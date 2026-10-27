@@ -24,7 +24,7 @@ type Input = z.infer<typeof input>;
 export const getImportPageScreenshotTool: ToolDefinitionWithHandler<Input> = {
   name: "get_import_page_screenshot",
   description:
-    "See a crawled import page's stored screenshot of the ORIGINAL live site (at crawl time) as an image, attached to your next turn — your keep-design reference. Use it as a visual self-check while rebuilding to compare your rebuild against real pixels. Requires the crawl worker to have run with screenshots enabled — a missing screenshot is reported honestly (do NOT claim you saw it). For pages on Caelo itself use `screenshot_page`; for arbitrary live URLs use `screenshot_external_page`.",
+    "Attach a crawled import page's stored screenshot of the ORIGINAL site (crawl time) to your next turn — visual reference to compare your rebuild against. A missing screenshot (crawl without screenshots) is reported -> never claim you saw it. Caelo pages -> `screenshot_page`; live URLs -> `screenshot_external_page`.",
   schema: input,
   inputSchema: {
     type: "object",

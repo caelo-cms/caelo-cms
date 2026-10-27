@@ -109,10 +109,15 @@ export const listListsOp = withHumanisedLinks(
     input: z
       .object({
         /** List type slug. */
-        type: z.string().min(1).max(64).optional(),
+        type: z.string().min(1).max(64).optional().describe("List type slug."),
         role: z.enum(LIST_TYPE_ROLES).optional(),
         /** Free-text match on slug, name, purpose and entry text. */
-        query: z.string().min(1).max(128).optional(),
+        query: z
+          .string()
+          .min(1)
+          .max(128)
+          .optional()
+          .describe("Free text over slug, name, purpose, entry text."),
         /**
          * Return every list's entries too. For a translation plugin that
          * resolves every list of a render in one read (docs/lists.md §9);
@@ -351,11 +356,22 @@ const upsertListSchema = z
     slug: slugSchema,
     name: z.string().min(1).max(200),
     /** Why this list exists and where it shows (CLAUDE.md §1A). */
-    purpose: z.string().min(1).max(1000),
+    purpose: z
+      .string()
+      .min(1)
+      .max(1000)
+      .describe("Why + where it shows, e.g. 'Main navigation in the site header'."),
     /** List type slug (`menu`, `links`, `categories`, …). */
-    type: z.string().min(1).max(64),
+    type: z.string().min(1).max(64).describe("List type slug (`list_list_types`)."),
     /** The whole entry tree; ids of existing entries keep their identity. */
-    items: z.array(listItemInputSchema).max(500),
+    items: z
+      .array(listItemInputSchema)
+      .max(500)
+      .describe(
+        "WHOLE entry tree. Keep `id` of existing entries, omit for new. `values` keyed by the node's fields; terms `caelo:term/<listId>/<itemId>`. `children` only under nodes allowing them. `query` only on source nodes, only the knobs its source lists in `editable` (e.g. {limit:5}); omit = type `defaults`. " +
+          "Links `{href}`: internal path (`/about`) of an EXISTING page (`list_pages`; else build an empty shell first: `build_page` with `modules: []`); `/` and `/#section` always valid; pages of an import run rebuilt in this chat are kept for `resolve_import_links`; external = full `https://` URL. " +
+          'E.g. (menu): [{"node":"entry","values":{"label":"Company","link":{"href":"/about"}},"children":[{"node":"entry","values":{"label":"Team","link":{"href":"/about/team"}}}]}]',
+      ),
     expectedVersion: z.number().int().positive().optional(),
   })
   .strict();

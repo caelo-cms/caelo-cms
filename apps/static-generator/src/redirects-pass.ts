@@ -11,6 +11,10 @@
  * - `_redirects.caddy` — the plan as a Caddyfile snippet the self-hosted
  *   site blocks import (redirect-emit-caddy.ts in @caelo-cms/shared).
  *
+ * #1157 — a redirects save also puts the table live without a build
+ * (admin-core deploy/redirect-sync.ts); the copies here are what a build
+ * carries, and Publish live re-syncs the table as saved now.
+ *
  * Runs after every other file of the build is written: the plan leaves out
  * rows whose from path a build file serves (the live page wins), so it needs
  * the complete file list.

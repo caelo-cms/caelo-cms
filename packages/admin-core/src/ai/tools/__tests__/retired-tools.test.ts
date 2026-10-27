@@ -69,7 +69,7 @@ const OLD_CALLS: Record<string, Record<string, unknown>> = {
 /** A representative call per renamed key, with the OLD wrapper key. */
 const OLD_KEY_CALLS: Record<string, Record<string, unknown>> = {
   update_modules_many: { updates: [{ moduleId: MODULE, css: ".hero{color:red}" }] },
-  update_pages_many: { updates: [{ pageId: PAGE, name: "About" }] },
+  update_pages_many: { updates: [{ pageId: PAGE, title: "About" }] },
   delete_pages_many: { deletions: [{ pageId: PAGE, disposition: "404" }] },
   bulk_optimize_seo: { updates: [{ pageId: PAGE, metaDescription: "x" }], context: "c" },
   bulk_create_redirects: { redirects: [{ fromPath: "/a", toPath: "/b" }] },
@@ -198,6 +198,8 @@ function recordingToolCtx(calls: { op: string; input: unknown }[]): ToolContext 
   registerAdminOps(registry);
   const adapter = {
     runOperation: async (op: { name: string }, _ctx: unknown, input: unknown) => {
+      // #1157 — the redirect tools read where the saved redirects are live.
+      if (op.name === "redirects.sync_status") return ok({ targets: [] });
       calls.push({ op: op.name, input });
       return ok({ results: [{}], count: 1 });
     },

@@ -56,11 +56,10 @@ const SITEMAP_BYTE_CAP = 512 * 1024;
 export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
   name: "map_external_page_types",
   description:
-    "Turn an EXTERNAL site's HOMEPAGE into its page-type map: the distinct page types it exposes (pricing, blog-article, use-cases, …), each with ONE representative sample URL to build a template from, plus WHY it was classified so you can name it to the operator. " +
-    "Use this in migration step 1 (understand structure) right after glancing the homepage — it is the cheap alternative to crawling the whole origin. Sources: homepage nav + footer links + a sampled sitemap.xml. " +
-    "It FILTERS noise automatically: other-locale prefixes (/de when you migrate /en), /tag, /category, date archives (/2023/05/…), /author, and pagination — those never become types. Many /blog/* collapse into ONE 'blog-article' type with one sample. " +
-    'Pass the exact base you are migrating (e.g. https://example.com/en) so the active locale is scoped correctly. When the operator asked for one language/section of the site, ALSO pass `scopePathPrefix` (e.g. "/de/") — samples then come only from inside that scope and everything else is reported as out-of-scope, never sampled (issue #425). Then sample each returned type with `inspect_external_page` and build its template. ' +
-    "Do NOT crawl the whole site (`propose_site_import`) before this — that is what #278 removes. Only public http(s) URLs; private addresses are refused.",
+    "Turn an EXTERNAL site's homepage into its page-type map: distinct types (pricing, blog-article, use-cases, …), each with ONE representative sample URL to build a template from + WHY it was classified (name it to the operator). Sources: nav + footer links + sampled sitemap.xml.\n" +
+    "USE FOR: migration step 1, right after glancing at the homepage (cheap alternative to crawling). Then sample each type with `inspect_external_page` and build its template.\n" +
+    "DO NOT USE FOR: crawling the whole site (`propose_site_import`) before this.\n" +
+    "Noise filtered: other-locale prefixes (/de when migrating /en), /tag, /category, date archives (/2023/05/…), /author, pagination. Many /blog/* collapse into ONE 'blog-article' type. Public http(s) URLs only; private addresses refused.",
   schema: input,
   inputSchema: {
     type: "object",
@@ -70,21 +69,20 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
       url: {
         type: "string",
         description:
-          "The homepage / base URL being migrated, e.g. https://example.com/en — fixes the host + active locale.",
+          "Exact base being migrated (e.g. `https://example.com/en`); fixes host + active locale.",
       },
       includeSitemap: {
         type: "boolean",
-        description:
-          "Also sample sitemap.xml as a backstop for types the nav/footer miss. Default true.",
+        description: "Also sample sitemap.xml for types nav/footer miss. Default true.",
       },
       sitemapSampleSize: {
         type: "number",
-        description: "How many sitemap URLs to sample (not enumerate). Default 40, max 200.",
+        description: "Sitemap URLs to sample (not enumerate). Default 40, max 200.",
       },
       scopePathPrefix: {
         type: "string",
         description:
-          'issue #425 — path prefix ("/de/") when the operator migrates one language/section: only URLs under it become types/samples; the rest are reported as out-of-scope.',
+          "Pass when the operator wants one language/section (e.g. `/de/`): only URLs under it are sampled; the rest is reported out-of-scope.",
       },
     },
   },

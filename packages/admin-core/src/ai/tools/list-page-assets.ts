@@ -28,28 +28,25 @@ const listPageAssetsInput = z
 export const listPageAssetsTool: ToolDefinitionWithHandler<z.infer<typeof listPageAssetsInput>> = {
   name: "list_page_assets",
   description:
-    "List/search EVERY asset URL (images, CSS backgrounds, video/audio/source) discovered in a crawled import run's stored page HTML — the COMPLETE inventory behind inspect_external_page's top-20 `images` glance. " +
-    "Use when the top-20 isn't enough, or to find assets by substring across a run's pages. " +
-    "Pass `runId` (required); narrow with `pageUrl` (one crawled page) and/or `search` (case-insensitive URL substring); paginate with `limit`/`offset`. " +
-    "Results are ranked by prominence (frequency of appearance). Then import the ones you need with import_media_from_urls({ urls: [...] }).",
+    "List EVERY asset URL (images, CSS backgrounds, video/audio/source) in a crawled import run's stored page HTML, ranked by frequency — the full inventory behind `inspect_external_page`'s top-20 `images`. Use when top-20 isn't enough or to find assets by URL across pages; then import via `import_media_from_urls`.",
   schema: listPageAssetsInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["runId"],
     properties: {
-      runId: { type: "string", format: "uuid", description: "The crawled import run to scan." },
+      runId: { type: "string", format: "uuid" },
       pageUrl: {
         type: "string",
         format: "uri",
-        description: "Optional — restrict to one crawled page by its exact source URL.",
+        description: "Only this crawled page (exact source URL).",
       },
       search: {
         type: "string",
-        description: "Optional case-insensitive substring the asset URL must contain.",
+        description: "Case-insensitive URL substring.",
       },
-      limit: { type: "number", description: "Max assets to return (default 200, max 500)." },
-      offset: { type: "number", description: "Pagination offset (default 0)." },
+      limit: { type: "number", description: "Default 200, max 500." },
+      offset: { type: "number" },
     },
   },
   handler: async (ctx, input, toolCtx) => {

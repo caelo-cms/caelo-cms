@@ -51,14 +51,9 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
 > = {
   name: "revert_chat_changes",
   description:
-    "Composite: undo every snapshot tagged with one chat's branch by filing a SINGLE propose_revert_site " +
-    "proposal targeting the snapshot right before the chat started. One Owner click rewinds the whole chat. " +
-    "WARNING: rewinds the FULL SITE to that pre-chat state — any non-chat edit since then is also reverted. " +
-    "Use when the operator says 'undo everything in this chat' or 'roll back the changes from session <id>'. " +
-    "For surgical per-entity rollback, prefer propose_revert_page / propose_revert_module individually. " +
-    "Refuses when the chat is the very first activity on the site (no pre-chat snapshot to revert to) or " +
-    "when the chat touched more entities than `maxEntities` (default 20) — a safety cap so a wide-ranging chat " +
-    "isn't accidentally one-click-reverted.",
+    "Undo one chat's changes via ONE `propose_revert_site` proposal to the snapshot right before the chat started (one Owner click).\n" +
+    "USE FOR: 'undo everything in this chat' / 'roll back session <id>'. Surgical rollback -> `propose_revert_page` / `propose_revert_module`.\n" +
+    "WARNING: rewinds the FULL SITE — non-chat edits since then are reverted too. Refused when the chat is the site's first activity (no pre-chat snapshot) or touched more than `maxEntities` (default 20) entities.",
   schema: revertChatChangesToolInput,
   inputSchema: {
     type: "object",

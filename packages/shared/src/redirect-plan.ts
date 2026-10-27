@@ -178,6 +178,30 @@ export function buildRedirectPlan(args: BuildRedirectPlanArgs): RedirectPlan {
   return { redirects, gone, shadowedByBuild };
 }
 
+/**
+ * The planned redirects whose Location is a same-site path the build does
+ * not serve (#1157). Redirects reach the live site on save, pages only with
+ * Publish live, so a redirect to a page that is still a draft answers 404 at
+ * its target until that page is published. Callers report these; they are
+ * not an error. Paths under `/api/` are answered by the gateway, not the
+ * build, and are never reported.
+ *
+ * @example
+ *   redirectsToUnservedPaths(plan, new Set(["index.html"]))
+ *   // → the entries of `plan.redirects` pointing anywhere but `/`
+ */
+export function redirectsToUnservedPaths(
+  plan: RedirectPlan,
+  servedFiles: ReadonlySet<string>,
+): PlannedRedirect[] {
+  return plan.redirects.filter((r) => {
+    const path = pathBeforeQuery(r.location);
+    if (path === "/api" || path.startsWith("/api/")) return false;
+    if (looksLikeFile(path)) return !servedFiles.has(path.slice(1));
+    return !servedByBuild(stripTrailingSlash(path), servedFiles);
+  });
+}
+
 function normaliseRows(rows: readonly RedirectTableRow[]): NormalisedRow[] {
   const byBare = new Map<string, NormalisedRow>();
   const out: NormalisedRow[] = [];

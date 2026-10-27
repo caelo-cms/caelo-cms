@@ -95,14 +95,14 @@ export const gatewaySettingsInput = z
       .int()
       .min(512)
       .max(1_048_576)
-      .describe("Largest public POST body the gateway accepts, in bytes."),
+      .describe("Largest public POST body, bytes."),
     captchaProvider: captchaProvider.describe(
-      "Challenge on public writes: pow (built-in proof-of-work), turnstile, hcaptcha, or off.",
+      "Challenge on public writes; `pow` = built-in proof-of-work.",
     ),
     captchaPowTargetPrefix: z
       .string()
       .regex(/^[0-9a-f]{1,16}$/)
-      .describe("Proof-of-work difficulty as a hex prefix; longer = harder for bots and visitors."),
+      .describe("Proof-of-work difficulty as hex prefix; longer = harder for bots + visitors."),
   })
   .strict();
 

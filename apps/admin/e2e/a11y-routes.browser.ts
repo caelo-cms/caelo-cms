@@ -153,6 +153,7 @@ for (const colorMode of COLOR_MODES) {
             pendingProposals: 3,
             failedDeploys: 0,
             staleBranches: 0,
+            failedRedirectSyncs: 0,
             upgradeAvailable: false,
             latestVersion: null,
             releaseUrl: null,

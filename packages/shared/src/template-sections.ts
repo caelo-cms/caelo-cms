@@ -68,6 +68,17 @@ const TAG_RE = /\{\{\s*([#^/>]\s*)?([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)*)\s
 const SECTION_NAME_RE = /^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*$/;
 const DOT_RE = /\{\{\s*\.\s*\}\}/g;
 
+/** Dotted heads the list context answers, not an entry: `{{page.*}}`, `{{site_text.*}}`. */
+const CONTEXT_HEADS = new Set(["page", "site_text"]);
+
+function contextHead(name: string): string {
+  return (name.split(".")[0] ?? "").toLowerCase();
+}
+
+function isContextHead(name: string): boolean {
+  return CONTEXT_HEADS.has(contextHead(name));
+}
+
 function tokenize(html: string): Token[] {
   const out: Token[] = [];
   TAG_RE.lastIndex = 0;
@@ -201,6 +212,9 @@ class SectionRenderer {
       v = this.env.lists?.pageScope() ?? undefined;
       if (v === undefined)
         return parts.length > 1 || st.chain.length > 0 ? { missing: true } : undefined;
+    } else if (head === "site_text") {
+      v = this.env.lists?.siteTextScope();
+      if (v === undefined) return { missing: true };
     } else {
       for (let k = st.chain.length - 1; k >= 0 && v === undefined; k -= 1) {
         v = st.chain[k]?.entry.get(head);
@@ -251,8 +265,8 @@ class SectionRenderer {
     }
     if ("missing" in v) {
       const marker =
-        t.name.split(".")[0]?.toLowerCase() === "page" && this.env.lists === undefined
-          ? "list-context-unavailable:page"
+        isContextHead(t.name) && this.env.lists === undefined
+          ? `list-context-unavailable:${contextHead(t.name)}`
           : this.notDeclared(t.name, st);
       return this.raw(source, marker);
     }
@@ -321,8 +335,8 @@ class SectionRenderer {
     if (v !== undefined) {
       if ("missing" in v) {
         const marker =
-          t.name.split(".")[0] === "page" && this.env.lists === undefined
-            ? "list-context-unavailable:page"
+          isContextHead(t.name) && this.env.lists === undefined
+            ? `list-context-unavailable:${contextHead(t.name)}`
             : this.notDeclared(t.name, st);
         return this.raw(source, marker);
       }

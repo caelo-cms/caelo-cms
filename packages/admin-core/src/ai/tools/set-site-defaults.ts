@@ -35,12 +35,9 @@ export const setSiteDefaultsTool: ToolDefinitionWithHandler<
   // every site change. Current values + valid slugs are read with
   // get_site_defaults / list_layouts / list_templates.
   description:
-    "Set the site-wide default layout and/or default template. New pages created without an explicit layout/template " +
-    "fall back to these. SAFE TO CALL DIRECTLY — only affects future creates; existing pages keep their pinned ids. " +
-    "Pass slugs (e.g. `home-template`, `site-default`), not UUIDs — current values and the valid slugs come from " +
-    "get_site_defaults / list_layouts / list_templates. " +
-    "On the FIRST set both `defaultLayoutSlug` and `defaultTemplateSlug` are required; afterwards pass only the field you change. " +
-    "With no layouts/templates on the site yet, bootstrap first (create_layout → create_template) — the op rejects loudly until then.",
+    "Set the site-wide default layout and/or template for new pages created without one. Safe to call directly: existing pages keep theirs.\n" +
+    "CORE RULES: pass slugs (e.g. `site-default`), not UUIDs; current values via `get_site_defaults`, slugs via `list_layouts`/`list_templates`. " +
+    "FIRST set needs both fields, afterwards only the changed one. No layouts/templates yet -> `create_layout` -> `create_template` first.",
   schema: setSiteDefaultsToolInput,
   inputSchema: {
     type: "object",

@@ -57,6 +57,7 @@ export interface ListSourceType<D> {
 export interface ListSourcePage {
   readonly id: string;
   readonly title: string;
+  readonly shortTitle: string;
   readonly parentId: string | null;
   readonly pageTypeId: string;
   readonly properties: Readonly<Record<string, unknown>>;
@@ -165,6 +166,7 @@ export async function assembleListRenderData(
     pages.set(p.id, {
       id: p.id,
       title: p.title,
+      shortTitle: p.shortTitle,
       parentId: p.parentId,
       pageTypeSlug: pageTypeSlugById.get(p.pageTypeId) ?? p.pageTypeId,
       properties: p.properties,
@@ -191,8 +193,8 @@ export async function assembleListRenderData(
   }
 
   const lang = (await tx.execute(sql`
-    SELECT site_language FROM site_defaults WHERE id = 1
-  `)) as unknown as { site_language: string | null }[];
+    SELECT site_language, home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1
+  `)) as unknown as { site_language: string | null; home_page_id: string | null }[];
   const siteLanguage = lang[0]?.site_language ?? null;
   if (siteLanguage === null && src.languageUnset === "refuse") {
     throw new ListRenderDataError(
@@ -206,6 +208,7 @@ export async function assembleListRenderData(
     pages,
     media,
     siteLanguage: siteLanguage ?? "und",
+    homePageId: lang[0]?.home_page_id ?? null,
     ...(src.pageVariants ? { pageVariants: src.pageVariants } : {}),
     ...(src.overlaySources && src.overlaySources.plugins.length > 0
       ? { overlays: mergeListOverlays(src.overlaySources), overlaySources: src.overlaySources }
@@ -252,7 +255,7 @@ export async function loadBuildListRenderData(
     SELECT id::text AS id, definition FROM page_types WHERE ${live} ORDER BY slug
   `)) as unknown as { id: string; definition: unknown }[];
   const pages = (await tx.execute(sql`
-    SELECT p.id::text AS id, p.title, p.parent_page_id::text AS parent_id,
+    SELECT p.id::text AS id, p.title, p.short_title, p.parent_page_id::text AS parent_id,
            p.page_type_id::text AS page_type_id, p.properties, p.status,
            p.first_published_at, p.updated_at,
            COALESCE((
@@ -264,6 +267,7 @@ export async function loadBuildListRenderData(
   `)) as unknown as {
     id: string;
     title: string;
+    short_title: string;
     parent_id: string | null;
     page_type_id: string;
     properties: unknown;
@@ -296,6 +300,7 @@ export async function loadBuildListRenderData(
     pages: pages.map((p) => ({
       id: p.id,
       title: p.title,
+      shortTitle: p.short_title,
       parentId: p.parent_id,
       pageTypeId: p.page_type_id,
       properties: json<Record<string, unknown>>(p.properties) ?? {},

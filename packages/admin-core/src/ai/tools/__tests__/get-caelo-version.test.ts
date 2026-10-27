@@ -54,6 +54,6 @@ describe("get_caelo_version", () => {
 
   it("tells the AI up front that it cannot install updates", () => {
     expect(getCaeloVersionTool.name).toBe("get_caelo_version");
-    expect(getCaeloVersionTool.description).toContain("you cannot install updates");
+    expect(getCaeloVersionTool.description).toContain("You cannot install updates");
   });
 });

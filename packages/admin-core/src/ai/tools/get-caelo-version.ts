@@ -47,9 +47,7 @@ export function formatCaeloVersion(s: PlatformUpdateStatus): string {
 export const getCaeloVersionTool = makeReadTool<Record<string, never>>({
   name: "get_caelo_version",
   description:
-    "Which Caelo version this site runs, the newest Caelo release, and whether an update is available (with the release-notes link). " +
-    "Use when the operator asks about the Caelo version, updates, upgrades or a new release, or when a missing feature may simply need a newer Caelo. " +
-    "Read-only: you cannot install updates — the Owner installs them at Settings → Updates (/settings/updates); tell the operator that and link the page.",
+    "Running Caelo version, newest release, update available (+ release-notes link). Use for version/update/release questions, or when a missing feature may need a newer Caelo. You cannot install updates — the Owner does at Settings → Updates (/settings/updates); say so and link it.",
   opName: "platform_updates.status",
   input: z.object({}).strict(),
   format: (value) => formatCaeloVersion(value as PlatformUpdateStatus),

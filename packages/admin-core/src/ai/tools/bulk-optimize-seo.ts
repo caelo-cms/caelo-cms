@@ -18,10 +18,11 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
 > = {
   name: "bulk_optimize_seo",
   description: [
-    "Re-optimize meta descriptions (+ optional og:image) — one call for 1..N pages (`items[]`), one all-or-nothing transaction, with one shared `context`. Allowed regardless of fill state.",
-    "USE FOR: ONLY when the user explicitly asks to optimize/rewrite SEO and gives context (keywords, intent shift, branding).",
-    "DO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; an exact user-dictated value -> `set_page_seo_many`.",
-    "Read current descriptions + core text with ONE `get_page_seo({pageIds})` first.",
+    "Re-optimize meta descriptions (+ og:image) of 1..N pages, all-or-nothing, regardless of fill state.",
+    "USE FOR: ONLY an explicit user request to optimize/rewrite SEO with context (keywords, intent, branding).",
+    "DO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; exact dictated value -> `set_page_seo_many`.",
+    "First read current descriptions + core text with ONE `get_page_seo({pageIds})`.",
+    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
   ].join("\n"),
   schema: bulkOptimizeSeoToolInput,
   inputSchema: {
@@ -47,8 +48,7 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
       context: {
         type: "string",
         maxLength: 4000,
-        description:
-          "The user's optimization brief (keywords, intent, branding), applied to every item.",
+        description: "The user's brief, applied to every item.",
       },
     },
   },
@@ -62,7 +62,7 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
     }
     return {
       ok: true,
-      content: `SEO optimized on ${(r.value as { updated: number }).updated} page(s)`,
+      content: `SEO optimized on ${(r.value as { updated: number }).updated} page(s) in this chat's draft — live after Stage + Publish live`,
     };
   },
 };

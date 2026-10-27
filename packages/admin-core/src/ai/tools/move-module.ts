@@ -37,7 +37,7 @@ const MOVE_MODULE_INPUT_SCHEMA: Record<string, unknown> = {
       type: "string",
       minLength: 1,
       maxLength: 80,
-      description: "Target block; omit to stay in the module's current block (reorder).",
+      description: "Target block; omit to reorder within the current block.",
     },
     position: {
       oneOf: [
@@ -45,7 +45,7 @@ const MOVE_MODULE_INPUT_SCHEMA: Record<string, unknown> = {
         { type: "integer", minimum: 0, maximum: 1000 },
       ],
       description:
-        "0-based index in the target block (clamped to its end). `up`/`down` = one slot, current block only.",
+        "0-based index (clamped to the block end). `up`/`down` = one slot, current block only.",
     },
   },
 };
@@ -71,7 +71,7 @@ export function targetIndex(
 export const moveModuleTool: ToolDefinitionWithHandler<MoveModuleToolInput> = {
   name: "move_module",
   description:
-    "Reposition a module on its page: into another block ('move the hero into the header', 'put this banner above the footer') or within its current block ('move the testimonials above the gallery', 'put the hero last' — omit `toBlockName`). Already in place -> no-op.",
+    "Reposition a module on its page: into another block ('move the hero into the header', 'put this banner above the footer') or within its block ('move the testimonials above the gallery', 'put the hero last' — omit `toBlockName`). Already in place -> no-op.",
   schema: moveModuleToolInput,
   inputSchema: MOVE_MODULE_INPUT_SCHEMA,
   handler: async (ctx, input, toolCtx) => {

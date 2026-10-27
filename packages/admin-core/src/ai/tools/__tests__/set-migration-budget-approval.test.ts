@@ -70,10 +70,11 @@ describe("set_migration_budget — operator approval gate", () => {
     });
   });
 
-  it("the description states the two-step contract and drops the stale 3x claim", () => {
+  it("the description states the approval contract and drops the stale 3x claim", () => {
     const d = setMigrationBudgetTool.description;
-    expect(d).toContain("TWO-STEP");
-    expect(d).toContain("Do not claim the budget was applied");
+    expect(d).toContain("APPROVAL-GATED");
+    expect(d).toContain("never claim it applied");
+    expect(d).toContain("Never propose an amount the operator has not named");
     // ESTIMATE_CEILING_SAFETY_FACTOR is 1; the description used to promise 3x.
     expect(d).not.toContain("3x");
   });

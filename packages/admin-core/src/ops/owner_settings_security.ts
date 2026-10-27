@@ -43,15 +43,13 @@ function usd(microcents: number | null): string {
 
 export const proposePluginAiCostCapInput = z
   .object({
-    pluginSlug: z.string().min(1).max(120).describe("Plugin slug as list_plugins shows it."),
+    pluginSlug: z.string().min(1).max(120).describe("As `list_plugins` shows it."),
     capMicrocents: z
       .number()
       .int()
       .nonnegative()
       .nullable()
-      .describe(
-        "Max AI spend per rolling 24h in microcents (1e-8 USD): $5 = 500000000. null removes the cap.",
-      ),
+      .describe("Microcents (1e-8 USD): $5 = 500000000; null removes the cap."),
   })
   .strict();
 
@@ -115,9 +113,7 @@ export const proposeRotateCookieSecretInput = z
       .string()
       .min(10)
       .max(500)
-      .describe(
-        "Why the secret must change (e.g. it leaked in a log or backup). Shown to the Owner on the approval.",
-      ),
+      .describe("Why it must change (e.g. leaked in a log/backup). Shown on the approval."),
   })
   .strict();
 

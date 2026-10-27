@@ -51,13 +51,15 @@ interface MediaRow {
 export const findMediaTool = makeListReadTool<z.infer<typeof findMediaInput>, MediaRow>({
   name: "find_media",
   description:
-    "Search the media library (TOON rows: id, name, mime, dims, alt, url). `filter` matches alt/filename server-side; optional `mime`; `limit`/`offset`/`full` as usual. " +
-    "The `id` column is the media UUID that `set_theme_asset` / `set_media_alt_many` / `regenerate_media_variants` require — take it from here; never invent one. " +
-    "The `url` column always points at a variant that EXISTS on the asset — use it verbatim in <img src> via update_modules_many; do NOT rewrite the variant segment. " +
-    'Reference images (guides for generate/edit, not placeable on pages) are hidden unless you pass `visibility: "reference"` or `"all"`. ' +
-    "Use when the user references an asset by description. This searches the EXISTING Caelo library only — during a site migration it is empty, so import source-site images with import_media_from_urls instead of this tool.",
+    "Search the EXISTING media library, most-used first, e.g. when the user describes an asset (TOON rows: id, name, mime, dims, alt, url).\n" +
+    "DO NOT USE FOR: site migrations (library is empty) -> `import_media_from_urls`.\n" +
+    "CORE RULES: `id` = media UUID for `set_theme_asset` / `set_media_alt_many` / `regenerate_media_variants`; take it from here, never invent one. `url` points at an EXISTING variant: use it verbatim in `<img src>` (via `update_modules_many`), never rewrite the variant segment. Reference images (generate/edit guides, not placeable) are hidden unless `visibility` is `reference` | `all`.",
   opName: "media.list",
   input: findMediaInput,
+  listParamDescriptions: {
+    filter: "Server-side search over alt text and filename.",
+    limit: "Default 15, max 50.",
+  },
   buildOpInput: (
     input: {
       mime?: string;

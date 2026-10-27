@@ -266,73 +266,58 @@ async function staticDesignFactBase(
 export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
   name: "inspect_external_page",
   description:
-    "Fetch ONE page of an EXTERNAL website (the operator's existing site, a reference site) and return ONLY the facets you ask for — keep discovery turns small, template-building turns rich. " +
-    "Pass `facets` (booleans; default when omitted = meta + markdown — the gist; every voluminous facet is opt-in): " +
-    "`markdown` (the page's readable text as Markdown — use this to understand what a page is about + how it's laid out; truncated with a cursor, call read_page_more for the rest), " +
-    "`meta` (title, description, canonical, lang+hreflang, h1–h3 outline), " +
-    "`links` (outbound links with anchor text, rel, and nav|footer|body location — the raw material for the page-type map; OPT-IN, default off, since index/nav pages can carry 200+ links — enable it on the FIRST/homepage inspect for site-structure discovery, leave off for content inspects), " +
-    "`altTexts` (accessibility inventory of img alt + aria-label; when `images` is ALSO on, this narrows to aria-labels since that inventory already carries each img's alt — no double-listing), " +
-    "`images` (the TOP ~20 asset URLs — images, CSS backgrounds, video/audio/source — deduped + ranked by prominence, each with its `alt=`; feed the URLs to import_media_from_urls to pull them into the media library; for the COMPLETE searchable list of a crawled site use list_page_assets), " +
-    "`screenshot` (rendered FULL-PAGE image on your next turn — the whole page, not just the top fold), " +
-    "`tokens` (design token inventory: the RENDERED computed-style tokens when Chromium is available, else a static CSS-derived fallback — ONE section, not both), " +
-    "The READING facets (markdown + meta's headings outline) are CLEANED by default (top-level `stripBoilerplate`, default true): cookie-consent banners, hidden DOM subtrees (mobile-nav clones, offscreen carousel slides — rendered path only) and same-page repeated blocks are stripped BEFORE conversion, and the result reports exact counts of what was removed. Pass `stripBoilerplate: false` (top-level, NOT inside facets) to read the page verbatim; `query_page_html` and the inventory facets (links, altTexts, images, tokens) always see the FULL unstripped DOM either way. " +
-    "There is NO raw-HTML/markup facet: for specific structure use `query_page_html` (by selector or a natural-language `describe`), which is bounded — never dump a whole page's HTML into the chat. " +
-    "Step 1 understand a page → default (`{}` = meta + markdown) + `{links:true}` on the FIRST/homepage inspect for site structure. Step 3 build a template from a sample → `{screenshot:true, tokens:true, altTexts:true, images:true}` for the visual + design + accessibility + asset URLs, markdown for the content, and `query_page_html` for any specific section. " +
-    "To turn a homepage's links into the site's page-type map, use `map_external_page_types` instead. " +
-    "Do NOT use for whole-site work (no link-following) — use `propose_site_import`. Do NOT use on Caelo's own pages — use `inspect_page_render`. " +
-    "Only public http(s) URLs work; private/internal addresses are refused by the SSRF guard.",
+    "Fetch ONE page of an EXTERNAL site (operator's existing site, a reference) returning only the requested `facets`. Keep discovery turns small, template turns rich.\n" +
+    "USE FOR: understanding a page -> `{}` (+ `links` on the FIRST/homepage inspect); building a template from a sample -> `screenshot`, `tokens`, `altTexts`, `images` + markdown, plus `query_page_html` for specific sections.\n" +
+    "DO NOT USE FOR: raw HTML (no such facet; bounded `query_page_html` by selector or `describe`, never dump a whole page) | page-type map (`map_external_page_types`) | whole sites, no link-following (`propose_site_import`) | Caelo's own pages (`inspect_page_render`). Public http(s) only; private/internal addresses refused (SSRF guard).",
   schema: input,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["url"],
     properties: {
-      url: { type: "string", description: "Absolute public URL, e.g. https://example.com/" },
+      url: { type: "string", description: "Absolute public URL." },
       stripBoilerplate: {
         type: "boolean",
         description:
-          "Default true: consent/cookie banners, hidden DOM subtrees (rendered path) and same-page repeated blocks (carousel clones, duplicate navs) are stripped from the READING facets (markdown + meta's headings outline) before conversion, with exact counts reported in the result. TOP-LEVEL flag, deliberately not a facet. Set false to read the page verbatim (e.g. when the cleanup removed something you needed). query_page_html and the inventory facets (links, altTexts, images, tokens) always see the full unstripped DOM either way.",
+          "Default true: cookie/consent banners, hidden DOM (mobile-nav clones, offscreen slides; rendered path) and same-page repeated blocks are stripped from markdown + meta outline, with counts reported. Top-level, not a facet. false = verbatim (when cleanup removed something you need). `query_page_html` and inventory facets (links, altTexts, images, tokens) always see the full DOM.",
       },
       facets: {
         type: "object",
         additionalProperties: false,
-        description:
-          "Which facets to pull. Omit for the gist (meta + markdown). Each is a boolean switch; voluminous facets (links, screenshot, tokens) are opt-in.",
+        description: "Omit = meta + markdown (the gist).",
         properties: {
           markdown: {
             type: "boolean",
             description:
-              "The page's readable text as Markdown (headings, paragraphs, links, lists) — the gist for understanding a page. For specific structure use query_page_html, not a raw-HTML dump. Truncated to one slice with a cursor; call read_page_more for the rest.",
+              "Readable text as Markdown; truncated with a cursor -> `read_page_more` for the rest.",
           },
           meta: {
             type: "boolean",
-            description:
-              "Title, meta description, canonical, lang + hreflang alternates, h1–h3 outline.",
+            description: "Title, description, canonical, lang + hreflang, h1–h3 outline.",
           },
           links: {
             type: "boolean",
             description:
-              "OPT-IN (default off). Outbound links: {href (absolute), text (anchor text), rel, location: nav|footer|body}. Enable on the first/homepage inspect for site-structure discovery; index/nav pages can carry 200+ links, so leave it off for content inspects.",
+              "Outbound links {href, text, rel, location nav|footer|body}. Index/nav pages carry 200+ -> only on the first/homepage inspect (site structure), off for content inspects.",
           },
           altTexts: {
             type: "boolean",
             description:
-              "Accessibility inventory of img alt + aria-label. When `images` is also requested it narrows to aria-labels (that inventory already lists each img's alt), so the two never double-list.",
+              "img alt + aria-label inventory; with `images` on, only aria-labels (no double-listing).",
           },
           images: {
             type: "boolean",
             description:
-              "The TOP ~20 asset URLs (images, CSS background-images, video/audio/source src+poster+srcset), deduped and ranked by prominence (frequency of appearance). Says '(showing top 20 of N)' when truncated. Feed the URLs to import_media_from_urls; for the complete searchable list of a crawled run use list_page_assets({ runId, search }).",
+              "Top ~20 asset URLs (img, CSS backgrounds, video/audio/source) ranked by prominence, each with alt; feed to `import_media_from_urls`. Complete list of a crawled run: `list_page_assets({runId, search})`.",
           },
           screenshot: {
             type: "boolean",
-            description:
-              "Rendered FULL-PAGE image (the whole page, not just the top fold), attached to your next turn (needs Playwright).",
+            description: "Full-page render attached to your next turn.",
           },
           tokens: {
             type: "boolean",
             description:
-              "Design token inventory: the RENDERED computed-style tokens (WS1 sampler) when Chromium is available, else a static CSS-derived fallback — ONE section, not both.",
+              "Design token inventory (rendered computed styles when Chromium is available, else static CSS).",
           },
         },
       },

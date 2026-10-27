@@ -44,14 +44,14 @@ interface SetValuesResult {
 export const setContentInstanceValuesManyTool = makeBulkTool({
   name: "set_content_instance_values_many",
   description: [
-    "Edit the values of shared content_instances — one call for 1..N instances (`items[]`), one transaction. Each item propagates to EVERY placement bound to that instance with sync_mode `synced` (blast radius = its placement count).",
-    "USE FOR: deliberate shared-content changes — check `purpose`, sample pages and placement count first (`list_content_instances` / `get_content_instance`).",
-    "DO NOT USE FOR: an edit meant for ONE page -> `set_page_module_content_many` (unsynced placement) or `fork_placement_content` first (synced placement); module structure -> `update_modules_many`.",
+    "Edit values of 1..N shared content_instances in one transaction. Each item propagates to EVERY placement bound to that instance with sync_mode `synced` (blast radius = its placement count).",
+    "USE FOR: deliberate shared-content changes — check `purpose`, sample pages, placement count first (`list_content_instances` / `get_content_instance`).",
+    "DO NOT USE FOR: an edit meant for ONE page -> `set_page_module_content_many` (unsynced placement) or `fork_placement_content` first (synced); module structure -> `update_modules_many`.",
     "CORE RULES:",
-    "- All-or-nothing: an invalid item aborts the batch (the error names `items[i]`) and nothing is written.",
+    "- All-or-nothing: an invalid item aborts the batch (error names `items[i]`); nothing is written.",
     "- Optional metadata in the same write: `slug`, `displayName` (`null` clears), `purpose`.",
     "- The result names per item where the edit now shows — relay it when the reach is wider than the operator asked for.",
-    INTERNAL_LINK_CONTRACT.trim(),
+    INTERNAL_LINK_CONTRACT,
   ].join("\n"),
   itemInputSchema: setContentInstanceValuesToolInput,
   itemJsonSchema: {
@@ -65,8 +65,8 @@ export const setContentInstanceValuesManyTool = makeBulkTool({
         additionalProperties: true,
         description:
           "Keyed by the module's field names; fully REPLACES existing values (no merge) — read via `get_content_instance` to keep other fields. " +
-          "Nested `module`/`module-list`: `{moduleId, contentInstanceId}` | array of them; the module's stable `type` MUST be in the field's `allowedModuleTypes` when set (`list_modules` shows both) — reuse an allowed-type module, else create one with an allowed `type`. " +
-          'Local `list`: entry array (`[{node:"text", values:{text:"Fast"}}]`, existing entries keep `id`). Shared `list`: `caelo:list/<id>` (switches the list shown; entries via `patch_list_items_many`). Source field: its editable knobs (`{limit:5}`, `{terms:[…]}` for term_pages).',
+          'Local `list` -> entries (`[{node:"text", values:{text:"Fast"}}]`, existing entries keep `id`); shared `list` -> `caelo:list/<id>` (switches the list shown; entries via `patch_list_items_many`); source field -> editable knobs (`{limit:5}`, `{terms:[…]}` for term_pages); ' +
+          "nested `module`/`module-list` -> `{moduleId, contentInstanceId}` | array; the module's stable `type` MUST be in the field's `allowedModuleTypes` when set (`list_modules` shows both) — reuse an allowed-type module, else create one with an allowed `type`.",
       },
       expectedVersion: { type: "integer", minimum: 0 },
       slug: { type: ["string", "null"], pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
@@ -74,8 +74,7 @@ export const setContentInstanceValuesManyTool = makeBulkTool({
       purpose: {
         type: ["string", "null"],
         maxLength: 1000,
-        description:
-          "Why this shared row exists; rewrite when the operator's intent for it shifts.",
+        description: "Why this shared row exists; rewrite when the operator's intent shifts.",
       },
     },
   },

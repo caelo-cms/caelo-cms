@@ -150,7 +150,7 @@ export function stageToolbarMode(args: {
  * #835 — whether the toolbar offers "Stage again" (rebuild staging from
  * main without pending edits). Always in the promote-only shape, whatever
  * the quality gate says: a Publish live refused by the parity guard, a
- * Caelo upgrade or fixes written live (SEO texts) all need a fresh Stage,
+ * Caelo upgrade or fixes written live all need a fresh Stage,
  * and without pending edits this button is the operator's only way to
  * get one. With pending edits, Stage… covers it.
  */

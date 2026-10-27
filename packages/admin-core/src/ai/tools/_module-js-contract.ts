@@ -30,18 +30,26 @@ import { INTERACTION_MARKUP_CONTRACT } from "@caelo-cms/shared";
  * boundary (`sourceTextArg` in shared `ai-tools.ts`); any other CDATA marker
  * in CSS / JS is still refused by the op (shared `content.ts`).
  */
-export const MODULE_SOURCE_VALUE_NOTE =
-  "Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping).";
+export const MODULE_SOURCE_VALUE_NOTE = "Plain source (no CDATA or extra escaping).";
 
 /** `html` parameter description for every module-authoring tool. */
-export const MODULE_HTML_DESCRIPTION = `Module HTML. ${MODULE_SOURCE_VALUE_NOTE}`;
+export const MODULE_HTML_DESCRIPTION =
+  `Module HTML. ${MODULE_SOURCE_VALUE_NOTE} ` +
+  "Placeholders: `{{field}}` primitives, `{{>field}}` single nested `module`, `{{#field}}…{{/field}}` `list` and `module-list`. " +
+  "Accordion, tabs, carousel, mobile-nav -> `data-caelo-ui` markup (see `js`) instead of custom JS.";
 
 /** `css` parameter description for every module-authoring tool. */
-export const MODULE_CSS_DESCRIPTION = `Module CSS. ${MODULE_SOURCE_VALUE_NOTE}`;
+export const MODULE_CSS_DESCRIPTION =
+  `Module CSS. ${MODULE_SOURCE_VALUE_NOTE} ` +
+  "MUST scope every selector under the module's root class — bare selectors (`body`, `h1`, `.card`) bleed into other modules and are flagged.";
 
+/** `js` parameter description for every module-authoring tool: runtime contract + interaction kit. */
 export const MODULE_JS_CONTRACT =
-  "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. " +
-  "Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. " +
-  "Omit entirely for purely presentational modules. " +
-  `${MODULE_SOURCE_VALUE_NOTE} ` +
+  `Vanilla JS. ${MODULE_SOURCE_VALUE_NOTE} ` +
+  "Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. " +
+  "Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. " +
   INTERACTION_MARKUP_CONTRACT;
+
+/** `bindThemeLiterals` parameter description for every module-authoring tool. */
+export const MODULE_BIND_THEME_LITERALS_DESCRIPTION =
+  "Rewrite CSS literals matching a theme token into `var(--…)`. Default true — omit unless keeping a deliberate off-palette literal.";

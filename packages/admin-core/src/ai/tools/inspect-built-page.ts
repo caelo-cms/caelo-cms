@@ -63,9 +63,7 @@ export type InspectBuiltPageInput = z.infer<typeof inspectBuiltInput>;
 export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInput> = {
   name: "inspect_built_page",
   description:
-    "Read the BUILT HTML of a page from the staging or static bucket — what publishStaging or promoteToProduction actually uploaded. " +
-    "USE THIS AFTER STAGE to verify the build matches the live preview's expectations. Catches drift the live preview can't show: SEO meta absence, hashed-asset URLs, plugin render transforms, CSP-relevant <script src> tags, robots.txt overrides. " +
-    "Default target='staging' reads from the staged build; pass target='static' to read what's currently serving production.",
+    "Read a page's BUILT HTML from the staging or production bucket — use AFTER Stage to verify the build. Catches what the preview can't show: missing SEO meta, hashed-asset URLs, plugin render transforms, CSP-relevant `<script src>`, robots.txt overrides.",
   schema: inspectBuiltInput,
   inputSchema: {
     type: "object",
@@ -76,14 +74,12 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
       target: {
         type: "string",
         enum: ["staging", "static"],
-        description:
-          "Which bucket. 'staging' = the most recent staged build. 'static' = the live site.",
+        description: "'staging' (default) = latest staged build; 'static' = live site.",
       },
       runId: {
         type: "string",
         format: "uuid",
-        description:
-          "Optional. When target='staging', pin to a specific runId. Defaults to the most recent succeeded staging run.",
+        description: "Pin a staging run; default latest succeeded.",
       },
     },
   },

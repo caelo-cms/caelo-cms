@@ -551,3 +551,58 @@ describe("lists — loud markers", () => {
     expect(r.missingSlots).toEqual(["list-context-unavailable:bullets"]);
   });
 });
+
+describe("lists — breadcrumbs and {{site_text.*}} (#1142)", () => {
+  const SITE_TEXTS = "00000000-0000-4000-8000-0000000000e1";
+  const withTexts = (pageId: string, texts: Record<string, string>): ListPageContext =>
+    createListRenderContext(
+      fixtureData({
+        lists: [
+          {
+            id: SITE_TEXTS,
+            slug: "site-texts",
+            name: "Site texts",
+            typeSlug: "site-texts",
+            items: Object.entries(texts).map(([key, text], i) => ({
+              id: uuid(900 + i),
+              node: "text",
+              values: { key, text },
+            })),
+          },
+        ],
+      }),
+    ).forPage(pageId, { linkResolver: fixtureLinkIndex().forPage(pageId) });
+  const CRUMBS: TemplateField = {
+    name: "crumbs",
+    kind: "list",
+    listType: "links",
+    bind: "source",
+    source: { kind: "system", name: "breadcrumbs" },
+  };
+  const NAV =
+    '<nav aria-label="{{site_text.breadcrumb_label}}"><ol>{{#crumbs}}<li>{{#is_current}}<span aria-current="page">{{short_title}}</span>{{/is_current}}{{^is_current}}<a href="{{link}}">{{short_title}}</a>{{/is_current}}</li>{{/crumbs}}</ol></nav>';
+
+  it("renders a trail home → current with the aria-label from the site texts", () => {
+    const r = render(NAV, [CRUMBS], {}, withTexts(PAGE.team, { breadcrumb_label: "Breadcrumb" }));
+    expect(r.html).toBe(
+      '<nav aria-label="Breadcrumb"><ol><li><a href="/">Home</a></li><li><a href="/about/">About</a></li><li><span aria-current="page">Team</span></li></ol></nav>',
+    );
+    expect(r.missingSlots).toEqual([]);
+  });
+
+  it("a missing site text stays loud", () => {
+    const r = render(
+      '<nav aria-label="{{site_text.breadcrumb_label}}"></nav>',
+      [],
+      {},
+      withTexts(PAGE.team, {}),
+    );
+    expect(r.html).toBe('<nav aria-label="{{site_text.breadcrumb_label}}"></nav>');
+    expect(r.missingSlots).toContain("site-text-missing:breadcrumb_label");
+  });
+
+  it("is loud without a list context", () => {
+    const r = render("{{site_text.breadcrumb_label}}", [], {}, null);
+    expect(r.missingSlots).toContain("list-context-unavailable:site_text");
+  });
+});

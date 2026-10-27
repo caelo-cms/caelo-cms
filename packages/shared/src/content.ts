@@ -627,6 +627,15 @@ export const templateBlocksSetSchema = z
 
 export const pageStatusSchema = z.enum(["draft", "published"]);
 
+/** `pages.short_title` (#1142): a crumb-sized public label, never blank. */
+export const pageShortTitleSchema = z
+  .string()
+  .trim()
+  .min(1, "the short title is the page's breadcrumb label and cannot be blank")
+  // Same bound as the title it is backfilled and defaulted from, so every
+  // stored page stays editable; keeping it crumb-sized is guidance.
+  .max(256);
+
 /**
  * Page payloads are `.strict()` — passing an `html` field is rejected by Zod
  * before the handler runs. This is the §3.1 "no raw HTML on pages" invariant
@@ -636,9 +645,13 @@ export const pageStatusSchema = z.enum(["draft", "published"]);
 export const pageCreateSchema = z
   .object({
     slug: slugSchema,
-    /** P6.7.5 — internal editor label. Defaults to title if omitted. */
-    name: z.string().min(1).max(256).optional(),
     title: z.string().min(1).max(256),
+    /**
+     * #1142 — the page's public label in breadcrumbs, navigation and the
+     * page picker ("Pricing" for "Pricing for teams of every size").
+     * Omitted = the create-time resolver stores `title` (stored data).
+     */
+    shortTitle: pageShortTitleSchema.optional(),
     /**
      * P6.7.6 — optional. When omitted, the handler resolves to
      * `site_defaults.default_template_id` at create time. Stored data,
@@ -703,9 +716,9 @@ export const pageUpdateSchema = z
      * Routes that load the page first should always pass it back.
      */
     expectedVersion: z.number().int().nonnegative().optional(),
-    /** P6.7.5 — three independently-editable identifiers. */
-    name: z.string().min(1).max(256).optional(),
     title: z.string().min(1).max(256).optional(),
+    /** #1142 — the breadcrumb / navigation label; see {@link pageCreateSchema}. */
+    shortTitle: pageShortTitleSchema.optional(),
     slug: slugSchema.optional(),
     templateId: z.string().uuid().optional(),
     status: pageStatusSchema.optional(),

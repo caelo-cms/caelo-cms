@@ -18,7 +18,6 @@
  * Pre-existing propose tools NOT in this file (their per-domain files
  * still exist):
  *   deploy.{promote,rollback}        — propose-deploy-promote.ts
- *   locales.{create,delete,...}      — propose-{add,remove,...}-locale.ts
  *   imports.create_run               — propose-site-import.ts
  *   skills.create                    — propose-skill.ts
  *   plugins.submit                   — submit-plugin.ts
@@ -57,8 +56,8 @@ export const proposeLayoutUpdateTool = makeProposeTool({
   opName: "layouts.propose_update",
   pendingQueuePath: "/settings/layouts/pending",
   when:
-    "Propose an edit to an existing layout — HTML, CSS, displayName, AND/OR its block-set (`blocks`) — in ONE proposal (symmetric with propose_update_template). " +
-    'Send html + blocks together so they apply atomically. Every block `name` needs a matching <caelo-slot name="<name>"> in html, and the set MUST include a `content` block. The change cascades to every page on every bound template.',
+    "Propose a layout edit (`html`, `css`, `displayName` and/or `blocks`) in ONE proposal; cascades to every page on every bound template. New layout -> `create_layout`.\n" +
+    'CORE RULES: send `html` + `blocks` together (atomic). Every block `name` needs a matching `<caelo-slot name="<name>"></caelo-slot>` in `html`; the set MUST include `content`.',
   schema: z
     .object({
       layoutId: uuid,
@@ -90,7 +89,7 @@ export const proposeLayoutUpdateTool = makeProposeTool({
       blocks: {
         type: "array",
         description:
-          "Optional — REPLACES the layout's block-set atomically with the html/css edit (fold of the former propose_set_layout_blocks). Every `name` needs a matching <caelo-slot> in html; the set must include a `content` entry.",
+          "REPLACES the layout's block-set atomically with the html/css edit; omit to keep it.",
         minItems: 1,
         maxItems: 20,
         items: {
@@ -114,7 +113,7 @@ export const proposeLayoutDeleteTool = makeProposeTool({
   toolName: "propose_delete_layout",
   opName: "layouts.propose_delete",
   pendingQueuePath: "/settings/layouts/pending",
-  when: "Propose deleting a layout. Bound templates re-bind to site_defaults.default_layout_id.",
+  when: "Propose deleting a layout; bound templates re-bind to the site's default layout.",
   schema: z.object({ layoutId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -151,9 +150,8 @@ export const proposeUninstallPluginTool = makeProposeTool({
   opName: "plugins.propose_uninstall",
   pendingQueuePath: "/settings/plugins/pending",
   when:
-    "Propose PERMANENTLY uninstalling a plugin: its cms_public AND cms_admin schemas are dropped (all plugin data deleted), its tools/workers/skills are removed, and pages whose URLs it reshaped move back with 301 redirects. " +
-    "This is a TWO-STEP flow: you propose, the Owner approves the in-chat card. Do NOT claim the plugin was uninstalled after proposing. " +
-    "For a temporary stop use plugins.disable instead — it keeps all data.",
+    "Propose PERMANENTLY uninstalling a plugin: drops its cms_public + cms_admin schemas (all plugin data), removes its tools/workers/skills, moves pages whose URLs it reshaped back with 301s. " +
+    "A temporary stop that keeps the data is the Owner's disable (Settings -> Plugins), not this tool.",
   schema: z
     .object({
       slug: z.string().min(1).max(120),
@@ -177,9 +175,8 @@ export const proposeUrlMigrationTool = makeProposeTool({
   opName: "url_migrations.propose_migrate",
   pendingQueuePath: "/settings/url_migrations/pending",
   when:
-    "Propose migrating every page whose public URL no longer matches the active URL-contribution set (after a URL plugin was activated, deactivated, or reconfigured). " +
-    "Computes the full old→new path diff + redirect fan-out as the preview; the Owner approves in-chat. " +
-    "If nothing changed the propose fails with 'no URL changes' — that is success (zero-diff retrofit), do NOT retry.",
+    "Propose migrating every page whose public URL no longer matches the active URL contributions (after a URL plugin was activated, deactivated or reconfigured). " +
+    "Preview = old->new path diff + redirect fan-out. Error 'no URL changes' = success (nothing to migrate); do NOT retry.",
   schema: z.object({ reason: z.string().max(500).optional() }).strict(),
   inputSchema: {
     type: "object",
@@ -198,10 +195,9 @@ export const proposeUserCreateTool = makeProposeTool({
   opName: "users.propose_create",
   pendingQueuePath: "/settings/users/pending",
   when:
-    "Propose inviting a new user to the CMS. Provide email + displayName + roleNames. " +
-    "DO NOT include a password. " +
-    "On Google Cloud installs the approval also lets this email through Google IAP (browser and MCP), so use the person's Google account address (Gmail or Workspace): an address that is not a Google account is created but CANNOT sign in until it is one. Google offers no way to check an address before approval; the result's `operatorAccess` says how the sync went, and `operatorAccess.refusedMembers` names addresses Google has no account for — relay any `warning` to the operator and ask for the person's Google account address. " +
-    "An address outside the project's Google organisation is refused until the Owner has set up Google sign-in (Settings → Google sign-in, a console step only a human can do): relay that error's next step to the operator instead of retrying or proposing another address.",
+    "Propose inviting a user to the CMS (never pass a password).\n" +
+    "CORE RULES (Google Cloud installs): approval also admits the email through Google IAP (browser + MCP) -> use the person's Google account address (Gmail/Workspace); a non-Google address is created but CANNOT sign in. Uncheckable before approval: result `operatorAccess` reports the sync, `operatorAccess.refusedMembers` lists addresses without a Google account -> relay any `warning`, ask for the Google address. " +
+    "An address outside the project's Google organisation is refused until the Owner sets up Google sign-in (Settings -> Google sign-in, human-only console step): relay that error's next step; do not retry or propose another address.",
   schema: z
     .object({
       email: z.string().email().max(254),
@@ -227,9 +223,7 @@ export const proposeUserSetRolesTool = makeProposeTool({
   afterApply: "sync-operator-access",
   opName: "users.propose_set_roles",
   pendingQueuePath: "/settings/users/pending",
-  when:
-    "Propose changing an existing user's role assignments (e.g. promote to Owner, demote to Editor). " +
-    "An empty role list also removes their Google IAP access on Google Cloud installs; relay any `warning` in the result.",
+  when: "Propose replacing a user's roles (e.g. promote to Owner, demote to Editor). Empty list also removes their Google IAP access on Google Cloud; relay any result `warning`.",
   schema: z.object({ userId: uuid, roleNames: z.array(z.string()) }).strict(),
   inputSchema: {
     type: "object",
@@ -249,9 +243,7 @@ export const proposeUserDeleteTool = makeProposeTool({
   afterApply: "sync-operator-access",
   opName: "users.propose_delete",
   pendingQueuePath: "/settings/users/pending",
-  when:
-    "Propose soft-deleting a user. The first Owner cannot be deleted; promote another Owner first. " +
-    "On Google Cloud installs this also removes their Google IAP and MCP access; relay any `warning` in the result.",
+  when: "Propose soft-deleting a user. The first Owner cannot be deleted (promote another Owner first). On Google Cloud also removes their IAP + MCP access; relay any result `warning`.",
   schema: z.object({ userId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -268,7 +260,7 @@ export const proposeRoleCreateTool = makeProposeTool({
   toolName: "propose_create_role",
   opName: "roles.propose_create",
   pendingQueuePath: "/settings/roles/pending",
-  when: "Propose a new custom role with a permission set. Built-in role names (owner/editor/reviewer) are reserved.",
+  when: "Propose a custom role with a permission set; built-in names (owner/editor/reviewer) are reserved.",
   schema: z
     .object({
       name: z
@@ -297,7 +289,7 @@ export const proposeRoleUpdatePermissionsTool = makeProposeTool({
   toolName: "propose_update_role_permissions",
   opName: "roles.propose_update_permissions",
   pendingQueuePath: "/settings/roles/pending",
-  when: "Propose adding or removing permissions from an existing role. The change applies to every user holding that role.",
+  when: "Propose replacing a role's permissions (full list; not the owner role); hits all its users.",
   schema: z.object({ roleId: uuid, permissions: z.array(z.string()) }).strict(),
   inputSchema: {
     type: "object",
@@ -317,9 +309,7 @@ export const proposeRoleDeleteTool = makeProposeTool({
   afterApply: "sync-operator-access",
   opName: "roles.propose_delete",
   pendingQueuePath: "/settings/roles/pending",
-  when:
-    "Propose deleting a custom role. Built-in roles cannot be deleted; users in the deleted role lose those permissions. " +
-    "On Google Cloud installs, anyone left with no role also loses Google IAP access; relay any `warning` in the result.",
+  when: "Propose deleting a custom role (built-ins cannot be); its users lose those permissions. On Google Cloud anyone left with no role loses IAP access; relay any result `warning`.",
   schema: z.object({ roleId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -337,10 +327,7 @@ export const proposeRevertSiteTool = makeProposeTool({
   toolName: "propose_revert_site",
   opName: "snapshots.propose_revert_site",
   pendingQueuePath: "/settings/snapshots/pending",
-  when:
-    "Propose rewinding the entire site to a previous snapshot. " +
-    "HIGHEST blast radius — affects every module/page/template that has rows in the target snapshot. " +
-    "Prefer revert_page or revert_module when the operator only needs a narrower undo.",
+  when: "Propose rewinding the ENTIRE site to a snapshot: highest blast radius (every module/page/template with rows in it). Narrower undo -> `propose_revert_page` | `propose_revert_module`.",
   schema: z.object({ snapshotId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -356,7 +343,7 @@ export const proposeRevertPageTool = makeProposeTool({
   toolName: "propose_revert_page",
   opName: "snapshots.propose_revert_page",
   pendingQueuePath: "/settings/snapshots/pending",
-  when: "Propose rewinding a single page (metadata + module composition) to a previous snapshot.",
+  when: "Propose rewinding one page (metadata + module composition) to a snapshot.",
   schema: z.object({ pageId: uuid, snapshotId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -375,7 +362,7 @@ export const proposeRevertTemplateTool = makeProposeTool({
   toolName: "propose_revert_template",
   opName: "snapshots.propose_revert_template",
   pendingQueuePath: "/settings/snapshots/pending",
-  when: "Propose rewinding a template (HTML/CSS/blocks) to a previous snapshot. Re-renders every page bound to it.",
+  when: "Propose rewinding a template (HTML/CSS/blocks) to a snapshot; re-renders every bound page.",
   schema: z.object({ templateId: uuid, snapshotId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -394,7 +381,7 @@ export const proposeRevertModuleTool = makeProposeTool({
   toolName: "propose_revert_module",
   opName: "snapshots.propose_revert_module",
   pendingQueuePath: "/settings/snapshots/pending",
-  when: "Propose rewinding a single module to a previous snapshot. Smallest-scope revert.",
+  when: "Propose rewinding one module to a snapshot (smallest-scope revert).",
   schema: z.object({ moduleId: uuid, snapshotId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -414,10 +401,7 @@ export const proposeEmailConfigSetTool = makeProposeTool({
   toolName: "propose_set_email_config",
   opName: "email_config.propose_set",
   pendingQueuePath: "/settings/email/pending",
-  when:
-    "Propose changing the site's email transport (smtp / resend / ses / none). " +
-    "DO NOT include credential material in config — the Owner pastes the SMTP password / Resend API key / SES keys " +
-    "inline at approve time. The propose handler rejects payloads carrying secret-shaped fields.",
+  when: "Propose changing the site's email transport. NEVER put credentials in `config` (secret-shaped fields are rejected); the Owner pastes the SMTP password / Resend key / SES keys at approval. Verify afterwards with `send_test_email`.",
   schema: z
     .object({
       transport: z.enum(["none", "smtp", "resend", "ses"]),
@@ -444,10 +428,7 @@ export const proposeAiProvidersSetTool = makeProposeTool({
   toolName: "propose_set_ai_provider",
   opName: "ai_providers.propose_set",
   pendingQueuePath: "/settings/ai/pending",
-  when:
-    "Propose adding/updating an AI provider config (anthropic / openai / google / local-openai-compat). " +
-    "DO NOT include apiKey — the Owner pastes it inline at approve time when no stored key exists. " +
-    "Existing-provider edits without a new key preserve the encrypted blob.",
+  when: "Propose adding/updating an AI provider config. NEVER include an apiKey: the Owner pastes it at approval when none is stored; edits without a new key keep the stored one.",
   schema: z
     .object({
       name: z.enum(["anthropic", "openai", "google", "local-openai-compat"]),
@@ -474,7 +455,7 @@ export const proposeAiProvidersClearKeyTool = makeProposeTool({
   toolName: "propose_clear_ai_provider_key",
   opName: "ai_providers.propose_clear_key",
   pendingQueuePath: "/settings/ai/pending",
-  when: "Propose clearing the stored API key for one provider. Falls back to env-var or null source.",
+  when: "Propose clearing one provider's stored API key; it then uses the env var, if any.",
   schema: z
     .object({ name: z.enum(["anthropic", "openai", "google", "local-openai-compat"]) })
     .strict(),
@@ -496,11 +477,8 @@ export const proposeMcpTokenCreateTool = makeProposeTool({
   opName: "mcp_tokens.propose_create",
   pendingQueuePath: "/settings/mcp/pending",
   when:
-    "Propose minting a new MCP bearer token. Pass displayName + optional scope + optional aiCostCapMicrocents. " +
-    "scope 'chat' (default) drives the caelo_chat surface; scope 'admin' additionally unlocks the Power-MCP " +
-    "tool surface for external agents. " +
-    "allowCaeloAi (admin only, default false) lets that agent spend the install's own AI (image generation, Caelo-side translation runs); " +
-    "leave it off unless the operator asks — the agent then does the AI work on its own subscription.",
+    "Propose minting an MCP bearer token. `scope`: `chat` (default) = `caelo_chat` surface; `admin` also unlocks the Power-MCP tools for external agents. " +
+    "`allowCaeloAi` (admin only, default false) lets that agent spend the install's own AI (image generation, Caelo-side translation); leave off unless the operator asks (the agent then uses its own subscription).",
   producesCredential: "mcp_token",
   schema: z
     .object({
@@ -529,10 +507,7 @@ export const proposeMcpTokenRevokeTool = makeProposeTool({
   toolName: "propose_revoke_mcp_token",
   opName: "mcp_tokens.propose_revoke",
   pendingQueuePath: "/settings/mcp/pending",
-  when:
-    "Propose revoking an existing MCP token. Already-revoked tokens are rejected at queue time. " +
-    "In an Owner's chat any user's token can be named; in anyone else's chat only that person's own " +
-    "tokens are visible — another user's token id comes back as not found.",
+  when: "Propose revoking an MCP token (already-revoked ones are rejected). In an Owner's chat any user's token can be named; otherwise only the chatting user's own tokens are visible (another's id -> not found).",
   schema: z.object({ tokenId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -550,18 +525,8 @@ export const proposeTemplateUpdateTool = makeProposeTool({
   opName: "templates.propose_update",
   pendingQueuePath: "/settings/templates/pending",
   when:
-    "Propose updating a template's HTML/CSS/displayName/layoutId/pageType AND/OR " +
-    "the block-set (template_blocks). Re-renders every page bound to the " +
-    "template — preview shows the count. " +
-    "CRITICAL — block syntax: in `html`, render-slot markers MUST be " +
-    '`<caelo-slot name="X"></caelo-slot>` tags, NOT HTML comments. ' +
-    "Every block declared in `blocks` needs a matching `<caelo-slot " +
-    'name="<blockName>"></caelo-slot>` in `html` for the renderer to ' +
-    "inject the page's modules into it. Without the caelo-slot tag the " +
-    "modules attach to the right block name in the DB but the renderer " +
-    "has nowhere to put them and the page renders empty between header " +
-    "and footer. Send html + blocks together in ONE proposal so they " +
-    "apply atomically.",
+    "Propose updating a template (`html`, `css`, `displayName`, `layoutId`, `pageType` and/or `blocks`); re-renders every bound page (preview shows the count). Layout only -> `set_template_layout`.\n" +
+    'CORE RULES: every block in `blocks` needs a matching `<caelo-slot name="<blockName>"></caelo-slot>` TAG in `html` (never an HTML comment), else its modules have nowhere to render and the page is empty between header and footer. Send `html` + `blocks` together (atomic).',
   schema: z
     .object({
       templateId: uuid,
@@ -590,21 +555,17 @@ export const proposeTemplateUpdateTool = makeProposeTool({
       displayName: { type: "string", minLength: 1, maxLength: 200 },
       html: {
         type: "string",
-        description:
-          'Template HTML. Render slots use <caelo-slot name="X"></caelo-slot> tags (NOT HTML comments). One slot per block declared in `blocks`.',
       },
       css: { type: "string" },
       layoutId: { type: "string", format: "uuid" },
       pageType: {
         type: "string",
         pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-        description:
-          "Also allow this template for the page type (slug, list_page_types) — it is added to that type's templates.",
+        description: "Also allow this template for this page type (slug from `list_page_types`).",
       },
       blocks: {
         type: "array",
-        description:
-          'Block-set definition. Each block name must have a matching <caelo-slot name="<name>"></caelo-slot> in `html`. Replaces the existing block set atomically (DELETE-then-INSERT). Omit to leave blocks unchanged.',
+        description: "REPLACES the block set atomically; omit to keep it.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -626,7 +587,7 @@ export const proposeTemplateDeleteTool = makeProposeTool({
   toolName: "propose_delete_template",
   opName: "templates.propose_delete",
   pendingQueuePath: "/settings/templates/pending",
-  when: "Propose deleting a template. Every bound page is orphaned — preview shows the count + a sample of affected page slugs.",
+  when: "Propose deleting a template; every bound page is orphaned (preview shows count + sample slugs).",
   schema: z.object({ templateId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -644,10 +605,7 @@ export const proposeDomainAddTool = makeProposeTool({
   toolName: "propose_add_domain",
   opName: "domains.propose_add",
   pendingQueuePath: "/settings/domains/pending",
-  when:
-    "Propose registering a new custom domain (admin / public). " +
-    "Approval triggers cms-provision regenerate-caddy on next deploy + ACME issues TLS. " +
-    "Use domains.verify (read-only DNS lookup) BEFORE proposing to confirm the hostname resolves.",
+  when: "Propose registering a custom domain; approval regenerates Caddy on next deploy + ACME issues TLS. After approval check resolution with `verify_domains`.",
   schema: z
     .object({
       hostname: z.string().min(1).max(253),
@@ -670,7 +628,7 @@ export const proposeDomainRemoveTool = makeProposeTool({
   toolName: "propose_remove_domain",
   opName: "domains.propose_remove",
   pendingQueuePath: "/settings/domains/pending",
-  when: "Propose removing a registered domain. Approval drops the Caddy vhost on next deploy — visitors hit 404 until DNS is re-pointed.",
+  when: "Propose removing a registered domain; approval drops its Caddy vhost on next deploy (visitors get 404 until DNS is re-pointed).",
   schema: z.object({ domainId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -686,10 +644,10 @@ export const proposeDomainReconnectTool = makeProposeTool({
   opName: "domains.propose_reconnect",
   pendingQueuePath: "/settings/domains/pending",
   when:
-    "Heal a Firebase Hosting custom domain that list_domains / verify_domains reports as 'stuck' (every DNS record is in place, yet Firebase still shows HOST_MISMATCH / OWNERSHIP_PENDING and has stopped re-checking — visitors get \"Site Not Found\"). " +
-    "Approval deletes and re-creates the custom domain so Firebase verifies it afresh (nothing goes offline: the domain is not serving yet); once it is active Caelo re-releases the live version to clear the CDN's cached 404. " +
-    "Also restores a domain reported 'deleted' when that was not intended (e.g. an interrupted reconnect) — ask the operator first, a deletion may be deliberate. " +
-    "Do not use it for a domain that is still waiting for DNS changes — tell the operator which records to add instead. Refused for a domain that is active.",
+    "Heal a Firebase Hosting custom domain that `list_domains` / `verify_domains` reports 'stuck' (all DNS records in place, yet Firebase shows HOST_MISMATCH / OWNERSHIP_PENDING and stopped re-checking -> visitors get \"Site Not Found\"). " +
+    "Approval deletes + re-creates the domain so Firebase verifies afresh (nothing goes offline; it is not serving yet); once active, Caelo re-releases the live version to clear the CDN's cached 404. " +
+    "Also restores a domain reported 'deleted' unintentionally (e.g. interrupted reconnect); ask the operator first, a deletion may be deliberate.\n" +
+    "DO NOT USE FOR a domain still waiting for DNS (tell the operator which records to add). Refused for an active domain.",
   schema: z.object({ hostname: z.string().min(1).max(253) }).strict(),
   summarize: (input, preview) =>
     `reconnect hosting domain "${input.hostname}" (${preview.hostState ?? "?"} / ${preview.ownershipState ?? "?"})`,
@@ -702,18 +660,8 @@ export const proposeCreateThemeTool = makeProposeTool({
   opName: "themes.propose_create",
   pendingQueuePath: "/settings/themes/pending",
   when:
-    "Create a new theme by COMPOSING the complete DTCG token document yourself from the " +
-    "brand context you already have (site identity, the operator's wording, the industry, " +
-    "the content you're about to write). There are no presets — you author every category: " +
-    `\`tokens:\` ${THEME_DOCUMENT_SKELETON} — each ` +
-    "leaf is `{$type, $value}` (e.g. `{$type: 'color', $value: '#4f46e5'}`). Pick a primary " +
-    "with real chroma that fits the brand; do NOT default to neutral/grayscale on a real " +
-    `site. Anchor-hue inspiration: ${ANCHOR_HUE_HINTS}. ${DEPTH_AND_SURFACE_HINTS} ${TOKEN_SHAPE_HINTS} ` +
-    `${SPACING_RHYTHM_HINTS} ${TOKEN_ROLE_HINTS} ${TYPOGRAPHY_COMPOSITION_HINTS} ` +
-    "`description` is required — record WHY this palette fits (the cold-start gate " +
-    "reads it). If `overrides.primaryColor` is set, the server derives a 50–900 OKLCh " +
-    "lightness ramp from it (each stop annotated `_derived: true`); explicit stops via " +
-    "`overrides[\"color.primary.500\"] = '#…'` win over derived ones.",
+    "Create a theme from a DTCG token document YOU COMPOSE from the brand context (site identity, operator wording, industry, upcoming content); no presets. " +
+    "Clone an existing theme -> `duplicate_theme`; tweak tokens -> `set_theme_tokens`.",
   schema: z
     .object({
       slug: z
@@ -734,11 +682,29 @@ export const proposeCreateThemeTool = makeProposeTool({
     properties: {
       slug: { type: "string", minLength: 1, maxLength: 120 },
       displayName: { type: "string", minLength: 1, maxLength: 200 },
-      description: { type: "string", minLength: 1, maxLength: 1000 },
+      description: {
+        type: "string",
+        minLength: 1,
+        maxLength: 1000,
+        description: "WHY this palette fits the brand (read by the cold-start gate).",
+      },
       // Full DTCG can't be expressed in provider JSON Schema — the Zod
-      // boundary (shared `themeDocument`) does the real validation.
-      tokens: { type: "object", additionalProperties: true },
-      overrides: { type: "object", additionalProperties: true },
+      // boundary (shared `themeDocument`) does the real validation, so the
+      // composition guidance rides on this property's description.
+      tokens: {
+        type: "object",
+        additionalProperties: true,
+        description:
+          `Complete DTCG document, every category: ${THEME_DOCUMENT_SKELETON}; each leaf \`{$type, $value}\`. ` +
+          `Primary with real chroma fitting the brand; do NOT default to neutral/grayscale on a real site. Anchors: ${ANCHOR_HUE_HINTS}. ` +
+          `${DEPTH_AND_SURFACE_HINTS} ${TOKEN_SHAPE_HINTS} ${SPACING_RHYTHM_HINTS} ${TOKEN_ROLE_HINTS} ${TYPOGRAPHY_COMPOSITION_HINTS}`,
+      },
+      overrides: {
+        type: "object",
+        additionalProperties: true,
+        description:
+          "`primaryColor` -> server derives a 50–900 OKLCh lightness ramp (stops marked `_derived: true`); explicit stops (`\"color.primary.500\": '#…'`) win.",
+      },
     },
   },
   summarize: (input) =>
@@ -749,10 +715,7 @@ export const proposeActivateThemeTool = makeProposeTool({
   toolName: "propose_activate_theme",
   opName: "themes.propose_activate",
   pendingQueuePath: "/settings/themes/pending",
-  when:
-    "Switch the site's active theme. Approving flips the DB row only — the live site keeps " +
-    "serving the previously-active theme's CSS until an Owner separately approves " +
-    "`propose_deploy_promote`. Tell the operator both steps are needed.",
+  when: "Switch the site's active theme. Approval flips the DB row only; the live site keeps the old theme's CSS until `propose_deploy_promote` is also approved: tell the operator both steps are needed.",
   schema: z.object({ themeId: uuid }).strict(),
   inputSchema: {
     type: "object",
@@ -768,9 +731,7 @@ export const proposeDeleteThemeTool = makeProposeTool({
   toolName: "propose_delete_theme",
   opName: "themes.propose_delete",
   pendingQueuePath: "/settings/themes/pending",
-  when:
-    "Delete an inactive theme. Active themes are rejected — activate a different theme " +
-    "first via `propose_activate_theme`.",
+  when: "Delete an inactive theme (the active one is rejected: `propose_activate_theme` another first).",
   schema: z.object({ themeId: uuid }).strict(),
   inputSchema: {
     type: "object",

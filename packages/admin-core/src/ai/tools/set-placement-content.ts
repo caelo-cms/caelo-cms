@@ -24,10 +24,7 @@ export const setPlacementContentTool: ToolDefinitionWithHandler<
 > = {
   name: "set_placement_content",
   description:
-    "Bind one placement (page + block + position) to a content_instance + choose sync mode. " +
-    "Use sync_mode='synced' to make this placement share content with every other placement that binds to the same instance — editing the instance propagates everywhere. " +
-    "Use sync_mode='unsynced' for page-local content. " +
-    "The content_instance must be for the same module as the placement.",
+    "Bind one placement (page + block + position) to a content_instance of the SAME module. `synced` = shares content with every placement bound to that instance (instance edits propagate); `unsynced` = page-local.",
   schema: setPlacementContentToolInput,
   inputSchema: {
     type: "object",

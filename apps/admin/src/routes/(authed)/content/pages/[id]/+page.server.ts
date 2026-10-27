@@ -113,6 +113,7 @@ export const actions: Actions = {
       pageId: params.id,
       ...(expectedVersion !== undefined ? { expectedVersion } : {}),
       title: String(form.get("title") ?? ""),
+      shortTitle: String(form.get("shortTitle") ?? ""),
       status: String(form.get("status") ?? "draft") === "published" ? "published" : "draft",
     });
     if (!result.ok) {

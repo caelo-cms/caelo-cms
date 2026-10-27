@@ -42,20 +42,24 @@ type SetThemeMetaToolInput = z.infer<typeof setThemeMetaToolInput>;
 export const setThemeMetaTool: ToolDefinitionWithHandler<SetThemeMetaToolInput> = {
   name: "set_theme_meta",
   description:
-    "Record the design intent (description) and / or display name of a theme. Use AFTER " +
-    "you change tokens on a `seed`-origin theme so the next turn knows WHY the palette " +
-    "is what it is — without this, future tweaks lose the brand context. Example: " +
-    "`set_theme_meta({description: 'Indigo primary (#4f46e5) chosen for a SaaS B2B " +
-    "feel. System fonts. 0.5rem radius for a softer-than-default Tailwind look.'})`. " +
-    "Defaults to the active theme; pass `themeSlug` to target a specific one. " +
-    "Pass `description: null` to clear.",
+    "Record a theme's design intent and/or display name. Use AFTER changing tokens on a `seed`-origin theme so later turns know WHY the palette is what it is.",
   schema: setThemeMetaToolInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     properties: {
-      themeSlug: { type: "string", minLength: 1, maxLength: 120 },
-      description: { type: ["string", "null"], maxLength: 1000 },
+      themeSlug: {
+        type: "string",
+        minLength: 1,
+        maxLength: 120,
+        description: "Omit for the active theme.",
+      },
+      description: {
+        type: ["string", "null"],
+        maxLength: 1000,
+        description:
+          "null clears. E.g. 'Indigo primary (#4f46e5) for a SaaS B2B feel. System fonts. 0.5rem radius, softer than default Tailwind.'",
+      },
       displayName: { type: "string", minLength: 1, maxLength: 200 },
     },
   },

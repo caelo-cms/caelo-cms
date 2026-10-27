@@ -94,14 +94,34 @@ const acceptGroupSchema = z.union([
 export const proposeAcceptInput = z
   .object({
     /** The audit the findings come from (get_quality_audit shows its id). */
-    auditRunId: z.string().uuid(),
+    auditRunId: z
+      .string()
+      .uuid()
+      .describe("From `get_quality_audit` (as are page paths and audit/rule ids)."),
     /** Single findings (Lighthouse audit id), category scores below 100
      *  (category) or page-check rules (rule id) on named pages. */
-    items: z.array(acceptItemSchema).min(1).max(50).optional(),
+    items: z
+      .array(acceptItemSchema)
+      .min(1)
+      .max(50)
+      .optional()
+      .describe("Only for single findings on named pages."),
     /** Bulk: one problem on every page it is open on (or the listed ones). */
-    groups: z.array(acceptGroupSchema).min(1).max(50).optional(),
+    groups: z
+      .array(acceptGroupSchema)
+      .min(1)
+      .max(50)
+      .optional()
+      .describe(
+        'PREFERRED: one problem across pages per entry. `{ruleId:"seo-check/description-missing"}` = every page it is open on; `pagePaths` = subset; Lighthouse audit by `auditId`, category below 100 by `category`.',
+      ),
     /** Why these are acceptable — shown to the editor and stored. */
-    reason: z.string().trim().min(3).max(500),
+    reason: z
+      .string()
+      .trim()
+      .min(3)
+      .max(500)
+      .describe("The operator's reason, or the plain fact why it cannot be fixed."),
   })
   .strict()
   .refine((v) => (v.items?.length ?? 0) + (v.groups?.length ?? 0) > 0, {

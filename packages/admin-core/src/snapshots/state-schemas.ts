@@ -17,7 +17,12 @@
  * the latest shape.
  */
 
-import { listItemInputSchema, listTypeDefSchema, pageTypeDefSchema } from "@caelo-cms/shared";
+import {
+  CHANGEFREQ_VALUES,
+  listItemInputSchema,
+  listTypeDefSchema,
+  pageTypeDefSchema,
+} from "@caelo-cms/shared";
 import { z } from "zod";
 import type {
   ListState,
@@ -69,6 +74,19 @@ const templateStateV1 = z
   })
   .strict();
 
+const pageSeoStateV1 = z
+  .object({
+    metaDescription: z.string(),
+    ogImageAssetId: z.string().uuid().nullable(),
+    canonicalUrl: z.string().nullable(),
+    noindex: z.boolean(),
+    changefreq: z.enum(CHANGEFREQ_VALUES),
+    priority: z.number().min(0).max(1),
+    autofilledAt: z.string().nullable(),
+    optimizedAt: z.string().nullable(),
+  })
+  .strict();
+
 const pageStateV1 = z.preprocess(
   // #384 — pre-cut snapshot rows carry a `locale` key; strip it at the
   // boundary (input normalisation of a legacy encoding, not a fallback)
@@ -85,6 +103,8 @@ const pageStateV1 = z.preprocess(
       schemaVersion: z.literal(1),
       slug: z.string(),
       title: z.string(),
+      // #1142 — migration 0358 backfilled every older snapshot from `title`.
+      shortTitle: z.string(),
       templateId: z.string().uuid(),
       status: z.enum(["draft", "published"]),
       version: z.number().int().nonnegative(),
@@ -98,6 +118,9 @@ const pageStateV1 = z.preprocess(
       pageTypeId: z.string().uuid(),
       properties: z.record(z.string(), z.unknown()),
       terms: z.array(z.string()),
+      // #1156 — absent when the snapshot did not write SEO; see
+      // PageState.seo for how writers treat that.
+      seo: pageSeoStateV1.optional(),
     })
     .strict(),
 );

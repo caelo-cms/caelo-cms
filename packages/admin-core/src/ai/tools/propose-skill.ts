@@ -15,10 +15,9 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 export const proposeSkillTool: ToolDefinitionWithHandler<ProposeSkillToolInput> = {
   name: "propose_skill",
   description:
-    "Draft a new AI skill (instructional body that augments your future system prompt) and queue it for Owner review. " +
-    "TWO-STEP: this only QUEUES the proposal — an Owner reviews it at /settings/skills/proposals and either accepts (creating a 'awaiting_activation' skill) or rejects. After acceptance the Owner separately activates the skill site-wide. " +
-    "Do NOT claim the skill is active. Use this when the user explicitly asks you to learn a new behaviour, codify a workflow, or persist a habit. " +
-    "Inputs: slug (lowercase-with-hyphens), displayName, description, body (the skill instructions), rationale (why this skill helps), allowlistedTools (optional list of AI TOOL names — e.g. update_modules_many, list_pages — this skill's workflow leans on; they are PRELOAD HINTS (kept loaded up front so the model reaches them without a tool-search round-trip), NOT a restriction — every other tool stays reachable via tool search, so list every tool the workflow calls; Query-API op names like pages.list are rejected), hints (optional auto-engagement matcher hints).",
+    "Draft a new AI skill (instructions augmenting your future system prompt) and QUEUE it for Owner review.\n" +
+    "USE FOR: the user explicitly asks you to learn a behaviour, codify a workflow, or persist a habit.\n" +
+    "CORE RULES: TWO-STEP, not in chat: an Owner accepts/rejects at /settings/skills/proposals (accept -> `awaiting_activation`), then separately activates it site-wide. Never claim the skill is active.",
   schema: proposeSkillToolInput,
   inputSchema: {
     type: "object",
@@ -28,11 +27,23 @@ export const proposeSkillTool: ToolDefinitionWithHandler<ProposeSkillToolInput> 
       slug: { type: "string", pattern: "^[a-z0-9-]+$", maxLength: 120 },
       displayName: { type: "string", minLength: 1, maxLength: 200 },
       description: { type: "string", maxLength: 1000 },
-      body: { type: "string", minLength: 1, maxLength: 20000 },
-      rationale: { type: "string", minLength: 1, maxLength: 1000 },
+      body: {
+        type: "string",
+        minLength: 1,
+        maxLength: 20000,
+        description: "The skill instructions.",
+      },
+      rationale: {
+        type: "string",
+        minLength: 1,
+        maxLength: 1000,
+        description: "Why this skill helps.",
+      },
       allowlistedTools: {
         type: "array",
         items: { type: "string", maxLength: 120 },
+        description:
+          "AI tool names (e.g. `update_modules_many`, `list_pages`) the workflow calls -> list every one. PRELOAD HINTS (loaded up front, no tool-search round-trip), NOT a restriction. Query-API op names (`pages.list`) are rejected.",
       },
       hints: {
         type: "object",
@@ -45,6 +56,7 @@ export const proposeSkillTool: ToolDefinitionWithHandler<ProposeSkillToolInput> 
           chipTrigger: { type: "boolean" },
           alwaysOn: { type: "boolean" },
         },
+        description: "Auto-engagement matcher hints.",
       },
     },
   },

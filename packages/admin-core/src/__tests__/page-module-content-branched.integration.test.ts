@@ -130,7 +130,7 @@ describe("page_module_content.set — branch-aware placement check (v0.6.1)", ()
     const ctx = systemCtx(); // no branch
     const pageRes = await execute(registry, adapter, ctx, "pages.create", {
       slug: PAGE_SLUG_LIVE,
-      name: "live page",
+      shortTitle: "live page",
       title: "Live",
       templateId,
     });
@@ -155,7 +155,7 @@ describe("page_module_content.set — branch-aware placement check (v0.6.1)", ()
     const branchCtx = systemCtx(CHAT_BRANCH_ID);
     const pageRes = await execute(registry, adapter, branchCtx, "pages.create", {
       slug: PAGE_SLUG_BRANCHED,
-      name: "branched page",
+      shortTitle: "branched page",
       title: "Branched",
       templateId,
     });
@@ -196,7 +196,7 @@ describe("page_module_content.set — branch-aware placement check (v0.6.1)", ()
     const branchCtx = systemCtx(CHAT_BRANCH_ID);
     const pageRes = await execute(registry, adapter, branchCtx, "pages.create", {
       slug: PAGE_SLUG_MISMATCH,
-      name: "mismatch page",
+      shortTitle: "mismatch page",
       title: "Mismatch",
       templateId,
     });

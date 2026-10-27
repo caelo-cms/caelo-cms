@@ -22,8 +22,7 @@ export const setTemplateLayoutTool: ToolDefinitionWithHandler<
 > = {
   name: "set_template_layout",
   description:
-    "Re-point a template to a different layout. Every page using the template adopts the new chrome on the next render. " +
-    'Use when the user wants a page-type to switch between chrome variants (e.g. "make landing pages use the bare layout").',
+    'Re-point a template to another layout; its pages adopt the new chrome on next render (e.g. "make landing pages use the bare layout").',
   schema: setTemplateLayoutToolInput,
   inputSchema: {
     type: "object",

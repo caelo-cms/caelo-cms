@@ -53,7 +53,7 @@ const aiSpendInput = z
       .min(1)
       .max(365)
       .optional()
-      .describe("Window in days, counted back from now (default 30)."),
+      .describe("Days back from now (default 30)."),
   })
   .strict();
 type AiSpendInput = z.infer<typeof aiSpendInput>;
@@ -62,9 +62,8 @@ type AiSpendInput = z.infer<typeof aiSpendInput>;
 export const getAiSpendTool: ToolDefinitionWithHandler<AiSpendInput> = {
   name: "get_ai_spend",
   description:
-    "Report AI spend over a window (default the last 30 days): total cost + tokens, text vs image, per provider/model, per source (plugin, person, subagent), the most recent days, and which admin domains the AI's tool calls went to (op counts + failures). " +
-    "Use when the operator asks what AI costs, why a budget warned, or which feature is expensive. " +
-    "Not for the caps themselves (get_ai_budgets) or one plugin's spend against its cap (get_plugin).",
+    "Report AI spend over a window: total cost + tokens, text vs image, per provider/model, per source (plugin, person, subagent), recent days, admin domains the AI's tool calls hit (op counts + failures). Use for what AI costs, why a budget warned, which feature is expensive. " +
+    "Caps -> `get_ai_budgets`; one plugin vs its cap -> `get_plugin`.",
   schema: aiSpendInput,
   inputSchema: z.toJSONSchema(aiSpendInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {
@@ -123,7 +122,7 @@ export const getAiSpendTool: ToolDefinitionWithHandler<AiSpendInput> = {
 // ─── plugin detail ───────────────────────────────────────────────────
 
 const getPluginInput = z
-  .object({ slug: z.string().min(1).max(120).describe("Plugin slug as list_plugins shows it.") })
+  .object({ slug: z.string().min(1).max(120).describe("As `list_plugins` shows it.") })
   .strict();
 type GetPluginInput = z.infer<typeof getPluginInput>;
 
@@ -179,10 +178,9 @@ function consentPurposesLine(raw: unknown): string {
 export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
   name: "get_plugin",
   description:
-    "Read one plugin in detail: version, tier, status, signature, health (whether the running servers have it loaded, and why not), its recent errors, the validator's findings, the tools / skills / capabilities its manifest declares, the plugins it requires and the active ones that require it, what it asks visitors to consent to (purpose, category, cookies), and its AI spend over the last 24h against its AI cost cap. " +
-    "Use when list_plugins' one-line summary is not enough — e.g. why a plugin is failing or a submission was rejected, what an inactive plugin would add before proposing activate_plugin, or whether a plugin is near its AI cap. " +
-    "A `core` error is Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team — repeat that exactly, never say the team knows unless it says sent; a `plugin` error comes from the plugin's own code; `transient` ones were retried. Errors never switch a plugin off. " +
-    "Never returns the plugin's source.",
+    "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, validator findings, declared tools/skills/capabilities, required plugins + active plugins requiring it, what it asks visitors to consent to (purpose, category, cookies), AI spend last 24h vs its cap. Never returns source.\n" +
+    "USE FOR: when `list_plugins`' summary isn't enough: why it fails or a submission was rejected, what an inactive plugin adds before `activate_plugin`, whether it nears its AI cap.\n" +
+    "Errors: `core` = Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team -> repeat exactly, never say the team knows unless it says sent | `plugin` = the plugin's own code | `transient` = retried. Errors never switch a plugin off.",
   schema: getPluginInput,
   inputSchema: z.toJSONSchema(getPluginInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {
@@ -239,8 +237,8 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
 export const getGatewayAnalyticsTool = makeReadTool({
   name: "get_gateway_analytics",
   description:
-    "Traffic on the public API gateway (visitor writes to plugin endpoints: forms, comments, signups) over a rolling window: requests, p95 latency, errors, throttled and honeypot-caught counts overall and for the busiest (plugin, operation) pairs. " +
-    "Use when the operator asks whether a form is being spammed or a public endpoint is slow, and before proposing a rate limit with tune_rate_limit. For individual requests use list_gateway_requests.",
+    "Public API gateway traffic (visitor writes to plugin endpoints: forms, comments, signups) over a rolling window: requests, p95 latency, errors, throttled + honeypot-caught counts, overall and for the busiest (plugin, operation) pairs. " +
+    "Use when a form may be spammed or an endpoint slow, and before `tune_rate_limit`. Individual requests -> `list_gateway_requests`.",
   opName: "gateway.list_analytics",
   input: z
     .object({
@@ -250,7 +248,7 @@ export const getGatewayAnalyticsTool = makeReadTool({
         .min(60)
         .max(86_400)
         .optional()
-        .describe("Window in seconds (default 3600)."),
+        .describe("Seconds (default 3600)."),
       topN: z.number().int().min(1).max(50).optional(),
     })
     .strict(),
@@ -273,8 +271,7 @@ export const listGatewayRequestsTool = makeListReadTool<
 >({
   name: "list_gateway_requests",
   description:
-    "List the most recent requests to the public API gateway (newest first): plugin, operation, status, duration, body size, and whether it was rate-limited, honeypot-caught or passed the captcha. " +
-    "Narrow with pluginSlug / onlyErrors. Use to diagnose a failing or abused public endpoint; for totals use get_gateway_analytics.",
+    "List recent public API gateway requests, newest first: plugin, operation, status, duration, body size, rate-limited/honeypot/captcha. Diagnose a failing or abused endpoint; totals -> `get_gateway_analytics`.",
   opName: "gateway.list_recent_requests",
   input: z
     .object({
@@ -318,8 +315,7 @@ export const listRateLimitProfilesTool = makeListReadTool<
 >({
   name: "list_rate_limit_profiles",
   description:
-    "List the named rate-limit profiles (per-visitor max per window) and how many plugin endpoints use each. " +
-    "Read before proposing a per-endpoint limit with tune_rate_limit, so the proposal fits the limits already in use.",
+    "List named rate-limit profiles (per-visitor max per window) + how many plugin endpoints use each. Read before `tune_rate_limit` so the proposal fits the limits in use.",
   opName: "gateway.list_rate_limit_profiles",
   input: noInput,
   rows: (value) => (value as OpValue<typeof listRateLimitProfilesOp>).profiles,
@@ -339,8 +335,8 @@ export const listRateLimitProfilesTool = makeListReadTool<
 export const getEmailConfigTool = makeReadTool({
   name: "get_email_config",
   description:
-    'Read how the site sends email: transport (none / smtp / resend / ses), from-address and transport settings. Credentials read as "[redacted]" when set — you see THAT a key is configured, never the key. ' +
-    "Use before propose_set_email_config, or when a form or newsletter mail did not arrive (then send_test_email checks delivery).",
+    'Read the site\'s email setup: transport, from-address, settings. Set credentials read "[redacted]" (you see THAT a key exists, never the key). ' +
+    "Use before `propose_set_email_config`, or when a form/newsletter mail didn't arrive (then `send_test_email` checks delivery).",
   opName: "email_config.get",
   input: noInput,
   // The op redacts secrets for the AI actor (#588); keeping the raw value
@@ -359,12 +355,10 @@ export const listBugReportsTool = makeListReadTool<
 >({
   name: "list_bug_reports",
   description:
-    "List the defect reports already filed against Caelo (by you via bug_report, or auto-captured by the chat), newest first. " +
-    "Call BEFORE bug_report to see whether the problem is already reported; filter by status (new / triaged / fixed / invalid). " +
-    "The forwarding column says where each report went: local_only = stored on this site only, the Caelo team has NOT seen it; " +
-    "queued = will be sent to the Caelo team; sent = the Caelo team received it; failed = sending failed, stored here only. " +
-    'local_only and failed reports reach the Caelo team only when the Owner clicks "Send unsent reports" on Settings → Detected bugs (with sending turned on); you cannot send them yourself. ' +
-    "Never tell the operator the Caelo team knows about a report unless its forwarding is sent.",
+    "List defect reports filed against Caelo (via `bug_report` or auto-captured by the chat), newest first. Call BEFORE `bug_report` to see whether it is already reported. " +
+    "Forwarding column: local_only = this site only, the Caelo team has NOT seen it | queued = will be sent | sent = the team received it | failed = sending failed, stored here only. " +
+    'local_only/failed reach the team only when the Owner clicks "Send unsent reports" on Settings → Detected bugs (sending turned on); you cannot send them. ' +
+    "Never tell the operator the team knows unless forwarding is sent.",
   opName: "ai_bug_reports.list",
   input: z.object({ status: z.enum(["new", "triaged", "fixed", "invalid"]).optional() }).strict(),
   buildOpInput: (input) => ({
@@ -387,8 +381,7 @@ export const listBugReportsTool = makeListReadTool<
 export const getMediaSettingsTool = makeReadTool({
   name: "get_media_settings",
   description:
-    "Read the media CDN settings: whether heavily used images are copied to the CDN and the usage count at which they are. " +
-    "Changing them is an Owner decision (billing/infrastructure) at /settings/media.",
+    "Read media CDN settings: whether heavily used images are copied to the CDN, from which usage count. Changing them = Owner decision (billing) at /settings/media.",
   opName: "media.get_settings",
   input: noInput,
   format: (value) => {

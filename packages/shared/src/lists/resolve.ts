@@ -24,6 +24,7 @@
 
 import type { LinkResolver } from "../link-refs.js";
 import { parseLinkRef } from "../link-refs.js";
+import { SITE_TEXTS_LIST_TYPE } from "./default-types.js";
 import { type FieldDef, TERM_REF_RE, validateFieldValue } from "./fields.js";
 import type { ListItem } from "./items.js";
 import {
@@ -125,6 +126,19 @@ export interface ListPageContext {
   resolveField(field: ListFieldSpec, value: unknown, holder: ListHolder): ListFieldResolution;
   /** `{{page.*}}`: the rendering page as a record scope; null outside a page. */
   pageScope(): ScopeValue | null;
+  /**
+   * `{{site_text.<key>}}`: the site texts (entries of every list of type
+   * {@link SITE_TEXTS_LIST_TYPE}) in the rendering page's variant. An
+   * unknown or duplicate key resolves to a failure marker (#1142).
+   */
+  siteTextScope(): ScopeValue;
+  /**
+   * The page ids of the breadcrumb trail this render showed (home →
+   * current), or null when no `breadcrumbs` source rendered. Drives the
+   * `BreadcrumbList` JSON-LD, so structured data always matches the
+   * visible trail (#1142).
+   */
+  breadcrumbTrail(): readonly string[] | null;
   /**
    * A section name no module field declares, read as a plugin list
    * source (`{{#language_links}}` written before the field kind existed).
@@ -420,6 +434,7 @@ function createPageContext(
   >();
   let depTree = false;
   const depPages = new Set<string>();
+  let trail: readonly string[] | null = null;
   /** Entries of a page-shaped system source: their pages become deps. */
   const readPages = (pages: ListPageRecord[]): ListPageRecord[] => {
     for (const pg of pages) depPages.add(pg.id);
@@ -696,6 +711,8 @@ function createPageContext(
           return text(p.id);
         case "title":
           return text(p.title);
+        case "short_title":
+          return text(p.shortTitle);
         case "link":
           return linkValue({ href: `caelo:page/${p.id}` }, data);
         case "published_at":
@@ -728,18 +745,47 @@ function createPageContext(
     };
   };
 
-  const pageEntries = (pages: readonly ListPageRecord[]): ScopeEntry[] =>
+  /**
+   * Page-shaped entries. `ancestor` overrides `is_ancestor` where the
+   * source knows better than the page tree: a breadcrumb trail's home
+   * crumb sits above the current page without being its parent.
+   */
+  const pageEntries = (
+    pages: readonly ListPageRecord[],
+    ancestor?: (p: ListPageRecord, index: number) => boolean,
+  ): ScopeEntry[] =>
     pages.map((p, index) => {
       const get = pageValue(p);
       const pos = { index, count: pages.length, depth: 1 };
+      const isAncestor = ancestor ? bool(ancestor(p, index)) : undefined;
       return {
         id: p.id,
         itemAttr: null,
         childrenKey: null,
         depth: 1,
-        get: (key) => get(key) ?? positionValue(key, pos),
+        get: (key) =>
+          (key === "is_ancestor" ? isAncestor : undefined) ?? get(key) ?? positionValue(key, pos),
       };
     });
+
+  /**
+   * The home page in the rendering page's variant: the designated home
+   * itself, or its version in the variant's `link-resolve` group. Null
+   * when no home is designated or the variant has no version of it yet
+   * (an untranslated home is absent, never the other language's page).
+   */
+  const homeOfVariant = (): ListPageRecord | null => {
+    if (data.homePageId === null) return null;
+    const home = data.pages.get(data.homePageId) ?? null;
+    if (home === null || variant === null) return home;
+    const hv = data.pageVariants?.get(home.id);
+    if (hv === undefined || hv.variant === variant) return home;
+    if (hv.group === null) return null;
+    for (const [id, v] of data.pageVariants ?? []) {
+      if (v.group === hv.group && v.variant === variant) return data.pages.get(id) ?? null;
+    }
+    return null;
+  };
 
   const sameVariant = (p: ListPageRecord): boolean =>
     variant === null || data.pageVariants?.get(p.id)?.variant === variant;
@@ -792,7 +838,13 @@ function createPageContext(
           seen.add(p.id);
           p = p.parentId === null ? undefined : data.pages.get(p.parentId);
         }
-        return listValue(pageEntries(readPages(chain)));
+        // The home page is no parent in the tree, yet every trail starts
+        // there; its short name is the "Start" crumb, translated with it.
+        const home = homeOfVariant();
+        if (home && !seen.has(home.id)) chain.unshift(home);
+        trail = chain.map((pg) => pg.id);
+        const last = chain.length - 1;
+        return listValue(pageEntries(readPages(chain), (_pg, index) => index < last));
       }
       case "children": {
         depTree = true;
@@ -1039,10 +1091,56 @@ function createPageContext(
     return { ok: true, entries: entriesOf(checked.items, local, 1) };
   };
 
+  let siteTextMemo: ScopeValue | undefined;
+  /** `{{site_text.<key>}}` — see {@link ListPageContext.siteTextScope}. */
+  const siteTextScope = (): ScopeValue => {
+    if (siteTextMemo !== undefined) return siteTextMemo;
+    depTypes.add(SITE_TEXTS_LIST_TYPE);
+    const byKey = new Map<string, { list: LoadedList; item: ListItem }[]>();
+    for (const list of data.lists.values()) {
+      if (list.typeSlug !== SITE_TEXTS_LIST_TYPE) continue;
+      depLists.add(list.id);
+      for (const item of list.items) {
+        if (overlay?.listHidden.has(`${list.id}/${item.id}`)) continue;
+        const key = item.values.key;
+        if (typeof key !== "string") continue;
+        byKey.set(key, [...(byKey.get(key) ?? []), { list, item }]);
+      }
+    }
+    const memo = new Map<string, ScopeValue>();
+    siteTextMemo = {
+      kind: "record",
+      text: null,
+      present: true,
+      get(key) {
+        const hit = memo.get(key);
+        if (hit) return hit;
+        const found = byKey.get(key) ?? [];
+        let v: ScopeValue;
+        if (found.length === 0) v = { kind: "failed", marker: `site-text-missing:${key}` };
+        else if (found.length > 1) v = { kind: "failed", marker: `site-text-duplicate:${key}` };
+        else {
+          const { list, item } = found[0] as { list: LoadedList; item: ListItem };
+          const translated = overlay?.listValues.get(`${list.id}/${item.id}`)?.get("text");
+          const raw = translated ?? item.values.text;
+          v =
+            typeof raw === "string"
+              ? text(raw)
+              : { kind: "failed", marker: `site-text-missing:${key}` };
+        }
+        memo.set(key, v);
+        return v;
+      },
+    };
+    return siteTextMemo;
+  };
+
   let pageScopeMemo: ScopeValue | null | undefined;
   return {
     pageId,
     resolveField,
+    siteTextScope,
+    breadcrumbTrail: () => trail,
     pageScope: () => {
       if (pageScopeMemo === undefined) {
         if (current === null) pageScopeMemo = null;

@@ -25,8 +25,7 @@ const noInput = z.object({}).strict();
 export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
   name: "get_site_defaults",
   description:
-    "Fetch the CURRENT site defaults + identity: default layout/template (slug + UUID), siteName, sitePurpose, siteLanguage (`<html lang>`), design brief. " +
-    "Call this whenever you need them — they are not in the system prompt — including after set_site_defaults / set_site_identity, instead of repeating the write.",
+    "Fetch CURRENT site defaults + identity: default layout/template (slug + UUID), siteName, sitePurpose, siteLanguage (`<html lang>`), design brief. Read before set_site_defaults / set_site_identity, and after them for fresh state instead of repeating the write.",
   opName: "site_defaults.get",
   input: noInput,
   format: (value) => {
@@ -67,9 +66,8 @@ export const listPendingProposalsTool = makeListReadTool<
 >({
   name: "list_pending_proposals",
   description:
-    "List every proposal currently awaiting Owner approval, across all gated domains (layouts, users, roles, reverts, themes, deploys, …). " +
-    "Call this BEFORE queueing a proposal you may already have filed (a duplicate is rejected), and after the user says they approved something. " +
-    "Rows with requestedBy=external-agent were queued by an external agent over MCP: their decision is handed back to that agent, which continues the work. In the Caelo chat, do not act on or re-propose them.",
+    "List every proposal awaiting Owner approval across all gated domains (layouts, users, roles, reverts, themes, deploys, …). Call BEFORE queueing a proposal you may already have filed (duplicates are rejected) and after the user says they approved something. " +
+    "Rows with requestedBy=external-agent belong to an external MCP agent, which gets the decision and continues: in the Caelo chat do not act on or re-propose them.",
   opName: "pending_proposals.list",
   input: noInput,
   label: "pending_proposals",
@@ -110,9 +108,8 @@ export const listEntityLocksTool = makeListReadTool<
 >({
   name: "list_entity_locks",
   description:
-    "List entities currently held by OTHER chat sessions (module/page/template/… + which chat holds it). " +
-    "A held entity is not blocked: writing it ADOPTS that chat's unstaged change on it into this chat (nothing is lost; your write builds on it, and the tool result tells you so — tell the operator). " +
-    "Call this before planning edits on entities another chat may be working on, so you can say up front which chat's work you will take over. For every open chat's unstaged changes use list_unpublished_changes({ allChats: true }).",
+    "List entities held by OTHER chat sessions (module/page/template/… + the holding chat). Held is not blocked: writing one ADOPTS that chat's unstaged change into this chat (nothing lost; your write builds on it; the result says so — tell the operator). " +
+    "Call before planning edits another chat may be working on, to say up front whose work you will take over. Every open chat's unstaged changes -> `list_unpublished_changes({allChats:true})`.",
   opName: "chat.list_foreign_locks",
   input: noInput,
   buildOpInput: (_input, _ctx, toolCtx) => ({ chatSessionId: toolCtx.chatSessionId }),
@@ -138,8 +135,7 @@ export const listUsersTool = makeListReadTool<
 >({
   name: "list_users",
   description:
-    "List the site's users (email, display name, roles). Read-only — user changes go through propose_create_user / propose_set_user_roles / propose_delete_user (Owner-approved). " +
-    "Call it again after an Owner approved a user proposal mid-conversation.",
+    "List site users (email, display name, roles); read-only. Changes: propose_create_user / propose_set_user_roles / propose_delete_user (Owner-approved). Re-call after an Owner approved one.",
   opName: "users.list",
   input: noInput,
   label: "users",
@@ -164,7 +160,7 @@ export const listRolesTool = makeListReadTool<
 >({
   name: "list_roles",
   description:
-    "List the site's roles (name, description, builtin flag). Read-only — role changes go through propose_create_role / propose_update_role_permissions / propose_delete_role (Owner-approved).",
+    "List site roles (name, description, builtin); read-only. Changes: propose_create_role / propose_update_role_permissions / propose_delete_role (Owner-approved).",
   opName: "roles.list",
   input: noInput,
   label: "roles",
@@ -196,8 +192,7 @@ type ProviderListRow = {
 export const listAiProvidersTool = makeListReadTool<Record<string, never>, ProviderListRow>({
   name: "list_ai_providers",
   description:
-    "List configured AI providers (display name, active flag, whether a key is configured, chat model, translation model and the catalogue models a translation model may be set to). Key values are never returned. " +
-    "Provider changes go through propose_set_ai_provider / propose_clear_ai_provider_key; the translation model through propose_set_translation_model (all Owner-approved).",
+    "List configured AI providers (display name, active, key configured?, chat model, translation model + allowed catalogue models); never returns keys. Changes: propose_set_ai_provider / propose_clear_ai_provider_key; translation model: propose_set_translation_model (Owner-approved).",
   opName: "ai_providers.list",
   input: noInput,
   includeValue: false,
@@ -239,8 +234,8 @@ export const listDomainsTool = withHostingStatus(
   >({
     name: "list_domains",
     description:
-      "List the site's domains (hostname, kind, TLS status). Domain changes go through propose_add_domain / propose_remove_domain (Owner-approved). " +
-      "On Firebase Hosting installs it also lists every hosting custom domain with its live state (active / waiting for DNS / verifying / stuck) — when one is 'stuck', propose_reconnect_domain heals it, and the CDN cache is cleared automatically once a domain turns active.",
+      "List the site's domains (hostname, kind, TLS status). Changes -> `propose_add_domain`/`propose_remove_domain` (Owner-approved). " +
+      "Firebase Hosting installs also list each hosting custom domain's live state; 'stuck' -> `propose_reconnect_domain` heals it (CDN cache clears automatically once active).",
     opName: "domains.list",
     input: noInput,
     label: "domains",

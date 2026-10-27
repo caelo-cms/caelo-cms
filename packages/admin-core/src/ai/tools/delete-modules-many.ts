@@ -24,7 +24,7 @@ const deleteModulesManyInput = z
       .array(z.string().uuid())
       .min(1)
       .max(200)
-      .describe("Module ids from list_modules. One module = a one-item array."),
+      .describe("From `list_modules` (its usage column shows unplaced ones)."),
   })
   .strict();
 
@@ -33,10 +33,8 @@ type DeleteModulesManyInput = z.infer<typeof deleteModulesManyInput>;
 export const deleteModulesManyTool: ToolDefinitionWithHandler<DeleteModulesManyInput> = {
   name: "delete_modules_many",
   description:
-    "Delete modules that are no longer placed anywhere, in ONE call (one module = a one-item array; up to 200). Take ids from `list_modules` — its usage column shows which modules are unplaced. " +
-    "A module still placed on a page or layout is refused (nothing is deleted for it) and the result names where it is used: unplace it with `remove_module_from` first, or keep it. " +
-    "Use it to clean up after a redesign or migration ('remove the old hero variants', 'delete unused imported modules'). Deletes land on this chat's preview like any other edit and reach the live site when the operator publishes; Undo restores them. " +
-    "To take a module off one page but keep it for reuse, use `remove_module_from` instead — that does not delete the module.",
+    "Delete modules no longer placed anywhere (cleanup after a redesign/migration). A still-placed module is refused (not deleted) and the result names where it is used: unplace via `remove_module_from` first, or keep it. Lands on the chat preview, live on publish; Undo restores. " +
+    "To take a module off one page but keep it -> `remove_module_from`.",
   schema: deleteModulesManyInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.delete_many", {

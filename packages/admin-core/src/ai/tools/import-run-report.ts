@@ -36,7 +36,7 @@ type NotesInput = z.infer<typeof notesInput>;
 export const addImportPageNotesTool: ToolDefinitionWithHandler<NotesInput> = {
   name: "add_import_page_notes",
   description:
-    "Record findings you made while rebuilding an imported page: typos (fix obvious ones in the rebuilt content and set applied: true), dead links, missing image alt texts, thin content, improvement ideas (applied: false — the operator decides). BATCH all of a page's notes in ONE call. `importPageId` accepts EITHER id: the staging import_pages id OR the CMS page id you just built (from build_page / accept_import_pages) — both work, no need to look one up from the other. These feed the migration report the operator receives at the end — record honestly, including what you could not fix.",
+    "Record findings from rebuilding an imported page for the operator's migration report: typos (fix obvious ones, applied:true), dead links, missing alt texts, thin content, improvement ideas (applied:false — operator decides). BATCH a page's notes in ONE call. Record honestly, incl. what you could not fix.",
   schema: notesInput,
   inputSchema: {
     type: "object",
@@ -47,7 +47,7 @@ export const addImportPageNotesTool: ToolDefinitionWithHandler<NotesInput> = {
         type: "string",
         format: "uuid",
         description:
-          "The page to attach notes to — pass EITHER the staging import_pages id OR the built CMS page id (accepted_page_id). Both resolve to the same import page.",
+          "EITHER the staging import_pages id OR the built CMS page id (from build_page / accept_import_pages); both resolve.",
       },
       notes: {
         type: "array",
@@ -65,7 +65,7 @@ export const addImportPageNotesTool: ToolDefinitionWithHandler<NotesInput> = {
             note: { type: "string", minLength: 1, maxLength: 1000 },
             applied: {
               type: "boolean",
-              description: "true = you fixed it during the rebuild; false = suggestion only.",
+              description: "true = fixed during rebuild; false = suggestion.",
             },
           },
         },
@@ -149,7 +149,7 @@ interface Report {
 export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
   name: "get_import_run_report",
   description:
-    "Fetch the migration run's rollup: pages built per confirmed type, redirects created, crawl fetch errors, and your recorded notes (applied vs suggested per category). Call it when the migration is DONE and close the conversation with it in plain words — what was preserved, what you fixed, what the operator should look at. Do not paste the raw data; narrate it.",
+    "Migration run rollup: pages built per confirmed type, redirects, crawl fetch errors, your notes (applied vs suggested per category). Call when the migration is DONE; close by narrating it plainly (preserved, fixed, what to check) — never paste raw data.",
   schema: reportInput,
   inputSchema: {
     type: "object",

@@ -28,15 +28,8 @@ type SetThemeAssetToolInput = z.infer<typeof setThemeAssetToolInput>;
 export const setThemeAssetTool: ToolDefinitionWithHandler<SetThemeAssetToolInput> = {
   name: "set_theme_asset",
   description:
-    "Bind one of the theme's brand assets (logo / logoDark / favicon / socialShare) to an " +
-    "uploaded media row. Pass `mediaId: null` to clear a slot. The mediaId is the media UUID " +
-    "from a `find_media` row's `id` column, an `import_media_from_urls` result line, or a " +
-    "`generate_image` result — never a slug or URL, and never invented. Targets the active " +
-    "theme by default; pass `themeSlug` to bind on a specific theme. A bound favicon is emitted " +
-    'as `<link rel="icon">` in every page\'s <head> by the platform — never hand-write an icon ' +
-    "tag into a module. The favicon must be an image row (ICO, PNG or SVG); an uploaded .ico " +
-    "is fine as-is, and a raster image of any size (e.g. a 1024px generate_image result) is " +
-    "fine too — the platform links a 64px PNG made from it, never the large original.",
+    "Bind a theme brand-asset slot to a media row, or clear it with `mediaId: null`. Active theme unless `themeSlug`. " +
+    'A bound favicon is emitted as `<link rel="icon">` on every page — never hand-write icon tags in modules.',
   schema: setThemeAssetToolInput,
   inputSchema: {
     type: "object",
@@ -45,7 +38,12 @@ export const setThemeAssetTool: ToolDefinitionWithHandler<SetThemeAssetToolInput
     properties: {
       themeSlug: { type: "string", minLength: 1, maxLength: 120 },
       slot: { enum: ["logo", "logoDark", "favicon", "socialShare"] },
-      mediaId: { type: ["string", "null"], format: "uuid" },
+      mediaId: {
+        type: ["string", "null"],
+        format: "uuid",
+        description:
+          "Media UUID from a `find_media` `id`, an `import_media_from_urls` or `generate_image` result — never a slug/URL, never invented. Favicon: an image row (ICO, PNG, SVG), any raster size (a 64px PNG is derived).",
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {

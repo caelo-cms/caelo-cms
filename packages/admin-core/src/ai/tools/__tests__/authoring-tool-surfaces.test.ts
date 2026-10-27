@@ -119,7 +119,7 @@ describe("module authoring tools say html/css are plain source text (no CDATA)",
   for (const [name, props] of cases) {
     it(`${name}: html, css and js descriptions rule out a CDATA wrapper`, () => {
       for (const key of ["html", "css", "js"]) {
-        expect(String(props[key]?.description ?? "")).toContain("<![CDATA[");
+        expect(String(props[key]?.description ?? "")).toContain("no CDATA");
       }
     });
   }

@@ -16,30 +16,30 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 export const logPageEditTool: ToolDefinitionWithHandler<PageLogAppendInput> = {
   name: "log_page_edit",
   description:
-    "Record WHY you just changed a page, in the page's durable log — so a future chat or a fresh subagent that touches this page knows the intent without re-reading this whole conversation. Call it after a MEANINGFUL change: a design/structure decision you made and why (entryKind 'decision'), an operator answer that shaped the page ('operator_answer'), a full rebuild ('rebuilt'), a substantive content/module edit ('edited'), something still unresolved a later turn must settle ('open_question'), or any other durable note ('note'). Keep `summary` to one sentence in plain words; put structured extras (chosen option, the operator's exact words, affected module ids) in `detail` as an object. Do NOT log routine no-ops or narrate every tool call — one entry per real decision. This is append-only work history; it is never reviewed or reverted.",
+    "Append WHY you changed a page to its durable log, so later chats/subagents know the intent without this conversation. Call after a MEANINGFUL change only — one entry per real decision; no routine no-ops or per-tool-call narration. Append-only; never reviewed or reverted.",
   schema: pageLogAppendInputSchema,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["pageId", "entryKind", "summary"],
     properties: {
-      pageId: { type: "string", format: "uuid", description: "The page this entry is about." },
+      pageId: { type: "string", format: "uuid" },
       entryKind: {
         type: "string",
         enum: ["edited", "decision", "operator_answer", "open_question", "rebuilt", "note"],
         description:
-          "edited = substantive content/module change; decision = a call you made + rationale; operator_answer = an answer the operator gave that shaped the page; open_question = still unresolved; rebuilt = rebuilt from scratch; note = anything else worth preserving.",
+          "edited = substantive content/module change | decision = your call + rationale | operator_answer = operator answer that shaped the page | open_question = unresolved, a later turn must settle | rebuilt = from scratch | note = other durable note.",
       },
       summary: {
         type: "string",
         minLength: 1,
         maxLength: 2000,
-        description: "One plain sentence: what happened / was decided and why.",
+        description: "One plain sentence: what happened/was decided and why.",
       },
       detail: {
         type: "object",
         description:
-          "Optional structured context as an OBJECT (not a scalar): chosen option, operator's exact words, affected module ids, etc.",
+          "Structured extras as an OBJECT (not scalar): chosen option, operator's exact words, affected module ids.",
         additionalProperties: true,
       },
     },

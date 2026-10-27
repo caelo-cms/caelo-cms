@@ -19,9 +19,7 @@ export const siteMemoryProposeTool: ToolDefinitionWithHandler<
   // enforce this regex but the live API does.
   name: "site_memory_propose",
   description:
-    "Propose an addition to the site's AI memory (brand voice, tone, banned " +
-    "phrases, instructions, glossary). The proposal queues for Owner review " +
-    "and only takes effect if accepted.",
+    "Propose an addition to the site's AI memory; queues for Owner review, effective only if accepted.",
   schema: siteMemoryProposeToolInput,
   inputSchema: {
     type: "object",

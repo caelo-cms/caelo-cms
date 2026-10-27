@@ -70,9 +70,8 @@ export function formatStagingAccess(v: StagingAccessValue): string {
 export const getStagingAccessTool = makeReadTool({
   name: "get_staging_access",
   description:
-    "Read the protected staging site: its URL (https://staging.<domain>), whether a staged build is served, and which access modes let people and crawlers in (admin 'Open staging' cookie, basic auth, secret header, IP allowlist). " +
-    "Use when the operator asks where to look at staging, how a crawler (e.g. a searchVIU dev crawl) gets in, or before propose_set_staging_access. " +
-    "You never see the basic-auth password or the secret header value: when the operator needs them, tell them to copy them from Settings → Staging access (/settings/staging).",
+    "Read the protected staging site: URL, whether a staged build is served, which access modes admit people + crawlers.\n" +
+    "USE FOR: where to see staging, how a crawler (e.g. searchVIU dev crawl) gets in, before `propose_set_staging_access`. You never see the basic-auth password / secret header value — the operator copies them from Settings → Staging access (/settings/staging).",
   opName: "staging_access.get",
   input: z.object({}).strict(),
   // #971 — never the credentials, whoever the operator is: the AI result
@@ -87,10 +86,12 @@ export const proposeSetStagingAccessTool = makeProposeTool({
   opName: "owner_settings.propose_set_staging_access",
   pendingQueuePath: PENDING_QUEUE,
   when:
-    "Propose who may open the protected staging site (https://staging.<domain>): cookieEnabled (admin 'Open staging'), basicAuthEnabled + basicAuthUser (a crawler logs in; the password is generated on approval), headerEnabled + headerName (a crawler sends a generated secret header), ipAllowlist (CIDRs or addresses let in without credentials, e.g. a crawler's static egress IP). " +
-    "Send ONLY the settings that change. For a searchVIU dev crawl: basic auth (dev_auth_type PW) or the crawler's egress IP (dev_auth_type IP). " +
-    "At least one mode must stay on. Read the current settings with get_staging_access first. Never invent an IP address — take it from the operator. " +
-    "Applies on the gateway within seconds after approval; a newly enabled basic-auth password or header value is never shown to you — the operator copies it from Settings → Staging access (/settings/staging). If get_staging_access says nothing is staged, the host serves nothing until stage_changes.",
+    "Propose who may open the protected staging site (https://staging.<domain>).\n" +
+    "CORE RULES:\n" +
+    "- Read current settings (`get_staging_access`) first; send ONLY what changes. At least one mode must stay on.\n" +
+    "- searchVIU dev crawl: basic auth (dev_auth_type PW) or the crawler's egress IP (dev_auth_type IP). Never invent an IP — take it from the operator.\n" +
+    "- Applies within seconds after approval. A new password / header value is never shown to you — the operator copies it from Settings → Staging access (/settings/staging).\n" +
+    "- If `get_staging_access` says nothing is staged, the host serves nothing until `stage_changes`.",
   schema: proposeStagingAccessInput,
   summarize: (_input, preview) => String(preview.summary ?? "staging access change"),
 });
@@ -99,10 +100,7 @@ export const proposeRotateStagingCredentialsTool = makeProposeTool({
   toolName: "propose_rotate_staging_credentials",
   opName: "owner_settings.propose_rotate_staging_credentials",
   pendingQueuePath: PENDING_QUEUE,
-  when:
-    "Propose replacing the staging crawler credentials (which: basic-auth, header or both). " +
-    "ONLY when the operator asks or a credential may have leaked: every crawler/tool using the old value is locked out until it gets the new one, and the old value cannot be restored. " +
-    "Give the reason in `reason`; it is shown on the approval. You never see the new value: the operator copies it from Settings → Staging access (/settings/staging).",
+  when: "Propose replacing staging crawler credentials. ONLY when the operator asks or one may have leaked: crawlers/tools with the old value are locked out until given the new one; irreversible. You never see the new value — the operator copies it from Settings → Staging access (/settings/staging).",
   schema: proposeRotateStagingCredentialsInput,
   summarize: (_input, preview) => String(preview.summary ?? "rotate staging credentials"),
 });
@@ -112,9 +110,8 @@ export const proposeSetStagingHostTool = makeProposeTool({
   opName: "owner_settings.propose_set_staging_host",
   pendingQueuePath: PENDING_QUEUE,
   when:
-    "Propose moving the protected staging site to another host (default staging.<domain>; any FQDN the operator names, also on another domain, e.g. preview.example.com). " +
-    "ONLY when the operator asks for a different staging host. Never the live or admin host. Read the current host with get_staging_access first. " +
-    "After approval: the operator maps the host with `cms-provision staging-domain enable --staging-domain <host>` (DNS record + certificate; that command also sets the host itself, so if the operator runs it you need no proposal), and NOTHING is served at the new host until the next Stage — call stage_changes once the work is ready, and tell the operator both steps.",
+    "Propose moving the protected staging site to another host (any FQDN the operator names, also another domain). ONLY when the operator asks. Read the current host (`get_staging_access`) first.\n" +
+    "After approval tell the operator both steps: (1) map the host with `cms-provision staging-domain enable --staging-domain <host>` (DNS + certificate; it also sets the host, so if they run it no proposal is needed); (2) NOTHING is served there until the next Stage -> `stage_changes` when the work is ready.",
   schema: proposeSetStagingHostInput,
   summarize: (_input, preview) => String(preview.summary ?? "staging host change"),
 });

@@ -159,6 +159,8 @@
         "@caelo-cms/plugin-newsletter": "workspace:*",
         "@caelo-cms/plugin-ratings": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
+        "ajv": "8.20.0",
+        "ajv-formats": "3.0.1",
       },
     },
     "packages/font-service": {

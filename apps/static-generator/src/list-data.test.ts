@@ -20,6 +20,7 @@ const MENU_TYPE = id(20);
 const page = (pageId: string, title: string, pageTypeSlug: string, inBuild = true) => ({
   id: pageId,
   title,
+  shortTitle: title,
   parentId: null,
   pageTypeSlug,
   properties: {},
@@ -50,6 +51,7 @@ function data(postInBuild: boolean): ListRenderData {
     pages: new Map(pages.map((p) => [p.id, p])),
     media: new Map(),
     siteLanguage: "en",
+    homePageId: null,
   };
 }
 

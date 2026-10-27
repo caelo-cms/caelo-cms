@@ -287,7 +287,7 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
       // retries=1. ON CONFLICT DO UPDATE makes seedMinimalSite
       // idempotent across the race.
       const pg = await tx\`
-        INSERT INTO pages (slug, name, title, template_id, status)
+        INSERT INTO pages (slug, short_title, title, template_id, status)
         VALUES ('home', 'Home', 'Home', \${templateId}::uuid, 'draft')
         ON CONFLICT (current_path, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
           WHERE deleted_at IS NULL
@@ -1370,7 +1370,7 @@ export function seedNewsArticles(count: number): void {
         const exists = await tx\`SELECT 1 FROM pages WHERE slug = \${slug} AND deleted_at IS NULL LIMIT 1\`;
         if (exists[0]) continue;
         const pg = await tx\`
-          INSERT INTO pages (slug, name, title, template_id, status, page_type_id, first_published_at)
+          INSERT INTO pages (slug, short_title, title, template_id, status, page_type_id, first_published_at)
           VALUES (\${slug}, \${"News " + i}, \${"Release notes " + i}, \${tpl[0].id}::uuid, 'published',
                   \${pt[0].id}::uuid, now() - make_interval(days => \${n - i}::int))
           RETURNING id::text AS id

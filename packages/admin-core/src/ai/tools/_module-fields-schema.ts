@@ -101,7 +101,7 @@ const TOOL_LIST_ENTRY_SCHEMA = {
     node: {
       type: "string",
       description:
-        'The NODE kind, not the type slug: "text" (texts), "link" (links), "entry" (menu).',
+        'NODE kind, not the listType slug: "text" (texts), "link" (links), "entry" (menu).',
     },
     values: { type: "object" },
     children: { type: "array", items: { type: "object" } },
@@ -124,8 +124,7 @@ function moduleFieldItemSchema(): Record<string, unknown> {
       // emit shapes the Zod validator then rejected — issue #106 class).
       default: {
         description:
-          "The ORIGINAL value(s) this field replaced, never a placeholder: scalar kinds → a string; " +
-          'list → its entries (local) or "caelo:list/<id>" (shared). Omit for module / module-list and bind "source".',
+          'ORIGINAL value(s) replaced (never a placeholder): scalar -> value; local `list` -> entries; shared `list` -> `"caelo:list/<id>"`. Omit for `module`, `module-list`, `bind:"source"`.',
         anyOf: [
           { type: "string" },
           { type: "number" },
@@ -143,18 +142,19 @@ function moduleFieldItemSchema(): Record<string, unknown> {
       listType: {
         type: "string",
         pattern: SLUG_PATTERN,
-        description: 'list: type slug — "texts", "links", "menu", "categories", "tags" or custom.',
+        description:
+          'For `kind:"list"`: "texts", "links", "menu", "categories", "tags", or custom slug (`upsert_list_types_many`).',
       },
       bind: {
         type: "string",
         enum: ["local", "shared", "source"],
         description:
-          "list: local (default; entries live with the placement) | shared (a site list: menus, navigation, footer links, categories, tags) | source (generated per page).",
+          'For `kind:"list"`: `local` (default; entries live with the placement) | `shared` (site-wide menus/nav/footer/categories/tags — check `list_lists` first, edit entries via `patch_list_items_many`, share a local list via `promote_local_list`) | `source` (generated per page; placement content may set the knobs the source marks `editable`).',
       },
       list: {
         type: "string",
         pattern: LIST_REF_PATTERN,
-        description: "list, shared: caelo:list/<id>.",
+        description: 'Required when `bind:"shared"`.',
       },
       source: {
         type: "object",
@@ -165,6 +165,8 @@ function moduleFieldItemSchema(): Record<string, unknown> {
       allowedModuleTypes: {
         type: "array",
         maxItems: 32,
+        description:
+          'For `module`/`module-list`: whitelist of stable module `type`s (e.g. `["button"]`), NOT slugs. Widen if a valid module is rejected.',
         items: { type: "string", pattern: SLUG_PATTERN },
       },
       // Mirror the Zod list bounds exactly (z.number().int().positive().max(256)).

@@ -117,44 +117,40 @@ export const aiPricingRowInput = z
       .int()
       .nonnegative()
       .describe(
-        "text: input rate in microcents PER 1K TOKENS ($3 per million tokens = 300000). image: the price of ONE generated image in microcents ($0.04 = 4000000).",
+        "text: microcents PER 1K TOKENS ($3/MTok = 300000). image: price of ONE image ($0.04 = 4000000).",
       ),
     outputMicrocents: z
       .number()
       .int()
       .nonnegative()
       .nullable()
-      .describe("text: output rate, microcents per 1K tokens. image: null (priced per image)."),
+      .describe("text: microcents/1K tokens. image: null."),
     cachedMicrocents: z
       .number()
       .int()
       .nonnegative()
       .nullable()
-      .describe("Cache-READ rate, microcents per 1K tokens; null if the provider has none."),
+      .describe("Cache-READ rate, microcents/1K tokens; null if none."),
     cacheCreationMicrocents: z
       .number()
       .int()
       .nonnegative()
       .nullable()
       .optional()
-      .describe("Cache-WRITE rate, microcents per 1K tokens; null/omitted bills 1.25x input."),
-    effectiveFrom: z
-      .string()
-      .datetime()
-      .optional()
-      .describe("ISO timestamp the row takes effect; omitted = now. Part of the row key."),
+      .describe("Cache-WRITE rate, microcents/1K tokens; null/omitted bills 1.25x input."),
+    effectiveFrom: z.string().datetime().optional().describe("Omitted = now. Part of the row key."),
     validFrom: z
       .string()
       .datetime()
       .nullable()
       .optional()
-      .describe("Start of a dated price window (e.g. intro pricing); null = open."),
+      .describe("Dated price window start; null = open."),
     validTo: z
       .string()
       .datetime()
       .nullable()
       .optional()
-      .describe("End of a dated price window; null = open-ended."),
+      .describe("Dated price window end; null = open."),
   })
   .strict()
   .refine((r) => !r.validFrom || !r.validTo || r.validFrom <= r.validTo, {

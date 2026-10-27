@@ -37,11 +37,7 @@ export type SubmitResultToolInput = z.infer<typeof submitResultToolInput>;
 export const submitResultTool: ToolDefinitionWithHandler<SubmitResultToolInput> = {
   name: "submit_result",
   description:
-    "SUBAGENT FINAL ANSWER — call this tool exactly once, as your LAST action, to deliver your result to the parent agent. " +
-    'Pass your result under the `result` key, matching the return-shape contract stated in your task (e.g. {"result": {"pages": [...], "summary": "..."}} for a rebuild task, ' +
-    '{"result": {"pass": true, "issues": []}} for a verdict task, or {"result": {"text": "..."}} / {"result": "..."} for freeform). ' +
-    "Your result is ONLY read from this tool call — plain text at the end of your turn is NOT collected. " +
-    "If this tool rejects your payload, fix the named fields and call it again. After it succeeds, end your turn.",
+    "SUBAGENT FINAL ANSWER to the parent agent: call exactly once as your LAST action. Only this call is read; final plain text is NOT collected. If rejected, fix the named fields and call again; after success, end your turn.",
   schema: submitResultToolInput,
   inputSchema: {
     type: "object",
@@ -59,7 +55,7 @@ export const submitResultTool: ToolDefinitionWithHandler<SubmitResultToolInput> 
         // (not starting with `{`/`[`) is left untouched by the repair.
         type: ["object", "array", "string"],
         description:
-          "The final result payload, matching the return-shape contract given in the task brief.",
+          "Payload matching the task's return-shape contract, e.g. rebuild `{pages:[…], summary}` | verdict `{pass:true, issues:[]}` | freeform `{text}` or a plain string.",
       },
     },
   },

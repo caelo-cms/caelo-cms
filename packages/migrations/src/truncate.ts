@@ -22,6 +22,7 @@
 
 import { databaseUrlFromEnv } from "@caelo-cms/shared";
 import type { SQL as SQLType } from "bun";
+import { SEED_SITE_TEXTS_LIST_SQL } from "./seed-site-texts.js";
 
 type SQL = SQLType;
 const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
@@ -188,6 +189,7 @@ await sql.begin(async (tx: SQL) => {
   const tableList = existing.map((t) => `"${t}"`).join(", ");
   console.log(`TRUNCATE ${tableList} RESTART IDENTITY CASCADE`);
   await tx.unsafe(`TRUNCATE ${tableList} RESTART IDENTITY CASCADE`);
+  if (target === "admin") await tx.unsafe(SEED_SITE_TEXTS_LIST_SQL);
 });
 
 console.log("truncate complete");

@@ -17,11 +17,13 @@ import {
 } from "@caelo-cms/query-api";
 import { DEFAULT_LIST_TYPES, type ExecutionContext, ok } from "@caelo-cms/shared";
 import { z } from "zod";
-import { LIST_FIELD_CONTRACT, LISTS_ALIAS, toolNamesIn } from "../_list-tool-kit.js";
+import { toolNamesIn } from "../_list-tool-kit.js";
+import { MODULE_FIELDS_JSON_SCHEMA } from "../_module-fields-schema.js";
 import { buildPageTool } from "../build-page.js";
 import { updatePagesManyTool } from "../bulk-pages-modules.js";
 import { createTemplateTool } from "../create-template.js";
 import type { ToolContext } from "../dispatch.js";
+import { generateInputSchema } from "../generate-input-schema.js";
 import { createDefaultToolRegistry } from "../index.js";
 import { catalogField } from "../list-modules.js";
 import {
@@ -107,12 +109,16 @@ describe("list tools (epic #1107)", () => {
     ]) {
       expect(names.has(n)).toBe(true);
     }
-    expect(LISTS_ALIAS).toContain(
-      "Menus, navigation, footer links, categories and tags are SHARED LISTS",
-    );
-    // Said once, where the AI looks for a menu (catalogue budget below).
-    expect(listListsTool.description).toContain(LISTS_ALIAS);
-    expect(LIST_FIELD_CONTRACT).toContain("promote_local_list");
+    // Said once, where the AI looks for a menu (catalogue budget below):
+    // menus are shared lists, local vs shared.
+    expect(listListsTool.description).toContain("SHARED LISTS");
+    expect(listListsTool.description).toContain("no menu-specific tools");
+    expect(listListsTool.description).toContain("`promote_local_list`");
+    expect(upsertListsManyTool.description).toContain("menus");
+    const fieldProps = (
+      MODULE_FIELDS_JSON_SCHEMA.items as { properties: Record<string, { description?: string }> }
+    ).properties;
+    expect(fieldProps.bind?.description).toContain("promote_local_list");
   });
 
   it("list_lists renders usage so the AI finds the header's menu instead of minting one", async () => {
@@ -220,10 +226,9 @@ describe("list tools (epic #1107)", () => {
   // menu's news entry `query`, which only takes the source's editable knobs
   // (the type's defaults fix the rest) — the description now says so.
   it("upsert_lists_many says an entry query takes only the editable knobs", () => {
-    expect(upsertListsManyTool.description).toContain(
-      "only with the knobs that node's source lists in `editable`",
-    );
-    expect(upsertListsManyTool.description).toContain("fixed by the type's `defaults`");
+    const schema = JSON.stringify(generateInputSchema(upsertListsManyTool.schema));
+    expect(schema).toContain("only the knobs its source lists in `editable`");
+    expect(schema).toContain("omit = type `defaults`");
   });
 
   it("upsert_lists_many accepts a nested entry tree and returns the list ref for binding", async () => {

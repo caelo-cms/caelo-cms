@@ -22,11 +22,9 @@ const listTemplatesInput = z.object({ includeDeleted: z.boolean().default(false)
 export const listTemplatesTool = makeListReadTool<z.infer<typeof listTemplatesInput>, TemplateRow>({
   name: "list_templates",
   description:
-    "List every template with UUID, slug, display name, bound layout UUID, `pageBlocks` and `pageTypes` (the page types whose pages may use it — list_page_types) (TOON rows). " +
-    "`pageBlocks` are the blocks a page on that template places modules into — the ONLY valid `blockName` values for build_page and add_module target='page' (usually just `content`). " +
-    "Header / footer / nav are NOT page blocks: they are site chrome on the template's LAYOUT (list_layouts), placed once with add_module target='layout'. " +
-    "Standard list params: `filter`, `limit`/`offset`, `full: true`. " +
-    "Use when you need a template UUID or its blocks before building a page. DO NOT ask the operator to paste a UUID.",
+    "List templates: UUID, slug, name, layout UUID, `pageBlocks`, `pageTypes` (page types allowed to use it). Use for a template id or its blocks before building a page; never ask the operator for a UUID.\n" +
+    "`pageBlocks` = the ONLY valid `blockName` for `build_page` / `add_module` target='page' (usually `content`). " +
+    "Header/footer/nav are layout chrome (`list_layouts`), placed once via `add_module` target='layout'.",
   opName: "templates.list",
   input: listTemplatesInput,
   label: "templates",

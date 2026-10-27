@@ -64,7 +64,7 @@ describe("bug_report forwarding wording (#902)", () => {
 
   it("the description forbids claiming notification the result does not confirm", () => {
     expect(bugReportTool.description).toContain(
-      "never claim the Caelo team was notified unless the result says it was sent",
+      "never claim the team was notified unless it says sent",
     );
   });
 });
@@ -127,9 +127,7 @@ describe("bug_report refuses placeholder reports (#1010)", () => {
   });
 
   it("the description says when a report is warranted", () => {
-    expect(bugReportTool.description).toContain(
-      "Report only after a concrete failure you observed",
-    );
+    expect(bugReportTool.description).toContain("Only after a concrete observed failure");
     expect(bugReportTool.description).toContain("search for it instead");
   });
 });

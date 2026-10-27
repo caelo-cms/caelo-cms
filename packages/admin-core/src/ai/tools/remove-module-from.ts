@@ -34,11 +34,7 @@ interface LayoutDetail {
 export const removeModuleFromTool: ToolDefinitionWithHandler<RemoveModuleFromToolInput> = {
   name: "remove_module_from",
   description:
-    "Remove a module from a page or a layout — `target` = 'page' | 'layout', `targetRef` = the page's id or URL path, or the layout's slug or id. " +
-    "The module row itself is NOT deleted, only the reference — it stays available for reuse. " +
-    "target='page' drops the page-level reference (from whatever block it's in). " +
-    "target='layout' detaches site-wide chrome from every block on the layout ('remove the footer from every page'). " +
-    "To replace a module's content, prefer `update_modules_many` (keeps the slot) over remove + add.",
+    'Remove a module reference from a page or layout; the module itself stays for reuse. `target:"page"` drops the page-level reference (any block); `target:"layout"` detaches site-wide chrome from every block of the layout (\'remove the footer from every page\'). To replace a module, PREFER `update_modules_many` (keeps the slot) over remove + add.',
   schema: removeModuleFromToolInput,
   inputSchema: {
     type: "object",
@@ -50,7 +46,7 @@ export const removeModuleFromTool: ToolDefinitionWithHandler<RemoveModuleFromToo
         type: "string",
         minLength: 1,
         maxLength: 500,
-        description: "Page: its id or URL path (e.g. '/docs/setup'). Layout: slug or id.",
+        description: "Page: id or URL path (e.g. `/docs/setup`). Layout: slug or id.",
       },
       moduleId: { type: "string", format: "uuid" },
     },

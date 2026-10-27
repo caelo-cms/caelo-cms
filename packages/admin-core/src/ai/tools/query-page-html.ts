@@ -170,9 +170,8 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
   name: "query_page_html",
   usesInstallAi: true,
   description:
-    "Pull a SPECIFIC part of an external page's HTML — without loading the whole page into context. Reuses a `pageRef` from a prior inspect_external_page (no re-fetch); pass `url` only if you have no handle. " +
-    'Pick ONE mode: `keyword` (exact text — HTML around each hit), `cssSelector` / `xpath` (return matching elements\' outerHTML), or `describe` (natural language like "the pricing table" or "each product card\'s title + price" — a small fast model reads the full HTML and returns just that, so the big HTML never enters your context). ' +
-    "Use this instead of inspect_external_page's `markup` facet when you need one section, not the whole page.",
+    "Pull ONE specific part of an external page's HTML without loading the whole page. Pass exactly ONE mode: `keyword` | `cssSelector` | `xpath` | `describe`.\n" +
+    "USE FOR: one section -> prefer over `inspect_external_page`'s `markup` facet (whole page).",
   schema: input,
   inputSchema: {
     type: "object",
@@ -180,40 +179,40 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
     properties: {
       pageRef: {
         type: "string",
-        description: "Handle from a prior inspect_external_page (preferred — no re-fetch).",
+        description: "Handle from `inspect_external_page` (preferred, no re-fetch).",
       },
       url: {
         type: "string",
-        description: "Absolute public URL — fallback when you have no pageRef.",
+        description: "Absolute public URL; only without a pageRef.",
       },
       keyword: {
         type: "string",
-        description: "Exact text to locate; returns the HTML window(s) around each hit.",
+        description: "Exact text; returns HTML window(s) around each hit.",
       },
       cssSelector: {
         type: "string",
-        description: "CSS selector; returns matching elements' outerHTML (needs Playwright).",
+        description: "Returns matching elements' outerHTML (needs Playwright).",
       },
       xpath: {
         type: "string",
-        description: "XPath expression; returns matching elements' outerHTML (needs Playwright).",
+        description: "Returns matching elements' outerHTML (needs Playwright).",
       },
       describe: {
         type: "string",
         description:
-          "Natural-language description of what you need (e.g. 'the main nav structure', 'the pricing table'). A small model extracts it from the full HTML and returns only that.",
+          "Natural language, e.g. 'the pricing table', 'each product card's title + price'; a small model extracts it from the full HTML so only that enters your context.",
       },
       maxMatches: {
         type: "integer",
         minimum: 1,
         maximum: 20,
-        description: "keyword mode: max windows (default 5).",
+        description: "keyword mode; default 5.",
       },
       contextChars: {
         type: "integer",
         minimum: 1,
         maximum: 4000,
-        description: "keyword mode: chars around each hit (default 800).",
+        description: "keyword mode: chars around each hit; default 800.",
       },
     },
   },

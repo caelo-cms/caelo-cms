@@ -23,12 +23,12 @@ type CreateContentInstancesInput = z.infer<typeof createContentInstancesInput>;
 export const createContentInstancesTool: ToolDefinitionWithHandler<CreateContentInstancesInput> = {
   name: "create_content_instances",
   description: [
-    "Mint shared, reusable content_instances — one call for 1..N (`items[]`), one transaction — for content that appears identically on several pages (site footer copyright, brand banner on product pages, repeated blog CTA). Bind each via `set_placement_content({syncMode:'synced'})`; edits then propagate everywhere bound.",
+    "Mint 1..N shared, reusable content_instances in one transaction — for content shown identically on several pages (site footer copyright, brand banner on product pages, repeated blog CTA). Bind each via `set_placement_content({syncMode:'synced'})`; edits then propagate everywhere bound.",
     "DO NOT USE FOR: one-off per-page content -> `set_page_module_content_many` (auto-mints a private instance); creating the page/modules too -> `build_page` (its `content` mints + binds in the same call).",
     "CORE RULES:",
-    "- BEFORE CALLING: check `list_content_instances` — a row with matching purpose + module + placement pattern -> BIND it via `set_placement_content` instead; duplicate shared rows defeat the point.",
-    "- All-or-nothing: an invalid item aborts the batch (the error names `items[i]` + the failing field) and nothing is written.",
-    INTERNAL_LINK_CONTRACT.trim(),
+    "- BEFORE CALLING: check `list_content_instances` — a row with matching purpose + module + placement pattern -> BIND it via `set_placement_content`; duplicate shared rows defeat the point.",
+    "- All-or-nothing: an invalid item aborts the batch (error names `items[i]` + failing field); nothing is written.",
+    INTERNAL_LINK_CONTRACT,
   ].join("\n"),
   schema: createContentInstancesInput,
   inputSchema: {
@@ -49,19 +49,19 @@ export const createContentInstancesTool: ToolDefinitionWithHandler<CreateContent
             slug: {
               type: "string",
               pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-              description: "Optional handle, unique per module.",
+              description: "Handle, unique per module.",
             },
             displayName: { type: "string", minLength: 1, maxLength: 128 },
             purpose: {
               type: "string",
               maxLength: 1000,
               description:
-                'Why this row is shared, one line (e.g. "Pricing CTA at the bottom of every pricing-adjacent page"); `list_content_instances` shows it for later reuse-vs-fork decisions. Always set it.',
+                'Why this row is shared, one line (e.g. "Pricing CTA at the bottom of every pricing-adjacent page"); `list_content_instances` shows it for reuse-vs-fork decisions. Always set it.',
             },
             values: {
               type: "object",
               additionalProperties: true,
-              description: "Keyed by the module's declared field names.",
+              description: "Keyed by the module's field names.",
             },
           },
         },

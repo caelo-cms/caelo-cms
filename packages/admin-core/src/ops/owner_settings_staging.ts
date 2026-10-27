@@ -119,14 +119,12 @@ export const proposeSetStagingAccessOp = defineOperation({
 
 export const proposeRotateStagingCredentialsInput = z
   .object({
-    which: credentialKind.describe("Which crawler credential to replace."),
+    which: credentialKind,
     reason: z
       .string()
       .min(10)
       .max(500)
-      .describe(
-        "Why it must change (e.g. shared with a contractor who left). Shown on the approval.",
-      ),
+      .describe("Why (e.g. shared with a contractor who left). Shown on the approval."),
   })
   .strict();
 
@@ -186,7 +184,7 @@ export const proposeSetStagingHostInput = z
       .min(1)
       .max(253)
       .describe(
-        "The new staging host, e.g. preview.example.com (no https://, port or path). Must not be the live or admin host.",
+        "e.g. preview.example.com (no https://, port or path). Never the live or admin host.",
       ),
   })
   .strict();

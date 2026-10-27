@@ -12,6 +12,9 @@
  *                        an open problem, so it does not count.
  *   - staleBranches    — chat_sessions whose last_active_at is over 14
  *                        days old, no published_at, no archived_at.
+ *   - failedRedirectSyncs — #1157: deploy targets whose hosting does not
+ *                        serve the saved redirects because the last push
+ *                        failed (retried automatically; Settings → Redirects).
  *
  * P20 ship 4 + P21 ship 5 — also surfaces the "newer release available"
  * hint (`upgradeAvailable` + `latestVersion`; #696: `updatesPath` is where
@@ -44,6 +47,7 @@ const notificationsRow = z.object({
   pendingProposals: z.number().int().nonnegative(),
   failedDeploys: z.number().int().nonnegative(),
   staleBranches: z.number().int().nonnegative(),
+  failedRedirectSyncs: z.number().int().nonnegative(),
   upgradeAvailable: z.boolean(),
   latestVersion: z.string().nullable(),
   releaseUrl: z.string().nullable(),
@@ -106,6 +110,9 @@ export const aggregateNotificationsOp = defineOperation({
            WHERE last_active_at < now() - interval '14 days'
              AND archived_at IS NULL
              AND published_at IS NULL) AS stale_branches,
+        (SELECT count(*)::int FROM redirect_sync_state
+           WHERE wanted_revision > synced_revision
+             AND last_error IS NOT NULL) AS failed_redirect_syncs,
         (SELECT latest_version FROM release_check_cache WHERE id = 1) AS latest_version,
         (SELECT release_url    FROM release_check_cache WHERE id = 1) AS release_url,
         ((SELECT bug_forwarding_decided_at IS NULL FROM telemetry_settings WHERE id = 1)
@@ -114,6 +121,7 @@ export const aggregateNotificationsOp = defineOperation({
       pending_proposals: number | string;
       failed_deploys: number | string;
       stale_branches: number | string;
+      failed_redirect_syncs: number | string;
       latest_version: string | null;
       release_url: string | null;
       bug_forwarding_undecided: boolean | null;
@@ -122,6 +130,7 @@ export const aggregateNotificationsOp = defineOperation({
       pending_proposals: 0,
       failed_deploys: 0,
       stale_branches: 0,
+      failed_redirect_syncs: 0,
       latest_version: null,
       release_url: null,
       bug_forwarding_undecided: false,
@@ -131,6 +140,7 @@ export const aggregateNotificationsOp = defineOperation({
     const pendingProposals = toInt(r.pending_proposals);
     const failedDeploys = toInt(r.failed_deploys);
     const staleBranches = toInt(r.stale_branches);
+    const failedRedirectSyncs = toInt(r.failed_redirect_syncs);
 
     const latestVersion = r.latest_version;
     const releaseUrl = r.release_url;
@@ -141,6 +151,7 @@ export const aggregateNotificationsOp = defineOperation({
       pendingProposals,
       failedDeploys,
       staleBranches,
+      failedRedirectSyncs,
       upgradeAvailable,
       latestVersion,
       releaseUrl,
@@ -153,6 +164,7 @@ export const aggregateNotificationsOp = defineOperation({
         pendingProposals +
         failedDeploys +
         staleBranches +
+        failedRedirectSyncs +
         (upgradeAvailable ? 1 : 0) +
         (bugForwardingUndecided ? 1 : 0),
     });

@@ -105,7 +105,7 @@ async function createPage(slug: string, ctx: ExecutionContext = SYS): Promise<st
   return (
     await op<{ pageId: string }>(ctx, "pages.create", {
       slug: `pdup-${slug}-${TS}`,
-      name: slug,
+      shortTitle: slug,
       title: slug,
       templateId,
     })

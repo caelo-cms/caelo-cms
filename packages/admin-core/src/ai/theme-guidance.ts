@@ -34,13 +34,10 @@ export const THEME_DOCUMENT_SKELETON =
  * isn't overtly color-coded.
  */
 export const ANCHOR_HUE_HINTS =
-  "`#4f46e5` indigo + violet accent (SaaS / dev tools), " +
-  "`#7c3aed` violet + cyan accent (creative / AI products), " +
-  "`#06b6d4` cyan + deep-navy neutrals (data / analytics), " +
-  "`#10b981` emerald + warm-sand neutrals (sustainability / finance), " +
-  "`#f59e0b` amber + terracotta accent (warm / lifestyle), " +
-  "`#ef4444` red + cool-slate neutrals (urgency / news), " +
-  "`#0f172a` slate + gold accent (luxury / enterprise)";
+  "`#4f46e5` indigo + violet (SaaS / dev tools) | `#7c3aed` violet + cyan (creative / AI) | " +
+  "`#06b6d4` cyan + deep-navy neutrals (data / analytics) | `#10b981` emerald + warm-sand " +
+  "(sustainability / finance) | `#f59e0b` amber + terracotta (warm / lifestyle) | `#ef4444` red + " +
+  "cool-slate (urgency / news) | `#0f172a` slate + gold (luxury / enterprise)";
 
 /**
  * issue #153 — the anti-flat primer. #112 killed grayscale; the next
@@ -56,19 +53,15 @@ export const ANCHOR_HUE_HINTS =
  * as the skeleton.
  */
 export const TOKEN_SHAPE_HINTS =
-  "Composite shapes — copy these exactly: typography leaves are " +
-  "`{$type: 'typography', $value: {fontFamily: 'Inter, sans-serif', fontSize: '1rem', " +
-  "fontWeight: 400, lineHeight: 1.6}}` (one composite per body/heading/mono — NOT per-property " +
-  "tokens, and fontFamily is a plain string). Shadow leaves are " +
-  "`{$type: 'shadow', $value: {color: '#0b132b33', offsetX: '0px', offsetY: '2px', " +
-  "blur: '8px', spread: '0px'}}` (structured object or array of them — NEVER a raw CSS string). " +
-  "Gradient leaves are a CSS `*-gradient(...)` string, NOT a color — set them at the " +
-  "`gradient.*` namespace and the `$type` is inferred: e.g. " +
-  "`set: {'gradient.hero': {$type: 'gradient', $value: 'linear-gradient(135deg, #4f46e5, #7c3aed)'}}` " +
-  "(the bare string `'linear-gradient(135deg, #4f46e5, #7c3aed)'` or a loose name like " +
-  "`heroGradient` also work — the server routes any `gradient.*`/`*Gradient` name to a gradient " +
-  "token). Only `linear-`/`radial-`/`conic-gradient(...)` values are valid; never alias " +
-  "({group.token}) unless the target exists.";
+  "Composite shapes (copy exactly): typography leaf = `{$type: 'typography', $value: {fontFamily: " +
+  "'Inter, sans-serif', fontSize: '1rem', fontWeight: 400, lineHeight: 1.6}}`, one composite per " +
+  "body/heading/mono (never per-property tokens; fontFamily a plain string). Shadow leaf = " +
+  "`{$type: 'shadow', $value: {color: '#0b132b33', offsetX: '0px', offsetY: '2px', blur: '8px', " +
+  "spread: '0px'}}`, an object or array of them, never a raw CSS string. Gradient leaf = a CSS " +
+  "`linear-` / `radial-` / `conic-gradient(...)` string (not a color) under `gradient.*`, `$type` " +
+  "inferred: `set: {'gradient.hero': {$type: 'gradient', $value: 'linear-gradient(135deg, #4f46e5, " +
+  "#7c3aed)'}}` (the bare string or a `*Gradient` name also routes to a gradient token). Never " +
+  "alias ({group.token}) unless the target exists.";
 
 /**
  * issue #430 — the spacing scale must cover the sizes pages actually
@@ -80,14 +73,11 @@ export const TOKEN_SHAPE_HINTS =
  * job, so a literal was the only available answer.
  */
 export const SPACING_RHYTHM_HINTS =
-  "Compose `spacing` so it covers what pages actually use — otherwise module CSS falls back to " +
-  "literals and the operator can never retune the site's density. A component-only scale " +
-  "(`xs`…`2xl`, 0.25–3rem) does NOT cover it: section bands need 3.5–5rem of vertical air, and " +
-  "controls need 0.6–0.9rem of padding. So ship the component steps PLUS named rhythm tokens — " +
-  "`section-sm` (tight band, ~2.5rem), `section` (standard band, ~4rem), `section-lg` (hero / " +
-  "feature band, ~5rem) — and reference them in module CSS as " +
-  "`padding: var(--spacing-section) var(--spacing-md)`. If you are about to write a padding " +
-  "literal, add the token instead.";
+  "`spacing` must cover what pages use, or module CSS falls back to literals the operator cannot " +
+  "retune: component steps `xs`…`2xl` (0.25-3rem; controls need 0.6-0.9rem padding) PLUS rhythm " +
+  "tokens `section-sm` (~2.5rem tight band), `section` (~4rem standard band), `section-lg` (~5rem " +
+  "hero / feature band). Module CSS references them (`padding: var(--spacing-section) " +
+  "var(--spacing-md)`); about to write a padding literal -> add the token instead.";
 
 /**
  * issue #430 — a token's role is a design decision, and it is recorded
@@ -96,37 +86,34 @@ export const SPACING_RHYTHM_HINTS =
  * moment module CSS references the var.
  */
 export const TOKEN_ROLE_HINTS =
-  "Record each token's ROLE via the DTCG envelope's `$description`, in either form: WITH the value " +
-  "when you already know it — `set: {'color.primary': {$type: 'color', $value: '#4f46e5', " +
-  "$description: 'CTAs, links and selected states — never large background fills'}}` — or as a " +
-  "value-LESS patch when the value is already settled and you are annotating it afterwards: " +
-  "`set: {'color.primary': {$description: '…'}}` (leaves `$value` untouched, so you never restate " +
-  "— and risk drifting — a value; needs the canonical path or the `--css-var` name, since a loose " +
-  "name infers its category from the value). Say where the token must NOT be used, not only where " +
-  "it should — the boundary is what keeps page nine on page one's visual line. Roles survive later " +
-  "value-only edits, and every module write replays the roles of the vars its CSS touches back to " +
-  "you, so this is the whole design-system record: there is no separate manifest to write.";
+  "Record each token's ROLE in `$description`: with the value (`set: {'color.primary': {$type: " +
+  "'color', $value: '#4f46e5', $description: 'CTAs, links and selected states — never large " +
+  "background fills'}}`) or as a value-less patch on a settled value (`set: {'color.primary': " +
+  "{$description: '…'}}` leaves `$value` untouched; needs the canonical path or the `--css-var` " +
+  "name, since a loose name infers its category from the value). Say where it must NOT be used, " +
+  "not only where. Roles survive value-only edits and every module write replays the roles of the " +
+  "vars its CSS touches: this is the whole design-system record, no separate manifest.";
 
 export const DEPTH_AND_SURFACE_HINTS =
-  "Compose DEPTH, not just hue: give `gradient.hero` a real two-stop CSS gradient in the " +
-  "primary's family (e.g. `linear-gradient(135deg, <primary>, <accent>)`) and `gradient.subtle` " +
-  "a near-invisible background wash; tint `color.surface-alt` a few percent off `background` so " +
-  "sections can alternate; grade `shadow.sm…xl` as a real elevation ramp. Flat single-hue " +
-  "palettes read as unfinished — reserve strict flatness for brands that explicitly demand it.";
+  "Compose DEPTH, not just hue: `gradient.hero` = a real two-stop gradient in the primary's family " +
+  "(e.g. `linear-gradient(135deg, <primary>, <accent>)`), `gradient.subtle` = a near-invisible " +
+  "wash; tint `color.surface-alt` a few percent off `background` so sections alternate; grade " +
+  "`shadow.sm…xl` as a real elevation ramp. Flat single-hue palettes read unfinished; strict " +
+  "flatness only when the brand demands it.";
 
 /** Typographic intent shared by theme creation, edits and the persistent author context. */
 export const TYPOGRAPHY_COMPOSITION_HINTS =
-  "Design typography by role: body for sustained reading, heading for navigation and hierarchy, " +
-  "and an optional typography.display composite for expressive hero or campaign titles. " +
-  "Choose real, resolvable font families and supported numeric weights for the brief; use one or two " +
-  "complementary families unless the existing brand calls for more. A display title needs deliberate " +
-  "size, line breaks, weight, spacing and composition, not just a body font enlarged or rainbow-colored. " +
-  "Record intended use and exclusions in each token's $description; reference --font-display, " +
-  "--text-display, --font-weight-display and --tracking-display only after creating those tokens. " +
-  "Preserve established brand typography unless the operator asks for a redesign. " +
-  "Preview actual rendered fonts with the operator's text, including accents and non-Latin characters; " +
-  "a family name in a picker does not prove its face loaded. Check mobile line breaks and reading contrast. " +
-  "Use the existing self-hosted font resolver and surface unresolved families; do not add external font links. " +
-  "AI-generated lettering is a separate image asset, never a reusable font or editable text. Use it only " +
-  "when explicitly requested, verify exact spelling, and retain accessible semantic text without drawing " +
-  "a duplicate visible title. Do not claim that web-font availability establishes PDF embedding support.";
+  "Typography by role: body = sustained reading, heading = hierarchy and navigation, optional " +
+  "`typography.display` composite for expressive hero / campaign titles. Real, resolvable families " +
+  "and supported numeric weights; one or two complementary families unless the brand needs more. A " +
+  "display title needs deliberate size, line breaks, weight, spacing and composition, not an " +
+  "enlarged or rainbow-colored body font. Record use and exclusions in each token's $description; " +
+  "reference --font-display, --text-display, --font-weight-display and --tracking-display only " +
+  "after creating those tokens. Keep established brand typography unless the operator asks for a " +
+  "redesign. Preview the actual rendered fonts with the operator's text (accents, non-Latin " +
+  "characters): a family name in a picker does not prove its face loaded. Check mobile line breaks " +
+  "and reading contrast. Use the self-hosted font resolver and surface unresolved families; no " +
+  "external font links. AI-generated lettering is a separate image asset, never a reusable font or " +
+  "editable text: only on explicit request, verify exact spelling, keep accessible semantic text " +
+  "without a duplicate visible title. Web-font availability does not establish PDF embedding " +
+  "support.";

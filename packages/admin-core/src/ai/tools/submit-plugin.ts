@@ -14,19 +14,19 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> = {
   name: "submit_plugin",
   description:
-    "Submit a plugin you wrote for the operator's site, for validation and the Owner's approval. Use when the operator needs behaviour no existing tool or module gives (a form that stores entries, a booking list, a private notes tool). " +
-    "TWO-STEP: this validates and queues only. The Owner approves the exact source at /settings/plugins (or, if it requests access, at /settings/plugins/installations) — say you have submitted it for approval; never claim it is active. " +
-    "The plugin runs sandboxed: import ONLY @caelo-cms/plugin-sdk; no fetch, Deno, dynamic import, eval/Function (nor calling a `.constructor`) or SQL, and never alias or pass globalThis (write `globalThis.X` directly).Its own visitor data goes in `schema` (public tables). " +
-    "Extra access must be requested and explained: `cms_admin_schema` for private author storage (declare `adminSchema`) and `chat_runner_tools` for tools you can call in chat (declare `tools`, each named `<slug_with_underscores>__<name>`); give each a reason in `capabilityReasons`. The Owner sees every tool name and description verbatim before approving, so describe honestly what each tool does. Private-storage writes made from a chat stay in the chat until it is published. " +
-    "Inputs: slug (lowercase-with-hyphens, unique), version (semver), manifest (slug, version, tier: 2, schema, operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, hasStaticRender), source (the full JS module; its default export is the plugin definition). " +
-    "Returns {pluginId, status, validationErrors[]}; on failure read each error's `hint`, fix the source and resubmit in the same turn.",
+    "Submit a plugin you wrote for validation + the Owner's approval. USE when the operator needs behaviour no existing tool or module gives (form storing entries, booking list, private notes tool).\n" +
+    "CORE RULES:\n" +
+    "- TWO-STEP: validates and queues only. The Owner approves the exact source at /settings/plugins (/settings/plugins/installations if it requests access) — say it is submitted for approval; never claim it is active.\n" +
+    "- `slug` and `version` must equal the manifest's.\n" +
+    "- Extra access must be requested + explained: `cms_admin_schema` for private author storage (declare `adminSchema`), `chat_runner_tools` for chat-callable tools (declare `tools`, each named `<slug_with_underscores>__<name>`); a reason per capability in `capabilityReasons`. The Owner sees every tool name + description verbatim — describe honestly what each does. Private-storage writes from a chat stay in the chat until it is published.\n" +
+    "- Result has validationErrors[]; on failure read each `hint`, fix the source, resubmit in the same turn.",
   schema: submitPluginToolInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["slug", "version", "manifest", "source"],
     properties: {
-      slug: { type: "string", pattern: "^[a-z][a-z0-9-]*$", maxLength: 55 },
+      slug: { type: "string", pattern: "^[a-z][a-z0-9-]*$", maxLength: 55, description: "Unique." },
       version: {
         type: "string",
         pattern: "^\\d+\\.\\d+\\.\\d+(-[a-z0-9.]+)?$",
@@ -35,8 +35,16 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
       manifest: {
         type: "object",
         additionalProperties: true,
+        description:
+          "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, hasStaticRender}.",
       },
-      source: { type: "string", minLength: 1, maxLength: 4_000_000 },
+      source: {
+        type: "string",
+        minLength: 1,
+        maxLength: 4_000_000,
+        description:
+          "Full JS module; default export = the plugin definition. Sandboxed: import ONLY @caelo-cms/plugin-sdk; no fetch, Deno, dynamic import, eval/Function (nor calling a `.constructor`) or SQL; never alias or pass globalThis (write `globalThis.X` directly).",
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {

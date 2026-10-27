@@ -69,6 +69,7 @@ describe("renderTemplate sections (S4, epic #1107 tokenizer)", () => {
     pages: new Map(),
     media: new Map(),
     siteLanguage: "en",
+    homePageId: null,
   }).forPage(null);
   const navField = { name: "nav_items", kind: "list" as const, listType: "links" };
   const entry = (n: number, label: string, href: string) => ({

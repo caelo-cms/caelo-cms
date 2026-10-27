@@ -20,6 +20,8 @@
     pendingProposals: number;
     failedDeploys: number;
     staleBranches: number;
+    /** #1157 — targets whose hosting does not serve the saved redirects (last push failed). */
+    failedRedirectSyncs: number;
     upgradeAvailable: boolean;
     latestVersion: string | null;
     releaseUrl: string | null;
@@ -34,6 +36,7 @@
     pendingProposals: 0,
     failedDeploys: 0,
     staleBranches: 0,
+    failedRedirectSyncs: 0,
     upgradeAvailable: false,
     latestVersion: null,
     releaseUrl: null,
@@ -160,6 +163,17 @@
               >
                 <Badge variant="destructive">{counts.failedDeploys}</Badge>
                 <span>Latest deploy failed and not yet fixed</span>
+              </a>
+            {/if}
+            {#if counts.failedRedirectSyncs > 0}
+              <a
+                href="/settings/redirects"
+                class="-mx-1 flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent"
+                data-testid="redirect-sync-notice"
+                onclick={() => (open = false)}
+              >
+                <Badge variant="destructive">{counts.failedRedirectSyncs}</Badge>
+                <span>Saved redirects are not live yet</span>
               </a>
             {/if}
             {#if counts.staleBranches > 0}

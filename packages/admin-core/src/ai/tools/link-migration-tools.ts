@@ -67,22 +67,20 @@ const SURFACE_TEXT: Record<string, string> = {
 export const getLinkMigrationReportTool: ToolDefinitionWithHandler<ReportInput> = {
   name: "get_link_migration_report",
   description:
-    "Internal links are stored as page references (they follow a page when it is renamed or moved). " +
-    "Content written before that was converted once by the link migration; this tool reports it: links converted per " +
-    "place, and every link it could NOT convert (it matched no page or media asset — never guessed), with the module / " +
-    "content it sits in. Use when the operator asks about broken or old links after an update, or before fixing " +
-    "links site-wide. Fix each listed link with the normal edit tools (update_modules_many, set_content_instance_values_many) " +
-    "by pointing it at an existing page's path (list_pages) or removing it; the edit stores the " +
-    "reference. A link in a layout's own HTML (the page frame) is the Owner's to fix under Settings → Layouts: name " +
-    "the layout and the path to use. Filter with `search` (matches the link, the label and the field). Running or reverting the migration " +
-    "is the Owner's (Settings → Internal links); you only read.",
+    "Read-only report of the one-time link migration (old plain-path links converted to page references): links converted per place + every link it could NOT convert (matched no page/media; never guessed) with its module/content.\n" +
+    "USE FOR: operator asks about broken/old links after an update; before fixing links site-wide. Current link problems -> `check_links`.\n" +
+    "Fix each with `update_modules_many` / `set_content_instance_values_many`: point it at an existing page path (`list_pages`) or remove it. A link in a layout's own HTML is the Owner's (Settings -> Layouts): name the layout + path. Running/reverting the migration is the Owner's (Settings -> Internal links).",
   schema: reportInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     properties: {
-      runId: { type: "string", format: "uuid", description: "Omit for the latest site-wide run." },
-      search: { type: "string", maxLength: 200 },
+      runId: { type: "string", format: "uuid", description: "Omit for the latest run." },
+      search: {
+        type: "string",
+        maxLength: 200,
+        description: "Matches the link, its label and field.",
+      },
       limit: { type: "integer", minimum: 1, maximum: 500 },
       offset: { type: "integer", minimum: 0 },
     },

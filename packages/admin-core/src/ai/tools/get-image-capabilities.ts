@@ -16,7 +16,7 @@ const input = z.object({}).strict();
 export const getImageCapabilitiesTool: ToolDefinitionWithHandler<z.infer<typeof input>> = {
   name: "get_image_capabilities",
   description:
-    "Read what the configured image model can do before calling generate_image or edit_image: supported operations, how many reference images (and their size/format limits), whether edits can use a mask, output sizes, native resolutions, and the budget reserved per request. Free; no image is generated.",
+    "What the configured image model supports, read before `generate_image` / `edit_image`: operations, reference count + size/format limits, mask edits, output sizes, native resolutions, budget reserved per request. Free.",
   schema: input,
   inputSchema: { type: "object", additionalProperties: false, properties: {} },
   handler: async (ctx, _input, toolCtx) => {
