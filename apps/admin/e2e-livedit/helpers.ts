@@ -292,7 +292,7 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
         ON CONFLICT (current_path, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
           WHERE deleted_at IS NULL
           DO UPDATE SET
-            name = EXCLUDED.name,
+            short_title = EXCLUDED.short_title,
             title = EXCLUDED.title,
             template_id = EXCLUDED.template_id,
             status = EXCLUDED.status

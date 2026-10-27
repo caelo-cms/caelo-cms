@@ -120,6 +120,7 @@ jobs:
       paid: ${{ steps.verdict.outputs.paid }}
       kind: ${{ steps.kind.outputs.kind }}
       record_main: ${{ steps.kind.outputs.record_main }}
+      carry: ${{ steps.carry.outputs.verdict }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -1000,6 +1001,14 @@ jobs:
       #     scenarios make at end-of-test, embedded on passing runs.
       # Runs always() so green runs replace the prior sticky comment
       # with their final-state shot.
+      # The guard fails before the checkout, and the comment below needs
+      # lib/sticky-comment.sh.
+      - name: Checkout the comment script (plan said not to run)
+        if: failure() && github.event_name == 'pull_request' && steps.guard.outcome == 'failure'
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: apps/admin/e2e-livedit/lib
+
       - name: Push screenshots to side branch and post PR comment
         if: always() && github.event_name == 'pull_request' && steps.paid.outputs.stop != 'true'
         env:
@@ -1012,6 +1021,7 @@ jobs:
           GUARD_OUTCOME: ${{ steps.guard.outcome }}
           SUPERSEDED: ${{ steps.stale.outputs.superseded }}
           PLAN_REASON: ${{ needs.plan.outputs.reason }}
+          CARRY: ${{ needs.plan.outputs.carry }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -1019,6 +1029,10 @@ jobs:
           # A superseded run cancelled itself: the newer commit's run owns
           # the comment.
           if [ "$SUPERSEDED" = "true" ]; then exit 0; fi
+
+          # An unrelated label kept the commit's red verdict: the comment of
+          # the run that produced it (screenshots, errors) stays.
+          if [ -n "$CARRY" ]; then exit 0; fi
 
           # The plan said "do not run" (CI red, plan failed): say why.
           if [ "$GUARD_OUTCOME" = "failure" ]; then

@@ -393,6 +393,11 @@ describe("e2e-livedit.yml — plan, budget, CI wait, no cancelled paid runs", ()
     expect(verdict.indexOf('[ -n "$CARRY" ] && emit "$CARRY"')).toBeLessThan(
       verdict.indexOf('[ "$DRAFT" = "true" ]'),
     );
+    // The red run's comment (screenshots, errors) is not overwritten.
+    const comment = aiSteps.find((s) => (s.name ?? "").startsWith("Push screenshots"));
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we match against
+    expect(comment?.env?.CARRY).toBe("${{ needs.plan.outputs.carry }}");
+    expect(comment?.run ?? "").toContain('if [ -n "$CARRY" ]; then exit 0; fi');
     for (const id of ["select", "budget"]) {
       expect(planSteps.find((s) => s.id === id)?.if ?? "", id).toContain(
         "steps.carry.outputs.verdict == ''",
