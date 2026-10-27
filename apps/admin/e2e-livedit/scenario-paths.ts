@@ -5,7 +5,8 @@
  * `.github/workflows/e2e-livedit.yml` (the planner is `lib/plan.ts`).
  *
  * The suite costs real money per run (~$5 for all scenarios, measured
- * 2026-10-20..26), so a pull request runs only what its change can break:
+ * 2026-10-20..26), so a pull request labelled `real-ai` runs only what its
+ * change can break (unlabelled PRs run nothing; `real-ai-full` runs all):
  *
  *   - no AI-relevant file changed (UI-only, docs, CI, provisioning…) →
  *     nothing runs, the required check passes as skipped;
@@ -15,7 +16,9 @@
  *
  * A scenario whose covered files the PR has not changed since a run of the
  * same PR where it passed keeps that result instead of running again
- * (`lib/plan.ts`, result keys).
+ * (`lib/plan.ts`, result keys). The release gate uses the same mapping to
+ * re-run only the scenarios whose covered files changed since their last
+ * green on main (`lib/main-greens.ts`).
  *
  * `lib/plan.test.ts` fails when a file under `AI_RELEVANT_PATHS` is matched
  * by no CI scenario and is not listed in `NO_REAL_AI_COVERAGE` — a new AI

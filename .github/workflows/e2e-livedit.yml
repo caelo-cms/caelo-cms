@@ -25,22 +25,22 @@ name: E2E Live Edit (real AI)
 # the operator; it became meaningful once #297 fixed the missing
 # ai_pricing row that had been zeroing cost_estimate_microcents.
 
-# WHEN IT RUNS (cost cut, 2026-10-27; measured 2026-10-20..26: $907 for 183
-# paid runs on 95 PR branches, ~$5 per full run). docs/internal/e2e-livedit.md
-# "When it runs" has the full rules; in short:
+# WHEN IT RUNS (cost cut 2026-10-27, budget ~$55/week; measured 2026-10-20..26:
+# $907 for 183 paid runs on 95 PR branches, ~$5 per full run).
+# docs/internal/e2e-livedit.md "When it runs" has the full rules; in short:
 #
-#   - Pull requests run only the scenarios their change can break: the
-#     `plan` job maps the PR's changed files to scenarios through
-#     apps/admin/e2e-livedit/scenario-paths.ts (lib/plan.ts). Nothing
-#     AI-relevant changed (UI-only, docs, CI, provisioning…) → nothing runs.
-#     Otherwise the core (homepage) plus every matching scenario; a change to
-#     the harness or this workflow runs everything. Label `real-ai-full`
-#     forces the full suite (re-run the workflow after adding it).
-#   - Follow-up pushes re-run only what is red or whose covered files changed:
-#     each run records the scenarios it left green with a key over the PR's
-#     changes to their covered files (artifact
-#     e2e-livedit-scenario-greens-<run_id>-<attempt>); a scenario whose key
-#     is unchanged keeps its result. Main moving on changes no key.
+#   - Pull requests run Real-AI only on request: label `real-ai` runs the
+#     scenarios the PR's change can break (the `plan` job maps the changed
+#     files through apps/admin/e2e-livedit/scenario-paths.ts, lib/plan.ts),
+#     label `real-ai-full` runs everything. Adding the label starts the run
+#     (`labeled` event). Without a label the check passes as skipped and,
+#     when the change is AI-relevant, the sticky PR comment says what would
+#     run and how to opt in. Adding any OTHER label keeps the commit's
+#     previous Real-AI verdict (a red stays red) instead of re-deciding.
+#   - Follow-up pushes of a labelled PR re-run only what is red or whose
+#     covered files changed: each run records the scenarios it left green
+#     with a key over the PR's changes to their covered files (artifact
+#     e2e-livedit-scenario-greens-<run_id>-<attempt>).
 #   - The paid job starts only after the cheap CI checks passed on the PR's
 #     head commit and never for a draft. A red CI check FAILS this check (so
 #     re-running CI to green cannot leave it skipped-green); re-run this
@@ -49,39 +49,56 @@ name: E2E Live Edit (real AI)
 #     already paid for): job-level concurrency queues the newest one and
 #     GitHub drops the older pending one; a job that starts for a commit that
 #     is no longer the PR head cancels itself before spending.
-#   - Weekly budget: the trailing-7-day spend from the e2e-livedit-ledger
-#     branch (lib/budget.ts) over `vars.E2E_LIVEDIT_WEEKLY_BUDGET_USD`
-#     (default $250) skips PR runs with a passing, annotated check.
 #   - The release gate (release-cut dispatches this workflow on
-#     release-gate/<sha>) and a manual workflow_dispatch always run the FULL
-#     suite and ignore the budget. Main is not run per push (operator
-#     direction 2026-10-09): release-cut runs it once per release on the exact
-#     commit and refuses to cut unless it is green. Trade-off: a regression
-#     that only appears when two PRs combine on main surfaces at the next
-#     release cut, not at merge time.
+#     release-gate/<sha>) re-runs only the scenarios whose covered files (or
+#     the harness) changed since that scenario's last green on main, or
+#     whose last green is older than 7 days; the rest carry over
+#     (lib/main-greens.ts, records on the e2e-livedit-ledger branch). It is
+#     exempt from the budget: a release is never blocked by spend. Main is
+#     not run per push (operator direction 2026-10-09).
+#   - A manual workflow_dispatch runs the full suite and respects the weekly
+#     budget unless `override_budget` is ticked.
+#   - Weekly budget: the trailing-7-day spend of EVERY run (PR, release gate,
+#     dispatch) from the e2e-livedit-ledger branch (lib/budget.ts) over
+#     `vars.E2E_LIVEDIT_WEEKLY_BUDGET_USD` skips PR runs and dispatches with
+#     a passing, annotated check.
 #
 # Every "nothing to run" verdict SKIPS the `Real-AI live-edit scenario` job;
 # a skipped job satisfies the required status check of the same name
 # (ruleset main-protection). Every "must not merge" verdict (plan job failed,
-# CI red) RUNS the job and fails it in its first step instead — a failing
-# gate job would skip the required check, and a skipped check passes.
+# CI red, a red verdict kept on an unrelated label) RUNS the job and fails it
+# in its first step instead — a failing gate job would skip the required
+# check, and a skipped check passes. A release gate whose scenarios all carry
+# over RUNS the job without its paid steps, so release-cut sees it succeed.
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+    # `labeled`: adding `real-ai` / `real-ai-full` starts the run.
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
   workflow_dispatch:
+    inputs:
+      override_budget:
+        description: "Run even when the weekly Real-AI budget is used up"
+        required: false
+        default: false
+        type: boolean
 
 env:
   # See ci.yml — Node 24 advisory shim until action authors update.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # Decides what the paid job runs (lib/plan.ts, lib/budget.ts) and waits for
-  # the cheap CI checks. Costs runner minutes only — no AI call. Its outputs:
+  # Decides what the paid job runs (lib/plan.ts, lib/main-greens.ts,
+  # lib/budget.ts) and waits for the cheap CI checks. Costs runner minutes
+  # only — no AI call. Its outputs:
   #   mode   skip | run | blocked   (blocked = the paid job fails at once)
   #   reason one line for the logs and the PR comment
   #   scenarios  CAELO_LIVEDIT_SCENARIOS (empty = every spec)
   #   full   true when every CI scenario runs (green-tree reuse by release-cut)
+  #   paid   false when a release gate carries every scenario over
+  #   kind   pr | release | dispatch
+  #   record_main  true when the run's greens count for main (release gate,
+  #                dispatch on main) and go to the ledger
   plan:
     name: Real-AI plan (selection, budget, CI wait)
     runs-on: ubuntu-latest
@@ -100,6 +117,10 @@ jobs:
       reason: ${{ steps.verdict.outputs.reason }}
       scenarios: ${{ steps.verdict.outputs.scenarios }}
       full: ${{ steps.verdict.outputs.full }}
+      paid: ${{ steps.verdict.outputs.paid }}
+      kind: ${{ steps.kind.outputs.kind }}
+      record_main: ${{ steps.kind.outputs.record_main }}
+      carry: ${{ steps.carry.outputs.verdict }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -127,11 +148,69 @@ jobs:
             echo "::notice::ANTHROPIC_API_KEY_E2E secret not configured; skipping the e2e-livedit suite. Add the secret in repo Settings → Secrets and variables → Actions to enable it."
           fi
 
+      # What kind of run this is. The release gate is a dispatch on
+      # release-gate/<sha> whose commit IS <sha> (release-cut pushes that
+      # branch); every other dispatch is a manual one.
+      - name: Run kind
+        id: kind
+        env:
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          kind="dispatch"
+          if [ "$EVENT" = "pull_request" ]; then kind="pr"
+          elif [ "$REF" = "refs/heads/release-gate/$SHA" ]; then kind="release"; fi
+          record_main=false
+          if [ "$kind" = "release" ] || { [ "$kind" = "dispatch" ] && [ "$REF" = "refs/heads/main" ]; }; then record_main=true; fi
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "record_main=$record_main" >> "$GITHUB_OUTPUT"
+          echo "run kind: $kind (records main greens: $record_main)"
+
+      # A label that is not `real-ai` / `real-ai-full` decides nothing new,
+      # but its run still reports the required check on the PR head — and the
+      # newest check run of that name is the one that counts. So it keeps the
+      # verdict of the newest OTHER Real-AI check on this commit (waiting for
+      # one still in flight): green or none → skip, red → blocked. Without
+      # this, labelling a PR `bug` would turn a red Real-AI check green.
+      - name: Unrelated label — keep the commit's verdict
+        id: carry
+        if: >-
+          steps.secret.outputs.enabled == 'true' && github.event_name == 'pull_request' &&
+          github.event.action == 'labeled' && github.event.label.name != 'real-ai' &&
+          github.event.label.name != 'real-ai-full'
+        env:
+          LABEL: ${{ github.event.label.name }}
+          JOB_NAME: Real-AI live-edit scenario
+        run: |
+          set -uo pipefail
+          deadline=$(( $(date +%s) + 60 * 60 ))
+          while :; do
+            if runs=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=$(jq -rn --arg n "$JOB_NAME" '$n|@uri')&per_page=100" --paginate \
+                --jq ".check_runs[] | select((.html_url // \"\") | contains(\"/runs/$RUN_ID/\") | not) | [.id, .status, (.conclusion // \"\")] | @tsv"); then
+              if ! awk -F'\t' '$2 != "completed"' <<<"$runs" | grep -q .; then
+                latest=$(sort -n <<<"$runs" | tail -1)
+                conclusion=$(cut -f3 <<<"$latest")
+                case "$conclusion" in
+                  "") verdict=skip; reason="label \`$LABEL\` does not opt in to Real-AI (no earlier Real-AI result on this commit)" ;;
+                  success|skipped|neutral) verdict=skip; reason="label \`$LABEL\` does not opt in to Real-AI; the commit's previous Real-AI result ($conclusion) stands" ;;
+                  *) verdict=blocked; reason="the previous Real-AI run on this commit ended '$conclusion' — adding label \`$LABEL\` does not clear it. Re-run that run, or push a fix." ;;
+                esac
+                { echo "verdict=$verdict"; echo "reason=$reason"; } >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              { echo "verdict=blocked"; echo "reason=could not read the commit's previous Real-AI result within 60 minutes — re-run this workflow."; } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 30
+          done
+
       - uses: actions/checkout@v7
-        if: steps.secret.outputs.enabled == 'true'
+        if: steps.secret.outputs.enabled == 'true' && steps.carry.outputs.verdict == ''
 
       - name: Setup Bun
-        if: steps.secret.outputs.enabled == 'true'
+        if: steps.secret.outputs.enabled == 'true' && steps.carry.outputs.verdict == ''
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.4
@@ -140,11 +219,27 @@ jobs:
       # original payload, so draft state and labels would be stale.
       - name: Select scenarios
         id: select
-        if: steps.secret.outputs.enabled == 'true'
+        if: steps.secret.outputs.enabled == 'true' && steps.carry.outputs.verdict == ''
+        env:
+          KIND: ${{ steps.kind.outputs.kind }}
         run: |
           set -euo pipefail
           mkdir -p "$OUT/greens"
-          if [ "$EVENT" != "pull_request" ]; then
+          if [ "$KIND" = "release" ]; then
+            # The newest green per scenario on main (lib/main-greens.ts). A
+            # listing that fails reads as "no greens": everything runs.
+            gh api "repos/$REPO/contents/greens?ref=e2e-livedit-ledger" --jq '.[].name' > "$OUT/main-greens.txt" 2>/dev/null || : > "$OUT/main-greens.txt"
+            # The green commits, so the planner can diff them against this
+            # one. A commit that cannot be fetched cannot be diffed: its
+            # scenarios run.
+            for sha in $(sed -nE 's/^[a-z0-9-]+_[0-9]{8}T[0-9]{6}Z_([0-9a-f]{40})_.*/\1/p' "$OUT/main-greens.txt" | sort -u); do
+              git fetch -q --no-tags --depth=1 origin "$sha" || echo "::warning::could not fetch green commit $sha; the scenarios green there run again"
+            done
+            bun run apps/admin/e2e-livedit/lib/main-greens.ts plan --names "$OUT/main-greens.txt" --out "$OUT/plan.json" > "$OUT/summary.md"
+            cat "$OUT/summary.md"
+            exit 0
+          fi
+          if [ "$KIND" = "dispatch" ]; then
             bun run apps/admin/e2e-livedit/lib/plan.ts plan --mode full --out "$OUT/plan.json" > "$OUT/summary.md"
             cat "$OUT/summary.md"
             exit 0
@@ -168,13 +263,18 @@ jobs:
             done
           done
           bun run apps/admin/e2e-livedit/lib/plan.ts plan --mode pr --changed "$OUT/changed.txt" \
-            --greens "$OUT/greens" --labels "$labels" --out "$OUT/plan.json" > "$OUT/summary.md"
+            --greens "$OUT/greens" --labels "$labels" --out "$OUT/plan.json" \
+            --comment "$OUT/opt-in-comment.md" > "$OUT/summary.md"
           cat "$OUT/summary.md"
 
-      # Release gate / manual dispatch are never budget-limited.
+      # Every kind of run counts toward the budget (the ledger records them
+      # all); PR runs and manual dispatches are limited by it, the release
+      # gate never is, and a dispatch with `override_budget` is not.
       - name: Weekly budget
         id: budget
-        if: steps.secret.outputs.enabled == 'true' && steps.select.outputs.draft != 'true'
+        if: >-
+          steps.secret.outputs.enabled == 'true' && steps.carry.outputs.verdict == '' &&
+          steps.select.outputs.draft != 'true' && steps.kind.outputs.kind != 'release'
         env:
           BUDGET_USD: ${{ vars.E2E_LIVEDIT_WEEKLY_BUDGET_USD }}
         run: |
@@ -190,9 +290,14 @@ jobs:
         if: always()
         env:
           ENABLED: ${{ steps.secret.outputs.enabled }}
+          KIND: ${{ steps.kind.outputs.kind }}
+          CARRY: ${{ steps.carry.outputs.verdict }}
+          CARRY_REASON: ${{ steps.carry.outputs.reason }}
           SELECT_OUTCOME: ${{ steps.select.outcome }}
           BUDGET_OUTCOME: ${{ steps.budget.outcome }}
           DRAFT: ${{ steps.select.outputs.draft }}
+          OVERRIDE_BUDGET: ${{ github.event.inputs.override_budget }}
+          DISPATCH_REF: ${{ github.ref_name }}
           # The cheap CI checks the paid job waits for (ci.yml job names).
           WAIT_FOR: "Lockfile freshness|Lint, Typecheck, Migrate, Test, License|Admin production image — boot smoke"
         run: |
@@ -203,6 +308,7 @@ jobs:
               echo "reason=$2"
               echo "scenarios=${3:-}"
               echo "full=${4:-false}"
+              echo "paid=${5:-true}"
             } >> "$GITHUB_OUTPUT"
             echo "### Real-AI plan: $1" >> "$GITHUB_STEP_SUMMARY"
             echo "$2" >> "$GITHUB_STEP_SUMMARY"
@@ -212,24 +318,45 @@ jobs:
             exit 0
           }
           [ "$ENABLED" = "true" ] || emit skip "ANTHROPIC_API_KEY_E2E is not configured"
+          [ -n "$CARRY" ] && emit "$CARRY" "$CARRY_REASON"
           [ "$DRAFT" = "true" ] && emit skip "draft PR — the suite runs once the PR is marked ready for review"
           [ "$SELECT_OUTCOME" = "success" ] || emit blocked "the scenario selection failed — see the plan job log; re-run the workflow"
           mode=$(jq -r .mode "$OUT/plan.json")
           reason=$(jq -r .reason "$OUT/plan.json")
           full=$(jq -r .full "$OUT/plan.json")
           scenarios=$(jq -r .scenarioFiles "$OUT/plan.json")
-          [ "$mode" = "skip" ] && emit skip "$reason"
-          if [ "$EVENT" != "pull_request" ]; then emit run "$reason" "$scenarios" "$full"; fi
+          # The release gate: never budget-limited, never waits for PR CI.
+          # With every scenario carried over the paid job still RUNS (without
+          # its paid steps), so release-cut reads a successful AI job.
+          if [ "$KIND" = "release" ]; then
+            paid=$(jq -r 'if .paid == false then "false" else "true" end' "$OUT/plan.json")
+            emit run "$reason" "$scenarios" "$full" "$paid"
+          fi
+          if [ "$mode" = "skip" ]; then
+            # Not opted in but AI-relevant: say what would run, and how.
+            if [ "$KIND" = "pr" ] && [ -s "$OUT/opt-in-comment.md" ]; then
+              bash apps/admin/e2e-livedit/lib/sticky-comment.sh "$PR_NUMBER" "$OUT/opt-in-comment.md" || true
+            fi
+            emit skip "$reason"
+          fi
+          if [ "$KIND" = "dispatch" ] && [ "$OVERRIDE_BUDGET" = "true" ]; then
+            emit run "$reason (override_budget)" "$scenarios" "$full"
+          fi
 
           [ "$BUDGET_OUTCOME" = "success" ] || emit blocked "the weekly budget could not be read — see the plan job log; re-run the workflow"
           line=$(jq -r .line "$OUT/budget.json")
           echo "$line" >> "$OUT/summary.md"
           if [ "$(jq -r .over "$OUT/budget.json")" = "true" ]; then
-            printf '<!-- e2e-livedit-sticky -->\n## e2e-livedit — not run (weekly budget)\n\n%s\n\nThe check passes as skipped. A maintainer can run the suite with `gh workflow run e2e-livedit.yml --ref %s` (manual dispatch ignores the budget), or raise the repo variable `E2E_LIVEDIT_WEEKLY_BUDGET_USD`.\n' \
-              "$line" "$HEAD_REF" > "$OUT/comment.md"
-            bash apps/admin/e2e-livedit/lib/sticky-comment.sh "$PR_NUMBER" "$OUT/comment.md" || true
+            if [ "$KIND" = "pr" ]; then
+              printf '<!-- e2e-livedit-sticky -->\n## e2e-livedit — not run (weekly budget)\n\n%s\n\nThe check passes as skipped. A maintainer can run the suite with `gh workflow run e2e-livedit.yml --ref %s -f override_budget=true`, or raise the repo variable `E2E_LIVEDIT_WEEKLY_BUDGET_USD`.\n' \
+                "$line" "$HEAD_REF" > "$OUT/comment.md"
+              bash apps/admin/e2e-livedit/lib/sticky-comment.sh "$PR_NUMBER" "$OUT/comment.md" || true
+            else
+              emit skip "$line Dispatch again with override_budget=true to run anyway: gh workflow run e2e-livedit.yml --ref $DISPATCH_REF -f override_budget=true"
+            fi
             emit skip "$line"
           fi
+          if [ "$KIND" = "dispatch" ]; then emit run "$reason" "$scenarios" "$full"; fi
 
           # Wait for the cheap checks on the head commit. The newest run of
           # each name decides (a re-run supersedes an earlier attempt).
@@ -396,35 +523,54 @@ jobs:
           name: e2e-livedit-plan-${{ github.run_id }}
           path: apps/admin/test-results/livedit/plan
 
-      # The plan read the budget before its CI wait (up to 65 min), and this
-      # job may have queued behind another paid run of the PR since; other
-      # PRs' runs can have spent the rest of the week meanwhile. Re-read the
-      # ledger right before the first paid step and stop with a passing,
-      # annotated check when it is used up — the same verdict the plan gives.
-      # PR runs only: the release gate / a manual dispatch ignore the budget.
-      - name: Guard — weekly budget (re-read before paid work)
-        id: budget-recheck
-        if: github.event_name == 'pull_request'
+      # The last stop before paid work. (1) A release gate whose scenarios
+      # all carried over (plan output `paid` false) ends here, green: the
+      # greens it rests on are newer than 7 days and nothing they cover
+      # changed. (2) The plan read the budget before its CI wait (up to 65
+      # min), and this job may have queued behind another paid run of the PR
+      # since; other runs can have spent the rest of the week meanwhile. Re-
+      # read the ledger right before the first paid step and stop with a
+      # passing, annotated check when it is used up — the same verdict the
+      # plan gives. The release gate and a dispatch with `override_budget`
+      # are exempt.
+      - name: Guard — paid work (nothing to run, weekly budget re-read)
+        id: paid
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           BUDGET_USD: ${{ vars.E2E_LIVEDIT_WEEKLY_BUDGET_USD }}
+          KIND: ${{ needs.plan.outputs.kind }}
+          PAID: ${{ needs.plan.outputs.paid }}
+          OVERRIDE_BUDGET: ${{ github.event.inputs.override_budget }}
         run: |
           set -euo pipefail
+          if [ "$PAID" = "false" ]; then
+            {
+              echo "### Real-AI suite: nothing to run"
+              cat apps/admin/test-results/livedit/plan/summary.md 2>/dev/null || true
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=Real-AI suite carried over::every scenario is green on main within 7 days and nothing it covers changed since."
+            echo "stop=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$KIND" = "release" ]; then exit 0; fi
+          if [ "$KIND" = "dispatch" ] && [ "$OVERRIDE_BUDGET" = "true" ]; then exit 0; fi
           dir=$(mktemp -d)
           gh api "repos/$REPO/contents/runs?ref=e2e-livedit-ledger" --jq '.[].name' > "$dir/ledger.txt" 2>/dev/null || : > "$dir/ledger.txt"
           bun run apps/admin/e2e-livedit/lib/budget.ts spend --names "$dir/ledger.txt" \
             --budget-usd "${BUDGET_USD:-}" --out "$dir/budget.json"
           line=$(jq -r .line "$dir/budget.json")
           if [ "$(jq -r .over "$dir/budget.json")" = "true" ]; then
-            printf '<!-- e2e-livedit-sticky -->\n## e2e-livedit — not run (weekly budget)\n\n%s\n\nThe budget ran out while this run waited for CI or for the previous paid run of this PR. The check passes as skipped. A maintainer can run the suite with `gh workflow run e2e-livedit.yml --ref %s` (manual dispatch ignores the budget), or raise the repo variable `E2E_LIVEDIT_WEEKLY_BUDGET_USD`.\n' \
-              "$line" "$HEAD_REF" > "$dir/comment.md"
-            bash apps/admin/e2e-livedit/lib/sticky-comment.sh "$PR_NUMBER" "$dir/comment.md" || true
+            if [ "$KIND" = "pr" ]; then
+              printf '<!-- e2e-livedit-sticky -->\n## e2e-livedit — not run (weekly budget)\n\n%s\n\nThe budget ran out while this run waited for CI or for the previous paid run of this PR. The check passes as skipped. A maintainer can run the suite with `gh workflow run e2e-livedit.yml --ref %s -f override_budget=true`, or raise the repo variable `E2E_LIVEDIT_WEEKLY_BUDGET_USD`.\n' \
+                "$line" "$HEAD_REF" > "$dir/comment.md"
+              bash apps/admin/e2e-livedit/lib/sticky-comment.sh "$PR_NUMBER" "$dir/comment.md" || true
+            fi
             { echo "### Real-AI suite not run: weekly budget"; echo "$line"; } >> "$GITHUB_STEP_SUMMARY"
             echo "::notice title=Real-AI suite skipped::$line"
-            echo "over=true" >> "$GITHUB_OUTPUT"
+            echo "stop=true" >> "$GITHUB_OUTPUT"
           fi
 
       # Fail fast when the provider refuses the CI key (spending/usage limit,
@@ -438,14 +584,14 @@ jobs:
       # never printed. Needs no `bun install`: the script uses fetch + node
       # builtins only.
       - name: AI provider preflight (fail fast)
-        if: steps.budget-recheck.outputs.over != 'true'
+        if: steps.paid.outputs.stop != 'true'
         id: provider-preflight
         env:
           ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
         run: bun scripts/ai-provider-preflight.ts --report apps/admin/test-results/livedit/provider-preflight.md
 
       - name: Install dependencies (frozen lockfile)
-        if: steps.budget-recheck.outputs.over != 'true'
+        if: steps.paid.outputs.stop != 'true'
         run: bun install --frozen-lockfile
 
       # Materialise the .env compose reads its POSTGRES_USER/PASSWORD
@@ -453,7 +599,7 @@ jobs:
       # docker-compose.yml; skipping the write makes Postgres start
       # with no roles.
       - name: Write compose .env
-        if: steps.budget-recheck.outputs.over != 'true'
+        if: steps.paid.outputs.stop != 'true'
         run: |
           cat > .env <<EOF
           POSTGRES_USER=${POSTGRES_USER}
@@ -472,18 +618,18 @@ jobs:
       # process (running as the runner's user) from writing the
       # generated files.
       - name: Pre-create static-gen output dirs
-        if: steps.budget-recheck.outputs.over != 'true'
+        if: steps.paid.outputs.stop != 'true'
         run: mkdir -p apps/admin/output/staging apps/admin/output/production
 
       - name: Start compose (postgres + caddy-staging + caddy-production)
-        if: steps.budget-recheck.outputs.over != 'true'
+        if: steps.paid.outputs.stop != 'true'
         # `wait` blocks until each service's healthcheck reports healthy.
         # postgres has a healthcheck; the caddy services don't, but
         # they come up in <1s so the wait is effectively just for pg.
         run: docker compose up -d --wait
 
       - name: Run migrations
-        if: steps.budget-recheck.outputs.over != 'true'
+        if: steps.paid.outputs.stop != 'true'
         env:
           PGHOST: localhost
         run: bun run db:migrate
@@ -493,13 +639,13 @@ jobs:
       # resolve them otherwise. Same #36/#51 lesson as the `e2e` job in
       # ci.yml.
       - name: Build @caelo-cms/shared + mcp-server (admin SSR deps)
-        if: steps.budget-recheck.outputs.over != 'true'
+        if: steps.paid.outputs.stop != 'true'
         run: |
           bun run --filter '@caelo-cms/shared' build
           bun run --filter '@caelo-cms/mcp-server' build
 
       - name: Install Playwright chromium
-        if: steps.budget-recheck.outputs.over != 'true'
+        if: steps.paid.outputs.stop != 'true'
         # #984 - apt fonts from actions/cache, not the Ubuntu mirror.
         uses: ./.github/actions/playwright-chromium
 
@@ -509,7 +655,7 @@ jobs:
       # <= 26 for the homepage, re-derived 2026-10-26 (rationale at the
       # constant). No Playwright retry: a breach fails this step.
       - name: Run e2e-livedit (Scenario 1)
-        if: steps.budget-recheck.outputs.over != 'true'
+        if: steps.paid.outputs.stop != 'true'
         id: suite
         env:
           # The planner's selection (comma-separated spec files); empty runs
@@ -576,10 +722,10 @@ jobs:
       # Weekly budget ledger (lib/budget.ts): one file per run attempt on the
       # `e2e-livedit-ledger` branch, named <time>_<run>-<attempt>_<microcents>
       # .json, so the plan job reads the week's spend from one directory
-      # listing. Entries older than 9 days are pruned in the same commit.
-      # Parallel runs push to the same branch: each attempt rebuilds its
-      # commit on the newest tip. Never fails the job; a lost entry
-      # under-counts the week, so it warns.
+      # listing. Every kind of run records here — PR, release gate, manual
+      # dispatch — so the budget sees all spend. Entries older than 9 days
+      # are pruned in the same commit (lib/ledger-commit.sh). Never fails the
+      # job; a lost entry under-counts the week, so it warns.
       - name: Record the run's cost in the budget ledger
         if: always() && steps.provider-preflight.outcome == 'success'
         env:
@@ -590,41 +736,16 @@ jobs:
         run: |
           set -uo pipefail
           COST="${GITHUB_WORKSPACE}/apps/admin/test-results/livedit/ai-cost.json"
-          BUDGET="${GITHUB_WORKSPACE}/apps/admin/e2e-livedit/lib/budget.ts"
-          BRANCH=e2e-livedit-ledger
-          if ! name=$(bun run "$BUDGET" name --cost "$COST" --run "$RUN_ID" --attempt "$ATTEMPT"); then
+          if ! name=$(bun run apps/admin/e2e-livedit/lib/budget.ts name --cost "$COST" --run "$RUN_ID" --attempt "$ATTEMPT"); then
             echo "::warning title=Real-AI budget ledger::could not read ${COST}; this run's spend is missing from the weekly budget."
             exit 0
           fi
-          dir="$RUNNER_TEMP/ledger"
-          rm -rf "$dir" && mkdir -p "$dir" && cd "$dir"
-          git init -q
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          pushed=0
-          for attempt in 1 2 3 4 5; do
-            if git fetch -q --depth 1 origin "$BRANCH" 2>/dev/null; then
-              git checkout -q -f -B "$BRANCH" FETCH_HEAD
-            else
-              git checkout -q -f --orphan "$BRANCH"
-              git rm -rfq . 2>/dev/null || true
-            fi
-            mkdir -p runs
-            cp "$COST" "runs/$name"
-            ls runs > "$RUNNER_TEMP/ledger-names.txt"
-            for stale in $(bun run "$BUDGET" stale --names "$RUNNER_TEMP/ledger-names.txt"); do
-              git rm -q "runs/$stale" || true
-            done
-            git add runs
-            git commit -qm "ledger: run ${RUN_ID} attempt ${ATTEMPT}" || true
-            if git push -q origin "HEAD:refs/heads/$BRANCH"; then pushed=1; break; fi
-            sleep $((attempt * 3))
-          done
-          if [ "$pushed" -ne 1 ]; then
-            echo "::warning title=Real-AI budget ledger::could not push ${name} to ${BRANCH} after 5 attempts; this run's spend is missing from the weekly budget."
+          src="$RUNNER_TEMP/ledger-cost"
+          rm -rf "$src" && mkdir -p "$src/runs" && cp "$COST" "$src/runs/$name"
+          if bash apps/admin/e2e-livedit/lib/ledger-commit.sh "ledger: run ${RUN_ID} attempt ${ATTEMPT}" "$src"; then
+            echo "recorded ${name} on e2e-livedit-ledger"
           else
-            echo "recorded ${name} on ${BRANCH}"
+            echo "::warning title=Real-AI budget ledger::could not push ${name} to e2e-livedit-ledger after 5 attempts; this run's spend is missing from the weekly budget."
           fi
 
       # Every defect filed during the run, from `ai_bug_reports`: the model's
@@ -718,6 +839,33 @@ jobs:
           path: ${{ runner.temp }}/scenario-greens.json
           if-no-files-found: error
           retention-days: 30
+
+      # Release-gate reuse (lib/main-greens.ts): every scenario a release gate
+      # or a dispatch on main RAN and passed is recorded on the ledger branch
+      # with this commit, so the next gate re-runs it only when a file it
+      # covers changed since (or the green is older than 7 days). Same
+      # condition as the per-scenario record above: past the bug gate.
+      # Carried scenarios keep their original record. A lost record only
+      # costs a re-run, so a failed push warns.
+      - name: Record main greens in the ledger (release gate / dispatch on main)
+        id: main-greens
+        if: always() && steps.greens.outcome == 'success' && needs.plan.outputs.record_main == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -uo pipefail
+          src="$RUNNER_TEMP/ledger-greens"
+          rm -rf "$src" && mkdir -p "$src"
+          bun run apps/admin/e2e-livedit/lib/main-greens.ts record \
+            --plan apps/admin/test-results/livedit/plan/plan.json \
+            --report apps/admin/test-results/livedit/playwright-report.json \
+            --sha "$GITHUB_SHA" --run "$RUN_ID" --attempt "$ATTEMPT" --dir "$src" || exit 0
+          [ -n "$(ls -A "$src/greens" 2>/dev/null)" ] || exit 0
+          bash apps/admin/e2e-livedit/lib/ledger-commit.sh "greens: run ${RUN_ID} attempt ${ATTEMPT} @ ${GITHUB_SHA::7}" "$src" \
+            || echo "::warning title=Real-AI main greens::could not push this run's greens; the next release gate re-runs those scenarios."
 
       # release-cut reuses this run for main when main's tree is exactly the
       # tree tested here, instead of paying for the same suite twice. A PR
@@ -853,8 +1001,16 @@ jobs:
       #     scenarios make at end-of-test, embedded on passing runs.
       # Runs always() so green runs replace the prior sticky comment
       # with their final-state shot.
+      # The guard fails before the checkout, and the comment below needs
+      # lib/sticky-comment.sh.
+      - name: Checkout the comment script (plan said not to run)
+        if: failure() && github.event_name == 'pull_request' && steps.guard.outcome == 'failure'
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: apps/admin/e2e-livedit/lib
+
       - name: Push screenshots to side branch and post PR comment
-        if: always() && github.event_name == 'pull_request' && steps.budget-recheck.outputs.over != 'true'
+        if: always() && github.event_name == 'pull_request' && steps.paid.outputs.stop != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -865,6 +1021,7 @@ jobs:
           GUARD_OUTCOME: ${{ steps.guard.outcome }}
           SUPERSEDED: ${{ steps.stale.outputs.superseded }}
           PLAN_REASON: ${{ needs.plan.outputs.reason }}
+          CARRY: ${{ needs.plan.outputs.carry }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -872,6 +1029,10 @@ jobs:
           # A superseded run cancelled itself: the newer commit's run owns
           # the comment.
           if [ "$SUPERSEDED" = "true" ]; then exit 0; fi
+
+          # An unrelated label kept the commit's red verdict: the comment of
+          # the run that produced it (screenshots, errors) stays.
+          if [ -n "$CARRY" ]; then exit 0; fi
 
           # The plan said "do not run" (CI red, plan failed): say why.
           if [ "$GUARD_OUTCOME" = "failure" ]; then

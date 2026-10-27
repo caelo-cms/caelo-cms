@@ -4,12 +4,16 @@
  * `.github/workflows/e2e-livedit.yml` (manifest: `../scenario-paths.ts`).
  *
  *   bun run apps/admin/e2e-livedit/lib/plan.ts plan \
- *     --mode pr|full --changed <file> --greens <dir> [--labels a,b] --out <file>
+ *     --mode pr|full --changed <file> --greens <dir> [--labels a,b] --out <file> [--comment <file>]
  *   bun run apps/admin/e2e-livedit/lib/plan.ts record \
  *     --plan <file> --report <playwright-report.json> --out <file>
  *
  * `plan` decides; `record` writes the scenarios this run leaves green, so a
- * later run of the same PR can keep them.
+ * later run of the same PR can keep them. A PR runs only with the label
+ * `real-ai` (its selection) or `real-ai-full` (everything); without one the
+ * plan says what it WOULD run and `--comment` gets the opt-in PR comment.
+ * The release gate is planned by `main-greens.ts` (per-scenario reuse on
+ * main), a manual dispatch runs everything.
  *
  * Result keys. A scenario's key is a SHA-256 over what THIS PR changed in
  * the files the scenario covers: every changed file under its `paths` (for
@@ -22,8 +26,9 @@
  *
  * Main moving on does NOT change a key: the PR's own changes do. That is the
  * trade-off this workflow already makes for main (a regression that only
- * appears when two PRs combine surfaces at the release gate, which always
- * runs the full suite on the exact commit). Keying on the whole tested tree
+ * appears when two PRs combine surfaces at the release gate, which re-runs
+ * every scenario whose covered files changed since its last green on main —
+ * see `main-greens.ts`). Keying on the whole tested tree
  * instead would re-run the core on nearly every push, because main changes
  * AI files several times a day. Sound to the same degree as the path
  * selection itself: a file outside a scenario's paths is, by the manifest's
@@ -47,6 +52,14 @@ import {
 
 /** Label that makes a PR run the whole suite. */
 export const FULL_SUITE_LABEL = "real-ai-full";
+/**
+ * Label that makes a PR run the scenarios its change selects. Without it (or
+ * {@link FULL_SUITE_LABEL}) a PR runs nothing: Real-AI on PRs is opt-in, the
+ * release gate is where main gets its run.
+ */
+export const SELECTED_LABEL = "real-ai";
+/** The labels that opt a PR into the paid suite. */
+export const OPT_IN_LABELS: readonly string[] = [SELECTED_LABEL, FULL_SUITE_LABEL];
 /**
  * GitHub's PR files API stops at 3000 files; a PR that size cannot be
  * classified reliably, so it runs everything.
@@ -209,11 +222,20 @@ export interface RunPlan {
   readonly reasons: readonly SelectionReason[];
   /** Key per CI scenario on this tree. */
   readonly keys: Readonly<Record<string, string>>;
+  /**
+   * PR without an opt-in label: what it WOULD run (selection minus carried
+   * greens). Empty when nothing would run; absent on opted-in runs.
+   */
+  readonly wouldRun?: readonly string[];
+  /** Why each carried scenario was kept (release gate: the green it rests on). */
+  readonly carriedReasons?: readonly SelectionReason[];
 }
 
 /**
- * Combine the selection with earlier greens. `mode: "full"` (release gate,
- * manual dispatch) runs everything and reuses nothing.
+ * Combine the selection with earlier greens. `mode: "full"` (manual
+ * dispatch) runs everything and reuses nothing; the release gate is planned
+ * by `main-greens.ts`. A PR without an opt-in label ({@link OPT_IN_LABELS})
+ * runs nothing and reports what it would run.
  */
 export function planRun(args: {
   mode: "pr" | "full";
@@ -229,7 +251,7 @@ export function planRun(args: {
   if (args.mode === "full") {
     return {
       mode: "run",
-      reason: "release gate / manual dispatch: the full suite",
+      reason: "manual dispatch: the full suite",
       full: true,
       run: all,
       carried: [],
@@ -255,6 +277,19 @@ export function planRun(args: {
   for (const id of sel.ids) {
     if (green.has(`${id} ${args.keys.get(id)}`)) carried.push(id);
     else run.push(id);
+  }
+  const labels = args.labels ?? [];
+  if (run.length > 0 && !OPT_IN_LABELS.some((l) => labels.includes(l))) {
+    return {
+      mode: "skip",
+      reason: `Real-AI is opt-in on PRs: add the label \`${SELECTED_LABEL}\` (the selected scenarios) or \`${FULL_SUITE_LABEL}\` (every scenario) to run it`,
+      full: false,
+      run: [],
+      carried,
+      reasons: sel.reasons,
+      keys,
+      wouldRun: run,
+    };
   }
   if (run.length === 0) {
     return {
@@ -350,6 +385,9 @@ export function greensAfterRun(
 /** The Markdown block the job summary and the PR comment show. */
 export function planSummary(plan: RunPlan): string {
   const lines = [`**Scenario selection:** ${plan.reason}.`];
+  if (plan.wouldRun !== undefined && plan.wouldRun.length > 0) {
+    lines.push("", `Would run: ${plan.wouldRun.map((id) => `\`${id}\``).join(", ")}.`);
+  }
   if (plan.full) lines.push("", "Every CI scenario runs.");
   else if (plan.run.length > 0)
     lines.push("", `Runs: ${plan.run.map((id) => `\`${id}\``).join(", ")}.`);
@@ -359,7 +397,12 @@ export function planSummary(plan: RunPlan): string {
       `Kept from an earlier green run on identical inputs: ${plan.carried.map((id) => `\`${id}\``).join(", ")}.`,
     );
   }
-  if (plan.reasons.length > 0 && !plan.full) {
+  if (plan.carriedReasons !== undefined && plan.carriedReasons.length > 0) {
+    lines.push("", "<details><summary>What each kept scenario rests on</summary>", "");
+    for (const r of plan.carriedReasons) lines.push(`- \`${r.id}\`: ${r.files.join(", ")}`);
+    lines.push("", "</details>");
+  }
+  if (plan.reasons.length > 0 && (!plan.full || plan.carriedReasons !== undefined)) {
     lines.push("", "<details><summary>Why each scenario was selected</summary>", "");
     for (const r of plan.reasons) {
       const shown = r.files
@@ -371,6 +414,23 @@ export function planSummary(plan: RunPlan): string {
     lines.push("", "</details>");
   }
   return lines.join("\n");
+}
+
+/**
+ * The sticky PR comment for a PR that is not opted in but would run
+ * something; null when nothing would run (a notice is enough then).
+ */
+export function optInComment(plan: RunPlan): string | null {
+  if (plan.wouldRun === undefined || plan.wouldRun.length === 0) return null;
+  return [
+    "<!-- e2e-livedit-sticky -->",
+    "## e2e-livedit — not run (opt-in)",
+    "",
+    `This PR changes files the Real-AI suite covers. It would run: ${plan.wouldRun.map((id) => `\`${id}\``).join(", ")}.`,
+    "",
+    `Real-AI runs on a PR only on request (each run costs real money; main gets its run at the release gate). Add the label \`${SELECTED_LABEL}\` to run these scenarios, or \`${FULL_SUITE_LABEL}\` for every scenario — adding the label starts the run. The check passes as skipped until then.`,
+    "",
+  ].join("\n");
 }
 
 /** `git ls-tree -r HEAD` of the checkout, as a path → blob index. */
@@ -447,6 +507,9 @@ function main(): void {
     // (CAELO_LIVEDIT_SCENARIOS); empty = every spec.
     const record = { ...plan, scenarioFiles: scenarioFiles(plan.run, plan.full) };
     writeFileSync(out, `${JSON.stringify(record, null, 2)}\n`);
+    const commentPath = arg("comment");
+    const comment = optInComment(plan);
+    if (commentPath !== undefined && comment !== null) writeFileSync(commentPath, comment);
     console.log(planSummary(plan));
     return;
   }
