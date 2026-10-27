@@ -68,10 +68,21 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "list_pages",
   "list_modules",
   "find_media",
+  // The reads `build_page` sends the model to: its `templateId`, block
+  // names and `pageType` come from these. Deferred, the first page build of
+  // nearly every chat paid a tool search for them (20 e2e-livedit runs,
+  // 2026-10-26: list_templates 73, list_layouts 67, list_page_types 34
+  // calls, each chat's first use behind a search). A search is one more
+  // model pass over the whole context plus the loaded definitions as
+  // uncached input (50–130k tokens of input per search call measured); the
+  // three definitions cost ~0.8k tokens of cached prefix per call.
+  "list_templates",
+  "list_layouts",
+  "list_page_types",
   // Epic #1107 — "add Careers to the menu" / "fix the footer link" is an
   // everyday edit: find the shared list, read its entry ids, patch it.
   // Creating lists stays deferred (the manage-menu and manage-page-types
-  // skills preload those).
+  // skills name those tools when loaded).
   "list_lists",
   "get_list",
   "patch_list_items_many",
