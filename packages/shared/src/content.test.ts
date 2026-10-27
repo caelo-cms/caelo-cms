@@ -91,6 +91,31 @@ describe("moduleCreateSchema", () => {
     expect(moduleCreateSchema.safeParse({ ...base, js: 'xml += "]]>";' }).success).toBe(true);
   });
 
+  // e2e-livedit run 40532297620 — html / css whose line breaks arrived as
+  // literal `\n` sequences rendered `\n` text and broke the CSS. AI tool
+  // arguments are decoded first (`decodeEscapedLineBreaks`); every other
+  // writer is refused with the fix.
+  it("rejects html and css whose line breaks are escaped, with the fix", () => {
+    const base = { slug: "site-footer", displayName: "Site footer", html: "<footer></footer>" };
+    const html = moduleCreateSchema.safeParse({
+      ...base,
+      html: '<footer class="f">\\n  <nav>\\n    <a href="/">Home</a>\\n  </nav>\\n</footer>',
+    });
+    expect(html.success).toBe(false);
+    if (!html.success) {
+      expect(html.error.issues.map((i) => i.message).join(" ")).toContain("real line breaks");
+    }
+    const css = moduleUpdateSchema.safeParse({
+      moduleId: "8c2f2f2a-0000-4000-8000-000000000432",
+      css: ".f {\\n  padding: 2rem;\\n}\\n.f a {\\n  color: inherit;\\n}",
+    });
+    expect(css.success).toBe(false);
+    // One escaped newline inside a CSS string on a single line is not the pattern.
+    expect(
+      moduleCreateSchema.safeParse({ ...base, css: '.f::after { content: "\\n  " }' }).success,
+    ).toBe(true);
+  });
+
   it("rejects CDATA on the update path too (update_modules_many / edit_content funnel)", () => {
     const r = moduleUpdateSchema.safeParse({
       moduleId: "8c2f2f2a-0000-4000-8000-000000000432",

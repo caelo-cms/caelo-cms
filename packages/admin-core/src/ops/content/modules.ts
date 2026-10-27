@@ -39,6 +39,7 @@ import { buildPatchSet, jsonbParam } from "../../sql-helpers.js";
 import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
 import { claimedListSourceNames } from "./list-source-names.js";
 import { applyMediaUsageDelta } from "./media-usage.js";
+import { moduleJsSyntaxError } from "./module-js-syntax.js";
 import {
   describePlacements,
   findModulePlacements,
@@ -326,6 +327,18 @@ export const createModuleOp = defineOperation({
     extractedFields: z.array(moduleFieldSchema).optional(),
   }),
   handler: async (ctx, input, tx) => {
+    const jsError = moduleJsSyntaxError(input.js);
+    if (jsError) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "modules.create",
+        input,
+        succeeded: false,
+        resultSummary: "js-syntax-error",
+      });
+      return err({ kind: "HandlerError", operation: "modules.create", message: jsError });
+    }
     // v0.12.2 — auto-templatise hardcoded content ONLY when the caller
     // didn't supply explicit fields. Callers that pass `fields` are
     // declaring intent: their HTML may already be pre-templatised
@@ -530,6 +543,19 @@ export const updateModuleOp = defineOperation({
     extractedFields: z.array(moduleFieldSchema).optional(),
   }),
   handler: async (ctx, input, tx) => {
+    const jsError = input.js !== undefined ? moduleJsSyntaxError(input.js) : null;
+    if (jsError) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "modules.update",
+        input,
+        succeeded: false,
+        entityId: input.moduleId,
+        resultSummary: "js-syntax-error",
+      });
+      return err({ kind: "HandlerError", operation: "modules.update", message: jsError });
+    }
     // v0.5.0 — per-entity lock. When the caller is in a chat,
     // acquire the lock for this module; reject if another chat holds
     // it. System writes (no chatBranchId) bypass.
