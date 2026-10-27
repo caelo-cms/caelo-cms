@@ -816,4 +816,43 @@ describe("#451 — consent-manager", () => {
     // serving the version that stops asking.
     expect(js?.relPath).not.toBe(before.find((a) => a.fileName === "runtime.js")?.relPath);
   });
+
+  // #1144 — an install seeded twice before activations were serialized
+  // collapses to one category per key and one settings row on its next
+  // activation, so its next build passes the duplicate-id check.
+  it("collapses duplicate seeds on the next activation", async () => {
+    await sqlSystem(async (tx) => {
+      await tx.unsafe(`SET LOCAL caelo.plugin_id = '${pluginId}'`);
+      await tx.unsafe(`INSERT INTO plugin_consent_manager.categories (key, display_name, description, required, position)
+        SELECT key, display_name, description, required, position FROM plugin_consent_manager.categories
+         WHERE key = 'necessary' AND caelo_chat_branch_id IS NULL`);
+      await tx.unsafe(`INSERT INTO plugin_consent_manager.settings (policy_version, retention_days, placeholder_module_slug)
+        SELECT policy_version, retention_days, placeholder_module_slug FROM plugin_consent_manager.settings
+         WHERE caelo_chat_branch_id IS NULL LIMIT 1`);
+    });
+    resetPluginHost();
+    const report = await bootstrap({
+      infra: { adapter, registry },
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: consentPlugin }],
+    });
+    if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
+    const counts = await sqlSystem(async (tx) => {
+      await tx.unsafe(`SET LOCAL caelo.plugin_id = '${pluginId}'`);
+      const cats =
+        (await tx.unsafe(`SELECT key, count(*)::int AS n FROM plugin_consent_manager.categories
+        WHERE caelo_chat_branch_id IS NULL AND caelo_deleted_at IS NULL GROUP BY key`)) as {
+          key: string;
+          n: number;
+        }[];
+      const settings =
+        (await tx.unsafe(`SELECT count(*)::int AS n FROM plugin_consent_manager.settings
+        WHERE caelo_chat_branch_id IS NULL AND caelo_deleted_at IS NULL`)) as { n: number }[];
+      return { cats, settings: settings[0]?.n };
+    });
+    expect(counts.cats.every((c) => c.n === 1)).toBe(true);
+    expect(counts.cats.length).toBe(4);
+    expect(counts.settings).toBe(1);
+  });
 });

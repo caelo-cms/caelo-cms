@@ -11,13 +11,12 @@
  *           respects the long TTL.
  *   - Azure → Front Door purge + warm endpoint.
  *
- * The redeploy-orchestrator's `cdnCopyTick()` (currently a no-op for
- * cloud installs) drains the per-asset CDN-pin queue using the adapter
- * registered for the active provider.
+ * A worker that drains the per-asset CDN-pin queue (none ships yet) uses
+ * the adapter registered for the active provider.
  *
  * Each provider's stack publishes a `CdnCopyAdapter` instance via its
  * Pulumi outputs (the actual implementation is dynamically imported by
- * the orchestrator at runtime so `@caelo-cms/provisioning` doesn't pull in
+ * that worker at runtime so `@caelo-cms/provisioning` doesn't pull in
  * `@aws-sdk/...`/`@google-cloud/...`/`@azure/...` as static deps). The
  * interface defined here is the only thing both sides agree on.
  */

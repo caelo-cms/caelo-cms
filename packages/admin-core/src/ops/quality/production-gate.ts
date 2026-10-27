@@ -3,7 +3,7 @@
 /**
  * Issue #553 PR 3 — the quality gate for production builds that do NOT go
  * through deploy.promote: a direct `deploy.trigger` on a production target
- * (Ops "Deploy production", the automatic redeploy's content-only path).
+ * (Ops "Deploy production" — an Owner-initiated production build).
  *
  * A production rebuild bakes main, and main holds everything that was
  * Staged — including a staged build the gate is still holding back. So a

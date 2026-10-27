@@ -23,9 +23,10 @@ import type {
   PluginInvocation,
   PluginProvenance,
 } from "@caelo-cms/plugin-sdk";
-import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { bakedDataPageIds } from "./baked-data-pages.js";
 import { type ExternalApproval, operatorHasPermission } from "./external-authorization.js";
 import { previewContext } from "./preview-context.js";
 import type { PluginRowLocker } from "./private-storage.js";
@@ -594,9 +595,8 @@ export async function runPluginOperation(
     );
     if (opts.readOnlyPreview) return { ok: true, value };
     // v0.2.16 — emit an audit_events row so plugin write ops (e.g.
-    // `comments.moderate`) are visible to the redeploy orchestrator's
-    // poll, allowing per-page incremental rebuild on plugin data
-    // change. Best-effort: failure to audit doesn't fail the op.
+    // `comments.moderate`) show in the operator's audit trail.
+    // Best-effort: failure to audit doesn't fail the op.
     try {
       // #635 — on the public side (no cms_admin login) the record lands in
       // cms_public, where the admin reads it back only as untrusted hints.
@@ -607,6 +607,15 @@ export async function runPluginOperation(
           operation: `${plugin.slug}.${opts.operationName}`,
           inputHash: auditInputDigest(opts.args),
           entityId: extractEntityId(value),
+          // #1155 — the page a declared baked-data trigger changed; the
+          // admin reads it back as an untrusted hint, never as a fact.
+          pageId:
+            bakedDataPageIds(
+              plugin.definition.bakedData,
+              opts.operationName,
+              { args: opts.args, result: value },
+              { single: true },
+            )[0] ?? null,
         });
         return { ok: true, value };
       }
@@ -620,6 +629,7 @@ export async function runPluginOperation(
     } catch {
       // Audit failure shouldn't surface to the visitor / caller.
     }
+    await markBakedPagesStale(plugin, opts.operationName, opts.args, value);
     return { ok: true, value };
   } catch (e) {
     if (!opts.readOnlyPreview && !isPublicSideHost(cachedInfra)) {
@@ -673,6 +683,56 @@ export async function runPluginOperation(
   }
 }
 
+/** The admin op that records stale bakes (admin-core `ops/plugin-data.ts`). */
+const MARK_BAKED_PAGES_OP = "plugin_data.mark_pages";
+
+/**
+ * #1155 — after a declared baked-data trigger succeeded in the admin, ask
+ * the next plugin-data build to re-bake the pages it names. The operation
+ * already happened, so a failure to record this is not the caller's: the
+ * item is live through the delta feed either way, and only its bake waits
+ * for the next Stage. It is recorded under the plugin (#1008), never
+ * swallowed.
+ */
+async function markBakedPagesStale(
+  plugin: LoadedPlugin,
+  operationName: string,
+  args: unknown,
+  result: unknown,
+): Promise<void> {
+  if (!cachedInfra) return;
+  const pageIds = bakedDataPageIds(plugin.definition.bakedData, operationName, {
+    args,
+    result,
+  });
+  if (pageIds.length === 0) return;
+  const infra = cachedInfra;
+  const fail = async (message: string): Promise<void> => {
+    await recordPluginError({
+      infra,
+      systemActorId: hostSystemActorId(),
+      slug: plugin.slug,
+      pluginId: plugin.pluginId,
+      phase: "operation",
+      error: new Error(
+        `"${operationName}" succeeded, but its pages were not queued for a plugin-data build: ${message}. They get the new data with the next Stage and Publish live.`,
+      ),
+    });
+  };
+  if (!infra.registry.has(MARK_BAKED_PAGES_OP)) {
+    await fail(`the admin registers no ${MARK_BAKED_PAGES_OP} operation`);
+    return;
+  }
+  const r = await execute(
+    infra.registry,
+    infra.adapter,
+    { actorId: hostSystemActorId(), actorKind: "system", requestId: `baked-data-${plugin.slug}` },
+    MARK_BAKED_PAGES_OP,
+    { pluginId: plugin.pluginId, pageIds, source: "operation" },
+  );
+  if (!r.ok) await fail(JSON.stringify(r.error));
+}
+
 /** Field names whose values are redacted before the audit digest is taken. */
 const SENSITIVE_KEY_RE =
   /pass(word|wd|phrase)?|secret|token|api[-_]?key|credential|private[-_]?key/i;
@@ -711,9 +771,8 @@ export function auditInputDigest(inputArgs: unknown): string {
  * v0.2.16 — write an audit_events row for a plugin op. Mirrors the
  * shape `recordAudit` in admin-core uses, but runs raw SQL because
  * plugin-host is a peer of admin-core (no upward import). The row
- * lets the redeploy orchestrator + the operator's own audit trail
- * see plugin write activity without each plugin author needing to
- * call recordAudit explicitly.
+ * lets the operator's audit trail see plugin write activity without
+ * each plugin author needing to call recordAudit explicitly.
  */
 async function emitPluginAuditRow(
   adapter: DatabaseAdapter,
@@ -752,10 +811,8 @@ async function emitPluginAuditRow(
  * convention: handlers that affect a specific row return an object
  * with a field matching the table's primary key (`commentId`,
  * `ratingId`, `formSubmissionId`, …) OR a generic `id`. The audit
- * row's entity_id then unblocks per-page redeploy resolution in the
- * orchestrator (which queries the plugin's own table by id to find
- * the bound page_id). Falls back to null when the result doesn't
- * look like one of these shapes.
+ * row's entity_id then names the row the op touched. Falls back to
+ * null when the result doesn't look like one of these shapes.
  */
 function extractEntityId(result: unknown): string | null {
   if (result === null || typeof result !== "object") return null;

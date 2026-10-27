@@ -3,7 +3,7 @@
 /**
  * issue #425 — decode the `import_runs.crawl_scope` jsonb into the
  * crawler's scope. Pure so the malformed-input contract is unit-testable
- * without booting the orchestrator (the parseExplicitUrls precedent).
+ * without booting the crawl worker (the parseExplicitUrls precedent).
  */
 
 import type { CrawlScope } from "@caelo-cms/site-importer";

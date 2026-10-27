@@ -126,6 +126,10 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   // Seed-bearing since 0271 (#696 Phase 5): the auto-update scheduler's
   // lease + status singleton.
   "platform_update_scheduler",
+  // Seed-bearing since 0371 (#1155): the plugin-data tick's state
+  // singleton. Tests that change it reset it themselves
+  // (plugin-data-build.integration.test.ts).
+  "plugin_data_build_state",
   "rate_limit_profiles",
   "release_check_cache",
   "role_permissions",

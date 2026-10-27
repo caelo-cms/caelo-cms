@@ -5,10 +5,9 @@
  * edges, against a real Postgres and real self-hosted staging builds:
  *
  *   - the draft tools run in the browser chat, where the AI actor is not
- *     the chat's creator (they act under the operator's context; the Stage
- *     still opens the AI hold);
+ *     the chat's creator (they act under the operator's context);
  *   - layout chrome placed in a chat is draft state (not live, undoable,
- *     replayed by a Stage) and an AI Stage opens the hold whatever it merged;
+ *     replayed by a Stage);
  *   - a Stage takes along the rows another chat created that it references;
  *   - an undo of a chat that created a page warns about the page's later
  *     section changes by another chat;
@@ -157,16 +156,6 @@ async function seedPage(slug: string, moduleIds: string[]): Promise<string> {
   return pageId;
 }
 
-async function openHolds(): Promise<number> {
-  const rows = await withSql(
-    (tx) =>
-      tx`SELECT count(*)::int AS n FROM ai_stage_holds WHERE released_at IS NULL` as Promise<
-        { n: number }[]
-      >,
-  );
-  return rows[0]?.n ?? 0;
-}
-
 async function chatPending(chatSessionId: string): Promise<number> {
   const rows = await withSql(
     (tx) =>
@@ -236,7 +225,6 @@ describe("#620 review — the draft tools in the browser chat", () => {
     });
     const a = await chat("Stage from the chat");
     await op(a.ai, "modules.update", { moduleId: m, html: "<p>staged by the AI</p>" });
-    const holdsBefore = await openHolds();
     const staged = await stageChangesTool.handler(
       a.ai,
       { scope: "this_chat" },
@@ -250,9 +238,6 @@ describe("#620 review — the draft tools in the browser chat", () => {
     // The operator's open chat delivers the check's result; polling it
     // cost the real-AI homepage turn 19 full model calls (PR #624).
     expect(staged.content).toContain("do NOT poll get_quality_audit");
-    // The AI initiated it: the production hold is open although the ops ran
-    // under the operator's context.
-    expect(await openHolds()).toBe(holdsBefore + 1);
     const live = await withSql(
       (tx) => tx`SELECT html FROM modules WHERE id = ${m}::uuid` as Promise<{ html: string }[]>,
     );
@@ -280,21 +265,10 @@ describe("#620 review — the draft tools in the browser chat", () => {
     );
     expect(kind[0]?.branch_kind).toBe("experiment");
   });
-
-  it("opens the AI hold for an AI Stage that merged nothing (it still triggered the staging build)", async () => {
-    const idle = await chat("Nothing to stage");
-    const before = await openHolds();
-    const staged = await stageChatSessions({ registry, adapter }, OWNER, [idle.id], {
-      stagedBy: "live_edit_ai",
-    });
-    if (!staged.ok) throw new Error(JSON.stringify(staged.error));
-    expect(staged.value.mergedEntityCount).toBe(0);
-    expect(await openHolds()).toBe(before + 1);
-  });
 });
 
 describe("#620 review — layout chrome is draft state", () => {
-  it("is not live, shows in the chat's view, is undone by an undo and replayed by an AI Stage that opens the hold", async () => {
+  it("is not live, shows in the chat's view, is undone by an undo and replayed by an AI Stage", async () => {
     const layout = await withSql(
       (tx) =>
         tx`SELECT id::text AS id FROM layouts WHERE slug = 'centered'` as Promise<{ id: string }[]>,
@@ -342,14 +316,12 @@ describe("#620 review — layout chrome is draft state", () => {
       blockName: "header",
       moduleIds: [chrome],
     });
-    const holds = await openHolds();
     const staged = await stageChatSessions({ registry, adapter }, OWNER, [e.id], {
       stagedBy: "live_edit_ai",
     });
     if (!staged.ok) throw new Error(JSON.stringify(staged.error));
     expect(staged.value.mergedEntityCount).toBe(1);
     expect(await liveHeader()).toEqual([chrome]);
-    expect(await openHolds()).toBe(holds + 1);
     // #685 — the AI's own Stage is recorded as such for the fix request.
     const audits = await withSql(
       (tx) =>

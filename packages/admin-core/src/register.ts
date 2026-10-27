@@ -394,6 +394,7 @@ import {
 } from "./ops/platform-update-scheduler.js";
 import { platformUpdatesSkipScheduledOp } from "./ops/platform-update-skip.js";
 import { platformUpdateStatusOp, platformUpdatesCheckNowOp } from "./ops/platform-updates.js";
+import { markPluginDataPagesOp } from "./ops/plugin-data.js";
 import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
   listPluginCapabilityGrantsOp,
@@ -428,7 +429,6 @@ import {
   verifyDnsRecordOp,
 } from "./ops/provisioning_outputs.js";
 import { revokeAcceptancesOp } from "./ops/quality/admin.js";
-import { planAutoRedeployOp, settleAutoPublishOp } from "./ops/quality/auto-publish.js";
 import { classifyStageOp } from "./ops/quality/classify_stage.js";
 import {
   ackChatNotificationOp,
@@ -643,6 +643,7 @@ import {
   setUserEmailOp,
   setUserRolesOp,
 } from "./ops/users.js";
+import { buildPluginDataOp } from "./plugin-data/build.js";
 
 export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(importFontOp);
@@ -819,8 +820,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeQualityProposalOp);
   registry.register(rejectQualityProposalOp);
   registry.register(listPendingQualityProposalsOp);
-  registry.register(planAutoRedeployOp);
-  registry.register(settleAutoPublishOp);
   registry.register(revokeAcceptancesOp);
   // P4 snapshots
   registry.register(listSnapshotsOp);
@@ -1003,8 +1002,11 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(updateDeployProgressOp);
   // #1003 — a run's row, committed when it starts (visible while it runs).
   registry.register(beginDeployRunOp);
-  // #969 — the orchestrator's keep-alive for the served staging preview.
+  // #969 — the keep-alive worker's refresh of the served staging preview.
   registry.register(refreshStagingPreviewOp);
+  // #1155 — plugin data into the live HTML: stale marks + the plugin-data build.
+  registry.register(markPluginDataPagesOp);
+  registry.register(buildPluginDataOp);
   // v0.2.19 — propose/execute pair for promote + rollback. AI proposes
   // (human + ai + system); Owner approves at /settings/deployments/pending
   // which calls execute_proposal (human + system) → runs the underlying op.

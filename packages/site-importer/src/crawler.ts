@@ -179,7 +179,7 @@ export interface CrawledPage {
   readonly modules: ReturnType<typeof extractModulesFromHtml>["modules"];
   /** run #10 D3 — loud counter: comment-thread subtrees the extractor
    *  removed (WP `#comments`, `.comment-list`, `#respond`, …). The
-   *  orchestrator persists it as a visible `comments-stripped:<n>`
+   *  crawl worker persists it as a visible `comments-stripped:<n>`
    *  import-page note; it must never vanish silently. */
   readonly commentsStripped: number;
   readonly themeTokens: Record<string, string>;

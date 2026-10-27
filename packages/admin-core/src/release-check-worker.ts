@@ -17,7 +17,7 @@
  * with Settings → Updates' "Check now".
  *
  * Bootstrapped once per process from apps/admin/src/hooks.server.ts —
- * same pattern as startRedeployOrchestrator.
+ * same pattern as the other maintenance workers.
  */
 
 import type { DatabaseAdapter } from "@caelo-cms/query-api";

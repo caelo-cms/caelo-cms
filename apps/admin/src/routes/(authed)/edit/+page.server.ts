@@ -445,8 +445,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     null;
   let productionMatchesStaging: boolean | null = null;
   try {
+    // #1155 — site builds only: plugin-data builds run every tick and
+    // would push the last Stage and Publish live out of the window.
     const recentR = await execute(registry, adapter, locals.ctx, "deploy.list_runs", {
       limit: 20,
+      buildKind: "site",
     });
     if (recentR.ok) {
       const v = recentR.value as {

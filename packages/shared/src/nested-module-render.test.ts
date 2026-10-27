@@ -29,6 +29,7 @@ import {
   type NestedRenderResolver,
   renderModuleWithContent,
   renderPlacedModule,
+  rewriteNestedRefs,
 } from "./nested-module-render.js";
 
 function buildResolver(
@@ -460,6 +461,44 @@ describe("renderModuleWithContent — list fields (epic #1107)", () => {
         ],
       }),
     ).toEqual([{ moduleId: MODULE.teaser, contentInstanceId: INSTANCE.teaser }]);
+  });
+
+  it("rewriteNestedRefs remaps every ref collectNestedRefs finds and copies the rest", () => {
+    const COPY = "00000000-0000-4000-8000-00000000c0c0";
+    const values = {
+      heading: "Keep me",
+      cta: { moduleId: MODULE.teaser, contentInstanceId: INSTANCE.teaser },
+      cards: [{ moduleId: MODULE.teaser, contentInstanceId: INSTANCE.teaser }],
+      mega: [
+        {
+          id: T(1),
+          node: "entry",
+          values: { label: "Entry" },
+          children: [
+            {
+              id: T(2),
+              node: "promo",
+              values: { teaser: { moduleId: MODULE.teaser, contentInstanceId: INSTANCE.teaser } },
+            },
+          ],
+        },
+      ],
+    };
+    const rewritten = rewriteNestedRefs(values, (id) => {
+      if (id !== INSTANCE.teaser) throw new Error(`no copy for ${id}`);
+      return COPY;
+    });
+    expect(collectNestedRefs(rewritten)).toEqual([
+      { moduleId: MODULE.teaser, contentInstanceId: COPY },
+      { moduleId: MODULE.teaser, contentInstanceId: COPY },
+      { moduleId: MODULE.teaser, contentInstanceId: COPY },
+    ]);
+    expect(rewritten.heading).toBe("Keep me");
+    expect((rewritten.mega as { values: unknown }[])[0]?.values).toEqual({ label: "Entry" });
+    // The source is not mutated.
+    expect(collectNestedRefs(values).every((r) => r.contentInstanceId === INSTANCE.teaser)).toBe(
+      true,
+    );
   });
 });
 

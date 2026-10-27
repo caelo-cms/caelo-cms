@@ -5891,7 +5891,7 @@
     },
     {
       "name": "get_gateway_settings",
-      "description": "Read the public API gateway settings: captcha provider + proof-of-work difficulty, max request body, auto-redeploy (on/off, debounce, triggering ops). Use before propose_set_gateway_settings.",
+      "description": "Read the public API gateway settings: captcha provider + proof-of-work difficulty, max request body. Use before propose_set_gateway_settings.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -6092,7 +6092,7 @@
     },
     {
       "name": "propose_set_gateway_settings",
-      "description": "Propose a change to the public API gateway: captcha provider + proof-of-work difficulty on visitor writes (forms, comments, signups), the max request body size, and auto-redeploy (publish production automatically after publishable writes, its debounce and which ops count). Read the current values with get_gateway_settings, then send ONLY the settings that change; everything else keeps its current value. Fails loudly if nothing would change. Not for per-plugin rate limits — that is tune_rate_limit. APPROVAL-GATED: calling this PAUSES for the operator's Approve/Reject right in the chat before anything changes. Do not claim the change is live until it is approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "description": "Propose a change to the public API gateway: captcha provider + proof-of-work difficulty on visitor writes (forms, comments, signups) and the max request body size. Read the current values with get_gateway_settings, then send ONLY the settings that change; everything else keeps its current value. Fails loudly if nothing would change. Not for per-plugin rate limits — that is tune_rate_limit. APPROVAL-GATED: calling this PAUSES for the operator's Approve/Reject right in the chat before anything changes. Do not claim the change is live until it is approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -6101,26 +6101,6 @@
             "minimum": 512,
             "maximum": 1048576,
             "description": "Largest public POST body the gateway accepts, in bytes."
-          },
-          "autoRedeployEnabled": {
-            "type": "boolean",
-            "description": "Rebuild + publish production automatically after publishable writes."
-          },
-          "autoRedeployDebounceMs": {
-            "type": "integer",
-            "minimum": 1000,
-            "maximum": 600000,
-            "description": "Quiet period after the last publishable write before the auto-redeploy fires."
-          },
-          "autoRedeployOpKinds": {
-            "maxItems": 50,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 120
-            },
-            "description": "Audit op names that count as publishable writes (e.g. a plugin's visitor-write op). Never 'deploy.trigger'."
           },
           "captchaProvider": {
             "type": "string",

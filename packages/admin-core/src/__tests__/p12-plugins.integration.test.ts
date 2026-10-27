@@ -844,6 +844,49 @@ describe("Auth plugin", () => {
     // Always returns issued=true; never reveals whether email exists.
     expect(reqAgain.ok).toBe(true);
   });
+
+  // #854 — the sweep read one unordered page of 1000 rows, so expired rows
+  // past it were never deleted. It now drains every expired row.
+  it("_sweep_expired deletes every expired session and dead token, past 1000 rows", async () => {
+    await bootstrapAll();
+    await pluginScopedQuery("auth", sql`DELETE FROM plugin_auth.visitor_sessions`);
+    await pluginScopedQuery("auth", sql`DELETE FROM plugin_auth.password_reset_tokens`);
+    await pluginScopedQuery(
+      "auth",
+      sql`INSERT INTO plugin_auth.visitor_sessions (public_user_id, token_hash, expires_at)
+          SELECT 'u-sweep', 'expired-' || g, now() - interval '1 day' FROM generate_series(1, 1500) g`,
+    );
+    await pluginScopedQuery(
+      "auth",
+      sql`INSERT INTO plugin_auth.visitor_sessions (public_user_id, token_hash, expires_at)
+          SELECT 'u-sweep', 'live-' || g, now() + interval '1 day' FROM generate_series(1, 3) g`,
+    );
+    await pluginScopedQuery(
+      "auth",
+      sql`INSERT INTO plugin_auth.password_reset_tokens (public_user_id, token_hash, expires_at, used_at)
+          VALUES ('u-sweep', 'tok-expired', now() - interval '1 hour', NULL),
+                 ('u-sweep', 'tok-used', now() + interval '30 minutes', now()),
+                 ('u-sweep', 'tok-live', now() + interval '30 minutes', NULL)`,
+    );
+    const r = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "auth",
+      operationName: "_sweep_expired",
+      args: {},
+    });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    expect((r.value as { deleted: number }).deleted).toBe(1502);
+    const sessions = await pluginScopedQuery<{ token_hash: string }>(
+      "auth",
+      sql`SELECT token_hash FROM plugin_auth.visitor_sessions ORDER BY token_hash`,
+    );
+    expect(sessions.map((s) => s.token_hash)).toEqual(["live-1", "live-2", "live-3"]);
+    const tokens = await pluginScopedQuery<{ token_hash: string }>(
+      "auth",
+      sql`SELECT token_hash FROM plugin_auth.password_reset_tokens`,
+    );
+    expect(tokens.map((t) => t.token_hash)).toEqual(["tok-live"]);
+  });
 });
 
 describe("Cross-plugin RLS", () => {

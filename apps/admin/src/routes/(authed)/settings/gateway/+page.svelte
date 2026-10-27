@@ -24,8 +24,6 @@
 
   let { data, form } = $props();
   let maxBodyBytes = $state(data.settings.maxBodyBytes);
-  let autoRedeployEnabled = $state(data.settings.autoRedeployEnabled);
-  let debounceMs = $state(data.settings.autoRedeployDebounceMs);
   let captchaProvider = $state(data.settings.captchaProvider);
   let captchaPowTargetPrefix = $state(data.settings.captchaPowTargetPrefix);
 
@@ -71,14 +69,6 @@
         <label class="grid gap-1 text-sm">
           <span>Max body bytes (512–1,048,576)</span>
           <Input name="maxBodyBytes" type="number" min={512} max={1048576} bind:value={maxBodyBytes} required />
-        </label>
-        <label class="flex items-center gap-2 text-sm">
-          <input type="checkbox" name="autoRedeployEnabled" bind:checked={autoRedeployEnabled} />
-          <span>Auto-redeploy on publishable events</span>
-        </label>
-        <label class="grid gap-1 text-sm">
-          <span>Auto-redeploy debounce (ms)</span>
-          <Input name="debounceMs" type="number" min={1000} max={600000} bind:value={debounceMs} required />
         </label>
         <label class="grid gap-1 text-sm">
           <span>Captcha provider</span>

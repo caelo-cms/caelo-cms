@@ -47,6 +47,20 @@ export function slotIdOf(index: number): string {
   return `s${index}`;
 }
 
+/**
+ * The identity of a slot across the source and its translation: the
+ * placement (block + position) and, for nested content, its path.
+ */
+export function slotKeyOf(s: {
+  readonly blockName: string;
+  readonly position: number;
+  readonly nestedPath?: string;
+}): string {
+  return s.nestedPath === undefined
+    ? `${s.blockName}|${s.position}`
+    : `${s.blockName}|${s.position}|${s.nestedPath}`;
+}
+
 /** `pages_seo.meta_description` hard cap (shared/seo.ts). */
 const SEO_DESCRIPTION_HARD_MAX = 320;
 
@@ -72,11 +86,9 @@ export function translationContractOf(input: {
   sourceMetaDescription: string;
   variantMetaDescription: string;
 }): TranslationContract {
-  const alignedKeys = new Set(
-    input.alignment.filter((a) => a.kind === "aligned").map((a) => `${a.blockName}|${a.position}`),
-  );
+  const alignedKeys = new Set(input.alignment.filter((a) => a.kind === "aligned").map(slotKeyOf));
   const slotIds = input.sourceSlots.flatMap((s, i) =>
-    input.mode === "full" || alignedKeys.has(`${s.blockName}|${s.position}`) ? [slotIdOf(i)] : [],
+    input.mode === "full" || alignedKeys.has(slotKeyOf(s)) ? [slotIdOf(i)] : [],
   );
   const fieldNames = [
     ...new Set(

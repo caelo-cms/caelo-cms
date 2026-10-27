@@ -96,6 +96,14 @@ export interface AdminSurfaceBackend {
   getContext(): Promise<GetContextResponse>;
   /** Reads the operator's decision; the agent can never make it. */
   fetchApprovalOutcome(proposalId: string): Promise<ApprovalOutcome>;
+  /**
+   * #1122 — a call may have changed the catalogue (a plugin was activated,
+   * disabled, uninstalled or reloaded). The stdio shim re-reads its cached
+   * copy now and notifies over its own channel when it changed (false); a
+   * stateless remote server lists live, so it asks the surface to send
+   * `notifications/tools/list_changed` on this request's stream (true).
+   */
+  catalogueMayHaveChanged(): Promise<boolean>;
   uploadImages(args: unknown): Promise<CallToolResult>;
 }
 
@@ -113,8 +121,9 @@ export interface AdminSurfaceOptions {
   /** Poll interval while waiting on an approval; tests shorten it. */
   readonly approvalPollMs?: number;
   /**
-   * #678 — advertise `tools.listChanged` (the shim notifies when its cached
-   * catalogue changes). A stateless remote server lists live every time.
+   * #678 / #1122 — advertise `tools.listChanged`: the shim notifies when its
+   * cached catalogue changes, the stateless remote server on the response
+   * stream of a call that changed it. Both surfaces set it.
    */
   readonly listChanged: boolean;
 }
@@ -138,6 +147,19 @@ function outcomeResult(o: ApprovalOutcome): CallToolResult & {
       },
     ],
   };
+}
+
+/**
+ * #1122 — calls after which the catalogue may differ: an applied proposal of
+ * the plugins domain (activate, uninstall, revoke a grant) and a reload.
+ * Without a notification the client kept its old tool list until the
+ * operator reconnected (`/mcp`), so an activated plugin's tools stayed out
+ * of reach although `activate_plugin` promised them for the next turn.
+ */
+const RELOADING_TOOLS: ReadonlySet<string> = new Set(["reload_plugin"]);
+
+function changesCatalogue(o: ApprovalOutcome): boolean {
+  return o.outcome === "applied" && o.domain === "plugins";
 }
 
 function errorResult(text: string): CallToolResult {
@@ -187,6 +209,11 @@ export function createAdminMcpServer(
               },
             });
           };
+    const announceCatalogueChange = async (): Promise<void> => {
+      if (await backend.catalogueMayHaveChanged()) {
+        await extra.sendNotification({ method: "notifications/tools/list_changed" });
+      }
+    };
     const awaitOutcome = (proposalId: string) =>
       waitForApproval({
         fetchOutcome: () => backend.fetchApprovalOutcome(proposalId),
@@ -200,7 +227,9 @@ export function createAdminMcpServer(
         if (!parsed.success) {
           return errorResult(`invalid arguments: ${parsed.error.message}`);
         }
-        return outcomeResult(await awaitOutcome(parsed.data.proposalId));
+        const outcome = await awaitOutcome(parsed.data.proposalId);
+        if (changesCatalogue(outcome)) await announceCatalogueChange();
+        return outcomeResult(outcome);
       }
       if (name === uploadTool.name) return await backend.uploadImages(req.params.arguments);
       if (name === OPEN_SESSION_TOOL.name) {
@@ -262,7 +291,9 @@ export function createAdminMcpServer(
         // Issue #658 — the call queued a proposal: wait for the operator's
         // decision (bounded) and return it in THIS result, so the agent
         // continues with the outcome instead of a "queued" note.
-        const decided = outcomeResult(await awaitOutcome(result.approval.proposalId));
+        const outcome = await awaitOutcome(result.approval.proposalId);
+        if (changesCatalogue(outcome)) await announceCatalogueChange();
+        const decided = outcomeResult(outcome);
         return {
           ...decided,
           content: [
@@ -274,6 +305,7 @@ export function createAdminMcpServer(
           ],
         };
       }
+      if (result.ok && RELOADING_TOOLS.has(name)) await announceCatalogueChange();
       return {
         ...(result.ok ? {} : { isError: true }),
         content: [
