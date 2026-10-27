@@ -31,7 +31,6 @@ COPY packages/plugin-sdk/package.json packages/plugin-sdk/
 COPY packages/plugin-component-kit/package.json packages/plugin-component-kit/
 COPY packages/plugin-sandbox/package.json packages/plugin-sandbox/
 COPY packages/plugin-host/package.json packages/plugin-host/
-COPY packages/redeploy-orchestrator/package.json packages/redeploy-orchestrator/
 COPY packages/site-importer/package.json packages/site-importer/
 COPY packages/migrations/package.json packages/migrations/
 COPY packages/mcp-server/package.json packages/mcp-server/

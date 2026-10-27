@@ -3,7 +3,7 @@
 /**
  * P13 — gateway dashboard.
  *  - Recent request log (last 100, status-coded).
- *  - Body-cap + auto-redeploy + captcha provider knobs.
+ *  - Body-cap + captcha provider knobs.
  *  - Cookie secret rotation.
  */
 
@@ -15,9 +15,6 @@ import type { Actions, PageServerLoad } from "./$types";
 
 interface GatewaySettings {
   maxBodyBytes: number;
-  autoRedeployEnabled: boolean;
-  autoRedeployDebounceMs: number;
-  autoRedeployOpKinds: string[];
   captchaProvider: "off" | "pow" | "turnstile" | "hcaptcha";
   captchaPowTargetPrefix: string;
   cookieSecretSet: boolean;
@@ -54,9 +51,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       ? (s.value as { settings: GatewaySettings }).settings
       : ({
           maxBodyBytes: 65536,
-          autoRedeployEnabled: false,
-          autoRedeployDebounceMs: 12000,
-          autoRedeployOpKinds: [],
           captchaProvider: "pow",
           captchaPowTargetPrefix: "000fff",
           cookieSecretSet: false,
@@ -72,8 +66,6 @@ export const actions: Actions = {
     requirePermission(locals, "settings.write");
     const form = await request.formData();
     const maxBodyBytes = Number.parseInt((form.get("maxBodyBytes") as string) ?? "0", 10);
-    const autoRedeployEnabled = form.get("autoRedeployEnabled") === "on";
-    const debounceMs = Number.parseInt((form.get("debounceMs") as string) ?? "0", 10);
     const captchaProvider = (form.get("captchaProvider") as string) ?? "pow";
     const captchaPowTargetPrefix = (form.get("captchaPowTargetPrefix") as string) ?? "000fff";
     if (!["off", "pow", "turnstile", "hcaptcha"].includes(captchaProvider)) {
@@ -82,14 +74,6 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "gateway.set_settings", {
       maxBodyBytes,
-      autoRedeployEnabled,
-      autoRedeployDebounceMs: debounceMs,
-      autoRedeployOpKinds: [
-        "pages.update",
-        "comments.moderate",
-        "media.publish",
-        "pages_seo.set_many",
-      ],
       captchaProvider,
       captchaPowTargetPrefix,
     });

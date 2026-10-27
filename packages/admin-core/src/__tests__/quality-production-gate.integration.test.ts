@@ -2,7 +2,7 @@
 
 /**
  * Issue #553 PR 3 — production builds that bypass deploy.promote obey the
- * quality gate, the automatic redeploy publishes only through it, and the
+ * quality gate (and, since #1154, run only for a human), and the
  * Owner's quality view operations (baselines, revoke) and the seeded
  * fix-quality-findings skill. Real Postgres + real self-hosted builds;
  * Lighthouse faked (see quality-gate.integration.test.ts).
@@ -153,8 +153,8 @@ async function audit(runJob: (job: AuditJob) => Promise<AuditJobResult>): Promis
   });
 }
 
-/** Stage outside a chat (as Ops / the automatic redeploy do) + queue its check. */
-async function stage(autoPublish = false): Promise<string> {
+/** Stage outside a chat (as Ops does) + queue its check. */
+async function stage(): Promise<string> {
   const built = await op<{ runId: string }>(SYS, "deploy.trigger", {
     targetName: "staging",
     repoRoot: testRoot,
@@ -163,7 +163,6 @@ async function stage(autoPublish = false): Promise<string> {
     deployRunId: built.runId,
     chatSessionId: null,
     branch: null,
-    autoPublish,
   });
   return built.runId;
 }
@@ -309,7 +308,10 @@ describe("direct production builds obey the quality gate", () => {
     expect((await buildProduction(EDITOR, { reason: "please" })).message).toContain(
       "deploy.trigger",
     );
-    expect((await buildProduction(SYS, { reason: "worker" })).message).toContain("human decision");
+    // #1154 — no background job builds production, override or not.
+    expect((await buildProduction(SYS, { reason: "worker" })).message).toContain(
+      "only by a human Publish live",
+    );
 
     // A build that fails after the override was allowed records nothing:
     // the gate stays closed for the next attempt.
@@ -361,38 +363,18 @@ describe("direct production builds obey the quality gate", () => {
   });
 });
 
-describe("the automatic redeploy publishes only through the gate", () => {
-  const plan = (changedPageIds: string[] = []) =>
-    op<{ auditNeeded: boolean; reasons: string[]; pageIds: string[] }>(
-      SYS,
-      "quality_audits.plan_auto_redeploy",
-      { changedPageIds },
-    );
-
-  it("content-only changes since the checked Stage rebuild production directly", async () => {
+describe("an Owner's direct production build ships only checked rendering", () => {
+  it("content-only changes since the checked Stage build production directly", async () => {
     await op(SYS, "pages.update", { pageId: homeId, title: "Home, renamed" });
-    expect(await plan([homeId])).toEqual({ auditNeeded: false, reasons: [], pageIds: [homeId] });
-  });
-
-  it("module code changes go through a Stage that audits the pages placing the module", async () => {
-    await op(SYS, "modules.update", { moduleId: cardModuleId, html: "<p>v2</p>" });
-    const p = await plan();
-    expect(p.auditNeeded).toBe(true);
-    expect(p.reasons).toEqual(["module code: Card"]);
-    expect(p.pageIds).toEqual([homeId]);
-    await stage();
-    await audit(fakeLighthouse([]));
+    expect(await buildProduction(OWNER)).toEqual({ ok: true, message: "" });
   });
 
   it("a draft published through pages.update is a new page going live", async () => {
     await op(SYS, "pages.update", { pageId: draftPageId, status: "published" });
-    const p = await plan();
-    expect(p.auditNeeded).toBe(true);
-    expect(p.reasons).toHaveLength(1);
-    expect(p.reasons[0]).toStartWith("new page:");
-    expect(p.pageIds).toEqual([draftPageId]);
+    const r = await buildProduction(OWNER);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("new page:");
     await op(SYS, "pages.update", { pageId: draftPageId, status: "draft" });
-    expect((await plan()).auditNeeded).toBe(false);
   });
 
   it("a live page moved to another template is audited", async () => {
@@ -403,83 +385,12 @@ describe("the automatic redeploy publishes only through the gate", () => {
       css: "",
     });
     await op(SYS, "pages.update", { pageId: homeId, templateId });
-    const p = await plan();
-    expect(p.auditNeeded).toBe(true);
-    expect(p.reasons.some((r) => r.startsWith("template:"))).toBe(true);
-    expect(p.pageIds).toContain(homeId);
+    const r = await buildProduction(OWNER);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("template:");
     await op(SYS, "pages.update", { pageId: homeId, templateId: mainTemplateId });
     await stage();
     await audit(fakeLighthouse([]));
-  });
-
-  it("a clean audit of an automatic Stage publishes exactly that build", async () => {
-    const staged = await stage(true);
-    await audit(fakeLighthouse([]));
-    const runs = await op<{ runs: { autoPublish: { outcome: string } | null }[] }>(
-      SYS,
-      "quality_audits.list",
-      { limit: 1 },
-    );
-    expect(runs.runs[0]?.autoPublish).toEqual({ outcome: "published", message: null });
-    expect((await lastProductionRun()).status).toBe("succeeded");
-    // Promote refuses a build that is no longer the newest Stage.
-    await stage();
-    expect(
-      await opErr(OWNER, "deploy.promote", {
-        fromTarget: "staging",
-        toTarget: "production",
-        repoRoot: testRoot,
-        expectedSourceRunId: staged,
-      }),
-    ).toContain("a newer build was staged");
-    await audit(fakeLighthouse([]));
-  });
-
-  it("problems stop it — recorded on the audit and as a failed production run", async () => {
-    await stage(true);
-    await audit(fakeLighthouse([imageAlt]));
-    const runs = await op<{ runs: { autoPublish: { outcome: string; message: string } | null }[] }>(
-      SYS,
-      "quality_audits.list",
-      { limit: 1 },
-    );
-    expect(runs.runs[0]?.autoPublish?.outcome).toBe("blocked");
-    expect(runs.runs[0]?.autoPublish?.message).toContain("image-alt");
-    const run = await lastProductionRun();
-    expect(run).toMatchObject({ status: "failed", span_ok: true });
-    expect(run.error_message).toContain("Automatic publish stopped by the quality gate");
-  });
-
-  it("an automatic audit interrupted by a restart is settled too", async () => {
-    await stage(true);
-    // The process that claimed it died: still `running` long after.
-    await withSql(async (tx) => {
-      await tx`UPDATE quality_audit_runs SET status = 'running', started_at = now() - interval '2 hours'
-               WHERE status = 'queued'`;
-    });
-    await audit(fakeLighthouse([]));
-    const runs = await op<{
-      runs: { status: string; autoPublish: { outcome: string; message: string } | null }[];
-    }>(SYS, "quality_audits.list", { limit: 1 });
-    expect(runs.runs[0]?.status).toBe("errored");
-    expect(runs.runs[0]?.autoPublish?.outcome).toBe("blocked");
-    expect((await lastProductionRun()).error_message).toContain(
-      "Automatic publish stopped by the quality gate",
-    );
-  });
-
-  it("an automatic Stage cannot carry a chat", async () => {
-    expect(
-      await opErr(SYS, "quality_audits.enqueue", {
-        deployRunId: crypto.randomUUID(),
-        chatSessionId: crypto.randomUUID(),
-        branch: {
-          classification: { auditNeeded: true, reasons: [], skipped: [] },
-          touchedPageIds: [],
-        },
-        autoPublish: true,
-      }),
-    ).toContain("ValidationFailed");
   });
 });
 

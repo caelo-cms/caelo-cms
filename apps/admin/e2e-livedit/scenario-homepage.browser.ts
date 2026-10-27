@@ -33,9 +33,9 @@ import {
   awaitQualityGateOpen,
   getProductionUrl,
   loginAsDevOwner,
-  openAiStageHoldCount,
   resetLiveditFixtures,
   sendChatPromptAndWait,
+  unpublishedAiStageCount,
   verifyPublishedPageWithVision,
 } from "./helpers.js";
 import {
@@ -441,14 +441,14 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     console.log(
       `[scenario-homepage] quality gate open (${quality.state}) after ${quality.restages} fix re-Stage(s); operator accepted ${quality.accepted.length === 0 ? "nothing" : quality.accepted.join(", ")}`,
     );
-    // The AI's Stage held production: nothing it staged may go live until
-    // a human Publish live (#620 Part B) — the click below is that human.
+    // Nothing the AI staged goes live until a human Publish live (#620
+    // Part B, #1154) — the click below is that human.
     expect(
-      openAiStageHoldCount(),
+      unpublishedAiStageCount(),
       "AI-staged work must wait for a human Publish live",
     ).toBeGreaterThan(0);
     await awaitPublishComplete(page);
-    expect(openAiStageHoldCount(), "a human Publish live releases the AI stage hold").toBe(0);
+    expect(unpublishedAiStageCount(), "a human Publish live ships the AI's Stage").toBe(0);
 
     // Compose the production URL from the snapshot's slug. Caelo's
     // routing manifest maps slug='home' to outputPath 'index.html'

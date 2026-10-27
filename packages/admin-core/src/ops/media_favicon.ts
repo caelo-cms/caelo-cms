@@ -71,7 +71,7 @@ export async function ensureFaviconRendition(
 export const ensureActiveFaviconRenditionOp = defineOperation({
   name: "themes.ensure_favicon_rendition",
   // Why every actor: it runs as part of whoever's Stage (human, the AI's
-  // deploy_staging, the system's auto-redeploy) and only derives data from
+  // deploy_staging, the system's stage flow) and only derives data from
   // an image that actor's build already ships.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",

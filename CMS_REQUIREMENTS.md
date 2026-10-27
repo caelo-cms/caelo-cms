@@ -119,7 +119,7 @@ Site snapshot #42
 - **Visual impact preview for module changes:** thumbnails with before/after diffs grouped by severity (low/medium/high); raw-list view hidden behind "Show all affected pages"
 - Per-site and per-module revert available in an **Advanced History drawer** for power users
 - "Publish / Deploy" button triggers static HTML generation and deployment pipeline
-- Auto-redeploy option: when a plugin item is approved, optionally triggers a rebuild — with 10–15 second debounce so bulk approvals trigger one build
+- One path to live: nothing reaches production except a human Publish live (or an Owner-initiated production build) — there is no automatic redeploy (§6.2)
 - Security control panel (fully separate from AI): login, user roles, **Owner-defined custom roles over a fixed permission catalog**, AI provider config, domain settings, API cost controls (per text / per image independently), **Advanced URL routing toggle**, skill activation queue, skill proposal review queue
 - Media library: browse, upload, manage assets; **usage tracking + optional deploy-time CDN copy** toggle
 - Redirect manager: create, edit, delete URL redirects
@@ -190,21 +190,24 @@ Web Component fetches only new items since deploy timestamp
 New items appended to static content
 ```
 
-### 6.2 Auto-Redeploy Trigger
+### 6.2 One Path to Live (no automatic redeploy)
 
-```
-Admin approves comment / plugin item
-        ↓
-10–15 second debounce window (batches bulk approvals)
-        ↓
-Admin panel fires internal POST to deploy endpoint
-        ↓
-Astro build runs, fetches fresh data from cms_public
-        ↓
-Static HTML regenerated and uploaded to hosting
-```
+Nothing reaches production except through a human **Publish live** (or an
+Owner-initiated production build from the Ops view). No background job, timer,
+plugin hook or AI action builds or publishes production; the deploy operations
+refuse every non-human production request (maintainer decision 2026-10-26,
+#1154).
 
-Auto-redeploy is optional — configurable toggle in admin settings.
+The automatic redeploy this section used to describe (approved plugin item →
+10–15 s debounce → production rebuild) is removed. It was specified before
+editorial content became draft-until-Stage (#620) and before comments and
+ratings became plugins (#380); what remained was a path that rebuilt production
+from `main` without a click, shipping whatever `main` held.
+
+Visitor-generated plugin data (comments, ratings, …) reaches the static HTML
+through its own mechanism, which publishes nothing else: an approved item is
+served at once by the public API through the delta fetch (§6.1), and a
+plugin-data build bakes it into the HTML from the last published state (#1155).
 
 ---
 
@@ -813,7 +816,7 @@ Extended built-in plugins (§14.11) each ship matching companion skills (`schedu
 | Self-hosted DB HA | Patroni (opt-in, documented) | Decided |
 | Provisioning | Pulumi with TypeScript | Decided |
 | Auth library | Arctic (OAuth2) | Decided |
-| Auto-redeploy | Internal webhook with 10–15s debounce, optional toggle | Decided |
+| Path to live | Human Publish live (or Owner-initiated production build) only; no automatic redeploy (#1154) | Decided |
 | Self-hosted AI (text) | Ollama / LM Studio via OpenAI-compatible adapter | Decided |
 | Self-hosted AI (images) | LocalAI via OpenAI-compatible adapter | Decided |
 | SSL/TLS | Let's Encrypt (self-hosted) / provider-native (cloud) | Decided |
@@ -840,7 +843,7 @@ Extended built-in plugins (§14.11) each ship matching companion skills (`schedu
 - **Ease of setup:** Single provisioning command, SSL auto-provisioned per domain, custom domains supported
 - **Open Source:** Licensed under **MPL 2.0**. All dependencies must be MPL-2.0-compatible (MPL-2.0, Apache-2.0, MIT, BSD, ISC). GPL/AGPL/SSPL/proprietary dependencies are blockers. Community-friendly, modular codebase
 - **Auditability:** All AI actions and database operations logged through single choke points
-- **Reliability:** Staging always separate from production, auto-redeploy debounced, cloud deployments HA by default
+- **Reliability:** Staging always separate from production, production changes only on a human Publish live, cloud deployments HA by default
 - **Cost control:** Per-user AI token budgets and daily spend caps configurable in admin settings
 - **i18n:** Language and country/language targeting, mixed URL strategies, AI-assisted translation with change tracking, no untranslated fallbacks — provided by the `international-site` plugin (§7)
 

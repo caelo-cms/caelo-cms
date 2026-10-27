@@ -117,7 +117,6 @@ interface AuditRun {
   finishedAt: string | null;
   fixRound: number;
   publishOverride: { by: string; reason: string; at: string } | null;
-  autoPublish: { outcome: string | null; message: string | null } | null;
 }
 
 interface AuditDetail {

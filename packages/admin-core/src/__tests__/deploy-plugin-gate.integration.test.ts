@@ -48,7 +48,7 @@ if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const HUMAN: ExecutionContext = {
   actorId: SYSTEM_ACTOR_ID,
-  actorKind: "system",
+  actorKind: "human",
   requestId: "t1008-deploy-gate",
 };
 const PLUGIN = "t1008g-links";

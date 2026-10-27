@@ -3,7 +3,7 @@
 /**
  * P14 polish — Playwright-driven screenshot capture for the importer.
  *
- * Used by the orchestrator's importerTick to take a "ground truth"
+ * Used by the admin's site-import crawl worker to take a "ground truth"
  * screenshot of each crawled URL and sample its computed styles in the
  * same render session, persisting the pixels + design tokens as the
  * live-inspect payload the theme proposal consumes.
@@ -415,13 +415,13 @@ function navigationKey(rawUrl: string): string {
 /**
  * Returns a Playwright-backed screenshotter, or null if Playwright isn't
  * importable in the current runtime. issue #247: a null return is NOT a
- * silent skip anymore — the orchestrator records a loud
+ * silent skip anymore — the crawl worker records a loud
  * `screenshot_missing` note on every affected import page so the run
  * report and downstream verification see those pages as UNVERIFIED.
  *
  * The dynamic import is wrapped in try/catch so a missing module (e.g.
  * a self-hosted install that didn't pre-install chromium) degrades to
- * "no screenshots, loudly noted" instead of crashing the orchestrator
+ * "no screenshots, loudly noted" instead of crashing the crawl worker
  * tick.
  */
 export async function createPlaywrightScreenshotter(guardOpts?: {
