@@ -7,9 +7,13 @@
  *     --mode pr|full --changed <file> --greens <dir> [--labels a,b] --out <file> [--comment <file>]
  *   bun run apps/admin/e2e-livedit/lib/plan.ts record \
  *     --plan <file> --report <playwright-report.json> --out <file>
+ *   bun run apps/admin/e2e-livedit/lib/plan.ts after-wait \
+ *     --plan <file> --jobs <tsv> --greens <dir> --out <file> [--summary <file>]
  *
  * `plan` decides; `record` writes the scenarios this run leaves green, so a
- * later run of the same PR can keep them. A PR runs only with the label
+ * later run of the same PR can keep them; `after-wait` re-decides once the
+ * paid job holds the PR's concurrency slot, from what other runs of the same
+ * commit finished meanwhile ({@link replanAfterWait}). A PR runs only with the label
  * `real-ai` (its selection) or `real-ai-full` (everything); without one the
  * plan says what it WOULD run and `--comment` gets the opt-in PR comment.
  * The release gate is planned by `main-greens.ts` (per-scenario reuse on
@@ -229,6 +233,12 @@ export interface RunPlan {
   readonly wouldRun?: readonly string[];
   /** Why each carried scenario was kept (release gate: the green it rests on). */
   readonly carriedReasons?: readonly SelectionReason[];
+  /**
+   * PR runs: the ids of the workflow runs that were already complete when
+   * the plan read their greens. A run of the same commit that is NOT in this
+   * list finished while this one waited (see {@link replanAfterWait}).
+   */
+  readonly consultedRuns?: readonly number[];
 }
 
 /**
@@ -382,6 +392,121 @@ export function greensAfterRun(
   return out;
 }
 
+/** The paid job of another workflow run on the same commit. */
+export interface OtherRunJob {
+  readonly runId: number;
+  /** GitHub job status: queued | in_progress | completed | … */
+  readonly status: string;
+  /** GitHub job conclusion ("" while not completed). */
+  readonly conclusion: string;
+  /**
+   * The job reached the provider (its preflight step ran). A job that failed
+   * before that — blocked by its plan, or by THIS guard echoing another
+   * run's red — carries no verdict of its own. Counting it would deadlock
+   * the recovery: re-running the red run would be blocked by the duplicate
+   * that only echoed it.
+   */
+  readonly ranPaidWork: boolean;
+}
+
+/** What the paid job does once it holds the concurrency slot. */
+export interface AfterWaitVerdict {
+  /** run: execute `plan.run`; stop: nothing left, pass; blocked: fail. */
+  readonly verdict: "run" | "stop" | "blocked";
+  readonly reason: string;
+  /** Planned scenarios a run that finished meanwhile already left green. */
+  readonly dropped: readonly string[];
+  /** The plan to execute and record from (unchanged unless `dropped`). */
+  readonly plan: RunPlan;
+}
+
+/** Job conclusions that carry no verdict about the commit. */
+const NO_VERDICT_CONCLUSIONS: readonly string[] = ["cancelled", "skipped"];
+
+/**
+ * Re-decide a PR plan after the paid job waited in the PR's concurrency
+ * queue. Two runs can plan the same commit before either paid job finishes
+ * (a push and a `real-ai-full` label seconds apart): both plan the same
+ * scenarios, and the second, queued behind the first, would pay for them a
+ * second time. `jobs` are the paid jobs of the OTHER runs on this commit;
+ * only those that completed after the plan read its greens (not in
+ * `plan.consultedRuns`) are news.
+ *
+ * - One of them ran paid work and ended red (failure, timed out, …): blocked. Its failures
+ *   stand for this commit — a duplicate run must not re-roll a red scenario
+ *   (or a run-level bug gate) into a green check. Re-running THAT run, or a
+ *   new push, is the way to a new verdict.
+ * - Otherwise each planned scenario whose `{id, key}` is in `greens` (what
+ *   those runs recorded — only scenarios that passed) moves to `carried`;
+ *   nothing left to run is "stop" (a passing check, like a plan whose every
+ *   scenario is already green).
+ * - Cancelled / skipped jobs say nothing about the commit and are ignored.
+ */
+export function replanAfterWait(args: {
+  plan: RunPlan;
+  jobs: readonly OtherRunJob[];
+  greens: readonly GreenResult[];
+}): AfterWaitVerdict {
+  const { plan } = args;
+  const consulted = new Set(plan.consultedRuns ?? []);
+  const fresh = args.jobs.filter((j) => j.status === "completed" && !consulted.has(j.runId));
+  const red = fresh.find(
+    (j) =>
+      j.ranPaidWork && j.conclusion !== "success" && !NO_VERDICT_CONCLUSIONS.includes(j.conclusion),
+  );
+  if (red !== undefined) {
+    return {
+      verdict: "blocked",
+      reason: `run ${red.runId} on this commit ended '${red.conclusion || "unknown"}' while this run waited for it — its result stands. Re-run that run (Re-run failed jobs) or push a fix; this run does not pay to re-roll it.`,
+      dropped: [],
+      plan,
+    };
+  }
+  const sources = fresh.filter((j) => j.conclusion === "success").map((j) => j.runId);
+  const green = new Set(args.greens.map((g) => `${g.id} ${g.key}`));
+  const dropped =
+    sources.length === 0 ? [] : plan.run.filter((id) => green.has(`${id} ${plan.keys[id]}`));
+  if (dropped.length === 0) {
+    return { verdict: "run", reason: plan.reason, dropped, plan };
+  }
+  const run = plan.run.filter((id) => !dropped.includes(id));
+  const from = sources.map((id) => `run ${id}`).join(", ");
+  const next: RunPlan = {
+    ...plan,
+    full: false,
+    run,
+    carried: [...plan.carried, ...dropped],
+    reason:
+      run.length === 0
+        ? `every planned scenario passed in ${from} on this commit while this run waited (${dropped.join(", ")})`
+        : `${plan.reason}; ${dropped.join(", ")} passed in ${from} on this commit while this run waited`,
+  };
+  return { verdict: run.length === 0 ? "stop" : "run", reason: next.reason, dropped, plan: next };
+}
+
+/**
+ * `runId\tstatus\tconclusion\tpreflight` lines (the workflow's job listing;
+ * `preflight` is the conclusion of the job's provider-preflight step, empty
+ * or "skipped" when it never ran).
+ */
+export function parseJobsTsv(text: string): OtherRunJob[] {
+  const out: OtherRunJob[] = [];
+  for (const line of text.split("\n")) {
+    const [id, status, conclusion, preflight] = line.split("\t");
+    const runId = Number(id);
+    if (!Number.isSafeInteger(runId) || runId <= 0 || status === undefined || status === "")
+      continue;
+    const pre = preflight?.trim() ?? "";
+    out.push({
+      runId,
+      status,
+      conclusion: conclusion?.trim() ?? "",
+      ranPaidWork: pre !== "" && pre !== "skipped",
+    });
+  }
+  return out;
+}
+
 /** The Markdown block the job summary and the PR comment show. */
 export function planSummary(plan: RunPlan): string {
   const lines = [`**Scenario selection:** ${plan.reason}.`];
@@ -496,13 +621,24 @@ function main(): void {
       .split(",")
       .map((l) => l.trim())
       .filter(Boolean);
-    const plan = planRun({
-      mode,
-      changed,
-      labels,
-      keys: scenarioKeys(readTree(), changed),
-      greens: readGreens(arg("greens")),
-    });
+    const consultedPath = arg("consulted");
+    const consultedRuns =
+      consultedPath !== undefined && existsSync(consultedPath)
+        ? readFileSync(consultedPath, "utf8")
+            .split("\n")
+            .map((l) => Number(l.trim()))
+            .filter((n) => Number.isSafeInteger(n) && n > 0)
+        : undefined;
+    const plan: RunPlan = {
+      ...planRun({
+        mode,
+        changed,
+        labels,
+        keys: scenarioKeys(readTree(), changed),
+        greens: readGreens(arg("greens")),
+      }),
+      ...(consultedRuns !== undefined ? { consultedRuns } : {}),
+    };
     // `scenarioFiles` is what the workflow hands Playwright
     // (CAELO_LIVEDIT_SCENARIOS); empty = every spec.
     const record = { ...plan, scenarioFiles: scenarioFiles(plan.run, plan.full) };
@@ -530,7 +666,37 @@ function main(): void {
     );
     return;
   }
-  throw new Error(`plan.ts: unknown command ${cmd ?? "(none)"} — use plan | record`);
+  if (cmd === "after-wait") {
+    const planPath = arg("plan");
+    const jobsPath = arg("jobs");
+    if (planPath === undefined || jobsPath === undefined) {
+      throw new Error("plan.ts after-wait: --plan <file> --jobs <file> are required");
+    }
+    const plan = JSON.parse(readFileSync(planPath, "utf8")) as RunPlan;
+    const v = replanAfterWait({
+      plan,
+      jobs: parseJobsTsv(readFileSync(jobsPath, "utf8")),
+      greens: readGreens(arg("greens")),
+    });
+    const scenarios = scenarioFiles(v.plan.run, v.plan.full);
+    if (v.dropped.length > 0) {
+      writeFileSync(out, `${JSON.stringify({ ...v.plan, scenarioFiles: scenarios }, null, 2)}\n`);
+      const summaryPath = arg("summary");
+      if (summaryPath !== undefined) writeFileSync(summaryPath, `${planSummary(v.plan)}\n`);
+    }
+    // One JSON line for the workflow step.
+    console.log(
+      JSON.stringify({
+        verdict: v.verdict,
+        reason: v.reason,
+        dropped: v.dropped,
+        scenarios,
+        full: v.plan.full,
+      }),
+    );
+    return;
+  }
+  throw new Error(`plan.ts: unknown command ${cmd ?? "(none)"} — use plan | record | after-wait`);
 }
 
 if (import.meta.main) main();

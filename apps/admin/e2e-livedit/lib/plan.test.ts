@@ -20,9 +20,12 @@ import {
   MAX_CLASSIFIABLE_FILES,
   OPT_IN_LABELS,
   optInComment,
+  parseJobsTsv,
   passedSpecFiles,
   planRun,
   planSummary,
+  type RunPlan,
+  replanAfterWait,
   SELECTED_LABEL,
   SPEC_DIR,
   scenarioFiles,
@@ -378,6 +381,136 @@ describe("recording greens", () => {
     expect(greens).toEqual([
       { id: "consent", key: "kc" },
       { id: "lists-mega-menu", key: "km" },
+    ]);
+  });
+});
+
+describe("replanAfterWait (two runs planned the same commit)", () => {
+  const keys = { homepage: "kh", consent: "kc", "lists-mega-menu": "km" };
+  // Run 2 planned while run 1 was still in flight: run 1 is not consulted.
+  const plan: RunPlan = {
+    mode: "run",
+    reason: "label `real-ai-full`",
+    full: true,
+    run: ["homepage", "consent", "lists-mega-menu"],
+    carried: [],
+    reasons: [],
+    keys,
+    consultedRuns: [100],
+  };
+  const done = (runId: number, conclusion: string, ranPaidWork = true) => ({
+    runId,
+    status: "completed",
+    conclusion,
+    ranPaidWork,
+  });
+
+  it("carries every scenario the earlier run passed; nothing left is stop", () => {
+    const v = replanAfterWait({
+      plan,
+      jobs: [done(1, "success")],
+      greens: [
+        { id: "homepage", key: "kh" },
+        { id: "consent", key: "kc" },
+        { id: "lists-mega-menu", key: "km" },
+      ],
+    });
+    expect(v.verdict).toBe("stop");
+    expect(v.plan.run).toEqual([]);
+    expect([...v.plan.carried].sort()).toEqual(["consent", "homepage", "lists-mega-menu"]);
+    expect(v.plan.full).toBe(false);
+    expect(v.reason).toContain("run 1");
+    // The carried ones are re-recorded green with their keys.
+    expect(greensAfterRun(v.plan, new Set()).length).toBe(3);
+  });
+
+  it("runs only the rest when the earlier run covered a subset", () => {
+    const v = replanAfterWait({
+      plan,
+      jobs: [done(1, "success")],
+      greens: [
+        { id: "homepage", key: "kh" },
+        { id: "consent", key: "other-key" },
+      ],
+    });
+    expect(v.verdict).toBe("run");
+    expect(v.dropped).toEqual(["homepage"]);
+    expect(v.plan.run).toEqual(["consent", "lists-mega-menu"]);
+    // A narrowed run never stands in for main's tree.
+    expect(v.plan.full).toBe(false);
+    expect(scenarioFiles(v.plan.run, v.plan.full)).not.toBe("");
+  });
+
+  it("a red earlier run blocks — its failures are not re-rolled green", () => {
+    for (const conclusion of ["failure", "timed_out", "action_required"]) {
+      const v = replanAfterWait({
+        plan,
+        jobs: [done(1, conclusion)],
+        // Even with the scenarios it did pass recorded green.
+        greens: [
+          { id: "homepage", key: "kh" },
+          { id: "consent", key: "kc" },
+        ],
+      });
+      expect(v.verdict, conclusion).toBe("blocked");
+      expect(v.reason).toContain(`run 1 on this commit ended '${conclusion}'`);
+      expect(v.plan).toBe(plan);
+    }
+    // One green and one red run: red wins.
+    const mixed = replanAfterWait({
+      plan,
+      jobs: [done(1, "success"), done(2, "failure")],
+      greens: [{ id: "homepage", key: "kh" }],
+    });
+    expect(mixed.verdict).toBe("blocked");
+  });
+
+  it("runs the consulted the plan already saw are not news (a deliberate re-request stays)", () => {
+    const v = replanAfterWait({
+      plan,
+      jobs: [done(100, "failure")],
+      greens: [{ id: "homepage", key: "kh" }],
+    });
+    expect(v.verdict).toBe("run");
+    expect(v.plan).toBe(plan);
+  });
+
+  it("ignores cancelled, skipped and unfinished jobs, and greens without a fresh green run", () => {
+    const greens = [{ id: "homepage", key: "kh" }];
+    for (const job of [
+      done(1, "cancelled"),
+      done(1, "skipped"),
+      { runId: 1, status: "in_progress", conclusion: "", ranPaidWork: false },
+    ]) {
+      const v = replanAfterWait({ plan, jobs: [job], greens });
+      expect(v.verdict, JSON.stringify(job)).toBe("run");
+      expect(v.dropped).toEqual([]);
+      expect(v.plan).toBe(plan);
+    }
+  });
+
+  it("a job that failed before paid work (a blocked duplicate) is no verdict — the red run can be re-run", () => {
+    // Run 1 went red, run 2 was blocked by this guard. Re-running run 1's
+    // failed job reuses its plan (run 2 not consulted): run 2's failure only
+    // echoed run 1 and must not block the retry.
+    const retry = replanAfterWait({ plan, jobs: [done(2, "failure", false)], greens: [] });
+    expect(retry.verdict).toBe("run");
+    expect(retry.plan).toBe(plan);
+    // ...while a red that reached the provider still blocks.
+    expect(replanAfterWait({ plan, jobs: [done(2, "failure", true)], greens: [] }).verdict).toBe(
+      "blocked",
+    );
+  });
+
+  it("parses the workflow's job listing", () => {
+    expect(
+      parseJobsTsv(
+        "1\tcompleted\tsuccess\tsuccess\n2\tin_progress\t\t\n3\tcompleted\tfailure\tskipped\n\nx\tcompleted\tfailure\tfailure\n",
+      ),
+    ).toEqual([
+      { runId: 1, status: "completed", conclusion: "success", ranPaidWork: true },
+      { runId: 2, status: "in_progress", conclusion: "", ranPaidWork: false },
+      { runId: 3, status: "completed", conclusion: "failure", ranPaidWork: false },
     ]);
   });
 });
