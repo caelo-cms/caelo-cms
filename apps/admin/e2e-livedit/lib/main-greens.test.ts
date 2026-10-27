@@ -199,6 +199,14 @@ describe("planRelease", () => {
     expect(planRelease({ now: NOW, greens, diffs: diffs([]) }).run).toEqual([]);
   });
 
+  it("runs a scenario whose green record is dated in the future", () => {
+    const greens = allGreen(SHA_A, 1);
+    greens.set("consent", { id: "consent", at: daysAgo(-1), sha: SHA_A, run: "1-1" });
+    const p = planRelease({ now: NOW, greens, diffs: diffs([]) });
+    expect(p.run).toEqual(["consent"]);
+    expect(p.reasons[0]?.files[0]).toContain("in the future");
+  });
+
   it("runs a scenario with no record, and one whose green commit cannot be diffed", () => {
     const greens = allGreen(SHA_A, 1);
     greens.delete("image-gen");

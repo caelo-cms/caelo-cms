@@ -28,7 +28,8 @@
  * The rule, per CI scenario (`planRelease`): it RUNS when
  *   - it has no record (none yet, a name that does not parse, a new
  *     scenario),
- *   - its newest green is older than {@link MAX_GREEN_AGE_DAYS} days (the
+ *   - its newest green is dated in the future, or older than
+ *     {@link MAX_GREEN_AGE_DAYS} days (the
  *     safety net against provider / model drift: the code did not change,
  *     the model behind it may have),
  *   - the diff from its green commit cannot be computed (unknown commit),
@@ -183,6 +184,12 @@ export function planRelease(args: {
       continue;
     }
     const at = g.at.toISOString().slice(0, 16).replace("T", " ");
+    // A record from the future is no evidence of anything (a clock or a
+    // forged name); it must not hold a scenario carried for a week.
+    if (g.at.getTime() > args.now.getTime() + 3_600_000) {
+      why([`(green record dated in the future: ${at} UTC)`]);
+      continue;
+    }
     if (args.now.getTime() - g.at.getTime() > maxAge) {
       why([`(last green ${at} UTC is older than ${MAX_GREEN_AGE_DAYS} days)`]);
       continue;
