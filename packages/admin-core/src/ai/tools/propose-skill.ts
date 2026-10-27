@@ -43,7 +43,7 @@ export const proposeSkillTool: ToolDefinitionWithHandler<ProposeSkillToolInput> 
         type: "array",
         items: { type: "string", maxLength: 120 },
         description:
-          "AI tool names (e.g. `update_modules_many`, `list_pages`) the workflow calls -> list every one. PRELOAD HINTS (loaded up front, no tool-search round-trip), NOT a restriction. Query-API op names (`pages.list`) are rejected.",
+          "AI tool names (e.g. `update_modules_many`, `list_pages`) the workflow calls -> list every one. load_skill names them for loading; NOT a restriction. Query-API op names (`pages.list`) are rejected.",
       },
       hints: {
         type: "object",

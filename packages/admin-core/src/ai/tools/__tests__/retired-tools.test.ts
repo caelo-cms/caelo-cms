@@ -13,7 +13,6 @@ import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { registerAdminOps } from "../../../register.js";
 import {
-  resolveAllowlistEntries,
   resolveAllowlistEntry,
   validateAllowlistEntries,
 } from "../../chat-runner/allowlist-mapping.js";
@@ -255,13 +254,6 @@ describe("skill allowlists (`retired` resolution)", () => {
       kind: "retired",
       toolNames: ["update_modules_many"],
     });
-  });
-
-  it("preloads the replacement and reports the rewrite", () => {
-    const r = resolveAllowlistEntries(["set_page_seo", "list_pages"], liveNames);
-    expect([...r.resolvedToolNames].sort()).toEqual(["list_pages", "set_page_seo_many"]);
-    expect(r.retired).toEqual([{ entry: "set_page_seo", toolNames: ["set_page_seo_many"] }]);
-    expect(r.unresolved).toEqual([]);
   });
 
   it("normalizes retired names on save, deduplicated against the live name", () => {

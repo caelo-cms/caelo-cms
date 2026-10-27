@@ -18,7 +18,7 @@
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
-import type { ChatEngagement, ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
+import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
 import { describeStageReadiness, type StageReadiness } from "../../deploy/stage-readiness.js";
 import { buildPageContext } from "./context/page.js";
@@ -48,9 +48,6 @@ export interface SystemContextResult {
    * + when the page changed), never the system prompt.
    */
   pageContextBlock: string | undefined;
-  /** Skills loaded this chat — feeds the tool-catalogue preload + diagnostics. */
-  engagedSkills: ChatEngagement[];
-  allowedToolNames: Set<string> | null;
   /**
    * Skills activated after this chat began. Deliberately absent from the
    * pinned index; announced once on the USER message instead.
@@ -199,9 +196,6 @@ export async function buildSystemContextBlocks(deps: {
   humanCtxWithBranch: ExecutionContext;
   aiActorId: string;
   input: ChatSendMessageInput;
-  /** Slugs the model already loaded this chat (parsed from prior load_skill
-   *  tool calls in the history) — drives the skills tool preload. */
-  loadedSkillSlugs: readonly string[];
   /** When this chat session was created. Pins the `## Skills` index to
    *  the skills that were active then, so a mid-chat activation can't
    *  rewrite the cached system prefix. */
@@ -217,7 +211,6 @@ export async function buildSystemContextBlocks(deps: {
     input.activePageId,
   );
   const skills = await buildSkillsContext(registry, adapter, humanCtx, {
-    loadedSkillSlugs: deps.loadedSkillSlugs,
     chatStartedAt: deps.chatStartedAt ?? null,
     chatSessionId: input.chatSessionId,
   });
@@ -249,8 +242,6 @@ export async function buildSystemContextBlocks(deps: {
   return {
     preBlocks: { skillsIndexBlock: skills.skillsIndexBlock, installedPluginsBlock },
     pageContextBlock,
-    engagedSkills: skills.engagedSkills,
-    allowedToolNames: skills.allowedToolNames,
     newlyActivatedSkills: skills.newlyActivated,
     unavailableSkills: skills.notRunningHere,
     statusLine,

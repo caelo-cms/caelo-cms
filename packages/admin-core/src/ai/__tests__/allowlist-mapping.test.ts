@@ -18,7 +18,6 @@ import { describe, expect, it } from "bun:test";
 
 import {
   OP_NAME_TO_TOOL_NAMES,
-  resolveAllowlistEntries,
   resolveAllowlistEntry,
   suggestNearestToolName,
   validateAllowlistEntries,
@@ -131,24 +130,6 @@ describe("resolveAllowlistEntry", () => {
       kind: "unresolved",
       suggestion: "update_modules_many",
     });
-  });
-});
-
-describe("resolveAllowlistEntries", () => {
-  it("partitions a mixed allowlist and dedupes the resolved set", () => {
-    const live = new Set(["update_modules_many", "list_pages"]);
-    const r = resolveAllowlistEntries(
-      ["update_modules_many", "pages.list", "pages.get", "ai_memory.list", "no.such_op"],
-      live,
-    );
-    expect([...r.resolvedToolNames].sort()).toEqual(["list_pages", "update_modules_many"]);
-    expect(r.translated).toEqual([
-      { entry: "pages.list", toolNames: ["list_pages"] },
-      { entry: "pages.get", toolNames: ["list_pages"] },
-    ]);
-    expect(r.contextServed).toEqual(["ai_memory.list"]);
-    expect(r.unresolved.length).toBe(1);
-    expect(r.unresolved[0]?.entry).toBe("no.such_op");
   });
 });
 

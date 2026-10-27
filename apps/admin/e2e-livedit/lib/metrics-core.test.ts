@@ -220,6 +220,73 @@ describe("aggregate + attribution", () => {
   });
 });
 
+/** A loop block with explicit cache figures (the shared helper derives them from inCall). */
+function cacheLoop(
+  session: string,
+  loop: number,
+  u: { read: number; write: number; fresh: number; search?: boolean },
+): string {
+  return [
+    "[chat-runner] loop {",
+    `  chatSessionId: "${session}",`,
+    `  loop: ${loop},`,
+    '  loopStop: "tool-calls",',
+    "  toolNames: [],",
+    `  serverToolCalls: ${u.search ? 1 : 0},`,
+    `  inThisCall: ${u.read + u.write + u.fresh},`,
+    `  cacheRead: ${u.read},`,
+    `  cacheWrite: ${u.write},`,
+    `  freshIn: ${u.fresh},`,
+    "  outThisCall: 100,",
+    "}",
+  ].join("\n");
+}
+
+function splitWithCatalogue(session: string, toolCatalogueTokens: number): string {
+  return contextSplit(session, 1000).replace(
+    "toolCatalogueTokens: 47720",
+    `toolCatalogueTokens: ${toolCatalogueTokens}`,
+  );
+}
+
+describe("cache breakdown", () => {
+  it("flags a later turn that re-wrote the history and says the tool list changed", () => {
+    // e2e-livedit 2026-10-26: a skill loaded in turn 1 grew the tool list of
+    // turn 2, whose first call read nothing from the cache.
+    const log = [
+      splitWithCatalogue(S1, 23_000),
+      cacheLoop(S1, 1, { read: 0, write: 45_000, fresh: 2 }),
+      cacheLoop(S1, 2, { read: 45_000, write: 50_000, fresh: 7000, search: true }),
+      cacheLoop(S1, 3, { read: 50_000, write: 30_000, fresh: 2 }),
+      splitWithCatalogue(S1, 30_000),
+      cacheLoop(S1, 1, { read: 0, write: 110_000, fresh: 2 }),
+    ].join("\n");
+    const { loops, tools, splits } = parseChatLog(log);
+    const m = aggregate(loops, tools, splits);
+    expect(m.cache.turnStartMisses).toEqual([
+      { turnNo: 2, session: S1, rewrittenTokens: 110_000, toolListChanged: true },
+    ]);
+    // The search call re-read 45k already sent once (45,002 before it): 0
+    // extra reads beyond that, plus 7000 uncached definitions.
+    expect(m.cache.toolSearchCalls).toBe(1);
+    expect(m.cache.toolSearchExtraTokens).toBe(7000);
+    expect(formatReport("homepage", m)).toContain(
+      "CACHE: 1 later turn(s) started with a cache miss (110.0k re-written; tool list changed in 1)",
+    );
+  });
+
+  it("a later turn that read its history from the cache is no miss", () => {
+    const log = [
+      splitWithCatalogue(S1, 23_000),
+      cacheLoop(S1, 1, { read: 43_000, write: 2000, fresh: 2 }),
+      splitWithCatalogue(S1, 23_000),
+      cacheLoop(S1, 1, { read: 45_000, write: 500, fresh: 2 }),
+    ].join("\n");
+    const { loops, tools, splits } = parseChatLog(log);
+    expect(aggregate(loops, tools, splits).cache.turnStartMisses).toEqual([]);
+  });
+});
+
 describe("thresholds (issue #432 re-derived ceilings)", () => {
   const { loops, tools, splits } = parseChatLog(FIXTURE);
   const m = aggregate(loops, tools, splits);
