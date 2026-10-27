@@ -70,7 +70,7 @@ export const PAGE_SEO_FIELDS = [
 export const uuidKey = (id: string): string => id.toLowerCase();
 
 /** {@link uuidKey} for a page id (the key of every map these helpers return). */
-export const pageKey = uuidKey;
+export const pageKey = (id: string): string => uuidKey(id);
 
 /** {@link uuidKey} for a nullable asset id (`null` = no OG image). */
 export const assetKey = (id: string | null): string | null => (id === null ? null : uuidKey(id));
