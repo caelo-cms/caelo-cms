@@ -77,7 +77,9 @@ async function createPage(slug: string, title: string, status: "draft" | "publis
 }
 
 async function trigger(targetName: string): Promise<{ ok: boolean; message: string }> {
-  const r = await execute(registry, adapter, SYS, "deploy.trigger", { targetName });
+  // #1154 — production is built only for a human (an Owner's build).
+  const ctx = targetName === "production" ? { ...SYS, actorKind: "human" as const } : SYS;
+  const r = await execute(registry, adapter, ctx, "deploy.trigger", { targetName });
   if (r.ok) return { ok: true, message: "" };
   return { ok: false, message: (r.error as { message?: string }).message ?? r.error.kind };
 }

@@ -18,7 +18,7 @@
  * the AI proposes and the operator approves in the chat (CLAUDE.md §11.A,
  * Plan B); `execute_proposal` then runs the existing op's handler on the
  * queued payload inside the same transaction, so the apply logic (pricing
- * cache invalidation, gateway pg_notify, the deploy.trigger guard, audit)
+ * cache invalidation, gateway pg_notify, audit)
  * is the one the Owner panel already uses, not a copy of it.
  *
  * Every propose op validates the payload against exactly what the apply
@@ -288,14 +288,6 @@ export const proposeSetGatewaySettingsOp = defineOperation({
   output: proposeOutput,
   handler: async (ctx, input, tx) => {
     const op = "owner_settings.propose_set_gateway_settings";
-    // Same guard as gateway.set_settings, moved forward to propose time so
-    // the operator is never asked to approve an infinite redeploy loop.
-    if (input.autoRedeployOpKinds?.includes("deploy.trigger")) {
-      return handlerError(
-        op,
-        "autoRedeployOpKinds must not include 'deploy.trigger' (the redeploy orchestrator fires it; listing it loops forever). Remove it and propose again.",
-      );
-    }
     const m = await mergedGatewaySettings(ctx, tx, input);
     if (!m.ok) return handlerError(op, m.message);
     const changes: Record<string, { from: unknown; to: unknown }> = {};

@@ -3,7 +3,7 @@
 /**
  * P14 imports happy-path integration test. Exercises the full loop:
  *   AI propose_run → Owner execute_proposal → write_extracted_pages
- *   (simulating the orchestrator tick) → accept_page → assert pages +
+ *   (simulating the crawl worker tick) → accept_page → assert pages +
  *   page_modules + modules rows exist.
  *
  * Also asserts the §11.A gate: AI calls execute_proposal directly →

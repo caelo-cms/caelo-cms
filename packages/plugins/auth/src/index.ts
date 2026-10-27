@@ -123,6 +123,38 @@ async function revokeAllSessions(q: PluginQuery, publicUserId: string): Promise<
   }
 }
 
+/**
+ * #854 — delete the dead rows of a table, all of them. `list` caps at 1000
+ * rows, and the sweep used to read one unordered page: past 1000 rows the
+ * expired ones beyond it were never deleted. Pages ordered by `expires_at`
+ * put the expired rows first, so the sweep deletes page after page and
+ * stops at the first page that reaches a row still valid.
+ */
+async function sweepByExpiry<Row extends { id: string; expires_at: string }>(
+  q: PluginQuery,
+  table: "visitor_sessions" | "password_reset_tokens",
+  now: Date,
+  isDead: (row: Row & { used_at: string | null }) => boolean,
+): Promise<number> {
+  let deleted = 0;
+  for (;;) {
+    const page = await q.list<typeof table, Row & { used_at: string | null }>(table, {
+      orderBy: "expires_at",
+      orderDir: "asc",
+      limit: 1000,
+    });
+    let reachedLive = false;
+    for (const row of page) {
+      if (new Date(row.expires_at) >= now) reachedLive = true;
+      if (isDead({ ...row, used_at: row.used_at ?? null })) {
+        await q.delete(table, row.id);
+        deleted += 1;
+      }
+    }
+    if (reachedLive || page.length < 1000) return deleted;
+  }
+}
+
 interface SignupInput {
   email: string;
   password: string;
@@ -549,29 +581,22 @@ export default definePlugin<PluginContextTier1>({
      * Runs hourly.
      */
     _sweep_expired: async (ctx, _args) => {
-      const sessions = await ctx.query.list<"visitor_sessions", { id: string; expires_at: string }>(
-        "visitor_sessions",
-        { limit: 1000 },
-      );
-      let deleted = 0;
       const now = new Date();
-      for (const s of sessions) {
-        if (new Date(s.expires_at) < now) {
-          await ctx.query.delete("visitor_sessions", s.id);
-          deleted += 1;
-        }
-      }
-      const tokens = await ctx.query.list<
+      const sessions = await sweepByExpiry(
+        ctx.query,
+        "visitor_sessions",
+        now,
+        (s) => new Date(s.expires_at) < now,
+      );
+      // A used token is dead too; one used within the hour expires (and
+      // goes) at the latest on the next hourly run.
+      const tokens = await sweepByExpiry(
+        ctx.query,
         "password_reset_tokens",
-        { id: string; expires_at: string; used_at: string | null }
-      >("password_reset_tokens", { limit: 1000 });
-      for (const t of tokens) {
-        if (t.used_at || new Date(t.expires_at) < now) {
-          await ctx.query.delete("password_reset_tokens", t.id);
-          deleted += 1;
-        }
-      }
-      return { deleted };
+        now,
+        (t) => t.used_at !== null || new Date(t.expires_at) < now,
+      );
+      return { deleted: sessions + tokens };
     },
   },
   tools: [

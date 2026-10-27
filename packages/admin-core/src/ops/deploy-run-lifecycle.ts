@@ -23,7 +23,6 @@ import { z } from "zod";
 import { deployRunIsOrphaned } from "../deploy/deploy-run-lock.js";
 import { deployPluginProblem } from "../deploy/plugin-problems.js";
 import { jsonbParam } from "../sql-helpers.js";
-import { uuidList } from "./quality/_shared.js";
 
 /** What a run that died mid-build says, and what to do about it. */
 export const ORPHANED_RUN_MESSAGE =
@@ -49,8 +48,6 @@ export const beginDeployRunOp = defineOperation({
       startedAt: z.string().min(1),
       /** #553 — main's render fingerprint at the start of a staging build. */
       renderFingerprint: z.unknown().nullable(),
-      /** #620 — the AI stage holds a build covers; null for a Publish live run. */
-      coveredAiHoldIds: z.array(z.string().uuid()).nullable(),
       /** #834 — the Caelo version rendering the build; null for a copy-promote. */
       caeloVersion: z.string().nullable(),
       /**
@@ -78,11 +75,10 @@ export const beginDeployRunOp = defineOperation({
     }
     await tx.execute(sql`
       INSERT INTO deploy_runs (id, target_id, actor_id, status, started_at, render_fingerprint,
-                               covered_ai_hold_ids, caelo_version, plugin_problems)
+                               caelo_version, plugin_problems)
       VALUES (${input.runId}::uuid, ${input.targetId}::uuid, ${input.actorId}::uuid, 'running',
               ${input.startedAt}::timestamptz,
               ${input.renderFingerprint === null ? sql`NULL` : jsonbParam(input.renderFingerprint)},
-              ${input.coveredAiHoldIds === null ? sql`NULL` : uuidList(input.coveredAiHoldIds)},
               ${input.caeloVersion},
               ${input.pluginProblems === null ? sql`NULL` : jsonbParam(input.pluginProblems)})
     `);

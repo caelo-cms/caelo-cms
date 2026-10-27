@@ -3024,13 +3024,17 @@
           {#if uploadError}
             <p class="text-xs text-destructive" data-testid="chat-upload-error">{uploadError}</p>
           {/if}
-          <div class="flex items-center gap-2">
-            <Label for="picker" class="text-xs text-muted-foreground">+ Reference module</Label>
+          <!-- Wraps: in a narrow chat (a phone, a 420 px column with Debug on)
+               the Thinking / Send buttons moved past the panel's clipped edge. -->
+          <div class="flex flex-wrap items-center gap-2" data-testid="chat-composer-actions">
+            <Label for="picker" class="whitespace-nowrap text-xs text-muted-foreground"
+              >+ Reference module</Label
+            >
             <select
               id="picker"
               bind:value={pickedModuleId}
               onchange={addChipFromDropdown}
-              class="flex h-8 rounded-md border border-input bg-transparent px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              class="flex h-8 min-w-0 max-w-full rounded-md border border-input bg-transparent px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="">…</option>
               {#each modules as m (m.id)}

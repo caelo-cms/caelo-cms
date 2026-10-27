@@ -29,7 +29,6 @@
         "@caelo-cms/plugin-host": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
-        "@caelo-cms/redeploy-orchestrator": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
         "@fontsource-variable/schibsted-grotesk": "5.3.0",
         "@fontsource/ibm-plex-mono": "5.3.0",
@@ -337,23 +336,6 @@
         "zod": "4.6.7",
       },
     },
-    "packages/redeploy-orchestrator": {
-      "name": "@caelo-cms/redeploy-orchestrator",
-      "version": "0.0.0",
-      "dependencies": {
-        "@caelo-cms/query-api": "workspace:*",
-        "@caelo-cms/site-importer": "workspace:*",
-        "drizzle-orm": "0.45.4",
-        "zod": "4.6.7",
-      },
-      "devDependencies": {
-        "@caelo-cms/admin-core": "workspace:*",
-        "@caelo-cms/plugin-consent-manager": "workspace:*",
-        "@caelo-cms/plugin-host": "workspace:*",
-        "@caelo-cms/plugin-ratings": "workspace:*",
-        "@caelo-cms/plugin-sandbox": "workspace:*",
-      },
-    },
     "packages/shared": {
       "name": "@caelo-cms/shared",
       "version": "0.0.0",
@@ -530,8 +512,6 @@
     "@caelo-cms/provisioning": ["@caelo-cms/provisioning@workspace:packages/provisioning"],
 
     "@caelo-cms/query-api": ["@caelo-cms/query-api@workspace:packages/query-api"],
-
-    "@caelo-cms/redeploy-orchestrator": ["@caelo-cms/redeploy-orchestrator@workspace:packages/redeploy-orchestrator"],
 
     "@caelo-cms/shared": ["@caelo-cms/shared@workspace:packages/shared"],
 

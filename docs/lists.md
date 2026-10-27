@@ -528,8 +528,7 @@ tools (`translate_chrome`, `apply_translations` with `kind: "addresses"`,
   ```
 
   An incremental build (`deploy.trigger` with `changedPageIds`,
-  `changedListIds`, `changedListTypeIds`; the redeploy orchestrator fills
-  them from `audit_events`) adds every page whose deps intersect the
+  `changedListIds`, `changedListTypeIds`) adds every page whose deps intersect the
   change: a changed list or type, a page whose filter attributes before
   (the file's `index`) or after match a recorded query, and every
   page-tree reader when a changed page's title, parent or build

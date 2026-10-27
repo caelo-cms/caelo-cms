@@ -10,7 +10,7 @@
  * branch-isolated per chat until publish.
  */
 
-import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
 import { err, ok, pageModuleContentSetManySchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -22,6 +22,16 @@ import {
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
 import { setContentInstanceValuesOp } from "./content-instances.js";
+import { loadNestedContent, placementFieldsOf } from "./page-content-tree.js";
+
+/** A module field as `list_for_page` returns it (see page-content-tree.ts). */
+const placementFieldSchema = z.object({
+  name: z.string(),
+  kind: z.string(),
+  default: z.unknown().optional(),
+  listType: z.string().optional(),
+  bind: z.string().optional(),
+});
 
 const pageModuleContentRowSchema = z.object({
   id: z.string(),
@@ -95,6 +105,57 @@ export const getPageModuleContentOp = withHumanisedLinks(
 );
 
 /**
+ * The nested content instance at `path` inside the placement bound to
+ * `rootId`, as the caller sees it — or why it may not be written: it does
+ * not exist, or another page renders it too (`fork` names the remedy).
+ */
+async function resolveNestedTarget(
+  tx: TransactionRunner,
+  chatBranchId: string | null,
+  rootId: string,
+  path: string,
+): Promise<
+  { ok: true; contentInstanceId: string } | { ok: false; message: string; fork: boolean }
+> {
+  const rows = (await tx.execute(sql`
+    SELECT "values" FROM content_instances WHERE id = ${rootId}::uuid AND deleted_at IS NULL
+  `)) as unknown as { values: unknown }[];
+  let values = rows[0]
+    ? (((typeof rows[0].values === "string" ? JSON.parse(rows[0].values) : rows[0].values) ??
+        {}) as Record<string, unknown>)
+    : undefined;
+  if (chatBranchId) {
+    const branched = (await loadContentInstanceBranchStates(tx, [rootId], chatBranchId)).get(
+      rootId,
+    );
+    if (branched)
+      values = branched.deletedAt ? undefined : (branched.values as Record<string, unknown>);
+  }
+  if (values === undefined) {
+    return { ok: false, message: `content instance ${rootId} does not exist`, fork: false };
+  }
+  const tree = await loadNestedContent(tx, chatBranchId, [
+    { key: "root", contentInstanceId: rootId, values },
+  ]);
+  const hit = tree.get("root")?.find((n) => n.path === path);
+  if (!hit) {
+    return {
+      ok: false,
+      message: `no nested content at "${path}" — page_module_content.list_for_page lists the nested paths`,
+      fork: false,
+    };
+  }
+  if (!hit.exclusive) {
+    return {
+      ok: false,
+      message: `the nested content at "${path}" is shared with another page; writing it would change that page too`,
+      fork: true,
+    };
+  }
+  return { ok: true, contentInstanceId: hit.contentInstanceId };
+}
+
+/**
  * Set / upsert the content values for a placement. Emits a snapshot tagged
  * with the caller's `chat_branch_id` so the preview overlay shows the new
  * content only on the chat that authored it; publish merges the branch
@@ -117,6 +178,13 @@ export const setPageModuleContentOp = defineOperation({
        * `page_module_content.get` if they need merge semantics).
        */
       contentValues: z.record(z.string(), z.unknown()),
+      /**
+       * Write the NESTED content at this path inside the placement
+       * (`cards[2]`, `hero>cta`; the paths `list_for_page` returns)
+       * instead of the placement's own. The write is bound to this page:
+       * it is refused when another page renders the same nested instance.
+       */
+      nestedPath: z.string().min(1).max(500).optional(),
     })
     .strict(),
   output: z.object({ pageModuleContentId: z.string() }),
@@ -184,12 +252,47 @@ export const setPageModuleContentOp = defineOperation({
       });
     }
 
+    // Nested content: resolved from THIS placement's tree, written only
+    // when no other page renders it (plugins hold this op, never
+    // content_instances.set_values: a write stays bound to a page).
+    let targetId = placement.contentInstanceId;
+    if (input.nestedPath !== undefined) {
+      const nested = await resolveNestedTarget(
+        tx,
+        ctx.chatBranchId ?? null,
+        placement.contentInstanceId,
+        input.nestedPath,
+      );
+      if (!nested.ok) {
+        return err({
+          kind: "HandlerError",
+          operation: "page_module_content.set",
+          message: `${nested.message} (placement ${input.blockName}#${input.position} on page ${input.pageId})`,
+          ...(nested.fork
+            ? {
+                nextAction: {
+                  tool: "fork_placement_content",
+                  args: {
+                    pageId: input.pageId,
+                    blockName: input.blockName,
+                    position: input.position,
+                  },
+                  reason:
+                    "the fork copies the placement's nested content, so this page owns it; retry the write after the fork",
+                },
+              }
+            : {}),
+        });
+      }
+      targetId = nested.contentInstanceId;
+    }
+
     // Unsynced — write through to content_instances.set_values. The
     // op handles the lock + branch isolation + snapshot.
     const setValuesResult = await setContentInstanceValuesOp.handler(
       ctx,
       {
-        id: placement.contentInstanceId,
+        id: targetId,
         values: input.contentValues,
       },
       tx,
@@ -281,6 +384,10 @@ export const setPageModuleContentManyOp = defineOperation({
  * (from the bound content_instance) + module slug, ordered by (blockName, position) — deterministic and identical to the preview composer's per-block ordering, though template/layout slot layout decides actual on-page visual order.
  * The read surface the international-site translator builds its
  * whole-page prompt from; open to plugin actors like the other reads.
+ *
+ * `fields` (with defaults) and `nested` (./page-content-tree.ts) carry
+ * the text the stored values alone miss: copy that renders from a field
+ * default, and the content of nested modules.
  */
 export const listPageModuleContentOp = withHumanisedLinks(
   defineOperation({
@@ -295,6 +402,18 @@ export const listPageModuleContentOp = withHumanisedLinks(
           position: z.number().int().nonnegative(),
           moduleSlug: z.string(),
           values: z.record(z.string(), z.unknown()),
+          contentInstanceId: z.string(),
+          fields: z.array(placementFieldSchema),
+          nested: z.array(
+            z.object({
+              path: z.string(),
+              contentInstanceId: z.string(),
+              moduleSlug: z.string(),
+              fields: z.array(placementFieldSchema),
+              values: z.record(z.string(), z.unknown()),
+              exclusive: z.boolean(),
+            }),
+          ),
         }),
       ),
     }),
@@ -321,14 +440,22 @@ export const listPageModuleContentOp = withHumanisedLinks(
       const moduleIds = [...new Set(placed.map((p) => p.moduleId))];
       const instanceIds = [...new Set(placed.map((p) => p.contentInstanceId))];
       const moduleRows = (await tx.execute(sql`
-        SELECT id::text AS id, slug, deleted_at FROM modules
+        SELECT id::text AS id, slug, fields, deleted_at FROM modules
         WHERE id IN (${sql.join(
           moduleIds.map((id) => sql`${id}::uuid`),
           sql`, `,
         )})
-      `)) as unknown as { id: string; slug: string; deleted_at: string | Date | null }[];
+      `)) as unknown as {
+        id: string;
+        slug: string;
+        fields: unknown;
+        deleted_at: string | Date | null;
+      }[];
       const modules = new Map(
-        moduleRows.map((m) => [m.id, { slug: m.slug, deleted: m.deleted_at !== null }]),
+        moduleRows.map((m) => [
+          m.id,
+          { slug: m.slug, fields: placementFieldsOf(m.fields), deleted: m.deleted_at !== null },
+        ]),
       );
       const instanceRows = (await tx.execute(sql`
         SELECT id::text AS id, "values" FROM content_instances
@@ -348,7 +475,11 @@ export const listPageModuleContentOp = withHumanisedLinks(
       );
       if (branchId) {
         for (const [id, state] of await loadBranchedModuleStates(tx, branchId, moduleIds)) {
-          modules.set(id, { slug: state.slug, deleted: state.deletedAt !== null });
+          modules.set(id, {
+            slug: state.slug,
+            fields: placementFieldsOf(state.fields),
+            deleted: state.deletedAt !== null,
+          });
         }
         for (const [id, state] of await loadContentInstanceBranchStates(
           tx,
@@ -358,18 +489,32 @@ export const listPageModuleContentOp = withHumanisedLinks(
           values.set(id, state.values);
         }
       }
+      const live = placed.flatMap((p) => {
+        const m = modules.get(p.moduleId);
+        if (!m || m.deleted) return [];
+        const v = values.get(p.contentInstanceId);
+        if (v === undefined) {
+          throw new Error(
+            `page_module_content.list_for_page: placement ${p.blockName}#${p.position} of page ${input.pageId} binds content_instance ${p.contentInstanceId}, which does not exist`,
+          );
+        }
+        return [{ p, m, v, key: `${p.blockName}|${p.position}` }];
+      });
+      const nested = await loadNestedContent(
+        tx,
+        branchId,
+        live.map((l) => ({ key: l.key, contentInstanceId: l.p.contentInstanceId, values: l.v })),
+      );
       return ok({
-        placements: placed.flatMap((p) => {
-          const m = modules.get(p.moduleId);
-          if (!m || m.deleted) return [];
-          const v = values.get(p.contentInstanceId);
-          if (v === undefined) {
-            throw new Error(
-              `page_module_content.list_for_page: placement ${p.blockName}#${p.position} of page ${input.pageId} binds content_instance ${p.contentInstanceId}, which does not exist`,
-            );
-          }
-          return [{ blockName: p.blockName, position: p.position, moduleSlug: m.slug, values: v }];
-        }),
+        placements: live.map(({ p, m, v, key }) => ({
+          blockName: p.blockName,
+          position: p.position,
+          moduleSlug: m.slug,
+          values: v,
+          contentInstanceId: p.contentInstanceId,
+          fields: m.fields,
+          nested: nested.get(key) ?? [],
+        })),
       });
     },
   }),

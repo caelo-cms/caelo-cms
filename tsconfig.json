@@ -13,7 +13,6 @@
     { "path": "./packages/plugin-component-kit" },
     { "path": "./packages/plugin-sandbox" },
     { "path": "./packages/plugin-host" },
-    { "path": "./packages/redeploy-orchestrator" },
     { "path": "./packages/site-importer" },
     { "path": "./packages/mcp-server" },
     { "path": "./packages/plugins/forms" },

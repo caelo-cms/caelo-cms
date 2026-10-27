@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { withFieldMarkupGuard } from "./_markup-guard.js";
+import { withPluginModuleHints } from "./_plugin-write-hints.js";
 import { placementTargets } from "./_repeated-value-guard.js";
 import { activatePluginTool } from "./activate-plugin.js";
 import { addModuleTool } from "./add-module.js";
@@ -267,7 +268,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // update_modules_many); grep_content = catalog-wide search. One registry
   // (content-edit/registry.ts) backs all three (CLAUDE.md §1A DRY).
   registry.register(readContentTool);
-  registry.register(editContentTool);
+  registry.register(
+    withPluginModuleHints(editContentTool, (i) =>
+      i.entityKind === "module" && i.field === "html" ? [i.entityId] : [],
+    ),
+  );
   registry.register(grepContentTool);
   // #917 — targeted text edits of one placement (escaped plain text, so no
   // markup guard needed); the same op Live Edit's in-place editing uses.
@@ -497,7 +502,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(updatePagesManyTool);
   // 0263 — nested page URLs: reparent pages (subtree + 301s).
   registry.register(movePagesTool);
-  registry.register(updateModulesManyTool);
+  registry.register(
+    withPluginModuleHints(updateModulesManyTool, (i) => i.items.map((x) => x.moduleId)),
+  );
   // v0.9.13 — singular + bulk status flip. Drafts are LIVE-EDIT ONLY;
   // only `published` pages ship to Stage / Production. Bulk variant
   // saves N round-trips when the user asks to flip a batch.

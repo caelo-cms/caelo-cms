@@ -50,12 +50,6 @@ import {
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
-import {
-  AI_MERGE_BUSY_MESSAGE,
-  enterAiMerge,
-  isAiInitiated,
-  recordAiStageHold,
-} from "../../stage/ai-stage-hold.js";
 import { refreshLivePathsAfterMerge } from "../content/current-path.js";
 import { stageReferenceGate } from "../content/link-integrity.js";
 import { applyMediaUsageDelta } from "../content/media-usage.js";
@@ -1279,21 +1273,14 @@ const chatMergeToMainInput = chatPublishInput.extend({
    * …", the Stage flow classifies again).
    */
   headerIds: z.array(z.string().uuid()).max(20000).optional(),
-  /**
-   * Issue #620 Part B — the AI initiated this Stage (stage_changes runs the
-   * flow with the operator's context): opens the production hold. Asking
-   * for a hold only ever restricts, so any caller may set it.
-   */
-  aiInitiated: z.boolean().optional(),
 });
 
 export const mergeChatToMainOp = defineOperation({
   name: "chat.merge_to_main",
   // Issue #620 Part B — the AI may Stage (stage_changes runs this op as
-  // the AI). Staging is not public, snapshots stay revertable (§11.A
-  // routine test), and an AI merge opens a production hold in this same
-  // transaction, so it can never reach production without a human Publish
-  // live (stage/ai-stage-hold.ts).
+  // the AI). Staging is not public and snapshots stay revertable (§11.A
+  // routine test). Production is built only by a human Publish live
+  // (#1154: deploy.trigger / promote refuse every non-human production build).
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: chatMergeToMainInput,
@@ -1317,15 +1304,7 @@ export const mergeChatToMainOp = defineOperation({
     mergedHeaderIds: z.array(z.string()),
   }),
   handler: async (ctx, input, tx) => {
-    const ai = isAiInitiated(ctx, input.aiInitiated);
-    if (ai && !(await enterAiMerge(tx))) {
-      return err({
-        kind: "HandlerError",
-        operation: "chat.merge_to_main",
-        message: AI_MERGE_BUSY_MESSAGE,
-      });
-    }
-    const { headerIds: fixedHeaderIds, aiInitiated: _ai, ...publishInput } = input;
+    const { headerIds: fixedHeaderIds, ...publishInput } = input;
     const merged = await mergeBranchSnapshotsToMain(
       tx,
       ctx,
@@ -1357,10 +1336,6 @@ export const mergeChatToMainOp = defineOperation({
         message: "could not read merge timestamp",
       });
     }
-
-    // Even a merge of nothing: the AI still triggers the staging build an
-    // automatic publish would promote.
-    if (ai) await recordAiStageHold(tx, ctx, [input.chatSessionId]);
 
     if (!input.deferConsume) {
       await markBranchStaged(

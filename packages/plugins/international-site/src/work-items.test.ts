@@ -174,7 +174,16 @@ function world() {
           return { seo: m ? { metaDescription: m } : null } as O;
         }
         case "page_module_content.list_for_page":
-          return { placements: structuredClone(placements[i.pageId as string] ?? []) } as O;
+          // Core's read: every placement with its module's fields (text
+          // fields here, no defaults) and no nested content.
+          return {
+            placements: structuredClone(placements[i.pageId as string] ?? []).map((p, n) => ({
+              ...p,
+              contentInstanceId: `ci-${String(i.pageId)}-${n}`,
+              fields: Object.keys(p.values).map((name) => ({ name, kind: "text" })),
+              nested: [],
+            })),
+          } as O;
         case "pages.list_shared_content":
           return {
             layoutPlacements: [

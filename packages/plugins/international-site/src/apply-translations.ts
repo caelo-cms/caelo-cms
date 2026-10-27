@@ -42,12 +42,12 @@ import {
   writeListTranslations,
 } from "./list-translation-ops.js";
 import {
+  outcomeNextStep,
   type PageTranslationOutcome,
   type PreparedPageTranslation,
   pageTranslationBasis,
   parsePageTranslationAnswer,
   preparePageTranslation,
-  SEO_STALE_NEXT_STEP,
   writePageTranslation,
 } from "./page-translation.js";
 import type { TranslationResultPayload } from "./translation.js";
@@ -442,13 +442,17 @@ export async function applyTranslations(
     }
   }
   const applied = results.filter((r) => r.status === "applied").length;
-  const seoStale = results.some(
-    (r) => r.kind === "page" && r.status === "applied" && r.seo === "marked_stale",
+  const steps = new Set(
+    results.flatMap((r) => {
+      if (r.kind !== "page" || r.status !== "applied") return [];
+      const step = outcomeNextStep(r);
+      return step ? [step] : [];
+    }),
   );
   return {
     applied,
     failed: results.length - applied,
     results,
-    ...(seoStale ? { nextStep: SEO_STALE_NEXT_STEP } : {}),
+    ...(steps.size > 0 ? { nextStep: [...steps].join(" ") } : {}),
   };
 }

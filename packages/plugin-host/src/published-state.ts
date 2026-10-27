@@ -277,10 +277,10 @@ function compareValues(a: unknown, b: unknown): number {
 
 /**
  * The gateway's plugin op audit (#635): one row per successful visitor
- * call, in cms_public. The redeploy orchestrator reads it back as an
- * UNTRUSTED hint for per-page rebuilds; the operator's audit trail of
- * authoring actions stays in cms_admin, where the public side cannot
- * forge rows (#763 L7).
+ * call, in cms_public. Nothing in the admin reads it since the automatic
+ * redeploy was removed (#1154); whatever reads it next (#1155) must treat
+ * every row as UNTRUSTED. The operator's audit trail of authoring actions
+ * stays in cms_admin, where the public side cannot forge rows (#763 L7).
  */
 export async function emitPublicPluginOpEvent(
   infra: PluginHostInfra,

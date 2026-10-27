@@ -41,6 +41,7 @@ import { loadListEntities } from "../../lists/store.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
+  loadBranchedModuleStates,
   loadPageLayoutState,
   loadPageLayoutStateWithBranchOverlay,
   loadPageState,
@@ -49,6 +50,7 @@ import {
 import type { PageState } from "../../snapshots/state.js";
 import { buildPatchSet, buildWhere, jsonbParam } from "../../sql-helpers.js";
 import { createRedirectOp } from "../redirects.js";
+import { cloneContentInstancesDeep } from "./content-instance-clone.js";
 import {
   composePaths,
   recomputeCurrentPaths,
@@ -2038,10 +2040,91 @@ export const deletePageOp = defineOperation({
   handler: (ctx, input, tx) => deletePageHandler(ctx, input, tx),
 });
 
+/** One placement of a page about to be duplicated, in render order. */
+interface DuplicablePlacement {
+  readonly blockName: string;
+  readonly position: number;
+  readonly moduleId: string;
+  readonly contentInstanceId: string;
+}
+
+/**
+ * The source page's placements as the CALLER sees them — the chat's
+ * branch-overlaid layout when it reshaped the page, else live
+ * `page_modules` — minus placements of modules that are deleted in that
+ * view. `pages.set_modules` rejects deleted module ids at write time; the
+ * copy keeps the same invariant instead of propagating dead references
+ * (P6.7.7 audit). Positions are renumbered per block over the kept
+ * placements, so the copy's (block, position) addresses stay dense the
+ * way every placement reader indexes them.
+ */
+async function loadDuplicablePlacements(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  sourcePageId: string,
+): Promise<
+  { ok: true; kept: DuplicablePlacement[]; total: number } | { ok: false; message: string }
+> {
+  const layout = await loadPageLayoutStateWithBranchOverlay(
+    tx,
+    sourcePageId,
+    ctx.chatBranchId ?? null,
+  );
+  const all: Omit<DuplicablePlacement, "position">[] = [];
+  for (const block of layout.blocks) {
+    if (block.placements === undefined) {
+      // A pre-v0.12 layout snapshot names modules but not their content.
+      return {
+        ok: false,
+        message: `the source page's layout for block "${block.blockName}" has no content bindings (pre-v0.12 snapshot); re-save the page's modules (pages.set_modules) before duplicating`,
+      };
+    }
+    for (const p of block.placements) {
+      all.push({
+        blockName: block.blockName,
+        moduleId: p.moduleId,
+        contentInstanceId: p.contentInstanceId,
+      });
+    }
+  }
+  const moduleIds = [...new Set(all.map((p) => p.moduleId))];
+  const live = new Set<string>();
+  if (moduleIds.length > 0) {
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id FROM modules
+      WHERE id IN (${sql.join(
+        moduleIds.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )}) AND deleted_at IS NULL
+    `)) as unknown as { id: string }[];
+    for (const r of rows) live.add(r.id);
+    if (ctx.chatBranchId) {
+      // A module the chat deleted (or restored) counts as the chat sees it.
+      const branched = await loadBranchedModuleStates(tx, ctx.chatBranchId, moduleIds);
+      for (const [id, state] of branched) {
+        if (state.deletedAt === null) live.add(id);
+        else live.delete(id);
+      }
+    }
+  }
+  const nextPosition = new Map<string, number>();
+  const kept: DuplicablePlacement[] = [];
+  for (const p of all) {
+    if (!live.has(p.moduleId)) continue;
+    const position = nextPosition.get(p.blockName) ?? 0;
+    nextPosition.set(p.blockName, position + 1);
+    kept.push({ ...p, position });
+  }
+  return { ok: true, kept, total: all.length };
+}
+
 /**
  * P6.7.7 — clone an existing page (and its module layout) under a new
  * slug. Modules are referenced by id, not deep-copied: edits to a
- * shared module propagate to every page using it. The duplicated page
+ * shared module propagate to every page using it. Content is copied
+ * (nested content included), so the copy's text diverges freely. The
+ * page and its layout are read as the caller sees them (a chat's draft
+ * edits included). The duplicated page
  * inherits the source page's templateId by default; callers that need
  * a different page-type pass `targetTemplateId` (validated like
  * pages.update).
@@ -2073,7 +2156,8 @@ export const duplicatePageOp = defineOperation({
     const sourceRows = (await tx.execute(sql`
       SELECT id::text AS id, slug, title,
              template_id::text AS template_id
-      FROM pages WHERE id = ${input.sourcePageId}::uuid AND deleted_at IS NULL LIMIT 1
+      FROM pages WHERE id = ${input.sourcePageId}::uuid AND deleted_at IS NULL
+      ${branchVisibilityFilter(ctx)} LIMIT 1
     `)) as unknown as {
       id: string;
       slug: string;
@@ -2081,14 +2165,19 @@ export const duplicatePageOp = defineOperation({
       template_id: string;
     }[];
     const source = sourceRows[0];
-    if (!source) {
+    // The copy starts from the source as the caller sees it: a chat that
+    // retitled, retyped or deleted the source on its branch copies that.
+    const sourceState = source
+      ? await loadPageStateWithBranchOverlay(tx, input.sourcePageId, ctx.chatBranchId)
+      : null;
+    if (!source || !sourceState || sourceState.deletedAt !== null) {
       return err({
         kind: "HandlerError",
         operation: "pages.duplicate",
         message: "source page not found",
       });
     }
-    const targetTemplateId = input.targetTemplateId ?? source.template_id;
+    const targetTemplateId = input.targetTemplateId ?? sourceState.templateId;
     if (input.targetTemplateId !== undefined) {
       const tplOk = (await tx.execute(sql`
         SELECT 1 FROM templates
@@ -2118,27 +2207,15 @@ export const duplicatePageOp = defineOperation({
       return err({ kind: "HandlerError", operation: "pages.duplicate", message: dupPlan.message });
     }
     const dupPath = dupPlan.plan.pathsAfter.get(dupTempId) ?? null;
-    const title = input.newTitle ?? source.title;
-    // Epic #1107 — the copy is the same kind of page (type, properties,
-    // terms as the caller sees the source); another template keeps the
-    // type when the type allows it, else takes the one type listing it.
-    const sourceState = await loadPageStateWithBranchOverlay(
-      tx,
-      input.sourcePageId,
-      ctx.chatBranchId,
-    );
-    if (!sourceState) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages.duplicate",
-        message: "source page not found",
-      });
-    }
+    const title = input.newTitle ?? sourceState.title;
     // A new title without a new short title means a page about something
     // else: its crumb follows the new title, not the source's label.
     const shortTitle =
       input.newShortTitle ??
       (input.newTitle !== undefined ? input.newTitle : sourceState.shortTitle);
+    // Epic #1107 — the copy is the same kind of page (type, properties,
+    // terms as the caller sees the source); another template keeps the
+    // type when the type allows it, else takes the one type listing it.
     const dupType = await nextTypeBound(
       tx,
       ctx,
@@ -2174,82 +2251,47 @@ export const duplicatePageOp = defineOperation({
     }
     await replacePageTerms(tx, newPageId, dupType.terms);
     // Modules carry over by reference — same module ids, same block
-    // names, same positions. If the target template has different
-    // block names, the migration is the caller's responsibility (use
+    // names, same order. If the target template has different block
+    // names, the migration is the caller's responsibility (use
     // change_template afterward).
-    //
-    // Filter out source rows whose module is soft-deleted. The plain
-    // `INSERT … SELECT FROM page_modules` would otherwise silently
-    // propagate dead references into the clone — a regression noticed
-    // in the P6.7.7 audit, since `pages.set_modules` rejects deleted
-    // module ids at write time and we want the same invariant here.
-    // The JOIN drops orphan rows; the audit summary surfaces the count
-    // so an operator can investigate the source page's stale links.
-    const sourceCounts = (await tx.execute(sql`
-      SELECT
-        (SELECT count(*)::int FROM page_modules WHERE page_id = ${input.sourcePageId}::uuid) AS total,
-        (SELECT count(*)::int FROM page_modules pm
-           JOIN modules m ON m.id = pm.module_id
-           WHERE pm.page_id = ${input.sourcePageId}::uuid AND m.deleted_at IS NULL) AS live
-    `)) as unknown as { total: number | string; live: number | string }[];
-    const totalSource =
-      typeof sourceCounts[0]?.total === "string"
-        ? Number.parseInt(sourceCounts[0].total, 10)
-        : (sourceCounts[0]?.total ?? 0);
-    const liveSource =
-      typeof sourceCounts[0]?.live === "string"
-        ? Number.parseInt(sourceCounts[0].live, 10)
-        : (sourceCounts[0]?.live ?? 0);
-    // v0.12.0 — duplicate must clone the source's content_instances too,
-    // not just rebind to them. A true "duplicate" lets the operator
-    // diverge the clone's content without affecting the source — so for
-    // each source placement we mint a fresh unsynced content_instance
-    // with the source's values copied, then bind the clone's
-    // page_modules row to the new ci. (Shared-synced semantics are
-    // available via set_placement_content after duplicate completes.)
-    await tx.execute(sql`
-      WITH source_placements AS (
-        SELECT pm.block_name, pm.position, pm.module_id, pm.content_instance_id, pm.sync_mode
-        FROM page_modules pm
-        JOIN modules m ON m.id = pm.module_id AND m.deleted_at IS NULL
-        WHERE pm.page_id = ${input.sourcePageId}::uuid
-      ),
-      cloned_cis AS (
-        INSERT INTO content_instances (module_id, slug, display_name, "values", updated_by, chat_branch_id)
-        SELECT
-          sp.module_id,
-          NULL,
-          NULL,
-          COALESCE(ci."values", '{}'::jsonb),
-          ${ctx.actorId}::uuid,
-          ${ctx.chatBranchId ?? null}::uuid
-        FROM source_placements sp
-        LEFT JOIN content_instances ci ON ci.id = sp.content_instance_id
-        RETURNING id, module_id
-      ),
-      indexed_sources AS (
-        SELECT
-          sp.*,
-          ROW_NUMBER() OVER (PARTITION BY sp.module_id ORDER BY sp.block_name, sp.position) AS rn
-        FROM source_placements sp
-      ),
-      indexed_clones AS (
-        SELECT
-          cc.id, cc.module_id,
-          ROW_NUMBER() OVER (PARTITION BY cc.module_id ORDER BY cc.id) AS rn
-        FROM cloned_cis cc
-      )
-      INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
-      SELECT
-        ${newPageId}::uuid,
-        s.block_name,
-        s.position,
-        s.module_id,
-        c.id,
-        'unsynced'
-      FROM indexed_sources s
-      JOIN indexed_clones c ON c.module_id = s.module_id AND c.rn = s.rn
-    `);
+    const placements = await loadDuplicablePlacements(tx, ctx, input.sourcePageId);
+    if (!placements.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.duplicate",
+        message: placements.message,
+      });
+    }
+    const totalSource = placements.total;
+    const liveSource = placements.kept.length;
+    // v0.12.0 — duplicate clones the source's content too, not just
+    // rebinds to it: each placement gets a fresh unsynced instance so the
+    // copy diverges without touching the source (shared-synced semantics
+    // are available via set_placement_content afterwards). The copy is
+    // deep: content nested in module / module-list fields gets its own
+    // rows as well, else the copy's nested sections would still be the
+    // source's. Copies come back in placement order, so each placement
+    // binds to the copy of exactly its own content.
+    const clones = await cloneContentInstancesDeep(
+      tx,
+      ctx,
+      placements.kept.map((p) => p.contentInstanceId),
+    );
+    if (!clones.ok) {
+      return err({ kind: "HandlerError", operation: "pages.duplicate", message: clones.message });
+    }
+    if (placements.kept.length > 0) {
+      const rows = placements.kept.map(
+        (p, i) => sql`(
+          ${newPageId}::uuid, ${p.blockName}, ${p.position}, ${p.moduleId}::uuid,
+          ${clones.ids[i]}::uuid, 'unsynced'
+        )`,
+      );
+      await tx.execute(sql`
+        INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+        VALUES ${sql.join(rows, sql`, `)}
+      `);
+    }
     // P7 review-pass: bump media usage_count for every distinct asset
     // referenced from the cloned modules' HTML. A duplicated page adds
     // a fresh set of live references, so find_media's `most_used` sort
