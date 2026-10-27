@@ -88,6 +88,7 @@ async function page(slug: string, status: "draft" | "published" = "published"): 
 
 interface SeoView {
   metaDescription: string;
+  ogImageAssetId: string | null;
   noindex: boolean;
   autofilledAt: string | null;
   pendingFields: string[];
@@ -417,5 +418,37 @@ describe("#1156 page SEO goes through Stage", () => {
       noindex: true,
     });
     expect((await seo(SYS, p))?.noindex).toBe(true);
+  });
+  it("accepts an uppercase OG image id and stores it canonically", async () => {
+    const p = await page("og-upper");
+    const sha = `${Date.now().toString(16).padStart(16, "0")}`.repeat(4).slice(0, 64);
+    const up = await op<{ assetId: string }>(SYS, "media.upload", {
+      sha256: sha,
+      originalName: "t1156-og.png",
+      mime: "image/png",
+      sizeBytes: 10,
+      width: 1200,
+      height: 630,
+      alt: "og",
+      storageKey: `t1156/${sha}.png`,
+      variants: [
+        {
+          variant: "original",
+          format: "png",
+          width: 1200,
+          height: 630,
+          sizeBytes: 10,
+          storageKey: `t1156/${sha}.png`,
+        },
+      ],
+    });
+    const a = await chat("OG upper");
+    for (const ctx of [a.ctx, SYS]) {
+      await op(ctx, "pages_seo.set", { pageId: p, ogImageAssetId: up.assetId.toUpperCase() });
+    }
+    const chatView = await seo(a.ctx, p);
+    expect(chatView?.ogImageAssetId).toBe(up.assetId);
+    // Main holds the same image now: the chat's (canonical) id is not "pending".
+    expect(chatView?.pendingFields).toEqual([]);
   });
 });

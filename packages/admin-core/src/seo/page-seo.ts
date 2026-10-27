@@ -60,12 +60,20 @@ export const PAGE_SEO_FIELDS = [
 ] as const satisfies readonly (keyof PageSeoState)[];
 
 /**
- * The key a page id has in every map these helpers return: Postgres prints
- * uuids lowercase, while a caller's (Zod-valid) uuid may be uppercase. Every
- * lookup by a caller's id goes through this, or it misses and the caller
- * silently builds on the column defaults.
+ * The canonical form of a uuid in this module: Postgres prints uuids
+ * lowercase, while a caller's (Zod-valid) uuid may be uppercase. Every
+ * caller-supplied id — page or asset — goes through this before it is
+ * compared, looked up or stored in a state, or a lookup misses (the caller
+ * silently builds on the column defaults) and an unchanged value reads as
+ * changed.
  */
-export const pageKey = (pageId: string): string => pageId.toLowerCase();
+export const uuidKey = (id: string): string => id.toLowerCase();
+
+/** {@link uuidKey} for a page id (the key of every map these helpers return). */
+export const pageKey = uuidKey;
+
+/** {@link uuidKey} for a nullable asset id (`null` = no OG image). */
+export const assetKey = (id: string | null): string | null => (id === null ? null : uuidKey(id));
 
 /** One SEO field name. */
 export type PageSeoField = (typeof PAGE_SEO_FIELDS)[number];

@@ -36,7 +36,13 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { observeDraftReads } from "../locks.js";
-import { loadPageSeoViews, PAGE_SEO_FIELDS, pageKey, pageSeoViewSql } from "../seo/page-seo.js";
+import {
+  assetKey,
+  loadPageSeoViews,
+  PAGE_SEO_FIELDS,
+  pageKey,
+  pageSeoViewSql,
+} from "../seo/page-seo.js";
 import {
   commitPageSeoWrites,
   type OpenedPageSeo,
@@ -178,7 +184,9 @@ export const pagesSeoSetOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const patch: Partial<PageSeoState> = {
       ...(input.metaDescription !== undefined ? { metaDescription: input.metaDescription } : {}),
-      ...(input.ogImageAssetId !== undefined ? { ogImageAssetId: input.ogImageAssetId } : {}),
+      ...(input.ogImageAssetId !== undefined
+        ? { ogImageAssetId: assetKey(input.ogImageAssetId) }
+        : {}),
       ...(input.canonicalUrl !== undefined ? { canonicalUrl: input.canonicalUrl } : {}),
       ...(input.noindex !== undefined ? { noindex: input.noindex } : {}),
       ...(input.changefreq !== undefined ? { changefreq: input.changefreq } : {}),
@@ -301,7 +309,9 @@ export const pagesSeoAutofillOp = defineOperation({
           next: {
             ...target,
             metaDescription: input.metaDescription,
-            ...(input.ogImageAssetId !== undefined ? { ogImageAssetId: input.ogImageAssetId } : {}),
+            ...(input.ogImageAssetId !== undefined
+              ? { ogImageAssetId: assetKey(input.ogImageAssetId) }
+              : {}),
             autofilledAt: new Date().toISOString(),
           },
         },
@@ -367,7 +377,7 @@ function optimizedSeo(
   return {
     ...current,
     metaDescription: u.metaDescription,
-    ...(u.ogImageAssetId !== undefined ? { ogImageAssetId: u.ogImageAssetId } : {}),
+    ...(u.ogImageAssetId !== undefined ? { ogImageAssetId: assetKey(u.ogImageAssetId) } : {}),
     optimizedAt: new Date().toISOString(),
   };
 }

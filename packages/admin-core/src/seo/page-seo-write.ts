@@ -26,9 +26,11 @@ import {
 import type { PageSeoState, PageState } from "../snapshots/state.js";
 import {
   applyPageSeoState,
+  assetKey,
   loadLivePageSeo,
   PAGE_SEO_COLUMN_DEFAULTS,
   pageKey,
+  uuidKey,
 } from "./page-seo.js";
 
 /** A page opened for an SEO write: its state in the caller's view and its current SEO. */
@@ -129,11 +131,17 @@ export function sameSeo(current: PageSeoState, next: PageSeoState): boolean {
 export async function commitPageSeoWrites(
   ctx: ExecutionContext,
   tx: TransactionRunner,
-  writes: readonly { readonly opened: OpenedPageSeo; readonly next: PageSeoState }[],
+  input: readonly { readonly opened: OpenedPageSeo; readonly next: PageSeoState }[],
   opKind: SnapshotOpKind,
   description: string,
 ): Promise<void> {
-  if (writes.length === 0) return;
+  if (input.length === 0) return;
+  // Asset ids in a state are canonical (the ops normalize them; this keeps
+  // any caller from storing an uppercase id every comparison would miss).
+  const writes = input.map((w) => ({
+    opened: w.opened,
+    next: { ...w.next, ogImageAssetId: assetKey(w.next.ogImageAssetId) },
+  }));
   await assertOgImagesUsable(
     tx,
     writes
@@ -182,7 +190,7 @@ async function assertOgImagesUsable(
   assetIds: readonly string[],
 ): Promise<void> {
   if (assetIds.length === 0) return;
-  const unique = [...new Set(assetIds)];
+  const unique = [...new Set(assetIds.map(uuidKey))];
   const rows = (await tx.execute(sql`
     SELECT id::text AS id FROM media_assets
     WHERE id IN (${sql.join(
