@@ -121,6 +121,21 @@ describe("e2e-livedit.yml — main runs once per release, gated in release-cut",
     expect(step?.run ?? "").toContain('.conclusion == \\"success\\"');
   });
 
+  it("N5: same-sha reuse needs the suite step's success, except on a release-gate run", () => {
+    // A dispatch the weekly budget stopped inside the paid job ends with a
+    // green AI job that ran nothing; it must never stand in for the gate.
+    const step = (cut.jobs.cut?.steps ?? []).find((s) =>
+      (s.run ?? "").includes('gh workflow run "$WORKFLOW_FILE"'),
+    );
+    const suite = (livedit.jobs["e2e-livedit"]?.steps ?? []).find((s) => s.id === "suite");
+    expect(step?.env?.SUITE_STEP).toBe(suite?.name);
+    const run = step?.run ?? "";
+    expect(run).toContain('if [ "$branch" = "release-gate/$SHA" ]; then');
+    expect(run).toContain(
+      String.raw`select(.name == \"$SUITE_STEP\" and .conclusion == \"success\")`,
+    );
+  });
+
   it("N3: waits by polling run and AI-job status, not `gh run watch`", () => {
     // `gh run watch || true` returned on a transient HTTP 502 and the gate
     // read the still-running suite as failed (v0.10.54 cut).

@@ -614,7 +614,10 @@ zip download per run, and artifacts expire after 30 days; the branch is one
 directory listing. The commit sha in the record is what makes the diff
 computable.
 
-`release-cut` still reuses an earlier green AI job on the same commit, and a
+`release-cut` still reuses an earlier green AI job on the same commit — one
+whose suite step succeeded, or an earlier release-gate run of that commit
+(a dispatch the budget stopped inside the job ends green without running
+anything and is never reused) — and a
 full PR run whose tested tree equals the commit's tree
 (`e2e-livedit-green-tree-<tree>`), before it dispatches a gate run at all.
 
