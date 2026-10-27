@@ -2,12 +2,11 @@
 
 /**
  * Unit tests for buildToolCatalogue — the tool-registration half of the
- * chat-runner split (issue #15). Post-Tool-Search (2026-07), skill
- * allowlists are PRELOAD hints, not filters: entries still resolve via
- * the issue-#301 op→tool table and tag their tools `alwaysLoaded`, but
- * NOTHING is removed from the catalogue — the model reaches everything
- * else via Tool Search. Only `excluded` (depth cap) and `spawnAllowed`
- * (per-spawn narrowing) hard-remove tools. No DB needed.
+ * chat-runner split (issue #15). The core set is tagged `alwaysLoaded`,
+ * everything else defers behind Tool Search, and only `excluded` (depth
+ * cap) and `spawnAllowed` (per-spawn narrowing) remove tools. Nothing the
+ * conversation did (loaded skills) shapes the result: the tool list is the
+ * front of the provider's cached prefix. No DB needed.
  */
 
 import { describe, expect, it, spyOn } from "bun:test";
@@ -35,12 +34,10 @@ function registry(...names: string[]): ToolRegistry {
 const chatSessionId = "11111111-1111-4111-8111-222222222222";
 
 describe("buildToolCatalogue", () => {
-  it("returns the full catalogue when no allowlist and no exclusions", () => {
+  it("returns the full catalogue when nothing is excluded", () => {
     const tools = registry("update_modules_many", "add_module_to_page", "list_pages");
     const result = buildToolCatalogue({
       tools,
-      allowedToolNames: null,
-      engagedSkills: [],
       excluded: undefined,
       chatSessionId,
     });
@@ -51,254 +48,7 @@ describe("buildToolCatalogue", () => {
     ]);
   });
 
-  it("issue #301: op-notation entries translate to tool names and PRELOAD them (run #15 regression)", () => {
-    // op-notation read allowlist. Post-Tool-Search, allowlists are
-    // PRELOAD hints, not filters: the entries translate
-    // (redirects.list → find_redirects, pages.list → list_pages) and
-    // those tools get `alwaysLoaded` so the model reaches them without a
-    // search round-trip. Nothing is removed — every other
-    // tool stays reachable via Tool Search.
-    const tools = registry(
-      "update_modules_many",
-      "add_module_to_page",
-      "find_redirects",
-      "list_pages",
-    );
-    const errSpy = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const result = buildToolCatalogue({
-        tools,
-        allowedToolNames: new Set(["redirects.list", "pages.list"]),
-        engagedSkills: [],
-        excluded: undefined,
-        chatSessionId,
-      });
-      // Nothing dropped — the whole catalogue is present.
-      expect(result.map((t) => t.name).sort()).toEqual(
-        ["add_module_to_page", "find_redirects", "list_pages", "update_modules_many"].sort(),
-      );
-      // The resolved allowlist entry (find_redirects, not in the
-      // core set) is preloaded via the skill hint.
-      const loaded = new Set(result.filter((t) => t.alwaysLoaded).map((t) => t.name));
-      expect(loaded.has("find_redirects")).toBe(true);
-      // A clean resolution logs nothing.
-      expect(errSpy.mock.calls.some((c) => String(c[0]).includes("skill-allowlist"))).toBe(false);
-    } finally {
-      errSpy.mockRestore();
-    }
-  });
-
-  it("a skill allowlist naming a retired singular preloads the bulk tool that replaced it", () => {
-    // Stored skill rows written before the singular write tools were retired
-    // still name them; the entry resolves to the live bulk tool, which is
-    // preloaded. The retired name itself is never offered.
-    const tools = registry("update_modules_many", "list_pages");
-    const result = buildToolCatalogue({
-      tools,
-      allowedToolNames: new Set(["edit_module"]),
-      engagedSkills: [],
-      excluded: undefined,
-      chatSessionId,
-    });
-    const loaded = new Set(result.filter((t) => t.alwaysLoaded).map((t) => t.name));
-    expect(loaded.has("update_modules_many")).toBe(true);
-    expect(result.some((t) => t.name === "edit_module")).toBe(false);
-  });
-
-  it("preloading a bulk tool adds no sibling (there is no singular twin any more)", () => {
-    const tools = registry("update_modules_many", "list_lists");
-    const result = buildToolCatalogue({
-      tools,
-      allowedToolNames: new Set(["update_modules_many"]),
-      engagedSkills: [],
-      excluded: undefined,
-      chatSessionId,
-    });
-    const loaded = new Set(result.filter((t) => t.alwaysLoaded).map((t) => t.name));
-    expect(loaded.has("update_modules_many")).toBe(true);
-    // list_lists is core, so it is loaded for that reason; nothing else is added.
-    expect([...loaded].sort()).toEqual(["list_lists", "update_modules_many"]);
-  });
-
-  it("issue #301: an all-garbage allowlist strands nobody — full catalogue, entries logged, nothing preloaded from it", () => {
-    const tools = registry("update_modules_many", "add_module_to_page");
-    const errSpy = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const result = buildToolCatalogue({
-        tools,
-        // Garbage that neither matches a live tool nor the translation table.
-        allowedToolNames: new Set(["pages.frobnicate", "totally.bogus_op"]),
-        engagedSkills: [],
-        excluded: undefined,
-        chatSessionId,
-      });
-      // The full catalogue is always present (allowlists never remove).
-      expect(result.map((t) => t.name).sort()).toEqual([
-        "add_module_to_page",
-        "update_modules_many",
-      ]);
-      // Each unresolved entry is still logged so a typo'd skill row is visible.
-      const unresolvedCalls = errSpy.mock.calls.filter((c) =>
-        String(c[0]).includes("skill-allowlist-unresolved-entry"),
-      );
-      expect(unresolvedCalls.length).toBe(2);
-      // No defect event exists anymore — narrowing is gone, so zero
-      // resolution is not a failure mode.
-      expect(errSpy.mock.calls.some((c) => String(c[0]).includes("skill-allowlist-defect"))).toBe(
-        false,
-      );
-    } finally {
-      errSpy.mockRestore();
-    }
-  });
-
-  it("issue #301: a partial resolution preloads the resolved subset and logs each unresolved entry with a suggestion", () => {
-    const tools = registry("update_modules_many", "add_module_to_page", "list_pages");
-    const errSpy = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const result = buildToolCatalogue({
-        tools,
-        allowedToolNames: new Set(["update_modules_man", "add_module_to_page"]),
-        engagedSkills: [],
-        excluded: undefined,
-        chatSessionId,
-      });
-      // Nothing dropped; the resolved non-core write is preloaded.
-      expect(result.map((t) => t.name).sort()).toEqual([
-        "add_module_to_page",
-        "list_pages",
-        "update_modules_many",
-      ]);
-      expect(result.find((t) => t.name === "add_module_to_page")?.alwaysLoaded).toBe(true);
-      const unresolvedCall = errSpy.mock.calls.find((c) =>
-        String(c[0]).includes("skill-allowlist-unresolved-entry"),
-      );
-      expect(unresolvedCall).toBeDefined();
-      const payload = unresolvedCall?.[1] as { entry: string; suggestion: string | null };
-      expect(payload.entry).toBe("update_modules_man");
-      expect(payload.suggestion).toBe("update_modules_many");
-    } finally {
-      errSpy.mockRestore();
-    }
-  });
-
-  it("a non-empty allowlist never removes writes — they stay reachable, only preload differs (run #8 R2b/R5)", () => {
-    const tools = registry("update_modules_many", "add_module_to_page", "list_pages");
-    const result = buildToolCatalogue({
-      tools,
-      allowedToolNames: new Set(["update_modules_many", "not_a_real_tool"]),
-      engagedSkills: [],
-      excluded: undefined,
-      chatSessionId,
-    });
-    // add_module_to_page (write, not allowlisted) is NOT dropped anymore —
-    // it stays in the catalogue (reachable via search), just not preloaded.
-    expect(result.map((t) => t.name).sort()).toEqual([
-      "add_module_to_page",
-      "list_pages",
-      "update_modules_many",
-    ]);
-    expect(result.find((t) => t.name === "add_module_to_page")?.alwaysLoaded).toBeUndefined();
-  });
-
-  it("run #8 R2b: a rebuild subagent keeps its lookup/inspect tools when a skill allowlist engages", () => {
-    // The live compose-page allowlist (migration 0088) — write-focused,
-    // with NO lookup tools. In run #8 the rebuild subagent's seed
-    // message engaged this skill and the subagent lost
-    // inspect_page_render + module lookup, then edited a wrong module.
-    const composePageAllowlist = new Set([
-      "build_page",
-      "create_page",
-      "add_module_to_page",
-      "update_modules_many",
-      "set_page_module_content_many",
-      "set_page_seo_many",
-    ]);
-    const tools = registry(
-      // Rebuild-critical reads the brief tells the subagent to use.
-      "inspect_page_render",
-      "list_modules",
-      "list_content_instances",
-      "get_content_instance",
-      "get_import_page_screenshot",
-      "get_import_run_report",
-      // Rebuild-critical writes (in the allowlist).
-      "update_modules_many",
-      "set_page_module_content_many",
-      // A write outside the allowlist — must drop.
-      "delete_page",
-      // Spawn tools — excluded for the child (depth cap).
-      "spawn_subagent",
-      "spawn_subagents",
-    );
-    const result = buildToolCatalogue({
-      tools,
-      allowedToolNames: composePageAllowlist,
-      engagedSkills: [],
-      excluded: new Set(["spawn_subagent", "spawn_subagents"]),
-      chatSessionId,
-    });
-    // Post-Tool-Search: the allowlist removes NOTHING, so the rebuild
-    // subagent keeps every lookup/inspect tool AND the write the skill
-    // forgot to list (delete_page) — that write is now reachable, just
-    // not preloaded. Only the excluded spawn tools drop.
-    expect(result.map((t) => t.name).sort()).toEqual([
-      "delete_page",
-      "get_content_instance",
-      "get_import_page_screenshot",
-      "get_import_run_report",
-      "inspect_page_render",
-      "list_content_instances",
-      "list_modules",
-      "set_page_module_content_many",
-      "update_modules_many",
-    ]);
-  });
-
-  it("run #9 R7: an orchestrator keeps spawn_subagent when a co-engaged skill allowlist narrows writes", () => {
-    // The migration run #9 shape: site-migrate (allowlist []) engages
-    // together with compose-page (write allowlist, predates the 0132
-    // subagent contract → no spawn tools listed). The ORCHESTRATOR
-    // session has no `excluded` set — only subagent children do — so
-    // the spawn tools must survive the skill-allowlist narrowing the
-    // same way read tools do, or the skill body says "spawn subagents"
-    // while the catalogue says "no such tool".
-    const composePageAllowlist = new Set([
-      "build_page",
-      "create_page",
-      "add_module_to_page",
-      "update_modules_many",
-      "set_page_module_content_many",
-    ]);
-    const tools = registry(
-      "update_modules_many",
-      "create_page",
-      "delete_page", // write outside the allowlist — must drop
-      "list_pages", // read — immune
-      "spawn_subagent",
-      "spawn_subagents",
-    );
-    const result = buildToolCatalogue({
-      tools,
-      allowedToolNames: composePageAllowlist,
-      engagedSkills: [],
-      excluded: undefined,
-      chatSessionId,
-    });
-    // Nothing is narrowed anymore, so the orchestrator keeps its spawn
-    // tools (and delete_page, the write outside the allowlist) — the
-    // whole catalogue is present.
-    expect(result.map((t) => t.name).sort()).toEqual([
-      "create_page",
-      "delete_page",
-      "list_pages",
-      "spawn_subagent",
-      "spawn_subagents",
-      "update_modules_many",
-    ]);
-  });
-
-  it("run #9 R7: the child-session exclusion still strips spawn tools despite the immunity", () => {
+  it("run #9 R7: the child-session exclusion strips the spawn tools", () => {
     const tools = registry(
       "update_modules_many",
       "list_pages",
@@ -307,25 +57,19 @@ describe("buildToolCatalogue", () => {
     );
     const result = buildToolCatalogue({
       tools,
-      allowedToolNames: new Set(["update_modules_many"]),
-      engagedSkills: [],
       excluded: new Set(["spawn_subagent", "spawn_subagents"]),
       chatSessionId,
     });
     expect(result.map((t) => t.name).sort()).toEqual(["list_pages", "update_modules_many"]);
   });
 
-  it("child-session exclusion strips screenshot_page despite its read-only-name immunity", () => {
-    // screenshot_page matches the read-only naming convention (screenshot_),
-    // so the skill-allowlist narrowing never drops it. But a subagent has no
-    // operator browser, so spawn_subagent adds it to the child's excluded set
-    // — and `excluded` is a HARD filter that overrides the read immunity.
+  it("child-session exclusion strips screenshot_page", () => {
+    // A subagent has no operator browser, so spawn_subagent adds
+    // screenshot_page to the child's excluded set — a HARD filter.
     // Guards the fix for the 14×-timeout / edit→screenshot→edit thrash.
     const tools = registry("update_modules_many", "inspect_page_render", "screenshot_page");
     const result = buildToolCatalogue({
       tools,
-      allowedToolNames: new Set(["update_modules_many"]),
-      engagedSkills: [],
       excluded: new Set(["spawn_subagent", "spawn_subagents", "screenshot_page"]),
       chatSessionId,
     });
@@ -336,8 +80,7 @@ describe("buildToolCatalogue", () => {
 
   it("run #8 R2b: spawnAllowed remains a HARD filter for read tools too", () => {
     // A parent that explicitly narrows a review subagent to two read
-    // tools gets exactly those — the read-immunity applies to SKILL
-    // allowlists only, never to explicit per-spawn narrowing.
+    // tools gets exactly those.
     const tools = registry(
       "list_pages",
       "list_modules",
@@ -346,8 +89,6 @@ describe("buildToolCatalogue", () => {
     );
     const result = buildToolCatalogue({
       tools,
-      allowedToolNames: null,
-      engagedSkills: [],
       excluded: undefined,
       spawnAllowed: new Set(["list_pages", "inspect_page_render"]),
       chatSessionId,
@@ -359,21 +100,7 @@ describe("buildToolCatalogue", () => {
     const tools = registry("update_modules_many", "spawn_subagent", "spawn_subagents");
     const result = buildToolCatalogue({
       tools,
-      allowedToolNames: null,
-      engagedSkills: [],
       excluded: new Set(["spawn_subagent", "spawn_subagents"]),
-      chatSessionId,
-    });
-    expect(result.map((t) => t.name)).toEqual(["update_modules_many"]);
-  });
-
-  it("allowlist and exclusion compose (exclusion still wins inside an allowlist)", () => {
-    const tools = registry("update_modules_many", "add_module_to_page");
-    const result = buildToolCatalogue({
-      tools,
-      allowedToolNames: new Set(["update_modules_many", "add_module_to_page"]),
-      engagedSkills: [],
-      excluded: new Set(["add_module_to_page"]),
       chatSessionId,
     });
     expect(result.map((t) => t.name)).toEqual(["update_modules_many"]);
@@ -383,8 +110,6 @@ describe("buildToolCatalogue", () => {
     const tools = registry("update_modules_many", "add_module_to_page", "list_pages");
     const result = buildToolCatalogue({
       tools,
-      allowedToolNames: null,
-      engagedSkills: [],
       excluded: undefined,
       spawnAllowed: new Set(["list_pages"]),
       chatSessionId,
@@ -392,7 +117,7 @@ describe("buildToolCatalogue", () => {
     expect(result.map((t) => t.name)).toEqual(["list_pages"]);
   });
 
-  it("issue #264: spawnAllowed gets NO zero-match fallback (unlike the skill allowlist)", () => {
+  it("issue #264: spawnAllowed gets NO zero-match fallback", () => {
     // The spawn handler validates the allowlist against live tool names
     // before the child turn starts, so a zero-match here is an upstream
     // bug — widening back to the full catalogue would silently grant
@@ -400,8 +125,6 @@ describe("buildToolCatalogue", () => {
     const tools = registry("update_modules_many", "add_module_to_page");
     const result = buildToolCatalogue({
       tools,
-      allowedToolNames: null,
-      engagedSkills: [],
       excluded: undefined,
       spawnAllowed: new Set(["pages.list"]),
       chatSessionId,
@@ -417,8 +140,6 @@ describe("buildToolCatalogue", () => {
       // Turn 1: full catalogue.
       buildToolCatalogue({
         tools,
-        allowedToolNames: null,
-        engagedSkills: [],
         excluded: undefined,
         chatSessionId: shrinkSessionId,
       });
@@ -426,8 +147,6 @@ describe("buildToolCatalogue", () => {
       // thing that removes a tool now) and disappears.
       buildToolCatalogue({
         tools,
-        allowedToolNames: null,
-        engagedSkills: [],
         excluded: new Set(["add_module_to_page"]),
         chatSessionId: shrinkSessionId,
       });
@@ -443,51 +162,15 @@ describe("buildToolCatalogue", () => {
     }
   });
 
-  it("issue #264: spawnAllowed composes with exclusion and the skill allowlist", () => {
+  it("issue #264: spawnAllowed composes with exclusion", () => {
     const tools = registry("update_modules_many", "list_pages", "spawn_subagent");
     const result = buildToolCatalogue({
       tools,
-      allowedToolNames: new Set(["update_modules_many", "list_pages", "spawn_subagent"]),
-      engagedSkills: [],
       excluded: new Set(["spawn_subagent"]),
       spawnAllowed: new Set(["list_pages", "spawn_subagent"]),
       chatSessionId,
     });
     expect(result.map((t) => t.name)).toEqual(["list_pages"]);
-  });
-
-  // Tool Search (2026-07 live-edit) — the search-storm fix. A skill
-  // allowlist that omits core writes must not leave them un-preloaded;
-  // otherwise the model burns a tool-search storm hunting for a core
-  // write (create_content_instance / remove_module_from fired 11
-  // back-to-back searches in one nested-CTA turn). Core writes are
-  // always preloaded regardless of the allowlist; nothing is dropped.
-  it("always preloads CORE write tools even when a skill allowlist omits them", () => {
-    const tools = registry(
-      "update_modules_many",
-      "create_content_instances", // core write, NOT in the allowlist below
-      "remove_module_from", // core write, NOT in the allowlist below
-      "bulk_optimize_seo", // non-core write, NOT allowlisted
-      "list_pages",
-    );
-    const result = buildToolCatalogue({
-      tools,
-      allowedToolNames: new Set(["update_modules_many"]),
-      engagedSkills: [],
-      excluded: undefined,
-      chatSessionId,
-    });
-    const loaded = new Set(result.filter((t) => t.alwaysLoaded).map((t) => t.name));
-    // Every core tool is preloaded (schema up front) — no search needed.
-    expect(loaded.has("create_content_instances")).toBe(true);
-    expect(loaded.has("remove_module_from")).toBe(true);
-    expect(loaded.has("update_modules_many")).toBe(true);
-    expect(loaded.has("list_pages")).toBe(true);
-    // The non-core write stays in the catalogue (reachable via search)
-    // but is NOT preloaded.
-    const names = new Set(result.map((t) => t.name));
-    expect(names.has("bulk_optimize_seo")).toBe(true);
-    expect(loaded.has("bulk_optimize_seo")).toBe(false);
   });
 
   // Tool Search default-on — core workflow tools carry alwaysLoaded so
@@ -497,8 +180,6 @@ describe("buildToolCatalogue", () => {
     const tools = registry("update_modules_many", "build_page", "set_page_seo_many", "list_pages");
     const result = buildToolCatalogue({
       tools,
-      allowedToolNames: null,
-      engagedSkills: [],
       excluded: undefined,
       chatSessionId,
     });
@@ -509,6 +190,20 @@ describe("buildToolCatalogue", () => {
     // set_page_seo is deliberately long-tail: named in the playbook,
     // loaded on demand via tool search.
     expect(byName.get("set_page_seo_many")?.alwaysLoaded).toBeUndefined();
+  });
+
+  // e2e-livedit 2026-10-26: a skill loaded in one turn changed the next
+  // turn's tool list (its allowlist was tagged `alwaysLoaded`), and the
+  // provider re-cached the whole chat history at full price on every such
+  // turn (100–170k tokens written each, 14–19 % of a run's cost). The tool
+  // list is the front of the prompt prefix, so the builder takes nothing
+  // the conversation shapes: the same registry and scoping give the same
+  // bytes on every turn of a chat.
+  it("gives byte-identical tool lists on every turn of a chat (prompt-cache prefix)", () => {
+    const tools = registry("update_modules_many", "build_page", "set_page_seo_many", "list_pages");
+    const turn1 = buildToolCatalogue({ tools, excluded: undefined, chatSessionId });
+    const turn2 = buildToolCatalogue({ tools, excluded: undefined, chatSessionId });
+    expect(JSON.stringify(turn2)).toBe(JSON.stringify(turn1));
   });
 });
 

@@ -44,9 +44,9 @@ interface SkillRow {
 /**
  * The closing note naming a skill's tools. It must not claim more than is
  * true: loading a skill does NOT load its tools into the running turn — the
- * tool list is fixed for the turn, and only the core set plus the preload
- * hints of skills engaged before the turn ship in full; the rest sit behind
- * tool search. The note used to say "now available to you" for all of them,
+ * tool list is the same on every turn of a chat (a changed one would make
+ * the provider re-cache the whole history), and only the core set ships in
+ * full; the rest sit behind tool search. The note used to say "now available to you" for all of them,
  * and the model then called a deferred tool (bootstrap_site_scaffold) it
  * could not emit — what came out instead was a `bug_report` with the
  * literal values "placeholder" (two e2e-livedit runs, 2026-10), after which

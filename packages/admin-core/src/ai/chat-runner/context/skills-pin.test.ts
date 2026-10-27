@@ -73,7 +73,7 @@ const CTX: ExecutionContext = { actorId: "op-1", actorKind: "human", requestId: 
 
 async function build(skills: readonly FixtureSkill[], chatStartedAt: string | null) {
   const { registry, adapter } = buildFixture(skills);
-  return buildSkillsContext(registry, adapter, CTX, { loadedSkillSlugs: [], chatStartedAt });
+  return buildSkillsContext(registry, adapter, CTX, { chatStartedAt });
 }
 
 describe("skills index pin", () => {
@@ -96,19 +96,6 @@ describe("skills index pin", () => {
     expect(r.skillsIndexBlock).not.toContain("translate-page");
     // …and the chat still learns about it, via the history.
     expect(r.newlyActivated.map((s) => s.slug)).toEqual(["translate-page"]);
-  });
-
-  it("still preloads a newly activated skill's tools once the model loads it", async () => {
-    const { registry, adapter } = buildFixture([{ slug: "translate-page", activatedAt: AFTER }]);
-    const r = await buildSkillsContext(registry, adapter, CTX, {
-      loadedSkillSlugs: ["translate-page"],
-      chatStartedAt: CHAT_START,
-    });
-    // The pin governs the PREFIX only. A skill the model actually
-    // loaded must behave like any other — otherwise the notice would
-    // advertise a skill whose tools never get preloaded.
-    expect(r.allowedToolNames?.has("tool_translate-page")).toBe(true);
-    expect(r.engagedSkills.map((e) => e.slug)).toEqual(["translate-page"]);
   });
 
   it("treats a row with no activation stamp as always having been there", async () => {

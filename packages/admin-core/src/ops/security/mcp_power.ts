@@ -1046,9 +1046,7 @@ export const mcpGetContextOp = defineOperation({
     };
 
     const memory = await loadMemory(registry, adapter, humanCtx);
-    const skillsCtx = await buildSkillsContext(registry, adapter, humanCtx, {
-      loadedSkillSlugs: [],
-    });
+    const skillsCtx = await buildSkillsContext(registry, adapter, humanCtx, {});
     // issue #413 — compose the "power-mcp" surface variant: the composer
     // itself drops the chat-runner-only chunks ("subagents",
     // "finishing-a-turn") and swaps the playbook's inspect/parallel entry

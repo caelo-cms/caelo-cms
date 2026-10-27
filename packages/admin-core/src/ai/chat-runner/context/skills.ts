@@ -13,13 +13,14 @@
  * every engagement) — only the tiny static index does, and each body is
  * injected exactly once, via history (CLAUDE.md §2).
  *
- * `buildSkillsContext` produces the static index + the tool-preload hints for
- * skills already loaded this chat.
+ * `buildSkillsContext` produces the static index and the availability facts
+ * the chat-runner announces in the history. It never shapes the tool list:
+ * that stays identical on every turn of a chat (tool-catalogue.ts).
  */
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
-import type { ChatEngagement, ExecutionContext } from "@caelo-cms/shared";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { noteSignature } from "./page.js";
 
 interface ActiveSkillRow {
@@ -28,7 +29,6 @@ interface ActiveSkillRow {
   displayName: string;
   description: string;
   body: string;
-  allowlistedTools: string[];
   /**
    * Auto-engagement hints. No longer drive SELECTION (the model self-selects
    * from descriptions), but they shape HOW prominently a skill is presented in
@@ -61,14 +61,6 @@ export interface SkillsContext {
    * activates/archives a skill, not per turn.
    */
   skillsIndexBlock: string | undefined;
-  /**
-   * Tool-preload hints: the union of the allowlisted tools of skills already
-   * loaded this chat, so their tools stay loaded without a tool-search
-   * round-trip on later turns. Null when nothing is loaded.
-   */
-  allowedToolNames: Set<string> | null;
-  /** Loaded skills (for the tool-catalogue diagnostic log line). */
-  engagedSkills: ChatEngagement[];
   /**
    * Skills that became active AFTER this chat started, and so are
    * deliberately absent from the pinned index above. The chat-runner
@@ -150,55 +142,14 @@ export function skillAvailabilityNote(
 }
 
 /**
- * Parse the slugs the model has already loaded this chat, from prior
- * `load_skill` tool calls in the persisted history. Each successful load put
- * the skill body into the message history (the tool result); this recovers the
- * set so `buildSkillsContext` can keep those skills' tools preloaded and feed
- * the subagent-hint heuristic. Defensive against jsonb-string args.
- */
-export function extractLoadedSkillSlugs(messages: readonly { toolCalls?: unknown }[]): string[] {
-  const slugs = new Set<string>();
-  for (const m of messages) {
-    const calls = m.toolCalls;
-    if (!Array.isArray(calls)) continue;
-    for (const c of calls) {
-      if (!c || typeof c !== "object") continue;
-      if ((c as { name?: unknown }).name !== "load_skill") continue;
-      let argsRaw = (c as { arguments?: unknown }).arguments;
-      if (typeof argsRaw === "string") {
-        try {
-          argsRaw = JSON.parse(argsRaw);
-        } catch {
-          continue;
-        }
-      }
-      if (!argsRaw || typeof argsRaw !== "object") continue;
-      // `slugs` is the current shape; `slug` is what chats persisted before
-      // the tool went bulk. Both must be read — dropping the singular form
-      // would silently lose the preload hints of every pre-existing chat.
-      const args = argsRaw as { slug?: unknown; slugs?: unknown };
-      const candidates = Array.isArray(args.slugs) ? args.slugs : [args.slug];
-      for (const s of candidates) {
-        if (typeof s === "string" && s.length > 0) slugs.add(s);
-      }
-    }
-  }
-  return [...slugs];
-}
-
-/**
- * Build the static skills index + the preload hints for skills loaded so far.
- *
- * @param args.loadedSkillSlugs slugs the model already loaded this chat
- *   (parsed from prior `load_skill` tool calls in the history). Drives the
- *   tool preload + the subagent-hint body text.
+ * Build the static skills index plus the skills to announce in the history
+ * (newly activated since the chat began, or whose plugin does not run here).
  */
 export async function buildSkillsContext(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
   humanCtx: ExecutionContext,
   args: {
-    loadedSkillSlugs: readonly string[];
     chatStartedAt?: string | null;
     /**
      * #1008 — the chat whose index this is. Its first build fixes which
@@ -210,8 +161,6 @@ export async function buildSkillsContext(
 ): Promise<SkillsContext> {
   const empty: SkillsContext = {
     skillsIndexBlock: undefined,
-    allowedToolNames: null,
-    engagedSkills: [],
     newlyActivated: [],
     notRunningHere: [],
   };
@@ -306,31 +255,12 @@ export async function buildSkillsContext(
   if (regular.length > 0) {
     parts.push("Load when a task matches:", ...regular.map(line));
   }
-  // Every active skill is newer than this chat: there is no index to
-  // pin, but the preload and engagement below still have to run —
-  // otherwise a chat whose only skills are new would advertise them in
-  // the notice and then fail to preload their tools when loaded.
+  // Every active skill is newer than this chat: there is no index to pin,
+  // and the notice in the history announces them instead.
   const skillsIndexBlock = activeSkills.length === 0 ? undefined : parts.join("\n");
-
-  // Preloads and engagement read from ALL active skills, not just the
-  // pinned ones — a newly activated skill the model loads must get its
-  // tools preloaded like any other. The pin governs the prefix only.
-  const loadedSet = new Set(args.loadedSkillSlugs);
-  const loaded = allActive.filter((s) => loadedSet.has(s.slug) && availableNow(s));
-  const engagedSkills: ChatEngagement[] = loaded.map((s) => ({
-    skillId: s.id,
-    slug: s.slug,
-    displayName: s.displayName,
-    source: "auto",
-    rationale: "loaded",
-  }));
-  const preload = new Set<string>();
-  for (const s of loaded) for (const t of s.allowlistedTools) preload.add(t);
 
   return {
     skillsIndexBlock,
-    allowedToolNames: preload.size > 0 ? preload : null,
-    engagedSkills,
     newlyActivated,
     notRunningHere,
   };

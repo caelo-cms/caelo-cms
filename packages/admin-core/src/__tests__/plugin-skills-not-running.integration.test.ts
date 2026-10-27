@@ -177,7 +177,6 @@ describe("#1008 — a failed plugin's skills are not offered where it does not r
 
     // A chat that starts now does not see it in its index.
     const ctx = await buildSkillsContext(registry, adapter, SYS, {
-      loadedSkillSlugs: [],
       chatStartedAt: new Date().toISOString(),
     });
     expect(ctx.skillsIndexBlock ?? "").not.toContain(SKILL);
@@ -204,7 +203,6 @@ describe("#1008 — a failed plugin's skills are not offered where it does not r
     const chatStartedAt = (session.value as { session: { createdAt: string } }).session.createdAt;
     const turn = () =>
       buildSkillsContext(registry, adapter, OWNER, {
-        loadedSkillSlugs: [],
         chatStartedAt,
         chatSessionId,
       });
@@ -246,7 +244,6 @@ describe("#1008 — a failed plugin's skills are not offered where it does not r
     const { chatSessionId } = created.value as { chatSessionId: string };
     const turn = () =>
       buildSkillsContext(registry, adapter, OWNER, {
-        loadedSkillSlugs: [],
         chatStartedAt: new Date(Date.now() + 1000).toISOString(),
         chatSessionId,
       });

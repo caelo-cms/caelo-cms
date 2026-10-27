@@ -1,23 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Tool-catalogue assembly: the skill-allowlist resolution (issue #301
- * op→tool translation; the issue-#106 "never strand the AI at zero
- * tools" guarantee), the P10.5 subagent exclusion, the issue-#264
- * per-spawn allowlist, and the P11.5 Tier-1 plugin-tool folding.
+ * Tool-catalogue assembly: the core-set tagging, the P10.5 subagent
+ * exclusion, the issue-#264 per-spawn allowlist, and the P11.5 Tier-1
+ * plugin-tool folding.
  * Extracted from the pre-split `chat-runner.ts`.
  */
 
 import { pluginToolsRegistry } from "@caelo-cms/plugin-host";
-
-import type { ChatEngagement } from "@caelo-cms/shared";
 
 import type { ToolDefinition } from "../provider.js";
 import { CORE_TOOL_NAMES } from "../tools/core-tools.js";
 import type { GatedToolSpec } from "../tools/dispatch.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { installUnavailableToolNames } from "../tools/install-availability.js";
-import { resolveAllowlistEntries } from "./allowlist-mapping.js";
 
 /**
  * A catalogue entry in provider-`tools` shape. `gated` (Plan B) is an
@@ -49,10 +45,9 @@ export type FilteredTool = ToolDefinition & {
  * list_modules / get_content_instance entirely (R2b). Per CLAUDE.md §11
  * "read surfaces are powerful — the AI needs broad read to plan good
  * writes". The 2026-07 Tool Search rework then went further: skill
- * allowlists no longer narrow ANYTHING — they became PRELOAD hints (a
- * listed tool ships its schema up front; everything else, read AND write,
- * defers behind Tool Search; nothing is removed), which permanently closed
- * the read-tool blinding above. Explicit per-spawn narrowing
+ * allowlists no longer narrow ANYTHING (everything outside the core set,
+ * read AND write, defers behind Tool Search; nothing is removed), which
+ * permanently closed the read-tool blinding above. Explicit per-spawn narrowing
  * (`spawnAllowed`) and `excluded` remain the only HARD filters — a parent
  * that narrows a review subagent to three read tools still gets exactly those.
  */
@@ -96,8 +91,8 @@ export function resolveExcludedToolNames(
 /**
  * Run #8 R5 — per-session catalogue determinism watchdog. The catalogue
  * is rebuilt every turn; when a tool that was present on the previous
- * turn disappears, that is either an intended narrowing (skill engaged,
- * subagent exclusion) or a bug — either way it must be LOUD in the logs,
+ * turn disappears, that is either an intended narrowing (subagent
+ * exclusion, a plugin switched off) or a bug — either way it must be LOUD in the logs,
  * because run #8's mid-session toolset shrink was silent and surfaced
  * only as "the AI edited the wrong module". Bounded map so long-lived
  * processes don't grow without limit.
@@ -129,81 +124,42 @@ function warnOnDisappearedTools(chatSessionId: string, names: readonly string[])
 }
 
 /**
- * Builds the per-turn tool catalogue: takes the full registry catalogue
- * (state-aware descriptions), tags each tool `alwaysLoaded` when it is in
- * the core set OR an engaged skill's allowlist (a PRELOAD hint — its
- * schema ships up front so the model skips a tool-search round-trip),
- * drops only the hard-scoped tools (`excluded` depth cap + `spawnAllowed`
- * per-spawn narrowing), then folds in the active Tier-1 plugin tools.
- * Skill allowlists NEVER remove a tool — everything not preloaded stays
- * reachable via Tool Search.
+ * Builds the per-turn tool catalogue: takes the full registry catalogue,
+ * tags the core set (`CORE_TOOL_NAMES`) `alwaysLoaded`, drops only the
+ * hard-scoped tools (`excluded` depth cap + `spawnAllowed` per-spawn
+ * narrowing), then folds in the active Tier-1 plugin tools.
+ *
+ * Nothing about the conversation shapes the result. The tool list is the
+ * very front of the provider's prompt prefix (tools -> system -> messages),
+ * so a tool list that changed between two turns of a chat made the provider
+ * re-write the chat's whole history to its cache at full price. That is what
+ * the skill preload did: a skill loaded in one turn marked its allowlisted
+ * tools `alwaysLoaded` from the NEXT turn on, and every such turn started
+ * with a cache miss over everything (e2e-livedit runs 2026-10-26: 100–170k
+ * tokens written per affected turn, 14–19 % of a run's cost). A skill's tools
+ * stay reachable the way every deferred tool is: tool search, whose loaded
+ * definitions the provider keeps for the rest of the chat.
  */
 export function buildToolCatalogue(args: {
   tools: ToolRegistry;
-  allowedToolNames: Set<string> | null;
-  engagedSkills: ChatEngagement[];
   excluded: ReadonlySet<string> | undefined;
   /**
    * issue #264 — per-spawn allowlist from the parent's subagent spec.
-   * A HARD filter (like `excluded`), never the zero-match fallback the
-   * skill allowlist gets: the spawn handler validates it against live
-   * tool names before the child turn starts, so a zero-match here is
-   * a bug upstream — silently widening back to the full catalogue
-   * would grant write tools to a subagent the parent asked to narrow.
+   * A HARD filter (like `excluded`): the spawn handler validates it against
+   * live tool names before the child turn starts, so a zero-match here is
+   * a bug upstream — silently widening back to the full catalogue would
+   * grant write tools to a subagent the parent asked to narrow.
    */
   spawnAllowed?: ReadonlySet<string>;
   chatSessionId: string;
 }): FilteredTool[] {
-  const { tools, allowedToolNames, engagedSkills, excluded, spawnAllowed, chatSessionId } = args;
+  const { tools, excluded, spawnAllowed, chatSessionId } = args;
 
   const fullCatalogue = tools.catalogue();
-  // Skill allowlists are PRELOAD HINTS, not filters (2026-07 Tool Search
-  // rework). An engaged skill's `allowlistedTools` name the tools its
-  // workflow leans on; we keep their full schemas LOADED for the turn
-  // (so the model reaches them without a tool-search round-trip) and let
-  // everything else defer behind the search surface. A skill NEVER
-  // removes a tool from the catalogue anymore.
-  //
-  // Why the reversal: the old hard-narrowing forced every skill to
-  // enumerate every write it might touch; a miss stranded the model.
-  // Under Tool Search that got worse — the model KNOWS more tools exist
-  // (the playbook says so) and burned search STORMS hunting for a write
-  // the skill forgot to list (one nested-CTA turn fired 11 back-to-back
-  // toolSearch calls for create_content_instance / remove_module_from).
-  // Deferral already gives the "focus" that narrowing was for, so the
-  // narrowing was pure downside. Real scoping (subagent read-only, the
-  // depth cap) is enforced by the HARD filters `spawnAllowed` /
-  // `excluded` below — those are unchanged.
-  //
-  // Entries still resolve exact-first then via the issue-#301 op→tool
-  // table (seeded skills carry op notation like `pages.list`);
-  // unresolved entries are logged so a typo'd skill row is visible.
-  const skillPreload = new Set<string>();
-  if (allowedToolNames) {
-    const liveNames = new Set<string>(fullCatalogue.map((t) => t.name));
-    for (const { spec } of pluginToolsRegistry.list()) liveNames.add(spec.name);
-    const resolution = resolveAllowlistEntries(allowedToolNames, liveNames);
-    for (const n of resolution.resolvedToolNames) skillPreload.add(n);
-    for (const u of resolution.unresolved) {
-      console.error("[chat-runner] skill-allowlist-unresolved-entry", {
-        chatSessionId,
-        entry: u.entry,
-        suggestion: u.suggestion,
-        engagedSkills: engagedSkills.map((e) => e.slug),
-      });
-    }
-  }
-  // Loaded up front = the always-on core set PLUS the engaged skills'
-  // preload hints. Everything else is reachable via tool search.
-  // Every routine write tool is the bulk form (one item = the n=1 case), so
-  // there is no singular/bulk sibling to preload alongside; a skill that
-  // still names a retired singular resolves to its bulk tool above
-  // (allowlist-mapping.ts, `retired`).
-  const preload = new Set<string>([...CORE_TOOL_NAMES, ...skillPreload]);
   const builtinTools = fullCatalogue.filter((t) => {
-    // Skill allowlists no longer narrow — only the HARD scoping filters
-    // do: `excluded` (subagent depth cap) and `spawnAllowed` (per-spawn
-    // narrowing a parent set for a child). Both stay authoritative.
+    // Only the HARD scoping filters remove a tool: `excluded` (subagent
+    // depth cap) and `spawnAllowed` (per-spawn narrowing a parent set for
+    // a child).
     if (excluded?.has(t.name)) return false;
     if (spawnAllowed && !spawnAllowed.has(t.name)) return false;
     return true;
@@ -218,16 +174,15 @@ export function buildToolCatalogue(args: {
     if (spawnAllowed && !spawnAllowed.has(spec.name)) return false;
     return true;
   });
-  // Tool-search hint: tools in `preload` (the core set + this turn's
-  // engaged-skill hints) keep full definitions in every request; the
-  // rest defer behind the provider's tool-search surface.
+  // Tool-search hint: the core set keeps full definitions in every
+  // request; the rest defer behind the provider's tool-search surface.
   const result: FilteredTool[] = [
-    ...builtinTools.map((t) => (preload.has(t.name) ? { ...t, alwaysLoaded: true } : t)),
+    ...builtinTools.map((t) => (CORE_TOOL_NAMES.has(t.name) ? { ...t, alwaysLoaded: true } : t)),
     ...pluginTools.map(({ pluginSlug, spec }) => ({
       name: spec.name,
       description: spec.description,
       inputSchema: spec.inputJsonSchema,
-      ...(preload.has(spec.name) ? { alwaysLoaded: true } : {}),
+      ...(CORE_TOOL_NAMES.has(spec.name) ? { alwaysLoaded: true } : {}),
       // #388 — carry the plugin's approval declaration into the
       // catalogue so the chat-runner can wire the SDK gate; without
       // this, plugin tools ran unqueued and unapproved on every call.

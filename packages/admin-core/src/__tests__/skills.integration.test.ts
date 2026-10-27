@@ -13,7 +13,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { buildSkillsContext, extractLoadedSkillSlugs } from "../ai/chat-runner/context/skills.js";
+import { buildSkillsContext } from "../ai/chat-runner/context/skills.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { liveToolNames } from "../ai/tools/live-tool-names.js";
 import { loadSkillTool } from "../ai/tools/load-skill.js";
@@ -296,8 +296,7 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     for (const slug of ALL_NEW) expect(slugs).toContain(slug);
   });
 
-  // The #301 invariant: an allowlist entry that isn't a live tool name is a
-  // dead preload hint (logged as skill-allowlist-unresolved-entry) — it means
+  // The #301 invariant: an allowlist entry that isn't a live tool name means
   // the skill teaches a tool the AI can't call. Every entry must resolve.
   it("every new skill's allowlist resolves to live tool names", async () => {
     const live = liveToolNames();
@@ -334,7 +333,7 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
   // skill's slug + description (the model's discovery surface) but never the
   // bodies — those load on demand via load_skill into the message history.
   it("the ## Skills index lists slug + description, not bodies", async () => {
-    const skills = await buildSkillsContext(registry, adapter, systemCtx, { loadedSkillSlugs: [] });
+    const skills = await buildSkillsContext(registry, adapter, systemCtx, {});
     const idx = skills.skillsIndexBlock ?? "";
     expect(idx).toContain("# Skills");
     expect(idx).toContain("load_skill({slugs})");
@@ -346,9 +345,6 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     expect(idx).toContain("brand-voice-guard");
     // The full body must NOT be in the index (a distinctive manage-menu phrase).
     expect(idx).not.toContain("SMALL CHANGES ARE PATCHES");
-    // Nothing loaded yet → no preload, no engaged skills.
-    expect(skills.allowedToolNames).toBeNull();
-    expect(skills.engagedSkills.length).toBe(0);
   });
 
   // load_skill is the activation step: valid slugs return the full bodies; an
@@ -415,37 +411,6 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
       const occurrences = res.content.split("SMALL CHANGES ARE PATCHES").length - 1;
       expect(occurrences).toBe(1);
     }
-  });
-
-  // Once loaded, a skill stays available: extractLoadedSkillSlugs recovers it
-  // from the history's load_skill tool call, and buildSkillsContext then
-  // preloads that skill's tools (no tool-search round-trip on later turns).
-  it("a loaded skill is recovered from history and its tools preloaded", async () => {
-    // NOTE: `{slug}` (singular) is the shape chats persisted BEFORE the tool
-    // went bulk. The parser must keep reading it — dropping it would silently
-    // lose the preload hints of every pre-existing chat.
-    const history = [
-      { toolCalls: [{ id: "t1", name: "load_skill", arguments: { slug: "manage-menu" } }] },
-      {
-        toolCalls: [
-          { id: "t2", name: "update_modules_many", arguments: { items: [{ moduleId: "x" }] } },
-        ],
-      },
-    ];
-    expect(extractLoadedSkillSlugs(history)).toEqual(["manage-menu"]);
-
-    // The current shape, and a mix of both in one history.
-    expect(
-      extractLoadedSkillSlugs([
-        { toolCalls: [{ id: "t3", name: "load_skill", arguments: { slugs: ["a", "b"] } }] },
-        { toolCalls: [{ id: "t4", name: "load_skill", arguments: { slug: "c" } }] },
-      ]),
-    ).toEqual(["a", "b", "c"]);
-
-    const skills = await buildSkillsContext(registry, adapter, systemCtx, {
-      loadedSkillSlugs: ["manage-menu"],
-    });
-    expect(skills.engagedSkills.map((e) => e.slug)).toContain("manage-menu");
   });
 });
 

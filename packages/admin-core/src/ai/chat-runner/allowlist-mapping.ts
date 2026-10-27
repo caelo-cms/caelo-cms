@@ -16,14 +16,14 @@
  * This module is the single, explicit translation layer:
  *   - retired tool names (`edit_module`, `set_page_seo`, … — see
  *     `tools/retired-tools.ts`) resolve to the bulk tool that replaced
- *     them, so a skill or preload list written before the merge keeps
- *     preloading the right tool and is normalized to it on save.
+ *     them, so a skill written before the merge keeps naming the right
+ *     tool and is normalized to it on save.
  *   - `OP_NAME_TO_TOOL_NAMES` maps every op name that appears in a
  *     seeded skill allowlist to the AI tool name(s) covering the same
  *     read/write surface. Unknown names never pass silently.
- *   - `resolveAllowlistEntries` is the runtime evaluator used by
- *     `buildToolCatalogue` (exact tool-name match first, then the
- *     table, then loud per-entry failure with a nearest-name hint).
+ *   - `resolveAllowlistEntry` resolves one entry (exact tool-name match
+ *     first, then a retired name, then the table, then a loud failure
+ *     with a nearest-name hint).
  *   - `validateAllowlistEntries` is the save-time gate used by the
  *     skills ops (`skills.set` / `skills.propose` /
  *     `skills.review_proposal`): entries that resolve to neither a
@@ -73,24 +73,10 @@ export type AllowlistEntryResolution =
   | { readonly kind: "retired"; readonly toolNames: readonly string[] }
   /** Op-notation entry translated to ≥1 live tool via the table. */
   | { readonly kind: "translated"; readonly toolNames: readonly string[] }
-  /** Known op with no AI-tool counterpart (context-served) — narrows nothing. */
+  /** Known op with no AI-tool counterpart (context-served) — names no tool. */
   | { readonly kind: "context-served" }
   /** Neither a live tool nor a translation entry — a defect in the skill row. */
   | { readonly kind: "unresolved"; readonly suggestion: string | null };
-
-/** Aggregate resolution of a whole allowlist. */
-export interface AllowlistResolution {
-  /** Live tool names the allowlist narrows to (exact + translated, deduped). */
-  readonly resolvedToolNames: ReadonlySet<string>;
-  /** Op-notation entries that translated, with their tool names (for logging). */
-  readonly translated: ReadonlyArray<{ entry: string; toolNames: readonly string[] }>;
-  /** Retired tool names that resolved to their replacement (for logging). */
-  readonly retired: ReadonlyArray<{ entry: string; toolNames: readonly string[] }>;
-  /** Known context-served ops that narrow nothing. */
-  readonly contextServed: readonly string[];
-  /** Entries that resolved to nothing — each with a nearest-name hint. */
-  readonly unresolved: ReadonlyArray<{ entry: string; suggestion: string | null }>;
-}
 
 /**
  * Resolves one allowlist entry: exact live-tool match first, then a retired
@@ -118,42 +104,6 @@ export function resolveAllowlistEntry(
     return { kind: "unresolved", suggestion: mapped[0] ?? null };
   }
   return { kind: "unresolved", suggestion: suggestNearestToolName(entry, liveToolNames) };
-}
-
-/** Resolves a whole allowlist; see {@link AllowlistResolution}. */
-export function resolveAllowlistEntries(
-  entries: Iterable<string>,
-  liveToolNames: ReadonlySet<string>,
-): AllowlistResolution {
-  const resolvedToolNames = new Set<string>();
-  const translated: Array<{ entry: string; toolNames: readonly string[] }> = [];
-  const retired: Array<{ entry: string; toolNames: readonly string[] }> = [];
-  const contextServed: string[] = [];
-  const unresolved: Array<{ entry: string; suggestion: string | null }> = [];
-  for (const entry of entries) {
-    const r = resolveAllowlistEntry(entry, liveToolNames);
-    switch (r.kind) {
-      case "tool":
-        for (const n of r.toolNames) resolvedToolNames.add(n);
-        break;
-      case "translated":
-        for (const n of r.toolNames) resolvedToolNames.add(n);
-        translated.push({ entry, toolNames: r.toolNames });
-        break;
-      case "retired":
-        for (const n of r.toolNames) resolvedToolNames.add(n);
-        retired.push({ entry, toolNames: r.toolNames });
-        console.warn(`[tool.alias-used] ${entry} -> ${r.toolNames.join(", ")} (skill allowlist)`);
-        break;
-      case "context-served":
-        contextServed.push(entry);
-        break;
-      case "unresolved":
-        unresolved.push({ entry, suggestion: r.suggestion });
-        break;
-    }
-  }
-  return { resolvedToolNames, translated, retired, contextServed, unresolved };
 }
 
 /** One rejected allowlist entry + the nearest live tool name, if any. */
@@ -207,8 +157,8 @@ export function describeAllowlistProblems(problems: readonly AllowlistProblem[])
   return (
     `allowlistedTools entries must be live AI tool names (e.g. "update_modules_many", "list_pages"), ` +
     `not Query-API op names. Unresolvable: ${list}. ` +
-    `Fix the named entries and retry; these are PRELOAD hints, not a restriction ` +
-    `(call with allowlistedTools=[] to preload no extras — the catalogue is never narrowed either way).`
+    `Fix the named entries and retry; they name the skill's tools for load_skill, not a restriction ` +
+    `(allowlistedTools=[] names none — the catalogue is never narrowed either way).`
   );
 }
 

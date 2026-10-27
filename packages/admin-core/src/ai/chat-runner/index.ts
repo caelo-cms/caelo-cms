@@ -39,11 +39,7 @@ import {
   resolveProactiveCompaction,
 } from "./compaction.js";
 import { lastNoteSignature, noteSignature } from "./context/page.js";
-import {
-  extractLoadedSkillSlugs,
-  formatNewSkillsNotice,
-  skillAvailabilityNote,
-} from "./context/skills.js";
+import { formatNewSkillsNotice, skillAvailabilityNote } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
 import { buildContextSplitEstimate } from "./context-split.js";
 import {
@@ -416,12 +412,7 @@ async function* runSerializedChatTurn(
   );
   markPhase("buildProviderHistoryMs");
 
-  // Progressive-disclosure skills: recover which skills the model already
-  // loaded this chat (from prior load_skill tool calls in the history) so their
-  // tools stay preloaded and the subagent-hint heuristic sees their bodies.
-  const loadedSkillSlugs = extractLoadedSkillSlugs(session.messages);
-
-  // Build all pre-catalogue system-prompt context blocks + skill engagement.
+  // Build all pre-catalogue system-prompt context blocks.
   const ctx = await buildSystemContextBlocks({
     registry,
     adapter,
@@ -429,7 +420,6 @@ async function* runSerializedChatTurn(
     humanCtxWithBranch,
     aiActorId: aiCtx.actorId,
     input,
-    loadedSkillSlugs,
     chatStartedAt: session.session.createdAt,
   });
   markPhase("contextBlocksMs");
@@ -505,8 +495,6 @@ async function* runSerializedChatTurn(
   );
   const catalogueTools = buildToolCatalogue({
     tools,
-    allowedToolNames: ctx.allowedToolNames,
-    engagedSkills: ctx.engagedSkills,
     excluded: effectiveExcluded,
     spawnAllowed: options.allowedToolNames,
     chatSessionId: input.chatSessionId,
