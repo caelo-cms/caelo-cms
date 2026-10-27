@@ -398,7 +398,12 @@ describe("replanAfterWait (two runs planned the same commit)", () => {
     keys,
     consultedRuns: [100],
   };
-  const done = (runId: number, conclusion: string) => ({ runId, status: "completed", conclusion });
+  const done = (runId: number, conclusion: string, ranPaidWork = true) => ({
+    runId,
+    status: "completed",
+    conclusion,
+    ranPaidWork,
+  });
 
   it("carries every scenario the earlier run passed; nothing left is stop", () => {
     const v = replanAfterWait({
@@ -475,7 +480,7 @@ describe("replanAfterWait (two runs planned the same commit)", () => {
     for (const job of [
       done(1, "cancelled"),
       done(1, "skipped"),
-      { runId: 1, status: "in_progress", conclusion: "" },
+      { runId: 1, status: "in_progress", conclusion: "", ranPaidWork: false },
     ]) {
       const v = replanAfterWait({ plan, jobs: [job], greens });
       expect(v.verdict, JSON.stringify(job)).toBe("run");
@@ -484,12 +489,28 @@ describe("replanAfterWait (two runs planned the same commit)", () => {
     }
   });
 
+  it("a job that failed before paid work (a blocked duplicate) is no verdict — the red run can be re-run", () => {
+    // Run 1 went red, run 2 was blocked by this guard. Re-running run 1's
+    // failed job reuses its plan (run 2 not consulted): run 2's failure only
+    // echoed run 1 and must not block the retry.
+    const retry = replanAfterWait({ plan, jobs: [done(2, "failure", false)], greens: [] });
+    expect(retry.verdict).toBe("run");
+    expect(retry.plan).toBe(plan);
+    // ...while a red that reached the provider still blocks.
+    expect(replanAfterWait({ plan, jobs: [done(2, "failure", true)], greens: [] }).verdict).toBe(
+      "blocked",
+    );
+  });
+
   it("parses the workflow's job listing", () => {
     expect(
-      parseJobsTsv("1\tcompleted\tsuccess\n2\tin_progress\t\n\nx\tcompleted\tfailure\n"),
+      parseJobsTsv(
+        "1\tcompleted\tsuccess\tsuccess\n2\tin_progress\t\t\n3\tcompleted\tfailure\tskipped\n\nx\tcompleted\tfailure\tfailure\n",
+      ),
     ).toEqual([
-      { runId: 1, status: "completed", conclusion: "success" },
-      { runId: 2, status: "in_progress", conclusion: "" },
+      { runId: 1, status: "completed", conclusion: "success", ranPaidWork: true },
+      { runId: 2, status: "in_progress", conclusion: "", ranPaidWork: false },
+      { runId: 3, status: "completed", conclusion: "failure", ranPaidWork: false },
     ]);
   });
 });

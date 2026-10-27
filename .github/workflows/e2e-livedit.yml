@@ -544,8 +544,10 @@ jobs:
       # read the paid jobs of the OTHER runs of this commit that finished
       # after the plan looked (plan.json consultedRuns) — lib/plan.ts
       # replanAfterWait decides:
-      #   - one ended red → this job FAILS: its failures stand for the commit;
-      #     a duplicate must not re-roll them green (re-run that run instead);
+      #   - one ran paid work and ended red → this job FAILS: its failures
+      #     stand for the commit; a duplicate must not re-roll them green
+      #     (re-run that run instead — a job blocked here never counts as a
+      #     verdict, so that re-run is not blocked in turn);
       #   - their greens carry over; nothing left to run → no paid step and a
       #     passing, annotated check (what a plan whose every scenario is
       #     already green gives), otherwise only the rest runs.
@@ -560,6 +562,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_ID: ${{ github.run_id }}
           JOB_NAME: Real-AI live-edit scenario
+          # A job counts as a verdict only when it reached this step: one
+          # that failed before it (blocked by its plan, or by this guard
+          # echoing another run's red) says nothing of its own.
+          PREFLIGHT_STEP: AI provider preflight (fail fast)
           PLAN_DIR: apps/admin/test-results/livedit/plan
         run: |
           set -uo pipefail
@@ -573,14 +579,14 @@ jobs:
           fi
           for id in $ids; do
             if ! job=$(gh api "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" \
-                --jq ".jobs[] | select(.name == \"$JOB_NAME\") | [.status, (.conclusion // \"\")] | @tsv"); then
+                --jq ".jobs[] | select(.name == \"$JOB_NAME\") | [.status, (.conclusion // \"\"), ([.steps[]? | select(.name == \"$PREFLIGHT_STEP\") | (.conclusion // \"\")] | first // \"\")] | @tsv"); then
               echo "::warning title=Real-AI duplicate check::could not read run $id; running the plan as it stands."
               exit 0
             fi
             [ -n "$job" ] || continue
             printf '%s\t%s\n' "$id" "$job" >> "$dir/jobs.tsv"
             # Greens only from a green job the plan did not consult.
-            [ "$job" = "$(printf 'completed\tsuccess')" ] || continue
+            [ "$(cut -f1,2 <<<"$job")" = "$(printf 'completed\tsuccess')" ] || continue
             jq -e --argjson id "$id" '(.consultedRuns // []) | index($id) != null' "$PLAN_DIR/plan.json" > /dev/null && continue
             for aid in $(gh api "repos/$REPO/actions/runs/$id/artifacts?per_page=100" \
               --jq '.artifacts[] | select(.expired == false and (.name | startswith("e2e-livedit-scenario-greens-"))) | .id'); do

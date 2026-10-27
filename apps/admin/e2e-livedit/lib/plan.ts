@@ -399,6 +399,14 @@ export interface OtherRunJob {
   readonly status: string;
   /** GitHub job conclusion ("" while not completed). */
   readonly conclusion: string;
+  /**
+   * The job reached the provider (its preflight step ran). A job that failed
+   * before that — blocked by its plan, or by THIS guard echoing another
+   * run's red — carries no verdict of its own. Counting it would deadlock
+   * the recovery: re-running the red run would be blocked by the duplicate
+   * that only echoed it.
+   */
+  readonly ranPaidWork: boolean;
 }
 
 /** What the paid job does once it holds the concurrency slot. */
@@ -424,7 +432,7 @@ const NO_VERDICT_CONCLUSIONS: readonly string[] = ["cancelled", "skipped"];
  * only those that completed after the plan read its greens (not in
  * `plan.consultedRuns`) are news.
  *
- * - One of them ended red (failure, timed out, …): blocked. Its failures
+ * - One of them ran paid work and ended red (failure, timed out, …): blocked. Its failures
  *   stand for this commit — a duplicate run must not re-roll a red scenario
  *   (or a run-level bug gate) into a green check. Re-running THAT run, or a
  *   new push, is the way to a new verdict.
@@ -443,7 +451,8 @@ export function replanAfterWait(args: {
   const consulted = new Set(plan.consultedRuns ?? []);
   const fresh = args.jobs.filter((j) => j.status === "completed" && !consulted.has(j.runId));
   const red = fresh.find(
-    (j) => j.conclusion !== "success" && !NO_VERDICT_CONCLUSIONS.includes(j.conclusion),
+    (j) =>
+      j.ranPaidWork && j.conclusion !== "success" && !NO_VERDICT_CONCLUSIONS.includes(j.conclusion),
   );
   if (red !== undefined) {
     return {
@@ -475,15 +484,25 @@ export function replanAfterWait(args: {
   return { verdict: run.length === 0 ? "stop" : "run", reason: next.reason, dropped, plan: next };
 }
 
-/** `runId\tstatus\tconclusion` lines (the workflow's job listing). */
+/**
+ * `runId\tstatus\tconclusion\tpreflight` lines (the workflow's job listing;
+ * `preflight` is the conclusion of the job's provider-preflight step, empty
+ * or "skipped" when it never ran).
+ */
 export function parseJobsTsv(text: string): OtherRunJob[] {
   const out: OtherRunJob[] = [];
   for (const line of text.split("\n")) {
-    const [id, status, conclusion] = line.split("\t");
+    const [id, status, conclusion, preflight] = line.split("\t");
     const runId = Number(id);
     if (!Number.isSafeInteger(runId) || runId <= 0 || status === undefined || status === "")
       continue;
-    out.push({ runId, status, conclusion: conclusion?.trim() ?? "" });
+    const pre = preflight?.trim() ?? "";
+    out.push({
+      runId,
+      status,
+      conclusion: conclusion?.trim() ?? "",
+      ranPaidWork: pre !== "" && pre !== "skipped",
+    });
   }
   return out;
 }

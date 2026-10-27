@@ -661,8 +661,9 @@ step "Guard — results recorded while this run waited" lists the paid jobs
 of the other runs of the same commit, and `lib/plan.ts after-wait`
 (`replanAfterWait`) decides from those that finished since the plan:
 
-- one ended red (failure, timeout, …) → this job **fails** without running
-  anything and leaves that run's PR comment in place. The earlier run's
+- one reached the provider and ended red (failure, timeout, …) → this job
+  **fails** without running anything and leaves that run's PR comment in
+  place. The earlier run's
   failures (a red scenario or the run-level bug gate) stand for the commit;
   a duplicate must not re-roll them into a green check. Re-run that run, or
   push a fix.
@@ -672,8 +673,11 @@ of the other runs of the same commit, and `lib/plan.ts after-wait`
   succeeds without paid steps, like a plan whose every scenario is already
   green. A narrowed run never writes the `green-tree` artifact.
 
-Cancelled and skipped jobs carry no verdict and are ignored, and so are
-runs the plan already consulted: adding a label on purpose after a red run
+Cancelled and skipped jobs carry no verdict and are ignored, and so is a
+job that failed before its provider preflight (blocked by its plan, or by
+this guard echoing another run's red) — otherwise re-running the red run
+would be blocked by the duplicate that only echoed it. Runs the plan
+already consulted are ignored too: adding a label on purpose after a red run
 still re-runs the red scenarios, as before. A listing that cannot be read
 warns and runs the plan unchanged.
 

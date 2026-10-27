@@ -384,7 +384,13 @@ describe("e2e-livedit.yml — plan, budget, CI wait, no cancelled paid runs", ()
     expect(run).toContain("select(.id != $RUN_ID)");
     expect(run).toContain("jobs?filter=latest");
     // Greens only from a green job the plan did not consult.
-    expect(run).toContain(String.raw`[ "$job" = "$(printf 'completed\tsuccess')" ] || continue`);
+    expect(run).toContain(
+      String.raw`[ "$(cut -f1,2 <<<"$job")" = "$(printf 'completed\tsuccess')" ] || continue`,
+    );
+    // Only a job that reached the provider is a verdict: the step name the
+    // listing looks for exists.
+    expect(aiSteps.map((s) => s.name)).toContain(dedupe?.env?.PREFLIGHT_STEP);
+    expect(run).toContain(String.raw`select(.name == \"$PREFLIGHT_STEP\")`);
     expect(run).toContain("e2e-livedit-scenario-greens-");
     expect(run).toContain("plan.ts after-wait");
     // The narrowed plan is the one recorded from.
