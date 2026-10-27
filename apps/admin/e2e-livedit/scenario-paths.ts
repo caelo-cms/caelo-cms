@@ -199,7 +199,8 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       // Plumbing every request and the publish path run through.
       `${SHARED}/{context,logger,result,cap-failures,untrusted-tool-result,run-batched,safe-keys}.ts`,
       `${SHARED}/{raw-text-escape,html-blank,id-safe-truncate,strip-cdata,uuid-diagnose,version}.ts`,
-      `${SHARED}/{phase-timer,source-text-transport,module-id-tag,link-canonicalise,interactions}.ts`,
+      `${SHARED}/{phase-timer,source-text-transport,escaped-line-breaks,module-id-tag}.ts`,
+      `${SHARED}/{link-canonicalise,interactions}.ts`,
       `${SHARED}/{page-log,proposal-status,document-language,database-url,screenshot-capture}.ts`,
       `${SHARED}/{static-cache-policy,static-security-headers,publish-live-parity,staging-gate}.ts`,
       `${A}/ops/notifications.ts`,
@@ -224,7 +225,14 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
   {
     id: "ai-layout-footer",
     file: "scenario-ai-layout-footer.browser.ts",
-    paths: [...LAYOUTS, ...LISTS],
+    // Release gate v0.11.1 (run 40532297620) failed here on module source
+    // sent with escaped line breaks: the decode and the js syntax check.
+    paths: [
+      ...LAYOUTS,
+      ...LISTS,
+      `${SHARED}/{source-text-transport,escaped-line-breaks}.ts`,
+      `${A}/ops/content/module-js-syntax.ts`,
+    ],
   },
   {
     id: "lists-mega-menu",
