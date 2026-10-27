@@ -59,6 +59,14 @@ export const PAGE_SEO_FIELDS = [
   "priority",
 ] as const satisfies readonly (keyof PageSeoState)[];
 
+/**
+ * The key a page id has in every map these helpers return: Postgres prints
+ * uuids lowercase, while a caller's (Zod-valid) uuid may be uppercase. Every
+ * lookup by a caller's id goes through this, or it misses and the caller
+ * silently builds on the column defaults.
+ */
+export const pageKey = (pageId: string): string => pageId.toLowerCase();
+
 /** One SEO field name. */
 export type PageSeoField = (typeof PAGE_SEO_FIELDS)[number];
 

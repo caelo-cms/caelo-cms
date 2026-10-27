@@ -24,7 +24,12 @@ import {
   type SnapshotOpKind,
 } from "../snapshots/index.js";
 import type { PageSeoState, PageState } from "../snapshots/state.js";
-import { applyPageSeoState, loadLivePageSeo, PAGE_SEO_COLUMN_DEFAULTS } from "./page-seo.js";
+import {
+  applyPageSeoState,
+  loadLivePageSeo,
+  PAGE_SEO_COLUMN_DEFAULTS,
+  pageKey,
+} from "./page-seo.js";
 
 /** A page opened for an SEO write: its state in the caller's view and its current SEO. */
 export interface OpenedPageSeo {
@@ -45,8 +50,9 @@ export async function peekPageSeo(
   ctx: ExecutionContext,
   tx: TransactionRunner,
   operation: string,
-  pageId: string,
+  rawPageId: string,
 ): Promise<Result<OpenedPageSeo, QueryError>> {
+  const pageId = pageKey(rawPageId);
   const page = ctx.chatBranchId
     ? await loadPageStateWithBranchOverlay(tx, pageId, ctx.chatBranchId)
     : await loadPageState(tx, pageId);

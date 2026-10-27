@@ -35,7 +35,8 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { loadPageSeoViews, PAGE_SEO_FIELDS, pageSeoViewSql } from "../seo/page-seo.js";
+import { observeDraftReads } from "../locks.js";
+import { loadPageSeoViews, PAGE_SEO_FIELDS, pageKey, pageSeoViewSql } from "../seo/page-seo.js";
 import {
   commitPageSeoWrites,
   type OpenedPageSeo,
@@ -98,7 +99,9 @@ export const pagesSeoGetOp = defineOperation({
   output: z.object({ seo: seoRowOutput.nullable() }),
   handler: async (ctx, input, tx) => {
     const rows = await loadSeoRows(tx, [input.pageId], ctx.chatBranchId);
-    return ok({ seo: rows.get(input.pageId) ?? null });
+    // The chat has now seen this page's draft state (a conflict's re-read).
+    await observeDraftReads(tx, ctx, "page", [pageKey(input.pageId)]);
+    return ok({ seo: rows.get(pageKey(input.pageId)) ?? null });
   },
 });
 
@@ -130,7 +133,11 @@ export const pagesSeoGetManyOp = defineOperation({
     ),
   }),
   handler: async (ctx, input, tx) => {
-    const texts = await loadPageContentTexts(tx, input.pageIds, ctx.chatBranchId ?? null);
+    const texts = await loadPageContentTexts(
+      tx,
+      input.pageIds.map(pageKey),
+      ctx.chatBranchId ?? null,
+    );
     if (texts.missing.length > 0) {
       return err({
         kind: "HandlerError",
@@ -144,6 +151,13 @@ export const pagesSeoGetManyOp = defineOperation({
       tx,
       texts.pages.map((p) => p.pageId),
       ctx.chatBranchId,
+    );
+    // The chat has now seen these pages' draft state (a conflict's re-read).
+    await observeDraftReads(
+      tx,
+      ctx,
+      "page",
+      texts.pages.map((p) => p.pageId),
     );
     return ok({
       pages: texts.pages.map((p) => ({ ...p, seo: seoByPage.get(p.pageId) ?? null })),
@@ -666,16 +680,17 @@ export const pagesSeoOptimizeManyOp = defineOperation({
     // input order (one snapshot entity, so "latest wins" never ties).
     const byPage = new Map<string, Parameters<typeof commitPageSeoWrites>[2][number]>();
     for (const u of input.updates) {
-      const prev = byPage.get(u.pageId);
+      const key = pageKey(u.pageId);
+      const prev = byPage.get(key);
       if (prev) {
-        byPage.set(u.pageId, { opened: prev.opened, next: optimizedSeo(prev.next, u) });
+        byPage.set(key, { opened: prev.opened, next: optimizedSeo(prev.next, u) });
         continue;
       }
       const opened = await openPageSeoWrite(ctx, tx, "pages_seo.optimize_many", u.pageId);
       // Thrown, not returned: an earlier item's lock may have taken over
       // another chat's change, and only an abort rolls that back too.
       if (!opened.ok) throw new OperationAbortError(opened.error);
-      byPage.set(u.pageId, { opened: opened.value, next: optimizedSeo(opened.value.current, u) });
+      byPage.set(key, { opened: opened.value, next: optimizedSeo(opened.value.current, u) });
     }
     const writes = [...byPage.values()];
     await commitPageSeoWrites(

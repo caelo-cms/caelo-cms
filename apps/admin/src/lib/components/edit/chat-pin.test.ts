@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { pinChatParam, unpinChatParam } from "./chat-pin.js";
+import { editorRefreshUrl, pinChatParam, unpinChatParam } from "./chat-pin.js";
 
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
@@ -50,5 +50,25 @@ describe("unpinChatParam", () => {
     const url = editUrl(B);
     unpinChatParam(url, null);
     expect(url.searchParams.get("chat")).toBe(B);
+  });
+});
+
+describe("editorRefreshUrl", () => {
+  it("follows the page the editor shows, keeping the chat pinned", () => {
+    const r = editorRefreshUrl(editUrl(A).toString(), A, "p2");
+    expect(r.url.searchParams.get("page")).toBe("p2");
+    expect(r.url.searchParams.get("chat")).toBe(A);
+    expect(r).toMatchObject({ pinned: false, changed: true });
+  });
+
+  it("pins the chat when the URL lacks it", () => {
+    const r = editorRefreshUrl(editUrl().toString(), A, "p1");
+    expect(r).toMatchObject({ pinned: true, changed: true });
+    expect(r.url.searchParams.get("chat")).toBe(A);
+  });
+
+  it("reports an unchanged URL as a plain refresh", () => {
+    expect(editorRefreshUrl(editUrl(A).toString(), A, "p1").changed).toBe(false);
+    expect(editorRefreshUrl(editUrl(A).toString(), A, null).changed).toBe(false);
   });
 });

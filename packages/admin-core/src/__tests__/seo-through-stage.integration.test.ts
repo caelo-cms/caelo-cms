@@ -388,4 +388,34 @@ describe("#1156 page SEO goes through Stage", () => {
     expect(await pendingPages(a.id)).toEqual([]);
     expect(await seo(a.ctx, p)).toBeNull();
   });
+  it("lets a bulk write refused on a draft conflict go through after the instructed re-read", async () => {
+    const p = await page("conflict");
+    const a = await chat("Writes first");
+    const b = await chat("Writes second");
+    await op(a.ctx, "pages_seo.set", { pageId: p, metaDescription: "From A." });
+    const batch = { updates: [{ pageId: p, metaDescription: "From B." }] };
+    const first = await execute(registry, adapter, b.ctx, "pages_seo.optimize_many", batch);
+    expect(first.ok).toBe(false);
+    if (!first.ok) expect(JSON.stringify(first.error)).toContain("Conflict");
+    // The re-read the conflict asks for records that B has seen A's change.
+    await op(b.ctx, "pages_seo.get_many", { pageIds: [p] });
+    await op(b.ctx, "pages_seo.optimize_many", batch);
+    expect((await seo(b.ctx, p))?.metaDescription).toBe("From B.");
+  });
+
+  it("finds a page's SEO under an uppercase page id instead of building on defaults", async () => {
+    const p = await page("upper");
+    await op(SYS, "pages_seo.set", {
+      pageId: p,
+      metaDescription: "Old.",
+      noindex: true,
+      canonicalUrl: "https://example.com/upper",
+    });
+    await op(SYS, "pages_seo.set", { pageId: p.toUpperCase(), metaDescription: "New." });
+    expect(await seo(SYS, p.toUpperCase())).toMatchObject({
+      metaDescription: "New.",
+      noindex: true,
+    });
+    expect((await seo(SYS, p))?.noindex).toBe(true);
+  });
 });

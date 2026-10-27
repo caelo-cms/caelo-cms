@@ -292,6 +292,32 @@ async function draftConflict(
   return stale;
 }
 
+/**
+ * Record that a draft chat READ these entities' current draft state, so its
+ * next write of them is not a draft conflict over a change it has now seen.
+ * The conflict message tells the AI to "read it again"; a read that records
+ * nothing would leave a write refused inside an aborted batch (the abort
+ * rolls back the observation `draftConflict` wrote) conflicting forever.
+ * Only for the caller's own draft chat (`chatTaskId`); a no-op elsewhere.
+ */
+export async function observeDraftReads(
+  tx: TransactionRunner,
+  ctx: { readonly chatBranchId?: string | null; readonly chatTaskId?: string | null },
+  kind: LockedEntityKind,
+  entityIds: readonly string[],
+): Promise<void> {
+  if (!ctx.chatBranchId || !ctx.chatTaskId || entityIds.length === 0) return;
+  const rows = (await tx.execute(sql`
+    SELECT caelo_chat_owner(cs.id)::text AS owner
+    FROM chat_sessions cs
+    WHERE cs.id = ${ctx.chatTaskId}::uuid AND cs.chat_branch_id = ${ctx.chatBranchId}::uuid
+      AND cs.branch_kind = 'draft'
+  `)) as unknown as { owner: string }[];
+  const owner = rows[0]?.owner;
+  if (!owner) return;
+  for (const id of new Set(entityIds)) await observeDraftEntity(tx, owner, kind, id);
+}
+
 /** Record that a draft chat has now seen the entity's current draft state. */
 async function observeDraftEntity(
   tx: TransactionRunner,
