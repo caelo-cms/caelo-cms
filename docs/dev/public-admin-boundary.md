@@ -58,7 +58,7 @@ The gateway writes these tables (all in `cms_public`, migration 0280):
 
 The gateway garbage-collects them itself. Every column is bounded by a `CHECK`. `public_role` can insert log and event rows but cannot read them back, and it may insert only their payload columns: `id` comes from the sequence and `created_at` from `now()`.
 
-Nothing in the admin reads `gateway_plugin_op_events` since the automatic redeploy was removed (#1154); the table stays for the plugin-data build (#1155). Whatever reads it next treats every row as untrusted, as below.
+The admin reads `gateway_plugin_op_events` for one thing: hints for the plugin-data build (#1155, [plugin-baked-data.md](../plugin-baked-data.md)). A visitor call of an operation a plugin declares as a baked-data trigger records the page it changed (`page_id`, cms_public 0372). The admin treats every row as untrusted, as below: a row counts only for a declared visitor trigger of a plugin the admin runs, under that plugin's own slug, and a main-line page that exists in `cms_admin`; it only marks that page for a re-render from authoritative state, and the build rewrites nothing but that plugin's own bake regions in the published files.
 
 Plugin op records from visitor calls go to `gateway_plugin_op_events`. They never go to `audit_events`: the public side must not be able to forge entries in the admin's audit trail.
 
@@ -84,7 +84,7 @@ Everything the admin reads from `cms_public` crosses a trust boundary. The rules
 
 1. **Validate at the boundary.** Each row must match a strict, bounded Zod schema when it is read. A row that does not fit is dropped and counted, never coerced (`parseUntrustedRows`, admin-core `untrusted/public-data.ts`).
 2. **Render as text.** Svelte interpolation only. Never `{@html}`, never a markdown renderer that turns links or images into live elements.
-3. **Never drive a privileged action without a human or validator step.** A public row can be a *hint*. Example: a plugin op event can schedule a rebuild, but only for a page that exists in `cms_admin`, and the rebuild reads the authoritative state. A public row is never an instruction.
+3. **Never drive a privileged action without a human or validator step.** A public row can be a *hint*. Example: a plugin op event can schedule a plugin-data build (#1155), but only for a declared trigger and a page that exists in `cms_admin`, and the build re-renders from authoritative state. A public row is never an instruction.
 4. **Never instructions to the AI.** Every plugin tool result reaches the admin AI wrapped in `<untrusted-plugin-data>` (`untrustedToolResult` in `@caelo-cms/shared`), and the static system prompt says what that means. Prompts built from visitor text fence it the same way. The admin AI holds publish and deploy tools (#763 M8).
 
 Every read path and how it meets these rules: [public-admin-read-paths.md](./public-admin-read-paths.md).

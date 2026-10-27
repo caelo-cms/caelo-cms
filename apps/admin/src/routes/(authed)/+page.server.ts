@@ -41,7 +41,11 @@ export const load: PageServerLoad = async ({ locals }) => {
   // succeeded: a half-known state would claim "nothing staged" or "not
   // live" without knowing it (CLAUDE.md §2 no-fallbacks).
   let siteState: SiteState | null = null;
-  const runsR = await execute(registry, adapter, locals.ctx, "deploy.list_runs", { limit: 200 });
+  const runsR = await execute(registry, adapter, locals.ctx, "deploy.list_runs", {
+    limit: 200,
+    // #1155 — plugin-data builds would push the published runs out of the window.
+    buildKind: "site",
+  });
   if (pagesR.ok && runsR.ok) {
     siteState = siteStateFrom(pages, (runsR.value as { runs: DeployRunSummary[] }).runs);
   }

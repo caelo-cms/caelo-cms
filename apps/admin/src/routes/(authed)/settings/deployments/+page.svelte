@@ -198,7 +198,13 @@
             {#each runs as r (r.id)}
               <TableRow>
                 <TableCell><strong>{r.targetName}</strong></TableCell>
-                <TableCell><code>{r.env}</code></TableCell>
+                <TableCell>
+                  <code>{r.env}</code>
+                  {#if r.buildKind === "plugin_data"}
+                    <!-- #1155 — the live build republished with fresher plugin data only. -->
+                    <Badge variant="outline" class="ml-1" title="Plugin data only: the published site with new comments, ratings or other plugin data baked in. Nothing else changed.">plugin data</Badge>
+                  {/if}
+                </TableCell>
                 <TableCell>
                   <Badge variant={statusVariant(r.status)}>{r.targetName} {r.status}</Badge>
                 </TableCell>
