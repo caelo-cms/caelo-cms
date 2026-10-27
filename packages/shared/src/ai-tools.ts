@@ -24,6 +24,7 @@ import {
   setPlacementContentSchema,
   slugSchema,
 } from "./content.js";
+import type { SourceLanguage } from "./escaped-line-breaks.js";
 import { LIST_ITEM_ATTR_RE } from "./lists/item-attr.js";
 import { pluginPreviewSelectionSchema } from "./plugin-preview.js";
 import { redirectTargetPathSchema } from "./redirect-target.js";
@@ -69,9 +70,10 @@ function stripSurroundingQuotes(v: unknown): unknown {
  * is handled in one place instead of refused per tool.
  *
  * @param schema - the string schema (length caps, min) the decoded value must satisfy.
+ * @param language - the grammar of the value (`html`, `css`, `js`).
  */
-export function sourceTextArg<T extends z.ZodType<string>>(schema: T) {
-  return z.preprocess(decodeSourceTextTransport, schema);
+export function sourceTextArg<T extends z.ZodType<string>>(schema: T, language: SourceLanguage) {
+  return z.preprocess((value) => decodeSourceTextTransport(value, language), schema);
 }
 
 export const positionInputSchema = z.preprocess(
@@ -159,9 +161,9 @@ export const addModuleToolInput = z
     description: z.string().max(1000).optional(),
     kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
     type: slugSchema.optional(),
-    html: sourceTextArg(z.string().min(1).max(50_000)).optional(),
-    css: sourceTextArg(z.string().max(50_000)).optional(),
-    js: sourceTextArg(z.string().max(50_000)).optional(),
+    html: sourceTextArg(z.string().min(1).max(50_000), "html").optional(),
+    css: sourceTextArg(z.string().max(50_000), "css").optional(),
+    js: sourceTextArg(z.string().max(50_000), "js").optional(),
     fields: z.array(moduleFieldSchema).max(64).optional(),
     bindThemeLiterals: z.boolean().optional(),
     /**
@@ -579,8 +581,8 @@ export const createTemplateToolInput = z
   .object({
     slug: slugInputSchema,
     displayName: z.string().min(1).max(256),
-    html: sourceTextArg(z.string().min(1).max(2_000_000)),
-    css: sourceTextArg(z.string().max(2_000_000)).default(""),
+    html: sourceTextArg(z.string().min(1).max(2_000_000), "html"),
+    css: sourceTextArg(z.string().max(2_000_000), "css").default(""),
     layoutId: z.string().uuid().optional(),
     /** Epic #1107 — the page type (slug) this template serves; omit for the site default. */
     pageType: pageTypeSlugSchema.optional(),
@@ -631,8 +633,8 @@ export const createLayoutToolInput = z
   .object({
     slug: slugInputSchema,
     displayName: z.string().min(1).max(200),
-    html: sourceTextArg(z.string().min(1).max(50_000)),
-    css: sourceTextArg(z.string().max(50_000)).optional(),
+    html: sourceTextArg(z.string().min(1).max(50_000), "html"),
+    css: sourceTextArg(z.string().max(50_000), "css").optional(),
     blocks: z
       .array(
         z

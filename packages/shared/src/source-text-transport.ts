@@ -8,7 +8,7 @@
  * sends it: as a CDATA section (`unwrapCdataEnvelope`), as a JSON string
  * literal (`"<footer class=\"x\">…"`), HTML-escaped (`&lt;main&gt;…`), or
  * with its line breaks string-escaped (`{\n  color: red;\n}`, see
- * `decodeEscapedLineBreaks`).
+ * `escaped-line-breaks.ts`).
  * Each is an encoding of a value the caller did supply, never content:
  * a JSON string literal is not valid markup, CSS or JS as a whole, and
  * markup without a single `<` but with `&lt;tag` has no element at all.
@@ -21,6 +21,7 @@
  * a fallback for missing data (CLAUDE.md §2).
  */
 
+import { decodeEscapedLineBreaks, type SourceLanguage } from "./escaped-line-breaks.js";
 import { unwrapCdataEnvelope } from "./strip-cdata.js";
 
 /**
@@ -67,49 +68,14 @@ export function decodeHtmlEscapedSource(value: unknown): unknown {
 }
 
 /**
- * A literal `\n` (backslash + `n`) not preceded by another backslash —
- * an escaped line break as opposed to an escaped backslash followed by `n`.
+ * Every whole-value transport encoding, outermost first.
+ *
+ * @param language - the grammar of the value; escaped line breaks are only
+ *   decoded where they cannot belong to a literal of it.
  */
-const ESCAPED_LINE_BREAK = /(?<!\\)(?:\\r)?\\n/g;
-
-/**
- * True when a source value's line breaks were string-escaped as a whole:
- * the value has no real line break at all, carries at least two literal
- * `\n` sequences, and at least one of them is followed by indentation (a
- * space or a tab, raw or escaped). That is the signature of pretty-printed
- * source (`(function () {\n  document…`) whose newlines arrived as the two
- * characters `\` `n` — e2e-livedit run 40532297620: the footer module's
- * html, css and js all came in that shape, the page showed literal `\n`
- * text and the shared module `<script>` threw `SyntaxError: Invalid or
- * unexpected token` (a backslash outside a string is not JavaScript).
- * Hand-written single-line source almost never matches: a minified script
- * has no indentation, and one `'\n'` in a string is below the threshold.
- */
-export function hasEscapedLineBreaks(value: string): boolean {
-  if (/[\r\n]/.test(value)) return false;
-  const hits = value.match(ESCAPED_LINE_BREAK)?.length ?? 0;
-  if (hits < 2) return false;
-  return /(?<!\\)\\n(?:[ \t]|\\t)/.test(value);
-}
-
-/**
- * Source whose line breaks were string-escaped as a whole (see
- * `hasEscapedLineBreaks`), with every escaped line break turned back into a
- * real one and the escaped tabs that indent the next line into real tabs;
- * the input unchanged otherwise. Nothing else is unescaped: quotes and
- * backslashes arrived as they were meant.
- */
-export function decodeEscapedLineBreaks(value: unknown): unknown {
-  if (typeof value !== "string" || !hasEscapedLineBreaks(value)) return value;
-  return value.replace(
-    /(?<!\\)(?:\\r)?\\n((?:\\t)*)/g,
-    (_m, tabs: string) => `\n${"\t".repeat(tabs.length / 2)}`,
-  );
-}
-
-/** Every whole-value transport encoding, outermost first. */
-export function decodeSourceTextTransport(value: unknown): unknown {
+export function decodeSourceTextTransport(value: unknown, language: SourceLanguage): unknown {
   return decodeEscapedLineBreaks(
     decodeHtmlEscapedSource(decodeJsonEncodedSource(unwrapCdataEnvelope(value))),
+    language,
   );
 }

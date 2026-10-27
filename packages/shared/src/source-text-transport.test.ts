@@ -2,8 +2,8 @@
 
 import { describe, expect, it } from "bun:test";
 import { addModuleToolInput, createTemplateToolInput } from "./ai-tools.js";
+import { decodeEscapedLineBreaks } from "./escaped-line-breaks.js";
 import {
-  decodeEscapedLineBreaks,
   decodeHtmlEscapedSource,
   decodeJsonEncodedSource,
   decodeSourceTextTransport,
@@ -44,13 +44,14 @@ describe("decodeJsonEncodedSource", () => {
 
 describe("decodeSourceTextTransport", () => {
   it("unwraps CDATA, then a JSON literal, then HTML escaping", () => {
-    expect(decodeSourceTextTransport(`<![CDATA[${markup}]]>`)).toBe(markup);
+    expect(decodeSourceTextTransport(`<![CDATA[${markup}]]>`, "html")).toBe(markup);
     expect(
       decodeSourceTextTransport(
         JSON.stringify(markup.replaceAll("<", "&lt;").replaceAll(">", "&gt;")),
+        "html",
       ),
     ).toBe(markup);
-    expect(decodeSourceTextTransport(42)).toBe(42);
+    expect(decodeSourceTextTransport(42, "html")).toBe(42);
   });
 
   it("is what create_template's html argument goes through", () => {
@@ -77,34 +78,64 @@ describe("decodeEscapedLineBreaks", () => {
     '<footer class="site-footer">\\n  <nav class="site-footer__nav" aria-label="Footer">\\n    <ul class="site-footer__list">\\n      {{#nav}}\\n      <li class="site-footer__item"><a class="site-footer__link" href="{{link.href}}">{{label}}</a></li>\\n      {{/nav}}\\n    </ul>\\n  </nav>\\n</footer>';
 
   it("turns escaped line breaks back into real ones (the run's exact values)", () => {
-    expect(decodeEscapedLineBreaks(sentJs)).toBe(
+    expect(decodeEscapedLineBreaks(sentJs, "js")).toBe(
       "(function () {\n  document.querySelectorAll('.site-footer__year').forEach(function (el) {\n    el.textContent = new Date().getFullYear();\n  });\n})();",
     );
-    expect(decodeEscapedLineBreaks(sentCss)).toBe(
+    expect(decodeEscapedLineBreaks(sentCss, "css")).toBe(
       ".site-footer {\n  padding: 2rem 1.5rem;\n  text-align: center;\n}\n.site-footer__link:hover {\n  text-decoration: underline;\n}",
     );
-    const html = decodeEscapedLineBreaks(sentHtml) as string;
+    const html = decodeEscapedLineBreaks(sentHtml, "html") as string;
     expect(html).not.toContain("\\n");
     expect(html.split("\n")).toHaveLength(9);
     expect(html).toContain('<footer class="site-footer">\n  <nav');
   });
 
   it("decodes escaped CRLF and escaped tab indentation", () => {
-    expect(decodeEscapedLineBreaks(".a {\\r\\n\\tcolor: red;\\r\\n\\t\\tx: y;\\r\\n}")).toBe(
+    expect(decodeEscapedLineBreaks(".a {\\r\\n\\tcolor: red;\\r\\n\\t\\tx: y;\\r\\n}", "css")).toBe(
       ".a {\n\tcolor: red;\n\t\tx: y;\n}",
     );
   });
 
   it("leaves source with real line breaks, single-line code and escaped backslashes alone", () => {
     const multiLine = "const s = 'a\\n  b';\nconsole.log(s.split('\\n  '));";
-    expect(decodeEscapedLineBreaks(multiLine)).toBe(multiLine);
+    expect(decodeEscapedLineBreaks(multiLine, "js")).toBe(multiLine);
     const minified = "var t=a.join('\\n');console.log(t.split('\\n'))";
-    expect(decodeEscapedLineBreaks(minified)).toBe(minified);
+    expect(decodeEscapedLineBreaks(minified, "js")).toBe(minified);
     const oneHit = "el.textContent = lines.join('\\n  ');";
-    expect(decodeEscapedLineBreaks(oneHit)).toBe(oneHit);
+    expect(decodeEscapedLineBreaks(oneHit, "js")).toBe(oneHit);
     const escapedBackslash = "a('\\\\n  x'); b('\\\\n  y');";
-    expect(decodeEscapedLineBreaks(escapedBackslash)).toBe(escapedBackslash);
-    expect(decodeEscapedLineBreaks(7)).toBe(7);
+    expect(decodeEscapedLineBreaks(escapedBackslash, "js")).toBe(escapedBackslash);
+    expect(decodeEscapedLineBreaks(7, "js")).toBe(7);
+  });
+
+  // PR #1189 review: an escape inside a literal is meaningful, so a value
+  // holding one is ambiguous and left exactly as sent — decoding it would
+  // turn valid source into broken source.
+  it("leaves values alone when an escaped line break sits inside a literal", () => {
+    const jsString = 'document.querySelector("pre").textContent = "Title\\n  Detail\\n  More";';
+    expect(decodeEscapedLineBreaks(jsString, "js")).toBe(jsString);
+    const jsTemplate = "(function () {\\n  el.title = `a\\n  b`;\\n})();";
+    expect(decodeEscapedLineBreaks(jsTemplate, "js")).toBe(jsTemplate);
+    const jsRegex = "(function () {\\n  var ok = /a\\n  b/.test(x);\\n})();";
+    expect(decodeEscapedLineBreaks(jsRegex, "js")).toBe(jsRegex);
+    const cssContent = '.a::after {\\n  content: "x\\n  y";\\n}';
+    expect(decodeEscapedLineBreaks(cssContent, "css")).toBe(cssContent);
+    const htmlAttr = '<div>\\n  <span title="a\\n  b">x</span>\\n</div>';
+    expect(decodeEscapedLineBreaks(htmlAttr, "html")).toBe(htmlAttr);
+    const htmlPre = '<div>\\n  <pre>printf("a\\n");</pre>\\n</div>';
+    expect(decodeEscapedLineBreaks(htmlPre, "html")).toBe(htmlPre);
+  });
+
+  it("decodes structural escapes around literals and comments that hold none", () => {
+    expect(
+      decodeEscapedLineBreaks(
+        "// it's the footer\\n(function () {\\n  var s = 'a\\\\n';\\n  /x/.test(s);\\n})();",
+        "js",
+      ),
+    ).toBe("// it's the footer\n(function () {\n  var s = 'a\\\\n';\n  /x/.test(s);\n})();");
+    expect(
+      decodeEscapedLineBreaks('<p>It\'s ours</p>\\n<p>\\n  <a href="/">Home</a>\\n</p>', "html"),
+    ).toBe('<p>It\'s ours</p>\n<p>\n  <a href="/">Home</a>\n</p>');
   });
 
   it("is what add_module's html / css / js arguments go through", () => {

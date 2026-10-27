@@ -360,9 +360,9 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
 // 40351690739: a bare placeholder moduleId came back as "module not found").
 const moduleUpdateItem = moduleUpdateSchema
   .extend({
-    html: sourceTextArg(moduleUpdateSchema.shape.html.unwrap()).optional(),
-    css: sourceTextArg(moduleUpdateSchema.shape.css.unwrap()).optional(),
-    js: sourceTextArg(moduleUpdateSchema.shape.js.unwrap()).optional(),
+    html: sourceTextArg(moduleUpdateSchema.shape.html.unwrap(), "html").optional(),
+    css: sourceTextArg(moduleUpdateSchema.shape.css.unwrap(), "css").optional(),
+    js: sourceTextArg(moduleUpdateSchema.shape.js.unwrap(), "js").optional(),
     bindThemeLiterals: z.boolean().optional(),
   })
   .strict()

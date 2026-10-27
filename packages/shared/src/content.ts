@@ -11,10 +11,10 @@
  */
 
 import { z } from "zod";
+import { hasEscapedLineBreaks } from "./escaped-line-breaks.js";
 import { listItemInputSchema } from "./lists/items.js";
 import { LIST_MAX_ITEMS, sourceDefSchema } from "./lists/list-type.js";
 import { LIST_REF_RE } from "./lists/refs.js";
-import { hasEscapedLineBreaks } from "./source-text-transport.js";
 
 /** Lowercase slug, hyphenated, 1–64 chars, no leading/trailing hyphen. */
 export const slugSchema = z
@@ -135,12 +135,12 @@ export function htmlEscapedMarkupMessage(field: string, value: string): string |
  * js is checked by parsing it (admin-core `module-js-syntax.ts`), which
  * catches this and every other syntax error.
  */
-export function escapedLineBreaksMessage(field: string, value: string): string | null {
-  if (!hasEscapedLineBreaks(value)) return null;
+export function escapedLineBreaksMessage(field: "html" | "css", value: string): string | null {
+  if (!hasEscapedLineBreaks(value, field)) return null;
   return `${field} has its line breaks escaped (literal \\n sequences, no real line break) — send the ${field} with real line breaks.`;
 }
 
-const noCorruptMarkup = (field: string) => (value: string, ctx: z.RefinementCtx) => {
+const noCorruptMarkup = (field: "html") => (value: string, ctx: z.RefinementCtx) => {
   const message =
     jsonEncodedCodeMessage(field, value) ??
     htmlEscapedMarkupMessage(field, value) ??
