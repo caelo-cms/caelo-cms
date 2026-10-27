@@ -36,7 +36,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { CADDY_REDIRECTS_FILE, type ExecutionContext } from "@caelo-cms/shared";
 import { findBakeRegions, replaceBakeRegions } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
@@ -433,10 +433,14 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     });
 
     const live = await filesUnder(join(productionDir(), "current"));
-    // Same files as the published build: no new page, no redirect file change …
+    // A saved redirect is not draft state (#1157): it is live on save, so
+    // the release re-syncs the redirect files over the build's own copy.
+    const redirectFiles = new Set(["_redirects", "_redirects.cloudflare", CADDY_REDIRECTS_FILE]);
+    expect(live.get(CADDY_REDIRECTS_FILE)?.toString("utf8")).toContain("/t1155-old");
+    // Same files as the published build: no new page …
     expect([...live.keys()].sort()).toEqual([...base.keys()].sort());
     for (const [path, body] of base) {
-      if (path === homePath) continue;
+      if (path === homePath || redirectFiles.has(path)) continue;
       expect({ path, same: live.get(path)?.equals(body) }).toEqual({ path, same: true });
     }
     // … and the page differs only inside the plugin's region.
@@ -447,7 +451,11 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     for (const unpublished of ["UNPUBLISHED EDIT", "UNPUBLISHED SEO", SECRET_SLUG, "t1155-old"]) {
       expect(liveHome).not.toContain(unpublished);
     }
-    expect([...live.values()].some((b) => b.toString("utf8").includes("t1155-old"))).toBe(false);
+    expect(
+      [...live.entries()].some(
+        ([path, b]) => !redirectFiles.has(path) && b.toString("utf8").includes("t1155-old"),
+      ),
+    ).toBe(false);
     // The marker an editor typed stays text, untouched.
     expect(liveHome).toContain("EDITOR TEXT");
     // The delta feed's `since` moved past the approval.
