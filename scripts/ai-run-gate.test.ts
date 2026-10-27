@@ -139,10 +139,13 @@ describe("e2e-livedit.yml — main runs once per release, gated in release-cut",
       (s) => typeof s.with?.name === "string" && s.with.name.startsWith("e2e-livedit-green-tree-"),
     );
     // Only a run that executed EVERY CI scenario may stand in for main's
-    // tree — a partial PR run proves nothing about the others.
-    expect(record?.if).toBe("success() && needs.plan.outputs.full == 'true'");
+    // tree — a partial PR run proves nothing about the others, and a run the
+    // budget stopped before the suite proves nothing at all.
+    const fullAndRan =
+      "success() && needs.plan.outputs.full == 'true' && steps.suite.outcome == 'success'";
+    expect(record?.if).toBe(fullAndRan);
     expect(record?.run ?? "").toContain("git rev-parse 'HEAD^{tree}'");
-    expect(upload?.if).toBe("success() && needs.plan.outputs.full == 'true'");
+    expect(upload?.if).toBe(fullAndRan);
     expect(upload?.with?.name).toBe("e2e-livedit-green-tree-${{ steps.green-tree.outputs.tree }}");
     // The marker is written after the bug gate, so a run with new detected
     // bugs never records its tree.
@@ -183,6 +186,9 @@ describe("e2e-livedit.yml — main runs once per release, gated in release-cut",
  *     dispatch are decided before the budget is read.
  * L8: a run whose commit is no longer the PR head cancels itself before any
  *     paid step.
+ * L9: the paid job re-reads the budget right before its first paid step: the
+ *     plan's reading predates the CI wait and the per-PR queue, and other
+ *     PRs' runs can spend the rest of the week meanwhile.
  */
 describe("e2e-livedit.yml — plan, budget, CI wait, no cancelled paid runs", () => {
   const text = readFileSync(resolve(REPO_ROOT, ".github/workflows/e2e-livedit.yml"), "utf8");
@@ -275,5 +281,25 @@ describe("e2e-livedit.yml — plan, budget, CI wait, no cancelled paid runs", ()
     expect(stale).toBeGreaterThan(0);
     expect(stale).toBeLessThan(preflight);
     expect(aiSteps[stale]?.run ?? "").toContain('gh run cancel "$RUN_ID"');
+  });
+
+  it("L9: the paid job re-reads the budget right before its first paid step", () => {
+    const recheck = aiSteps.findIndex((s) => s.id === "budget-recheck");
+    const preflight = aiSteps.findIndex((s) => s.id === "provider-preflight");
+    expect(recheck).toBeGreaterThan(0);
+    expect(recheck).toBeLessThan(preflight);
+    expect(aiSteps[recheck]?.if).toBe("github.event_name == 'pull_request'");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we match against
+    expect(aiSteps[recheck]?.env?.BUDGET_USD).toBe("${{ vars.E2E_LIVEDIT_WEEKLY_BUDGET_USD }}");
+    // Every step from the preflight to the suite stops once the budget is
+    // used up; the steps after it hang off the preflight's or the suite's
+    // outcome, so an over-budget run ends as a passing, annotated check.
+    const suite = aiSteps.findIndex((s) => s.id === "suite");
+    for (const s of aiSteps.slice(preflight, suite + 1)) {
+      expect(s.if, s.name).toContain("steps.budget-recheck.outputs.over != 'true'");
+    }
+    const tree = aiSteps.filter((s) => (s.name ?? "").includes("tested tree"));
+    expect(tree.length).toBe(2);
+    for (const s of tree) expect(s.if).toContain("steps.suite.outcome == 'success'");
   });
 });

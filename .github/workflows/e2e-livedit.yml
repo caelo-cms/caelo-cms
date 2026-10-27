@@ -396,6 +396,37 @@ jobs:
           name: e2e-livedit-plan-${{ github.run_id }}
           path: apps/admin/test-results/livedit/plan
 
+      # The plan read the budget before its CI wait (up to 65 min), and this
+      # job may have queued behind another paid run of the PR since; other
+      # PRs' runs can have spent the rest of the week meanwhile. Re-read the
+      # ledger right before the first paid step and stop with a passing,
+      # annotated check when it is used up — the same verdict the plan gives.
+      # PR runs only: the release gate / a manual dispatch ignore the budget.
+      - name: Guard — weekly budget (re-read before paid work)
+        id: budget-recheck
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BUDGET_USD: ${{ vars.E2E_LIVEDIT_WEEKLY_BUDGET_USD }}
+        run: |
+          set -euo pipefail
+          dir=$(mktemp -d)
+          gh api "repos/$REPO/contents/runs?ref=e2e-livedit-ledger" --jq '.[].name' > "$dir/ledger.txt" 2>/dev/null || : > "$dir/ledger.txt"
+          bun run apps/admin/e2e-livedit/lib/budget.ts spend --names "$dir/ledger.txt" \
+            --budget-usd "${BUDGET_USD:-}" --out "$dir/budget.json"
+          line=$(jq -r .line "$dir/budget.json")
+          if [ "$(jq -r .over "$dir/budget.json")" = "true" ]; then
+            printf '<!-- e2e-livedit-sticky -->\n## e2e-livedit — not run (weekly budget)\n\n%s\n\nThe budget ran out while this run waited for CI or for the previous paid run of this PR. The check passes as skipped. A maintainer can run the suite with `gh workflow run e2e-livedit.yml --ref %s` (manual dispatch ignores the budget), or raise the repo variable `E2E_LIVEDIT_WEEKLY_BUDGET_USD`.\n' \
+              "$line" "$HEAD_REF" > "$dir/comment.md"
+            bash apps/admin/e2e-livedit/lib/sticky-comment.sh "$PR_NUMBER" "$dir/comment.md" || true
+            { echo "### Real-AI suite not run: weekly budget"; echo "$line"; } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=Real-AI suite skipped::$line"
+            echo "over=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # Fail fast when the provider refuses the CI key (spending/usage limit,
       # invalid key, permission) — one `max_tokens: 1` call on the cheapest
       # catalog model before compose, build and the scenarios. Without it a
@@ -407,12 +438,14 @@ jobs:
       # never printed. Needs no `bun install`: the script uses fetch + node
       # builtins only.
       - name: AI provider preflight (fail fast)
+        if: steps.budget-recheck.outputs.over != 'true'
         id: provider-preflight
         env:
           ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
         run: bun scripts/ai-provider-preflight.ts --report apps/admin/test-results/livedit/provider-preflight.md
 
       - name: Install dependencies (frozen lockfile)
+        if: steps.budget-recheck.outputs.over != 'true'
         run: bun install --frozen-lockfile
 
       # Materialise the .env compose reads its POSTGRES_USER/PASSWORD
@@ -420,6 +453,7 @@ jobs:
       # docker-compose.yml; skipping the write makes Postgres start
       # with no roles.
       - name: Write compose .env
+        if: steps.budget-recheck.outputs.over != 'true'
         run: |
           cat > .env <<EOF
           POSTGRES_USER=${POSTGRES_USER}
@@ -438,15 +472,18 @@ jobs:
       # process (running as the runner's user) from writing the
       # generated files.
       - name: Pre-create static-gen output dirs
+        if: steps.budget-recheck.outputs.over != 'true'
         run: mkdir -p apps/admin/output/staging apps/admin/output/production
 
       - name: Start compose (postgres + caddy-staging + caddy-production)
+        if: steps.budget-recheck.outputs.over != 'true'
         # `wait` blocks until each service's healthcheck reports healthy.
         # postgres has a healthcheck; the caddy services don't, but
         # they come up in <1s so the wait is effectively just for pg.
         run: docker compose up -d --wait
 
       - name: Run migrations
+        if: steps.budget-recheck.outputs.over != 'true'
         env:
           PGHOST: localhost
         run: bun run db:migrate
@@ -456,11 +493,13 @@ jobs:
       # resolve them otherwise. Same #36/#51 lesson as the `e2e` job in
       # ci.yml.
       - name: Build @caelo-cms/shared + mcp-server (admin SSR deps)
+        if: steps.budget-recheck.outputs.over != 'true'
         run: |
           bun run --filter '@caelo-cms/shared' build
           bun run --filter '@caelo-cms/mcp-server' build
 
       - name: Install Playwright chromium
+        if: steps.budget-recheck.outputs.over != 'true'
         # #984 - apt fonts from actions/cache, not the Ubuntu mirror.
         uses: ./.github/actions/playwright-chromium
 
@@ -470,6 +509,7 @@ jobs:
       # <= 26 for the homepage, re-derived 2026-10-26 (rationale at the
       # constant). No Playwright retry: a breach fails this step.
       - name: Run e2e-livedit (Scenario 1)
+        if: steps.budget-recheck.outputs.over != 'true'
         id: suite
         env:
           # The planner's selection (comma-separated spec files); empty runs
@@ -689,14 +729,14 @@ jobs:
       # scenarios it did not run.
       - name: Record the tested tree (green only)
         id: green-tree
-        if: success() && needs.plan.outputs.full == 'true'
+        if: success() && needs.plan.outputs.full == 'true' && steps.suite.outcome == 'success'
         run: |
           mkdir -p "$RUNNER_TEMP/green-tree"
           tree=$(git rev-parse 'HEAD^{tree}')
           echo "$tree" > "$RUNNER_TEMP/green-tree/tree.txt"
           echo "tree=$tree" >> "$GITHUB_OUTPUT"
       - name: Upload the tested tree (green only)
-        if: success() && needs.plan.outputs.full == 'true'
+        if: success() && needs.plan.outputs.full == 'true' && steps.suite.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: e2e-livedit-green-tree-${{ steps.green-tree.outputs.tree }}
@@ -814,7 +854,7 @@ jobs:
       # Runs always() so green runs replace the prior sticky comment
       # with their final-state shot.
       - name: Push screenshots to side branch and post PR comment
-        if: always() && github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request' && steps.budget-recheck.outputs.over != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

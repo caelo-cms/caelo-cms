@@ -609,6 +609,12 @@ skip with a passing, annotated check and the sticky PR comment says
 dispatch only". The release gate and a manual dispatch always run (and
 count). Every run's PR comment shows the spend-vs-budget line.
 
+The paid job reads the ledger a second time, right before the provider
+preflight (step `budget-recheck`): the plan's reading predates its CI wait
+(up to 65 min) and the per-PR queue, and other PRs' runs can spend the rest
+of the week in between. Over budget there, the job skips every paid step
+and ends green with the same annotation and comment.
+
 The sticky PR comment is one comment per PR (marker
 `<!-- e2e-livedit-sticky -->`), edited by every run
 (`lib/sticky-comment.sh`).

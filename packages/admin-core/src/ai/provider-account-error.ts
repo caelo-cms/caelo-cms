@@ -198,14 +198,21 @@ export const PROVIDER_ACCOUNT_NOTICE_PREFIX = "The AI can't answer right now:";
 /**
  * The operator-facing chat notice. Brand-free on purpose: the editor chat
  * never names the provider (CLAUDE.md §2); Settings → AI does.
+ *
+ * It makes no claim about what the turn changed: the limit can hit on a
+ * continuation after tool calls already wrote, and those writes stay. So it
+ * points the operator at the chat before they repeat the request.
  */
 export function providerAccountNotice(issue: Pick<ProviderAccountIssue, "kind">): string {
+  const resume =
+    "Changes the AI already made in this turn stay; check the chat and the preview, then ask " +
+    "it to continue where it stopped rather than repeating the whole request.";
   return issue.kind === "quota"
     ? `${PROVIDER_ACCOUNT_NOTICE_PREFIX} the usage, spending or billing limit of the configured ` +
-        "AI provider account is used up. Nothing was changed. An Owner has to raise the limit or " +
-        "add credit at the provider (Settings → AI shows which provider and key are configured); " +
-        "then send your message again."
+        "AI provider account is used up. An Owner has to raise the limit or add credit at the " +
+        "provider (Settings → AI shows which provider and key are configured). " +
+        resume
     : `${PROVIDER_ACCOUNT_NOTICE_PREFIX} the configured AI provider rejected the API key ` +
-        "(invalid, revoked or without permission). Nothing was changed. An Owner has to check " +
-        "or replace the key under Settings → AI; then send your message again.";
+        "(invalid, revoked or without permission). An Owner has to check or replace the key " +
+        `under Settings → AI. ${resume}`;
 }

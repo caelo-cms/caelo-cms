@@ -234,4 +234,15 @@ describe("message fallback + notice", () => {
     expect(providerAccountNotice({ kind: "quota" })).toContain("limit");
     expect(providerAccountNotice({ kind: "auth" })).toContain("API key");
   });
+
+  // The limit can hit on a continuation after tool calls already wrote; the
+  // notice must not tell the operator that nothing changed (Codex, PR #1178).
+  it("the chat notice claims nothing about the turn's earlier writes", () => {
+    for (const kind of ["quota", "auth"] as const) {
+      const text = providerAccountNotice({ kind });
+      expect(text).not.toContain("Nothing was changed");
+      expect(text).not.toContain("send your message again");
+      expect(text).toContain("already made in this turn stay");
+    }
+  });
 });
