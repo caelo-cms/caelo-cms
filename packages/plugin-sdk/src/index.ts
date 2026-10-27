@@ -838,6 +838,41 @@ export interface DeclaredConsentPurpose {
   }>;
 }
 
+/**
+ * #1155 — where a baked-data trigger finds the pages it changed: a key of
+ * the operation's arguments or of its result, holding one page id or a
+ * list of them.
+ */
+export const bakedDataPageIds = z
+  .object({
+    from: z.enum(["args", "result"]),
+    key: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/),
+  })
+  .strict();
+
+/** One operation whose success changes what `staticRender` bakes. */
+export const bakedDataTrigger = z
+  .object({
+    operation: z.string().min(1).max(120),
+    pageIds: bakedDataPageIds,
+  })
+  .strict();
+
+/**
+ * #1155 — see `PluginDefinition.bakedData`. Data only, no capability: it
+ * asks the host to refresh this plugin's own bakes, nothing else.
+ */
+export const pluginBakedData = z
+  .object({
+    /** What is baked, in a sentence the Owner and the AI read. */
+    description: z.string().trim().min(1).max(300),
+    triggers: z.array(bakedDataTrigger).min(1).max(20),
+  })
+  .strict();
+
+/** A plugin's baked-data declaration (`PluginDefinition.bakedData`). */
+export type PluginBakedData = z.infer<typeof pluginBakedData>;
+
 export const pluginManifest = z
   .object({
     // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
@@ -967,6 +1002,8 @@ export const pluginManifest = z
     /** See `PluginDefinition.consentPurposes`. Data only — no capability:
      *  a declaration asks the visitor, it never grants anything. */
     consentPurposes: z.array(pluginConsentPurpose).max(20).optional(),
+    /** See `PluginDefinition.bakedData` (#1155). */
+    bakedData: pluginBakedData.optional(),
   })
   .strict()
   .superRefine((m, ctx) => {
@@ -1055,6 +1092,27 @@ export const pluginManifest = z
         path: ["auditFindingsOperation"],
         message: `auditFindingsOperation "${m.auditFindingsOperation}" is not one of the plugin's operations`,
       });
+    }
+    // #1155 — a plugin-data build refreshes `staticRender` output, so a
+    // declaration without one bakes nothing, and a trigger must be an
+    // operation the plugin has.
+    if (m.bakedData) {
+      if (!m.hasStaticRender) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["bakedData"],
+          message: "bakedData needs a staticRender: it declares when that output goes stale",
+        });
+      }
+      for (const [i, t] of m.bakedData.triggers.entries()) {
+        if (!m.operations.includes(t.operation)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["bakedData", "triggers", i, "operation"],
+            message: `bakedData trigger "${t.operation}" is not one of the plugin's operations`,
+          });
+        }
+      }
     }
     if (m.writeHintsOperation !== undefined && !m.operations.includes(m.writeHintsOperation)) {
       ctx.addIssue({
@@ -2126,6 +2184,35 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * runtime-installed plugins: no plugin ships admin UI code.
    */
   readonly adminPanels?: ReadonlyArray<PluginAdminPanel>;
+  /**
+   * #1155 — this plugin's `staticRender` bakes visitor data (comments,
+   * ratings, …) into pages, and these operations change it. CMS_REQUIREMENTS
+   * §6.1: an approved item is served at once by the Web Component's delta
+   * fetch; the host then batches the pages the triggers name and runs ONE
+   * plugin-data build per tick, which re-renders only this plugin's bake
+   * regions in the files of the build that is live, so the HTML carries the
+   * item and the delta feed's `since` moves past it. Nothing but those
+   * regions changes: no draft, staged or unpublished edit goes live.
+   *
+   * A trigger is an operation in `operations`. After it succeeds, the host
+   * reads the page id(s) from `pageIds` — a key of the arguments (`args`) or
+   * of the result (`result`) holding a page id or a list of them. For an
+   * operation in `publicOperations` (a visitor call), the gateway records
+   * the one page id with its op event and the admin treats it as an
+   * untrusted hint: it counts only for a declared trigger of an active
+   * plugin and a page that exists. A region is refreshed only while the
+   * running plugin version is the one that rendered it.
+   *
+   * @example
+   *   bakedData: {
+   *     description: "Approved comments, baked into the page they belong to.",
+   *     triggers: [
+   *       { operation: "moderate", pageIds: { from: "result", key: "pageId" } },
+   *       { operation: "bulk_moderate", pageIds: { from: "result", key: "pageIds" } },
+   *     ],
+   *   },
+   */
+  readonly bakedData?: PluginBakedData;
 }
 
 /**
@@ -2181,6 +2268,7 @@ export function manifestFromDefinition(def: {
   readonly adminPanels?: ReadonlyArray<PluginAdminPanel>;
   readonly requiresPlugins?: ReadonlyArray<string>;
   readonly consentPurposes?: ReadonlyArray<PluginConsentPurpose>;
+  readonly bakedData?: PluginBakedData;
 }): PluginManifest {
   return pluginManifest.parse({
     slug: def.slug,
@@ -2233,6 +2321,17 @@ export function manifestFromDefinition(def: {
             ...p,
             cookies: p.cookies.map((c) => ({ ...c })),
           })),
+        }
+      : {}),
+    ...(def.bakedData
+      ? {
+          bakedData: {
+            description: def.bakedData.description,
+            triggers: def.bakedData.triggers.map((t) => ({
+              operation: t.operation,
+              pageIds: { ...t.pageIds },
+            })),
+          },
         }
       : {}),
   });

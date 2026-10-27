@@ -190,6 +190,48 @@ Web Component fetches only new items since deploy timestamp
 New items appended to static content
 ```
 
+The `since` timestamp is the bake's `data-baked-at` attribute on the
+plugin's placeholder (`<div data-caelo-plugin="<slug>" data-page-id="<id>"
+data-baked-at="<iso>">`), taken before the plugin reads its data, so an item
+that lands during a build is fetched by the Web Component rather than lost.
+Each bake is wrapped in markers (`<!--caelo-bake:<slug>:<pageId>:<version>-->`
+… `<!--/caelo-bake:<slug>:<pageId>-->`); marker-shaped comments anywhere else
+in the page are neutralised at build time, so only the plugin pass can open or
+close a bake region.
+
+**An approved item between two publishes (#1155).** Visitor data (comments,
+ratings, …) is a plugin topic, handled on the platform level for every plugin
+the same way:
+
+1. The item is approved (an Owner click, the AI's moderation, or a visitor
+   operation the plugin declares). It is active in the live database at once,
+   and the public API serves it through the Web Component's delta fetch — no
+   build.
+2. The plugin declares in its manifest that its public data is baked into
+   pages and which operations change it, with where each finds the page
+   (plugin SDK `bakedData`). After such an operation the admin marks the page
+   stale. A visitor operation's page id reaches the admin through the
+   gateway's op event as an untrusted hint: it counts only for a declared
+   trigger of an active plugin the admin runs, and a page that exists.
+3. A **plugin-data build** runs at most once per scheduler tick and batches
+   every stale page. It does not build the site: it reads the files of the
+   build that is live (the last succeeded production run) and re-renders only
+   the marked bake regions of the declaring plugins, with current data. Every
+   other byte, file, header, redirect and setting is the published build's.
+   It is a deploy run of its own kind (`plugin_data`, with its base run),
+   audited apart from Publish live.
+4. Once that build is live, the region's `data-baked-at` is past the item, so
+   the delta fetch no longer returns it: the item is in the HTML now.
+
+A plugin-data build refreshes a region only when the running plugin version
+rendered it and the running Caelo version rendered the live build; a new
+release's markup goes live with the next Publish live. It re-renders a plugin
+only while that plugin runs (§14, #1008). It is not gated by the quality audit
+(#553): no page structure changes, only data rows inside a region the audited
+build already carried. Design and code: `docs/plugin-baked-data.md`. A Publish live of an older
+Stage, or a rollback, makes the affected bakes stale again, so the next tick
+re-bakes them.
+
 ### 6.2 One Path to Live (no automatic redeploy)
 
 Nothing reaches production except through a human **Publish live** (or an
@@ -207,7 +249,10 @@ from `main` without a click, shipping whatever `main` held.
 Visitor-generated plugin data (comments, ratings, …) reaches the static HTML
 through its own mechanism, which publishes nothing else: an approved item is
 served at once by the public API through the delta fetch (§6.1), and a
-plugin-data build bakes it into the HTML from the last published state (#1155).
+plugin-data build bakes it into the HTML of the last published build (#1155).
+That build is the one background publish there is, and by construction it
+contains no draft, staged or `main`-only change: its input is the live build's
+files, not `cms_admin`, and it rewrites only plugin-owned bake regions.
 
 ---
 

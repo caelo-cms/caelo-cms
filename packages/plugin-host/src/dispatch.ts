@@ -23,9 +23,10 @@ import type {
   PluginInvocation,
   PluginProvenance,
 } from "@caelo-cms/plugin-sdk";
-import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { bakedDataPageIds } from "./baked-data-pages.js";
 import { type ExternalApproval, operatorHasPermission } from "./external-authorization.js";
 import { previewContext } from "./preview-context.js";
 import type { PluginRowLocker } from "./private-storage.js";
@@ -606,6 +607,15 @@ export async function runPluginOperation(
           operation: `${plugin.slug}.${opts.operationName}`,
           inputHash: auditInputDigest(opts.args),
           entityId: extractEntityId(value),
+          // #1155 — the page a declared baked-data trigger changed; the
+          // admin reads it back as an untrusted hint, never as a fact.
+          pageId:
+            bakedDataPageIds(
+              plugin.definition.bakedData,
+              opts.operationName,
+              { args: opts.args, result: value },
+              { single: true },
+            )[0] ?? null,
         });
         return { ok: true, value };
       }
@@ -619,6 +629,7 @@ export async function runPluginOperation(
     } catch {
       // Audit failure shouldn't surface to the visitor / caller.
     }
+    await markBakedPagesStale(plugin, opts.operationName, opts.args, value);
     return { ok: true, value };
   } catch (e) {
     if (!opts.readOnlyPreview && !isPublicSideHost(cachedInfra)) {
@@ -670,6 +681,56 @@ export async function runPluginOperation(
       },
     };
   }
+}
+
+/** The admin op that records stale bakes (admin-core `ops/plugin-data.ts`). */
+const MARK_BAKED_PAGES_OP = "plugin_data.mark_pages";
+
+/**
+ * #1155 — after a declared baked-data trigger succeeded in the admin, ask
+ * the next plugin-data build to re-bake the pages it names. The operation
+ * already happened, so a failure to record this is not the caller's: the
+ * item is live through the delta feed either way, and only its bake waits
+ * for the next Stage. It is recorded under the plugin (#1008), never
+ * swallowed.
+ */
+async function markBakedPagesStale(
+  plugin: LoadedPlugin,
+  operationName: string,
+  args: unknown,
+  result: unknown,
+): Promise<void> {
+  if (!cachedInfra) return;
+  const pageIds = bakedDataPageIds(plugin.definition.bakedData, operationName, {
+    args,
+    result,
+  });
+  if (pageIds.length === 0) return;
+  const infra = cachedInfra;
+  const fail = async (message: string): Promise<void> => {
+    await recordPluginError({
+      infra,
+      systemActorId: hostSystemActorId(),
+      slug: plugin.slug,
+      pluginId: plugin.pluginId,
+      phase: "operation",
+      error: new Error(
+        `"${operationName}" succeeded, but its pages were not queued for a plugin-data build: ${message}. They get the new data with the next Stage and Publish live.`,
+      ),
+    });
+  };
+  if (!infra.registry.has(MARK_BAKED_PAGES_OP)) {
+    await fail(`the admin registers no ${MARK_BAKED_PAGES_OP} operation`);
+    return;
+  }
+  const r = await execute(
+    infra.registry,
+    infra.adapter,
+    { actorId: hostSystemActorId(), actorKind: "system", requestId: `baked-data-${plugin.slug}` },
+    MARK_BAKED_PAGES_OP,
+    { pluginId: plugin.pluginId, pageIds, source: "operation" },
+  );
+  if (!r.ok) await fail(JSON.stringify(r.error));
 }
 
 /** Field names whose values are redacted before the audit digest is taken. */

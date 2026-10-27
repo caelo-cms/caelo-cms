@@ -11,6 +11,7 @@ The admin applies four mechanisms across these paths:
 
 | Read path | `cms_public` source | Where the data goes | How it is handled now |
 |---|---|---|---|
+| Plugin-data hints (admin-core `plugin-data/visitor-hints.ts`, #1155) | `gateway_plugin_op_events` (`plugin_id`, `operation`, `page_id`) | `plugin_data_stale_pages` marks, then a plugin-data build | Strict Zod row schema (`parseUntrustedRows` style: dropped and logged). Counts only for a declared visitor trigger of a plugin the admin runs, under that plugin's slug, and a main-line page that exists (`plugin_data.mark_pages`). A mark only schedules a re-render of that plugin's own bake regions from authoritative state; at most 500 rows per tick; the watermark never passes the sequence's last value. |
 | `gateway.list_recent_requests`, `gateway.list_analytics` (admin-core `ops/gateway.ts`) | `gateway_request_log` | `/settings/gateway`, SSE live view, chat tools | Strict Zod row schemas (slug and operation charset, status range, bounded strings). Bad rows are dropped and counted (`droppedRows`). |
 | comments `list_pending` | `plugin_comments.comments` | Owner panel (plain text), chat tool | Row validation (1); untrusted wrapper (2, 3). |
 | comments `moderate` / `bulk_moderate`: archive into `cms_admin` | `plugin_comments.comments` | `comment_archive` (then baked into pages) | The decision comes from a human or the AI, never from the row. The copy goes through the Zod-validated `comment_archive.insert` (UUIDs, bounded lengths). Row validation (1). |

@@ -336,6 +336,64 @@ export function createGcsStaticPublisher(
       return summary;
     },
 
+    async readLiveFiles({ paths }) {
+      const h = await bucketHandles();
+      const out = new Map<string, Buffer | null>();
+      await runBatched([...paths], PARALLEL_COPIES, async (path) => {
+        const file = h.staticBucket.file(path);
+        const [exists] = await file.exists();
+        out.set(path, exists ? (await file.download())[0] : null);
+      });
+      return out;
+    },
+
+    /**
+     * #1155 — overwrite the re-baked objects in the live bucket, keeping
+     * each object's Content-Type (and so its cache policy), then restamp
+     * the live manifest. Nothing else in the bucket and no redirect rule
+     * changes. Refuses when the bucket's live manifest names another build
+     * than the live run recorded.
+     */
+    async publishPluginData({ live, runId, files }) {
+      const h = await bucketHandles();
+      const manifest = await readLiveManifest(h.staticBucket);
+      if (manifest && manifest.buildId !== live.buildId) {
+        throw new Error(
+          `static-publisher-gcs: gs://${h.staticBucketName}/ serves build ${manifest.buildId}, but the last recorded production run put ${live.buildId} live — something was published outside Caelo. Publish live again; plugin data is not published on top of an unrecorded build.`,
+        );
+      }
+      await runBatched([...files.entries()], PARALLEL_UPLOADS, async ([path, body]) => {
+        const file = h.staticBucket.file(path);
+        const [exists] = await file.exists();
+        if (!exists) {
+          throw new Error(
+            `static-publisher-gcs: ${path} is not a file of the live build — a plugin-data build only replaces files the build has`,
+          );
+        }
+        const [meta] = await file.getMetadata();
+        const contentType =
+          typeof meta.contentType === "string" ? meta.contentType : contentTypeFor(path);
+        await file.save(body, {
+          contentType,
+          metadata: gcsObjectMetadata(contentType, path),
+        });
+      });
+      const newManifest = await buildLiveManifest(h.staticBucket, runId);
+      await uploadBytes(
+        h.staticBucket,
+        MANIFEST_KEY,
+        Buffer.from(JSON.stringify(newManifest), "utf8"),
+        "application/json",
+      );
+      return {
+        provider: "gcp",
+        uploadedCount: files.size,
+        skippedUnchangedCount: 0,
+        location: `gs://${h.staticBucketName}/`,
+        destinationBuildId: runId,
+      };
+    },
+
     async rollback({ sourceBuildDir, target }): Promise<PublishSummary> {
       // Rollback re-uploads the archived build dir to the static bucket
       // root. Because we don't archive cloud builds today (only the
