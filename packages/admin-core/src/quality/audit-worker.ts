@@ -30,7 +30,7 @@ import { NOT_FOUND_PAGE_FILE } from "@caelo-cms/static-generator";
 import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { localBuildArchiveDir } from "../ops/deploy.js";
 import { linkSourcesFromOps, referenceSourcesFromOps } from "./checks/links-sources.js";
-import { withPluginAuditChecks } from "./checks/plugin-findings.js";
+import { type PluginAuditSource, withPluginAuditChecks } from "./checks/plugin-findings.js";
 import { type CheckRegistry, createCoreCheckRegistry } from "./checks/registry.js";
 import { runChecksOnStagedBuild } from "./checks/run-staged.js";
 import { structureSourcesFromOps } from "./checks/structure-sources.js";
@@ -295,11 +295,19 @@ interface WorkerDeps {
 
 let coreChecks: CheckRegistry | null = null;
 
-/** Plugin audit contributions through the plugin host broker (epic #1107). */
-const HOST_PLUGIN_AUDIT = {
-  contributors: auditFindingContributors,
-  findings: collectPluginAuditFindings,
-};
+/**
+ * Plugin audit contributions through the plugin host broker (epic #1107).
+ * The site's URLs come from the same read as the links check's, so a
+ * URL is same-site in a plugin's page facts exactly when it is for core.
+ */
+function hostPluginAudit(deps: WorkerDeps): PluginAuditSource {
+  const links = linkSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX);
+  return {
+    contributors: auditFindingContributors,
+    findings: collectPluginAuditFindings,
+    siteUrls: () => links.siteUrls(),
+  };
+}
 
 /** Core's registry, built once per process (one adapter per process). */
 function defaultChecks(deps: WorkerDeps): CheckRegistry {
@@ -353,7 +361,7 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
     return;
   }
   // Plugin contributions are read per audit: activation changes them.
-  const checks = deps.checks ?? withPluginAuditChecks(defaultChecks(deps), HOST_PLUGIN_AUDIT);
+  const checks = deps.checks ?? withPluginAuditChecks(defaultChecks(deps), hostPluginAudit(deps));
   const runLighthouse = deps.runJob ?? checks.lighthouse()?.run;
   if (run.pages.length > 0 && !runLighthouse) {
     await record(deps, run.auditRunId, null, {

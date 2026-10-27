@@ -41,6 +41,7 @@ import {
   stripMustache,
   templateShape,
 } from "@caelo-cms/shared";
+import { pluginWriteHintsSuffix } from "./_plugin-write-hints.js";
 import {
   hasRepeatCandidates,
   repeatedValueHints,
@@ -365,7 +366,8 @@ export async function repeatedValueSuffix(
 
 /**
  * Wrap a field-value-writing tool so a successful write carries the field
- * markup hints and (with `scope`) the repeated-value hint. `pick` names
+ * markup hints, (with `scope`) the repeated-value hint, and the active
+ * plugins' write hints (./_plugin-write-hints.ts). `pick` names
  * the value objects the input writes; `scope` names the modules /
  * instances / placements it writes to.
  */
@@ -382,7 +384,11 @@ export function withFieldMarkupGuard<T>(
       const written = pick(input);
       const suffix =
         (await fieldMarkupSuffix(ctx, toolCtx, written)) +
-        (scope ? await repeatedValueSuffix(ctx, toolCtx, written, scope(input)) : "");
+        (scope ? await repeatedValueSuffix(ctx, toolCtx, written, scope(input)) : "") +
+        (await pluginWriteHintsSuffix(
+          ctx,
+          written.map((values) => ({ kind: "values" as const, moduleId: null, values })),
+        ));
       return suffix ? { ...result, content: `${result.content}${suffix}` } : result;
     },
   };

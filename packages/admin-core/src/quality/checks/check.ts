@@ -66,6 +66,12 @@ export interface StagedBuild {
    * answer at all throws (the check then fails loudly, never "no findings").
    */
   probe(path: string): Promise<StagedProbe>;
+  /**
+   * The text of the file the staged build serves at `path` (root-relative,
+   * as for {@link probe}), or null when it serves none (404/410). Staging
+   * failing to answer throws, as for a probe.
+   */
+  text(path: string): Promise<string | null>;
 }
 
 export interface PageCheckContext {
