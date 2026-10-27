@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * Contract for the AI-run cost gate in the two AI workflows: once the AI
- * job has succeeded on a PR, later commits to that PR skip it; a new or
- * reopened PR always runs.
+ * Contract for the AI-run cost gate of the security review: once the AI job
+ * has succeeded on a PR, later commits to that PR skip it; a new or reopened
+ * PR always runs. (The real-AI live-edit suite replaced this gate with
+ * per-scenario selection and reuse — its contract is further down, L1–L8.)
  *
  * G1: a `prior-success` job exists with only `actions: read`.
  * G2: the AI job needs it and skips when it reports `passed == 'true'`.
@@ -36,10 +37,7 @@ interface Job {
   readonly steps?: Step[];
 }
 
-const CASES = [
-  { file: "security-review.yml", aiJob: "security-review" },
-  { file: "e2e-livedit.yml", aiJob: "e2e-livedit" },
-] as const;
+const CASES = [{ file: "security-review.yml", aiJob: "security-review" }] as const;
 
 for (const { file, aiJob } of CASES) {
   const wf = yaml.load(readFileSync(resolve(REPO_ROOT, ".github/workflows", file), "utf8")) as {
@@ -140,9 +138,14 @@ describe("e2e-livedit.yml — main runs once per release, gated in release-cut",
     const upload = aiSteps.find(
       (s) => typeof s.with?.name === "string" && s.with.name.startsWith("e2e-livedit-green-tree-"),
     );
-    expect(record?.if).toBe("success()");
+    // Only a run that executed EVERY CI scenario may stand in for main's
+    // tree — a partial PR run proves nothing about the others, and a run the
+    // budget stopped before the suite proves nothing at all.
+    const fullAndRan =
+      "success() && needs.plan.outputs.full == 'true' && steps.suite.outcome == 'success'";
+    expect(record?.if).toBe(fullAndRan);
     expect(record?.run ?? "").toContain("git rev-parse 'HEAD^{tree}'");
-    expect(upload?.if).toBe("success()");
+    expect(upload?.if).toBe(fullAndRan);
     expect(upload?.with?.name).toBe("e2e-livedit-green-tree-${{ steps.green-tree.outputs.tree }}");
     // The marker is written after the bug gate, so a run with new detected
     // bugs never records its tree.
@@ -162,5 +165,141 @@ describe("e2e-livedit.yml — main runs once per release, gated in release-cut",
     expect(run.indexOf("tree_job_ok)")).toBeLessThan(
       run.indexOf('gh workflow run "$WORKFLOW_FILE"'),
     );
+  });
+});
+
+/**
+ * The real-AI live-edit suite's cost controls (2026-10-27).
+ *
+ * L1: the paid job is skipped only on the plan's explicit `skip`; a failed or
+ *     blocking plan RUNS it so its first step fails the required check (a
+ *     skipped required check passes).
+ * L2: that first step fails on a plan result other than success or a mode
+ *     other than `run`.
+ * L3: no workflow-level concurrency; the paid job serializes per PR without
+ *     cancelling a run in flight.
+ * L4: drafts do not run, ready_for_review does; dispatch stays (release gate).
+ * L5: the plan job waits for CI checks that exist in ci.yml under those names.
+ * L6: the suite runs the planned specs, and per-scenario results are recorded
+ *     only when the run-level bug gate passed.
+ * L7: the weekly budget limits PR runs only — the release gate / a manual
+ *     dispatch are decided before the budget is read.
+ * L8: a run whose commit is no longer the PR head cancels itself before any
+ *     paid step.
+ * L9: the paid job re-reads the budget right before its first paid step: the
+ *     plan's reading predates the CI wait and the per-PR queue, and other
+ *     PRs' runs can spend the rest of the week meanwhile.
+ */
+describe("e2e-livedit.yml — plan, budget, CI wait, no cancelled paid runs", () => {
+  const text = readFileSync(resolve(REPO_ROOT, ".github/workflows/e2e-livedit.yml"), "utf8");
+  const wf = yaml.load(text) as {
+    on: Record<string, { types?: string[] } | null>;
+    concurrency?: unknown;
+    jobs: Record<
+      string,
+      Job & { concurrency?: { group?: string; "cancel-in-progress"?: boolean } }
+    >;
+  };
+  const plan = wf.jobs.plan;
+  const ai = wf.jobs["e2e-livedit"];
+  const aiSteps = ai?.steps ?? [];
+  const planSteps = plan?.steps ?? [];
+  const ci = yaml.load(readFileSync(resolve(REPO_ROOT, ".github/workflows/ci.yml"), "utf8")) as {
+    jobs: Record<string, Job>;
+  };
+
+  it("L1: skipped only on an explicit skip verdict", () => {
+    expect(ai?.needs).toEqual(["plan"]);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we match against
+    expect(ai?.if).toBe("${{ !cancelled() && needs.plan.outputs.mode != 'skip' }}");
+  });
+
+  it("L2: the first step fails unless the plan succeeded with mode run", () => {
+    const guard = aiSteps[0];
+    expect(guard?.id).toBe("guard");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we match against
+    expect(guard?.env?.PLAN_RESULT).toBe("${{ needs.plan.result }}");
+    expect(guard?.run ?? "").toContain('if [ "$PLAN_RESULT" != "success" ]; then');
+    expect(guard?.run ?? "").toContain('if [ "$MODE" != "run" ]; then');
+  });
+
+  it("L3: a paid run in flight is never cancelled by a new push", () => {
+    expect(wf.concurrency).toBeUndefined();
+    expect(ai?.concurrency?.["cancel-in-progress"]).toBe(false);
+    expect(ai?.concurrency?.group).toContain("github.event.pull_request.number");
+  });
+
+  it("L4: drafts wait for ready_for_review; dispatch stays", () => {
+    expect(wf.on.pull_request?.types).toEqual([
+      "opened",
+      "synchronize",
+      "reopened",
+      "ready_for_review",
+    ]);
+    expect(Object.keys(wf.on)).toContain("workflow_dispatch");
+    const verdict = planSteps.find((s) => s.id === "verdict")?.run ?? "";
+    expect(verdict).toContain('[ "$DRAFT" = "true" ] && emit skip');
+  });
+
+  it("L5: waits for CI checks that exist under exactly those names", () => {
+    const verdict = planSteps.find((s) => s.id === "verdict");
+    const names = (verdict?.env?.WAIT_FOR ?? "").split("|");
+    expect(names.length).toBeGreaterThanOrEqual(2);
+    const ciNames = Object.values(ci.jobs).map((j) => j.name);
+    for (const n of names) expect(ciNames, n).toContain(n);
+    // A red CI check blocks (fails) instead of skipping.
+    expect(verdict?.run ?? "").toContain('emit blocked "CI is red on this commit');
+  });
+
+  it("L6: runs the planned specs; records greens only past the bug gate", () => {
+    const suite = aiSteps.find((s) => s.id === "suite");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we match against
+    expect(suite?.env?.CAELO_LIVEDIT_SCENARIOS).toBe("${{ needs.plan.outputs.scenarios }}");
+    const record = aiSteps.find((s) => s.id === "greens");
+    expect(record?.if).toBe(
+      "always() && steps.suite.outcome != 'skipped' && steps.bug-gate.outcome == 'success'",
+    );
+    expect(aiSteps.findIndex((s) => s.id === "bug-gate")).toBeLessThan(
+      aiSteps.findIndex((s) => s.id === "greens"),
+    );
+  });
+
+  it("L7: the budget limits PR runs only", () => {
+    const verdict = planSteps.find((s) => s.id === "verdict")?.run ?? "";
+    const dispatchRuns = verdict.indexOf('if [ "$EVENT" != "pull_request" ]; then emit run');
+    const budgetRead = verdict.indexOf('jq -r .over "$OUT/budget.json"');
+    expect(dispatchRuns).toBeGreaterThan(0);
+    expect(budgetRead).toBeGreaterThan(dispatchRuns);
+    const budget = planSteps.find((s) => s.id === "budget");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we match against
+    expect(budget?.env?.BUDGET_USD).toBe("${{ vars.E2E_LIVEDIT_WEEKLY_BUDGET_USD }}");
+  });
+
+  it("L8: a superseded commit cancels its own run before the provider preflight", () => {
+    const stale = aiSteps.findIndex((s) => s.id === "stale");
+    const preflight = aiSteps.findIndex((s) => s.id === "provider-preflight");
+    expect(stale).toBeGreaterThan(0);
+    expect(stale).toBeLessThan(preflight);
+    expect(aiSteps[stale]?.run ?? "").toContain('gh run cancel "$RUN_ID"');
+  });
+
+  it("L9: the paid job re-reads the budget right before its first paid step", () => {
+    const recheck = aiSteps.findIndex((s) => s.id === "budget-recheck");
+    const preflight = aiSteps.findIndex((s) => s.id === "provider-preflight");
+    expect(recheck).toBeGreaterThan(0);
+    expect(recheck).toBeLessThan(preflight);
+    expect(aiSteps[recheck]?.if).toBe("github.event_name == 'pull_request'");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we match against
+    expect(aiSteps[recheck]?.env?.BUDGET_USD).toBe("${{ vars.E2E_LIVEDIT_WEEKLY_BUDGET_USD }}");
+    // Every step from the preflight to the suite stops once the budget is
+    // used up; the steps after it hang off the preflight's or the suite's
+    // outcome, so an over-budget run ends as a passing, annotated check.
+    const suite = aiSteps.findIndex((s) => s.id === "suite");
+    for (const s of aiSteps.slice(preflight, suite + 1)) {
+      expect(s.if, s.name).toContain("steps.budget-recheck.outputs.over != 'true'");
+    }
+    const tree = aiSteps.filter((s) => (s.name ?? "").includes("tested tree"));
+    expect(tree.length).toBe(2);
+    for (const s of tree) expect(s.if).toContain("steps.suite.outcome == 'success'");
   });
 });

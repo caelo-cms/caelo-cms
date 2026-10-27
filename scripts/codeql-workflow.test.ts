@@ -244,8 +244,12 @@ describe("issue #113 — workflow action pinning + least-privilege permissions",
     expect(count).toBeGreaterThanOrEqual(4);
   });
 
-  it("P6: e2e-livedit preflight declares an empty permissions block", () => {
+  it("P6: the e2e-livedit plan job only reads, except the budget-skip PR comment", () => {
     const wf = WORKFLOWS.find((w) => w.name === "e2e-livedit.yml")?.body ?? "";
-    expect(wf).toMatch(/permissions:\s*\{\}/);
+    const plan = wf.slice(wf.indexOf("\n  plan:\n"), wf.indexOf("\n  e2e-livedit:\n"));
+    expect(plan).toMatch(
+      /permissions:\s*\n\s*contents: read\n(?:\s*#.*\n)*\s*actions: read\n(?:\s*#.*\n)*\s*checks: read\n(?:\s*#.*\n)*\s*pull-requests: write\n/,
+    );
+    expect(plan).not.toMatch(/contents: write|actions: write/);
   });
 });

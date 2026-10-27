@@ -38,6 +38,7 @@ import type {
   ProviderResponseMessage,
   ProviderStepSummary,
 } from "../provider.js";
+import { providerAccountNotice } from "../provider-account-error.js";
 import { capWrapUpNoticeText, shouldWrapUpAtCap } from "../tools/subagent-budget.js";
 import { buildApprovalPreview } from "./approval.js";
 import {
@@ -588,6 +589,37 @@ export async function* runToolLoop(
     }
 
     if (run.providerErr) {
+      if (run.providerAccountIssue !== null) {
+        // The provider account is out of quota/credit or its key was
+        // refused: an Owner fixes that at the provider, nothing in Caelo is
+        // broken. Tell the operator in brand-free words (the raw message may
+        // name the provider — server log only) and file NO bug report: these
+        // used to land as `blocking` reports the bug intake turned into
+        // GitHub issues. No retry either — the answer will not change.
+        const issue = run.providerAccountIssue;
+        const notice = providerAccountNotice(issue);
+        console.error("[chat-runner] provider-account-issue", {
+          chatSessionId,
+          kind: issue.kind,
+          statusCode: issue.statusCode,
+          providerMessage: issue.providerMessage,
+        });
+        yield { kind: "text-delta", text: notice };
+        const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
+          chatSessionId,
+          role: "assistant",
+          content: notice,
+          status: "complete",
+        });
+        if (noticeSave.ok) {
+          lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
+          yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
+        }
+        yield { kind: "error", message: notice };
+        succeeded = false;
+        stopReason = "error";
+        break;
+      }
       if (run.firstEventTimedOut) {
         // issue #442 — the SDK's native first-chunk watchdog fired (hung
         // request / dead upstream). One automatic retry replaces the silent

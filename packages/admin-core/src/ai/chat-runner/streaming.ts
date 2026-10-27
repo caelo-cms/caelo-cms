@@ -38,6 +38,10 @@ import type {
   ProviderResponseMessage,
   ProviderStepSummary,
 } from "../provider.js";
+import {
+  classifyProviderAccountError,
+  type ProviderAccountIssue,
+} from "../provider-account-error.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { estimateTextTokens, isPromptTooLongError } from "./compaction.js";
 import { buildContextSplitEstimate } from "./context-split.js";
@@ -107,6 +111,12 @@ export interface StreamTurnResult {
   firstEventTimedOut: boolean;
   /** Raw message of a turn-fatal provider error surfaced to the client. */
   providerErrorMessage: string | null;
+  /**
+   * The provider refused the call for an account reason (quota, billing,
+   * key). Not surfaced to the client here — the raw message may name the
+   * provider; loop.ts shows a brand-free notice and files no bug report.
+   */
+  providerAccountIssue: ProviderAccountIssue | null;
   stoppingDiagnostics: StoppingDiagnostics | null;
   /** Gated calls paused on tool-approval-requests, across all steps. */
   approvalRequests: ApprovalRequest[];
@@ -327,6 +337,7 @@ export async function* streamProviderTurn(
     promptTooLongMessage: null,
     firstEventTimedOut: false,
     providerErrorMessage: null,
+    providerAccountIssue: null,
     stoppingDiagnostics: null,
     approvalRequests: [],
     stepsCount: 0,
@@ -930,6 +941,9 @@ export async function* streamProviderTurn(
           console.error("[chat-runner] provider-first-chunk-timeout", {
             messageCount: history.messages.length,
           });
+        } else if (ev.accountIssue) {
+          result.providerErrorMessage = ev.message;
+          result.providerAccountIssue = ev.accountIssue;
         } else {
           result.providerErrorMessage = ev.message;
           queue.push({ kind: "error", message: ev.message });
@@ -999,8 +1013,12 @@ export async function* streamProviderTurn(
           message,
         });
         result.providerErr = true;
+        const accountIssue = classifyProviderAccountError(e);
         if (/first chunk timeout of \d+ms exceeded/i.test(message)) {
           result.firstEventTimedOut = true;
+        } else if (accountIssue) {
+          result.providerErrorMessage = message;
+          result.providerAccountIssue = accountIssue;
         } else {
           result.providerErrorMessage = message;
           queue.push({ kind: "error", message });

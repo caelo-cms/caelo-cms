@@ -14,6 +14,7 @@ import type { Page, Response } from "@playwright/test";
 import { expect } from "@playwright/test";
 import { ADMIN_LOG_DIR, ADMIN_LOG_PATH } from "./global-setup.js";
 import {
+  PROVIDER_ACCOUNT_NOTICE_PREFIX,
   TURN_FAILURE_TITLE,
   type TurnFailureReport,
   turnFailureError,
@@ -469,8 +470,10 @@ export async function sendChatPromptAndWait(
 
 /**
  * Turn-fatal error reports (see `lib/turn-failure.ts`) filed since
- * `sinceIso` for top-level chats — a subagent's failure is reported to its
- * parent turn, which may recover, so it does not fail the scenario here.
+ * `sinceIso` for top-level chats, plus the provider-account notices (quota,
+ * billing, key) the chat-runner persists instead of filing a report — a
+ * subagent's failure is reported to its parent turn, which may recover, so
+ * it does not fail the scenario here.
  */
 function turnFailuresSince(sinceIso: string): TurnFailureReport[] {
   const out = runBunInline(
@@ -487,13 +490,21 @@ function turnFailuresSince(sinceIso: string): TurnFailureReport[] {
         WHERE r.source = 'auto' AND r.title = \${process.env.TITLE}
           AND r.created_at > \${process.env.SINCE}::timestamptz
           AND cs.subagent_role IS NULL
-        ORDER BY r.created_at
+        UNION ALL
+        SELECT m.created_at::text, m.content
+        FROM chat_messages m
+        JOIN chat_sessions cs ON cs.id = m.chat_session_id
+        WHERE m.role = 'assistant'
+          AND starts_with(m.content, \${process.env.ACCOUNT_PREFIX})
+          AND m.created_at > \${process.env.SINCE}::timestamptz
+          AND cs.subagent_role IS NULL
+        ORDER BY 1
       \`;
     });
     await sql.end();
     console.log(JSON.stringify(rows));
     `,
-    { SINCE: sinceIso, TITLE: TURN_FAILURE_TITLE },
+    { SINCE: sinceIso, TITLE: TURN_FAILURE_TITLE, ACCOUNT_PREFIX: PROVIDER_ACCOUNT_NOTICE_PREFIX },
   );
   return JSON.parse(out) as TurnFailureReport[];
 }
