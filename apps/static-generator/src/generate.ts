@@ -802,6 +802,8 @@ export async function generateSite(args: {
     pageSlug: string;
     pageTitle: string;
     relPath: string;
+    /** #1142 — the trail the page's breadcrumbs showed, for the BreadcrumbList JSON-LD. */
+    breadcrumbTrail: readonly string[] | null;
   }[] = [];
   // P13 — per-page bake target for the plugin render pass, keyed by page
   // id: slugs are not unique once pages nest (epic #690).
@@ -1011,6 +1013,7 @@ export async function generateSite(args: {
       pageSlug: page.slug,
       pageTitle: page.title,
       relPath: outputPathOf(page),
+      breadcrumbTrail: lists.breadcrumbTrail(),
     });
     renderedForGate.push({
       pageSlug: page.slug,

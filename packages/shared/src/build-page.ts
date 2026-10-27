@@ -220,7 +220,7 @@ export const buildPageTargetSchema = z
     pageId: z.string().uuid().optional(),
     slug: slugSchema.optional(),
     title: z.string().min(1).max(256).optional(),
-    name: z.string().min(1).max(256).optional(),
+    shortTitle: pageCreateSchema.shape.shortTitle,
     templateId: z.string().uuid().optional(),
     status: pageStatusSchema.optional(),
     /**
@@ -268,7 +268,7 @@ export const buildPageTargetSchema = z
       [
         "slug",
         "title",
-        "name",
+        "shortTitle",
         "templateId",
         "status",
         "parentPageId",

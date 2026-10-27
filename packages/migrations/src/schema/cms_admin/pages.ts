@@ -36,6 +36,9 @@ export const pages = pgTable(
     // depth / homepage rules are op-level (pages.create, pages.move_many).
     parentPageId: uuid("parent_page_id").references((): AnyPgColumn => pages.id),
     title: text("title").notNull(),
+    // #1142 (0358) — the breadcrumb / navigation label, translated with
+    // the page; replaced the internal `name` (0020).
+    shortTitle: text("short_title").notNull(),
     templateId: uuid("template_id")
       .notNull()
       .references(() => templates.id),

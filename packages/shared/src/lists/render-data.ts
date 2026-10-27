@@ -44,6 +44,8 @@ export interface LoadedPageType {
 export interface ListPageRecord {
   readonly id: string;
   readonly title: string;
+  /** `pages.short_title`: the page's label in breadcrumbs and navigation (#1142). */
+  readonly shortTitle: string;
   readonly parentId: string | null;
   readonly pageTypeSlug: string;
   readonly properties: Readonly<Record<string, unknown>>;
@@ -101,6 +103,13 @@ export interface ListRenderData {
   readonly overlays?: ReadonlyMap<string, ListVariantOverlay>;
   /** `site_settings.site_language`, for `{{date.formatted}}`. */
   readonly siteLanguage: string;
+  /**
+   * `site_defaults.home_page_id`: where every breadcrumb trail starts
+   * (#1142). A variant page's trail starts at the home page's version in
+   * that variant (same `link-resolve` group). Null while no home page is
+   * designated.
+   */
+  readonly homePageId: string | null;
 }
 
 /** Render dependencies one page collected (build manifest `render-deps.json`). */

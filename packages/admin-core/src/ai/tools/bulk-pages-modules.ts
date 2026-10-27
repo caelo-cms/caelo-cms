@@ -204,8 +204,8 @@ const pageUpdateItem = z
   .object({
     pageId: uuid,
     expectedVersion: z.number().int().nonnegative().optional(),
-    name: z.string().min(1).max(256).optional(),
     title: z.string().min(1).max(256).optional(),
+    shortTitle: pageUpdateSchema.shape.shortTitle,
     slug: z.string().min(1).max(120).optional(),
     templateId: uuid.optional(),
     status: z.enum(["draft", "published", "archived"]).optional(),
@@ -241,7 +241,7 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
     "Edit page metadata — the ONLY tool for it, one call for 1..N pages (`items[]`): rename, retitle, reslug, status, template, page type, properties, terms.",
     "DO NOT USE FOR: nesting under another page / back to top level -> `move_pages`; SEO -> `set_page_seo_many`; modules -> `update_modules_many`.",
     "CORE RULES:",
-    "- THREE independent identifiers, never substitute one for another: `name` (internal editor label), `title` (HTML <title>), `slug` (URL). Operator says only 'rename' -> ASK which (usually `name`).",
+    "- THREE independent identifiers, never substitute one for another: `title` (HTML <title>), `shortTitle` (the page's label in breadcrumbs, menus and the page picker; translated with the page), `slug` (URL). 'Rename this page' = `title` + `shortTitle`; the URL only when the operator asks.",
     `- Changing \`slug\` moves the page's URL AND every nested page's URL; a 301 from each old URL is created in the same transaction. On-site links (menus, link lists, modules, content) follow automatically — do not update them. A slug change moving ${PAGE_MOVE_APPROVAL_THRESHOLD}+ URLs (page + subtree) pauses for one Owner click in chat.`,
     "- Items apply independently: per-item failures (not found, version conflict) are reported, the rest still applies.",
   ].join("\n"),
@@ -273,17 +273,18 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
           properties: {
             pageId: { type: "string", format: "uuid" },
             expectedVersion: { type: "integer", minimum: 0 },
-            name: {
-              type: "string",
-              minLength: 1,
-              maxLength: 256,
-              description: "Internal editor label (page picker / breadcrumbs); not public.",
-            },
             title: {
               type: "string",
               minLength: 1,
               maxLength: 256,
               description: "HTML <title>: browser tab + search results.",
+            },
+            shortTitle: {
+              type: "string",
+              minLength: 1,
+              maxLength: 256,
+              description:
+                "Short public label in breadcrumbs, navigation and the page picker. Every trail showing the page follows it.",
             },
             slug: {
               type: "string",

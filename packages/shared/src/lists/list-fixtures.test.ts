@@ -12,7 +12,7 @@
  */
 
 import { createSiteLinkIndex, type LinkPageVariant } from "../link-refs.js";
-import { DEFAULT_LIST_TYPES } from "./default-types.js";
+import { DEFAULT_LIST_TYPES, SITE_TEXTS_TYPE } from "./default-types.js";
 import type { ListItem } from "./items.js";
 import type { ListTypeDef } from "./list-type.js";
 import type {
@@ -116,6 +116,7 @@ const page = (
 ): ListPageRecord => ({
   id: pageId,
   title,
+  shortTitle: title,
   parentId: null,
   pageTypeSlug: "page",
   properties: {},
@@ -242,12 +243,16 @@ export function fixtureData(
     overlays?: ReadonlyMap<string, ListVariantOverlay>;
     pageVariants?: ReadonlyMap<string, LinkPageVariant>;
     pages?: readonly ListPageRecord[];
+    /** Default: the fixture home page. */
+    homePageId?: string | null;
+    /** Shared lists added to the fixture ones (e.g. a site texts list). */
+    lists?: readonly LoadedList[];
   } = {},
 ): ListRenderData {
-  const types = [...DEFAULT_LIST_TYPES, MEGA_MENU_TYPE];
+  const types = [...DEFAULT_LIST_TYPES, MEGA_MENU_TYPE, SITE_TEXTS_TYPE];
   return {
     listTypes: new Map(types.map((t, i) => [t.slug, { id: id(600 + i), def: t }])),
-    lists: new Map(LISTS.map((l) => [l.id, l])),
+    lists: new Map([...LISTS, ...(extra.lists ?? [])].map((l) => [l.id, l])),
     pageTypes: new Map([
       [
         "news",
@@ -273,6 +278,7 @@ export function fixtureData(
     ...(extra.pageVariants ? { pageVariants: extra.pageVariants } : {}),
     ...(extra.overlays ? { overlays: extra.overlays } : {}),
     siteLanguage: "en",
+    homePageId: extra.homePageId === undefined ? PAGE.home : extra.homePageId,
   };
 }
 

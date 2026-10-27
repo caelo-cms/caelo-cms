@@ -207,7 +207,7 @@ beforeAll(async () => {
       INSERT INTO content_instances (module_id, "values") VALUES (${mod[0]?.id}::uuid, '{}'::jsonb)
       RETURNING id::text AS id`) as unknown as { id: string }[];
     const page = (await tx`
-      INSERT INTO pages (slug, name, title, template_id, status)
+      INSERT INTO pages (slug, short_title, title, template_id, status)
       VALUES (${PAGE_SLUG}, 'P', 'P', ${templateId}::uuid, 'published')
       RETURNING id::text AS id`) as unknown as { id: string }[];
     pageId = page[0]?.id ?? "";

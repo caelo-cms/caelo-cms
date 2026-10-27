@@ -19,6 +19,7 @@ export interface PageInView {
   readonly id: string;
   readonly slug: string;
   readonly title: string;
+  readonly shortTitle: string;
   readonly currentPath: string;
   readonly parentPageId: string | null;
   readonly templateId: string;
@@ -50,7 +51,7 @@ export async function loadPagesInView(
     ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
     : sql`p.chat_branch_id IS NULL`;
   const rows = (await tx.execute(sql`
-    SELECT p.id::text AS id, p.slug, p.title, p.current_path,
+    SELECT p.id::text AS id, p.slug, p.title, p.short_title, p.current_path,
            p.parent_page_id::text AS parent_page_id, p.template_id::text AS template_id,
            p.page_type_id::text AS page_type_id, p.status, p.properties, p.version,
            p.first_published_at, p.updated_at, p.deleted_at,
@@ -66,6 +67,7 @@ export async function loadPagesInView(
     id: string;
     slug: string;
     title: string;
+    short_title: string;
     current_path: string;
     parent_page_id: string | null;
     template_id: string;
@@ -103,6 +105,7 @@ export async function loadPagesInView(
       id: r.id,
       slug: o?.slug ?? r.slug,
       title: o?.title ?? r.title,
+      shortTitle: o?.shortTitle ?? r.short_title,
       currentPath: r.current_path,
       parentPageId: o?.parentPageId === undefined ? r.parent_page_id : o.parentPageId,
       templateId: o?.templateId ?? r.template_id,

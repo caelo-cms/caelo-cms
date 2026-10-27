@@ -199,7 +199,7 @@ export const revertSiteOp = defineOperation({
       const t = r.state;
       await tx.execute(sql`
         UPDATE pages SET
-          slug = ${t.slug}, title = ${t.title},
+          slug = ${t.slug}, title = ${t.title}, short_title = ${t.shortTitle},
           template_id = ${t.templateId}::uuid, status = ${t.status},
           ${t.parentPageId === undefined ? sql`` : sql`parent_page_id = ${t.parentPageId}::uuid,`}
           page_type_id = ${t.pageTypeId}::uuid, properties = ${jsonbParam(t.properties)},
