@@ -60,6 +60,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // deploy_targets is kept across files by the test reset: a leftover
+  // production target would be one more target later files' builds see
+  // (the plugin-data build refuses while any production target has no
+  // live build).
+  await asSystem(async (tx) => {
+    await tx`DELETE FROM deploy_runs WHERE target_id IN (SELECT id FROM deploy_targets WHERE name LIKE ${`${PFX}%`})`;
+    await tx`DELETE FROM deploy_targets WHERE name LIKE ${`${PFX}%`}`;
+  });
   await adapter.close();
 });
 

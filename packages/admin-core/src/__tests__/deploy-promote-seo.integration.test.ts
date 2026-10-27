@@ -51,7 +51,7 @@ const SITE_BASE_URL = "https://example.com";
 
 const HUMAN: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
-  actorKind: "system",
+  actorKind: "human",
   requestId: "promote-seo-test",
 };
 

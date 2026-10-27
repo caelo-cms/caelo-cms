@@ -41,9 +41,10 @@ let restoreSiteLanguage: (() => Promise<void>) | null = null;
 
 const HUMAN: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
-  actorKind: "system",
+  actorKind: "human",
   requestId: "p6-deploy-test",
 };
+const SYSTEM: ExecutionContext = { ...HUMAN, actorKind: "system" };
 const AI: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-000000000a1a",
   actorKind: "ai",
@@ -304,6 +305,49 @@ describe("P6 deploy.trigger", () => {
     if (result.ok) return;
     const message = (result.error as { message?: string }).message ?? "";
     expect(message).toContain("propose_deploy_promote");
+  });
+
+  it("#1154: a background (system) caller can neither build nor publish production", async () => {
+    const countRuns = async (): Promise<number> => {
+      const sql = new SQL(ADMIN_URL as string);
+      try {
+        const rows = await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          return (await tx`SELECT count(*)::int AS n FROM deploy_runs r
+            JOIN deploy_targets t ON t.id = r.target_id WHERE t.env = 'production'`) as {
+            n: number;
+          }[];
+        });
+        return rows[0]?.n ?? 0;
+      } finally {
+        await sql.end();
+      }
+    };
+    const before = await countRuns();
+    const built = await execute(registry, adapter, SYSTEM, "deploy.trigger", {
+      targetName: "production",
+      repoRoot: testRoot,
+    });
+    const promoted = await execute(registry, adapter, SYSTEM, "deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    for (const r of [built, promoted]) {
+      expect(r.ok).toBe(false);
+      if (r.ok) continue;
+      expect((r.error as { message?: string }).message ?? "").toContain(
+        "only by a human Publish live",
+      );
+    }
+    // Refused before anything ran: not even a failed run is recorded.
+    expect(await countRuns()).toBe(before);
+    // Staging stays the system's to build (the Stage flow runs it).
+    const staged = await execute(registry, adapter, SYSTEM, "deploy.trigger", {
+      targetName: "dev",
+      repoRoot: testRoot,
+    });
+    expect(staged.ok).toBe(true);
   });
 
   it("deploy_staging tool: the AI rebuilds staging (and only staging) through the real op", async () => {

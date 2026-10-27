@@ -73,8 +73,15 @@ const fixture = definePlugin({
   // Only `settings.label` crosses to the public side.
   visitorProjection: { settings: ["label"] },
   requestedCapabilities: ["cms_admin_schema"],
-  publicOperations: ["save", "read_setting", "read_internal", "write_setting"],
+  publicOperations: ["save", "read_setting", "read_internal", "write_setting", "vote"],
+  // #1155 — a visitor's vote changes what the plugin bakes into its page.
+  staticRender: async () => "",
+  bakedData: {
+    description: "Votes, baked into their page.",
+    triggers: [{ operation: "vote", pageIds: { from: "args", key: "pageId" } }],
+  },
   operations: {
+    vote: async () => ({}),
     save: async (ctx, args) => {
       const r = await ctx.query.insert("notes", {
         visitor_id: ctx.visitor.id,
@@ -327,6 +334,26 @@ describe("the gateway's database identity (#613, #635)", () => {
 });
 
 describe("/api/* served from cms_public alone (#635)", () => {
+  it("records the page a declared baked-data trigger names with its op event (#1155)", async () => {
+    const pageId = "11550000-0000-4000-8000-0000000000aa";
+    await expectStatus(await handleRequest(post(`/api/plugin/${SLUG}/vote`, { pageId })), 200);
+    // Not a trigger: no page, whatever the visitor sends.
+    await expectStatus(
+      await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "x", pageId })),
+      200,
+    );
+    const events = await asPublicAdmin(
+      async (tx) =>
+        (await tx`SELECT operation, page_id::text AS page_id FROM gateway_plugin_op_events
+                  WHERE plugin_id = ${pluginId}::uuid AND operation IN (${`${SLUG}.vote`}, ${`${SLUG}.save`})
+                  ORDER BY id DESC LIMIT 2`) as { operation: string; page_id: string | null }[],
+    );
+    expect(events).toEqual([
+      { operation: `${SLUG}.save`, page_id: null },
+      { operation: `${SLUG}.vote`, page_id: pageId },
+    ]);
+  });
+
   it("dispatches a visitor write, logs the request and records the op event in cms_public", async () => {
     const r = await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "hi" }));
     await expectStatus(r, 200);

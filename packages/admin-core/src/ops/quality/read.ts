@@ -68,13 +68,6 @@ export const runSummarySchema = z.object({
   stagedBy: stagedBySchema.nullable(),
   /** An editor's recorded "publish anyway" over this failed audit. */
   publishOverride: z.object({ by: z.string(), reason: z.string(), at: z.string() }).nullable(),
-  /** Queued by the automatic redeploy: whether it published or stopped. */
-  autoPublish: z
-    .object({
-      outcome: z.enum(["published", "blocked"]).nullable(),
-      message: z.string().nullable(),
-    })
-    .nullable(),
 });
 
 export type RunSummary = z.infer<typeof runSummarySchema>;
@@ -99,9 +92,6 @@ export interface RunDbRow {
   publish_override_by: string | null;
   publish_override_reason: string | null;
   publish_override_at: string | Date | null;
-  auto_publish: boolean;
-  auto_publish_outcome: "published" | "blocked" | null;
-  auto_publish_message: string | null;
   checks: unknown;
 }
 
@@ -111,8 +101,7 @@ export const RUN_COLUMNS = sql`
   cardinality(q.target_page_ids) AS page_count, q.problem_count, q.base_url,
   q.error_code, q.error_message, q.created_at, q.started_at, q.finished_at,
   q.fix_round, q.retry_of::text AS retry_of, q.staged_by, q.publish_override_by::text AS publish_override_by,
-  q.publish_override_reason, q.publish_override_at,
-  q.auto_publish, q.auto_publish_outcome, q.auto_publish_message, q.checks`;
+  q.publish_override_reason, q.publish_override_at, q.checks`;
 
 export function toRunSummary(r: RunDbRow): RunSummary {
   const checks = r.checks === null ? null : json<RunChecksSummary>(r.checks);
@@ -148,9 +137,6 @@ export function toRunSummary(r: RunDbRow): RunSummary {
             at: iso(r.publish_override_at),
           }
         : null,
-    autoPublish: r.auto_publish
-      ? { outcome: r.auto_publish_outcome, message: r.auto_publish_message }
-      : null,
   };
 }
 

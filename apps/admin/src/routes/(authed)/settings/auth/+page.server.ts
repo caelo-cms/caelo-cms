@@ -10,15 +10,9 @@
 
 import { runPluginOperation } from "@caelo-cms/plugin-host";
 import { fail } from "@sveltejs/kit";
+import { authConfigView, parsePasswordMinLength } from "#lib/server/auth-config.js";
 import { requirePermission } from "#lib/server/guards.js";
 import type { Actions, PageServerLoad } from "./$types";
-
-interface AuthConfig {
-  id: string | null;
-  signupOpen: boolean;
-  passwordMinLength: number;
-  updatedAt: string | null;
-}
 
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
@@ -28,13 +22,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     operationName: "get_auth_config",
     args: {},
   });
-  if (!r.ok) {
-    return {
-      config: { id: null, signupOpen: true, passwordMinLength: 8, updatedAt: null } as AuthConfig,
-      error: r.error.message,
-    };
-  }
-  return { config: r.value as AuthConfig, error: null };
+  return authConfigView(r);
 };
 
 export const actions: Actions = {
@@ -42,14 +30,8 @@ export const actions: Actions = {
     requirePermission(locals, "settings.write");
     const form = await request.formData();
     const signupOpen = form.get("signupOpen") === "on";
-    const passwordMinLengthRaw = form.get("passwordMinLength");
-    const passwordMinLength = Number.parseInt(
-      typeof passwordMinLengthRaw === "string" ? passwordMinLengthRaw : "8",
-      10,
-    );
-    if (Number.isNaN(passwordMinLength) || passwordMinLength < 8 || passwordMinLength > 128) {
-      return fail(400, { error: "passwordMinLength must be 8..128" });
-    }
+    const passwordMinLength = parsePasswordMinLength(form.get("passwordMinLength"));
+    if (typeof passwordMinLength === "string") return fail(400, { error: passwordMinLength });
     const r = await runPluginOperation({
       invocation: { origin: "owner-panel", actorId: locals.ctx.actorId },
       pluginSlug: "auth",

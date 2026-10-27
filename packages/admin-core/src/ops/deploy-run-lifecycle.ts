@@ -23,7 +23,6 @@ import { z } from "zod";
 import { deployRunIsOrphaned } from "../deploy/deploy-run-lock.js";
 import { deployPluginProblem } from "../deploy/plugin-problems.js";
 import { jsonbParam } from "../sql-helpers.js";
-import { uuidList } from "./quality/_shared.js";
 
 /** What a run that died mid-build says, and what to do about it. */
 export const ORPHANED_RUN_MESSAGE =
@@ -49,8 +48,6 @@ export const beginDeployRunOp = defineOperation({
       startedAt: z.string().min(1),
       /** #553 — main's render fingerprint at the start of a staging build. */
       renderFingerprint: z.unknown().nullable(),
-      /** #620 — the AI stage holds a build covers; null for a Publish live run. */
-      coveredAiHoldIds: z.array(z.string().uuid()).nullable(),
       /** #834 — the Caelo version rendering the build; null for a copy-promote. */
       caeloVersion: z.string().nullable(),
       /**
@@ -59,8 +56,15 @@ export const beginDeployRunOp = defineOperation({
        * Publish live run, which are not checked.
        */
       pluginProblems: z.array(deployPluginProblem).nullable(),
+      /** #1155 — what kind of build the run is (default: a site build). */
+      buildKind: z.enum(["site", "plugin_data"]).default("site"),
+      /** #1155 — a plugin-data run's base: the live run its files came from. */
+      baseRunId: z.string().uuid().nullable().default(null),
     })
-    .strict(),
+    .strict()
+    .refine((i) => (i.buildKind === "plugin_data") === (i.baseRunId !== null), {
+      message: "a plugin_data run names its base run, and only it does",
+    }),
   output: z.object({ orphanedRunIds: z.array(z.string()) }),
   handler: async (_ctx, input, tx) => {
     const running = (await tx.execute(sql`
@@ -78,13 +82,14 @@ export const beginDeployRunOp = defineOperation({
     }
     await tx.execute(sql`
       INSERT INTO deploy_runs (id, target_id, actor_id, status, started_at, render_fingerprint,
-                               covered_ai_hold_ids, caelo_version, plugin_problems)
+                               caelo_version, plugin_problems, build_kind, base_run_id)
       VALUES (${input.runId}::uuid, ${input.targetId}::uuid, ${input.actorId}::uuid, 'running',
               ${input.startedAt}::timestamptz,
               ${input.renderFingerprint === null ? sql`NULL` : jsonbParam(input.renderFingerprint)},
-              ${input.coveredAiHoldIds === null ? sql`NULL` : uuidList(input.coveredAiHoldIds)},
               ${input.caeloVersion},
-              ${input.pluginProblems === null ? sql`NULL` : jsonbParam(input.pluginProblems)})
+              ${input.pluginProblems === null ? sql`NULL` : jsonbParam(input.pluginProblems)},
+              ${input.buildKind},
+              ${input.baseRunId === null ? sql`NULL` : sql`${input.baseRunId}::uuid`})
     `);
     if (orphanedRunIds.length > 0) {
       console.error("[deploy] marked runs that stopped mid-build as failed", { orphanedRunIds });

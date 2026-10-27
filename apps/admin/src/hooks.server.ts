@@ -15,7 +15,7 @@ process.on("uncaughtException", (e) => {
 // adapter-node answers SIGTERM/SIGINT by closing the HTTP server, letting
 // in-flight requests finish, then emitting `sveltekit:shutdown` and waiting
 // for the event loop to drain. Ours never drains: the bootstrapped workers
-// below (redeploy, GC sweeps, release check, plugin host) poll on timers and
+// below (GC sweeps, release check, plugin host) poll on timers and
 // hold pg pools. Without this exit, Cloud Run and `docker stop` fall back to
 // SIGKILL after their grace period. The workers keep no in-memory state the
 // database does not already hold, so exiting once requests are done is safe.
@@ -47,11 +47,15 @@ import {
   startBugForwardingWorker,
   startChatImageGcWorker,
   startDomainEventGcWorker,
+  startPluginDataBuildWorker,
   startProposalGcWorker,
   startPublicProjectionPublisher,
   startQualityAuditWorker,
+  startRateLimitGcWorker,
   startRedirectSyncWorker,
   startReleaseCheckWorker,
+  startSiteImportWorker,
+  startStagingPreviewKeepAliveWorker,
   transformPluginImage,
 } from "@caelo-cms/admin-core";
 import {
@@ -63,7 +67,6 @@ import {
   syncPluginHost,
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
-import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
 import {
   type ExecutionContext,
   type PlatformUpdateAgentStatus,
@@ -435,18 +438,24 @@ function bootstrapBugForwarding(): void {
   });
 }
 
-// P13 — debounced auto-redeploy + gateway log GC. Polls audit_events
-// for "publishable" op kinds (driven by site_settings.auto_redeploy_*)
-// and fires deploy.trigger after `auto_redeploy_debounce_ms` of quiet.
-// Off by default; Owner toggles at /settings/gateway.
-let redeployBootstrapped = false;
-function bootstrapRedeploy(): void {
-  if (redeployBootstrapped) return;
-  redeployBootstrapped = true;
+// Maintenance loops that lived in the redeploy orchestrator until the
+// automatic redeploy was removed (#1154): the hourly login rate-limit GC,
+// the six-hourly staging-preview keep-alive (#969) and the site-import
+// crawl worker (P14). None of them builds or publishes production. The
+// plugin-data tick (#1155) republishes the LIVE build with fresher plugin
+// data in plugin-owned regions only — nothing a human did not publish; its
+// cadence moves to the scheduler tick with #1140.
+let maintenanceBootstrapped = false;
+function bootstrapMaintenanceWorkers(): void {
+  if (maintenanceBootstrapped) return;
+  maintenanceBootstrapped = true;
   const { adapter, registry } = getQueryContext();
+  startRateLimitGcWorker({ adapter });
+  startStagingPreviewKeepAliveWorker({ adapter, registry });
   // issue #198 — hand the importer worker the media storage so crawl
   // screenshots persist (review side-by-sides + parity references).
-  startRedeployOrchestrator({ adapter, registry, screenshotStorage: getMediaStorage() });
+  startSiteImportWorker({ adapter, registry, screenshotStorage: getMediaStorage() });
+  startPluginDataBuildWorker({ adapter, registry });
 }
 
 // P21 ship 5 — release-check sidecar. Polls GitHub Releases once
@@ -625,7 +634,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   // task failures (plugin manifest invalid, bootstrap token DB write)
   // land in Cloud Run stderr instead of disappearing into the void.
   bootstrapE2eOperatorAccess();
-  bootstrapRedeploy();
+  bootstrapMaintenanceWorkers();
   bootstrapReleaseCheck();
   bootstrapAutoUpdates();
   bootstrapSupersedeUpdateRequests();

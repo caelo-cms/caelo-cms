@@ -8,9 +8,9 @@
  * Before cms_public migration 0300 the gateway's INSERT policy was
  * `WITH CHECK (true)`: any well-formed row went in, so a compromised public
  * side could attribute events to plugins that are not installed, not active,
- * or not the plugin that ran the op. The rows stay UNTRUSTED hints for the
- * redeploy orchestrator either way (#844 drops invalid ones); this is the
- * Postgres half of that defense (CLAUDE.md §2).
+ * or not the plugin that ran the op. Any reader must still treat the rows
+ * as UNTRUSTED (#844); this is the Postgres half of that defense
+ * (CLAUDE.md §2).
  *
  * Production wiring, like public-gateway.integration.test.ts: an admin-side
  * host registers the real ratings plugin (with consent-manager, which it

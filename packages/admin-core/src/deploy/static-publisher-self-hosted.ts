@@ -23,7 +23,18 @@
  */
 
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  type FileHandle,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { CADDY_REDIRECTS_FILE, emitCaddyRedirects, formatRedirectsFile } from "@caelo-cms/shared";
 import { planRedirectSync } from "./redirect-sync-plan.js";
@@ -182,6 +193,52 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     };
   },
 
+  async readLiveFiles({ live, paths }) {
+    const out = new Map<string, Buffer | null>();
+    for (const path of paths) {
+      const file = insideBuild(live.localBuildDir, path);
+      out.set(path, existsSync(file) ? await readFile(file) : null);
+    }
+    return out;
+  },
+
+  /**
+   * #1155 — the live build's archive copied to `builds/<runId>/` with the
+   * re-baked files written over it, then mirrored into `current/` like a
+   * rollback. The archive is a complete build, so the new one is too, and
+   * a later rollback to this run finds it.
+   */
+  async publishPluginData({ target, live, runId, files, pruneBuildIds }) {
+    if (!existsSync(join(live.localBuildDir, "routing-manifest.json"))) {
+      throw new Error(
+        `self-hosted publisher: the archive of the live build (${live.localBuildDir}) is missing, so there is nothing to publish plugin data on top of. Publish live again; the next plugin-data build then starts from that build.`,
+      );
+    }
+    const buildDir = join(dirname(live.localBuildDir), runId);
+    await mkdir(buildDir, { recursive: true });
+    await copyTreeExcept(live.localBuildDir, buildDir, []);
+    for (const [path, body] of files) {
+      await overwriteExistingFile(insideBuild(buildDir, path), path, body);
+    }
+    const currentDir = join(dirname(dirname(live.localBuildDir)), "current");
+    await mkdir(currentDir, { recursive: true });
+    await syncContentsInto(buildDir, currentDir);
+    // Each plugin-data build is a full copy of the site and the generator's
+    // retention never sees them (they bypass it): drop the older ones the
+    // caller named, so a busy comment section cannot fill the disk.
+    for (const id of pruneBuildIds) {
+      if (id === runId || id === live.buildId) continue;
+      await rm(insideBuild(dirname(live.localBuildDir), id), { recursive: true, force: true });
+    }
+    return {
+      provider: "self-hosted",
+      uploadedCount: files.size,
+      skippedUnchangedCount: (await countFiles(buildDir)) - files.size,
+      location: `${target.outDir}/current/`,
+      destinationBuildId: runId,
+    };
+  },
+
   async rollback({ sourceBuildDir, target }): Promise<PublishSummary> {
     // sourceBuildDir is `<repoRoot>/<target.outDir>/builds/<runId>`.
     // currentDir is the sibling of `builds/`.
@@ -197,6 +254,42 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     };
   },
 };
+
+/**
+ * Replaces the contents of a file the build already has. Opening with `r+`
+ * (no create flag) makes "the file exists" and "write it" one step, so a
+ * path the live build lacks fails here instead of being created between a
+ * check and the write.
+ */
+async function overwriteExistingFile(file: string, path: string, body: Buffer): Promise<void> {
+  let handle: FileHandle;
+  try {
+    handle = await open(file, "r+");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        `self-hosted publisher: ${path} is not a file of the live build — a plugin-data build only replaces files the build has`,
+      );
+    }
+    throw err;
+  }
+  try {
+    await handle.truncate(0);
+    await handle.writeFile(body);
+  } finally {
+    await handle.close();
+  }
+}
+
+/** `path` under `dir`, refusing anything that would leave it. */
+function insideBuild(dir: string, path: string): string {
+  const root = resolve(dir);
+  const file = resolve(root, path);
+  if (!file.startsWith(`${root}${sep}`)) {
+    throw new Error(`self-hosted publisher: "${path}" is outside the build directory`);
+  }
+  return file;
+}
 
 function parseJsonOrNull(raw: string): unknown {
   try {

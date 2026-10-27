@@ -285,9 +285,8 @@ export function builtPageOutputPath(
  *
  * Scope: full builds on non-dev targets only. `dev` is an unfiltered
  * debugging surface, and an *incremental* build (`changedPageIds`)
- * matching zero published pages is a routine no-op — e.g. the
- * auto-redeploy orchestrator reacting to a draft-page edit — not an
- * unservable site.
+ * matching zero published pages is a routine no-op — e.g. a rebuild of
+ * pages that are all still drafts — not an unservable site.
  *
  * @returns the error message to throw, or null when the build may
  *   proceed. Pure so the guard is unit-testable without a DB.
@@ -435,9 +434,7 @@ export async function generateSite(args: {
   /** P13 ideas-pass — incremental rebuild whitelist. When non-empty,
    *  only re-bake the listed page ids — plus every page whose render
    *  dependencies (`render-deps.json`, epic #1107) the change reaches;
-   *  the rest are left alone in the build dir. Auto-redeploy passes the
-   *  audit_events tail's touched page ids; manual triggers omit it for
-   *  full rebuild. */
+   *  the rest are left alone in the build dir. Omitted = full rebuild. */
   changedPageIds?: ReadonlyArray<string>;
   /** Epic #1107 — shared lists changed since the last build (incremental). */
   changedListIds?: ReadonlyArray<string>;
@@ -1210,7 +1207,11 @@ export async function generateSite(args: {
     runId,
     builtAt: new Date().toISOString(),
     pageCount: pageRows.length,
+    // #1155 — `pageId` lets a plugin-data build find a page's file in the
+    // build that is live, without reading the (possibly unpublished)
+    // current page paths from cms_admin.
     pages: pageRows.map((p) => ({
+      pageId: p.page_id,
       slug: p.slug,
       path: p.current_path,
       outputPath: outputPathOf(p),

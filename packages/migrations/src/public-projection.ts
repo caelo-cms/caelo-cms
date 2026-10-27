@@ -41,8 +41,8 @@
  * a derived, read-only replica, with no input from anyone. It runs as the
  * `system` actor inside the adapter's own transactions
  * (`DatabaseAdapter.withAdminTransaction` / `withPublicTransaction`, the
- * established path for system workers such as the redeploy orchestrator
- * and the plugin host loader), so RLS still applies, and the only
+ * established path for system workers such as the site-import crawl
+ * worker and the plugin host loader), so RLS still applies, and the only
  * identifiers it interpolates are the validated ones above. Auditing each
  * publish would record the same change twice, once per database; the
  * write that caused it is the audit record. The SQL also has to run in

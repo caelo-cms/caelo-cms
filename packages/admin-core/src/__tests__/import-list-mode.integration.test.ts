@@ -6,7 +6,7 @@
  * The #278 migration flow proposes a crawl of an EXACT URL set (the
  * homepage's one-sample-per-page-type picks, then the scoped per-type
  * fill) rather than a blind BFS. This test pins the storage + read path
- * the orchestrator relies on: propose_run persists `explicit_urls`,
+ * the crawl worker relies on: propose_run persists `explicit_urls`,
  * execute_proposal flips the run to 'crawling', the run reads back with
  * that exact list on every surface, and driving the real crawler with
  * the list read from the DB fetches ONLY those URLs (+ the source
@@ -52,7 +52,7 @@ async function wipe(): Promise<void> {
   }
 }
 
-/** Read import_runs.explicit_urls exactly as the orchestrator's claim
+/** Read import_runs.explicit_urls exactly as the crawl worker's claim
  *  does, normalising the jsonb (decoded array vs JSON string). */
 async function readExplicitUrls(runId: string): Promise<string[] | null> {
   const sql = new SQL(ADMIN_URL!);
@@ -152,7 +152,7 @@ describe("list-mode site import (#229)", () => {
     expect(approved.ok).toBe(true);
     expect((approved.value as { ceilingSource: string }).ceilingSource).toBe("explicit");
 
-    // The orchestrator claim reads explicit_urls straight off the row;
+    // The crawl worker's claim reads explicit_urls straight off the row;
     // reproduce that read and confirm the exact set survived the write.
     const persisted = await readExplicitUrls(runId);
     expect(persisted).toEqual(CHOSEN);

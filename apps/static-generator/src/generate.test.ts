@@ -118,7 +118,7 @@ describe("zeroPageBuildError", () => {
     expect(zeroPageBuildError({ pageCount: 0, env: "dev", incremental: false })).toBeNull();
   });
 
-  it("allows an incremental build matching 0 published pages (draft-edit auto-redeploy)", () => {
+  it("allows an incremental build matching 0 published pages (a rebuild of draft pages)", () => {
     expect(zeroPageBuildError({ pageCount: 0, env: "staging", incremental: true })).toBeNull();
   });
 

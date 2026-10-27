@@ -32,7 +32,7 @@ let testRoot: string;
 
 const HUMAN: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
-  actorKind: "system",
+  actorKind: "human",
   requestId: "p6-2-rollback",
 };
 

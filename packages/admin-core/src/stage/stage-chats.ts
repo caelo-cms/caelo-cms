@@ -224,8 +224,7 @@ export async function stageChatSessions(
     /**
      * Who started this Stage (#685; default: the operator). Anything but
      * "operator" is an AI's stage_changes (run with the operator's
-     * context): the merges open the production hold, and the audit's
-     * fix request tells the AI who staged.
+     * context): the audit's fix request tells the AI who staged.
      */
     readonly stagedBy?: StagedBy;
   } = {},
@@ -320,19 +319,16 @@ export async function stageChatSessions(
     const { unit } = entry;
     let attempt = 1;
     for (;;) {
-      const aiFlag = stagedBy !== "operator" ? { aiInitiated: true } : {};
       const r = unit.draft
         ? await execute(registry, adapter, ctx, "chat.merge_draft_to_main", {
             chatSessionIds: unit.chatSessionIds,
             deferConsume: true,
             headerIds: entry.value.headerIds,
-            ...aiFlag,
           })
         : await execute(registry, adapter, ctx, "chat.merge_to_main", {
             chatSessionId: unit.chatSessionIds[0],
             deferConsume: true,
             headerIds: entry.value.headerIds,
-            ...aiFlag,
           });
       if (
         !r.ok &&

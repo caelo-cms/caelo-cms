@@ -212,11 +212,19 @@ export {
   type UpdateRoute,
   type UpdateRouteInput,
 } from "./platform-updates/update-route.js";
+// #1154 — the admin's login rate-limit GC (formerly in the redeploy orchestrator).
+export {
+  type PluginDataTickResult,
+  runPluginDataBuildIfDue,
+  startPluginDataBuildWorker,
+} from "./plugin-data/worker.js";
 export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
 export * from "./public-projection.js";
 // #553 — quality-audit worker (Lighthouse after a substantial Stage).
 export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit-worker.js";
 export * from "./rate-limit.js";
+// #1154 — the admin's login rate-limit GC (formerly in the redeploy orchestrator).
+export { startRateLimitGcWorker } from "./rate-limit-gc-worker.js";
 export { startRedirectSyncWorker, stopRedirectSyncWorker } from "./redirect-sync-worker.js";
 export * from "./register.js";
 export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check-worker.js";
@@ -311,10 +319,9 @@ export {
   UpgraderTriggerError,
   upgraderTriggerFromEnv,
 } from "./security/upgrader/job-trigger.js";
+// #1154 — the site-import crawl worker (formerly in the redeploy orchestrator).
+export { startSiteImportWorker } from "./site-import/crawl-worker.js";
 export { emitSnapshot } from "./snapshots/emit.js";
-// issue #620 — the advisory lock that orders AI merges against automatic
-// production publishes (the serialization regression tests take it).
-export { AI_STAGE_LOCK_KEY } from "./stage/ai-stage-hold.js";
 // issue #620 — the Stage flow for one chat or a selection of chats (/edit's
 // Stage button, the Open changes overview).
 export {
@@ -323,5 +330,7 @@ export {
   type StageFailure,
   stageChatSessions,
 } from "./stage/stage-chats.js";
+// #969 — staging-preview keep-alive (formerly in the redeploy orchestrator).
+export { startStagingPreviewKeepAliveWorker } from "./staging-preview-keepalive-worker.js";
 export * from "./tokens.js";
 export * from "./untrusted/public-data.js";

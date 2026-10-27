@@ -619,11 +619,11 @@ export function assertNoBrowserConsoleErrors(tracker: BrowserConsoleErrorTracker
  */
 export async function awaitStageComplete(page: Page): Promise<void> {
   // Issue #620 — the AI stages finished work itself (stage_changes). When it
-  // already did, nothing is pending and the toolbar offers no Stage; the
-  // open AI stage hold proves the merge happened.
+  // already did, nothing is pending and the toolbar offers no Stage; an AI
+  // Stage newer than the last Publish live proves the merge happened.
   const stageBtn = page.getByTestId("stage-btn");
   await stageBtn.waitFor({ state: "visible", timeout: 10_000 }).catch(() => undefined);
-  if (!(await stageBtn.isVisible()) && openAiStageHoldCount() > 0) return;
+  if (!(await stageBtn.isVisible()) && unpublishedAiStageCount() > 0) return;
   const responsePromise = page.waitForResponse(
     (r: Response) => r.url().includes("?/stageAndDeployStaging") && r.request().method() === "POST",
     // 360s since #155 — see waitForChatTurnIdle's rationale (hang guard,
@@ -1166,10 +1166,20 @@ export async function verifyPublishedPageWithVision(page: Page): Promise<VisionV
 }
 
 /**
- * Issue #620 Part B — wait until the AI staged its own work: an AI-initiated
- * merge into main opens a production hold (ai_stage_holds) in the same
- * transaction, so a hold created after `sinceIso` means the AI's
- * stage_changes merged real changes. Returns the number of such holds.
+ * The AI's Stages are recorded on their quality audit run (`staged_by` is
+ * the AI origin, #685): the Stage flow queues exactly one audit run per
+ * Stage, whatever the build checks. SQL over those runs, created after
+ * `${since}` (a SQL expression).
+ */
+function aiStageRunsSql(since: string): string {
+  return `SELECT count(*)::int AS n FROM quality_audit_runs
+          WHERE staged_by IS NOT NULL AND staged_by <> 'operator' AND created_at > ${since}`;
+}
+
+/**
+ * Issue #620 Part B — wait until the AI staged its own work: a quality audit
+ * run recorded as an AI Stage after `sinceIso` means the AI's stage_changes
+ * merged and built staging. Returns the number of such Stages.
  */
 export async function awaitAiStaged(sinceIso: string, timeoutMs = 360_000): Promise<number> {
   const deadline = Date.now() + timeoutMs;
@@ -1181,30 +1191,30 @@ export async function awaitAiStaged(sinceIso: string, timeoutMs = 360_000): Prom
         const sql = new SQL(process.env.ADMIN_DATABASE_URL);
         await sql.begin(async (tx) => {
           await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-          const rows = await tx\`
-            SELECT count(*)::int AS n FROM ai_stage_holds
-            WHERE created_at > \${process.env.SINCE}::timestamptz
-          \`;
+          const rows = await tx.unsafe(process.env.QUERY, [process.env.SINCE]);
           process.stdout.write(String(rows[0]?.n ?? 0));
         });
         await sql.end();
         `,
-        { SINCE: sinceIso },
+        { SINCE: sinceIso, QUERY: aiStageRunsSql("$1::timestamptz") },
       ).trim(),
       10,
     );
     if (n > 0) return n;
     if (Date.now() > deadline) {
       throw new Error(
-        `awaitAiStaged: the AI did not stage its work (no AI stage hold since ${sinceIso}) — it must call stage_changes when the requested work is done`,
+        `awaitAiStaged: the AI did not stage its work (no AI Stage since ${sinceIso}) — it must call stage_changes when the requested work is done`,
       );
     }
     await new Promise((r) => setTimeout(r, 3_000));
   }
 }
 
-/** Issue #620 Part B — AI stage holds still open (a human Publish live releases them). */
-export function openAiStageHoldCount(): number {
+/**
+ * AI Stages newer than the last succeeded production build: AI-staged work
+ * that waits for a human Publish live (#1154 — nothing else publishes it).
+ */
+export function unpublishedAiStageCount(): number {
   return Number.parseInt(
     runBunInline(
       `
@@ -1212,11 +1222,17 @@ export function openAiStageHoldCount(): number {
       const sql = new SQL(process.env.ADMIN_DATABASE_URL);
       await sql.begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-        const rows = await tx\`SELECT count(*)::int AS n FROM ai_stage_holds WHERE released_at IS NULL\`;
+        const rows = await tx.unsafe(process.env.QUERY);
         process.stdout.write(String(rows[0]?.n ?? 0));
       });
       await sql.end();
       `,
+      {
+        QUERY: aiStageRunsSql(`COALESCE((
+          SELECT max(r.finished_at) FROM deploy_runs r
+          JOIN deploy_targets t ON t.id = r.target_id
+          WHERE t.env = 'production' AND r.status = 'succeeded'), '-infinity'::timestamptz)`),
+      },
     ).trim(),
     10,
   );

@@ -66,6 +66,8 @@ const SYSTEM: ExecutionContext = {
   actorKind: "system",
   requestId: "staging-domain-test",
 };
+/** #1154 — production is built and published only for a human. */
+const PUBLISHER: ExecutionContext = { ...SYSTEM, actorKind: "human" };
 
 const TPL_SLUG = "stg-domain-tpl";
 const MOD_SLUG = "stg-domain-mod";
@@ -231,6 +233,13 @@ async function ok<T>(op: string, input: unknown): Promise<T> {
   return r.value as T;
 }
 
+/** Publish live (staging → production) as a human. */
+async function publish<T>(input: Record<string, unknown>): Promise<T> {
+  const r = await execute(registry, adapter, PUBLISHER, "deploy.promote", input);
+  if (!r.ok) throw new Error(`deploy.promote failed: ${JSON.stringify(r.error)}`);
+  return r.value as T;
+}
+
 async function stagingRow() {
   return withSql(
     (tx) =>
@@ -353,7 +362,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       repoRoot: testRoot,
     });
     await markAudited(staged.runId);
-    const promoted = await ok<{ toRunId: string; buildId: string }>("deploy.promote", {
+    const promoted = await publish<{ toRunId: string; buildId: string }>({
       fromTarget: "staging",
       toTarget: "production",
       repoRoot: testRoot,
@@ -446,7 +455,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     expect(existsSync(join(testRoot, "output", "staging", "builds", staged.runId))).toBe(true);
 
     await markAudited(staged.runId);
-    const promoted = await ok<{ toRunId: string }>("deploy.promote", {
+    const promoted = await publish<{ toRunId: string }>({
       fromTarget: "staging",
       toTarget: "production",
       repoRoot: testRoot,
@@ -560,7 +569,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     // with a day left.
     fake.lifetimes.seed(`runid-${staged.runId}`, Date.now() + DAY_MS);
     await markAudited(staged.runId);
-    await ok("deploy.promote", {
+    await publish({
       fromTarget: "staging",
       toTarget: "production",
       repoRoot: testRoot,
@@ -575,7 +584,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       repoRoot: testRoot,
     });
     const channelId = `runid-${staged.runId}`;
-    // Ten idle days later the orchestrator's keep-alive ticks.
+    // Ten idle days later the keep-alive worker ticks.
     const start = Date.now();
     fake.lifetimes.now = () => start + 10 * DAY_MS;
     try {
@@ -723,7 +732,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       (tx) => tx`UPDATE staging_access SET origin_url = ${newerUrl}, origin_run_id = ${newer}::uuid
                  WHERE id = 1`,
     );
-    const promoted = await execute(registry, adapter, SYSTEM, "deploy.promote", {
+    const promoted = await execute(registry, adapter, PUBLISHER, "deploy.promote", {
       fromTarget: "staging",
       toTarget: "production",
       repoRoot: testRoot,
@@ -749,7 +758,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     await markAudited(staged.runId);
     const liveBefore = fake.live.length;
     await ok("modules.update", { moduleId, html: "<p>changed after the stage</p>" });
-    const r = await execute(registry, adapter, SYSTEM, "deploy.promote", {
+    const r = await execute(registry, adapter, PUBLISHER, "deploy.promote", {
       fromTarget: "staging",
       toTarget: "production",
       repoRoot: testRoot,
@@ -790,7 +799,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
   }
 
   async function promoteRefusal(): Promise<string> {
-    const r = await execute(registry, adapter, SYSTEM, "deploy.promote", {
+    const r = await execute(registry, adapter, PUBLISHER, "deploy.promote", {
       fromTarget: "staging",
       toTarget: "production",
       repoRoot: testRoot,

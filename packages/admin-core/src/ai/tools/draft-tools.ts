@@ -8,9 +8,8 @@
  *                          into main, build staging, queue the quality
  *                          check. Routine (§11.A): staging is not public and
  *                          the merge is a revertable snapshot. Publish live
- *                          stays the human's click; an AI Stage opens a
- *                          production hold so no automatic publish can ship
- *                          it (stage/ai-stage-hold.ts).
+ *                          stays the human's click, and nothing else builds
+ *                          production (#1154).
  *   undo_this_chat         Part A: drop this chat's unstaged changes from
  *                          the draft. When that would also drop another
  *                          chat's later change, the first call only reports
@@ -40,8 +39,8 @@ const NO_CHAT =
  * the operator (`created_by`), and the session/stage/undo ops are scoped to
  * the chat's owner — under the AI actor they would find no chat at all
  * (the browser chat's AI actor is not the chat's creator). The Stage still
- * counts as the AI's: stage_changes passes `stagedBy` (an AI origin), which opens the
- * production hold.
+ * counts as the AI's: stage_changes passes `stagedBy` (an AI origin), which
+ * the audit's fix request names.
  */
 function operatorCtx(
   ctx: ExecutionContext,

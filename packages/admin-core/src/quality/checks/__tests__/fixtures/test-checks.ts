@@ -23,6 +23,9 @@ export const NO_PROBE_BUILD: StagedBuild = {
   probe: async (path) => {
     throw new Error(`this test's checks do not probe the build (asked for ${path})`);
   },
+  text: async (path) => {
+    throw new Error(`this test's checks do not read the build (asked for ${path})`);
+  },
 };
 
 /** The `content` of every `<meta name="description">` in `<head>`. */

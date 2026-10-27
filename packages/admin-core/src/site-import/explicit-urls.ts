@@ -3,7 +3,7 @@
 /**
  * issue #229 — decode the `import_runs.explicit_urls` jsonb into the
  * LIST-mode URL set. Pure so the malformed-input contract is unit-testable
- * without booting the orchestrator.
+ * without booting the crawl worker.
  */
 
 /**

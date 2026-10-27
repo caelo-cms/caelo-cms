@@ -924,3 +924,74 @@ describe("gcsStaticPublisher.syncRedirects — on save, no build (#1157)", () =>
     expect(urlMapUpdates).toEqual([]);
   });
 });
+
+describe("gcsStaticPublisher — plugin-data release (#1155)", () => {
+  async function publishLive() {
+    await writeFile(
+      join(buildDir, "routing-manifest.json"),
+      JSON.stringify({ env: "staging", envNoindexInHtml: false }),
+    );
+    const gcs = await publisher();
+    await gcs.publishStaging({ buildDir, runId: "run-1", target: TARGET });
+    await gcs.promoteToProduction({
+      sourceRunId: "run-1",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://example.com/",
+    });
+    return {
+      gcs,
+      live: { runId: "p1", buildId: "run-1", location: "gs://test-static/", localBuildDir: "" },
+    };
+  }
+
+  it("overwrites only the given objects, keeps their type, and restamps the live manifest", async () => {
+    const { gcs, live } = await publishLive();
+    const robotsBefore = staticBucket.files.get("robots.txt")?.body?.toString("utf8");
+    const read = await gcs.readLiveFiles({
+      target: PROD_TARGET,
+      live,
+      paths: ["en/about/index.html", "nope.html"],
+    });
+    expect(read.get("en/about/index.html")?.toString("utf8")).toBe("<html>about</html>");
+    expect(read.get("nope.html")).toBeNull();
+
+    const summary = await gcs.publishPluginData({
+      target: PROD_TARGET,
+      live,
+      runId: "pd-1",
+      files: new Map([["en/about/index.html", Buffer.from("<html>about + comment</html>")]]),
+    });
+    expect(summary.destinationBuildId).toBe("pd-1");
+    const page = staticBucket.files.get("en/about/index.html");
+    expect(page?.body?.toString("utf8")).toBe("<html>about + comment</html>");
+    expect(page?.metadata?.contentType).toBe("text/html; charset=utf-8");
+    expect(staticBucket.files.get("robots.txt")?.body?.toString("utf8")).toBe(robotsBefore);
+    const manifest = JSON.parse(
+      staticBucket.files.get("_state/last-build-manifest.json")?.body?.toString("utf8") ?? "{}",
+    ) as { buildId?: string };
+    expect(manifest.buildId).toBe("pd-1");
+  });
+
+  it("refuses a bucket that serves another build than the live run recorded, or a new file", async () => {
+    const { gcs, live } = await publishLive();
+    const files = new Map([["en/about/index.html", Buffer.from("x")]]);
+    await expect(
+      gcs.publishPluginData({
+        target: PROD_TARGET,
+        live: { ...live, buildId: "other" },
+        runId: "pd-1",
+        files,
+      }),
+    ).rejects.toThrow(/published outside Caelo/);
+    await expect(
+      gcs.publishPluginData({
+        target: PROD_TARGET,
+        live,
+        runId: "pd-1",
+        files: new Map([["new/index.html", Buffer.from("x")]]),
+      }),
+    ).rejects.toThrow(/not a file of the live build/);
+  });
+});

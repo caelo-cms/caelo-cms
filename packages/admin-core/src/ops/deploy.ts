@@ -93,13 +93,8 @@ import {
 } from "../deploy/static-publisher.js";
 import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
+import { forgetAllBakes, rewindBakesToRun } from "../plugin-data/stale-pages.js";
 import { jsonbParam } from "../sql-helpers.js";
-import {
-  aiStageHoldRefusal,
-  lockForAutomaticProductionPublish,
-  openAiStageHoldIds,
-  releaseAiStageHolds,
-} from "../stage/ai-stage-hold.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
 import { json } from "./quality/_shared.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
@@ -170,6 +165,13 @@ const runRow = z.object({
   errorMessage: z.string().nullable(),
   buildId: z.string().nullable(),
   progress: z.object({ pagesDone: z.number().int(), pagesTotal: z.number().int() }).nullable(),
+  /**
+   * #1155 — `site`: a build of the site (Stage, Publish live, a production
+   * build, a rollback); `plugin_data`: the live build republished with
+   * fresher plugin data only. A `plugin_data` run makes nothing else live,
+   * so "when did a human last publish" skips it.
+   */
+  buildKind: z.enum(["site", "plugin_data"]),
 });
 
 interface TargetDbRow {
@@ -210,6 +212,7 @@ interface RunDbRow {
   error_message: string | null;
   build_id: string | null;
   progress: { pagesDone: number; pagesTotal: number } | string | null;
+  build_kind: "site" | "plugin_data";
 }
 
 function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
@@ -234,6 +237,7 @@ function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
     errorMessage: r.error_message,
     buildId: r.build_id,
     progress,
+    buildKind: r.build_kind,
   };
 }
 
@@ -278,7 +282,15 @@ export const listDeployRunsOp = defineOperation({
   // them.
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
-  input: z.object({ limit: z.number().int().min(1).max(200).default(50) }),
+  input: z.object({
+    limit: z.number().int().min(1).max(200).default(50),
+    /**
+     * #1155 — only runs of this kind. Readers of "what a human last staged
+     * and published" pass `site`: plugin-data builds run every tick and
+     * would otherwise push those runs out of the window.
+     */
+    buildKind: z.enum(["site", "plugin_data"]).optional(),
+  }),
   output: z.object({ runs: z.array(runRow) }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
@@ -290,8 +302,9 @@ export const listDeployRunsOp = defineOperation({
              r.status,
              r.started_at, r.finished_at,
              r.page_count, r.file_count, r.error_message,
-             r.build_id, r.progress
+             r.build_id, r.progress, r.build_kind
       FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+      ${input.buildKind ? sql`WHERE r.build_kind = ${input.buildKind}` : sql``}
       ORDER BY r.started_at DESC
       LIMIT ${input.limit}
     `)) as unknown as RunDbRow[];
@@ -577,6 +590,29 @@ export const updateDeployProgressOp = defineOperation({
   },
 });
 
+/**
+ * #1154 — the one path to live: a production build or publish runs only for
+ * a human (an Owner-initiated production build, a Publish live, or an
+ * approved proposal applied as its approver). There is no automatic
+ * redeploy; a `system` caller asking for production is a code path that
+ * must not exist, so it is refused before anything is built.
+ *
+ * @returns the refusal for a non-human production request, or null.
+ */
+function productionNeedsHuman(
+  ctx: ExecutionContext,
+  targetEnv: string,
+  operation: "deploy.trigger" | "deploy.promote",
+): { kind: "HandlerError"; operation: string; message: string } | null {
+  if (targetEnv !== "production" || ctx.actorKind === "human") return null;
+  return {
+    kind: "HandlerError",
+    operation,
+    message:
+      "production is built only by a human Publish live (or an Owner-initiated production build) — nothing publishes automatically. Stage the change and let the Owner click Publish live.",
+  };
+}
+
 export const triggerDeployOp = defineOperation({
   name: "deploy.trigger",
   actorScope: ["human", "ai", "system"],
@@ -586,8 +622,7 @@ export const triggerDeployOp = defineOperation({
     repoRoot: z.string().optional(),
     /** P13 ideas-pass — when supplied, the static-generator
      *  re-bakes only these pages. Other pages keep their cached HTML.
-     *  Auto-redeploy passes this from the audit_events tail; manual
-     *  triggers omit it for full-site rebuild. */
+     *  Omitted = full-site rebuild. */
     changedPageIds: z.array(z.string().uuid()).optional(),
     /**
      * Epic #1107 — shared lists and list types changed since the last
@@ -676,6 +711,11 @@ export const triggerDeployOp = defineOperation({
           "Rebuild staging with deploy_staging, then call propose_deploy_promote (fromTarget = the staging target) so the Owner approves the go-live.",
       });
     }
+    // #1154 — nothing reaches production without a human: a production
+    // build is an Owner-initiated build or a human Publish live, never a
+    // background job.
+    const automatic = productionNeedsHuman(ctx, target.env, "deploy.trigger");
+    if (automatic) return err(automatic);
     // The active theme's raster favicon ships as its 64 px rendition
     // (ops/media_favicon.ts). One bound before that rule has none: create
     // it from the stored original now, so an upgraded install needs no
@@ -705,33 +745,13 @@ export const triggerDeployOp = defineOperation({
     }
     // #553 — a production build publishes what is staged, so it passes the
     // same quality gate as Publish live (production-gate.ts). A refusal is
-    // recorded as a failed run, so Ops and the notification bell show it
-    // even when nobody watched the request (the automatic redeploy).
+    // recorded as a failed run, so Ops and the notification bell show it.
     let override: ProductionOverride | null = null;
-    if (target.env === "production" && ctx.actorKind === "system") {
-      // Issue #620 Part B — an automatic production build (the
-      // auto-redeploy) never ships changes the AI staged that no human has
-      // published yet. Recorded as a failed run like a quality-gate stop.
-      // The exclusive lock waits for in-flight AI merges (their holds are
-      // visible after it) and keeps new ones out of this transaction —
-      // which spans the generator run — so none can land in this build.
-      await lockForAutomaticProductionPublish(tx);
-      const held = await aiStageHoldRefusal(tx);
-      if (held) {
-        await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
-                  ${`Automatic publish stopped: ${held}`})
-        `);
-        return err({ kind: "HandlerError", operation: "deploy.trigger", message: held });
-      }
-    }
     // CLAUDE.md §2 SEO fill-once — no page is built for staging or
     // production without a meta description (deploy/missing-seo.ts). Before
     // the quality gate: a publish-anyway override is about a failed
     // Lighthouse run, never about missing SEO. Recorded as a failed run so
-    // Ops and the bell show it when nobody watched the request (the
-    // automatic redeploy). Dev builds stay unchecked — they are local
+    // Ops and the bell show it. Dev builds stay unchecked — they are local
     // previews, never served to visitors.
     if (target.env === "staging" || target.env === "production") {
       const missingSeo = describeMissingMetaDescriptions(await pagesMissingMetaDescription(tx));
@@ -795,9 +815,6 @@ export const triggerDeployOp = defineOperation({
     // still renders what this Stage's quality check saw (taken before the
     // generator runs: a change landing mid-build counts as unchecked).
     const fingerprint = target.env === "staging" ? await computeRenderFingerprint(tx) : null;
-    // Issue #620 — the AI holds this build covers: open now means committed
-    // together with its merge, before the generator reads main.
-    const coveredHolds = await openAiStageHoldIds(tx);
 
     const runKind = target.env === "staging" ? "stage" : "build";
     // The trigger op needs a registry+adapter pair to commit the run row and
@@ -842,7 +859,6 @@ export const triggerDeployOp = defineOperation({
         actorId: ctx.actorId,
         startedAt,
         renderFingerprint: fingerprint,
-        coveredAiHoldIds: coveredHolds,
         // #834 — the Caelo version rendering this build: Publish live's
         // parity guard names an upgrade between Stage and Publish live.
         caeloVersion: CAELO_VERSION,
@@ -1063,11 +1079,6 @@ export const triggerDeployOp = defineOperation({
     // The publish-anyway decision is recorded only now that the build it
     // allowed is live; a failed build leaves the quality gate closed.
     if (override) await recordProductionOverride(tx, ctx, override);
-    // Issue #620 — a human production build from main publishes what the
-    // AI staged before it started: exactly those holds are released.
-    if (target.env === "production" && ctx.actorKind === "human") {
-      await releaseAiStageHolds(tx, { holdIds: coveredHolds, productionRunId: runId });
-    }
 
     // Epic #1107 — a production build is a Publish live: pages it ships
     // for the first time get their first_published_at.
@@ -1150,9 +1161,6 @@ export const promoteDeployOp = defineOperation({
     fromTarget: z.string(),
     toTarget: z.string(),
     repoRoot: z.string().optional(),
-    /** #553 — promote only if this is still the source's newest build
-     *  (the automatic publish ships exactly the build its audit checked). */
-    expectedSourceRunId: z.string().uuid().optional(),
   }),
   output: z.object({
     fromRunId: z.string(),
@@ -1185,7 +1193,6 @@ export const promoteDeployOp = defineOperation({
     }
     const fromRunRows = (await tx.execute(sql`
       SELECT id::text AS id, build_id, site_url,
-             COALESCE(to_jsonb(covered_ai_hold_ids), '[]'::jsonb) AS covered_ai_hold_ids,
              plugin_problems
       FROM deploy_runs
       WHERE target_id = ${from.id}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
@@ -1194,7 +1201,6 @@ export const promoteDeployOp = defineOperation({
       id: string;
       build_id: string | null;
       site_url: string | null;
-      covered_ai_hold_ids: unknown;
       plugin_problems: unknown;
     }[];
     const fromRow = fromRunRows[0];
@@ -1209,24 +1215,10 @@ export const promoteDeployOp = defineOperation({
         message: `no succeeded build to promote from '${from.name}' — run Stage first (deploy.trigger targetName=${from.name}); Publish live only copies an already-staged build`,
       });
     }
-    if (input.expectedSourceRunId && input.expectedSourceRunId !== fromRunId) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.promote",
-        message: `a newer build was staged on '${from.name}' since build ${input.expectedSourceRunId}; that newer build goes through its own quality check before it can be published`,
-      });
-    }
-
-    // Issue #620 Part B — an automatic publish (the audit-gated automatic
-    // redeploy runs this handler as system) never ships changes the AI
-    // staged that no human has published yet.
-    if (to.env === "production" && ctx.actorKind === "system") {
-      await lockForAutomaticProductionPublish(tx);
-      const held = await aiStageHoldRefusal(tx);
-      if (held) {
-        return err({ kind: "HandlerError", operation: "deploy.promote", message: held });
-      }
-    }
+    // #1154 — Publish live is a human's click (the toolbar, the pages list,
+    // Ops, or an approved propose_deploy_promote applied as the approver).
+    const automatic = productionNeedsHuman(ctx, to.env, "deploy.promote");
+    if (automatic) return err(automatic);
 
     // #1008 — never publish a site without an active plugin: not while one
     // is not running, and not a Stage that was built while one was not
@@ -1293,7 +1285,6 @@ export const promoteDeployOp = defineOperation({
         actorId: ctx.actorId,
         startedAt,
         renderFingerprint: null,
-        coveredAiHoldIds: null,
         // Set when the run finishes: a rebuild is rendered by this version,
         // a copy keeps the version of the build it copies.
         caeloVersion: null,
@@ -1363,21 +1354,15 @@ export const promoteDeployOp = defineOperation({
         timer.include("publish", copyPhases ?? []);
         timer.lap("publish");
       }
-      // Issue #620 — a human Publish live ships the staged build, and with
-      // it exactly the AI Stages that build covered. Released before the
-      // run is marked finished (same transaction, so the order changes
-      // nothing about what is released): the stored span and steps then
-      // cover all of the run's work, like the logged total (#1003).
-      if (to.env === "production" && ctx.actorKind === "human" && fromRow) {
-        await releaseAiStageHolds(tx, {
-          holdIds: json<string[]>(fromRow.covered_ai_hold_ids),
-          productionRunId: toRunId,
-        });
-      }
       // Epic #1107 — Publish live: the pages of the build it ships get
       // their first_published_at — the staged run's start, which is what
       // both the staged build and its live rebuild rendered.
-      if (to.env === "production") await stampFirstPublished(tx, fromRunId);
+      if (to.env === "production") {
+        await stampFirstPublished(tx, fromRunId);
+        // #1155 — the promoted build baked its plugin data when it was
+        // staged; bakes a plugin-data build made since are pending again.
+        await rewindBakesToRun(tx, fromRunId);
+      }
       timer.lap("finish");
       await tx.execute(sql`
         UPDATE deploy_runs
@@ -1568,7 +1553,7 @@ async function selectServedStagingPreview(
  */
 export const refreshStagingPreviewOp = defineOperation({
   name: "deploy.refresh_staging_preview",
-  // Why human-only: a maintenance tick the redeploy orchestrator runs on a
+  // Why human-only: a maintenance tick the keep-alive worker runs on a
   // timer; it decides nothing an editor or the AI chooses (Stage already
   // refreshes the preview), so it carries no AI tool.
   actorScope: ["human", "system"],
@@ -1630,13 +1615,13 @@ export const rollbackDeployOp = defineOperation({
       });
     }
     const priorRows = (await tx.execute(sql`
-      SELECT build_id, publish_summary->>'location' AS location FROM deploy_runs
+      SELECT build_id, publish_summary->>'location' AS location, caelo_version FROM deploy_runs
       WHERE id = ${input.runId}::uuid
         AND target_id = ${target.id}::uuid
         AND status = 'succeeded'
         AND build_id IS NOT NULL
       LIMIT 1
-    `)) as unknown as { build_id: string; location: string | null }[];
+    `)) as unknown as { build_id: string; location: string | null; caelo_version: string | null }[];
     const buildId = priorRows[0]?.build_id;
     if (!buildId) {
       return err({
@@ -1675,11 +1660,15 @@ export const rollbackDeployOp = defineOperation({
     // the Hosting version the rollback created). Recording it makes this
     // run itself a valid rollback source later — without it the Firebase
     // publisher refuses a run with no `publish_summary.location`.
+    // #1155 — and the Caelo version that rendered the restored build: it
+    // is what is live now, and a plugin-data build refreshes regions only
+    // while the running version rendered the live build.
     const newRunRows = (await tx.execute(sql`
       INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id,
-                               publish_summary)
+                               publish_summary, caelo_version)
       VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'succeeded', ${startedAt}::timestamptz,
-              clock_timestamp(), ${buildId}, ${jsonbParam(summary)})
+              clock_timestamp(), ${buildId}, ${jsonbParam(summary)},
+              ${priorRows[0]?.caelo_version ?? null})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const newRunId = newRunRows[0]?.id ?? "";
@@ -1690,6 +1679,8 @@ export const rollbackDeployOp = defineOperation({
       targetIds: [target.id],
       outputRoot: root,
     });
+    // #1155 — the build put back may lack any bake made since it ran.
+    if (target.env === "production") await forgetAllBakes(tx);
     return ok({ buildId, newRunId });
   },
 });
