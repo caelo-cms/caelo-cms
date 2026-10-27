@@ -16,6 +16,15 @@
 /** Title `fileTurnFatalProviderReport` (admin-core chat-runner) files under. */
 export const TURN_FAILURE_TITLE = "AI turn failed: provider error";
 
+/**
+ * Start of the chat notice the chat-runner persists when the provider refused
+ * the call for an ACCOUNT reason (quota, billing, key). Those turns file no
+ * bug report, so the scenario finds them by this notice instead. Mirrors
+ * `PROVIDER_ACCOUNT_NOTICE_PREFIX` in admin-core's provider-account-error.ts
+ * (a unit test pins the two together).
+ */
+export const PROVIDER_ACCOUNT_NOTICE_PREFIX = "The AI can't answer right now:";
+
 export interface TurnFailureReport {
   readonly createdAt: string;
   readonly whatHappened: string;
@@ -34,10 +43,12 @@ export function turnFailureError(
   const head = prompt.replace(/\s+/g, " ").slice(0, 80);
   return new Error(
     `The AI turn for "${head}${prompt.length > 80 ? "…" : ""}" died on a turn-fatal error ` +
-      `(${reports.length} ${TURN_FAILURE_TITLE} report(s)) — the scenario stops here instead of ` +
+      `(${reports.length} ${TURN_FAILURE_TITLE} report(s) or account notice(s)) — the scenario stops here instead of ` +
       `failing on a downstream assertion:\n` +
       distinct.map((m) => `  - ${m.slice(0, 600)}`).join("\n") +
-      `\nA spending/usage limit, invalid key or provider outage is an account/provider problem, ` +
-      `not a regression; anything else is a Caelo bug (see the report's evidence in bug-reports.json).`,
+      `\nAn "AI can't answer right now" notice is a provider account problem (usage limit, ` +
+      `billing, key), not a regression — raise the limit and re-run. A provider outage is not ` +
+      `a regression either; ` +
+      `anything else is a Caelo bug (see the report's evidence in bug-reports.json).`,
   );
 }

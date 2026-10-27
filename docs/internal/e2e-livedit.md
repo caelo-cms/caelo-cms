@@ -132,6 +132,9 @@ The metric surfaces three ways:
 3. **Durable artifact** — `ai-cost.json` uploads `if: always()` as
    `e2e-livedit-cost-<run_id>` with 90-day retention (the failure-only
    bundle would miss green runs).
+4. **Budget ledger** — the same total, as one file per run on the
+   `e2e-livedit-ledger` branch, feeds the weekly budget (see *When it
+   runs*).
 
 **Unpriced-call warning.** `unpricedCalls` counts rows with
 `cost_estimate_microcents = 0` despite token work — the signature of
@@ -358,8 +361,9 @@ itself (the consent scenario wipes its plugin's tables first).
 ## Adding a new scenario
 
 Each scenario is a single `apps/admin/e2e-livedit/scenario-*.browser.ts`
-file. Use Scenario 1 as the template; the helpers in `helpers.ts`
-cover the common shape:
+file, listed in `scenario-paths.ts` with the repo paths it exercises (the
+manifest test fails until it is — see *Scenario selection*). Use Scenario 1
+as the template; the helpers in `helpers.ts` cover the common shape:
 
 ```ts
 import {
@@ -476,58 +480,187 @@ bun run e2e-livedit
 PR description records the green local run output. CI is the
 secondary guard — local pass is the primary one.
 
-### When it runs
+## When it runs
 
-- **Pull requests:** on open / reopen / ready-for-review, and on later
-  commits only until it has passed once on that PR (`prior-success` cost
-  gate; close and reopen the PR to force a fresh run).
-- **`main`:** not on every push (a squash merge re-runs code its PR
-  already ran green). Instead `release-cut` runs it once on the exact
-  `main` commit it releases (dispatched on `release-gate/<sha>`, a branch
-  pinned to that commit) and refuses to cut unless it is green.
-- **Manual:** `gh workflow run e2e-livedit.yml --ref main` always runs.
+Each full run costs real money (~$5–7; measured 2026-10-20..26: $907 for
+183 paid runs on 95 PR branches, 92% of the input tokens cache reads — the
+money is in run count × scenario count). The `plan` job of
+`.github/workflows/e2e-livedit.yml` decides what a run executes; the paid
+`Real-AI live-edit scenario` job runs only what it picked.
+
+| Trigger | What runs |
+|---|---|
+| PR, nothing AI-relevant changed (UI-only, docs, CI outside this suite, provisioning, tests…) | nothing — the check passes as skipped |
+| PR with AI-relevant changes | the core (`homepage`) + every scenario whose paths match a changed file |
+| PR that changes the harness (this suite's lib/helpers/fixtures/global setup, its Playwright config, the workflow, `docker-compose.yml`, the provider preflight) | every CI scenario |
+| PR with the label `real-ai-full` | every CI scenario |
+| Draft PR | nothing until it is marked ready for review |
+| Release gate (`release-cut` → dispatch on `release-gate/<sha>`) | every CI scenario, no budget limit |
+| Manual `gh workflow run e2e-livedit.yml --ref <branch>` | every CI scenario, no budget limit |
+
+Main gets no run per push: a squash merge re-runs code its PR already ran.
+`release-cut` runs the full suite once on the exact `main` commit it
+releases and refuses to cut unless it is green. Trade-off: a regression
+that only appears when two PRs combine on main surfaces at the next
+release cut, not at merge time.
+
+**Force the full suite on a PR:** add the label `real-ai-full`, then
+re-run the workflow (Actions → E2E Live Edit → Re-run all jobs) or push.
+Or dispatch it on the branch: `gh workflow run e2e-livedit.yml --ref
+<branch>` (the dispatched run reports the same check on the branch's head
+commit and ignores the budget).
+
+### Scenario selection (`scenario-paths.ts`)
+
+Every spec under `apps/admin/e2e-livedit/` is listed in
+`apps/admin/e2e-livedit/scenario-paths.ts` with the repo paths it
+exercises (`Bun.Glob` patterns). `lib/plan.ts` maps the PR's changed files
+(GitHub's PR files API, renames counted on both names) onto it:
+
+- `AI_RELEVANT_PATHS` minus tests (`NON_RUNTIME_PATHS`) minus
+  `NO_REAL_AI_COVERAGE` decides whether anything runs. AI-relevant: the
+  whole AI layer (`packages/admin-core/src/ai/**`: chat-runner, system
+  prompt, providers, every tool), the ops and rendering the suite drives,
+  `packages/shared`, the Query API, migrations (skills are seeded there),
+  every plugin and the plugin runtime, the static generator, the chat UI
+  and `/edit`, `apps/admin/src/lib/server`, the lockfile and package
+  manifests.
+- `NO_REAL_AI_COVERAGE` lists AI-relevant-looking files no CI scenario
+  reaches (users/roles, step-up, platform updates, domains, gateway,
+  email, redirects, theme import, site migration — the last only covered
+  by the opt-in migrate/onboarding scenarios). A change there runs
+  nothing, honestly: no scenario would exercise it.
+- **The core is `homepage`.** It is the one scenario that drives the whole
+  loop on every AI surface at once — cold start, theme compose, page and
+  module build through the full tool catalogue and the system prompt, AI
+  Stage, quality audit, human Publish, re-edit, vision verdict — and it
+  carries the token/loop ceilings. Every tool definition rides in every
+  request it makes, so a catalogue or prompt regression anywhere shows up
+  there first. It runs on every PR with an AI-relevant change.
+- Opt-in scenarios (`optIn`: consistency, genesis, onboarding, migrate,
+  google-pictbook) are listed for documentation but never selected — CI
+  does not set their flags, so they would only skip themselves.
+
+`lib/plan.test.ts` fails when a tracked file under the AI-relevant roots is
+matched by no CI scenario and is not in `NO_REAL_AI_COVERAGE`, when a spec
+file is missing from the manifest, or when a glob matches no file. **A new
+AI area must be mapped to the scenario that exercises it** (or declared
+uncovered on purpose) — it can never be skipped silently. Adding a
+scenario: add its entry to `SCENARIOS` with the paths it covers.
+
+To run a subset locally: `CAELO_LIVEDIT_SCENARIOS=scenario-consent.browser.ts,scenario-homepage.browser.ts bun run e2e-livedit`
+(comma-separated spec file names; empty runs everything;
+`playwright.livedit.config.ts` rejects anything that is not a spec name).
+
+### Follow-up pushes: keep what is green
+
+After the bug gate passed, each run records the scenarios it left green
+as `{id, key}` (artifact `e2e-livedit-scenario-greens-<run_id>-<attempt>`,
+30 days) — also when another scenario failed, so the next push re-runs
+only what was red. A scenario's **key** is a SHA-256 over what the PR
+changed in the files it covers: each changed file under its paths (for
+the core: each changed AI-relevant file), its own spec and the harness,
+with its blob id in the tested tree. The next push's plan reads the greens
+of the PR's last 15 runs; a selected scenario whose key is unchanged keeps
+its result, everything else runs. If every selected scenario is kept, the
+paid job is skipped (passing).
+
+Main moving on does not change a key — only the PR's own changes do. That
+is the same trade-off as for main itself (combinations are caught at the
+release gate, which always runs everything); keying on the whole tested
+tree would re-run the core on nearly every push, because main changes AI
+files several times a day. Nothing is recorded when the bug gate failed
+(new bugs cannot be pinned to one scenario), so the next push re-runs the
+whole selection. The `e2e-livedit-green-tree-<tree>` artifact that
+`release-cut` reuses is written only by a run that executed **every** CI
+scenario and passed.
+
+### Cheap checks first, no cancelled paid runs
+
+The plan job waits (up to 65 min) until `Lockfile freshness`, `Lint,
+Typecheck, Migrate, Test, License` and `Admin production image — boot
+smoke` of `ci.yml` finished on the PR's head commit (the newest attempt of
+each counts). If one is red, the paid job **fails** at once with "CI is red
+on this commit" instead of running — a skip would pass the required check
+and a later CI re-run to green would leave the suite unrun. Re-run this
+workflow (Re-run all jobs) after fixing CI. `workflow_run` was not used:
+it reports no check on the PR, and the required check name must stay.
+
+A paid run in flight is never cancelled by a new push — a cancelled run
+is already paid for (15 were cancelled on 2026-10-26 alone). The paid job
+has job-level `concurrency` with `cancel-in-progress: false`: one runs per
+PR, the newest waiting one queues, and GitHub drops an older pending one.
+A plan that finds the PR moved on after the CI wait skips, and a paid job
+that starts for a commit that is no longer the PR head cancels its own run
+before any paid step.
+
+### Weekly budget
+
+Every run that reached the provider writes one file to the
+`e2e-livedit-ledger` branch: `runs/<UTC time>_<run_id>-<attempt>_<microcents>.json`
+(the run's `ai-cost.json`; 1 USD = 1e8 microcents; entries older than 9
+days are pruned). The plan job sums the trailing 7 days from one
+directory listing (`lib/budget.ts`) — the `e2e-livedit-cost-<run_id>`
+artifacts stay the durable 90-day record, but summing them takes one zip
+download per run, more than a job's API budget. When the sum reaches the
+repo variable `E2E_LIVEDIT_WEEKLY_BUDGET_USD` (default **$250**), PR runs
+skip with a passing, annotated check and the sticky PR comment says
+"Real-AI weekly budget used: $X of $Y — runs on release gate / manual
+dispatch only". The release gate and a manual dispatch always run (and
+count). Every run's PR comment shows the spend-vs-budget line.
+
+The sticky PR comment is one comment per PR (marker
+`<!-- e2e-livedit-sticky -->`), edited by every run
+(`lib/sticky-comment.sh`).
 
 ### CI secret gate
 
-`.github/workflows/e2e-livedit.yml` starts with a one-step `preflight`
-job that reads `secrets.ANTHROPIC_API_KEY_E2E` into an env var and
-emits `enabled=true|false`. The main `e2e-livedit` job's `if:` keys
-off that output:
+The plan job's first step reads `secrets.ANTHROPIC_API_KEY_E2E` into an
+env var. Without it (a fork, a fresh clone of the repo) the plan says
+`skip`: the paid job is SKIPPED, so the check passes instead of failing on
+a config gap. Once the secret is configured every PR follows the rules
+above without code changes.
 
-- **Secret set →** main job runs normally; failure is real and blocks the
-  PR check.
-- **Secret unset →** main job is `SKIPPED` with a workflow notice
-  pointing the operator at repo Settings → Secrets and variables →
-  Actions. The PR check goes neutral, not red.
-
-This means a fresh fork or a PR opened before the operator has
-configured the secret doesn't fail CI on a config gap — the suite
-just stays dormant until the secret arrives. Once configured, every
-subsequent PR + push:main + workflow_dispatch run executes the full
-real-AI flow without code changes.
+A plan job that fails or cannot decide (an API error, a broken selection)
+does not skip: the paid job runs and its first step fails with the reason,
+because a skipped required check would pass.
 
 ### Provider preflight (fail fast)
 
-The first step of the suite job, `AI provider preflight (fail fast)`,
-runs `scripts/ai-provider-preflight.ts`: one `max_tokens: 1` call on the
+The first paid step, `AI provider preflight (fail fast)`, runs
+`scripts/ai-provider-preflight.ts`: one `max_tokens: 1` call on the
 cheapest catalog model (the Anthropic `fast` slot in
 `model-catalog.json`) with the CI key, before install, compose and build.
 
-- **Refused** (spending/usage limit, credit balance, invalid key,
-  permission, unknown model) → the job fails at once. The provider's
-  message lands in the step summary, an `::error::` annotation and the
-  PR comment; no scenario runs.
+- **Usage/spending limit or credit used up** → the job fails within
+  seconds with **"AI provider quota exhausted"** (step summary, `::error::`
+  annotation, PR comment). No scenario runs and no bug report is filed.
+  Raise the limit (or wait for the date the provider names) and re-run.
+- **Refused otherwise** (invalid key, permission, unknown model) → fails
+  at once with the provider's message.
 - **Overloaded / 5xx / 429 / network** → retried after 5 s, 15 s and
   30 s, then the job fails with "AI provider unavailable".
 
-It lives inside the suite job on purpose: a failing gate job would skip
+It lives inside the paid job on purpose: a failing gate job would skip
 the suite job, and a skipped required check counts as passing. The key is
-passed through env only and redacted from any message. A spending-limit
-failure is an account problem: raise the limit and re-run the job.
+passed through env only and redacted from any message.
 
-Inside the scenarios, `sendChatPromptAndWait` checks for
-`AI turn failed: provider error` reports (top-level chats only) after
-every turn, and fails right there with the provider's message
+**Account refusals are not bugs — in the product too.** When the provider
+refuses a chat turn for an account reason (usage limit, credit, billing,
+invalid or revoked key; Anthropic's 400 "You have reached your specified
+API usage limits", OpenAI's `insufficient_quota`, Google's billing
+`RESOURCE_EXHAUSTED`, 401/403 key errors), the chat-runner shows the
+operator a brand-free notice ("The AI can't answer right now: the usage,
+spending or billing limit of the configured AI provider account is used
+up… An Owner has to raise the limit… Settings → AI") and files **no**
+`ai_bug_reports` row, so the bug intake opens no issue for it
+(`packages/admin-core/src/ai/provider-account-error.ts`, classified from
+the AI SDK's `APICallError`). The same holds for an image provider's
+refusal in `generate_image` / `edit_image`.
+
+Inside the scenarios, `sendChatPromptAndWait` checks after every turn for
+`AI turn failed: provider error` reports and for those account notices
+(top-level chats only), and fails right there with the message
 (`lib/turn-failure.ts`). A turn that dies mid-run therefore no longer
 shows up as a downstream "module is null" or a 6-minute Stage timeout.
 

@@ -37,6 +37,7 @@ import type {
   ProviderEvent,
   ProviderStepSummary,
 } from "../provider.js";
+import { classifyProviderAccountError } from "../provider-account-error.js";
 import { normalizeToolArgs } from "../tools/normalize-args.js";
 import { resolveToolCall } from "../tools/retired-tools.js";
 
@@ -390,7 +391,13 @@ export async function* translateSDKStream(
               : typeof errVal === "string"
                 ? errVal
                 : "provider error";
-          yield { kind: "error", message };
+          // Quota / billing / key refusals are account problems, not Caelo
+          // defects — classified here, from the SDK's APICallError, so the
+          // chat-runner never has to scrape the message.
+          const accountIssue = classifyProviderAccountError(errVal);
+          yield accountIssue
+            ? { kind: "error", message, accountIssue }
+            : { kind: "error", message };
           yield { kind: "done", stopReason: "error" };
           yieldedDone = true;
           break;

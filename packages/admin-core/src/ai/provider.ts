@@ -13,6 +13,8 @@
  * adapter — this file is provider-agnostic on purpose.
  */
 
+import type { ProviderAccountIssue } from "./provider-account-error.js";
+
 export type ProviderName = "anthropic" | "openai" | "google" | "local-openai-compat";
 
 export interface ToolDefinition {
@@ -394,7 +396,17 @@ export type ProviderEvent =
         responseModelId: string | null;
       };
     }
-  | { kind: "error"; message: string }
+  | {
+      kind: "error";
+      message: string;
+      /**
+       * Set when the provider refused the call for an ACCOUNT reason (usage
+       * limit, billing, credit, invalid key — see provider-account-error.ts).
+       * The chat-runner shows the operator a brand-free notice instead of the
+       * raw message and files no bug report: nothing in Caelo is broken.
+       */
+      accountIssue?: ProviderAccountIssue;
+    }
   /**
    * v0.2.54 — extended-thinking text increment. Streamed character-by-
    * character like text-delta but routed to the thinking surface in

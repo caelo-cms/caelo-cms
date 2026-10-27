@@ -43,7 +43,7 @@ describe("e2e-livedit.yml provider preflight", () => {
     // A failing gate job would SKIP the suite job — and a skipped required
     // check counts as passing. The probe must fail the suite job itself.
     expect(job("e2e-livedit")).toContain(`- name: ${PREFLIGHT}`);
-    expect(job("preflight")).not.toContain("ai-provider-preflight");
+    expect(job("plan")).not.toContain("ai-provider-preflight");
   });
 
   it("runs before install, compose, build and the scenarios", () => {

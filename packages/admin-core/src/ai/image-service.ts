@@ -33,6 +33,7 @@ import {
   isFakeImageEnabled,
   makeImageProvider,
 } from "./image-provider.js";
+import { classifyProviderAccountError, providerAccountNotice } from "./provider-account-error.js";
 import { getImageProviderApiKey } from "./provider-resolver.js";
 import { describeError } from "./tools/_describe-error.js";
 import type { ToolContext } from "./tools/dispatch.js";
@@ -47,7 +48,8 @@ export interface ConfiguredImageModel {
   reserveMicrocents: number;
 }
 
-type ToolResult = { ok: boolean; content: string };
+/** `refusal`: not a Caelo defect (an account refusal) — no auto bug report. */
+type ToolResult = { ok: boolean; content: string; refusal?: true };
 
 /**
  * #741 — why an image tool does not run on an AI-delegated call, and what
@@ -421,6 +423,20 @@ export async function runImageRequest(args: {
     };
   } catch (e) {
     await execute(toolCtx.registry, toolCtx.adapter, system, "image_requests.mark_uncertain", key);
+    // The image provider's account is out of quota/credit or its key was
+    // refused: no Caelo defect, so a refusal (no auto bug report) that tells
+    // the model to stop and hand the fix to the Owner. Brand-free, since the
+    // result is shown in the editor chat.
+    const accountIssue = classifyProviderAccountError(e);
+    if (accountIssue) {
+      return {
+        ok: false,
+        refusal: true,
+        content:
+          `${tool}: no image was made. ${providerAccountNotice(accountIssue)} ` +
+          "Do not retry; tell the operator this and continue without the image.",
+      };
+    }
     return {
       ok: false,
       content: `${tool}: the outcome is uncertain (${(e as Error).message}). The reservation stays charged and the call was not retried. Generate again only if a NEW image is wanted.`,

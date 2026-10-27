@@ -13,7 +13,9 @@
  *   - ok        — the suite runs.
  *   - fatal     — usage/spending limit, invalid key, permission, unknown
  *                 model: retrying cannot help. The job fails at once with the
- *                 provider's own message.
+ *                 provider's own message; a used-up usage/spending limit or
+ *                 credit balance is reported as "AI provider quota exhausted"
+ *                 (an account state to fix at the provider, never a bug).
  *   - retryable — overloaded (529), 5xx, 429 rate limit, network failure:
  *                 retried with backoff; still failing after the last attempt
  *                 means "provider unavailable", and the job fails with that.
@@ -37,7 +39,12 @@ const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 /** The probe's verdict on one provider answer. */
 export type ProbeVerdict =
   | { readonly kind: "ok" }
-  | { readonly kind: "fatal"; readonly message: string }
+  | {
+      readonly kind: "fatal";
+      readonly message: string;
+      /** `quota`: the account's usage/spending limit or credit is used up. */
+      readonly quota: boolean;
+    }
   | { readonly kind: "retryable"; readonly message: string };
 
 /** One HTTP answer, reduced to what the classification reads. */
@@ -54,7 +61,7 @@ export interface ProbeResponse {
  * balance. Matched on the message because Anthropic reports the usage cap as
  * a 400 `invalid_request_error`.
  */
-const ACCOUNT_LIMIT = /usage limit|spend(ing)? limit|credit balance/i;
+const ACCOUNT_LIMIT = /usage limit|spend(ing)? limit|credit balance|insufficient_quota|billing/i;
 
 /** Pull `error.type` + `error.message` out of an Anthropic error body. */
 function providerError(body: string): { type: string | null; message: string | null } {
@@ -79,8 +86,10 @@ export function classifyProviderResponse(res: ProbeResponse): ProbeVerdict {
   if (res.status >= 200 && res.status < 300) return { kind: "ok" };
   const { type, message } = providerError(res.body);
   const text = `HTTP ${res.status}${type ? ` ${type}` : ""}: ${message ?? (res.body.slice(0, 300) || "(empty body)")}`;
-  if (message && ACCOUNT_LIMIT.test(message)) return { kind: "fatal", message: text };
-  if (res.shouldRetry === "false") return { kind: "fatal", message: text };
+  if ((message && ACCOUNT_LIMIT.test(message)) || res.status === 402) {
+    return { kind: "fatal", message: text, quota: true };
+  }
+  if (res.shouldRetry === "false") return { kind: "fatal", message: text, quota: false };
   if (res.shouldRetry === "true") return { kind: "retryable", message: text };
   const retryable =
     res.status === 408 ||
@@ -88,7 +97,9 @@ export function classifyProviderResponse(res: ProbeResponse): ProbeVerdict {
     res.status === 425 ||
     res.status === 429 ||
     res.status >= 500;
-  return { kind: retryable ? "retryable" : "fatal", message: text };
+  return retryable
+    ? { kind: "retryable", message: text }
+    : { kind: "fatal", message: text, quota: false };
 }
 
 /** Replace every occurrence of the key in `text` — defence in depth. */
@@ -112,8 +123,12 @@ export function cheapestAnthropicModel(catalogJson: string): string {
 
 export interface PreflightResult {
   readonly ok: boolean;
-  /** "fatal" = the provider refused the key/account; "unavailable" = retries exhausted. */
-  readonly failure: "fatal" | "unavailable" | null;
+  /**
+   * "quota" = the account's usage/spending limit or credit is used up;
+   * "fatal" = the provider refused the key/account otherwise;
+   * "unavailable" = retries exhausted.
+   */
+  readonly failure: "quota" | "fatal" | "unavailable" | null;
   readonly message: string;
   readonly attempts: number;
 }
@@ -144,7 +159,12 @@ export async function runPreflight(deps: PreflightDeps): Promise<PreflightResult
       return { ok: true, failure: null, message: "provider reachable", attempts: attempt };
     }
     if (verdict.kind === "fatal") {
-      return { ok: false, failure: "fatal", message: verdict.message, attempts: attempt };
+      return {
+        ok: false,
+        failure: verdict.quota ? "quota" : "fatal",
+        message: verdict.message,
+        attempts: attempt,
+      };
     }
     last = verdict.message;
     const wait = deps.backoffMs[attempt - 1];
@@ -156,15 +176,21 @@ export async function runPreflight(deps: PreflightDeps): Promise<PreflightResult
 /** The Markdown the step summary and the PR comment show on failure. */
 export function failureReport(result: PreflightResult, model: string): string {
   const headline =
-    result.failure === "fatal"
-      ? "The AI provider refused the CI key, so the real-AI scenarios were not run."
-      : `The AI provider was unavailable (${result.attempts} attempts), so the real-AI scenarios were not run.`;
+    result.failure === "quota"
+      ? "**AI provider quota exhausted:** the CI key's usage/spending limit or credit balance is used up, so the real-AI scenarios were not run and no bug reports were filed."
+      : result.failure === "fatal"
+        ? "The AI provider refused the CI key, so the real-AI scenarios were not run."
+        : `The AI provider was unavailable (${result.attempts} attempts), so the real-AI scenarios were not run.`;
   const next =
-    result.failure === "fatal"
-      ? "This is an account/key problem, not a regression in this change: fix the account (spending limit, credit balance, key, permissions) and re-run the job."
-      : "Re-run the job once the provider recovers; this is not a regression in this change.";
+    result.failure === "quota"
+      ? "This is an account limit, not a regression in this change: raise the limit (or wait for the date the provider names) and re-run the job."
+      : result.failure === "fatal"
+        ? "This is an account/key problem, not a regression in this change: fix the account (spending limit, credit balance, key, permissions) and re-run the job."
+        : "Re-run the job once the provider recovers; this is not a regression in this change.";
   return [
-    "## Real-AI suite: provider preflight failed",
+    result.failure === "quota"
+      ? "## Real-AI suite: AI provider quota exhausted"
+      : "## Real-AI suite: provider preflight failed",
     "",
     headline,
     "",
@@ -229,9 +255,11 @@ async function main(): Promise<void> {
     writeFileSync(reportPath, report);
   }
   console.error(
-    safe.failure === "fatal"
-      ? `::error title=AI provider refused the CI key::${oneLine}`
-      : `::error title=AI provider unavailable::${oneLine}`,
+    safe.failure === "quota"
+      ? `::error title=AI provider quota exhausted::${oneLine}`
+      : safe.failure === "fatal"
+        ? `::error title=AI provider refused the CI key::${oneLine}`
+        : `::error title=AI provider unavailable::${oneLine}`,
   );
   process.exit(1);
 }

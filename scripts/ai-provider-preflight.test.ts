@@ -38,6 +38,7 @@ describe("classifyProviderResponse", () => {
       ),
     );
     expect(v.kind).toBe("fatal");
+    expect(v.kind === "fatal" && v.quota).toBe(true);
     expect(v.kind !== "ok" && v.message).toContain(
       "You have reached your specified API usage limits",
     );
@@ -49,6 +50,7 @@ describe("classifyProviderResponse", () => {
       res(429, anthropicError("rate_limit_error", "Your credit balance is too low"), "true"),
     );
     expect(v.kind).toBe("fatal");
+    expect(v.kind === "fatal" && v.quota).toBe(true);
   });
 
   it("treats an invalid key, a permission error and an unknown model as fatal", () => {
@@ -104,6 +106,14 @@ describe("runPreflight", () => {
       },
     });
     expect(calls).toBe(1);
+    expect(r).toMatchObject({ ok: false, failure: "quota", attempts: 1 });
+  });
+
+  it("reports a refused key as fatal, not as a quota problem", async () => {
+    const r = await runPreflight({
+      ...noSleep,
+      send: async () => res(401, anthropicError("authentication_error", "invalid x-api-key")),
+    });
     expect(r).toMatchObject({ ok: false, failure: "fatal", attempts: 1 });
   });
 
@@ -172,6 +182,13 @@ describe("helpers", () => {
       "claude-haiku-4-5",
     );
     expect(fatal).toContain("refused the CI key");
+    const quota = failureReport(
+      { ok: false, failure: "quota", message: "HTTP 400: usage limits", attempts: 1 },
+      "claude-haiku-4-5",
+    );
+    expect(quota).toContain("AI provider quota exhausted");
+    expect(quota).toContain("no bug reports were filed");
+    expect(quota).toContain("not a regression");
     expect(fatal).toContain("HTTP 400: usage limits");
     expect(fatal).toContain("not a regression");
     const down = failureReport(

@@ -43,9 +43,30 @@ import { defineConfig } from "@playwright/test";
  */
 export const E2E_LIVEDIT_MODEL = "claude-sonnet-5";
 
+/**
+ * The specs to run. CI sets `CAELO_LIVEDIT_SCENARIOS` to the comma-separated
+ * spec files the planner picked (`e2e-livedit/lib/plan.ts`); unset or empty
+ * runs every spec. A name that is not a spec file fails loudly here, and one
+ * that matches no file makes Playwright fail with "No tests found" — never a
+ * silent empty run.
+ */
+function selectedSpecs(raw: string | undefined): string | string[] {
+  const files = (raw ?? "")
+    .split(",")
+    .map((f) => f.trim())
+    .filter(Boolean);
+  if (files.length === 0) return "**/*.browser.ts";
+  for (const f of files) {
+    if (!/^[a-z0-9-]+\.browser\.ts$/.test(f)) {
+      throw new Error(`CAELO_LIVEDIT_SCENARIOS: "${f}" is not a spec file name (x.browser.ts)`);
+    }
+  }
+  return files.map((f) => `**/${f}`);
+}
+
 export default defineConfig({
   testDir: "./e2e-livedit",
-  testMatch: "**/*.browser.ts",
+  testMatch: selectedSpecs(process.env.CAELO_LIVEDIT_SCENARIOS),
   globalSetup: "./e2e-livedit/global-setup.ts",
   globalTeardown: "./e2e-livedit/global-teardown.ts",
   // Per-test timeout — a full chat→Stage→Publish→re-edit loop with
