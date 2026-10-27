@@ -19,6 +19,7 @@ import {
   forkPlacementContentSchema,
   type ModuleField,
   moduleFieldSchema,
+  pageShortTitleSchema,
   pageTypeSlugSchema,
   setPlacementContentSchema,
   slugSchema,
@@ -667,8 +668,9 @@ export const duplicatePageToolInput = z
   .object({
     sourcePageId: z.string().uuid(),
     newSlug: slugInputSchema,
-    newName: z.string().min(1).max(256).optional(),
     newTitle: z.string().min(1).max(256).optional(),
+    /** #1142 — the copy's breadcrumb label; omitted = newTitle when given, else the source's. */
+    newShortTitle: pageShortTitleSchema.optional(),
     targetTemplateId: z.string().uuid().optional(),
     /** Where the copy sits: a parent page id, or null for the top level.
      *  Omitted = next to the source (same parent). */

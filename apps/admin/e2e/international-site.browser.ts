@@ -66,7 +66,7 @@ function seedSourcePage(): SeedResult {
           VALUES (\${lay[0].id}, 'content', 'Content', 0)\`;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position)
           VALUES (\${tpl[0].id}, 'content', 'Content', 0)\`;
-        const pg = await tx\`INSERT INTO pages (slug, name, title, template_id, status)
+        const pg = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status)
           VALUES (\${process.env.SRC_SLUG}, \${process.env.SRC_SLUG}, 'Pricing', \${tpl[0].id}, 'published')
           RETURNING id\`;
         out = { pageId: pg[0].id };
@@ -376,7 +376,7 @@ function seed(): Seed {
         VALUES (\${tpl[0].id}, 'content', 'Content', 0)\`;
       // Internal links are stored as page references (#724), so the
       // pages exist before the footer that links to them.
-      const mk = async (slug, path) => (await tx\`INSERT INTO pages (slug, name, title, template_id, status, current_path)
+      const mk = async (slug, path) => (await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, current_path)
         VALUES (\${slug}, \${slug}, \${slug}, \${tpl[0].id}, 'published', \${path}) RETURNING id\`)[0].id;
       const enPricing = await mk(P + "-pricing", "/" + P + "-pricing");
       const enAbout = await mk(P + "-about", "/" + P + "-about");
@@ -513,9 +513,9 @@ test("#690 — a nested page's German variant nests under the German parent, reu
           VALUES (\${lay[0].id}, 'content', 'Content', 0)\`;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position)
           VALUES (\${tpl[0].id}, 'content', 'Content', 0)\`;
-        const sec = await tx\`INSERT INTO pages (slug, name, title, template_id, status)
+        const sec = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status)
           VALUES (\${process.env.SECTION}, 'Section', 'Section', \${tpl[0].id}, 'published') RETURNING id::text AS id\`;
-        const child = await tx\`INSERT INTO pages (slug, name, title, template_id, status, parent_page_id)
+        const child = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, parent_page_id)
           VALUES (\${process.env.CHILD}, 'Teams', 'Teams', \${tpl[0].id}, 'published', \${sec[0].id}::uuid)
           RETURNING id::text AS id\`;
         return { sectionId: sec[0].id, childId: child[0].id };

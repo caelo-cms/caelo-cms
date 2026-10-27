@@ -36,7 +36,7 @@ test("raw-inserted home slugs default to the root unless another page is designa
       await adoptTemplateIntoDefaultPageType(tx, templateId);
       const insert = async (slug: string) => {
         const rows = (await tx`
-          INSERT INTO pages (slug, name, title, template_id)
+          INSERT INTO pages (slug, short_title, title, template_id)
           VALUES (${slug}, ${slug}, ${slug}, ${templateId}::uuid)
           RETURNING id::text AS id, current_path
         `) as unknown as { id: string; current_path: string }[];

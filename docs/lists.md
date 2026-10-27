@@ -113,6 +113,14 @@ Seeded as stored data (migration 0352), editable like any other type:
 `packages/shared/src/lists/default-types.ts` exports them (the migration
 and tests use the same objects).
 
+Migration 0358 (#1142) adds a sixth type, `site-texts` (content, `text`
+{key: text required, text: text required}, exported as `SITE_TEXTS_TYPE`),
+and one shared list of it, `site-texts` ("Site texts"). Its entries are the
+fixed interface strings of the website — a breadcrumb `aria-label`, "Read
+more" — that module HTML reads by key with `{{site_text.<key>}}` (§8). They
+are shared-list values, so `list-resolve` overlays translate them per
+variant like any other list.
+
 ### Changing a type that has lists
 
 `list_types.upsert_many` validates the new definition against every list
@@ -192,14 +200,16 @@ composition point partitions pages into variants, a query only returns
 pages in the rendering page's variant.
 
 Every generated entry (query and the page-shaped system sources) exposes:
-`title`, `link` (`caelo:page/<id>`), `published_at`, `updated_at`,
+`title`, `short_title` (`pages.short_title`, the page's label in
+breadcrumbs and navigation), `link` (`caelo:page/<id>`), `published_at`, `updated_at`,
 `summary` (SEO description), `image` (social image, media), `page_type`,
 `props.<name>`, `terms.<vocabulary slug>` (iterable), `is_current`.
 `page_terms` and term-shaped entries expose the vocabulary entry's values
 (`name`, `slug`, …) plus `link` = its `landing_page` when set.
 
-`system` sources: `breadcrumbs` (root → current via `parent_page_id`,
-current page included), `children` / `siblings` of the current page
+`system` sources: `breadcrumbs` (home → root → current via
+`parent_page_id`, current page included — see "Breadcrumbs" below),
+`children` / `siblings` of the current page
 (published, title order; `siblings` includes the current page, marked
 `is_current`, so a sub-navigation needs no special case), `page_terms`
 (on a module field, `list` names the vocabulary as `caelo:list/<id>`; on
@@ -208,6 +218,40 @@ all of the page's terms), `term_pages` (published pages of the rendering
 page's variant carrying any of the terms, title order, at most 50; the
 terms come from the placement value's `terms` on a module field, from
 the node's `term` field values on a source node).
+
+### Breadcrumbs (#1142)
+
+The `breadcrumbs` source reads the page tree at render time, so a move or
+a renamed short title reaches every trail on the next render, and the
+page-tree render dependency rebuilds every page that shows one. The home
+page is not a parent in the tree, yet every trail starts there: the
+source prepends `site_defaults.home_page_id` unless the chain already
+holds it. A variant page's trail starts at the home page's version in
+that variant (same `link-resolve` group); a variant without one shows no
+home crumb (never the other language's page). Crumbs other than the last
+are `is_ancestor`, the last `is_current`. Label crumbs with
+`{{short_title}}` — the home page's short title is the "Start" crumb, so
+it is translated with the home page.
+
+The render records the trail (`ListPageContext.breadcrumbTrail()`), and
+the SEO pass emits a `BreadcrumbList` JSON-LD from it with each crumb's
+short title and public URL (`breadcrumbJsonLdItems` + `renderSeoHead` in
+`shared/src/seo.ts`; the generator's `seo-pass.ts` and the preview's
+`preview-breadcrumbs.ts` build the items alike). A page that shows no
+trail gets none; a trail page without a public URL (not published) is
+left out of the JSON-LD — its visible link is already flagged by the
+unpublished-link gate. The 404 page never carries one.
+
+A breadcrumb module:
+
+```html
+<nav aria-label="{{site_text.breadcrumb_label}}"><ol>
+  {{#crumbs}}<li>{{#is_current}}<span aria-current="page">{{short_title}}</span>{{/is_current}}{{^is_current}}<a href="{{link}}">{{short_title}}</a>{{/is_current}}</li>{{/crumbs}}
+</ol></nav>
+```
+
+with the field `{name: "crumbs", kind: "list", listType: "links", bind:
+"source", source: {kind: "system", name: "breadcrumbs"}}`.
 
 Plugin sources (they replaced the manifest's `dataLists`): a plugin
 declares `listSources: [{ name, label, description, node: NodeDef }]`
@@ -305,6 +349,7 @@ inside itself.
 | `is_current`, `is_ancestor` | from `current_from` and the page being rendered |
 | `has_<children>`, `count_<children>` | per children / items list |
 | `{{page.title}}`, `{{page.props.x}}`, `{{#page.terms.tags}}` | the page being rendered (any module) |
+| `{{site_text.<key>}}` | the site text with that key in the rendering page's variant (any module, #1142) |
 
 Lookup inside an entry: the entry's own keys first, then the enclosing
 entries outwards, then the module's fields. A key found nowhere stays raw
@@ -344,8 +389,10 @@ New markers: `list-unbound:<field>`, `list-missing:<listId>` (and
 gone), `list-type-missing:<slug>`, `list-source-unavailable:<name>
 plugin=<slug>` (`plugin=unknown` when no installed plugin declares the
 name), `list-malformed:<field>[<path>]`, and
-`list-context-unavailable:<field>` / `…:page` for a list or `{{page.*}}`
-rendered by a caller that passed the engine no list context (never
+`site-text-missing:<key>` / `site-text-duplicate:<key>` for a key no
+`site-texts` entry carries or several do, and
+`list-context-unavailable:<field>` / `…:page` / `…:site_text` for a list,
+`{{page.*}}` or `{{site_text.*}}` rendered by a caller that passed the engine no list context (never
 legitimate output). The template keeps the section raw in each case.
 
 ## 9. Translation: core enables, the plugin translates

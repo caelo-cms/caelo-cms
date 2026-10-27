@@ -151,7 +151,7 @@ beforeAll(async () => {
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       const tagsPage = (await tx`
-        INSERT INTO pages (slug, name, title, template_id)
+        INSERT INTO pages (slug, short_title, title, template_id)
         VALUES (${PAGE_SLUGS.textList}, 'Text list', 'Text list', ${seeded.templateId}::uuid)
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
@@ -188,7 +188,7 @@ beforeAll(async () => {
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       const navPage = (await tx`
-        INSERT INTO pages (slug, name, title, template_id)
+        INSERT INTO pages (slug, short_title, title, template_id)
         VALUES (${PAGE_SLUGS.linkList}, 'Link list', 'Link list', ${seeded.templateId}::uuid)
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
@@ -246,7 +246,7 @@ beforeAll(async () => {
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       const cardsPage = (await tx`
-        INSERT INTO pages (slug, name, title, template_id)
+        INSERT INTO pages (slug, short_title, title, template_id)
         VALUES (${PAGE_SLUGS.moduleList}, 'Cards', 'Cards', ${seeded.templateId}::uuid)
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
@@ -279,7 +279,7 @@ beforeAll(async () => {
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       const missingPage = (await tx`
-        INSERT INTO pages (slug, name, title, template_id)
+        INSERT INTO pages (slug, short_title, title, template_id)
         VALUES (${PAGE_SLUGS.missingInstance}, 'Missing', 'Missing', ${seeded.templateId}::uuid)
         RETURNING id::text AS id
       `) as unknown as { id: string }[];

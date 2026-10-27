@@ -31,6 +31,7 @@ const LISTS = createListRenderContext({
   pages: new Map(),
   media: new Map(),
   siteLanguage: "en",
+  homePageId: null,
 }).forPage(null);
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 

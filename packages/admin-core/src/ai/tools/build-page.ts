@@ -44,7 +44,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
       type: "object",
       additionalProperties: false,
       description:
-        "EITHER { pageId, metaDescription? } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, name?, pageType?, properties?, terms?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
+        "EITHER { pageId, metaDescription? } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, shortTitle?, pageType?, properties?, terms?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
       properties: {
         pageId: { type: "string", format: "uuid" },
         slug: {
@@ -55,7 +55,13 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
             "Lowercase letters, digits and hyphens only — never a path or a slash. The HOMEPAGE (served at `/`) uses slug 'home'.",
         },
         title: { type: "string", minLength: 1, maxLength: 256 },
-        name: { type: "string", minLength: 1, maxLength: 256 },
+        shortTitle: {
+          type: "string",
+          minLength: 1,
+          maxLength: 256,
+          description:
+            "The page's short label in breadcrumbs and navigation ('Pricing' for 'Pricing for teams of every size'). Omit when the title is already short — it is stored as the short title.",
+        },
         templateId: {
           type: "string",
           format: "uuid",

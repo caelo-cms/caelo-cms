@@ -74,6 +74,7 @@ export const revertPageOp = defineOperation({
         UPDATE pages SET
           slug = ${target.slug},
           title = ${target.title},
+          short_title = ${target.shortTitle},
           template_id = ${target.templateId}::uuid,
           status = ${target.status},
           ${target.parentPageId === undefined ? sql`` : sql`parent_page_id = ${target.parentPageId}::uuid,`}

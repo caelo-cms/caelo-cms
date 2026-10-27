@@ -39,7 +39,7 @@ test.beforeAll(() => {
                 '', \${lay[0].id}) RETURNING id\`;
       for (const slug of JSON.parse(process.env.SLUGS)) {
         await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
-        const page = await tx\`INSERT INTO pages (slug, name, title, template_id, status, current_path)
+        const page = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, current_path)
           VALUES (\${slug}, \${slug}, 'Quality view', \${tpl[0].id}, 'published', \${"/" + slug})
           RETURNING id\`;
         await tx\`

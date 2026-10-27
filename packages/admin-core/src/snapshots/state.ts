@@ -63,6 +63,8 @@ export interface PageState {
   readonly schemaVersion: StateSchemaVersion;
   readonly slug: string;
   readonly title: string;
+  /** #1142 — the breadcrumb / navigation label (0358 backfilled every older snapshot). */
+  readonly shortTitle: string;
   readonly templateId: string;
   readonly status: "draft" | "published";
   readonly version: number;

@@ -274,7 +274,7 @@ beforeAll(async () => {
              VALUES (${templateId}::uuid, 'content', 'Content', 0)`;
     for (const slug of ["pricing", "about"]) {
       const p = (await tx`
-        INSERT INTO pages (slug, name, title, template_id, status)
+        INSERT INTO pages (slug, short_title, title, template_id, status)
         VALUES (${`${PFX}-${slug}`}, ${slug}, ${slug}, ${templateId}::uuid, 'published')
         RETURNING id::text AS id`) as unknown as { id: string }[];
       if (slug === "pricing") ids.en = p[0]?.id ?? "";

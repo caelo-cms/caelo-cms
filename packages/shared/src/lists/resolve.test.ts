@@ -8,9 +8,17 @@
 
 import { describe, expect, it } from "bun:test";
 import type { LinkPageVariant } from "../link-refs.js";
-import { fixtureData, fixtureLinkIndex, ITEM, LIST, PAGE, TERM } from "./list-fixtures.test.js";
+import {
+  fixtureData,
+  fixtureLinkIndex,
+  ITEM,
+  LIST,
+  PAGE,
+  PAGES,
+  TERM,
+} from "./list-fixtures.test.js";
 import type { QueryKnob } from "./list-type.js";
-import type { ListVariantOverlay } from "./render-data.js";
+import type { ListPageRecord, ListVariantOverlay, LoadedList } from "./render-data.js";
 import {
   createListRenderContext,
   type ListFieldSpec,
@@ -126,8 +134,9 @@ describe("system sources", () => {
     source: { kind: "system", name },
   });
 
-  it("breadcrumbs run root → current", () => {
+  it("breadcrumbs run home → root → current", () => {
     expect(entries(page(PAGE.team), sys("breadcrumbs")).map((e) => textOf(e, "title"))).toEqual([
+      "Home",
       "About",
       "Team",
     ]);
@@ -263,8 +272,8 @@ describe("render dependencies", () => {
       listTypes: ["menu"],
       queries: [{ pageType: "news", terms: [TERM.event], parent: null }],
       pageTree: true,
-      // The breadcrumb trail's pages: their values render as entries.
-      pages: [PAGE.about, PAGE.team].sort(),
+      // The breadcrumb trail's pages (home included): their values render as entries.
+      pages: [PAGE.home, PAGE.about, PAGE.team].sort(),
     });
   });
 
@@ -291,5 +300,173 @@ describe("render dependencies", () => {
     if (terms?.kind !== "record") throw new Error("terms");
     terms.get("tags");
     expect(ctx.deps().lists).toEqual([LIST.tags]);
+  });
+});
+
+describe("breadcrumbs (#1142)", () => {
+  const CRUMBS: ListFieldSpec = {
+    name: "crumbs",
+    listType: "links",
+    bind: "source",
+    source: { kind: "system", name: "breadcrumbs" },
+  };
+  const at = (id: string): ListPageRecord => PAGES.find((p) => p.id === id) as ListPageRecord;
+  const withShort = (id: string, shortTitle: string): ListPageRecord => ({ ...at(id), shortTitle });
+
+  it("labels crumbs with the short title and marks every crumb but the last as ancestor", () => {
+    const data = fixtureData({
+      pages: PAGES.map((p) =>
+        p.id === PAGE.home
+          ? withShort(PAGE.home, "Start")
+          : p.id === PAGE.about
+            ? withShort(PAGE.about, "Us")
+            : p,
+      ),
+    });
+    const ctx = page(PAGE.team, data);
+    const got = entries(ctx, CRUMBS);
+    expect(got.map((e) => textOf(e, "short_title"))).toEqual(["Start", "Us", "Team"]);
+    expect(got.map((e) => e.get("is_ancestor"))).toEqual([
+      { kind: "bool", value: true },
+      { kind: "bool", value: true },
+      { kind: "bool", value: false },
+    ]);
+    expect(got.map((e) => e.get("is_current"))).toEqual([
+      { kind: "bool", value: false },
+      { kind: "bool", value: false },
+      { kind: "bool", value: true },
+    ]);
+    expect(ctx.breadcrumbTrail()).toEqual([PAGE.home, PAGE.about, PAGE.team]);
+    expect(ctx.deps().pageTree).toBe(true);
+    expect(ctx.deps().pages).toEqual([PAGE.home, PAGE.about, PAGE.team].sort());
+  });
+
+  it("the home page's own trail is the home page alone", () => {
+    const ctx = page(PAGE.home);
+    expect(entries(ctx, CRUMBS).map((e) => textOf(e, "title"))).toEqual(["Home"]);
+    expect(ctx.breadcrumbTrail()).toEqual([PAGE.home]);
+  });
+
+  it("without a designated home the trail is the page tree alone", () => {
+    const ctx = page(PAGE.team, fixtureData({ homePageId: null }));
+    expect(entries(ctx, CRUMBS).map((e) => textOf(e, "title"))).toEqual(["About", "Team"]);
+  });
+
+  it("a page that renders no breadcrumbs records no trail", () => {
+    expect(page(PAGE.team).breadcrumbTrail()).toBeNull();
+  });
+
+  it("follows the page tree as it is: a moved page's trail needs no edit", () => {
+    // Team moved from About to News.
+    const moved = PAGES.map((p) => (p.id === PAGE.team ? { ...p, parentId: PAGE.news } : p));
+    const ctx = page(PAGE.team, fixtureData({ pages: moved }));
+    expect(entries(ctx, CRUMBS).map((e) => textOf(e, "title"))).toEqual(["Home", "News", "Team"]);
+  });
+
+  describe("variants", () => {
+    const HOME_DE = "00000000-0000-4000-8000-0000000000d1";
+    const ABOUT_DE = "00000000-0000-4000-8000-0000000000d2";
+    const pages = [
+      ...PAGES,
+      { ...withShort(PAGE.home, "Startseite"), id: HOME_DE },
+      { ...withShort(PAGE.about, "Über uns"), id: ABOUT_DE },
+    ];
+    const pageVariants = new Map<string, LinkPageVariant>([
+      [PAGE.home, { variant: "en", group: "g-home" }],
+      [PAGE.about, { variant: "en", group: "g-about" }],
+      [HOME_DE, { variant: "de", group: "g-home" }],
+      [ABOUT_DE, { variant: "de", group: "g-about" }],
+    ]);
+
+    it("a variant page's trail starts at the home page's version in that variant", () => {
+      const ctx = page(ABOUT_DE, fixtureData({ pages, pageVariants }));
+      expect(entries(ctx, CRUMBS).map((e) => textOf(e, "short_title"))).toEqual([
+        "Startseite",
+        "Über uns",
+      ]);
+    });
+
+    it("a variant without a version of the home page shows no home crumb", () => {
+      const fr = new Map(pageVariants).set(ABOUT_DE, { variant: "fr", group: "g-about" });
+      const ctx = page(ABOUT_DE, fixtureData({ pages, pageVariants: fr }));
+      expect(entries(ctx, CRUMBS).map((e) => textOf(e, "short_title"))).toEqual(["Über uns"]);
+    });
+  });
+});
+
+describe("site texts (#1142)", () => {
+  const SITE_TEXTS = "00000000-0000-4000-8000-0000000000e1";
+  const LABEL = "00000000-0000-4000-9000-0000000000e1";
+  const MORE = "00000000-0000-4000-9000-0000000000e2";
+  const list = (items: LoadedList["items"], id = SITE_TEXTS): LoadedList => ({
+    id,
+    slug: id === SITE_TEXTS ? "site-texts" : "more-texts",
+    name: "Site texts",
+    typeSlug: "site-texts",
+    items,
+  });
+  const text = (itemId: string, key: string, value: string) => ({
+    id: itemId,
+    node: "text",
+    values: { key, text: value },
+  });
+  const read = (ctx: ListPageContext, key: string) => ctx.siteTextScope().get(key);
+
+  it("reads a text by key and records the list as a dependency", () => {
+    const ctx = page(
+      PAGE.about,
+      fixtureData({ lists: [list([text(LABEL, "breadcrumb_label", "Breadcrumb")])] }),
+    );
+    expect(read(ctx, "breadcrumb_label")).toEqual({ kind: "text", text: "Breadcrumb" });
+    expect(ctx.deps().lists).toContain(SITE_TEXTS);
+    expect(ctx.deps().listTypes).toContain("site-texts");
+  });
+
+  it("an unknown key is loud, never empty", () => {
+    const ctx = page(PAGE.about, fixtureData({ lists: [list([])] }));
+    expect(read(ctx, "breadcrumb_label")).toEqual({
+      kind: "failed",
+      marker: "site-text-missing:breadcrumb_label",
+    });
+  });
+
+  it("a key defined twice is loud", () => {
+    const ctx = page(
+      PAGE.about,
+      fixtureData({
+        lists: [
+          list([text(LABEL, "read_more", "Read more")]),
+          list([text(MORE, "read_more", "More")], "00000000-0000-4000-8000-0000000000e2"),
+        ],
+      }),
+    );
+    expect(read(ctx, "read_more")).toEqual({
+      kind: "failed",
+      marker: "site-text-duplicate:read_more",
+    });
+  });
+
+  it("a variant's overlay translates the text", () => {
+    const data = fixtureData({
+      lists: [list([text(LABEL, "breadcrumb_label", "Breadcrumb")])],
+      pageVariants: new Map([[PAGE.about, { variant: "de", group: null }]]),
+      overlays: new Map([
+        [
+          "de",
+          {
+            values: new Map([[`list/${SITE_TEXTS}/item/${LABEL}/text`, "Brotkrumen"]]),
+            hidden: new Set<string>(),
+          },
+        ],
+      ]),
+    });
+    expect(read(page(PAGE.about, data), "breadcrumb_label")).toEqual({
+      kind: "text",
+      text: "Brotkrumen",
+    });
+    expect(read(page(PAGE.home, data), "breadcrumb_label")).toEqual({
+      kind: "text",
+      text: "Breadcrumb",
+    });
   });
 });
