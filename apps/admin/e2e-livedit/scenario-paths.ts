@@ -56,6 +56,8 @@ const PLUGIN_RUNTIME = [
   "packages/plugin-sandbox/**",
   "packages/plugin-component-kit/**",
   `${A}/ops/plugins/**`,
+  `${A}/ops/plugin-data.ts`,
+  `${A}/plugin-data/**`,
   `${A}/ai/plugin-*.ts`,
   `${A}/ai/tools/activate-plugin.ts`,
   `${A}/ai/tools/add-plugin-to-page.ts`,
