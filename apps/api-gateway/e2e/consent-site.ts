@@ -237,6 +237,9 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
       changedPageIds: [pageId],
       syncCurrent: false,
     }),
+    // Same holder as the generator CLI: a build reads one snapshot while
+    // plugin build hooks read their storage (pool-guard.ts allowlist, #1220).
+    { holder: "static-generator.build" },
   );
   // The admin publishes what the gateway serves from (#635).
   await publishProjectionOnce(adminAdapter, { comments: true });
