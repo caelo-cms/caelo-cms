@@ -255,7 +255,7 @@ export async function stageChatSessions(
   const draftIds: string[] = [];
   const isolatedIds: string[] = [];
   for (const chatSessionId of ids) {
-    const r = await execute(registry, adapter, ctx, "chat.get_session", { chatSessionId });
+    const r = await execute(registry, adapter, ctx, "chat.resolve_session", { chatSessionId });
     const session = r.ok
       ? (
           r.value as {
@@ -271,7 +271,7 @@ export async function stageChatSessions(
           chatSessionId,
           message: `Chat ${chatSessionId} is not one of your open chats — only your own open chats can be staged; nothing was staged.`,
           error: r.ok
-            ? { kind: "HandlerError", operation: "chat.get_session", message: "chat is closed" }
+            ? { kind: "HandlerError", operation: "chat.resolve_session", message: "chat is closed" }
             : r.error,
         },
       };

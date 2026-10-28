@@ -31,7 +31,7 @@ interface PluginInvocation {
 }
 ```
 
-Every dispatch site fills it: chat tool dispatch (from `aiCtxWithBranch`), approval-gated plugin tools after the Owner's click (`origin: "approved"`, the approving Owner, no branch — an approved action applies live), Power-MCP (already computes the branch and currently drops it), the Owner panel routes (the Owner's identity instead of the plugin actor), workers (`origin: "worker"`, no branch), render hooks (`origin: "render"`, the preview's branch or none for the static generator), and the gateway (`origin: "visitor"`). `ctx.invocation` is exposed read-only to the plugin.
+Every dispatch site fills it: chat tool dispatch (from `aiCtxWithBranch`), approval-gated plugin tools after the Owner's click (`origin: "approved"`, the approving Owner, no branch — an approved action applies live; the chat's branch instead when the approver cannot publish or the tool sets `approvedOnChatBranch` because it decides about the chat's draft), Power-MCP (already computes the branch and currently drops it), the Owner panel routes (the Owner's identity instead of the plugin actor), workers (`origin: "worker"`, no branch), render hooks (`origin: "render"`, the preview's branch or none for the static generator), and the gateway (`origin: "visitor"`). `ctx.invocation` is exposed read-only to the plugin.
 
 ### 2. Named operations instead of host SQL
 
@@ -81,11 +81,16 @@ Writes follow the pattern `content_instances` and `modules` already use:
 
 Data lists, deferrals, head contributions, build assets and URL annotations take a required `RenderScope` (`{ chatBranchId: string | null }`; `MAIN_RENDER` for main): the preview's branch in the admin preview, main in the static generator and for the live `current_path`. Required, so no call site can silently read main in a branch preview. A branch preview therefore renders plugin state exactly as it will look after publish, and the deployed site renders main only. `buildAssets` output is computed per preview branch; the deployed bytes come from main.
 
+A scope that lives for exactly one render pass may also carry a `renderId` (#1213; the editor preview sets a fresh one per render). It reaches every plugin call of the pass as `invocation.renderId`, so a plugin can read its rows once for all of the pass's composition points (international-site: the locale registry, the page's variant group, the published-variant matrix behind hreflang and the language switcher). A plugin must not keep such reads past the pass: nothing tells it when its rows or the pages changed in between. `MAIN_RENDER` carries none.
+
+**Complete reads.** One `list` returns at most 1000 rows. To read more, page by id (`orderBy: "id", orderDir: "asc"`, then `afterId: <last id>` until a short page); to read the rows of a set of values, use `anyOf: { column: [values] }` (≤ 1000 values per column) instead of one read per value. Both apply to a chat's overlay rows exactly as to live rows. A plugin never plans with "the first 1000" rows (CLAUDE.md §2).
+
 ### 6. Plugin-side changes
 
 - **No authoring writes outside authoring contexts.** Lazy seeding on first read (consent-manager's `settingsOf` / `categoriesOf`, reachable from visitor and render paths) moves to an `onActivate` hook. It runs every time the host brings the plugin up — at boot and on activation — on main with origin `system`, and must be idempotent; a throw fails the plugin's load.
 - **Reads never write.** `list_embeds` stops running `syncGuards`; it reports the verdict each module would get from the hosts it reaches now (stored verdict if its hosts are unchanged, else vendor-table classification or pending) without persisting. `classify_embed` records the operator's decision even when no scan row exists yet.
 - **Workers stay on main** by design. consent-manager's scan and international-site's staleness tick keep operating on published state; the staleness tick already ignores branch events.
+- **Branch verdicts come from the write, not the worker (#1214).** consent-manager's render hooks read stored `module_guards` only. Core calls its `moduleChangesOperation` after each committed write with the modules it touched, in the writer's scope — a chat write runs as origin `chat` on that branch, so the rewritten guards are branch rows that the merge carries to main; a main write runs as origin `system`. The cron scan stays the main-line backstop.
 - **Process-global caches** (international-site's `localeCache`) hold main state: the only locale write is the approval-gated `set_locales`, which applies on main, so a branch never changes locales. A future branch-writable input to such a cache must keep branch reads out of it.
 
 ## Rollout

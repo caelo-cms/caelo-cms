@@ -361,7 +361,7 @@ export const renderDesignDraftOp = defineOperation({
     let fonts: ComposeFonts | undefined;
     if (theme !== undefined) {
       const resolved = await resolveThemeFonts({
-        readFont: fontReader(tx, _ctx),
+        readFont: fontReader(tx),
         tokens: theme.tokens,
         // The draft is not stored as modules yet, so its own markup joins
         // the usage scan: a weight only the draft uses must survive.

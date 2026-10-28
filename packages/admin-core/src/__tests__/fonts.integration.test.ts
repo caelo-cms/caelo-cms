@@ -197,7 +197,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
         tokens,
         cacheDir,
         publicBasePath: "/_caelo/fonts",
-        readFont: fontReader(tx, ctx),
+        readFont: fontReader(tx),
         loadFontUsage: () => loadSiteFontUsage(tx, tokens),
         preloadLanguage: null,
         fetcher: (() => {
@@ -220,7 +220,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
         tokens,
         cacheDir,
         publicBasePath: "/_assets/fonts",
-        readFont: fontReader(tx, ctx),
+        readFont: fontReader(tx),
         loadFontUsage: () => loadSiteFontUsage(tx, tokens),
         preloadLanguage: null,
       });
@@ -230,7 +230,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
         tokens,
         cacheDir,
         publicBasePath: "/restored",
-        readFont: fontReader(tx, ctx),
+        readFont: fontReader(tx),
         loadFontUsage: () => loadSiteFontUsage(tx, tokens),
         preloadLanguage: null,
       });

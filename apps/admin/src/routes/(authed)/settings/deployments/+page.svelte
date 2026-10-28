@@ -3,6 +3,7 @@
   import { Rocket } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
+  import { coalescedRefresh } from "#lib/components/edit/coalesced-refresh.js";
   import { Badge, type BadgeVariant } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import {
@@ -23,6 +24,7 @@
     TableHeader,
     TableRow,
   } from "#lib/components/ui/table/index.js";
+  import { liveFetch, liveHub } from "#lib/live/live-refresh.js";
 
   let { data, form } = $props();
 
@@ -33,45 +35,43 @@
     return "outline";
   };
 
-  // P6.6b — live progress polling. While any run is in `running` or
-  // `pending` state, refetch /api/deploy-runs every 1.5s and replace
-  // `data.runs` so the Progress bar and status badges advance without
-  // a manual reload. Polling stops when no in-flight rows remain.
-  // Uses the Page Visibility API to pause in background tabs.
+  // P6.6b — live progress. While any run is in `running` or `pending`
+  // state, the Progress bar and status badges advance without a manual
+  // reload. #1215 — not by polling (CLAUDE.md §11.B): /api/deploy-runs is
+  // re-read on every `deploys` live topic (a run's progress commit), via
+  // the live-events wait that the hub holds while a run is in flight, and
+  // when the tab regains focus. Nothing is read while the tab is hidden.
   let runs = $state(data.runs);
-  let pollHandle: ReturnType<typeof setInterval> | null = null;
+  let unregister: (() => void) | null = null;
   const inFlight = $derived(
     runs.some((r: { status: string }) => r.status === "running" || r.status === "pending"),
   );
 
-  async function refetch() {
+  // One read on the wire at a time; a topic meanwhile re-reads once after it.
+  const refetch = coalescedRefresh(async () => {
     if (document.visibilityState !== "visible") return;
     try {
-      const r = await fetch("/api/deploy-runs", { headers: { accept: "application/json" } });
+      const r = await liveFetch("/api/deploy-runs", { headers: { accept: "application/json" } });
       if (!r.ok) return;
       const json = (await r.json()) as { runs: typeof data.runs };
       runs = json.runs;
     } catch {
-      // Network blip — ignore; the next tick retries.
+      // Network blip or deadline: the next topic or focus re-reads.
     }
-  }
-  $effect(() => {
-    // (Re)start the interval whenever inFlight transitions to true,
-    // tear it down once everything's settled.
-    if (inFlight && !pollHandle) {
-      pollHandle = setInterval(refetch, 1_500);
-    } else if (!inFlight && pollHandle) {
-      clearInterval(pollHandle);
-      pollHandle = null;
-    }
+    liveHub.kick();
   });
   onMount(() => {
     // Initial refetch right after mount picks up any run that was
     // already in flight when the page loaded.
     void refetch();
+    unregister = liveHub.register({
+      topics: ["deploys"],
+      refresh: () => void refetch(),
+      waiting: () => inFlight,
+    });
   });
   onDestroy(() => {
-    if (pollHandle) clearInterval(pollHandle);
+    unregister?.();
   });
 </script>
 

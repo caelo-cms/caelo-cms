@@ -39,6 +39,7 @@ import {
   writeListTranslations,
 } from "./list-translation-ops.js";
 import { basisOf } from "./stable-json.js";
+import { listAll } from "./store-reads.js";
 import {
   type GlossaryEntry,
   renderGlossaryBlock,
@@ -156,18 +157,6 @@ export async function loadChromeTargets(cms: ChromeCms): Promise<ChromeTarget[]>
       values: i.values,
     })),
   ];
-}
-
-/** The plugin store caps a read at 1000 rows; past that this plugin
- *  would silently plan with half the data — refuse instead (CLAUDE.md §2). */
-export async function listAll(q: PluginAdminQuery, table: string): Promise<unknown[]> {
-  const rows = await q.list(table, { limit: 1000 });
-  if (rows.length >= 1000) {
-    throw new Error(
-      `international-site: ${table} holds 1000+ rows, more than one read returns; paged reads are not implemented yet (file an issue)`,
-    );
-  }
-  return rows;
 }
 
 /** Every stored chrome variant. */

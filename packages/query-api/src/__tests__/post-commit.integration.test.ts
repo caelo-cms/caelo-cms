@@ -8,7 +8,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { type ExecutionContext, ok } from "@caelo-cms/shared";
+import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -17,6 +17,7 @@ import {
   defineOperation,
   execute,
   OperationRegistry,
+  observeCommittedOperations,
 } from "../index.js";
 import { deleteActors, seedActors } from "./_seed.js";
 
@@ -41,7 +42,10 @@ async function markerVisible(marker: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-const writeInput = z.object({ marker: z.string(), mode: z.enum(["ok", "throw", "fail_effect"]) });
+const writeInput = z.object({
+  marker: z.string(),
+  mode: z.enum(["ok", "throw", "fail_effect", "answer_err"]),
+});
 
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
@@ -68,6 +72,9 @@ beforeAll(async () => {
           },
         });
         if (input.mode === "throw") throw new Error("statement after the effect failed");
+        if (input.mode === "answer_err") {
+          return err({ kind: "HandlerError" as const, operation: c.requestId, message: "no" });
+        }
         return ok({});
       },
     }),
@@ -139,6 +146,45 @@ describe("afterCommit", () => {
       }),
     ).rejects.toThrow("abort");
     expect(seen).toEqual(["kept"]);
+  });
+
+  it("#1215 — committed-operation listeners hear an op that committed ok, never a rollback or an error answer", async () => {
+    const heard: string[] = [];
+    const stop = observeCommittedOperations((name) => heard.push(name));
+    // A throwing listener must not change the op's result nor silence the next one.
+    const stopThrowing = observeCommittedOperations(() => {
+      throw new Error("listener bug");
+    });
+    try {
+      const committed = await execute(registry, adapter, ctx, "post_commit.write", {
+        marker: "heard-ok",
+        mode: "ok",
+      });
+      expect(committed.ok).toBe(true);
+      expect(heard).toEqual(["post_commit.write"]);
+
+      await execute(registry, adapter, ctx, "post_commit.write", {
+        marker: "heard-throw",
+        mode: "throw",
+      });
+      await execute(registry, adapter, ctx, "post_commit.write", {
+        marker: "heard-err",
+        mode: "answer_err",
+      });
+      expect(heard).toEqual(["post_commit.write"]);
+
+      // The change is saved even though an effect failed: readers re-read.
+      await execute(registry, adapter, ctx, "post_commit.write", {
+        marker: "heard-effect-fails",
+        mode: "fail_effect",
+      });
+      expect(heard).toEqual(["post_commit.write", "post_commit.write"]);
+    } finally {
+      stop();
+      stopThrowing();
+    }
+    await execute(registry, adapter, ctx, "post_commit.write", { marker: "unheard", mode: "ok" });
+    expect(heard).toHaveLength(2);
   });
 
   it("refuses a transaction the adapter did not open, instead of guessing", async () => {

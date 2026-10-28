@@ -6,6 +6,7 @@ export {
   DatabaseAdapter,
   DatabaseUnresponsiveError,
   POOL_IDLE_TIMEOUT_SECONDS,
+  type TransactionOptions,
 } from "./adapter.js";
 export { recordAudit, recordAuditFromCtx, SYSTEM_ACTOR_ID } from "./audit.js";
 export { assertChatOpenForWrite } from "./chat-write-guard.js";
@@ -25,5 +26,17 @@ export {
   type StepwiseOperationHandler,
   type TransactionRunner,
 } from "./operation.js";
-export { afterCommit, type PostCommitEffect } from "./post-commit.js";
+export {
+  allowNestedCheckouts,
+  NESTED_CHECKOUT_ALLOWLIST,
+  NestedPoolCheckoutError,
+  POOL_ACQUIRE_TIMEOUT_MS,
+  PoolAcquireTimeoutError,
+} from "./pool-guard.js";
+export {
+  afterCommit,
+  type CommittedOperationListener,
+  observeCommittedOperations,
+  type PostCommitEffect,
+} from "./post-commit.js";
 export { OperationRegistry } from "./registry.js";

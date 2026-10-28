@@ -744,6 +744,7 @@
     onClearPreviewSelection={previewSelection ? () => { previewSelection = null; } : undefined}
     session={data.activeChat}
     initialMessages={data.messages}
+    initialHasMore={data.hasMoreMessages}
     firstRunSuggestions={data.firstRunSuggestions}
     modules={data.modules}
     csrfToken={data.csrfToken}

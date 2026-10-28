@@ -112,6 +112,14 @@ export {
   type EmailConfigRow,
   emailDeliveryProblem,
 } from "./email/transport.js";
+// #1215 — live-refresh topics instead of editor timer polling.
+export {
+  type LiveTopicListener,
+  publishLiveTopics,
+  subscribeLiveTopics,
+  type WaitForLiveTopicsOptions,
+  waitForLiveTopics,
+} from "./live-events.js";
 export { lockPluginRow } from "./locks.js";
 export { assertDurableMediaRoot, type MediaStorageSetup } from "./media/durable-root.js";
 export * from "./media/pipeline.js";

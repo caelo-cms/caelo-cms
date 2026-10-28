@@ -10,7 +10,7 @@ export const GET: RequestHandler = async ({ locals, params, url }) => {
   if (!parsed.success) throw error(400, "Invalid font revision");
   const { adapter } = getQueryContext();
   const { metadata, bytes } = await adapter.withAdminTransaction(locals.ctx, (tx) =>
-    fontReader(tx, locals.ctx)(parsed.data),
+    fontReader(tx)(parsed.data),
   );
   return new Response(new Uint8Array(bytes), {
     headers: {

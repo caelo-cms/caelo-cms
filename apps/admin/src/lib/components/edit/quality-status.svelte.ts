@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #553 — one shared poller of a chat's quality-gate status, used by
+ * Issue #553 — one shared reader of a chat's quality-gate status, used by
  * the chat panel (status notes, the fix offer card) and the /edit toolbar
  * (Publish gate). A
- * module-level registry keyed by chat id keeps it to ONE request stream per
- * chat however many components read it.
+ * module-level registry keyed by chat id keeps it to ONE request at a time
+ * per chat however many components read it.
  *
- * Cadence: every 4 s while the chat's newest audit is queued/running (the
- * result should land promptly), every 20 s otherwise (a Stage from another
- * tab or chat can move the site-wide gate). Polling pauses while the tab is
- * hidden.
+ * When it re-reads (#1215 — never on a timer, CLAUDE.md §11.B): on every
+ * `quality` live topic (a Stage, an audit settling, a claim — from this
+ * tab's chat stream, or from the live-events wait while the chat's newest
+ * audit is queued/running), when the tab regains focus, and after this
+ * tab's own quality actions. Nothing is read while the tab is hidden.
  */
 
+import { type LiveConsumer, liveFetch, liveHub } from "#lib/live/live-refresh.js";
 import { coalescedRefresh } from "./coalesced-refresh.js";
 
 export interface QualityGate {
@@ -82,7 +84,7 @@ export interface QualityStatus {
 
 class QualityStatusPoller {
   status = $state<QualityStatus | null>(null);
-  #timer: ReturnType<typeof setTimeout> | null = null;
+  #unregister: (() => void) | null = null;
   #users = 0;
   // Bumped by `apply()`. A read that started under an older epoch may have
   // read the state from before the change whose result was applied, so it
@@ -102,15 +104,29 @@ class QualityStatusPoller {
 
   acquire(): void {
     this.#users += 1;
-    if (this.#users === 1) void this.refresh();
+    if (this.#users !== 1) return;
+    void this.refresh();
+    const consumer: LiveConsumer = {
+      topics: ["quality"],
+      // The hub's own re-read: automatic, so it may only kick, never resume.
+      refresh: () => void this.#fetchCoalesced().then(() => liveHub.kick()),
+      // The result of a queued / running audit lands without any action here.
+      waiting: () => this.#auditBusy(),
+    };
+    this.#unregister = liveHub.register(consumer);
   }
 
   release(): void {
     this.#users -= 1;
-    if (this.#users <= 0 && this.#timer !== null) {
-      clearTimeout(this.#timer);
-      this.#timer = null;
+    if (this.#users <= 0) {
+      this.#unregister?.();
+      this.#unregister = null;
     }
+  }
+
+  #auditBusy(): boolean {
+    const s = this.status?.audit?.status;
+    return s === "queued" || s === "running";
   }
 
   /**
@@ -125,18 +141,20 @@ class QualityStatusPoller {
     await this.refresh();
   }
 
-  /** Fetch now (e.g. right after a Stage) and reschedule. Resolves once a
-   *  fetch that started after this call has landed. */
+  /** Fetch now, after an action of this tab (a Stage, a Retry, a claim).
+   *  Resolves once a fetch that started after this call has landed. */
   async refresh(): Promise<void> {
     await this.#fetchCoalesced();
-    this.#schedule();
+    // A queued audit may just have appeared: wait for its result, also
+    // when an earlier wait failed — this is the operator's own action.
+    liveHub.resume();
   }
 
   async #fetchOnce(): Promise<void> {
     const epoch = this.#epoch;
     try {
       if (typeof document === "undefined" || document.visibilityState !== "hidden") {
-        const res = await fetch(`/content/chat/${this.chatSessionId}/quality-audit`, {
+        const res = await liveFetch(`/content/chat/${this.chatSessionId}/quality-audit`, {
           headers: { accept: "application/json" },
         });
         if (!res.ok) return;
@@ -144,16 +162,8 @@ class QualityStatusPoller {
         if (epoch === this.#epoch) this.status = status;
       }
     } catch {
-      // network blip — the next tick retries
+      // Network blip or deadline: the next topic or focus re-reads.
     }
-  }
-
-  #schedule(): void {
-    if (this.#users <= 0) return;
-    if (this.#timer !== null) clearTimeout(this.#timer);
-    const busy =
-      this.status?.audit?.status === "queued" || this.status?.audit?.status === "running";
-    this.#timer = setTimeout(() => void this.refresh(), busy ? 4_000 : 20_000);
   }
 }
 

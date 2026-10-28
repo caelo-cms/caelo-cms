@@ -455,6 +455,10 @@ export const mcpSendChatOp = defineOperation({
   // just to read mcp_tokens.
   actorScope: ["system"],
   database: "cms_admin",
+  // Issue #1210 — a whole chat turn (minutes of model and tool work, every
+  // step its own op) runs here; a transaction held around it sat idle for
+  // the turn and made each inner op a second checkout of the pool.
+  transaction: "none",
   input: sendChatInput,
   output: z.object({
     chatSessionId: z.string(),
@@ -510,7 +514,8 @@ export const mcpSendChatOp = defineOperation({
     let chatSessionId = input.chatSessionId;
     let chatBranchId: string | undefined;
     if (chatSessionId) {
-      const existing = await execute(registry, adapter, humanCtx, "chat.get_session", {
+      // #1216 — the branch only; the turn itself loads the history.
+      const existing = await execute(registry, adapter, humanCtx, "chat.resolve_session", {
         chatSessionId,
       });
       if (!existing.ok) {
@@ -693,6 +698,8 @@ export const mcpAuthorizeUploadOp = defineOperation({
   // Why system-only: credentials are resolved here; bytes are stored as the human actor.
   actorScope: ["system"],
   database: "cms_admin",
+  // Issue #1210 — resolving the credential runs its own transaction.
+  transaction: "none",
   // Either surface may upload (both list caelo_upload_images).
   input: z
     .object({ ...mcpCredentialShape })
@@ -718,14 +725,16 @@ export const mcpAuthorizeUploadOp = defineOperation({
         message: resolved.message,
       });
     const actorId = resolved.principal.actorId;
-    const rows = (await tx.execute(sql`
-      SELECT u.id FROM users u
-      JOIN user_roles ur ON ur.user_id = u.id
-      JOIN role_permissions rp ON rp.role_id = ur.role_id
-      JOIN permissions p ON p.id = rp.permission_id
-      WHERE u.id = ${actorId}::uuid AND u.deleted_at IS NULL AND p.name = 'content.write'
-      LIMIT 1
-    `)) as unknown as { id: string }[];
+    const rows = (await tx.transaction((t) =>
+      t.execute(sql`
+        SELECT u.id FROM users u
+        JOIN user_roles ur ON ur.user_id = u.id
+        JOIN role_permissions rp ON rp.role_id = ur.role_id
+        JOIN permissions p ON p.id = rp.permission_id
+        WHERE u.id = ${actorId}::uuid AND u.deleted_at IS NULL AND p.name = 'content.write'
+        LIMIT 1
+      `),
+    )) as unknown as { id: string }[];
     if (!rows.length)
       return err({
         kind: "HandlerError",
@@ -750,6 +759,8 @@ export const mcpGetVersionOp = defineOperation({
   // mcp.send_chat) — the HTTP shell dispatches as system.
   actorScope: ["system"],
   database: "cms_admin",
+  // Issue #1210 — resolving the token runs its own transaction.
+  transaction: "none",
   input: z.object({ plaintextToken: z.string().min(8).max(200) }).strict(),
   output: z.object({ version: z.string() }),
   handler: async (_ctx, input, _tx) => {

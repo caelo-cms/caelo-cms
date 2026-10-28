@@ -287,6 +287,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     reason: "tool-call idempotency cache (chat-runner + mcp.execute_tool)",
   },
   "chat.summarize": { kind: "internal", reason: "chat-runner history compaction read" },
+  "chat.resolve_session": {
+    kind: "internal",
+    reason:
+      "#1216 request-path session lookup (branch / owner / open state) for MCP, Stage and the editor; the agent already runs inside its session and has nothing to resolve",
+  },
   "chat.list_sessions": {
     kind: "internal",
     reason:

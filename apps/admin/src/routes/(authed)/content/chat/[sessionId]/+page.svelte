@@ -146,6 +146,7 @@
       <ChatPanel
         session={data.session}
         initialMessages={data.messages}
+        initialHasMore={data.hasMoreMessages}
         modules={data.modules}
         csrfToken={data.csrfToken}
         formError={form?.error ?? null}

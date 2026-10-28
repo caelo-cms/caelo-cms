@@ -44,7 +44,11 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { untrustedToolResult } from "@caelo-cms/shared";
-import { approvedPluginInvocation, chatPluginInvocation } from "./plugin-invocation.js";
+import {
+  approvedCallRunsLive,
+  approvedPluginInvocation,
+  chatPluginInvocation,
+} from "./plugin-invocation.js";
 import { describeError } from "./tools/_describe-error.js";
 import type { ToolResult } from "./tools/dispatch.js";
 import { createDefaultToolRegistry } from "./tools/index.js";
@@ -280,7 +284,8 @@ async function runApprovedPluginTool(
   },
 ): Promise<{ ok: boolean; content: string }> {
   // Same rule as the in-chat gate: live only for an approver who could
-  // publish it anyway; otherwise it stays on the proposing session's branch.
+  // publish it anyway, and not for a draft-bound tool; otherwise it stays
+  // on the proposing session's branch.
   const canPublish = await operatorHasPermission(
     hostInfra(),
     hostSystemActorId(),
@@ -289,7 +294,7 @@ async function runApprovedPluginTool(
   );
   const delegation = { aiDelegated: call.aiDelegated };
   const invocation =
-    canPublish || !call.chatBranchId
+    approvedCallRunsLive(canPublish, pluginTool.spec) || !call.chatBranchId
       ? approvedPluginInvocation(call.approverId, undefined, delegation)
       : approvedPluginInvocation(
           call.approverId,

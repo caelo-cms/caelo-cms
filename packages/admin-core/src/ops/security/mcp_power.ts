@@ -264,6 +264,8 @@ export const mcpListToolsOp = defineOperation({
   // resolves the real actor itself.
   actorScope: ["system"],
   database: "cms_admin",
+  // Issue #1210 — resolving the credential runs its own ops.
+  transaction: "none",
   input: withCredential({}),
   output: z.object({ tools: z.array(toolCatalogueEntry) }),
   handler: async (_ctx, input, _tx) => {
@@ -313,6 +315,9 @@ export const mcpOpenSessionOp = defineOperation({
   // shell dispatches as system and the handler resolves the real actor.
   actorScope: ["system"],
   database: "cms_admin",
+  // Issue #1210 — an orchestration of chat ops: holding a transaction around
+  // them would make every one a second checkout of the pool.
+  transaction: "none",
   input: z
     .object({
       ...mcpCredentialShape,
@@ -356,9 +361,9 @@ export const mcpOpenSessionOp = defineOperation({
       requestId: crypto.randomUUID(),
     };
     if (input.chatSessionId) {
-      // chat.get_session filters by created_by: another user's session
+      // chat.resolve_session filters by created_by: another user's session
       // reads as not found, so a token can never resume someone else's.
-      const existing = await execute(registry, adapter, humanCtx, "chat.get_session", {
+      const existing = await execute(registry, adapter, humanCtx, "chat.resolve_session", {
         chatSessionId: input.chatSessionId,
       });
       if (!existing.ok) {
@@ -383,7 +388,7 @@ export const mcpOpenSessionOp = defineOperation({
           message: `session_closed: ${input.chatSessionId} was already published, archived or discarded — omit chatSessionId to resume your most recent open session, or pass newSession: true`,
         });
       }
-      await rememberRemoteSession(tx, auth, input.chatSessionId);
+      await tx.transaction((t) => rememberRemoteSession(t, auth, input.chatSessionId as string));
       return ok({
         chatSessionId: input.chatSessionId,
         chatBranchId: v.session.chatBranchId,
@@ -419,7 +424,7 @@ export const mcpOpenSessionOp = defineOperation({
         }
       ).sessions.find((s) => s.publishedAt === null);
       if (open) {
-        await rememberRemoteSession(tx, auth, open.id);
+        await tx.transaction((t) => rememberRemoteSession(t, auth, open.id));
         return ok({
           chatSessionId: open.id,
           chatBranchId: open.chatBranchId,
@@ -441,7 +446,7 @@ export const mcpOpenSessionOp = defineOperation({
       });
     }
     const c = created.value as { chatSessionId: string; chatBranchId: string };
-    await rememberRemoteSession(tx, auth, c.chatSessionId);
+    await tx.transaction((t) => rememberRemoteSession(t, auth, c.chatSessionId));
     return ok({
       chatSessionId: c.chatSessionId,
       chatBranchId: c.chatBranchId,
@@ -459,6 +464,10 @@ export const mcpExecuteToolOp = defineOperation({
   // dispatches the tool AS the AI actor bound to it.
   actorScope: ["system"],
   database: "cms_admin",
+  // Issue #1210 — the tool runs for as long as it takes (image generation,
+  // a server-side screenshot that loops back into the admin) and through
+  // its own ops; no transaction may stay open around it.
+  transaction: "none",
   input: z
     .object({
       ...mcpCredentialShape,
@@ -518,7 +527,9 @@ export const mcpExecuteToolOp = defineOperation({
       actorKind: "human",
       requestId,
     };
-    const session = await execute(registry, adapter, humanCtx, "chat.get_session", {
+    // #1216 — the session row only: an MCP tool call needs the branch, not
+    // the transcript.
+    const session = await execute(registry, adapter, humanCtx, "chat.resolve_session", {
       chatSessionId: input.chatSessionId,
     });
     if (!session.ok) {
@@ -550,7 +561,9 @@ export const mcpExecuteToolOp = defineOperation({
       if (cached) {
         // The first call recorded the hand-off (the cache keeps only
         // ok+content); serve the same handle.
-        const approval = await findMcpHandoffByToolCall(tx, input.chatSessionId, toolCallId);
+        const approval = await tx.transaction((t) =>
+          findMcpHandoffByToolCall(t, input.chatSessionId, toolCallId),
+        );
         return ok({
           ok: cached.ok,
           content: cached.content,
@@ -583,7 +596,8 @@ export const mcpExecuteToolOp = defineOperation({
         auth.via.kind === "token"
           ? sql`(SELECT created_at FROM mcp_tokens WHERE id = ${auth.via.tokenId}::uuid)`
           : sql`(SELECT created_at FROM mcp_remote_connections WHERE id = ${auth.via.connectionId}::uuid)`;
-      const spendRows = (await tx.execute(sql`
+      const spendRows = (await tx.transaction((t) =>
+        t.execute(sql`
         SELECT COALESCE(SUM(cost_estimate_microcents), 0)::bigint AS spent
         FROM ai_calls
         WHERE chat_session_id = ${input.chatSessionId}::uuid
@@ -591,7 +605,8 @@ export const mcpExecuteToolOp = defineOperation({
              actor_id = ${auth.actorId}::uuid
              AND created_at >= ${credentialCreatedAt}
            )
-      `)) as unknown as Array<{ spent: bigint | string | number }>;
+      `),
+      )) as unknown as Array<{ spent: bigint | string | number }>;
       const raw = spendRows[0]?.spent ?? 0;
       // Compare as bigint — a Number round-trip could lose precision past
       // 2^53 µ¢ and let a capped token slip through (review finding, PR #379).
@@ -768,9 +783,11 @@ export const mcpExecuteToolOp = defineOperation({
       // a later reconnect could resume a browser chat that merely looked
       // more recently active.
       if (result.ok) {
-        await tx.execute(sql`
-        UPDATE chat_sessions SET last_active_at = now() WHERE id = ${input.chatSessionId}::uuid
-      `);
+        await tx.transaction((t) =>
+          t.execute(sql`
+            UPDATE chat_sessions SET last_active_at = now() WHERE id = ${input.chatSessionId}::uuid
+          `),
+        );
       }
 
       if (input.toolCallId) {
@@ -791,15 +808,17 @@ export const mcpExecuteToolOp = defineOperation({
       // surface for MCP work is chat.list_pending_changes + snapshots,
       // which capture every write regardless.
 
-      const approval = await handOffQueuedProposal(tx, {
-        ok: result.ok,
-        content: result.content,
-        ...(result.queuedProposalId ? { queuedProposalId: result.queuedProposalId } : {}),
-        chatSessionId: input.chatSessionId,
-        requestedBy: auth.actorId,
-        toolName: input.toolName,
-        toolCallId,
-      });
+      const approval = await tx.transaction((t) =>
+        handOffQueuedProposal(t, {
+          ok: result.ok,
+          content: result.content,
+          ...(result.queuedProposalId ? { queuedProposalId: result.queuedProposalId } : {}),
+          chatSessionId: input.chatSessionId,
+          requestedBy: auth.actorId,
+          toolName: input.toolName,
+          toolCallId,
+        }),
+      );
 
       return ok({
         ok: result.ok,
@@ -919,6 +938,8 @@ export const mcpGetApprovalOutcomeOp = defineOperation({
   // it. Read-only for the agent: it learns the operator's decision, never makes it (§11.A).
   actorScope: ["system"],
   database: "cms_admin",
+  // Issue #1210 — resolving the credential runs its own ops.
+  transaction: "none",
   input: withCredential({ proposalId: z.string().uuid() }),
   output: z.object({
     proposalId: z.string(),
@@ -951,7 +972,9 @@ export const mcpGetApprovalOutcomeOp = defineOperation({
         message: auth.message,
       });
     }
-    const view = await readHandoffForAgent(tx, input.proposalId, auth.actorId);
+    const view = await tx.transaction((t) =>
+      readHandoffForAgent(t, input.proposalId, auth.actorId),
+    );
     if (!view) {
       return err({
         kind: "HandlerError",
@@ -1018,6 +1041,8 @@ export const mcpGetContextOp = defineOperation({
   // it.
   actorScope: ["system"],
   database: "cms_admin",
+  // Issue #1210 — composes the context from a dozen reads, each its own op.
+  transaction: "none",
   input: withCredential({
     /** True = include full skill bodies (the CLAUDE.md export path). */
     includeSkillBodies: z.boolean().optional(),

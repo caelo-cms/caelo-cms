@@ -172,6 +172,9 @@ export const renderPagePreviewOp = defineOperation({
       chatBranchId: chatBranchId ?? null,
       onPluginFailure: pluginFailureSink.onPluginFailure,
       editorPreview: true,
+      // #1213 — one pass: plugins may read their data once for all of
+      // this render's composition points instead of once per point.
+      renderId: crypto.randomUUID(),
     };
     // v0.9.0 — branch-aware preview. The iframe shows the caller's
     // branched-create pages / templates / layouts (in addition to
@@ -1126,7 +1129,7 @@ export const renderPagePreviewOp = defineOperation({
     if (composeTheme !== undefined) {
       const themeTokens = composeTheme.tokens;
       const resolvedFonts = await resolveThemeFonts({
-        readFont: fontReader(tx, ctx),
+        readFont: fontReader(tx),
         tokens: composeTheme.tokens,
         // Same loader as the build: the preview instances faces exactly
         // as the deployed site will (preview/production parity).

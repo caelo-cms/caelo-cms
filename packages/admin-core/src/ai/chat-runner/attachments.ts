@@ -64,62 +64,101 @@ export type AttachmentImageLoader = (
  * Default loader: media.get for the storage key, media storage for the
  * bytes. Uses the ORIGINAL variant — the model should judge the design
  * mockup at full fidelity, not a webp thumbnail.
+ *
+ * #1216 — one loader serves one turn: each image is read and encoded at
+ * most once (a content-addressed screenshot that several messages
+ * reference shares ONE base64 string), and every source is size-checked
+ * before its bytes are read, so an oversized object never reaches memory.
  */
 export function createMediaAttachmentLoader(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
   humanCtx: ExecutionContext,
 ): AttachmentImageLoader {
-  return async (att) => {
-    // A chat image is a bare object-store key — no media_assets row exists
-    // for it by design, so there is nothing to look up.
-    if (att.storageKey !== undefined) {
-      try {
-        const bytes = await getMediaStorage().get(att.storageKey);
-        return {
-          type: "image",
-          base64: Buffer.from(bytes).toString("base64"),
-          mediaType: att.mime,
-        };
-      } catch (e) {
-        return {
-          failed: `chat image ${att.storageKey} is gone from storage: ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        };
-      }
+  const loaded = new Map<string, Promise<ImagePart | { failed: string }>>();
+  const load = (att: ChatAttachment): Promise<ImagePart | { failed: string }> =>
+    att.storageKey !== undefined
+      ? loadChatImage(att.storageKey, att.mime)
+      : loadMediaAsset(registry, adapter, humanCtx, att.assetId);
+  return (att) => {
+    const key = att.storageKey !== undefined ? `key:${att.storageKey}` : `asset:${att.assetId}`;
+    let pending = loaded.get(key);
+    if (!pending) {
+      pending = load(att);
+      loaded.set(key, pending);
     }
-    const r = await execute(registry, adapter, humanCtx, "media.get", { assetId: att.assetId });
-    if (!r.ok) return { failed: `media.get failed for ${att.assetId}` };
-    const asset = (
-      r.value as {
-        asset: { storageKey: string; sizeBytes: number; mime: string } | null;
-      }
-    ).asset;
-    if (!asset) return { failed: `media asset ${att.assetId} not found (deleted?)` };
-    if (!CHAT_IMAGE_MIMES.includes(asset.mime as (typeof CHAT_IMAGE_MIMES)[number])) {
-      return { failed: `media asset ${att.assetId} is not a supported chat image` };
-    }
-    if (asset.sizeBytes > MAX_ATTACHMENT_BYTES) {
-      return {
-        failed: `image ${att.assetId} is ${asset.sizeBytes} bytes — exceeds the ${MAX_ATTACHMENT_BYTES}-byte provider cap`,
-      };
-    }
-    try {
-      const bytes = await getMediaStorage().get(asset.storageKey);
-      if (bytes.byteLength > MAX_ATTACHMENT_BYTES)
-        return { failed: `image ${att.assetId} exceeds the provider byte cap` };
-      return {
-        type: "image",
-        base64: Buffer.from(bytes).toString("base64"),
-        mediaType: asset.mime as (typeof CHAT_IMAGE_MIMES)[number],
-      };
-    } catch (e) {
-      return {
-        failed: `storage read failed for ${att.assetId}: ${e instanceof Error ? e.message : String(e)}`,
-      };
-    }
+    return pending;
   };
+}
+
+/**
+ * A chat image is a bare object-store key — no media_assets row exists for
+ * it by design, so there is nothing to look up; its size comes from storage.
+ */
+async function loadChatImage(
+  storageKey: string,
+  mime: ChatAttachment["mime"],
+): Promise<ImagePart | { failed: string }> {
+  try {
+    const size = await getMediaStorage().size(storageKey);
+    if (size > MAX_ATTACHMENT_BYTES) {
+      return {
+        failed: `chat image ${storageKey} is ${size} bytes — exceeds the ${MAX_ATTACHMENT_BYTES}-byte provider cap`,
+      };
+    }
+    const bytes = await getMediaStorage().get(storageKey);
+    if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+      return { failed: `chat image ${storageKey} exceeds the provider byte cap` };
+    }
+    return { type: "image", base64: Buffer.from(bytes).toString("base64"), mediaType: mime };
+  } catch (e) {
+    return {
+      failed: `chat image ${storageKey} is gone from storage: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    };
+  }
+}
+
+/** An operator-uploaded media asset: its row names the key, mime and size. */
+async function loadMediaAsset(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  humanCtx: ExecutionContext,
+  assetId: string | undefined,
+): Promise<ImagePart | { failed: string }> {
+  if (assetId === undefined)
+    return { failed: "attachment names neither a storage key nor an asset" };
+  const r = await execute(registry, adapter, humanCtx, "media.get", { assetId });
+  if (!r.ok) return { failed: `media.get failed for ${assetId}` };
+  const asset = (
+    r.value as {
+      asset: { storageKey: string; sizeBytes: number; mime: string } | null;
+    }
+  ).asset;
+  if (!asset) return { failed: `media asset ${assetId} not found (deleted?)` };
+  if (!CHAT_IMAGE_MIMES.includes(asset.mime as (typeof CHAT_IMAGE_MIMES)[number])) {
+    return { failed: `media asset ${assetId} is not a supported chat image` };
+  }
+  if (asset.sizeBytes > MAX_ATTACHMENT_BYTES) {
+    return {
+      failed: `image ${assetId} is ${asset.sizeBytes} bytes — exceeds the ${MAX_ATTACHMENT_BYTES}-byte provider cap`,
+    };
+  }
+  try {
+    const bytes = await getMediaStorage().get(asset.storageKey);
+    if (bytes.byteLength > MAX_ATTACHMENT_BYTES)
+      return { failed: `image ${assetId} exceeds the provider byte cap` };
+    return {
+      type: "image",
+      base64: Buffer.from(bytes).toString("base64"),
+      mediaType: asset.mime as (typeof CHAT_IMAGE_MIMES)[number],
+    };
+  } catch (e) {
+    return {
+      failed: `storage read failed for ${assetId}: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
 }
 
 export interface HistoryMessage {

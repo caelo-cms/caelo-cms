@@ -19,10 +19,11 @@ import {
   type StagedPageRef,
   siteFindings,
 } from "./audit-rules.js";
-import { type ChromeDeps, listAll, loadChromeTargets, loadChromeVariants } from "./chrome-ops.js";
+import { type ChromeDeps, loadChromeTargets, loadChromeVariants } from "./chrome-ops.js";
 import type { PageVariantRow } from "./index.js";
 import { listFindings, loadListTranslationState } from "./list-translation-ops.js";
 import type { GlossaryRow } from "./page-translation.js";
+import { listAll } from "./store-reads.js";
 
 /** Most findings one answer may carry (the SDK contract). */
 const MAX_FINDINGS_PER_ANSWER = 499;

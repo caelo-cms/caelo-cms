@@ -53,7 +53,11 @@ export interface ListPlan {
   readonly orderDir: "asc" | "desc";
   readonly since: string | null;
   readonly before: string | null;
+  /** #1213 — keyset cursor: rows whose id sorts after this one (ordered by id). */
+  readonly afterId: string | null;
   readonly equals: ReadonlyArray<readonly [string, unknown]>;
+  /** #1213 — per column, the values it may hold (an IN list). */
+  readonly anyOf: ReadonlyArray<readonly [string, ReadonlyArray<unknown>]>;
 }
 
 interface Target {
@@ -446,8 +450,19 @@ export async function privateList(
   }
   if (plan.since !== null) wheres.push(sql`t."created_at" > ${plan.since}`);
   if (plan.before !== null) wheres.push(sql`t."created_at" < ${plan.before}`);
+  if (plan.afterId !== null) wheres.push(sql`t.id > ${plan.afterId}::uuid`);
   for (const [k, v] of plan.equals) {
     wheres.push(v === null ? sql`t.${col(k)} IS NULL` : sql`t.${col(k)} = ${v}`);
+  }
+  for (const [k, values] of plan.anyOf) {
+    wheres.push(
+      values.length === 0
+        ? sql`FALSE`
+        : sql`t.${col(k)} IN (${sql.join(
+            values.map((v) => sql`${v}`),
+            sql`, `,
+          )})`,
+    );
   }
   const orderSql = plan.orderBy
     ? sql.raw(`ORDER BY t."${plan.orderBy}" ${plan.orderDir.toUpperCase()}`)
@@ -474,6 +489,10 @@ export async function privateList(
 function matches(values: Readonly<Record<string, unknown>>, plan: ListPlan): boolean {
   if (plan.since !== null && !(compare(values.created_at, plan.since) > 0)) return false;
   if (plan.before !== null && !(compare(values.created_at, plan.before) < 0)) return false;
+  // Lowercase hex compares like Postgres orders uuids (bytewise), so a
+  // branch row merges into the same keyset page the SQL half would put it.
+  if (plan.afterId !== null && !(String(values.id).toLowerCase() > plan.afterId)) return false;
+  if (!plan.anyOf.every(([k, list]) => list.some((v) => sameValue(values[k], v)))) return false;
   return plan.equals.every(([k, v]) => sameValue(values[k], v));
 }
 

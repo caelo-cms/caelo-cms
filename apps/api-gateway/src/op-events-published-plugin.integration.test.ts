@@ -22,7 +22,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { publishProjectionOnce } from "@caelo-cms/admin-core";
+import { publishProjectionOnce, registerAdminOps } from "@caelo-cms/admin-core";
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
@@ -172,8 +172,12 @@ beforeAll(async () => {
     adminDatabaseUrl: ADMIN_URL,
     publicDatabaseUrl: PUBLIC_ADMIN_URL,
   });
+  // The admin's real registry: consent-manager's first activation judges
+  // the site's existing modules (`modules.list`, #1214).
+  const adminRegistry = new OperationRegistry();
+  registerAdminOps(adminRegistry);
   const adminReport = await bootstrap({
-    infra: { adapter: adminAdapter, registry: new OperationRegistry() },
+    infra: { adapter: adminAdapter, registry: adminRegistry },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [

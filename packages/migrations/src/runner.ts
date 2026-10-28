@@ -73,6 +73,12 @@ export async function runMigrations(sql: SQL, dir: string): Promise<string[]> {
     // it's safe to wrap everything in BEGIN/COMMIT here.
     await sql.begin(async (tx: SQL) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      // Migration 0392's limits are for the running admin, not for a
+      // backfill or an index build, nor for a migration that waits for the
+      // locks of a long request to clear.
+      await tx.unsafe("SET LOCAL statement_timeout = 0");
+      await tx.unsafe("SET LOCAL lock_timeout = 0");
+      await tx.unsafe("SET LOCAL idle_in_transaction_session_timeout = 0");
       for (const stmt of statements) {
         await tx.unsafe(stmt);
       }

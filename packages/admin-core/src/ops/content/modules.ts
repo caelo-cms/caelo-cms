@@ -247,26 +247,40 @@ export const listModulesOp = withHumanisedLinks(
     // read: the write path stays closed to plugins.
     actorScope: ["human", "ai", "plugin", "system"],
     database: "cms_admin",
-    input: z.object({ includeDeleted: z.boolean().default(false) }),
+    input: z.object({
+      includeDeleted: z.boolean().default(false),
+      /**
+       * #1214 — only these modules. A plugin keeping a per-module verdict
+       * current re-reads just the modules a write touched instead of the
+       * whole site.
+       */
+      moduleIds: z.array(z.string().uuid()).min(1).max(1000).optional(),
+    }),
     output: z.object({ modules: z.array(moduleRowSchema) }),
     handler: async (ctx, input, tx) => {
       // v0.9.0 — branch-aware: chats see main + their own branched
       // creates; system actors / cross-chat reads see main only.
       const branchFilter = branchVisibilityFilter(ctx);
+      const idFilter = input.moduleIds
+        ? sql`AND id IN (${sql.join(
+            input.moduleIds.map((id) => sql`${id}::uuid`),
+            sql`, `,
+          )})`
+        : sql``;
       const rows = (await tx.execute(
         input.includeDeleted
           ? sql`
             SELECT id::text AS id, slug, display_name, description, kind, type, html, css, js, fields,
                    created_at, updated_at, deleted_at
-            FROM modules WHERE 1=1 ${branchFilter} ORDER BY created_at ASC
+            FROM modules WHERE 1=1 ${branchFilter} ${idFilter} ORDER BY created_at ASC
           `
           : sql`
             SELECT id::text AS id, slug, display_name, description, kind, type, html, css, js, fields,
                    created_at, updated_at, deleted_at
-            FROM modules WHERE deleted_at IS NULL ${branchFilter} ORDER BY created_at ASC
+            FROM modules WHERE deleted_at IS NULL ${branchFilter} ${idFilter} ORDER BY created_at ASC
           `,
       )) as unknown as ModuleDbRow[];
-      const effective = await overlayBranchEdits(ctx, tx, rows);
+      const effective = await overlayBranchEdits(ctx, tx, rows, input.moduleIds);
       // A module this chat deleted (branched) is hidden like a live-deleted one.
       const visible = input.includeDeleted
         ? effective

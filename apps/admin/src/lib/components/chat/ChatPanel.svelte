@@ -15,6 +15,7 @@
     CHAT_IMAGE_MIMES,
     CHAT_MAX_ATTACHMENTS,
     CHAT_MAX_ATTACHMENT_BYTES,
+    isLiveTopic,
     screenshotTargetNotRendered,
   } from "@caelo-cms/shared";
   import { ArrowDown, ImagePlus, Lock, Square, Unlock } from "lucide-svelte";
@@ -34,6 +35,8 @@
   import { Textarea } from "#lib/components/ui/textarea/index.js";
   import { cn } from "#lib/utils.js";
   import RunningAgentsBar from "#lib/components/agents/RunningAgentsBar.svelte";
+  import { coalescedRefresh } from "#lib/components/edit/coalesced-refresh.js";
+  import { liveFetch, liveHub } from "#lib/live/live-refresh.js";
   import {
     fetchAgentRuns,
     heldBackNote,
@@ -129,6 +132,8 @@
     onClearPreviewSelection?: () => void;
     session: ChatSession;
     initialMessages: ChatMessage[];
+    /** #1216 — older messages exist before `initialMessages` (paged transcript). */
+    initialHasMore?: boolean;
     modules: ChatModule[];
     csrfToken: string;
     formError?: string | null;
@@ -172,6 +177,7 @@
   let {
     session,
     initialMessages,
+    initialHasMore = false,
     modules,
     csrfToken,
     formError = null,
@@ -267,6 +273,8 @@
     void _msgCount;
     void _streamLen;
     void tick().then(() => {
+      // Prepended history is not new content below the fold.
+      if (prependingEarlier) return;
       // Before the operator's first message the transcript is the
       // onboarding welcome — a reader starts at the TOP. Jumping to
       // the bottom cut its first lines off in the 480px overlay.
@@ -276,6 +284,40 @@
       else hasNewContent = true;
     });
   });
+
+  // #1216 — the page loads only the newest transcript page; older pages
+  // come from the messages endpoint on request and are prepended.
+  let hasEarlierMessages = $state(initialHasMore);
+  let loadingEarlier = $state(false);
+  let earlierError = $state<string | null>(null);
+  let prependingEarlier = false;
+  async function loadEarlierMessages(): Promise<void> {
+    const oldest = messages[0];
+    if (!oldest || loadingEarlier) return;
+    loadingEarlier = true;
+    earlierError = null;
+    try {
+      const res = await fetch(
+        `/content/chat/${session.id}/messages?before=${encodeURIComponent(oldest.id)}`,
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const page = (await res.json()) as { messages: ChatMessage[]; hasMore: boolean };
+      const el = transcriptEl;
+      const fromBottom = el ? el.scrollHeight - el.scrollTop : 0;
+      const known = new Set(messages.map((m) => m.id));
+      prependingEarlier = true;
+      messages = [...page.messages.filter((m) => !known.has(m.id)), ...messages];
+      hasEarlierMessages = page.hasMore;
+      await tick();
+      // Keep the message the operator was reading in place.
+      if (el) el.scrollTop = el.scrollHeight - fromBottom;
+    } catch (e) {
+      earlierError = `Could not load earlier messages (${e instanceof Error ? e.message : String(e)}). Try again.`;
+    } finally {
+      prependingEarlier = false;
+      loadingEarlier = false;
+    }
+  }
 
   /**
    * P6.7.4 — auto-grow the composer from one row up to 6, then scroll.
@@ -347,8 +389,6 @@
     requestedVia: RequestedVia;
   }
   let sdkApprovals = $state<SdkApproval[]>([]);
-  // #971 — bumped to re-read the "One-time credentials" strip.
-  let credentialRefresh = $state(0);
   // Cards whose decision is on its way from this tab: a pending-list
   // refresh racing it must not bring them back meanwhile.
   const decidedApprovalIds = new Set<string>();
@@ -400,6 +440,7 @@
       sdkApprovals = sdkApprovals.filter((x) => x.approvalId !== a.approvalId);
       noteLocally(externalDecisionNote(approved ? "approve" : "reject", a.preview || a.name));
       void loadPendingProposals();
+      liveHub.publish(["credentials"]);
     } catch (e) {
       chatError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -407,13 +448,16 @@
     }
   }
 
-  async function loadPendingProposals(): Promise<void> {
-    // #971 — an approval may have left a one-time credential for this
-    // operator; the strip re-reads whenever the pending state does. A write
-    // that does not read the state, so an $effect calling this never loops.
-    credentialRefresh = performance.now();
+  /**
+   * Re-read the pending strip. #1215 — one read on the wire at a time (a
+   * call meanwhile re-reads once after it), with a deadline; triggered by
+   * `pending` live topics, focus and this panel's own actions, never by a
+   * timer. The one-time credentials strip re-reads on its own topic now
+   * instead of piggybacking on every pending read.
+   */
+  const loadPendingProposals = coalescedRefresh(async () => {
     try {
-      const res = await fetch(`/content/chat/${session.id}/pending`, {
+      const res = await liveFetch(`/content/chat/${session.id}/pending`, {
         headers: { accept: "application/json" },
       });
       if (!res.ok) return;
@@ -434,7 +478,7 @@
       // Pending strip is best-effort. A network blip leaves the
       // existing list intact rather than wiping it.
     }
-  }
+  });
 
   async function actOnPending(
     proposalId: string,
@@ -464,6 +508,9 @@
         // chained on this one).
         pendingProposals = pendingProposals.filter((p) => p.proposalId !== proposalId);
         void loadPendingProposals();
+        // #971 / #1215 — an applied approval may have left a one-time
+        // credential for this operator: the strip re-reads now.
+        liveHub.publish(["credentials"]);
         // v0.2.75 — propagate the approval so:
         //   1. The /edit overlay's preview iframe reloads (the
         //      proposal applied a change to the chat-branch
@@ -553,7 +600,8 @@
 
   /**
    * issue #228 — live crawl status. After an approved site_import the
-   * panel polls /content/chat/<id>/crawl-status every 4s: renders the
+   * panel re-reads /content/chat/<id>/crawl-status on every `crawl` live
+   * topic (#1215 — no timer; see lib/live/live-refresh.ts): renders the
    * progress strip above the composer, and when the run reaches
    * ready_for_review posts the continuation nudge itself — the
    * operator never types "check status" to unstick the AI. v1 state
@@ -572,30 +620,29 @@
     errorMessage: string | null;
   }
   let crawlRun = $state<ImportRunStatus | null>(null);
-  let crawlPollTimer: ReturnType<typeof setInterval> | null = null;
+  // #1215 — the crawl's live consumer while one is followed; its progress
+  // arrives as `crawl` topics (and a re-read when a wait expires), never
+  // from a timer.
+  let crawlWatch: (() => void) | null = null;
   let pendingImportNudge = $state<string | null>(null);
 
   function stopImportPolling(): void {
-    if (crawlPollTimer !== null) {
-      clearInterval(crawlPollTimer);
-      crawlPollTimer = null;
-    }
+    crawlWatch?.();
+    crawlWatch = null;
   }
 
   function startImportPolling(runId: string): void {
     stopImportPolling();
-    // Re-entrancy guard (review finding): a fetch slower than the 4s
-    // interval must not overlap the next tick and race on crawlRun.
-    let inFlight = false;
-    const poll = async (): Promise<void> => {
-      if (inFlight) return;
-      inFlight = true;
+    let following = true;
+    // One read on the wire at a time; a topic meanwhile re-reads once after it.
+    const poll = coalescedRefresh(async () => {
+      if (!following) return;
       try {
-        const res = await fetch(
+        const res = await liveFetch(
           `/content/chat/${session.id}/crawl-status?runId=${encodeURIComponent(runId)}`,
           { headers: { accept: "application/json" } },
         );
-        if (!res.ok) return; // transient — keep polling
+        if (!res.ok || !following) return; // transient — the next topic re-reads
         const data = (await res.json()) as ImportRunStatus;
         crawlRun = data;
         if (data.status === "ready_for_review") {
@@ -610,13 +657,23 @@
           crawlRun = null;
         }
       } catch {
-        // network blip — next tick retries
-      } finally {
-        inFlight = false;
+        // Network blip or deadline: the next topic or focus re-reads.
       }
+      liveHub.kick();
+    });
+    const unregister = liveHub.register({
+      topics: ["crawl"],
+      refresh: () => void poll(),
+      // The crawl runs on the server without any action of this tab.
+      waiting: () => following,
+    });
+    crawlWatch = () => {
+      following = false;
+      unregister();
     };
     void poll();
-    crawlPollTimer = setInterval(() => void poll(), 4000);
+    // Following a crawl starts from the operator's approval.
+    liveHub.resume();
   }
 
   $effect(() => {
@@ -943,14 +1000,24 @@
   const STREAM_STALL_THRESHOLD_MS = 180_000;
 
   // Issue #658 — an external agent (MCP) works on this session concurrently
-  // and queues proposals outside this panel's stream; poll the strip so its
-  // cards (and the hand-back status after a decision) appear without a
-  // reload. Paused while this chat streams — tool results refresh it then.
-  const PENDING_POLL_MS = 10_000;
+  // and queues proposals outside this panel's stream; its cards (and the
+  // hand-back status after a decision) appear without a reload. #1215 — not
+  // by polling: the strip re-reads on every `pending` topic (this chat's
+  // stream while a turn runs; the live-events wait while an agent works
+  // here, held by the running-agents bar) and on focus. An empty wait
+  // re-reads it too: that agent's proposal may have been committed on
+  // another admin instance, which announces no topic here.
+  $effect(() =>
+    liveHub.register({
+      topics: ["pending"],
+      refresh: () => void loadPendingProposals(),
+      refreshOnExpiry: true,
+    }),
+  );
+  // While this tab's stream is open its `live` events stand in for the wait.
   $effect(() => {
-    if (streaming) return;
-    const id = setInterval(() => void loadPendingProposals(), PENDING_POLL_MS);
-    return () => clearInterval(id);
+    if (!streaming) return;
+    return liveHub.openStream();
   });
   $effect(() => {
     if (!streaming) {
@@ -1911,6 +1978,16 @@
                 };
               }
             }
+            // #1215 — the server's live-refresh topics (agents, approvals,
+            // credentials, quality, crawl, deploys changed): each surface
+            // that shows one re-reads itself. Not an activity: the pill and
+            // the transcript stay as they are.
+            if (ev["kind"] === "live") {
+              if (Array.isArray(ev["topics"])) {
+                liveHub.publish((ev["topics"] as unknown[]).map(String).filter(isLiveTopic));
+              }
+              continue;
+            }
             // v0.2.60 — live activity pill. Updated on every SSE
             // event so the operator sees moving status between bursts
             // of streaming text + tool-card landings. The set of
@@ -2296,6 +2373,23 @@
                  had a tool card between them. It drops empty legacy notes
                  and keeps only the latest of consecutive near-identical
                  crawl-wait ticks. -->
+            {#if hasEarlierMessages}
+              <li class="flex flex-col items-center gap-1 py-1 text-xs">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={loadingEarlier}
+                  onclick={() => void loadEarlierMessages()}
+                  data-testid="transcript-load-earlier"
+                >
+                  {loadingEarlier ? "Loading…" : "Show earlier messages"}
+                </Button>
+                {#if earlierError}
+                  <span class="text-destructive">{earlierError}</span>
+                {/if}
+              </li>
+            {/if}
             {#each collapseStatusNotes(messages).filter((m) => !showFailedOnly || m.role !== "tool" || isFailedToolMessage(m.content)) as m (m.id)}
               {#if m.role === "tool"}
                 <!-- v0.2.46 — tool messages render as per-tool cards via
@@ -2707,7 +2801,7 @@
         <!-- #971 — a credential an approval in this chat produced (a new
              user's password, an MCP token): shown to the approver only,
              never to the AI. -->
-        <CredentialHandoffs {csrfToken} refreshKey={credentialRefresh} />
+        <CredentialHandoffs {csrfToken} />
         <!-- Plan B (SDK approval gate) — inline Approve/Reject for a gated tool
              a turn in this chat paused on. This chat's own AI resumes (or
              reacts to a denial) as soon as the operator decides; an external

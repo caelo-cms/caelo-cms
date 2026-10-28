@@ -152,6 +152,9 @@ async function main(): Promise<void> {
           retainBuilds: input.retainBuilds,
           onProgress: (p) => emit({ kind: "progress", ...p }),
         }),
+      // The whole build reads one snapshot; the name puts it on the
+      // nested-checkout allowlist (query-api pool-guard.ts).
+      { holder: "static-generator.build" },
     );
     emit({ kind: "done", ...result });
   } finally {

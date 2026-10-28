@@ -51,7 +51,7 @@ export function unreviewedEmbedFindings(
         `Until then visitors get nothing in its place. ${w.siteChrome ? "It is site chrome, so every page is missing it" : "Every page it is placed on is missing it"}.`,
       fix: {
         tool: "classify_external_embed",
-        hint: `Pin module ${w.moduleId} to the consent category its vendor needs, or allow it when the request identifies nobody; ask the operator if the vendor is unclear.`,
+        hint: `Pin module ${w.moduleId} to the consent category its vendor needs; only when the request identifies nobody, allow it with allow_external_embed (Owner approval). Ask the operator if the vendor is unclear.`,
       },
     }));
 }

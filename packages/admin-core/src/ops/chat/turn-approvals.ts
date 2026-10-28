@@ -595,6 +595,8 @@ export const mcpGetChatApprovalStateOp = defineOperation({
   // reads only that token's own approvals. Read-only — nothing here decides.
   actorScope: ["system"],
   database: "cms_admin",
+  // Issue #1210 — resolving the credential runs its own transaction.
+  transaction: "none",
   input: z
     .object({
       /** A bearer token (stdio shim) or a remote IAP credential (#806). */
@@ -624,10 +626,12 @@ export const mcpGetChatApprovalStateOp = defineOperation({
         message: resolved.message,
       });
     }
-    const rows = await agentApprovals(
-      tx as TransactionRunner,
-      input.chatSessionId,
-      mcpAgentOpFields(mcpAgentRefOf(resolved.principal)),
+    const rows = await tx.transaction((t) =>
+      agentApprovals(
+        t as TransactionRunner,
+        input.chatSessionId,
+        mcpAgentOpFields(mcpAgentRefOf(resolved.principal)),
+      ),
     );
     return ok(chatApprovalStateOf(rows.map(toView)));
   },

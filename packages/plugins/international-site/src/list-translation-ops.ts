@@ -46,6 +46,7 @@ import {
   type TranslationIndex,
   unitStatus,
 } from "./list-translation.js";
+import { listAll } from "./store-reads.js";
 
 /** A stored list value translation. */
 export interface ValueTranslationRow {
@@ -116,19 +117,9 @@ export interface ListTranslationState {
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const PAGE_REF_RE = new RegExp(`^caelo:page/(${UUID})`);
 
-/**
- * Read every row of a private table, past the store's 1000-row read: the
- * store pages by `orderBy` + a `since`-free cursor is not offered, so the
- * plugin refuses beyond one read rather than plan with half the rows.
- */
+/** Every row of a private table, paged past one read's 1000 rows (#1213). */
 async function readAll<T>(deps: ChromeDeps, table: string): Promise<T[]> {
-  const rows = await deps.q.list(table, { limit: 1000 });
-  if (rows.length >= 1000) {
-    throw new Error(
-      `international-site: ${table} holds 1000+ rows, more than one read returns; paged reads are not implemented yet (file an issue)`,
-    );
-  }
-  return rows as unknown as T[];
+  return (await listAll(deps.q, table)) as unknown as T[];
 }
 
 /** A stored timestamp as an ISO string (the store may hand back a Date). */
