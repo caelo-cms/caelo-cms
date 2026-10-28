@@ -23,8 +23,8 @@ export interface SignalTarget {
 const SIGTERM_EXIT = 143;
 
 /**
- * Install the SIGTERM handler: exit at once until {@link ServingGuard.markServing},
- * ignore the signal afterwards.
+ * Install the SIGTERM handler: exit at once until `markServing()` is
+ * called, ignore the signal afterwards.
  */
 export function installServingGuard(proc: SignalTarget): { markServing(): void } {
   let serving = false;
@@ -37,6 +37,3 @@ export function installServingGuard(proc: SignalTarget): { markServing(): void }
     },
   };
 }
-
-/** What {@link installServingGuard} returns. */
-export type ServingGuard = ReturnType<typeof installServingGuard>;
