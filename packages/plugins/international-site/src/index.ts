@@ -70,6 +70,7 @@ import {
   setChromeVariants,
   translateChrome,
 } from "./chrome-ops.js";
+import { languageToolbarState } from "./editor-toolbar.js";
 import { chromeLinkLocations } from "./link-locations.js";
 import { entryStates, LIST_EXT_FIELD_SCHEMA } from "./list-translation.js";
 import {
@@ -982,6 +983,27 @@ export default definePlugin<PluginContextTier1>({
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
   publicOperations: [],
+  /**
+   * The language of the page the live editor shows, next to its address:
+   * the code as the label, the other versions in the popover (each opens
+   * in the editor), the out-of-date ones counted.
+   */
+  editorToolbar: [
+    {
+      id: "languages",
+      title: "Languages",
+      icon: "globe",
+      operation: "editor_languages",
+      permission: "content.read",
+      prompts: [
+        {
+          label: "Translate this page",
+          text: "Translate {page} into every language it is missing or out of date in.",
+        },
+        { label: "Add a language", text: "Add a new language to the site." },
+      ],
+    },
+  ],
   operations: {
     /**
      * #390 I/O phase — per-page URL annotations from the variant table:
@@ -1311,6 +1333,29 @@ export default definePlugin<PluginContextTier1>({
           return { lists: listStatus(deps, state), listFindings: listFindings(deps, state) };
         })()),
       };
+    },
+
+    /**
+     * The `languages` editor toolbar item: the shown page's language and
+     * how its other versions stand (./editor-toolbar.ts). Read-only; it
+     * runs on the editor's chat branch, so a version the chat just made
+     * shows up at once.
+     */
+    editor_languages: async (ctx, args) => {
+      const { pageId } = z.object({ pageId: z.string().uuid() }).strict().parse(args);
+      const q = adminQueryOf(ctx);
+      const reg = await refreshLocaleCache(q, ctx);
+      const variants = (await listAll(q, "page_variants")) as PageVariantRow[];
+      const { pages } = await cmsOf(ctx).call<{ pages: { id: string; status: string }[] }>(
+        "pages.list",
+        {},
+      );
+      return languageToolbarState({
+        pageId,
+        locales: reg.rows,
+        variants,
+        pages: new Map(pages.map((p) => [p.id, p])),
+      });
     },
 
     /** Link an existing page into a variant group. */

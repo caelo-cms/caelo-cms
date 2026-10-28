@@ -10,6 +10,11 @@
 
   import PluginHealth from "#lib/components/PluginHealth.svelte";
   import { confirmSubmit } from "#lib/confirm.svelte.js";
+  import {
+    adminPanelLines,
+    consentPurposeLines,
+    toolbarItemLines,
+  } from "#lib/plugin-manifest-lines.js";
   import { Puzzle } from "lucide-svelte";
   import { enhance } from "$app/forms";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -37,33 +42,6 @@
     if (manifestJson === null || typeof manifestJson !== "object") return [];
     const caps = (manifestJson as { requestedCapabilities?: unknown }).requestedCapabilities;
     return Array.isArray(caps) ? caps.filter((c): c is string => typeof c === "string") : [];
-  }
-
-  /** What the manifest asks visitors to consent to, one line per purpose. */
-  function consentPurposesOf(manifestJson: unknown): string[] {
-    if (manifestJson === null || typeof manifestJson !== "object") return [];
-    const raw = (manifestJson as { consentPurposes?: unknown }).consentPurposes;
-    if (!Array.isArray(raw)) return [];
-    return raw.map((p: { key?: unknown; category?: unknown; cookies?: unknown }) => {
-      const cookies = Array.isArray(p.cookies)
-        ? p.cookies.map((c: { name?: unknown }) => String(c?.name ?? "")).join(", ")
-        : "";
-      return `${String(p.key)} — ${String(p.category)}${cookies ? ` (${cookies})` : ""}`;
-    });
-  }
-
-  /**
-   * The admin pages the manifest declares and who may open them, so the
-   * Owner sees what an activation adds to the admin before approving it.
-   */
-  function adminPanelsOf(manifestJson: unknown): string[] {
-    if (manifestJson === null || typeof manifestJson !== "object") return [];
-    const raw = (manifestJson as { adminPanels?: unknown }).adminPanels;
-    if (!Array.isArray(raw)) return [];
-    return raw.map(
-      (p: { title?: unknown; permission?: unknown }) =>
-        `${String(p.title)} (needs ${String(p.permission)})`,
-    );
   }
 
   let { data, form } = $props();
@@ -206,11 +184,14 @@
                       Required by: <span class="font-mono">{p.requiredBy.join(", ")}</span>
                     </p>
                   {/if}
-                  {#each consentPurposesOf(p.manifestJson) as line (line)}
-                    <p class="mt-1 text-xs text-muted-foreground">Asks visitors: {line}</p>
+                  {#each consentPurposeLines(p.manifestJson) as line (line.key)}
+                    <p class="mt-1 text-xs text-muted-foreground">Asks visitors: {line.text}</p>
                   {/each}
-                  {#each adminPanelsOf(p.manifestJson) as line (line)}
-                    <p class="mt-1 text-xs text-muted-foreground">Admin page: {line}</p>
+                  {#each adminPanelLines(p.manifestJson) as line (line.key)}
+                    <p class="mt-1 text-xs text-muted-foreground">Admin page: {line.text}</p>
+                  {/each}
+                  {#each toolbarItemLines(p.manifestJson) as line (line.key)}
+                    <p class="mt-1 text-xs text-muted-foreground">Live editor toolbar: {line.text}</p>
                   {/each}
                 </TableCell>
                 <TableCell class="font-mono text-xs">{p.sourcePath ?? "—"}</TableCell>

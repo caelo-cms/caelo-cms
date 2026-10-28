@@ -28,6 +28,10 @@
     value?: string;
     placeholder?: string;
     class?: string;
+    /** Classes for the text input, merged over its defaults. */
+    inputClass?: string;
+    /** Text the closed combobox shows for the selection; the item's label by default. */
+    selectedText?: string;
     onValueChange?: (value: string) => void;
   }
   let {
@@ -36,6 +40,8 @@
     value = $bindable(""),
     placeholder = "Search…",
     class: className,
+    inputClass,
+    selectedText,
     onValueChange,
   }: Props = $props();
 
@@ -45,7 +51,9 @@
       ? items
       : items.filter((it) => it.label.toLowerCase().includes(searchValue.toLowerCase())),
   );
-  const selectedLabel = $derived(items.find((i) => i.value === value)?.label ?? "");
+  const selectedLabel = $derived(
+    selectedText ?? items.find((i) => i.value === value)?.label ?? "",
+  );
 </script>
 
 <ComboboxPrimitive.Root
@@ -56,7 +64,10 @@
   <div class={cn("relative", className)}>
     <ComboboxPrimitive.Input
       {id}
-      class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 pr-8 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      class={cn(
+        "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 pr-8 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        inputClass,
+      )}
       placeholder={selectedLabel || placeholder}
       oninput={(e) => {
         searchValue = (e.currentTarget as HTMLInputElement).value;
