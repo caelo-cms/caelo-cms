@@ -228,7 +228,9 @@ export const createChatSessionOp = defineOperation({
         return err({
           kind: "HandlerError",
           operation: "chat.create_session",
-          message: `page ${pageId} already has an open chat (${open.title}, id=${open.id}); resume that chat or publish it first`,
+          // §11 — names the chat and the next step: /edit shows this to the
+          // operator, the AI acts on the chatSessionId.
+          message: `you already have an open chat for this page: “${open.title}” (chatSessionId=${open.id}). Continue in that chat instead of starting another; to start fresh, archive it first (a chat with unstaged changes must stage or discard them before it can be archived)`,
         });
       }
     }

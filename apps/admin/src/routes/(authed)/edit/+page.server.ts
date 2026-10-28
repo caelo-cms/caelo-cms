@@ -12,6 +12,7 @@ import {
 } from "#lib/components/edit/use-overlay-layout.svelte.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission, requireUser } from "#lib/server/guards.js";
+import { opErrorMessage } from "#lib/server/op-error.js";
 import { loadPageSeoInfo } from "#lib/server/page-seo-info.js";
 import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
 import { getQueryContext } from "#lib/server/query.js";
@@ -89,6 +90,28 @@ async function describeUnopenedChat(
     return `The chat “${session.title}” was closed, so it can take no more changes; Live Edit ${opened}. Continue here, or pick or start another chat in the chat list.`;
   }
   return `The chat in this link was not found; Live Edit ${opened}. Continue here, or pick or start another chat in the chat list.`;
+}
+
+/**
+ * #1201 — the caller's open chat on `pageId` (the one the per-page gate in
+ * `chat.create_session` refuses a second chat for), loaded for Live Edit;
+ * null when there is none or it cannot be read.
+ */
+async function resumeOpenPageChat(
+  pageId: string,
+  ctx: ExecutionContext,
+): Promise<ChatSession | null> {
+  const { adapter, registry } = getQueryContext();
+  const active = await execute(registry, adapter, ctx, "chat.list_active_pages", {});
+  if (!active.ok) return null;
+  const held = (active.value as { pages: { pageId: string; chatSessionId: string }[] }).pages.find(
+    (p) => p.pageId === pageId,
+  );
+  if (!held) return null;
+  const session = await execute(registry, adapter, ctx, "chat.get_session", {
+    chatSessionId: held.chatSessionId,
+  });
+  return session.ok ? (session.value as { session: ChatSession }).session : null;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -192,6 +215,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     sessions.find((s) => !s.publishedAt) ??
     globalSessions.find((s) => !s.publishedAt) ??
     null;
+  // #1201 — why the auto-create below was refused, when the op refused it
+  // (a HandlerError carries an operator-readable reason). Turns the dead end
+  // into a 409 that says what to do instead of a bare 500.
+  let createRefusal: string | null = null;
   if (!activeChat) {
     const created = await execute(registry, adapter, locals.ctx, "chat.create_session", {
       title: activePage ? `Live edit · ${activePage.slug}` : "Live edit",
@@ -223,7 +250,24 @@ export const load: PageServerLoad = async ({ locals, url }) => {
         activePageId,
         error: created.error,
       });
+      if (created.error.kind === "HandlerError") {
+        createRefusal = opErrorMessage(created.error, "the chat could not be created");
+        // #1201 — the per-page gate refuses only for an open chat of this
+        // operator on this page, and `chat.list_active_pages` lists exactly
+        // that chat. The session lists above can miss it — another tab
+        // created it in between, or newer published chats on the page
+        // filled the list's 100 rows — so resume it from there instead of
+        // failing.
+        if (activePageId) activeChat = await resumeOpenPageChat(activePageId, locals.ctx);
+      }
     }
+  }
+  if (!activeChat && createRefusal) {
+    // #1201 — a refusal is not a server fault: say why and where to go on.
+    throw error(
+      409,
+      `Live Edit could not open a chat for this page: ${createRefusal}. Pick a chat in the chat list, or open Content → Changes to see every open chat with unstaged changes.`,
+    );
   }
   if (!activeChat) {
     // v0.2.56 — was a silent 303 redirect to /content/chat (matching
@@ -626,7 +670,13 @@ export const actions: Actions = {
       ...(isGlobal ? {} : { pageId }),
       ...(experiment ? { isolation: "experiment" } : {}),
     });
-    if (!created.ok) return fail(500, { error: "Could not create chat." });
+    if (!created.ok) {
+      // #1201 — a refusal names its reason and the next step; only an
+      // unexpected failure stays a 500.
+      return created.error.kind === "HandlerError"
+        ? fail(409, { error: opErrorMessage(created.error, "Could not create chat.") })
+        : fail(500, { error: "Could not create chat." });
+    }
     const newId = (created.value as { chatSessionId: string }).chatSessionId;
     const next = new URL(url);
     next.searchParams.set("chat", newId);
