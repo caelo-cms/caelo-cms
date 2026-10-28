@@ -506,7 +506,7 @@ async function acquireStagingPublicationLease(
     if (Date.now() >= deadline) {
       return {
         ok: false,
-        message: `${v.heldByRunId ? `another Stage (build ${v.heldByRunId})` : "a Publish live"} kept publishing the staging site for ${Math.round(STAGING_PUBLICATION_WAIT_MS / 60_000)} minutes, so this build was not published. Stage again once it finished (Settings → Deployments shows it).`,
+        message: `${v.heldByRunId ? `another Stage or Publish live (build ${v.heldByRunId})` : "a Publish live"} kept publishing the staging site for ${Math.round(STAGING_PUBLICATION_WAIT_MS / 60_000)} minutes, so this build was not published. Stage again once it finished (Settings → Deployments shows it).`,
       };
     }
     await abortableSleep(pause, args.stop);

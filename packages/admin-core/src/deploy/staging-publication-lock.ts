@@ -34,6 +34,20 @@
  * fixed (live release first, then this) and a Stage never takes the
  * live-release lock, so the two cannot deadlock.
  *
+ * Rolling update (#1211 review): while the previous release still serves
+ * in-flight requests, its Stage, Publish live and keep-alive order
+ * themselves by the transaction-scoped advisory lock
+ * {@link LEGACY_STAGING_PUBLICATION_LOCK_KEY} and know nothing of the lease.
+ * So this release honours that protocol too: a transaction holder also
+ * takes the advisory lock (the previous release waits for it as before),
+ * and a Stage acquires the lease only while no holder of the previous
+ * release is in flight — neither the advisory lock nor a running site
+ * build without a lease whose per-run lock is held. A run of the previous
+ * release that only starts after this release's Stage acquired the lease
+ * is not seen; the cutover leaves the previous revision nothing but its
+ * in-flight requests, so that window is the seconds between one of them
+ * arriving and reaching its first database step.
+ *
  * The lease expires: it guards a running process, not an editor's change
  * (CLAUDE.md §2's "locks never expire" is about the cross-branch entity
  * locks). A Stage whose instance died cannot release it; once its
@@ -42,9 +56,17 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { DEPLOY_RUN_LOCK_PREFIX } from "./deploy-run-lock.js";
 
 /** The lease's row name. Exported for the serialization regression tests. */
 export const STAGING_PUBLICATION_LEASE = "staging-publication";
+
+/**
+ * The advisory-lock key the previous release ordered staging publications
+ * by (a transaction-scoped `pg_advisory_xact_lock(hashtext(key))`). Kept
+ * for rolling updates from it (see the file header).
+ */
+export const LEGACY_STAGING_PUBLICATION_LOCK_KEY = "caelo:staging-publication";
 
 /** How long Publish live waits for a Stage that is publishing staging right now. */
 export const STAGING_PUBLICATION_WAIT_MS = 10 * 60_000;
@@ -91,8 +113,15 @@ async function currentHolder(tx: TransactionRunner): Promise<StagingPublicationH
 export async function tryLockStagingPublication(
   tx: TransactionRunner,
 ): Promise<
-  { readonly locked: true } | { readonly locked: false; heldBy: StagingPublicationHolder }
+  { readonly locked: true } | { readonly locked: false; heldBy: StagingPublicationHolder | null }
 > {
+  // The previous release's protocol (file header): held until this
+  // transaction ends, like that release held it. Not held: a transaction
+  // of the previous release publishes right now (heldBy null).
+  const legacy = (await tx.execute(
+    sql`SELECT pg_try_advisory_xact_lock(hashtext(${LEGACY_STAGING_PUBLICATION_LOCK_KEY})) AS free`,
+  )) as unknown as { free: boolean }[];
+  if (legacy[0]?.free !== true) return { locked: false, heldBy: null };
   await ensureLeaseRow(tx);
   // One statement tests and locks: an UPDATE locks only the row it matches,
   // and re-checks the condition on the newest version after a wait, so a
@@ -130,7 +159,7 @@ export async function lockStagingPublication(
     if (r.locked) return;
     if (Date.now() >= deadline) {
       throw new StagingPublicationBusyError(
-        `a Stage is publishing the staging site right now (build ${r.heldBy.runId}) and did not finish within ${Math.round(waitMs / 1000)} s. Nothing was published; Publish live again once that Stage finished (Settings → Deployments shows it).`,
+        `a Stage is publishing the staging site right now (${r.heldBy ? `build ${r.heldBy.runId}` : "a run of the previous Caelo version, during the update"}) and did not finish within ${Math.round(waitMs / 1000)} s. Nothing was published; Publish live again once that Stage finished (Settings → Deployments shows it).`,
       );
     }
     await sleep(pause);
@@ -152,6 +181,28 @@ export async function acquireStagingPublication(
   | { readonly acquired: true }
   | { readonly acquired: false; readonly heldBy: StagingPublicationHolder | null }
 > {
+  // Rolling update (file header): wait while the previous release may
+  // publish — it holds the advisory lock, or one of its site builds is in
+  // flight (a running row without a lease whose run lock is held).
+  const legacyLock = (await tx.execute(
+    sql`SELECT pg_try_advisory_xact_lock(hashtext(${LEGACY_STAGING_PUBLICATION_LOCK_KEY})) AS free`,
+  )) as unknown as { free: boolean }[];
+  if (legacyLock[0]?.free !== true) return { acquired: false, heldBy: null };
+  const legacyRun = (await tx.execute(sql`
+    SELECT r.id::text AS run_id
+    FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+    WHERE r.status = 'running' AND r.lease_expires_at IS NULL AND r.build_kind = 'site'
+      AND t.env IN ('staging', 'production') AND r.id <> ${args.runId}::uuid
+      AND NOT pg_try_advisory_xact_lock(hashtext(${DEPLOY_RUN_LOCK_PREFIX} || r.id::text))
+    LIMIT 1
+  `)) as unknown as { run_id: string }[];
+  const inFlight = legacyRun[0];
+  if (inFlight) {
+    return {
+      acquired: false,
+      heldBy: { runId: inFlight.run_id, expiresAt: new Date().toISOString() },
+    };
+  }
   await ensureLeaseRow(tx);
   const rows = (await tx.execute(sql`
     SELECT holder_run_id::text AS run_id, expires_at,

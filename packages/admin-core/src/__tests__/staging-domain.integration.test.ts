@@ -30,7 +30,12 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import { CAELO_VERSION, deriveStagingCredential, type ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
-import { STAGING_PUBLICATION_LEASE } from "../deploy/staging-publication-lock.js";
+import { DEPLOY_RUN_LOCK_PREFIX } from "../deploy/deploy-run-lock.js";
+import {
+  LEGACY_STAGING_PUBLICATION_LOCK_KEY,
+  STAGING_PUBLICATION_LEASE,
+  tryLockStagingPublication,
+} from "../deploy/staging-publication-lock.js";
 import { SERVED_PREVIEW_CHANNEL_TTL } from "../deploy/static-publisher-firebase.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
@@ -576,8 +581,17 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     try {
       await conn`BEGIN`;
       await conn`SELECT pg_advisory_xact_lock(hashtext(${DEPLOY_RUN_LOCK_PREFIX} || ${alive}::text))`;
-      // The lapsed lease does not hold the Stage up.
-      await ok("deploy.trigger", { targetName: "staging", repoRoot: testRoot });
+      // The lapsed lease does not hold the Stage up; the run still being
+      // built does, until it ends (a Publish live, or a run of the previous
+      // release during a rolling update: staging-publication-lock.ts).
+      let settled = false;
+      const pending = ok("deploy.trigger", { targetName: "staging", repoRoot: testRoot }).finally(
+        () => {
+          settled = true;
+        },
+      );
+      await builtAndWaiting();
+      expect(settled).toBe(false);
       const rows = (await withSql(
         (tx) => tx`SELECT id::text AS id, status, error_message FROM deploy_runs
                    WHERE id IN (${orphan}::uuid, ${alive}::uuid, ${lapsed}::uuid, ${leased}::uuid)`,
@@ -591,8 +605,10 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
         (tx) => tx`SELECT holder_run_id FROM deploy_leases WHERE name = 'staging-publication'`,
       )) as { holder_run_id: string | null }[];
       expect(lease?.holder_run_id ?? null).toBeNull();
-    } finally {
       await conn`ROLLBACK`;
+      await pending;
+    } finally {
+      await conn`ROLLBACK`.catch(() => undefined);
       conn.release();
       await holder.end();
       await withSql(
@@ -807,6 +823,93 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       await holderTx.catch(() => undefined);
       await holder.end();
     }
+  });
+
+  /**
+   * #1211 rolling update — a transaction of the previous release holding
+   * `key` (its staging-publication lock, or its run lock) until released.
+   */
+  async function previousReleaseHolds(key: string): Promise<{ release: () => Promise<void> }> {
+    const holder = new SQL(ADMIN_URL!);
+    let release!: () => void;
+    const released = new Promise<void>((r) => {
+      release = r;
+    });
+    let held!: () => void;
+    const locked = new Promise<void>((r) => {
+      held = r;
+    });
+    const holderTx = holder.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+      held();
+      await released;
+    });
+    await locked;
+    return {
+      release: async () => {
+        release();
+        await holderTx.catch(() => undefined);
+        await holder.end();
+      },
+    };
+  }
+
+  /** Stage while `hold` keeps the previous release publishing; it waits, then publishes. */
+  async function stageWaitsFor(hold: { release: () => Promise<void> }): Promise<void> {
+    try {
+      const channelsBefore = [...fake.channels.keys()];
+      let settled = false;
+      const pending = ok<{ runId: string }>("deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      }).finally(() => {
+        settled = true;
+      });
+      await builtAndWaiting();
+      expect(settled).toBe(false);
+      expect([...fake.channels.keys()]).toEqual(channelsBefore);
+      await hold.release();
+      const staged = await pending;
+      expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
+    } finally {
+      await hold.release();
+    }
+  }
+
+  it("#1211 rolling update: a Stage waits while the previous release holds its staging-publication lock", async () => {
+    await stageWaitsFor(await previousReleaseHolds(LEGACY_STAGING_PUBLICATION_LOCK_KEY));
+  });
+
+  it("#1211 rolling update: a Stage waits while a Stage or Publish live of the previous release is in flight", async () => {
+    const [{ id: targetId } = { id: "" }] = (await withSql(
+      (tx) => tx`SELECT id::text AS id FROM deploy_targets WHERE name = 'production'`,
+    )) as { id: string }[];
+    const runId = crypto.randomUUID();
+    // The previous release's run: no lease, its run lock held by its transaction.
+    await withSql(
+      (tx) => tx`INSERT INTO deploy_runs (id, target_id, actor_id, status)
+                 VALUES (${runId}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running')`,
+    );
+    const hold = await previousReleaseHolds(`${DEPLOY_RUN_LOCK_PREFIX}${runId}`);
+    try {
+      await stageWaitsFor(hold);
+    } finally {
+      await withSql((tx) => tx`DELETE FROM deploy_runs WHERE id = ${runId}::uuid`);
+    }
+  });
+
+  it("#1211 rolling update: Publish live and the keep-alive hold the previous release's lock too", async () => {
+    const hold = await previousReleaseHolds(LEGACY_STAGING_PUBLICATION_LOCK_KEY);
+    try {
+      const busy = await adapter.withAdminTransaction(SYSTEM, (tx) =>
+        tryLockStagingPublication(tx),
+      );
+      expect(busy.locked).toBe(false);
+    } finally {
+      await hold.release();
+    }
+    const free = await adapter.withAdminTransaction(SYSTEM, (tx) => tryLockStagingPublication(tx));
+    expect(free.locked).toBe(true);
   });
 
   it("#1211 a Stage waits for another Stage that holds the publish lease, without a transaction", async () => {

@@ -32,9 +32,10 @@
 -- database clock, never an instance's wall clock.
 --
 -- Expand-safe: a new table, a nullable column and a guard. The previous
--- release never reads either; during a rolling update its Stage serializes
--- on the old advisory lock and the new one on the lease, which only overlap
--- for the minutes both images serve.
+-- release never reads either. During a rolling update this release also
+-- honours the previous release's advisory publication lock and waits for
+-- its in-flight site builds before a Stage takes the lease
+-- (admin-core deploy/staging-publication-lock.ts).
 --
 -- The guard (deploy_runs_keep_leased_running): the previous release tells a
 -- live run only by its advisory lock, which a lease-holding run never
