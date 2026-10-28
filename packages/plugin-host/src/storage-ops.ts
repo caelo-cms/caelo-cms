@@ -169,16 +169,25 @@ function parseListFilter(
   let orderDir: "asc" | "desc" = "desc";
   let since: string | null = null;
   let before: string | null = null;
+  let afterId: string | null = null;
   const equals: [string, unknown][] = [];
+  const anyOf: [string, unknown[]][] = [];
   for (const [k, v] of Object.entries(filter)) {
     if (k === "limit") {
       if (typeof v !== "number" || v <= 0 || v > 1000) return `${op}: limit must be 1..1000`;
       limit = v;
     } else if (k === "orderBy") {
       if (typeof v !== "string") return `${op}: orderBy must be string`;
-      const problem = checkColumn(op, columns, v);
+      // `id` is host-owned but orderable: it is the keyset `afterId` pages by.
+      const problem = v === "id" ? null : checkColumn(op, columns, v);
       if (problem) return problem;
       orderBy = v;
+    } else if (k === "anyOf") {
+      const problem = parseAnyOf(op, columns, v, anyOf);
+      if (problem) return problem;
+    } else if (k === "afterId") {
+      if (typeof v !== "string" || !UUID_RE.test(v)) return `${op}: afterId must be a row id`;
+      afterId = v.toLowerCase();
     } else if (k === "orderDir") {
       if (v !== "asc" && v !== "desc") return `${op}: orderDir must be asc|desc`;
       orderDir = v;
@@ -196,7 +205,46 @@ function parseListFilter(
       equals.push([k, v]);
     }
   }
-  return { limit, orderBy, orderDir, since, before, equals };
+  if (afterId !== null && (orderBy !== "id" || orderDir !== "asc")) {
+    return `${op}: afterId pages by id — pass orderBy: "id" and orderDir: "asc" with it`;
+  }
+  return { limit, orderBy, orderDir, since, before, afterId, equals, anyOf };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Values one `anyOf` column may list — the same ceiling as one read's rows. */
+const ANY_OF_MAX = 1000;
+
+/**
+ * #1213 — parse `anyOf: { column: [values] }` into `out`, or return the
+ * reason it is refused. Scalars only: a jsonb column has no IN semantics
+ * the overlay rows could mirror exactly, and `null` never equals in SQL.
+ */
+function parseAnyOf(
+  op: string,
+  columns: Readonly<Record<string, string>>,
+  raw: unknown,
+  out: [string, unknown[]][],
+): string | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return `${op}: anyOf must be an object of column → list of values`;
+  }
+  for (const [column, values] of Object.entries(raw)) {
+    const problem = checkColumn(op, columns, column);
+    if (problem) return problem;
+    if (columns[column] === "jsonb")
+      return `${op}: anyOf cannot match the jsonb column "${column}"`;
+    if (!Array.isArray(values) || values.length > ANY_OF_MAX) {
+      return `${op}: anyOf.${column} must be a list of at most ${ANY_OF_MAX} values — split a longer list into several reads`;
+    }
+    for (const value of values) {
+      if (!["string", "number", "boolean"].includes(typeof value)) {
+        return `${op}: anyOf.${column} holds ${JSON.stringify(value)}; only strings, numbers and booleans can be listed`;
+      }
+    }
+    out.push([column, values]);
+  }
+  return null;
 }
 
 function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
@@ -275,11 +323,22 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       const wheres: ReturnType<typeof sql>[] = [];
       if (plan.since !== null) wheres.push(sql`"created_at" > ${plan.since}`);
       if (plan.before !== null) wheres.push(sql`"created_at" < ${plan.before}`);
+      if (plan.afterId !== null) wheres.push(sql`"id" > ${plan.afterId}::uuid`);
       for (const [k, v] of plan.equals) {
         wheres.push(
           v === null
             ? sql`${sql.raw(`"${k}"`)} IS NULL`
             : sql`${sql.raw(`"${k}"`)} = ${valueSql(input.columns, k, v)}`,
+        );
+      }
+      for (const [k, values] of plan.anyOf) {
+        wheres.push(
+          values.length === 0
+            ? sql`FALSE`
+            : sql`${sql.raw(`"${k}"`)} IN (${sql.join(
+                values.map((v) => sql`${v}`),
+                sql`, `,
+              )})`,
         );
       }
       const whereSql =

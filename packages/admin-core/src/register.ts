@@ -162,6 +162,7 @@ import {
 } from "./ops/content/page-module-content.js";
 import { patchPageModuleFieldsOp } from "./ops/content/page-module-patch.js";
 import { movePagesManyOp, planPageMovesOp } from "./ops/content/page-moves.js";
+import { listPageStatusesOp } from "./ops/content/page-statuses.js";
 import {
   changeTemplateOp,
   createPageOp,
@@ -760,6 +761,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(planPageMovesOp);
   registry.register(listSharedContentOp);
   registry.register(resolvePublicUrlsOp);
+  registry.register(listPageStatusesOp);
   registry.register(canonicaliseLinkValuesOp);
   // Epic #724 (rollout F) — reference integrity read (check_links, Publish-live check).
   registry.register(checkReferencesOp);

@@ -81,6 +81,10 @@ Writes follow the pattern `content_instances` and `modules` already use:
 
 Data lists, deferrals, head contributions, build assets and URL annotations take a required `RenderScope` (`{ chatBranchId: string | null }`; `MAIN_RENDER` for main): the preview's branch in the admin preview, main in the static generator and for the live `current_path`. Required, so no call site can silently read main in a branch preview. A branch preview therefore renders plugin state exactly as it will look after publish, and the deployed site renders main only. `buildAssets` output is computed per preview branch; the deployed bytes come from main.
 
+A scope that lives for exactly one render pass may also carry a `renderId` (#1213; the editor preview sets a fresh one per render). It reaches every plugin call of the pass as `invocation.renderId`, so a plugin can read its rows once for all of the pass's composition points (international-site: the locale registry, the page's variant group, the published-variant matrix behind hreflang and the language switcher). A plugin must not keep such reads past the pass: nothing tells it when its rows or the pages changed in between. `MAIN_RENDER` carries none.
+
+**Complete reads.** One `list` returns at most 1000 rows. To read more, page by id (`orderBy: "id", orderDir: "asc"`, then `afterId: <last id>` until a short page); to read the rows of a set of values, use `anyOf: { column: [values] }` (≤ 1000 values per column) instead of one read per value. Both apply to a chat's overlay rows exactly as to live rows. A plugin never plans with "the first 1000" rows (CLAUDE.md §2).
+
 ### 6. Plugin-side changes
 
 - **No authoring writes outside authoring contexts.** Lazy seeding on first read (consent-manager's `settingsOf` / `categoriesOf`, reachable from visitor and render paths) moves to an `onActivate` hook. It runs every time the host brings the plugin up — at boot and on activation — on main with origin `system`, and must be idempotent; a throw fails the plugin's load.

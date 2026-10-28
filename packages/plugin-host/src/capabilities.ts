@@ -398,14 +398,27 @@ function makeScopedQuery(
       filter?: PluginQueryFilter,
     ): Promise<T[]> => {
       const columns = tableColumns("list", table);
-      const reserved = new Set(["limit", "orderBy", "orderDir", "since", "before"]);
+      const reserved = new Set([
+        "limit",
+        "orderBy",
+        "orderDir",
+        "since",
+        "before",
+        "anyOf",
+        "afterId",
+      ]);
       for (const [k, v] of Object.entries(filter ?? {})) {
         if (k === "limit" && (typeof v !== "number" || v <= 0 || v > 1000)) {
           throw new Error(`${scope.label}.list: limit must be 1..1000`);
         }
+        if (k === "anyOf" && v !== null && typeof v === "object" && !Array.isArray(v)) {
+          // Name the plugin's schema in the error; the op re-checks values.
+          assertDeclared("list", table, columns, Object.keys(v));
+        }
         if (k === "orderBy") {
           if (typeof v !== "string") throw new Error(`${scope.label}.list: orderBy must be string`);
-          if (!(v in columns)) {
+          // `id` is host-owned but orderable: `afterId` pages by it (#1213).
+          if (v !== "id" && !(v in columns)) {
             throw new Error(`${scope.label}.list: orderBy "${v}" not declared in schema`);
           }
         }

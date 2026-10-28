@@ -62,7 +62,6 @@ import {
   type ChromeDeps,
   chromeStatus,
   chromeTranslationBasis,
-  listAll,
   prepareChromeTranslation,
   reattachChromeVariant,
   reattachChromeVariantDelegated,
@@ -92,6 +91,8 @@ import {
   type StyleGuideRow,
   translateVariantPage,
 } from "./page-translation.js";
+import { batchIn, onceIn, renderMemoOf } from "./render-memo.js";
+import { chunked, listAll, listWhereAnyOf } from "./store-reads.js";
 import { writeHints } from "./write-hints.js";
 
 /**
@@ -154,6 +155,7 @@ export interface PageVariantRow {
   locale_code: string;
   translation_status: "source" | "up_to_date" | "needs_update";
   source_event_cursor: number | null;
+  created_at: string;
 }
 
 /**
@@ -231,7 +233,16 @@ interface LocaleRegistry {
   prefixDefaultLocale: boolean;
 }
 
-async function refreshLocaleCache(q: PluginAdminQuery, ctx?: unknown): Promise<LocaleRegistry> {
+/**
+ * The locale registry, fresh — or, inside one render pass, the one this
+ * pass already read (#1213): a preview asks five composition points for
+ * the same page and every one of them needs the registry.
+ */
+function refreshLocaleCache(q: PluginAdminQuery, ctx?: unknown): Promise<LocaleRegistry> {
+  return onceIn(renderMemoOf(ctx), "locales", () => readLocaleRegistry(q, ctx));
+}
+
+async function readLocaleRegistry(q: PluginAdminQuery, ctx?: unknown): Promise<LocaleRegistry> {
   const rows = (await q.list("locales", { limit: 500 })) as unknown as LocaleRow[];
   const byCode = new Map<string, LocaleRow>();
   for (const row of rows) byCode.set(row.code, row);
@@ -270,23 +281,64 @@ async function loadPrefixDefaultLocaleSetting(
   return { enabled: value.enabled, rowId: row.id };
 }
 
+/**
+ * The variant row of each page that has one. One `anyOf` read per 1000
+ * pages (#1213 — it used to be one read per page, which a build of the
+ * whole site paid for every page); within a render pass, a page read once
+ * is not read again.
+ */
 async function loadVariantsByPage(
   q: PluginAdminQuery,
   pageIds: ReadonlyArray<string>,
+  ctx?: unknown,
 ): Promise<Map<string, PageVariantRow>> {
+  const byPage = await batchIn<PageVariantRow | null>(renderMemoOf(ctx), "variantByPage").getMany(
+    pageIds,
+    async (missing) => {
+      const rows = (await listWhereAnyOf(
+        q,
+        "page_variants",
+        "page_id",
+        missing,
+      )) as PageVariantRow[];
+      return new Map(rows.map((r) => [r.page_id, r]));
+    },
+    null,
+  );
   const out = new Map<string, PageVariantRow>();
-  // Bounded per-page lookups through the declared-column filter; page
-  // counts per call are small (write-path recomputes) or batched by
-  // the diff engine which tolerates the N queries.
-  for (const pageId of pageIds) {
-    const rows = (await q.list("page_variants", {
-      page_id: pageId,
-      limit: 1,
-    })) as unknown as PageVariantRow[];
-    const row = rows[0];
-    if (row) out.set(pageId, row);
-  }
+  for (const [pageId, row] of byPage) if (row) out.set(pageId, row);
   return out;
+}
+
+/** Every variant row of each group, batched and per-pass memoised like
+ *  {@link loadVariantsByPage}. */
+async function loadGroupMembers(
+  q: PluginAdminQuery,
+  groupIds: ReadonlyArray<string>,
+  ctx?: unknown,
+): Promise<Map<string, PageVariantRow[]>> {
+  return batchIn<PageVariantRow[]>(renderMemoOf(ctx), "groupMembers").getMany(
+    groupIds,
+    async (missing) => {
+      const rows = (await listWhereAnyOf(
+        q,
+        "page_variants",
+        "group_id",
+        missing,
+      )) as PageVariantRow[];
+      // In the order the variants joined the group (the source first): the
+      // order hreflang, sitemap alternates and the switcher list them in.
+      rows.sort(
+        (a, b) =>
+          Date.parse(String(a.created_at)) - Date.parse(String(b.created_at)) ||
+          (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      );
+      const byGroup = new Map<string, PageVariantRow[]>();
+      for (const r of rows) byGroup.set(r.group_id, [...(byGroup.get(r.group_id) ?? []), r]);
+      return byGroup;
+    },
+    [],
+  );
 }
 
 function defaultLocale(locales: ReadonlyMap<string, LocaleRow> = localeCache): LocaleRow | null {
@@ -306,11 +358,12 @@ async function localesByPage(
   q: PluginAdminQuery,
   pageIds: readonly string[],
   locales: ReadonlyMap<string, LocaleRow> = localeCache,
+  ctx?: unknown,
 ): Promise<Map<string, LocaleRow>> {
   const out = new Map<string, LocaleRow>();
   if (locales.size === 0) return out;
   const def = defaultLocale(locales);
-  const variants = await loadVariantsByPage(q, pageIds);
+  const variants = await loadVariantsByPage(q, pageIds, ctx);
   for (const id of pageIds) {
     const variant = variants.get(id);
     const locale = variant ? locales.get(variant.locale_code) : def;
@@ -332,13 +385,16 @@ async function localesByPage(
  * internal link on a page to the linked page's version in that page's
  * language, in module HTML, rich text, link fields, menus and chrome
  * alike. Empty when no locales are registered: one language, nothing
- * to map. One read of the variant table, not one per page — a build asks
- * for the whole site.
+ * to map. #1213 — reads the variant rows of exactly the asked pages (one
+ * read per 1000), so a caller that asks only for the pages a render
+ * references pays for those, and a build asking for the whole site pays
+ * one read per 1000 pages.
  */
 async function pageVariantPartition(
   q: PluginAdminQuery,
   pageIds: readonly string[],
   locales: ReadonlyMap<string, LocaleRow>,
+  ctx?: unknown,
 ): Promise<Record<string, { variant: string; group: string | null }>> {
   const out: Record<string, { variant: string; group: string | null }> = {};
   if (locales.size === 0) return out;
@@ -348,8 +404,7 @@ async function pageVariantPartition(
       "international-site: locales are registered but none is the default — set_locales with exactly one isDefault",
     );
   }
-  const rows = (await listAll(q, "page_variants")) as unknown as PageVariantRow[];
-  const rowByPage = new Map(rows.map((r) => [r.page_id, r]));
+  const rowByPage = await loadVariantsByPage(q, pageIds, ctx);
   for (const id of pageIds) {
     const row = rowByPage.get(id);
     if (!row) {
@@ -375,10 +430,10 @@ async function chromeDepsOf(ctx: unknown): Promise<ChromeDeps> {
   const reg = await refreshLocaleCache(q, ctx);
   const cms = cmsOf(ctx);
   // Epic #1107 — local lists in chrome are read with their list types
-  // (which entry fields are text is the type's to say).
-  const types = await cms.call<{ listTypes: { slug: string; definition: ListTypeDef }[] }>(
-    "list_types.list",
-    {},
+  // (which entry fields are text is the type's to say). Once per render
+  // pass (#1213): content_variants and list_resolve both need them.
+  const types = await onceIn(renderMemoOf(ctx), "listTypes", () =>
+    cms.call<{ listTypes: { slug: string; definition: ListTypeDef }[] }>("list_types.list", {}),
   );
   return {
     q,
@@ -401,7 +456,7 @@ async function counterpartInLocale(
   ctx?: unknown,
 ): Promise<string | null> {
   const reg = await refreshLocaleCache(q, ctx);
-  const variant = (await loadVariantsByPage(q, [pageId])).get(pageId);
+  const variant = (await loadVariantsByPage(q, [pageId], ctx)).get(pageId);
   if (!variant) return defaultLocale(reg.byCode)?.code === localeCode ? pageId : null;
   if (variant.locale_code === localeCode) return pageId;
   const rows = (await q.list("page_variants", {
@@ -429,9 +484,8 @@ async function assertRemovedLocalesUnused(
     (await cms.call<{ pages: { id: string }[] }>("pages.list", {})).pages.map((p) => p.id),
   );
   for (const code of removedCodes) {
-    const rows = (await q.list("page_variants", {
+    const rows = (await listAll(q, "page_variants", {
       locale_code: code,
-      limit: 1000,
     })) as unknown as PageVariantRow[];
     const used = rows.filter((r) => livePageIds.has(r.page_id)).map((r) => r.page_id);
     if (used.length > 0) {
@@ -590,29 +644,51 @@ async function publishedVariantMatrix(
   const reg = await refreshLocaleCache(q, ctx);
   const out = new Map<string, PublishedVariant[]>();
   if (reg.byCode.size === 0) return out;
+  // #1213 — one render pass asks for the same page's matrix from
+  // language_links, head_contributions and the static selector: compute
+  // it once per pass, so the switcher and hreflang also read the same rows.
+  const byPage = await batchIn<PublishedVariant[] | null>(
+    renderMemoOf(ctx),
+    `matrix:${pageUrlStyle}`,
+  ).getMany(
+    pageIds,
+    (missing) => computeVariantMatrix(ctx, q, cms, reg, missing, pageUrlStyle),
+    null,
+  );
+  for (const [pageId, variants] of byPage) if (variants) out.set(pageId, variants);
+  return out;
+}
 
-  const requested = new Set(pageIds);
-  const allVariants = (await q.list("page_variants", {
-    limit: 1000,
-  })) as unknown as PageVariantRow[];
-  const byGroup = new Map<string, PageVariantRow[]>();
-  for (const v of allVariants) {
-    const list = byGroup.get(v.group_id) ?? [];
-    list.push(v);
-    byGroup.set(v.group_id, list);
-  }
-  const pagesResult = await cms.call<{
-    pages: { id: string; status: string }[];
-  }>("pages.list", {});
-  const pageById = new Map(pagesResult.pages.map((p) => [p.id, p]));
+/**
+ * The matrix for `pageIds`, from the variant rows of those pages and of
+ * their groups only (#1213): its cost follows the pages asked about, not
+ * the site. It used to read every variant row (silently only the first
+ * 1000) and every page of the site, on every call.
+ */
+async function computeVariantMatrix(
+  ctx: unknown,
+  q: PluginAdminQuery,
+  cms: CmsHandle,
+  reg: LocaleRegistry,
+  pageIds: readonly string[],
+  pageUrlStyle: PageUrlStyle,
+): Promise<Map<string, PublishedVariant[]>> {
+  const out = new Map<string, PublishedVariant[]>();
+  const variants = await loadVariantsByPage(q, pageIds, ctx);
+  const groupIds = [...new Set([...variants.values()].map((v) => v.group_id))];
+  if (groupIds.length === 0) return out;
+  const members = await loadGroupMembers(q, groupIds, ctx);
+  const statuses = await loadPageStatuses(
+    cms,
+    [...members.values()].flatMap((group) => group.map((v) => v.page_id)),
+    ctx,
+  );
 
-  const groups: { members: PageVariantRow[]; published: Omit<PublishedVariant, "href">[] }[] = [];
-  for (const group of byGroup.values()) {
-    if (!group.some((v) => requested.has(v.page_id))) continue;
+  const groups: { groupId: string; published: Omit<PublishedVariant, "href">[] }[] = [];
+  for (const groupId of groupIds) {
     const published: Omit<PublishedVariant, "href">[] = [];
-    for (const v of group) {
-      const page = pageById.get(v.page_id);
-      if (page?.status !== "published") continue;
+    for (const v of members.get(groupId) ?? []) {
+      if (statuses.get(v.page_id) !== "published") continue;
       const locale = reg.byCode.get(v.locale_code);
       if (!locale) {
         throw new Error(
@@ -626,27 +702,64 @@ async function publishedVariantMatrix(
         displayName: locale.display_name,
       });
     }
-    if (published.length >= 2) groups.push({ members: group, published });
+    if (published.length >= 2) groups.push({ groupId, published });
   }
   if (groups.length === 0) return out;
 
-  const { urls } = await cms.call<{ urls: Record<string, string> }>("pages.resolve_public_urls", {
-    pageIds: [...new Set(groups.flatMap((g) => g.published.map((v) => v.pageId)))],
-    pageUrlStyle,
-  });
-  for (const group of groups) {
-    const published = group.published.map((v) => {
-      const href = urls[v.pageId];
-      if (href === undefined) {
-        throw new Error(`international-site: core resolved no public URL for page ${v.pageId}`);
-      }
-      return { ...v, href };
+  const urls: Record<string, string> = {};
+  const linked = [...new Set(groups.flatMap((g) => g.published.map((v) => v.pageId)))];
+  for (const slice of chunked(linked)) {
+    const resolved = await cms.call<{ urls: Record<string, string> }>("pages.resolve_public_urls", {
+      pageIds: slice,
+      pageUrlStyle,
     });
-    for (const v of group.members) {
-      if (requested.has(v.page_id)) out.set(v.page_id, published);
-    }
+    Object.assign(urls, resolved.urls);
+  }
+  const byGroup = new Map<string, PublishedVariant[]>();
+  for (const group of groups) {
+    byGroup.set(
+      group.groupId,
+      group.published.map((v) => {
+        const href = urls[v.pageId];
+        if (href === undefined) {
+          throw new Error(`international-site: core resolved no public URL for page ${v.pageId}`);
+        }
+        return { ...v, href };
+      }),
+    );
+  }
+  for (const [pageId, v] of variants) {
+    const published = byGroup.get(v.group_id);
+    if (published) out.set(pageId, published);
   }
   return out;
+}
+
+/**
+ * Publication status of each page (null = deleted or not visible in this
+ * scope), from core's `pages.list_statuses`: the named pages only, one
+ * call per 1000, memoised per render pass (#1213).
+ */
+async function loadPageStatuses(
+  cms: CmsHandle,
+  pageIds: readonly string[],
+  ctx: unknown,
+): Promise<Map<string, "draft" | "published" | null>> {
+  return batchIn<"draft" | "published" | null>(renderMemoOf(ctx), "pageStatus").getMany(
+    pageIds,
+    async (missing) => {
+      const out = new Map<string, "draft" | "published">();
+      for (const slice of chunked(missing)) {
+        const { statuses } = await cms.call<{ statuses: Record<string, "draft" | "published"> }>(
+          "pages.list_statuses",
+          { pageIds: slice },
+        );
+        for (const [id, status] of Object.entries(statuses)) out.set(id, status);
+      }
+      return out;
+    },
+    null,
+  );
 }
 
 /**
@@ -664,28 +777,20 @@ async function localeRootPageIds(
   q: PluginAdminQuery,
   pageIds: readonly string[],
 ): Promise<Set<string>> {
-  const out = new Set<string>();
-  const cms = cmsOf(ctx);
-  const homePageId = await siteHomePageId(cms);
-  if (!homePageId) return out; // the site has no home page at all
-  const homeVariant = (
-    (await q.list("page_variants", {
-      page_id: homePageId,
-      limit: 1,
-    })) as unknown as PageVariantRow[]
-  )[0];
-  if (!homeVariant) return out; // home is not in any variant group
-  const group = (await q.list("page_variants", {
-    group_id: homeVariant.group_id,
-    limit: 100,
-  })) as unknown as PageVariantRow[];
-  const requested = new Set(pageIds);
-  for (const v of group) {
+  // The home's counterparts are the same for every page of a pass.
+  const roots = await onceIn(renderMemoOf(ctx), "localeRoots", async () => {
+    const homePageId = await siteHomePageId(cmsOf(ctx));
+    if (!homePageId) return new Set<string>(); // the site has no home page at all
+    const homeVariant = (await loadVariantsByPage(q, [homePageId], ctx)).get(homePageId);
+    if (!homeVariant) return new Set<string>(); // home is not in any variant group
+    const group = (await loadGroupMembers(q, [homeVariant.group_id], ctx)).get(
+      homeVariant.group_id,
+    );
     // The designated home keeps core's own root handling; only its
     // counterparts need the annotation.
-    if (v.page_id !== homePageId && requested.has(v.page_id)) out.add(v.page_id);
-  }
-  return out;
+    return new Set((group ?? []).map((v) => v.page_id).filter((id) => id !== homePageId));
+  });
+  return new Set(pageIds.filter((id) => roots.has(id)));
 }
 
 /** #741 — the Power-MCP half of the translation tools' descriptions. */
@@ -889,7 +994,7 @@ export default definePlugin<PluginContextTier1>({
         for (const id of pageIds) annotations[id] = {};
         return { annotations };
       }
-      const locales = await localesByPage(q, pageIds, reg.byCode);
+      const locales = await localesByPage(q, pageIds, reg.byCode, ctx);
       // Which of these pages is the home page IN ITS OWN LOCALE. The
       // site has exactly one designated home (site_defaults), so core
       // composes every other page as `<prefix>/<slug>` — which put the
@@ -1044,7 +1149,7 @@ export default definePlugin<PluginContextTier1>({
     content_variants: async (ctx, args) => {
       const deps = await chromeDepsOf(ctx);
       return resolveChromeVariants(deps, args, (pageIds) =>
-        localesByPage(deps.q, pageIds, deps.locales),
+        localesByPage(deps.q, pageIds, deps.locales, ctx),
       );
     },
 
@@ -1057,7 +1162,7 @@ export default definePlugin<PluginContextTier1>({
       const { pageIds } = linkResolveArgs.parse(args);
       const q = adminQueryOf(ctx);
       const reg = await refreshLocaleCache(q, ctx);
-      return { pages: await pageVariantPartition(q, pageIds, reg.byCode) };
+      return { pages: await pageVariantPartition(q, pageIds, reg.byCode, ctx) };
     },
 
     /**
@@ -1128,9 +1233,7 @@ export default definePlugin<PluginContextTier1>({
       const cms = cmsOf(ctx);
       const reg = await refreshLocaleCache(q, ctx);
       const locales = reg.rows;
-      const variants = (await q.list("page_variants", {
-        limit: 1000,
-      })) as unknown as PageVariantRow[];
+      const variants = (await listAll(q, "page_variants")) as unknown as PageVariantRow[];
       const pagesResult = await cms.call<{
         pages: { id: string; slug: string; title: string; status: string; currentPath: string }[];
       }>("pages.list", {});
@@ -1670,7 +1773,7 @@ export default definePlugin<PluginContextTier1>({
       const reg = await refreshLocaleCache(q, ctx);
       const matrix = await publishedVariantMatrix(ctx, pageIds, pageUrlStyleOf(args));
       const lang: Record<string, string> = {};
-      for (const [pageId, locale] of await localesByPage(q, pageIds, reg.byCode)) {
+      for (const [pageId, locale] of await localesByPage(q, pageIds, reg.byCode, ctx)) {
         lang[pageId] = locale.code;
       }
       const head: Record<string, unknown[]> = {};
