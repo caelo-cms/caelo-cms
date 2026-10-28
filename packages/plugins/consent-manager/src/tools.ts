@@ -170,6 +170,9 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
     // make without consent: the same permission as registering a tag.
     requiredPermission: "settings.write",
     approvalPreviewFullArgs: ["hosts", "reason"],
+    // The module may exist only in the chat's draft, or reach other hosts
+    // there than on main: judge and record it where the Owner saw it.
+    approvedOnChatBranch: true,
     inputJsonSchema: {
       type: "object",
       additionalProperties: false,

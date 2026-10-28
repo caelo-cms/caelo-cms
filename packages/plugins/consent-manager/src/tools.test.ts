@@ -20,6 +20,8 @@ describe("embed decisions", () => {
     expect(allow.approvalMode).toBe("user-approval");
     expect(allow.requiredPermission).toBe("settings.write");
     expect(allow.approvalPreviewFullArgs).toEqual(["hosts", "reason"]);
+    // Judged on the chat's draft, where the module the Owner saw lives.
+    expect(allow.approvedOnChatBranch).toBe(true);
   });
 
   it("lets the ungated tool only keep an embed withheld until consent", () => {
