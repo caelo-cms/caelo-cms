@@ -629,7 +629,7 @@ export function assertNoBrowserConsoleErrors(tracker: BrowserConsoleErrorTracker
  * free of SvelteKit/devalue wire-format coupling.
  */
 export async function awaitStageComplete(page: Page): Promise<void> {
-  // Issue #620 — the AI stages finished work itself (stage_changes). When it
+  // Issue #620 — the AI may stage itself (stage_changes) when asked. When it
   // already did, nothing is pending and the toolbar offers no Stage; an AI
   // Stage newer than the last Publish live proves the merge happened.
   const stageBtn = page.getByTestId("stage-btn");
@@ -1188,33 +1188,41 @@ function aiStageRunsSql(since: string): string {
 }
 
 /**
- * Issue #620 Part B — wait until the AI staged its own work: a quality audit
- * run recorded as an AI Stage after `sinceIso` means the AI's stage_changes
- * merged and built staging. Returns the number of such Stages.
+ * The number of quality audit runs recorded as an AI Stage after `sinceIso`:
+ * each one means an AI's stage_changes merged and built staging.
+ */
+export function aiStageCountSince(sinceIso: string): number {
+  return Number.parseInt(
+    runBunInline(
+      `
+      import { SQL } from "bun";
+      const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const rows = await tx.unsafe(process.env.QUERY, [process.env.SINCE]);
+        process.stdout.write(String(rows[0]?.n ?? 0));
+      });
+      await sql.end();
+      `,
+      { SINCE: sinceIso, QUERY: aiStageRunsSql("$1::timestamptz") },
+    ).trim(),
+    10,
+  );
+}
+
+/**
+ * Wait until the AI staged the work the scenario asked it to stage (the AI
+ * stages on request, never on its own). Returns the number of AI Stages
+ * since `sinceIso`.
  */
 export async function awaitAiStaged(sinceIso: string, timeoutMs = 360_000): Promise<number> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const n = Number.parseInt(
-      runBunInline(
-        `
-        import { SQL } from "bun";
-        const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-        await sql.begin(async (tx) => {
-          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-          const rows = await tx.unsafe(process.env.QUERY, [process.env.SINCE]);
-          process.stdout.write(String(rows[0]?.n ?? 0));
-        });
-        await sql.end();
-        `,
-        { SINCE: sinceIso, QUERY: aiStageRunsSql("$1::timestamptz") },
-      ).trim(),
-      10,
-    );
+    const n = aiStageCountSince(sinceIso);
     if (n > 0) return n;
     if (Date.now() > deadline) {
       throw new Error(
-        `awaitAiStaged: the AI did not stage its work (no AI Stage since ${sinceIso}) — it must call stage_changes when the requested work is done`,
+        `awaitAiStaged: the AI did not stage its work (no AI Stage since ${sinceIso}) — it must call stage_changes when the user asks for a Stage`,
       );
     }
     await new Promise((r) => setTimeout(r, 3_000));

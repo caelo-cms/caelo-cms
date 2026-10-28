@@ -35,10 +35,12 @@
 
 import {
   definePlugin,
+  type ModuleDeferralSpec,
   type PluginAdminQuery,
   type PluginContextTier1,
   z,
 } from "@caelo-cms/plugin-sdk";
+import { unreviewedEmbedFindings } from "./audit.js";
 import { DEFAULT_CATEGORIES } from "./categories.js";
 import { consentLogCsv, consentLogPage, consentStats, describeConsentLog } from "./consent-log.js";
 import {
@@ -47,7 +49,7 @@ import {
   usedCategoryKeys,
   vendorEntries,
 } from "./declaration.js";
-import { defaultPlaceholder } from "./placeholder.js";
+import { defaultPlaceholder, editorNotice } from "./placeholder.js";
 import { buildRuntimeJs, CONSENT_COOKIE, RUNTIME_CSS } from "./runtime.js";
 import { deferralReason, moduleHosts } from "./scan.js";
 import { CONSENT_SKILLS } from "./skills.js";
@@ -526,6 +528,9 @@ export default definePlugin<PluginContextTier1>({
    */
   deferralsOperation: "consent_deferrals",
 
+  /** A pending module blocks Publish live — see `audit_findings`. */
+  auditFindingsOperation: "audit_findings",
+
   /** Keeps the scan current without anyone remembering to run it. */
   workers: [
     { name: "consent-embed-scan", cron: "*/5 * * * *", operationName: "scan_modules" },
@@ -681,7 +686,7 @@ export default definePlugin<PluginContextTier1>({
         ...(withheldNow.some((w) => w.siteChrome)
           ? {
               withheldNote:
-                "Site chrome (header, footer, navigation) is withheld: visitors see a placeholder instead on EVERY page. Tell the operator now, then resolve each module with classify_external_embed (or allow_external_embed, which asks the Owner to approve).",
+                "Site chrome (header, footer, navigation) is withheld: on EVERY page visitors see nothing in its place (pending) or a consent placeholder (gated). Tell the operator now, then resolve each module with classify_external_embed (or allow_external_embed, which asks the Owner to approve).",
             }
           : {}),
         consentLog: describeConsentLog(settings.retention_days),
@@ -760,25 +765,20 @@ export default definePlugin<PluginContextTier1>({
     /**
      * Core asks which modules to withhold; this answers.
      *
-     * `pending` withholds exactly like `gated` does. A module whose
-     * vendor nobody has ruled on is not known to be harmless, and
-     * rendering it while the question is open would send the request
-     * this whole mechanism exists to hold back. The difference between
-     * the two is surfaced to the EDITOR, not to the visitor.
+     * `pending` withholds too: a module whose vendor nobody has ruled
+     * on is not known to be harmless, and rendering it while the
+     * question is open would send the request this whole mechanism
+     * exists to hold back. But the visitor cannot answer that question,
+     * so a pending module is omitted from the built page altogether; the
+     * editor preview shows a notice in its place, and the Stage audit
+     * blocks Publish live until it is resolved (`audit_findings`).
      */
     consent_deferrals: async (ctx, args) => {
       const { modules } = deferralsArgs.parse(args);
       const q = adminQueryOf(ctx);
       const settings = await settingsOf(q);
       const labelOf = new Map((await categoriesOf(q)).map((c) => [c.key, c.display_name]));
-      const deferrals: Record<
-        string,
-        {
-          reason: string;
-          placeholderModuleSlug: string;
-          defaultPlaceholder: { html: string; css: string };
-        }
-      > = {};
+      const deferrals: Record<string, ModuleDeferralSpec> = {};
       for (const m of modules) {
         const hosts = moduleHosts(m);
         if (hosts.length === 0) continue;
@@ -790,14 +790,31 @@ export default definePlugin<PluginContextTier1>({
         })) as unknown as GuardRow[];
         const reason = deferralReason(hosts, guard, classifyHosts);
         if (reason === null) continue;
+        if (reason === "unclassified") {
+          deferrals[m.moduleId] = { reason, omit: true, editorNotice: editorNotice(hosts) };
+          continue;
+        }
+        const label = labelOf.get(reason);
+        if (label === undefined) {
+          throw new Error(
+            `consent_deferrals: module ${m.moduleId} is gated under category "${reason}", which does not exist (categories: ${[...labelOf.keys()].join(", ")}). Re-classify it with classify_external_embed.`,
+          );
+        }
         deferrals[m.moduleId] = {
           reason,
           placeholderModuleSlug: settings.placeholder_module_slug,
-          defaultPlaceholder: defaultPlaceholder(reason, labelOf.get(reason) ?? null),
+          defaultPlaceholder: defaultPlaceholder(reason, label),
         };
       }
       return { deferrals };
     },
+
+    /** The Stage-audit contribution: see ./audit.ts. Read-only, main line. */
+    audit_findings: async (ctx) => ({
+      findings: unreviewedEmbedFindings(
+        (await withheldModules(ctx)).map(({ scan, reason }) => ({ ...scan, reason })),
+      ),
+    }),
 
     /**
      * Scan changed modules for third-party hosts and record a verdict.

@@ -25,12 +25,14 @@ import { expect, test } from "./fixtures.js";
 import { ADMIN_LOG_PATH } from "./global-setup.js";
 import {
   activePluginSlugs,
+  aiStageCountSince,
   assertNoChatRunnerDiagWarnings,
   assertNoOrphanLocks,
   attachChatSessionTracker,
   awaitAiStaged,
   awaitPublishComplete,
   awaitQualityGateOpen,
+  awaitStageComplete,
   getProductionUrl,
   loginAsDevOwner,
   resetLiveditFixtures,
@@ -66,7 +68,8 @@ const HOMEPAGE_PROMPT =
   "don't leave it black-and-white) and a nice background for the header. Include a header " +
   "module with the Caelo brand and a simple top navigation, a hero section with a headline, " +
   "a 3-column feature grid below the hero with three features about branched edits, plugin sandbox, " +
-  "and snapshot revert, and a footer module with copyright text mentioning Caelo and MPL 2.0.";
+  "and snapshot revert, and a footer module with copyright text mentioning Caelo and MPL 2.0. " +
+  "When it is done, put it on staging.";
 
 // Concrete enough to avoid the chat-runner's `passive-response-diag`
 // warning, which fires when the AI returns a short text-only response
@@ -403,11 +406,11 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
       `Expected the rendered page body to contain substantive text. Got ${bodyText.trim().length} chars.`,
     ).toBeGreaterThan(100);
 
-    // ── Step 4: The AI stages its own work (#620 Part B) ───────────
-    // The target flow: the operator says what they want; the AI changes,
-    // STAGES (stage_changes → merge + real staging build + quality audit)
-    // and checks; the operator only clicks Publish live. No Stage click
-    // here — the AI must have staged within its turn.
+    // ── Step 4: The AI stages on request (#620 Part B) ─────────────
+    // The prompt asks for staging: the AI changes, STAGES (stage_changes →
+    // merge + real staging build + quality audit) and checks; the operator
+    // only clicks Publish live. No Stage click here — the AI must have
+    // staged within its turn.
     await awaitAiStaged(startTimestamp);
 
     // ── Step 5: DB structural floor (AC #2) ────────────────────────
@@ -599,11 +602,17 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     await page.goto("/edit");
     await sendChatPromptAndWait(page, HERO_REEDIT_PROMPT);
 
-    // The AI stages the re-edit itself, merging it into main, so the
-    // post-reedit snapshot reads the updated content_values. Publish is
-    // not required here — the assertion is pure DB shape (placement
-    // identity + updated_at advance), not a production URL check.
-    await awaitAiStaged(reeditStart);
+    // A one-line wording change is not staged by the AI: it says what
+    // changed and offers the Stage, and the operator clicks Stage, which
+    // merges into main so the post-reedit snapshot reads the updated
+    // content_values. Publish is not required here — the assertion is pure
+    // DB shape (placement identity + updated_at advance), not a production
+    // URL check.
+    expect(
+      aiStageCountSince(reeditStart),
+      "the AI staged a small edit the operator did not ask to stage",
+    ).toBe(0);
+    await awaitStageComplete(page);
 
     const postReeditSnapshot = snapshotMostRecentPage(startTimestamp);
     expect(postReeditSnapshot, "snapshot post-reedit").not.toBeNull();

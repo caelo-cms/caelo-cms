@@ -92,7 +92,7 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
   {
     name: "consent_status",
     description:
-      "Read the consent setup: categories (and which ones something on the site uses), policy version, the exact contract a banner module must satisfy, the cookies the site itself sets, `withheldNow` (modules visitors currently see as a placeholder — `siteChrome: true` means a header/footer/navigation missing from every page), and `consentLog` (what each recorded decision stores, for how long, where, and a paragraph for the privacy policy). " +
+      "Read the consent setup: categories (and which ones something on the site uses), policy version, the exact contract a banner module must satisfy, the cookies the site itself sets, `withheldNow` (modules visitors do not get as authored: `pending` ones are left out of the page entirely, `gated` ones show the consent placeholder — `siteChrome: true` means a header/footer/navigation missing from every page), and `consentLog` (what each recorded decision stores, for how long, where, and a paragraph for the privacy policy). " +
       "Call this FIRST whenever the operator asks for a cookie banner, consent dialog, privacy policy text, or anything about tracking, and right after the consent plugin is activated — tell the operator about anything in `withheldNow` at once. " +
       "NOT for changing anything.",
     operationName: "consent_status",
@@ -133,8 +133,8 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
     name: "list_external_embeds",
     description:
       "List the modules that load something from a third party (YouTube, Maps, fonts, pixels), what each reaches for, and whether it is withheld pending consent, already gated, or explicitly allowed. " +
-      "Call when the operator asks what the site loads, why a module shows a placeholder, or after adding a module with an embed. " +
-      "A module marked `pending` is WITHHELD from visitors — an unrecognised vendor is not assumed harmless — so resolve those with classify_external_embed or allow_external_embed.",
+      "Call when the operator asks what the site loads, why a module shows a placeholder or is missing, or after adding a module with an embed. " +
+      "A module marked `pending` is left OUT of the built page — an unrecognised vendor is not assumed harmless, so visitors see nothing in its place and Publish live is blocked — so resolve those with classify_external_embed or allow_external_embed.",
     operationName: "list_embeds",
     inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
   },
