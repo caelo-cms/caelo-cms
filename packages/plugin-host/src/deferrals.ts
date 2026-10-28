@@ -37,7 +37,7 @@ import {
   moduleDeferralSpec,
 } from "@caelo-cms/plugin-sdk";
 import { execute, type OperationRegistry } from "@caelo-cms/query-api";
-import { type ModuleFieldKind, renderTemplate } from "@caelo-cms/shared";
+import { type ComposeDeferral, type ModuleFieldKind, renderTemplate } from "@caelo-cms/shared";
 import {
   hostInfra,
   hostSystemActorId,
@@ -49,15 +49,12 @@ import {
 } from "./dispatch.js";
 import { reportPluginRenderFailure } from "./render-failures.js";
 
-/** What the composer needs to emit one withheld module. */
-export interface ResolvedDeferral {
-  readonly pluginSlug: string;
-  readonly reason: string;
-  readonly placeholderModuleSlug: string;
-  /** The placeholder module, already rendered from its field defaults. */
-  readonly placeholderHtml: string;
-  readonly placeholderCss: string;
-}
+/**
+ * What the composer needs to emit one withheld module: a gate's
+ * placeholder already rendered from its module's field defaults, or an
+ * omitted module's editor notice (`null` outside the editor preview).
+ */
+export type ResolvedDeferral = ComposeDeferral;
 
 /** moduleId → the verdict withholding it. Absent means "renders normally". */
 export type ResolvedDeferrals = ReadonlyMap<string, ResolvedDeferral>;
@@ -141,10 +138,27 @@ export async function resolveModuleDeferrals(
   }
   if (raw.size === 0) return out;
 
-  const placeholders = await loadPlaceholders(
-    new Set([...raw.values()].map((v) => v.spec.placeholderModuleSlug)),
-  );
+  const gates = new Map<string, { pluginSlug: string; spec: ModuleGateSpec }>();
   for (const [moduleId, { pluginSlug, spec }] of raw) {
+    if (!("omit" in spec)) {
+      gates.set(moduleId, { pluginSlug, spec });
+      continue;
+    }
+    // The notice explains to the operator why the module is missing;
+    // a visitor gets nothing in its place.
+    out.set(moduleId, {
+      pluginSlug,
+      reason: spec.reason,
+      omit: true,
+      editorNotice: scope.editorPreview ? spec.editorNotice : null,
+    });
+  }
+  if (gates.size === 0) return out;
+
+  const placeholders = await loadPlaceholders(
+    new Set([...gates.values()].map((v) => v.spec.placeholderModuleSlug)),
+  );
+  for (const [moduleId, { pluginSlug, spec }] of gates) {
     const mod = placeholders.get(spec.placeholderModuleSlug);
     if (!mod && spec.defaultPlaceholder) {
       // The plugin ships a placeholder of its own; the page keeps
@@ -182,6 +196,8 @@ export async function resolveModuleDeferrals(
   }
   return out;
 }
+
+type ModuleGateSpec = Exclude<ModuleDeferralSpec, { omit: true }>;
 
 /** One `modules.list` read for every placeholder in the pass. */
 async function loadPlaceholders(slugs: ReadonlySet<string>): Promise<Map<string, ModuleRow>> {

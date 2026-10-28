@@ -30,7 +30,7 @@ import type { ModuleFieldKind } from "./content.js";
 import { findInteractionIds, interactionAssets } from "./interactions.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import type { ListPageContext } from "./lists/resolve.js";
-import { tagModuleId } from "./module-id-tag.js";
+import { MODULE_ID_ATTRIBUTE, tagModuleId } from "./module-id-tag.js";
 import {
   type NestedModuleResource,
   type NestedRenderFailure,
@@ -530,12 +530,28 @@ function recordFailures(
  * A module withheld from this render, as resolved by the plugin host
  * (#450). The composer never decides this — it only knows the verdict.
  */
-export interface ComposeDeferral {
+export type ComposeDeferral = ComposeGateDeferral | ComposeOmitDeferral;
+
+/** Withheld behind a placeholder until the plugin's runtime releases it. */
+export interface ComposeGateDeferral {
   readonly pluginSlug: string;
   readonly reason: string;
   readonly placeholderModuleSlug: string;
   readonly placeholderHtml: string;
   readonly placeholderCss: string;
+  readonly omit?: undefined;
+}
+
+/**
+ * Left out entirely: nothing on the visitor's side can release it. The
+ * plugin host passes the editor notice only to the editor preview; a
+ * build gets `null` and the module's place stays empty.
+ */
+export interface ComposeOmitDeferral {
+  readonly pluginSlug: string;
+  readonly reason: string;
+  readonly omit: true;
+  readonly editorNotice: { readonly html: string; readonly css: string } | null;
 }
 
 /**
@@ -566,10 +582,8 @@ function wrapDeferredModule(
   moduleHtml: string,
   module: Pick<ComposeModule, "moduleId" | "slug" | "css" | "js">,
   nestedModules: readonly Pick<NestedModuleResource, "moduleId" | "css" | "js">[],
-  deferral: ComposeDeferral,
+  deferral: ComposeGateDeferral,
 ): string {
-  const attr = (v: string): string =>
-    v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
   // Inside the inert <template>, only an element's own end tag ends a
   // <style> / <script>; a `</template` there is text. So CSS needs just
   // its own close escaped, JS that could end its <script> ships base64
@@ -596,6 +610,25 @@ function wrapDeferredModule(
     `<template data-caelo-deferred-content>${css}${safeHtml}${js}</template>`,
     `</div>`,
   ].join("");
+}
+
+/**
+ * Emit an omitted module: nothing in a build, the editor notice in the
+ * preview. The module's markup, CSS and JS never reach the page — not
+ * even in a `<template>`, since nothing would ever clone it out. The
+ * notice carries the module id (and its slug as the label) so the
+ * editor's chat affordances reference the module it stands in for.
+ */
+function omittedModuleNotice(
+  module: Pick<ComposeModule, "moduleId" | "slug">,
+  deferral: ComposeOmitDeferral,
+): string {
+  if (deferral.editorNotice === null) return "";
+  return `<div data-caelo-deferred="${attr(deferral.pluginSlug)}" data-reason="${attr(deferral.reason)}" data-module="${attr(module.slug)}" data-caelo-deferred-omitted ${MODULE_ID_ATTRIBUTE}="${attr(module.moduleId)}" aria-label="${attr(module.slug)}">${deferral.editorNotice.html}</div>`;
+}
+
+function attr(v: string): string {
+  return v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
 }
 
 export interface ComposeLayoutBlock {
@@ -693,9 +726,9 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   // Duplicate rule blocks made the cascade order-dependent and bloated
   // every page the same module appeared on twice.
   const seenAssetModules = new Set<string>();
-  // Placeholder CSS, keyed by placeholder slug: one withheld module's
-  // placeholder used on five placements is emitted once.
-  const deferredCss = new Map<string, string>();
+  // Placeholder and notice CSS: one withheld module's placeholder used
+  // on five placements is emitted once.
+  const deferredCss = new Set<string>();
   const moduleFailures: ComposeModuleFailure[] = [];
   // Nested modules rendered since the last asset flush (see flushNestedAssets).
   const nestedAssetIds: string[] = [];
@@ -734,7 +767,11 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     }
     const tagged = tagModuleId(baseHtml, m.moduleId);
     if (!deferral) return tagged;
-    deferredCss.set(deferral.placeholderModuleSlug, deferral.placeholderCss);
+    if (deferral.omit) {
+      if (deferral.editorNotice) deferredCss.add(deferral.editorNotice.css);
+      return omittedModuleNotice(m, deferral);
+    }
+    deferredCss.add(deferral.placeholderCss);
     const gatedNested = [...gatedNestedIds].map((id) => {
       const nested = input.nestedModules?.getModule(id);
       // renderModuleFields resolved every id it reports through this
@@ -791,7 +828,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     flushNestedAssets();
   }
 
-  for (const css of deferredCss.values()) {
+  for (const css of deferredCss) {
     if (css.trim().length > 0) cssParts.push(css);
   }
 

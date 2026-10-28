@@ -83,13 +83,18 @@ function bootRuntime(search = `?branch=b1&channel=${CHANNEL}`): {
     assigned: string[];
     navigate: string[];
   };
+  /** Click an arbitrary fake element; returns what was posted to the editor. */
+  clickElement: (target: unknown) => { defaultPrevented: boolean; posted: unknown[] };
 } {
-  const listeners = new Map<string, (ev: unknown) => void>();
+  // Every listener per kind, like the DOM: the editing affordances add
+  // click listeners of their own next to the browse-mode one.
+  const listeners = new Map<string, ((ev: unknown) => void)[]>();
   const assigned: string[] = [];
-  const posted: { kind?: string; href?: string; channel?: string }[] = [];
+  const posted: { kind?: string; href?: string; channel?: string; [k: string]: unknown }[] = [];
   const document = {
     readyState: "loading",
-    addEventListener: (kind: string, fn: (ev: unknown) => void) => listeners.set(kind, fn),
+    addEventListener: (kind: string, fn: (ev: unknown) => void) =>
+      listeners.set(kind, [...(listeners.get(kind) ?? []), fn]),
     getElementById: () => null,
     createElement: () => ({}),
     head: { appendChild: () => undefined },
@@ -115,8 +120,11 @@ function bootRuntime(search = `?branch=b1&channel=${CHANNEL}`): {
     location,
     parent,
   );
-  const handler = listeners.get("click");
-  if (!handler) throw new Error("runtime registered no click handler");
+  const clickListeners = listeners.get("click") ?? [];
+  if (clickListeners.length === 0) throw new Error("runtime registered no click handler");
+  const handler = (ev: unknown) => {
+    for (const fn of clickListeners) fn(ev);
+  };
   return {
     click(href) {
       const a = { nodeType: 1, tagName: "A", target: "", getAttribute: () => href };
@@ -135,8 +143,60 @@ function bootRuntime(search = `?branch=b1&channel=${CHANNEL}`): {
         });
       return { defaultPrevented, assigned: [...assigned], navigate };
     },
+    clickElement(target) {
+      const before = posted.length;
+      let defaultPrevented = false;
+      handler({
+        target,
+        preventDefault: () => {
+          defaultPrevented = true;
+        },
+      });
+      return { defaultPrevented, posted: posted.slice(before) };
+    },
   };
 }
+
+describe("an editor notice's Ask AI button", () => {
+  it("adds the module it stands in for to the chat, with the notice as context", () => {
+    const notice: Record<string, unknown> = {
+      nodeType: 1,
+      tagName: "DIV",
+      id: "",
+      className: "",
+      textContent: "Hidden from visitors: loads from cdn.example.com Resolve in chat",
+      parentNode: null,
+      hasAttribute: (a: string) => a === "data-caelo-module-id",
+      getAttribute: (a: string) =>
+        ({ "data-caelo-module-id": "m-header", "aria-label": "site-header" })[a] ?? null,
+    };
+    const button: Record<string, unknown> = {
+      nodeType: 1,
+      tagName: "BUTTON",
+      id: "",
+      className: "",
+      textContent: "Resolve in chat",
+      parentNode: notice,
+      hasAttribute: () => false,
+      getAttribute: () => null,
+    };
+    button.closest = (sel: string) => (sel === "[data-caelo-ask-ai]" ? button : null);
+
+    const r = bootRuntime().clickElement(button);
+    expect(r.defaultPrevented).toBe(true);
+    expect(r.posted).toEqual([
+      {
+        kind: "caelo:element-referenced",
+        moduleId: "m-header",
+        selector: "div",
+        label: "site-header",
+        context: "Hidden from visitors: loads from cdn.example.com",
+        ask: true,
+        channel: CHANNEL,
+      },
+    ]);
+  });
+});
 
 describe("browse-mode link clicks (#724)", () => {
   it("swallows a click on an unresolved caelo: reference instead of navigating", () => {
