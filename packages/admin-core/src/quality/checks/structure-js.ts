@@ -59,7 +59,13 @@ export function moduleJsFindings(
     const facts = analyseModuleJs(m.js);
     const name = `"${m.displayName}" (${m.id})`;
     const own = new Set([m.id, ...(analysis.nested.get(m.id) ?? [])]);
-    const foreign = foreignHooks(facts, own, owners, neutral);
+    // A wrapperless parent keeps its first child's stamp instead of its
+    // own (tagModuleId), so the modules nested in it are not visible here.
+    // Without them its own markup is unknown: no foreign-markup verdict.
+    const nestingUnknown = !analysis.placements.has(m.id) && /\{\{[>#]/.test(m.html);
+    const foreign = nestingUnknown
+      ? { specific: new Map<string, readonly string[]>(), shared: [] }
+      : foreignHooks(facts, own, owners, neutral);
 
     if (foreign.specific.size > 0) {
       const targets = [...foreign.specific].map(
@@ -127,8 +133,12 @@ const DEFERRED_RE = /data-caelo-deferred-script="([0-9a-f-]{36})"/gi;
 /**
  * Module id → the staged pages that ship its JS: rendered roots, deferred
  * scripts, and — for modules without either — the page's module bundle
- * containing the module's JS. Bundles repeat across pages, so each
- * distinct bundle is searched once.
+ * containing the module's JS. The bundle has no per-module markers, so a
+ * module counts only for what is left once the scripts of the modules
+ * known to be on those pages are taken out, and only as whole lines (the
+ * composer joins scripts with "\n"): an unused module whose JS repeats a
+ * placed module's statement is not shipped. Bundles repeat across pages,
+ * so each distinct bundle is searched once.
  */
 function shippedOn(
   analysis: StructureAnalysis,
@@ -149,11 +159,19 @@ function shippedOn(
     const bundle = moduleBundle(page.html);
     if (bundle !== null) bundles.set(bundle, [...(bundles.get(bundle) ?? []), page.pageId]);
   }
+  const residuals = [...bundles].map(([bundle, pageIds]) => {
+    let rest = bundle;
+    for (const m of modules) {
+      if (m.js.trim().length === 0) continue;
+      const known = shipped.get(m.id);
+      if (known && pageIds.some((p) => known.has(p))) rest = rest.replace(m.js, "");
+    }
+    return { rest: `\n${rest}\n`, pageIds };
+  });
   for (const m of modules) {
-    const js = m.js.trim();
-    if (js.length === 0 || shipped.has(m.id)) continue;
-    for (const [bundle, pageIds] of bundles) {
-      if (bundle.includes(js)) for (const p of pageIds) on(m.id, p);
+    if (m.js.trim().length === 0 || shipped.has(m.id)) continue;
+    for (const { rest, pageIds } of residuals) {
+      if (rest.includes(`\n${m.js}\n`)) for (const p of pageIds) on(m.id, p);
     }
   }
   return shipped;

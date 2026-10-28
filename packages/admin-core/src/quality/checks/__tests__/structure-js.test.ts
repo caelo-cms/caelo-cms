@@ -284,6 +284,58 @@ describe("Codex round 3 on #1199", () => {
   });
 });
 
+describe("Codex round 4 on #1199", () => {
+  it("a template interpolation stays where the template puts it", () => {
+    const facts = analyseModuleJs(
+      `const iconName = 'icon-menu';\nicon.innerHTML = \`<svg><use href="#\${iconName}"></use></svg>\`;`,
+    );
+    expect(facts.rendersContent).toEqual([]);
+    expect(facts.writesText).toEqual([]);
+  });
+
+  it("plain text through innerHTML is written text", () => {
+    const facts = analyseModuleJs(
+      "panel.innerHTML = 'Discover our latest products and explore all available services';",
+    );
+    expect(facts.writesText).toHaveLength(1);
+  });
+
+  it("a wrapperless parent may drive the nested module whose stamp it carries", () => {
+    const child = mod(40, "Tool card", '<article class="tool-card"><h3>{{title}}</h3></article>');
+    const parent = mod(
+      41,
+      "Tool cards",
+      "{{#cards}}{{/cards}}",
+      "document.querySelectorAll('.tool-card').forEach(function (c) { c.tabIndex = 0; });",
+    );
+    const p: StagedPage = {
+      ...page(1, "/tools"),
+      html: `<!doctype html><html><body><article class="tool-card" data-caelo-module-id="${child.id}"><h3>A</h3></article><script defer data-source="modules">\n${parent.js}\n</script></body></html>`,
+    };
+    expect(jsFindings([p], [child, parent])).toEqual([]);
+  });
+
+  it("an unused module repeating a placed module's statement is not shipped", () => {
+    const form = mod(
+      42,
+      "Contact form",
+      '<form class="contact-form"></form>',
+      "document.querySelector('.contact-form');\nconsole.info('ready');",
+    );
+    const unused = mod(
+      43,
+      "Old header",
+      "<header></header>",
+      "document.querySelector('.contact-form');",
+    );
+    const p: StagedPage = {
+      ...page(1, "/kontakt"),
+      html: `<!doctype html><html><body>${placed(form)}<script defer data-source="modules">\n${form.js}\n</script></body></html>`,
+    };
+    expect(jsFindings([p], [form, unused])).toEqual([]);
+  });
+});
+
 describe("foreignHooks", () => {
   it("separates one module's own hooks from hooks many modules share", () => {
     const owners = hookOwners([DEMO, HERO, TEXT]);

@@ -83,6 +83,9 @@ function stringLiteral(n: unknown): string | null {
   return isNode(n) && n.type === "Literal" && typeof n.value === "string" ? n.value : null;
 }
 
+/** Stands for an interpolated value in reconstructed text. */
+const HOLE = "\uE000";
+
 /** Longest chain of string bindings followed (`a = b + "x"`, `b = c`, …). */
 const MAX_BINDING_DEPTH = 8;
 
@@ -105,21 +108,43 @@ function boundString(decl: Node | null): Node | null {
  */
 function staticText(expr: unknown, scopes: JsScopes | null = null, depth = 0): string {
   const parts: string[] = [];
-  for (const n of nodes(expr)) {
-    if (n.type === "TemplateLiteral") {
-      const quasis = n.quasis as { value: { cooked: string | null } }[];
-      parts.push(quasis.map((q) => q.value.cooked ?? "").join("\uE000"));
-    } else if (n.type === "Identifier" && scopes !== null) {
-      const bound = boundString(scopes.resolve(n));
-      if (bound && depth < MAX_BINDING_DEPTH) parts.push(staticText(bound, scopes, depth + 1));
-    } else {
-      const s = stringLiteral(n);
-      if (s !== null) parts.push(s);
+  const visit = (v: unknown): void => {
+    if (Array.isArray(v)) {
+      for (const x of v) visit(x);
+      return;
     }
-  }
+    if (!isNode(v)) return;
+    if (v.type === "TemplateLiteral") {
+      // Quasis and expressions interleaved, as the template evaluates:
+      // `<use href="#${name}">` keeps `name` inside the tag.
+      const quasis = v.quasis as { value: { cooked: string | null } }[];
+      const exprs = v.expressions as unknown[];
+      let text = "";
+      quasis.forEach((q, i) => {
+        text += q.value.cooked ?? "";
+        if (i < exprs.length) text += staticText(exprs[i], scopes, depth) || HOLE;
+      });
+      parts.push(text);
+      return;
+    }
+    if (v.type === "Identifier") {
+      const bound = scopes !== null ? boundString(scopes.resolve(v)) : null;
+      if (bound && depth < MAX_BINDING_DEPTH) parts.push(staticText(bound, scopes, depth + 1));
+      return;
+    }
+    const s = stringLiteral(v);
+    if (s !== null) {
+      parts.push(s);
+      return;
+    }
+    for (const [key, child] of Object.entries(v)) {
+      if (key !== "type" && typeof child === "object" && child !== null) visit(child);
+    }
+  };
+  visit(expr);
   // Pieces of one expression are concatenated at runtime; a value between
   // them (`a + x + b`) is interpolated data.
-  return parts.join("\uE000");
+  return parts.join(HOLE);
 }
 
 /**
@@ -322,7 +347,8 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
               : undefined;
       if (markupArg !== undefined) {
         rendered.addSubtree(markupArg);
-        for (const t of variants(markupArg, scope)) noteMarkup(`${name}()`, t, rendersContent);
+        for (const t of variants(markupArg, scope))
+          noteMarkup(`${name}()`, t, rendersContent, writesText);
       }
       if (
         (name !== null && TEXT_SINK_CALLS.has(name) && !isDataReceiver(n.callee, scope)) ||
@@ -342,7 +368,7 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
       const prop = memberName(n.left);
       if (prop !== null && MARKUP_SINK_PROPS.has(prop)) {
         rendered.addSubtree(n.right);
-        for (const t of variants(n.right, scope)) noteMarkup(prop, t, rendersContent);
+        for (const t of variants(n.right, scope)) noteMarkup(prop, t, rendersContent, writesText);
       } else if (prop !== null && TEXT_SINK_PROPS.has(prop)) {
         rendered.addSubtree(n.right);
         for (const t of variants(n.right, scope)) noteText(t, writesText, rendersContent);
@@ -516,7 +542,12 @@ function isDocument(callee: unknown): boolean {
   );
 }
 
-function noteMarkup(sink: string, text: string, out: string[]): void {
+function noteMarkup(sink: string, text: string, out: string[], writesText: string[]): void {
+  // Plain text through a markup sink is still text in the page.
+  if (!/<[a-z]/i.test(text)) {
+    noteText(text, writesText, out);
+    return;
+  }
   const why = markupContent(text);
   if (why === null) return;
   const what = why === "links" ? "links" : why === "text" ? "text" : "interpolated data";
