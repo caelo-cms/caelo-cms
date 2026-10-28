@@ -8,6 +8,12 @@
  * pages.set_modules (same pattern as add/remove). The destination block
  * must exist on the page's template; the validator inside set_modules
  * surfaces a clear error if not.
+ *
+ * #1195 — it moves ONE placement, addressed by block + position when the
+ * module sits on the page more than once, and hands set_modules every
+ * placement's content instance. Filtering by moduleId removed the
+ * module's other placements in the source and target block, and a
+ * cross-block move re-bound the moved placement to fresh empty content.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -18,7 +24,21 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageWithModules {
   id: string;
-  blocks: { blockName: string; modules: { moduleId: string }[] }[];
+  blocks: {
+    blockName: string;
+    modules: { moduleId: string; contentInstanceId?: string | null }[];
+  }[];
+}
+
+/** One placement on the page, as set_modules takes it back. */
+interface Placement {
+  readonly moduleId: string;
+  readonly contentInstanceId: string | null;
+}
+
+/** "block "content" position 2" for each placement of the module. */
+function describePlacements(found: readonly { blockName: string; index: number }[]): string {
+  return found.map((p) => `block "${p.blockName}" position ${p.index}`).join(", ");
 }
 
 /**
@@ -33,6 +53,13 @@ const MOVE_MODULE_INPUT_SCHEMA: Record<string, unknown> = {
   properties: {
     pageId: { type: "string", format: "uuid" },
     moduleId: { type: "string", format: "uuid" },
+    fromBlockName: {
+      type: "string",
+      minLength: 1,
+      maxLength: 80,
+      description: "With `fromPosition`: which placement, when the module is on the page twice+.",
+    },
+    fromPosition: { type: "integer", minimum: 0, maximum: 1000 },
     toBlockName: {
       type: "string",
       minLength: 1,
@@ -71,7 +98,7 @@ export function targetIndex(
 export const moveModuleTool: ToolDefinitionWithHandler<MoveModuleToolInput> = {
   name: "move_module",
   description:
-    "Reposition a module on its page: into another block ('move the hero into the header', 'put this banner above the footer') or within its block ('move the testimonials above the gallery', 'put the hero last' — omit `toBlockName`). Already in place -> no-op.",
+    "Reposition a module on its page: into another block ('move the hero into the header', 'put this banner above the footer') or within its block ('move the testimonials above the gallery', 'put the hero last' — omit `toBlockName`). Moves one placement with its content; a module placed twice+ needs `fromBlockName` + `fromPosition`. Already in place -> no-op.",
   schema: moveModuleToolInput,
   inputSchema: MOVE_MODULE_INPUT_SCHEMA,
   handler: async (ctx, input, toolCtx) => {
@@ -82,14 +109,47 @@ export const moveModuleTool: ToolDefinitionWithHandler<MoveModuleToolInput> = {
       return { ok: false, content: `pages.get_with_modules failed: ${describeError(got.error)}` };
     }
     const detail = (got.value as { page: PageWithModules }).page;
-    const from = detail.blocks.find((b) => b.modules.some((m) => m.moduleId === input.moduleId));
-    if (!from) {
+    const placementsOf = (b: PageWithModules["blocks"][number]): Placement[] =>
+      b.modules.map((m) => ({
+        moduleId: m.moduleId,
+        contentInstanceId: m.contentInstanceId ?? null,
+      }));
+    const found = detail.blocks.flatMap((b) =>
+      b.modules.flatMap((m, index) =>
+        m.moduleId === input.moduleId ? [{ blockName: b.blockName, index }] : [],
+      ),
+    );
+    if (found.length === 0) {
       return {
         ok: false,
         content: `module ${input.moduleId} is not on page ${input.pageId}`,
       };
     }
-    const fromBlock = from.blockName;
+    const addressed = found.filter(
+      (p) =>
+        (input.fromBlockName === undefined || p.blockName === input.fromBlockName) &&
+        (input.fromPosition === undefined || p.index === input.fromPosition),
+    );
+    const isAddressed = input.fromBlockName !== undefined || input.fromPosition !== undefined;
+    if (addressed.length !== 1 || (found.length > 1 && !isAddressed)) {
+      return {
+        ok: false,
+        content:
+          addressed.length === 0
+            ? `module ${input.moduleId} has no placement at ${[
+                input.fromBlockName !== undefined ? `block "${input.fromBlockName}"` : "",
+                input.fromPosition !== undefined ? `position ${input.fromPosition}` : "",
+              ]
+                .filter((x) => x !== "")
+                .join(
+                  " ",
+                )} — its placements: ${describePlacements(found)}. Re-call with one of them as fromBlockName + fromPosition.`
+            : `module ${input.moduleId} is placed ${found.length} times on page ${input.pageId} (${describePlacements(found)}) — pass fromBlockName + fromPosition to say which one to move.`,
+      };
+    }
+    const source = addressed[0] as { blockName: string; index: number };
+    const fromBlock = source.blockName;
+    const currentIdx = source.index;
     const toBlock = input.toBlockName ?? fromBlock;
     // v0.12.3 (issue #106) — pages.get_with_modules returns ALL template
     // blocks (incl. empty ones), so a toBlockName absent from this list is
@@ -112,9 +172,12 @@ export const moveModuleTool: ToolDefinitionWithHandler<MoveModuleToolInput> = {
         content: `position "${input.position}" moves one slot within the module's current block ("${fromBlock}"); for block "${toBlock}" pass "top", "bottom" or a 0-based index — or omit toBlockName to stay in "${fromBlock}".`,
       };
     }
-    const currentIds = from.modules.map((m) => m.moduleId);
-    const currentIdx = currentIds.indexOf(input.moduleId);
-    const base = target.modules.map((m) => m.moduleId).filter((id) => id !== input.moduleId);
+    const fromPlacements = placementsOf(
+      detail.blocks.find((b) => b.blockName === fromBlock) as PageWithModules["blocks"][number],
+    );
+    const moving = fromPlacements[currentIdx] as Placement;
+    // The target block without the moving placement — only that one.
+    const base = placementsOf(target).filter((_, i) => !(sameBlock && i === currentIdx));
     const insertIdx = targetIndex(input.position, currentIdx, base.length);
     if (sameBlock && insertIdx === currentIdx) {
       return {
@@ -122,20 +185,26 @@ export const moveModuleTool: ToolDefinitionWithHandler<MoveModuleToolInput> = {
         content: `module already at position ${currentIdx} in block "${fromBlock}" — no-op`,
       };
     }
+    const toSetModules = (blockName: string, placements: readonly Placement[]) => ({
+      blockName,
+      moduleIds: placements.map((p) => p.moduleId),
+      contentInstanceIds: placements.map((p) => p.contentInstanceId),
+    });
     const blocks = detail.blocks.map((b) => {
       if (b.blockName === toBlock) {
-        return {
-          blockName: b.blockName,
-          moduleIds: [...base.slice(0, insertIdx), input.moduleId, ...base.slice(insertIdx)],
-        };
+        return toSetModules(b.blockName, [
+          ...base.slice(0, insertIdx),
+          moving,
+          ...base.slice(insertIdx),
+        ]);
       }
       if (b.blockName === fromBlock) {
-        return {
-          blockName: b.blockName,
-          moduleIds: b.modules.map((m) => m.moduleId).filter((id) => id !== input.moduleId),
-        };
+        return toSetModules(
+          b.blockName,
+          fromPlacements.filter((_, i) => i !== currentIdx),
+        );
       }
-      return { blockName: b.blockName, moduleIds: b.modules.map((m) => m.moduleId) };
+      return toSetModules(b.blockName, placementsOf(b));
     });
     const setRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.set_modules", {
       pageId: input.pageId,

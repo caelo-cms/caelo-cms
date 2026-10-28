@@ -257,7 +257,9 @@ async function writeList(
     readonly typeSlug: string;
     readonly items: unknown;
   },
-): Promise<{ ok: true; id: string; state: ListState } | { ok: false; message: string }> {
+): Promise<
+  { ok: true; id: string; state: ListState } | { ok: false; message: string; refusal?: true }
+> {
   const branchId = branchOf(ctx);
   const types = await listTypesBySlug(tx, branchId);
   const type = types.get(args.typeSlug);
@@ -289,7 +291,8 @@ async function writeList(
       shaped.data as ListItem[],
       live?.state.items,
     );
-    if (!canon.ok) return { ok: false, message: `${args.at}: ${canon.message}` };
+    // A link to a page that does not exist: the guard working (#1097).
+    if (!canon.ok) return { ok: false, message: `${args.at}: ${canon.message}`, refusal: true };
     input = canon.items;
     pending = canon.pending;
   }
@@ -449,7 +452,10 @@ export const upsertListsManyOp = defineOperation({
         items: item.items,
       });
       if (!r.ok)
-        return failBatch(wrote, handlerError(op, `${r.message} The whole batch was rolled back.`));
+        return failBatch(
+          wrote,
+          handlerError(op, `${r.message} The whole batch was rolled back.`, r.refusal === true),
+        );
       wrote = true;
       entities.push({ kind: "list", entityId: r.id, state: r.state });
       await emitListItemsChanged(
@@ -636,7 +642,10 @@ export const patchListItemsManyOp = defineOperation({
         items: next,
       });
       if (!r.ok)
-        return failBatch(wrote, handlerError(op, `${r.message} The whole batch was rolled back.`));
+        return failBatch(
+          wrote,
+          handlerError(op, `${r.message} The whole batch was rolled back.`, r.refusal === true),
+        );
       wrote = true;
       entities.push({ kind: "list", entityId: r.id, state: r.state });
       await emitListItemsChanged(

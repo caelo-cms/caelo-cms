@@ -146,10 +146,10 @@ function iso(v: string | Date | null | undefined): string | null {
  * offending field so the AI's recovery is one round-trip.
  *
  * Side-effect: NORMALIZES `values` in place for `kind=url` fields —
- * an empty/whitespace-only url is coerced to the safe placeholder "#"
- * (see the url branch below) so one missing link target can't abort an
- * atomic build. Callers persist `values` after this returns, so the
- * coercion is durable.
+ * an empty/whitespace-only url is stored as "" (no link, #1095; see the
+ * url branch below), so one missing link target can't abort an atomic
+ * build. Callers persist `values` after this returns, so the
+ * normalisation is durable.
  */
 async function validateNestedRefs(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
@@ -213,18 +213,17 @@ async function validateNestedRefs(
         };
       }
     } else if (f.kind === "url") {
-      // Resilience (build_page atomicity) — an EMPTY or whitespace-only
-      // url value is a MISSING link target, not an authoring error worth
-      // rolling back an atomic multi-module build over (a 29-module
-      // homepage was killed by one empty CTA link). Coerce it to "#" — a
-      // safe no-op placeholder anchor — and accept. "#" is a resilience
-      // placeholder, NOT a valid target: the internal-link integrity
-      // check at stage/publish surfaces genuinely-missing targets loudly
-      // and separately. We mutate `values` in place so the coerced "#"
-      // persists through the caller's INSERT/UPDATE, the emitted
-      // snapshot state, and the audit record — not just past validation.
+      // An EMPTY or whitespace-only url value is a link the content does
+      // not have — valid for an optional link, and stored as "" so an
+      // optional `{{#field}}…{{/field}}` section stays hidden (#1095). An
+      // earlier version stored a placeholder "#" to keep build_page from
+      // rolling back; that made the section truthy and rendered a dead
+      // link. The empty value now simply passes, so build_page stays
+      // atomic without inventing a target. Mutated in place so the
+      // normalised "" persists through the caller's INSERT/UPDATE, the
+      // snapshot state and the audit record.
       if (typeof v === "string" && v.trim() === "") {
-        values[f.name] = "#";
+        values[f.name] = "";
         continue;
       }
       // Permissive URL shape — paths, absolute URLs, mailto/tel, and
@@ -745,6 +744,9 @@ export const createContentInstanceOp = defineOperation({
         kind: "HandlerError",
         operation: "content_instances.create",
         message: linkCanon.message,
+        // A link to a page that does not exist: the guard working, not a
+        // Caelo defect — not auto-filed as a bug (#1097).
+        refusal: true,
       });
     }
     Object.assign(input.values, linkCanon.value);
@@ -1161,6 +1163,9 @@ export const setContentInstanceValuesOp = defineOperation({
         kind: "HandlerError",
         operation: "content_instances.set_values",
         message: linkCanon.message,
+        // A link to a page that does not exist: the guard working, not a
+        // Caelo defect — not auto-filed as a bug (#1097).
+        refusal: true,
       });
     }
     Object.assign(input.values, linkCanon.value);

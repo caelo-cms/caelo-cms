@@ -30,6 +30,7 @@ import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
+import { keepStoredDefaults, storedModuleFields } from "./_module-field-defaults.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -430,6 +431,7 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
     "- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).",
     '- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:"texts"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.',
     "- KEEP METADATA FRESH: update `description` + `kind` when a module's purpose drifts (`list_modules` relies on them).",
+    '- `fields` is the WHOLE list (omitted fields are dropped): read it first with `read_content` `field:"fields"` and resend every field. A field resent without `default` keeps its stored one.',
     "- Items apply independently: a failed item (not found, draft conflict, invalid field) is reported with its reason, the rest commits; nothing updated -> error. One snapshot per module.",
     INTERNAL_LINK_CONTRACT,
   ].join("\n"),
@@ -477,8 +479,19 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
     // item passes `bindThemeLiterals: false`); the flag never reaches the op.
     const opItems: Record<string, unknown>[] = [];
     const bindingReports: string[] = [];
+    const keptDefaults = new Map<string, string[]>();
     for (const item of input.items) {
-      const { bindThemeLiterals, ...opItem } = item;
+      const { bindThemeLiterals, ...rest } = item;
+      let opItem = rest;
+      // #1100 — a field resent without `default` keeps the stored one.
+      if (rest.fields !== undefined && rest.fields.length > 0) {
+        const stored = await storedModuleFields(ctx, toolCtx, rest.moduleId);
+        if (stored !== null) {
+          const merged = keepStoredDefaults(rest.fields, stored);
+          opItem = { ...rest, fields: merged.fields };
+          if (merged.kept.length > 0) keptDefaults.set(rest.moduleId, merged.kept);
+        }
+      }
       if (bindThemeLiterals !== false && typeof opItem.css === "string") {
         const bound = await bindCssToTheme(ctx, toolCtx, opItem.css);
         opItems.push({ ...opItem, css: bound.css });
@@ -514,8 +527,11 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
       const writtenCss = opItems[i]?.css as string | undefined;
       const notes = await updatedItemNotes(ctx, toolCtx, item, writtenCss, bindingReports[i] ?? "");
       const extracted = extractedById.get(item.moduleId);
+      const kept = keptDefaults.get(item.moduleId);
+      const keptNote =
+        kept && kept.length > 0 ? ` Kept the stored default of: ${kept.join(", ")}.` : "";
       lines.push(
-        `- ${item.moduleId}: updated${notes}${extracted && extracted.length > 0 ? extractedFieldsHint(extracted) : ""}`,
+        `- ${item.moduleId}: updated${keptNote}${notes}${extracted && extracted.length > 0 ? extractedFieldsHint(extracted) : ""}`,
       );
     }
     const summary = `Updated ${v.updated} of ${input.items.length} module(s) (notFound=${notFound.size}, failed=${v.failed.length}).`;

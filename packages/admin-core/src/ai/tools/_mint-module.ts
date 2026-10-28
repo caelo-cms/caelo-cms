@@ -22,6 +22,7 @@ import { execute } from "@caelo-cms/query-api";
 import { type ExecutionContext, type ModuleField, slugifyModuleName } from "@caelo-cms/shared";
 import { moduleize } from "../moduleize.js";
 import { describeError } from "./_describe-error.js";
+import { toolNamesIn } from "./_list-tool-kit.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolContext } from "./dispatch.js";
 
@@ -99,8 +100,13 @@ export async function mintModuleFromHtml(
   // `{{label}}`'s field to `button_label` and dropped the `>` from the
   // nested `{{>cta}}` marker (live-edit nested-CTA turn: ~20 recovery
   // loops chasing both). So skip moduleize whenever explicit fields are
-  // supplied and trust the AI's html + fields verbatim.
-  const hasExplicitFields = (args.fieldsHint?.length ?? 0) > 0;
+  // supplied and trust the AI's html + fields verbatim. An explicit EMPTY
+  // `fields: []` is authored too — "this module has no fields of its own"
+  // (#1186): a consent banner iterating the plugin's
+  // `{{#consent_categories}}`, which its skill says to declare no field
+  // for, or a divider. Moduleizing it unrolled the plugin loop into
+  // hard-coded categories. Power-MCP already treats `[]` this way.
+  const hasExplicitFields = args.fieldsHint !== undefined;
   // #741 — on an AI-delegated call (Power-MCP) moduleize would spend the
   // install's AI on what the calling agent is there to author: refuse before
   // anything is written and say exactly what to send. An explicit empty
@@ -151,9 +157,13 @@ export async function mintModuleFromHtml(
       });
       html = mod.html;
       fields = mod.fields;
-      displayName = mod.displayName;
-      kind = mod.kind;
-      description = mod.description;
+      // #1173 — what the caller said about the module wins; moduleize only
+      // fills what it left out (its description defaults to "").
+      if (displayName.trim().length === 0) displayName = mod.displayName;
+      kind ??= mod.kind;
+      if (description === undefined || description.trim().length === 0) {
+        description = mod.description;
+      }
       note = ` (moduleized: ${fields?.length ?? 0} fields)`;
     } catch (e) {
       return {
@@ -191,7 +201,10 @@ export async function mintModuleFromHtml(
     ...(fields ? { fields } : {}),
   });
   if (!created.ok) {
-    return { ok: false, content: `modules.create failed: ${describeError(created.error)}` };
+    return {
+      ok: false,
+      content: `modules.create failed: ${toolNamesIn(describeError(created.error))}`,
+    };
   }
   return {
     ok: true,

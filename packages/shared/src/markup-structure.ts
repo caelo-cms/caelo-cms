@@ -120,13 +120,84 @@ function splitClasses(raw: string | undefined): string[] {
   return [...new Set(raw.split(/\s+/).filter((c) => c.length > 0))].sort();
 }
 
+/** Options of {@link stripMustache}. */
+export interface StripMustacheOptions {
+  /**
+   * Keep the text of a section inside a tag (`class="a {{#s}}b{{/s}}"` →
+   * `class="a b"`): every class the template CAN render. Default false:
+   * such a section is dropped, leaving the classes it ALWAYS renders.
+   */
+  readonly keepOptionalAttributeText?: boolean;
+}
+
 /**
  * Remove Mustache tags (`{{x}}`, `{{{x}}}`, `{{#s}}`, `{{/s}}`, `{{>p}}`)
  * from a module template so it parses as the markup it renders: a section
- * body stays once, a placeholder becomes empty.
+ * body between elements stays once (a list renders it per entry), a
+ * placeholder becomes empty.
+ *
+ * A section INSIDE a tag (`<div class="split {{#reverse}}rev{{/reverse}}">`,
+ * a boolean variant) is optional: the rendered element may or may not
+ * carry its text. By default it is dropped, so the template node has only
+ * the classes every render has (#1104). Keeping it made `rev` a required
+ * class — every render without it looked like free markup — and a root
+ * whose classes all sit in sections matched no render, so the module's
+ * free markup went unchecked.
  */
-export function stripMustache(template: string): string {
-  return stripDelimited(stripDelimited(template, 3), 2);
+export function stripMustache(template: string, opts: StripMustacheOptions = {}): string {
+  const base = opts.keepOptionalAttributeText ? template : dropInTagSections(template);
+  return stripDelimited(stripDelimited(base, 3), 2);
+}
+
+/**
+ * Remove every `{{#s}}…{{/s}}` / `{{^s}}…{{/s}}` that opens inside a tag
+ * (between `<name` and its `>`), body included. One linear scan; Mustache
+ * tags are skipped whole, so a `>` in `{{>partial}}` never ends a tag.
+ */
+function dropInTagSections(text: string): string {
+  let out = "";
+  let i = 0;
+  let inTag = false;
+  let quote: string | null = null;
+  // Names with no closer after some point have none after any later point
+  // either: remembering them keeps the scan linear on unclosed openers.
+  const unclosed = new Set<string>();
+  while (i < text.length) {
+    if (text.startsWith("{{", i)) {
+      const end = text.indexOf("}}", i + 2);
+      if (end < 0) break;
+      const sigil = text[i + 2];
+      if (inTag && (sigil === "#" || sigil === "^")) {
+        const name = text.slice(i + 3, end).trim();
+        const closer = `{{/${name}}}`;
+        const close = unclosed.has(name) ? -1 : text.indexOf(closer, end + 2);
+        if (close < 0) unclosed.add(name);
+        if (name.length > 0 && close >= 0) {
+          i = close + closer.length;
+          continue;
+        }
+      }
+      out += text.slice(i, end + 2);
+      i = end + 2;
+      continue;
+    }
+    const ch = text[i] as string;
+    if (inTag) {
+      if (quote !== null) {
+        if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === ">") {
+        inTag = false;
+      }
+    } else if (ch === "<" && /[a-zA-Z]/.test(text[i + 1] ?? "")) {
+      inTag = true;
+      quote = null;
+    }
+    out += ch;
+    i++;
+  }
+  return out + text.slice(i);
 }
 
 /**

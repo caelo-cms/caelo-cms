@@ -126,7 +126,7 @@ flowchart LR
 | "add a CTA on this page" | `add_module` (`target: 'page'`) | one page |
 | "add a hero on every blog post" | `add_module` (`target: 'template'`) | all pages on the template |
 | "add a footer on every page" | `add_module` (`target: 'layout'`) | all pages on the layout |
-| "move the hero to the header" | `move_module` (`toBlockName`) | same page, cross-block |
+| "move the hero to the header" | `move_module` (`toBlockName`; `fromBlockName` + `fromPosition` when the module is placed twice+) | same page, cross-block; one placement, its content moves with it |
 | "show testimonials before gallery" | `move_module` (no `toBlockName`) | same page, same block |
 | "duplicate this page" | `duplicate_page` | modules carry by reference |
 | "switch this page to landing-tpl" | `repoint_page_template` | modules migrate; orphan disposition required |

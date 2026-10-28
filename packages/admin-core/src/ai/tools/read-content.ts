@@ -19,6 +19,7 @@ import {
   resolveContentTarget,
 } from "../content-edit/registry.js";
 import { contentSha, renderWithLineNumbers } from "../content-edit/text-ops.js";
+import { storedModuleFields } from "./_module-field-defaults.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 const readContentInput = z
@@ -35,7 +36,9 @@ const readContentInput = z
       .min(1)
       .max(32)
       .optional()
-      .describe("`html` | `css` | `js` (templates/layouts: `html` | `css`)."),
+      .describe(
+        "`html` | `css` | `js` (templates/layouts: `html` | `css`); modules also `fields` (full field schema).",
+      ),
     offset: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(5000).optional(),
   })
@@ -52,6 +55,29 @@ function renderField(name: string, body: string, window: { offset?: number; limi
   return body.length === 0 ? `${header}\n(empty)` : `${header}\n${r.text}`;
 }
 
+/** Name of the module pseudo-body holding its field schema (#1100). */
+const FIELDS_BODY = "fields";
+
+/**
+ * #1100 — a module's full field schema (label, default, list type and
+ * binding, allowedModuleTypes, min/max) as JSON: what `update_modules_many`
+ * takes as `fields`. No other read returned it, so an edit of one field
+ * rebuilt the rest from guesses. Read-only — no sha, `edit_content` does
+ * not edit it.
+ */
+function renderFieldSchema(
+  fields: readonly unknown[],
+  window: { offset?: number; limit?: number },
+): string {
+  const body = JSON.stringify(fields, null, 2);
+  const r = renderWithLineNumbers(body, window);
+  const windowNote =
+    r.shownLines < r.totalLines
+      ? ` (lines ${r.startLine}-${r.endLine} of ${r.totalLines}; next: offset=${r.endLine + 1})`
+      : "";
+  return `# fields — ${fields.length} field(s), the \`fields\` list update_modules_many takes${windowNote}\n${r.text}`;
+}
+
 async function readOne(
   ctx: Parameters<ToolDefinitionWithHandler<ReadContentInput>["handler"]>[0],
   input: ReadContentInput,
@@ -61,12 +87,25 @@ async function readOne(
   const row = await readContentRow(ctx, toolCtx, target, input.entityId);
   if (!row.ok) return { ok: false, content: row.content };
   const bodies = row.bodies;
+  const isModule = input.entityKind === "module";
+  const fieldSchema = isModule ? await storedModuleFields(ctx, toolCtx, input.entityId) : null;
+
+  if (input.field === FIELDS_BODY && isModule) {
+    if (fieldSchema === null) {
+      return { ok: false, content: `could not read the fields of module ${input.entityId}.` };
+    }
+    return {
+      ok: true,
+      content: renderFieldSchema(fieldSchema, { offset: input.offset, limit: input.limit }),
+      value: { entityKind: input.entityKind, entityId: input.entityId, fields: fieldSchema },
+    };
+  }
 
   if (input.field !== undefined) {
     if (!target.fields.includes(input.field)) {
       return {
         ok: false,
-        content: `unknown field "${input.field}" for ${input.entityKind}. Valid fields: ${target.fields.join(", ")}.`,
+        content: `unknown field "${input.field}" for ${input.entityKind}. Valid fields: ${[...target.fields, ...(isModule ? [FIELDS_BODY] : [])].join(", ")}.`,
       };
     }
     const body = bodies[input.field] ?? "";
@@ -84,6 +123,7 @@ async function readOne(
 
   // No field → dump every field (offset/limit ignored across multiple fields).
   const blocks = target.fields.map((f) => renderField(f, bodies[f] ?? "", {}));
+  if (fieldSchema !== null) blocks.push(renderFieldSchema(fieldSchema, {}));
   return {
     ok: true,
     content: blocks.join("\n\n"),
@@ -100,7 +140,7 @@ export const readContentTool: ToolDefinitionWithHandler<ReadContentInput> = {
   description: [
     "Read a module's, template's or layout's body with line numbers — the Read step before a surgical `edit_content` (NOT `update_modules_many`). PREFER over `list_modules` (metadata only).",
     '- `entityKind:"layout"` = chrome shell its templates render in (`list_templates` shows each template\'s layoutId).',
-    "- Omit `field` -> every body; name one to window a large body via `offset` (1-based line) + `limit`.",
+    "- Omit `field` -> every body (modules: plus `fields`, the full field schema with labels, defaults, list types, allowedModuleTypes, min/max — read it before changing `fields`); name one to window a large body via `offset` (1-based line) + `limit`.",
     "- Each block prints `sha=`; pass it to `edit_content` as `expectedSha` to guard against concurrent changes.",
   ].join("\n"),
   schema: readContentInput,

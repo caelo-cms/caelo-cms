@@ -1709,14 +1709,65 @@ export const setPageModulesOp = defineOperation({
       contentInstanceId: string;
       syncMode: "synced" | "unsynced";
     };
+    // #1195 — placements addressed by their content instance. Each must be
+    // one of this page's placements of the same module, named once; they
+    // are reserved before the FIFO pass so it never hands them out twice.
+    const priorById = new Map<string, { moduleId: string; syncMode: "synced" | "unsynced" }>();
+    for (const block of priorLayout.blocks) {
+      for (const p of block.placements ?? []) {
+        priorById.set(p.contentInstanceId, { moduleId: p.moduleId, syncMode: p.syncMode });
+      }
+    }
+    const reserved = new Set<string>();
+    for (const block of input.blocks) {
+      for (const [i, ciId] of (block.contentInstanceIds ?? []).entries()) {
+        if (ciId === null) continue;
+        const moduleId = block.moduleIds[i] as string;
+        const prior = priorById.get(ciId);
+        const problem =
+          prior === undefined
+            ? `content instance ${ciId} is not a placement on this page`
+            : prior.moduleId !== moduleId
+              ? `content instance ${ciId} belongs to module ${prior.moduleId}, not ${moduleId}`
+              : reserved.has(ciId)
+                ? `content instance ${ciId} is named twice`
+                : null;
+        if (problem !== null) {
+          return err({
+            kind: "HandlerError",
+            operation: "pages.set_modules",
+            message: `${problem} — pages.get_with_modules lists the page's placements (block, module, contentInstanceId).`,
+          });
+        }
+        reserved.add(ciId);
+      }
+    }
+
     const resolved: ResolvedPlacement[] = [];
     for (const block of input.blocks) {
       let position = 0;
-      for (const moduleId of block.moduleIds) {
-        // Consume the next surviving binding for this (block, module) —
-        // FIFO keeps repeated placements of the same module in their
-        // relative order while tolerating position shifts.
-        const prior = priorQueues.get(`${block.blockName}#${moduleId}`)?.shift();
+      for (const [index, moduleId] of block.moduleIds.entries()) {
+        const named = block.contentInstanceIds?.[index] ?? null;
+        // A named placement keeps its own binding; otherwise consume the
+        // next surviving binding for this (block, module) — FIFO keeps
+        // repeated placements of the same module in their relative order
+        // while tolerating position shifts — skipping reserved ones.
+        const queue = priorQueues.get(`${block.blockName}#${moduleId}`) ?? [];
+        let prior: { contentInstanceId: string; syncMode: "synced" | "unsynced" } | undefined;
+        if (named !== null) {
+          prior = {
+            contentInstanceId: named,
+            syncMode: (priorById.get(named) as { syncMode: "synced" | "unsynced" }).syncMode,
+          };
+        } else {
+          while (
+            queue.length > 0 &&
+            reserved.has((queue[0] as { contentInstanceId: string }).contentInstanceId)
+          ) {
+            queue.shift();
+          }
+          prior = queue.shift();
+        }
         let contentInstanceId: string;
         let syncMode: "synced" | "unsynced";
         if (prior) {

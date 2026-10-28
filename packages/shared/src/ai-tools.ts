@@ -725,6 +725,16 @@ export const moveModuleToolInput = z
   .object({
     pageId: z.string().uuid(),
     moduleId: z.string().uuid(),
+    /**
+     * #1195 — which placement of `moduleId` to move when the page holds it
+     * more than once: its block and 0-based position there. Needed only
+     * then; the error names the placements.
+     */
+    fromBlockName: z.string().min(1).max(80).optional(),
+    fromPosition: z.preprocess(
+      (v) => (typeof v === "string" && /^\d+$/.test(v) ? Number.parseInt(v, 10) : v),
+      z.number().int().min(0).max(1000).optional(),
+    ),
     toBlockName: z.string().min(1).max(80).optional(),
     position: movePositionInputSchema,
   })
