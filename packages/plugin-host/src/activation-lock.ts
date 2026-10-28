@@ -33,10 +33,17 @@ export async function runActivationSerialized<T>(
     actorKind: "system",
     requestId: `plugin-activate-${slug}`,
   };
-  return infra.adapter.withAdminTransaction(ctx, async (tx) => {
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`caelo:plugin-activate:${slug}`}, 0))`,
-    );
-    return fn();
-  });
+  // The holder name puts this transaction on the nested-checkout allowlist
+  // (query-api pool-guard.ts): `fn`'s writes open their own transactions
+  // while this one holds the lock.
+  return infra.adapter.withAdminTransaction(
+    ctx,
+    async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`caelo:plugin-activate:${slug}`}, 0))`,
+      );
+      return fn();
+    },
+    { holder: "plugins.activation_lock" },
+  );
 }

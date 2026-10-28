@@ -23,7 +23,12 @@ import type {
   PluginInvocation,
   PluginProvenance,
 } from "@caelo-cms/plugin-sdk";
-import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
+import {
+  allowNestedCheckouts,
+  type DatabaseAdapter,
+  execute,
+  type OperationRegistry,
+} from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { bakedDataPageIds } from "./baked-data-pages.js";
@@ -439,7 +444,21 @@ export function renderInvocation(scope: RenderScope): PluginInvocation {
   };
 }
 
+/**
+ * Run one plugin operation. A render-origin call (URL annotations, list
+ * sources, public URLs, preview hooks) runs inside whatever transaction its
+ * caller holds, and the plugin's storage reads are ops of their own, so it
+ * is an allowlisted nested-checkout call site until #1220 hands it the
+ * caller's transaction (query-api pool-guard.ts).
+ */
 export async function runPluginOperation(
+  opts: RunPluginOperationOpts,
+): Promise<RunPluginOperationResult> {
+  if (opts.invocation.origin !== "render") return runPluginOperationNow(opts);
+  return allowNestedCheckouts("plugins.render_hook", () => runPluginOperationNow(opts));
+}
+
+async function runPluginOperationNow(
   opts: RunPluginOperationOpts,
 ): Promise<RunPluginOperationResult> {
   if (
