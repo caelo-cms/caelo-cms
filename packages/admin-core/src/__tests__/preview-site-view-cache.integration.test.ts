@@ -50,7 +50,9 @@ describe("preview site-view cache (#1212)", () => {
     const { cold, warm } = await site.measure();
     // The first render of measure() after an earlier one is already warm.
     expect(warm).toBe(cold);
-    expect(site.lastStatements().some((s) => /FROM media_assets WHERE deleted_at IS NULL/.test(s))).toBe(false);
+    expect(
+      site.lastStatements().some((s) => /FROM media_assets WHERE deleted_at IS NULL/.test(s)),
+    ).toBe(false);
     expect(site.lastStatements().some((s) => /site_view_generation/.test(s))).toBe(true);
   });
 
