@@ -21,9 +21,9 @@ import { join } from "node:path";
 import {
   clearFontReaderCache,
   fontByteReadCount,
-  fontReaderCachedBytes,
   fontMetadata,
   fontReader,
+  fontReaderCachedBytes,
 } from "@caelo-cms/font-service";
 import {
   DatabaseAdapter,
