@@ -244,6 +244,39 @@ async function syncGuards(ctx: PluginContextTier1): Promise<{ flagged: number; c
   return { flagged, cleared };
 }
 
+/** The module an operator decision is about; refuses one with no third-party host. */
+async function embedToDecide(
+  ctx: PluginContextTier1,
+  op: string,
+  moduleId: string,
+): Promise<EmbedScan> {
+  const scan = (await scanEmbeds(ctx)).find((e) => e.moduleId === moduleId);
+  if (!scan || scan.hosts.length === 0) {
+    throw new Error(
+      `${op}: module ${moduleId} has no detected third-party host — nothing to decide. Run list_external_embeds to see what does.`,
+    );
+  }
+  return scan;
+}
+
+/**
+ * Store a decision about the hosts the module reaches now; the row may
+ * not exist yet, since only the scheduled scan records them. A chat call
+ * is the AI's decision (an approved one is the approver's), and the
+ * stored `decided_by` says so rather than crediting the operator.
+ */
+async function recordEmbedVerdict(
+  ctx: PluginContextTier1,
+  scan: EmbedScan,
+  decision: Pick<GuardRow, "category_key" | "status">,
+): Promise<void> {
+  const q = adminQueryOf(ctx);
+  const decidedBy = ctx.invocation.origin === "chat" ? "ai" : "operator";
+  const fields = { ...decision, detected_hosts: scan.hosts, decided_by: decidedBy };
+  if (scan.guard) await q.update("module_guards", scan.guard.id, fields);
+  else await q.insert("module_guards", { module_id: scan.moduleId, ...fields });
+}
+
 const deferralsArgs = z.object({
   modules: z.array(
     z.object({
@@ -648,7 +681,7 @@ export default definePlugin<PluginContextTier1>({
         ...(withheldNow.some((w) => w.siteChrome)
           ? {
               withheldNote:
-                "Site chrome (header, footer, navigation) is withheld: visitors see a placeholder instead on EVERY page. Tell the operator now, then resolve each module with classify_external_embed.",
+                "Site chrome (header, footer, navigation) is withheld: visitors see a placeholder instead on EVERY page. Tell the operator now, then resolve each module with classify_external_embed (or allow_external_embed, which asks the Owner to approve).",
             }
           : {}),
         consentLog: describeConsentLog(settings.retention_days),
@@ -796,39 +829,53 @@ export default definePlugin<PluginContextTier1>({
       return { embeds };
     },
 
+    // Only the direction that keeps a module withheld until consent. A
+    // category every visitor is in (`necessary`) renders the module for
+    // everyone, which is allow_embed's decision and needs its approval.
     classify_embed: async (ctx, args) => {
-      const { moduleId, category, allow } = args as {
-        moduleId?: unknown;
-        category?: unknown;
-        allow?: unknown;
-      };
+      const { moduleId, category } = args as { moduleId?: unknown; category?: unknown };
       if (typeof moduleId !== "string") throw new Error("classify_embed: `moduleId` is required");
       const q = adminQueryOf(ctx);
-      const scan = (await scanEmbeds(ctx)).find((e) => e.moduleId === moduleId);
-      if (!scan || scan.hosts.length === 0) {
+      const scan = await embedToDecide(ctx, "classify_embed", moduleId);
+      const consentCategories = (await categoriesOf(q)).filter((c) => !c.required);
+      if (typeof category !== "string" || !consentCategories.some((c) => c.key === category)) {
         throw new Error(
-          `classify_embed: module ${moduleId} has no detected third-party host — nothing to classify. Run list_embeds to see what does.`,
+          `classify_embed: \`category\` must be one of ${consentCategories.map((c) => c.key).join(", ")}. To render the module for every visitor without consent, use allow_external_embed (it asks the Owner to approve).`,
         );
       }
-      let decision: Pick<GuardRow, "category_key" | "status">;
-      if (allow === true) {
-        decision = { category_key: scan.guard?.category_key ?? "marketing", status: "allowed" };
-      } else {
-        const categories = await categoriesOf(q);
-        const known = new Set(categories.map((c) => c.key));
-        if (typeof category !== "string" || !known.has(category)) {
-          throw new Error(`classify_embed: \`category\` must be one of ${[...known].join(", ")}`);
-        }
-        decision = { category_key: category, status: "gated" };
+      await recordEmbedVerdict(ctx, scan, { category_key: category, status: "gated" });
+      return { moduleId, status: "gated", category };
+    },
+
+    // The loosening direction: the module renders for every visitor,
+    // before any consent. A §11.A tool (approvalMode), so a chat reaches
+    // this only through the Owner's click, and the approver sees the
+    // hosts they let through — which must be exactly the ones the module
+    // reaches now, or the approval would cover requests nobody named.
+    allow_embed: async (ctx, args) => {
+      const { moduleId, moduleSlug, hosts } = args as {
+        moduleId?: unknown;
+        moduleSlug?: unknown;
+        hosts?: unknown;
+      };
+      if (typeof moduleId !== "string") throw new Error("allow_embed: `moduleId` is required");
+      const scan = await embedToDecide(ctx, "allow_embed", moduleId);
+      if (moduleSlug !== scan.moduleSlug) {
+        throw new Error(
+          `allow_embed: module ${moduleId} is "${scan.moduleSlug}", not ${JSON.stringify(moduleSlug)}. Pass the slug list_external_embeds reports.`,
+        );
       }
-      // The operator decides about the hosts the module reaches now; the
-      // row may not exist yet, since only the scheduled scan records them.
-      const fields = { ...decision, detected_hosts: scan.hosts, decided_by: "operator" };
-      if (scan.guard) await q.update("module_guards", scan.guard.id, fields);
-      else await q.insert("module_guards", { module_id: moduleId, ...fields });
-      return decision.status === "allowed"
-        ? { moduleId, status: "allowed" }
-        : { moduleId, status: "gated", category: decision.category_key };
+      const named = Array.isArray(hosts) ? [...hosts].map(String).sort() : [];
+      if (JSON.stringify(named) !== JSON.stringify(scan.hosts)) {
+        throw new Error(
+          `allow_embed: module "${scan.moduleSlug}" reaches ${scan.hosts.join(", ")} now, not ${named.join(", ") || "nothing"}. Call list_external_embeds again and ask for approval of exactly those hosts.`,
+        );
+      }
+      await recordEmbedVerdict(ctx, scan, {
+        category_key: scan.guard?.category_key ?? "marketing",
+        status: "allowed",
+      });
+      return { moduleId, status: "allowed" };
     },
 
     add_tag: async (ctx, args) => addTag(ctx, args),
