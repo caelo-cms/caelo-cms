@@ -31,6 +31,18 @@ const STATUS_DETAIL: Record<PageVariantRow["translation_status"], string> = {
   needs_update: "Out of date",
 };
 
+/** The longest entry label the SDK's toolbar state accepts. */
+const MAX_LABEL = 80;
+
+/**
+ * A language's name as an entry label: the configured name (up to 120
+ * characters) shortened to the toolbar's limit, so one long name cannot
+ * invalidate the whole state.
+ */
+function entryLabel(name: string): string {
+  return name.length <= MAX_LABEL ? name : `${name.slice(0, MAX_LABEL - 1)}…`;
+}
+
 /** Upper-cased locale code, the label next to the icon. */
 function codeLabel(code: string): string {
   return code.toUpperCase().slice(0, 8);
@@ -73,7 +85,7 @@ export function languageToolbarState(input: {
     const variant = group.find((v) => v.locale_code === locale.code);
     const isCurrent = locale.code === pageLocale.code;
     if (!variant && !isCurrent) {
-      return { label: locale.display_name, detail: "Not translated" };
+      return { label: entryLabel(locale.display_name), detail: "Not translated" };
     }
     const status = variant?.translation_status ?? "source";
     if (status === "needs_update") outOfDate += 1;
@@ -83,7 +95,7 @@ export function languageToolbarState(input: {
       .filter((p): p is string => p !== null)
       .join(" · ");
     return {
-      label: locale.display_name,
+      label: entryLabel(locale.display_name),
       detail,
       ...(status === "needs_update" ? { tone: "attention" as const } : {}),
       ...(isCurrent ? { current: true } : { pageId: (variant as PageVariantRow).page_id }),

@@ -48,6 +48,13 @@ describe("editorToolbar in the manifest", () => {
     ]);
   });
 
+  it("refuses two prompts with the same label in one item", () => {
+    const prompt = { label: "Translate", text: "Translate {page}." };
+    expect(issues({ ...base, editorToolbar: [{ ...item, prompts: [prompt, prompt] }] })).toEqual([
+      'editorToolbar.0.prompts.1.label: prompt "Translate" is declared twice',
+    ]);
+  });
+
   it("allows at most two items per plugin", () => {
     const three = ["a", "b", "c"].map((id) => ({ ...item, id }));
     expect(issues({ ...base, editorToolbar: three }).length).toBeGreaterThan(0);

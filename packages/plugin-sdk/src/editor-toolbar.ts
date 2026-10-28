@@ -121,7 +121,8 @@ export type PluginEditorToolbarState = z.infer<typeof pluginEditorToolbarState>;
 
 /**
  * The cross-field checks of a plugin's toolbar items, run by the manifest
- * schema: unique ids, and every operation one of the plugin's `operations`.
+ * schema: unique ids, unique prompt labels per item, and every operation one
+ * of the plugin's `operations`.
  */
 export function checkEditorToolbar(
   items: readonly PluginEditorToolbarItem[],
@@ -138,6 +139,14 @@ export function checkEditorToolbar(
         [i, "operation"],
         `operation "${item.operation}" is not one of the plugin's operations`,
       );
+    }
+    // A prompt is told apart by its label (the button text, the review line).
+    const labels = new Set<string>();
+    for (const [p, prompt] of (item.prompts ?? []).entries()) {
+      if (labels.has(prompt.label)) {
+        addIssue([i, "prompts", p, "label"], `prompt "${prompt.label}" is declared twice`);
+      }
+      labels.add(prompt.label);
     }
   }
 }

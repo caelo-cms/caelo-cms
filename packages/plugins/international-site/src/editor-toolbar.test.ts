@@ -120,6 +120,18 @@ describe("languageToolbarState", () => {
     expect(state.count).toBe(1);
   });
 
+  it("shortens a language name longer than an entry label may be", () => {
+    const long = "L".repeat(120);
+    const state = languageToolbarState({
+      pageId: EN,
+      locales: [locale("en", "English", true), locale("de", long)],
+      variants: [],
+      pages,
+    });
+    expect(pluginEditorToolbarState.safeParse(state).success).toBe(true);
+    expect(state.items?.[1]?.label).toBe(`${"L".repeat(79)}…`);
+  });
+
   it("asks for languages when none are set up", () => {
     const state = languageToolbarState({ pageId: EN, locales: [], variants: [], pages });
     expect(state).toEqual({
