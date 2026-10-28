@@ -154,6 +154,10 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${A}/ops/page_log.ts`,
       `${A}/ops/tool_approvals.ts`,
       `${A}/ops/pending_proposals.ts`,
+      // #1215 — every chat turn's stream forwards the live-refresh topics
+      // its commits announce (agents, pending, quality …).
+      `${A}/live-events.ts`,
+      `${SHARED}/live-events.ts`,
       `${A}/ops/_*.ts`,
       `${A}/ops/links*.ts`,
       `${A}/stage/**`,

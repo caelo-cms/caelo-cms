@@ -24,8 +24,9 @@ import {
   readAgentStopEpoch,
   resolveTestProvider,
   runChatTurn,
+  subscribeLiveTopics,
 } from "@caelo-cms/admin-core";
-import { pluginPreviewSelectionSchema } from "@caelo-cms/shared";
+import { type LiveTopic, pluginPreviewSelectionSchema } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
@@ -33,6 +34,8 @@ import type { RequestHandler } from "./$types";
 
 const AI_ACTOR_ID = "00000000-0000-0000-0000-000000000a1a";
 const TEST_PROVIDER_HEADER = "x-caelo-test-provider";
+/** #1215 — live topics committed within this window go out as one event. */
+const LIVE_SETTLE_MS = 100;
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
   requirePermission(locals, "content.write");
@@ -228,6 +231,30 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
           // Stream torn down; finally clears.
         }
       }, 30_000);
+      // Issue #1215 — while this turn runs, the tab hears every live-refresh
+      // topic of this admin process (agents, approvals, credentials, quality,
+      // crawl, deploys) as `{kind: "live", topics}` and re-reads only those
+      // surfaces; it polls nothing on a timer. A burst of commits (one tool
+      // writing a proposal and its audit row) is sent once.
+      const liveTopics = new Set<LiveTopic>();
+      let liveFlush: ReturnType<typeof setTimeout> | null = null;
+      const flushLive = () => {
+        liveFlush = null;
+        if (liveTopics.size === 0) return;
+        const topics = [...liveTopics].sort();
+        liveTopics.clear();
+        try {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ kind: "live", topics })}\n\n`),
+          );
+        } catch {
+          // Stream torn down; the finally below unsubscribes.
+        }
+      };
+      const stopLive = subscribeLiveTopics((topics) => {
+        for (const t of topics) liveTopics.add(t);
+        liveFlush ??= setTimeout(flushLive, LIVE_SETTLE_MS);
+      });
       try {
         for await (const ev of runChatTurn(
           {
@@ -269,6 +296,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
           },
         )) {
           if (abortSignal.aborted) break;
+          // The tab may stop reading at `done`: topics still waiting go first.
+          if (ev.kind === "done") {
+            if (liveFlush !== null) clearTimeout(liveFlush);
+            flushLive();
+          }
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
           lastEventKind = ev.kind;
           eventsEnqueued++;
@@ -318,6 +350,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
       } finally {
         clearInterval(keepAlive);
         clearInterval(heartbeat);
+        stopLive();
+        if (liveFlush !== null) clearTimeout(liveFlush);
+        // The turn's last commits (its agent run finishing) still reach the tab.
+        flushLive();
         controller.close();
       }
     },

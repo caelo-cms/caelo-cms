@@ -7,12 +7,18 @@
    * administrator), including ones started in another tab, by another
    * client or by an external MCP agent. Click opens the list with a Stop
    * per entry and a link to the chat. Hidden while nothing runs.
+   *
+   * #1215 — no timer polling: re-read on every `agents` live topic (from a
+   * chat stream of this tab or, while an agent runs, the live-events wait),
+   * when the tab regains focus and after a Stop / Allow here.
    */
 
   import { Bot, Square } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
+  import { coalescedRefresh } from "#lib/components/edit/coalesced-refresh.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Card, CardContent } from "#lib/components/ui/card/index.js";
+  import { liveHub } from "#lib/live/live-refresh.js";
   import {
     type AgentRunView,
     activeRuns,
@@ -30,14 +36,16 @@
   let open = $state(false);
   let nowMs = $state(Date.now());
   let actionError = $state<string | null>(null);
-  let pollHandle: ReturnType<typeof setInterval> | null = null;
   let rootEl: HTMLDivElement | null = $state(null);
+  let unregister: (() => void) | null = null;
 
-  async function refresh(): Promise<void> {
+  // One read on the wire at a time; a call meanwhile re-reads once after it.
+  const refresh = coalescedRefresh(async () => {
     const next = await fetchAgentRuns();
     if (next) runs = next;
     nowMs = Date.now();
-  }
+    liveHub.kick();
+  });
 
   async function act(run: AgentRunView, action: "cancel" | "allow"): Promise<void> {
     actionError = await postAgentAction({
@@ -47,6 +55,8 @@
       runId: run.id,
     });
     await refresh();
+    // The operator's own Stop / Allow: a failed wait may wait again.
+    liveHub.resume();
   }
 
   function onDocClick(e: MouseEvent): void {
@@ -55,17 +65,25 @@
 
   onMount(() => {
     void refresh();
-    pollHandle = setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, 5000);
+    unregister = liveHub.register({
+      topics: ["agents"],
+      refresh: () => void refresh(),
+      waiting: () => activeRuns(runs).length > 0,
+    });
     document.addEventListener("click", onDocClick);
   });
   onDestroy(() => {
-    if (pollHandle) clearInterval(pollHandle);
+    unregister?.();
     if (typeof document !== "undefined") document.removeEventListener("click", onDocClick);
   });
 
   const active = $derived(activeRuns(runs));
+  // Ages in the open list tick locally while an agent runs; no request.
+  $effect(() => {
+    if (!open || active.length === 0) return;
+    const id = setInterval(() => (nowMs = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
 </script>
 
 {#if runs.length > 0}

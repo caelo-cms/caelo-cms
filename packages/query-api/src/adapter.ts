@@ -31,6 +31,7 @@ import type { OperationDefinition, TransactionRunner } from "./operation.js";
 import { type ProvisionOutcome, provisionPluginSchemaInTx } from "./plugin-schema-provision.js";
 import {
   collectPostCommitEffects,
+  notifyOperationCommitted,
   type PostCommitEffect,
   type PostCommitFailure,
   runPostCommitEffects,
@@ -495,6 +496,10 @@ export class DatabaseAdapter {
         publishFailure = `The change is saved, but the public site does not serve it yet: publishing it failed (${thrown instanceof Error ? thrown.message : String(thrown)}). Do not repeat the change; it is published automatically within seconds once the public database answers.`;
       }
     }
+    // #1215 — change hints (the editor's live refresh) hear a handler that
+    // answered ok: its change is committed even when a follow-up below
+    // failed. A handler's own error left nothing a reader should re-read.
+    if (result.ok) notifyOperationCommitted(op.name);
     if (effectFailures.length > 0) {
       const effects = postCommitFailureMessage(effectFailures);
       return err({

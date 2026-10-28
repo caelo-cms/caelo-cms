@@ -100,3 +100,45 @@ export async function runPostCommitEffects(
   }
   return failures;
 }
+
+/**
+ * Issue #1215 — a listener that hears the NAME of every operation whose
+ * transaction committed successfully in this process. It exists for change
+ * hints that have no single handler to live in (the editor's live refresh:
+ * "a proposal changed, re-read the pending strip" spans ~70 propose /
+ * execute / reject ops). The listener classifies by name and never sees
+ * inputs, outputs or the actor, so it cannot carry data between callers.
+ * It runs after the commit and the post-commit effects; it must be cheap,
+ * and a throw is logged and ignored — the operation itself succeeded, and a
+ * hint never changes its result.
+ */
+export type CommittedOperationListener = (operationName: string) => void;
+
+const committedListeners = new Set<CommittedOperationListener>();
+
+/**
+ * Hear every successfully committed operation of this process.
+ *
+ * @returns the unsubscribe function.
+ * @example
+ *   const stop = observeCommittedOperations((name) => {
+ *     if (name.endsWith(".execute_proposal")) markPendingChanged();
+ *   });
+ */
+export function observeCommittedOperations(listener: CommittedOperationListener): () => void {
+  committedListeners.add(listener);
+  return () => {
+    committedListeners.delete(listener);
+  };
+}
+
+/** Adapter-internal: tell every listener that `operationName` committed. */
+export function notifyOperationCommitted(operationName: string): void {
+  for (const listener of committedListeners) {
+    try {
+      listener(operationName);
+    } catch (thrown) {
+      console.error(`[query-api] committed-operation listener failed for ${operationName}`, thrown);
+    }
+  }
+}
