@@ -880,21 +880,26 @@ function setLeafAtPath(doc: Record<string, unknown>, path: string, leaf: unknown
   const parts = path.split(".");
   // The dotted path comes from the caller's `writes` map (form / AI input),
   // so a segment like `__proto__` or `constructor` would let the walk below
-  // (`cur[k] = {}`, `cur[last] = leaf`) pollute the prototype chain (CodeQL
-  // js/prototype-pollution-utility). Reject the whole write on any unsafe
-  // segment rather than partially applying it.
-  if (parts.some(isUnsafeKey)) return;
+  // (`cur[k] = {}`, `cur[last] = leaf`) pollute the prototype chain. No
+  // token is named that, so the write fails loudly instead of being dropped
+  // (CLAUDE.md §2). The comparison sits inline at the assignment so CodeQL's
+  // js/prototype-pollution-utility sees the guard.
   let cur: Record<string, unknown> = doc;
-  for (let i = 0; i < parts.length - 1; i++) {
+  for (let i = 0; i < parts.length; i++) {
     const k = parts[i];
     if (!k) continue;
+    if (k === "__proto__" || k === "constructor" || k === "prototype") {
+      throw new UnknownTokenName(path, []);
+    }
+    if (i === parts.length - 1) {
+      cur[k] = leaf;
+      return;
+    }
     if (cur[k] === undefined || cur[k] === null || typeof cur[k] !== "object") {
       cur[k] = {};
     }
     cur = cur[k] as Record<string, unknown>;
   }
-  const last = parts[parts.length - 1];
-  if (last) cur[last] = leaf;
 }
 
 /**

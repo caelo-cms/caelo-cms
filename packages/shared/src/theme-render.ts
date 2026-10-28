@@ -519,16 +519,17 @@ function asString(value: unknown): string {
  * CSS values are otherwise unrestricted in character set (font-family
  * names legitimately contain quotes, commas, parens, hyphens), so we
  * don't HTML-encode broadly — that would break perfectly-valid
- * `font-family: "Segoe UI", sans-serif` declarations. Instead, scrub
- * the two sequences that let an attacker break out of the surrounding
- * `<style>…</style>` context:
+ * `font-family: "Segoe UI", sans-serif` declarations. Instead, drop the
+ * single characters that let a value leave its context:
  *
- *   - `</style` (case-insensitive) — premature end-tag would close
- *     the style block and let everything after it parse as HTML
- *     (`fontFamily: "Inter</style><script>alert(1)</script>"`).
- *   - `<!--` / `-->` — CDO/CDC tokens; some HTML parsers treat them
- *     specially inside `<style>` and they're never valid in a real
- *     CSS value anyway.
+ *   - `<` and `>` — every way out of the surrounding `<style>…</style>`
+ *     starts with one (`</style`, `<!--`, `-->`, `--!>`), and no color,
+ *     dimension, shadow or font name contains them. Removing single
+ *     characters cannot re-create a removed sequence, so one pass is
+ *     complete (a sequence-based scrub needs a fixed-point loop, which
+ *     CodeQL's js/incomplete-multi-character-sanitization cannot see).
+ *   - `;`, `{`, `}` — they would end the declaration or the rule and
+ *     inject CSS of the value's choosing.
  *
  * The themeColorToken / themeDimensionToken Zod regexes already
  * constrain those token types to character sets that exclude `<`, so
@@ -536,21 +537,5 @@ function asString(value: unknown): string {
  * (`typography.X.fontFamily`, `$description` if it ever lands in CSS).
  */
 function sanitizeCssTokenValue(value: string): string {
-  // Run to a fixed point: removing one sequence can re-create another
-  // (e.g. `<!--</style>-->` → `</style` only appears after the comment
-  // tokens go), which a single pass would leave behind (CodeQL
-  // js/incomplete-multi-character-sanitization). `--!>` is the HTML5
-  // alternative comment-close and must be scrubbed alongside `-->`
-  // (CodeQL js/bad-tag-filter).
-  let out = value;
-  let prev: string;
-  do {
-    prev = out;
-    out = out
-      .replace(/<\/style/gi, "")
-      .replace(/<!--/g, "")
-      .replace(/--!?>/g, "")
-      .replace(/[;{}]/g, "");
-  } while (out !== prev);
-  return out;
+  return value.replace(/[<>;{}]/g, "");
 }

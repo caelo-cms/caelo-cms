@@ -38,6 +38,14 @@ describe("renderThemeCss CSS-token sanitization (S6)", () => {
     expect(css).not.toContain("-->");
   });
 
+  it("drops every < and > in one pass, so no nesting re-creates a breakout", () => {
+    for (const hostile of ["<</style>/style>", "<<!--!---->>", "</sty</style>le>", "a--!>b"]) {
+      const css = renderThemeCss(fontDoc(hostile));
+      expect(css).not.toMatch(/[<>]/);
+      expect(css.toLowerCase()).not.toContain("</style");
+    }
+  });
+
   it("leaves a normal fontFamily untouched", () => {
     const css = renderThemeCss(fontDoc("Inter, sans-serif"));
     expect(css).toContain("Inter, sans-serif");
