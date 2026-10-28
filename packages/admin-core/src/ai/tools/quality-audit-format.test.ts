@@ -7,6 +7,7 @@ import {
   AUDIT_FIX_LOOP_NEXT_STEP,
   formatAudit,
   formatPage,
+  readStageAudit,
   readUntilSettled,
 } from "./quality-audit-tools.js";
 
@@ -297,5 +298,37 @@ describe("readUntilSettled", () => {
       { waitMs: 50_000, intervalMs: 5_000, signal: controller.signal, sleep: async () => {} },
     );
     expect(reads).toBe(1);
+  });
+});
+
+describe("readStageAudit", () => {
+  const running = { ok: true, value: { run: { status: "running" } } };
+  const noAudit = { ok: true, value: { run: null } };
+
+  it("waits for the build and the audit within one budget (#1211)", async () => {
+    let clock = 0;
+    const r = await readStageAudit(
+      {
+        runId: "00000000-0000-0000-0000-000000001211",
+        // The build is done after 30 s; its audit then keeps running.
+        readRun: async () => ({
+          status: clock >= 30_000 ? "succeeded" : "running",
+          errorMessage: null,
+          progress: null,
+        }),
+        read: async () => (clock >= 30_000 ? running : noAudit),
+      },
+      {
+        waitMs: 50_000,
+        intervalMs: 5_000,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+        now: () => clock,
+      },
+    );
+    expect(r).toBe(running);
+    // Not 30 s for the build plus a fresh 50 s for the audit.
+    expect(clock).toBeLessThanOrEqual(50_000);
   });
 });

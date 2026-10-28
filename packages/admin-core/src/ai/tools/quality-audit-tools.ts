@@ -323,33 +323,67 @@ export const getQualityAuditTool: typeof readQualityAuditTool = {
       intervalMs: AUDIT_POLL_INTERVAL_MS,
       ...(toolCtx.abortSignal ? { signal: toolCtx.abortSignal } : {}),
     };
-    if (input.deployRunId) {
-      // #1211 — a Stage that outlasted stage_changes' wait is still
-      // building: wait for its build (and its audit to be queued) first.
-      const runId = input.deployRunId;
-      const build = await waitForStageBuild(
-        async () => {
+    if (!input.deployRunId) return readUntilSettled(read, opts);
+    // #1211 — a Stage that outlasted stage_changes' wait is still building:
+    // wait for its build (and its audit to be queued) first.
+    const runId = input.deployRunId;
+    return readStageAudit(
+      {
+        runId,
+        readRun: async () => {
           const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "deploy.get_run", {
             runId,
           });
           if (!r.ok) throw new Error(describeError(r.error));
           return (r.value as { run: StageRun | null }).run;
         },
-        async () => {
-          const r = await read();
-          return r.ok && (r.value as AuditValue | undefined)?.run != null;
-        },
-        opts,
-      );
-      const blocked = describeStageBuild(runId, build);
-      if (blocked) return blocked;
-    }
-    return readUntilSettled(read, opts);
+        read,
+      },
+      opts,
+    );
   },
 };
 
+/**
+ * get_quality_audit for a Stage's build run: wait for the build, then for
+ * its audit — both within ONE `waitMs` budget, so the whole call stays
+ * under the MCP client's request timeout however the time splits between
+ * the build and the audit.
+ *
+ * @returns the tool result while the build is not done, else the last
+ *   audit read.
+ */
+export async function readStageAudit<R extends { ok: boolean; value?: unknown }>(
+  args: {
+    readonly runId: string;
+    readonly readRun: () => Promise<StageRun | null>;
+    readonly read: () => Promise<R>;
+  },
+  opts: {
+    readonly waitMs: number;
+    readonly intervalMs: number;
+    readonly signal?: AbortSignal;
+    readonly sleep?: (ms: number) => Promise<void>;
+    readonly now?: () => number;
+  },
+): Promise<R | { ok: boolean; content: string }> {
+  const now = opts.now ?? Date.now;
+  const deadline = now() + opts.waitMs;
+  const build = await waitForStageBuild(
+    args.readRun,
+    async () => {
+      const r = await args.read();
+      return r.ok && (r.value as AuditValue | undefined)?.run != null;
+    },
+    opts,
+  );
+  const blocked = describeStageBuild(args.runId, build);
+  if (blocked) return blocked;
+  return readUntilSettled(args.read, { ...opts, waitMs: Math.max(0, deadline - now()) });
+}
+
 /** What get_quality_audit reads of a Stage's deploy run (deploy.get_run). */
-interface StageRun {
+export interface StageRun {
   readonly status: "pending" | "running" | "succeeded" | "failed";
   readonly errorMessage: string | null;
   readonly progress: { pagesDone: number; pagesTotal: number } | null;
