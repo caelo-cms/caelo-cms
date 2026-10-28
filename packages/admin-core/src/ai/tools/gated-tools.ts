@@ -43,7 +43,7 @@ import {
 import { describeOperatorAccessSync, syncOperatorAccess } from "../../ops/user_access.js";
 import { describePersistError } from "../chat-runner/persistence.js";
 import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
-import { approvedPluginInvocation } from "../plugin-invocation.js";
+import { approvedCallRunsLive, approvedPluginInvocation } from "../plugin-invocation.js";
 import { credentialFreeResult } from "./credential-free-result.js";
 
 /**
@@ -266,16 +266,18 @@ export function attachPluginGatedExecute(
       const approver = chat.operatorActorId;
       if (!approver)
         return { ok: false, error: "ApprovalWithoutOperator: no human approved this call" };
-      // Live only for an approver who could publish it anyway; otherwise the
-      // approved action stays on the chat's branch until someone publishes.
+      // Live only for an approver who could publish it anyway (and not for a
+      // draft-bound tool); otherwise the approved action stays on the
+      // chat's branch until someone publishes.
       const canPublish = await operatorHasPermission(
         hostInfra(),
         hostSystemActorId(),
         approver,
         "deploy.trigger",
       );
+      const spec = plugin?.definition.tools?.find((t) => t.name === tool.name) ?? {};
       const invocation =
-        canPublish || !chat.chatBranchId
+        approvedCallRunsLive(canPublish, spec) || !chat.chatBranchId
           ? approvedPluginInvocation(approver)
           : approvedPluginInvocation(approver, {
               chatBranchId: chat.chatBranchId,

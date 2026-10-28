@@ -29,11 +29,29 @@ export function chatPluginInvocation(
 }
 
 /**
+ * Whether an approved plugin tool call applies live (no branch) rather
+ * than on the proposing chat's branch: only for an approver who may
+ * publish (`deploy.trigger`), and never for a tool whose decision is
+ * about the chat's draft (`approvedOnChatBranch`) — main would not
+ * show it what the approver saw.
+ *
+ * @param canPublish the approver holds `deploy.trigger`
+ * @param tool the approved tool's spec
+ */
+export function approvedCallRunsLive(
+  canPublish: boolean,
+  tool: { readonly approvedOnChatBranch?: boolean },
+): boolean {
+  return canPublish && tool.approvedOnChatBranch !== true;
+}
+
+/**
  * The plugin invocation for an approval-gated plugin tool after the
  * click (CMS_REQUIREMENTS §14.7). An approved action applies live when
  * the approver may publish (`deploy.trigger`) — the click is then the
  * publishing decision. An approver who cannot publish keeps it on the
- * chat's branch, so it goes live with the chat, by someone who may.
+ * chat's branch, so it goes live with the chat, by someone who may
+ * (see {@link approvedCallRunsLive} for the draft-bound exception).
  *
  * @param operatorActorId the human who approved
  * @param chatBranch the chat's branch and task, when the action must stay on it

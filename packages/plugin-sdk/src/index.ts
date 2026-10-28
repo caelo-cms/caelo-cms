@@ -177,6 +177,13 @@ export const pluginToolSpec = z.object({
    *  body of an email that is sent as approved). Only meaningful with
    *  `approvalMode`; bound each one in `inputJsonSchema` (`maxLength`). */
   approvalPreviewFullArgs: z.array(z.string().min(1).max(64)).max(8).optional(),
+  /** An approved call normally applies live when the approver may
+   *  publish. Set this when the decision is about the chat's draft (e.g.
+   *  a module the chat created or edited): the approved call then runs
+   *  on the chat's branch for every approver and goes live with it, so
+   *  it judges exactly what the approver was shown. Only meaningful
+   *  with `approvalMode`. */
+  approvedOnChatBranch: z.boolean().optional(),
   /** The permission the HUMAN a chat call acts for must hold — for the
    *  direct call, or for the approver of an approval-gated one. Use the
    *  permission the plugin's own owner panel requires, so the chat is not
