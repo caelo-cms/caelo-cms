@@ -4,11 +4,13 @@
  * P6.7.2 → #390 — path-aware live preview for the chrome-less /edit
  * surface.
  *
- * GET `/edit/preview-by-path/<...path>?branch=<chatBranchId>` resolves
- * the COMPOSED public path against `pages.currentPath` (the
- * materialized URL-composition result, so plugin prefixes work), then
- * delegates to `pages.render_preview` (branch-aware) and splices the
- * inject-script before `</body>`.
+ * GET `/edit/preview-by-path/<...path>?branch=<chatBranchId>` renders the
+ * page at that COMPOSED public path through `pages.render_preview`
+ * (branch-aware; it matches `current_path`, the materialized
+ * URL-composition result, so plugin prefixes work — and a page the chat
+ * renamed or moved at its pending path) and splices the inject-script
+ * before `</body>`. #1212 — one call: the op resolves the path from its
+ * cached site view instead of this route listing every page first.
  *
  * The iframe inside /edit loads this path-based URL so a relative
  * `<a href="/de/about">` click inside the iframe naturally navigates to
@@ -37,13 +39,6 @@ import { previewDocumentResponse } from "#lib/server/preview-sandbox.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
-interface PageRow {
-  id: string;
-  slug: string;
-  currentPath: string;
-  parentPageId: string | null;
-}
-
 export const GET: RequestHandler = async ({ params, url, locals, cookies }) => {
   const user = requirePermission(locals, "content.write");
   const { adapter, registry } = getQueryContext();
@@ -53,36 +48,12 @@ export const GET: RequestHandler = async ({ params, url, locals, cookies }) => {
   const trimmed = (params.path ?? "").replace(/^\/+|\/+$/g, "");
   const lookupPath = trimmed.length === 0 ? "/" : `/${trimmed}`;
 
-  // v0.9.6 — branch-aware ctx for the page lookup. Without this, a page
-  // the AI just created on a chat branch (chat_branch_id NOT NULL) is
-  // hidden by `branchVisibilityFilter` and the iframe sees a 404 — even
-  // though render_preview below was already being told the branch via
-  // `chatBranchId`. The render call was branch-aware; the LOOKUP wasn't.
+  // v0.9.6 — branch-aware ctx: a page the AI just created on a chat
+  // branch (chat_branch_id NOT NULL) is visible only in that branch's view.
   const branch = url.searchParams.get("branch");
   const ctxWithBranch: ExecutionContext = branch
     ? { ...locals.ctx, chatBranchId: branch }
     : locals.ctx;
-
-  const pagesR = await execute(registry, adapter, ctxWithBranch, "pages.list", {});
-  // Issue #569 — the Query API refuses a branch the caller may not see;
-  // answer 404 like for a branch that does not exist.
-  if (!pagesR.ok && pagesR.error.kind === "BranchNotFound") throw error(404, "Branch not found");
-  if (!pagesR.ok) throw error(500, "Could not list pages");
-  const pages = (pagesR.value as { pages: PageRow[] }).pages;
-  // Primary: composed-path match. Legacy slug match keeps pre-#390
-  // bookmarks working when no URL plugin has reshaped anything (then
-  // currentPath === "/<slug>" and both branches agree). Top-level pages
-  // only — a nested page's URL is its parent chain + slug, so "/<slug>"
-  // is NOT its address — and only while exactly one page matches: slugs
-  // repeat across URL prefixes (epic #690), and a guess would open the
-  // wrong page.
-  const legacy = pages.filter(
-    (p) => p.parentPageId === null && p.slug === (trimmed.length === 0 ? "home" : trimmed),
-  );
-  const page =
-    pages.find((p) => p.currentPath === lookupPath) ??
-    (legacy.length === 1 ? legacy[0] : undefined);
-  if (!page) throw error(404, `No page at ${lookupPath}`);
 
   // P6.6b — `?exclude=<moduleId>,<moduleId>` lets the chat-side diff
   // panel render a partial-publish view: the right iframe excludes
@@ -93,24 +64,30 @@ export const GET: RequestHandler = async ({ params, url, locals, cookies }) => {
     ? excludeRaw.split(",").filter((id) => id.length > 0)
     : undefined;
   const composed = await execute(registry, adapter, ctxWithBranch, "pages.render_preview", {
-    pageId: page.id,
+    path: lookupPath,
     ...(branch ? { chatBranchId: branch } : {}),
     ...(excludeBranchModules ? { excludeBranchModules } : {}),
     // #917 — field markers for in-place text editing.
     editMarkers: true,
   });
   if (!composed.ok) {
+    // Issue #569 — the Query API refuses a branch the caller may not see;
+    // answer 404 like for a branch that does not exist.
     if (composed.error.kind === "BranchNotFound") throw error(404, "Branch not found");
-    // The page was found above, so a failure here is a render failure,
-    // not a 404; surface its message (see preview/[pageId]).
+    // Only a missing page is a 404; any other failure is a render
+    // failure, surfaced with its message (see preview/[pageId]).
     const message =
       "message" in composed.error ? String(composed.error.message) : composed.error.kind;
+    if (message === "page not found") throw error(404, `No page at ${lookupPath}`);
     throw error(500, `Preview render failed: ${message}`);
   }
 
   const out = composed.value as {
     html: string;
     pluginFailures?: { slug: string; reason: string }[];
+    pageId: string;
+    pageSlug: string;
+    pagePath: string;
   };
   // The inject-script needs to know its own pageId/slug so it can
   // post `caelo:navigated` to the parent on every iframe load. We thread
@@ -121,9 +98,9 @@ export const GET: RequestHandler = async ({ params, url, locals, cookies }) => {
       previewPluginProblems(pluginsNotRunningHere(), out.pluginFailures),
     ),
     {
-      pageId: page.id,
-      slug: page.slug,
-      path: page.currentPath,
+      pageId: out.pageId,
+      slug: out.pageSlug,
+      path: out.pagePath,
     },
   );
 

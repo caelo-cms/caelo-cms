@@ -610,6 +610,12 @@ export async function runPluginOperation(
       opts.args,
     );
     if (opts.readOnlyPreview) return { ok: true, value };
+    // #1212 — a render call only reads (its storage writes are refused,
+    // capabilities.ts), and the preview makes several per view of a page:
+    // an audit row each recorded nothing anyone acted on, in a transaction
+    // of its own per call. A failing one still lands in the plugin's error
+    // log below.
+    if (opts.invocation.origin === "render") return { ok: true, value };
     // v0.2.16 — emit an audit_events row so plugin write ops (e.g.
     // `comments.moderate`) show in the operator's audit trail.
     // Best-effort: failure to audit doesn't fail the op.
@@ -648,7 +654,11 @@ export async function runPluginOperation(
     await markBakedPagesStale(plugin, opts.operationName, opts.args, value);
     return { ok: true, value };
   } catch (e) {
-    if (!opts.readOnlyPreview && !isPublicSideHost(cachedInfra)) {
+    if (
+      !opts.readOnlyPreview &&
+      opts.invocation.origin !== "render" &&
+      !isPublicSideHost(cachedInfra)
+    ) {
       try {
         await emitPluginAuditRow(cachedInfra.adapter, {
           actorId: plugin.pluginActorId,

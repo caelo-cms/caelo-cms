@@ -318,19 +318,28 @@ function makeScopedQuery(
    * Owner action (CMS_REQUIREMENTS §14.7). Seed data in `onActivate`.
    */
   function assertAuthoring(method: string): void {
+    // #1212 — a render call only reads, from either pool: the preview
+    // runs every render hook on every view of every page, and a write
+    // from one would change plugin data because someone looked at a page.
+    // It is also why dispatch keeps no audit row per render call.
+    if (invocation.origin === "render") {
+      throw new Error(
+        `${scope.label}.${method}: plugin "${plugin.slug}" cannot write from a render call — render hooks only read; write from a chat tool, the Owner panel, a worker or onActivate`,
+      );
+    }
     if (scope.pool !== "admin") {
       // Public tables hold visitor data and have no branch: a write from a
       // chat would go live before publish. Installed plugins keep chat
       // work in private storage (which branches); visitors, the Owner
       // panel and actions approved by someone who may publish write live.
-      if (plugin.externalApproval && invocation.chatBranchId && invocation.origin !== "render") {
+      if (plugin.externalApproval && invocation.chatBranchId) {
         throw new Error(
           `${scope.label}.${method}: plugin "${plugin.slug}" cannot write its public tables from a chat — they are live visitor data; keep chat work in private storage (adminQuery)`,
         );
       }
       return;
     }
-    if (invocation.origin === "render" || invocation.origin === "visitor") {
+    if (invocation.origin === "visitor") {
       throw new Error(
         `${scope.label}.${method}: plugin "${plugin.slug}" cannot write its private storage from a ${invocation.origin} call — write from a chat tool, the Owner panel, a worker or onActivate`,
       );

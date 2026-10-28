@@ -27,7 +27,13 @@ import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
 import { recordAudit, SYSTEM_ACTOR_ID } from "./audit.js";
 import { branchNotFound, firstInvisibleBranch, namedBranches } from "./branch-access.js";
 import { extractPgFields, isRlsDenial, OperationAbortError, type QueryError } from "./errors.js";
-import type { OperationDefinition, TransactionRunner } from "./operation.js";
+import {
+  type AnyOperationDefinition,
+  isReadOperation,
+  type ReadOperationDefinition,
+  type ReadScope,
+  type TransactionRunner,
+} from "./operation.js";
 import { type ProvisionOutcome, provisionPluginSchemaInTx } from "./plugin-schema-provision.js";
 import {
   collectPostCommitEffects,
@@ -86,6 +92,13 @@ export interface AdapterConfig {
     readonly admin: string | null;
     readonly public: readonly string[];
   };
+  /**
+   * Called with the text of every statement either pool runs, and with
+   * `BEGIN` / `COMMIT` for every transaction the adapter opens. Only for
+   * the benchmarks that count database round-trips (issue #1212); left
+   * unset everywhere else.
+   */
+  readonly onStatement?: (statement: string) => void;
 }
 
 const DEFAULT_ROLES = { admin: "admin_role", public: ["admin_role", "public_role"] } as const;
@@ -240,6 +253,7 @@ export class DatabaseAdapter {
   readonly #roles: { readonly admin: string | null; readonly public: readonly string[] };
   #verifyPromise: Promise<void> | null = null;
   #projectionPublisher: (() => Promise<unknown>) | null = null;
+  readonly #onStatement: ((statement: string) => void) | null;
 
   constructor(config: AdapterConfig) {
     this.#roles = config.expectedRoles ?? DEFAULT_ROLES;
@@ -256,8 +270,11 @@ export class DatabaseAdapter {
       new SQL(url, poolMax === undefined ? { idleTimeout } : { max: poolMax, idleTimeout });
     this.#adminRaw = config.adminDatabaseUrl === null ? null : open(config.adminDatabaseUrl);
     this.#publicRaw = open(config.publicDatabaseUrl);
-    this.#admin = this.#adminRaw === null ? null : drizzle(this.#adminRaw);
-    this.#public = drizzle(this.#publicRaw);
+    this.#onStatement = config.onStatement ?? null;
+    const observe = this.#onStatement;
+    const options = observe ? { logger: { logQuery: (query: string) => observe(query) } } : {};
+    this.#admin = this.#adminRaw === null ? null : drizzle(this.#adminRaw, options);
+    this.#public = drizzle(this.#publicRaw, options);
     this.#skipVerify = config.skipRoleVerification === true;
   }
 
@@ -413,11 +430,12 @@ export class DatabaseAdapter {
    * there is no string interpolation at the SQL boundary.
    */
   async runOperation<I, O>(
-    op: OperationDefinition<I, O>,
+    op: AnyOperationDefinition<I, O>,
     ctx: ExecutionContext,
     validatedInput: I,
   ): Promise<Result<O, QueryError>> {
     if (!this.#skipVerify) await this.verifyRoles();
+    if (isReadOperation(op)) return this.#runReadOperation(op, ctx, validatedInput);
 
     const db = op.database === "cms_admin" ? this.#adminDb(`operation ${op.name}`) : this.#public;
     let publishAfterCommit = false;
@@ -429,6 +447,7 @@ export class DatabaseAdapter {
     // The handler's own error Result, kept for the COMMIT_ROLLED_BACK case below.
     let handlerError: Result<O, QueryError> | null = null;
     try {
+      this.#onStatement?.("BEGIN");
       result = await db.transaction(async (tx) => {
         postCommit = collectPostCommitEffects(tx);
         await this.#setIdentity(tx, ctx);
@@ -447,6 +466,7 @@ export class DatabaseAdapter {
         if (out.ok && op.database === "cms_admin") {
           publishAfterCommit = await this.#projectionDirty(tx);
         }
+        this.#onStatement?.("COMMIT");
         return out;
       });
     } catch (thrown) {
@@ -514,19 +534,84 @@ export class DatabaseAdapter {
     return result;
   }
 
-  /** Session identity every transaction of this adapter runs under (RLS reads it). */
+  /**
+   * Session identity every transaction of this adapter runs under (RLS
+   * reads it). One statement, not one per setting: every transaction pays
+   * it, and a round-trip per setting made it five (#1212).
+   */
   async #setIdentity(tx: TransactionRunner, ctx: ExecutionContext): Promise<void> {
-    await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
-    await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
-    await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
-    // P5: optional chat-branch / chat-task identity. Snapshot writes
-    // read these via ctx.chatBranchId / ctx.chatTaskId; the session
-    // vars exist for any future read-side query that wants to scope
-    // by branch without an extra parameter.
-    await tx.execute(
-      sql`SELECT set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true)`,
-    );
-    await tx.execute(sql`SELECT set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`);
+    // P5: the chat-branch / chat-task identity is optional. Snapshot
+    // writes read these via ctx.chatBranchId / ctx.chatTaskId; the
+    // session vars exist for read-side queries that scope by branch
+    // without an extra parameter.
+    await tx.execute(sql`SELECT
+      set_config('caelo.actor_id', ${ctx.actorId}, true),
+      set_config('caelo.actor_kind', ${ctx.actorKind}, true),
+      set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true),
+      set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true),
+      set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`);
+  }
+
+  /**
+   * Issue #1212 — run a {@link ReadOperationDefinition}: the branch gate
+   * (#569) in a short transaction of its own (only when the call names a
+   * branch), then the handler, whose every `reads.read` is one more short
+   * transaction. No connection is held while the handler does anything
+   * else (plugin calls, font I/O, composing).
+   */
+  async #runReadOperation<I, O>(
+    op: ReadOperationDefinition<I, O>,
+    ctx: ExecutionContext,
+    validatedInput: I,
+  ): Promise<Result<O, QueryError>> {
+    try {
+      const branches = namedBranches(ctx, validatedInput);
+      if (branches.length > 0) {
+        const denied = await this.#shortRead(ctx, (tx) => firstInvisibleBranch(tx, branches));
+        if (denied !== null) return err(branchNotFound(op.name, denied));
+      }
+      return await op.handler(ctx, validatedInput, this.readScope(ctx));
+    } catch (thrown) {
+      if (thrown instanceof OperationAbortError) return err(thrown.queryError);
+      if (isRlsDenial(thrown)) {
+        return err({
+          kind: "RLSDenied",
+          operation: op.name,
+          detail: (thrown as { message?: string }).message ?? "RLS policy denied the read",
+        });
+      }
+      const pgDetail = extractPgFields(thrown);
+      return err({
+        kind: "HandlerError",
+        operation: op.name,
+        message: thrown instanceof Error ? thrown.message : String(thrown),
+        ...(pgDetail ? { pgDetail } : {}),
+      });
+    }
+  }
+
+  /**
+   * Issue #1212 — a {@link ReadScope} acting as `ctx`: each read is one
+   * short cms_admin transaction under the caller's identity. It does not
+   * run the branch gate; a read operation passes it once before its
+   * handler receives the scope.
+   */
+  readScope(ctx: ExecutionContext): ReadScope {
+    return { read: (fn) => this.#shortRead(ctx, fn) };
+  }
+
+  async #shortRead<T>(
+    ctx: ExecutionContext,
+    fn: (tx: TransactionRunner) => Promise<T>,
+  ): Promise<T> {
+    const admin = this.#adminDb("read");
+    this.#onStatement?.("BEGIN");
+    const out = await admin.transaction(async (tx) => {
+      await this.#setIdentity(tx, ctx);
+      return fn(tx);
+    });
+    this.#onStatement?.("COMMIT");
+    return out;
   }
 
   /**
@@ -602,6 +687,7 @@ export class DatabaseAdapter {
     if (!this.#skipVerify) await this.verifyRoles();
     let publishAfterCommit = false;
     let postCommit: PostCommitEffect[] = [];
+    this.#onStatement?.("BEGIN");
     const out = await admin.transaction(async (tx) => {
       postCommit = collectPostCommitEffects(tx);
       await this.#setIdentity(tx, ctx);
@@ -614,6 +700,7 @@ export class DatabaseAdapter {
       publishAfterCommit = await this.#projectionDirty(tx);
       return result;
     });
+    this.#onStatement?.("COMMIT");
     // #585 — deferred in-process effects, after the commit only.
     const effectFailures = await this.#settlePostCommit("withAdminTransaction", ctx, postCommit);
     // #635 — published state changed: live on the public side before
@@ -635,6 +722,7 @@ export class DatabaseAdapter {
   ): Promise<T> {
     if (!this.#skipVerify) await this.verifyRoles();
     let postCommit: PostCommitEffect[] = [];
+    this.#onStatement?.("BEGIN");
     const out = await this.#public.transaction(async (tx) => {
       postCommit = collectPostCommitEffects(tx);
       await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
@@ -642,6 +730,7 @@ export class DatabaseAdapter {
       await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
       return await fn(tx);
     });
+    this.#onStatement?.("COMMIT");
     const effectFailures = await this.#settlePostCommit("withPublicTransaction", ctx, postCommit);
     if (effectFailures.length > 0) throw new Error(postCommitFailureMessage(effectFailures));
     return out;

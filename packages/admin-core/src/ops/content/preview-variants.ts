@@ -13,6 +13,11 @@
  *   here with the caller's branch visibility;
  * - problems, as missing-content markers — the build refuses to ship the
  *   same problems.
+ *
+ * Three steps (#1212), so the editor preview holds no transaction while the
+ * plugins answer: {@link askContentVariants} (plugins, no database),
+ * {@link loadVariantModules} (one read of the modules the answers name)
+ * and {@link finishContentVariants} (pure).
  */
 
 import {
@@ -69,24 +74,58 @@ function defaults(raw: unknown): Record<string, unknown> {
 
 const NONE: PreviewContentVariants = { pageValues: new Map(), layout: new Map(), markers: [] };
 
+/** What the preview asks the content-variant contributors about. */
+export interface ContentVariantsInput {
+  pageId: string;
+  layoutId: string;
+  layoutModRows: readonly VariantModuleRow[];
+  modRows: readonly VariantModuleRow[];
+  placementBindings: ReadonlyMap<string, { contentInstanceId: string; synced: boolean }>;
+  valuesByInstance: ReadonlyMap<string, Record<string, unknown>>;
+  chatBranchId: string | null;
+  renderScope: RenderScope;
+}
+
+/** The contributors' answers, before the modules they name are loaded. */
+export interface ContentVariantAnswers {
+  readonly pageValues: ReadonlyMap<string, Record<string, unknown>>;
+  readonly layoutRaw: ReadonlyMap<string, { moduleId?: string; values?: Record<string, unknown> }>;
+  readonly markers: readonly string[];
+  /** The modules layout variants render instead of the stored one. */
+  readonly moduleIds: readonly string[];
+}
+
+const NO_ANSWERS: ContentVariantAnswers = {
+  pageValues: new Map(),
+  layoutRaw: new Map(),
+  markers: [],
+  moduleIds: [],
+};
+
 /**
  * Resolve this page's content variants. Costs nothing — no payload, no
  * plugin call — when no plugin contributes.
  */
 export async function resolvePreviewContentVariants(
   tx: TransactionRunner,
-  input: {
-    pageId: string;
-    layoutId: string;
-    layoutModRows: readonly VariantModuleRow[];
-    modRows: readonly VariantModuleRow[];
-    placementBindings: ReadonlyMap<string, { contentInstanceId: string; synced: boolean }>;
-    valuesByInstance: ReadonlyMap<string, Record<string, unknown>>;
-    chatBranchId: string | null;
-    renderScope: RenderScope;
-  },
+  input: ContentVariantsInput,
 ): Promise<PreviewContentVariants> {
-  if (!hasContentVariantContributors()) return NONE;
+  const answers = await askContentVariants(input);
+  if (answers === NO_ANSWERS) return NONE;
+  return finishContentVariants(
+    answers,
+    await loadVariantModules(tx, answers.moduleIds, input.chatBranchId),
+  );
+}
+
+/**
+ * Ask the contributing plugins (no database access of its own; call it
+ * with no transaction held, plugin answers take their own connections).
+ */
+export async function askContentVariants(
+  input: ContentVariantsInput,
+): Promise<ContentVariantAnswers> {
+  if (!hasContentVariantContributors()) return NO_ANSWERS;
 
   const placements: ContentVariantPlacement[] = [];
   const indexInBlock = new Map<string, number>();
@@ -135,7 +174,7 @@ export async function resolvePreviewContentVariants(
   const resolved = (
     await resolveContentVariants([{ pageId: input.pageId, placements }], input.renderScope)
   ).get(input.pageId);
-  if (!resolved) return NONE;
+  if (!resolved) return NO_ANSWERS;
 
   const markers: string[] = [];
   const pageValues = new Map<string, Record<string, unknown>>();
@@ -153,26 +192,43 @@ export async function resolvePreviewContentVariants(
     }
   }
 
-  const overrideIds = [
+  const moduleIds = [
     ...new Set([...layoutRaw.values()].flatMap((v) => (v.moduleId ? [v.moduleId] : []))),
   ];
+  return { pageValues, layoutRaw, markers, moduleIds };
+}
+
+/** The modules `moduleIds` names, in the caller's branch view (one query, none when empty). */
+export async function loadVariantModules(
+  tx: TransactionRunner,
+  moduleIds: readonly string[],
+  chatBranchId: string | null,
+): Promise<ReadonlyMap<string, VariantModuleRow>> {
   const modulesById = new Map<string, VariantModuleRow>();
-  if (overrideIds.length > 0) {
-    const branchScope = input.chatBranchId
-      ? sql`AND (chat_branch_id IS NULL OR chat_branch_id = ${input.chatBranchId}::uuid)`
-      : sql`AND chat_branch_id IS NULL`;
-    const rows = (await tx.execute(sql`
-      SELECT id::text AS module_id, slug, display_name, html, css, js, fields
-      FROM modules
-      WHERE id IN (${sql.join(
-        overrideIds.map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )}) AND deleted_at IS NULL ${branchScope}
-    `)) as unknown as Omit<VariantModuleRow, "block_name" | "position">[];
-    for (const r of rows) modulesById.set(r.module_id, { ...r, block_name: "", position: 0 });
-  }
+  if (moduleIds.length === 0) return modulesById;
+  const branchScope = chatBranchId
+    ? sql`AND (chat_branch_id IS NULL OR chat_branch_id = ${chatBranchId}::uuid)`
+    : sql`AND chat_branch_id IS NULL`;
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS module_id, slug, display_name, html, css, js, fields
+    FROM modules
+    WHERE id IN (${sql.join(
+      moduleIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    )}) AND deleted_at IS NULL ${branchScope}
+  `)) as unknown as Omit<VariantModuleRow, "block_name" | "position">[];
+  for (const r of rows) modulesById.set(r.module_id, { ...r, block_name: "", position: 0 });
+  return modulesById;
+}
+
+/** Turn the answers and their loaded modules into what the preview renders (pure). */
+export function finishContentVariants(
+  answers: ContentVariantAnswers,
+  modulesById: ReadonlyMap<string, VariantModuleRow>,
+): PreviewContentVariants {
+  const markers = [...answers.markers];
   const layout = new Map<string, { module?: VariantModuleRow; values?: Record<string, unknown> }>();
-  for (const [key, v] of layoutRaw) {
+  for (const [key, v] of answers.layoutRaw) {
     const module = v.moduleId !== undefined ? modulesById.get(v.moduleId) : undefined;
     if (v.moduleId !== undefined && !module) {
       // The variant names a module this chat cannot see (deleted, or on
@@ -190,5 +246,5 @@ export async function resolvePreviewContentVariants(
       ...(v.values !== undefined ? { values: v.values } : {}),
     });
   }
-  return { pageValues, layout, markers };
+  return { pageValues: answers.pageValues, layout, markers };
 }

@@ -51,7 +51,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { toIsoRequired } from "./_helpers.js";
-import { loadActiveThemeForCompose } from "./content/preview.js";
+import { loadActiveThemeForCompose } from "./content/preview-theme.js";
 
 const draftRow = z.object({
   id: z.string(),

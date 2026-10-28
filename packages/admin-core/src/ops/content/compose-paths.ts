@@ -117,11 +117,46 @@ export async function composePathsDetailed(
   annotationScope: RenderScope,
   view?: UrlCompositionView,
 ): Promise<Map<string, ComposedPath>> {
-  const out = new Map<string, ComposedPath>();
-  const ids = [...new Set(pageIds)].filter((id) => tree.byId.has(id));
-  if (ids.length === 0) return out;
+  const ids = composableIds(tree, pageIds);
+  if (ids.length === 0) return new Map();
   const designated = await loadDesignatedHomePageId(tx);
   const annotations = await collectUrlAnnotations(ids, annotationScope, view);
+  return composePathsFrom(tree, ids, designated, annotations, view);
+}
+
+/** The distinct ids of `pageIds` that are pages of `tree`, in order. */
+function composableIds(tree: PageTree, pageIds: ReadonlyArray<string>): string[] {
+  return [...new Set(pageIds)].filter((id) => tree.byId.has(id));
+}
+
+/**
+ * Issue #1212 — {@link composePaths} for a caller that holds no
+ * transaction: the designated home page is already known (the preview's
+ * site view carries it), and the plugin annotations are asked here, with
+ * no database connection held while the plugins answer.
+ */
+export async function composePathsOutsideTransaction(
+  tree: PageTree,
+  pageIds: ReadonlyArray<string>,
+  designatedHomePageId: string | null,
+  annotationScope: RenderScope,
+): Promise<Map<string, string>> {
+  const ids = composableIds(tree, pageIds);
+  if (ids.length === 0) return new Map();
+  const annotations = await collectUrlAnnotations(ids, annotationScope);
+  const detailed = composePathsFrom(tree, ids, designatedHomePageId, annotations);
+  return new Map([...detailed].map(([id, c]) => [id, c.path]));
+}
+
+/** The pure core of the path composition, once the inputs are loaded. */
+function composePathsFrom(
+  tree: PageTree,
+  ids: readonly string[],
+  designated: string | null,
+  annotations: ReadonlyMap<string, Record<string, unknown>>,
+  view?: UrlCompositionView,
+): Map<string, ComposedPath> {
+  const out = new Map<string, ComposedPath>();
   for (const id of ids) {
     const node = tree.byId.get(id) as PageTreeNode;
     const ann = annotations.get(id) ?? {};
