@@ -154,6 +154,7 @@ async function op<T>(ctx: ExecutionContext, name: string, input: unknown): Promi
 
 async function file(title: string, extra: Record<string, unknown> = {}) {
   return op<{ id: string; forwardingState: string }>(SYSTEM, "ai_bug_reports.create", {
+    kind: "defect",
     title,
     whatHappened: "screenshot_page ignored the selector for max@example.de",
     expected: "A cropped screenshot.",
@@ -167,6 +168,7 @@ async function rows() {
   const r = await op<{
     reports: Array<{
       id: string;
+      title: string;
       forwardingState: string;
       forwardError: string | null;
       upstreamStatus: string | null;
@@ -278,12 +280,47 @@ describe("bug forwarding", () => {
     expect(intake.reports.find((r) => r.reportId === legacy.id)?.caeloVersion).toBe("unknown");
   });
 
+  it("forwards a suggestion from bug_report with its kind and no severity; defects say defect (#1192)", async () => {
+    await op(HUMAN, "bug_forwarding.set", { enabled: true });
+    const { bugReportTool, bugReportToolInput } = await import("../ai/tools/bug-report.js");
+    const r = await bugReportTool.handler(
+      SYSTEM,
+      bugReportToolInput.parse({
+        kind: "suggestion",
+        title: "BF consent log fields undocumented",
+        whatHappened:
+          "No tool description says which fields record_consent stores or for how long; the privacy policy needs them.",
+        expected: "A documented field list and retention period of the consent log.",
+        suspectedTool: "record_consent",
+      }),
+      { adapter, registry } as Parameters<typeof bugReportTool.handler>[2],
+    );
+    expect(r.ok).toBe(true);
+    const defect = await file("BF defect beside a suggestion");
+    const idea = (await rows()).find((x) => x.title === "BF consent log fields undocumented");
+    if (!idea) throw new Error("the suggestion was not stored");
+
+    const preview = await op<{ payload: Record<string, unknown> }>(
+      HUMAN,
+      "bug_forwarding.preview",
+      { reportId: idea.id },
+    );
+    expect(preview.payload).toMatchObject({ kind: "suggestion", severity: null, source: "ai" });
+    expect(await forwardDueReports(worker())).toBe(2);
+    expect(intake.reports.find((x) => x.reportId === idea.id)).toEqual(preview.payload);
+    expect(intake.reports.find((x) => x.reportId === defect.id)).toMatchObject({
+      kind: "defect",
+      severity: "degraded",
+    });
+  });
+
   it("the bug_report result tells the AI a queued report will reach the Caelo team", async () => {
     await op(HUMAN, "bug_forwarding.set", { enabled: true });
     const { bugReportTool, bugReportToolInput } = await import("../ai/tools/bug-report.js");
     const r = await bugReportTool.handler(
       SYSTEM,
       bugReportToolInput.parse({
+        kind: "defect",
         title: "BF tool report",
         whatHappened: "screenshot_page ignored the selector.",
         expected: "A cropped screenshot.",

@@ -12,7 +12,9 @@
  *     reports";
  *   - a report whose sending failed is offered by the same button and is
  *     queued again (#982);
- *   - "Stop sending" takes back what has not left yet.
+ *   - "Stop sending" takes back what has not left yet;
+ *   - a suggestion (#1192) is labelled as one, not graded, and its payload
+ *     carries `kind: "suggestion"`.
  *
  * The suite's admin points CAELO_BUG_INTAKE_URL at a closed port
  * (playwright.config.ts), so nothing leaves the test machine. The tests
@@ -39,6 +41,14 @@ const FIXTURE = `
           'screenshot_page ignored the selector for max@example.de',
           'A cropped screenshot.', 'screenshot_page', 'see https://kunde.example.de/preise')\`;
     }
+    if (process.env.E2E_OP === "suggest") {
+      // #1192 — what bug_report files with kind "suggestion": no severity.
+      const actor = await tx\`SELECT id FROM actors WHERE kind = 'system' LIMIT 1\`;
+      await tx\`INSERT INTO ai_bug_reports (actor_id, kind, severity, title, what_happened, expected, suspected_tool)
+        VALUES (\${actor[0].id}, 'suggestion', NULL, \${process.env.E2E_TITLE},
+          'The tag had to load on German product pages only; add_tracking_tag has no page or locale scope.',
+          'add_tracking_tag accepts a scope (pages, path prefixes, locales).', 'add_tracking_tag')\`;
+    }
     if (process.env.E2E_OP === "fail") {
       // What the worker leaves behind once every attempt failed.
       await tx\`UPDATE ai_bug_reports SET forwarding_state = 'failed', next_forward_at = NULL,
@@ -52,7 +62,7 @@ const FIXTURE = `
   await sql.end();
 `;
 
-const fixture = (op: "reset" | "file" | "fail" | "close", title = "") =>
+const fixture = (op: "reset" | "file" | "suggest" | "fail" | "close", title = "") =>
   runBunInline(FIXTURE, { E2E_OP: op, E2E_TITLE: title });
 
 async function login(page: Page): Promise<void> {
@@ -142,5 +152,22 @@ test.describe("Detected bugs → Caelo team", () => {
     await card.getByRole("button", { name: "Stop sending" }).click();
     await expect(card).toContainText("Reports stay on this site");
     await expect(row(page, "E2E BF queued")).toContainText("This site only");
+  });
+
+  test("a suggestion shows as one, and its payload says so (#1192)", async ({ page }) => {
+    fixture("suggest", "E2E BF suggestion");
+    fixture("file", "E2E BF defect");
+    await login(page);
+    await page.goto("/settings/bugs");
+
+    await expect(row(page, "E2E BF suggestion").getByTestId("bug-kind")).toHaveText("suggestion");
+    await expect(row(page, "E2E BF defect").getByTestId("bug-kind")).toHaveText("degraded");
+
+    await row(page, "E2E BF suggestion").click();
+    await expect(page.getByText("What was missing")).toBeVisible();
+    await page.getByRole("button", { name: "What gets sent" }).click();
+    const preview = page.locator("pre", { hasText: '"protocolVersion": 1' });
+    await expect(preview).toContainText('"kind": "suggestion"');
+    await expect(preview).toContainText('"severity": null');
   });
 });

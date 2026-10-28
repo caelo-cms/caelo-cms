@@ -1,29 +1,43 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The intake's storage: pinned install keys, clusters (one per defect, one
- * public issue each), the fingerprint/issue indexes into them, and the raw
- * reports.
+ * The intake's storage: pinned install keys, clusters (one per defect or
+ * suggestion, one public issue each), the fingerprint/issue indexes into
+ * them, and the raw reports.
  *
  * Production keeps it in Firestore (firestore-store.ts), so the GitHub App
  * needs no repository write access at all: its only power is filing issues.
  * Every write is optimistic: `put` with the version read, `conflict` →
  * re-read and retry; first-writer-wins links answer `taken` / `conflict`.
+ *
+ * Kinds (#1192): defects and suggestions never share anything that decides
+ * where a report goes or whether it gets an issue. The fingerprint index,
+ * the matcher's candidate pool, the daily issue slots and the pending queue
+ * all exist once per kind, so a suggestion can neither join a defect's
+ * cluster nor take a defect's slot, and the other way round.
  */
 
-import type { BugClusterStatus, BugIntakeReport } from "@caelo-cms/shared";
+import {
+  BUG_REPORT_KIND_BEFORE_1192,
+  type BugClusterStatus,
+  type BugIntakeReport,
+  type BugReportKind,
+  type BugReportSeverity,
+} from "@caelo-cms/shared";
 
-/** One defect, as many installs reported it. */
+/** One defect or suggestion, as many installs reported it. */
 export interface ClusterRecord {
   id: string;
   createdAt: string;
+  kind: BugReportKind;
   source: "ai" | "auto";
   suspectedTool: string | null;
   /** Redacted text of the first report; the public issue is built from it. */
   title: string;
   whatHappened: string;
   expected: string;
-  severity: "blocking" | "degraded" | "cosmetic";
+  /** The worst severity reported; null for a suggestion, which has none. */
+  severity: BugReportSeverity | null;
   blockedTask: boolean;
   fingerprints: string[];
   /** SHA-256 of each reporting install id (the intake never lists raw ids). */
@@ -46,10 +60,12 @@ export interface ClusterRecord {
 /**
  * What the semantic matcher sees about a candidate cluster. The tool and
  * source are hints for the model, never a partition: the AI words one tool
- * differently from one chat to the next (#1049).
+ * differently from one chat to the next (#1049). The kind IS a partition
+ * (#1192): it picks the pool the summary lives in.
  */
 export interface ClusterSummary {
   id: string;
+  kind: BugReportKind;
   title: string;
   /** Cut to `CANDIDATE_TEXT_CHARS`, so the matcher prompt stays bounded. */
   whatHappened: string;
@@ -78,43 +94,63 @@ export interface IntakeStore {
   getReport(reportId: string): Promise<StoredReport | null>;
   /** First write wins: a retried report id writes nothing new. */
   putReport(report: StoredReport): Promise<void>;
-  clusterIdForFingerprint(fingerprint: string): Promise<string | null>;
-  /** `taken` = another cluster claimed this fingerprint first; use that one. */
-  linkFingerprint(fingerprint: string, clusterId: string): Promise<"linked" | "taken">;
+  /** The cluster of this kind that claimed `fingerprint`; the other kind's index is never read. */
+  clusterIdForFingerprint(kind: BugReportKind, fingerprint: string): Promise<string | null>;
+  /** `taken` = another cluster of this kind claimed this fingerprint first; use that one. */
+  linkFingerprint(
+    kind: BugReportKind,
+    fingerprint: string,
+    clusterId: string,
+  ): Promise<"linked" | "taken">;
   clusterIdForIssue(issueNumber: number): Promise<string | null>;
   linkIssue(issueNumber: number, clusterId: string): Promise<void>;
   getCluster(id: string): Promise<Versioned<ClusterRecord> | null>;
   /** Create (version null) or replace the version read. */
   putCluster(cluster: ClusterRecord, version: string | null): Promise<"ok" | "conflict">;
   /**
-   * The matcher's candidate pool: at most `MAX_CANDIDATES` clusters of any
-   * tool and source, newest first. A store that has never held a pool builds
-   * it from its clusters on first use (#1049).
+   * The matcher's candidate pool of one kind: at most `MAX_CANDIDATES`
+   * clusters of that kind, any tool and source, newest first. A store that
+   * has never held the pool builds it from its clusters on first use (#1049).
    */
-  candidates(): Promise<ClusterSummary[]>;
-  /** Put a cluster at the front of the pool (once), dropping the oldest beyond the cap. */
+  candidates(kind: BugReportKind): Promise<ClusterSummary[]>;
+  /** Put a cluster at the front of its kind's pool (once), dropping the oldest beyond the cap. */
   addCandidate(summary: ClusterSummary): Promise<void>;
   /**
-   * Take one of `limit` new-issue slots for a UTC day (`YYYY-MM-DD`); false
-   * when the day's slots are used up. Atomic: concurrent takers never exceed
-   * the limit together.
+   * Take one of `limit` new-issue slots of a kind for a UTC day
+   * (`YYYY-MM-DD`); false when the day's slots are used up. Atomic:
+   * concurrent takers never exceed the limit together.
    */
-  takeIssueSlot(day: string, limit: number): Promise<boolean>;
+  takeIssueSlot(kind: BugReportKind, day: string, limit: number): Promise<boolean>;
   /** Give back a slot whose issue was not created after all (GitHub refused). */
-  returnIssueSlot(day: string): Promise<void>;
+  returnIssueSlot(kind: BugReportKind, day: string): Promise<void>;
   /**
    * Queue a cluster that is due an issue but could not get one yet (daily cap,
    * kill switch, GitHub failure). Re-marking keeps the original `since`, so
    * the queue stays first-come, first-filed.
    */
-  markIssuePending(clusterId: string, since: string): Promise<void>;
-  clearIssuePending(clusterId: string): Promise<void>;
-  /** Oldest queued cluster ids first. */
-  pendingIssueClusters(limit: number): Promise<string[]>;
+  markIssuePending(kind: BugReportKind, clusterId: string, since: string): Promise<void>;
+  clearIssuePending(kind: BugReportKind, clusterId: string): Promise<void>;
+  /** Oldest queued cluster ids of a kind first. */
+  pendingIssueClusters(kind: BugReportKind, limit: number): Promise<string[]>;
+}
+
+/** Every kind, in the order the intake drains their queues. */
+export const REPORT_KINDS: readonly BugReportKind[] = ["defect", "suggestion"];
+
+/**
+ * The kind of a record read back from the store. Clusters and pool entries
+ * written before #1192 carry none, and every one of them is a defect: the
+ * same contract rule as a report without `kind` ({@link BUG_REPORT_KIND_BEFORE_1192}).
+ * Anything else stored there is corrupt and fails loudly.
+ */
+export function storedKind(kind: unknown): BugReportKind {
+  if (kind === undefined) return BUG_REPORT_KIND_BEFORE_1192;
+  if (kind === "defect" || kind === "suggestion") return kind;
+  throw new Error(`stored bug-intake record has an unknown kind ${JSON.stringify(kind)}`);
 }
 
 /**
- * Size of the candidate pool. Every candidate goes into one matcher prompt,
+ * Size of each candidate pool. Every candidate goes into one matcher prompt,
  * so this and `CANDIDATE_TEXT_CHARS` bound the prompt (about 40 x 1 kB);
  * the pool keeps the newest clusters because older defects rarely recur in
  * new wording.
@@ -128,6 +164,7 @@ export const CANDIDATE_TEXT_CHARS = 600;
 export function clusterSummary(c: ClusterRecord): ClusterSummary {
   return {
     id: c.id,
+    kind: c.kind,
     title: c.title,
     whatHappened: c.whatHappened.slice(0, CANDIDATE_TEXT_CHARS),
     suspectedTool: c.suspectedTool,
@@ -136,14 +173,15 @@ export function clusterSummary(c: ClusterRecord): ClusterSummary {
 }
 
 /**
- * The pool a store builds when it has none yet (the first run after #1049
- * replaced the per-tool lists): the most recently reported clusters, AI and
- * auto alike. Merged clusters are left out; their reports belong to the
+ * The pool of `kind` a store builds when it has none yet (the first run
+ * after #1049 replaced the per-tool lists, or after #1192 added the
+ * suggestion pool): the most recently reported clusters of that kind, AI
+ * and auto alike. Merged clusters are left out; their reports belong to the
  * cluster they were merged into, which is a candidate of its own.
  */
-export function poolFromClusters(clusters: ClusterRecord[]): ClusterSummary[] {
+export function poolFromClusters(clusters: ClusterRecord[], kind: BugReportKind): ClusterSummary[] {
   return clusters
-    .filter((c) => c.mergedInto === null)
+    .filter((c) => c.mergedInto === null && c.kind === kind)
     .sort((a, b) => b.lastSeen.localeCompare(a.lastSeen) || a.id.localeCompare(b.id))
     .slice(0, MAX_CANDIDATES)
     .map(clusterSummary);
@@ -158,13 +196,18 @@ export function withCandidate(pool: ClusterSummary[], summary: ClusterSummary): 
 export class MemoryStore implements IntakeStore {
   keys = new Map<string, string>();
   reports = new Map<string, StoredReport>();
+  /** Keyed `<kind>:<fingerprint>`, one index per kind. */
   fingerprints = new Map<string, string>();
   issues = new Map<number, string>();
   clusters = new Map<string, Versioned<ClusterRecord>>();
   /** null until first use, like a database that predates the pool. */
-  pool: ClusterSummary[] | null = null;
+  pools: Record<BugReportKind, ClusterSummary[] | null> = { defect: null, suggestion: null };
+  /** Keyed `<kind>:<day>`. */
   issueSlots = new Map<string, number>();
-  pending = new Map<string, string>();
+  pending: Record<BugReportKind, Map<string, string>> = {
+    defect: new Map(),
+    suggestion: new Map(),
+  };
   #v = 0;
 
   async getInstallKey(id: string) {
@@ -184,12 +227,13 @@ export class MemoryStore implements IntakeStore {
   async putReport(r: StoredReport) {
     if (!this.reports.has(r.reportId)) this.reports.set(r.reportId, structuredClone(r));
   }
-  async clusterIdForFingerprint(fp: string) {
-    return this.fingerprints.get(fp) ?? null;
+  async clusterIdForFingerprint(kind: BugReportKind, fp: string) {
+    return this.fingerprints.get(`${kind}:${fp}`) ?? null;
   }
-  async linkFingerprint(fp: string, id: string) {
-    if (this.fingerprints.has(fp)) return "taken" as const;
-    this.fingerprints.set(fp, id);
+  async linkFingerprint(kind: BugReportKind, fp: string, id: string) {
+    const key = `${kind}:${fp}`;
+    if (this.fingerprints.has(key)) return "taken" as const;
+    this.fingerprints.set(key, id);
     return "linked" as const;
   }
   async clusterIdForIssue(n: number) {
@@ -208,33 +252,41 @@ export class MemoryStore implements IntakeStore {
     this.clusters.set(c.id, { value: structuredClone(c), version: String(++this.#v) });
     return "ok" as const;
   }
-  #ensurePool(): ClusterSummary[] {
-    this.pool ??= poolFromClusters([...this.clusters.values()].map((c) => c.value));
-    return this.pool;
+  #ensurePool(kind: BugReportKind): ClusterSummary[] {
+    const built =
+      this.pools[kind] ??
+      poolFromClusters(
+        [...this.clusters.values()].map((c) => c.value),
+        kind,
+      );
+    this.pools[kind] = built;
+    return built;
   }
-  async candidates() {
-    return structuredClone(this.#ensurePool());
+  async candidates(kind: BugReportKind) {
+    return structuredClone(this.#ensurePool(kind));
   }
   async addCandidate(s: ClusterSummary) {
-    this.pool = withCandidate(this.#ensurePool(), structuredClone(s));
+    this.pools[s.kind] = withCandidate(this.#ensurePool(s.kind), structuredClone(s));
   }
-  async takeIssueSlot(day: string, limit: number) {
-    const used = this.issueSlots.get(day) ?? 0;
+  async takeIssueSlot(kind: BugReportKind, day: string, limit: number) {
+    const key = `${kind}:${day}`;
+    const used = this.issueSlots.get(key) ?? 0;
     if (used >= limit) return false;
-    this.issueSlots.set(day, used + 1);
+    this.issueSlots.set(key, used + 1);
     return true;
   }
-  async returnIssueSlot(day: string) {
-    this.issueSlots.set(day, Math.max(0, (this.issueSlots.get(day) ?? 0) - 1));
+  async returnIssueSlot(kind: BugReportKind, day: string) {
+    const key = `${kind}:${day}`;
+    this.issueSlots.set(key, Math.max(0, (this.issueSlots.get(key) ?? 0) - 1));
   }
-  async markIssuePending(id: string, since: string) {
-    if (!this.pending.has(id)) this.pending.set(id, since);
+  async markIssuePending(kind: BugReportKind, id: string, since: string) {
+    if (!this.pending[kind].has(id)) this.pending[kind].set(id, since);
   }
-  async clearIssuePending(id: string) {
-    this.pending.delete(id);
+  async clearIssuePending(kind: BugReportKind, id: string) {
+    this.pending[kind].delete(id);
   }
-  async pendingIssueClusters(limit: number) {
-    return [...this.pending.entries()]
+  async pendingIssueClusters(kind: BugReportKind, limit: number) {
+    return [...this.pending[kind].entries()]
       .sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]))
       .slice(0, limit)
       .map(([id]) => id);

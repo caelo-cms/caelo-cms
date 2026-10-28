@@ -13,6 +13,7 @@ const row: ForwardableBugReport = {
   id: "11111111-1111-4111-8111-111111111111",
   fingerprint: null,
   source: "ai",
+  kind: "defect",
   severity: "degraded",
   blockedTask: false,
   suspectedTool: "screenshot_page",
@@ -34,5 +35,20 @@ describe("buildIntakeReport version", () => {
     const payload = await buildIntakeReport({ ...row, caeloVersion: null });
     expect(payload.caeloVersion).toBe(UNKNOWN_FILING_VERSION);
     expect(UNKNOWN_FILING_VERSION).toBe("unknown");
+  });
+});
+
+describe("buildIntakeReport kind (#1192)", () => {
+  it("forwards a defect with its severity and a suggestion with its kind and none", async () => {
+    expect(await buildIntakeReport(row)).toMatchObject({ kind: "defect", severity: "degraded" });
+    const idea = await buildIntakeReport({ ...row, kind: "suggestion", severity: null });
+    expect(idea).toMatchObject({ kind: "suggestion", severity: null, source: "ai" });
+  });
+
+  it("refuses a row that breaks the kind contract instead of sending it", async () => {
+    await expect(buildIntakeReport({ ...row, kind: "suggestion" })).rejects.toThrow(
+      "a suggestion has no severity",
+    );
+    await expect(buildIntakeReport({ ...row, kind: "idea" })).rejects.toThrow();
   });
 });

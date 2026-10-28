@@ -60,7 +60,8 @@ When enabled, each report is sent to the Caelo bug intake at `https://bugs.caelo
   "caeloVersion": "0.10.55",
   "fingerprint": "<sha256 of source + tool + normalised error text>",
   "source": "ai | auto",
-  "severity": "blocking | degraded | cosmetic",
+  "kind": "defect | suggestion",
+  "severity": "blocking | degraded | cosmetic | null",
   "blockedTask": false,
   "suspectedTool": "build_page",
   "title": "<redacted>",
@@ -69,6 +70,8 @@ When enabled, each report is sent to the Caelo bug intake at `https://bugs.caelo
   "evidence": "<redacted excerpt, max 4000 chars>"
 }
 ```
+
+`kind` says whether something in Caelo misbehaved (`defect`, graded by `severity`) or the AI needed something Caelo does not have yet, such as a capability or documentation (`suggestion`, `severity` is `null`). Auto-captured reports are always defects.
 
 Unlike the categories above, a bug report carries **text**: the AI's description of the defect and an evidence excerpt, which for auto-captured reports includes the failing tool call's arguments. Before a report is queued, email addresses, links, IP addresses, phone numbers, tokens and keys are removed (`redactBugText`), and the Owner can open any report and see the exact bytes ("What gets sent"). On the intake, `evidence` stays private to the Caelo maintainers; the public GitHub issue is built from the structured fields and the redacted description only.
 

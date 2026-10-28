@@ -19,29 +19,66 @@
  * same defect across installs, and the Caelo version that filed it (#1072):
  * a report sent after an upgrade still names the release it was seen on.
  *
+ * Every row has a `kind` (#1192): a `defect` (something misbehaved, graded
+ * by `severity`) or a `suggestion` (nothing misbehaved, Caelo lacks
+ * something; no severity). Only the AI files suggestions; auto captures are
+ * always defects. The bug intake files the two kinds under different labels
+ * and daily caps.
+ *
  * Not audited: internal AI telemetry, same stance as ai_moduleize_attempts.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { CAELO_VERSION, computeBugFingerprint, ok } from "@caelo-cms/shared";
+import {
+  bugReportKind,
+  bugReportSeverity,
+  CAELO_VERSION,
+  computeBugFingerprint,
+  ok,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 
 const createBugReportInput = z
   .object({
     chatSessionId: z.string().uuid().nullable().optional(),
+    /**
+     * #1192 — 'defect' (something misbehaved) or 'suggestion' (nothing
+     * misbehaved; Caelo lacks something). Required: every caller decides,
+     * and every auto capture passes 'defect'.
+     */
+    kind: bugReportKind,
     title: z.string().min(1).max(200),
     whatHappened: z.string().min(1).max(4000),
     expected: z.string().min(1).max(4000),
     suspectedTool: z.string().max(200).nullable().optional(),
     evidence: z.string().max(8000).nullable().optional(),
-    severity: z.enum(["blocking", "degraded", "cosmetic"]).default("degraded"),
+    /** Defects only; a defect without one is 'degraded'. A suggestion must leave it out. */
+    severity: bugReportSeverity.optional(),
     blockedTask: z.boolean().default(false),
     // 'ai' = the model filed it via the bug_report tool; 'auto' = the
     // chat-runner auto-captured a failed tool result. Default 'ai'.
     source: z.enum(["ai", "auto"]).default("ai"),
   })
-  .strict();
+  .strict()
+  .superRefine((input, ctx) => {
+    if (input.kind !== "suggestion") return;
+    if (input.severity !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["severity"],
+        message:
+          "severity grades defects only — leave it out for a suggestion, or file a defect if something misbehaved.",
+      });
+    }
+    if (input.source === "auto") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["kind"],
+        message: "an auto-captured failure is always a defect.",
+      });
+    }
+  });
 
 /** Where a bug report went — see migration 0329 for the meaning of each state. */
 export const bugForwardingState = z.enum(["local_only", "queued", "sent", "failed"]);
@@ -75,20 +112,24 @@ export const createBugReportOp = defineOperation({
       title: input.title,
       whatHappened: input.whatHappened,
     });
+    // A defect's default grade is 'degraded' (the column default since 0165);
+    // a suggestion has none (migration 0391's shape check).
+    const severity = input.kind === "defect" ? (input.severity ?? "degraded") : null;
     const rows = (await tx.execute(sql`
       INSERT INTO ai_bug_reports
-        (chat_session_id, actor_id, title, what_happened, expected,
+        (chat_session_id, actor_id, kind, title, what_happened, expected,
          suspected_tool, evidence, severity, blocked_task, source,
          fingerprint, caelo_version, forwarding_state, next_forward_at)
       VALUES (
         ${input.chatSessionId ?? null}::uuid,
         ${ctx.actorId}::uuid,
+        ${input.kind},
         ${input.title},
         ${input.whatHappened},
         ${input.expected},
         ${input.suspectedTool ?? null},
         ${input.evidence ?? null},
-        ${input.severity},
+        ${severity},
         ${input.blockedTask},
         ${input.source},
         ${fingerprint},
@@ -109,6 +150,8 @@ export const createBugReportOp = defineOperation({
 const listBugReportsInput = z
   .object({
     status: z.enum(["new", "triaged", "fixed", "invalid"]).optional(),
+    /** Only defects or only suggestions (#1192); both when left out. */
+    kind: bugReportKind.optional(),
     limit: z.number().int().min(1).max(200).default(50),
     offset: z.number().int().min(0).default(0),
   })
@@ -118,12 +161,15 @@ const bugReportRow = z.object({
   id: z.string(),
   createdAt: z.string(),
   chatSessionId: z.string().nullable(),
+  /** 'defect' or 'suggestion' (#1192). */
+  kind: bugReportKind,
   title: z.string(),
   whatHappened: z.string(),
   expected: z.string(),
   suspectedTool: z.string().nullable(),
   evidence: z.string().nullable(),
-  severity: z.string(),
+  /** blocking | degraded | cosmetic for a defect; null for a suggestion. */
+  severity: bugReportSeverity.nullable(),
   blockedTask: z.boolean(),
   status: z.string(),
   /** 'ai' (model-filed via bug_report) or 'auto' (chat-runner auto-captured). */
@@ -144,11 +190,16 @@ export const listBugReportsOp = defineOperation({
   input: listBugReportsInput,
   output: z.object({ reports: z.array(bugReportRow), total: z.number() }),
   handler: async (_ctx, input, tx) => {
-    const where = input.status !== undefined ? sql`WHERE status = ${input.status}` : sql``;
+    const filters = [
+      input.status !== undefined ? sql`status = ${input.status}` : null,
+      input.kind !== undefined ? sql`kind = ${input.kind}` : null,
+    ].filter((f) => f !== null);
+    const where = filters.length > 0 ? sql`WHERE ${sql.join(filters, sql` AND `)}` : sql``;
     const rows = (await tx.execute(sql`
       SELECT id::text AS id,
              created_at::text AS "createdAt",
              chat_session_id::text AS "chatSessionId",
+             kind,
              title,
              what_happened AS "whatHappened",
              expected,

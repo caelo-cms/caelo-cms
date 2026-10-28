@@ -25,7 +25,7 @@
  */
 
 import { beforeAll, describe, expect, it } from "bun:test";
-import type { BugIntakeReport } from "@caelo-cms/shared";
+import type { BugIntakeReport, BugReportKind } from "@caelo-cms/shared";
 import { type DocumentReference, Firestore } from "@google-cloud/firestore";
 import { FirestoreStore } from "./firestore-store.js";
 import { IntakeService, type IssueTracker } from "./service.js";
@@ -35,6 +35,7 @@ import {
   clusterSummary,
   MAX_CANDIDATES,
   type StoredReport,
+  storedKind,
 } from "./store.js";
 
 const EMULATOR = process.env.FIRESTORE_EMULATOR_HOST;
@@ -71,7 +72,15 @@ const summary = (
   id: string,
   suspectedTool: string | null,
   source: "ai" | "auto" = "ai",
-): ClusterSummary => ({ id, title: `title of ${id}`, whatHappened: "w", suspectedTool, source });
+  kind: BugReportKind = "defect",
+): ClusterSummary => ({
+  id,
+  kind,
+  title: `title of ${id}`,
+  whatHappened: "w",
+  suspectedTool,
+  source,
+});
 
 /** Forward every other property to the real object, bound to it, so the SDK never sees a proxy. */
 function forward<T extends object>(target: T, prop: string | symbol): unknown {
@@ -133,6 +142,7 @@ async function slotsUsed(day: string): Promise<number | undefined> {
 const cluster = (id: string, over: Partial<ClusterRecord> = {}): ClusterRecord => ({
   id,
   createdAt: "2026-10-21T10:00:00.000Z",
+  kind: "defect",
   source: "ai",
   suspectedTool: "build_page",
   title: "Build fails",
@@ -162,6 +172,7 @@ const sentReport = (over: Partial<BugIntakeReport> = {}): BugIntakeReport => ({
   caeloVersion: "0.10.61",
   fingerprint: "b".repeat(64),
   source: "auto",
+  kind: "defect",
   severity: "degraded",
   blockedTask: false,
   suspectedTool: "build_page",
@@ -216,10 +227,10 @@ describe("FirestoreStore against the emulator (#980)", () => {
 
   live("links a fingerprint once; the second link is taken and changes nothing", async () => {
     const fp = "c".repeat(64);
-    expect(await s().clusterIdForFingerprint(fp)).toBeNull();
-    expect(await s().linkFingerprint(fp, "c_x")).toBe("linked");
-    expect(await s().linkFingerprint(fp, "c_y")).toBe("taken");
-    expect(await s().clusterIdForFingerprint(fp)).toBe("c_x");
+    expect(await s().clusterIdForFingerprint("defect", fp)).toBeNull();
+    expect(await s().linkFingerprint("defect", fp, "c_x")).toBe("linked");
+    expect(await s().linkFingerprint("defect", fp, "c_y")).toBe("taken");
+    expect(await s().clusterIdForFingerprint("defect", fp)).toBe("c_x");
   });
 
   live("maps issues to clusters, last link wins", async () => {
@@ -264,7 +275,7 @@ describe("FirestoreStore against the emulator (#980)", () => {
     async () => {
       const db = freshDb();
       const pool = new FirestoreStore(db);
-      expect(await pool.candidates()).toEqual([]);
+      expect(await pool.candidates("defect")).toEqual([]);
       await pool.addCandidate(summary("c_first", "build_page"));
       // Another writer adds a candidate between this writer's read and write:
       // the stale write is refused and re-read, so neither entry is lost.
@@ -277,15 +288,19 @@ describe("FirestoreStore against the emulator (#980)", () => {
       );
       await raced.addCandidate(summary("c_mine", "stage_changes"));
       expect(fired()).toBe(1);
-      expect((await pool.candidates()).map((c) => c.id)).toEqual(["c_mine", "c_other", "c_first"]);
-      expect((await pool.candidates())[1]).toEqual(
+      expect((await pool.candidates("defect")).map((c) => c.id)).toEqual([
+        "c_mine",
+        "c_other",
+        "c_first",
+      ]);
+      expect((await pool.candidates("defect"))[1]).toEqual(
         summary("c_other", "stage_changes (Firebase)", "auto"),
       );
       for (let i = 0; i < MAX_CANDIDATES + 2; i++) {
         await pool.addCandidate(summary(`c_${i}`, `tool_${i}`));
       }
       await pool.addCandidate({ ...summary("c_5", "tool_5"), title: "again" });
-      const list = await pool.candidates();
+      const list = await pool.candidates("defect");
       expect(list.length).toBe(MAX_CANDIDATES);
       expect(list[0]).toEqual({ ...summary("c_5", "tool_5"), title: "again" });
       expect(list.filter((c) => c.id === "c_5").length).toBe(1);
@@ -336,12 +351,12 @@ describe("FirestoreStore against the emulator (#980)", () => {
         "candidates",
         "pool",
         async () => {
-          b = await new FirestoreStore(db).candidates();
+          b = await new FirestoreStore(db).candidates("defect");
         },
         1,
         db,
       );
-      const a = await raced.candidates();
+      const a = await raced.candidates("defect");
       expect(fired()).toBe(1);
       expect(a).toEqual(b);
       expect(a.map((c) => c.id)).toEqual(["c_1047", "c_1043", "c_1039", "c_1037"]);
@@ -351,7 +366,7 @@ describe("FirestoreStore against the emulator (#980)", () => {
 
       // From now on the pool is kept, not rebuilt.
       await before.addCandidate(summary("c_new", "build_page"));
-      expect((await before.candidates()).map((c) => c.id)).toEqual([
+      expect((await before.candidates("defect")).map((c) => c.id)).toEqual([
         "c_new",
         "c_1047",
         "c_1043",
@@ -378,37 +393,37 @@ describe("FirestoreStore against the emulator (#980)", () => {
       ),
     );
     await st.addCandidate(summary("c_fresh", "build_page"));
-    const ids = (await st.candidates()).map((c) => c.id);
+    const ids = (await st.candidates("defect")).map((c) => c.id);
     expect(ids.length).toBe(MAX_CANDIDATES);
     expect(ids.slice(0, 3)).toEqual(["c_fresh", "c_089", "c_088"]);
     expect(ids.at(-1)).toBe(`c_0${89 - MAX_CANDIDATES + 2}`);
   });
 
   live("hands out at most `limit` issue slots per day and gives them back", async () => {
-    expect(await s().takeIssueSlot("2026-10-21", 2)).toBe(true);
-    expect(await s().takeIssueSlot("2026-10-21", 2)).toBe(true);
-    expect(await s().takeIssueSlot("2026-10-21", 2)).toBe(false);
-    expect(await s().takeIssueSlot("2026-10-22", 2)).toBe(true);
-    await s().returnIssueSlot("2026-10-21");
+    expect(await s().takeIssueSlot("defect", "2026-10-21", 2)).toBe(true);
+    expect(await s().takeIssueSlot("defect", "2026-10-21", 2)).toBe(true);
+    expect(await s().takeIssueSlot("defect", "2026-10-21", 2)).toBe(false);
+    expect(await s().takeIssueSlot("defect", "2026-10-22", 2)).toBe(true);
+    await s().returnIssueSlot("defect", "2026-10-21");
     expect(await slotsUsed("2026-10-21")).toBe(1);
-    expect(await s().takeIssueSlot("2026-10-21", 2)).toBe(true);
-    expect(await s().takeIssueSlot("2026-10-21", 2)).toBe(false);
+    expect(await s().takeIssueSlot("defect", "2026-10-21", 2)).toBe(true);
+    expect(await s().takeIssueSlot("defect", "2026-10-21", 2)).toBe(false);
     // Returning on a day with nothing taken never goes below zero.
-    await s().returnIssueSlot("2026-10-30");
+    await s().returnIssueSlot("defect", "2026-10-30");
     expect(await slotsUsed("2026-10-30")).toBeUndefined();
-    expect(await s().takeIssueSlot("2026-10-30", 1)).toBe(true);
-    expect(await s().takeIssueSlot("2026-10-30", 1)).toBe(false);
+    expect(await s().takeIssueSlot("defect", "2026-10-30", 1)).toBe(true);
+    expect(await s().takeIssueSlot("defect", "2026-10-30", 1)).toBe(false);
   });
 
   live("never exceeds the cap when another taker wins the last slot in between", async () => {
     const day = "2026-11-10";
-    await s().takeIssueSlot(day, 3);
-    await s().takeIssueSlot(day, 3);
+    await s().takeIssueSlot("defect", day, 3);
+    await s().takeIssueSlot("defect", day, 3);
     // This taker reads used=2, then the other one takes the last slot.
     const { store: raced, raced: fired } = racedStore("issueSlots", day, async () => {
-      expect(await s().takeIssueSlot(day, 3)).toBe(true);
+      expect(await s().takeIssueSlot("defect", day, 3)).toBe(true);
     });
-    expect(await raced.takeIssueSlot(day, 3)).toBe(false);
+    expect(await raced.takeIssueSlot("defect", day, 3)).toBe(false);
     expect(fired()).toBe(1);
     expect(await slotsUsed(day)).toBe(3);
   });
@@ -417,21 +432,21 @@ describe("FirestoreStore against the emulator (#980)", () => {
     const day = "2026-11-11";
     // This taker reads "no counter yet"; the other one creates it first.
     const { store: raced, raced: fired } = racedStore("issueSlots", day, async () => {
-      expect(await s().takeIssueSlot(day, 3)).toBe(true);
+      expect(await s().takeIssueSlot("defect", day, 3)).toBe(true);
     });
-    expect(await raced.takeIssueSlot(day, 3)).toBe(true);
+    expect(await raced.takeIssueSlot("defect", day, 3)).toBe(true);
     expect(fired()).toBe(1);
     expect(await slotsUsed(day)).toBe(2);
   });
 
   live("loses no return when another writer changes the counter in between", async () => {
     const day = "2026-11-12";
-    await s().takeIssueSlot(day, 5);
-    await s().takeIssueSlot(day, 5);
+    await s().takeIssueSlot("defect", day, 5);
+    await s().takeIssueSlot("defect", day, 5);
     const { store: raced, raced: fired } = racedStore("issueSlots", day, () =>
-      s().returnIssueSlot(day),
+      s().returnIssueSlot("defect", day),
     );
-    await raced.returnIssueSlot(day);
+    await raced.returnIssueSlot("defect", day);
     expect(fired()).toBe(1);
     expect(await slotsUsed(day)).toBe(0);
   });
@@ -444,12 +459,12 @@ describe("FirestoreStore against the emulator (#980)", () => {
       day,
       async () => {
         // Another writer changes the counter after every one of this writer's reads.
-        await s().takeIssueSlot(day, 1_000);
+        await s().takeIssueSlot("defect", day, 1_000);
         n++;
       },
       Number.POSITIVE_INFINITY,
     );
-    await expect(raced.takeIssueSlot(day, 1_000)).rejects.toThrow(
+    await expect(raced.takeIssueSlot("defect", day, 1_000)).rejects.toThrow(
       "issueSlots/2026-11-13: 10 write conflicts in a row",
     );
     expect(n).toBe(10);
@@ -457,15 +472,15 @@ describe("FirestoreStore against the emulator (#980)", () => {
   });
 
   live("queues pending issues oldest first and keeps the original place", async () => {
-    await s().markIssuePending("c_late", "2026-10-21T12:00:00.000Z");
-    await s().markIssuePending("c_early", "2026-10-21T09:00:00.000Z");
-    await s().markIssuePending("c_late", "2026-10-21T01:00:00.000Z");
-    expect(await s().pendingIssueClusters(10)).toEqual(["c_early", "c_late"]);
-    expect(await s().pendingIssueClusters(1)).toEqual(["c_early"]);
-    await s().clearIssuePending("c_early");
-    await s().clearIssuePending("c_missing");
-    expect(await s().pendingIssueClusters(10)).toEqual(["c_late"]);
-    await s().clearIssuePending("c_late");
+    await s().markIssuePending("defect", "c_late", "2026-10-21T12:00:00.000Z");
+    await s().markIssuePending("defect", "c_early", "2026-10-21T09:00:00.000Z");
+    await s().markIssuePending("defect", "c_late", "2026-10-21T01:00:00.000Z");
+    expect(await s().pendingIssueClusters("defect", 10)).toEqual(["c_early", "c_late"]);
+    expect(await s().pendingIssueClusters("defect", 1)).toEqual(["c_early"]);
+    await s().clearIssuePending("defect", "c_early");
+    await s().clearIssuePending("defect", "c_missing");
+    expect(await s().pendingIssueClusters("defect", 10)).toEqual(["c_late"]);
+    await s().clearIssuePending("defect", "c_late");
   });
 
   live("carries the intake service end to end, including the daily cap", async () => {
@@ -496,6 +511,7 @@ describe("FirestoreStore against the emulator (#980)", () => {
       matcher: { match: async () => null },
       issueThresholdInstalls: 1,
       maxNewIssuesPerDay: 1,
+      maxNewSuggestionsPerDay: 1,
       issuesPaused: false,
       now: () => clock,
     });
@@ -512,5 +528,132 @@ describe("FirestoreStore against the emulator (#980)", () => {
     expect(created).toEqual([500, 501]);
     expect((await s().getCluster(capped.clusterId))?.value.issueNumber).toBe(501);
     expect(await s().clusterIdForIssue(501)).toBe(capped.clusterId);
+  });
+
+  live("keeps every per-kind index, pool, slot counter and queue apart (#1192)", async () => {
+    const db = freshDb();
+    const st = new FirestoreStore(db);
+    const fp = "7".repeat(64);
+    expect(await st.linkFingerprint("defect", fp, "c_d")).toBe("linked");
+    expect(await st.clusterIdForFingerprint("suggestion", fp)).toBeNull();
+    expect(await st.linkFingerprint("suggestion", fp, "c_s")).toBe("linked");
+    expect(await st.clusterIdForFingerprint("defect", fp)).toBe("c_d");
+    expect(await st.clusterIdForFingerprint("suggestion", fp)).toBe("c_s");
+
+    await st.addCandidate(summary("c_d", "build_page"));
+    await st.addCandidate(summary("c_s", "list_pages", "ai", "suggestion"));
+    expect((await st.candidates("defect")).map((c) => c.id)).toEqual(["c_d"]);
+    expect(await st.candidates("suggestion")).toEqual([
+      summary("c_s", "list_pages", "ai", "suggestion"),
+    ]);
+
+    const day = "2026-11-20";
+    expect(await st.takeIssueSlot("suggestion", day, 1)).toBe(true);
+    expect(await st.takeIssueSlot("suggestion", day, 1)).toBe(false);
+    expect(await st.takeIssueSlot("defect", day, 1)).toBe(true);
+    await st.returnIssueSlot("suggestion", day);
+    expect(await st.takeIssueSlot("suggestion", day, 1)).toBe(true);
+    expect((await db.collection("issueSlots").doc(day).get()).get("used")).toBe(1);
+    expect((await db.collection("suggestionIssueSlots").doc(day).get()).get("used")).toBe(1);
+
+    await st.markIssuePending("defect", "c_d", "2026-11-20T10:00:00.000Z");
+    await st.markIssuePending("suggestion", "c_s", "2026-11-20T09:00:00.000Z");
+    expect(await st.pendingIssueClusters("defect", 10)).toEqual(["c_d"]);
+    expect(await st.pendingIssueClusters("suggestion", 10)).toEqual(["c_s"]);
+    await st.clearIssuePending("suggestion", "c_d");
+    expect(await st.pendingIssueClusters("defect", 10)).toEqual(["c_d"]);
+    await st.clearIssuePending("suggestion", "c_s");
+    expect(await st.pendingIssueClusters("suggestion", 10)).toEqual([]);
+  });
+
+  live(
+    "reads clusters, pool entries and reports stored before #1192 (no kind) as defects",
+    async () => {
+      const db = freshDb();
+      const st = new FirestoreStore(db);
+      // Written the way the intake wrote them before kinds existed.
+      const { kind: _k, ...legacyCluster } = cluster("c_old", {
+        lastSeen: "2026-10-25T10:00:00.000Z",
+      });
+      await db.collection("clusters").doc("c_old").set(legacyCluster);
+      const { kind: _sk, ...legacySummary } = summary("c_pooled", "build_page");
+      await db
+        .collection("candidates")
+        .doc("pool")
+        .set({ items: [legacySummary] });
+      const { kind: _rk, ...legacyReport } = sentReport();
+      await db.collection("reports").doc(legacyReport.reportId).set({
+        reportId: legacyReport.reportId,
+        installHash: "h",
+        receivedAt: "2026-10-25T10:00:00.000Z",
+        clusterId: "c_old",
+        report: legacyReport,
+      });
+
+      const read = (await st.getCluster("c_old"))!;
+      expect(read.value).toEqual(cluster("c_old", { lastSeen: "2026-10-25T10:00:00.000Z" }));
+      expect(await st.candidates("defect")).toEqual([summary("c_pooled", "build_page")]);
+      expect((await st.getReport(legacyReport.reportId))?.report.kind).toBe("defect");
+      // The suggestion pool is built on first use and holds no legacy defect.
+      expect(await st.candidates("suggestion")).toEqual([]);
+
+      // The next write gives the record its kind for good.
+      expect(await st.putCluster({ ...read.value, occurrences: 1 }, read.version)).toBe("ok");
+      expect((await db.collection("clusters").doc("c_old").get()).get("kind")).toBe("defect");
+
+      // Anything that is not a kind is corrupt, not a defect.
+      await db
+        .collection("clusters")
+        .doc("c_bad")
+        .set({ ...legacyCluster, id: "c_bad", kind: "feature" });
+      await expect(st.getCluster("c_bad")).rejects.toThrow('unknown kind "feature"');
+      expect(() => storedKind(null)).toThrow("unknown kind null");
+    },
+  );
+
+  live("files suggestions from their own daily slots end to end", async () => {
+    const created: number[] = [];
+    const tracker: IssueTracker = {
+      createIssue: async ({ labels }) => {
+        const n = 700 + created.length;
+        created.push(n);
+        expect(labels[0]).toBe(n === 700 ? "ai-suggested" : "ai-detected");
+        return { number: n, url: `https://github.com/caelo-cms/caelo-cms/issues/${n}` };
+      },
+      updateIssue: async () => {},
+      getIssue: async (n) => ({
+        number: n,
+        url: `https://github.com/caelo-cms/caelo-cms/issues/${n}`,
+        state: "open",
+        stateReason: null,
+        closedAt: null,
+        labels: [],
+      }),
+      addComment: async () => {},
+      recentCommentBodies: async () => [],
+      releases: async () => [],
+    };
+    const st = new FirestoreStore(freshDb());
+    const service = new IntakeService({
+      store: st,
+      tracker,
+      matcher: { match: async () => null },
+      issueThresholdInstalls: 1,
+      maxNewIssuesPerDay: 1,
+      maxNewSuggestionsPerDay: 1,
+      issuesPaused: false,
+      now: () => new Date("2026-11-03T10:00:00Z"),
+    });
+    const idea = (fingerprint: string) =>
+      sentReport({ source: "ai", kind: "suggestion", severity: null, fingerprint });
+    const first = await service.ingest("install-a", idea("1".repeat(64)));
+    const second = await service.ingest("install-a", idea("2".repeat(64)));
+    const defect = await service.ingest("install-a", sentReport({ fingerprint: "1".repeat(64) }));
+    expect(first.issueUrl).toContain("/issues/700");
+    expect(second.issueUrl).toBeNull();
+    expect(defect.issueUrl).toContain("/issues/701");
+    expect(defect.clusterId).not.toBe(first.clusterId);
+    expect(await st.pendingIssueClusters("suggestion", 10)).toEqual([second.clusterId]);
+    expect(await st.pendingIssueClusters("defect", 10)).toEqual([]);
   });
 });

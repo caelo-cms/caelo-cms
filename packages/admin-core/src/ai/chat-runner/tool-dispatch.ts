@@ -490,6 +490,7 @@ export async function dispatchToolCall(
       suspectedTool: call.name,
       evidence: toolInputEvidence,
       severity: "degraded",
+      kind: "defect",
       source: "auto",
     }).catch(() => undefined);
   }

@@ -383,6 +383,32 @@ describe("email, bug reports, media settings", () => {
     expect(r.content).toContain("sent");
   });
 
+  it("list_bug_reports filters by kind and shows each report's kind (#1192)", async () => {
+    const row = {
+      id: "s",
+      createdAt: "2026-10-28 10:00:00+00",
+      chatSessionId: null,
+      kind: "suggestion",
+      title: "add_tracking_tag has no page/locale filter",
+      whatHappened: "x",
+      expected: "y",
+      suspectedTool: "add_tracking_tag",
+      evidence: null,
+      severity: null,
+      blockedTask: false,
+      status: "new",
+      source: "ai",
+      forwardingState: "queued",
+    };
+    const h = harness({ "ai_bug_reports.list": () => ({ reports: [row], total: 1 }) });
+    const r = await run(listBugReportsTool, { kind: "suggestion" }, h.toolCtx);
+    expect(h.calls[0]?.input).toEqual({ kind: "suggestion", limit: 50 });
+    expect(r.content).toContain("kind");
+    expect(r.content).toContain("suggestion");
+    expect(r.content).not.toContain("null");
+    expect((await run(listBugReportsTool, { kind: "feature" }, h.toolCtx)).ok).toBe(false);
+  });
+
   it("get_media_settings renders the CDN toggle", async () => {
     const h = harness({
       "media.get_settings": () => ({ cdnCopyEnabled: true, cdnUsageThreshold: 5 }),

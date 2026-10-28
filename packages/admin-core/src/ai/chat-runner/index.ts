@@ -368,6 +368,7 @@ async function* runSerializedChatTurn(
           expected: "An approved action's result is saved with the turn that ran it.",
           suspectedTool: interruptedApproved[0]?.toolName ?? null,
           severity: "degraded",
+          kind: "defect",
           source: "auto",
         }).catch(() => undefined);
       }
@@ -387,6 +388,7 @@ async function* runSerializedChatTurn(
           expected: "Turns of one chat run one after another (chat turn serializer).",
           suspectedTool: null,
           severity: "degraded",
+          kind: "defect",
           source: "auto",
         }).catch(() => undefined);
       }
@@ -406,6 +408,7 @@ async function* runSerializedChatTurn(
           "consumes deferred continuations in-turn since #442).",
         suspectedTool: "tool_search",
         severity: "degraded",
+        kind: "defect",
         source: "auto",
       }).catch(() => undefined);
     },

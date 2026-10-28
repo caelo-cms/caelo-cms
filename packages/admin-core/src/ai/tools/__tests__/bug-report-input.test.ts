@@ -15,6 +15,7 @@ import {
 } from "../bug-report.js";
 
 const base = {
+  kind: "defect" as const,
   title: "translate_variant fails",
   whatHappened: "Called translate_variant and it threw.",
   expected: "A translated variant row.",
@@ -72,6 +73,7 @@ describe("bug_report forwarding wording (#902)", () => {
 describe("bug_report refuses placeholder reports (#1010)", () => {
   it("refuses the exact report a real-AI run filed", () => {
     const parsed = bugReportToolInput.safeParse({
+      kind: "defect",
       title: "placeholder",
       whatHappened: "n/a",
       expected: "n/a",
@@ -112,6 +114,7 @@ describe("bug_report refuses placeholder reports (#1010)", () => {
 
   it("accepts a real report that mentions a placeholder word inside a sentence", () => {
     const parsed = bugReportToolInput.safeParse({
+      kind: "defect",
       title: "build_page leaves placeholder text",
       whatHappened: "build_page wrote the literal value 'placeholder' into hero_title.",
       expected: "The hero_title I passed.",
@@ -127,7 +130,64 @@ describe("bug_report refuses placeholder reports (#1010)", () => {
   });
 
   it("the description says when a report is warranted", () => {
-    expect(bugReportTool.description).toContain("Only after a concrete observed failure");
-    expect(bugReportTool.description).toContain("search for it instead");
+    expect(bugReportTool.description).toContain("Only after a concrete observation");
+    expect(bugReportTool.description).toContain(
+      "a tool missing from YOUR list — search for it first",
+    );
+  });
+});
+
+describe("bug_report kind (#1192)", () => {
+  const suggestion = {
+    kind: "suggestion" as const,
+    title: "add_tracking_tag has no page/locale filter",
+    whatHappened:
+      "Leadinfo had to run on German product pages only; add_tracking_tag has no page, path or locale scope, so the tag loads site-wide.",
+    expected: "add_tracking_tag accepts a scope (pages, path prefixes, locales).",
+    suspectedTool: "add_tracking_tag",
+  };
+
+  it("takes a suggestion without severity", () => {
+    const parsed = bugReportToolInput.parse(suggestion);
+    expect(parsed.kind).toBe("suggestion");
+    expect(parsed.severity).toBeUndefined();
+  });
+
+  it("requires the kind: the AI decides on every report", () => {
+    const { kind: _k, ...noKind } = suggestion;
+    const parsed = bugReportToolInput.safeParse(noKind);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((i) => i.path.join("."))).toContain("kind");
+  });
+
+  it("refuses a graded suggestion and names both ways forward", () => {
+    const parsed = bugReportToolInput.safeParse({ ...suggestion, severity: "cosmetic" });
+    expect(parsed.success).toBe(false);
+    const issue = parsed.error?.issues[0];
+    expect(issue?.path).toEqual(["severity"]);
+    expect(issue?.message).toContain('Leave it out for kind="suggestion"');
+    expect(issue?.message).toContain('file kind="defect"');
+  });
+
+  it("the description decides defect vs suggestion with the real reports as examples", () => {
+    const d = bugReportTool.description;
+    expect(d).toContain("did something MISBEHAVE?");
+    expect(d).toContain('kind="defect"');
+    expect(d).toContain('kind="suggestion"');
+    // #1138, #1131, #1132: a missing option, a missing view, a docs gap.
+    expect(d).toContain("add_tracking_tag has no page/locale filter");
+    expect(d).toContain("no consent-rate overview");
+    expect(d).toContain("consent log fields undocumented");
+    expect(d).toContain("works as described but should do more is a suggestion");
+  });
+
+  it("the JSON schema the model sees requires kind with the contract's values", () => {
+    expect(bugReportTool.inputSchema.required).toContain("kind");
+    const props = bugReportTool.inputSchema.properties as Record<
+      string,
+      { enum?: string[]; description?: string }
+    >;
+    expect(props.kind?.enum).toEqual(["defect", "suggestion"]);
+    expect(props.severity?.description).toContain("Defects only");
   });
 });
