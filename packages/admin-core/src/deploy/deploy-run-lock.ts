@@ -94,11 +94,15 @@ export class DeployRunHeartbeat {
   constructor(beat: () => Promise<DeployRunBeat | null>, intervalMs = DEPLOY_RUN_HEARTBEAT_MS) {
     this.#timer = setInterval(() => {
       if (this.#inFlight !== null) return;
+      // Judged against what the run held when the beat STARTED: a beat that
+      // began before the run acquired the publication lease may answer
+      // "not-held" after the acquisition, and says nothing about the lease.
+      const expectsPublication = this.#expectsPublication;
       this.#inFlight = beat()
         .then((r) => {
           if (r === null) return;
           if (!r.running) this.#lose("the run was marked failed while it still built");
-          else if (this.#expectsPublication && r.publication !== "renewed") {
+          else if (expectsPublication && r.publication !== "renewed") {
             this.#lose("its staging-publication lease lapsed");
           }
         })
