@@ -12,6 +12,7 @@ import {
 } from "#lib/components/edit/use-overlay-layout.svelte.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission, requireUser } from "#lib/server/guards.js";
+import { loadLiveLinks } from "#lib/server/live-links.js";
 import { loadPageSeoInfo } from "#lib/server/page-seo-info.js";
 import { loadEditorToolbar } from "#lib/server/plugin-toolbar.js";
 import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
@@ -306,22 +307,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       })
     : Promise.resolve([]);
 
-  // "View live": the shown page on the site's address. Main's path, since
-  // the live site is built from main; null when the page is not published
-  // on main (it cannot be live) or the site has no address yet (#551).
-  const mainActive = mainPages.find((p) => p.id === activePage?.id);
-  const seoR = await execute(registry, adapter, locals.ctx, "site_defaults.get_seo", {});
-  const siteBaseUrl = seoR.ok ? (seoR.value as { siteBaseUrl: string | null }).siteBaseUrl : null;
-  const live = {
-    /** Why the site address could not be read; shown in the Live menu. */
-    error: seoR.ok ? null : describeError(seoR.error),
-    siteUrl: siteBaseUrl,
-    pageUrl:
-      siteBaseUrl && mainActive?.status === "published"
-        ? new URL(mainActive.currentPath, siteBaseUrl).href
-        : null,
-  };
-
   // Load the chat's messages + the modules list (powers the chip picker
   // inside the embedded ChatPanel).
   let messages: ChatMessage[] = [];
@@ -554,6 +539,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       layout = { ...DEFAULT_LAYOUT, ...(v as Partial<OverlayLayout>) };
     }
   }
+
+  // "View live" in the Publish live menu (see live-links.ts for when the
+  // page link is offered).
+  const live = await loadLiveLinks(
+    locals.ctx,
+    mainPages.find((p) => p.id === activePage?.id) ?? null,
+    productionMatchesStaging,
+  );
 
   return {
     pages: pages.map((p) => ({

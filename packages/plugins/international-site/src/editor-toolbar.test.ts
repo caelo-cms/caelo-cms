@@ -96,6 +96,30 @@ describe("languageToolbarState", () => {
     ]);
   });
 
+  it("stays within the toolbar state's 20 entries on a site with more languages", () => {
+    const many = [
+      locale("en", "English", true),
+      ...Array.from({ length: 24 }, (_, i) => locale(`l${i}`, `Language ${i}`)),
+    ];
+    const stale = variant(DE, "l23", "needs_update");
+    const state = languageToolbarState({
+      pageId: EN,
+      locales: many,
+      variants: [variant(EN, "en", "source"), stale],
+      pages,
+    });
+    expect(pluginEditorToolbarState.safeParse(state).success).toBe(true);
+    expect(state.items).toHaveLength(20);
+    // The shown page and the out-of-date version are kept; the rest fold.
+    expect(state.items?.[0]?.current).toBe(true);
+    expect(state.items?.[1]).toMatchObject({ label: "Language 23", tone: "attention" });
+    expect(state.items?.[19]).toEqual({
+      label: "6 more languages",
+      detail: "Ask the AI for the full status",
+    });
+    expect(state.count).toBe(1);
+  });
+
   it("asks for languages when none are set up", () => {
     const state = languageToolbarState({ pageId: EN, locales: [], variants: [], pages });
     expect(state).toEqual({

@@ -113,8 +113,13 @@
     productionMatchesStaging?: boolean | null;
     /** The latest succeeded production deploy, for the live-site menu. */
     lastPublishedLive?: { finishedAt: string } | null;
-    /** Where the shown page and the site are live (null: not live / no address). */
-    live: { error: string | null; siteUrl: string | null; pageUrl: string | null };
+    /** Where the shown page and the site are live (`#lib/server/live-links.ts`). */
+    live: {
+      error: string | null;
+      siteUrl: string | null;
+      pageUrl: string | null;
+      pageNote: string | null;
+    };
   } = $props();
 
   /**
@@ -367,9 +372,9 @@
               >
                 <ExternalLink class="size-3.5" />This page live
               </a>
-            {:else}
+            {:else if live.pageNote}
               <p class="px-2 py-1.5 text-xs text-muted-foreground" data-testid="live-page-missing">
-                This page is not live: it is a draft or new in this chat.
+                {live.pageNote}
               </p>
             {/if}
             <a

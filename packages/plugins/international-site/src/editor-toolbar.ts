@@ -16,6 +16,9 @@
 import type { PluginEditorToolbarState } from "@caelo-cms/plugin-sdk";
 import type { LocaleRow, PageVariantRow } from "./index.js";
 
+/** One line of the toolbar popover. */
+type ToolbarEntry = NonNullable<PluginEditorToolbarState["items"]>[number];
+
 /** The fields of a page the toolbar state needs. */
 export interface ToolbarPage {
   readonly id: string;
@@ -66,7 +69,7 @@ export function languageToolbarState(input: {
 
   let outOfDate = 0;
   let translated = 0;
-  const items = ordered.map((locale) => {
+  const items = ordered.map((locale): ToolbarEntry => {
     const variant = group.find((v) => v.locale_code === locale.code);
     const isCurrent = locale.code === pageLocale.code;
     if (!variant && !isCurrent) {
@@ -100,6 +103,25 @@ export function languageToolbarState(input: {
     label: codeLabel(pageLocale.code),
     ...(outOfDate > 0 ? { count: outOfDate, tone: "attention" as const } : {}),
     summary,
-    items,
+    items: capItems(items),
   };
+}
+
+/** The most entries the SDK's toolbar state accepts. */
+const MAX_ITEMS = 20;
+
+/**
+ * Keeps the popover within {@link MAX_ITEMS} on a site with more languages:
+ * the shown page first, then the out-of-date versions (they need work),
+ * then the other versions, then the missing ones; what does not fit is
+ * one closing line. The count and summary still cover every language.
+ */
+function capItems(items: ToolbarEntry[]): ToolbarEntry[] {
+  if (items.length <= MAX_ITEMS) return items;
+  const rank = (i: ToolbarEntry): number =>
+    i.current ? 0 : i.tone === "attention" ? 1 : i.pageId !== undefined ? 2 : 3;
+  const sorted = [...items].sort((a, b) => rank(a) - rank(b));
+  const shown = sorted.slice(0, MAX_ITEMS - 1);
+  const rest = items.length - shown.length;
+  return [...shown, { label: `${rest} more languages`, detail: "Ask the AI for the full status" }];
 }
