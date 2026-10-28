@@ -10,7 +10,7 @@
    */
 
   import type { SchedulerStatus } from "@caelo-cms/admin-core";
-  import { enhance, type SubmitFunction } from "$app/forms";
+  import { applyAction, enhance, type SubmitFunction } from "$app/forms";
   import type { StoredUpdatePolicy } from "@caelo-cms/shared";
   import { Alert, AlertDescription, AlertTitle } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -33,6 +33,7 @@
     pauseSummary,
     SCHEDULER_ACTION_LABELS,
   } from "#lib/auto-update-display.js";
+  import { thrownErrorAsFailure } from "#lib/thrown-error-message.js";
 
   let {
     policy,
@@ -77,9 +78,15 @@
   /**
    * Submitted in place, so a wrong password keeps what the Owner typed into
    * the form (a full reload would show the stored policy again); the dialog
-   * closes once the change went through.
+   * closes once the change went through. An error the server throws (a CSRF
+   * token that no longer verifies) shows in the dialog like a wrong password
+   * instead of replacing the page with SvelteKit's error page.
    */
   const submitInPlace: SubmitFunction = () => async ({ result, update }) => {
+    if (result.type === "error" && confirming) {
+      await applyAction(thrownErrorAsFailure(result, confirming, { policy: true }));
+      return;
+    }
     await update({ reset: false });
     if (result.type === "success") confirming = null;
   };

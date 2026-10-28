@@ -35,10 +35,15 @@
   let darkMode = $state(false);
   let activeTab = $state("colors");
 
-  // Re-sync edited tokens when the server returns a new snapshot
-  // (e.g. after Save). $effect on data.theme handles that.
+  // Re-sync edited tokens when the server returns a new snapshot (e.g.
+  // after Save), and only then. Read through a $derived: page data is a new
+  // object whenever any layout load reruns (the background CSRF token
+  // refresh, #lib/csrf-refresh.ts), and an effect reading `data.theme`
+  // directly would rerun on that and throw away unsaved edits. The derived
+  // signals only when the tokens object itself changed.
+  const serverTokens = $derived(data.theme.tokens);
   $effect(() => {
-    editedTokens = data.theme.tokens;
+    editedTokens = serverTokens;
   });
 
   function handleTokensChange(next: ThemeDocument): void {
