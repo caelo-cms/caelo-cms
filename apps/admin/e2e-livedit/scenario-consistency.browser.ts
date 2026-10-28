@@ -57,7 +57,8 @@ const TWO_PAGE_PROMPT =
   "Pricing page. Pick a fitting color scheme with real brand colors (not black-and-white). " +
   "The homepage needs a hero with a 'Start free trial' button and two more sections with headings; " +
   "the Pricing page needs a heading per section, three plans, a 'Start free trial' button too, " +
-  "and a short FAQ at the bottom where visitors click a question to reveal its answer.";
+  "and a short FAQ at the bottom where visitors click a question to reveal its answer. " +
+  "When it is done, put it on staging.";
 
 interface BuiltPage {
   readonly title: string;
