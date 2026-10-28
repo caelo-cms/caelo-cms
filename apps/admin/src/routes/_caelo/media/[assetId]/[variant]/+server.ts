@@ -58,27 +58,24 @@ export const GET: RequestHandler = async ({ params, locals, request, cookies }) 
   const v = asset.variants.find((x) => x.variant === (variant as MediaVariantTag));
   if (!v) throw error(404, `variant '${variant}' not emitted for this asset`);
 
-  const storage = getMediaStorage();
-  let body: Uint8Array;
+  // #1216 — stream the object instead of reading it whole: the old path
+  // held the file plus two copies (Uint8Array + Blob) per request, and a
+  // preview page requests dozens of variants at once.
+  let file: { body: ReadableStream<Uint8Array>; sizeBytes: number };
   try {
-    body = await storage.get(v.storageKey);
+    file = await getMediaStorage().openStream(v.storageKey);
   } catch {
     throw error(404, "storage object missing");
   }
 
   // Content-addressed → safe for long caching. Etag = sha is implicit
   // via the assetId (which is keyed by sha in the upload pipeline).
-  // Copy into a fresh ArrayBuffer so BodyInit accepts it regardless of
-  // the backing buffer kind (Bun's Uint8Array can carry a non-strict
-  // ArrayBufferLike). new Uint8Array(len) gives an exact ArrayBuffer.
-  const copy = new Uint8Array(body.byteLength);
-  copy.set(body);
   const contentType = contentTypeFor(v.format);
-  return new Response(new Blob([copy], { type: contentType }), {
+  return new Response(file.body, {
     status: 200,
     headers: {
       "content-type": contentType,
-      "content-length": String(body.byteLength),
+      "content-length": String(file.sizeBytes),
       "cache-control": "private, max-age=31536000, immutable",
       ...mediaSecurityHeaders(contentType),
     },

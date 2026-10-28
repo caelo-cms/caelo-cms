@@ -6,12 +6,13 @@
  *   chat.list_sessions    — caller's sessions, most-recent first.
  *   chat.create_session   — new session, bound to the site's shared draft
  *                           (or an isolated experiment/migration branch).
- *   chat.get_session      — load one session + its messages.
+ *   chat.resolve_session  — one session row, no history (#1216).
+ *   chat.get_session      — load one session + its messages (paged).
  *   chat.rename_session   — title edit.
  *   chat.archive_session  — soft-archive (sets archived_at).
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import {
   chatAttachmentSchema,
   chatCreateSessionInput,
@@ -314,6 +315,107 @@ const sessionMessagesRow = z.object({
   status: z.enum(["complete", "interrupted"]),
 });
 
+/** Raw `chat_sessions` columns both session reads select. */
+interface SessionDbRow {
+  id: string;
+  title: string;
+  created_by: string;
+  chat_branch_id: string;
+  branch_kind: "draft" | "experiment" | "migration" | "legacy";
+  created_at: string | Date;
+  last_active_at: string | Date;
+  published_at: string | Date | null;
+  last_staged_at: string | Date | null;
+  archived_at: string | Date | null;
+  pinned_elements: unknown;
+  page_id: string | null;
+  template_id: string | null;
+  extended_thinking_enabled: boolean;
+  extended_thinking_budget_tokens: number | null;
+}
+
+function isoOrNull(v: string | Date | null): string | null {
+  if (v === null) return null;
+  return v instanceof Date ? v.toISOString() : String(v);
+}
+
+/**
+ * Read one session row the caller owns (`created_by = actor`), or null.
+ * The owner filter is the access rule of both session reads: another
+ * user's session reads as not found, so an MCP token can never resume or
+ * write into a chat it does not own.
+ */
+async function readOwnSessionRow(
+  tx: TransactionRunner,
+  chatSessionId: string,
+  actorId: string,
+): Promise<z.infer<typeof sessionRow> | null> {
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id, title, created_by::text AS created_by,
+           chat_branch_id::text AS chat_branch_id, branch_kind,
+           created_at, last_active_at, published_at, last_staged_at, archived_at,
+           pinned_elements,
+           page_id::text     AS page_id,
+           template_id::text AS template_id,
+           extended_thinking_enabled,
+           extended_thinking_budget_tokens
+    FROM chat_sessions
+    WHERE id = ${chatSessionId}::uuid AND created_by = ${actorId}::uuid
+    LIMIT 1
+  `)) as unknown as SessionDbRow[];
+  const s = rows[0];
+  if (!s) return null;
+  return {
+    id: s.id,
+    title: s.title,
+    createdBy: s.created_by,
+    chatBranchId: s.chat_branch_id,
+    branchKind: s.branch_kind,
+    createdAt: isoOrNull(s.created_at) ?? "",
+    lastActiveAt: isoOrNull(s.last_active_at) ?? "",
+    publishedAt: isoOrNull(s.published_at),
+    lastStagedAt: isoOrNull(s.last_staged_at),
+    archivedAt: isoOrNull(s.archived_at),
+    pinnedElements: parsePinnedElements(s.pinned_elements),
+    pageId: s.page_id,
+    templateId: s.template_id,
+    extendedThinkingEnabled: s.extended_thinking_enabled,
+    extendedThinkingBudgetTokens: s.extended_thinking_budget_tokens,
+  };
+}
+
+/**
+ * #1216 — the session row alone (id, branch, open/closed state, owner,
+ * page/template binding), no history. Every caller that does not render
+ * or replay the transcript uses this instead of `chat.get_session`: an MCP
+ * tool call only needs the branch to write on, and loading a long chat's
+ * full history (SDK response messages, thinking, attachments) on every
+ * such call is what held an admin instance near its memory limit.
+ */
+export const resolveChatSessionOp = defineOperation({
+  name: "chat.resolve_session",
+  // Same scope + owner filter as chat.get_session (read surface, §11).
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ chatSessionId: z.string().uuid() }),
+  output: z.object({ session: sessionRow }),
+  handler: async (ctx, input, tx) => {
+    const session = await readOwnSessionRow(tx, input.chatSessionId, ctx.actorId);
+    if (!session) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.resolve_session",
+        message:
+          "session not found — it does not exist or belongs to another user; list your chats with chat.list_sessions",
+      });
+    }
+    return ok({ session });
+  },
+});
+
+/** Upper bound for one page of `chat.get_session` history. */
+export const CHAT_HISTORY_PAGE_MAX = 500;
+
 export const getChatSessionOp = defineOperation({
   name: "chat.get_session",
   // CLAUDE.md §11: read surface open to AI. The chat-runner already
@@ -321,42 +423,40 @@ export const getChatSessionOp = defineOperation({
   // ctx detour for every session reload.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ chatSessionId: z.string().uuid() }),
+  input: z.object({
+    chatSessionId: z.string().uuid(),
+    /**
+     * #1216 — the SDK-canonical `response_messages` are only needed to
+     * REPLAY the history to the model (the chat runner). They are the
+     * heaviest column (full tool results, reasoning) and no transcript
+     * view renders them, so every other caller leaves them out.
+     */
+    includeResponseMessages: z.boolean().default(false),
+    /**
+     * #1216 — page size: the newest `limit` messages (before `before`
+     * when set), returned oldest-first. Omitted = the whole history,
+     * which only the chat runner needs (it replays everything and
+     * compaction trims in memory).
+     */
+    limit: z.number().int().min(1).max(CHAT_HISTORY_PAGE_MAX).optional(),
+    /** Message id cursor: return messages older than this one. Requires `limit`. */
+    before: z.string().uuid().optional(),
+  }),
   output: z.object({
     session: sessionRow,
     messages: z.array(sessionMessagesRow),
+    /** True when older messages exist beyond this page (paged reads only). */
+    hasMore: z.boolean(),
   }),
   handler: async (ctx, input, tx) => {
-    const sessionRows = (await tx.execute(sql`
-      SELECT id::text AS id, title, created_by::text AS created_by,
-             chat_branch_id::text AS chat_branch_id, branch_kind,
-             created_at, last_active_at, published_at, last_staged_at, archived_at,
-             pinned_elements,
-             page_id::text     AS page_id,
-             template_id::text AS template_id,
-             extended_thinking_enabled,
-             extended_thinking_budget_tokens
-      FROM chat_sessions
-      WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
-      LIMIT 1
-    `)) as unknown as {
-      id: string;
-      title: string;
-      created_by: string;
-      chat_branch_id: string;
-      branch_kind: "draft" | "experiment" | "migration" | "legacy";
-      created_at: string | Date;
-      last_active_at: string | Date;
-      published_at: string | Date | null;
-      last_staged_at: string | Date | null;
-      archived_at: string | Date | null;
-      pinned_elements: unknown;
-      page_id: string | null;
-      template_id: string | null;
-      extended_thinking_enabled: boolean;
-      extended_thinking_budget_tokens: number | null;
-    }[];
-    const session = sessionRows[0];
+    if (input.before !== undefined && input.limit === undefined) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.get_session",
+        message: "`before` pages the history and needs `limit` — pass both, or neither",
+      });
+    }
+    const session = await readOwnSessionRow(tx, input.chatSessionId, ctx.actorId);
     if (!session) {
       return err({
         kind: "HandlerError",
@@ -364,14 +464,42 @@ export const getChatSessionOp = defineOperation({
         message: "session not found",
       });
     }
-    const msgs = (await tx.execute(sql`
-      SELECT id::text AS id, role, content, origin, tool_calls, tool_call_id,
+    const responseCol = input.includeResponseMessages
+      ? sql`response_messages`
+      : sql`NULL::jsonb AS response_messages`;
+    const cols = sql`id::text AS id, role, content, origin, tool_calls, tool_call_id,
              tokens_in, tokens_out, created_at, thinking_blocks, attachments,
-             response_messages, status
-      FROM chat_messages
-      WHERE chat_session_id = ${input.chatSessionId}::uuid
-      ORDER BY created_at ASC
-    `)) as unknown as {
+             ${responseCol}, status`;
+    let raw: unknown;
+    let hasMore = false;
+    if (input.limit === undefined) {
+      raw = await tx.execute(sql`
+        SELECT ${cols}
+        FROM chat_messages
+        WHERE chat_session_id = ${input.chatSessionId}::uuid
+        ORDER BY created_at ASC
+      `);
+    } else {
+      // Newest page first (one row extra tells whether more exist), then
+      // flipped to oldest-first like the full read. (created_at, id) is a
+      // total order, so a cursor never skips or repeats a row.
+      const cursor = input.before
+        ? sql`AND (created_at, id) < (
+            SELECT created_at, id FROM chat_messages
+            WHERE id = ${input.before}::uuid AND chat_session_id = ${input.chatSessionId}::uuid
+          )`
+        : sql``;
+      const page = (await tx.execute(sql`
+        SELECT ${cols}
+        FROM chat_messages
+        WHERE chat_session_id = ${input.chatSessionId}::uuid ${cursor}
+        ORDER BY created_at DESC, id DESC
+        LIMIT ${input.limit + 1}
+      `)) as unknown as unknown[];
+      hasMore = page.length > input.limit;
+      raw = page.slice(0, input.limit).reverse();
+    }
+    const msgs = raw as {
       id: string;
       role: "user" | "assistant" | "tool";
       content: string;
@@ -386,28 +514,9 @@ export const getChatSessionOp = defineOperation({
       response_messages: unknown;
       status: "complete" | "interrupted";
     }[];
-    const iso = (v: string | Date | null): string | null => {
-      if (v === null) return null;
-      return v instanceof Date ? v.toISOString() : String(v);
-    };
     return ok({
-      session: {
-        id: session.id,
-        title: session.title,
-        createdBy: session.created_by,
-        chatBranchId: session.chat_branch_id,
-        branchKind: session.branch_kind,
-        createdAt: iso(session.created_at) ?? "",
-        lastActiveAt: iso(session.last_active_at) ?? "",
-        publishedAt: iso(session.published_at),
-        lastStagedAt: iso(session.last_staged_at),
-        archivedAt: iso(session.archived_at),
-        pinnedElements: parsePinnedElements(session.pinned_elements),
-        pageId: session.page_id,
-        templateId: session.template_id,
-        extendedThinkingEnabled: session.extended_thinking_enabled,
-        extendedThinkingBudgetTokens: session.extended_thinking_budget_tokens,
-      },
+      session,
+      hasMore,
       messages: msgs.map((m) => {
         const parsedTools =
           typeof m.tool_calls === "string" ? (JSON.parse(m.tool_calls) as unknown) : m.tool_calls;
@@ -432,7 +541,7 @@ export const getChatSessionOp = defineOperation({
           toolCallId: m.tool_call_id,
           tokensIn: m.tokens_in,
           tokensOut: m.tokens_out,
-          createdAt: iso(m.created_at) ?? "",
+          createdAt: isoOrNull(m.created_at) ?? "",
           thinkingBlocks:
             Array.isArray(parsedThinking) && parsedThinking.length > 0
               ? (parsedThinking as { thinking: string; signature: string }[])
@@ -443,6 +552,7 @@ export const getChatSessionOp = defineOperation({
               : null,
           // Option C — the SDK-canonical ModelMessage assembly for an
           // assistant turn; replayed verbatim as history (CLAUDE.md §12).
+          // Null unless the caller asked for it (`includeResponseMessages`).
           responseMessages:
             Array.isArray(parsedResponseMessages) && parsedResponseMessages.length > 0
               ? (parsedResponseMessages as unknown[])

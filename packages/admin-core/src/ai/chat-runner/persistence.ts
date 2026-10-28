@@ -237,7 +237,11 @@ export async function loadMemory(
     : [];
 }
 
-/** Load the chat session + its message history. Returns null on failure. */
+/**
+ * Load the chat session + its full message history, including the SDK's
+ * `response_messages` the replay needs (CLAUDE.md §12). The chat runner is
+ * the only caller that asks for them (#1216). Returns null on failure.
+ */
 export async function loadSession(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
@@ -246,6 +250,7 @@ export async function loadSession(
 ): Promise<LoadedSession | null> {
   const sessionResult = await execute(registry, adapter, humanCtx, "chat.get_session", {
     chatSessionId,
+    includeResponseMessages: true,
   });
   if (!sessionResult.ok) return null;
   return sessionResult.value as LoadedSession;

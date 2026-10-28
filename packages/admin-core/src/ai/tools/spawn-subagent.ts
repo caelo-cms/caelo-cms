@@ -205,6 +205,9 @@ const SUBAGENT_MAX_PARALLEL = parsePositiveIntEnv("SUBAGENT_MAX_PARALLEL", 6);
 // the #251 drift class (provider schema invites what dispatch rejects).
 const SUBAGENT_MAX_BATCH = Math.min(32, parsePositiveIntEnv("SUBAGENT_MAX_BATCH", 32));
 
+/** History page size when looking for a child's last assistant message. */
+const FINAL_TEXT_PAGE = 50;
+
 /**
  * Run #10 D2 — the per-shape payload sketch for the submit_result
  * instruction. Appended to every task brief (and restated on the nudge
@@ -500,30 +503,36 @@ async function runOneSubagent(
   };
 
   /** Latest assistant message in the child session (empty string when none). */
+  // #1216 — paged from the newest end: the answer is almost always on the
+  // first page, and a long child run must not load its whole transcript.
   const readFinalAssistantText = async (): Promise<string> => {
-    const sessGet = await execute(
-      toolCtx.registry,
-      toolCtx.adapter,
-      // childHumanCtx captured after the top-of-function guard — TS can't
-      // carry that narrowing into this closure via toolCtx.humanCtx.
-      childHumanCtx,
-      "chat.get_session",
-      {
-        chatSessionId: subagentChatSessionId,
-      },
-    );
-    if (!sessGet.ok) return "";
-    const messages = (
-      sessGet.value as {
-        messages: { role: string; content: string }[];
+    let before: string | undefined;
+    for (;;) {
+      const sessGet = await execute(
+        toolCtx.registry,
+        toolCtx.adapter,
+        // childHumanCtx captured after the top-of-function guard — TS can't
+        // carry that narrowing into this closure via toolCtx.humanCtx.
+        childHumanCtx,
+        "chat.get_session",
+        {
+          chatSessionId: subagentChatSessionId,
+          limit: FINAL_TEXT_PAGE,
+          ...(before ? { before } : {}),
+        },
+      );
+      if (!sessGet.ok) return "";
+      const page = sessGet.value as {
+        messages: { id: string; role: string; content: string }[];
+        hasMore: boolean;
+      };
+      for (let i = page.messages.length - 1; i >= 0; i--) {
+        const m = page.messages[i];
+        if (m?.role === "assistant" && m.content) return m.content;
       }
-    ).messages;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i]?.role === "assistant" && messages[i]?.content) {
-        return messages[i]?.content ?? "";
-      }
+      before = page.messages[0]?.id;
+      if (!page.hasMore || !before) return "";
     }
-    return "";
   };
 
   const failErrored = async (

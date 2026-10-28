@@ -58,6 +58,19 @@ export class LocalVolumeAdapter implements MediaStorageAdapter {
     return new Uint8Array(buf);
   }
 
+  async size(key: string): Promise<number> {
+    const s = await stat(this.#pathFor(key));
+    if (!s.isFile()) throw new Error(`storage key is not a file: ${key}`);
+    return s.size;
+  }
+
+  async openStream(key: string): Promise<{ body: ReadableStream<Uint8Array>; sizeBytes: number }> {
+    // stat first so a missing object throws here (a lazy Bun.file stream
+    // would only fail once the response is already being sent).
+    const sizeBytes = await this.size(key);
+    return { body: Bun.file(this.#pathFor(key)).stream(), sizeBytes };
+  }
+
   async delete(key: string): Promise<void> {
     const path = this.#pathFor(key);
     try {

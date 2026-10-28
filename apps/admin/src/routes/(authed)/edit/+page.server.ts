@@ -10,6 +10,7 @@ import {
   DEFAULT_LAYOUT,
   type OverlayLayout,
 } from "#lib/components/edit/use-overlay-layout.svelte.js";
+import { loadTranscriptPage } from "#lib/server/chat-transcript.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission, requireUser } from "#lib/server/guards.js";
 import { loadPageSeoInfo } from "#lib/server/page-seo-info.js";
@@ -79,7 +80,7 @@ async function describeUnopenedChat(
 ): Promise<string> {
   const { adapter, registry } = getQueryContext();
   const asked = UUID_RE.test(chatSessionId)
-    ? await execute(registry, adapter, ctx, "chat.get_session", { chatSessionId })
+    ? await execute(registry, adapter, ctx, "chat.resolve_session", { chatSessionId })
     : null;
   const session = asked?.ok
     ? (asked.value as { session: { title: string; archivedAt: string | null } }).session
@@ -199,7 +200,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     });
     if (created.ok) {
       const id = (created.value as { chatSessionId: string; chatBranchId: string }).chatSessionId;
-      const fresh = await execute(registry, adapter, locals.ctx, "chat.get_session", {
+      const fresh = await execute(registry, adapter, locals.ctx, "chat.resolve_session", {
         chatSessionId: id,
       });
       if (fresh.ok) {
@@ -211,7 +212,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
         // mismatch (op output validator rejecting a row that the SQL
         // returned) — exactly the regression class introduced by
         // v0.2.54's session-row schema additions.
-        console.error("[edit] chat.get_session failed after auto-create", {
+        console.error("[edit] chat.resolve_session failed after auto-create", {
           createdSessionId: id,
           error: fresh.error,
         });
@@ -297,13 +298,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
   // Load the chat's messages + the modules list (powers the chip picker
   // inside the embedded ChatPanel).
+  // #1216 — the newest transcript page only; ChatPanel loads older pages
+  // on demand.
   let messages: ChatMessage[] = [];
+  let hasMoreMessages = false;
   if (activeChat) {
-    const sR = await execute(registry, adapter, locals.ctx, "chat.get_session", {
-      chatSessionId: activeChat.id,
-    });
-    if (sR.ok) {
-      messages = (sR.value as { messages: ChatMessage[] }).messages;
+    const page = await loadTranscriptPage(locals.ctx, activeChat.id);
+    if (page) {
+      messages = page.messages;
+      hasMoreMessages = page.hasMore;
     }
   }
 
@@ -365,11 +368,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
         source: "first-run welcome seed (/edit)",
       });
       if (seeded.ok) {
-        const reread = await execute(registry, adapter, locals.ctx, "chat.get_session", {
-          chatSessionId: activeChat.id,
-        });
-        if (reread.ok) {
-          messages = (reread.value as { messages: ChatMessage[] }).messages;
+        const reread = await loadTranscriptPage(locals.ctx, activeChat.id);
+        if (reread) {
+          messages = reread.messages;
+          hasMoreMessages = reread.hasMore;
         }
       } else {
         console.error("[edit] first-run welcome seed failed", { error: seeded.error });
@@ -545,6 +547,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     /** #1102 — why the `?chat=` in the URL was not opened, or null. */
     chatNotice,
     messages,
+    hasMoreMessages,
     firstRunSuggestions,
     modules,
     branchEditedModuleIds,
