@@ -457,6 +457,14 @@ export async function generateSite(args: {
    * nothing reads `current/`.
    */
   syncCurrent?: boolean;
+  /**
+   * How many builds to keep under `<outDir>/builds/` (default
+   * {@link DEFAULT_RETAINED_BUILDS}: self-hosted rolls back to them). #1211
+   * — 0 prunes nothing here: a cloud publisher uploads the build and the
+   * admin deletes it right after, so no build stays in the container's
+   * `/tmp` (memory on Cloud Run), and pruning would race a parallel build.
+   */
+  retainBuilds?: number;
 }): Promise<GenerateResult> {
   const start = Date.now();
   const timer = new PhaseTimer();
@@ -1300,11 +1308,14 @@ export async function generateSite(args: {
     timer.lap("sync-current");
   }
 
-  // Best-effort old-build retention: keep the most recent 5, remove the
+  // Best-effort old-build retention: keep the most recent ones, remove the
   // rest. Failures are swallowed because they don't affect the live
   // serving target (which is `current/`).
-  await pruneOldBuilds(buildsDir, runId, 5);
-  timer.lap("prune");
+  const retainBuilds = args.retainBuilds ?? DEFAULT_RETAINED_BUILDS;
+  if (retainBuilds > 0) {
+    await pruneOldBuilds(buildsDir, runId, retainBuilds);
+    timer.lap("prune");
+  }
 
   return {
     pageCount: pageRows.length,
@@ -1315,6 +1326,9 @@ export async function generateSite(args: {
     unpublishedLinkTargets,
   };
 }
+
+/** Builds a self-hosted target keeps under `builds/` for rollback. */
+export const DEFAULT_RETAINED_BUILDS = 5;
 
 async function pruneOldBuilds(buildsDir: string, keepRunId: string, retain: number): Promise<void> {
   try {

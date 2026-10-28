@@ -19,28 +19,15 @@
  * then syncs the overlay into the destination's `current/`. Rollback
  * re-syncs any prior succeeded build's archive into `current/`.
  *
- * deploy.trigger writes the deploy_runs row with status='running' and
- * a stable runId, spawns the generator, and updates the row as the
- * subprocess emits progress / done / error events. Each progress write
- * is its own short tx so the Ops dashboard can show pagesDone/total
- * while the build is in flight.
+ * `deploy.trigger` (Stage and every other build) lives in
+ * deploy-trigger.ts: it holds no transaction while it builds (#1211).
+ * Publish live (`deploy.promote`) still builds and publishes inside one
+ * transaction; its run row is committed on its own (deploy.begin_run) so
+ * the Ops dashboard shows it and its progress while it runs.
  */
 
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-// Top-level import, NOT a lazy `require()`. issue #262: under vite's dev
-// SSR the module graph is pure ESM on a Node runtime, where `require` is
-// undefined — the lazy call threw inside the deploy.trigger transaction,
-// rolling back the deploy_runs row and killing every Stage in dev with
-// "Staging build failed: require is not defined". Bun tolerates require()
-// in ESM, which is why `bun test` never caught it.
-import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import {
-  decodeBuildPayload,
-  encodeBuildPayload,
-  serveBuildPluginCall,
-} from "@caelo-cms/plugin-host";
 import {
   type DatabaseAdapter,
   defineOperation,
@@ -48,74 +35,56 @@ import {
   type OperationRegistry,
   type TransactionRunner,
 } from "@caelo-cms/query-api";
-import {
-  CAELO_VERSION,
-  databaseUrlFromEnv,
-  type ExecutionContext,
-  err,
-  ok,
-  PhaseTimer,
-  phaseTimingSchema,
-} from "@caelo-cms/shared";
+import { CAELO_VERSION, type ExecutionContext, err, ok, PhaseTimer } from "@caelo-cms/shared";
 import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
-import { SYSTEM_ACTOR_ID } from "../audit.js";
-import {
-  buildManifestOf,
-  compareBuildManifests,
-  hostNormaliser,
-  parityRefusal,
-} from "../deploy/build-parity.js";
+import { removeUploadedBuild, retainedBuildsFor } from "../deploy/build-cleanup.js";
+import { buildManifestOf, compareBuildManifests, parityRefusal } from "../deploy/build-parity.js";
 import { holdDeployRun } from "../deploy/deploy-run-lock.js";
-import { draftPagesSummary, mainDraftPages } from "../deploy/draft-pages.js";
-import { lockLiveReleases } from "../deploy/live-release-lock.js";
 import {
-  describeMissingMetaDescriptions,
-  pagesMissingMetaDescription,
-} from "../deploy/missing-seo.js";
+  resolveGeneratorCli,
+  runGenerator,
+  systemContextOf,
+} from "../deploy/generator-subprocess.js";
+import { lockLiveReleases } from "../deploy/live-release-lock.js";
 import { resolveOutputRoot } from "../deploy/output-root.js";
 import {
   activePluginProblems,
-  deployPluginProblem,
   describePluginProblems,
   stagedWithoutPlugins,
 } from "../deploy/plugin-problems.js";
-import { ProgressThrottle } from "../deploy/progress-throttle.js";
 import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
-import { stagingSiteUrl } from "../deploy/staging-domain.js";
-import { lockStagingPublication } from "../deploy/staging-publication-lock.js";
+import {
+  lockStagingPublication,
+  StagingPublicationBusyError,
+  tryLockStagingPublication,
+} from "../deploy/staging-publication-lock.js";
 import {
   loadStaticPublisher,
   type PublishSummary,
   type StaticPublisher,
 } from "../deploy/static-publisher.js";
-import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
-import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { forgetAllBakes, rewindBakesToRun } from "../plugin-data/stale-pages.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
+import {
+  effectiveOutDir,
+  logRunTimings,
+  phaseTimingsParam,
+  productionNeedsHuman,
+  rowToTarget,
+  runStartedAt,
+  selectServedStagingPreview,
+  type TargetDbRow,
+  targetRow,
+} from "./deploy-common.js";
 import { json } from "./quality/_shared.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
-import {
-  checkProductionBuildGate,
-  type ProductionOverride,
-  recordProductionOverride,
-} from "./quality/production-gate.js";
-import { computeRenderFingerprint } from "./quality/render-fingerprint.js";
-import { setStagingOrigin } from "./staging_access.js";
 
-/**
- * The directory a target's builds are written to. v0.2.78 — on Cloud Run
- * (gcp / aws / azure) the row's out_dir resolves to a read-only path, so
- * builds go to `/tmp/caelo-builds/<env>` (ephemeral: publishStaging uploads
- * them right away); self-hosted keeps the row's out_dir.
- */
-export function effectiveOutDir(provider: string | undefined, env: string, outDir: string): string {
-  const isCloud = provider === "gcp" || provider === "aws" || provider === "azure";
-  return isCloud ? `/tmp/caelo-builds/${env}` : outDir;
-}
+export { effectiveOutDir } from "./deploy-common.js";
+export { triggerDeployOp } from "./deploy-trigger.js";
 
 /**
  * Absolute path of a run's build archive (`<outDir>/builds/<runId>`) as
@@ -135,21 +104,6 @@ export function localBuildArchiveDir(args: {
     args.runId,
   );
 }
-
-const targetRow = z.object({
-  id: z.string(),
-  name: z.string(),
-  env: z.enum(["dev", "staging", "production"]),
-  outDir: z.string(),
-  baseUrl: z.string(),
-  robotsDefault: z.enum(["index", "noindex"]),
-  isDefault: z.boolean(),
-  // v0.2.85 — per-target page emission style. 'directory' (default)
-  // emits <slug>/index.html; 'no-extension' emits bare <slug> with
-  // Content-Type: text/html for clean URLs without bucket-website
-  // redirect gymnastics.
-  pageUrlStyle: z.enum(["directory", "no-extension"]),
-});
 
 const runRow = z.object({
   id: z.string(),
@@ -173,30 +127,6 @@ const runRow = z.object({
    */
   buildKind: z.enum(["site", "plugin_data"]),
 });
-
-interface TargetDbRow {
-  id: string;
-  name: string;
-  env: "dev" | "staging" | "production";
-  out_dir: string;
-  base_url: string;
-  robots_default: "index" | "noindex";
-  is_default: boolean;
-  page_url_style: "directory" | "no-extension";
-}
-
-function rowToTarget(r: TargetDbRow): z.infer<typeof targetRow> {
-  return {
-    id: r.id,
-    name: r.name,
-    env: r.env,
-    outDir: r.out_dir,
-    baseUrl: r.base_url,
-    robotsDefault: r.robots_default,
-    isDefault: r.is_default,
-    pageUrlStyle: r.page_url_style ?? "directory",
-  };
-}
 
 interface RunDbRow {
   id: string;
@@ -239,19 +169,6 @@ function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
     progress,
     buildKind: r.build_kind,
   };
-}
-
-/** Minimum gap between two progress writes of one build (#1003). */
-const PROGRESS_INTERVAL_MS = 1000;
-
-/**
- * The system actor for a run's internal steps (deploy.begin_run,
- * deploy.update_progress), keeping the trigger's request id for log
- * correlation. Those ops are system callbacks: an AI-started Stage must
- * reach them too.
- */
-function systemContextOf(ctx: ExecutionContext): ExecutionContext {
-  return { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: ctx.requestId };
 }
 
 export const listDeployTargetsOp = defineOperation({
@@ -312,260 +229,32 @@ export const listDeployRunsOp = defineOperation({
   },
 });
 
-/**
- * Resolve the path to the static-generator CLI. We look in three places
- * in order: an explicit env override, the workspace-relative path
- * `apps/static-generator/src/cli.ts` from the cwd, and node_modules
- * resolution via `import.meta.resolve`. The cwd path is what the admin
- * process uses (it runs from apps/admin/, so we walk up); the
- * `import.meta.resolve` path is the fallback for tests that pass a
- * tmpdir as `repoRoot` (the tmpdir doesn't contain the workspace).
- */
-function resolveGeneratorCli(): string {
-  const override = process.env.CAELO_GENERATOR_CLI;
-  if (override) return override;
-  // Walk up from cwd until we find apps/static-generator/src/cli.ts.
-  // This survives `cd` into a subdir (the test runner's cwd) without
-  // requiring the test to plumb a workspace path in.
-  let dir = process.cwd();
-  for (let i = 0; i < 8; i++) {
-    const candidate = resolve(dir, "apps/static-generator/src/cli.ts");
-    if (existsSync(candidate)) return candidate;
-    const parent = resolve(dir, "..");
-    if (parent === dir) break;
-    dir = parent;
-  }
-  // Final fallback: assume the workspace is the package's own ancestor.
-  return resolve(import.meta.dirname, "../../../../apps/static-generator/src/cli.ts");
-}
-
-interface SubprocessProgress {
-  kind: "progress";
-  pagesDone: number;
-  pagesTotal: number;
-}
-/**
- * The generator's final event. Parsed (not cast) — it crosses a process
- * boundary, and its link report feeds the Stage warning (#724).
- */
-const subprocessDoneSchema = z.object({
-  kind: z.literal("done"),
-  pageCount: z.number().int(),
-  fileCount: z.number().int(),
-  durationMs: z.number(),
-  phases: z.array(phaseTimingSchema),
-  buildDir: z.string(),
-  unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
-});
-type SubprocessDone = z.infer<typeof subprocessDoneSchema>;
-
-/**
- * A run's step timings as stored in deploy_runs.phase_timings, so "why was
- * this Stage slow" has an answer per step.
- */
-function phaseTimingsParam(timer: PhaseTimer) {
-  return jsonbParam(timer.phases());
-}
-
-/**
- * The database clock now, as a run's `started_at`. Read before the run's
- * PhaseTimer starts, so `finished_at - started_at` always covers the
- * timed steps — the row itself is inserted only after preparation, and
- * the column default would start the run there (#1003).
- */
-async function runStartedAt(tx: TransactionRunner): Promise<string> {
-  const rows = (await tx.execute(sql`SELECT clock_timestamp()::text AS at`)) as unknown as {
-    at: string;
-  }[];
-  const at = rows[0]?.at;
-  if (!at) throw new Error("clock_timestamp() returned no row");
-  return at;
-}
-
-/** One log line per finished run with its step timings (Cloud Logging / docker logs). */
-function logRunTimings(
-  kind: "stage" | "build" | "publish-live",
-  runId: string,
-  timer: PhaseTimer,
-  extra: { status: "succeeded" | "failed"; pageCount?: number; fileCount?: number },
-): void {
-  console.info(
-    `[deploy] ${kind} ${extra.status} in ${timer.totalMs()} ms`,
-    JSON.stringify({ runId, ...extra, totalMs: timer.totalMs(), phases: timer.phases() }),
-  );
-}
-interface SubprocessError {
-  kind: "error";
-  message: string;
-}
-/** #605 — the generator asks the admin's plugin host (build-services.ts). */
-interface SubprocessPluginCall {
-  kind: "plugin-call";
-  id: number;
-  method: unknown;
-  args: unknown;
-}
-type SubprocessEvent = SubprocessProgress | SubprocessDone | SubprocessError | SubprocessPluginCall;
-
-/**
- * Spawn the generator CLI and stream its JSON-line stdout. Each progress
- * line updates the deploy_runs row in its own tx so the Ops dashboard
- * can poll while the build runs. Returns the final done/error event.
- */
-async function runGenerator(
-  registry: OperationRegistry,
-  adapter: DatabaseAdapter,
-  ctx: ExecutionContext,
-  args: {
-    cliPath: string;
-    runId: string;
-    target: DeployTarget;
-    repoRoot: string;
-    /** P13 ideas-pass — incremental deploy. When non-empty the
-     *  static-generator filters its page query to these ids only,
-     *  re-baking just the changed pages. */
-    changedPageIds?: ReadonlyArray<string>;
-    /** Epic #1107 — changed shared lists / list types: the generator adds
-     *  every page whose render dependencies they reach. */
-    changedListIds?: ReadonlyArray<string>;
-    changedListTypeIds?: ReadonlyArray<string>;
-    /** #650 — render this origin instead of the stored site URL. */
-    siteBaseUrlOverride?: string;
-    /** Epic #1107 — first-publication time of never-live pages (see generateSite). */
-    publishAt: string;
-    /**
-     * false: leave `<outDir>/current/` alone — #650 Publish live's rebuild,
-     * and #1003 every build on a publisher that does not serve `current/`.
-     */
-    syncCurrent?: boolean;
+export const getDeployRunOp = defineOperation({
+  name: "deploy.get_run",
+  // CLAUDE.md §11: read-only. #1211 — a Stage that outlasts the caller's
+  // wait keeps building; the AI reads its run to learn how far it got.
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ runId: z.string().uuid() }).strict(),
+  output: z.object({ run: runRow.nullable() }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT r.id::text AS id,
+             r.target_id::text AS target_id,
+             t.name AS target_name,
+             t.env AS env,
+             r.actor_id::text AS actor_id,
+             r.status,
+             r.started_at, r.finished_at,
+             r.page_count, r.file_count, r.error_message,
+             r.build_id, r.progress, r.build_kind
+      FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+      WHERE r.id = ${input.runId}::uuid
+    `)) as unknown as RunDbRow[];
+    const row = rows[0];
+    return ok({ run: row ? rowToRun(row) : null });
   },
-): Promise<{ ok: true; result: SubprocessDone } | { ok: false; message: string; stderr: string }> {
-  // The generator gets the composed URLs on stdin, never on argv or env.
-  const adminUrl = databaseUrlFromEnv(["ADMIN_DATABASE_URL"]);
-  const publicUrl = databaseUrlFromEnv(["PUBLIC_ADMIN_DATABASE_URL", "PUBLIC_DATABASE_URL"]);
-  if (!adminUrl || !publicUrl) {
-    return { ok: false, message: "ADMIN_DATABASE_URL / PUBLIC_DATABASE_URL not set", stderr: "" };
-  }
-  // #1003 — progress lands on the run row deploy.begin_run committed, at
-  // most once per interval (it was one transaction per page), as the system
-  // actor: update_progress is an internal callback whoever started the run.
-  const progress = new ProgressThrottle<{ pagesDone: number; pagesTotal: number }>(
-    (p) =>
-      execute(registry, adapter, systemContextOf(ctx), "deploy.update_progress", {
-        runId: args.runId,
-        ...p,
-      }),
-    PROGRESS_INTERVAL_MS,
-  );
-  return await new Promise((respond) => {
-    // The last progress is written before the caller finishes the run, so
-    // no progress write can land after the run's final update.
-    const finish = (r: Parameters<typeof respond>[0]): void => {
-      void progress.flush().then(() => respond(r));
-    };
-    const child = spawn("bun", ["run", args.cliPath], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env },
-    });
-    const stderrChunks: Buffer[] = [];
-    let stdoutBuf = "";
-    let finalEvent: SubprocessDone | SubprocessError | null = null;
-
-    // The config is the first line; stdin then stays open for the answers
-    // to the generator's plugin calls (#605) until the child exits.
-    child.stdin.write(
-      `${JSON.stringify({
-        adminDatabaseUrl: adminUrl,
-        publicDatabaseUrl: publicUrl,
-        target: args.target,
-        runId: args.runId,
-        repoRoot: args.repoRoot,
-        publishAt: args.publishAt,
-        ...(args.changedPageIds && args.changedPageIds.length > 0
-          ? { changedPageIds: [...args.changedPageIds] }
-          : {}),
-        ...(args.changedListIds && args.changedListIds.length > 0
-          ? { changedListIds: [...args.changedListIds] }
-          : {}),
-        ...(args.changedListTypeIds && args.changedListTypeIds.length > 0
-          ? { changedListTypeIds: [...args.changedListTypeIds] }
-          : {}),
-        ...(args.siteBaseUrlOverride ? { siteBaseUrlOverride: args.siteBaseUrlOverride } : {}),
-        ...(args.syncCurrent === false ? { syncCurrent: false } : {}),
-      })}\n`,
-    );
-    // Answer one plugin call with THIS process's plugin host — the same
-    // resolvers the editor preview uses. A failure is handed back to the
-    // generator, which fails the build with it.
-    const answerPluginCall = async (call: SubprocessPluginCall): Promise<void> => {
-      let reply: Record<string, unknown>;
-      try {
-        const value = await serveBuildPluginCall(call.method, call.args);
-        reply = { kind: "plugin-result", id: call.id, ok: true, value };
-      } catch (e) {
-        reply = {
-          kind: "plugin-result",
-          id: call.id,
-          ok: false,
-          message: e instanceof Error ? e.message : String(e),
-        };
-      }
-      if (!child.stdin.destroyed) child.stdin.write(`${encodeBuildPayload(reply)}\n`);
-    };
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdoutBuf += chunk.toString("utf8");
-      let nl = stdoutBuf.indexOf("\n");
-      while (nl !== -1) {
-        const line = stdoutBuf.slice(0, nl).trim();
-        stdoutBuf = stdoutBuf.slice(nl + 1);
-        nl = stdoutBuf.indexOf("\n");
-        if (line.length === 0) continue;
-        let ev: SubprocessEvent;
-        try {
-          ev = decodeBuildPayload(line) as SubprocessEvent;
-        } catch {
-          continue;
-        }
-        if (ev.kind === "plugin-call") {
-          void answerPluginCall(ev);
-        } else if (ev.kind === "progress") {
-          progress.offer({ pagesDone: ev.pagesDone, pagesTotal: ev.pagesTotal });
-        } else if (ev.kind === "done") {
-          const done = subprocessDoneSchema.safeParse(ev);
-          finalEvent = done.success
-            ? done.data
-            : {
-                kind: "error",
-                message: `generator reported a malformed done event: ${done.error.message}`,
-              };
-        } else if (ev.kind === "error") {
-          finalEvent = ev;
-        }
-      }
-    });
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-
-    child.on("error", (e) => {
-      finish({ ok: false, message: e.message, stderr: Buffer.concat(stderrChunks).toString() });
-    });
-    child.on("close", (code) => {
-      if (!child.stdin.destroyed) child.stdin.end();
-      const stderr = Buffer.concat(stderrChunks).toString();
-      if (finalEvent && finalEvent.kind === "done") {
-        finish({ ok: true, result: finalEvent });
-      } else if (finalEvent && finalEvent.kind === "error") {
-        finish({ ok: false, message: finalEvent.message, stderr });
-      } else {
-        finish({
-          ok: false,
-          message: `generator exited ${code} without a done event`,
-          stderr,
-        });
-      }
-    });
-  });
-}
+});
 
 export const updateDeployProgressOp = defineOperation({
   name: "deploy.update_progress",
@@ -591,546 +280,6 @@ export const updateDeployProgressOp = defineOperation({
 });
 
 /**
- * #1154 — the one path to live: a production build or publish runs only for
- * a human (an Owner-initiated production build, a Publish live, or an
- * approved proposal applied as its approver). There is no automatic
- * redeploy; a `system` caller asking for production is a code path that
- * must not exist, so it is refused before anything is built.
- *
- * @returns the refusal for a non-human production request, or null.
- */
-function productionNeedsHuman(
-  ctx: ExecutionContext,
-  targetEnv: string,
-  operation: "deploy.trigger" | "deploy.promote",
-): { kind: "HandlerError"; operation: string; message: string } | null {
-  if (targetEnv !== "production" || ctx.actorKind === "human") return null;
-  return {
-    kind: "HandlerError",
-    operation,
-    message:
-      "production is built only by a human Publish live (or an Owner-initiated production build) — nothing publishes automatically. Stage the change and let the Owner click Publish live.",
-  };
-}
-
-export const triggerDeployOp = defineOperation({
-  name: "deploy.trigger",
-  actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: z.object({
-    targetName: z.string().optional(),
-    repoRoot: z.string().optional(),
-    /** P13 ideas-pass — when supplied, the static-generator
-     *  re-bakes only these pages. Other pages keep their cached HTML.
-     *  Omitted = full-site rebuild. */
-    changedPageIds: z.array(z.string().uuid()).optional(),
-    /**
-     * Epic #1107 — shared lists and list types changed since the last
-     * build. With them (or changedPageIds) the build is incremental: the
-     * generator rebuilds the changed pages plus every page whose recorded
-     * render dependencies the change reaches (`render-deps.json`).
-     */
-    changedListIds: z.array(z.string().uuid()).optional(),
-    changedListTypeIds: z.array(z.string().uuid()).optional(),
-    /**
-     * #553 — a human's explicit decision to build PRODUCTION although the
-     * staged build's quality check failed (no result). Recorded on the
-     * audit run; ignored for anything but a failed check.
-     */
-    publishAnyway: z
-      .object({ reason: z.string().trim().min(3).max(500) })
-      .strict()
-      .optional(),
-  }),
-  output: z.object({
-    runId: z.string(),
-    targetName: z.string(),
-    pageCount: z.number().int(),
-    fileCount: z.number().int(),
-    durationMs: z.number().int(),
-    /** Where the run spent its time, step by step (also in deploy_runs.phase_timings). */
-    phases: z.array(phaseTimingSchema),
-    buildId: z.string(),
-    /**
-     * Where the staged build can be looked at. #650 — on a provider whose
-     * staging has its own protected host, that host
-     * (`https://staging.<domain>/`); otherwise the provider's preview URL
-     * when it has one, undefined where the form action builds the URL.
-     */
-    previewUrl: z.string().optional(),
-    /**
-     * #678 — main's draft pages, which this build does NOT contain (only
-     * status='published' pages are built). Reported so a "successful"
-     * build never hides missing pages.
-     */
-    draftPages: draftPagesSummary,
-    /**
-     * #724 — pages this build links to that it does not contain (drafts).
-     * A Stage warning; Publish live blocks on them (rollout F).
-     */
-    unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
-    /**
-     * #1008 — active plugins that were not running when this build ran,
-     * so it lacks their output. A Stage warning; such a Stage is never
-     * published, and a production build refuses instead.
-     */
-    pluginProblems: z.array(deployPluginProblem),
-  }),
-  handler: async (ctx, input, tx) => {
-    const startedAt = await runStartedAt(tx);
-    const timer = new PhaseTimer();
-    const targetRows = (await tx.execute(
-      input.targetName
-        ? sql`
-            SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default, page_url_style
-            FROM deploy_targets WHERE name = ${input.targetName} LIMIT 1`
-        : sql`
-            SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default, page_url_style
-            FROM deploy_targets WHERE is_default LIMIT 1`,
-    )) as unknown as TargetDbRow[];
-    const target = targetRows[0];
-    if (!target) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.trigger",
-        message: input.targetName
-          ? `target not found: ${input.targetName}`
-          : "no default target configured",
-      });
-    }
-    // Production reaches visitors, so it ships only through the §11.A
-    // gate (deploy.propose_promote → Owner Approve), never through a
-    // direct AI trigger. Dev/staging rebuilds stay AI-callable — staging
-    // is noindex and exists precisely to be rebuilt and inspected.
-    if (ctx.actorKind === "ai" && target.env === "production") {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.trigger",
-        message:
-          `target "${target.name}" is a production target — the AI cannot deploy it directly. ` +
-          "Rebuild staging with deploy_staging, then call propose_deploy_promote (fromTarget = the staging target) so the Owner approves the go-live.",
-      });
-    }
-    // #1154 — nothing reaches production without a human: a production
-    // build is an Owner-initiated build or a human Publish live, never a
-    // background job.
-    const automatic = productionNeedsHuman(ctx, target.env, "deploy.trigger");
-    if (automatic) return err(automatic);
-    // The active theme's raster favicon ships as its 64 px rendition
-    // (ops/media_favicon.ts). One bound before that rule has none: create
-    // it from the stored original now, so an upgraded install needs no
-    // manual step. Its own committed transaction — the generator reads
-    // through a separate connection and would not see a row written in
-    // this one. A failure (original missing / undecodable) fails the build
-    // loudly, recorded as a failed run like the other pre-build stops.
-    const favBridge = getDeployBridge();
-    if (favBridge) {
-      const fav = await execute(
-        favBridge.registry,
-        favBridge.adapter,
-        ctx,
-        "themes.ensure_favicon_rendition",
-        {},
-      );
-      if (!fav.ok) {
-        const message =
-          fav.error.kind === "HandlerError" ? fav.error.message : JSON.stringify(fav.error);
-        await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
-                  ${`Blocked, favicon: ${message}`})
-        `);
-        return err({ kind: "HandlerError", operation: "deploy.trigger", message });
-      }
-    }
-    // #553 — a production build publishes what is staged, so it passes the
-    // same quality gate as Publish live (production-gate.ts). A refusal is
-    // recorded as a failed run, so Ops and the notification bell show it.
-    let override: ProductionOverride | null = null;
-    // CLAUDE.md §2 SEO fill-once — no page is built for staging or
-    // production without a meta description (deploy/missing-seo.ts). Before
-    // the quality gate: a publish-anyway override is about a failed
-    // Lighthouse run, never about missing SEO. Recorded as a failed run so
-    // Ops and the bell show it. Dev builds stay unchecked — they are local
-    // previews, never served to visitors.
-    if (target.env === "staging" || target.env === "production") {
-      const missingSeo = describeMissingMetaDescriptions(await pagesMissingMetaDescription(tx));
-      if (missingSeo) {
-        await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
-                  ${`Blocked, missing SEO: ${missingSeo}`})
-        `);
-        return err({ kind: "HandlerError", operation: "deploy.trigger", message: missingSeo });
-      }
-    }
-    // #1008 — a site built without an active plugin lacks what it adds. A
-    // Stage records and reports it; production refuses (no override: the
-    // fix is to get the plugin running, not to ship without it).
-    const pluginProblems =
-      target.env === "staging" || target.env === "production" ? await activePluginProblems(tx) : [];
-    if (target.env === "production" && pluginProblems.length > 0) {
-      const message = describePluginProblems(pluginProblems);
-      await tx.execute(sql`
-        INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message, plugin_problems)
-        VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
-                ${`Blocked, plugins not running: ${message}`}, ${jsonbParam(pluginProblems)})
-      `);
-      return err({ kind: "HandlerError", operation: "deploy.trigger", message });
-    }
-    if (target.env === "production") {
-      const gate = await checkProductionBuildGate(tx, ctx, input.publishAnyway);
-      if (gate.ok) override = gate.override;
-      if (!gate.ok) {
-        await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
-                  ${`Blocked by the quality gate: ${gate.message}`})
-        `);
-        return err({ kind: "HandlerError", operation: "deploy.trigger", message: gate.message });
-      }
-    }
-
-    // #650 — on a provider whose staging has its own host, a staging build
-    // renders that host into every absolute URL (canonical, sitemap,
-    // og:url, hreflang, robots) so staging.<domain> is self-consistent for
-    // crawlers. Resolved before the run row exists: a missing host is a
-    // provisioning error, not a build failure.
-    const provider = process.env.CAELO_PROVIDER;
-    let stagingOrigin: string | null = null;
-    if (target.env === "staging") {
-      try {
-        stagingOrigin = await stagingSiteUrl(tx, provider);
-      } catch (e) {
-        return err({
-          kind: "HandlerError",
-          operation: "deploy.trigger",
-          message: e instanceof Error ? e.message : String(e),
-        });
-      }
-    }
-
-    // #553 — a staging build records main's render fingerprint as it
-    // starts, so a later direct production build can tell whether main
-    // still renders what this Stage's quality check saw (taken before the
-    // generator runs: a change landing mid-build counts as unchecked).
-    const fingerprint = target.env === "staging" ? await computeRenderFingerprint(tx) : null;
-
-    const runKind = target.env === "staging" ? "stage" : "build";
-    // The trigger op needs a registry+adapter pair to commit the run row and
-    // land progress on it from outside this transaction. The host process
-    // sets the bridge at startup; tests do the same.
-    const bridge = getDeployBridge();
-    if (!bridge) {
-      // Preparation is done and the generator could not start: the failed
-      // run records both steps like every other failure after start.
-      timer.lap("prepare");
-      timer.lap("generator");
-      const failedRows = (await tx.execute(sql`
-        INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at,
-                                 error_message, phase_timings)
-        VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz,
-                clock_timestamp(), 'deploy-bridge not configured', ${phaseTimingsParam(timer)})
-        RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
-      const failedRunId = failedRows[0]?.id;
-      if (!failedRunId) throw new Error("INSERT INTO deploy_runs returned no row");
-      logRunTimings(runKind, failedRunId, timer, { status: "failed" });
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.trigger",
-        message: "deploy-bridge not configured",
-      });
-    }
-    // #1003 — the run row is committed now, in its own transaction, so the
-    // deployments page shows the running build and its progress lands; this
-    // transaction finishes it. The lock, held until this transaction ends,
-    // is what tells a later run that this one is still building.
-    const runId = randomUUID();
-    await holdDeployRun(tx, runId);
-    const begun = await execute(
-      bridge.registry,
-      bridge.adapter,
-      systemContextOf(ctx),
-      "deploy.begin_run",
-      {
-        runId,
-        targetId: target.id,
-        actorId: ctx.actorId,
-        startedAt,
-        renderFingerprint: fingerprint,
-        // #834 — the Caelo version rendering this build: Publish live's
-        // parity guard names an upgrade between Stage and Publish live.
-        caeloVersion: CAELO_VERSION,
-        // #1008 — which active plugins did not run for this build; Publish
-        // live refuses a Stage that has any (null: a dev build, not checked).
-        pluginProblems: target.env === "dev" ? null : pluginProblems,
-      },
-    );
-    if (!begun.ok) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.trigger",
-        message: `could not start the deploy run: ${describeError(begun.error)}`,
-      });
-    }
-    timer.lap("prepare");
-
-    const repoRoot = resolveOutputRoot(input.repoRoot);
-    const cliPath = resolveGeneratorCli();
-    // v0.2.78 — on Cloud Run the row's out_dir (e.g. 'output/staging')
-    // resolves to a path the container can't write (read-only FS).
-    // Override to /tmp/caelo-builds/<env> which is always writable.
-    // The build is ephemeral — publishStaging uploads to durable
-    // storage immediately after, and the local copy is irrelevant
-    // by the time the next request comes in. Self-hosted keeps the
-    // row's configured out_dir.
-    const effectiveTarget: DeployTarget = {
-      ...rowToTarget(target),
-      outDir: effectiveOutDir(provider, target.env, target.out_dir),
-    };
-    // Loaded before the build: the publisher decides whether the build is
-    // mirrored into `current/` (#1003 — only a serving layer that reads it
-    // needs the copy, which was the largest step of a Stage).
-    let publisher: StaticPublisher;
-    try {
-      publisher = await loadStaticPublisher(provider);
-    } catch (e) {
-      const message = `publish failed: ${e instanceof Error ? e.message : String(e)}`;
-      await tx.execute(sql`
-        UPDATE deploy_runs
-        SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
-            phase_timings = ${phaseTimingsParam(timer)}
-        WHERE id = ${runId}::uuid
-      `);
-      logRunTimings(runKind, runId, timer, { status: "failed" });
-      return err({ kind: "HandlerError", operation: "deploy.trigger", message });
-    }
-    const subprocess = await runGenerator(bridge.registry, bridge.adapter, ctx, {
-      cliPath,
-      runId,
-      target: effectiveTarget,
-      repoRoot,
-      publishAt: await deployRunStartedAt(tx, runId),
-      changedPageIds: input.changedPageIds,
-      changedListIds: input.changedListIds,
-      changedListTypeIds: input.changedListTypeIds,
-      ...(stagingOrigin ? { siteBaseUrlOverride: stagingOrigin } : {}),
-      syncCurrent: publisher.servesCurrentDir,
-    });
-    if (subprocess.ok) timer.include("generator", subprocess.result.phases);
-    timer.lap("generator");
-    if (!subprocess.ok) {
-      const tail = subprocess.stderr ? `\n${subprocess.stderr.slice(-500)}` : "";
-      await tx.execute(sql`
-        UPDATE deploy_runs
-        SET status = 'failed', finished_at = clock_timestamp(),
-            error_message = ${subprocess.message + tail},
-            phase_timings = ${phaseTimingsParam(timer)}
-        WHERE id = ${runId}::uuid
-      `);
-      logRunTimings(runKind, runId, timer, { status: "failed" });
-      // v0.2.77 — include the stderr tail in the HandlerError message
-      // so SvelteKit form actions surfacing the error to the operator
-      // (e.g. /edit?/stage's toast) carry the real reason. Without
-      // the tail, the operator sees "generator failed: generator
-      // exited 1 without a done event" and has to dig into Ops →
-      // Deployments → click the failed run for stderr.
-      const stderrTail = subprocess.stderr ? ` — ${subprocess.stderr.slice(-300).trim()}` : "";
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.trigger",
-        message: `generator failed: ${subprocess.message}${stderrTail}`,
-      });
-    }
-
-    // v0.2.78 — hand off to the per-provider StaticPublisher.
-    // Self-hosted is a no-op (the generator already synced into
-    // current/); cloud uploads to the staging bucket. Failures here
-    // mark the run as failed and surface to the form-action toast
-    // via the same describeError path as before.
-    let publishSummary: Awaited<
-      ReturnType<Awaited<ReturnType<typeof loadStaticPublisher>>["publishStaging"]>
-    >;
-    try {
-      // #650 — publishing a preview, recording it as the staging origin and
-      // pruning the others is one ordered step per Stage: a concurrent Stage
-      // must not prune this channel between its creation and our record.
-      if (stagingOrigin) {
-        await lockStagingPublication(tx);
-        timer.lap("lock-wait");
-      }
-      const { phases: publishPhases, ...summary } = await publisher.publishStaging({
-        buildDir: subprocess.result.buildDir,
-        runId,
-        target: effectiveTarget,
-      });
-      publishSummary = summary;
-      timer.include("publish", publishPhases ?? []);
-      timer.lap("publish");
-    } catch (e) {
-      timer.lap("publish");
-      const message = e instanceof Error ? e.message : String(e);
-      await tx.execute(sql`
-        UPDATE deploy_runs
-        SET status = 'failed', finished_at = clock_timestamp(),
-            error_message = ${`publish failed: ${message}`},
-            phase_timings = ${phaseTimingsParam(timer)}
-        WHERE id = ${runId}::uuid
-      `);
-      logRunTimings(runKind, runId, timer, { status: "failed" });
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.trigger",
-        message: `publish failed: ${message}`,
-      });
-    }
-
-    // Migration run #9 R10 (issue #262) — a staging deploy only counts as
-    // succeeded when the staging serving layer actually serves THIS build.
-    // Run #9: the admin ran from a worktree copy, so builds landed outside
-    // the directory the dev-compose Caddy mounts; every deploy "succeeded"
-    // while :8081 kept serving a build from months earlier. Verify through
-    // the same URL the operator's Preview link uses. Self-hosted staging
-    // only: cloud publishers upload to provider storage and surface their
-    // own previewUrl, and non-staging envs are out of this check's scope
-    // (production ships via deploy.promote). Test harnesses without a
-    // serving layer opt out explicitly via CAELO_SKIP_STAGING_SERVE_CHECK.
-    const isSelfHosted = !provider || provider === "self-hosted";
-    if (
-      isSelfHosted &&
-      target.env === "staging" &&
-      process.env.CAELO_SKIP_STAGING_SERVE_CHECK !== "1"
-    ) {
-      const stagingBaseUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
-      const check = await verifyStagedBuildServed({ stagingBaseUrl, runId });
-      timer.lap("verify-served");
-      if (!check.served) {
-        const outputRoot = resolve(repoRoot, effectiveTarget.outDir);
-        const message =
-          `staging build verification failed: ${check.reason}. ` +
-          `This build was written to ${outputRoot} — if the serving layer (e.g. the dev-compose caddy-staging container) mounts a different directory, ` +
-          "set CAELO_OUTPUT_ROOT to the directory the serving layer mounts (dev compose: <checkout>/apps/admin) and re-run the Stage.";
-        await tx.execute(sql`
-          UPDATE deploy_runs
-          SET status = 'failed', finished_at = clock_timestamp(),
-              error_message = ${message},
-              phase_timings = ${phaseTimingsParam(timer)}
-          WHERE id = ${runId}::uuid
-        `);
-        logRunTimings(runKind, runId, timer, { status: "failed" });
-        return err({
-          kind: "HandlerError",
-          operation: "deploy.trigger",
-          message,
-        });
-      }
-    }
-
-    // #650 — what Publish live's parity guard compares against: this
-    // build's content with the staging host swapped back to the live one.
-    // Hashed now, while the build directory is on this instance.
-    let parityManifest: Record<string, string> | null = null;
-    if (stagingOrigin) {
-      try {
-        const { siteBaseUrl } = await readSeoSettings(tx);
-        parityManifest = await buildManifestOf(
-          subprocess.result.buildDir,
-          hostNormaliser(stagingOrigin, siteBaseUrl),
-        );
-      } catch (e) {
-        const message = `staging build ${runId} could not be fingerprinted for Publish live's parity check: ${e instanceof Error ? e.message : String(e)}`;
-        timer.lap("parity");
-        await tx.execute(sql`
-          UPDATE deploy_runs
-          SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
-              phase_timings = ${phaseTimingsParam(timer)}
-          WHERE id = ${runId}::uuid
-        `);
-        logRunTimings(runKind, runId, timer, { status: "failed" });
-        return err({ kind: "HandlerError", operation: "deploy.trigger", message });
-      }
-      timer.lap("parity");
-
-      // #650 / #908 — staging.<domain> now serves this build: the one place
-      // its preview becomes the served one (kept alive, every other preview
-      // retired) and is recorded as the origin the gateway proxies to.
-      try {
-        await selectServedStagingPreview(publisher, runId);
-      } catch (e) {
-        const message = `staging build ${runId} was published but could not be made the build staging serves: ${e instanceof Error ? e.message : String(e)}. Staging still serves the previous build; Stage again.`;
-        timer.lap("select-preview");
-        await tx.execute(sql`
-          UPDATE deploy_runs
-          SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
-              phase_timings = ${phaseTimingsParam(timer)}
-          WHERE id = ${runId}::uuid
-        `);
-        logRunTimings(runKind, runId, timer, { status: "failed" });
-        return err({ kind: "HandlerError", operation: "deploy.trigger", message });
-      }
-      await setStagingOrigin(tx, {
-        originUrl: publishSummary.previewUrl ?? null,
-        runId,
-      });
-      timer.lap("select-preview");
-    }
-
-    // The publish-anyway decision is recorded only now that the build it
-    // allowed is live; a failed build leaves the quality gate closed.
-    if (override) await recordProductionOverride(tx, ctx, override);
-
-    // Epic #1107 — a production build is a Publish live: pages it ships
-    // for the first time get their first_published_at.
-    if (target.env === "production") await stampFirstPublished(tx, runId);
-
-    timer.lap("finish");
-    await tx.execute(sql`
-      UPDATE deploy_runs
-      SET status = 'succeeded', finished_at = clock_timestamp(),
-          phase_timings = ${phaseTimingsParam(timer)},
-          page_count = ${subprocess.result.pageCount},
-          file_count = ${subprocess.result.fileCount},
-          build_id = ${runId},
-          publish_summary = ${jsonbParam(publishSummary)},
-          site_url = ${stagingOrigin},
-          parity_manifest = ${parityManifest === null ? null : jsonbParam(parityManifest)}
-      WHERE id = ${runId}::uuid
-    `);
-    // #1157 — the build read the redirects table when it started; a
-    // redirect saved since then was pushed to what the target served before
-    // this build. Put the table as saved now on the build it serves now.
-    await syncRedirectsInTx(tx, ctx, {
-      trigger: "build",
-      targetIds: [target.id],
-      outputRoot: repoRoot,
-    });
-    logRunTimings(runKind, runId, timer, {
-      status: "succeeded",
-      pageCount: subprocess.result.pageCount,
-      fileCount: subprocess.result.fileCount,
-    });
-
-    // #650 — where staging has its own host, that host is the only staging
-    // URL anyone is shown; the provider's preview origin stays internal.
-    const previewUrl = stagingOrigin ? `${stagingOrigin}/` : publishSummary.previewUrl;
-    return ok({
-      runId,
-      targetName: target.name,
-      pageCount: subprocess.result.pageCount,
-      fileCount: subprocess.result.fileCount,
-      durationMs: subprocess.result.durationMs,
-      phases: timer.phases(),
-      buildId: runId,
-      ...(previewUrl ? { previewUrl } : {}),
-      draftPages: await mainDraftPages(tx),
-      unpublishedLinkTargets: subprocess.result.unpublishedLinkTargets,
-      pluginProblems,
-    });
-  },
-});
-
-/**
  * P6.2 promote ("Publish live") — ship the source target's
  * currently-active build to the destination through the provider's
  * StaticPublisher. Promote intentionally ships staging's exact build to
@@ -1152,6 +301,9 @@ export const triggerDeployOp = defineOperation({
  * with the host swapped back (build-parity.ts). Anything else that
  * differs blocks the publish and names the files.
  */
+// FIXME(issue #1225): Publish live still rebuilds and uploads inside this
+// one transaction (and takes nested checkouts for begin_run / progress);
+// it moves to the step-wise shape deploy.trigger has (#1211).
 export const promoteDeployOp = defineOperation({
   name: "deploy.promote",
   // Why human-only: Ops-level decision per CMS_REQUIREMENTS §6 (staging → production gate).
@@ -1308,7 +460,8 @@ export const promoteDeployOp = defineOperation({
       await lockLiveReleases(tx);
       // #650 — and no Stage may publish or prune previews until this
       // publish has decided what staging serves next (lock order: live
-      // release first, see staging-publication-lock.ts).
+      // release first, see staging-publication-lock.ts). A Stage that is
+      // publishing right now finishes first (#1211: it holds the lease).
       if (fromRow?.site_url) await lockStagingPublication(tx);
       timer.lap("lock-wait");
       const provider = process.env.CAELO_PROVIDER;
@@ -1406,7 +559,10 @@ export const promoteDeployOp = defineOperation({
         operation: "deploy.promote",
         // The parity guard's refusal already says what happened and what to
         // do next; anything else is an unexpected publish failure.
-        message: e instanceof ParityRefusalError ? message : `promotion failed: ${message}`,
+        message:
+          e instanceof ParityRefusalError || e instanceof StagingPublicationBusyError
+            ? message
+            : `promotion failed: ${message}`,
       });
     }
   },
@@ -1481,6 +637,8 @@ async function rebuildAndPublishLive(
     publishAt: await deployRunStartedAt(tx, args.stagingRunId),
     // Nothing may serve this build before the parity guard passed.
     syncCurrent: false,
+    // #1211 — an uploading publisher keeps no builds in the container.
+    retainBuilds: retainedBuildsFor(args.publisher),
   });
   if (built.ok) args.timer.include("generator", built.result.phases);
   args.timer.lap("generator");
@@ -1488,24 +646,32 @@ async function rebuildAndPublishLive(
     const tail = built.stderr ? ` — ${built.stderr.slice(-300).trim()}` : "";
     throw new Error(`the live rebuild failed: ${built.message}${tail}`);
   }
-  const diff = compareBuildManifests(stagedManifest, await buildManifestOf(built.result.buildDir));
-  const refusal = parityRefusal(diff, {
-    stagingRunId: args.stagingRunId,
-    stagedCaeloVersion,
-    runningCaeloVersion: CAELO_VERSION,
-  });
-  args.timer.lap("parity");
-  if (refusal) throw new ParityRefusalError(refusal);
+  try {
+    const diff = compareBuildManifests(
+      stagedManifest,
+      await buildManifestOf(built.result.buildDir),
+    );
+    const refusal = parityRefusal(diff, {
+      stagingRunId: args.stagingRunId,
+      stagedCaeloVersion,
+      runningCaeloVersion: CAELO_VERSION,
+    });
+    args.timer.lap("parity");
+    if (refusal) throw new ParityRefusalError(refusal);
 
-  const summary = await publishLiveBuild({
-    buildDir: built.result.buildDir,
-    runId: args.toRunId,
-    target,
-    sourceRunId: args.stagingRunId,
-  });
-  args.timer.include("publish", summary.phases ?? []);
-  args.timer.lap("publish");
-  return { summary, pageCount: built.result.pageCount, fileCount: built.result.fileCount };
+    const summary = await publishLiveBuild({
+      buildDir: built.result.buildDir,
+      runId: args.toRunId,
+      target,
+      sourceRunId: args.stagingRunId,
+    });
+    args.timer.include("publish", summary.phases ?? []);
+    args.timer.lap("publish");
+    return { summary, pageCount: built.result.pageCount, fileCount: built.result.fileCount };
+  } finally {
+    // Uploaded (or refused): the provider holds what goes live, not /tmp.
+    await removeUploadedBuild(args.publisher, built.result.buildDir);
+  }
 }
 
 /**
@@ -1520,36 +686,16 @@ async function servedStagingRun(tx: TransactionRunner): Promise<string | null> {
 }
 
 /**
- * #650 / #908 — make `servedRunId`'s public preview the one staging serves
- * (null: none) through the publisher, which keeps it alive and retires the
- * rest. Throws when the served preview cannot be kept alive: the caller
- * then neither records nor releases anything. A preview that could not be
- * retired still expires with its restored TTL and is retried by the next
- * selection, so that is logged loudly instead of failing the operation.
- */
-async function selectServedStagingPreview(
-  publisher: StaticPublisher,
-  servedRunId: string | null,
-): Promise<void> {
-  if (!publisher.selectStagingPreview) return;
-  const { notRetired } = await publisher.selectStagingPreview({ servedRunId });
-  if (notRetired.length > 0) {
-    console.error(
-      "[deploy] could not delete superseded staging previews; they stay publicly reachable until their TTL ends or the next Stage or Publish live retires them",
-      { servedRunId, notRetired },
-    );
-  }
-}
-
-/**
  * #969 — keep the preview staging serves alive between Stages. A provider
  * whose served preview has a finite lifetime (Firebase Hosting: preview
  * channels live at most 30 days and cannot be made permanent) extends it
  * again; Stage and Publish live do the same through selectStagingPreview,
  * this covers the idle stretch in between. Runs under the staging
- * publication lock, so it refreshes exactly the preview a concurrent Stage
- * or Publish live leaves served. A served preview that is already gone
- * fails loudly (Stage again) — never a silent no-op.
+ * publication lock, so it refreshes exactly the preview a concurrent
+ * Publish live leaves served. While a Stage holds the lease (#1211) the
+ * tick is skipped: that Stage selects — and so refreshes — the preview
+ * staging serves next itself. A served preview that is already gone fails
+ * loudly (Stage again) — never a silent no-op.
  */
 export const refreshStagingPreviewOp = defineOperation({
   name: "deploy.refresh_staging_preview",
@@ -1566,7 +712,9 @@ export const refreshStagingPreviewOp = defineOperation({
   handler: async (_ctx, _input, tx) => {
     const publisher = await loadStaticPublisher(process.env.CAELO_PROVIDER);
     if (!publisher.refreshStagingPreview) return ok({ servedRunId: null, expiresAt: null });
-    await lockStagingPublication(tx);
+    if (!(await tryLockStagingPublication(tx)).locked) {
+      return ok({ servedRunId: null, expiresAt: null });
+    }
     const servedRunId = await servedStagingRun(tx);
     if (servedRunId === null) return ok({ servedRunId: null, expiresAt: null });
     try {

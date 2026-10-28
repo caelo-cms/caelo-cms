@@ -58,6 +58,18 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     by: ["deploy_staging", "stage_changes"],
     note: "pre-build step of deploy.trigger: creates the active theme favicon's 64 px rendition when missing",
   },
+  // #1211 — deploy.trigger holds no transaction while it builds: its first
+  // and last steps are ops of their own, run under the trigger's context.
+  "deploy.start_trigger": {
+    kind: "covered",
+    by: ["deploy_staging", "stage_changes"],
+    note: "first step of deploy.trigger (ops/deploy-trigger.ts): the gates and the committed run row",
+  },
+  "deploy.finish_trigger": {
+    kind: "covered",
+    by: ["deploy_staging", "stage_changes"],
+    note: "last step of deploy.trigger: records the run and the staging origin, releases the publish lease",
+  },
   "chat.finalize_stage": {
     kind: "covered",
     by: ["stage_changes"],

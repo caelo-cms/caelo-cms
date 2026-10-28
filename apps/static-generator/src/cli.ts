@@ -16,7 +16,7 @@
  *
  *   stdin, first line — the config:
  *     { adminDatabaseUrl, publicDatabaseUrl, target, runId, repoRoot, publishAt,
- *       changedPageIds?, siteBaseUrlOverride?, syncCurrent? }
+ *       changedPageIds?, siteBaseUrlOverride?, syncCurrent?, retainBuilds? }
  *   stdout — progress and the outcome:
  *     {kind:"progress", pagesDone, pagesTotal}
  *     {kind:"done", pageCount, fileCount, durationMs, buildDir}
@@ -62,6 +62,8 @@ interface CliInput {
   siteBaseUrlOverride?: string;
   /** #650 — see generateSite's `syncCurrent`. */
   syncCurrent?: boolean;
+  /** #1211 — see generateSite's `retainBuilds`. */
+  retainBuilds?: number;
 }
 
 interface PluginResult {
@@ -147,6 +149,7 @@ async function main(): Promise<void> {
           changedListTypeIds: input.changedListTypeIds,
           siteBaseUrlOverride: input.siteBaseUrlOverride,
           syncCurrent: input.syncCurrent,
+          retainBuilds: input.retainBuilds,
           onProgress: (p) => emit({ kind: "progress", ...p }),
         }),
     );

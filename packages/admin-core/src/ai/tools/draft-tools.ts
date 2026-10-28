@@ -20,6 +20,7 @@
  *                          experiment ("try a redesign") or a site migration.
  */
 
+import { randomUUID } from "node:crypto";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
@@ -30,6 +31,7 @@ import type { AffectedChat } from "../../draft.js";
 import { stageChatSessions } from "../../stage/stage-chats.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { AUDIT_WAIT_MS } from "./quality-audit-tools.js";
 
 const NO_CHAT =
   "this tool works on a chat session — open one first (Power-MCP: caelo_open_session).";
@@ -51,6 +53,56 @@ function operatorCtx(
 
 function describeAffected(list: readonly AffectedChat[]): string {
   return list.map((a) => `chat '${a.title}' (${a.labels.join(", ") || "changes"})`).join("; ");
+}
+
+/** stage_changes' answer when the Stage outlasted its wait (#1204). */
+const STILL_RUNNING = Symbol("still-running");
+
+/**
+ * How long stage_changes waits for the Stage before it answers "still
+ * running" (agents without the operator's chat): the same bound as a
+ * running audit's read, inside the MCP SDK client's default 60 s request
+ * timeout. `CAELO_STAGE_TOOL_WAIT_MS` overrides it (tests).
+ */
+export function stageToolWaitMs(): number {
+  const raw = process.env.CAELO_STAGE_TOOL_WAIT_MS;
+  if (raw === undefined) return AUDIT_WAIT_MS;
+  const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `CAELO_STAGE_TOOL_WAIT_MS must be a positive integer of milliseconds, got "${raw}"`,
+    );
+  }
+  return parsed;
+}
+
+/** The "still running" result: where the build stands and what to call next. */
+async function stillRunningResult(
+  toolCtx: Parameters<ToolDefinitionWithHandler<unknown>["handler"]>[2],
+  opCtx: ExecutionContext,
+  deployRunId: string,
+): Promise<{ ok: boolean; content: string; value: unknown }> {
+  const r = await execute(toolCtx.registry, toolCtx.adapter, opCtx, "deploy.get_run", {
+    runId: deployRunId,
+  });
+  const run = r.ok
+    ? (r.value as { run: { progress: { pagesDone: number; pagesTotal: number } | null } | null })
+        .run
+    : null;
+  const where =
+    run === null
+      ? "it is still merging the chats' changes"
+      : run.progress
+        ? `${run.progress.pagesDone} of ${run.progress.pagesTotal} pages built`
+        : "the build is starting";
+  return {
+    ok: true,
+    content:
+      `The Stage is still running on the server (build run ${deployRunId}: ${where}). It continues without this call; ` +
+      "do NOT call stage_changes again and do not tell the operator it is staged yet. " +
+      `Call get_quality_audit with deployRunId "${deployRunId}": it waits for the build, then for its quality check, and says if the build failed.`,
+    value: { deployRunId, status: "running" },
+  };
 }
 
 const stageInput = z
@@ -96,15 +148,57 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
         };
       }
     }
-    const staged = await stageChatSessions(
+    // #1204 — the operator's Stop reaches the build only while this call
+    // waits for it; a Stage left running past the wait (below) is not
+    // stopped by whatever later ends the caller's turn.
+    const deployRunId = randomUUID();
+    const stop = new AbortController();
+    const forwardStop = (): void => stop.abort(toolCtx.abortSignal?.reason);
+    if (toolCtx.abortSignal?.aborted) forwardStop();
+    toolCtx.abortSignal?.addEventListener("abort", forwardStop, { once: true });
+    const staging = stageChatSessions(
       { registry: toolCtx.registry, adapter: toolCtx.adapter },
       opCtx,
       ids,
-      // #685 — the chat's fix request says who staged: the Live Edit AI
-      // (an operator browser consumes this turn) or another agent (an
-      // external MCP agent, or a subagent, which never gets that flag).
-      { stagedBy: toolCtx.operatorBrowserAttached === true ? "live_edit_ai" : "other_agent" },
+      {
+        // #685 — the chat's fix request says who staged: the Live Edit AI
+        // (an operator browser consumes this turn) or another agent (an
+        // external MCP agent, or a subagent, which never gets that flag).
+        stagedBy: toolCtx.operatorBrowserAttached === true ? "live_edit_ai" : "other_agent",
+        deployRunId,
+        abortSignal: stop.signal,
+      },
     );
+    // #1204 — an agent without the operator's chat (Power-MCP, a subagent)
+    // gets an answer within its client's request timeout: a long Stage
+    // keeps building on the server and the call returns "still running",
+    // so the call — and the chat's turn lease it holds — never outlives
+    // the caller. The Live Edit chat waits for the Stage, as before.
+    const waitMs = toolCtx.operatorBrowserAttached === true ? null : stageToolWaitMs();
+    let waited: ReturnType<typeof setTimeout> | undefined;
+    const staged =
+      waitMs === null
+        ? await staging
+        : await Promise.race([
+            staging,
+            new Promise<typeof STILL_RUNNING>((done) => {
+              waited = setTimeout(() => done(STILL_RUNNING), waitMs);
+            }),
+          ]);
+    clearTimeout(waited);
+    toolCtx.abortSignal?.removeEventListener("abort", forwardStop);
+    if (staged === STILL_RUNNING) {
+      void staging.then((r) => {
+        if (!r.ok) {
+          console.error("[stage] a Stage that outlasted its caller's wait failed", {
+            deployRunId,
+            step: r.error.step,
+            message: r.error.message,
+          });
+        }
+      });
+      return stillRunningResult(toolCtx, opCtx, deployRunId);
+    }
     if (!staged.ok)
       return { ok: false, content: `Stage failed (${staged.error.step}): ${staged.error.message}` };
     const v = staged.value;

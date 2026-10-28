@@ -204,12 +204,12 @@ import {
 } from "./ops/content/url_migrations.js";
 import { issueCredentialOp, listCredentialHandoffsOp } from "./ops/credential_handoffs.js";
 import {
+  getDeployRunOp,
   listDeployRunsOp,
   listDeployTargetsOp,
   promoteDeployOp,
   refreshStagingPreviewOp,
   rollbackDeployOp,
-  triggerDeployOp,
   updateDeployProgressOp,
 } from "./ops/deploy.js";
 import {
@@ -219,8 +219,14 @@ import {
   proposeDeployRollbackOp,
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
-import { beginDeployRunOp } from "./ops/deploy-run-lifecycle.js";
+import {
+  acquireStagingPublicationOp,
+  beginDeployRunOp,
+  failDeployRunOp,
+  renewDeployRunLeaseOp,
+} from "./ops/deploy-run-lifecycle.js";
 import { getDeployRunOriginOp } from "./ops/deploy-run-origin.js";
+import { finishTriggerOp, startTriggerOp, triggerDeployOp } from "./ops/deploy-trigger.js";
 import { hostingStatusOp, reconnectHostingDomainOp } from "./ops/domain_hosting.js";
 import {
   executeDomainProposalOp,
@@ -998,6 +1004,13 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // #1088 — a run's build origin for inspect_built_page on Firebase.
   registry.register(getDeployRunOriginOp);
   registry.register(triggerDeployOp);
+  // #1211 — deploy.trigger's steps: it holds no transaction while it builds.
+  registry.register(startTriggerOp);
+  registry.register(finishTriggerOp);
+  registry.register(renewDeployRunLeaseOp);
+  registry.register(acquireStagingPublicationOp);
+  registry.register(failDeployRunOp);
+  registry.register(getDeployRunOp);
   registry.register(promoteDeployOp);
   registry.register(rollbackDeployOp);
   registry.register(updateDeployProgressOp);

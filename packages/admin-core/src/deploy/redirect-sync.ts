@@ -45,7 +45,7 @@ import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { lockLiveReleases } from "./live-release-lock.js";
 import { resolveOutputRoot } from "./output-root.js";
-import { lockStagingPublication } from "./staging-publication-lock.js";
+import { tryLockStagingPublication } from "./staging-publication-lock.js";
 import { loadStaticPublisher, type StaticPublisher } from "./static-publisher.js";
 
 /** Why a sync ran. */
@@ -171,7 +171,9 @@ interface TargetRow {
  * Takes the live-release lock before any production target and the
  * staging-publication lock before any staging target (that order, as every
  * publish does), so a sync never interleaves with a publish of the same
- * target: whichever runs second sees the other's result.
+ * target: whichever runs second sees the other's result. Staging targets
+ * are skipped (and stay behind) while a Stage holds the staging lease: that
+ * Stage syncs them when it finishes (#1211).
  */
 export async function syncRedirectsInTx(
   tx: TransactionRunner,
@@ -200,7 +202,13 @@ export async function syncRedirectsInTx(
   `)) as unknown as { env: string }[];
   if (envRows.length === 0) return [];
   if (envRows.some((r) => r.env === "production")) await lockLiveReleases(tx);
-  if (envRows.some((r) => r.env === "staging")) await lockStagingPublication(tx);
+  // #1211 — a Stage that is publishing staging right now holds the lease
+  // without a transaction to wait for. Its own finish step syncs the table
+  // as saved by then onto the build it serves, so staging targets are left
+  // behind here (wanted > synced: Settings shows it, the worker retries
+  // should that Stage fail) instead of waiting minutes inside this write.
+  const skipStaging =
+    envRows.some((r) => r.env === "staging") && !(await tryLockStagingPublication(tx)).locked;
 
   await tx.execute(sql`
     INSERT INTO redirect_sync_state (target_id)
@@ -242,6 +250,7 @@ export async function syncRedirectsInTx(
     (a, b) => Number(b.env === "production") - Number(a.env === "production"),
   );
   for (const t of ordered) {
+    if (skipStaging && t.env === "staging") continue;
     outcomes.push(await syncTarget(tx, ctx, args.trigger, t, table, publisher, outputRoot));
   }
   return outcomes;

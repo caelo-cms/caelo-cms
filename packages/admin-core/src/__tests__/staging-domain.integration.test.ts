@@ -30,7 +30,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import { CAELO_VERSION, deriveStagingCredential, type ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
-import { STAGING_PUBLICATION_LOCK_KEY } from "../deploy/staging-publication-lock.js";
+import { STAGING_PUBLICATION_LEASE } from "../deploy/staging-publication-lock.js";
 import { SERVED_PREVIEW_CHANNEL_TTL } from "../deploy/static-publisher-firebase.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
@@ -452,7 +452,9 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     // mirrored into it (the largest step of a Stage before #1003).
     expect(names(stageRun)).not.toContain("generator.sync-current");
     expect(existsSync(join(testRoot, "output", "staging", "current"))).toBe(false);
-    expect(existsSync(join(testRoot, "output", "staging", "builds", staged.runId))).toBe(true);
+    // #1211 — and the uploaded build does not stay in the container (on
+    // Cloud Run /tmp is memory): Firebase holds what staging serves.
+    expect(existsSync(join(testRoot, "output", "staging", "builds", staged.runId))).toBe(false);
 
     await markAudited(staged.runId);
     const promoted = await publish<{ toRunId: string }>({
@@ -484,6 +486,10 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       .reduce((n, p) => n + p.ms, 0);
     expect(liveRun.took_ms).toBeGreaterThanOrEqual(liveStepsMs - 5);
     expect(liveRun.publish_summary).not.toHaveProperty("phases");
+    // #1211 — nor does Publish live's uploaded rebuild.
+    expect(existsSync(join(testRoot, "output", "production", "builds", promoted.toRunId))).toBe(
+      false,
+    );
   });
 
   it("#1003 a running Stage is visible with its progress, also when the AI started it", async () => {
@@ -498,9 +504,18 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
           >,
       );
     let midRun: RunRow[] = [];
+    let openTransactions: { state: string; query: string }[] = [];
     fake.onPopulate = async () => {
-      // Another connection, while the build transaction is still open.
+      // Another connection, while the Stage uploads.
       midRun = await runRows();
+      // #1211 — and the Stage holds no transaction while it uploads (it
+      // used to hold one across the whole build and upload).
+      openTransactions = (await withSql(
+        (tx) => tx`
+          SELECT state, query FROM pg_stat_activity
+          WHERE datname = 'cms_admin' AND pid <> pg_backend_pid()
+            AND state LIKE 'idle in transaction%'`,
+      )) as { state: string; query: string }[];
     };
     try {
       const r = await execute(registry, adapter, { ...SYSTEM, actorKind: "ai" }, "deploy.trigger", {
@@ -514,6 +529,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       expect(midRun).toEqual([
         { status: "running", progress: { pagesDone: pageCount, pagesTotal: pageCount } },
       ]);
+      expect(openTransactions).toEqual([]);
       expect(await runRows(runId)).toEqual([
         { status: "succeeded", progress: { pagesDone: pageCount, pagesTotal: pageCount } },
       ]);
@@ -522,18 +538,36 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     }
   });
 
-  it("#1003 a run that died mid-build is marked failed by the next one; one still building is left alone", async () => {
+  it("#1003 / #1211 a run that died mid-build is marked failed by the next one; one still building is left alone", async () => {
     const { ORPHANED_RUN_MESSAGE } = await import("../ops/deploy-run-lifecycle.js");
     const [{ id: targetId } = { id: "" }] = (await withSql(
       (tx) => tx`SELECT id::text AS id FROM deploy_targets WHERE name = 'staging'`,
     )) as { id: string }[];
+    // Runs built inside one transaction (Publish live) carry no lease: the
+    // advisory lock tells. Stages carry a lease on their row (#1211).
     const orphan = crypto.randomUUID();
     const alive = crypto.randomUUID();
+    const lapsed = crypto.randomUUID();
+    const leased = crypto.randomUUID();
     await withSql(
       (tx) => tx`
-        INSERT INTO deploy_runs (id, target_id, actor_id, status)
-        VALUES (${orphan}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running'),
-               (${alive}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running')`,
+        INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+        VALUES (${orphan}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running', NULL),
+               (${alive}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running', NULL),
+               (${lapsed}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running',
+                clock_timestamp() - interval '1 second'),
+               (${leased}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running',
+                clock_timestamp() + interval '10 minutes')`,
+    );
+    // The dead Stage still names itself as the staging publisher; its
+    // lease lapsed with its heartbeat.
+    await withSql(
+      (tx) => tx`
+        INSERT INTO deploy_leases (name, holder_run_id, acquired_at, expires_at)
+        VALUES ('staging-publication', ${lapsed}::uuid, clock_timestamp() - interval '3 minutes',
+                clock_timestamp() - interval '1 second')
+        ON CONFLICT (name) DO UPDATE SET holder_run_id = EXCLUDED.holder_run_id,
+          acquired_at = EXCLUDED.acquired_at, expires_at = EXCLUDED.expires_at`,
     );
     // `alive` is still being built elsewhere: another transaction holds its run lock.
     const { DEPLOY_RUN_LOCK_PREFIX } = await import("../deploy/deploy-run-lock.js");
@@ -542,20 +576,28 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     try {
       await conn`BEGIN`;
       await conn`SELECT pg_advisory_xact_lock(hashtext(${DEPLOY_RUN_LOCK_PREFIX} || ${alive}::text))`;
+      // The lapsed lease does not hold the Stage up.
       await ok("deploy.trigger", { targetName: "staging", repoRoot: testRoot });
       const rows = (await withSql(
         (tx) => tx`SELECT id::text AS id, status, error_message FROM deploy_runs
-                   WHERE id IN (${orphan}::uuid, ${alive}::uuid)`,
+                   WHERE id IN (${orphan}::uuid, ${alive}::uuid, ${lapsed}::uuid, ${leased}::uuid)`,
       )) as { id: string; status: string; error_message: string | null }[];
       const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
       expect(byId[orphan]).toMatchObject({ status: "failed", error_message: ORPHANED_RUN_MESSAGE });
+      expect(byId[lapsed]).toMatchObject({ status: "failed", error_message: ORPHANED_RUN_MESSAGE });
       expect(byId[alive]).toMatchObject({ status: "running", error_message: null });
+      expect(byId[leased]).toMatchObject({ status: "running", error_message: null });
+      const [lease] = (await withSql(
+        (tx) => tx`SELECT holder_run_id FROM deploy_leases WHERE name = 'staging-publication'`,
+      )) as { holder_run_id: string | null }[];
+      expect(lease?.holder_run_id ?? null).toBeNull();
     } finally {
       await conn`ROLLBACK`;
       conn.release();
       await holder.end();
       await withSql(
-        (tx) => tx`DELETE FROM deploy_runs WHERE id IN (${orphan}::uuid, ${alive}::uuid)`,
+        (tx) => tx`DELETE FROM deploy_runs
+                   WHERE id IN (${orphan}::uuid, ${alive}::uuid, ${lapsed}::uuid, ${leased}::uuid)`,
       );
     }
   });
@@ -668,9 +710,64 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     expect([...fake.channels.keys()]).toEqual([`runid-${next.runId}`]);
   });
 
-  it("a Stage waits for an in-flight Stage / Publish live before it publishes and prunes (codex review on #652)", async () => {
+  /** #1211 — resolves once a running Stage finished building (it then waits for the lease). */
+  async function builtAndWaiting(): Promise<void> {
+    for (let i = 0; i < 2400; i++) {
+      const rows = (await withSql(
+        (tx) => tx`
+          SELECT count(*)::int AS n FROM deploy_runs
+          WHERE status = 'running' AND lease_expires_at IS NOT NULL AND progress IS NOT NULL
+            AND (progress->>'pagesTotal')::int > 0
+            AND (progress->>'pagesDone')::int = (progress->>'pagesTotal')::int`,
+      )) as { n: number }[];
+      if ((rows[0]?.n ?? 0) > 0) break;
+      await Bun.sleep(25);
+    }
+    // A few acquire attempts; a Stage that did not wait would publish now.
+    await Bun.sleep(500);
+  }
+
+  /** A committed `running` Stage holding the staging-publication lease (#1211). */
+  async function leaseHeldByAnotherStage(): Promise<{
+    runId: string;
+    release: () => Promise<void>;
+  }> {
+    const [{ id: targetId } = { id: "" }] = (await withSql(
+      (tx) => tx`SELECT id::text AS id FROM deploy_targets WHERE name = 'staging'`,
+    )) as { id: string }[];
+    const runId = crypto.randomUUID();
+    await withSql(async (tx) => {
+      await tx`
+        INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+        VALUES (${runId}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running',
+                clock_timestamp() + interval '10 minutes')`;
+      await tx`
+        INSERT INTO deploy_leases (name, holder_run_id, acquired_at, expires_at)
+        VALUES (${STAGING_PUBLICATION_LEASE}, ${runId}::uuid, clock_timestamp(),
+                clock_timestamp() + interval '10 minutes')
+        ON CONFLICT (name) DO UPDATE SET holder_run_id = EXCLUDED.holder_run_id,
+          acquired_at = EXCLUDED.acquired_at, expires_at = EXCLUDED.expires_at`;
+    });
+    return {
+      runId,
+      release: async () => {
+        await withSql(async (tx) => {
+          await tx`UPDATE deploy_leases SET holder_run_id = NULL, acquired_at = NULL, expires_at = NULL
+                   WHERE holder_run_id = ${runId}::uuid`;
+          await tx`DELETE FROM deploy_runs WHERE id = ${runId}::uuid`;
+        });
+      },
+    };
+  }
+
+  it("a Stage waits for a Publish live (in its transaction) before it publishes and prunes (codex review on #652)", async () => {
     // Without ordering, Stage A prunes Stage B's fresh channel and B then
-    // records that deleted channel as the staging origin.
+    // records that deleted channel as the staging origin. Publish live
+    // holds the lease row locked in its transaction (#1211).
+    await withSql(
+      (tx) => tx`INSERT INTO deploy_leases (name) VALUES (${STAGING_PUBLICATION_LEASE})
+                 ON CONFLICT (name) DO NOTHING`,
+    );
     const holder = new SQL(ADMIN_URL!);
     let release!: () => void;
     const released = new Promise<void>((r) => {
@@ -681,7 +778,8 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       held = r;
     });
     const holderTx = holder.begin(async (tx) => {
-      await tx`SELECT pg_advisory_xact_lock(hashtext(${STAGING_PUBLICATION_LOCK_KEY}))`;
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`UPDATE deploy_leases SET name = name WHERE name = ${STAGING_PUBLICATION_LEASE}`;
       held();
       await released;
     });
@@ -695,13 +793,8 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       }).finally(() => {
         settled = true;
       });
-      for (let i = 0; i < 2400; i++) {
-        const waiting = await holder`
-          SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`;
-        if ((waiting[0] as { n: number }).n > 0) break;
-        await Bun.sleep(25);
-      }
-      // Built, but queued on the lock: no channel published, none pruned.
+      await builtAndWaiting();
+      // Built, but queued for the publish slot: no channel published, none pruned.
       expect(settled).toBe(false);
       expect([...fake.channels.keys()]).toEqual(channelsBefore);
       release();
@@ -713,6 +806,112 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       release();
       await holderTx.catch(() => undefined);
       await holder.end();
+    }
+  });
+
+  it("#1211 a Stage waits for another Stage that holds the publish lease, without a transaction", async () => {
+    const other = await leaseHeldByAnotherStage();
+    try {
+      const channelsBefore = [...fake.channels.keys()];
+      let settled = false;
+      const pending = ok<{ runId: string }>("deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      }).finally(() => {
+        settled = true;
+      });
+      await builtAndWaiting();
+      expect(settled).toBe(false);
+      expect([...fake.channels.keys()]).toEqual(channelsBefore);
+      // Waiting for a lease pins no connection in a transaction.
+      const open = (await withSql(
+        (tx) => tx`SELECT count(*)::int AS n FROM pg_stat_activity
+                   WHERE datname = 'cms_admin' AND pid <> pg_backend_pid()
+                     AND state LIKE 'idle in transaction%'`,
+      )) as { n: number }[];
+      expect(open[0]?.n).toBe(0);
+      await other.release();
+      const staged = await pending;
+      expect([...fake.channels.keys()]).toEqual([`runid-${staged.runId}`]);
+      expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
+      const [lease] = (await withSql(
+        (tx) =>
+          tx`SELECT holder_run_id FROM deploy_leases WHERE name = ${STAGING_PUBLICATION_LEASE}`,
+      )) as { holder_run_id: string | null }[];
+      expect(lease?.holder_run_id ?? null).toBeNull();
+    } finally {
+      await other.release();
+    }
+  });
+
+  it("#1204 a Stage stopped while it uploads frees the publish lease and keeps staging on the previous build", async () => {
+    const served = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    const stop = new AbortController();
+    fake.onPopulate = async () => {
+      stop.abort(new Error("the operator pressed Stop"));
+    };
+    try {
+      const r = await execute(
+        registry,
+        adapter,
+        SYSTEM,
+        "deploy.trigger",
+        { targetName: "staging", repoRoot: testRoot },
+        { signal: stop.signal },
+      );
+      expect(r.ok).toBe(false);
+      expect(JSON.stringify(r.ok ? null : r.error)).toContain("stopped before it finished");
+    } finally {
+      fake.onPopulate = null;
+    }
+    // Nothing of the stopped Stage became what staging serves, and it holds nothing.
+    expect((await stagingRow())[0]?.origin_run_id).toBe(served.runId);
+    expect(fake.channels.has(`runid-${served.runId}`)).toBe(true);
+    const [lease] = (await withSql(
+      (tx) => tx`SELECT holder_run_id FROM deploy_leases WHERE name = ${STAGING_PUBLICATION_LEASE}`,
+    )) as { holder_run_id: string | null }[];
+    expect(lease?.holder_run_id ?? null).toBeNull();
+    const running = (await withSql(
+      (tx) => tx`SELECT count(*)::int AS n FROM deploy_runs WHERE status = 'running'`,
+    )) as { n: number }[];
+    expect(running[0]?.n).toBe(0);
+    // The next Stage runs at once and supersedes both.
+    const next = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    expect((await stagingRow())[0]?.origin_run_id).toBe(next.runId);
+    expect([...fake.channels.keys()]).toEqual([`runid-${next.runId}`]);
+  });
+
+  it("#1211 Publish live waits for a Stage that is publishing staging", async () => {
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    await markAudited(staged.runId);
+    const other = await leaseHeldByAnotherStage();
+    try {
+      let settled = false;
+      const pending = publish<{ toRunId: string }>({
+        fromTarget: "staging",
+        toTarget: "production",
+        repoRoot: testRoot,
+      }).finally(() => {
+        settled = true;
+      });
+      await Bun.sleep(1_000);
+      expect(settled).toBe(false);
+      const liveBefore = [...fake.live];
+      expect(fake.live).toEqual(liveBefore);
+      await other.release();
+      expect((await pending).toRunId).toBeTruthy();
+      expect(fake.live.length).toBe(liveBefore.length + 1);
+    } finally {
+      await other.release();
     }
   });
 

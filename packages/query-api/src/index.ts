@@ -18,8 +18,11 @@ export {
 export { allowAllRateLimiter, type ExecuteOptions, execute, type RateLimiter } from "./execute.js";
 export {
   defineOperation,
+  defineStepwiseOperation,
   type OperationDefinition,
   type OperationHandler,
+  type OperationSteps,
+  type StepwiseOperationHandler,
   type TransactionRunner,
 } from "./operation.js";
 export { afterCommit, type PostCommitEffect } from "./post-commit.js";

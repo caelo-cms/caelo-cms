@@ -27,6 +27,12 @@ export const allowAllRateLimiter: RateLimiter = {
 
 export interface ExecuteOptions {
   readonly rateLimiter?: RateLimiter;
+  /**
+   * #1211 — handed to a step-wise operation (`defineStepwiseOperation`),
+   * which stops at its next step once it aborts. A transactional op runs
+   * to its commit or rollback either way.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -34,6 +40,9 @@ export interface ExecuteOptions {
  *
  *   lookup op → scope-check actor → rate-limit → malformed-branch check →
  *   zod-validate input → adapter runs it in a txn (branch-visibility gate first)
+ *
+ * A step-wise op (`defineStepwiseOperation`) skips the last step: it opens
+ * no transaction and runs its steps as ops of their own.
  *
  * Any step can fail and returns a Result.Err without throwing. A thrown error
  * here is always a real bug (registry corrupt, adapter connection gone).
@@ -78,5 +87,14 @@ export async function execute(
     return err({ kind: "ValidationFailed", issues: parsed.error.issues });
   }
 
+  // #1211 — a step-wise op holds no transaction: each of its steps is an
+  // op of its own, executed (and committed) through the same registry.
+  if (op.stepwise) {
+    return op.stepwise(ctx, parsed.data, {
+      registry,
+      adapter,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  }
   return adapter.runOperation(op, ctx, parsed.data);
 }

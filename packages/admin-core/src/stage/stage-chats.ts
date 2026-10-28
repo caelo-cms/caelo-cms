@@ -227,6 +227,19 @@ export async function stageChatSessions(
      * context): the audit's fix request tells the AI who staged.
      */
     readonly stagedBy?: StagedBy;
+    /**
+     * #1211 — the id the build's deploy run gets, so a caller that stops
+     * waiting before the build ends can still name it ("still running,
+     * run X"). Default: deploy.trigger mints one.
+     */
+    readonly deployRunId?: string;
+    /**
+     * #1204 — the caller stopped the Stage (the operator's Stop). Checked
+     * before the build; during the build it kills the generator, and the
+     * run ends failed with every lease released, so the chat can Stage
+     * again at once. Nothing merged is finalized: the chats stay pending.
+     */
+    readonly abortSignal?: AbortSignal;
   } = {},
 ): Promise<{ ok: true; value: StagedChats } | { ok: false; error: StageFailure }> {
   const { adapter, registry } = deps;
@@ -374,9 +387,31 @@ export async function stageChatSessions(
   }
 
   timer.lap("merge");
-  const deployed = await execute(registry, adapter, ctx, "deploy.trigger", {
-    targetName: "staging",
-  });
+  if (options.abortSignal?.aborted) {
+    return {
+      ok: false,
+      error: {
+        step: "deploy",
+        chatSessionId: null,
+        message:
+          "The Stage was stopped before its build started; nothing was built and every chat keeps its changes pending. Stage again when ready.",
+        error: { kind: "HandlerError", operation: "deploy.trigger", message: "stopped" },
+      },
+    };
+  }
+  // #1211 — deploy.trigger holds no transaction while it builds; the
+  // signal reaches its generator.
+  const deployed = await execute(
+    registry,
+    adapter,
+    ctx,
+    "deploy.trigger",
+    {
+      targetName: "staging",
+      ...(options.deployRunId ? { runId: options.deployRunId } : {}),
+    },
+    options.abortSignal ? { signal: options.abortSignal } : {},
+  );
   if (deployed.ok) timer.include("deploy", (deployed.value as { phases: PhaseTiming[] }).phases);
   timer.lap("deploy");
   if (!deployed.ok) {
