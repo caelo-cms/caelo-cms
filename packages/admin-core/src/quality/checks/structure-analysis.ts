@@ -45,6 +45,8 @@ export interface StructureModule {
   readonly displayName: string;
   /** The template body, Mustache tags included. */
   readonly html: string;
+  /** The module's script (#1198: whose markup it drives, whether it builds content). */
+  readonly js: string;
 }
 
 /** A pattern found in free markup on one page. */
@@ -99,6 +101,8 @@ export interface StructureAnalysis {
   readonly placements: ReadonlyMap<string, ReadonlySet<string>>;
   /** Module id → its template's root shape (patterns only matter). */
   readonly templateShapes: ReadonlyMap<string, SubtreeShape>;
+  /** Module id → the modules rendered inside its roots, at any depth (#1198). */
+  readonly nested: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 interface ParsedModule {
@@ -126,6 +130,7 @@ export function analyseStructure(
   const linkGroups: LinkGroup[] = [];
   const classUse = new Map<string, ClassUse>();
   const placements = new Map<string, Set<string>>();
+  const nested = new Map<string, Set<string>>();
   const use = (cls: string): ClassUse => {
     let u = classUse.get(cls);
     if (!u) {
@@ -148,6 +153,9 @@ export function analyseStructure(
         placements.set(id, onPages);
       }
       onPages.add(page.pageId);
+      const inside = nested.get(id) ?? new Set<string>();
+      nestedModuleIds(root, inside);
+      nested.set(id, inside);
       const mod = parsed.get(id);
       if (!mod) continue;
       const free = freeRegions(root, mod.template);
@@ -180,7 +188,24 @@ export function analyseStructure(
       }
     }
   }
-  return { occurrences, siblingRepeats, linkGroups, classUse, placements, templateShapes };
+  return {
+    occurrences,
+    siblingRepeats,
+    linkGroups,
+    classUse,
+    placements,
+    templateShapes,
+    nested,
+  };
+}
+
+/** Adds the module ids of every root nested inside `root` (at any depth). */
+function nestedModuleIds(root: MarkupNode, out: Set<string>): void {
+  const walk = (n: MarkupNode) => {
+    if (n !== root && n.moduleId !== null) out.add(n.moduleId);
+    for (const c of n.children) walk(c);
+  };
+  walk(root);
 }
 
 // `<listId>/<itemId>` — a shared list's entry stamp.

@@ -36,7 +36,7 @@ const TOKENS = {
   },
 };
 
-function toolCtxWith(overrides: { moduleCss?: string } = {}): ToolContext {
+function toolCtxWith(overrides: { moduleCss?: string; layoutCss?: string } = {}): ToolContext {
   const adapter = {
     runOperation: async (op: { name: string }, _ctx: unknown, input: unknown) => {
       switch (op.name) {
@@ -65,7 +65,9 @@ function toolCtxWith(overrides: { moduleCss?: string } = {}): ToolContext {
         case "templates.list":
           return ok({ templates: [] });
         case "layouts.list":
-          return ok({ layouts: [] });
+          return ok({
+            layouts: overrides.layoutCss === undefined ? [] : [{ css: overrides.layoutCss }],
+          });
         default:
           return ok({});
       }
@@ -75,6 +77,25 @@ function toolCtxWith(overrides: { moduleCss?: string } = {}): ToolContext {
 }
 
 describe("authoring-tool css-var warning (issue #156)", () => {
+  it("a var a layout defines is known, not flagged (#1098)", async () => {
+    const res = await updateModulesManyTool.handler(
+      AI,
+      { items: [{ moduleId: MODULE_ID, css: ".hero{border:1px solid var(--line-hair)}" }] },
+      toolCtxWith({ layoutCss: ":root{--line-hair:#e3e7ee}" }),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.content).not.toContain("Unknown CSS vars");
+
+    const flagged = await updateModulesManyTool.handler(
+      AI,
+      { items: [{ moduleId: MODULE_ID, css: ".hero{border:1px solid var(--line-hair)}" }] },
+      toolCtxWith(),
+    );
+    expect(flagged.content).toContain("Unknown CSS vars");
+    expect(flagged.content).toContain("nothing defines it");
+    expect(flagged.content).not.toContain("declaration is invalid");
+  });
+
   it("update_modules_many flags a typo'd var with a did-you-mean", async () => {
     const res = await updateModulesManyTool.handler(
       AI,

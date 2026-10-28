@@ -409,6 +409,12 @@ export interface RenderScope {
    * unset and fail loudly. See render-failures.ts.
    */
   readonly onPluginFailure?: (failure: PluginRenderFailure) => void;
+  /**
+   * Set by the editor preview: the render is for the operator, never a
+   * visitor, so plugin output meant only for editors (a module
+   * deferral's `editorNotice`) may appear. Builds leave it unset.
+   */
+  readonly editorPreview?: boolean;
 }
 
 /** A render of the deployed site / live state: no branch. */

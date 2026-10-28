@@ -39,21 +39,29 @@
     }
   };
 
-  const severityClass = (s: string): string =>
-    s === "blocking"
-      ? "bg-destructive/15 text-destructive"
-      : s === "degraded"
-        ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
-        : "bg-muted text-muted-foreground";
+  // A suggestion has no severity (#1192); it shows its kind in that column instead.
+  const kindLabel = (r: BugReport): string =>
+    r.kind === "suggestion" ? "suggestion" : (r.severity ?? "defect");
+
+  const kindClass = (r: BugReport): string =>
+    r.kind === "suggestion"
+      ? "bg-sky-500/15 text-sky-700 dark:text-sky-400"
+      : r.severity === "blocking"
+        ? "bg-destructive/15 text-destructive"
+        : r.severity === "degraded"
+          ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+          : "bg-muted text-muted-foreground";
 
   const upstreamLabel = (r: BugReport): string | null => {
     if (r.forwardingState !== "sent" || r.upstreamStatus === null) return null;
+    const idea = r.kind === "suggestion";
     if (r.upstreamStatus === "fixed") {
-      return r.upstreamFixedIn ? `Fixed in ${r.upstreamFixedIn}` : "Fixed";
+      const done = idea ? "Done" : "Fixed";
+      return r.upstreamFixedIn ? `${done} in ${r.upstreamFixedIn}` : done;
     }
     if (r.upstreamStatus === "regression") return "Came back, reopened";
-    if (r.upstreamStatus === "wontfix") return "Won't be fixed";
-    return "Known, being worked on";
+    if (r.upstreamStatus === "wontfix") return idea ? "Won't be done" : "Won't be fixed";
+    return idea ? "Known, under consideration" : "Known, being worked on";
   };
 
   const forwardingLabel: Record<BugReport["forwardingState"], { label: string; hint: string }> = {
@@ -79,7 +87,9 @@
       .map(
         (r, i) =>
           `\n## ${i + 1}. ${r.title}\n\n` +
-          `- **Severity:** ${r.severity}${r.blockedTask ? " (blocked the task)" : ""}\n` +
+          (r.kind === "suggestion"
+            ? `- **Kind:** suggestion${r.blockedTask ? " (blocked the task)" : ""}\n`
+            : `- **Kind:** defect\n- **Severity:** ${r.severity}${r.blockedTask ? " (blocked the task)" : ""}\n`) +
           `- **Source:** ${r.source === "auto" ? "auto-captured" : "AI-filed"}\n` +
           `- **Status:** ${r.status}\n` +
           `- **When:** ${r.createdAt}\n` +
@@ -123,7 +133,8 @@
     <div>
       <h1 class="text-2xl font-semibold tracking-tight">Detected bugs</h1>
       <p class="mt-1 max-w-2xl text-sm text-muted-foreground">
-        Defects the AI flagged while working — it filed these and continued with a workaround.
+        Defects the AI flagged while working, and suggestions for things Caelo could not do yet — it
+        filed these and continued with a workaround.
         <!-- With forwarding on, the card below offers the one-click send for
              unsent reports; the manual-export hint only applies when off. -->
         {#if unsentSummary && !forwarding.enabled}{unsentSummary}{/if}
@@ -210,7 +221,7 @@
     <EmptyStatePlaceholder
       icon={Bug}
       title="No bugs detected"
-      description="When the AI runs into a tool behaving contrary to its contract, it files a report here. An empty list is a good sign."
+      description="When the AI runs into a tool behaving contrary to its contract, or needs something Caelo cannot do yet, it files a report here. An empty list is a good sign."
     />
   {:else}
     <div class="overflow-x-auto rounded-lg border">
@@ -219,7 +230,7 @@
           <tr>
             <th class="px-4 py-2 font-medium">Title</th>
             <th class="px-4 py-2 font-medium">Source</th>
-            <th class="px-4 py-2 font-medium">Severity</th>
+            <th class="px-4 py-2 font-medium">Kind</th>
             <th class="px-4 py-2 font-medium">Status</th>
             <th class="px-4 py-2 font-medium">Caelo team</th>
             <th class="px-4 py-2 font-medium">Suspected tool</th>
@@ -253,8 +264,14 @@
                 </span>
               </td>
               <td class="px-4 py-2">
-                <span class={cn("rounded px-1.5 py-0.5 text-xs font-medium", severityClass(r.severity))}>
-                  {r.severity}
+                <span
+                  class={cn("rounded px-1.5 py-0.5 text-xs font-medium", kindClass(r))}
+                  data-testid="bug-kind"
+                  title={r.kind === "suggestion"
+                    ? "Suggestion: nothing broke, Caelo lacked something the AI needed"
+                    : `Defect, severity ${r.severity}`}
+                >
+                  {kindLabel(r)}
                 </span>
               </td>
               <td class="px-4 py-2 text-muted-foreground">{r.status}</td>
@@ -273,11 +290,15 @@
               <tr class="border-b bg-muted/20 last:border-0">
                 <td colspan="7" class="space-y-3 px-4 py-3 text-sm">
                   <div>
-                    <div class="text-xs font-semibold uppercase text-muted-foreground">What happened</div>
+                    <div class="text-xs font-semibold uppercase text-muted-foreground">
+                      {r.kind === "suggestion" ? "What was missing" : "What happened"}
+                    </div>
                     <p class="mt-0.5 whitespace-pre-wrap">{r.whatHappened}</p>
                   </div>
                   <div>
-                    <div class="text-xs font-semibold uppercase text-muted-foreground">Expected</div>
+                    <div class="text-xs font-semibold uppercase text-muted-foreground">
+                      {r.kind === "suggestion" ? "What would have helped" : "Expected"}
+                    </div>
                     <p class="mt-0.5 whitespace-pre-wrap">{r.expected}</p>
                   </div>
                   {#if r.evidence}

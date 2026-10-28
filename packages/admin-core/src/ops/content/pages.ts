@@ -1709,14 +1709,82 @@ export const setPageModulesOp = defineOperation({
       contentInstanceId: string;
       syncMode: "synced" | "unsynced";
     };
+    // #1195 — placements addressed by their content instance. Each must be
+    // one of this page's placements of the same module. Placements may share
+    // a content instance (placement.set_content allows it), so an id can be
+    // named as often as the page has placements bound to it — each name
+    // claims one of them, with that placement's sync mode. Claimed ones are
+    // skipped by the FIFO pass below so no binding is handed out twice.
+    type PriorBinding = { moduleId: string; syncMode: "synced" | "unsynced" };
+    const priorById = new Map<string, PriorBinding[]>();
+    for (const block of priorLayout.blocks) {
+      for (const p of block.placements ?? []) {
+        const list = priorById.get(p.contentInstanceId) ?? [];
+        list.push({ moduleId: p.moduleId, syncMode: p.syncMode });
+        priorById.set(p.contentInstanceId, list);
+      }
+    }
+    const claimedSyncModes = new Map<string, ("synced" | "unsynced")[]>();
+    const claims = new Map<string, number>();
+    for (const block of input.blocks) {
+      for (const [i, ciId] of (block.contentInstanceIds ?? []).entries()) {
+        if (ciId === null) continue;
+        const moduleId = block.moduleIds[i] as string;
+        const prior = priorById.get(ciId);
+        const used = claims.get(ciId) ?? 0;
+        const problem =
+          prior === undefined
+            ? `content instance ${ciId} is not a placement on this page`
+            : (prior[0] as PriorBinding).moduleId !== moduleId
+              ? `content instance ${ciId} belongs to module ${(prior[0] as PriorBinding).moduleId}, not ${moduleId}`
+              : used >= prior.length
+                ? `content instance ${ciId} is named ${used + 1} times but bound to ${prior.length} placement(s) on this page`
+                : null;
+        if (problem !== null) {
+          return err({
+            kind: "HandlerError",
+            operation: "pages.set_modules",
+            message: `${problem} — pages.get_with_modules lists the page's placements (block, module, contentInstanceId).`,
+          });
+        }
+        claims.set(ciId, used + 1);
+        const modes = claimedSyncModes.get(ciId) ?? [];
+        modes.push((prior as PriorBinding[])[used]?.syncMode ?? "unsynced");
+        claimedSyncModes.set(ciId, modes);
+      }
+    }
+    // Remaining claims per id: the FIFO pass skips that many queue entries
+    // bound to it, since the named placements took those bindings.
+    const toSkip = new Map(claims);
+
     const resolved: ResolvedPlacement[] = [];
     for (const block of input.blocks) {
       let position = 0;
-      for (const moduleId of block.moduleIds) {
-        // Consume the next surviving binding for this (block, module) —
-        // FIFO keeps repeated placements of the same module in their
-        // relative order while tolerating position shifts.
-        const prior = priorQueues.get(`${block.blockName}#${moduleId}`)?.shift();
+      for (const [index, moduleId] of block.moduleIds.entries()) {
+        const named = block.contentInstanceIds?.[index] ?? null;
+        // A named placement keeps its own binding; otherwise consume the
+        // next surviving binding for this (block, module) — FIFO keeps
+        // repeated placements of the same module in their relative order
+        // while tolerating position shifts — skipping reserved ones.
+        const queue = priorQueues.get(`${block.blockName}#${moduleId}`) ?? [];
+        let prior: { contentInstanceId: string; syncMode: "synced" | "unsynced" } | undefined;
+        if (named !== null) {
+          prior = {
+            contentInstanceId: named,
+            syncMode: (claimedSyncModes.get(named) as ("synced" | "unsynced")[]).shift() as
+              | "synced"
+              | "unsynced",
+          };
+        } else {
+          for (;;) {
+            const head = queue[0];
+            const skip = head ? (toSkip.get(head.contentInstanceId) ?? 0) : 0;
+            if (!head || skip === 0) break;
+            toSkip.set(head.contentInstanceId, skip - 1);
+            queue.shift();
+          }
+          prior = queue.shift();
+        }
         let contentInstanceId: string;
         let syncMode: "synced" | "unsynced";
         if (prior) {

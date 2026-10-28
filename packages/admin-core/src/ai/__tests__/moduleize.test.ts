@@ -17,7 +17,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { pluginListSourcesRegistry } from "@caelo-cms/plugin-host";
 import type { PluginListSourceSpec } from "@caelo-cms/plugin-sdk";
-import { type ModuleizeRetryRecord, moduleize } from "../moduleize.js";
+import { type ModuleizeRetryRecord, moduleize, moduleizeJsonSchema } from "../moduleize.js";
 import type {
   AIProvider,
   GenerateInput,
@@ -285,5 +285,61 @@ describe("moduleize with a plugin list source", () => {
     });
     expect(out.html).toContain("{{#consent_categories}}");
     expect(retried).toBe(false);
+  });
+
+  it("refuses an output that unrolls a plugin source loop of the input, then repairs (#1186)", async () => {
+    pluginListSourcesRegistry.declare("consent-manager", [
+      {
+        name: "consent_categories",
+        label: "Consent categories",
+        description: "The categories the banner offers.",
+        node: { fields: [{ name: "key", type: "text", label: "Key" }] },
+      } as unknown as PluginListSourceSpec,
+    ]);
+    const input = `<div data-consent-banner>{{#consent_categories}}<label><input type="checkbox" data-consent-category="{{key}}"> {{label}}</label>{{/consent_categories}}<button data-consent-reject-all>Nur Notwendige</button></div>`;
+    const UNROLLED = {
+      ...BANNER,
+      html: `<div data-consent-banner><label><input type="checkbox" data-consent-category="necessary"> {{necessary_label}}</label><button data-consent-reject-all>{{reject_label}}</button></div>`,
+      fields: [
+        ...BANNER.fields,
+        { name: "necessary_label", kind: "text", label: "Necessary", default: "Notwendig" },
+      ],
+    };
+    const records: ModuleizeRetryRecord[] = [];
+    const out = await moduleize({
+      provider: new ObjectFixtureProvider([UNROLLED, BANNER]),
+      html: input,
+      onRetry: async (r) => {
+        records.push(r);
+      },
+    });
+    expect(out.html).toContain(
+      '{{#consent_categories}}<label><input type="checkbox" data-consent-category="{{key}}"> {{label}}</label>{{/consent_categories}}',
+    );
+    expect(records[0]?.errors[0]).toContain("consent_categories");
+  });
+});
+
+describe("moduleize structured-output schema", () => {
+  const listTypeOf = (schema: unknown): { enum?: string[]; pattern?: string } =>
+    (
+      schema as {
+        properties: { fields: { items: { properties: { listType: { enum?: string[] } } } } };
+      }
+    ).properties.fields.items.properties.listType;
+
+  it("offers only the shipped list types as an enum, never a free slug (#1171)", () => {
+    const lt = listTypeOf(moduleizeJsonSchema());
+    expect(lt.enum).toEqual(["texts", "links", "menu"]);
+    expect(lt.pattern).toBeUndefined();
+  });
+
+  it("adds a list type the caller's field hint names", () => {
+    expect(listTypeOf(moduleizeJsonSchema(["mega-menu"])).enum).toEqual([
+      "texts",
+      "links",
+      "menu",
+      "mega-menu",
+    ]);
   });
 });

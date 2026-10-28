@@ -40,6 +40,7 @@ const TEXT: StructureModule = {
   slug: "text",
   displayName: "Text",
   html: '<section class="prose"><h2>{{title}}</h2><div class="body">{{body}}</div></section>',
+  js: "",
 };
 const DIFF_TEMPLATE =
   '<div class="split"><div class="copy"><h2>{{title}}</h2><p>{{lead}}</p></div>' +
@@ -49,18 +50,21 @@ const DIFF: StructureModule = {
   slug: "split-diff",
   displayName: "Split with diff",
   html: DIFF_TEMPLATE,
+  js: "",
 };
 const DIFF_COPY: StructureModule = {
   id: id(103),
   slug: "split-diff-2",
   displayName: "Split with diff (pricing)",
   html: DIFF_TEMPLATE.replace("{{title}}", "Pricing"),
+  js: "",
 };
 const NAV: StructureModule = {
   id: id(104),
   slug: "main-menu",
   displayName: "Main menu",
   html: '<nav class="menu"><ul>{{#menu}}<li><a class="item" href="{{link}}">{{label}}</a></li>{{/menu}}</ul></nav>',
+  js: "",
 };
 const MODULES = [TEXT, DIFF, DIFF_COPY, NAV];
 
@@ -171,6 +175,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     slug: "faq",
     displayName: "FAQ",
     html: '<section class="faq-wrap"><h2>{{title}}</h2><div class="faq">{{#items}}{{/items}}</div>{{>featured}}</section>',
+    js: "",
     fields: [
       { name: "title", kind: "text" as const },
       { name: "items", kind: "module-list" as const },
@@ -198,6 +203,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     slug: "tool-card-list",
     displayName: "Tool-Karten-Liste",
     html: '<section class="tcl"><h2>{{title}}</h2><div class="tcg">{{#karten}}{{/karten}}</div></section>',
+    js: "",
     fields: [
       { name: "title", kind: "text" as const },
       { name: "karten", kind: "module-list" as const },
@@ -208,6 +214,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     slug: m.slug,
     displayName: m.slug,
     html: m.html,
+    js: "",
   });
   const nestedModules = [asStructure(FAQ_ENTRY), asStructure(TOOL_CARD)];
 
@@ -490,12 +497,14 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     slug: "site-header",
     displayName: "Site header",
     html: '<header class="hd"><ul>{{#nav}}<li><a href="{{link}}">{{label}}</a></li>{{/nav}}</ul></header>',
+    js: "",
   };
   const FOOTER: StructureModule = {
     id: id(111),
     slug: "site-footer",
     displayName: "Site footer",
     html: '<footer class="ft"><p>{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}</p></footer>',
+    js: "",
   };
   const NAV_MODULES = [...MODULES, HEADER, FOOTER];
   const SHARED = "00000000-0000-4000-8000-000000000900";

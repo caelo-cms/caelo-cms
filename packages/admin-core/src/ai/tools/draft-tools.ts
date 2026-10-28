@@ -67,7 +67,7 @@ const stageInput = z
 export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInput>> = {
   name: "stage_changes",
   description:
-    "Stage: merge this chat's unstaged changes into the site, rebuild the STAGING site (noindex, never visitor-facing), then run the quality check (Lighthouse). Use when the requested change is done and should be reviewed: 'stage it', 'put it on staging', last step of finished work.\n" +
+    "Stage: merge this chat's unstaged changes into the site, rebuild the STAGING site (noindex, never visitor-facing), then run the quality check (Lighthouse). Use only when the user asks ('stage it', 'put it on staging', 'publish it') and to re-check your own quality fixes; after other edits, offer the Stage instead.\n" +
     "CORE RULES:\n" +
     "- Other chats' changes to the SAME module/page ride along (result names them -> tell the operator).\n" +
     "- Only status 'published' pages are built; result lists left-out drafts -> `set_pages_status_many` first if they belong on staging.\n" +

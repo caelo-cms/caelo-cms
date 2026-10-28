@@ -125,6 +125,7 @@ export async function fileTurnFatalProviderReport(args: {
     suspectedTool: null,
     evidence: summarizeHistoryForBugReport(args.messages),
     severity: "blocking",
+    kind: "defect",
     source: "auto",
   }).catch(() => undefined);
 }

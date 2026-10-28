@@ -450,6 +450,43 @@ type RegisteredTool = Omit<ToolDefinitionWithHandler<unknown>, "inputSchema"> & 
  * Returns null when the schema isn't a recognizable union (caller falls back
  * to the raw message).
  */
+/**
+ * #1185 — the JSON Schema of the argument at a Zod issue path, nested
+ * ones included (`modules.0.moduleId`): array indices step into `items`,
+ * keys into `properties` (of the schema or of one of its union branches),
+ * `$ref`s into the root `$defs`. Null when the path leaves the schema.
+ */
+function schemaAtPath(root: ToolInputSchema, path: readonly PropertyKey[]): unknown {
+  const defs = (root.$defs ?? {}) as Record<string, unknown>;
+  const deref = (node: unknown): unknown => {
+    const ref = (node as { $ref?: unknown } | null)?.$ref;
+    if (typeof ref === "string" && ref.startsWith("#/$defs/")) return defs[ref.slice(8)];
+    return node;
+  };
+  let cur: unknown = root;
+  for (const key of path) {
+    cur = deref(cur);
+    if (!cur || typeof cur !== "object") return null;
+    const node = cur as {
+      items?: unknown;
+      properties?: Record<string, unknown>;
+      oneOf?: unknown[];
+      anyOf?: unknown[];
+    };
+    if (typeof key === "number") {
+      cur = node.items ?? null;
+      continue;
+    }
+    const k = String(key);
+    const branches = [node, ...(node.oneOf ?? []), ...(node.anyOf ?? [])].map(deref);
+    cur =
+      branches
+        .map((b) => (b as { properties?: Record<string, unknown> } | null)?.properties?.[k])
+        .find((p) => p !== undefined) ?? null;
+  }
+  return deref(cur);
+}
+
 function describeAllowedForms(propSchema: unknown): string | null {
   if (!propSchema || typeof propSchema !== "object") return null;
   const branches =
@@ -458,9 +495,20 @@ function describeAllowedForms(propSchema: unknown): string | null {
   const parts: string[] = [];
   for (const b of branches) {
     if (!b || typeof b !== "object") continue;
-    const branch = b as { enum?: unknown[]; type?: string; minimum?: number; maximum?: number };
+    const branch = b as {
+      enum?: unknown[];
+      type?: string;
+      format?: string;
+      minimum?: number;
+      maximum?: number;
+      required?: unknown[];
+    };
     if (Array.isArray(branch.enum)) {
       parts.push(branch.enum.map((v) => JSON.stringify(v)).join(" | "));
+    } else if (branch.type === "string" && typeof branch.format === "string") {
+      parts.push(`a ${branch.format} string`);
+    } else if (branch.type === "object" && Array.isArray(branch.required)) {
+      parts.push(`an object {${branch.required.map((k) => `"${String(k)}": …`).join(", ")}}`);
     } else if (branch.type === "integer" || branch.type === "number") {
       const lo = typeof branch.minimum === "number" ? branch.minimum : null;
       const hi = typeof branch.maximum === "number" ? branch.maximum : null;
@@ -539,9 +587,13 @@ function nestingIntentHint(
   return (
     `You passed ${keyList} to nest repeating or sub-content — this tool has no such argument. ` +
     `Nesting is expressed as an entry in the \`fields\` array, NOT a top-level key:\n` +
-    `- a nav / menu / list of links → one \`list\` field, e.g. ` +
-    `\`{name:"nav_links",kind:"list",listType:"links",label:"Navigation",default:[{node:"link",values:{label:"Home",link:{href:"/"}}}]}\` (each internal \`href\` must be the path of a page that exists; site navigation is a shared list: \`bind:"shared"\`), ` +
-    `rendered in the HTML with \`{{#nav_links}}<a href="{{link}}">{{label}}</a>{{/nav_links}}\`;\n` +
+    `- a list of links this module owns → one local \`list\` field with its entries as \`default\`, e.g. ` +
+    `\`{name:"links",kind:"list",listType:"links",label:"Links",default:[{node:"link",values:{label:"Home",link:{href:"/"}}}]}\` (each internal \`href\` must be the path of a page that exists), ` +
+    `rendered in the HTML with \`{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}\`;\n` +
+    // closed #1175 — the hint used to show a local entries default next to
+    // "site navigation is a shared list: bind:shared"; following both
+    // produced the "a shared default is caelo:list/<id>" error.
+    `- site navigation (a menu every page shows) → a SHARED list: create it with \`upsert_lists_many\`, then \`{name:"nav",kind:"list",listType:"menu",label:"Navigation",bind:"shared",list:"caelo:list/<id>"}\` — entries live in the list, never in \`default\`;\n` +
     `- a list of plain strings (tags, bullets) → one \`list\` field with \`listType:"texts"\` and a \`default\` of entries, rendered with \`{{#name}}…{{text}}…{{/name}}\`;\n` +
     `- repeating rich sub-modules (cards with image + title + body) → one \`module-list\` field ` +
     `(note: \`module\`/\`module-list\` need a content_instance to fill them, so they do NOT render on layout/template chrome — use a \`list\` field there).\n` +
@@ -627,26 +679,35 @@ function formatToolArgError(
   inputSchema: ToolInputSchema,
   args?: unknown,
 ): string {
-  const props = (inputSchema.properties ?? {}) as Record<string, unknown>;
-
   const lines = issues.slice(0, 6).map((issue) => {
     const path = issue.path.join(".") || "(root)";
     switch (issue.code) {
-      case "unrecognized_keys":
-        return `Unrecognized argument(s): ${issue.keys
-          .map((k) => `\`${k}\``)
-          .join(", ")} — this tool does not accept ${
-          issue.keys.length > 1 ? "those keys" : "that key"
-        }.`;
+      case "unrecognized_keys": {
+        // #1151 — say WHERE: a key nested in `page` or `modules[i]` is not a
+        // top-level argument, and the property list below is top-level only.
+        const keys = issue.keys.map((k) => `\`${k}\``).join(", ");
+        const them = issue.keys.length > 1 ? "those keys" : "that key";
+        return issue.path.length === 0
+          ? `Unrecognized argument(s): ${keys} — this tool does not accept ${them}.`
+          : `\`${path}\`: unrecognized key(s) ${keys} — \`${path}\` does not accept ${them}.`;
+      }
       case "invalid_type":
         return `\`${path}\`: expected ${issue.expected} (${issue.message}).`;
       case "invalid_union": {
         // Zod emits a bare "Invalid input" for a failed union; surface the
         // allowed forms from the arg's JSON schema so the model can re-emit.
-        const forms = describeAllowedForms(props[String(issue.path[0])]);
+        // #1185 — resolved along the whole path, so a nested argument
+        // (`modules.0.moduleId`) names its forms too.
+        const forms = describeAllowedForms(schemaAtPath(inputSchema, issue.path));
+        const last = issue.path[issue.path.length - 1];
+        const value = valueAtPath(args, issue.path);
+        const mint =
+          last === "moduleId" && (value === null || value === "")
+            ? " To mint a new module instead, omit `moduleId` and pass the module itself (displayName, html, fields …)."
+            : "";
         return forms
-          ? `\`${path}\`: invalid value — expected ${forms}.`
-          : `\`${path}\`: ${issue.message} (did not match any allowed form for this argument).`;
+          ? `\`${path}\`: invalid value — expected ${forms}.${mint}`
+          : `\`${path}\`: ${issue.message} (did not match any allowed form for this argument).${mint}`;
       }
       case "invalid_format": {
         // #1089 — a bare "Invalid UUID" does not say which character is off,

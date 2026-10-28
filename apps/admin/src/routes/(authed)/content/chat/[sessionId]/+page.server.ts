@@ -3,6 +3,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { error, fail } from "@sveltejs/kit";
 import type { ChatMessage, ChatModule, ChatSession } from "#lib/components/chat/types.js";
+import { loadTranscriptPage } from "#lib/server/chat-transcript.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
@@ -11,6 +12,8 @@ import type { Actions, PageServerLoad } from "./$types";
 interface ChatPageData {
   session: ChatSession;
   messages: ChatMessage[];
+  /** #1216 — older messages exist beyond the loaded page. */
+  hasMoreMessages: boolean;
   modules: ChatModule[];
   /** v0.2.46 — gates the debug panel. True when the user has
    *  settings.read; the page component then opts in via `?debug=1`. */
@@ -27,33 +30,14 @@ interface ChatPageData {
 export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPageData> => {
   requirePermission(locals, "content.read");
   const { adapter, registry } = getQueryContext();
-  const [sessionR, modulesR, pagesR] = await Promise.all([
-    execute(registry, adapter, locals.ctx, "chat.get_session", {
-      chatSessionId: params.sessionId,
-    }),
+  // #1216 — the newest transcript page; older pages load on demand.
+  const [transcript, modulesR, pagesR] = await Promise.all([
+    loadTranscriptPage(locals.ctx, params.sessionId),
     execute(registry, adapter, locals.ctx, "modules.list", {}),
     execute(registry, adapter, locals.ctx, "pages.list", {}),
   ]);
-  if (!sessionR.ok) throw error(404, "Chat not found");
-  const sessionData = sessionR.value as {
-    session: ChatSession;
-    messages: (ChatMessage & {
-      toolCalls: unknown;
-      createdAt: string;
-      thinkingBlocks: { thinking: string; signature: string }[] | null;
-    })[];
-  };
+  if (!transcript) throw error(404, "Chat not found");
   const modules = modulesR.ok ? (modulesR.value as { modules: ChatModule[] }).modules : [];
-  // v0.2.54 — flatten thinking blocks to text for ChatPanel rendering.
-  // Signatures stay server-side; the UI only shows the model's reasoning
-  // text in a collapsed details block.
-  const messages = sessionData.messages.map((m) => ({
-    ...m,
-    thinkingText:
-      Array.isArray(m.thinkingBlocks) && m.thinkingBlocks.length > 0
-        ? m.thinkingBlocks.map((b) => b.thinking).join("\n\n")
-        : undefined,
-  }));
   // v0.3.21 — pick the default preview page (mirrors /edit's logic).
   // Prefer the composed root, fall back to the first page, null when
   // none exist.
@@ -67,8 +51,9 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPage
       : null;
 
   return {
-    session: sessionData.session,
-    messages,
+    session: transcript.session,
+    messages: transcript.messages,
+    hasMoreMessages: transcript.hasMore,
     modules,
     // v0.2.46 — debug panel exposes engaged-skills + tool args, so it
     // needs the same permission as the rest of /settings/* views.

@@ -275,6 +275,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     reason: "tool-call idempotency cache (chat-runner + mcp.execute_tool)",
   },
   "chat.summarize": { kind: "internal", reason: "chat-runner history compaction read" },
+  "chat.resolve_session": {
+    kind: "internal",
+    reason:
+      "#1216 request-path session lookup (branch / owner / open state) for MCP, Stage and the editor; the agent already runs inside its session and has nothing to resolve",
+  },
   "chat.list_sessions": {
     kind: "internal",
     reason:
@@ -287,7 +292,7 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   "chat.branch_change_count": { kind: "internal", reason: "/edit toolbar pending-changes pill" },
   "chat.list_active_pages": {
     kind: "internal",
-    reason: "/edit page picker (pages with open chats)",
+    reason: "/edit New chat action (resume the caller's open page chat)",
   },
   "chat.list_open_with_pending": { kind: "internal", reason: "unstaged-work banner in the editor" },
   "imports.get_session_budget_state": {

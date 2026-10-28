@@ -27,6 +27,7 @@ import { chatPluginInvocation } from "../plugin-invocation.js";
 import type { AIProvider, ChatMessageInput } from "../provider.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { isE2eAutoApproveEnabled } from "./e2e-auto-approve.js";
+import { shrinkToolImage } from "./tool-image.js";
 import type {
   AccumulatedToolCall,
   ChatRunnerOptions,
@@ -209,6 +210,30 @@ async function persistToolImage(
       message: e instanceof Error ? e.message : String(e),
     });
     return null;
+  }
+}
+
+/**
+ * #1216 — the result with its image downscaled + re-encoded (tool-image.ts).
+ * An image the encoder cannot read is dropped with a note in the result, so
+ * the model is told it has no picture instead of silently lacking one.
+ */
+async function withShrunkImage(
+  toolName: string,
+  result: ToolDispatchResult,
+): Promise<ToolDispatchResult> {
+  if (!result.image) return result;
+  try {
+    const small = await shrinkToolImage(result.image);
+    return { ...result, image: small as NonNullable<ToolDispatchResult["image"]> };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("[chat-runner] tool image unreadable — dropped", { toolName, message });
+    const { image: _dropped, ...rest } = result;
+    return {
+      ...rest,
+      content: `${result.content}\n[NOTE: the image this tool returned could not be processed (${message}); you did not receive it — do not describe it.]`,
+    };
   }
 }
 
@@ -490,9 +515,14 @@ export async function dispatchToolCall(
       suspectedTool: call.name,
       evidence: toolInputEvidence,
       severity: "degraded",
+      kind: "defect",
       source: "auto",
     }).catch(() => undefined);
   }
+
+  // #1216 — shrink a returned image ONCE, before it is streamed, stored and
+  // put into the history: every later copy is the small one.
+  if (result.image) result = await withShrunkImage(call.name, result);
 
   outcomes.push({
     toolCallId: call.id,

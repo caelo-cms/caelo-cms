@@ -57,7 +57,10 @@ import {
   COMPACTION_RECENT_TOKENS_DEFAULT,
   COMPACTION_TARGET_TOKENS_DEFAULT,
   compactHistory,
+  compactHistoryImages,
+  estimateHistoryImageBytes,
   estimateHistoryTokens,
+  HISTORY_IMAGE_BYTES_BUDGET,
   KEEP_RECENT_MESSAGES,
   parsePromptTooLongLimit,
   RETRY_TOOL_RESULT_HEAD_CHARS,
@@ -413,6 +416,22 @@ export async function* runToolLoop(
         keepRecentMessages,
         toolResultsTruncated: compacted.toolResultsTruncated,
         summarizedMessages: compacted.summarizedMessages,
+      });
+    }
+    // #1216 — image bytes are bounded on their own: they barely move the
+    // token estimate but dominate the request size (and admin memory).
+    if (estimateHistoryImageBytes(history.messages) > HISTORY_IMAGE_BYTES_BUDGET) {
+      const images = compactHistoryImages(history.messages, {
+        budgetBytes: HISTORY_IMAGE_BYTES_BUDGET,
+        keepRecentMessages: KEEP_RECENT_MESSAGES,
+      });
+      history.messages = images.messages;
+      console.error("[chat-runner] history-images-compacted", {
+        chatSessionId,
+        step: stepCounter.value,
+        imagesRemoved: images.imagesRemoved,
+        imageBytesBefore: images.imageBytesBefore,
+        imageBytesAfter: images.imageBytesAfter,
       });
     }
   };

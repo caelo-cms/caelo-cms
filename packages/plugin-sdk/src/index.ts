@@ -183,6 +183,13 @@ export const pluginToolSpec = z.object({
    *  body of an email that is sent as approved). Only meaningful with
    *  `approvalMode`; bound each one in `inputJsonSchema` (`maxLength`). */
   approvalPreviewFullArgs: z.array(z.string().min(1).max(64)).max(8).optional(),
+  /** An approved call normally applies live when the approver may
+   *  publish. Set this when the decision is about the chat's draft (e.g.
+   *  a module the chat created or edited): the approved call then runs
+   *  on the chat's branch for every approver and goes live with it, so
+   *  it judges exactly what the approver was shown. Only meaningful
+   *  with `approvalMode`. */
+  approvedOnChatBranch: z.boolean().optional(),
   /** The permission the HUMAN a chat call acts for must hold — for the
    *  direct call, or for the approver of an approval-gated one. Use the
    *  permission the plugin's own owner panel requires, so the chat is not
@@ -420,6 +427,16 @@ export const listResolveVariantOverlay = z
 
 export type ListResolveVariantOverlay = z.infer<typeof listResolveVariantOverlay>;
 
+const deferralReasonKey = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z][a-z0-9_-]*$/, "reason is a lowercase key");
+
+const deferralMarkup = z
+  .object({ html: z.string().min(1).max(20_000), css: z.string().max(20_000) })
+  .strict();
+
 /**
  * A module withheld from the page until the withholding plugin says
  * otherwise.
@@ -430,29 +447,43 @@ export type ListResolveVariantOverlay = z.infer<typeof listResolveVariantOverlay
  * plugin's client runtime clones the content into place when its
  * condition is met.
  *
+ * The `omit` form is for a module nothing on the visitor's side can
+ * release (a consent vendor nobody has classified yet): a build emits
+ * nothing in its place — no placeholder, no withheld content — and only
+ * the editor preview shows `editorNotice`, so the operator learns why
+ * the module is missing and can resolve it. A placeholder telling the
+ * visitor to wait for a review nobody on their side can do is noise.
+ *
  * Deliberately generic — core learns "withheld by plugin X for reason
  * Y", never "consent". A paywall or an auth gate uses the same shape.
  */
-export const moduleDeferralSpec = z
-  .object({
-    /** The plugin's own vocabulary, surfaced as `data-reason`. */
-    reason: z
-      .string()
-      .min(1)
-      .max(64)
-      .regex(/^[a-z][a-z0-9_-]*$/, "reason is a lowercase key"),
-    /** Slug of the module rendered in the withheld one's place. An
-     *  ordinary module, so the AI authors and styles it. */
-    placeholderModuleSlug: z.string().min(1).max(200),
-    /** The plugin's own built-in placeholder, rendered while no module
-     *  with `placeholderModuleSlug` exists yet. Without it a site whose
-     *  placeholder was never designed cannot render the page at all. */
-    defaultPlaceholder: z
-      .object({ html: z.string().min(1).max(20_000), css: z.string().max(20_000) })
-      .strict()
-      .optional(),
-  })
-  .strict();
+export const moduleDeferralSpec = z.union([
+  z
+    .object({
+      /** The plugin's own vocabulary, surfaced as `data-reason`. */
+      reason: deferralReasonKey,
+      /** Slug of the module rendered in the withheld one's place. An
+       *  ordinary module, so the AI authors and styles it. */
+      placeholderModuleSlug: z.string().min(1).max(200),
+      /** The plugin's own built-in placeholder, rendered while no module
+       *  with `placeholderModuleSlug` exists yet. Without it a site whose
+       *  placeholder was never designed cannot render the page at all. */
+      defaultPlaceholder: deferralMarkup.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      reason: deferralReasonKey,
+      omit: z.literal(true),
+      /**
+       * Shown in the editor preview only, in the module's place: what is
+       * held back and why. A `<button data-caelo-ask-ai>` inside it adds
+       * the module to the current chat as a reference chip.
+       */
+      editorNotice: deferralMarkup,
+    })
+    .strict(),
+]);
 
 export type ModuleDeferralSpec = z.infer<typeof moduleDeferralSpec>;
 

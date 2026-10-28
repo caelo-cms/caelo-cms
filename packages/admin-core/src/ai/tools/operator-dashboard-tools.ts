@@ -350,32 +350,40 @@ export const getEmailConfigTool = makeReadTool({
 });
 
 export const listBugReportsTool = makeListReadTool<
-  { status?: "new" | "triaged" | "fixed" | "invalid" },
+  { status?: "new" | "triaged" | "fixed" | "invalid"; kind?: "defect" | "suggestion" },
   OpValue<typeof listBugReportsOp>["reports"][number]
 >({
   name: "list_bug_reports",
   description:
-    "List defect reports filed against Caelo (via `bug_report` or auto-captured by the chat), newest first. Call BEFORE `bug_report` to see whether it is already reported. " +
+    "List reports filed against Caelo — defects (via `bug_report` or auto-captured by the chat) and suggestions (via `bug_report` kind=suggestion) — newest first. Call BEFORE `bug_report` to see whether it is already reported; `kind` narrows to one kind. " +
     "Forwarding column: local_only = this site only, the Caelo team has NOT seen it | queued = will be sent | sent = the team received it | failed = sending failed, stored here only. " +
     'local_only/failed reach the team only when the Owner clicks "Send unsent reports" on Settings → Detected bugs (sending turned on); you cannot send them. ' +
     "Never tell the operator the team knows unless forwarding is sent.",
   opName: "ai_bug_reports.list",
-  input: z.object({ status: z.enum(["new", "triaged", "fixed", "invalid"]).optional() }).strict(),
+  input: z
+    .object({
+      status: z.enum(["new", "triaged", "fixed", "invalid"]).optional(),
+      kind: z.enum(["defect", "suggestion"]).optional(),
+    })
+    .strict(),
   buildOpInput: (input) => ({
     ...(input.status ? { status: input.status } : {}),
+    ...(input.kind ? { kind: input.kind } : {}),
     limit: Math.min(200, (input.offset ?? 0) + (input.limit ?? 50)),
   }),
   rows: (value) => (value as OpValue<typeof listBugReportsOp>).reports,
   label: "bug_reports",
   columns: [
     { key: "createdAt", value: (r) => r.createdAt },
+    { key: "kind", value: (r) => r.kind },
     { key: "status", value: (r) => r.status },
-    { key: "severity", value: (r) => r.severity },
+    // A suggestion has no severity.
+    { key: "severity", value: (r) => r.severity ?? "" },
     { key: "tool", value: (r) => r.suspectedTool ?? "" },
     { key: "forwarding", value: (r) => r.forwardingState },
     { key: "title", value: (r) => r.title },
   ],
-  emptyMessage: "No bug reports filed (for that status).",
+  emptyMessage: "No bug reports filed (for that status and kind).",
 });
 
 export const getMediaSettingsTool = makeReadTool({

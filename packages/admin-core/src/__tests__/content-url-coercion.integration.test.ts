@@ -2,8 +2,9 @@
 
 /**
  * build_page URL-field resilience — an EMPTY or whitespace-only `kind=url`
- * content value is coerced to the safe placeholder "#" (and persisted)
- * instead of aborting the WHOLE atomic build_page. A genuinely-not-a-URL
+ * content value is stored as "" (no link) instead of aborting the WHOLE
+ * atomic build_page. It is NOT turned into "#": that made an optional
+ * `{{#field}}` section truthy and rendered a dead link (#1095). A genuinely-not-a-URL
  * value (unrecognized non-empty string, or a non-string primitive) still
  * fails loudly with the actionable message. Runs against real Postgres
  * through the op layer so the coercion is exercised end-to-end (write +
@@ -12,8 +13,10 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, renderTemplate } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { buildPageTool } from "../ai/tools/build-page.js";
+import type { ToolContext } from "../ai/tools/dispatch.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -90,7 +93,7 @@ function ctaModule(href: unknown) {
 }
 
 describe("build_page url-field resilience", () => {
-  it("an EMPTY link_href does NOT abort build_page; the stored value is coerced to '#'", async () => {
+  it("an EMPTY link_href does NOT abort build_page; the stored value stays empty (#1095)", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
       page: { slug: `urlc-empty-${TS}`, title: "URLC Empty", templateId },
       modules: [ctaModule("")],
@@ -102,10 +105,33 @@ describe("build_page url-field resilience", () => {
     const ci = await execute(registry, adapter, systemCtx, "content_instances.get", { id: ciId });
     if (!ci.ok) throw new Error("ci get failed");
     const values = (ci.value as { instance: { values: Record<string, unknown> } }).instance.values;
-    expect(values.cta_href).toBe("#");
+    expect(values.cta_href).toBe("");
   });
 
-  it("a WHITESPACE-only link_href is coerced to '#' too", async () => {
+  it("the stored empty url keeps an optional {{#href}} section hidden (#1095)", async () => {
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { slug: `urlc-section-${TS}`, title: "URLC Section", templateId },
+      modules: [ctaModule("")],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const ciId = (r.value as { placements: { contentInstanceId: string }[] }).placements[0]!
+      .contentInstanceId;
+    const ci = await execute(registry, adapter, systemCtx, "content_instances.get", { id: ciId });
+    if (!ci.ok) throw new Error("ci get failed");
+    const values = (ci.value as { instance: { values: Record<string, unknown> } }).instance.values;
+    const out = renderTemplate({
+      html: '<p>{{cta_label}}{{#cta_href}}<a href="{{cta_href}}">more</a>{{/cta_href}}</p>',
+      fields: [
+        { name: "cta_label", kind: "text" },
+        { name: "cta_href", kind: "url" },
+      ],
+      contentValues: values,
+    });
+    expect(out.html).toBe("<p>Go</p>");
+  });
+
+  it("a WHITESPACE-only link_href is stored as an empty string too", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
       page: { slug: `urlc-ws-${TS}`, title: "URLC WS", templateId },
       modules: [ctaModule("   \n\t ")],
@@ -117,7 +143,7 @@ describe("build_page url-field resilience", () => {
     const ci = await execute(registry, adapter, systemCtx, "content_instances.get", { id: ciId });
     if (!ci.ok) throw new Error("ci get failed");
     const values = (ci.value as { instance: { values: Record<string, unknown> } }).instance.values;
-    expect(values.cta_href).toBe("#");
+    expect(values.cta_href).toBe("");
   });
 
   it("a VALID href passes through untouched (not coerced)", async () => {
@@ -161,5 +187,25 @@ describe("build_page url-field resilience", () => {
     if (r.ok) return;
     const msg = (r.error as { message?: string }).message ?? "";
     expect(msg).toContain("kind=url");
+  });
+
+  it("a link to a page that does not exist is a refusal, not a filed bug (#1097)", async () => {
+    const page = { slug: `urlc-dead-${TS}`, title: "URLC Dead", templateId };
+    const modules = [ctaModule(`/urlc-no-such-page-${TS}/`)];
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", { page, modules });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect((r.error as { refusal?: boolean }).refusal).toBe(true);
+    const tool = await buildPageTool.handler(
+      systemCtx,
+      { page, modules } as never,
+      {
+        registry,
+        adapter,
+      } as unknown as ToolContext,
+    );
+    expect(tool.ok).toBe(false);
+    expect(tool.content).toContain("is not the path of any page");
+    expect(tool.refusal).toBe(true);
   });
 });

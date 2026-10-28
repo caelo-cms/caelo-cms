@@ -36,6 +36,7 @@ export function structureSourcesFromOps(
           slug: m.slug,
           displayName: m.displayName,
           html: m.html,
+          js: m.js,
         })),
       ),
     layouts: () =>

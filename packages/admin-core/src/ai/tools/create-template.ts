@@ -18,6 +18,7 @@ import { execute } from "@caelo-cms/query-api";
 import { createTemplateToolInput } from "@caelo-cms/shared";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError, forwardNextAction } from "./_describe-error.js";
+import { toolNamesIn } from "./_list-tool-kit.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const createTemplateTool: ToolDefinitionWithHandler<
@@ -73,7 +74,7 @@ export const createTemplateTool: ToolDefinitionWithHandler<
       const next = forwardNextAction(r.error);
       return {
         ok: false,
-        content: `templates.create failed: ${describeError(r.error)}`,
+        content: `templates.create failed: ${toolNamesIn(describeError(r.error))}`,
         ...(next ? { nextAction: next } : {}),
       };
     }

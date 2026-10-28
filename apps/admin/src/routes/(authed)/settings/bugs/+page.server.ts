@@ -2,7 +2,7 @@
 
 /**
  * "Detected bugs" — operator-facing view of `ai_bug_reports`, the defects
- * the AI filed while working (see `ops/ai/bug-reports.ts`), plus the
+ * and suggestions the AI filed while working (see `ops/ai/bug-reports.ts`), plus the
  * Owner's choice whether they go to the Caelo team (epic #901,
  * `ops/ai/bug-forwarding.ts`). The Markdown / JSON export stays for
  * installs that keep forwarding off.
@@ -20,12 +20,15 @@ export interface BugReport {
   id: string;
   createdAt: string;
   chatSessionId: string | null;
+  /** 'defect' = something misbehaved; 'suggestion' = nothing did, Caelo lacks something (#1192). */
+  kind: "defect" | "suggestion";
   title: string;
   whatHappened: string;
   expected: string;
   suspectedTool: string | null;
   evidence: string | null;
-  severity: string;
+  /** blocking | degraded | cosmetic for a defect; null for a suggestion. */
+  severity: string | null;
   blockedTask: boolean;
   status: string;
   /** 'ai' = model-filed via bug_report; 'auto' = chat-runner auto-captured. */

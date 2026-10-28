@@ -47,14 +47,16 @@ describe("composeSystemPrompt", () => {
     expect(out.startsWith("You are Caelo")).toBe(true);
   });
 
-  // Issue #620 / PR #624 real-AI run — the AI staged its first build but
-  // left a later content edit unstaged ("let me know when you want to stage
-  // it"): every site-changing turn ends with stage_changes, small edits and
-  // pending quality decisions included.
-  it("makes stage_changes the end of every site-changing turn", () => {
+  // An operator asking for one wording change got a full Stage (merge,
+  // staging build, quality check) every time: the AI stages when the user
+  // asks or to re-check its own quality fixes, and otherwise ends a change
+  // turn by offering the Stage.
+  it("stages on request only and ends a change turn with the offer", () => {
     const out = composeSystemPrompt([]);
-    expect(out).toContain("Every turn that changed the site ends with `stage_changes`");
-    expect(out).toContain("Never leave the Stage to the user");
+    expect(out).toContain("Do not stage on your own.");
+    expect(out).toContain("only when the user asks for it");
+    expect(out).toContain("re-check your own fixes in a quality fix round");
+    expect(out).not.toContain("Never leave the Stage to the user");
   });
 
   // Issue #667 / #727 — the quality target (100 / zero findings, the

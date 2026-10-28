@@ -65,8 +65,10 @@ export async function assertChatAccess(locals: App.Locals, chatSessionId: string
   const user = requirePermission(locals, "content.read");
   if (canManageAllChats(user)) return;
   const { adapter, registry } = getQueryContext();
-  // chat.get_session reads only the caller's own sessions.
-  const own = await execute(registry, adapter, locals.ctx, "chat.get_session", { chatSessionId });
+  // chat.resolve_session reads only the caller's own sessions.
+  const own = await execute(registry, adapter, locals.ctx, "chat.resolve_session", {
+    chatSessionId,
+  });
   if (!own.ok) throw error(404, "Chat not found");
 }
 

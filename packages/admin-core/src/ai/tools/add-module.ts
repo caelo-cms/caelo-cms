@@ -42,6 +42,7 @@ import {
   findUnrenderableLayoutFields,
   unrenderableLayoutFieldsError,
 } from "./_layout-module-fields.js";
+import { toolNamesIn } from "./_list-tool-kit.js";
 import { mintModuleFromHtml } from "./_mint-module.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
@@ -53,6 +54,7 @@ import {
   MODULE_HTML_DESCRIPTION,
   MODULE_JS_CONTRACT,
 } from "./_module-js-contract.js";
+import { moduleJsGuardSuffix } from "./_module-js-guard.js";
 import { resolvePageRef } from "./_page-ref.js";
 import { pluginWriteHintsSuffix, storedModuleWrites } from "./_plugin-write-hints.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
@@ -269,7 +271,7 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     'USE FOR: one incremental module on an existing page; chrome (`target:"layout"`); a module on every page of a template.',
     "DO NOT USE FOR: a new page or a page needing >1 module -> `build_page` (whole ordered list WITH content, one transaction).",
     "CORE RULES:",
-    "- Two modes, all targets. Reuse (check `list_modules` first): `moduleId` places a SHARED module without a duplicate; a later `update_modules_many` changes it everywhere. Placement-only: authoring fields passed alongside are NOT applied (result says so) — to change the module, place by `moduleId`, then `update_modules_many`. Mint: `html` + `displayName` + `kind` + `fields[]`.",
+    "- Two modes, all targets. Reuse (check `list_modules` first): `moduleId` places a SHARED module without a duplicate; a later `update_modules_many` changes it everywhere. Placement-only: authoring fields passed alongside are NOT applied (result says so) — to change the module, place by `moduleId`, then `update_modules_many`. Mint: `html` + `displayName` + `kind` + `fields[]` (`[]` = no fields of its own, used verbatim).",
     "- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).",
     '- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:"texts"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.',
     "- Initial content comes IN THIS CALL via `values`. A mint with `fields` but neither `values` nor field defaults is REJECTED (would render empty placeholders).",
@@ -363,7 +365,7 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     // CSS/design-guard suffixes only apply to freshly authored CSS.
     const cssSuffix = mod.reused
       ? ""
-      : `${await cssVarWarningSuffix(ctx, toolCtx, mod.css)}${await designGuardSuffix(ctx, toolCtx, { css: mod.css, html: input.html, excludeModuleIds: [mod.moduleId] })}${await pluginWriteHintsSuffix(ctx, await storedModuleWrites(ctx, toolCtx, [mod.moduleId]))}`;
+      : `${await cssVarWarningSuffix(ctx, toolCtx, mod.css)}${await designGuardSuffix(ctx, toolCtx, { css: mod.css, html: input.html, excludeModuleIds: [mod.moduleId] })}${await pluginWriteHintsSuffix(ctx, await storedModuleWrites(ctx, toolCtx, [mod.moduleId]))}${await moduleJsGuardSuffix(ctx, toolCtx, [mod.moduleId])}`;
     // §2 — reuse ignored some authoring fields the call also carried; say so
     // loudly so an intended change never vanishes silently.
     const ignoredNote =
@@ -477,9 +479,13 @@ async function fillPlacementValues(
     },
   );
   if (!write.ok) {
+    // #1149 — the placement exists (empty); re-running add_module would
+    // place the module a second time. Say where it is and what fills it.
     return {
       ok: false,
-      content: `placed the module, but applying \`values\` failed: ${describeError(write.error)}`,
+      content:
+        `the module IS placed (page ${pageId}, block "${blockName}", position ${position}) but its content is empty: applying \`values\` failed: ${toolNamesIn(describeError(write.error))} ` +
+        `Do not call add_module again — fix the values and write them with set_page_module_content_many({items: [{pageId: "${pageId}", blockName: "${blockName}", position: ${position}, contentValues: …}]}).`,
     };
   }
   return { ok: true };

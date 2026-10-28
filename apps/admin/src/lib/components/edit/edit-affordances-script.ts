@@ -446,6 +446,30 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     true,
   );
 
+  // A button a plugin's editor notice offers (an omitted module: why it
+  // is missing from the page) does what Ask AI does for that module: the
+  // notice's text rides on the chip as context, the instruction is typed
+  // in the editor's composer.
+  document.addEventListener(
+    "click",
+    function (ev) {
+      var t = ev.target && ev.target.nodeType === 1 ? ev.target : null;
+      var btn = t && t.closest ? t.closest("[data-caelo-ask-ai]") : null;
+      if (!btn || isOwnUi(btn)) return;
+      var moduleEl = findModuleAncestor(btn);
+      if (!moduleEl) return;
+      ev.preventDefault();
+      var ref = buildRef(moduleEl, moduleEl, "");
+      var context = clip(
+        (moduleEl.textContent || "").replace(btn.textContent || "", " "),
+        LIMITS.context,
+      );
+      if (context) ref.context = context;
+      post(ref, true);
+    },
+    true,
+  );
+
   document.addEventListener(
     "mousedown",
     function (ev) {

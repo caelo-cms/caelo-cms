@@ -156,7 +156,7 @@ describe("buildStatusLine", () => {
     expect(line).toContain("pageId h1");
     expect(line).toContain("set_pages_status_many");
     expect(line).toContain("autofill_page_seo_many");
-    expect(line).toContain("before its stage_changes");
+    expect(line).toContain("so the next Stage is not refused");
   });
 
   it("a Stage-ready site adds nothing, and a failed readiness read is not evidence", () => {

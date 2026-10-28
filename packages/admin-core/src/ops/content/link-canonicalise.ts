@@ -79,6 +79,8 @@ export const canonicaliseLinkValuesOp = defineOperation({
         kind: "HandlerError",
         operation: "links.canonicalise_values",
         message: r.message,
+        // An unknown link target is the check working (#1097).
+        refusal: true,
       });
     }
     return ok({ values: r.value });

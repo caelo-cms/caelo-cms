@@ -103,9 +103,9 @@ export const upsertPageTypesManyTool = makeOpTool({
   description:
     "Create or replace page types in one transaction, when the operator starts a new kind of content ('a news section with categories', 'a job board').\n" +
     "CORE RULES:\n" +
-    "- `templates`: ids from `list_templates`; none fits -> `create_template` with `pageType` first. `defaultTemplate` is one of them.\n" +
+    "- `templates`: ids from `list_templates`; none fits -> `create_template` WITHOUT `pageType` first, then list its id here. `defaultTemplate` is one of them.\n" +
     "- `properties`: fields every page of the type carries (e.g. `author` text, `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n" +
-    "- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` (pageType `news`) or reuse one -> this -> `build_page`/`update_pages_many` with pageType, properties, terms.\n" +
+    "- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` (no pageType) or reuse one -> this, with the template id -> `build_page`/`update_pages_many` with pageType, properties, terms.\n" +
     "- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.",
   inputSchema: UPSERT_PAGE_TYPES_JSON_SCHEMA,
   opName: "page_types.upsert_many",

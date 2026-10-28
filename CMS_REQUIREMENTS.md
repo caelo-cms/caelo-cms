@@ -578,7 +578,7 @@ With the client-assets grant, a plugin declares `buildAssets`, returning `.js` /
 
 #### Deferred modules — withholding content until a plugin allows it (#450)
 
-A plugin with the deferrals contribution declares `deferralsOperation`, receives every module of the render pass **with the content about to ship**, and returns a verdict per withheld module (`reason`, `placeholderModuleSlug`, optional `defaultPlaceholder`). Core emits:
+A plugin with the deferrals contribution declares `deferralsOperation`, receives every module of the render pass **with the content about to ship**, and returns a verdict per withheld module (`reason`, `placeholderModuleSlug`, optional `defaultPlaceholder` — or the omit form below). Core emits:
 
 ```html
 <div data-caelo-deferred="<plugin>" data-reason="<key>" data-module="<slug>">
@@ -591,6 +591,7 @@ A plugin with the deferrals contribution declares `deferralsOperation`, receives
 - **Only what loads with the page counts.** A gate judges page-load requests (embeds, images, stylesheets, fonts, scripts); a link contacts nobody until clicked.
 - **Per module, not per placement**, including modules placed in a layout.
 - **The placeholder is an ordinary module** by slug; while the site has none, the plugin's `defaultPlaceholder` renders instead, so a page never fails because a placeholder was not designed yet. Without either, the render fails loudly.
+- **Omitted when the visitor cannot release it.** A verdict of the form `{reason, omit: true, editorNotice}` (a consent vendor nobody has classified yet) makes a build emit nothing in the module's place — no placeholder, no parked copy. Only the editor preview shows `editorNotice` there (attributed to the module, with a `data-caelo-ask-ai` button that adds the module to the current chat), and the plugin's Stage-audit finding blocks Publish live until the question is resolved, so a missing header never ships unnoticed.
 - **Generic by design** — core learns "withheld by plugin X for reason Y", nothing about consent.
 
 ### 14.11 Shipped plugins

@@ -237,7 +237,14 @@ export const createLayoutOp = defineOperation({
         succeeded: false,
         resultSummary: `link-canonicalisation: ${linkCanon.issues.length} issue(s)`,
       });
-      return err({ kind: "HandlerError", operation: "layouts.create", message: linkCanon.message });
+      return err({
+        kind: "HandlerError",
+        operation: "layouts.create",
+        message: linkCanon.message,
+        // A link to a page that does not exist: the guard working, not a
+        // Caelo defect — not auto-filed as a bug (#1097).
+        refusal: true,
+      });
     }
     // v0.9.0 — branched-create: tagged with chat_branch_id when in chat
     // context; chat.merge_to_main clears the tag to graduate to main.
@@ -348,6 +355,9 @@ export const updateLayoutOp = defineOperation({
           kind: "HandlerError",
           operation: "layouts.update",
           message: linkCanon.message,
+          // A link to a page that does not exist: the guard working, not a
+          // Caelo defect — not auto-filed as a bug (#1097).
+          refusal: true,
         });
       }
       sets.push(sql`html = ${linkCanon.value}`);

@@ -158,8 +158,8 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
     expect(res.content).toContain("`fields`");
     expect(res.content).toContain('kind:"list"');
     // gives a concrete, copyable field example so it re-emits in one turn
-    expect(res.content).toContain("nav_links");
-    expect(res.content).toContain("{{#nav_links}}");
+    expect(res.content).toContain('listType:"links"');
+    expect(res.content).toContain("{{#links}}");
     // still the generic drop-and-retry guidance
     expect(res.content.toLowerCase()).toContain("retry");
   });
@@ -183,6 +183,6 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
     expect(res.content).toContain("wobble");
     // No nesting-mechanism noise for a non-nesting key.
     expect(res.content).not.toContain('kind:"list"');
-    expect(res.content).not.toContain("{{#nav_links}}");
+    expect(res.content).not.toContain("{{#links}}");
   });
 });

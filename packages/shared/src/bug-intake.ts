@@ -60,7 +60,41 @@ export const bugIntakeRegisterRequest = z
   .strict();
 export type BugIntakeRegisterRequest = z.infer<typeof bugIntakeRegisterRequest>;
 
-/** `POST /v1/reports` — one redacted bug report (signed). */
+/**
+ * What a report is about (#1192).
+ *   defect     — something in Caelo misbehaved: a tool contradicted its
+ *                description, a render contradicted stored state, a call
+ *                failed. Auto captures and provider errors are always this.
+ *   suggestion — nothing misbehaved, but Caelo lacks something the AI needed:
+ *                a capability, a tool, a docs page. Filed by the AI only.
+ * The intake keeps the two apart end to end: own title prefix and label, own
+ * daily issue cap, and matching never puts one kind into the other's cluster.
+ */
+export const bugReportKind = z.enum(["defect", "suggestion"]);
+export type BugReportKind = z.infer<typeof bugReportKind>;
+
+/**
+ * The kind of a report that names none. Contract rule (#1192): installs
+ * released before `kind` existed send no kind, and everything they could
+ * file was a defect, so a missing kind IS `defect`. This is a protocol rule,
+ * not a guess: it holds for every protocol-1 report, and the intake applies
+ * the same rule to the records it stored before #1192.
+ */
+export const BUG_REPORT_KIND_BEFORE_1192: BugReportKind = "defect";
+
+/** How badly a defect hurt the task. Defects only: a suggestion has no severity. */
+export const bugReportSeverity = z.enum(["blocking", "degraded", "cosmetic"]);
+export type BugReportSeverity = z.infer<typeof bugReportSeverity>;
+
+/**
+ * `POST /v1/reports` — one redacted bug report (signed).
+ *
+ * `kind` is optional on the wire only for the contract rule above; parsing
+ * always yields one. `severity` is set for a defect and `null` for a
+ * suggestion (nothing broke, so there is nothing to grade), and an
+ * auto-captured report is always a defect. A report that breaks either is
+ * refused, not repaired: it came from a broken client.
+ */
 export const bugIntakeReport = z
   .object({
     protocolVersion: z.literal(BUG_INTAKE_PROTOCOL_VERSION),
@@ -69,7 +103,8 @@ export const bugIntakeReport = z
     caeloVersion: z.string().min(1).max(64),
     fingerprint: fingerprintSchema,
     source: z.enum(["ai", "auto"]),
-    severity: z.enum(["blocking", "degraded", "cosmetic"]),
+    kind: bugReportKind.default(BUG_REPORT_KIND_BEFORE_1192),
+    severity: bugReportSeverity.nullable(),
     blockedTask: z.boolean(),
     suspectedTool: z.string().max(200).nullable(),
     title: z.string().min(1).max(BUG_INTAKE_LIMITS.title),
@@ -77,7 +112,27 @@ export const bugIntakeReport = z
     expected: z.string().min(1).max(BUG_INTAKE_LIMITS.expected),
     evidence: z.string().max(BUG_INTAKE_LIMITS.evidence).nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((r, ctx) => {
+    if (r.kind === "defect" && r.severity === null) {
+      ctx.addIssue({ code: "custom", path: ["severity"], message: "a defect needs a severity" });
+    }
+    if (r.kind === "suggestion" && r.severity !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["severity"],
+        message: "a suggestion has no severity; send null",
+      });
+    }
+    if (r.kind === "suggestion" && r.source === "auto") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["kind"],
+        message: "an auto-captured report is always a defect",
+      });
+    }
+  });
+/** A parsed report: `kind` is always present. */
 export type BugIntakeReport = z.infer<typeof bugIntakeReport>;
 
 /**

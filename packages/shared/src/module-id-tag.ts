@@ -22,9 +22,12 @@ export const MODULE_ID_ATTRIBUTE = "data-caelo-module-id";
  * stays attributed to itself. Comments / DOCTYPE / leading whitespace
  * before the first tag are tolerated. HTML without an opening tag (pure
  * text, a failure comment) returns unchanged because there's nothing to
- * attach to.
+ * attach to. A self-closing root (`<line … />`, common for SVG parts)
+ * gets the attribute before its `/` (#1099) — after it, the tag would no
+ * longer self-close and swallow every following sibling.
  *
  * @example tagModuleId("<p>hi</p>", "abc") // '<p data-caelo-module-id="abc">hi</p>'
+ * @example tagModuleId('<line x1="0"/>', "abc") // '<line x1="0" data-caelo-module-id="abc"/>'
  */
 export function tagModuleId(html: string, moduleId: string): string {
   if (!html) return html;
@@ -33,6 +36,12 @@ export function tagModuleId(html: string, moduleId: string): string {
   if (!m) return html;
   const tagAttrs = m[2] ?? "";
   if (/\sdata-caelo-module-id\s*=/.test(tagAttrs)) return html;
-  const replaced = `<${m[1]}${tagAttrs} ${MODULE_ID_ATTRIBUTE}="${moduleId}">`;
+  // String ops, not a `\s*\/\s*$` regex: that backtracks polynomially on
+  // long whitespace runs (CodeQL js/polynomial-redos).
+  const trimmed = tagAttrs.trimEnd();
+  const selfClosing = trimmed.endsWith("/");
+  const attrs = selfClosing ? trimmed.slice(0, -1).trimEnd() : tagAttrs;
+  const close = selfClosing ? "/>" : ">";
+  const replaced = `<${m[1]}${attrs} ${MODULE_ID_ATTRIBUTE}="${moduleId}"${close}`;
   return html.slice(0, m.index) + replaced + html.slice(m.index + m[0].length);
 }

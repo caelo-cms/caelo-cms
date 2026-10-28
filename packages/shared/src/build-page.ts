@@ -283,6 +283,11 @@ export const buildPageTargetSchema = z
           code: z.ZodIssueCode.custom,
           message:
             `pageId targets an EXISTING page — drop ${createKeys.join(", ")}. ` +
+            // #1152 — status is a create-time field; publishing an existing
+            // page has its own tool.
+            (createKeys.includes("status")
+              ? "`status` only applies to a page this call creates; publish an existing page with set_pages_status_many. "
+              : "") +
             "To create a new page instead, omit pageId and pass slug + title.",
         });
       }

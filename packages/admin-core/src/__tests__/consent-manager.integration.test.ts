@@ -690,7 +690,35 @@ describe("#451 — consent-manager", () => {
         ?.reason,
     ).toBe("functional");
 
-    const allowed = await call("classify_embed", { moduleId: unknownId, allow: true });
+    // Rendering for everyone is not a classification: neither the old
+    // `allow` flag nor a category every visitor is in gets past
+    // classify_embed, which the AI may call without the Owner's click.
+    for (const loosening of [{ allow: true }, { category: "necessary" }]) {
+      const refused = await call("classify_embed", { moduleId: unknownId, ...loosening });
+      expect(refused.ok).toBe(false);
+      if (!refused.ok) expect(refused.error.message).toContain("allow_external_embed");
+    }
+
+    // allow_embed (approval-gated) lets through exactly the hosts the
+    // approver saw, on the module they saw — nothing else.
+    const allowArgs = {
+      moduleId: unknownId,
+      moduleSlug: "t451-unknown",
+      hosts: ["widgets.unknown-vendor.example"],
+      reason: "test",
+    };
+    const otherHosts = await call("allow_embed", { ...allowArgs, hosts: ["cdn.example"] });
+    expect(otherHosts.ok).toBe(false);
+    const otherSlug = await call("allow_embed", { ...allowArgs, moduleSlug: "t451-video" });
+    expect(otherSlug.ok).toBe(false);
+    const stillGated = await call("consent_deferrals", { modules: [unknownCandidate] });
+    if (!stillGated.ok) throw new Error(JSON.stringify(stillGated.error));
+    expect(
+      (stillGated.value as { deferrals: Record<string, { reason: string }> }).deferrals[unknownId]
+        ?.reason,
+    ).toBe("functional");
+
+    const allowed = await call("allow_embed", allowArgs);
     if (!allowed.ok) throw new Error(JSON.stringify(allowed.error));
     const finally_ = await call("consent_deferrals", { modules: [unknownCandidate] });
     if (!finally_.ok) throw new Error(JSON.stringify(finally_.error));

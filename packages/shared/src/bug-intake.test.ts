@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  BUG_REPORT_KIND_BEFORE_1192,
   bugIntakeReport,
   bugIntakeSigningString,
   computeBugFingerprint,
@@ -150,5 +151,51 @@ describe("bugIntakeReport", () => {
       siteUrl: "https://leak.example",
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe("bugIntakeReport kind (#1192)", () => {
+  const base = {
+    protocolVersion: 1,
+    reportId: "7f3c2b9e-1d4a-4e8b-9c0f-2a1b3c4d5e6f",
+    caeloVersion: "0.10.55",
+    fingerprint: "a".repeat(64),
+    source: "ai",
+    severity: "degraded",
+    blockedTask: false,
+    suspectedTool: null,
+    title: "t",
+    whatHappened: "w",
+    expected: "e",
+    evidence: null,
+  } as const;
+
+  it("parses a report without kind, as an install from before #1192 sends it, as a defect", () => {
+    expect(BUG_REPORT_KIND_BEFORE_1192).toBe("defect");
+    const parsed = bugIntakeReport.parse(base);
+    expect(parsed.kind).toBe("defect");
+    expect(parsed.severity).toBe("degraded");
+  });
+
+  it("round-trips a suggestion, which carries no severity", () => {
+    const sent = { ...base, kind: "suggestion", severity: null };
+    const parsed = bugIntakeReport.parse(sent);
+    expect(parsed).toEqual(sent);
+    expect(bugIntakeReport.parse(JSON.parse(JSON.stringify(parsed)))).toEqual(sent);
+  });
+
+  it("refuses a defect without severity, a graded suggestion and an auto-captured suggestion", () => {
+    const issues = (r: unknown) =>
+      bugIntakeReport.safeParse(r).error?.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
+    expect(issues({ ...base, kind: "defect", severity: null })).toEqual([
+      "severity: a defect needs a severity",
+    ]);
+    expect(issues({ ...base, kind: "suggestion" })).toEqual([
+      "severity: a suggestion has no severity; send null",
+    ]);
+    expect(issues({ ...base, source: "auto", kind: "suggestion", severity: null })).toEqual([
+      "kind: an auto-captured report is always a defect",
+    ]);
+    expect(issues({ ...base, kind: "feature" })?.[0]).toStartWith("kind:");
   });
 });

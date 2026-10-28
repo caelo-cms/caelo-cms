@@ -35,10 +35,12 @@
 
 import {
   definePlugin,
+  type ModuleDeferralSpec,
   type PluginAdminQuery,
   type PluginContextTier1,
   z,
 } from "@caelo-cms/plugin-sdk";
+import { unreviewedEmbedFindings } from "./audit.js";
 import { DEFAULT_CATEGORIES } from "./categories.js";
 import { consentLogCsv, consentLogPage, consentStats, describeConsentLog } from "./consent-log.js";
 import {
@@ -47,7 +49,7 @@ import {
   usedCategoryKeys,
   vendorEntries,
 } from "./declaration.js";
-import { defaultPlaceholder } from "./placeholder.js";
+import { defaultPlaceholder, editorNotice } from "./placeholder.js";
 import { buildRuntimeJs, CONSENT_COOKIE, RUNTIME_CSS } from "./runtime.js";
 import { deferralReason, moduleHosts } from "./scan.js";
 import { CONSENT_SKILLS } from "./skills.js";
@@ -242,6 +244,39 @@ async function syncGuards(ctx: PluginContextTier1): Promise<{ flagged: number; c
     flagged += 1;
   }
   return { flagged, cleared };
+}
+
+/** The module an operator decision is about; refuses one with no third-party host. */
+async function embedToDecide(
+  ctx: PluginContextTier1,
+  op: string,
+  moduleId: string,
+): Promise<EmbedScan> {
+  const scan = (await scanEmbeds(ctx)).find((e) => e.moduleId === moduleId);
+  if (!scan || scan.hosts.length === 0) {
+    throw new Error(
+      `${op}: module ${moduleId} has no detected third-party host — nothing to decide. Run list_external_embeds to see what does.`,
+    );
+  }
+  return scan;
+}
+
+/**
+ * Store a decision about the hosts the module reaches now; the row may
+ * not exist yet, since only the scheduled scan records them. A chat call
+ * is the AI's decision (an approved one is the approver's), and the
+ * stored `decided_by` says so rather than crediting the operator.
+ */
+async function recordEmbedVerdict(
+  ctx: PluginContextTier1,
+  scan: EmbedScan,
+  decision: Pick<GuardRow, "category_key" | "status">,
+): Promise<void> {
+  const q = adminQueryOf(ctx);
+  const decidedBy = ctx.invocation.origin === "chat" ? "ai" : "operator";
+  const fields = { ...decision, detected_hosts: scan.hosts, decided_by: decidedBy };
+  if (scan.guard) await q.update("module_guards", scan.guard.id, fields);
+  else await q.insert("module_guards", { module_id: scan.moduleId, ...fields });
 }
 
 const deferralsArgs = z.object({
@@ -493,6 +528,9 @@ export default definePlugin<PluginContextTier1>({
    */
   deferralsOperation: "consent_deferrals",
 
+  /** A pending module blocks Publish live — see `audit_findings`. */
+  auditFindingsOperation: "audit_findings",
+
   /** Keeps the scan current without anyone remembering to run it. */
   workers: [
     { name: "consent-embed-scan", cron: "*/5 * * * *", operationName: "scan_modules" },
@@ -648,7 +686,7 @@ export default definePlugin<PluginContextTier1>({
         ...(withheldNow.some((w) => w.siteChrome)
           ? {
               withheldNote:
-                "Site chrome (header, footer, navigation) is withheld: visitors see a placeholder instead on EVERY page. Tell the operator now, then resolve each module with classify_external_embed.",
+                "Site chrome (header, footer, navigation) is withheld: on EVERY page visitors see nothing in its place (pending) or a consent placeholder (gated). Tell the operator now, then resolve each module with classify_external_embed (or allow_external_embed, which asks the Owner to approve).",
             }
           : {}),
         consentLog: describeConsentLog(settings.retention_days),
@@ -727,25 +765,20 @@ export default definePlugin<PluginContextTier1>({
     /**
      * Core asks which modules to withhold; this answers.
      *
-     * `pending` withholds exactly like `gated` does. A module whose
-     * vendor nobody has ruled on is not known to be harmless, and
-     * rendering it while the question is open would send the request
-     * this whole mechanism exists to hold back. The difference between
-     * the two is surfaced to the EDITOR, not to the visitor.
+     * `pending` withholds too: a module whose vendor nobody has ruled
+     * on is not known to be harmless, and rendering it while the
+     * question is open would send the request this whole mechanism
+     * exists to hold back. But the visitor cannot answer that question,
+     * so a pending module is omitted from the built page altogether; the
+     * editor preview shows a notice in its place, and the Stage audit
+     * blocks Publish live until it is resolved (`audit_findings`).
      */
     consent_deferrals: async (ctx, args) => {
       const { modules } = deferralsArgs.parse(args);
       const q = adminQueryOf(ctx);
       const settings = await settingsOf(q);
       const labelOf = new Map((await categoriesOf(q)).map((c) => [c.key, c.display_name]));
-      const deferrals: Record<
-        string,
-        {
-          reason: string;
-          placeholderModuleSlug: string;
-          defaultPlaceholder: { html: string; css: string };
-        }
-      > = {};
+      const deferrals: Record<string, ModuleDeferralSpec> = {};
       for (const m of modules) {
         const hosts = moduleHosts(m);
         if (hosts.length === 0) continue;
@@ -757,14 +790,31 @@ export default definePlugin<PluginContextTier1>({
         })) as unknown as GuardRow[];
         const reason = deferralReason(hosts, guard, classifyHosts);
         if (reason === null) continue;
+        if (reason === "unclassified") {
+          deferrals[m.moduleId] = { reason, omit: true, editorNotice: editorNotice(hosts) };
+          continue;
+        }
+        const label = labelOf.get(reason);
+        if (label === undefined) {
+          throw new Error(
+            `consent_deferrals: module ${m.moduleId} is gated under category "${reason}", which does not exist (categories: ${[...labelOf.keys()].join(", ")}). Re-classify it with classify_external_embed.`,
+          );
+        }
         deferrals[m.moduleId] = {
           reason,
           placeholderModuleSlug: settings.placeholder_module_slug,
-          defaultPlaceholder: defaultPlaceholder(reason, labelOf.get(reason) ?? null),
+          defaultPlaceholder: defaultPlaceholder(reason, label),
         };
       }
       return { deferrals };
     },
+
+    /** The Stage-audit contribution: see ./audit.ts. Read-only, main line. */
+    audit_findings: async (ctx) => ({
+      findings: unreviewedEmbedFindings(
+        (await withheldModules(ctx)).map(({ scan, reason }) => ({ ...scan, reason })),
+      ),
+    }),
 
     /**
      * Scan changed modules for third-party hosts and record a verdict.
@@ -796,39 +846,53 @@ export default definePlugin<PluginContextTier1>({
       return { embeds };
     },
 
+    // Only the direction that keeps a module withheld until consent. A
+    // category every visitor is in (`necessary`) renders the module for
+    // everyone, which is allow_embed's decision and needs its approval.
     classify_embed: async (ctx, args) => {
-      const { moduleId, category, allow } = args as {
-        moduleId?: unknown;
-        category?: unknown;
-        allow?: unknown;
-      };
+      const { moduleId, category } = args as { moduleId?: unknown; category?: unknown };
       if (typeof moduleId !== "string") throw new Error("classify_embed: `moduleId` is required");
       const q = adminQueryOf(ctx);
-      const scan = (await scanEmbeds(ctx)).find((e) => e.moduleId === moduleId);
-      if (!scan || scan.hosts.length === 0) {
+      const scan = await embedToDecide(ctx, "classify_embed", moduleId);
+      const consentCategories = (await categoriesOf(q)).filter((c) => !c.required);
+      if (typeof category !== "string" || !consentCategories.some((c) => c.key === category)) {
         throw new Error(
-          `classify_embed: module ${moduleId} has no detected third-party host — nothing to classify. Run list_embeds to see what does.`,
+          `classify_embed: \`category\` must be one of ${consentCategories.map((c) => c.key).join(", ")}. To render the module for every visitor without consent, use allow_external_embed (it asks the Owner to approve).`,
         );
       }
-      let decision: Pick<GuardRow, "category_key" | "status">;
-      if (allow === true) {
-        decision = { category_key: scan.guard?.category_key ?? "marketing", status: "allowed" };
-      } else {
-        const categories = await categoriesOf(q);
-        const known = new Set(categories.map((c) => c.key));
-        if (typeof category !== "string" || !known.has(category)) {
-          throw new Error(`classify_embed: \`category\` must be one of ${[...known].join(", ")}`);
-        }
-        decision = { category_key: category, status: "gated" };
+      await recordEmbedVerdict(ctx, scan, { category_key: category, status: "gated" });
+      return { moduleId, status: "gated", category };
+    },
+
+    // The loosening direction: the module renders for every visitor,
+    // before any consent. A §11.A tool (approvalMode), so a chat reaches
+    // this only through the Owner's click, and the approver sees the
+    // hosts they let through — which must be exactly the ones the module
+    // reaches now, or the approval would cover requests nobody named.
+    allow_embed: async (ctx, args) => {
+      const { moduleId, moduleSlug, hosts } = args as {
+        moduleId?: unknown;
+        moduleSlug?: unknown;
+        hosts?: unknown;
+      };
+      if (typeof moduleId !== "string") throw new Error("allow_embed: `moduleId` is required");
+      const scan = await embedToDecide(ctx, "allow_embed", moduleId);
+      if (moduleSlug !== scan.moduleSlug) {
+        throw new Error(
+          `allow_embed: module ${moduleId} is "${scan.moduleSlug}", not ${JSON.stringify(moduleSlug)}. Pass the slug list_external_embeds reports.`,
+        );
       }
-      // The operator decides about the hosts the module reaches now; the
-      // row may not exist yet, since only the scheduled scan records them.
-      const fields = { ...decision, detected_hosts: scan.hosts, decided_by: "operator" };
-      if (scan.guard) await q.update("module_guards", scan.guard.id, fields);
-      else await q.insert("module_guards", { module_id: moduleId, ...fields });
-      return decision.status === "allowed"
-        ? { moduleId, status: "allowed" }
-        : { moduleId, status: "gated", category: decision.category_key };
+      const named = Array.isArray(hosts) ? [...hosts].map(String).sort() : [];
+      if (JSON.stringify(named) !== JSON.stringify(scan.hosts)) {
+        throw new Error(
+          `allow_embed: module "${scan.moduleSlug}" reaches ${scan.hosts.join(", ")} now, not ${named.join(", ") || "nothing"}. Call list_external_embeds again and ask for approval of exactly those hosts.`,
+        );
+      }
+      await recordEmbedVerdict(ctx, scan, {
+        category_key: scan.guard?.category_key ?? "marketing",
+        status: "allowed",
+      });
+      return { moduleId, status: "allowed" };
     },
 
     add_tag: async (ctx, args) => addTag(ctx, args),

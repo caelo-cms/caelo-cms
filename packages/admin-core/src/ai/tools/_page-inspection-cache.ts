@@ -26,8 +26,21 @@ export interface PageInspection {
 }
 
 const CACHE_CAP = 32;
+/**
+ * #1216 — total size bound across entries, in string chars (≈2 bytes each
+ * in memory). An entry count alone let 32 rendered pages of a few MB each
+ * (HTML + rendered HTML + Markdown) pin well over 100 MB in the admin.
+ * The newest entry is always kept, even alone over the bound, so the
+ * pageRef its caller just received still resolves.
+ */
+export const CACHE_CHAR_CAP = 24 * 1024 * 1024;
 /** pageRef → entry. Map insertion order is the LRU order (bump on access). */
 const cache = new Map<string, PageInspection>();
+let cachedChars = 0;
+
+function entryChars(e: PageInspection): number {
+  return e.html.length + e.markdown.length + (e.renderedHtml?.length ?? 0) + e.url.length;
+}
 
 /** Chars of Markdown returned per page/slice (~2K tokens). */
 export const MARKDOWN_SLICE_CHARS = 8_000;
@@ -46,14 +59,26 @@ function hash(input: string): string {
  */
 export function putPageInspection(sessionId: string, entry: PageInspection): string {
   const pageRef = `pg_${hash(`${sessionId}\n${entry.url}`)}`;
-  cache.delete(pageRef); // re-insert at MRU
+  const previous = cache.get(pageRef);
+  if (previous) {
+    cache.delete(pageRef); // re-insert at MRU
+    cachedChars -= entryChars(previous);
+  }
   cache.set(pageRef, entry);
-  while (cache.size > CACHE_CAP) {
+  cachedChars += entryChars(entry);
+  while (cache.size > 1 && (cache.size > CACHE_CAP || cachedChars > CACHE_CHAR_CAP)) {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
+    const evicted = cache.get(oldest);
     cache.delete(oldest);
+    if (evicted) cachedChars -= entryChars(evicted);
   }
   return pageRef;
+}
+
+/** Test seam — the cache's current total size in chars. */
+export function pageInspectionCacheCharsForTests(): number {
+  return cachedChars;
 }
 
 /** Fetch a cached inspection (bumping it to MRU), or null if evicted/absent. */
@@ -81,4 +106,5 @@ export function sliceMarkdown(
 /** Test seam — drop all cached inspections. */
 export function clearPageInspectionCacheForTests(): void {
   cache.clear();
+  cachedChars = 0;
 }

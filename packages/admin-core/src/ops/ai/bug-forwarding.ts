@@ -45,6 +45,7 @@ const reportColumns = sql`
   id::text AS id,
   fingerprint,
   source,
+  kind,
   severity,
   blocked_task AS "blockedTask",
   suspected_tool AS "suspectedTool",

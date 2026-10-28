@@ -92,7 +92,7 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
   {
     name: "consent_status",
     description:
-      "Read the consent setup: categories (and which ones something on the site uses), policy version, the exact contract a banner module must satisfy, the cookies the site itself sets, `withheldNow` (modules visitors currently see as a placeholder — `siteChrome: true` means a header/footer/navigation missing from every page), and `consentLog` (what each recorded decision stores, for how long, where, and a paragraph for the privacy policy). " +
+      "Read the consent setup: categories (and which ones something on the site uses), policy version, the exact contract a banner module must satisfy, the cookies the site itself sets, `withheldNow` (modules visitors do not get as authored: `pending` ones are left out of the page entirely, `gated` ones show the consent placeholder — `siteChrome: true` means a header/footer/navigation missing from every page), and `consentLog` (what each recorded decision stores, for how long, where, and a paragraph for the privacy policy). " +
       "Call this FIRST whenever the operator asks for a cookie banner, consent dialog, privacy policy text, or anything about tracking, and right after the consent plugin is activated — tell the operator about anything in `withheldNow` at once. " +
       "NOT for changing anything.",
     operationName: "consent_status",
@@ -133,32 +133,71 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
     name: "list_external_embeds",
     description:
       "List the modules that load something from a third party (YouTube, Maps, fonts, pixels), what each reaches for, and whether it is withheld pending consent, already gated, or explicitly allowed. " +
-      "Call when the operator asks what the site loads, why a module shows a placeholder, or after adding a module with an embed. " +
-      "A module marked `pending` is WITHHELD from visitors — an unrecognised vendor is not assumed harmless — so resolve those with classify_external_embed.",
+      "Call when the operator asks what the site loads, why a module shows a placeholder or is missing, or after adding a module with an embed. " +
+      "A module marked `pending` is left OUT of the built page — an unrecognised vendor is not assumed harmless, so visitors see nothing in its place and Publish live is blocked — so resolve those with classify_external_embed or allow_external_embed.",
     operationName: "list_embeds",
     inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
   },
   {
     name: "classify_external_embed",
     description:
-      "Decide what a module's third-party embed needs: pin it to a consent category (it then shows the placeholder until the visitor agrees) or mark it allowed (it renders for everyone). " +
-      "Mark allowed ONLY when the request carries nothing identifying — a self-hosted asset, a CDN with no cookies and no logging of visitors. When unsure, pin it to a category; the cost is a placeholder, and the cost of the other mistake is an unasked request to a third party.",
+      "Pin a module's third-party embed to a consent category -> placeholder until the visitor consents to it. " +
+      "Default answer for anything that could identify the visitor (video/map platforms, social widgets, pixels). " +
+      "Rendering for everyone is NOT this tool -> allow_external_embed (Owner approval).",
     operationName: "classify_embed",
     // Decides which third-party requests visitors' browsers make — a consent setting.
     requiredPermission: "settings.write",
     inputJsonSchema: {
       type: "object",
       additionalProperties: false,
-      required: ["moduleId"],
+      required: ["moduleId", "category"],
       properties: {
         moduleId: { type: "string", format: "uuid" },
-        category: {
+        category: { type: "string", enum: ["functional", "analytics", "marketing"] },
+      },
+    },
+  },
+  {
+    name: "allow_external_embed",
+    description:
+      "Let a module's third-party embed render for EVERY visitor, without consent.\n" +
+      "USE FOR: requests that carry nothing identifying (self-hosted asset, CDN without cookies/visitor logs) | requests only the visitor's own action triggers (form posting to the site's backend on submit).\n" +
+      "DO NOT USE when unsure -> classify_external_embed: a wrong pin costs a placeholder, a wrong allow an unasked request to a third party.\n" +
+      "TWO-STEP: PAUSES for the Owner's in-chat Approve. Say you asked for approval; never claim the module is visible.",
+    operationName: "allow_embed",
+    approvalMode: "user-approval",
+    // The approver decides which third-party requests visitors' browsers
+    // make without consent: the same permission as registering a tag.
+    requiredPermission: "settings.write",
+    approvalPreviewFullArgs: ["hosts", "reason"],
+    // The module may exist only in the chat's draft, or reach other hosts
+    // there than on main: judge and record it where the Owner saw it.
+    approvedOnChatBranch: true,
+    inputJsonSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["moduleId", "moduleSlug", "hosts", "reason"],
+      properties: {
+        moduleId: { type: "string", format: "uuid" },
+        moduleSlug: {
           type: "string",
-          enum: ["necessary", "functional", "analytics", "marketing"],
+          maxLength: 200,
+          description: "As list_external_embeds reports it.",
         },
-        allow: {
-          type: "boolean",
-          description: "True to render it for everyone. Mutually exclusive with `category`.",
+        hosts: {
+          type: "array",
+          minItems: 1,
+          maxItems: 20,
+          items: { type: "string", maxLength: 253 },
+          description:
+            "Exactly the module's hosts per list_external_embeds; any other set is refused.",
+        },
+        reason: {
+          type: "string",
+          minLength: 1,
+          maxLength: 600,
+          description:
+            "For the Owner: what the module sends where, and when (e.g. on submit only).",
         },
       },
     },

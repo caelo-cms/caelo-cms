@@ -42,7 +42,7 @@ Troubleshooting (the audit's failure message names which one):
 
 ## Core check: `structure` (#820)
 
-Free markup that should be a module, and data kept twice that should be one list. See `checks/structure.ts`.
+Free markup that should be a module, data kept twice that should be one list, and module JS that belongs elsewhere or builds content. See `checks/structure.ts` and `checks/structure-js.ts`.
 
 | Rule | Severity | Meaning |
 |---|---|---|
@@ -53,10 +53,16 @@ Free markup that should be a module, and data kept twice that should be one list
 | `structure/similar-navigation` | warning | Near matches of duplicate navigation (Jaccard ≥ the near-match threshold, 0.8). |
 | `structure/layout-css-module-specific` | warning | Layout CSS for classes only one module, or only free markup, uses. |
 | `structure/repeated-items` | warning | One pattern written out 3+ times side by side in one module's free markup (#1068): give the module a `list` field with one entry per item (a `module-list` only when each item is a module of its own). |
+| `structure/foreign-module-js` | error | A placed module's JS drives markup (classes, ids, `data-*` hooks) that only one or two OTHER modules render (#1198) — e.g. a header carrying the demo form's submit. Move the script into the module it serves. |
+| `structure/js-rendered-content` | error | A placed module's JS builds visible content (#1198): markup with text, links or interpolated data written into `innerHTML` / `insertAdjacentHTML` / `document.write`, or the entries of a content array put into the page. Content goes into the html (entries as a `list` field); JS only shows and hides. |
+| `structure/site-wide-module-js` | warning | A placed module's JS drives hooks three or more modules render (scroll reveal) without a `caelo:site-wide: <reason>` comment. |
+| `structure/js-written-text` | warning | A placed module's JS writes long literal text (6+ words or 50+ characters) into the page. Keep it in the html, hidden until shown. |
 
-Exact repeats are errors, near repeats are warnings (maintainer decision on #820). The write tools give the same advice at the second copy (`ai/tools/_markup-guard.ts`, `ai/tools/_shared-list-guard.ts`).
+Exact repeats are errors, near repeats are warnings (maintainer decision on #820). The write tools give the same advice at the second copy (`ai/tools/_markup-guard.ts`, `ai/tools/_shared-list-guard.ts`) and after every module js / html write (`ai/tools/_module-js-guard.ts`).
 
-**What counts as free markup.** Each module root in the staged HTML (`data-caelo-module-id`) is walked against its own template; whatever the template cannot account for came in through a field value and is free. Sub-modules in `module` / `module-list` fields carry their own `data-caelo-module-id` (#1027), so an FAQ entry or a card in a list is module output, never free markup of its parent. A template child accounts for a rendered element by best fit (exact class set, then most classes in common, then the fewest unaccounted elements, then sibling order), so a classless left column never claims the classed right column next to it.
+**How module JS is read** (#1198, `checks/module-js-analysis.ts`, oxc-parser). Hooks: every string literal that is a CSS selector, plus the bare arguments of `getElementById` / `getElementsByClassName`, so a selector kept in a constant counts too; a selector assembled at runtime does not. A module owns the hooks of its own template and of the modules nested inside it on the staged pages; layout chrome and `data-caelo-*` / `.caelo-*` platform hooks are neutral. A `caelo:site-wide:` comment covers shared hooks only — the hooks of one or two modules stay an error. Content: a markup write counts when its static parts carry text or `href`, or a content tag (`li`, `a`, `h1`–`h6`, `p`, …) wraps an interpolated value; a content array (3+ entries with visitor text or links) counts only when the script renders it — named in a markup / text write, or iterated by a callback or loop that writes to the page.
+
+**What counts as free markup.** Each module root in the staged HTML (`data-caelo-module-id`) is walked against its own template; whatever the template cannot account for came in through a field value and is free. Sub-modules in `module` / `module-list` fields carry their own `data-caelo-module-id` (#1027), so an FAQ entry or a card in a list is module output, never free markup of its parent. A template child accounts for a rendered element by best fit (exact class set, then most classes in common, then the fewest unaccounted elements, then sibling order), so a classless left column never claims the classed right column next to it. A Mustache section inside a tag (`class="split {{#reverse}}rev{{/reverse}}"`, a boolean variant) is optional: the template node carries only the classes every render has, so renders with and without the variant are both module output (#1104).
 
 **What counts as a module's own links.** Per module root and page: the `<a href>`s inside entries of its local lists (`data-caelo-list-item="instance/…"` or `"local/…"`, stamped by the template engine) and in its free markup. Links inside a shared list's entries (`"<listId>/<itemId>"`) never count — two modules showing one shared list is the goal. Links of generated entries (queries, system and plugin sources) carry no stamp and sit in the template's own markup, so they never count either. The same module on many pages is not a copy; only different modules are compared.
 

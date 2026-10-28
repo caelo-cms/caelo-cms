@@ -31,7 +31,7 @@ interface PluginInvocation {
 }
 ```
 
-Every dispatch site fills it: chat tool dispatch (from `aiCtxWithBranch`), approval-gated plugin tools after the Owner's click (`origin: "approved"`, the approving Owner, no branch — an approved action applies live), Power-MCP (already computes the branch and currently drops it), the Owner panel routes (the Owner's identity instead of the plugin actor), workers (`origin: "worker"`, no branch), render hooks (`origin: "render"`, the preview's branch or none for the static generator), and the gateway (`origin: "visitor"`). `ctx.invocation` is exposed read-only to the plugin.
+Every dispatch site fills it: chat tool dispatch (from `aiCtxWithBranch`), approval-gated plugin tools after the Owner's click (`origin: "approved"`, the approving Owner, no branch — an approved action applies live; the chat's branch instead when the approver cannot publish or the tool sets `approvedOnChatBranch` because it decides about the chat's draft), Power-MCP (already computes the branch and currently drops it), the Owner panel routes (the Owner's identity instead of the plugin actor), workers (`origin: "worker"`, no branch), render hooks (`origin: "render"`, the preview's branch or none for the static generator), and the gateway (`origin: "visitor"`). `ctx.invocation` is exposed read-only to the plugin.
 
 ### 2. Named operations instead of host SQL
 

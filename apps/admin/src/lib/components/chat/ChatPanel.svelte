@@ -129,6 +129,8 @@
     onClearPreviewSelection?: () => void;
     session: ChatSession;
     initialMessages: ChatMessage[];
+    /** #1216 — older messages exist before `initialMessages` (paged transcript). */
+    initialHasMore?: boolean;
     modules: ChatModule[];
     csrfToken: string;
     formError?: string | null;
@@ -172,6 +174,7 @@
   let {
     session,
     initialMessages,
+    initialHasMore = false,
     modules,
     csrfToken,
     formError = null,
@@ -267,6 +270,8 @@
     void _msgCount;
     void _streamLen;
     void tick().then(() => {
+      // Prepended history is not new content below the fold.
+      if (prependingEarlier) return;
       // Before the operator's first message the transcript is the
       // onboarding welcome — a reader starts at the TOP. Jumping to
       // the bottom cut its first lines off in the 480px overlay.
@@ -276,6 +281,40 @@
       else hasNewContent = true;
     });
   });
+
+  // #1216 — the page loads only the newest transcript page; older pages
+  // come from the messages endpoint on request and are prepended.
+  let hasEarlierMessages = $state(initialHasMore);
+  let loadingEarlier = $state(false);
+  let earlierError = $state<string | null>(null);
+  let prependingEarlier = false;
+  async function loadEarlierMessages(): Promise<void> {
+    const oldest = messages[0];
+    if (!oldest || loadingEarlier) return;
+    loadingEarlier = true;
+    earlierError = null;
+    try {
+      const res = await fetch(
+        `/content/chat/${session.id}/messages?before=${encodeURIComponent(oldest.id)}`,
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const page = (await res.json()) as { messages: ChatMessage[]; hasMore: boolean };
+      const el = transcriptEl;
+      const fromBottom = el ? el.scrollHeight - el.scrollTop : 0;
+      const known = new Set(messages.map((m) => m.id));
+      prependingEarlier = true;
+      messages = [...page.messages.filter((m) => !known.has(m.id)), ...messages];
+      hasEarlierMessages = page.hasMore;
+      await tick();
+      // Keep the message the operator was reading in place.
+      if (el) el.scrollTop = el.scrollHeight - fromBottom;
+    } catch (e) {
+      earlierError = `Could not load earlier messages (${e instanceof Error ? e.message : String(e)}). Try again.`;
+    } finally {
+      prependingEarlier = false;
+      loadingEarlier = false;
+    }
+  }
 
   /**
    * P6.7.4 — auto-grow the composer from one row up to 6, then scroll.
@@ -2296,6 +2335,23 @@
                  had a tool card between them. It drops empty legacy notes
                  and keeps only the latest of consecutive near-identical
                  crawl-wait ticks. -->
+            {#if hasEarlierMessages}
+              <li class="flex flex-col items-center gap-1 py-1 text-xs">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={loadingEarlier}
+                  onclick={() => void loadEarlierMessages()}
+                  data-testid="transcript-load-earlier"
+                >
+                  {loadingEarlier ? "Loading…" : "Show earlier messages"}
+                </Button>
+                {#if earlierError}
+                  <span class="text-destructive">{earlierError}</span>
+                {/if}
+              </li>
+            {/if}
             {#each collapseStatusNotes(messages).filter((m) => !showFailedOnly || m.role !== "tool" || isFailedToolMessage(m.content)) as m (m.id)}
               {#if m.role === "tool"}
                 <!-- v0.2.46 — tool messages render as per-tool cards via

@@ -20,6 +20,7 @@ import { cssVarWarnings } from "./_css-var-warnings.js";
 import { describeError, forwardNextAction, forwardRefusal } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
+import { toolNamesIn } from "./_list-tool-kit.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -30,6 +31,7 @@ import {
   MODULE_HTML_DESCRIPTION,
   MODULE_JS_CONTRACT,
 } from "./_module-js-contract.js";
+import { moduleJsGuardSuffix } from "./_module-js-guard.js";
 import { pluginWriteHintsSuffix, storedModuleWrites } from "./_plugin-write-hints.js";
 import { stageReadinessSuffix } from "./_stage-readiness.js";
 import { bindCssToTheme } from "./_theme-binding.js";
@@ -92,7 +94,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           type: "string",
           enum: ["draft", "published"],
           description:
-            "Only `published` pages build on staging. Omitted: published on a site with no published page yet, else draft.",
+            "New pages only (with `pageId`: publish via `set_pages_status_many`). Only `published` pages build on staging. Omitted: published on a site with no published page yet, else draft.",
         },
         metaDescription: {
           type: "string",
@@ -284,7 +286,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       const next = forwardNextAction(r.error);
       return {
         ok: false,
-        content: `pages.build_page failed (nothing was written — the whole call rolled back): ${describeError(r.error)}`,
+        content: `pages.build_page failed (nothing was written — the whole call rolled back): ${toolNamesIn(describeError(r.error))}`,
         ...(next ? { nextAction: next } : {}),
         ...forwardRefusal(r.error),
       };
@@ -411,10 +413,9 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       });
       note(i, suffix);
     }
-    const pluginHints = await pluginWriteHintsSuffix(
-      ctx,
-      await storedModuleWrites(ctx, toolCtx, mintedIds),
-    );
+    const pluginHints =
+      (await pluginWriteHintsSuffix(ctx, await storedModuleWrites(ctx, toolCtx, mintedIds))) +
+      (await moduleJsGuardSuffix(ctx, toolCtx, mintedIds));
     const moduleNotes = [...notesByIndex.entries()]
       .sort(([a], [b]) => a - b)
       .flatMap(([i, texts]) => texts.map((t) => `\n${label(i)}: ${t}`))

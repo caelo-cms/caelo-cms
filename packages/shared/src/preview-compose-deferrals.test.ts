@@ -245,3 +245,47 @@ function liveScripts(html: string): string[] {
   parser.end();
   return scripts;
 }
+
+describe("composer — omitted modules", () => {
+  const omitted = (editorNotice: { html: string; css: string } | null): ComposeDeferral => ({
+    pluginSlug: "consent-manager",
+    reason: "unclassified",
+    omit: true,
+    editorNotice,
+  });
+  const MODULE_WITH_ASSETS = { ...VIDEO, css: ".video-frame{}", js: "fetch('https://t.example')" };
+  const composeOmitted = (d: ComposeDeferral) =>
+    composePageWithLayout({
+      templateHtml: TEMPLATE,
+      templateCss: "",
+      blocks: [{ blockName: "main", modules: [MODULE_WITH_ASSETS] }],
+      layoutHtml: LAYOUT,
+      layoutCss: "",
+      layoutBlocks: [],
+      deferredModules: { [VIDEO.moduleId]: d },
+    }).html;
+
+  it("leaves a build with nothing in the module's place", () => {
+    // A visitor cannot release it, so no placeholder and no parked copy:
+    // neither the markup nor the module's CSS/JS reach the page.
+    const html = composeOmitted(omitted(null));
+    expect(html).not.toContain("youtube.com");
+    expect(html).not.toContain(".video-frame");
+    expect(html).not.toContain("t.example");
+    expect(html).not.toContain("data-caelo-deferred");
+    expect(html).not.toContain("<template");
+  });
+
+  it("shows the editor notice in the preview, attributed to the module", () => {
+    const html = composeOmitted(
+      omitted({ html: '<div class="note">Hidden</div>', css: ".note{color:red}" }),
+    );
+    expect(html).toContain('<div class="note">Hidden</div>');
+    expect(html).toContain(".note{color:red}");
+    expect(html).toContain("data-caelo-deferred-omitted");
+    // The chat affordances reference the module the notice stands in for.
+    expect(html).toContain(`data-caelo-module-id="${VIDEO.moduleId}"`);
+    expect(html).not.toContain("youtube.com");
+    expect(html).not.toContain("<template");
+  });
+});
