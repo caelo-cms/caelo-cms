@@ -14,6 +14,7 @@ import { PARITY_REFUSAL_PREFIX } from "@caelo-cms/shared";
 import {
   formResultError,
   offersStageAgain,
+  pendingEntryKey,
   publishButtonState,
   publishErrorNextStep,
   qualityBlockReason,
@@ -220,5 +221,20 @@ describe("stagingMenuState — the Staging button's label", () => {
   it("reads Staged when staging is built and its gate is open", () => {
     const s = stagingMenuState({ ...base, qualityGate: { ...gate("passed"), open: true } });
     expect(s).toEqual({ label: "Staged", tone: "ok", tooltip: "Staging is built and checked" });
+  });
+});
+
+describe("pendingEntryKey", () => {
+  it("a new page's page and placement entries get distinct keys (Staging menu each-key crash)", () => {
+    // chat.list_pending_changes puts content, page and pageLayout entries
+    // in one `pages` group; a page minted in the chat has the last two
+    // under the same page id.
+    const pageId = "8bddc261-fa49-470c-93ea-0f29b62d49b7";
+    const pages = [
+      { kind: "page", entityId: pageId, label: "Startseite" },
+      { kind: "pageLayout", entityId: pageId, label: "Startseite" },
+    ];
+    const keys = pages.map(pendingEntryKey);
+    expect(new Set(keys).size).toBe(pages.length);
   });
 });
