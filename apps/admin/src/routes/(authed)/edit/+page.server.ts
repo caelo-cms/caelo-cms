@@ -109,7 +109,8 @@ async function resumeOpenPageChat(
     (p) => p.pageId === pageId,
   );
   if (!held) return null;
-  const session = await execute(registry, adapter, ctx, "chat.get_session", {
+  // The session row alone: the transcript is loaded later as a bounded page.
+  const session = await execute(registry, adapter, ctx, "chat.resolve_session", {
     chatSessionId: held.chatSessionId,
   });
   return session.ok ? (session.value as { session: ChatSession }).session : null;
