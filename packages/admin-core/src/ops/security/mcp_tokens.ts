@@ -510,7 +510,8 @@ export const mcpSendChatOp = defineOperation({
     let chatSessionId = input.chatSessionId;
     let chatBranchId: string | undefined;
     if (chatSessionId) {
-      const existing = await execute(registry, adapter, humanCtx, "chat.get_session", {
+      // #1216 — the branch only; the turn itself loads the history.
+      const existing = await execute(registry, adapter, humanCtx, "chat.resolve_session", {
         chatSessionId,
       });
       if (!existing.ok) {

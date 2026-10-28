@@ -49,24 +49,20 @@ export const GET: RequestHandler = async ({ params, locals, request, cookies }) 
   const v = asset.variants.find((x) => x.variant === "orig");
   if (!v) throw error(404, "orig variant not emitted for this asset");
 
-  const storage = getMediaStorage();
-  let body: Uint8Array;
+  // #1216 — streamed, never read whole (see the variant route).
+  let file: { body: ReadableStream<Uint8Array>; sizeBytes: number };
   try {
-    body = await storage.get(v.storageKey);
+    file = await getMediaStorage().openStream(v.storageKey);
   } catch {
     throw error(404, "storage object missing");
   }
 
-  // Copy into a fresh ArrayBuffer so BodyInit accepts it regardless of the
-  // backing buffer kind (see the variant route for the same guard).
-  const copy = new Uint8Array(body.byteLength);
-  copy.set(body);
   const contentType = contentTypeFor(v.format);
-  return new Response(new Blob([copy], { type: contentType }), {
+  return new Response(file.body, {
     status: 200,
     headers: {
       "content-type": contentType,
-      "content-length": String(body.byteLength),
+      "content-length": String(file.sizeBytes),
       "cache-control": "private, max-age=31536000, immutable",
       ...mediaSecurityHeaders(contentType),
     },

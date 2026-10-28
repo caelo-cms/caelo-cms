@@ -71,6 +71,8 @@
     firstRunSuggestions?: { label: string; message: string }[];
     session: ChatSession;
     initialMessages: ChatMessage[];
+    /** #1216 — passed to ChatPanel: older transcript pages exist. */
+    initialHasMore?: boolean;
     modules: ChatModule[];
     csrfToken: string;
     initialLayout?: OverlayLayout;
@@ -101,6 +103,7 @@
     firstRunSuggestions = [],
     session,
     initialMessages,
+    initialHasMore = false,
     modules,
     csrfToken,
     initialLayout = DEFAULT_LAYOUT,
@@ -603,6 +606,7 @@
       {onClearPreviewSelection}
       {session}
       {initialMessages}
+      {initialHasMore}
       {modules}
       {csrfToken}
       {activePageId}

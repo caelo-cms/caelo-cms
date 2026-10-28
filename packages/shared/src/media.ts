@@ -394,6 +394,18 @@ export type MediaSetCdnInput = z.infer<typeof mediaSetCdnInputSchema>;
 export interface MediaStorageAdapter {
   put(key: string, body: Uint8Array, contentType: string): Promise<void>;
   get(key: string): Promise<Uint8Array>;
+  /**
+   * #1216 — the object's size in bytes without reading it, so a caller can
+   * refuse an oversized object before it is loaded. Throws when the key
+   * does not exist.
+   */
+  size(key: string): Promise<number>;
+  /**
+   * #1216 — the object as a byte stream plus its size, for serving it
+   * without holding the whole file in memory. Throws when the key does not
+   * exist.
+   */
+  openStream(key: string): Promise<{ body: ReadableStream<Uint8Array>; sizeBytes: number }>;
   delete(key: string): Promise<void>;
   exists(key: string): Promise<boolean>;
   /** Bytes-on-disk for capacity reporting. */

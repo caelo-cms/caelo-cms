@@ -51,9 +51,21 @@ const CHARS_PER_TOKEN = 4;
  * Flat per-image estimate. Provider image tokenization is
  * resolution-based (Anthropic caps around ~1600 tokens per image);
  * counting base64 chars/4 would overestimate ~100x and trigger
- * compaction on every screenshot-bearing turn.
+ * compaction on every screenshot-bearing turn. Image BYTES are bounded
+ * separately — see {@link HISTORY_IMAGE_BYTES_BUDGET}.
  */
 const IMAGE_PART_TOKENS = 1600;
+
+/**
+ * #1216 — ceiling for the base64 image data one provider request carries
+ * (summed over every image in the history). Tokens say nothing about
+ * bytes: forty 1.5 MB screenshots are only ~64K tokens but a 60 MB request
+ * — over the provider's request-size limit and held in admin memory on
+ * every step. 20 MiB leaves the rest of Anthropic's 32 MB request limit to
+ * text. Tool screenshots are stored at ≤300 KB (tool-image.ts), so the
+ * budget holds ~70 of them before {@link compactHistoryImages} fires.
+ */
+export const HISTORY_IMAGE_BYTES_BUDGET = 20 * 1024 * 1024;
 
 /**
  * chars/4 overcounts real provider input tokens by ~1.66× (measured
@@ -450,4 +462,57 @@ export function compactHistory(
     estimatedTokensBefore,
     estimatedTokensAfter: estimateHistoryTokens(out),
   };
+}
+
+/** Base64 chars of every image part in the history (≈ request bytes). */
+export function estimateHistoryImageBytes(messages: readonly ChatMessageInput[]): number {
+  let total = 0;
+  for (const m of messages) {
+    for (const part of m.additionalContent ?? []) {
+      if (part.type === "image") total += part.base64.length;
+    }
+  }
+  return total;
+}
+
+/** Text that takes the place of an image {@link compactHistoryImages} removed. */
+export const IMAGE_REMOVED_NOTE =
+  "[An image was removed here to keep the request within its size limit (oldest images go " +
+  "first). You can no longer see it — take a new screenshot if you need it again.]";
+
+export interface ImageCompactionResult {
+  readonly messages: ChatMessageInput[];
+  readonly imagesRemoved: number;
+  readonly imageBytesBefore: number;
+  readonly imageBytesAfter: number;
+}
+
+/**
+ * #1216 — bring the history's image bytes under `budgetBytes` by replacing
+ * the OLDEST images with {@link IMAGE_REMOVED_NOTE}, never touching the last
+ * `keepRecentMessages` messages. Pure and deterministic, and a no-op while
+ * under budget: like token compaction it edits the cached prefix, so it
+ * runs only when the request would otherwise grow past its size limit.
+ */
+export function compactHistoryImages(
+  messages: readonly ChatMessageInput[],
+  opts: { readonly budgetBytes: number; readonly keepRecentMessages: number },
+): ImageCompactionResult {
+  const imageBytesBefore = estimateHistoryImageBytes(messages);
+  const out: ChatMessageInput[] = [...messages];
+  let bytes = imageBytesBefore;
+  let imagesRemoved = 0;
+  const firstProtectedIdx = Math.max(0, out.length - opts.keepRecentMessages);
+  for (let i = 0; i < firstProtectedIdx && bytes > opts.budgetBytes; i++) {
+    const m = out[i];
+    if (!m?.additionalContent?.some((p) => p.type === "image")) continue;
+    const parts = m.additionalContent.map((part) => {
+      if (part.type !== "image" || bytes <= opts.budgetBytes) return part;
+      bytes -= part.base64.length;
+      imagesRemoved++;
+      return { type: "text" as const, text: IMAGE_REMOVED_NOTE };
+    });
+    out[i] = { ...m, additionalContent: parts };
+  }
+  return { messages: out, imagesRemoved, imageBytesBefore, imageBytesAfter: bytes };
 }

@@ -356,9 +356,9 @@ export const mcpOpenSessionOp = defineOperation({
       requestId: crypto.randomUUID(),
     };
     if (input.chatSessionId) {
-      // chat.get_session filters by created_by: another user's session
+      // chat.resolve_session filters by created_by: another user's session
       // reads as not found, so a token can never resume someone else's.
-      const existing = await execute(registry, adapter, humanCtx, "chat.get_session", {
+      const existing = await execute(registry, adapter, humanCtx, "chat.resolve_session", {
         chatSessionId: input.chatSessionId,
       });
       if (!existing.ok) {
@@ -518,7 +518,9 @@ export const mcpExecuteToolOp = defineOperation({
       actorKind: "human",
       requestId,
     };
-    const session = await execute(registry, adapter, humanCtx, "chat.get_session", {
+    // #1216 — the session row only: an MCP tool call needs the branch, not
+    // the transcript.
+    const session = await execute(registry, adapter, humanCtx, "chat.resolve_session", {
       chatSessionId: input.chatSessionId,
     });
     if (!session.ok) {

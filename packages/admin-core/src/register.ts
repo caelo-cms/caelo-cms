@@ -81,6 +81,7 @@ import {
   listChatSessionsOp,
   listOpenChatsWithPendingOp,
   renameChatSessionOp,
+  resolveChatSessionOp,
   setChatExtendedThinkingOp,
   setPinnedElementsOp,
 } from "./ops/chat/sessions.js";
@@ -858,6 +859,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listChatSessionsOp);
   registry.register(createChatSessionOp);
   registry.register(getChatSessionOp);
+  registry.register(resolveChatSessionOp);
   registry.register(pinSkillsIndexOp);
   registry.register(getChatBranchIdOp);
   registry.register(renameChatSessionOp);

@@ -83,13 +83,14 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
         for (const c of m.additionalContent) {
           if (c.type === "text") parts.push({ type: "text", text: c.text });
           else if (c.type === "image") {
-            // SDK accepts data URL for the `image` field; mediaType
-            // is informational so the provider knows the format.
-            parts.push({
-              type: "image",
-              image: `data:${c.mediaType};base64,${c.base64}`,
-              mediaType: c.mediaType,
-            });
+            // #1216 — the bare base64 string, not a `data:` URL. The SDK
+            // takes base64 as-is (no URL parse, no split) and the provider
+            // sends it unchanged, so every step of a turn reuses the ONE
+            // string the history holds. A data URL was rebuilt (concat)
+            // and re-parsed (URL + toString + split) on every step — four
+            // copies of a ~1.5 MB string per image per step. Wire bytes
+            // are identical either way, so the prompt cache is unaffected.
+            parts.push({ type: "image", image: c.base64, mediaType: c.mediaType });
           }
         }
         return [{ role: "user", content: parts as ModelMessage["content"] } as ModelMessage];
