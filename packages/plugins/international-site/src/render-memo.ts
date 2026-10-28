@@ -56,8 +56,12 @@ export class BatchMemo<V> {
         this.entries.set(key, entry);
       }
     }
+    // Take every promise BEFORE awaiting any: a failed batch evicts its
+    // keys while an earlier await is pending, and a lookup after that would
+    // read `undefined` — a failed read silently turned into "absent".
+    const pending = unique.map((key) => [key, this.entries.get(key) as Promise<V>] as const);
     const out = new Map<string, V>();
-    for (const key of unique) out.set(key, await (this.entries.get(key) as Promise<V>));
+    for (const [key, entry] of pending) out.set(key, await entry);
     return out;
   }
 }

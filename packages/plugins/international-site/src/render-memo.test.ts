@@ -60,6 +60,18 @@ describe("BatchMemo", () => {
     ]);
   });
 
+  it("rejects when a new key's batch fails while cached keys are awaited first", async () => {
+    const memo = new BatchMemo<string>();
+    await memo.getMany(["a", "b"], async (m) => new Map(m.map((k) => [k, k])), "");
+    // Rejects at once: its eviction runs while `a` is still being awaited.
+    const failing = memo.getMany(
+      ["a", "b", "c"],
+      () => Promise.reject(new Error("read failed")),
+      "",
+    );
+    await expect(failing).rejects.toThrow("read failed");
+  });
+
   it("forgets a failed batch so the next call reads again", async () => {
     const memo = batchIn<number>(renderMemoOf(pass(crypto.randomUUID())), "n");
     let calls = 0;
