@@ -133,13 +133,18 @@ export function productionNeedsHuman(
  * then neither records nor releases anything. A preview that could not be
  * retired still expires with its restored TTL and is retried by the next
  * selection, so that is logged loudly instead of failing the operation.
+ * `retireUntil`: see {@link StaticPublisher.selectStagingPreview}.
  */
 export async function selectServedStagingPreview(
   publisher: StaticPublisher,
   servedRunId: string | null,
+  opts: { readonly retireUntil?: number } = {},
 ): Promise<void> {
   if (!publisher.selectStagingPreview) return;
-  const { notRetired } = await publisher.selectStagingPreview({ servedRunId });
+  const { notRetired } = await publisher.selectStagingPreview({
+    servedRunId,
+    ...(opts.retireUntil !== undefined ? { retireUntil: opts.retireUntil } : {}),
+  });
   if (notRetired.length > 0) {
     console.error(
       "[deploy] could not delete superseded staging previews; they stay publicly reachable until their TTL ends or the next Stage or Publish live retires them",

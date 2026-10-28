@@ -514,6 +514,38 @@ async function acquireStagingPublicationLease(
   }
 }
 
+/**
+ * Prove that `runId` still holds its run lease and the staging-publication
+ * lease, renewing both. The leases then hold until at least a TTL after
+ * this call started; the returned `retireUntil` is half of that window, the
+ * rest is the margin for a retirement already in flight.
+ */
+async function fenceStagingPublication(
+  steps: OperationSteps,
+  sys: ExecutionContext,
+  args: { readonly runId: string; readonly ttlMs: number },
+): Promise<
+  | { readonly ok: true; readonly retireUntil: number }
+  | { readonly ok: false; readonly message: string }
+> {
+  const startedAt = Date.now();
+  const r = await execute(steps.registry, steps.adapter, sys, "deploy.renew_run_lease", args);
+  if (!r.ok) {
+    return {
+      ok: false,
+      message: `staging build ${args.runId} was published, but could not confirm it still holds the staging publish slot (${describeError(r.error)}), so it did not take over staging. Staging still serves the previous build; Stage again.`,
+    };
+  }
+  const beat = r.value as DeployRunBeat;
+  if (!beat.running || beat.publication !== "renewed") {
+    return {
+      ok: false,
+      message: `staging build ${args.runId} lost its place in the staging publish order (its lease lapsed), so it did not take over staging: another Stage or Publish live may have changed what staging serves. Stage again.`,
+    };
+  }
+  return { ok: true, retireUntil: startedAt + Math.floor(args.ttlMs / 2) };
+}
+
 type TriggerOutput = z.infer<typeof triggerOutput>;
 
 /** The body of deploy.trigger (see the module comment). */
@@ -698,11 +730,18 @@ async function runTrigger(
       // The last point a stop is honoured: selecting the preview retires
       // the one staging serves, so from here on the run must be recorded.
       if (stop.aborted) return await fail(abortMessage(stop));
+      // Selecting retires every other preview, so it needs PROOF that this
+      // run still holds the staging publish slot — not the heartbeat's
+      // last word, which may be minutes old when beats failed. One renewal
+      // now proves it and keeps it for a full TTL from before the call;
+      // retiring stops halfway through that window.
+      const fence = await fenceStagingPublication(steps, sys, { runId, ttlMs });
+      if (!fence.ok) return await fail(fence.message);
       // #650 / #908 — staging.<domain> now serves this build: its preview
       // becomes the served one (kept alive, every other preview retired);
       // deploy.finish_trigger records it as the origin.
       try {
-        await selectServedStagingPreview(publisher, runId);
+        await selectServedStagingPreview(publisher, runId, { retireUntil: fence.retireUntil });
       } catch (e) {
         timer.lap("select-preview");
         return await fail(

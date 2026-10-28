@@ -887,6 +887,44 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     expect([...fake.channels.keys()]).toEqual([`runid-${next.runId}`]);
   });
 
+  it("#1211 a Stage whose publish lease lapsed unnoticed retires no other Stage's preview", async () => {
+    const served = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    // While this Stage uploads, its lease lapses without a heartbeat noticing
+    // (beats failing for two minutes) and a later Stage takes the slot and
+    // publishes its own preview.
+    let later: Awaited<ReturnType<typeof leaseHeldByAnotherStage>> | null = null;
+    fake.onPopulate = async () => {
+      fake.onPopulate = null;
+      later = await leaseHeldByAnotherStage();
+      fake.channels.set(`runid-${later.runId}`, `https://${SITE}--runid-${later.runId}.web.app`);
+      fake.lifetimes.create(`runid-${later.runId}`, SERVED_PREVIEW_CHANNEL_TTL);
+    };
+    try {
+      const r = await execute(registry, adapter, SYSTEM, "deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      expect(r.ok).toBe(false);
+      expect(JSON.stringify(r.ok ? null : r.error)).toContain("lost its place");
+      // The later Stage's preview and the one staging serves survive.
+      const laterRun = later as unknown as { runId: string } | null;
+      expect(laterRun).not.toBeNull();
+      expect(fake.channels.has(`runid-${laterRun!.runId}`)).toBe(true);
+      expect(fake.channels.has(`runid-${served.runId}`)).toBe(true);
+      expect((await stagingRow())[0]?.origin_run_id).toBe(served.runId);
+    } finally {
+      fake.onPopulate = null;
+      const laterRun = later as unknown as { runId: string; release: () => Promise<void> } | null;
+      if (laterRun) {
+        fake.channels.delete(`runid-${laterRun.runId}`);
+        await laterRun.release();
+      }
+    }
+  });
+
   it("#1211 Publish live waits for a Stage that is publishing staging", async () => {
     const staged = await ok<{ runId: string }>("deploy.trigger", {
       targetName: "staging",
