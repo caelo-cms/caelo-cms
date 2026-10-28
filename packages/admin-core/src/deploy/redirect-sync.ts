@@ -150,6 +150,30 @@ export async function requestRedirectSync(
   });
 }
 
+/**
+ * #1211 — mark `targetIds` as behind in the caller's transaction: the build
+ * they serve changed and carries the redirects of its own build time. The
+ * caller pushes the table after its commit (`redirects.sync_provider`), so
+ * no provider I/O runs inside its transaction; should that push fail or
+ * never run, the target stays behind and the worker retries it.
+ */
+export async function markRedirectsBehind(
+  tx: TransactionRunner,
+  targetIds: readonly string[],
+): Promise<void> {
+  if (targetIds.length === 0) return;
+  const ids = sql.join(
+    targetIds.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    INSERT INTO redirect_sync_state (target_id, wanted_revision)
+    SELECT id, 1 FROM deploy_targets WHERE env IN ${SYNC_ENVS} AND id IN (${ids}) ORDER BY id
+    ON CONFLICT (target_id) DO UPDATE
+      SET wanted_revision = redirect_sync_state.wanted_revision + 1, updated_at = now()
+  `);
+}
+
 interface TargetRow {
   id: string;
   name: string;
@@ -203,7 +227,7 @@ export async function syncRedirectsInTx(
   if (envRows.length === 0) return [];
   if (envRows.some((r) => r.env === "production")) await lockLiveReleases(tx);
   // #1211 — a Stage that is publishing staging right now holds the lease
-  // without a transaction to wait for. Its own finish step syncs the table
+  // without a transaction to wait for. Once its run is recorded it syncs the table
   // as saved by then onto the build it serves, so staging targets are left
   // behind here (wanted > synced: Settings shows it, the worker retries
   // should that Stage fail) instead of waiting minutes inside this write.

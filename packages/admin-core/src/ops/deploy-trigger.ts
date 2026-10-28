@@ -18,7 +18,9 @@
  *   deploy.acquire_staging_publication  (a Stage with its own staging host)
  *   (publisher upload)     no transaction
  *   deploy.finish_trigger  record the origin + the run, release the lease,
- *                          push the redirects
+ *                          mark the target's redirects behind
+ *   redirects.sync_provider push the redirects (provider I/O, after the
+ *                          run is recorded; a failure is retried)
  *   deploy.fail_run        on every failure or abort: record it, release
  *
  * A heartbeat (deploy.renew_run_lease) keeps the run's lease — and the
@@ -81,7 +83,7 @@ import {
   deployPluginProblem,
   describePluginProblems,
 } from "../deploy/plugin-problems.js";
-import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
+import { markRedirectsBehind } from "../deploy/redirect-sync.js";
 import { stagingSiteUrl } from "../deploy/staging-domain.js";
 import {
   releaseStagingPublication,
@@ -383,7 +385,6 @@ export const finishTriggerOp = defineOperation({
       parityManifest: z.record(z.string(), z.string()).nullable(),
       override: z.object({ auditRunId: z.string(), reason: z.string() }).nullable(),
       phaseTimings: z.array(phaseTimingSchema),
-      repoRoot: z.string().optional(),
     })
     .strict(),
   output: z.object({ draftPages: draftPagesSummary }),
@@ -446,12 +447,10 @@ export const finishTriggerOp = defineOperation({
     `);
     // #1157 — the build read the redirects table when it started; a
     // redirect saved since then was pushed to what the target served before
-    // this build. Put the table as saved now on the build it serves now.
-    await syncRedirectsInTx(tx, ctx, {
-      trigger: "build",
-      targetIds: [input.targetId],
-      outputRoot: resolveOutputRoot(input.repoRoot),
-    });
+    // this build. The target is behind until the table as saved now is put
+    // on the build it serves now — after this commit (deploy.trigger), so
+    // no provider I/O runs inside this transaction (#1211).
+    await markRedirectsBehind(tx, [input.targetId]);
     return ok({ draftPages: await mainDraftPages(tx) });
   },
 });
@@ -770,9 +769,25 @@ async function runTrigger(
       parityManifest,
       override: plan.override,
       phaseTimings: timer.phases(),
-      ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
     });
     if (!finished.ok) return await fail(describeError(finished.error));
+    // The run is recorded; now put the redirects table on the build the
+    // target serves, in a transaction of its own. A failure is recorded and
+    // retried by the redirect-sync worker (the target stays behind); it
+    // does not undo the Stage.
+    if (plan.target.env !== "dev") {
+      const synced = await execute(registry, adapter, sys, "redirects.sync_provider", {
+        trigger: "build",
+        targetIds: [plan.target.id],
+        ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
+      });
+      if (!synced.ok) {
+        console.error("[deploy] redirects not synced after the build; retried automatically", {
+          runId,
+          error: describeError(synced.error),
+        });
+      }
+    }
     logRunTimings(runKind, runId, timer, {
       status: "succeeded",
       pageCount: built.pageCount,

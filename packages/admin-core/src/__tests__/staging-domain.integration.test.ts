@@ -93,6 +93,8 @@ class FakeFirebase {
   blobs = new Map<string, Buffer>();
   /** #1003 — runs while a Stage uploads (populateFiles), i.e. mid-run. */
   onPopulate: (() => Promise<void>) | null = null;
+  /** #1211 — runs before every Hosting API request (method, route). */
+  onRequest: ((method: string, route: string) => Promise<void>) | null = null;
   private seq = 0;
 
   body(versionName: string, path: string): string {
@@ -115,6 +117,7 @@ class FakeFirebase {
     }
     const [route = "", query = ""] = url.slice(API.length).split("?");
     const params = new URLSearchParams(query);
+    await this.onRequest?.(method, route);
     if (method === "POST" && route === `sites/${SITE}/versions`) {
       const id = `v${++this.seq}`;
       this.versions.set(id, { config: parsed.config, files: {} });
@@ -988,6 +991,29 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     });
     expect((await stagingRow())[0]?.origin_run_id).toBe(next.runId);
     expect([...fake.channels.keys()]).toEqual([`runid-${next.runId}`]);
+  });
+
+  it("#1211 a Stage records its run before it pushes the redirects to the provider", async () => {
+    const runId = crypto.randomUUID();
+    const seen: string[] = [];
+    // The redirect sync's first request reads the served channel's release.
+    fake.onRequest = async (method, route) => {
+      if (method === "GET" && /channels\/[^/]+\/releases$/.test(route)) {
+        const [run] = (await withSql(
+          (tx) => tx`SELECT status FROM deploy_runs WHERE id = ${runId}::uuid`,
+        )) as { status: string }[];
+        seen.push(run?.status ?? "missing");
+      }
+    };
+    try {
+      await ok("deploy.trigger", { targetName: "staging", repoRoot: testRoot, runId });
+    } finally {
+      fake.onRequest = null;
+    }
+    // Committed before any provider I/O of the sync: no transaction of the
+    // Stage stays open across it (migration 0392's idle timeout).
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((s) => s === "succeeded")).toBe(true);
   });
 
   it("#1211 a Stage whose publish lease lapsed unnoticed retires no other Stage's preview", async () => {

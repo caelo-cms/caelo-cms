@@ -16,6 +16,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { resolveOutputRoot } from "../deploy/output-root.js";
 import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
 import { json } from "./quality/_shared.js";
 
@@ -46,9 +47,12 @@ export const syncRedirectsProviderOp = defineOperation({
   database: "cms_admin",
   input: z
     .object({
-      trigger: z.enum(["save", "retry", "manual"]).default("manual"),
+      /** `build`: a Stage changed the build its target serves (deploy.trigger, #1211). */
+      trigger: z.enum(["save", "build", "retry", "manual"]).default("manual"),
       /** Only these deploy targets (the retry worker passes the ones that are due). */
       targetIds: z.array(z.string().uuid()).max(100).optional(),
+      /** Where relative out_dirs resolve: the build's own root (deploy.trigger's `repoRoot`). */
+      repoRoot: z.string().optional(),
     })
     .strict(),
   output: z.object({ targets: z.array(outcomeSchema) }),
@@ -56,6 +60,7 @@ export const syncRedirectsProviderOp = defineOperation({
     const targets = await syncRedirectsInTx(tx, ctx, {
       trigger: input.trigger,
       ...(input.targetIds ? { targetIds: input.targetIds } : {}),
+      ...(input.repoRoot ? { outputRoot: resolveOutputRoot(input.repoRoot) } : {}),
     });
     return ok({ targets: targets.map((t) => ({ ...t, unservedTargets: [...t.unservedTargets] })) });
   },
