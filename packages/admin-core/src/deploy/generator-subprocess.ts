@@ -99,7 +99,20 @@ interface SubprocessPluginCall {
   method: unknown;
   args: unknown;
 }
-type SubprocessEvent = SubprocessProgress | GeneratorDone | SubprocessError | SubprocessPluginCall;
+/**
+ * #1211 — the generator started mirroring the build into `current/`: it
+ * ignores SIGTERM from now on (static-generator serving-guard.ts), and a
+ * `done` after it means the build is served.
+ */
+interface SubprocessServing {
+  kind: "serving";
+}
+type SubprocessEvent =
+  | SubprocessProgress
+  | SubprocessServing
+  | GeneratorDone
+  | SubprocessError
+  | SubprocessPluginCall;
 
 /** Everything one generator run is told on stdin. */
 export interface GeneratorRunArgs {
@@ -129,7 +142,11 @@ export interface GeneratorRunArgs {
    * (memory on Cloud Run). Omitted: the generator's default retention.
    */
   readonly retainBuilds?: number;
-  /** #1211 — kills the generator (SIGTERM) when it aborts. */
+  /**
+   * #1211 — kills the generator (SIGTERM) when it aborts, until the
+   * generator reports that it mirrors the build into `current/`: from then
+   * on the build is being published and runs to its end.
+   */
   readonly signal?: AbortSignal;
 }
 
@@ -186,6 +203,9 @@ export async function runGenerator(
       aborted = abortMessage(args.signal);
       child.kill("SIGTERM");
     }
+    // Set once the generator reported it is writing `current/`: a stop
+    // after that cannot undo the publication, so its `done` counts.
+    let serving = false;
     args.signal?.addEventListener("abort", onAbort, { once: true });
     const stderrChunks: Buffer[] = [];
     let stdoutBuf = "";
@@ -250,6 +270,8 @@ export async function runGenerator(
         }
         if (ev.kind === "plugin-call") {
           void answerPluginCall(ev);
+        } else if (ev.kind === "serving") {
+          serving = true;
         } else if (ev.kind === "progress") {
           progress.offer({ pagesDone: ev.pagesDone, pagesTotal: ev.pagesTotal });
         } else if (ev.kind === "done") {
@@ -273,7 +295,7 @@ export async function runGenerator(
     child.on("close", (code) => {
       if (!child.stdin.destroyed) child.stdin.end();
       const stderr = Buffer.concat(stderrChunks).toString();
-      if (aborted !== null) {
+      if (aborted !== null && !(serving && finalEvent?.kind === "done")) {
         finish({ ok: false, message: aborted, stderr });
       } else if (finalEvent && finalEvent.kind === "done") {
         finish({ ok: true, result: finalEvent });

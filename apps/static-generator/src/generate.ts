@@ -421,6 +421,12 @@ export async function generateSite(args: {
   publishAt: string;
   /** Optional progress callback fired after each page is written. */
   onProgress?: ProgressCallback;
+  /**
+   * #1211 — fired right before the build is mirrored into `current/`
+   * (only when `syncCurrent` is on): from then on the build is being
+   * published and must not be stopped halfway.
+   */
+  onServing?: () => void;
   /** P13 — adapter handle so the plugin render pass can read +
    *  upsert `static_bakes` outside the page-build transaction. */
   adapter: import("@caelo-cms/query-api").DatabaseAdapter;
@@ -1299,6 +1305,9 @@ export async function generateSite(args: {
   // changes. The `builds/<runId>/` archive stays for content-addressed
   // history and for `deploy.rollback` to copy back when invoked.
   if (args.syncCurrent !== false) {
+    // #1211 — from here the build is being published: the caller may no
+    // longer stop it (cli.ts serving-guard.ts).
+    args.onServing?.();
     await mkdir(currentLink, { recursive: true });
     await syncContents(buildDir, currentLink);
     timer.lap("sync-current");

@@ -655,6 +655,11 @@ async function runTrigger(
       );
     }
     const built = subprocess.result;
+    // #1211 — a publisher that serves `current/` (self-hosted) is serving
+    // this build already: the generator mirrored it and could not be
+    // stopped while it did. A stop from here on cannot unpublish it, so the
+    // run is recorded instead of reported as "nothing was published".
+    const servedByGenerator = publisher.servesCurrentDir;
 
     // #650 — publishing a preview, recording it as the staging origin and
     // pruning the others is one ordered step per Stage: a concurrent Stage
@@ -665,7 +670,7 @@ async function runTrigger(
       if (!slot.ok) return await fail(slot.message);
       heartbeat.expectPublication(true);
     }
-    if (stop.aborted) return await fail(abortMessage(stop));
+    if (stop.aborted && !servedByGenerator) return await fail(abortMessage(stop));
 
     // v0.2.78 — hand off to the per-provider StaticPublisher. Self-hosted
     // is a no-op (the generator already synced into current/); cloud
@@ -749,7 +754,7 @@ async function runTrigger(
         );
       }
       timer.lap("select-preview");
-    } else if (stop.aborted) {
+    } else if (stop.aborted && !servedByGenerator) {
       return await fail(abortMessage(stop));
     }
 

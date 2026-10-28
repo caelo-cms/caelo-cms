@@ -16,6 +16,8 @@
  *   - stage_changes over Power-MCP answers "still running" within its
  *     wait while the build goes on, the chat's turn lease is free right
  *     away, and get_quality_audit later reports how the build ended;
+ *   - a stop while a self-hosted build is mirrored into current/ cannot
+ *     interrupt that publication: the run is recorded as published;
  *   - an uploading (cloud) publisher keeps no build on disk.
  */
 
@@ -59,6 +61,13 @@ for await (const line of console) {
   mkdirSync(buildDir, { recursive: true });
   writeFileSync(join(buildDir, "index.html"), "<p>stub</p>");
   console.log(JSON.stringify({ kind: "progress", pagesDone: 0, pagesTotal: 1 }));
+  if (process.env.CAELO_TEST_STUB_GENERATOR === "serve-slow") {
+    // Like cli.ts once it mirrors the build into current/: a stop is ignored.
+    process.on("SIGTERM", () => undefined);
+    console.log(JSON.stringify({ kind: "serving" }));
+    writeFileSync(join(cfg.repoRoot, "serving-" + cfg.runId), "");
+    await Bun.sleep(1000);
+  }
   if (process.env.CAELO_TEST_STUB_GENERATOR === "hang") {
     await Bun.sleep(Number(process.env.CAELO_TEST_STUB_HANG_MS ?? "600000"));
     console.log(JSON.stringify({ kind: "error", message: "stub generator gave up" }));
@@ -190,13 +199,17 @@ describe("#1204 a Stage whose caller goes away leaves nothing held", () => {
     // Building: the run is committed as running, with its lease.
     await until(async () => (await runRow(runId))?.status === "running", "the running Stage");
     expect((await runRow(runId))?.lease_expires_at).not.toBeNull();
-    // While it builds, nothing sits in a transaction (#1211).
+    // While it builds, nothing sits in a transaction (#1211). A short op
+    // (the progress write) is briefly idle between its statements; a held
+    // transaction stays idle for as long as the build runs.
+    await Bun.sleep(400);
     const open = (await withSql(
-      (tx) => tx`SELECT count(*)::int AS n FROM pg_stat_activity
+      (tx) => tx`SELECT count(*)::int AS n, string_agg(query, ' | ') AS q FROM pg_stat_activity
                  WHERE datname = 'cms_admin' AND pid <> pg_backend_pid()
-                   AND state LIKE 'idle in transaction%'`,
-    )) as { n: number }[];
-    expect(open[0]?.n).toBe(0);
+                   AND state LIKE 'idle in transaction%'
+                   AND clock_timestamp() - state_change > interval '300 milliseconds'`,
+    )) as { n: number; q: string | null }[];
+    expect(open[0]).toEqual({ n: 0, q: null });
 
     stop.abort(new Error("the operator pressed Stop"));
     const r = await pending;
@@ -297,6 +310,36 @@ describe("#1204 a Stage whose caller goes away leaves nothing held", () => {
         CAELO_TEST_STUB_HANG_MS: undefined,
         CAELO_STAGE_TOOL_WAIT_MS: undefined,
       });
+    }
+  });
+});
+
+describe("#1211 a stop cannot interrupt a self-hosted publication", () => {
+  it("a Stop while the build is mirrored into current/ lets it finish, and the run is recorded", async () => {
+    setEnv({ CAELO_TEST_STUB_GENERATOR: "serve-slow" });
+    const stop = new AbortController();
+    const runId = crypto.randomUUID();
+    try {
+      const pending = execute(
+        registry,
+        adapter,
+        HUMAN,
+        "deploy.trigger",
+        { targetName: "staging", repoRoot: testRoot, runId },
+        { signal: stop.signal },
+      );
+      await until(
+        async () => existsSync(join(testRoot, `serving-${runId}`)),
+        "the build being served",
+      );
+      stop.abort(new Error("the operator pressed Stop"));
+      const r = await pending;
+      expect(r.ok).toBe(true);
+      const row = await runRow(runId);
+      expect(row?.status).toBe("succeeded");
+      expect(row?.lease_expires_at).toBeNull();
+    } finally {
+      setEnv({ CAELO_TEST_STUB_GENERATOR: undefined });
     }
   });
 });
