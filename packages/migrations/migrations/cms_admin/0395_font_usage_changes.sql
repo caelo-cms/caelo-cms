@@ -31,8 +31,8 @@
 --
 -- Garbage collection (opportunistic, on a cache miss in a writable
 -- transaction): rows below the GC transaction's snapshot xmin are deleted
--- (`FOR UPDATE SKIP LOCKED`, never waits) and a `kind = 'horizon'` row
--- records that xmin. A cached snapshot whose xmin is below any horizon is
+-- (`FOR UPDATE SKIP LOCKED`, never waits) and a `kind = 'horizon'` row,
+-- keyed by the GC transaction's own xid, records that xmin. A cached snapshot whose xmin is below any horizon is
 -- treated as stale, because a change row it would need may be gone.
 --
 -- Expand-only: new table, function and triggers. The previous release's
@@ -40,10 +40,15 @@
 
 SET LOCAL caelo.actor_kind = 'system';
 
+-- `xid` is always the writing transaction's own id, so two transactions
+-- never insert the same key and never wait on each other's uncommitted
+-- row. A horizon row carries the xmin it records in `horizon`.
 CREATE TABLE IF NOT EXISTS font_usage_changes (
-  kind text NOT NULL CHECK (kind IN ('change', 'horizon')),
-  xid  xid8 NOT NULL,
-  PRIMARY KEY (kind, xid)
+  kind    text NOT NULL CHECK (kind IN ('change', 'horizon')),
+  xid     xid8 NOT NULL,
+  horizon xid8 NULL,
+  PRIMARY KEY (kind, xid),
+  CHECK ((kind = 'horizon') = (horizon IS NOT NULL))
 );
 
 ALTER TABLE font_usage_changes ENABLE ROW LEVEL SECURITY;

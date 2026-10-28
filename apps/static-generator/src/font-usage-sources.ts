@@ -113,7 +113,7 @@ async function isFresh(tx: TransactionRunner, entry: CachedUsage): Promise<boole
       -- No garbage collection removed a row the comparison above needs.
       AND NOT EXISTS (
         SELECT 1 FROM font_usage_changes f
-         WHERE f.kind = 'horizon' AND f.xid > pg_snapshot_xmin(c.s)
+         WHERE f.kind = 'horizon' AND f.horizon > pg_snapshot_xmin(c.s)
       )
     ) AS fresh
     FROM c, r
@@ -143,9 +143,13 @@ async function collectGarbage(tx: TransactionRunner): Promise<void> {
        WHERE f.kind = v.kind AND f.xid = v.xid
        RETURNING 1
     )
-    INSERT INTO font_usage_changes (kind, xid)
-      SELECT 'horizon', h.xmin FROM h WHERE EXISTS (SELECT 1 FROM removed)
-      ON CONFLICT DO NOTHING
+    -- Keyed by this transaction's own xid: concurrent passes sharing one
+    -- xmin insert different keys, so none waits on another's uncommitted
+    -- row. A second pass in the same transaction raises its own horizon.
+    INSERT INTO font_usage_changes (kind, xid, horizon)
+      SELECT 'horizon', pg_current_xact_id(), h.xmin FROM h WHERE EXISTS (SELECT 1 FROM removed)
+      ON CONFLICT (kind, xid) DO UPDATE
+        SET horizon = GREATEST(font_usage_changes.horizon, EXCLUDED.horizon)
   `);
 }
 

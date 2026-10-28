@@ -21,6 +21,7 @@ import { join } from "node:path";
 import {
   clearFontReaderCache,
   fontByteReadCount,
+  fontReaderCachedBytes,
   fontMetadata,
   fontReader,
 } from "@caelo-cms/font-service";
@@ -76,6 +77,7 @@ async function run(name: string, input: unknown) {
 }
 
 let tokens: ThemeDocument;
+let ref: { id: string; sha256: string };
 let pageId: string;
 let cacheDir: string;
 /** Below the git-ignored `data/fonts/`, apart from what the default cache holds. */
@@ -114,7 +116,7 @@ beforeAll(async () => {
   const font = fontMetadata.parse(
     await run("fonts.import", { dataBase64: interBase64, license, source: "test:inter-mini" }),
   );
-  const ref = { id: font.id, sha256: font.sha256 };
+  ref = { id: font.id, sha256: font.sha256 };
   await run("themes.duplicate", {
     sourceSlug: "site-default",
     newSlug: THEME_SLUG,
@@ -348,4 +350,65 @@ test("usage cache: garbage collection trims the change log and never serves a st
     expect(siteFontUsageScanCount() - scans).toBe(0);
     expect(usage).toEqual(await uncached(tx));
   });
+});
+
+// Codex review on #1219: two GC passes sharing one snapshot xmin inserted
+// the same horizon key, so the second waited on the first's uncommitted row.
+test("usage cache: concurrent garbage-collection passes never wait on each other", async () => {
+  await adapter.withAdminTransaction(ctx, (tx) =>
+    tx.execute(sql`
+      INSERT INTO font_usage_changes (kind, xid)
+        SELECT 'change', n::text::xid8 FROM generate_series(3, 2002) AS n
+        ON CONFLICT DO NOTHING
+    `),
+  );
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let collected!: () => void;
+  const isCollected = new Promise<void>((resolve) => {
+    collected = resolve;
+  });
+  // A: misses, collects one batch and its horizon, and stays open.
+  const first = adapter.withAdminTransaction(ctx, async (tx) => {
+    clearSiteFontUsageCache();
+    await loadSiteFontUsage(tx, tokens);
+    collected();
+    await released;
+  });
+  await isCollected;
+  // B: misses too and collects the next batch while A is uncommitted. It
+  // must finish on its own; a lock wait would hang until A ends.
+  const second = otherAdapter.withAdminTransaction(ctx, async (tx) => {
+    clearSiteFontUsageCache();
+    await loadSiteFontUsage(tx, tokens);
+    return "done" as const;
+  });
+  const outcome = await Promise.race([
+    second,
+    new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 5000)),
+  ]);
+  release();
+  await first;
+  await second;
+  expect(outcome).toBe("done");
+  const left = (await adapter.withAdminTransaction(ctx, (tx) =>
+    tx.execute(
+      sql`SELECT count(*)::int AS n FROM font_usage_changes WHERE kind = 'change' AND xid < '2003'::xid8`,
+    ),
+  )) as unknown as { n: number }[];
+  expect(left[0]?.n).toBe(0);
+});
+
+// Codex review on #1219: concurrent first reads of one face each stored it,
+// counting its bytes twice against the cache budget.
+test("font byte cache: concurrent first reads of one face are counted once", async () => {
+  clearFontReaderCache();
+  const [a, b] = await Promise.all([
+    adapter.withAdminTransaction(ctx, (tx) => fontReader(tx)(ref)),
+    otherAdapter.withAdminTransaction(ctx, (tx) => fontReader(tx)(ref)),
+  ]);
+  expect(a.bytes.byteLength).toBe(b.bytes.byteLength);
+  expect(fontReaderCachedBytes()).toBe(a.bytes.byteLength);
 });

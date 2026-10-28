@@ -41,6 +41,14 @@ let byteReads = 0;
 
 function remember(key: string, read: FontRead): void {
   if (read.bytes.byteLength > MAX_CACHED_BYTES) return;
+  // Concurrent first reads of one face each reach here; replacing the
+  // entry must not count its bytes twice, or the budget drifts upward and
+  // evicts faces that still fit.
+  const previous = cache.get(key);
+  if (previous !== undefined) {
+    cache.delete(key);
+    cachedBytes -= previous.bytes.byteLength;
+  }
   cache.set(key, read);
   cachedBytes += read.bytes.byteLength;
   for (const [oldKey, old] of cache) {
@@ -81,6 +89,11 @@ export function fontReader(tx: TransactionRunner) {
 export function clearFontReaderCache(): void {
   cache.clear();
   cachedBytes = 0;
+}
+
+/** Test seam: bytes the cache accounts for (must equal the sum of its entries). */
+export function fontReaderCachedBytes(): number {
+  return cachedBytes;
 }
 
 /** Test seam: how many face byte reads reached the database in this process. */
