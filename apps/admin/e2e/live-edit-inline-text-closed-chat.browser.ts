@@ -12,6 +12,8 @@ import { expect, test } from "@playwright/test";
 import {
   archiveChat,
   clearLoginRateBucket,
+  ensureIsolatedOwner,
+  ISOLATED_OWNER_PASSWORD,
   openOwnerChat,
   resetOverlayLayoutFor,
   runBunInline,
@@ -21,10 +23,18 @@ const ts = Date.now();
 const TPL_SLUG = `e2e-le-closed-tpl-${ts}`;
 const MOD_SLUG = `e2e-le-closed-mod-${ts}`;
 const PAGE_SLUG = `e2e-le-closed-page-${ts}`;
+/**
+ * Own Owner: after the closed chat, Live Edit falls back to the operator's
+ * newest open chat, and the test then follows "Continue here" into it. As
+ * the shared dev-owner, a parallel spec could close that fallback chat in
+ * between, and the notice rightly came back for it.
+ */
+const OWNER_EMAIL = "e2e-le-closed-chat-owner@example.com";
 
 test.beforeAll(() => {
   clearLoginRateBucket();
-  resetOverlayLayoutFor("dev-owner@example.com");
+  ensureIsolatedOwner(OWNER_EMAIL);
+  resetOverlayLayoutFor(OWNER_EMAIL);
 });
 
 test.afterAll(() => {
@@ -84,11 +94,11 @@ test("a save into a chat archived after the load is refused, not lost", async ({
   const ids = JSON.parse(seed) as { pg: string };
 
   await page.goto("/login");
-  await page.getByLabel("Email").fill("dev-owner@example.com");
-  await page.getByLabel("Password").fill("dev owner password");
+  await page.getByLabel("Email").fill(OWNER_EMAIL);
+  await page.getByLabel("Password").fill(ISOLATED_OWNER_PASSWORD);
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
-  const chat = openOwnerChat(`e2e-le-closed-${ts}`);
+  const chat = openOwnerChat(`e2e-le-closed-${ts}`, undefined, OWNER_EMAIL);
   await page.goto(`/edit?page=${ids.pg}&chat=${chat}`);
 
   const preview = page.frameLocator("iframe[title='Live preview']");
