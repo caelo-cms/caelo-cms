@@ -487,6 +487,74 @@ test("an English page shows the English footer, its German counterpart the Germa
   }
 });
 
+test("the editor toolbar shows the page's language; its popover opens the other version and offers a prompt", async ({
+  page,
+}) => {
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("dev-owner@example.com");
+  await page.getByLabel("Password").fill("dev owner password");
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
+
+  await page.goto("/settings/plugins");
+  const activate = page.getByTestId("activate-international-site");
+  if ((await activate.count()) > 0) {
+    await activate.click();
+    await expect(page.getByTestId("activate-international-site")).toHaveCount(0, {
+      timeout: 30_000,
+    });
+  }
+
+  const s = seed();
+  try {
+    // The German page fell behind its English source.
+    runBunInline(
+      pluginScopedSql(`
+        const plug = await tx\`SELECT id FROM plugins WHERE slug = 'international-site'\`;
+        await tx.unsafe(\`SET LOCAL caelo.plugin_id = '\${plug[0].id}'\`);
+        await tx\`UPDATE plugin_international_site.page_variants
+          SET translation_status = 'needs_update' WHERE page_id = \${process.env.DE_PAGE}\`;
+        return null;
+      `),
+      { DE_PAGE: s.dePageId },
+    );
+
+    await page.goto(`/edit?page=${s.dePageId}`);
+    const slot = page.locator(
+      '[data-testid="plugin-toolbar-slot"][data-slot="international-site/languages"]',
+    );
+    await expect(slot).toContainText("DE", { timeout: 15_000 });
+    await expect(slot).toContainText("1");
+    await expect(slot).toHaveAttribute("data-tone", "attention");
+
+    // The popover: the shown page first, the English source as a link.
+    await slot.click();
+    const panel = page.locator(
+      '[data-testid="plugin-toolbar-panel"][data-slot="international-site/languages"]',
+    );
+    await expect(panel).toContainText("This page is in Deutsch and out of date with its source.");
+    const entries = panel.getByTestId("plugin-toolbar-entry");
+    await expect(entries.first()).toContainText("This page · Out of date");
+
+    // A prompt goes into the composer for the operator to send; nothing is sent.
+    await panel
+      .getByTestId("plugin-toolbar-prompt")
+      .filter({ hasText: "Translate this page" })
+      .click();
+    await expect(page.getByTestId("chat-composer")).toHaveValue(
+      `Translate /de/${PFX}-preise into every language it is missing or out of date in.`,
+    );
+
+    // The English version opens in the editor.
+    await slot.click();
+    await panel.getByRole("button", { name: /English/ }).click();
+    await expect(page).toHaveURL(new RegExp(`page=${s.enPageId}`), { timeout: 15_000 });
+    await expect(slot).toContainText("EN", { timeout: 15_000 });
+  } finally {
+    cleanupChrome();
+  }
+});
+
 test("#690 — a nested page's German variant nests under the German parent, reusing the slug", async ({
   context,
   page,

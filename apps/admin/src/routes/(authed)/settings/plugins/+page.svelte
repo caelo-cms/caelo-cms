@@ -66,6 +66,17 @@
     );
   }
 
+  /** The live-editor toolbar items the manifest declares and who sees them. */
+  function toolbarItemsOf(manifestJson: unknown): string[] {
+    if (manifestJson === null || typeof manifestJson !== "object") return [];
+    const raw = (manifestJson as { editorToolbar?: unknown }).editorToolbar;
+    if (!Array.isArray(raw)) return [];
+    return raw.map(
+      (p: { title?: unknown; permission?: unknown }) =>
+        `${String(p.title)} (needs ${String(p.permission)})`,
+    );
+  }
+
   let { data, form } = $props();
 
   /** The required plugins of `p` that are not active yet, in manifest order. */
@@ -211,6 +222,9 @@
                   {/each}
                   {#each adminPanelsOf(p.manifestJson) as line (line)}
                     <p class="mt-1 text-xs text-muted-foreground">Admin page: {line}</p>
+                  {/each}
+                  {#each toolbarItemsOf(p.manifestJson) as line (line)}
+                    <p class="mt-1 text-xs text-muted-foreground">Live editor toolbar: {line}</p>
                   {/each}
                 </TableCell>
                 <TableCell class="font-mono text-xs">{p.sourcePath ?? "—"}</TableCell>

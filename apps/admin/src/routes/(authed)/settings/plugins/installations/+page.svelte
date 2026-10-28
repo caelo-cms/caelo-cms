@@ -79,6 +79,23 @@
               </ul>
             </section>
           {/if}
+          {#if item.toolbarItems.length}
+            <section class="space-y-2" data-testid="installation-toolbar-{item.slug}">
+              <h3 class="font-semibold">Live editor toolbar</h3>
+              <p class="text-sm">An icon next to the page address in the live editor, for everyone holding the named permission. Its buttons put the text below into the chat; the person sends it.</p>
+              <ul class="space-y-2">
+                {#each item.toolbarItems as tb (tb.id)}
+                  <li class="rounded border p-2">
+                    <p class="font-semibold">{tb.title} <span class="font-mono text-xs">needs {tb.permission}</span></p>
+                    <p class="text-xs">Runs: {tb.operation}</p>
+                    {#each tb.prompts as prompt (prompt.label)}
+                      <p class="text-xs">Button "{prompt.label}": {prompt.text}</p>
+                    {/each}
+                  </li>
+                {/each}
+              </ul>
+            </section>
+          {/if}
           <fieldset class="space-y-2"><legend class="font-semibold">Requested access</legend>
             {#each item.manifest.requestedCapabilities ?? [] as capability}
               <label class="flex items-start gap-2"><input type="checkbox" name="capability" value={capability} required />

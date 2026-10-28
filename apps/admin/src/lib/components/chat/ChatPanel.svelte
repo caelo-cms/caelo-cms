@@ -2953,7 +2953,9 @@
             bind:value={composer}
             bind:ref={composerEl}
             rows={1}
-            placeholder="Tell the AI what to change…"
+            placeholder={compact
+              ? "Tell the AI what to change, or right-click the page…"
+              : "Tell the AI what to change…"}
             title="Shortcuts: / for commands, @ for module references, drop images to attach"
             class={cn(
               "subtle-scrollbar resize-none placeholder:text-muted-foreground/50",

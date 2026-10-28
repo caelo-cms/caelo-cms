@@ -98,7 +98,7 @@ test.describe("phone width", () => {
     await expect(reopen).toBeInViewport();
     await reopen.click();
     await expect(overlay).toBeVisible();
-    await expect(page.getByPlaceholder("Tell the AI what to change…")).toBeInViewport();
+    await expect(page.getByPlaceholder(/^Tell the AI what to change/)).toBeInViewport();
     // The composer's actions wrap instead of running past the panel's edge.
     for (const testId of ["chat-extended-thinking-toggle"]) {
       const b = await page.getByTestId(testId).boundingBox();

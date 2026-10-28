@@ -2,7 +2,7 @@
 
 /**
  * #1156 — page SEO is draft state, and the editor shows it: the info
- * button in the preview's top corner opens the page's title, meta
+ * button in the toolbar's page address opens the page's title, meta
  * description and social-share values. An SEO change the chat made is
  * marked Pending (button dot, badge per field) while the live row keeps
  * the old value until a Stage.
@@ -142,10 +142,10 @@ test("the SEO info shows the page's SEO and marks the chat's pending change", as
   const info = page.getByTestId("page-seo-info");
   await expect(info).toHaveAttribute("data-pending", "false", { timeout: 15_000 });
   await info.click();
-  const sheet = page.getByTestId("page-seo-sheet");
-  await expect(sheet).toContainText("SEO Info Page");
-  await expect(sheet).toContainText("LIVE_DESCRIPTION");
-  await expect(sheet.getByTestId("page-seo-pending")).toHaveCount(0);
+  const popover = page.getByTestId("page-seo-popover");
+  await expect(popover).toContainText("SEO Info Page");
+  await expect(popover).toContainText("LIVE_DESCRIPTION");
+  await expect(popover.getByTestId("page-seo-pending")).toHaveCount(0);
   await page.keyboard.press("Escape");
 
   // The chat rewrites the description: pending in the editor, not live.
@@ -153,11 +153,11 @@ test("the SEO info shows the page's SEO and marks the chat's pending change", as
   await page.reload();
   await expect(info).toHaveAttribute("data-pending", "true", { timeout: 15_000 });
   await info.click();
-  await expect(sheet).toContainText("DRAFT_DESCRIPTION");
-  await expect(sheet.getByTestId("page-seo-pending-note")).toContainText("next Stage");
-  const description = sheet.locator('[data-testid="page-seo-row"][data-field="metaDescription"]');
+  await expect(popover).toContainText("DRAFT_DESCRIPTION");
+  await expect(popover.getByTestId("page-seo-pending-note")).toContainText("next Stage");
+  const description = popover.locator('[data-testid="page-seo-row"][data-field="metaDescription"]');
   await expect(description.first().getByTestId("page-seo-pending")).toBeVisible();
-  const title = sheet.locator('[data-testid="page-seo-row"][data-field="title"]');
+  const title = popover.locator('[data-testid="page-seo-row"][data-field="title"]');
   await expect(title.first().getByTestId("page-seo-pending")).toHaveCount(0);
   expect(liveDescription(pageId)).toBe("LIVE_DESCRIPTION");
 });

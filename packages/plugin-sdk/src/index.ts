@@ -32,6 +32,11 @@ import type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
 import { type ListTypeDef, listTypeDefSchema, nodeDefSchema } from "@caelo-cms/shared/lists-model";
 import { z } from "zod";
 import { checkAdminPanels, type PluginAdminPanel, pluginAdminPanel } from "./admin-panels.js";
+import {
+  checkEditorToolbar,
+  type PluginEditorToolbarItem,
+  pluginEditorToolbarItem,
+} from "./editor-toolbar.js";
 
 /**
  * Epic #1107 — the list model a plugin plans with (`docs/lists.md`): the
@@ -53,6 +58,7 @@ export {
   validateFieldValue,
 } from "@caelo-cms/shared/lists-model";
 export * from "./admin-panels.js";
+export * from "./editor-toolbar.js";
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
  *  §4 "Zod at every boundary") without importing zod directly — the
  *  sandbox validator allowlists only the SDK + component-kit. */
@@ -997,6 +1003,8 @@ export const pluginManifest = z
     /** See `PluginDefinition.adminPanels`. Data only: the admin renders
      *  them; part of the artifact the Owner approves. */
     adminPanels: z.array(pluginAdminPanel).max(8).optional(),
+    /** See `PluginDefinition.editorToolbar`. Data only, like the panels. */
+    editorToolbar: z.array(pluginEditorToolbarItem).max(2).optional(),
     /** See `PluginDefinition.requiresPlugins`. */
     requiresPlugins: z.array(pluginSlugRef).max(20).optional(),
     /** See `PluginDefinition.consentPurposes`. Data only — no capability:
@@ -1009,6 +1017,9 @@ export const pluginManifest = z
   .superRefine((m, ctx) => {
     checkAdminPanels(m.adminPanels ?? [], m.operations, (path, message) =>
       ctx.addIssue({ code: "custom", path: ["adminPanels", ...path], message }),
+    );
+    checkEditorToolbar(m.editorToolbar ?? [], m.operations, (path, message) =>
+      ctx.addIssue({ code: "custom", path: ["editorToolbar", ...path], message }),
     );
     const required = new Set<string>();
     for (const [i, slug] of (m.requiresPlugins ?? []).entries()) {
@@ -2185,6 +2196,17 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly adminPanels?: ReadonlyArray<PluginAdminPanel>;
   /**
+   * The plugin's place in the live editor's top bar (see
+   * `./editor-toolbar.ts`): an icon next to the page address that shows
+   * the plugin's state for the shown page and opens a popover with its
+   * details and "ask the AI" prompts. At most two per plugin. Declared as
+   * data and rendered by the admin's one generic toolbar item, only while
+   * the plugin is active and for people holding the item's `permission`.
+   * Each `operation` must be in `operations`; it runs read-only on the
+   * editor's chat branch.
+   */
+  readonly editorToolbar?: ReadonlyArray<PluginEditorToolbarItem>;
+  /**
    * #1155 — this plugin's `staticRender` bakes visitor data (comments,
    * ratings, …) into pages, and these operations change it. CMS_REQUIREMENTS
    * §6.1: an approved item is served at once by the Web Component's delta
@@ -2266,6 +2288,7 @@ export function manifestFromDefinition(def: {
   readonly publicOperations?: ReadonlyArray<string>;
   readonly visitorProjection?: Readonly<Record<string, ReadonlyArray<string>>>;
   readonly adminPanels?: ReadonlyArray<PluginAdminPanel>;
+  readonly editorToolbar?: ReadonlyArray<PluginEditorToolbarItem>;
   readonly requiresPlugins?: ReadonlyArray<string>;
   readonly consentPurposes?: ReadonlyArray<PluginConsentPurpose>;
   readonly bakedData?: PluginBakedData;
@@ -2312,6 +2335,9 @@ export function manifestFromDefinition(def: {
     ...(def.listTypes && def.listTypes.length > 0 ? { listTypes: [...def.listTypes] } : {}),
     ...(def.listExt ? { listExt: def.listExt } : {}),
     ...(def.adminPanels && def.adminPanels.length > 0 ? { adminPanels: [...def.adminPanels] } : {}),
+    ...(def.editorToolbar && def.editorToolbar.length > 0
+      ? { editorToolbar: [...def.editorToolbar] }
+      : {}),
     ...(def.requiresPlugins && def.requiresPlugins.length > 0
       ? { requiresPlugins: [...def.requiresPlugins] }
       : {}),
