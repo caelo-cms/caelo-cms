@@ -119,16 +119,66 @@ export class ListRenderDataError extends Error {
 }
 
 /**
+ * The scope-independent rows a list render reads: every page's SEO
+ * summary and social image, every media asset's metadata, the site
+ * language and home page. Read once by {@link loadListRenderBase}; the
+ * editor preview keeps them in its cached site view (#1212).
+ */
+export interface ListRenderBase {
+  readonly seo: readonly {
+    readonly page_id: string;
+    readonly meta_description: string;
+    readonly og_image: string | null;
+  }[];
+  readonly media: readonly {
+    readonly id: string;
+    readonly alt: string;
+    readonly width: number | null;
+    readonly height: number | null;
+  }[];
+  readonly siteLanguage: string | null;
+  readonly homePageId: string | null;
+}
+
+/** Read the {@link ListRenderBase} (three queries). */
+export async function loadListRenderBase(tx: TransactionRunner): Promise<ListRenderBase> {
+  const seo = (await tx.execute(sql`
+    SELECT page_id::text AS page_id, meta_description, og_image_asset_id::text AS og_image
+    FROM pages_seo
+  `)) as unknown as ListRenderBase["seo"][number][];
+  const media = (await tx.execute(sql`
+    SELECT id::text AS id, alt, width, height FROM media_assets WHERE deleted_at IS NULL
+  `)) as unknown as ListRenderBase["media"][number][];
+  const lang = (await tx.execute(sql`
+    SELECT site_language, home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1
+  `)) as unknown as { site_language: string | null; home_page_id: string | null }[];
+  return {
+    seo,
+    media,
+    siteLanguage: lang[0]?.site_language ?? null,
+    homePageId: lang[0]?.home_page_id ?? null,
+  };
+}
+
+/**
  * Assemble `ListRenderData` from scope-dependent rows plus the
- * scope-independent ones loaded here (SEO summaries / social images,
- * media metadata, the site language). Shared by the build loader below
- * and admin-core's draft-aware preview loader (`lists/load.ts`), so the
- * two produce the same shape from their own views.
+ * scope-independent ones (SEO summaries / social images, media metadata,
+ * the site language). Shared by the build loader below and admin-core's
+ * draft-aware preview loader (`lists/load.ts`), so the two produce the
+ * same shape from their own views.
  */
 export async function assembleListRenderData(
   tx: TransactionRunner,
   src: ListRenderSources,
 ): Promise<LoadedListRenderData> {
+  return assembleListRenderDataFrom(src, await loadListRenderBase(tx));
+}
+
+/** {@link assembleListRenderData} once the {@link ListRenderBase} is loaded (pure). */
+export function assembleListRenderDataFrom(
+  src: ListRenderSources,
+  base: ListRenderBase,
+): LoadedListRenderData {
   const listTypes = new Map<string, LoadedListType>();
   const typeSlugById = new Map<string, string>();
   for (const t of src.listTypes) {
@@ -155,11 +205,7 @@ export async function assembleListRenderData(
     pageTypeSlugById.set(t.id, t.def.slug);
   }
 
-  const seo = (await tx.execute(sql`
-    SELECT page_id::text AS page_id, meta_description, og_image_asset_id::text AS og_image
-    FROM pages_seo
-  `)) as unknown as { page_id: string; meta_description: string; og_image: string | null }[];
-  const seoByPage = new Map(seo.map((r) => [r.page_id, r]));
+  const seoByPage = new Map(base.seo.map((r) => [r.page_id, r]));
   const pages = new Map<string, ListPageRecord>();
   for (const p of src.pages) {
     const s = seoByPage.get(p.id);
@@ -180,10 +226,7 @@ export async function assembleListRenderData(
   }
 
   const media = new Map<string, ListMediaRecord>();
-  const mediaRows = (await tx.execute(sql`
-    SELECT id::text AS id, alt, width, height FROM media_assets WHERE deleted_at IS NULL
-  `)) as unknown as { id: string; alt: string; width: number | null; height: number | null }[];
-  for (const m of mediaRows) {
+  for (const m of base.media) {
     media.set(m.id, {
       id: m.id,
       alt: m.alt.trim() === "" ? null : m.alt,
@@ -192,10 +235,7 @@ export async function assembleListRenderData(
     });
   }
 
-  const lang = (await tx.execute(sql`
-    SELECT site_language, home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1
-  `)) as unknown as { site_language: string | null; home_page_id: string | null }[];
-  const siteLanguage = lang[0]?.site_language ?? null;
+  const siteLanguage = base.siteLanguage;
   if (siteLanguage === null && src.languageUnset === "refuse") {
     throw new ListRenderDataError(
       "site_defaults.site_language is not set — set the site language (set_site_identity siteLanguage) before lists can render",
@@ -208,7 +248,7 @@ export async function assembleListRenderData(
     pages,
     media,
     siteLanguage: siteLanguage ?? "und",
-    homePageId: lang[0]?.home_page_id ?? null,
+    homePageId: base.homePageId,
     ...(src.pageVariants ? { pageVariants: src.pageVariants } : {}),
     ...(src.overlaySources && src.overlaySources.plugins.length > 0
       ? { overlays: mergeListOverlays(src.overlaySources), overlaySources: src.overlaySources }

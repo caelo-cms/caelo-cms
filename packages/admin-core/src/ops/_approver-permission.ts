@@ -22,7 +22,11 @@
  * gated tool's executor declares one.
  */
 
-import type { OperationDefinition, TransactionRunner } from "@caelo-cms/query-api";
+import type {
+  AnyOperationDefinition,
+  OperationDefinition,
+  TransactionRunner,
+} from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { err } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -122,7 +126,7 @@ export function requiresApproverPermission<I, O>(
  * is the single source for the pending pages and the CI guard.
  */
 export function approverPermissionsOf(
-  op: OperationDefinition<unknown, unknown>,
+  op: AnyOperationDefinition<unknown, unknown>,
 ): readonly Permission[] | null {
   const declared = (op as Partial<ApprovalOperationDefinition<unknown, unknown>>)
     .approverPermissions;
