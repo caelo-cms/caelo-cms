@@ -31,7 +31,7 @@ export async function storedModuleFields(
 
 /**
  * `fields` with the stored `default` of every field resent without one
- * (same name, kind and — for a list — binding). Pure.
+ * (same name, kind and — for a list — binding and list type). Pure.
  *
  * @returns the fields to write and the names whose default was kept.
  */
@@ -48,8 +48,15 @@ export function keepStoredDefaults(
       return f;
     }
     // A list's default takes the shape of its binding (entries vs a
-    // `caelo:list/<id>`): a rebound list starts without one.
-    if (f.kind === "list" && prev.kind === "list" && bindOf(prev) !== bindOf(f)) return f;
+    // `caelo:list/<id>`) and of its list type (a `texts` entry is not a
+    // `links` entry): a rebound or retyped list starts without one.
+    if (
+      f.kind === "list" &&
+      prev.kind === "list" &&
+      (bindOf(prev) !== bindOf(f) || prev.listType !== f.listType)
+    ) {
+      return f;
+    }
     kept.push(f.name);
     return { ...f, default: prev.default } as ModuleField;
   });

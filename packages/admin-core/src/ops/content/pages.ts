@@ -1710,27 +1710,35 @@ export const setPageModulesOp = defineOperation({
       syncMode: "synced" | "unsynced";
     };
     // #1195 — placements addressed by their content instance. Each must be
-    // one of this page's placements of the same module, named once; they
-    // are reserved before the FIFO pass so it never hands them out twice.
-    const priorById = new Map<string, { moduleId: string; syncMode: "synced" | "unsynced" }>();
+    // one of this page's placements of the same module. Placements may share
+    // a content instance (placement.set_content allows it), so an id can be
+    // named as often as the page has placements bound to it — each name
+    // claims one of them, with that placement's sync mode. Claimed ones are
+    // skipped by the FIFO pass below so no binding is handed out twice.
+    type PriorBinding = { moduleId: string; syncMode: "synced" | "unsynced" };
+    const priorById = new Map<string, PriorBinding[]>();
     for (const block of priorLayout.blocks) {
       for (const p of block.placements ?? []) {
-        priorById.set(p.contentInstanceId, { moduleId: p.moduleId, syncMode: p.syncMode });
+        const list = priorById.get(p.contentInstanceId) ?? [];
+        list.push({ moduleId: p.moduleId, syncMode: p.syncMode });
+        priorById.set(p.contentInstanceId, list);
       }
     }
-    const reserved = new Set<string>();
+    const claimedSyncModes = new Map<string, ("synced" | "unsynced")[]>();
+    const claims = new Map<string, number>();
     for (const block of input.blocks) {
       for (const [i, ciId] of (block.contentInstanceIds ?? []).entries()) {
         if (ciId === null) continue;
         const moduleId = block.moduleIds[i] as string;
         const prior = priorById.get(ciId);
+        const used = claims.get(ciId) ?? 0;
         const problem =
           prior === undefined
             ? `content instance ${ciId} is not a placement on this page`
-            : prior.moduleId !== moduleId
-              ? `content instance ${ciId} belongs to module ${prior.moduleId}, not ${moduleId}`
-              : reserved.has(ciId)
-                ? `content instance ${ciId} is named twice`
+            : (prior[0] as PriorBinding).moduleId !== moduleId
+              ? `content instance ${ciId} belongs to module ${(prior[0] as PriorBinding).moduleId}, not ${moduleId}`
+              : used >= prior.length
+                ? `content instance ${ciId} is named ${used + 1} times but bound to ${prior.length} placement(s) on this page`
                 : null;
         if (problem !== null) {
           return err({
@@ -1739,9 +1747,15 @@ export const setPageModulesOp = defineOperation({
             message: `${problem} — pages.get_with_modules lists the page's placements (block, module, contentInstanceId).`,
           });
         }
-        reserved.add(ciId);
+        claims.set(ciId, used + 1);
+        const modes = claimedSyncModes.get(ciId) ?? [];
+        modes.push((prior as PriorBinding[])[used]?.syncMode ?? "unsynced");
+        claimedSyncModes.set(ciId, modes);
       }
     }
+    // Remaining claims per id: the FIFO pass skips that many queue entries
+    // bound to it, since the named placements took those bindings.
+    const toSkip = new Map(claims);
 
     const resolved: ResolvedPlacement[] = [];
     for (const block of input.blocks) {
@@ -1757,13 +1771,16 @@ export const setPageModulesOp = defineOperation({
         if (named !== null) {
           prior = {
             contentInstanceId: named,
-            syncMode: (priorById.get(named) as { syncMode: "synced" | "unsynced" }).syncMode,
+            syncMode: (claimedSyncModes.get(named) as ("synced" | "unsynced")[]).shift() as
+              | "synced"
+              | "unsynced",
           };
         } else {
-          while (
-            queue.length > 0 &&
-            reserved.has((queue[0] as { contentInstanceId: string }).contentInstanceId)
-          ) {
+          for (;;) {
+            const head = queue[0];
+            const skip = head ? (toSkip.get(head.contentInstanceId) ?? 0) : 0;
+            if (!head || skip === 0) break;
+            toSkip.set(head.contentInstanceId, skip - 1);
             queue.shift();
           }
           prior = queue.shift();

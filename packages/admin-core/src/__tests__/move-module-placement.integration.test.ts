@@ -178,6 +178,36 @@ describe("#1195 — move_module moves one placement", () => {
     expect(await labelled(SYSTEM, pageId)).toEqual({ header: ["x"], content: ["b", "a", "n"] });
   });
 
+  it("moves a module on a page whose placements share a content instance", async () => {
+    const { pageId, m, n } = await seedPage(SYSTEM, "shared");
+    const before = await blocksOf(SYSTEM, pageId);
+    const shared = before.find((b) => b.blockName === "content")?.modules[0]?.contentInstanceId;
+    await op(SYSTEM, "placement.set_content", {
+      pageId,
+      blockName: "header",
+      position: 0,
+      contentInstanceId: shared,
+      syncMode: "synced",
+    });
+    expect(await labelled(SYSTEM, pageId)).toEqual({ header: ["a"], content: ["a", "n", "b"] });
+
+    const res = await move(SYSTEM, {
+      pageId,
+      moduleId: n,
+      fromBlockName: "content",
+      fromPosition: 1,
+      position: "top",
+    });
+    expect(res.ok).toBe(true);
+    expect(await labelled(SYSTEM, pageId)).toEqual({ header: ["a"], content: ["n", "a", "b"] });
+    const after = await blocksOf(SYSTEM, pageId);
+    expect(after.find((b) => b.blockName === "header")?.modules[0]?.contentInstanceId).toBe(shared);
+    expect(after.find((b) => b.blockName === "content")?.modules[1]).toMatchObject({
+      moduleId: m,
+      contentInstanceId: shared,
+    });
+  });
+
   it("refuses an unaddressed move of a repeated module, naming its placements", async () => {
     const { pageId, m } = await seedPage(SYSTEM, "ambiguous");
     const res = await move(SYSTEM, { pageId, moduleId: m, toBlockName: "header", position: 0 });

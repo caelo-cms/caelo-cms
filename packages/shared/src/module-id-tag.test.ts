@@ -28,4 +28,11 @@ describe("tagModuleId", () => {
     const once = tagModuleId('<polyline points="0,0 1,1"/>', "m1");
     expect(tagModuleId(once, "m2")).toBe(once);
   });
+
+  it("stays linear on a long whitespace run inside the root tag", () => {
+    const html = `<div${"\t".repeat(200_000)}x>`;
+    const start = performance.now();
+    expect(tagModuleId(html, "m1").endsWith(' data-caelo-module-id="m1">')).toBe(true);
+    expect(performance.now() - start).toBeLessThan(500);
+  });
 });

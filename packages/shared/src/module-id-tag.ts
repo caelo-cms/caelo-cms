@@ -36,8 +36,11 @@ export function tagModuleId(html: string, moduleId: string): string {
   if (!m) return html;
   const tagAttrs = m[2] ?? "";
   if (/\sdata-caelo-module-id\s*=/.test(tagAttrs)) return html;
-  const selfClosing = /\s*\/\s*$/.exec(tagAttrs);
-  const attrs = selfClosing ? tagAttrs.slice(0, selfClosing.index) : tagAttrs;
+  // String ops, not a `\s*\/\s*$` regex: that backtracks polynomially on
+  // long whitespace runs (CodeQL js/polynomial-redos).
+  const trimmed = tagAttrs.trimEnd();
+  const selfClosing = trimmed.endsWith("/");
+  const attrs = selfClosing ? trimmed.slice(0, -1).trimEnd() : tagAttrs;
   const close = selfClosing ? "/>" : ">";
   const replaced = `<${m[1]}${attrs} ${MODULE_ID_ATTRIBUTE}="${moduleId}"${close}`;
   return html.slice(0, m.index) + replaced + html.slice(m.index + m[0].length);
