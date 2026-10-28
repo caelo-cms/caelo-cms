@@ -234,9 +234,15 @@ export async function syncRedirectsInTx(
   const skipStaging =
     envRows.some((r) => r.env === "staging") && !(await tryLockStagingPublication(tx)).locked;
 
+  // A skipped staging target's state row is not touched at all: locking it
+  // here would hold it across the provider calls below, and the Stage's own
+  // finish step writes that row (it would wait past lock_timeout and roll
+  // back its publication record).
+  const envs = skipStaging ? sql`('production')` : SYNC_ENVS;
+
   await tx.execute(sql`
     INSERT INTO redirect_sync_state (target_id)
-    SELECT id FROM deploy_targets WHERE env IN ${SYNC_ENVS} ${only("id")} ORDER BY id
+    SELECT id FROM deploy_targets WHERE env IN ${envs} ${only("id")} ORDER BY id
     ON CONFLICT (target_id) DO NOTHING
   `);
   // A new served build carries the redirects of its own build time, so the
@@ -245,7 +251,7 @@ export async function syncRedirectsInTx(
   if (SERVED_BUILD_CHANGED.has(args.trigger)) {
     await tx.execute(sql`
       UPDATE redirect_sync_state SET wanted_revision = wanted_revision + 1, updated_at = now()
-      WHERE target_id IN (SELECT id FROM deploy_targets WHERE env IN ${SYNC_ENVS} ${only("id")})
+      WHERE target_id IN (SELECT id FROM deploy_targets WHERE env IN ${envs} ${only("id")})
     `);
   }
   // The revision first, then the rows (see the module comment).
@@ -253,7 +259,7 @@ export async function syncRedirectsInTx(
     SELECT t.id::text AS id, t.name, t.env, t.out_dir, t.base_url, t.robots_default,
            t.page_url_style, s.wanted_revision, s.failed_attempts
     FROM deploy_targets t JOIN redirect_sync_state s ON s.target_id = t.id
-    WHERE t.env IN ${SYNC_ENVS} ${only("t.id")}
+    WHERE t.env IN ${envs} ${only("t.id")}
     ORDER BY t.id
     FOR UPDATE OF s
   `)) as unknown as TargetRow[];
@@ -274,7 +280,6 @@ export async function syncRedirectsInTx(
     (a, b) => Number(b.env === "production") - Number(a.env === "production"),
   );
   for (const t of ordered) {
-    if (skipStaging && t.env === "staging") continue;
     outcomes.push(await syncTarget(tx, ctx, args.trigger, t, table, publisher, outputRoot));
   }
   return outcomes;

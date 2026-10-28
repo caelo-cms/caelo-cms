@@ -21,7 +21,7 @@ import { SQL } from "bun";
 import { bulkCreateRedirectsTool } from "../ai/tools/bulk-create-redirects.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
-import type { StaticPublisher } from "../deploy/static-publisher.js";
+import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publisher.js";
 import type { RedirectSyncTargetStatus } from "../ops/redirect_sync.js";
 import {
   _redirectSyncPollOnceForTests,
@@ -376,6 +376,60 @@ describe("redirect sync on save (#1157)", () => {
       trigger: "build",
       status: "applied",
     });
+  });
+
+  it("#1211 a sync while a Stage publishes staging leaves staging's state row unlocked", async () => {
+    // A Stage holds the staging-publication lease (it publishes without a
+    // transaction); its finish step will write staging's sync state.
+    const stageRun = crypto.randomUUID();
+    await sys(async (tx) => {
+      await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+               VALUES (${stageRun}::uuid, ${targets.staging.id}::uuid, ${SYSTEM.actorId}::uuid,
+                       'running', now() + interval '10 minutes')`;
+      await tx`INSERT INTO deploy_leases (name, holder_run_id, acquired_at, expires_at)
+               VALUES ('staging-publication', ${stageRun}::uuid, now(), now() + interval '10 minutes')
+               ON CONFLICT (name) DO UPDATE SET holder_run_id = EXCLUDED.holder_run_id,
+                 acquired_at = EXCLUDED.acquired_at, expires_at = EXCLUDED.expires_at`;
+      await tx`INSERT INTO redirect_sync_state (target_id) VALUES (${targets.staging.id}::uuid)
+               ON CONFLICT (target_id) DO NOTHING`;
+    });
+    const real = await loadStaticPublisher(undefined);
+    let stagingRowFree: boolean | null = null;
+    const publisher: StaticPublisher = {
+      ...real,
+      syncRedirects: async (args) => {
+        // While the production push runs, the Stage could write its row.
+        const probe = new SQL(ADMIN_URL!);
+        try {
+          stagingRowFree = await probe.begin(async (tx) => {
+            await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+            try {
+              await tx`SELECT 1 FROM redirect_sync_state
+                       WHERE target_id = ${targets.staging.id}::uuid FOR UPDATE NOWAIT`;
+              return true;
+            } catch {
+              return false;
+            }
+          });
+        } finally {
+          await probe.end();
+        }
+        return real.syncRedirects!(args);
+      },
+    };
+    try {
+      const outcomes = await adapter.withAdminTransaction(SYSTEM, (tx) =>
+        syncRedirectsInTx(tx, SYSTEM, { trigger: "retry", publisher }),
+      );
+      expect(outcomes.map((o) => o.env)).toEqual(["production"]);
+      expect(stagingRowFree).toBe(true);
+    } finally {
+      await sys(async (tx) => {
+        await tx`UPDATE deploy_leases SET holder_run_id = NULL, acquired_at = NULL, expires_at = NULL
+                 WHERE name = 'staging-publication'`;
+        await tx`DELETE FROM deploy_runs WHERE id = ${stageRun}::uuid`;
+      });
+    }
   });
 
   it("a moved Firebase build moves only the run that recorded the copied version", async () => {
