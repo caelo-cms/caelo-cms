@@ -21,7 +21,9 @@
  *     instance it ran. Its row has no lease (NULL).
  *
  * Either way such a run is safe to mark failed (`deploy.begin_run` sweeps
- * them). A lease expiring on a timer is right here: it guards a process,
+ * them). Ending a leased run clears its lease in the same update: the
+ * database refuses to end a run whose lease is live otherwise (migration
+ * 0393's guard, for the previous release's sweep during a rolling update). A lease expiring on a timer is right here: it guards a process,
  * not an editor's change — a dead process cannot release anything.
  */
 

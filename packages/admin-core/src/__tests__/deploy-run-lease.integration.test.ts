@@ -320,3 +320,48 @@ describe("#1211 builds on an uploading publisher do not stay on disk", () => {
     expect(existsSync(dir)).toBe(true);
   });
 });
+
+describe("#1211 a rolling update cannot end a Stage of this release", () => {
+  /** The previous release's begin_run sweep: it knows no lease, only the advisory lock. */
+  async function previousReleaseSweep(runId: string): Promise<void> {
+    await withSql(
+      (tx) => tx`
+        UPDATE deploy_runs
+        SET status = 'failed', finished_at = clock_timestamp(), error_message = 'orphaned'
+        WHERE id = ${runId}::uuid AND status = 'running'
+          AND pg_try_advisory_xact_lock(hashtext(${"caelo:deploy-run:"} || ${runId}::text))`,
+    );
+  }
+
+  async function leasedRun(lease: string): Promise<string> {
+    const runId = crypto.randomUUID();
+    await withSql(
+      (tx) => tx`
+        INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+        SELECT ${runId}::uuid, id, ${HUMAN.actorId}::uuid, 'running',
+               clock_timestamp() + ${lease}::interval
+        FROM deploy_targets WHERE name = 'staging'`,
+    );
+    return runId;
+  }
+
+  it("a run whose lease is live stays running through the previous release's sweep", async () => {
+    const runId = await leasedRun("2 minutes");
+    await previousReleaseSweep(runId);
+    expect((await runRow(runId))?.status).toBe("running");
+    // This release ends it as usual: the update clears the lease.
+    const r = await execute(registry, adapter, SYSTEM, "deploy.fail_run", {
+      runId,
+      message: "stopped",
+      phaseTimings: [],
+    });
+    expect(r.ok).toBe(true);
+    expect(await runRow(runId)).toMatchObject({ status: "failed", lease_expires_at: null });
+  });
+
+  it("a run whose lease lapsed is swept by either release", async () => {
+    const runId = await leasedRun("-1 second");
+    await previousReleaseSweep(runId);
+    expect((await runRow(runId))?.status).toBe("failed");
+  });
+});
