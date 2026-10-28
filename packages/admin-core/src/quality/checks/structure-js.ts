@@ -18,14 +18,23 @@
  * - `structure/js-written-text` (warning): the JS writes long literal
  *   text into the page.
  *
- * Only modules rendered on a staged page count: an unplaced module's JS
- * ships nowhere. Site-scope findings, one per module and rule — the fix is
- * one module edit, wherever it is placed. Analysis: module-js-analysis.ts.
+ * Only modules whose JS a staged page ships count: an unplaced module's JS
+ * ships nowhere. A module root stamp is not enough evidence on its own — a
+ * module with empty html, or a wrapperless parent whose first element is a
+ * nested module's root, has no stamp of its own, yet the composer still
+ * bundles its JS (shared preview-compose.ts). So the page's own module
+ * script (`<script defer data-source="modules">`, inline or base64) and
+ * its consent-deferred scripts (`data-caelo-deferred-script="<id>"`) are
+ * read too (shippedOn). Site-scope findings, one per module and rule — the
+ * fix is one module edit, wherever it is placed. Analysis:
+ * module-js-analysis.ts, module-js-hooks.ts.
  */
 
 import { truncateKeepingIds } from "@caelo-cms/shared";
+import type { StagedPage } from "./check.js";
 import type { Finding } from "./findings.js";
-import { analyseModuleJs, foreignHooks, hookOwners, templateHooks } from "./module-js-analysis.js";
+import { analyseModuleJs } from "./module-js-analysis.js";
+import { foreignHooks, hookOwners, templateHooks } from "./module-js-hooks.js";
 import type { StructureLayout } from "./structure.js";
 import type { StructureAnalysis, StructureModule } from "./structure-analysis.js";
 
@@ -35,15 +44,17 @@ const MAX_LISTED = 6;
 /** The module-JS findings of one staged build. Pure. */
 export function moduleJsFindings(
   analysis: StructureAnalysis,
+  stagedPages: readonly StagedPage[],
   modules: readonly StructureModule[],
   layouts: readonly StructureLayout[],
 ): Finding[] {
   const byId = new Map(modules.map((m) => [m.id, m]));
+  const shipped = shippedOn(analysis, stagedPages, modules);
   const owners = hookOwners(modules);
   const neutral = new Set(layouts.flatMap((l) => [...templateHooks(l.html)]));
   const findings: Finding[] = [];
   for (const m of modules) {
-    const pages = analysis.placements.get(m.id);
+    const pages = shipped.get(m.id);
     if (!pages || pages.size === 0 || m.js.trim().length === 0) continue;
     const facts = analyseModuleJs(m.js);
     const name = `"${m.displayName}" (${m.id})`;
@@ -107,6 +118,60 @@ export function moduleJsFindings(
     }
   }
   return findings;
+}
+
+const BUNDLE_OPEN = '<script defer data-source="modules"';
+const BASE64_SRC = ' src="data:text/javascript;base64,';
+const DEFERRED_RE = /data-caelo-deferred-script="([0-9a-f-]{36})"/gi;
+
+/**
+ * Module id → the staged pages that ship its JS: rendered roots, deferred
+ * scripts, and — for modules without either — the page's module bundle
+ * containing the module's JS. Bundles repeat across pages, so each
+ * distinct bundle is searched once.
+ */
+function shippedOn(
+  analysis: StructureAnalysis,
+  pages: readonly StagedPage[],
+  modules: readonly StructureModule[],
+): Map<string, Set<string>> {
+  const shipped = new Map<string, Set<string>>();
+  const on = (moduleId: string, pageId: string) => {
+    const set = shipped.get(moduleId) ?? new Set<string>();
+    set.add(pageId);
+    shipped.set(moduleId, set);
+  };
+  for (const [id, onPages] of analysis.placements) for (const p of onPages) on(id, p);
+  const bundles = new Map<string, string[]>();
+  for (const page of pages) {
+    for (const m of page.html.matchAll(DEFERRED_RE))
+      on((m[1] as string).toLowerCase(), page.pageId);
+    const bundle = moduleBundle(page.html);
+    if (bundle !== null) bundles.set(bundle, [...(bundles.get(bundle) ?? []), page.pageId]);
+  }
+  for (const m of modules) {
+    const js = m.js.trim();
+    if (js.length === 0 || shipped.has(m.id)) continue;
+    for (const [bundle, pageIds] of bundles) {
+      if (bundle.includes(js)) for (const p of pageIds) on(m.id, p);
+    }
+  }
+  return shipped;
+}
+
+/** The page's module script as the composer emitted it, or null. */
+function moduleBundle(html: string): string | null {
+  const at = html.indexOf(BUNDLE_OPEN);
+  if (at === -1) return null;
+  const rest = at + BUNDLE_OPEN.length;
+  if (html.startsWith(BASE64_SRC, rest)) {
+    const start = rest + BASE64_SRC.length;
+    const end = html.indexOf('"', start);
+    return end === -1 ? null : Buffer.from(html.slice(start, end), "base64").toString("utf8");
+  }
+  const open = html.indexOf(">", rest);
+  const close = html.indexOf("</script>", open);
+  return open === -1 || close === -1 ? null : html.slice(open + 1, close);
 }
 
 function clip(message: string): string {

@@ -122,7 +122,7 @@ export function structureFindings(
     ...layoutCss(analysis, layouts, byId),
     ...repeatedItems(analysis, [...groups.exact, ...groups.near], byId),
     ...navigationFindings(analysis.linkGroups, byId),
-    ...moduleJsFindings(analysis, modules, layouts),
+    ...moduleJsFindings(analysis, pages, modules, layouts),
   ];
   // Errors first (stable within a severity), so a cut keeps what blocks.
   // The fix of one group is site-wide, so the next Stage re-reports

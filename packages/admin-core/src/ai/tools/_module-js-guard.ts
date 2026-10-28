@@ -19,12 +19,8 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import {
-  analyseModuleJs,
-  foreignHooks,
-  hookOwners,
-  templateHooks,
-} from "../../quality/checks/module-js-analysis.js";
+import { analyseModuleJs } from "../../quality/checks/module-js-analysis.js";
+import { foreignHooks, hookOwners, templateHooks } from "../../quality/checks/module-js-hooks.js";
 import type { ToolContext } from "./dispatch.js";
 
 interface GuardModule {

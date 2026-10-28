@@ -28,13 +28,13 @@
  *
  * A deliberate site-wide script (scroll reveal on `[data-reveal]` across
  * many modules) says so in a comment, `caelo:site-wide: <reason>`. The
- * check verifies the claim (foreignHooks): a site-wide script may use
+ * check verifies the claim (foreignHooks, module-js-hooks.ts): a site-wide script may use
  * shared hooks only (rendered by three or more modules), never the hooks
  * of one or two modules.
  */
 
-import { stripMustache } from "@caelo-cms/shared";
 import { parseSync } from "oxc-parser";
+import { isNode, JsScopes, type Node, nodes } from "./module-js-ast.js";
 
 /** What one module's JS references and writes. */
 export interface ModuleJsFacts {
@@ -72,32 +72,6 @@ const DOM_INSERT_CALLS = new Set([
   ...TEXT_SINK_CALLS,
 ]);
 
-/** A loosely typed ESTree node as oxc-parser returns it. */
-interface Node {
-  readonly type: string;
-  readonly [key: string]: unknown;
-}
-
-function isNode(v: unknown): v is Node {
-  return typeof v === "object" && v !== null && typeof (v as { type?: unknown }).type === "string";
-}
-
-/** Every node of a subtree, depth first. */
-function* nodes(root: unknown): Generator<Node> {
-  const stack: unknown[] = [root];
-  while (stack.length > 0) {
-    const v = stack.pop();
-    if (Array.isArray(v)) {
-      for (let i = v.length - 1; i >= 0; i--) stack.push(v[i]);
-    } else if (isNode(v)) {
-      yield v;
-      for (const [key, child] of Object.entries(v)) {
-        if (key !== "type" && typeof child === "object" && child !== null) stack.push(child);
-      }
-    }
-  }
-}
-
 /** The non-computed property name of a member expression, or null. */
 function memberName(n: unknown): string | null {
   if (!isNode(n) || n.type !== "MemberExpression" || n.computed === true) return null;
@@ -109,44 +83,18 @@ function stringLiteral(n: unknown): string | null {
   return isNode(n) && n.type === "Literal" && typeof n.value === "string" ? n.value : null;
 }
 
-/**
- * The strings a script binds to names (`const markup = "<p>…</p>"`), so a
- * write of `markup` is read like a write of the literal. `nonRefs` are the
- * identifiers that name a property or a declaration rather than read a
- * binding (`i.label`, `{ label: … }`).
- */
-interface StringScope {
-  readonly strings: ReadonlyMap<string, Node>;
-  readonly nonRefs: ReadonlySet<Node>;
-}
-
-const NO_SCOPE: StringScope = { strings: new Map(), nonRefs: new Set() };
-
 /** Longest chain of string bindings followed (`a = b + "x"`, `b = c`, …). */
 const MAX_BINDING_DEPTH = 8;
 
-function stringScope(program: unknown): StringScope {
-  const strings = new Map<string, Node>();
-  const nonRefs = new Set<Node>();
-  for (const n of nodes(program)) {
-    if (n.type === "MemberExpression" && n.computed !== true && isNode(n.property)) {
-      nonRefs.add(n.property);
-    }
-    if (n.type === "Property" && n.computed !== true && isNode(n.key)) nonRefs.add(n.key);
-    if (n.type === "VariableDeclarator" && isNode(n.id) && n.id.type === "Identifier") {
-      nonRefs.add(n.id);
-      const init = n.init;
-      if (
-        isNode(init) &&
-        (stringLiteral(init) !== null ||
-          init.type === "TemplateLiteral" ||
-          (init.type === "BinaryExpression" && init.operator === "+"))
-      ) {
-        strings.set(n.id.name as string, init);
-      }
-    }
-  }
-  return { strings, nonRefs };
+/** The string a declaration binds (`const markup = "<p>…</p>"`), or null. */
+function boundString(decl: Node | null): Node | null {
+  if (decl === null || decl.type !== "VariableDeclarator" || !isNode(decl.init)) return null;
+  const init = decl.init;
+  return stringLiteral(init) !== null ||
+    init.type === "TemplateLiteral" ||
+    (init.type === "BinaryExpression" && init.operator === "+")
+    ? init
+    : null;
 }
 
 /**
@@ -155,15 +103,15 @@ function stringScope(program: unknown): StringScope {
  * branches of a conditional, and template literals returned from callbacks
  * (`items.map((i) => \`<li>${i.label}</li>\`).join("")`).
  */
-function staticText(expr: unknown, scope: StringScope = NO_SCOPE, depth = 0): string {
+function staticText(expr: unknown, scopes: JsScopes | null = null, depth = 0): string {
   const parts: string[] = [];
   for (const n of nodes(expr)) {
     if (n.type === "TemplateLiteral") {
       const quasis = n.quasis as { value: { cooked: string | null } }[];
       parts.push(quasis.map((q) => q.value.cooked ?? "").join("\uE000"));
-    } else if (n.type === "Identifier" && !scope.nonRefs.has(n)) {
-      const bound = scope.strings.get(n.name as string);
-      if (bound && depth < MAX_BINDING_DEPTH) parts.push(staticText(bound, scope, depth + 1));
+    } else if (n.type === "Identifier" && scopes !== null) {
+      const bound = boundString(scopes.resolve(n));
+      if (bound && depth < MAX_BINDING_DEPTH) parts.push(staticText(bound, scopes, depth + 1));
     } else {
       const s = stringLiteral(n);
       if (s !== null) parts.push(s);
@@ -179,7 +127,7 @@ function staticText(expr: unknown, scope: StringScope = NO_SCOPE, depth = 0): st
  * own (`open ? "Menü schließen" : "Menü öffnen"` is two short labels, not
  * one long text).
  */
-function variants(expr: unknown, scope: StringScope): string[] {
+function variants(expr: unknown, scope: JsScopes): string[] {
   if (isNode(expr) && expr.type === "ConditionalExpression") {
     return [...variants(expr.consequent, scope), ...variants(expr.alternate, scope)];
   }
@@ -206,12 +154,25 @@ const CONTENT_TAG_RE = /<(?:a|li|h[1-6]|p|td|th|dt|dd|figcaption|blockquote|opti
  */
 function markupContent(text: string): string | null {
   if (!/<[a-z]/i.test(text)) return null;
-  if (/\bhref\s*=/i.test(text)) return "links";
+  if (hasAnchorLink(text)) return "links";
   // One word is a control label (`<span>Close</span>`); two are copy.
   if (wordCount(textOutsideTags(text)) >= 2) return "text";
   // `<li>${item.label}</li>`: the tag wraps an interpolated value.
   if (CONTENT_TAG_RE.test(text) && /\uE000/.test(stripTags(text))) return "data";
   return null;
+}
+
+/**
+ * An `<a href>` in markup. Only anchors: `<use href="#icon">` in an SVG
+ * sprite and `<link href>` reference resources, they are no navigation.
+ */
+function hasAnchorLink(markup: string): boolean {
+  for (const part of markup.split("<").slice(1)) {
+    const end = part.indexOf(">");
+    const tag = end === -1 ? part : part.slice(0, end);
+    if (/^a[\s\uE000]/i.test(tag) && /\shref\s*=/i.test(tag)) return true;
+  }
+  return false;
 }
 
 function stripTags(markup: string): string {
@@ -329,9 +290,9 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
   const rendersContent: string[] = [];
   const writesText: string[] = [];
   const arrays = new Map<Node, { count: number; sample: string[] }>();
-  const bindings = new Map<string, Node[]>();
-  const rendered = new Rendered();
-  const scope = stringScope(parsed.program);
+  const bindings = new Map<Node, { name: string; viaProperty: boolean }>();
+  const scope = new JsScopes(parsed.program as unknown as Node);
+  const rendered = new Rendered(scope);
 
   for (const n of nodes(parsed.program)) {
     const s = stringLiteral(n);
@@ -398,15 +359,18 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
       if (a) arrays.set(n, a);
     }
     const bound = bindingOfArray(n);
-    if (bound) bindings.set(bound.name, [...(bindings.get(bound.name) ?? []), bound.array]);
+    if (bound) bindings.set(bound.array, { name: bound.name, viaProperty: bound.viaProperty });
   }
 
   // Data in an array is rendered content only when the script puts its
   // entries into the page; an array of analytics labels next to an
   // unrelated `textContent` write is not.
   for (const [node, a] of arrays) {
-    const names = [...bindings].filter(([, list]) => list.includes(node)).map(([k]) => k);
-    if (!rendered.nodes.has(node) && !names.some((k) => rendered.names.has(k))) continue;
+    const b = bindings.get(node);
+    const reached =
+      rendered.nodes.has(node) ||
+      (b !== undefined && (b.viaProperty ? rendered.names.has(b.name) : rendered.decls.has(node)));
+    if (!reached) continue;
     rendersContent.push(
       `renders ${a.count} entries from a JS array (${a.sample.map((x) => `"${x}"`).join(", ")}, …)`,
     );
@@ -418,17 +382,27 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
 /** Array methods whose callback runs per entry. */
 const ITERATE_CALLS = new Set(["forEach", "map", "flatMap", "reduce"]);
 
-/** What a script renders into the page: array literals and the names they are reached by. */
+/**
+ * What a script renders into the page: array literals, the declarations
+ * of the variables it reads (resolved lexically, so another function's
+ * `items` is a different array), and property names (`config.items`).
+ */
 class Rendered {
   readonly nodes = new Set<Node>();
+  /** Array literals bound to a variable the script renders. */
+  readonly decls = new Set<Node>();
   readonly names = new Set<string>();
+
+  constructor(private readonly scopes: JsScopes) {}
 
   /** One reference: `items`, `config.items` or an inline array literal. */
   add(ref: unknown): void {
     if (!isNode(ref)) return;
     if (ref.type === "ArrayExpression") this.nodes.add(ref);
-    else if (ref.type === "Identifier") this.names.add(ref.name as string);
-    else {
+    else if (ref.type === "Identifier") {
+      const decl = this.scopes.resolve(ref);
+      if (decl?.type === "VariableDeclarator" && isNode(decl.init)) this.decls.add(decl.init);
+    } else {
       const name = memberName(ref);
       if (name !== null) this.names.add(name);
     }
@@ -441,11 +415,11 @@ class Rendered {
 }
 
 /** `const items = [ … ]` / `{ items: [ … ] }` → the name and the array literal. */
-function bindingOfArray(n: Node): { name: string; array: Node } | null {
+function bindingOfArray(n: Node): { name: string; array: Node; viaProperty: boolean } | null {
   if (n.type === "VariableDeclarator" && isNode(n.init) && n.init.type === "ArrayExpression") {
     const id = n.id;
     return isNode(id) && id.type === "Identifier"
-      ? { name: id.name as string, array: n.init }
+      ? { name: id.name as string, array: n.init, viaProperty: false }
       : null;
   }
   if (n.type === "Property" && isNode(n.value) && n.value.type === "ArrayExpression") {
@@ -455,7 +429,7 @@ function bindingOfArray(n: Node): { name: string; array: Node } | null {
         ? (key.name as string)
         : stringLiteral(key)
       : null;
-    return name !== null ? { name, array: n.value } : null;
+    return name !== null ? { name, array: n.value, viaProperty: true } : null;
   }
   return null;
 }
@@ -505,85 +479,4 @@ function noteText(text: string, writesText: string[], rendersContent: string[]):
   if (words >= MIN_TEXT_WORDS || visible.length >= MIN_TEXT_CHARS) {
     writesText.push(`"${excerpt(visible)}"`);
   }
-}
-
-/** The hooks a template renders: its classes, ids and `data-*` attribute names. */
-export function templateHooks(html: string): Set<string> {
-  const markup = stripMustache(html);
-  const out = new Set<string>();
-  // Quoted or unquoted (`class=hero`): both are valid HTML.
-  for (const m of markup.matchAll(/\sclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi)) {
-    for (const c of (m[1] ?? m[2] ?? m[3] ?? "").split(/\s+/)) if (c) out.add(`.${c}`);
-  }
-  for (const m of markup.matchAll(/\sid\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi)) {
-    const v = (m[1] ?? m[2] ?? m[3] ?? "").trim();
-    if (v) out.add(`#${v}`);
-  }
-  for (const m of markup.matchAll(/\s(data-[\w-]+)/gi))
-    out.add(`[${(m[1] as string).toLowerCase()}]`);
-  return out;
-}
-
-/** Platform hooks every module may use (the interaction kit, composer stamps). */
-function isPlatformHook(hook: string): boolean {
-  return hook.startsWith("[data-caelo-") || hook.startsWith(".caelo-");
-}
-
-/**
- * A hook three or more modules render is shared by design (`[data-reveal]`
- * on every section); one that one or two modules render is theirs — two,
- * because a pattern kept as two module copies (the demo form) is still
- * one component.
- */
-const SHARED_HOOK_OWNERS = 3;
-
-/** How a module's JS relates to the hooks other modules render. */
-export interface ForeignHooks {
-  /** Other module id → hooks of that module's own markup the JS drives. */
-  readonly specific: ReadonlyMap<string, readonly string[]>;
-  /** Shared hooks (rendered by three or more modules) the JS drives without a site-wide declaration. */
-  readonly shared: readonly string[];
-}
-
-/**
- * The hooks a module's JS takes from other modules.
- *
- * @param own - the module itself plus every module nested inside it.
- * @param owners - hook → ids of the modules whose templates render it.
- * @param neutral - hooks of the layout chrome, which any module may drive.
- */
-export function foreignHooks(
-  facts: ModuleJsFacts,
-  own: ReadonlySet<string>,
-  owners: ReadonlyMap<string, ReadonlySet<string>>,
-  neutral: ReadonlySet<string> = new Set(),
-): ForeignHooks {
-  const specific = new Map<string, string[]>();
-  const shared: string[] = [];
-  for (const hook of facts.hooks) {
-    if (isPlatformHook(hook) || neutral.has(hook)) continue;
-    const by = owners.get(hook);
-    if (!by || by.size === 0 || [...by].some((id) => own.has(id))) continue;
-    if (by.size >= SHARED_HOOK_OWNERS) {
-      if (facts.siteWide === null || facts.siteWide.length === 0) shared.push(hook);
-      continue;
-    }
-    for (const id of by) specific.set(id, [...(specific.get(id) ?? []), hook]);
-  }
-  return { specific, shared };
-}
-
-/** hook → ids of the modules whose templates render it. */
-export function hookOwners(
-  modules: readonly { readonly id: string; readonly html: string }[],
-): Map<string, Set<string>> {
-  const owners = new Map<string, Set<string>>();
-  for (const m of modules) {
-    for (const h of templateHooks(m.html)) {
-      const set = owners.get(h) ?? new Set<string>();
-      set.add(m.id);
-      owners.set(h, set);
-    }
-  }
-  return owners;
 }

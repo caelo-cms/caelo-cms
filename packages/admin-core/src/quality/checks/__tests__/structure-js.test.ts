@@ -10,7 +10,8 @@
 import { describe, expect, it } from "bun:test";
 import type { StagedPage } from "../check.js";
 import { findingSchema } from "../findings.js";
-import { analyseModuleJs, foreignHooks, hookOwners } from "../module-js-analysis.js";
+import { analyseModuleJs } from "../module-js-analysis.js";
+import { foreignHooks, hookOwners } from "../module-js-hooks.js";
 import { type StructureLayout, structureFindings } from "../structure.js";
 import type { StructureModule } from "../structure-analysis.js";
 
@@ -204,6 +205,50 @@ describe("Codex review on #1199", () => {
     const facts = analyseModuleJs("document.querySelectorAll('.product:not(.admin-only)');");
     expect(facts.hooks).toEqual([".product"]);
     expect(foreignHooks(facts, new Set([id(8)]), owners).specific.size).toBe(0);
+  });
+});
+
+describe("Codex re-review on #1199", () => {
+  it("an SVG sprite reference is decoration, not a link", () => {
+    const facts = analyseModuleJs(
+      `icon.innerHTML = '<svg aria-hidden="true"><use href="#icon-menu"></use></svg>';`,
+    );
+    expect(facts.rendersContent).toEqual([]);
+  });
+
+  it("another function's variable of the same name is a different array", () => {
+    const facts = analyseModuleJs(`
+      (function () { var items = ['Open Menu', 'Close Menu', 'Submit Form']; track(items); })();
+      (function () { var items = document.querySelectorAll('.card'); items.forEach(function (el) { list.appendChild(el); }); })();
+    `);
+    expect(facts.rendersContent).toEqual([]);
+  });
+
+  it("a module without a stamped root is checked by the script the page ships", () => {
+    const utility = mod(
+      30,
+      "Promo injector",
+      "",
+      "document.body.insertAdjacentHTML('beforeend', '<p>Discover our latest products</p>');",
+    );
+    const bundled: StagedPage = {
+      ...page(1, "/"),
+      html: `<!doctype html><html><body><main></main><script defer data-source="modules">\n${utility.js}\n</script></body></html>`,
+    };
+    const encoded: StagedPage = {
+      ...page(2, "/b"),
+      html: `<!doctype html><html><body><script defer data-source="modules" src="data:text/javascript;base64,${Buffer.from(utility.js).toString("base64")}"></script></body></html>`,
+    };
+    const deferred: StagedPage = {
+      ...page(3, "/c"),
+      html: `<!doctype html><html><body><script type="text/plain" data-caelo-deferred-script="${utility.id}">x</script></body></html>`,
+    };
+    for (const p of [bundled, encoded, deferred]) {
+      expect(jsFindings([p], [utility]).map((f) => f.ruleId)).toEqual([
+        "structure/js-rendered-content",
+      ]);
+    }
+    expect(jsFindings([page(4, "/d")], [utility])).toEqual([]);
   });
 });
 
