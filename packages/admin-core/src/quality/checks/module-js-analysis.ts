@@ -83,6 +83,22 @@ function stringLiteral(n: unknown): string | null {
   return isNode(n) && n.type === "Literal" && typeof n.value === "string" ? n.value : null;
 }
 
+/** String methods whose result is their receiver, transformed (arguments are not output). */
+const STRING_TRANSFORMS = new Set([
+  "replace",
+  "replaceAll",
+  "trim",
+  "trimStart",
+  "trimEnd",
+  "toLowerCase",
+  "toUpperCase",
+  "padStart",
+  "padEnd",
+  "normalize",
+  "substring",
+  "repeat",
+]);
+
 /** Stands for an interpolated value in reconstructed text. */
 const HOLE = "\uE000";
 
@@ -135,6 +151,13 @@ function staticText(expr: unknown, scopes: JsScopes | null = null, depth = 0): s
     const s = stringLiteral(v);
     if (s !== null) {
       parts.push(s);
+      return;
+    }
+    // `'<svg …>'.replace('currentColor', 'white')`: the result is the
+    // receiver transformed; the arguments are not appended to it.
+    const method = v.type === "CallExpression" ? memberName(v.callee) : null;
+    if (method !== null && STRING_TRANSFORMS.has(method)) {
+      visit((v.callee as Node).object);
       return;
     }
     for (const [key, child] of Object.entries(v)) {
@@ -315,7 +338,7 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
   const rendersContent: string[] = [];
   const writesText: string[] = [];
   const arrays = new Map<Node, { count: number; sample: string[] }>();
-  const bindings = new Map<Node, { name: string; viaProperty: boolean }>();
+  const bindings = new Map<Node, { name: string; owner: Node | null; viaProperty: boolean }>();
   const scope = new JsScopes(parsed.program as unknown as Node);
   const rendered = new Rendered(scope);
 
@@ -388,7 +411,13 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
       if (a) arrays.set(n, a);
     }
     const bound = bindingOfArray(n);
-    if (bound) bindings.set(bound.array, { name: bound.name, viaProperty: bound.viaProperty });
+    if (bound) {
+      bindings.set(bound.array, {
+        name: bound.name,
+        owner: bound.viaProperty ? scope.ownerOf(n) : null,
+        viaProperty: bound.viaProperty,
+      });
+    }
   }
 
   // Data in an array is rendered content only when the script puts its
@@ -398,7 +427,8 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
     const b = bindings.get(node);
     const reached =
       rendered.nodes.has(node) ||
-      (b !== undefined && (b.viaProperty ? rendered.names.has(b.name) : rendered.decls.has(node)));
+      (b !== undefined &&
+        (b.viaProperty ? rendered.hasProperty(b.name, b.owner) : rendered.decls.has(node)));
     if (!reached) continue;
     rendersContent.push(
       `renders ${a.count} entries from a JS array (${a.sample.map((x) => `"${x}"`).join(", ")}, …)`,
@@ -439,7 +469,8 @@ class Rendered {
   readonly nodes = new Set<Node>();
   /** Array literals bound to a variable the script renders. */
   readonly decls = new Set<Node>();
-  readonly names = new Set<string>();
+  /** Property name → the variables read through (`view.items` → `view`); null when unknown. */
+  readonly properties = new Map<string, Set<Node | null>>();
 
   constructor(private readonly scopes: JsScopes) {}
 
@@ -452,8 +483,23 @@ class Rendered {
       if (decl?.type === "VariableDeclarator" && isNode(decl.init)) this.decls.add(decl.init);
     } else {
       const name = memberName(ref);
-      if (name !== null) this.names.add(name);
+      if (name === null) return;
+      const object = ref.object as Node;
+      const owner = object.type === "Identifier" ? this.scopes.resolve(object) : null;
+      const owners = this.properties.get(name) ?? new Set<Node | null>();
+      owners.add(owner);
+      this.properties.set(name, owners);
     }
+  }
+
+  /**
+   * Is the property array of `owner` (null: an unbound object) rendered?
+   * Exact when both sides resolve; when either does not, the name decides.
+   */
+  hasProperty(name: string, owner: Node | null): boolean {
+    const owners = this.properties.get(name);
+    if (!owners) return false;
+    return owner === null || owners.has(null) || owners.has(owner);
   }
 
   /**
@@ -471,7 +517,7 @@ class Rendered {
   }
 }
 
-/** `const items = [ … ]` / `{ items: [ … ] }` → the name and the array literal. */
+/** `const items = [ … ]` / `{ items: [ … ] }` → the name and the array literal (owner: JsScopes.ownerOf). */
 function bindingOfArray(n: Node): { name: string; array: Node; viaProperty: boolean } | null {
   if (n.type === "VariableDeclarator" && isNode(n.init) && n.init.type === "ArrayExpression") {
     const id = n.id;

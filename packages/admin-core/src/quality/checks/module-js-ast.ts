@@ -104,6 +104,17 @@ export class JsScopes {
     }
   }
 
+  /**
+   * The variable an object literal property belongs to: for `items` in
+   * `const view = { items: [ … ] }`, the declarator of `view`; null when
+   * the object is not bound to a variable (an argument, a nested object).
+   */
+  ownerOf(property: Node): Node | null {
+    const obj = this.parents.get(property);
+    const decl = obj?.type === "ObjectExpression" ? this.parents.get(obj) : undefined;
+    return decl?.type === "VariableDeclarator" && decl.init === obj ? decl : null;
+  }
+
   /** Is this identifier a read of a binding (not `x.name` / `{ name: … }` / a declaration)? */
   isReference(n: Node): boolean {
     return n.type === "Identifier" && !this.nonRefs.has(n);

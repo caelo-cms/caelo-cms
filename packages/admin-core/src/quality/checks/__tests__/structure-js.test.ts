@@ -361,6 +361,29 @@ describe("Codex round 5 on #1199", () => {
   });
 });
 
+describe("Codex round 6 on #1199", () => {
+  it("a string method transforms its receiver; its arguments are not output", () => {
+    const facts = analyseModuleJs(
+      `icon.innerHTML = '<svg><path fill="currentColor"/></svg>'.replace('currentColor', 'white');`,
+    );
+    expect(facts.rendersContent).toEqual([]);
+  });
+
+  it("property arrays of different objects are different arrays", () => {
+    const facts = analyseModuleJs(`
+      const tracking = { items: ['Open Menu', 'Close Menu', 'Submit Form'] };
+      const view = { items: document.querySelectorAll('.card') };
+      view.items.forEach(function (card) { list.appendChild(card); });
+    `);
+    expect(facts.rendersContent).toEqual([]);
+    const same = analyseModuleJs(`
+      const menu = { items: ['Produkte', 'Preise', 'Kontakt'] };
+      menu.items.forEach(function (label) { var a = document.createElement('a'); a.textContent = label; nav.appendChild(a); });
+    `);
+    expect(same.rendersContent).toHaveLength(1);
+  });
+});
+
 describe("foreignHooks", () => {
   it("separates one module's own hooks from hooks many modules share", () => {
     const owners = hookOwners([DEMO, HERO, TEXT]);
