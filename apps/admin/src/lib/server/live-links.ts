@@ -99,17 +99,41 @@ export async function loadLiveLinks(
     };
   }
   // The page's own address, not a canonical override pointing elsewhere.
-  const urls = await resolvePublicPageUrls(
-    [
-      {
-        id: mainPage.id,
-        slug: mainPage.slug,
-        currentPath: mainPage.currentPath,
-        canonicalOverride: null,
-      },
-    ],
-    { siteBaseUrl: siteUrl, pageUrlStyle: target.pageUrlStyle },
-    MAIN_RENDER,
-  );
-  return { error: null, siteUrl, pageUrl: urls.get(mainPage.id) ?? null, pageNote: null };
+  return settleLiveUrl(siteUrl, async () => {
+    const urls = await resolvePublicPageUrls(
+      [
+        {
+          id: mainPage.id,
+          slug: mainPage.slug,
+          currentPath: mainPage.currentPath,
+          canonicalOverride: null,
+        },
+      ],
+      { siteBaseUrl: siteUrl, pageUrlStyle: target.pageUrlStyle },
+      MAIN_RENDER,
+    );
+    return urls.get(mainPage.id) ?? null;
+  });
+}
+
+/**
+ * The live links once the page URL is built by `build`. A failing host
+ * contribution (a plugin's URL annotations or encoder) throws there by
+ * design; it becomes the menu's error, so an optional link never takes the
+ * whole editor down.
+ */
+export async function settleLiveUrl(
+  siteUrl: string,
+  build: () => Promise<string | null>,
+): Promise<LiveLinks> {
+  try {
+    return { error: null, siteUrl, pageUrl: await build(), pageNote: null };
+  } catch (e) {
+    return {
+      error: `The page's live address could not be built: ${e instanceof Error ? e.message : String(e)}`,
+      siteUrl,
+      pageUrl: null,
+      pageNote: null,
+    };
+  }
 }

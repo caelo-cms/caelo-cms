@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { livePageAvailability, type MainPage } from "./live-links.js";
+import { livePageAvailability, type MainPage, settleLiveUrl } from "./live-links.js";
 
 const page: MainPage = { id: "p1", slug: "preise", status: "published", currentPath: "/preise" };
 
@@ -25,5 +25,31 @@ describe("livePageAvailability", () => {
 
   it("does not link before anything of the current staging went live", () => {
     expect(livePageAvailability(page, null).live).toBe(false);
+  });
+});
+
+describe("settleLiveUrl", () => {
+  it("returns the built page URL", async () => {
+    expect(
+      await settleLiveUrl("https://example.com", async () => "https://de.example.com/preise/"),
+    ).toEqual({
+      error: null,
+      siteUrl: "https://example.com",
+      pageUrl: "https://de.example.com/preise/",
+      pageNote: null,
+    });
+  });
+
+  it("turns a failing host contribution into the menu's error instead of throwing", async () => {
+    const links = await settleLiveUrl("https://example.com", async () => {
+      throw new Error("international-site url_annotations failed");
+    });
+    expect(links).toEqual({
+      error:
+        "The page's live address could not be built: international-site url_annotations failed",
+      siteUrl: "https://example.com",
+      pageUrl: null,
+      pageNote: null,
+    });
   });
 });
