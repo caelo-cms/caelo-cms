@@ -110,17 +110,60 @@ function stringLiteral(n: unknown): string | null {
 }
 
 /**
+ * The strings a script binds to names (`const markup = "<p>…</p>"`), so a
+ * write of `markup` is read like a write of the literal. `nonRefs` are the
+ * identifiers that name a property or a declaration rather than read a
+ * binding (`i.label`, `{ label: … }`).
+ */
+interface StringScope {
+  readonly strings: ReadonlyMap<string, Node>;
+  readonly nonRefs: ReadonlySet<Node>;
+}
+
+const NO_SCOPE: StringScope = { strings: new Map(), nonRefs: new Set() };
+
+/** Longest chain of string bindings followed (`a = b + "x"`, `b = c`, …). */
+const MAX_BINDING_DEPTH = 8;
+
+function stringScope(program: unknown): StringScope {
+  const strings = new Map<string, Node>();
+  const nonRefs = new Set<Node>();
+  for (const n of nodes(program)) {
+    if (n.type === "MemberExpression" && n.computed !== true && isNode(n.property)) {
+      nonRefs.add(n.property);
+    }
+    if (n.type === "Property" && n.computed !== true && isNode(n.key)) nonRefs.add(n.key);
+    if (n.type === "VariableDeclarator" && isNode(n.id) && n.id.type === "Identifier") {
+      nonRefs.add(n.id);
+      const init = n.init;
+      if (
+        isNode(init) &&
+        (stringLiteral(init) !== null ||
+          init.type === "TemplateLiteral" ||
+          (init.type === "BinaryExpression" && init.operator === "+"))
+      ) {
+        strings.set(n.id.name as string, init);
+      }
+    }
+  }
+  return { strings, nonRefs };
+}
+
+/**
  * The static text of an expression, with `\uE000` where a value is
- * interpolated: literals, template parts, `+` chains, both branches of a
- * conditional, and template literals returned from callbacks
+ * interpolated: literals, template parts, `+` chains, string bindings, both
+ * branches of a conditional, and template literals returned from callbacks
  * (`items.map((i) => \`<li>${i.label}</li>\`).join("")`).
  */
-function staticText(expr: unknown): string {
+function staticText(expr: unknown, scope: StringScope = NO_SCOPE, depth = 0): string {
   const parts: string[] = [];
   for (const n of nodes(expr)) {
     if (n.type === "TemplateLiteral") {
       const quasis = n.quasis as { value: { cooked: string | null } }[];
       parts.push(quasis.map((q) => q.value.cooked ?? "").join("\uE000"));
+    } else if (n.type === "Identifier" && !scope.nonRefs.has(n)) {
+      const bound = scope.strings.get(n.name as string);
+      if (bound && depth < MAX_BINDING_DEPTH) parts.push(staticText(bound, scope, depth + 1));
     } else {
       const s = stringLiteral(n);
       if (s !== null) parts.push(s);
@@ -136,14 +179,14 @@ function staticText(expr: unknown): string {
  * own (`open ? "Menü schließen" : "Menü öffnen"` is two short labels, not
  * one long text).
  */
-function variants(expr: unknown): string[] {
+function variants(expr: unknown, scope: StringScope): string[] {
   if (isNode(expr) && expr.type === "ConditionalExpression") {
-    return [...variants(expr.consequent), ...variants(expr.alternate)];
+    return [...variants(expr.consequent, scope), ...variants(expr.alternate, scope)];
   }
   if (isNode(expr) && expr.type === "LogicalExpression") {
-    return [...variants(expr.left), ...variants(expr.right)];
+    return [...variants(expr.left, scope), ...variants(expr.right, scope)];
   }
-  return [staticText(expr)];
+  return [staticText(expr, scope)];
 }
 
 /** Visible text left when tags are removed (interpolations dropped). */
@@ -196,6 +239,8 @@ function wordCount(s: string): number {
 export function isVisitorText(s: string): boolean {
   const t = s.trim();
   if (t.length < 2 || /^[.#[<]/.test(t)) return false;
+  // `card-one`, `is_open`, `step2`: ids, classes and keys, never copy.
+  if (/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(t)) return false;
   if (/(?:^|[\s"'(])[\p{Lu}][\p{L}]/u.test(t)) return true;
   if (/[^\p{ASCII}]/u.test(t) && /\p{L}{2,}/u.test(t)) return true;
   return wordCount(t) >= 2 && !/^[\w-]+\(.*\)$/.test(t);
@@ -217,8 +262,14 @@ function isSelector(s: string): boolean {
 /** The class / id / data-attribute hooks of one selector. */
 function selectorHooks(selector: string): string[] {
   const out: string[] = [];
-  // Attribute values are not hooks (`[href="#top"]` names no id).
-  const bare = selector.replace(/"[^"]*"|'[^']*'/g, '""');
+  // Attribute values are not hooks (`[href="#top"]` names no id), and a
+  // negation excludes elements (`.product:not(.admin-only)` drives no
+  // `.admin-only`).
+  let bare = selector.replace(/"[^"]*"|'[^']*'/g, '""');
+  for (let prev = ""; prev !== bare; ) {
+    prev = bare;
+    bare = bare.replace(/:not\([^()]*\)/gi, "");
+  }
   for (const m of bare.matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)) out.push(`.${m[1]}`);
   for (const m of bare.matchAll(/#(-?[_a-zA-Z][\w-]*)/g)) out.push(`#${m[1]}`);
   for (const m of bare.matchAll(/\[\s*(data-[\w-]+)/g)) out.push(`[${m[1]}]`);
@@ -280,6 +331,7 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
   const arrays = new Map<Node, { count: number; sample: string[] }>();
   const bindings = new Map<string, Node[]>();
   const rendered = new Rendered();
+  const scope = stringScope(parsed.program);
 
   for (const n of nodes(parsed.program)) {
     const s = stringLiteral(n);
@@ -309,11 +361,12 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
               : undefined;
       if (markupArg !== undefined) {
         rendered.addSubtree(markupArg);
-        for (const t of variants(markupArg)) noteMarkup(`${name}()`, t, rendersContent);
+        for (const t of variants(markupArg, scope)) noteMarkup(`${name}()`, t, rendersContent);
       }
       if ((name !== null && TEXT_SINK_CALLS.has(name)) || name === "createTextNode") {
         rendered.addSubtree(args);
-        for (const a of args) for (const t of variants(a)) noteText(t, writesText, rendersContent);
+        for (const a of args)
+          for (const t of variants(a, scope)) noteText(t, writesText, rendersContent);
       }
       // `items.forEach((i) => { …appendChild… })`: the iterated array is rendered.
       if (name !== null && ITERATE_CALLS.has(name) && args.some(containsSink)) {
@@ -325,10 +378,10 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
       const prop = memberName(n.left);
       if (prop !== null && MARKUP_SINK_PROPS.has(prop)) {
         rendered.addSubtree(n.right);
-        for (const t of variants(n.right)) noteMarkup(prop, t, rendersContent);
+        for (const t of variants(n.right, scope)) noteMarkup(prop, t, rendersContent);
       } else if (prop !== null && TEXT_SINK_PROPS.has(prop)) {
         rendered.addSubtree(n.right);
-        for (const t of variants(n.right)) noteText(t, writesText, rendersContent);
+        for (const t of variants(n.right, scope)) noteText(t, writesText, rendersContent);
       }
     }
 
@@ -458,11 +511,12 @@ function noteText(text: string, writesText: string[], rendersContent: string[]):
 export function templateHooks(html: string): Set<string> {
   const markup = stripMustache(html);
   const out = new Set<string>();
-  for (const m of markup.matchAll(/\sclass\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
-    for (const c of (m[1] ?? m[2] ?? "").split(/\s+/)) if (c) out.add(`.${c}`);
+  // Quoted or unquoted (`class=hero`): both are valid HTML.
+  for (const m of markup.matchAll(/\sclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi)) {
+    for (const c of (m[1] ?? m[2] ?? m[3] ?? "").split(/\s+/)) if (c) out.add(`.${c}`);
   }
-  for (const m of markup.matchAll(/\sid\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
-    const v = (m[1] ?? m[2] ?? "").trim();
+  for (const m of markup.matchAll(/\sid\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi)) {
+    const v = (m[1] ?? m[2] ?? m[3] ?? "").trim();
     if (v) out.add(`#${v}`);
   }
   for (const m of markup.matchAll(/\s(data-[\w-]+)/gi))

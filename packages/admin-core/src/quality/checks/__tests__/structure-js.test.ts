@@ -173,6 +173,40 @@ describe("analyseModuleJs — content", () => {
   });
 });
 
+describe("Codex review on #1199", () => {
+  it("reordering existing elements by id is not rendered content", () => {
+    const facts = analyseModuleJs(
+      "['card-one', 'card-two', 'card-three'].forEach(function (id) { list.appendChild(document.getElementById(id)); });",
+    );
+    expect(facts.rendersContent).toEqual([]);
+  });
+
+  it("markup kept in a string constant is read like the literal", () => {
+    const facts = analyseModuleJs(
+      "const markup = '<p>Discover our latest products</p>';\npanel.innerHTML = markup;",
+    );
+    expect(facts.rendersContent).toHaveLength(1);
+  });
+
+  it("unquoted class and id attributes are the template's own hooks", () => {
+    const owners = hookOwners([
+      { id: id(7), html: "<section class=hero id=top><h1>{{t}}</h1></section>" },
+    ]);
+    expect(owners.get(".hero")).toEqual(new Set([id(7)]));
+    expect(owners.get("#top")).toEqual(new Set([id(7)]));
+  });
+
+  it("a class inside :not() is excluded, not driven", () => {
+    const owners = hookOwners([
+      { id: id(8), html: '<div class="product"></div>' },
+      { id: id(9), html: '<div class="admin-only"></div>' },
+    ]);
+    const facts = analyseModuleJs("document.querySelectorAll('.product:not(.admin-only)');");
+    expect(facts.hooks).toEqual([".product"]);
+    expect(foreignHooks(facts, new Set([id(8)]), owners).specific.size).toBe(0);
+  });
+});
+
 describe("foreignHooks", () => {
   it("separates one module's own hooks from hooks many modules share", () => {
     const owners = hookOwners([DEMO, HERO, TEXT]);
