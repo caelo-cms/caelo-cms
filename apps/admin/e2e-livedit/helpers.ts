@@ -618,6 +618,22 @@ export function assertNoBrowserConsoleErrors(tracker: BrowserConsoleErrorTracker
 }
 
 /**
+ * Whether the chat has edits to Stage: the toolbar's Staging control is in
+ * its `pending` shape. Waits briefly for the toolbar, then reads it once.
+ */
+async function stagePending(page: Page): Promise<boolean> {
+  const control = page.getByTestId("stage-deploy");
+  await control.waitFor({ state: "visible", timeout: 10_000 }).catch(() => undefined);
+  return (await control.getAttribute("data-mode").catch(() => null)) === "pending";
+}
+
+/** Opens the toolbar's Staging menu (Stage, Stage again, the quality gate) unless open. */
+async function openStagingMenu(page: Page): Promise<void> {
+  if (await page.getByTestId("staging-menu-content").isVisible()) return;
+  await page.getByTestId("staging-menu").click({ timeout: 30_000 });
+}
+
+/**
  * Click the Stage modal trigger + confirm; resolves when the
  * `?/stageAndDeployStaging` action returns. The action awaits
  * `chat.merge_to_main` + `deploy.trigger` synchronously, so the HTTP
@@ -632,17 +648,16 @@ export async function awaitStageComplete(page: Page): Promise<void> {
   // Issue #620 — the AI may stage itself (stage_changes) when asked. When it
   // already did, nothing is pending and the toolbar offers no Stage; an AI
   // Stage newer than the last Publish live proves the merge happened.
-  const stageBtn = page.getByTestId("stage-btn");
-  await stageBtn.waitFor({ state: "visible", timeout: 10_000 }).catch(() => undefined);
-  if (!(await stageBtn.isVisible()) && unpublishedAiStageCount() > 0) return;
+  if (!(await stagePending(page)) && unpublishedAiStageCount() > 0) return;
   const responsePromise = page.waitForResponse(
     (r: Response) => r.url().includes("?/stageAndDeployStaging") && r.request().method() === "POST",
     // 360s since #155 — see waitForChatTurnIdle's rationale (hang guard,
     // not a race against legitimately longer turns/builds on a busy runner).
     { timeout: 360_000 },
   );
-  // Bounded: the AI can stage between the visibility check and the click
-  // (the button then leaves the toolbar) — fail in 30s, not at test timeout.
+  // Bounded: the AI can stage between the check and the click (Stage then
+  // leaves the Staging menu) — fail in 30s, not at test timeout.
+  await openStagingMenu(page);
   await page.getByTestId("stage-btn").click({ timeout: 30_000 });
   await page.getByTestId("stage-submit-btn").click({ timeout: 30_000 });
   const res = await responsePromise;
@@ -980,7 +995,7 @@ export async function awaitQualityGateOpen(
       );
     }
     restages += 1;
-    if (await page.getByTestId("stage-btn").isVisible()) {
+    if (await stagePending(page)) {
       await awaitStageComplete(page);
     } else {
       // The fix wrote nothing pending on the branch (e.g. SEO texts are
@@ -990,6 +1005,7 @@ export async function awaitQualityGateOpen(
           r.url().includes("?/stageAndDeployStaging") && r.request().method() === "POST",
         { timeout: 360_000 },
       );
+      await openStagingMenu(page);
       await page.getByTestId("restage-btn").click({ timeout: 30_000 });
       const res = await restage;
       const body = await res.text();

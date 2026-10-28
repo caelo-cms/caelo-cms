@@ -13,8 +13,10 @@ import {
 import { loadTranscriptPage } from "#lib/server/chat-transcript.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission, requireUser } from "#lib/server/guards.js";
+import { loadLiveLinks } from "#lib/server/live-links.js";
 import { opErrorMessage } from "#lib/server/op-error.js";
 import { loadPageSeoInfo } from "#lib/server/page-seo-info.js";
+import { loadEditorToolbar } from "#lib/server/plugin-toolbar.js";
 import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { describeStagedBuild } from "#lib/server/stage-result.js";
@@ -340,6 +342,16 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       )
     : null;
 
+  // The plugin places in the toolbar for the shown page, in this chat's
+  // view. Streamed: plugin operations must not hold up the editor.
+  const pluginToolbar = activePage
+    ? loadEditorToolbar({
+        permissions: editUser.permissions,
+        pageId: activePage.id,
+        chatBranchId: activeChat.chatBranchId,
+      })
+    : Promise.resolve([]);
+
   // Load the chat's messages + the modules list (powers the chip picker
   // inside the embedded ChatPanel).
   // #1216 — the newest transcript page only; ChatPanel loads older pages
@@ -574,6 +586,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     }
   }
 
+  // "View live" in the Publish live menu (see live-links.ts for when the
+  // page link is offered).
+  const live = await loadLiveLinks(
+    locals.ctx,
+    mainPages.find((p) => p.id === activePage?.id) ?? null,
+    productionMatchesStaging,
+  );
+
   return {
     pages: pages.map((p) => ({
       id: p.id,
@@ -587,6 +607,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     activePageId,
     /** #1156 — the active page's SEO for the editor's SEO info, or null without a page. */
     pageSeo,
+    /** The plugin places in the toolbar for the shown page (streamed). */
+    pluginToolbar,
+    /** Where the shown page and the site are live, for "View live". */
+    live,
     activeChat,
     /** #1102 — why the `?chat=` in the URL was not opened, or null. */
     chatNotice,

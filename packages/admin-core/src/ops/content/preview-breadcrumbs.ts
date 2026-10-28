@@ -7,17 +7,19 @@
  * the canonical. The static generator's SEO pass does the same from the
  * main line; both go through `breadcrumbJsonLdItems`, so a page shows the
  * same structured data in the preview and after Publish live.
+ *
+ * #1212 — the pages and their canonical overrides come from the render's
+ * site view (no query here); only the plugins' URL builders are asked,
+ * with no transaction held.
  */
 
 import { type RenderScope, resolvePublicPageUrls } from "@caelo-cms/plugin-host";
-import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   type BreadcrumbJsonLdItem,
   breadcrumbJsonLdItems,
   type PageUrlStyle,
 } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
-import { loadPagesInView } from "../../lists/pages-view.js";
+import type { SiteView } from "../../site-view.js";
 
 /**
  * Items for `renderSeoHead`'s `breadcrumbs`; empty when the page rendered
@@ -25,10 +27,9 @@ import { loadPagesInView } from "../../lists/pages-view.js";
  * public URL and is left out, as in the build.
  */
 export async function previewBreadcrumbs(
-  tx: TransactionRunner,
+  view: SiteView,
   trail: readonly string[] | null,
   opts: {
-    readonly chatBranchId: string | null;
     readonly siteBaseUrl: string;
     readonly pageUrlStyle: PageUrlStyle;
     readonly renderScope: RenderScope;
@@ -36,23 +37,13 @@ export async function previewBreadcrumbs(
 ): Promise<BreadcrumbJsonLdItem[]> {
   if (trail === null || trail.length === 0) return [];
   const wanted = new Set(trail);
-  const pages = (await loadPagesInView(tx, opts.chatBranchId)).filter(
-    (p) => wanted.has(p.id) && p.status === "published",
-  );
-  const overrides = new Map<string, string | null>();
-  // Per-id query — same Bun-SQL constraint as the generator's SEO pass.
-  for (const p of pages) {
-    const rows = (await tx.execute(sql`
-      SELECT canonical_url FROM pages_seo WHERE page_id = ${p.id}::uuid LIMIT 1
-    `)) as unknown as { canonical_url: string | null }[];
-    overrides.set(p.id, rows[0]?.canonical_url || null);
-  }
+  const pages = view.pages.filter((p) => wanted.has(p.id) && p.status === "published");
   const urls = await resolvePublicPageUrls(
     pages.map((p) => ({
       id: p.id,
       slug: p.slug,
       currentPath: p.currentPath,
-      canonicalOverride: overrides.get(p.id) ?? null,
+      canonicalOverride: view.canonicalOverrides.get(p.id) ?? null,
     })),
     { siteBaseUrl: opts.siteBaseUrl, pageUrlStyle: opts.pageUrlStyle },
     opts.renderScope,

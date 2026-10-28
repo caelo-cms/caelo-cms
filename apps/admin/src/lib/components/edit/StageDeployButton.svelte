@@ -8,25 +8,27 @@
    * — chats stay the atomic revert unit under the hood, but the
    * operator never has to think about them to ship work.
    *
-   * Three gestures:
+   * Two controls (the toolbar redesign of 2026-10):
    *
-   *   [Stage to staging (N)]  → merges everything in the active chat's
-   *                             branch into main (without closing the
-   *                             chat), then runs a full staging deploy.
-   *                             The staging URL is a 1:1 preview of
-   *                             what production would see.
-   *   [▾] (dropdown)          → opens the Promote-to-production modal
-   *                             with per-kind checkboxes. Mentions the
-   *                             current staging build at the top so the
-   *                             operator knows what they're promoting.
-   *   Click the (N) badge     → opens a small popover listing the
-   *                             pages + entities the chat has touched.
-   *                             Preview of the Stage blast radius
-   *                             without triggering it.
+   *   [Staging ▾]            → its label says where staging stands
+   *                            (pending edits, staged, N problems, check
+   *                            failed …), so a closed Publish live always
+   *                            has its reason on screen. The menu lists
+   *                            what Stage would ship, opens the Stage
+   *                            dialog, holds the quality-gate actions and
+   *                            Stage again, and links to staging.
+   *   [Publish live | ▾]     → the human-only decision (coral). The caret
+   *                            opens the live-site menu: this page live,
+   *                            the live site, and whether live matches
+   *                            staging.
    */
+  import { Check, ChevronDown, ExternalLink, LoaderCircle } from "lucide-svelte";
   import { enhance } from "$app/forms";
   import StateDot from "#lib/components/StateDot.svelte";
-  import { Button } from "#lib/components/ui/button/index.js";
+  import { Button, buttonVariants } from "#lib/components/ui/button/index.js";
+  import { Popover, PopoverContent, PopoverTrigger } from "#lib/components/ui/popover/index.js";
+  import { cn } from "#lib/utils.js";
+  import { askInChat } from "./ask-in-chat.js";
   import {
     Dialog,
     DialogContent,
@@ -41,7 +43,10 @@
     offersStageAgain,
     publishButtonState,
     publishErrorNextStep,
+    qualityBlockReason,
+    type StagingTone,
     stageToolbarMode,
+    stagingMenuState,
   } from "./stage-deploy-state.js";
 
   interface PendingEntity {
@@ -69,7 +74,9 @@
     sessionPublished = false,
     sessionLastStagedAt = null,
     lastStaged = null,
+    lastPublishedLive = null,
     productionMatchesStaging = null,
+    live,
   }: {
     pendingChanges: PendingChangesView;
     /**
@@ -104,6 +111,15 @@
      * staging" / "Newer staged build" indicator next to Publish live.
      */
     productionMatchesStaging?: boolean | null;
+    /** The latest succeeded production deploy, for the live-site menu. */
+    lastPublishedLive?: { finishedAt: string } | null;
+    /** Where the shown page and the site are live (`#lib/server/live-links.ts`). */
+    live: {
+      error: string | null;
+      siteUrl: string | null;
+      pageUrl: string | null;
+      pageNote: string | null;
+    };
   } = $props();
 
   /**
@@ -169,9 +185,8 @@
       sessionLastStagedAt,
     }),
   );
-  let popoverOpen = $state(false);
-  let popoverRef = $state<HTMLDivElement | null>(null);
-  let pillRef = $state<HTMLButtonElement | null>(null);
+  let stagingMenuOpen = $state(false);
+  let liveMenuOpen = $state(false);
   let publishing = $state(false);
   let staging = $state(false);
   /**
@@ -203,6 +218,24 @@
     }
   }
 
+  /** The Staging button's label: where staging stands, at a glance. */
+  const stagingView = $derived(
+    stagingMenuState({
+      mode: toolbarMode,
+      busy: staging || publishing,
+      hasStagedBuild: lastStaged !== null,
+      branchChangeCount,
+      qualityGate: gate,
+    }),
+  );
+  const STAGING_TONE: Record<StagingTone, string> = {
+    neutral: "",
+    pending: "border-amber-500/50 text-amber-800 dark:text-amber-300",
+    busy: "text-muted-foreground",
+    ok: "border-emerald-500/50 text-emerald-800 dark:text-emerald-300",
+    problem: "border-red-500/50 text-red-700 dark:text-red-300",
+  };
+
   /** run #10 D6 — shared disabled/visible-reason logic (unit-tested). */
   const publishState = $derived(
     publishButtonState({
@@ -213,29 +246,6 @@
     }),
   );
 
-  // v0.8.1 — popover dismissal. The pre-v0.8.1 popover stayed open
-  // until the operator clicked the pill again; missing Esc + click-
-  // outside handlers was an a11y issue and a UX surprise (opening
-  // the Promote modal left the popover hanging). Attached via
-  // $effect so listeners cleanly mount/unmount with the open state.
-  $effect(() => {
-    if (!popoverOpen) return;
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === "Escape") popoverOpen = false;
-    }
-    function onClick(e: MouseEvent): void {
-      const t = e.target as Node | null;
-      if (!t) return;
-      if (popoverRef?.contains(t) || pillRef?.contains(t)) return;
-      popoverOpen = false;
-    }
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("mousedown", onClick);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("mousedown", onClick);
-    };
-  });
   let userPagesChoice = $state(true);
   let userModulesChoice = $state(true);
   let userTemplatesChoice = $state(true);
@@ -261,59 +271,132 @@
   }
 </script>
 
-<!-- v0.10.12 — shared inline status: persistent link to the latest
-     staging preview + a colored-dot indicator answering "is live in
-     sync with the latest staged build?". Rendered next to both the
-     Publish-live and Stage actions so the operator sees the deploy
-     state without opening a modal. -->
-<!-- run #10 D6 — ONE Publish-live form for both toolbar branches. The
-     button's disabled state carries a VISIBLE reason (not tooltip-only)
-     and failures render a persistent inline alert — a Publish click can
-     no longer be a silent no-op (same pattern as #267's stage-error).
-     #779 — Publish live is a human-only decision, so it is coral
-     (`decide`) in both toolbar branches. -->
-{#snippet publishLiveForm(testid: string)}
-  <form
-    method="post"
-    action="?/promoteToProduction"
-    use:enhance={() => {
-      publishing = true;
-      publishError = null;
-      return async ({ result, update }) => {
-        try {
-          await update({ reset: false });
-        } finally {
-          publishing = false;
-        }
-        publishError = formResultError(result);
-        void quality.refresh();
-      };
-    }}
-    class="contents"
-  >
-    <input type="hidden" name="_csrf" value={csrfToken} />
-    <Button
-      type="submit"
-      size="sm"
-      variant="decide"
-      disabled={publishState.disabled}
-      title={publishState.tooltip}
-      data-testid={testid}
+<!-- run #10 D6 — ONE Publish-live form for every toolbar shape. A failed
+     Publish renders a persistent inline alert, immune to toast dedup (#267).
+     #779 — Publish live is a human-only decision, so it is coral (`decide`).
+     Its caret opens the live-site menu: where the page is live, and whether
+     live matches staging. -->
+{#snippet liveControls(testid: string)}
+  <div class="inline-flex" data-testid="live-controls">
+    <form
+      method="post"
+      action="?/promoteToProduction"
+      use:enhance={() => {
+        publishing = true;
+        publishError = null;
+        return async ({ result, update }) => {
+          try {
+            await update({ reset: false });
+          } finally {
+            publishing = false;
+          }
+          publishError = formResultError(result);
+          void quality.refresh();
+        };
+      }}
+      class="contents"
     >
-      {publishing ? "Publishing…" : "Publish live"}
-    </Button>
-  </form>
-  {#if publishState.visibleReason}
-    <span class="text-xs text-muted-foreground" data-testid="publish-disabled-reason">
-      {publishState.visibleReason}
-    </span>
-  {/if}
+      <input type="hidden" name="_csrf" value={csrfToken} />
+      <Button
+        type="submit"
+        size="sm"
+        variant="decide"
+        class="rounded-r-none"
+        disabled={publishState.disabled}
+        title={publishState.tooltip}
+        data-testid={testid}
+      >
+        {#if publishing}
+          Publishing…
+        {:else if productionMatchesStaging === true}
+          <Check class="size-3.5" />Live
+        {:else}
+          Publish live
+        {/if}
+      </Button>
+    </form>
+    <Popover bind:open={liveMenuOpen}>
+      <PopoverTrigger
+        class={cn(
+          buttonVariants({ variant: "outline", size: "sm" }),
+          "rounded-l-none border-l-0 px-1.5",
+        )}
+        aria-label="Live site"
+        title="View the live site"
+        data-testid="live-menu"
+      >
+        <ChevronDown class="size-3.5" />
+      </PopoverTrigger>
+      <PopoverContent align="end" class="w-72 p-0">
+        <div class="space-y-1 p-3">
+          <h2 class="text-sm font-semibold">Live site</h2>
+          <p class="text-xs text-muted-foreground" data-testid="live-sync-indicator">
+            {#if productionMatchesStaging === true}
+              <StateDot state="live">Live matches staging</StateDot>
+            {:else if productionMatchesStaging === false}
+              <StateDot state="preview">A newer staged build is not live yet</StateDot>
+            {:else if lastPublishedLive}
+              Published live {formatRelativeTime(lastPublishedLive.finishedAt)}
+            {:else}
+              Nothing published live yet
+            {/if}
+          </p>
+          {#if lastPublishedLive && productionMatchesStaging !== null}
+            <p class="text-xs text-muted-foreground">
+              Published live {formatRelativeTime(lastPublishedLive.finishedAt)}
+            </p>
+          {/if}
+          {#if publishState.visibleReason}
+            <p class="text-xs text-muted-foreground" data-testid="publish-disabled-reason">
+              {publishState.visibleReason}
+            </p>
+          {/if}
+        </div>
+        <div class="border-t p-1">
+          {#if live.error}
+            <p class="px-2 py-1.5 text-xs text-red-700 dark:text-red-300" role="alert">
+              The site address could not be read: {live.error}
+            </p>
+          {:else if live.siteUrl === null}
+            <p class="px-2 py-1.5 text-xs text-muted-foreground">
+              The site has no address yet. Set it in Settings, SEO.
+            </p>
+          {:else}
+            {#if live.pageUrl}
+              <a
+                href={live.pageUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"
+                data-testid="live-page-link"
+              >
+                <ExternalLink class="size-3.5" />This page live
+              </a>
+            {:else if live.pageNote}
+              <p class="px-2 py-1.5 text-xs text-muted-foreground" data-testid="live-page-missing">
+                {live.pageNote}
+              </p>
+            {/if}
+            <a
+              href={live.siteUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"
+              data-testid="live-site-link"
+            >
+              <ExternalLink class="size-3.5" />Live site
+            </a>
+          {/if}
+        </div>
+      </PopoverContent>
+    </Popover>
+  </div>
   {#if publishError}
     <span
       role="alert"
       data-testid="publish-error"
       title={publishError}
-      class="inline-block max-w-96 truncate align-middle text-xs font-medium text-red-700 dark:text-red-300"
+      class="inline-block max-w-72 truncate align-middle text-xs font-medium text-red-700 dark:text-red-300"
     >
       Publish failed: {publishError}
     </span>
@@ -326,10 +409,10 @@
 {/snippet}
 
 <!-- #835 — Stage again without pending edits: rebuilds staging from the
-     current main. The one re-Stage control of the promote-only toolbar,
+     current main. The one re-Stage control of the promote-only shape,
      whatever the quality gate says — after a parity refusal, a Caelo
      upgrade or fixes written live, it is the operator's only way to a
-     fresh Stage. Secondary (outline): Publish live stays the decision. -->
+     fresh Stage. -->
 {#snippet stageAgainForm()}
   <form
     method="post"
@@ -337,6 +420,7 @@
     use:enhance={() => {
       staging = true;
       restageError = null;
+      stagingMenuOpen = false;
       return async ({ result, update }) => {
         try {
           await update({ reset: false });
@@ -365,188 +449,184 @@
       {staging ? "Staging…" : "Stage again"}
     </Button>
   </form>
-  {#if restageError}
-    <span role="alert" class="text-xs font-medium text-red-700 dark:text-red-300" data-testid="restage-error">
-      Stage failed: {restageError}
-    </span>
-  {/if}
 {/snippet}
 
 <!-- #553 — what to do when the quality gate keeps Publish live closed:
-     retry a failed / missing check, publish anyway over a FAILED check
-     (an explicit, recorded human decision). Re-Staging after fixes that do
-     not show as pending changes is the promote-only toolbar's Stage again
-     (#835). -->
+     fix the problems in the chat, retry a failed / missing check, publish
+     anyway over a FAILED check (an explicit, recorded human decision). -->
 {#snippet qualityGateControls()}
   {#if gate && !gate.open}
-    <span class="inline-flex items-center gap-2" data-testid="quality-gate-status" data-state={gate.state}>
-      {#if gate.state === "errored" || gate.state === "missing"}
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={qualityBusy}
-          data-testid="quality-retry-btn"
-          onclick={() => void retryQualityCheck()}
-        >
-          {gate.state === "errored" ? "Retry check" : "Run quality check"}
-        </Button>
-      {/if}
-      {#if gate.canPublishAnyway}
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          data-testid="quality-publish-anyway-btn"
-          onclick={() => {
-            publishAnywayError = null;
-            publishAnywayOpen = true;
-          }}
-        >
-          Publish anyway…
-        </Button>
-      {/if}
-      {#if qualityActionError}
-        <span role="alert" class="text-xs font-medium text-red-700 dark:text-red-300" data-testid="quality-action-error">
-          {qualityActionError}
-        </span>
-      {/if}
-    </span>
-  {/if}
-{/snippet}
-
-{#snippet stagingStatus()}
-  {#if lastStaged?.previewUrl}
-    <a
-      href={lastStaged.previewUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      class="text-xs text-muted-foreground underline hover:text-foreground"
-      title={`Open the latest staging preview (staged ${formatRelativeTime(lastStaged.finishedAt)})`}
-      data-testid="staging-preview-link"
-    >
-      Preview staging ↗
-    </a>
-  {/if}
-  <!-- #779 — the deploy state as a Draft/Preview/Live mark: Live when
-       production serves the latest staged build, Preview when a newer
-       staged build waits for Publish live. -->
-  {#if productionMatchesStaging === true}
-    <span
-      class="text-muted-foreground"
-      title="Live serves the same build as the current staging preview"
-      data-testid="live-sync-indicator"
-    >
-      <StateDot state="live">Live matches staging</StateDot>
-    </span>
-  {:else if productionMatchesStaging === false}
-    <span
-      class="text-muted-foreground"
-      title="A newer staging build hasn't been Published live yet"
-      data-testid="live-sync-indicator"
-    >
-      <StateDot state="preview">Preview: newer staged build not yet live</StateDot>
-    </span>
-  {/if}
-{/snippet}
-
-{#if toolbarMode === "published"}
-  <span class="text-xs text-muted-foreground italic">Chat published</span>
-{:else if toolbarMode === "fresh"}
-  <!-- v0.10.9 — truly fresh chat: no edits AND never Staged. -->
-  <span class="text-xs text-muted-foreground">No pending changes</span>
-{:else if toolbarMode === "promote-only"}
-  <!-- v0.10.10 — chat has no fresh pending edits but staging holds
-       a build the operator hasn't promoted yet. Direct Publish-live
-       submit, no modal. v0.10.12 — adds the persistent staging preview
-       link + the live-matches-staging indicator inline. -->
-  <div class="inline-flex items-center gap-3" data-testid="stage-deploy">
-    {@render stagingStatus()}
-    {@render publishLiveForm("promote-only-btn")}
-    {#if offersStageAgain(toolbarMode)}{@render stageAgainForm()}{/if}
-    {@render qualityGateControls()}
-  </div>
-{:else}
-  <div class="relative inline-flex items-center gap-1" data-testid="stage-deploy">
-    <!-- (N) badge: clickable popover with blast-radius preview. -->
-    <button
-      bind:this={pillRef}
-      type="button"
-      class="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-500/40 hover:bg-amber-500/25 dark:text-amber-300"
-      onclick={() => {
-        popoverOpen = !popoverOpen;
-      }}
-      aria-expanded={popoverOpen}
-      data-testid="pending-pill"
-      title="Preview what Stage will ship"
-    >
-      <!-- #779 — unstaged edits are the Draft state. -->
-      <StateDot state="draft">Draft · {branchChangeCount} pending</StateDot>
-    </button>
-
-    {#if popoverOpen}
-      <div
-        bind:this={popoverRef}
-        class="absolute right-0 top-full z-40 mt-1 w-72 rounded-md border bg-background p-3 shadow-lg"
-        role="dialog"
-        aria-label="Pending-changes preview"
-      >
-        <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Will be staged ({branchChangeCount})
-        </h4>
-        <ul class="space-y-1 text-xs">
-          {#each pendingChanges.pending.pages as e (e.entityId)}
-            <li class="flex items-center gap-2">
-              <span class="rounded bg-link/10 px-1 py-0.5 font-mono text-[10px] text-link"
-                >page</span
-              >
-              <span class="truncate">{e.label}</span>
-            </li>
-          {/each}
-          {#each pendingChanges.pending.globals as e (e.entityId)}
-            <li class="flex items-center gap-2">
-              <span
-                class="rounded bg-purple-500/10 px-1 py-0.5 font-mono text-[10px] text-purple-700 dark:text-purple-300"
-                >{e.kind}</span
-              >
-              <span class="truncate">{e.label}</span>
-              {#if e.detail}<span class="text-muted-foreground truncate">— {e.detail}</span>{/if}
-            </li>
-          {/each}
-          {#each pendingChanges.pending.lists as e (e.entityId)}
-            <li class="flex items-center gap-2">
-              <span class="rounded bg-emerald-500/10 px-1 py-0.5 font-mono text-[10px] text-emerald-700 dark:text-emerald-300"
-                >list</span
-              >
-              <span class="truncate">{e.label}</span>
-            </li>
-          {/each}
-        </ul>
+    <div class="space-y-2" data-testid="quality-gate-status" data-state={gate.state}>
+      <p class="text-xs">{qualityBlockReason(gate)}</p>
+      <div class="flex flex-wrap gap-2">
+        {#if gate.state === "problems"}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-testid="quality-fix-in-chat"
+            onclick={() => {
+              stagingMenuOpen = false;
+              askInChat("Fix the quality problems of the staged build.");
+            }}
+          >
+            Fix in chat
+          </Button>
+        {/if}
+        {#if gate.state === "errored" || gate.state === "missing"}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={qualityBusy}
+            data-testid="quality-retry-btn"
+            onclick={() => void retryQualityCheck()}
+          >
+            {gate.state === "errored" ? "Retry check" : "Run quality check"}
+          </Button>
+        {/if}
+        {#if gate.canPublishAnyway}
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            data-testid="quality-publish-anyway-btn"
+            onclick={() => {
+              stagingMenuOpen = false;
+              publishAnywayError = null;
+              publishAnywayOpen = true;
+            }}
+          >
+            Publish anyway…
+          </Button>
+        {/if}
       </div>
-    {/if}
+      {#if qualityActionError}
+        <p role="alert" class="text-xs font-medium text-red-700 dark:text-red-300" data-testid="quality-action-error">
+          {qualityActionError}
+        </p>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
 
-    <!-- v0.9.0 — Stage opens the modal (modal shows preview + submits
-         the stage form). Publish-live is a separate primary button
-         calling atomic deploy.promote. v0.10.12 — adds the persistent
-         staging preview link + live-matches-staging indicator inline. -->
-    <Button
-      type="button"
-      size="sm"
-      disabled={staging || publishing}
-      data-testid="stage-btn"
-      onclick={() => {
-        popoverOpen = false;
-        stageError = null;
-        dialogOpen = true;
-      }}
+<div class="inline-flex items-center gap-1.5" data-testid="stage-deploy" data-mode={toolbarMode}>
+  <Popover bind:open={stagingMenuOpen}>
+    <PopoverTrigger
+      class={cn(buttonVariants({ variant: "outline", size: "sm" }), STAGING_TONE[stagingView.tone])}
+      title={stagingView.tooltip}
+      aria-label={`Staging: ${stagingView.tooltip}`}
+      data-testid="staging-menu"
+      data-tone={stagingView.tone}
     >
-      {staging ? "Staging…" : "Stage…"}
-    </Button>
-    {@render stagingStatus()}
-    {@render publishLiveForm("promote-btn")}
-    {@render qualityGateControls()}
-  </div>
-{/if}
+      {#if stagingView.tone === "busy"}
+        <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" />
+      {:else if stagingView.tone === "ok"}
+        <Check class="size-3.5" />
+      {:else if stagingView.tone !== "neutral"}
+        <span class="size-2 rounded-full bg-current" aria-hidden="true"></span>
+      {/if}
+      {stagingView.label}
+      <ChevronDown class="size-3.5 opacity-60" />
+    </PopoverTrigger>
+    <PopoverContent align="end" class="w-80 p-0" data-testid="staging-menu-content">
+      <div class="space-y-3 p-3">
+        <div class="flex items-baseline justify-between gap-3">
+          <h2 class="text-sm font-semibold">Staging</h2>
+          <span class="text-xs text-muted-foreground" data-testid="last-staged">
+            {lastStaged ? `Built ${formatRelativeTime(lastStaged.finishedAt)}` : "Nothing staged yet"}
+          </span>
+        </div>
+
+        {#if toolbarMode === "published"}
+          <p class="text-xs text-muted-foreground">This chat's work was published live.</p>
+        {:else if toolbarMode === "pending"}
+          <div class="space-y-2">
+            <h3 class="text-xs font-medium text-muted-foreground">
+              Not staged yet ({branchChangeCount})
+            </h3>
+            <ul class="max-h-48 space-y-1 overflow-y-auto text-xs" data-testid="pending-list">
+              {#each pendingChanges.pending.pages as e (e.entityId)}
+                <li class="flex items-center gap-2">
+                  <span class="rounded bg-link/10 px-1 py-0.5 font-mono text-[10px] text-link">page</span>
+                  <span class="truncate">{e.label}</span>
+                </li>
+              {/each}
+              {#each pendingChanges.pending.globals as e (e.entityId)}
+                <li class="flex items-center gap-2">
+                  <span
+                    class="rounded bg-purple-500/10 px-1 py-0.5 font-mono text-[10px] text-purple-700 dark:text-purple-300"
+                    >{e.kind}</span
+                  >
+                  <span class="truncate">{e.label}</span>
+                  {#if e.detail}<span class="truncate text-muted-foreground">— {e.detail}</span>{/if}
+                </li>
+              {/each}
+              {#each pendingChanges.pending.lists as e (e.entityId)}
+                <li class="flex items-center gap-2">
+                  <span
+                    class="rounded bg-emerald-500/10 px-1 py-0.5 font-mono text-[10px] text-emerald-700 dark:text-emerald-300"
+                    >list</span
+                  >
+                  <span class="truncate">{e.label}</span>
+                </li>
+              {/each}
+            </ul>
+            <Button
+              type="button"
+              size="sm"
+              disabled={staging || publishing}
+              data-testid="stage-btn"
+              onclick={() => {
+                stagingMenuOpen = false;
+                stageError = null;
+                dialogOpen = true;
+              }}
+            >
+              {staging ? "Staging…" : `Stage ${branchChangeCount} ${branchChangeCount === 1 ? "change" : "changes"}…`}
+            </Button>
+          </div>
+        {:else if toolbarMode === "fresh"}
+          <p class="text-xs text-muted-foreground">
+            No changes in this chat. Ask the AI for one, then stage it here.
+          </p>
+        {/if}
+
+        {@render qualityGateControls()}
+
+        {#if offersStageAgain(toolbarMode)}
+          <div>{@render stageAgainForm()}</div>
+        {/if}
+        {#if restageError}
+          <p role="alert" class="text-xs font-medium text-red-700 dark:text-red-300" data-testid="restage-error">
+            Stage failed: {restageError}
+          </p>
+        {/if}
+      </div>
+      {#if lastStaged?.previewUrl}
+        <div class="border-t p-1">
+          <a
+            href={lastStaged.previewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"
+            data-testid="staging-preview-link"
+          >
+            <ExternalLink class="size-3.5" />Open staging
+          </a>
+        </div>
+      {/if}
+    </PopoverContent>
+  </Popover>
+  {#if toolbarMode !== "published"}
+    {@render liveControls(toolbarMode === "pending" ? "promote-btn" : "promote-only-btn")}
+  {/if}
+  {#if restageError && !stagingMenuOpen}
+    <span role="alert" class="max-w-60 truncate text-xs font-medium text-red-700 dark:text-red-300" title={restageError}>
+      Stage failed: {restageError}
+    </span>
+  {/if}
+</div>
 
 <Dialog bind:open={dialogOpen}>
   <DialogContent class="sm:max-w-md">

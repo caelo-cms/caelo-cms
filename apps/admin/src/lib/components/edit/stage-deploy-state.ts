@@ -168,3 +168,66 @@ export function publishErrorNextStep(message: string | null): string | null {
   if (message === null || !isParityRefusal(message)) return null;
   return "Use Stage again to rebuild staging, check it, then Publish live.";
 }
+
+/** How the toolbar's Staging button looks: its colour family. */
+export type StagingTone = "neutral" | "pending" | "busy" | "ok" | "problem";
+
+/** The Staging button's visible label, tone and tooltip. */
+export interface StagingMenuState {
+  readonly label: string;
+  readonly tone: StagingTone;
+  readonly tooltip: string;
+}
+
+/**
+ * The Staging button of the toolbar: one label that says where staging
+ * stands, so a closed Publish live always has its reason on screen (run #10
+ * D6) without a sentence in the toolbar. The details and the actions sit
+ * in the button's menu.
+ */
+export function stagingMenuState(args: {
+  mode: StageToolbarMode;
+  busy: boolean;
+  hasStagedBuild: boolean;
+  branchChangeCount: number;
+  qualityGate: QualityGateView | null;
+}): StagingMenuState {
+  if (args.busy) {
+    return { label: "Staging…", tone: "busy", tooltip: "Building staging and checking it" };
+  }
+  if (args.mode === "published") {
+    return { label: "Chat published", tone: "neutral", tooltip: "This chat's work is live" };
+  }
+  if (args.mode === "pending") {
+    const n = args.branchChangeCount;
+    return {
+      label: "Staging",
+      tone: "pending",
+      tooltip: `${n} ${n === 1 ? "change" : "changes"} in this chat not staged yet`,
+    };
+  }
+  if (!args.hasStagedBuild) {
+    return {
+      label: "Not staged",
+      tone: "neutral",
+      tooltip: "Nothing staged yet — Stage builds staging and checks it before Publish live",
+    };
+  }
+  const gate = args.qualityGate;
+  if (gate && !gate.open) {
+    const tooltip = qualityBlockReason(gate);
+    switch (gate.state) {
+      case "running":
+        return { label: "Checking…", tone: "busy", tooltip };
+      case "problems": {
+        const n = gate.openProblemCount;
+        return { label: `${n} ${n === 1 ? "problem" : "problems"}`, tone: "problem", tooltip };
+      }
+      case "errored":
+        return { label: "Check failed", tone: "problem", tooltip };
+      default:
+        return { label: "Not checked", tone: "pending", tooltip };
+    }
+  }
+  return { label: "Staged", tone: "ok", tooltip: "Staging is built and checked" };
+}

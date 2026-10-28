@@ -18,11 +18,17 @@ export {
 } from "./errors.js";
 export { allowAllRateLimiter, type ExecuteOptions, execute, type RateLimiter } from "./execute.js";
 export {
+  type AnyOperationDefinition,
   defineOperation,
+  defineReadOperation,
   defineStepwiseOperation,
+  isReadOperation,
   type OperationDefinition,
   type OperationHandler,
   type OperationSteps,
+  type ReadOperationDefinition,
+  type ReadOperationHandler,
+  type ReadScope,
   type StepwiseOperationHandler,
   type TransactionRunner,
 } from "./operation.js";

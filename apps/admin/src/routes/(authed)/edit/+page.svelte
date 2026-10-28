@@ -21,7 +21,7 @@
 
   import { type ActionResult, applyAction, deserialize, enhance } from "$app/forms";
   import { goto, refreshAll } from "$app/navigation";
-  import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
+  import { ArrowLeft, Ellipsis, GitCompareArrows } from "lucide-svelte";
   import CaeloMascot from "#lib/components/CaeloMascot.svelte";
   import { onMount } from "svelte";
   import { editorRefreshUrl, unpinChatParam } from "#lib/components/edit/chat-pin.js";
@@ -29,6 +29,7 @@
   import DiffPanel from "#lib/components/edit/DiffPanel.svelte";
   import PageSeoInfo from "#lib/components/edit/PageSeoInfo.svelte";
   import PluginPreview from "#lib/components/edit/PluginPreview.svelte";
+  import PluginToolbarSlots from "#lib/components/edit/PluginToolbarSlots.svelte";
   import { localPluginPreview, previewFromResult } from "#lib/components/edit/plugin-preview.js";
   import type { PluginPreviewSelection } from "@caelo-cms/shared";
   import Overlay from "#lib/components/edit/Overlay.svelte";
@@ -47,6 +48,13 @@
   } from "#lib/components/edit/iframe-protocol.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Combobox } from "#lib/components/ui/combobox/index.js";
+  import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+  } from "#lib/components/ui/dropdown-menu/index.js";
   import { cn } from "#lib/utils.js";
   import {
     Dialog,
@@ -57,7 +65,7 @@
     DialogTitle,
   } from "#lib/components/ui/dialog/index.js";
 
-  let { data, form } = $props();
+  let { data } = $props();
   let activePageId = $state(data.activePageId ?? "");
   let pluginPreviewUrl = $state<string | null>(null);
   let previewSelection = $state<PluginPreviewSelection | null>(null);
@@ -121,11 +129,6 @@
     return displayPath ?? activePage?.currentPath ?? "—";
   });
 
-  const stagedPreviewUrl = $derived(
-    form && "staged" in form && form.staged
-      ? (form.staged as { previewUrl?: string }).previewUrl ?? null
-      : null,
-  );
   // #390 — address the COMPOSED path, matching DiffPanel and the chat
   // panel. The endpoint's slug lookup is a legacy fallback for pre-#390
   // bookmarks; the live surface should hit the primary currentPath
@@ -507,13 +510,15 @@
     {/if}
   </div>
 
-  <!-- Slim toolbar — wordmark + URL + page picker + back-to-admin. No
-       sidebar, no breadcrumbs, no admin chrome. On phones it wraps: the
-       page picker takes its own row and the desktop-only readouts (URL,
-       AI spend, side-by-side Diff) step aside; the chat overlay starts
-       below whatever height it measures (toolbarHeight). -->
+  <!-- The toolbar, in three groups: the page (an address bar with the SEO
+       info, the page picker and its status, then the plugin places next to
+       it), the chat's work (Diff), and getting it out (Staging, Publish
+       live). Nothing in it covers the preview; only the chat does. On
+       phones it wraps: the address bar takes its own row and the
+       desktop-only controls step aside; the chat overlay starts below
+       whatever height it measures (toolbarHeight). -->
   <header
-    class="z-30 flex min-h-11 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b bg-background px-3 py-1.5 text-sm"
+    class="z-30 flex min-h-12 shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 border-b bg-background px-3 py-1.5 text-sm"
     data-testid="edit-toolbar"
     bind:clientHeight={toolbarHeight}
   >
@@ -525,44 +530,137 @@
       <ArrowLeft class="size-4" />
       <span class="font-semibold">Caelo</span>
     </a>
-    <span class="hidden text-muted-foreground/50 sm:inline">/</span>
-    <code
-      class="hidden max-w-[40vw] truncate rounded bg-muted px-1.5 py-0.5 text-xs text-foreground sm:inline"
-      data-testid="edit-url"
-    >{pluginPreviewUrl ? "Preview" : urlText}</code>
-    {#if pluginPreviewUrl}<button type="button" class="underline" onclick={closePluginPreview}>Website preview</button>{/if}
+    <span class="mx-1 hidden h-5 w-px bg-border sm:inline-block" aria-hidden="true"></span>
 
-    <!-- AI spend, last 7 days. /edit is chrome-less (no AppShell), so the
-         spend readout that lives in the AppShell top bar is repeated here —
-         this is where the operator actually works (migration/chat). The
-         `ml-auto` right-aligns the whole trailing cluster; the publish group's
-         own ml-auto below then no-ops when this is present, and still handles
-         alignment when spend is absent (op error → null). -->
-    {#if data.aiSpend7d}
-      <span
-        class="ml-auto hidden text-xs text-muted-foreground md:inline"
-        title="AI spend, last 7 days"
-        data-testid="edit-ai-spend"
-      >AI · {aiSpendDisplay} / 7d</span>
+    {#if pluginPreviewUrl}
+      <code class="rounded bg-muted px-1.5 py-0.5 text-xs" data-testid="edit-url">Preview</code>
+      <button type="button" class="underline" onclick={closePluginPreview}>Website preview</button>
+    {:else if data.pages.length > 0}
+      <!-- The page address: what the browser's address bar is to a site.
+           The SEO info sits where a browser shows the site info. -->
+      <div
+        class="order-last flex h-9 w-full min-w-0 items-center gap-1 rounded-lg border bg-muted/40 pl-1 pr-1.5 focus-within:border-ring sm:order-none sm:w-[30rem]"
+        data-testid="edit-address"
+      >
+        {#if previewSrc && data.pageSeo && data.activePageId === activePageId}
+          <!-- Only while the loaded SEO is the shown page's: a client-side page
+               switch hides it until the refresh (?page= follows) brings that page's. -->
+          <PageSeoInfo info={data.pageSeo} path={urlText} siteUrl={data.live.siteUrl} />
+        {/if}
+        <code
+          class="hidden max-w-[12rem] shrink-0 truncate font-mono text-xs text-foreground sm:inline"
+          data-testid="edit-url"
+        >{urlText}</code>
+        <div class="min-w-0 flex-1" data-testid="edit-page-picker">
+          <Combobox
+            items={data.pages.map((p) => ({
+              value: p.id,
+              label: `${p.currentPath}  ·  ${p.title}`,
+            }))}
+            bind:value={activePageId}
+            onValueChange={onPageChange}
+            selectedText={activePage?.title}
+            placeholder="Switch page…"
+            inputClass="h-7 border-0 bg-transparent px-1.5 text-muted-foreground shadow-none focus-visible:ring-0"
+          />
+        </div>
+        <!-- v0.9.9 — per-page status toggle. Drafts are LIVE-EDIT ONLY
+             (visible in iframe + picker); Stage and Production filter to
+             `status='published'`. Click to flip the active page's
+             status. Form action rides the chat branch so the flip
+             merges to main at Stage like any other edit. -->
+        {#if activePage}
+          {@const cur = activePage.status}
+          {@const next = cur === "published" ? "draft" : "published"}
+          <form
+            method="post"
+            action="?/setPageStatus"
+            use:enhance={() => async ({ update }) => {
+              await update({ reset: false });
+            }}
+            data-testid="page-status-toggle"
+          >
+            <input type="hidden" name="_csrf" value={data.csrfToken} />
+            <input type="hidden" name="pageId" value={activePage.id} />
+            <input type="hidden" name="status" value={next} />
+            <input type="hidden" name="chatSessionId" value={data.activeChat.id} />
+            <input type="hidden" name="chatBranchId" value={data.activeChat.chatBranchId} />
+            <button
+              type="submit"
+              title={`Click to switch to ${next}. Drafts stay in live-edit; only published pages ship to Stage / Production.`}
+              class={cn(
+                "inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium transition-colors",
+                cur === "published"
+                  ? "bg-emerald-50 text-emerald-900 hover:bg-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-200"
+                  : "bg-amber-50 text-amber-900 hover:bg-amber-100 dark:bg-amber-950/30 dark:text-amber-200",
+              )}
+            >
+              <span
+                class={cn(
+                  "size-2 rounded-full",
+                  cur === "published" ? "bg-emerald-500" : "bg-amber-500",
+                )}
+              ></span>
+              {cur === "published" ? "Published" : "Draft"}
+            </button>
+          </form>
+        {/if}
+      </div>
+      <!-- Plugin places (the SDK's editorToolbar), streamed: a slow plugin
+           never holds up the editor. Shown only for the page they describe. -->
+      {#await data.pluginToolbar then slots}
+        {#if data.activePageId === activePageId}
+          <PluginToolbarSlots
+            {slots}
+            path={urlText}
+            pageIds={new Set(data.pages.map((p) => p.id))}
+            onOpenPage={onPageChange}
+          />
+        {/if}
+      {:catch e}
+        <span
+          role="alert"
+          class="max-w-60 truncate text-xs font-medium text-red-700 dark:text-red-300"
+          title={e instanceof Error ? e.message : String(e)}
+          data-testid="plugin-toolbar-error"
+        >
+          Plugin toolbar failed: {e instanceof Error ? e.message : String(e)}
+        </span>
+      {/await}
+    {:else}
+      <span class="text-muted-foreground">
+        No pages yet —
+        <a class="underline" href="/content/pages">create one</a>.
+      </span>
     {/if}
 
-    <!-- v0.8.0 — Stage / Promote split-button lives in the toolbar
-         (per-page surface, per-chat semantics under the hood). The
-         (N) badge counts entities on the active chat's branch; the ▾
-         opens the Promote-to-production modal. -->
+    <div class="ml-auto"></div>
+
+    <button
+      type="button"
+      onclick={() => (diffOpen = !diffOpen)}
+      aria-pressed={diffOpen}
+      disabled={!!pluginPreviewUrl || !activePage || !data.activeChat}
+      class={cn(
+        "hidden h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors motion-reduce:transition-none md:inline-flex",
+        diffOpen
+          ? "border-link bg-link/10 text-link hover:bg-link/15"
+          : "border-border bg-background text-foreground hover:bg-accent",
+        (!activePage || !data.activeChat) && "cursor-not-allowed opacity-50",
+      )}
+      title={!data.activeChat
+        ? "Start a chat first to see pending edits"
+        : pendingChanges > 0
+          ? `${pendingChanges} ${pendingChanges === 1 ? "change" : "changes"} in this chat, side by side with the live version`
+          : "No changes in this chat yet"}
+      data-testid="diff-toggle"
+    >
+      <GitCompareArrows class="size-3.5" />
+      Diff <span class="tabular-nums text-muted-foreground">({pendingChanges})</span>
+    </button>
+
     {#if !pluginPreviewUrl && activePageId && data.activeChat}
-      <div class="ml-auto flex items-center gap-3" data-testid="toolbar-publish">
-        {#if stagedPreviewUrl}
-          <span class="text-xs text-muted-foreground">
-            Staged —
-            <a
-              href={stagedPreviewUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              class="underline"
-            >preview</a>
-          </span>
-        {/if}
+      <div class="flex items-center gap-2" data-testid="toolbar-publish">
         <StageDeployButton
           pendingChanges={data.pendingChanges}
           branchChangeCount={pendingChanges}
@@ -572,112 +670,43 @@
           sessionLastStagedAt={data.activeChat.lastStagedAt ?? null}
           {activePageId}
           lastStaged={data.lastStaged ?? null}
+          lastPublishedLive={data.lastPublishedLive ?? null}
           productionMatchesStaging={data.productionMatchesStaging ?? null}
+          live={data.live}
         />
       </div>
-    {:else}
-      <div class="ml-auto"></div>
     {/if}
 
-    {#if !pluginPreviewUrl}
-      <span
-        class="hidden items-center gap-1.5 text-xs text-muted-foreground lg:inline-flex"
-        data-testid="edit-hint"
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        class="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        aria-label="More"
+        title="More"
+        data-testid="edit-more"
       >
-        <MousePointerClick class="size-3.5" />
-        Right-click or select text in the page to ask the AI
-      </span>
-    {/if}
-    <button
-      type="button"
-      onclick={() => (diffOpen = !diffOpen)}
-      aria-pressed={diffOpen}
-      disabled={!!pluginPreviewUrl || !activePage || !data.activeChat}
-      class={cn(
-        "hidden items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors motion-reduce:transition-none md:inline-flex",
-        diffOpen
-          ? "border-link bg-link/10 text-link hover:bg-link/15"
-          : "border-border bg-background text-foreground hover:bg-accent",
-        (!activePage || !data.activeChat) && "cursor-not-allowed opacity-50",
-      )}
-      title={!data.activeChat
-        ? "Start a chat first to see pending edits"
-        : "Side-by-side: main branch vs your pending edits"}
-    >
-      <GitCompareArrows class="size-3.5" />
-      Diff
-    </button>
-    {#if !pluginPreviewUrl && data.pages.length > 0}
-      <div class="order-last w-full sm:order-none sm:w-64" data-testid="edit-page-picker">
-        <Combobox
-          items={data.pages.map((p) => ({
-            value: p.id,
-            label: `${p.slug}  ·  ${p.title}`,
-          }))}
-          bind:value={activePageId}
-          onValueChange={onPageChange}
-          placeholder="Switch page…"
-        />
-      </div>
-      <!-- v0.9.9 — per-page status toggle. Drafts are LIVE-EDIT ONLY
-           (visible in iframe + picker); Stage and Production filter to
-           `status='published'`. Click to flip the active page's
-           status. Form action rides the chat branch so the flip
-           merges to main at Stage like any other edit. -->
-      {#if activePage}
-        {@const cur = activePage.status}
-        {@const next = cur === "published" ? "draft" : "published"}
-        <form
-          method="post"
-          action="?/setPageStatus"
-          use:enhance={() => async ({ update }) => {
-            await update({ reset: false });
-          }}
-          data-testid="page-status-toggle"
-        >
-          <input type="hidden" name="_csrf" value={data.csrfToken} />
-          <input type="hidden" name="pageId" value={activePage.id} />
-          <input type="hidden" name="status" value={next} />
-          <input type="hidden" name="chatSessionId" value={data.activeChat.id} />
-          <input type="hidden" name="chatBranchId" value={data.activeChat.chatBranchId} />
-          <button
-            type="submit"
-            title={`Click to switch to ${next}. Drafts stay in live-edit; only published pages ship to Stage / Production.`}
-            class={cn(
-              "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
-              cur === "published"
-                ? "border-emerald-500/40 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-200"
-                : "border-amber-500/40 bg-amber-50 text-amber-900 hover:bg-amber-100 dark:bg-amber-950/30 dark:text-amber-200",
-            )}
-          >
-            <span
-              class={cn(
-                "size-2 rounded-full",
-                cur === "published" ? "bg-emerald-500" : "bg-amber-500",
-              )}
-            ></span>
-            {cur === "published" ? "Published" : "Draft"}
-          </button>
-        </form>
-      {/if}
-    {:else if !pluginPreviewUrl}
-      <span class="text-muted-foreground">
-        No pages yet —
-        <a class="underline" href="/content/pages">create one</a>.
-      </span>
-    {/if}
+        <Ellipsis class="size-4" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" class="w-64">
+        {#if aiSpendDisplay}
+          <div class="flex items-center justify-between px-2 py-1.5 text-sm" data-testid="edit-ai-spend">
+            <span>AI spend</span>
+            <span class="tabular-nums text-muted-foreground">{aiSpendDisplay} · 7 days</span>
+          </div>
+          <DropdownMenuSeparator />
+        {/if}
+        <DropdownMenuItem onSelect={() => void goto("/")}>Back to the admin</DropdownMenuItem>
+        {#if activePageId}
+          <DropdownMenuItem onSelect={() => void goto(`/content/pages/${activePageId}`)}>
+            Page settings
+          </DropdownMenuItem>
+        {/if}
+      </DropdownMenuContent>
+    </DropdownMenu>
   </header>
 
   <div class={pluginPreviewUrl ? "flex min-h-0 flex-1 flex-col md:flex-row" : "contents"}>
   <!-- Full-bleed iframe -->
   <div class="relative min-h-0 flex-1">
-    <!-- #1156 — head values (title, description, OG) never show in the
-         preview; the corner info opens them, pending changes marked. -->
-    <!-- Only while the loaded SEO is the shown page's: a client-side page
-         switch hides it until the refresh (?page= follows) brings that page's. -->
-    {#if !pluginPreviewUrl && previewSrc && data.pageSeo && data.activePageId === activePageId}
-      <PageSeoInfo info={data.pageSeo} />
-    {/if}
     {#if pluginPreviewUrl}
       <PluginPreview url={pluginPreviewUrl} chatSessionId={data.activeChat.id} onSelection={(selection) => { previewSelection = selection; }} onContext={(context) => { previewContext = context; }} onDocument={openPluginPreview} />
     {:else if previewSrc}

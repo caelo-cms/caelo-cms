@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
-import { fontReader } from "@caelo-cms/font-service";
 
 /**
  * Render a page to composed HTML for the admin preview iframe.
  *
  * Read-only — no audit row, same convention as `users.list`. Returns an
- * object (per the existing `defineOperation` shape); the route handler
+ * object (per the `defineReadOperation` shape); the route handler
  * unwraps `html` into a `text/html` response.
  *
  * P6.7 — accepts an optional `chatBranchId`. When set, every module
@@ -13,8 +12,25 @@ import { fontReader } from "@caelo-cms/font-service";
  * for that branch (P5 schema); modules with no branch snapshot fall
  * back to the live `modules` row. Lets the live-edit overlay's iframe
  * render the post-AI-edit view of a page without requiring publish.
+ *
+ * Issue #1212 — a read operation: it holds NO transaction while plugins
+ * answer, fonts resolve or the page composes. A render reads in short
+ * transactions —
+ *
+ *   1. the site view (`site-view.ts`, cached per branch and generation)
+ *      and the page bundle (`preview-page-load.ts`);
+ *   2. only when the plugin answers name something not loaded yet: the
+ *      modules of list entries and content variants;
+ *   3. font bytes, one short read each (`resolveThemeFonts`);
+ *   4. only when the composed page embeds media: the image variants;
+ *
+ * — and asks every plugin in between, holding nothing. Before, ~10 plugin
+ * calls ran inside one held transaction and each plugin storage access
+ * took a second connection from the same pool: ten concurrent previews
+ * on a pool of ten deadlocked for good (#1209).
  */
 
+import { fontReader } from "@caelo-cms/font-service";
 import {
   collectBuildAssets,
   collectContributions,
@@ -25,24 +41,23 @@ import {
   pluginNotRunningMarker,
   pluginRenderFailedMarker,
   pluginsNotRunningHere,
+  type RenderScope,
   reportListOverlayIssues,
   resolveListSources,
   resolveModuleDeferrals,
   resolvePublicPageUrls,
 } from "@caelo-cms/plugin-host";
 import type { DeferralCandidate } from "@caelo-cms/plugin-sdk";
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineReadOperation, type QueryError, type ReadScope } from "@caelo-cms/query-api";
 import {
   applyDocumentLanguage,
   buildMediaUrl,
   ComposeError,
   type ComposeFonts,
-  type ComposeTheme,
-  type ComposeThemeAsset,
   collectListModuleRefs,
-  collectNestedRefs,
   composePageWithLayout,
   createListRenderContext,
+  type ExecutionContext,
   enrichResponsiveImages,
   err,
   extractMediaRefs,
@@ -53,19 +68,16 @@ import {
   isListFailureMarker,
   linkMarkersOf,
   listThemeCssVarNames,
-  type NestedContentInstanceResource,
   type NestedModuleResource,
   type NestedRenderResolver,
   ok,
+  type Result,
   renderModuleWithContent,
   renderSeoHead,
   resolveDocumentLanguage,
   type SiteSeoSettings,
   scanCssVars,
   type TemplateField,
-  type ThemeDocument,
-  templateFieldsFromJson,
-  themeFaviconRendition,
   unknownCssVarMarker,
   wrapEditableValues,
 } from "@caelo-cms/shared";
@@ -76,1472 +88,649 @@ import {
 } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { pendingSnapshotSql } from "../../draft.js";
-import { loadPreviewLinkIndex } from "../../links/link-targets.js";
-import { loadListRenderData } from "../../lists/load.js";
-import { pageSeoViewSql } from "../../seo/page-seo.js";
-import { effectiveLayoutModulesSql } from "./layout-overlay.js";
+import { previewLinkIndexOf, siteViewDriftPaths } from "../../links/link-targets.js";
+import { listRenderDataOf, resolveListPluginInputs } from "../../lists/load.js";
+import { loadSiteView, type SiteView } from "../../site-view.js";
 import { previewBreadcrumbs } from "./preview-breadcrumbs.js";
-import { resolvePreviewContentVariants } from "./preview-variants.js";
-import { loadPublishPageUrlStyle } from "./public-urls.js";
+import {
+  expandNestedResources,
+  hasUnloadedRefs,
+  loadPreviewPage,
+  PreviewLoadError,
+  type PreviewPageBundle,
+  parseFields,
+} from "./preview-page-load.js";
+import {
+  askContentVariants,
+  finishContentVariants,
+  loadVariantModules,
+} from "./preview-variants.js";
 
-interface ModuleSourceRow {
-  block_name: string;
-  position: number;
-  module_id: string;
-  slug: string;
-  display_name: string;
-  html: string;
-  css: string;
-  js: string;
-  /** v0.4.0 — module field schema (drives placeholder substitution). */
-  fields: unknown;
+const OP = "pages.render_preview";
+
+const inputSchema = z
+  .object({
+    /** The page to render. Give this or `path`. */
+    pageId: z.string().uuid().optional(),
+    /**
+     * #390 / #1212 — the page at this public path in the caller's view
+     * (`/`, `/de/about`): its `current_path`, or for a page a pending
+     * rename or move changes, the path the chat gives it. Give this or
+     * `pageId`.
+     */
+    path: z.string().startsWith("/").max(2048).optional(),
+    chatBranchId: z.string().uuid().optional(),
+    /**
+     * P6.6b deferred — module ids whose branch state should be skipped
+     * when rendering (the chat-side diff's partial view). Accepted for the
+     * diff panel's URL contract; not applied yet.
+     */
+    excludeBranchModules: z.array(z.string().uuid()).optional(),
+    /**
+     * #917 — mark which placement + field each piece of page text came
+     * from (HTML comments, see `edit-markers.ts`) so the Live Edit
+     * preview can edit it in place. Only the editor's preview iframe
+     * sets this; published output never carries markers.
+     */
+    editMarkers: z.boolean().optional(),
+  })
+  .strict()
+  .refine((v) => (v.pageId === undefined) !== (v.path === undefined), {
+    message: "give exactly one of pageId or path",
+  });
+
+const outputSchema = z.object({
+  html: z.string(),
+  replacedSlots: z.array(z.string()),
+  missingSlots: z.array(z.string()),
+  /**
+   * #1087 — plugins whose contribution this render left out because
+   * their call failed (each also flagged as `plugin-render-failed:<slug>`
+   * in missingSlots). The preview routes show them in the banner.
+   */
+  pluginFailures: z.array(z.object({ slug: z.string(), reason: z.string() })),
+  pageId: z.string(),
+  pageSlug: z.string(),
+  /** The page's public path in the caller's view (what `path` looks up). */
+  pagePath: z.string(),
+});
+
+type Input = z.infer<typeof inputSchema>;
+type Output = z.infer<typeof outputSchema>;
+
+function failure(message: string): Result<Output, QueryError> {
+  return err({ kind: "HandlerError", operation: OP, message });
 }
 
-// v0.12.1 — `substituteFields` was replaced by the recursive renderer
-// shared with the static generator (`@caelo-cms/shared` nested-module-render.ts). The new renderer subsumes the v0.4.0 flat
-// behaviour AND handles {{>field}} / {{#field}}…{{/field}} slots for
-// nested module / module-list / list field kinds.
-
-/**
- * The module's field schema as the template engine renders it. jsonb may
- * carry a typo'd or unknown kind; it passes through so the engine emits
- * kind-mismatch loudly (compile-time safety lives at the authoring tools).
- */
-function parseFields(raw: unknown): TemplateField[] {
-  return templateFieldsFromJson(raw);
-}
-
-export const renderPagePreviewOp = defineOperation({
-  name: "pages.render_preview",
+export const renderPagePreviewOp = defineReadOperation({
+  name: OP,
   // CLAUDE.md §11: read-only render. AI runs preview to verify edits
   // before publishing — same path as the iframe in /content/pages/[id].
   actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      pageId: z.string().uuid(),
-      chatBranchId: z.string().uuid().optional(),
-      /**
-       * P6.6b deferred — module ids whose branch state should be
-       * skipped when rendering. The right pane of the chat-side diff
-       * uses this to reveal what the page would look like if a
-       * specific module's pending edit were rolled back, while the
-       * rest of the branch's edits stay applied. Ignored when
-       * `chatBranchId` is omitted.
-       */
-      excludeBranchModules: z.array(z.string().uuid()).optional(),
-      /**
-       * #917 — mark which placement + field each piece of page text came
-       * from (HTML comments, see `edit-markers.ts`) so the Live Edit
-       * preview can edit it in place. Only the editor's preview iframe
-       * sets this; published output never carries markers.
-       */
-      editMarkers: z.boolean().optional(),
-    })
-    .strict(),
-  output: z.object({
-    html: z.string(),
-    replacedSlots: z.array(z.string()),
-    missingSlots: z.array(z.string()),
-    /**
-     * #1087 — plugins whose contribution this render left out because
-     * their call failed (each also flagged as `plugin-render-failed:<slug>`
-     * in missingSlots). The preview routes show them in the banner.
-     */
-    pluginFailures: z.array(z.object({ slug: z.string(), reason: z.string() })),
-    pageSlug: z.string(),
-  }),
-  handler: async (ctx, input, tx) => {
-    // Run #8 live-edit CI — ONE effective branch for the whole render.
-    // Pre-fix, row VISIBILITY keyed off `ctx.chatBranchId` while the
-    // snapshot OVERLAYS keyed off `input.chatBranchId`. The /edit
-    // preview iframe (and the screenshot capture riding on it) calls
-    // this op with the operator's ctx — which carries NO branch — and
-    // the branch in the INPUT, so a branched-CREATED page's live row
-    // was invisible and the whole render 404'd even though the caller
-    // named the branch explicitly. Either source now widens visibility
-    // AND drives the overlays, so the two can never disagree again.
-    const chatBranchId = input.chatBranchId ?? ctx.chatBranchId;
-    // Plugin render hooks show the same branch as the core rows below.
-    // #1087 — a plugin whose call fails is left out of THIS render and
-    // flagged, instead of aborting the preview: a plugin's errors block
-    // Publish live (the build throws), never the editor's view of a page.
-    const pluginFailureSink = createPluginRenderFailureSink();
-    const renderScope = {
-      chatBranchId: chatBranchId ?? null,
-      onPluginFailure: pluginFailureSink.onPluginFailure,
-      editorPreview: true,
-      // #1213 — one pass: plugins may read their data once for all of
-      // this render's composition points instead of once per point.
-      renderId: crypto.randomUUID(),
-    };
-    // v0.9.0 — branch-aware preview. The iframe shows the caller's
-    // branched-create pages / templates / layouts (in addition to
-    // main). Without this filter, a brand-new chat that just created
-    // its first page+template+layout would fail to render because
-    // the JOIN'd live rows are branched to the chat (invisible to
-    // an unfiltered query when chat_branch_id is set on this row).
-    const branchScope = chatBranchId
-      ? sql`AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${chatBranchId}::uuid)
-            AND (t.chat_branch_id IS NULL OR t.chat_branch_id = ${chatBranchId}::uuid)
-            AND (l.chat_branch_id IS NULL OR l.chat_branch_id = ${chatBranchId}::uuid)`
-      : sql`AND p.chat_branch_id IS NULL AND t.chat_branch_id IS NULL AND l.chat_branch_id IS NULL`;
-    const pageRows = (await tx.execute(sql`
-      SELECT p.id::text AS page_id, p.slug AS slug, p.current_path, p.title AS title,
-             t.html AS template_html, t.css AS template_css,
-             l.id::text AS layout_id, l.slug AS layout_slug,
-             l.html AS layout_html, l.css AS layout_css
-      FROM pages p
-      JOIN templates t ON t.id = p.template_id
-      JOIN layouts l   ON l.id = t.layout_id
-      WHERE p.id = ${input.pageId}::uuid AND p.deleted_at IS NULL ${branchScope}
-      LIMIT 1
-    `)) as unknown as {
-      page_id: string;
-      slug: string;
-      current_path: string;
-      title: string;
-      template_html: string;
-      template_css: string;
-      layout_id: string;
-      layout_slug: string;
-      layout_html: string;
-      layout_css: string;
-    }[];
-    const pageRow = pageRows[0];
-    if (!pageRow) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages.render_preview",
-        message: "page not found",
-      });
-    }
-
-    // v0.5.5 — page meta overlay. v0.5.3 branched pages.update writes
-    // slug/title into page_snapshots but the live join above still
-    // carries the pre-branch values; iframe <title> + URL composition
-    // would leak the live slug/title to a chat that renamed the page.
-    // Overlay slug + title only — templateId overlay (which would
-    // cascade through template_html / layout_html) is out of scope
-    // until pages.change_template branching lands.
-    if (chatBranchId) {
-      const snap = (await tx.execute(sql`
-        SELECT state FROM page_snapshots ps
-        JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-        WHERE ps.page_id = ${input.pageId}::uuid
-          AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-        ORDER BY ss.created_at DESC LIMIT 1
-      `)) as unknown as { state: unknown }[];
-      const raw = snap[0]?.state;
-      if (raw) {
-        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-        const s = parsed as { slug?: string; title?: string };
-        if (s.slug) pageRow.slug = s.slug;
-        if (s.title) pageRow.title = s.title;
-      }
-    }
-    // P6.7.6 no-fallbacks invariant — the layout must declare a
-    // `content` block (the slot the template renders into). Surface a
-    // loud error if it doesn't, instead of silently producing chrome
-    // with no body.
-    const layoutBlocksRows = (await tx.execute(sql`
-      SELECT name FROM layout_blocks WHERE layout_id = ${pageRow.layout_id}::uuid
-    `)) as unknown as { name: string }[];
-    if (!layoutBlocksRows.some((r) => r.name === "content")) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages.render_preview",
-        message: `layout "${pageRow.layout_slug}" is missing the required \`content\` block — fix via /settings/layouts`,
-      });
-    }
-
-    let modRows = (await tx.execute(sql`
-      SELECT pm.block_name AS block_name,
-             pm.position AS position,
-             m.id::text AS module_id,
-             m.slug AS slug,
-             m.display_name AS display_name,
-             m.html AS html,
-             m.css AS css,
-             m.js AS js,
-             m.fields AS fields
-      FROM page_modules pm JOIN modules m ON m.id = pm.module_id
-      WHERE pm.page_id = ${input.pageId}::uuid AND m.deleted_at IS NULL
-      ORDER BY pm.block_name ASC, pm.position ASC
-    `)) as unknown as ModuleSourceRow[];
-
-    // v0.5.3 — page layout overlay: when the caller's chat has a
-    // branched page_layout_snapshot for this page, replace the live
-    // page_modules ordering with the snapshot's blocks/moduleIds.
-    // Module rows (html/css/js) still join from `modules`; the module
-    // overlay below applies branched module CODE on top.
-    if (chatBranchId) {
-      const layoutSnap = (await tx.execute(sql`
-        SELECT state FROM page_layout_snapshots pls
-        JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-        WHERE pls.page_id = ${input.pageId}::uuid
-          AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-        ORDER BY ss.created_at DESC
-        LIMIT 1
-      `)) as unknown as { state: unknown }[];
-      const raw = layoutSnap[0]?.state;
-      if (raw) {
-        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-        const blocks = (parsed as { blocks?: { blockName: string; moduleIds: string[] }[] }).blocks;
-        if (Array.isArray(blocks)) {
-          const moduleIds = [...new Set(blocks.flatMap((b) => b.moduleIds))];
-          if (moduleIds.length === 0) {
-            modRows = [];
-          } else {
-            const byId = new Map<string, ModuleSourceRow>();
-            // v0.9.0 — branch-aware module fetch so chat sees its
-            // own branched-create modules in the iframe.
-            const moduleBranchScope = chatBranchId
-              ? sql`AND (m.chat_branch_id IS NULL OR m.chat_branch_id = ${chatBranchId}::uuid)`
-              : sql`AND m.chat_branch_id IS NULL`;
-            const fetched = (await tx.execute(sql`
-              SELECT m.id::text AS module_id, m.slug AS slug, m.display_name AS display_name,
-                     m.html AS html, m.css AS css, m.js AS js, m.fields AS fields
-              FROM modules m
-              WHERE m.id IN (${sql.join(
-                moduleIds.map((id) => sql`${id}::uuid`),
-                sql`, `,
-              )}) AND m.deleted_at IS NULL ${moduleBranchScope}
-            `)) as unknown as Omit<ModuleSourceRow, "block_name" | "position">[];
-            for (const m of fetched) {
-              byId.set(m.module_id, { ...m, block_name: "", position: 0 });
-            }
-            const replaced: ModuleSourceRow[] = [];
-            for (const b of blocks) {
-              let pos = 0;
-              for (const mid of b.moduleIds) {
-                const m = byId.get(mid);
-                if (!m) continue;
-                replaced.push({ ...m, block_name: b.blockName, position: pos });
-                pos += 1;
-              }
-            }
-            modRows = replaced;
-          }
-        }
-      }
-    }
-
-    // v0.5.1 — module code overlay: apply staged + caller-branch snapshots
-    // on top of the live `modules` row. Order:
-    //   main → all-staged-overlay → caller's-branch-overlay
-    // Caller's branch wins ties (it sees its own pending edits + everyone
-    // else's already-staged work, but not other chats' un-staged pendings).
-    if (modRows.length > 0) {
-      // Build the IN clause once. Bun's SQL adapter rejects an empty IN().
-      const moduleIds = modRows.map((r) => sql`${r.module_id}::uuid`);
-
-      // 1. Staged overlay — latest snapshot per module from any branch
-      // currently marked stage_state='staged'. EXCLUDE the caller's own
-      // branch so we don't double-apply (caller wins below).
-      const stagedRows = (await tx.execute(sql`
-        SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
-        FROM module_snapshots ms
-        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-        JOIN chat_branch_publish_marks m
-          ON m.chat_branch_id = ss.chat_branch_id
-         AND m.entity_kind = 'module'
-         AND m.entity_id = ms.module_id
-         AND m.stage_state = 'staged'
-        WHERE ms.module_id IN (${sql.join(moduleIds, sql`, `)})
-          ${chatBranchId ? sql`AND ss.chat_branch_id <> ${chatBranchId}::uuid` : sql``}
-        ORDER BY ms.module_id, ss.created_at DESC
-      `)) as unknown as { module_id: string; state: unknown }[];
-
-      const overlayByModule = new Map<
-        string,
-        {
-          html: string;
-          css: string;
-          js: string;
-          displayName: string;
-          slug: string;
-          // A branch update_modules_many can ADD/RENAME fields (e.g. a new list field).
-          // The overlay MUST carry the branch schema or the render context uses
-          // the stale live `modules.fields`, and a `{{#field}}` section over the
-          // new field renders as literal `{{#field}}` text (field-not-declared).
-          // The layout + nested overlays already carry fields; this one didn't.
-          fields?: unknown;
-          deleted: boolean;
-        }
-      >();
-      for (const r of stagedRows) {
-        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-        const s = raw as {
-          html?: string;
-          css?: string;
-          js?: string;
-          displayName?: string;
-          slug?: string;
-          fields?: unknown;
-          deletedAt?: string | null;
-        };
-        overlayByModule.set(r.module_id, {
-          html: s.html ?? "",
-          css: s.css ?? "",
-          js: s.js ?? "",
-          displayName: s.displayName ?? "",
-          slug: s.slug ?? "",
-          fields: s.fields,
-          deleted: !!s.deletedAt,
-        });
-      }
-
-      // 2. Caller-branch overlay — supersedes staged for modules the
-      // caller's chat has edited.
-      if (chatBranchId) {
-        const branchRows = (await tx.execute(sql`
-          SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
-          FROM module_snapshots ms
-          JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-          WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-            AND ms.module_id IN (${sql.join(moduleIds, sql`, `)})
-          ORDER BY ms.module_id, ss.created_at DESC
-        `)) as unknown as { module_id: string; state: unknown }[];
-        for (const r of branchRows) {
-          const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-          const s = raw as {
-            html?: string;
-            css?: string;
-            js?: string;
-            displayName?: string;
-            slug?: string;
-            fields?: unknown;
-            deletedAt?: string | null;
-          };
-          overlayByModule.set(r.module_id, {
-            html: s.html ?? "",
-            css: s.css ?? "",
-            js: s.js ?? "",
-            displayName: s.displayName ?? "",
-            slug: s.slug ?? "",
-            fields: s.fields,
-            deleted: !!s.deletedAt,
-          });
-        }
-      }
-
-      // Apply the merged overlay.
-      for (const m of modRows) {
-        const overlay = overlayByModule.get(m.module_id);
-        if (!overlay) continue;
-        if (overlay.deleted) continue; // soft-deleted in the overlay — keep live
-        m.html = overlay.html;
-        m.css = overlay.css;
-        m.js = overlay.js;
-        m.display_name = overlay.displayName;
-        m.slug = overlay.slug;
-        // Carry the branch schema so a section over a branch-added list field
-        // renders (guarded: a snapshot without fields keeps the live value).
-        if (Array.isArray(overlay.fields)) m.fields = overlay.fields as typeof m.fields;
-      }
-    }
-
-    // v0.12.0 — module CONTENT lives in content_instances now, joined
-    // via page_modules.content_instance_id. Read the live binding +
-    // values for each placement; for branched callers, also overlay any
-    // page_layout_snapshots (rebound placements via placement.set_content
-    // / fork_placement_content) AND content_instance_snapshots (values
-    // edits via content_instances.set_values).
-    //
-    // The lookup is keyed by content_instance_id (not by block+position
-    // as it was pre-v0.12) so re-using the same instance across pages
-    // and forking diverging copies both compose correctly.
-    const placementBindings = new Map<
-      string, // `${block_name}#${position}`
-      { contentInstanceId: string; synced: boolean }
-    >();
-    const liveBindings = (await tx.execute(sql`
-      SELECT block_name, position, content_instance_id::text AS content_instance_id, sync_mode
-      FROM page_modules
-      WHERE page_id = ${input.pageId}::uuid
-    `)) as unknown as {
-      block_name: string;
-      position: number;
-      content_instance_id: string;
-      sync_mode: string;
-    }[];
-    for (const r of liveBindings) {
-      placementBindings.set(`${r.block_name}#${r.position}`, {
-        contentInstanceId: r.content_instance_id,
-        synced: r.sync_mode === "synced",
-      });
-    }
-    if (chatBranchId) {
-      // Branched page_layout_snapshots authoritatively replace live
-      // bindings for the active chat. Re-read the layout state below.
-      const layoutSnapForBindings = (await tx.execute(sql`
-        SELECT state FROM page_layout_snapshots pls
-        JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-        WHERE pls.page_id = ${input.pageId}::uuid
-          AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-        ORDER BY ss.created_at DESC
-        LIMIT 1
-      `)) as unknown as { state: unknown }[];
-      const raw = layoutSnapForBindings[0]?.state;
-      if (raw) {
-        const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
-          blocks?: {
-            blockName: string;
-            placements?: { moduleId: string; contentInstanceId: string; syncMode: string }[];
-          }[];
-        };
-        if (parsed.blocks) {
-          placementBindings.clear();
-          for (const b of parsed.blocks) {
-            const placements = b.placements ?? [];
-            for (let i = 0; i < placements.length; i += 1) {
-              const p = placements[i];
-              if (p) {
-                placementBindings.set(`${b.blockName}#${i}`, {
-                  contentInstanceId: p.contentInstanceId,
-                  synced: p.syncMode === "synced",
-                });
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // Load values + module_id for every referenced content_instance_id.
-    const allInstanceIds = [
-      ...new Set([...placementBindings.values()].map((b) => b.contentInstanceId)),
-    ];
-    const valuesByInstance = new Map<string, Record<string, unknown>>();
-    const instanceModuleIdById = new Map<string, string>();
-    if (allInstanceIds.length > 0) {
-      const valueRows = (await tx.execute(sql`
-        SELECT id::text AS id, module_id::text AS module_id, "values" AS values
-        FROM content_instances
-        WHERE id IN (${sql.join(
-          allInstanceIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})
-          AND deleted_at IS NULL
-      `)) as unknown as { id: string; module_id: string; values: unknown }[];
-      for (const r of valueRows) {
-        const raw = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
-        valuesByInstance.set(r.id, (raw ?? {}) as Record<string, unknown>);
-        instanceModuleIdById.set(r.id, r.module_id);
-      }
-      // Branch overlay — content_instance_snapshots tagged with this
-      // chat's branch_id supersede live values for the same instance.
-      if (chatBranchId) {
-        const branchRows = (await tx.execute(sql`
-          SELECT DISTINCT ON (cis.content_instance_id)
-                 cis.content_instance_id::text AS id,
-                 cis.state AS state
-          FROM content_instance_snapshots cis
-          JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-          WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-            AND cis.content_instance_id IN (${sql.join(
-              allInstanceIds.map((id) => sql`${id}::uuid`),
-              sql`, `,
-            )})
-          ORDER BY cis.content_instance_id, ss.created_at DESC
-        `)) as unknown as { id: string; state: unknown }[];
-        for (const r of branchRows) {
-          const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-          const state = (raw ?? {}) as {
-            values?: Record<string, unknown>;
-            deletedAt?: string | null;
-          };
-          if (state.deletedAt) continue;
-          if (state.values) {
-            valuesByInstance.set(r.id, state.values);
-          }
-        }
-      }
-    }
-
-    // v0.12.1 — recursive renderer. Walk every loaded instance's values
-    // to find transitive nested-module references; batch-fetch them so
-    // the renderer never blocks on I/O. Mirrors the v0.4.0 substitution
-    // for the flat case (modules with primitive fields only); recurses
-    // into module / module-list fields.
-    const moduleByIdResource = new Map<string, NestedModuleResource>();
-    const instanceByIdResource = new Map<string, NestedContentInstanceResource>();
-    for (const m of modRows) {
-      moduleByIdResource.set(m.module_id, {
-        moduleId: m.module_id,
-        slug: m.slug,
-        html: m.html,
-        css: m.css,
-        js: m.js,
-        fields: parseFields(m.fields),
-      });
-    }
-    for (const [id, values] of valuesByInstance) {
-      const moduleId = instanceModuleIdById.get(id) ?? "";
-      instanceByIdResource.set(id, { id, moduleId, values, deletedAt: null });
-    }
-
-    // P6.7.6 — load layout modules (chrome) for every layout block
-    // except `content` (which is filled by the rendered template).
-    // issue #106 — load `m.fields` for layout/chrome modules too. A
-    // layout module (footer/header/nav) has NO content_instance binding
-    // (the `layout_modules` table carries no content_instance_id), so its
-    // content lives in the authored field `default`s. The composer's
-    // applyFieldSubstitution renders those defaults — but only if it
-    // receives the fields. Omitting them shipped raw `{{nav_links}}` /
-    // `{{copyright}}` placeholders to the live-edit preview iframe while
-    // page-content modules (bound to content_instances) interpolated
-    // fine. The static generator already loads fields here; the preview
-    // op was the lone divergence. See CLAUDE.md §1A (repeating content is
-    // a list field) — the footer nav is a `list` field.
-    const layoutModRows = (await tx.execute(sql`
-      SELECT lm.block_name AS block_name,
-             lm.position   AS position,
-             m.id::text    AS module_id,
-             m.slug        AS slug,
-             m.display_name AS display_name,
-             m.html        AS html,
-             m.css         AS css,
-             m.js          AS js,
-             m.fields      AS fields
-      FROM (${effectiveLayoutModulesSql(chatBranchId)}) lm JOIN modules m ON m.id = lm.module_id
-      WHERE lm.layout_id = ${pageRow.layout_id}::uuid AND m.deleted_at IS NULL
-      ORDER BY lm.block_name ASC, lm.position ASC
-    `)) as unknown as ModuleSourceRow[];
-    // Caller-branch module-code overlay for LAYOUT (chrome) modules —
-    // same class as the run-#8-R3 page-module overlay above. A branched
-    // `update_modules_many` on a footer/header writes module_snapshots only; the
-    // live `modules` row stays published. Without this overlay the
-    // preview (and inspect_page_render / screenshot_page riding on it)
-    // kept rendering the STALE chrome, sending the AI into an
-    // "my edits don't land" re-edit loop (live-edit footer turn burned
-    // ~8 recovery rounds). Fields ride along because chrome renders from
-    // field DEFAULTS — a default edit must show up too.
-    if (chatBranchId && layoutModRows.length > 0) {
-      const layoutModuleIds = layoutModRows.map((r) => sql`${r.module_id}::uuid`);
-      const chromeBranchRows = (await tx.execute(sql`
-        SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
-        FROM module_snapshots ms
-        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-        WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-          AND ms.module_id IN (${sql.join(layoutModuleIds, sql`, `)})
-        ORDER BY ms.module_id, ss.created_at DESC
-      `)) as unknown as { module_id: string; state: unknown }[];
-      const chromeOverlay = new Map<string, Record<string, unknown>>();
-      for (const r of chromeBranchRows) {
-        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-        chromeOverlay.set(r.module_id, raw as Record<string, unknown>);
-      }
-      for (const m of layoutModRows) {
-        const s = chromeOverlay.get(m.module_id);
-        if (!s || s.deletedAt) continue;
-        m.html = (s.html as string) ?? m.html;
-        m.css = (s.css as string) ?? m.css;
-        m.js = (s.js as string) ?? m.js;
-        m.display_name = (s.displayName as string) ?? m.display_name;
-        if (Array.isArray(s.fields)) m.fields = s.fields as ModuleSourceRow["fields"];
-      }
-    }
-    // Epic #1107 — the lists this render resolves (draft view of the
-    // chat's branch). Loaded before the nested-module batch load so the
-    // modules embedded in list entries are loaded with the rest.
-    const listData = await loadListRenderData(tx, {
-      chatBranchId: chatBranchId ?? null,
-      scope: "preview",
-      env: "preview",
-      renderScope,
-    });
-
-    // BFS expand transitively referenced (moduleId, contentInstanceId)
-    // pairs. Bounded by the depth limit baked into the renderer; the
-    // explicit batch-load avoids N+1 during recursion.
-    {
-      let pendingModuleIds = new Set<string>();
-      let pendingInstanceIds = new Set<string>();
-      const enqueueRefs = (values: Record<string, unknown>) => {
-        for (const ref of collectNestedRefs(values)) {
-          if (!moduleByIdResource.has(ref.moduleId)) pendingModuleIds.add(ref.moduleId);
-          if (!instanceByIdResource.has(ref.contentInstanceId))
-            pendingInstanceIds.add(ref.contentInstanceId);
-        }
-      };
-      for (const r of instanceByIdResource.values()) enqueueRefs(r.values);
-      // Chrome renders from field defaults, and shared list entries can
-      // embed modules: both are reachable from no placement's instance.
-      for (const m of layoutModRows) {
-        const defaults: Record<string, unknown> = {};
-        for (const f of parseFields(m.fields)) {
-          if (f.default !== undefined) defaults[f.name] = f.default;
-        }
-        enqueueRefs(defaults);
-      }
-      enqueueRefs({ listRefs: collectListModuleRefs(listData) });
-
-      // Cap BFS rounds; the renderer enforces depth at substitute time
-      // and 8 levels is the absolute max so 8 rounds is the ceiling.
-      for (let round = 0; round < 8; round += 1) {
-        if (pendingModuleIds.size === 0 && pendingInstanceIds.size === 0) break;
-        if (pendingModuleIds.size > 0) {
-          // Pre-existing bug surfaced by #71's nested-module
-          // integration test: the SELECT aliased `id::text AS id`
-          // but the consumer read `f.module_id`, leaving the
-          // recursion's transitively-referenced modules unloaded
-          // (every nested-module ref then resolved as
-          // `module-missing`). Align the alias with what the
-          // top-level pass at line 192 uses so the BFS-loaded
-          // modules actually populate `moduleByIdResource`.
-          const fetched = (await tx.execute(sql`
-            SELECT id::text AS module_id, slug, display_name, html, css, js, fields
-            FROM modules
-            WHERE id IN (${sql.join(
-              [...pendingModuleIds].map((id) => sql`${id}::uuid`),
-              sql`, `,
-            )})
-              AND deleted_at IS NULL
-          `)) as unknown as ModuleSourceRow[];
-          // Caller-branch module-CODE overlay for NESTED modules — the
-          // THIRD read path of the run-#8-R3 class (page modules and
-          // layout chrome are fixed above/below). A branched update_modules_many
-          // on a nested/detached module writes module_snapshots only;
-          // without this overlay the recursion rendered the STALE live
-          // code and the AI spiralled on "my edits don't propagate"
-          // (live-edit run A2: repeated color-mix removal never showed,
-          // straight into the max_loops cap).
-          if (chatBranchId && fetched.length > 0) {
-            const nestedBranchRows = (await tx.execute(sql`
-              SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
-              FROM module_snapshots ms
-              JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-              WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-                AND ms.module_id IN (${sql.join(
-                  fetched.map((f) => sql`${f.module_id}::uuid`),
-                  sql`, `,
-                )})
-              ORDER BY ms.module_id, ss.created_at DESC
-            `)) as unknown as { module_id: string; state: unknown }[];
-            for (const r of nestedBranchRows) {
-              const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-              const s = raw as Record<string, unknown>;
-              const target = fetched.find((f) => f.module_id === r.module_id);
-              if (!target || s.deletedAt) continue;
-              target.html = (s.html as string) ?? target.html;
-              target.css = (s.css as string) ?? target.css;
-              target.js = (s.js as string) ?? target.js;
-              if (Array.isArray(s.fields)) target.fields = s.fields as ModuleSourceRow["fields"];
-            }
-          }
-          for (const f of fetched) {
-            moduleByIdResource.set(f.module_id, {
-              moduleId: f.module_id,
-              slug: f.slug,
-              html: f.html,
-              css: f.css,
-              js: f.js,
-              fields: parseFields(f.fields),
-            });
-          }
-          pendingModuleIds = new Set();
-        }
-        const justLoadedInstances: Record<string, unknown>[] = [];
-        if (pendingInstanceIds.size > 0) {
-          const fetched = (await tx.execute(sql`
-            SELECT id::text AS id, module_id::text AS module_id, "values" AS values
-            FROM content_instances
-            WHERE id IN (${sql.join(
-              [...pendingInstanceIds].map((id) => sql`${id}::uuid`),
-              sql`, `,
-            )})
-              AND deleted_at IS NULL
-          `)) as unknown as { id: string; module_id: string; values: unknown }[];
-          // Caller-branch VALUES overlay for nested instances — same
-          // hole as the module-code overlay above: branched set_values
-          // on a nested instance landed in content_instance_snapshots
-          // only, so the recursion rendered stale live values.
-          const nestedValueOverlay = new Map<string, Record<string, unknown>>();
-          if (chatBranchId && fetched.length > 0) {
-            const rows = (await tx.execute(sql`
-              SELECT DISTINCT ON (cis.content_instance_id)
-                     cis.content_instance_id::text AS id, cis.state AS state
-              FROM content_instance_snapshots cis
-              JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-              WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-                AND cis.content_instance_id IN (${sql.join(
-                  fetched.map((f) => sql`${f.id}::uuid`),
-                  sql`, `,
-                )})
-              ORDER BY cis.content_instance_id, ss.created_at DESC
-            `)) as unknown as { id: string; state: unknown }[];
-            for (const r of rows) {
-              const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-              const state = (raw ?? {}) as {
-                values?: Record<string, unknown>;
-                deletedAt?: string | null;
-              };
-              if (!state.deletedAt && state.values) nestedValueOverlay.set(r.id, state.values);
-            }
-          }
-          for (const f of fetched) {
-            const raw = typeof f.values === "string" ? JSON.parse(f.values) : f.values;
-            const v = nestedValueOverlay.get(f.id) ?? ((raw ?? {}) as Record<string, unknown>);
-            instanceByIdResource.set(f.id, {
-              id: f.id,
-              moduleId: f.module_id,
-              values: v,
-              deletedAt: null,
-            });
-            justLoadedInstances.push(v);
-          }
-          pendingInstanceIds = new Set();
-        }
-        for (const v of justLoadedInstances) enqueueRefs(v);
-      }
-    }
-
-    const resolver: NestedRenderResolver = {
-      getModule: (id) => moduleByIdResource.get(id) ?? null,
-      getContentInstance: (id) => instanceByIdResource.get(id) ?? null,
-    };
-
-    // v0.11.1 (issue #76) — load the active theme up front so its asset
-    // URLs are available to renderModuleWithContent (substitutes
-    // `{{theme_logo_url}}` etc. inside nested-module HTML). The same
-    // theme value flows into composePageWithLayout below for the
-    // `<style data-source="theme">` injection — single fetch, two uses.
-    const composeTheme = await loadActiveThemeForCompose(tx, chatBranchId);
-    const renderThemeAssets = composeTheme
-      ? {
-          logo: composeTheme.assets.logo?.url ?? null,
-          logoDark: composeTheme.assets.logoDark?.url ?? null,
-          favicon: composeTheme.assets.favicon?.url ?? null,
-          socialShare: composeTheme.assets.socialShare?.url ?? null,
-        }
-      : undefined;
-
-    // Collect CSS/JS from every nested module touched during recursion
-    // so the page's <style>/<script> tags include them. Dedup by
-    // moduleId; the composer dedupes by moduleId as well (issue #158).
-    // #590 — every URL the preview shows (canonical, plugin hreflang,
-    // switcher links) follows the style of the target Publish serves, so
-    // the editor shows the URLs the live site will carry.
-    const pageUrlStyle = await loadPublishPageUrlStyle(tx);
-    if (pageUrlStyle === null) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages.render_preview",
-        message:
-          "no default deploy target — the preview needs its page URL style to render canonical " +
-          "and language links. Next step: run the cms_admin migrations (they seed the " +
-          "production target) or mark a deploy target as default under Ops → Deploy.",
-      });
-    }
-    // Epic #724 — internal references (`caelo:page/<id>`, `caelo:media/<id>`)
-    // resolve against the chat's view of the site (its renames, moves and
-    // new pages included) in the publish target's URL style, so a link in
-    // the iframe navigates to the same path `preview-by-path` looks up —
-    // and, through the link-resolve point, to the page's own language.
-    const linkResolver = (
-      await loadPreviewLinkIndex(tx, chatBranchId ?? null, "preview", pageUrlStyle, renderScope)
-    ).forPage(input.pageId);
-    // Plugin list sources for THIS page: the editor preview must show the
-    // same thing the deploy will, including the loud marker when a plugin
-    // whose source a module iterates has been switched off.
-    const resolvedSources = await resolveListSources([input.pageId], renderScope, pageUrlStyle);
-    const listContext = createListRenderContext(listData, {
-      dormantPluginSources: dormantListSourceNames(),
-    });
-    const lists = listContext.forPage(input.pageId, {
-      linkResolver,
-      pluginSources: resolvedSources.get(input.pageId) ?? {},
-    });
-
-    // #592 — content variants: which chrome and which shared content this
-    // page shows (e.g. the footer in the page's language). Same keys and
-    // payload as the static generator's pass, so both surfaces agree;
-    // problems land on the missing-content surface here and stop the
-    // build there.
-    const variants = await resolvePreviewContentVariants(tx, {
-      pageId: input.pageId,
-      layoutId: pageRow.layout_id,
-      layoutModRows,
-      modRows,
-      placementBindings,
-      valuesByInstance,
-      chatBranchId: chatBranchId ?? null,
-      renderScope,
-    });
-    for (const [key, values] of variants.pageValues) {
-      const binding = placementBindings.get(key);
-      const m = modRows.find((r) => `${r.block_name}#${r.position}` === key);
-      if (!binding || !m) continue;
-      const id = `variant:${key}`;
-      instanceByIdResource.set(id, { id, moduleId: m.module_id, values, deletedAt: null });
-      placementBindings.set(key, { ...binding, contentInstanceId: id });
-    }
-
-    // #917 — a copy of the placement's instance whose plain-text values
-    // carry edit-marker sentinels, registered under its own id so the
-    // real instance (which a nested slot elsewhere may also render) stays
-    // untouched. Variant content (#592) is resolved, not stored on this
-    // placement, so it is not editable in place.
-    function editMarkedInstance(
-      key: string,
-      binding: { contentInstanceId: string },
-      moduleId: string,
-    ): string | null {
-      if (binding.contentInstanceId.startsWith("variant:")) return null;
-      const ci = instanceByIdResource.get(binding.contentInstanceId);
-      const mod = moduleByIdResource.get(moduleId);
-      if (!ci || !mod) return null;
-      const id = `edit:${key}`;
-      instanceByIdResource.set(id, {
-        ...ci,
-        id,
-        listHolderId: ci.listHolderId ?? ci.id,
-        values: wrapEditableValues(
-          ci.values,
-          mod.fields,
-          (slug) => listData.listTypes.get(slug)?.def,
-        ),
-      });
-      return id;
-    }
-
-    // #918 — how many pages show each synced instance, so the editor can
-    // say "this text is on N pages" before an in-place edit.
-    const sharedPageCounts = new Map<string, number>();
-    const syncedIds = [...placementBindings.values()]
-      .filter((b) => b.synced && !b.contentInstanceId.startsWith("variant:"))
-      .map((b) => b.contentInstanceId);
-    if (input.editMarkers === true && syncedIds.length > 0) {
-      const counts = (await tx.execute(sql`
-        SELECT content_instance_id::text AS id, count(DISTINCT page_id)::int AS pages
-        FROM page_modules
-        WHERE content_instance_id IN (${sql.join(
-          [...new Set(syncedIds)].map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})
-        GROUP BY content_instance_id
-      `)) as unknown as { id: string; pages: number }[];
-      for (const r of counts) sharedPageCounts.set(r.id, Number(r.pages));
-    }
-
-    const nestedCssJsByModuleId = new Map<string, NestedModuleResource>();
-    // Epic #724 — broken internal references of the page's modules; the
-    // layout modules' and nav menus' join from the composer's failures.
-    const pageLinkMarkers: string[] = [];
-    // Epic #1107 — an unbound / deleted / malformed list of a page module
-    // or of the chrome: loud on the missing-content surface too.
-    const pageListMarkers: string[] = [];
-    for (const m of modRows) {
-      const key = `${m.block_name}#${m.position}`;
-      const binding = placementBindings.get(key);
-      if (!binding) {
-        m.html = "";
-        continue;
-      }
-      const markers =
-        input.editMarkers === true ? editMarkedInstance(key, binding, m.module_id) : null;
-      const result = renderModuleWithContent(
-        m.module_id,
-        markers ?? binding.contentInstanceId,
-        resolver,
-        renderThemeAssets,
-        lists,
-        linkResolver,
-      );
-      m.html = markers
-        ? finalizeEditMarkers(
-            result.html,
-            key,
-            // A synced placement this chat created is not in live
-            // page_modules yet: then this page is the only one showing it.
-            binding.synced ? (sharedPageCounts.get(binding.contentInstanceId) ?? 1) : 0,
-          )
-        : result.html;
-      pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
-      pageListMarkers.push(...result.missingSlots.filter(isListFailureMarker));
-      // CSS/JS dedup: emit CSS/JS for every module the recursion touched
-      // (in addition to this top-level module). The existing composer
-      // dedupes by slug, so we just need to ensure every nested module's
-      // CSS/JS is staged. The grouped[] structure below collects unique
-      // slugs already; we extend it by injecting touched-but-not-placed
-      // modules as zero-placement entries in a virtual "__nested__" block
-      // — the composer ignores blockName for CSS/JS dedup, so this is
-      // safe (the HTML output is already inline via renderModuleWithContent).
-      for (const touchedId of result.touchedModuleIds) {
-        if (touchedId === m.module_id) continue;
-        const mod = moduleByIdResource.get(touchedId);
-        if (!mod || (!mod.css && !mod.js)) continue;
-        // Will be added to the grouped[] payload below.
-        if (!nestedCssJsByModuleId.has(touchedId)) {
-          nestedCssJsByModuleId.set(touchedId, mod);
-        }
-      }
-    }
-
-    const grouped = new Map<
-      string,
-      {
-        moduleId: string;
-        slug: string;
-        displayName: string;
-        html: string;
-        css: string;
-        js: string;
-      }[]
-    >();
-    for (const r of modRows) {
-      const arr = grouped.get(r.block_name) ?? [];
-      arr.push({
-        moduleId: r.module_id,
-        slug: r.slug,
-        displayName: r.display_name,
-        html: r.html,
-        css: r.css,
-        js: r.js,
-      });
-      grouped.set(r.block_name, arr);
-    }
-    // v0.12.1 — fold nested-module CSS/JS into a virtual block so the
-    // composer's <style> + script tags include them. HTML for these is
-    // already inlined by renderModuleWithContent, so we set html='' to
-    // avoid double-rendering.
-    if (nestedCssJsByModuleId.size > 0) {
-      const arr = grouped.get("__nested__") ?? [];
-      for (const m of nestedCssJsByModuleId.values()) {
-        arr.push({
-          moduleId: m.moduleId,
-          slug: m.slug,
-          displayName: m.slug,
-          html: "",
-          css: m.css,
-          js: m.js,
-        });
-      }
-      grouped.set("__nested__", arr);
-    }
-    const blocks = [...grouped.entries()].map(([blockName, modules]) => ({
-      blockName,
-      modules,
-    }));
-
-    const layoutGrouped = new Map<
-      string,
-      {
-        moduleId: string;
-        slug: string;
-        displayName: string;
-        html: string;
-        css: string;
-        js: string;
-        fields: TemplateField[];
-        contentValues?: Record<string, unknown>;
-      }[]
-    >();
-    for (const r of layoutModRows) {
-      const arr = layoutGrouped.get(r.block_name) ?? [];
-      // #592 — a locale's chrome may render other values or another module.
-      const override = variants.layout.get(`layout:${r.block_name}:${arr.length}`);
-      const src = override?.module ?? r;
-      arr.push({
-        moduleId: src.module_id,
-        slug: src.slug,
-        displayName: src.display_name,
-        html: src.html,
-        css: src.css,
-        js: src.js,
-        fields: parseFields(src.fields),
-        ...(override?.values !== undefined ? { contentValues: override.values } : {}),
-      });
-      layoutGrouped.set(r.block_name, arr);
-    }
-    const layoutBlocks = [...layoutGrouped.entries()].map(([blockName, modules]) => ({
-      blockName,
-      modules,
-    }));
-
-    // #450 — which of this page's modules is a plugin withholding? The
-    // editor has to see the placeholder the visitor will see; a module
-    // that renders here and is gated on the live site would leave the
-    // operator styling something nobody is shown yet. A module the
-    // visitor gets nothing for shows the plugin's editor notice instead
-    // (renderScope.editorPreview), so its absence is explained here.
-    // The gate judges the content about to render, not a verdict
-    // recorded before the latest edit. Page modules arrive with their
-    // content values already substituted into `html` (by
-    // renderModuleWithContent above); layout modules carry `fields`,
-    // whose defaults the composer substitutes.
-    const candidates = new Map<string, DeferralCandidate>();
-    for (const m of [...blocks, ...layoutBlocks].flatMap((b) => b.modules)) {
-      if (candidates.has(m.moduleId)) continue;
-      candidates.set(m.moduleId, {
-        moduleId: m.moduleId,
-        html: m.html,
-        css: m.css,
-        js: m.js,
-        fields: "fields" in m ? m.fields : [],
-        contentValues: [],
-      });
-    }
-    const deferredModules = Object.fromEntries(
-      await resolveModuleDeferrals([...candidates.values()], renderScope),
-    );
-
-    // v0.11.0 (#45) — `composeTheme` loaded earlier (above the render
-    // loop) so its asset URLs flow into renderModuleWithContent for
-    // `{{theme_logo_url}}` substitution (v0.11.1, issue #76). Same row
-    // flows into composePageWithLayout's <style data-source="theme">
-    // injection below.
-    //
-    // issue #150 — preview/production font parity: resolve the theme's
-    // web fonts through the SAME resolver the static generator uses, so
-    // the editor previews the design in the real typefaces. Served from
-    // the admin's /_caelo/fonts route (disk cache; network only on the
-    // first render after a font change). Unresolvable families do NOT
-    // fail the preview — blocking every editor render on fonts-CDN
-    // reachability punishes the operator for a network condition — but
-    // they surface as `theme-font-unresolvable:<family>` in missingSlots
-    // (loud, CLAUDE.md §2); the deploy path hard-fails on the same state.
-    // Site settings first: the font preload follows the site language,
-    // and the SEO head below reads the rest.
-    const settingsRows = (await tx.execute(sql`
-      SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json,
-             site_language
-      FROM site_defaults WHERE id = 1 LIMIT 1
-    `)) as unknown as {
-      site_base_url: string | null;
-      sitemap_enabled: boolean;
-      organization_json: string | null;
-      site_language: string | null;
-    }[];
-    const settingsRow = settingsRows[0];
-    if (!settingsRow) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages.render_preview",
-        message: "site_defaults row (id=1) is missing — the cms_admin migrations did not seed it",
-      });
-    }
-    let previewFonts: ComposeFonts | undefined;
-    const fontMarkers: string[] = [];
-    if (composeTheme !== undefined) {
-      const themeTokens = composeTheme.tokens;
-      const resolvedFonts = await resolveThemeFonts({
-        readFont: fontReader(tx),
-        tokens: composeTheme.tokens,
-        // Same loader as the build: the preview instances faces exactly
-        // as the deployed site will (preview/production parity).
-        loadFontUsage: () => loadSiteFontUsage(tx, themeTokens),
-        cacheDir: defaultFontsCacheDir(process.cwd()),
-        publicBasePath: "/_caelo/fonts",
-        // Same preload as the build (#1065): the composed render is what
-        // inspect_page_render reports as the page's HTML, so a hint the
-        // deployed page carries must show here too.
-        preloadLanguage: settingsRow.site_language,
-      });
-      if (resolvedFonts.css.length > 0) {
-        previewFonts = { css: resolvedFonts.css, preloads: resolvedFonts.preloads };
-      }
-      for (const family of resolvedFonts.unresolved) {
-        fontMarkers.push(fontUnresolvableMarker(family));
-      }
-    }
-
-    let composed: ReturnType<typeof composePageWithLayout>;
+  input: inputSchema,
+  output: outputSchema,
+  handler: async (ctx, input, reads) => {
     try {
-      composed = composePageWithLayout({
-        deferredModules,
-        // Page-block modules already had their lists applied by
-        // renderModuleWithContent; LAYOUT modules reach the composer
-        // raw, so without the list context and the nested resolver a
-        // `{{#menu}}` (or a list entry's embedded module) in site chrome
-        // would render literally in the editor and correctly on the
-        // deployed site. The generator passes the same two.
-        lists,
-        nestedModules: resolver,
-        templateHtml: pageRow.template_html,
-        templateCss: pageRow.template_css,
-        blocks,
-        theme: composeTheme,
-        fonts: previewFonts,
-        layoutHtml: pageRow.layout_html,
-        layoutCss: pageRow.layout_css,
-        layoutBlocks,
-        layoutSlug: pageRow.layout_slug,
-        linkResolver,
-      });
+      return await renderPreview(ctx, input, reads);
     } catch (e) {
-      if (e instanceof ComposeError) {
-        return err({
-          kind: "HandlerError",
-          operation: "pages.render_preview",
-          message: e.message,
-        });
-      }
+      if (e instanceof PreviewLoadError || e instanceof ComposeError) return failure(e.message);
       throw e;
     }
-    // Epic #1107 — overlay entries this render refused are the plugin's
-    // fault: the stored value rendered, and the plugin's error channel
-    // (plugin_errors → list_plugins, Settings → Plugins) names them.
-    const refusedOverlays = lists.overlayIssues();
-    if (refusedOverlays.length > 0 && listData.overlaySources) {
-      await reportListOverlayIssues(listData.overlaySources, refusedOverlays);
-    }
-    // P8 review-pass — preview parity with the static deploy.
-    // Without this, editors can't verify SEO meta / canonical /
-    // OG / JSON-LD before publishing. Loads pages_seo + site_defaults
-    // SEO settings inline; same shape as the static generator's
-    // seo-pass.ts. Missing rows (unfilled SEO) are tolerated — we
-    // just emit a head with whatever's present.
-    let html = composed.html;
-
-    // issue #162 — preview/production image parity: the SAME srcset/
-    // sizes/loading/decoding enrichment the static generator's media
-    // pass applies, with URLs kept on the admin's media route. Without
-    // this, the operator (and the #155 self-review loop) tunes visuals
-    // against markup that differs from what visitors get.
-    // Refs in the HTML are slugs (current embeds) or legacy UUID ids.
-    // Resolve the slugs to asset ids, load every referenced asset's
-    // variants, then key the enrichment map by the SAME ref that appears
-    // in the HTML (slug for current, id for legacy) — the shape
-    // enrichResponsiveImages + the static generator's media pass expect.
-    const previewRefs = extractMediaRefs(html);
-    if (previewRefs.length > 0) {
-      const slugRefs = new Set<string>();
-      const legacyIdRefs = new Set<string>();
-      for (const r of previewRefs) {
-        if (r.isSlug) slugRefs.add(r.ref);
-        else legacyIdRefs.add(r.ref);
-      }
-      const slugToId = new Map<string, string>();
-      if (slugRefs.size > 0) {
-        const slugFrags = [...slugRefs].map((s) => sql`${s}`);
-        const slugRows = (await tx.execute(sql`
-          SELECT id::text AS id, slug FROM media_assets
-          WHERE slug IN (${sql.join(slugFrags, sql`, `)}) AND deleted_at IS NULL
-        `)) as unknown as { id: string; slug: string }[];
-        for (const r of slugRows) slugToId.set(r.slug, r.id);
-      }
-      const assetIds = [...new Set([...legacyIdRefs, ...slugToId.values()])];
-      if (assetIds.length > 0) {
-        const idFrags = assetIds.map((id) => sql`${id}::uuid`);
-        const variantRows = (await tx.execute(sql`
-          SELECT asset_id::text AS asset_id, variant, format, width
-          FROM media_variants
-          WHERE asset_id IN (${sql.join(idFrags, sql`, `)})
-        `)) as unknown as {
-          asset_id: string;
-          variant: string;
-          format: string;
-          width: number | null;
-        }[];
-        const variantsById = new Map<string, ImageVariantInfo[]>();
-        for (const r of variantRows) {
-          const list = variantsById.get(r.asset_id) ?? [];
-          list.push({ variant: r.variant, format: r.format, width: r.width });
-          variantsById.set(r.asset_id, list);
-        }
-        const variantsByRef = new Map<string, ImageVariantInfo[]>();
-        for (const [slug, id] of slugToId) variantsByRef.set(slug, variantsById.get(id) ?? []);
-        for (const id of legacyIdRefs) variantsByRef.set(id, variantsById.get(id) ?? []);
-        html = enrichResponsiveImages(html, variantsByRef, {
-          rewriteSrc: false,
-          urlFor: (ref, variant) => buildMediaUrl(ref, variant),
-        });
-      }
-    }
-    // #1156 — the SEO this render's branch shows (a chat's pending edit).
-    const seoRows = (await tx.execute(sql`
-      SELECT s.meta_description, s.og_image_asset_id::text AS og_image_asset_id,
-             s.canonical_url, s.noindex
-      FROM ${pageSeoViewSql(chatBranchId, [input.pageId])} s LIMIT 1
-    `)) as unknown as {
-      meta_description: string;
-      og_image_asset_id: string | null;
-      canonical_url: string | null;
-      noindex: boolean;
-    }[];
-    const seoRow = seoRows[0];
-    let organization: SiteSeoSettings["organization"] = {};
-    if (settingsRow.organization_json) {
-      try {
-        organization = JSON.parse(settingsRow.organization_json) as SiteSeoSettings["organization"];
-      } catch {
-        organization = {};
-      }
-    }
-    // #551 — no substituted base URL. Unset, the preview renders without
-    // canonical / og:url / plugin head contributions (which need absolute
-    // URLs) and flags `site-base-url-unset` on the missing-content
-    // surface; the static generator refuses to build in that state.
-    const siteBaseUrl = settingsRow.site_base_url;
-    const seoMarkers: string[] = siteBaseUrl ? [] : ["site-base-url-unset"];
-    // Migration 0232 — likewise no substituted language. Unset, pages no
-    // plugin assigns a locale to render `<html>` without `lang`, and the
-    // marker stays up even when this page has a contributed locale: the
-    // static generator refuses to build the site until it is set.
-    if (!settingsRow.site_language) seoMarkers.push("site-language-unset");
-
-    let ogImageUrl: string | null = null;
-    if (seoRow?.og_image_asset_id) {
-      const variants = (await tx.execute(sql`
-        SELECT mv.variant AS variant, mv.format AS format, ma.slug AS slug
-        FROM media_variants mv
-        JOIN media_assets ma ON ma.id = mv.asset_id AND ma.deleted_at IS NULL
-        WHERE mv.asset_id = ${seoRow.og_image_asset_id}::uuid
-        ORDER BY
-          CASE mv.variant
-            WHEN 'webp-1200' THEN 0 WHEN 'webp-1600' THEN 1
-            WHEN 'webp-800'  THEN 2 WHEN 'orig'      THEN 3 ELSE 4
-          END
-        LIMIT 1
-      `)) as unknown as { variant: string; format: string; slug: string }[];
-      const v = variants[0];
-      if (v) {
-        // Preview keeps the /_caelo/media URL form (built from the slug) so
-        // the admin resolver serves the bytes; the static generator
-        // rewrites to /_assets at deploy.
-        ogImageUrl = buildMediaUrl(v.slug, v.variant);
-      }
-    }
-    // #390 — canonical follows the MATERIALIZED composed path (home
-    // designation + plugin URL shape are baked into current_path); #590 —
-    // through the same builder as the generator and plugin hreflang.
-    const canonicalOverride = seoRow?.canonical_url || null;
-    const canonical = siteBaseUrl
-      ? ((
-          await resolvePublicPageUrls(
-            [
-              {
-                id: input.pageId,
-                slug: pageRow.slug,
-                currentPath: pageRow.current_path,
-                canonicalOverride,
-              },
-            ],
-            { siteBaseUrl, pageUrlStyle },
-            renderScope,
-          )
-        ).get(input.pageId) ?? null)
-      : canonicalOverride;
-    const headBlock = renderSeoHead({
-      title: pageRow.title,
-      metaDescription: seoRow?.meta_description ?? "",
-      canonical,
-      noindex: seoRow?.noindex ?? false,
-      ogImageUrl,
-      organization,
-      breadcrumbs: siteBaseUrl
-        ? await previewBreadcrumbs(tx, lists.breadcrumbTrail(), {
-            chatBranchId: chatBranchId ?? null,
-            siteBaseUrl,
-            pageUrlStyle,
-            renderScope,
-          })
-        : null,
-    });
-    // #391 — plugin head contributions ride the SAME compose call the
-    // static generator uses (byte parity by construction).
-    // Plugin contributions need absolute URLs, so with no base URL none are
-    // collected and `<html lang>` carries the stored site language (or none
-    // when that is unset too). Both states are flagged on the missing-content
-    // surface and the static generator refuses to build in either, so no
-    // published page diverges from this.
-    const contributions = siteBaseUrl
-      ? await collectContributions([input.pageId], { siteBaseUrl, pageUrlStyle, ...renderScope })
-      : null;
-    html = injectSeoIntoHead(
-      html,
-      composeHeadBlock(headBlock, contributions?.head.get(input.pageId)),
-    );
-    // `<html lang>` — same resolution as the static generator's SEO pass.
-    html = applyDocumentLanguage(
-      html,
-      resolveDocumentLanguage({
-        contributed: contributions?.lang.get(input.pageId),
-        siteLanguage: settingsRow.site_language,
-      }),
-    );
-
-    // #449 — plugin client assets. The deploy LINKS these files; the
-    // preview iframe has no build directory to serve from, so it
-    // inlines the identical bytes. Same resolver, so the editor can
-    // never show behaviour the deployed site won't have — a consent
-    // dialog that works in preview and is missing on the live site is
-    // the failure this parity exists to prevent.
-    html = injectPluginAssets(
-      html,
-      await collectBuildAssets([input.pageId], renderScope),
-      "inline",
-    );
-
-    // issue #156 — surface unknown `var(--…)` references in the page's
-    // CSS bundle (layout + template + placed modules) on the existing
-    // missing-content channel. Same silent-fallback trap class as
-    // `theme-asset-unbound:<slot>`: the page renders "fine" but ignores
-    // the theme, so the miss must be loud (CLAUDE.md §2). Scanned as
-    // one bundle so custom properties defined by the layout for its
-    // modules count as known.
-    const cssVarMarkers: string[] = [];
-    if (composeTheme !== undefined) {
-      const cssBundle = [
-        pageRow.layout_css,
-        pageRow.template_css,
-        ...modRows.map((m) => m.css),
-        ...layoutModRows.map((m) => m.css),
-      ].join("\n");
-      for (const u of scanCssVars({
-        css: cssBundle,
-        knownVars: listThemeCssVarNames(composeTheme.tokens),
-      })) {
-        cssVarMarkers.push(unknownCssVarMarker(u.name));
-      }
-    }
-
-    return ok({
-      html,
-      replacedSlots: [...composed.replacedSlots],
-      // issue #150 + #156 — unresolvable web fonts and unknown CSS vars
-      // ride the missing-content surface (`theme-font-unresolvable:` /
-      // `unknown-css-var:`), same convention as theme-asset-unbound.
-      missingSlots: [
-        ...composed.missingSlots,
-        ...variants.markers,
-        ...fontMarkers,
-        ...cssVarMarkers,
-        ...seoMarkers,
-        // #1008 — an active plugin this server could not load renders
-        // without its contribution; loud here (and Publish live refuses).
-        ...pluginsNotRunningHere().map((p) => pluginNotRunningMarker(p.slug)),
-        // #1087 — a plugin that runs here but failed during this render.
-        ...new Set(pluginFailureSink.failures().map((f) => pluginRenderFailedMarker(f.slug))),
-        // Epic #724 — `link-target-missing:<kind>/<id>`, once per target.
-        ...new Set([
-          ...pageLinkMarkers,
-          ...linkMarkersOf(composed.moduleFailures.map((f) => f.reason)),
-        ]),
-        ...new Set([
-          ...pageListMarkers,
-          ...composed.moduleFailures.map((f) => f.reason).filter(isListFailureMarker),
-        ]),
-      ],
-      pluginFailures: pluginFailureSink.failures().map((f) => ({ slug: f.slug, reason: f.reason })),
-      pageSlug: pageRow.slug,
-    });
   },
 });
 
 /**
- * v0.11.0 — load the currently-active themes row + apply chat-branch
- * overlay (theme_snapshots tagged with the caller's chat_branch_id
- * authoritatively replace live tokens for the preview render).
- *
- * Returns null when no active theme exists; the renderer skips the
- * <style data-source="theme"> tag entirely in that case (legacy
- * parity). The migration ensures at least one is_active row exists
- * post-install so this only fires before-the-migration tests.
+ * The page `path` names in the view: the composed-path match, else — for
+ * pre-#390 bookmarks — the one top-level page with that slug. Top-level
+ * only (a nested page's URL is its parent chain + slug) and only while
+ * exactly one matches: slugs repeat across URL prefixes (epic #690), and a
+ * guess would open the wrong page.
  */
-export async function loadActiveThemeForCompose(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  chatBranchId: string | undefined,
-): Promise<ComposeTheme | undefined> {
-  const rows = (await tx.execute(sql`
-    SELECT
-      t.id::text                     AS id,
-      t.tokens                       AS tokens,
-      t.logo_media_id::text          AS logo_media_id,
-      la.slug                        AS logo_slug,
-      la.mime                        AS logo_mime,
-      t.logo_dark_media_id::text     AS logo_dark_media_id,
-      lda.slug                       AS logo_dark_slug,
-      lda.mime                       AS logo_dark_mime,
-      t.favicon_media_id::text       AS favicon_media_id,
-      fa.slug                        AS favicon_slug,
-      fa.mime                        AS favicon_mime,
-      t.social_share_media_id::text  AS social_share_media_id,
-      ssa.slug                       AS social_share_slug,
-      ssa.mime                       AS social_share_mime
-    FROM themes t
-    LEFT JOIN media_assets la  ON la.id  = t.logo_media_id         AND la.deleted_at  IS NULL
-    LEFT JOIN media_assets lda ON lda.id = t.logo_dark_media_id    AND lda.deleted_at IS NULL
-    LEFT JOIN media_assets fa  ON fa.id  = t.favicon_media_id      AND fa.deleted_at  IS NULL
-    LEFT JOIN media_assets ssa ON ssa.id = t.social_share_media_id AND ssa.deleted_at IS NULL
-    WHERE t.is_active = true
-    LIMIT 1
-  `)) as unknown as Array<{
-    id: string;
-    tokens: unknown;
-    logo_media_id: string | null;
-    logo_slug: string | null;
-    logo_mime: string | null;
-    logo_dark_media_id: string | null;
-    logo_dark_slug: string | null;
-    logo_dark_mime: string | null;
-    favicon_media_id: string | null;
-    favicon_slug: string | null;
-    favicon_mime: string | null;
-    social_share_media_id: string | null;
-    social_share_slug: string | null;
-    social_share_mime: string | null;
-  }>;
-  const row = rows[0];
-  if (!row) return undefined;
-  let tokens: ThemeDocument =
-    typeof row.tokens === "string"
-      ? (JSON.parse(row.tokens) as ThemeDocument)
-      : (row.tokens as ThemeDocument);
+function pageAtPath(
+  view: SiteView,
+  driftPaths: ReadonlyMap<string, string>,
+  path: string,
+): string | null {
+  const trimmed = path.replace(/^\/+|\/+$/g, "");
+  const lookupPath = trimmed.length === 0 ? "/" : `/${trimmed}`;
+  const exact = view.pages.find((p) => (driftPaths.get(p.id) ?? p.currentPath) === lookupPath);
+  if (exact) return exact.id;
+  const slug = trimmed.length === 0 ? "home" : trimmed;
+  const legacy = view.pages.filter((p) => p.parentPageId === null && p.slug === slug);
+  return legacy.length === 1 ? (legacy[0]?.id ?? null) : null;
+}
 
-  // Branch overlay — most-recent theme_snapshots row for this branch
-  // replaces live tokens.
-  if (chatBranchId) {
-    const branchRows = (await tx.execute(sql`
-      SELECT state
-      FROM theme_snapshots ts
-      JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-      WHERE ts.theme_id = ${row.id}::uuid
-        AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-      ORDER BY ss.created_at DESC
-      LIMIT 1
-    `)) as unknown as Array<{ state: unknown }>;
-    const raw = branchRows[0]?.state;
-    if (raw) {
-      const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
-        tokens?: ThemeDocument;
-        deletedAt?: string | null;
-      };
-      if (!parsed.deletedAt && parsed.tokens) tokens = parsed.tokens;
+async function renderPreview(
+  ctx: ExecutionContext,
+  input: Input,
+  reads: ReadScope,
+): Promise<Result<Output, QueryError>> {
+  // Run #8 live-edit CI — ONE effective branch for the whole render: the
+  // /edit iframe calls with the operator's ctx (no branch) and the branch
+  // in the INPUT; either source widens visibility AND drives the overlays,
+  // so the two can never disagree.
+  const chatBranchId = input.chatBranchId ?? ctx.chatBranchId ?? null;
+  const editMarkers = input.editMarkers === true;
+  // Plugin render hooks show the same branch as the core rows. #1087 — a
+  // plugin whose call fails is left out of THIS render and flagged instead
+  // of aborting the preview: a plugin's errors block Publish live (the
+  // build throws), never the editor's view of a page.
+  const pluginFailureSink = createPluginRenderFailureSink();
+  const renderScope: RenderScope = {
+    chatBranchId,
+    onPluginFailure: pluginFailureSink.onPluginFailure,
+    editorPreview: true,
+    // #1213 — one pass: plugins may read their data once for all of
+    // this render's composition points instead of once per point.
+    renderId: crypto.randomUUID(),
+  };
+  const loadPage = (tx: Parameters<Parameters<ReadScope["read"]>[0]>[0], pageId: string) =>
+    loadPreviewPage(tx, { pageId, chatBranchId, editMarkers });
+
+  // 1. The site view, and the page when its id is known.
+  const first = await reads.read(async (tx) => {
+    const view = await loadSiteView(tx, chatBranchId);
+    return { view, page: input.pageId ? await loadPage(tx, input.pageId) : null };
+  });
+  const view = first.view;
+  const driftPaths = await siteViewDriftPaths(view, renderScope);
+  let page: PreviewPageBundle;
+  if (first.page) {
+    page = first.page;
+  } else {
+    const pageId = pageAtPath(view, driftPaths, input.path as string);
+    if (pageId === null) return failure("page not found");
+    page = await reads.read((tx) => loadPage(tx, pageId));
+  }
+  const pageId = page.pageRow.page_id;
+  const { pageRow, modRows, layoutModRows, placementBindings, resources, pageUrlStyle } = page;
+  const instanceByIdResource = resources.instances;
+  const moduleByIdResource = resources.modules;
+
+  // 2. Plugins, with no connection held. Epic #1107 — the lists this
+  // render resolves; epic #724 — internal references resolve against the
+  // chat's view of the site in the publish target's URL style, so a link
+  // in the iframe navigates to the path `path` looks up.
+  const listPlugins = await resolveListPluginInputs(
+    view.pages.map((p) => p.id),
+    renderScope,
+  );
+  const listData = listRenderDataOf(view, listPlugins);
+  const linkResolver = previewLinkIndexOf({
+    view,
+    driftPaths,
+    pageVariants: listPlugins.pageVariants,
+    env: "preview",
+    pageUrlStyle,
+  }).forPage(pageId);
+  // Plugin list sources for THIS page: the editor preview must show the
+  // same thing the deploy will, including the loud marker when a plugin
+  // whose source a module iterates has been switched off.
+  const resolvedSources = await resolveListSources([pageId], renderScope, pageUrlStyle);
+  // #592 — content variants: which chrome and which shared content this
+  // page shows (e.g. the footer in the page's language). Same keys and
+  // payload as the static generator's pass.
+  const variantAnswers = await askContentVariants({
+    pageId,
+    layoutId: pageRow.layout_id,
+    layoutModRows,
+    modRows,
+    placementBindings,
+    valuesByInstance: page.valuesByInstance,
+    chatBranchId,
+    renderScope,
+  });
+
+  // Shared list entries can embed modules, and a variant can render
+  // another module: loaded now, in a second short read, only when needed.
+  const listSeeds = [{ listRefs: collectListModuleRefs(listData) }];
+  const needsListModules = hasUnloadedRefs(resources, listSeeds);
+  const variantModules =
+    needsListModules || variantAnswers.moduleIds.length > 0
+      ? await reads.read(async (tx) => {
+          if (needsListModules) {
+            await expandNestedResources(tx, resources, listSeeds, chatBranchId);
+          }
+          return loadVariantModules(tx, variantAnswers.moduleIds, chatBranchId);
+        })
+      : new Map();
+  const variants = finishContentVariants(variantAnswers, variantModules);
+
+  const listContext = createListRenderContext(listData, {
+    dormantPluginSources: dormantListSourceNames(),
+  });
+  const lists = listContext.forPage(pageId, {
+    linkResolver,
+    pluginSources: resolvedSources.get(pageId) ?? {},
+  });
+  for (const [key, values] of variants.pageValues) {
+    const binding = placementBindings.get(key);
+    const m = modRows.find((r) => `${r.block_name}#${r.position}` === key);
+    if (!binding || !m) continue;
+    const id = `variant:${key}`;
+    instanceByIdResource.set(id, { id, moduleId: m.module_id, values, deletedAt: null });
+    placementBindings.set(key, { ...binding, contentInstanceId: id });
+  }
+
+  const resolver: NestedRenderResolver = {
+    getModule: (id) => moduleByIdResource.get(id) ?? null,
+    getContentInstance: (id) => instanceByIdResource.get(id) ?? null,
+  };
+  const composeTheme = page.theme;
+  const renderThemeAssets = composeTheme
+    ? {
+        logo: composeTheme.assets.logo?.url ?? null,
+        logoDark: composeTheme.assets.logoDark?.url ?? null,
+        favicon: composeTheme.assets.favicon?.url ?? null,
+        socialShare: composeTheme.assets.socialShare?.url ?? null,
+      }
+    : undefined;
+
+  // #917 — a copy of the placement's instance whose plain-text values
+  // carry edit-marker sentinels, registered under its own id so the real
+  // instance (which a nested slot elsewhere may also render) stays
+  // untouched. Variant content (#592) is resolved, not stored on this
+  // placement, so it is not editable in place.
+  function editMarkedInstance(
+    key: string,
+    binding: { contentInstanceId: string },
+    moduleId: string,
+  ): string | null {
+    if (binding.contentInstanceId.startsWith("variant:")) return null;
+    const ci = instanceByIdResource.get(binding.contentInstanceId);
+    const mod = moduleByIdResource.get(moduleId);
+    if (!ci || !mod) return null;
+    const id = `edit:${key}`;
+    instanceByIdResource.set(id, {
+      ...ci,
+      id,
+      listHolderId: ci.listHolderId ?? ci.id,
+      values: wrapEditableValues(
+        ci.values,
+        mod.fields,
+        (slug) => listData.listTypes.get(slug)?.def,
+      ),
+    });
+    return id;
+  }
+
+  const nestedCssJsByModuleId = new Map<string, NestedModuleResource>();
+  // Epic #724 — broken internal references of the page's modules; the
+  // layout modules' and nav menus' join from the composer's failures.
+  const pageLinkMarkers: string[] = [];
+  // Epic #1107 — an unbound / deleted / malformed list of a page module
+  // or of the chrome: loud on the missing-content surface too.
+  const pageListMarkers: string[] = [];
+  for (const m of modRows) {
+    const key = `${m.block_name}#${m.position}`;
+    const binding = placementBindings.get(key);
+    if (!binding) {
+      m.html = "";
+      continue;
+    }
+    const markers = editMarkers ? editMarkedInstance(key, binding, m.module_id) : null;
+    const result = renderModuleWithContent(
+      m.module_id,
+      markers ?? binding.contentInstanceId,
+      resolver,
+      renderThemeAssets,
+      lists,
+      linkResolver,
+    );
+    m.html = markers
+      ? finalizeEditMarkers(
+          result.html,
+          key,
+          // A synced placement this chat created is not in live
+          // page_modules yet: then this page is the only one showing it.
+          binding.synced ? (page.sharedPageCounts.get(binding.contentInstanceId) ?? 1) : 0,
+        )
+      : result.html;
+    pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
+    pageListMarkers.push(...result.missingSlots.filter(isListFailureMarker));
+    // Every module the recursion touched gets its CSS/JS staged (the
+    // composer dedupes by moduleId, issue #158) through a virtual
+    // "__nested__" block below; their HTML is already inline.
+    for (const touchedId of result.touchedModuleIds) {
+      if (touchedId === m.module_id) continue;
+      const mod = moduleByIdResource.get(touchedId);
+      if (!mod || (!mod.css && !mod.js)) continue;
+      if (!nestedCssJsByModuleId.has(touchedId)) nestedCssJsByModuleId.set(touchedId, mod);
     }
   }
 
-  // URL is built from the SLUG (public form); the id stays the mediaId.
-  // A null slug means the bound asset was deleted — drop the binding
-  // (slug and mime come from the same joined row, so they are null
-  // together).
-  const asset = (
-    id: string | null,
-    slug: string | null,
-    mime: string | null,
-  ): ComposeThemeAsset | null =>
-    id === null || slug === null || mime === null
-      ? null
-      : { mediaId: id, url: buildMediaUrl(slug, "orig"), mime };
-  return {
-    tokens,
-    assets: {
-      logo: asset(row.logo_media_id, row.logo_slug, row.logo_mime),
-      logoDark: asset(row.logo_dark_media_id, row.logo_dark_slug, row.logo_dark_mime),
-      // Same rendition as the static generator: a raster favicon links its
-      // small PNG, never the (often MB-sized) original.
-      favicon:
-        row.favicon_media_id === null || row.favicon_slug === null || row.favicon_mime === null
-          ? null
-          : {
-              mediaId: row.favicon_media_id,
-              ...themeFaviconRendition(row.favicon_slug, row.favicon_mime),
+  const grouped = new Map<
+    string,
+    { moduleId: string; slug: string; displayName: string; html: string; css: string; js: string }[]
+  >();
+  for (const r of modRows) {
+    const arr = grouped.get(r.block_name) ?? [];
+    arr.push({
+      moduleId: r.module_id,
+      slug: r.slug,
+      displayName: r.display_name,
+      html: r.html,
+      css: r.css,
+      js: r.js,
+    });
+    grouped.set(r.block_name, arr);
+  }
+  // v0.12.1 — nested-module CSS/JS in a virtual block (html '' to avoid
+  // double-rendering: renderModuleWithContent inlined it).
+  if (nestedCssJsByModuleId.size > 0) {
+    const arr = grouped.get("__nested__") ?? [];
+    for (const m of nestedCssJsByModuleId.values()) {
+      arr.push({
+        moduleId: m.moduleId,
+        slug: m.slug,
+        displayName: m.slug,
+        html: "",
+        css: m.css,
+        js: m.js,
+      });
+    }
+    grouped.set("__nested__", arr);
+  }
+  const blocks = [...grouped.entries()].map(([blockName, modules]) => ({ blockName, modules }));
+
+  const layoutGrouped = new Map<
+    string,
+    {
+      moduleId: string;
+      slug: string;
+      displayName: string;
+      html: string;
+      css: string;
+      js: string;
+      fields: TemplateField[];
+      contentValues?: Record<string, unknown>;
+    }[]
+  >();
+  for (const r of layoutModRows) {
+    const arr = layoutGrouped.get(r.block_name) ?? [];
+    // #592 — a locale's chrome may render other values or another module.
+    const override = variants.layout.get(`layout:${r.block_name}:${arr.length}`);
+    const src = override?.module ?? r;
+    arr.push({
+      moduleId: src.module_id,
+      slug: src.slug,
+      displayName: src.display_name,
+      html: src.html,
+      css: src.css,
+      js: src.js,
+      fields: parseFields(src.fields),
+      ...(override?.values !== undefined ? { contentValues: override.values } : {}),
+    });
+    layoutGrouped.set(r.block_name, arr);
+  }
+  const layoutBlocks = [...layoutGrouped.entries()].map(([blockName, modules]) => ({
+    blockName,
+    modules,
+  }));
+
+  // #450 — which of this page's modules is a plugin withholding? The
+  // editor has to see the placeholder the visitor will see; a module the
+  // visitor gets nothing for shows the plugin's editor notice instead
+  // (renderScope.editorPreview), so its absence is explained here. The gate
+  // judges the content about to render: page modules arrive with their
+  // values substituted into `html`; layout modules carry `fields`, whose
+  // defaults the composer substitutes.
+  const candidates = new Map<string, DeferralCandidate>();
+  for (const m of [...blocks, ...layoutBlocks].flatMap((b) => b.modules)) {
+    if (candidates.has(m.moduleId)) continue;
+    candidates.set(m.moduleId, {
+      moduleId: m.moduleId,
+      html: m.html,
+      css: m.css,
+      js: m.js,
+      fields: "fields" in m ? m.fields : [],
+      contentValues: [],
+    });
+  }
+  const deferredModules = Object.fromEntries(
+    await resolveModuleDeferrals([...candidates.values()], renderScope),
+  );
+
+  // issue #150 — preview/production font parity: the theme's web fonts
+  // through the SAME resolver the static generator uses, served from the
+  // admin's /_caelo/fonts route. Unresolvable families do NOT fail the
+  // preview; they surface as `theme-font-unresolvable:<family>` (loud,
+  // CLAUDE.md §2) and the deploy path hard-fails on the same state. Each
+  // font read is a short transaction of its own (#1212): the resolver
+  // does disk and network I/O between them.
+  const settings = view.settings;
+  let previewFonts: ComposeFonts | undefined;
+  const fontMarkers: string[] = [];
+  if (composeTheme !== undefined) {
+    const themeTokens = composeTheme.tokens;
+    const resolvedFonts = await resolveThemeFonts({
+      readFont: (ref) => reads.read((tx) => fontReader(tx)(ref)),
+      tokens: composeTheme.tokens,
+      // Same loader as the build: the preview instances faces exactly as
+      // the deployed site will (preview/production parity).
+      loadFontUsage: () => reads.read((tx) => loadSiteFontUsage(tx, themeTokens)),
+      cacheDir: defaultFontsCacheDir(process.cwd()),
+      publicBasePath: "/_caelo/fonts",
+      // Same preload as the build (#1065): the composed render is what
+      // inspect_page_render reports as the page's HTML.
+      preloadLanguage: settings.siteLanguage,
+    });
+    if (resolvedFonts.css.length > 0) {
+      previewFonts = { css: resolvedFonts.css, preloads: resolvedFonts.preloads };
+    }
+    for (const family of resolvedFonts.unresolved) fontMarkers.push(fontUnresolvableMarker(family));
+  }
+
+  const composed = composePageWithLayout({
+    deferredModules,
+    // Page-block modules already had their lists applied; LAYOUT modules
+    // reach the composer raw, so it needs the list context and the nested
+    // resolver too (the generator passes the same two).
+    lists,
+    nestedModules: resolver,
+    templateHtml: pageRow.template_html,
+    templateCss: pageRow.template_css,
+    blocks,
+    theme: composeTheme,
+    fonts: previewFonts,
+    layoutHtml: pageRow.layout_html,
+    layoutCss: pageRow.layout_css,
+    layoutBlocks,
+    layoutSlug: pageRow.layout_slug,
+    linkResolver,
+  });
+  // Epic #1107 — overlay entries this render refused are the plugin's
+  // fault: the stored value rendered, and the plugin's error channel
+  // (plugin_errors → list_plugins, Settings → Plugins) names them.
+  const refusedOverlays = lists.overlayIssues();
+  if (refusedOverlays.length > 0 && listData.overlaySources) {
+    await reportListOverlayIssues(listData.overlaySources, refusedOverlays);
+  }
+
+  // issue #162 — preview/production image parity: the SAME srcset/sizes/
+  // loading/decoding enrichment as the generator's media pass, with URLs
+  // kept on the admin's media route. Refs are slugs (current embeds) or
+  // legacy UUID ids; the enrichment map is keyed by the ref as it appears.
+  let html = await enrichPreviewImages(composed.html, view, reads);
+
+  // P8 review-pass — preview parity with the static deploy (SEO meta,
+  // canonical, OG, JSON-LD). Unfilled SEO is tolerated.
+  let organization: SiteSeoSettings["organization"] = {};
+  if (settings.organizationJson) {
+    try {
+      organization = JSON.parse(settings.organizationJson) as SiteSeoSettings["organization"];
+    } catch {
+      organization = {};
+    }
+  }
+  // #551 — no substituted base URL: unset, the preview renders without
+  // canonical / og:url / plugin head contributions and flags it; the
+  // static generator refuses to build in that state. Migration 0232 —
+  // likewise for the site language.
+  const siteBaseUrl = settings.siteBaseUrl;
+  const seoMarkers: string[] = siteBaseUrl ? [] : ["site-base-url-unset"];
+  if (!settings.siteLanguage) seoMarkers.push("site-language-unset");
+
+  // #390 — canonical follows the MATERIALIZED composed path; #590 —
+  // through the same builder as the generator and plugin hreflang.
+  const canonicalOverride = page.seo?.canonicalUrl || null;
+  const canonical = siteBaseUrl
+    ? ((
+        await resolvePublicPageUrls(
+          [
+            {
+              id: pageId,
+              slug: pageRow.slug,
+              currentPath: pageRow.current_path,
+              canonicalOverride,
             },
-      socialShare: asset(row.social_share_media_id, row.social_share_slug, row.social_share_mime),
-    },
-  };
+          ],
+          { siteBaseUrl, pageUrlStyle },
+          renderScope,
+        )
+      ).get(pageId) ?? null)
+    : canonicalOverride;
+  const headBlock = renderSeoHead({
+    title: pageRow.title,
+    metaDescription: page.seo?.metaDescription ?? "",
+    canonical,
+    noindex: page.seo?.noindex ?? false,
+    ogImageUrl: page.ogImageUrl,
+    organization,
+    breadcrumbs: siteBaseUrl
+      ? await previewBreadcrumbs(view, lists.breadcrumbTrail(), {
+          siteBaseUrl,
+          pageUrlStyle,
+          renderScope,
+        })
+      : null,
+  });
+  // #391 — plugin head contributions ride the SAME compose call the static
+  // generator uses (byte parity by construction). They need absolute URLs:
+  // with no base URL none are collected and `<html lang>` carries the
+  // stored site language (or none).
+  const contributions = siteBaseUrl
+    ? await collectContributions([pageId], { siteBaseUrl, pageUrlStyle, ...renderScope })
+    : null;
+  html = injectSeoIntoHead(html, composeHeadBlock(headBlock, contributions?.head.get(pageId)));
+  html = applyDocumentLanguage(
+    html,
+    resolveDocumentLanguage({
+      contributed: contributions?.lang.get(pageId),
+      siteLanguage: settings.siteLanguage,
+    }),
+  );
+
+  // #449 — plugin client assets. The deploy LINKS these files; the preview
+  // iframe inlines the identical bytes (same resolver), so the editor can
+  // never show behaviour the deployed site won't have.
+  html = injectPluginAssets(html, await collectBuildAssets([pageId], renderScope), "inline");
+
+  // issue #156 — unknown `var(--…)` references in the page's CSS bundle
+  // (layout + template + placed modules), scanned as one bundle so custom
+  // properties the layout defines count as known.
+  const cssVarMarkers: string[] = [];
+  if (composeTheme !== undefined) {
+    const cssBundle = [
+      pageRow.layout_css,
+      pageRow.template_css,
+      ...modRows.map((m) => m.css),
+      ...layoutModRows.map((m) => m.css),
+    ].join("\n");
+    for (const u of scanCssVars({
+      css: cssBundle,
+      knownVars: listThemeCssVarNames(composeTheme.tokens),
+    })) {
+      cssVarMarkers.push(unknownCssVarMarker(u.name));
+    }
+  }
+
+  return ok({
+    html,
+    replacedSlots: [...composed.replacedSlots],
+    // issue #150 + #156 — unresolvable web fonts and unknown CSS vars ride
+    // the missing-content surface, same convention as theme-asset-unbound.
+    missingSlots: [
+      ...composed.missingSlots,
+      ...variants.markers,
+      ...fontMarkers,
+      ...cssVarMarkers,
+      ...seoMarkers,
+      // #1008 — an active plugin this server could not load renders
+      // without its contribution; loud here (and Publish live refuses).
+      ...pluginsNotRunningHere().map((p) => pluginNotRunningMarker(p.slug)),
+      // #1087 — a plugin that runs here but failed during this render.
+      ...new Set(pluginFailureSink.failures().map((f) => pluginRenderFailedMarker(f.slug))),
+      // Epic #724 — `link-target-missing:<kind>/<id>`, once per target.
+      ...new Set([
+        ...pageLinkMarkers,
+        ...linkMarkersOf(composed.moduleFailures.map((f) => f.reason)),
+      ]),
+      ...new Set([
+        ...pageListMarkers,
+        ...composed.moduleFailures.map((f) => f.reason).filter(isListFailureMarker),
+      ]),
+    ],
+    pluginFailures: pluginFailureSink.failures().map((f) => ({ slug: f.slug, reason: f.reason })),
+    pageId,
+    pageSlug: pageRow.slug,
+    pagePath: driftPaths.get(pageId) ?? pageRow.current_path,
+  });
+}
+
+/**
+ * Responsive-image enrichment of the composed page (issue #162). Slugs
+ * resolve through the site view; only the variants of the assets the page
+ * embeds are read, in one short transaction (none for a page without
+ * images).
+ */
+async function enrichPreviewImages(
+  html: string,
+  view: SiteView,
+  reads: ReadScope,
+): Promise<string> {
+  const refs = extractMediaRefs(html);
+  if (refs.length === 0) return html;
+  const idBySlug = new Map(view.media.map((m) => [m.slug, m.id]));
+  const slugToId = new Map<string, string>();
+  const legacyIdRefs = new Set<string>();
+  for (const r of refs) {
+    if (!r.isSlug) {
+      legacyIdRefs.add(r.ref);
+      continue;
+    }
+    const id = idBySlug.get(r.ref);
+    if (id !== undefined) slugToId.set(r.ref, id);
+  }
+  const assetIds = [...new Set([...legacyIdRefs, ...slugToId.values()])];
+  if (assetIds.length === 0) return html;
+  const variantRows = await reads.read(
+    async (tx) =>
+      (await tx.execute(sql`
+        SELECT asset_id::text AS asset_id, variant, format, width
+        FROM media_variants
+        WHERE asset_id IN (${sql.join(
+          assetIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})
+      `)) as unknown as {
+        asset_id: string;
+        variant: string;
+        format: string;
+        width: number | null;
+      }[],
+  );
+  const variantsById = new Map<string, ImageVariantInfo[]>();
+  for (const r of variantRows) {
+    const list = variantsById.get(r.asset_id) ?? [];
+    list.push({ variant: r.variant, format: r.format, width: r.width });
+    variantsById.set(r.asset_id, list);
+  }
+  const variantsByRef = new Map<string, ImageVariantInfo[]>();
+  for (const [slug, id] of slugToId) variantsByRef.set(slug, variantsById.get(id) ?? []);
+  for (const id of legacyIdRefs) variantsByRef.set(id, variantsById.get(id) ?? []);
+  return enrichResponsiveImages(html, variantsByRef, {
+    rewriteSrc: false,
+    urlFor: (ref, variant) => buildMediaUrl(ref, variant),
+  });
 }

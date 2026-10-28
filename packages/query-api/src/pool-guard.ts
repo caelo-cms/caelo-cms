@@ -67,9 +67,6 @@ export interface AllowlistEntry {
  * chain is let through, every other one throws.
  */
 const ALLOWLIST: readonly AllowlistEntry[] = [
-  // FIXME(issue #1212): the preview render runs plugin render hooks (which
-  // write their audit rows through their own transactions) inside its op tx.
-  { holder: "pages.render_preview", issue: 1212, nestedCheckouts: true, noSessionTimeouts: false },
   // FIXME(issue #1225): Publish live holds its op transaction across the
   // live build + upload (nested `deploy.begin_run`), and waits for a Stage
   // that is publishing for longer than any role timeout of migration 0392

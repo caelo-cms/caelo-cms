@@ -92,6 +92,12 @@ The operator can hide an entry in one language on purpose
 - Skill `international-qa` says how to fix each finding.
 - `language_links` is a list source (`listSources`): entries
   `{ href: link, label, locale, is_current: boolean }`, id = locale code.
+- `editor_languages` answers the plugin's place in the live editor's
+  toolbar (`editorToolbar`, `docs/plugin-editor-toolbar.md`): the shown
+  page's language code, its other versions (each opens in the editor),
+  and the out-of-date ones counted. A language without a version reads
+  "Not translated" without a tone: that URL is a clean 404 by design.
+  The state is computed in `src/editor-toolbar.ts` (pure).
 
 Without the plugin running there are no variants: lists render their
 stored values everywhere.

@@ -46,6 +46,15 @@ export const load: PageServerLoad = async ({ locals }) => {
           permission: panel.permission,
           operations: [...new Set(adminPanelOperations(panel).map((o) => o.operation))],
         })),
+        // The editor toolbar items, with the text their "ask the AI"
+        // buttons put into the chat composer.
+        toolbarItems: (manifest.editorToolbar ?? []).map((item) => ({
+          id: item.id,
+          title: item.title,
+          permission: item.permission,
+          operation: item.operation,
+          prompts: (item.prompts ?? []).map((p) => ({ label: p.label, text: p.text })),
+        })),
       };
     }),
   };

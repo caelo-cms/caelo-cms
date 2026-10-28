@@ -300,14 +300,28 @@
     window.dispatchEvent(new CustomEvent("caelo:chip", { detail: (ev as CustomEvent).detail }));
   }
 
+  // Text for the composer (a toolbar's "ask the AI" button) has the same
+  // problem: expand, then hand it on to the now-mounted panel.
+  async function onComposerTextWhileCollapsed(ev: Event): Promise<void> {
+    if (!layout.collapsed || docked) return;
+    ev.stopImmediatePropagation();
+    layout = { ...layout, collapsed: false };
+    await tick();
+    document.dispatchEvent(
+      new CustomEvent("caelo:insert-into-composer", { detail: (ev as CustomEvent).detail }),
+    );
+  }
+
   onMount(() => {
     document.addEventListener("keydown", onGlobalKeyDown);
     window.addEventListener("caelo:chip", onChipWhileCollapsed);
+    document.addEventListener("caelo:insert-into-composer", onComposerTextWhileCollapsed);
   });
   onDestroy(() => {
     if (typeof document !== "undefined") {
       document.removeEventListener("keydown", onGlobalKeyDown);
       window.removeEventListener("caelo:chip", onChipWhileCollapsed);
+      document.removeEventListener("caelo:insert-into-composer", onComposerTextWhileCollapsed);
     }
   });
 

@@ -391,8 +391,27 @@ describe("branch-aware plugin storage", () => {
   it("refuses private-storage writes from a render call", async () => {
     const r = await call({ origin: "render", actorId: SYSTEM_ACTOR_ID }, "add", { label: "x" });
     expect(r.ok).toBe(false);
-    if (!r.ok)
-      expect(r.error.message).toContain("cannot write its private storage from a render call");
+    if (!r.ok) expect(r.error.message).toContain("cannot write from a render call");
+  });
+
+  // #1212 — a render call only reads; the preview makes several per view
+  // of a page, and an audit row (in a transaction of its own) per call
+  // recorded nothing anyone acted on.
+  it("keeps no audit row for a render call, and one for an authoring call", async () => {
+    const auditRows = async () =>
+      withSystemSql(async (tx) => {
+        const rows = (await tx`
+          SELECT count(*)::int AS n FROM audit_events WHERE operation = ${`${SLUG}.list`}
+        `) as { n: number }[];
+        return rows[0]?.n ?? 0;
+      });
+    const before = await auditRows();
+    const rendered = await call({ origin: "render", actorId: SYSTEM_ACTOR_ID }, "list");
+    expect(rendered.ok).toBe(true);
+    expect(await auditRows()).toBe(before);
+    const authored = await call({ origin: "system", actorId: SYSTEM_ACTOR_ID }, "list");
+    expect(authored.ok).toBe(true);
+    expect(await auditRows()).toBe(before + 1);
   });
 
   it("writes core entities from a chat on the chat's branch", async () => {

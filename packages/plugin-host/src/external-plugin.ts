@@ -75,6 +75,8 @@ export function externalPluginDefinition(opts: {
     // Admin panels are reviewed manifest data: an installed plugin gets
     // the same admin pages a shipped one declares (one plugin model).
     ...(manifest.adminPanels ? { adminPanels: manifest.adminPanels } : {}),
+    // The editor toolbar items are reviewed manifest data the same way.
+    ...(manifest.editorToolbar ? { editorToolbar: manifest.editorToolbar } : {}),
     requiresPlugins: manifest.requiresPlugins,
     consentPurposes: manifest.consentPurposes,
     // Epic #1107 — the Stage-audit hook is a manifest field, so a

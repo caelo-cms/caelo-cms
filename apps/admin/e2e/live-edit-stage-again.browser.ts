@@ -78,9 +78,7 @@ async function login(page: Page): Promise<void> {
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 }
 
-test("no pending edits + a staged build: one Stage again next to Publish live", async ({
-  page,
-}) => {
+test("no pending edits + a staged build: one Stage again in the Staging menu", async ({ page }) => {
   await login(page);
   await page.goto("/content/chat");
   await page.getByRole("button", { name: /\+ new chat/i }).click();
@@ -91,6 +89,8 @@ test("no pending edits + a staged build: one Stage again next to Publish live", 
   const publish = page.getByTestId("promote-only-btn");
   await expect(publish).toBeVisible({ timeout: 15_000 });
 
+  // Stage again lives in the Staging menu, next to Publish live.
+  await page.getByTestId("staging-menu").click();
   const restage = page.getByTestId("restage-btn");
   await expect(restage).toHaveCount(1);
   await expect(restage).toBeVisible();

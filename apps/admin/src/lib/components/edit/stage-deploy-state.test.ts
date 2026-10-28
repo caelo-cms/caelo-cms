@@ -18,6 +18,7 @@ import {
   publishErrorNextStep,
   qualityBlockReason,
   stageToolbarMode,
+  stagingMenuState,
 } from "./stage-deploy-state.js";
 
 describe("publishButtonState", () => {
@@ -167,5 +168,57 @@ describe("Stage again in the toolbar (#835)", () => {
     expect(publishErrorNextStep(refusal)).toContain("Stage again");
     expect(publishErrorNextStep("promotion failed: bucket unreachable")).toBeNull();
     expect(publishErrorNextStep(null)).toBeNull();
+  });
+});
+
+describe("stagingMenuState — the Staging button's label", () => {
+  const base = {
+    mode: "promote-only" as const,
+    busy: false,
+    hasStagedBuild: true,
+    branchChangeCount: 0,
+    qualityGate: null,
+  };
+  const gate = (state: string, openProblemCount = 0) => ({
+    open: false,
+    state,
+    message: "",
+    openProblemCount,
+  });
+
+  it("says Staging… while a Stage or Publish runs", () => {
+    expect(stagingMenuState({ ...base, busy: true }).label).toBe("Staging…");
+  });
+
+  it("marks unstaged edits as pending with their count in the tooltip", () => {
+    const s = stagingMenuState({ ...base, mode: "pending", branchChangeCount: 5 });
+    expect(s).toEqual({
+      label: "Staging",
+      tone: "pending",
+      tooltip: "5 changes in this chat not staged yet",
+    });
+  });
+
+  it("says why Publish live is closed when nothing is staged", () => {
+    expect(stagingMenuState({ ...base, mode: "fresh", hasStagedBuild: false }).label).toBe(
+      "Not staged",
+    );
+  });
+
+  it("puts the problem count of a blocking quality gate on the button", () => {
+    const s = stagingMenuState({ ...base, qualityGate: gate("problems", 3) });
+    expect(s.label).toBe("3 problems");
+    expect(s.tone).toBe("problem");
+    expect(s.tooltip).toContain("Blocked by 3 quality problem(s)");
+  });
+
+  it("names a failed and a running check", () => {
+    expect(stagingMenuState({ ...base, qualityGate: gate("errored") }).label).toBe("Check failed");
+    expect(stagingMenuState({ ...base, qualityGate: gate("running") }).tone).toBe("busy");
+  });
+
+  it("reads Staged when staging is built and its gate is open", () => {
+    const s = stagingMenuState({ ...base, qualityGate: { ...gate("passed"), open: true } });
+    expect(s).toEqual({ label: "Staged", tone: "ok", tooltip: "Staging is built and checked" });
   });
 });

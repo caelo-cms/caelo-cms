@@ -70,6 +70,7 @@ import {
   setChromeVariants,
   translateChrome,
 } from "./chrome-ops.js";
+import { languageToolbarState } from "./editor-toolbar.js";
 import { chromeLinkLocations } from "./link-locations.js";
 import { entryStates, LIST_EXT_FIELD_SCHEMA } from "./list-translation.js";
 import {
@@ -92,7 +93,7 @@ import {
   translateVariantPage,
 } from "./page-translation.js";
 import { batchIn, onceIn, renderMemoOf } from "./render-memo.js";
-import { chunked, listAll, listWhereAnyOf } from "./store-reads.js";
+import { chunked, listAll, listWhereAnyOf, STORE_READ_MAX } from "./store-reads.js";
 import { writeHints } from "./write-hints.js";
 
 /**
@@ -295,13 +296,18 @@ async function loadVariantsByPage(
   const byPage = await batchIn<PageVariantRow | null>(renderMemoOf(ctx), "variantByPage").getMany(
     pageIds,
     async (missing) => {
-      const rows = (await listWhereAnyOf(
-        q,
-        "page_variants",
-        "page_id",
-        missing,
-      )) as PageVariantRow[];
-      return new Map(rows.map((r) => [r.page_id, r]));
+      // A page is at most one variant, so the table holds no more rows
+      // than the site has translated pages. Past one batch of ids (a
+      // preview asks for every page of the site), paging the table is at
+      // most as many reads as the batches and does not grow with the
+      // untranslated pages (#1212 cost test).
+      const rows = (
+        missing.length > STORE_READ_MAX
+          ? await listAll(q, "page_variants")
+          : await listWhereAnyOf(q, "page_variants", "page_id", missing)
+      ) as PageVariantRow[];
+      const asked = new Set(missing);
+      return new Map(rows.filter((r) => asked.has(r.page_id)).map((r) => [r.page_id, r]));
     },
     null,
   );
@@ -977,6 +983,27 @@ export default definePlugin<PluginContextTier1>({
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
   publicOperations: [],
+  /**
+   * The language of the page the live editor shows, next to its address:
+   * the code as the label, the other versions in the popover (each opens
+   * in the editor), the out-of-date ones counted.
+   */
+  editorToolbar: [
+    {
+      id: "languages",
+      title: "Languages",
+      icon: "globe",
+      operation: "editor_languages",
+      permission: "content.read",
+      prompts: [
+        {
+          label: "Translate this page",
+          text: "Translate {page} into every language it is missing or out of date in.",
+        },
+        { label: "Add a language", text: "Add a new language to the site." },
+      ],
+    },
+  ],
   operations: {
     /**
      * #390 I/O phase — per-page URL annotations from the variant table:
@@ -1306,6 +1333,29 @@ export default definePlugin<PluginContextTier1>({
           return { lists: listStatus(deps, state), listFindings: listFindings(deps, state) };
         })()),
       };
+    },
+
+    /**
+     * The `languages` editor toolbar item: the shown page's language and
+     * how its other versions stand (./editor-toolbar.ts). Read-only; it
+     * runs on the editor's chat branch, so a version the chat just made
+     * shows up at once.
+     */
+    editor_languages: async (ctx, args) => {
+      const { pageId } = z.object({ pageId: z.string().uuid() }).strict().parse(args);
+      const q = adminQueryOf(ctx);
+      const reg = await refreshLocaleCache(q, ctx);
+      const variants = (await listAll(q, "page_variants")) as PageVariantRow[];
+      const { pages } = await cmsOf(ctx).call<{ pages: { id: string; status: string }[] }>(
+        "pages.list",
+        {},
+      );
+      return languageToolbarState({
+        pageId,
+        locales: reg.rows,
+        variants,
+        pages: new Map(pages.map((p) => [p.id, p])),
+      });
     },
 
     /** Link an existing page into a variant group. */

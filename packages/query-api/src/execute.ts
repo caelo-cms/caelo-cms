@@ -5,6 +5,7 @@ import { err, isErr } from "@caelo-cms/shared";
 import type { DatabaseAdapter } from "./adapter.js";
 import { branchNotFound, firstMalformedBranch, namedBranches } from "./branch-access.js";
 import type { QueryError } from "./errors.js";
+import { isReadOperation } from "./operation.js";
 import { notifyOperationCommitted } from "./post-commit.js";
 import type { OperationRegistry } from "./registry.js";
 
@@ -90,7 +91,7 @@ export async function execute(
 
   // #1211 — a step-wise op holds no transaction: each of its steps is an
   // op of its own, executed (and committed) through the same registry.
-  if (op.stepwise) {
+  if (!isReadOperation(op) && op.stepwise) {
     const result = await op.stepwise(ctx, parsed.data, {
       registry,
       adapter,

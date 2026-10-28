@@ -11,18 +11,19 @@
  *   - read: humanising references back into paths for tool results and
  *     editor fields (rollout C).
  *
- * All three must agree on which page `/about` is, so all three read it
- * from here. Branch view: under a chat branch the chat sees main plus its
- * own created pages, with its pending page edits (rename, move, status,
- * delete) overlaid — the same view `pages.list` gives the chat, so a
- * link the chat writes to a page it just renamed resolves to that page.
+ * All three must agree on which page `/about` is, so all three derive it
+ * through {@link linkTargetPagesOf}. Branch view: under a chat branch the
+ * chat sees main plus its own created pages, with its pending page edits
+ * (rename, move, status, delete) overlaid — the same view `pages.list`
+ * gives the chat, so a link the chat writes to a page it just renamed
+ * resolves to that page.
+ *
+ * The preview reads the rows through its cached site view (#1212) and
+ * asks the plugins for a pending move's path while it holds no
+ * transaction; the write and read paths load them here.
  */
 
-import {
-  hasLinkResolveContributors,
-  type RenderScope,
-  resolveLinkVariants,
-} from "@caelo-cms/plugin-host";
+import type { RenderScope, ResolvedLinkVariants } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   createSiteLinkIndex,
@@ -33,9 +34,10 @@ import {
   type SiteLinkIndex,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../draft.js";
-import { composePaths } from "../ops/content/compose-paths.js";
-import { loadPageTree, pendingDriftIds } from "../ops/content/page-tree.js";
+import { loadPageRows, type PageRows } from "../lists/pages-view.js";
+import { composePaths, composePathsOutsideTransaction } from "../ops/content/compose-paths.js";
+import { driftIdsBetween, pageTreeOf } from "../ops/content/page-tree.js";
+import type { SiteView } from "../site-view.js";
 
 /** A page as link canonicalisation and humanising need it. */
 export interface LinkTargetPage extends LinkIndexPage {
@@ -48,11 +50,28 @@ export interface LinkTargets {
   readonly media: readonly LinkIndexMedia[];
 }
 
-interface PageRow {
-  id: string;
-  current_path: string;
-  title: string;
-  status: "draft" | "published";
+/**
+ * The link-target pages of `rows`: live (non-deleted) rows with the
+ * branch's pending title / status / delete applied, at their stored path
+ * or, for a page a pending rename or move changes, at `driftPaths`.
+ */
+export function linkTargetPagesOf(
+  { rows, pending }: PageRows,
+  driftPaths: ReadonlyMap<string, string>,
+): LinkTargetPage[] {
+  const out: LinkTargetPage[] = [];
+  for (const r of rows) {
+    if (r.deleted_at !== null) continue;
+    const s = pending.get(r.id);
+    if (s?.deletedAt) continue;
+    out.push({
+      id: r.id,
+      path: driftPaths.get(r.id) ?? r.current_path,
+      title: s?.title ?? r.title,
+      status: s?.status ?? r.status,
+    });
+  }
+  return out;
 }
 
 /**
@@ -66,93 +85,60 @@ export async function loadLinkTargets(
   tx: TransactionRunner,
   chatBranchId: string | null,
 ): Promise<LinkTargets> {
-  const visibility = chatBranchId
-    ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${chatBranchId}::uuid)`
-    : sql`chat_branch_id IS NULL`;
-  const rows = (await tx.execute(sql`
-    SELECT id::text AS id, current_path, title, status
-    FROM pages
-    WHERE deleted_at IS NULL AND ${visibility}
-  `)) as unknown as PageRow[];
-  const pages = new Map<string, LinkTargetPage>(
-    rows.map((r) => [r.id, { id: r.id, path: r.current_path, title: r.title, status: r.status }]),
-  );
-
-  if (chatBranchId) {
-    // Pending page edits of this chat: title / status / delete apply to
-    // the row directly; a rename or move changes the path of the page
-    // and everything below it, recomposed from the branch's tree.
-    const overlay = (await tx.execute(sql`
-      SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
-        FROM page_snapshots ps
-        JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-       WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-       ORDER BY ps.page_id, ss.created_at DESC
-    `)) as unknown as { page_id: string; state: unknown }[];
-    for (const o of overlay) {
-      const base = pages.get(o.page_id);
-      if (!base) continue;
-      const s = (typeof o.state === "string" ? JSON.parse(o.state) : o.state) as {
-        title?: string;
-        status?: "draft" | "published";
-        deletedAt?: string | null;
-      };
-      if (s.deletedAt) {
-        pages.delete(o.page_id);
-        continue;
-      }
-      pages.set(o.page_id, {
-        ...base,
-        title: s.title ?? base.title,
-        status: s.status ?? base.status,
-      });
-    }
-    if (overlay.length > 0) {
-      const tree = await loadPageTree(tx, chatBranchId);
-      const drifted = await pendingDriftIds(tx, tree, chatBranchId);
-      if (drifted.length > 0) {
-        const paths = await composePaths(tx, tree, drifted, { chatBranchId });
-        for (const [id, path] of paths) {
-          const p = pages.get(id);
-          if (p) pages.set(id, { ...p, path });
-        }
-      }
-    }
+  const pageRows = await loadPageRows(tx, chatBranchId);
+  let driftPaths: ReadonlyMap<string, string> = new Map();
+  if (chatBranchId && pageRows.pending.size > 0) {
+    // A rename or move changes the path of the page and everything below
+    // it, recomposed from the branch's tree.
+    const live = pageRows.rows.filter((r) => r.deleted_at === null);
+    const tree = pageTreeOf(live, pageRows.pending);
+    const drifted = driftIdsBetween(tree, pageTreeOf(live, new Map()));
+    if (drifted.length > 0) driftPaths = await composePaths(tx, tree, drifted, { chatBranchId });
   }
-
   const media = (await tx.execute(sql`
     SELECT id::text AS id, slug FROM media_assets WHERE deleted_at IS NULL
   `)) as unknown as LinkIndexMedia[];
-  return { pages: [...pages.values()], media };
+  return { pages: linkTargetPagesOf(pageRows, driftPaths), media };
 }
 
 /**
- * Build the render-time link index for a preview: the scope's link
- * targets plus the link-resolve composition point's page-variant
- * partition (rollout D), asked with the render's branch scope so a page
- * the chat just created as a German version maps like a published one.
- * The static generator builds its twin in `link-index.ts`.
+ * Issue #1212 — the paths a branch's pending renames and moves give its
+ * pages, composed from the site view's tree. Asks the URL plugins for
+ * their annotations, so call it with no transaction held. Empty when
+ * nothing drifted (no plugin call then).
  */
-export async function loadPreviewLinkIndex(
-  tx: TransactionRunner,
-  chatBranchId: string | null,
-  env: LinkRenderEnv,
-  pageUrlStyle: PageUrlStyle,
+export async function siteViewDriftPaths(
+  view: SiteView,
   renderScope: RenderScope,
-): Promise<SiteLinkIndex> {
-  const targets = await loadLinkTargets(tx, chatBranchId);
-  const pageVariants =
-    targets.pages.length > 0 && hasLinkResolveContributors()
-      ? await resolveLinkVariants(
-          targets.pages.map((p) => p.id),
-          renderScope,
-        )
-      : undefined;
+): Promise<ReadonlyMap<string, string>> {
+  if (view.driftedIds.length === 0) return new Map();
+  return composePathsOutsideTransaction(
+    view.tree,
+    view.driftedIds,
+    view.settings.homePageId,
+    renderScope,
+  );
+}
+
+/**
+ * Build the render-time link index for a preview: the site view's link
+ * targets plus the link-resolve composition point's page-variant
+ * partition (rollout D), asked by the caller with the render's branch
+ * scope so a page the chat just created as a German version maps like a
+ * published one. The static generator builds its twin in `link-index.ts`.
+ */
+export function previewLinkIndexOf(input: {
+  readonly view: SiteView;
+  readonly driftPaths: ReadonlyMap<string, string>;
+  readonly pageVariants: ResolvedLinkVariants | undefined;
+  readonly env: LinkRenderEnv;
+  readonly pageUrlStyle: PageUrlStyle;
+}): SiteLinkIndex {
   return createSiteLinkIndex({
-    pages: targets.pages,
-    media: targets.media,
-    env,
-    pageUrlStyle,
-    ...(pageVariants ? { pageVariants } : {}),
+    pages: linkTargetPagesOf(input.view.pageRows, input.driftPaths),
+    media: input.view.media,
+    env: input.env,
+    pageUrlStyle: input.pageUrlStyle,
+    ...(input.pageVariants ? { pageVariants: input.pageVariants } : {}),
   });
 }

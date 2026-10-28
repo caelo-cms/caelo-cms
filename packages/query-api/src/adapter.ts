@@ -27,7 +27,14 @@ import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
 import { recordAudit, SYSTEM_ACTOR_ID } from "./audit.js";
 import { branchNotFound, firstInvisibleBranch, namedBranches } from "./branch-access.js";
 import { extractPgFields, isRlsDenial, OperationAbortError, type QueryError } from "./errors.js";
-import type { OperationDefinition, TransactionRunner } from "./operation.js";
+import {
+  type AnyOperationDefinition,
+  isReadOperation,
+  type OperationDefinition,
+  type ReadOperationDefinition,
+  type ReadScope,
+  type TransactionRunner,
+} from "./operation.js";
 import { type ProvisionOutcome, provisionPluginSchemaInTx } from "./plugin-schema-provision.js";
 import {
   detachedRunner,
@@ -101,6 +108,13 @@ export interface AdapterConfig {
     readonly admin: string | null;
     readonly public: readonly string[];
   };
+  /**
+   * Called with the text of every statement either pool runs, and with
+   * `BEGIN` / `COMMIT` for every transaction the adapter opens. Only for
+   * the benchmarks that count database round-trips (issue #1212); left
+   * unset everywhere else.
+   */
+  readonly onStatement?: (statement: string) => void;
 }
 
 const DEFAULT_ROLES = { admin: "admin_role", public: ["admin_role", "public_role"] } as const;
@@ -268,6 +282,9 @@ export class DatabaseAdapter {
   readonly #guard = new PoolGuard();
   #verifyPromise: Promise<void> | null = null;
   #projectionPublisher: (() => Promise<unknown>) | null = null;
+  readonly #onStatement: ((statement: string) => void) | null;
+  /** The statement logger (onStatement) every drizzle handle of this adapter carries. */
+  readonly #drizzleOptions: { logger?: { logQuery: (query: string) => void } };
 
   constructor(config: AdapterConfig) {
     this.#roles = config.expectedRoles ?? DEFAULT_ROLES;
@@ -284,8 +301,13 @@ export class DatabaseAdapter {
       new SQL(url, poolMax === undefined ? { idleTimeout } : { max: poolMax, idleTimeout });
     this.#adminRaw = config.adminDatabaseUrl === null ? null : open(config.adminDatabaseUrl);
     this.#publicRaw = open(config.publicDatabaseUrl);
-    this.#admin = this.#adminRaw === null ? null : drizzle(this.#adminRaw);
-    this.#public = drizzle(this.#publicRaw);
+    this.#onStatement = config.onStatement ?? null;
+    const observe = this.#onStatement;
+    this.#drizzleOptions = observe
+      ? { logger: { logQuery: (query: string) => observe(query) } }
+      : {};
+    this.#admin = this.#adminRaw === null ? null : drizzle(this.#adminRaw, this.#drizzleOptions);
+    this.#public = drizzle(this.#publicRaw, this.#drizzleOptions);
     this.#skipVerify = config.skipRoleVerification === true;
     this.#acquireTimeoutMs = config.poolAcquireTimeoutMs ?? POOL_ACQUIRE_TIMEOUT_MS;
   }
@@ -311,13 +333,16 @@ export class DatabaseAdapter {
     try {
       // drizzle's transaction() is `client.begin()`, which on a reserved
       // connection runs on exactly that connection.
-      const db = drizzle({ client: reserved as unknown as SQL });
-      return await db.transaction((tx) =>
+      const db = drizzle({ client: reserved as unknown as SQL, ...this.#drizzleOptions });
+      this.#onStatement?.("BEGIN");
+      const out = await db.transaction((tx) =>
         this.#guard.run(pool, marker, async () => {
           if (exemptFromSessionTimeouts(holder)) await liftSessionTimeouts(tx);
           return fn(tx);
         }),
       );
+      this.#onStatement?.("COMMIT");
+      return out;
     } finally {
       reserved.release();
     }
@@ -495,7 +520,7 @@ export class DatabaseAdapter {
    * there is no string interpolation at the SQL boundary.
    */
   async runOperation<I, O>(
-    op: OperationDefinition<I, O>,
+    op: AnyOperationDefinition<I, O>,
     ctx: ExecutionContext,
     validatedInput: I,
   ): Promise<Result<O, QueryError>> {
@@ -503,6 +528,7 @@ export class DatabaseAdapter {
     this.#guard.assertMayCheckout(pool, op.name);
     if (op.database === "cms_admin") this.#adminDb(`operation ${op.name}`);
     if (!this.#skipVerify) await this.verifyRoles();
+    if (isReadOperation(op)) return this.#runReadOperation(op, ctx, validatedInput);
     if (op.transaction === "none") return this.#runDetached(op, ctx, validatedInput);
 
     let publishAfterCommit = false;
@@ -641,19 +667,89 @@ export class DatabaseAdapter {
     }
   }
 
-  /** Session identity every transaction of this adapter runs under (RLS reads it). */
+  /**
+   * Session identity every transaction of this adapter runs under (RLS
+   * reads it). One statement, not one per setting: every transaction pays
+   * it, and a round-trip per setting made it five (#1212).
+   */
   async #setIdentity(tx: TransactionRunner, ctx: ExecutionContext): Promise<void> {
-    await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
-    await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
-    await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
-    // P5: optional chat-branch / chat-task identity. Snapshot writes
-    // read these via ctx.chatBranchId / ctx.chatTaskId; the session
-    // vars exist for any future read-side query that wants to scope
-    // by branch without an extra parameter.
-    await tx.execute(
-      sql`SELECT set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true)`,
-    );
-    await tx.execute(sql`SELECT set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`);
+    // P5: the chat-branch / chat-task identity is optional. Snapshot
+    // writes read these via ctx.chatBranchId / ctx.chatTaskId; the
+    // session vars exist for read-side queries that scope by branch
+    // without an extra parameter.
+    await tx.execute(sql`SELECT
+      set_config('caelo.actor_id', ${ctx.actorId}, true),
+      set_config('caelo.actor_kind', ${ctx.actorKind}, true),
+      set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true),
+      set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true),
+      set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`);
+  }
+
+  /**
+   * Issue #1212 — run a {@link ReadOperationDefinition}: the branch gate
+   * (#569) in a short transaction of its own (only when the call names a
+   * branch), then the handler, whose every `reads.read` is one more short
+   * transaction. No connection is held while the handler does anything
+   * else (plugin calls, font I/O, composing).
+   */
+  async #runReadOperation<I, O>(
+    op: ReadOperationDefinition<I, O>,
+    ctx: ExecutionContext,
+    validatedInput: I,
+  ): Promise<Result<O, QueryError>> {
+    try {
+      const branches = namedBranches(ctx, validatedInput);
+      if (branches.length > 0) {
+        const denied = await this.#shortRead(ctx, op.name, (tx) =>
+          firstInvisibleBranch(tx, branches),
+        );
+        if (denied !== null) return err(branchNotFound(op.name, denied));
+      }
+      return await op.handler(ctx, validatedInput, this.readScope(ctx, op.name));
+    } catch (thrown) {
+      // #1210 — a nested checkout is a bug in the code, not an outcome.
+      if (thrown instanceof NestedPoolCheckoutError) throw thrown;
+      if (thrown instanceof OperationAbortError) return err(thrown.queryError);
+      if (isRlsDenial(thrown)) {
+        return err({
+          kind: "RLSDenied",
+          operation: op.name,
+          detail: (thrown as { message?: string }).message ?? "RLS policy denied the read",
+        });
+      }
+      const pgDetail = extractPgFields(thrown);
+      return err({
+        kind: "HandlerError",
+        operation: op.name,
+        message: thrown instanceof Error ? thrown.message : String(thrown),
+        ...(pgDetail ? { pgDetail } : {}),
+      });
+    }
+  }
+
+  /**
+   * Issue #1212 — a {@link ReadScope} acting as `ctx`: each read is one
+   * short cms_admin transaction under the caller's identity. It does not
+   * run the branch gate; a read operation passes it once before its
+   * handler receives the scope. Like every transaction of the adapter, a
+   * read refuses to run inside a transaction its own call chain holds
+   * (#1210).
+   *
+   * @param holder - names the reader in pool-guard errors.
+   */
+  readScope(ctx: ExecutionContext, holder = "reads.read"): ReadScope {
+    return { read: (fn) => this.#shortRead(ctx, holder, fn) };
+  }
+
+  #shortRead<T>(
+    ctx: ExecutionContext,
+    holder: string,
+    fn: (tx: TransactionRunner) => Promise<T>,
+  ): Promise<T> {
+    return this.#transaction("admin", holder, async (tx) => {
+      await this.#setIdentity(tx, ctx);
+      return fn(tx);
+    });
   }
 
   /**

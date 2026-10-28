@@ -18,23 +18,35 @@
  * A page is `inBuild` when its status (in that view) is published. The
  * `list-resolve` overlays are asked for the partition's variants in the
  * same render scope, so a chat's preview shows the chat's translations.
+ *
+ * Three steps (#1212), so the editor preview can hold no transaction while
+ * plugins answer: the rows (the preview's cached site view, or
+ * {@link loadListRenderData}'s own reads), the plugin answers
+ * ({@link resolveListPluginInputs}), and the pure assembly
+ * ({@link listRenderDataOf}).
  */
 
 import {
   hasLinkResolveContributors,
   hasListResolveContributors,
   type RenderScope,
+  type ResolvedLinkVariants,
+  type ResolvedListOverlays,
   resolveLinkVariants,
   resolveListOverlays,
 } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   assembleListRenderData,
+  assembleListRenderDataFrom,
+  type ListRenderBase,
+  type ListRenderSources,
   type LoadedListRenderData,
   renderVariants,
 } from "@caelo-cms/static-generator";
-import { loadPagesInView } from "./pages-view.js";
-import { loadListEntities } from "./store.js";
+import type { SiteView } from "../site-view.js";
+import { loadPagesInView, type PageInView } from "./pages-view.js";
+import { type ListEntityView, loadListEntities } from "./store.js";
 
 /** Options of {@link loadListRenderData}. */
 export interface LoadListRenderDataOptions {
@@ -55,45 +67,63 @@ export interface LoadListRenderDataOptions {
   readonly renderScope?: RenderScope;
 }
 
-/** Load everything a list render needs, in one pass (see the file header). */
-export async function loadListRenderData(
-  tx: TransactionRunner,
-  opts: LoadListRenderDataOptions,
-): Promise<LoadedListRenderData> {
-  const branchId = opts.scope === "build" ? null : opts.chatBranchId;
-  const pages = await loadPagesInView(tx, branchId);
-  // A published page that was never live shows as if it went live now —
-  // where the next Publish live puts it in "latest news" (#1121 review).
-  const previewPublishAt = new Date().toISOString();
+/** What the plugins contribute to a list render. */
+export interface ListPluginInputs {
+  /** The `link-resolve` partition of the asked pages. */
+  readonly pageVariants?: ResolvedLinkVariants;
+  /** The `list-resolve` overlays of the partition's variants. */
+  readonly overlaySources?: ResolvedListOverlays;
+}
+
+/**
+ * Ask the plugins for the `link-resolve` partition of `pageIds` and the
+ * `list-resolve` overlays of its variants. Costs nothing when no plugin
+ * contributes. Call it with no transaction held: each plugin answer can
+ * take connections of its own (#1209).
+ */
+export async function resolveListPluginInputs(
+  pageIds: readonly string[],
+  scope: RenderScope,
+): Promise<ListPluginInputs> {
   const pageVariants =
-    pages.length > 0 && hasLinkResolveContributors()
-      ? await resolveLinkVariants(
-          pages.map((p) => p.id),
-          opts.renderScope ?? { chatBranchId: branchId },
-        )
+    pageIds.length > 0 && hasLinkResolveContributors()
+      ? await resolveLinkVariants(pageIds, scope)
       : undefined;
   const variants = renderVariants(pageVariants);
   const overlaySources =
     variants.length > 0 && hasListResolveContributors()
-      ? await resolveListOverlays(variants, opts.renderScope ?? { chatBranchId: branchId })
+      ? await resolveListOverlays(variants, scope)
       : undefined;
-  return assembleListRenderData(tx, {
-    listTypes: (await loadListEntities(tx, "listType", branchId)).map((t) => ({
-      id: t.id,
-      def: t.state.definition,
-    })),
-    lists: (await loadListEntities(tx, "list", branchId)).map((l) => ({
+  return {
+    ...(pageVariants ? { pageVariants } : {}),
+    ...(overlaySources ? { overlaySources } : {}),
+  };
+}
+
+/** The scope-dependent rows of a list render. */
+interface ListRows {
+  readonly listTypes: readonly ListEntityView<"listType">[];
+  readonly lists: readonly ListEntityView<"list">[];
+  readonly pageTypes: readonly ListEntityView<"pageType">[];
+  readonly pages: readonly PageInView[];
+}
+
+function listSourcesOf(
+  rows: ListRows,
+  plugins: ListPluginInputs,
+  opts: { readonly previewPublishAt: string; readonly languageUnset: "refuse" | "undetermined" },
+): ListRenderSources {
+  return {
+    listTypes: rows.listTypes.map((t) => ({ id: t.id, def: t.state.definition })),
+    lists: rows.lists.map((l) => ({
       id: l.id,
       slug: l.state.slug,
       name: l.state.name,
       listTypeId: l.state.listTypeId,
       items: l.state.items,
     })),
-    pageTypes: (await loadListEntities(tx, "pageType", branchId)).map((t) => ({
-      id: t.id,
-      def: t.state.definition,
-    })),
-    pages: pages.map((p) => ({
+    pageTypes: rows.pageTypes.map((t) => ({ id: t.id, def: t.state.definition })),
+    pages: rows.pages.map((p) => ({
       id: p.id,
       title: p.title,
       shortTitle: p.shortTitle,
@@ -101,12 +131,57 @@ export async function loadListRenderData(
       pageTypeId: p.pageTypeId,
       properties: p.properties,
       terms: p.terms,
-      firstPublishedAt: p.firstPublishedAt ?? (p.status === "published" ? previewPublishAt : null),
+      // A published page that was never live shows as if it went live now —
+      // where the next Publish live puts it in "latest news" (#1121 review).
+      firstPublishedAt:
+        p.firstPublishedAt ?? (p.status === "published" ? opts.previewPublishAt : null),
       updatedAt: p.updatedAt,
       published: p.status === "published",
     })),
-    ...(pageVariants ? { pageVariants } : {}),
-    ...(overlaySources ? { overlaySources } : {}),
-    languageUnset: opts.scope === "preview" ? "undetermined" : "refuse",
-  });
+    ...(plugins.pageVariants ? { pageVariants: plugins.pageVariants } : {}),
+    ...(plugins.overlaySources ? { overlaySources: plugins.overlaySources } : {}),
+    languageUnset: opts.languageUnset,
+  };
+}
+
+/**
+ * The editor preview's list render data from its site view and the
+ * plugin answers (pure). Same result as {@link loadListRenderData} with
+ * `scope: "preview"` over the same rows.
+ */
+export function listRenderDataOf(view: SiteView, plugins: ListPluginInputs): LoadedListRenderData {
+  return assembleListRenderDataFrom(
+    listSourcesOf(view, plugins, {
+      previewPublishAt: new Date().toISOString(),
+      languageUnset: "undetermined",
+    }),
+    view.listBase satisfies ListRenderBase,
+  );
+}
+
+/** Load everything a list render needs, in one pass (see the file header). */
+export async function loadListRenderData(
+  tx: TransactionRunner,
+  opts: LoadListRenderDataOptions,
+): Promise<LoadedListRenderData> {
+  const branchId = opts.scope === "build" ? null : opts.chatBranchId;
+  const pages = await loadPagesInView(tx, branchId);
+  const previewPublishAt = new Date().toISOString();
+  const plugins = await resolveListPluginInputs(
+    pages.map((p) => p.id),
+    opts.renderScope ?? { chatBranchId: branchId },
+  );
+  const rows: ListRows = {
+    listTypes: await loadListEntities(tx, "listType", branchId),
+    lists: await loadListEntities(tx, "list", branchId),
+    pageTypes: await loadListEntities(tx, "pageType", branchId),
+    pages,
+  };
+  return assembleListRenderData(
+    tx,
+    listSourcesOf(rows, plugins, {
+      previewPublishAt,
+      languageUnset: opts.scope === "preview" ? "undetermined" : "refuse",
+    }),
+  );
 }
