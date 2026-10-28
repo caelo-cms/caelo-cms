@@ -252,6 +252,38 @@ describe("Codex re-review on #1199", () => {
   });
 });
 
+describe("Codex round 3 on #1199", () => {
+  it("concatenated markup is read in source order", () => {
+    const facts = analyseModuleJs(
+      `icon.innerHTML = '<svg><use href="#' + 'icon-menu' + '"></use></svg>';`,
+    );
+    expect(facts.rendersContent).toEqual([]);
+  });
+
+  it("reading an array's length or membership renders none of its entries", () => {
+    const facts = analyseModuleJs(
+      "const events = ['Open Menu', 'Close Menu', 'Submit Form'];\ncount.textContent = events.length;\nflag.hidden = !events.includes(x);",
+    );
+    expect(facts.rendersContent).toEqual([]);
+    const indexed = analyseModuleJs(
+      "const labels = ['Open Menu', 'Close Menu', 'Submit Form'];\nbtn.textContent = labels[i];",
+    );
+    expect(indexed.rendersContent).toHaveLength(1);
+  });
+
+  it("FormData / URLSearchParams.append are request data, not page writes", () => {
+    const facts = analyseModuleJs(`
+      const payload = new FormData();
+      payload.append('html', '<p>Contact request details</p>');
+      payload.append('note', 'Bitte rufen Sie mich morgen zwischen neun und zwölf Uhr zurück, danke.');
+      url.searchParams.append('q', 'Alle Werkzeuge für technisches SEO und Monitoring');
+      new URLSearchParams().append('a', '<p>Some long request text here</p>');
+    `);
+    expect(facts.rendersContent).toEqual([]);
+    expect(facts.writesText).toEqual([]);
+  });
+});
+
 describe("foreignHooks", () => {
   it("separates one module's own hooks from hooks many modules share", () => {
     const owners = hookOwners([DEMO, HERO, TEXT]);

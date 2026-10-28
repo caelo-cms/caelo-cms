@@ -23,7 +23,7 @@ export function isNode(v: unknown): v is Node {
   return typeof v === "object" && v !== null && typeof (v as { type?: unknown }).type === "string";
 }
 
-/** Every node of a subtree, depth first. */
+/** Every node of a subtree, depth first in source order. */
 export function* nodes(root: unknown): Generator<Node> {
   const stack: unknown[] = [root];
   while (stack.length > 0) {
@@ -32,9 +32,13 @@ export function* nodes(root: unknown): Generator<Node> {
       for (let i = v.length - 1; i >= 0; i--) stack.push(v[i]);
     } else if (isNode(v)) {
       yield v;
-      for (const [key, child] of Object.entries(v)) {
-        if (key !== "type" && typeof child === "object" && child !== null) stack.push(child);
-      }
+      // Children are pushed last-first so they pop in source order:
+      // `a + b` yields `a` before `b`, which staticText relies on.
+      const children = Object.entries(v).filter(
+        ([key, child]) => key !== "type" && typeof child === "object" && child !== null,
+      );
+      for (let i = children.length - 1; i >= 0; i--)
+        stack.push((children[i] as [string, unknown])[1]);
     }
   }
 }

@@ -324,13 +324,16 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
         rendered.addSubtree(markupArg);
         for (const t of variants(markupArg, scope)) noteMarkup(`${name}()`, t, rendersContent);
       }
-      if ((name !== null && TEXT_SINK_CALLS.has(name)) || name === "createTextNode") {
+      if (
+        (name !== null && TEXT_SINK_CALLS.has(name) && !isDataReceiver(n.callee, scope)) ||
+        name === "createTextNode"
+      ) {
         rendered.addSubtree(args);
         for (const a of args)
           for (const t of variants(a, scope)) noteText(t, writesText, rendersContent);
       }
       // `items.forEach((i) => { …appendChild… })`: the iterated array is rendered.
-      if (name !== null && ITERATE_CALLS.has(name) && args.some(containsSink)) {
+      if (name !== null && ITERATE_CALLS.has(name) && args.some((a) => containsSink(a, scope))) {
         rendered.add((n.callee as Node).object);
       }
     }
@@ -347,8 +350,8 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
     }
 
     // `for (const i of items) …` / `for (…; i < items.length; …) items[i]` with a sink inside.
-    if (n.type === "ForOfStatement" && containsSink(n.body)) rendered.add(n.right);
-    if ((n.type === "ForStatement" || n.type === "WhileStatement") && containsSink(n.body)) {
+    if (n.type === "ForOfStatement" && containsSink(n.body, scope)) rendered.add(n.right);
+    if ((n.type === "ForStatement" || n.type === "WhileStatement") && containsSink(n.body, scope)) {
       for (const m of nodes(n.body)) {
         if (m.type === "MemberExpression" && m.computed === true) rendered.add(m.object);
       }
@@ -379,6 +382,25 @@ export function analyseModuleJs(js: string): ModuleJsFacts {
   return { hooks: [...hooks].sort(), siteWide, rendersContent, writesText };
 }
 
+/** Array members that hand entries on (everything else is metadata: `length`, `includes`, …). */
+const ENTRY_READS = new Set([
+  "map",
+  "flatMap",
+  "forEach",
+  "reduce",
+  "join",
+  "filter",
+  "slice",
+  "concat",
+  "sort",
+  "reverse",
+  "at",
+  "find",
+  "values",
+  "entries",
+  "toString",
+]);
+
 /** Array methods whose callback runs per entry. */
 const ITERATE_CALLS = new Set(["forEach", "map", "flatMap", "reduce"]);
 
@@ -408,9 +430,18 @@ class Rendered {
     }
   }
 
-  /** Every reference inside an expression written to the page. */
+  /**
+   * Every reference inside an expression written to the page, except a
+   * read of its metadata: `events.length` or `events.includes(x)` puts no
+   * entry into the page, `events[i]` and `events.map(…)` do.
+   */
   addSubtree(root: unknown): void {
-    for (const n of nodes(root)) this.add(n);
+    const metadataOnly = new Set<Node>();
+    for (const n of nodes(root)) {
+      const prop = memberName(n);
+      if (prop !== null && !ENTRY_READS.has(prop) && isNode(n.object)) metadataOnly.add(n.object);
+    }
+    for (const n of nodes(root)) if (!metadataOnly.has(n)) this.add(n);
   }
 }
 
@@ -435,7 +466,7 @@ function bindingOfArray(n: Node): { name: string; array: Node; viaProperty: bool
 }
 
 /** Does a subtree write to the page (a markup / text sink or a DOM insert)? */
-function containsSink(root: unknown): boolean {
+function containsSink(root: unknown, scopes: JsScopes): boolean {
   for (const n of nodes(root)) {
     if (n.type === "AssignmentExpression") {
       const prop = memberName(n.left);
@@ -443,10 +474,36 @@ function containsSink(root: unknown): boolean {
     }
     if (n.type === "CallExpression") {
       const name = memberName(n.callee);
-      if (name !== null && (DOM_INSERT_CALLS.has(name) || name === "createTextNode")) return true;
+      if (name === null) continue;
+      if (TEXT_SINK_CALLS.has(name) && isDataReceiver(n.callee, scopes)) continue;
+      if (DOM_INSERT_CALLS.has(name) || name === "createTextNode") return true;
     }
   }
   return false;
+}
+
+/** Request data that shares DOM method names (`append`), never the page. */
+const DATA_CONSTRUCTORS = new Set(["FormData", "URLSearchParams", "Headers"]);
+
+/**
+ * Is the receiver of `x.append(…)` request data rather than a DOM node:
+ * `new FormData()` inline or bound to the name, or a `searchParams`?
+ */
+function isDataReceiver(callee: unknown, scopes: JsScopes): boolean {
+  if (!isNode(callee) || callee.type !== "MemberExpression") return false;
+  let obj = callee.object;
+  if (memberName(obj) === "searchParams") return true;
+  if (isNode(obj) && obj.type === "Identifier") {
+    const decl = scopes.resolve(obj);
+    obj = decl?.type === "VariableDeclarator" ? decl.init : undefined;
+  }
+  return (
+    isNode(obj) &&
+    obj.type === "NewExpression" &&
+    isNode(obj.callee) &&
+    obj.callee.type === "Identifier" &&
+    DATA_CONSTRUCTORS.has(obj.callee.name as string)
+  );
 }
 
 function isDocument(callee: unknown): boolean {
