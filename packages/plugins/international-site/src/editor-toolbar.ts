@@ -31,16 +31,21 @@ const STATUS_DETAIL: Record<PageVariantRow["translation_status"], string> = {
   needs_update: "Out of date",
 };
 
-/** The longest entry label the SDK's toolbar state accepts. */
+/** The SDK toolbar state's text limits: entry label, summary. */
 const MAX_LABEL = 80;
+const MAX_SUMMARY = 200;
 
 /**
- * A language's name as an entry label: the configured name (up to 120
- * characters) shortened to the toolbar's limit, so one long name cannot
- * invalidate the whole state.
+ * `text` within `max` characters. A configured language name may be 120
+ * characters long; every text built from one is clipped to its field's
+ * limit, so one long name can never invalidate the whole state.
  */
+function clip(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
 function entryLabel(name: string): string {
-  return name.length <= MAX_LABEL ? name : `${name.slice(0, MAX_LABEL - 1)}…`;
+  return clip(name, MAX_LABEL);
 }
 
 /** Upper-cased locale code, the label next to the icon. */
@@ -104,17 +109,18 @@ export function languageToolbarState(input: {
 
   const others = locales.length - 1;
   const ownStale = own?.translation_status === "needs_update";
-  const where = `This page is in ${pageLocale.display_name}${ownStale ? " and out of date with its source" : ""}.`;
+  const pageLanguage = entryLabel(pageLocale.display_name);
+  const where = `This page is in ${pageLanguage}${ownStale ? " and out of date with its source" : ""}.`;
   const otherStale = outOfDate - (ownStale ? 1 : 0);
   const summary =
     others === 0
-      ? `This page is in ${pageLocale.display_name}, the site's only language.`
+      ? `This page is in ${pageLanguage}, the site's only language.`
       : `${where} ${translated} of ${others} other ${others === 1 ? "language has" : "languages have"} a version${otherStale > 0 ? `, ${otherStale} out of date` : ""}.`;
 
   return {
     label: codeLabel(pageLocale.code),
     ...(outOfDate > 0 ? { count: outOfDate, tone: "attention" as const } : {}),
-    summary,
+    summary: clip(summary, MAX_SUMMARY),
     items: capItems(items),
   };
 }

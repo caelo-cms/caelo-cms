@@ -132,6 +132,22 @@ describe("languageToolbarState", () => {
     expect(state.items?.[1]?.label).toBe(`${"L".repeat(79)}…`);
   });
 
+  it("produces a valid state for the longest allowed language names in every case", () => {
+    const long = (c: string) => locale(c, c.toUpperCase().repeat(120).slice(0, 120));
+    const locales = [{ ...long("en"), is_default: true }, long("de"), long("fr")];
+    const cases = [
+      { pageId: EN, variants: [variant(EN, "en", "source"), variant(DE, "de", "needs_update")] },
+      { pageId: DE, variants: [variant(EN, "en", "source"), variant(DE, "de", "needs_update")] },
+      { pageId: LONE, variants: [] },
+    ];
+    for (const c of cases) {
+      const state = languageToolbarState({ ...c, locales, pages });
+      expect(pluginEditorToolbarState.safeParse(state).success).toBe(true);
+    }
+    const only = languageToolbarState({ pageId: EN, locales: [locales[0]], variants: [], pages });
+    expect(pluginEditorToolbarState.safeParse(only).success).toBe(true);
+  });
+
   it("asks for languages when none are set up", () => {
     const state = languageToolbarState({ pageId: EN, locales: [], variants: [], pages });
     expect(state).toEqual({
