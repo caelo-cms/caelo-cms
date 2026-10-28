@@ -35,6 +35,7 @@ export * from "./interactions.js";
 export * from "./link-canonicalise.js";
 export * from "./link-refs.js";
 export * from "./lists/index.js";
+export * from "./live-events.js";
 export {
   type LogContext,
   type Logger,

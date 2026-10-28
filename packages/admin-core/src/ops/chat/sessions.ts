@@ -479,15 +479,16 @@ export const getChatSessionOp = defineOperation({
         SELECT ${cols}
         FROM chat_messages
         WHERE chat_session_id = ${input.chatSessionId}::uuid
-        ORDER BY created_at ASC
+        ORDER BY created_at ASC, seq ASC
       `);
     } else {
       // Newest page first (one row extra tells whether more exist), then
-      // flipped to oldest-first like the full read. (created_at, id) is a
-      // total order, so a cursor never skips or repeats a row.
+      // flipped to oldest-first like the full read. (created_at, seq) is a
+      // total order in write order (migration 0401), so a cursor never
+      // skips or repeats a row and rows saved together keep their order.
       const cursor = input.before
-        ? sql`AND (created_at, id) < (
-            SELECT created_at, id FROM chat_messages
+        ? sql`AND (created_at, seq) < (
+            SELECT created_at, seq FROM chat_messages
             WHERE id = ${input.before}::uuid AND chat_session_id = ${input.chatSessionId}::uuid
           )`
         : sql``;
@@ -495,7 +496,7 @@ export const getChatSessionOp = defineOperation({
         SELECT ${cols}
         FROM chat_messages
         WHERE chat_session_id = ${input.chatSessionId}::uuid ${cursor}
-        ORDER BY created_at DESC, id DESC
+        ORDER BY created_at DESC, seq DESC
         LIMIT ${input.limit + 1}
       `)) as unknown as unknown[];
       hasMore = page.length > input.limit;

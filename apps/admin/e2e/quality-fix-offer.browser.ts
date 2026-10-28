@@ -153,7 +153,9 @@ function seedProblemAudit(
   ownerId: string,
   stagedBy: "operator" | "other_agent",
   shape: "single" | "grouped" = "single",
-): void {
+  /** #1215 — "running": the audit has not settled yet (see {@link settleAudit}). */
+  status: "problems" | "running" = "problems",
+): string {
   const runId = runBunInline(
     `
     import { SQL } from "bun";
@@ -188,9 +190,10 @@ function seedProblemAudit(
       const audit = (await tx\`INSERT INTO quality_audit_runs
           (deploy_run_id, chat_session_id, requested_by, status, classification, target_page_ids,
            problem_count, started_at, finished_at, fix_round, staged_by)
-        VALUES (\${run.id}::uuid, \${process.env.CHAT_ID}::uuid, \${process.env.OWNER_ID}::uuid, 'problems',
+        VALUES (\${run.id}::uuid, \${process.env.CHAT_ID}::uuid, \${process.env.OWNER_ID}::uuid, \${process.env.STATUS},
           \${JSON.stringify({ auditNeeded: true, reasons: [], skipped: [] })}::jsonb,
-          ARRAY[\${page.id}::uuid], \${total}, now(), now(), 0, \${process.env.STAGED_BY})
+          ARRAY[\${page.id}::uuid], \${total}, now(),
+          \${process.env.STATUS === "running" ? null : new Date()}, 0, \${process.env.STAGED_BY})
         RETURNING id::text AS id\`)[0];
       for (const [i, p] of pages.entries()) {
         await tx\`INSERT INTO quality_audit_pages (audit_run_id, page_id, url, status, problems)
@@ -202,9 +205,38 @@ function seedProblemAudit(
     process.stdout.write(id);
     await sql.end();
     `,
-    { CHAT_ID: chatSessionId, OWNER_ID: ownerId, STAGED_BY: stagedBy, SLUG, SHAPE: shape },
+    {
+      CHAT_ID: chatSessionId,
+      OWNER_ID: ownerId,
+      STAGED_BY: stagedBy,
+      SLUG,
+      SHAPE: shape,
+      STATUS: status,
+    },
   ).trim();
   seededRuns.push(runId);
+  return runId;
+}
+
+/**
+ * #1215 — the audit of `deployRunId` settles the way the audit worker
+ * records it. Written from this test process, so the admin announces no
+ * live topic for it: the tab sees it through its wait expiring.
+ */
+function settleAudit(deployRunId: string): void {
+  runBunInline(
+    `
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx\`UPDATE quality_audit_runs SET status = 'problems', finished_at = now()
+        WHERE deploy_run_id = \${process.env.RUN_ID}::uuid\`;
+    });
+    await sql.end();
+    `,
+    { RUN_ID: deployRunId },
+  );
 }
 
 /** Every chat-turn request this page sends from now on. */
@@ -340,6 +372,33 @@ test("the offer goes away after 'Fix with AI' even when a status read was in fli
       timeout: 15_000,
     })
     .toBe(true);
+});
+
+// #1215 — no timer poll: while the chat's audit runs, the tab holds a
+// live-events wait, and the result shows up without a reload or a click.
+test("a running audit's result reaches the open chat without a reload or a poll", async ({
+  page,
+}) => {
+  const ownerId = await login(page);
+  const chatSessionId = await newChat(page);
+  const runId = seedProblemAudit(chatSessionId, ownerId, "operator", "single", "running");
+  const waits: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/api/live-events")) waits.push(r.url());
+  });
+  await page.reload();
+
+  // The running audit makes the tab wait on its topic …
+  await expect.poll(() => waits.length, { timeout: 15_000 }).toBeGreaterThan(0);
+  expect(waits[0]).toContain("quality");
+  const card = page.getByTestId("quality-fix-offer");
+  await expect(card).toHaveCount(0);
+
+  // … and the result, recorded by another process (as on another admin
+  // instance), arrives when that wait expires: within one 10 s wait.
+  settleAudit(runId);
+  await expect(card).toBeVisible({ timeout: 20_000 });
+  await expect(card).toContainText("Low contrast text (1 page(s))");
 });
 
 test("'Not now' leaves a note and runs nothing; Publish live stays blocked", async ({ page }) => {

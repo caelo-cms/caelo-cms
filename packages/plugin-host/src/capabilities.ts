@@ -32,7 +32,7 @@ import {
   type PluginTheme,
   type PluginVisitor,
 } from "@caelo-cms/plugin-sdk";
-import { execute } from "@caelo-cms/query-api";
+import { execute, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { makePluginConsentPurposes } from "./consent-purposes.js";
 import {
@@ -398,14 +398,27 @@ function makeScopedQuery(
       filter?: PluginQueryFilter,
     ): Promise<T[]> => {
       const columns = tableColumns("list", table);
-      const reserved = new Set(["limit", "orderBy", "orderDir", "since", "before"]);
+      const reserved = new Set([
+        "limit",
+        "orderBy",
+        "orderDir",
+        "since",
+        "before",
+        "anyOf",
+        "afterId",
+      ]);
       for (const [k, v] of Object.entries(filter ?? {})) {
         if (k === "limit" && (typeof v !== "number" || v <= 0 || v > 1000)) {
           throw new Error(`${scope.label}.list: limit must be 1..1000`);
         }
+        if (k === "anyOf" && v !== null && typeof v === "object" && !Array.isArray(v)) {
+          // Name the plugin's schema in the error; the op re-checks values.
+          assertDeclared("list", table, columns, Object.keys(v));
+        }
         if (k === "orderBy") {
           if (typeof v !== "string") throw new Error(`${scope.label}.list: orderBy must be string`);
-          if (!(v in columns)) {
+          // `id` is host-owned but orderable: `afterId` pages by it (#1213).
+          if (v !== "id" && !(v in columns)) {
             throw new Error(`${scope.label}.list: orderBy "${v}" not declared in schema`);
           }
         }
@@ -520,15 +533,19 @@ function makePluginEvents(plugin: LoadedPlugin, infra: PluginHostInfra): PluginE
   assertUuid(plugin.pluginActorId, "caelo.actor_id");
   assertUuid(plugin.pluginId, "caelo.plugin_id");
 
-  async function withPluginAdminTx<T>(
-    fn: (tx: Parameters<Parameters<typeof infra.adapter.admin.transaction>[0]>[0]) => Promise<T>,
-  ): Promise<T> {
-    return infra.adapter.admin.transaction(async (tx) => {
-      await tx.execute(sql`SELECT set_config('caelo.actor_kind', 'plugin', true)`);
-      await tx.execute(sql`SELECT set_config('caelo.actor_id', ${plugin.pluginActorId}, true)`);
-      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${plugin.pluginId}, true)`);
-      return fn(tx);
-    });
+  // Through the adapter (not the raw drizzle pool) so the transaction is
+  // under the nested-checkout guard and the acquire deadline (#1210); the
+  // adapter sets the same plugin identity as session vars.
+  async function withPluginAdminTx<T>(fn: (tx: TransactionRunner) => Promise<T>): Promise<T> {
+    return infra.adapter.withAdminTransaction(
+      {
+        actorId: plugin.pluginActorId,
+        actorKind: "plugin",
+        pluginId: plugin.pluginId,
+        requestId: `plugin-events-${plugin.slug}`,
+      },
+      fn,
+    );
   }
 
   return {

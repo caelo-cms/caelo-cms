@@ -379,6 +379,10 @@ describe("plugin storage through named operations (§14.7, step 2)", () => {
                 return {};
               },
               list: async (ctx) => (ctx as AdminCtx).adminQuery?.list("settings", {}),
+              list_any: async (ctx, args) =>
+                (ctx as AdminCtx).adminQuery?.list("settings", {
+                  anyOf: (args as { anyOf: Record<string, string[]> }).anyOf,
+                }),
               write_host_column: async (ctx) =>
                 (ctx as AdminCtx).adminQuery?.insert("settings", {
                   label: "x",
@@ -437,6 +441,32 @@ describe("plugin storage through named operations (§14.7, step 2)", () => {
     const listed = await call("list");
     if (!listed.ok) throw new Error(listed.error.message);
     expect((listed.value as { id: string }[]).some((r) => r.id === id)).toBe(false);
+  });
+
+  it("reads a set of keys in one call with `anyOf` (#1214)", async () => {
+    for (const label of ["any-a", "any-b", "any-c"]) {
+      expect((await call("add", { label })).ok).toBe(true);
+    }
+    const listed = await call("list_any", { anyOf: { label: ["any-a", "any-c", "absent"] } });
+    if (!listed.ok) throw new Error(listed.error.message);
+    expect((listed.value as { label: string }[]).map((r) => r.label).sort()).toEqual([
+      "any-a",
+      "any-c",
+    ]);
+    // An empty set matches nothing (the #1213 contract: a caller with no
+    // keys left gets no rows, not an error).
+    const none = await call("list_any", { anyOf: { label: [] } });
+    if (!none.ok) throw new Error(none.error.message);
+    expect(none.value).toEqual([]);
+    // Loud, not "no rows": an undeclared column, an object value or more
+    // than one page of keys is a caller bug.
+    for (const anyOf of [
+      { nope: ["x"] },
+      { label: [{ nested: true }] },
+      { label: Array.from({ length: 1001 }, (_, i) => `k${i}`) },
+    ]) {
+      expect((await call("list_any", { anyOf })).ok).toBe(false);
+    }
   });
 
   it("refuses a plugin write to a host-owned column", async () => {

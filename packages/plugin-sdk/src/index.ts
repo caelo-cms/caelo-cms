@@ -784,6 +784,12 @@ export interface PluginWriteHintsArgs {
   readonly writes: readonly PluginWrite[];
 }
 
+/** What a `moduleChangesOperation` is called with (#1214). */
+export interface PluginModuleChangesArgs {
+  /** Modules whose rendered content may have changed, deduplicated (1–1000). */
+  readonly moduleIds: readonly string[];
+}
+
 /** What a `writeHintsOperation` returns: sentences for the AI, at most five. */
 export const pluginWriteHints = z
   .object({ hints: z.array(z.string().min(1).max(600)).max(5) })
@@ -977,6 +983,11 @@ export const pluginManifest = z
      *  `operations`. Needs no capability: it reads like a render and only
      *  adds sentences to the AI's tool result. */
     writeHintsOperation: z.string().min(1).max(120).optional(),
+    /** See `PluginDefinition.moduleChangesOperation` (#1214). Must name
+     *  one of `operations`. Needs no capability: it only learns which
+     *  modules changed; reading them and writing its own rows take the
+     *  grants those always take. */
+    moduleChangesOperation: z.string().min(1).max(120).optional(),
     /** Grants this plugin asks for. A request grants nothing: the Owner
      *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
@@ -1156,6 +1167,16 @@ export const pluginManifest = z
         }
       }
     }
+    if (
+      m.moduleChangesOperation !== undefined &&
+      !m.operations.includes(m.moduleChangesOperation)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["moduleChangesOperation"],
+        message: `moduleChangesOperation "${m.moduleChangesOperation}" is not one of the plugin's operations`,
+      });
+    }
     if (m.writeHintsOperation !== undefined && !m.operations.includes(m.writeHintsOperation)) {
       ctx.addIssue({
         code: "custom",
@@ -1202,8 +1223,26 @@ export type PluginManifest = z.infer<typeof pluginManifest>;
  *   `{column: value}` AND-combined → parameterised WHERE.
  *   Reserved keys: `since` (timestamptz cutoff on `created_at`),
  *   `limit` (int, default 100, max 1000), `orderBy` (column name,
- *   must be in the declared schema), `orderDir` ("asc" | "desc").
+ *   must be in the declared schema, or `"id"`), `orderDir` ("asc" |
+ *   "desc"), `anyOf` (column → list of values, a parameterised IN),
+ *   `afterId` (keyset cursor over `id`, see below).
  *   No raw SQL crosses the boundary — all values are parameterised.
+ *
+ * Reading a whole table past one read's 1000 rows (#1213): page by id.
+ *
+ * @example
+ * ```ts
+ * const all = [];
+ * let afterId: string | undefined;
+ * for (;;) {
+ *   const page = await ctx.adminQuery.list("page_variants", {
+ *     orderBy: "id", orderDir: "asc", limit: 1000, ...(afterId ? { afterId } : {}),
+ *   });
+ *   all.push(...page);
+ *   if (page.length < 1000) break;
+ *   afterId = String(page[page.length - 1]?.id);
+ * }
+ * ```
  */
 export interface PluginQueryFilter {
   /** Rows created strictly after this ISO timestamp. */
@@ -1214,6 +1253,20 @@ export interface PluginQueryFilter {
   readonly limit?: number;
   readonly orderBy?: string;
   readonly orderDir?: "asc" | "desc";
+  /**
+   * #1213 — rows whose column holds one of the listed values, per column
+   * (AND-combined with every other filter). 1–1000 non-null scalar values
+   * per column; jsonb columns are refused. One read instead of one read
+   * per value.
+   */
+  readonly anyOf?: Readonly<Record<string, ReadonlyArray<string | number | boolean>>>;
+  /**
+   * #1213 — keyset cursor: only rows whose `id` sorts after this one.
+   * Requires `orderBy: "id"` with `orderDir: "asc"`; pass the last id of
+   * the previous page to read the next one. Unlike an offset it stays
+   * exact while rows are inserted or deleted between the reads.
+   */
+  readonly afterId?: string;
   readonly [column: string]: unknown;
 }
 
@@ -1606,6 +1659,16 @@ export interface PluginInvocation {
    * instead, naming the tool that takes the agent's answer.
    */
   readonly aiDelegated?: boolean;
+  /**
+   * #1213 — set for origin `render` when the caller renders ONE pass (an
+   * editor preview): the same id on every plugin call of that pass, a new
+   * one for the next. A plugin may reuse what it read for one call of the
+   * pass in the next call of the same pass (the preview asks for hreflang,
+   * the language switcher and the URL annotations of the same page) —
+   * never across passes, because nothing tells it when its data changed
+   * in between. Absent outside a render pass.
+   */
+  readonly renderId?: string;
 }
 
 /** Prefix of the error the host throws when a plugin calls `ctx.ai` or
@@ -2182,6 +2245,26 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly writeHintsOperation?: string;
   /**
+   * #1214 — told which modules a committed write changed: an operation in
+   * `operations` taking {@link PluginModuleChangesArgs}. Core calls it
+   * after every write that changes what a module renders — its source or
+   * field defaults, a content instance's values, a delete, a revert, a
+   * merge — once the write's transaction has committed, in the WRITER's
+   * scope: on the chat's branch (origin `chat`) for a chat write, on main
+   * (origin `system`) otherwise. The call may write the plugin's private
+   * storage, so a verdict derived from module content (an embed scan)
+   * stays current where it is stored and render hooks read it instead of
+   * rescanning the site on every preview. A failing call is recorded
+   * against the plugin and never undoes the write.
+   *
+   * @example
+   *   module_changes: async (ctx, { moduleIds }) => {
+   *     const { modules } = await ctx.cms!.call("modules.list", { moduleIds, includeDeleted: true });
+   *     // … recompute and store one verdict per module …
+   *   },
+   */
+  readonly moduleChangesOperation?: string;
+  /**
    * Epic #1107 — the I/O half of `listSources`: an operation in
    * `operations` taking `{pageIds: string[], pageUrlStyle: PageUrlStyle}`
    * (page links come from `pages.resolve_public_urls`, as for head
@@ -2311,6 +2394,7 @@ export function manifestFromDefinition(def: {
   readonly linkResolveOperation?: string;
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
+  readonly moduleChangesOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
   readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
@@ -2352,6 +2436,7 @@ export function manifestFromDefinition(def: {
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
     ...(def.writeHintsOperation ? { writeHintsOperation: def.writeHintsOperation } : {}),
+    ...(def.moduleChangesOperation ? { moduleChangesOperation: def.moduleChangesOperation } : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
     ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),

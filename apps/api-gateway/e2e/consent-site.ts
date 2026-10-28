@@ -218,25 +218,30 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
   const pageId = (page.value as { pageId: string }).pageId;
 
   const runId = `${PFX}-run`;
-  const built = await adminAdapter.withAdminTransaction(SYSTEM, (tx) =>
-    generateSite({
-      publishAt: new Date().toISOString(),
-      tx,
-      adapter: adminAdapter,
-      plugins: localBuildPluginServices,
-      target: {
-        id: "00000000-0000-0000-0000-000000000677",
-        name: "dev",
-        env: "dev",
-        outDir: "out",
-        baseUrl: "http://localhost",
-        robotsDefault: "noindex",
-      },
-      runId,
-      repoRoot: root,
-      changedPageIds: [pageId],
-      syncCurrent: false,
-    }),
+  const built = await adminAdapter.withAdminTransaction(
+    SYSTEM,
+    (tx) =>
+      generateSite({
+        publishAt: new Date().toISOString(),
+        tx,
+        adapter: adminAdapter,
+        plugins: localBuildPluginServices,
+        target: {
+          id: "00000000-0000-0000-0000-000000000677",
+          name: "dev",
+          env: "dev",
+          outDir: "out",
+          baseUrl: "http://localhost",
+          robotsDefault: "noindex",
+        },
+        runId,
+        repoRoot: root,
+        changedPageIds: [pageId],
+        syncCurrent: false,
+      }),
+    // Same holder as the generator CLI: a build reads one snapshot while
+    // plugin build hooks read their storage (pool-guard.ts allowlist, #1220).
+    { holder: "static-generator.build" },
   );
   // The admin publishes what the gateway serves from (#635).
   await publishProjectionOnce(adminAdapter, { comments: true });

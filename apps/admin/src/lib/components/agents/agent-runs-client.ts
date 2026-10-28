@@ -6,6 +6,8 @@
  * wording. Pure functions where possible so they are unit-testable.
  */
 
+import { liveFetch } from "#lib/live/live-refresh.js";
+
 /** One running agent, as `chat.list_agent_runs` returns it. */
 export interface AgentRunView {
   id: string;
@@ -37,11 +39,15 @@ export function runStatusText(run: AgentRunView, nowMs: number): string {
   return run.kind === "mcp" ? `working · last action ${age} ago` : `working · ${age}`;
 }
 
-/** GET the running agents (one chat, or every chat the operator manages). */
+/**
+ * GET the running agents (one chat, or every chat the operator manages),
+ * with the live reads' deadline (#1215): a slow admin answers `null`
+ * instead of leaving the request open.
+ */
 export async function fetchAgentRuns(chatSessionId?: string): Promise<AgentRunView[] | null> {
   const url = chatSessionId ? `/content/chat/${chatSessionId}/agents` : "/api/agents";
   try {
-    const res = await fetch(url, { headers: { accept: "application/json" } });
+    const res = await liveFetch(url, { headers: { accept: "application/json" } });
     if (!res.ok) return null;
     return ((await res.json()) as { runs: AgentRunView[] }).runs;
   } catch {

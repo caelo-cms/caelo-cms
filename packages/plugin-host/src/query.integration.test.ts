@@ -82,6 +82,17 @@ function makePlugin(slug: string) {
           limit: 5,
         });
       },
+      // #1213 — one keyset page by id, optionally narrowed with anyOf.
+      list_keyset: async (ctx, args) => {
+        const a = args as { afterId?: string; messages?: string[]; limit: number };
+        return ctx.query.list("greetings", {
+          orderBy: "id",
+          orderDir: "asc",
+          limit: a.limit,
+          ...(a.afterId ? { afterId: a.afterId } : {}),
+          ...(a.messages ? { anyOf: { message: a.messages } } : {}),
+        });
+      },
       change_tags: async (ctx, args) => {
         const a = args as { id: string; tags: unknown };
         await ctx.query.update("greetings", a.id, { tags: a.tags });
@@ -245,6 +256,47 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     });
     if (!older.ok) throw new Error(older.error.message);
     expect((older.value as Array<{ message: string }>).map((r) => r.message)).toEqual(["first"]);
+  });
+
+  it("pages by id with afterId and filters with anyOf (#1213)", async () => {
+    await bootstrap({
+      infra: { adapter, registry },
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: pluginA }],
+    });
+    await provisionPluginSchema(pluginA);
+    const run = async (operationName: string, args: unknown) => {
+      const r = await runPluginOperation({
+        invocation: SYSTEM_INVOCATION,
+        pluginSlug: PLUGIN_A,
+        operationName,
+        args,
+      });
+      if (!r.ok) throw new Error(r.error.message);
+      return r.value;
+    };
+    for (const message of ["m1", "m2", "m3", "m4", "m5"]) {
+      await run("add", { pageId: "page-1", message });
+    }
+    const seen: { id: string; message: string }[] = [];
+    let afterId: string | undefined;
+    for (;;) {
+      const page = (await run("list_keyset", { limit: 2, afterId })) as {
+        id: string;
+        message: string;
+      }[];
+      seen.push(...page);
+      if (page.length < 2) break;
+      afterId = page[page.length - 1]?.id;
+    }
+    expect(seen.map((r) => r.message).sort()).toEqual(["m1", "m2", "m3", "m4", "m5"]);
+    expect(seen.map((r) => r.id)).toEqual(seen.map((r) => r.id).sort());
+    const some = (await run("list_keyset", { limit: 10, messages: ["m2", "m4", "nope"] })) as {
+      message: string;
+    }[];
+    expect(some.map((r) => r.message).sort()).toEqual(["m2", "m4"]);
+    expect(await run("list_keyset", { limit: 10, messages: [] })).toEqual([]);
   });
 
   it("stores a jsonb ARRAY as an array", async () => {

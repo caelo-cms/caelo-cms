@@ -126,7 +126,16 @@ test("a floating chat stays on screen when the window narrows, and is the phone 
   expect(placed.x).toBeGreaterThan(800);
 
   // A narrower window: the box is pulled back on screen, not cut off.
+  // The overlay learns the new size from the window's resize event
+  // (`bind:innerWidth`), so it re-renders after setViewportSize returns;
+  // measuring at once caught the old position on a busy runner (#1234).
   await page.setViewportSize({ width: 900, height: 700 });
+  await expect
+    .poll(async () => {
+      const b = await overlayBox(page);
+      return b.x + b.width;
+    })
+    .toBeLessThanOrEqual(900);
   const narrowed = await overlayBox(page);
   expect(narrowed.x).toBeGreaterThanOrEqual(0);
   expect(narrowed.x + narrowed.width).toBeLessThanOrEqual(900);

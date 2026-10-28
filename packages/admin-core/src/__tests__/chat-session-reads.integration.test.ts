@@ -205,6 +205,46 @@ describe("chat.get_session (#1216)", () => {
     expect((oldest.value as Page).hasMore).toBe(false);
   });
 
+  it("keeps rows saved in one transaction in write order (0401)", async () => {
+    // One transaction = one `created_at` for every row. Ordering ties by the
+    // random uuid shuffled them (e2e chat-status-notes); `seq` keeps the
+    // order they were written in, for the full read and every page.
+    const id = await newSession(owner, "issue1216 same-transaction order");
+    const written = Array.from({ length: 12 }, (_, i) => `t${String(i).padStart(2, "0")}`);
+    const db = new SQL(ADMIN_URL as string);
+    try {
+      await db.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        for (const content of written) {
+          await tx`INSERT INTO chat_messages (chat_session_id, role, content, origin, status)
+                   VALUES (${id}::uuid, 'user', ${content}, 'system', 'complete')`;
+        }
+      });
+    } finally {
+      await db.end();
+    }
+
+    const all = await execute(registry, adapter, owner, "chat.get_session", { chatSessionId: id });
+    if (!all.ok) throw new Error("full read failed");
+    expect((all.value as Page).messages.map((m) => m.content)).toEqual(written);
+
+    const paged: string[] = [];
+    let before: string | undefined;
+    for (;;) {
+      const r = await execute(registry, adapter, owner, "chat.get_session", {
+        chatSessionId: id,
+        limit: 5,
+        ...(before ? { before } : {}),
+      });
+      if (!r.ok) throw new Error("paged read failed");
+      const page = r.value as Page;
+      paged.unshift(...page.messages.map((m) => m.content));
+      if (!page.hasMore) break;
+      before = page.messages[0]?.id;
+    }
+    expect(paged).toEqual(written);
+  });
+
   it("refuses a before cursor without a limit, naming both parameters", async () => {
     const id = await newSession(owner, "issue1216 cursor");
     const r = await execute(registry, adapter, owner, "chat.get_session", {

@@ -18,13 +18,19 @@
  * back in `skipped` with a reason (CLAUDE.md §2 — nothing silently
  * dropped).
  *
- * Network I/O inside a Query-API handler is deliberate here (the
- * neighbouring media ops keep the chokepoint DB-only): the download's
- * bytes and its media_assets metadata row must land in the same tx. The
- * per-file + per-call caps below bound how long the tx can stay open.
+ * Issue #1210 — the downloads (up to 5 minutes of network I/O) run with no
+ * transaction open: the op is detached (`transaction: "none"`). Per asset it
+ * downloads and validates, checks the library for the same bytes in a short
+ * read, and re-encodes and stores the files; then it writes every media row
+ * plus the audit row in one short transaction. Before, the whole
+ * call ran inside one transaction that sat idle for the downloads, holding a
+ * pool connection the whole time (and migration 0392 now ends a transaction
+ * idle for a minute). A file stored whose row then fails to write is an
+ * unreferenced blob the media GC sweeps, exactly as before, when the storage
+ * write also happened ahead of the commit.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   err,
@@ -88,6 +94,120 @@ function originalNameFromUrl(url: string): string {
   }
 }
 
+/**
+ * Download one asset through the SSRF guard and check it is media of an
+ * allowed type and size. Network only — called with no transaction open.
+ */
+async function downloadAsset(
+  url: string,
+  hosts: readonly string[],
+): Promise<{ ok: true; mime: MediaMime; bytes: Uint8Array } | { ok: false; reason: string }> {
+  let res: Awaited<ReturnType<typeof safeExternalFetchBinary>>;
+  try {
+    res = await safeExternalFetchBinary(url, {
+      allowedHosts: hosts,
+      maxBytes: PER_FILE_MAX_BYTES,
+      timeoutMs: PER_FILE_TIMEOUT_MS,
+      headers: { Accept: "image/*,video/mp4,font/*,application/pdf,*/*;q=0.5" },
+    });
+  } catch (e) {
+    if (isExternalUrlBlockedError(e))
+      return { ok: false, reason: `blocked-by-ssrf-guard: ${e.reason}` };
+    if (e instanceof Error && e.message.includes("-byte cap")) {
+      return { ok: false, reason: "too-large (50 MB per-file cap)" };
+    }
+    return { ok: false, reason: `fetch-failed: ${(e as Error).message.slice(0, 200)}` };
+  }
+  if (!res.ok) return { ok: false, reason: `http-${res.status}` };
+  const mime = normalizeAssetMime(res.contentType);
+  if (mime === null) {
+    return { ok: false, reason: `blocked-content-type (${res.contentType || "none"})` };
+  }
+  if (!magicBytesMatchMime(mime, res.bodyBytes)) {
+    return { ok: false, reason: `content-mismatch (served bytes do not look like ${mime})` };
+  }
+  // Per-mime cap: the fetch ceiling is the 50 MB video-sized hard limit, so
+  // a 40 MB image (image cap 10 MB) would otherwise slip through.
+  const mimeCap = MEDIA_SIZE_CAPS[mime];
+  if (res.bodyBytes.length > mimeCap) {
+    return {
+      ok: false,
+      reason: `too-large (${res.bodyBytes.length} bytes exceeds the ${mime} cap of ${mimeCap} bytes)`,
+    };
+  }
+  return { ok: true, mime, bytes: res.bodyBytes };
+}
+
+/**
+ * The library's live asset with these bytes, with the storage keys of its
+ * files. media.upload dedupes too; knowing it up front skips a redundant
+ * pipeline run for bytes that already exist.
+ */
+async function existingAsset(
+  tx: TransactionRunner,
+  sha: string,
+): Promise<{ id: string; slug: string; storageKeys: string[] } | null> {
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id, slug FROM media_assets
+    WHERE sha256 = ${sha} AND deleted_at IS NULL LIMIT 1
+  `)) as unknown as Array<{ id: string; slug: string }>;
+  const row = rows[0];
+  if (!row) return null;
+  const keys = (await tx.execute(sql`
+    SELECT storage_key FROM media_variants WHERE asset_id = ${row.id}::uuid
+  `)) as unknown as Array<{ storage_key: string }>;
+  return { id: row.id, slug: row.slug, storageKeys: keys.map((k) => k.storage_key) };
+}
+
+/** Whether any of an existing asset's stored files is gone. */
+async function anyFileMissing(
+  storage: MediaStorageAdapter,
+  storageKeys: readonly string[],
+): Promise<boolean> {
+  for (const key of storageKeys) {
+    if (!(await storage.exists(key))) return true;
+  }
+  return false;
+}
+
+/** The media.upload input of a stored asset: metadata only, no file bytes. */
+type MediaRowInput = Parameters<typeof mediaUploadOp.handler>[1];
+
+/** The media row of an asset whose files `pipeline` produced and stored. */
+function mediaRowInput(
+  asset: { readonly url: string; readonly name?: string | undefined; readonly mime: MediaMime },
+  sha: string,
+  sizeBytes: number,
+  pipeline: Awaited<ReturnType<typeof runMediaPipeline>>,
+): MediaRowInput {
+  return {
+    sha256: sha,
+    originalName: originalNameFromUrl(asset.url),
+    // Meaningful public slug: the AI-supplied label wins; the handler falls
+    // back to alt → originalName when it's absent.
+    name: asset.name,
+    mime: asset.mime,
+    sizeBytes,
+    width: pipeline.width,
+    height: pipeline.height,
+    alt: "",
+    storageKey: pipeline.variants[0]?.storageKey ?? `${sha}/orig`,
+    storageProvider: getMediaStorageProvider(),
+    // Media provenance (0181) — the asset was downloaded from the source
+    // site being migrated; record its origin URL.
+    sourceKind: "imported",
+    sourceDetail: asset.url,
+    variants: pipeline.variants.map((v) => ({
+      variant: v.variant,
+      format: v.format,
+      width: v.width,
+      height: v.height,
+      sizeBytes: v.sizeBytes,
+      storageKey: v.storageKey,
+    })),
+  };
+}
+
 const importedEntry = z.object({
   sourceUrl: z.string(),
   mediaId: z.string(),
@@ -114,6 +234,8 @@ export const importMediaUrlsOp = defineOperation({
   name: "imports.import_media_urls",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
+  // Issue #1210 — the downloads run outside any transaction (file header).
+  transaction: "none",
   input: z
     .object({
       /**
@@ -168,85 +290,24 @@ export const importMediaUrlsOp = defineOperation({
 
     const imported: Array<z.infer<typeof importedEntry>> = [];
     const skipped: Array<{ url: string; reason: string }> = [];
-    let downloadedBytes = 0;
     const deadline = Date.now() + PER_CALL_TIME_BUDGET_MS;
     const hosts = allowedHosts();
 
-    /** Whether any stored file of an existing asset is gone. */
-    const assetFilesMissing = async (assetId: string): Promise<boolean> => {
-      const keys = (await tx.execute(sql`
-        SELECT storage_key FROM media_variants WHERE asset_id = ${assetId}::uuid
-      `)) as unknown as Array<{ storage_key: string }>;
-      for (const k of keys) {
-        if (!(await mediaStorage.exists(k.storage_key))) return true;
-      }
-      return false;
-    };
-    type PersistResult =
-      | { ok: true; assetId: string; slug: string }
-      | { ok: false; reason: string };
-    const persistAsset = async (
-      url: string,
-      name: string | undefined,
-      mime: MediaMime,
-      sha: string,
-      bytes: Uint8Array,
-    ): Promise<PersistResult> => {
-      let pipeline: Awaited<ReturnType<typeof runMediaPipeline>>;
-      try {
-        // The pipeline re-encodes rasters (validating them) and strips
-        // scripts from SVG — the same hardening the upload endpoint gets.
-        pipeline = await runMediaPipeline(sha, mime, bytes);
-      } catch (e) {
-        return { ok: false, reason: `processing-failed: ${(e as Error).message.slice(0, 200)}` };
-      }
-      for (const v of pipeline.variants) {
-        await mediaStorage.put(v.storageKey, v.body, v.contentType);
-      }
-      // Direct handler call (same pattern the neighbouring media ops use):
-      // this op is the audited boundary; the upload handler adds its own
-      // audit row + sha dedup.
-      const upload = await mediaUploadOp.handler(
-        ctx,
-        {
-          sha256: sha,
-          originalName: originalNameFromUrl(url),
-          // Meaningful public slug: the AI-supplied label wins; the handler
-          // falls back to alt → originalName when it's absent.
-          name,
-          mime,
-          sizeBytes: bytes.byteLength,
-          width: pipeline.width,
-          height: pipeline.height,
-          alt: "",
-          storageKey: pipeline.variants[0]?.storageKey ?? `${sha}/orig`,
-          storageProvider: getMediaStorageProvider(),
-          // Media provenance (0181) — the asset was downloaded from the
-          // source site being migrated; record its origin URL.
-          sourceKind: "imported",
-          sourceDetail: url,
-          variants: pipeline.variants.map((v) => ({
-            variant: v.variant,
-            format: v.format,
-            width: v.width,
-            height: v.height,
-            sizeBytes: v.sizeBytes,
-            storageKey: v.storageKey,
-          })),
-        },
-        tx,
-      );
-      if (!upload.ok) {
-        return {
-          ok: false,
-          reason: `media-upload-failed: ${JSON.stringify(upload.error).slice(0, 200)}`,
-        };
-      }
-      const uploaded = upload.value as { assetId: string; slug: string };
-      return { ok: true, assetId: uploaded.assetId, slug: uploaded.slug };
-    };
-
-    for (const { url, name } of uniqueAssets) {
+    // Per asset, with no transaction open: download and validate it, look
+    // up its bytes in the library (one short read), and re-encode and store
+    // its files when they are new — or gone: the same bytes refill the same
+    // storage keys and the upload op dedupes the row, so every page using
+    // the asset is fixed (the recovery list_missing_media points at). Only
+    // the row metadata is kept, so one asset's bytes are in memory at a time.
+    const reused = new Map<string, { mediaId: string; slug: string }>();
+    const toWrite: Array<{ url: string; row: MediaRowInput }> = [];
+    // Bytes this call already queued: a second URL serving them is that
+    // asset too (no second pipeline run, no second row).
+    const queuedUrlBySha = new Map<string, string>();
+    const sameAs = new Map<string, string>();
+    let downloadedBytes = 0;
+    for (const asset of uniqueAssets) {
+      const { url } = asset;
       if (downloadedBytes >= PER_CALL_MAX_BYTES) {
         skipped.push({ url, reason: "call-budget-exhausted (250 MB download cap)" });
         continue;
@@ -255,103 +316,92 @@ export const importMediaUrlsOp = defineOperation({
         skipped.push({ url, reason: "time-budget-exhausted (5 min per call)" });
         continue;
       }
-
-      let res: Awaited<ReturnType<typeof safeExternalFetchBinary>>;
+      const fetched = await downloadAsset(url, hosts);
+      if (!fetched.ok) {
+        skipped.push({ url, reason: fetched.reason });
+        continue;
+      }
+      const sha = await sha256Hex(fetched.bytes);
+      const queuedUrl = queuedUrlBySha.get(sha);
+      if (queuedUrl !== undefined) {
+        sameAs.set(url, queuedUrl);
+        continue;
+      }
+      const existing = await tx.transaction((t) => existingAsset(t, sha));
+      if (existing && !(await anyFileMissing(mediaStorage, existing.storageKeys))) {
+        reused.set(url, { mediaId: existing.id, slug: existing.slug });
+        continue;
+      }
+      let pipeline: Awaited<ReturnType<typeof runMediaPipeline>>;
       try {
-        res = await safeExternalFetchBinary(url, {
-          allowedHosts: hosts,
-          maxBytes: PER_FILE_MAX_BYTES,
-          timeoutMs: PER_FILE_TIMEOUT_MS,
-          headers: { Accept: "image/*,video/mp4,font/*,application/pdf,*/*;q=0.5" },
-        });
+        // The pipeline re-encodes rasters (validating them) and strips
+        // scripts from SVG — the same hardening the upload endpoint gets.
+        pipeline = await runMediaPipeline(sha, fetched.mime, fetched.bytes);
       } catch (e) {
-        if (isExternalUrlBlockedError(e)) {
-          skipped.push({ url, reason: `blocked-by-ssrf-guard: ${e.reason}` });
-        } else if (e instanceof Error && e.message.includes("-byte cap")) {
-          skipped.push({ url, reason: "too-large (50 MB per-file cap)" });
-        } else {
-          skipped.push({ url, reason: `fetch-failed: ${(e as Error).message.slice(0, 200)}` });
-        }
+        skipped.push({ url, reason: `processing-failed: ${(e as Error).message.slice(0, 200)}` });
         continue;
       }
-      if (!res.ok) {
-        skipped.push({ url, reason: `http-${res.status}` });
-        continue;
+      for (const v of pipeline.variants) {
+        await mediaStorage.put(v.storageKey, v.body, v.contentType);
       }
-      const mime = normalizeAssetMime(res.contentType);
-      if (mime === null) {
-        skipped.push({ url, reason: `blocked-content-type (${res.contentType || "none"})` });
-        continue;
-      }
-      if (!magicBytesMatchMime(mime, res.bodyBytes)) {
-        skipped.push({ url, reason: `content-mismatch (served bytes do not look like ${mime})` });
-        continue;
-      }
-      // Per-mime cap: the fetch ceiling is the 50 MB video-sized hard
-      // limit, so a 40 MB image (image cap 10 MB) would otherwise slip
-      // through. Enforce the tighter per-mime cap here, loudly.
-      const mimeCap = MEDIA_SIZE_CAPS[mime];
-      if (res.bodyBytes.length > mimeCap) {
-        skipped.push({
-          url,
-          reason: `too-large (${res.bodyBytes.length} bytes exceeds the ${mime} cap of ${mimeCap} bytes)`,
-        });
-        continue;
-      }
-
-      const sha = await sha256Hex(res.bodyBytes);
-      // Dedupe by content hash against the whole library. media.upload
-      // dedupes too, but the pre-check skips a redundant pipeline run for
-      // bytes that already exist.
-      const existing = (await tx.execute(sql`
-        SELECT id::text AS id, slug FROM media_assets
-        WHERE sha256 = ${sha} AND deleted_at IS NULL LIMIT 1
-      `)) as unknown as Array<{ id: string; slug: string }>;
-      if (existing[0]) {
-        // The asset exists but its stored files may be gone (media lost from
-        // a cloud container's disk). The same bytes refill the same storage
-        // keys; the upload op dedupes the row, so every page using the asset
-        // is fixed — this is the recovery list_missing_media points at.
-        if (await assetFilesMissing(existing[0].id)) {
-          const restored = await persistAsset(url, name, mime, sha, res.bodyBytes);
-          if (!restored.ok) {
-            skipped.push({ url, reason: restored.reason });
-            continue;
-          }
-          downloadedBytes += res.bodyBytes.byteLength;
-        }
-        imported.push({
-          sourceUrl: url,
-          mediaId: existing[0].id,
-          slug: existing[0].slug,
-          mediaUrl: buildMediaUrl(existing[0].slug, "orig"),
-        });
-        continue;
-      }
-
-      const persisted = await persistAsset(url, name, mime, sha, res.bodyBytes);
-      if (!persisted.ok) {
-        skipped.push({ url, reason: persisted.reason });
-        continue;
-      }
-      downloadedBytes += res.bodyBytes.byteLength;
-      imported.push({
-        sourceUrl: url,
-        mediaId: persisted.assetId,
-        slug: persisted.slug,
-        mediaUrl: buildMediaUrl(persisted.slug, "orig"),
+      downloadedBytes += fetched.bytes.byteLength;
+      queuedUrlBySha.set(sha, url);
+      toWrite.push({
+        url,
+        row: mediaRowInput(
+          { ...asset, mime: fetched.mime },
+          sha,
+          fetched.bytes.byteLength,
+          pipeline,
+        ),
       });
     }
 
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "imports.import_media_urls",
-      input: { urls: uniqueAssets.length, runId: input.runId ?? null },
-      succeeded: true,
-      entityId: input.runId ?? null,
-      resultSummary: `imported=${imported.length} skipped=${skipped.length} bytes=${downloadedBytes}`,
+    // Every media row and the audit row in one short transaction. The
+    // upload handler is this op's inner step: this op is the audited
+    // boundary, the handler adds its own audit row and sha dedup.
+    const written = await tx.transaction(async (t) => {
+      const rows = new Map<string, { mediaId: string; slug: string }>();
+      for (const { url, row } of toWrite) {
+        const upload = await mediaUploadOp.handler(ctx, row, t);
+        if (!upload.ok) {
+          skipped.push({
+            url,
+            reason: `media-upload-failed: ${JSON.stringify(upload.error).slice(0, 200)}`,
+          });
+          continue;
+        }
+        const uploaded = upload.value as { assetId: string; slug: string };
+        rows.set(url, { mediaId: uploaded.assetId, slug: uploaded.slug });
+      }
+      const importedCount = uniqueAssets.filter(({ url }) => {
+        const own = sameAs.get(url) ?? url;
+        return reused.has(own) || rows.has(own);
+      }).length;
+      await recordAudit(t, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "imports.import_media_urls",
+        input: { urls: uniqueAssets.length, runId: input.runId ?? null },
+        succeeded: true,
+        entityId: input.runId ?? null,
+        resultSummary: `imported=${importedCount} skipped=${skipped.length} bytes=${downloadedBytes}`,
+      });
+      return rows;
     });
+
+    // In request order, as before.
+    for (const { url } of uniqueAssets) {
+      const own = sameAs.get(url) ?? url;
+      const row = reused.get(own) ?? written.get(own);
+      if (!row) continue;
+      imported.push({
+        sourceUrl: url,
+        mediaId: row.mediaId,
+        slug: row.slug,
+        mediaUrl: buildMediaUrl(row.slug, "orig"),
+      });
+    }
 
     return ok({ imported, skipped });
   },
