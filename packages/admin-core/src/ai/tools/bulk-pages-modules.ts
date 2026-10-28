@@ -41,6 +41,7 @@ import {
   MODULE_HTML_DESCRIPTION,
   MODULE_JS_CONTRACT,
 } from "./_module-js-contract.js";
+import { moduleJsGuardSuffix } from "./_module-js-guard.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 import { countMovedUrls, PAGE_MOVE_APPROVAL_THRESHOLD } from "./move-pages.js";
@@ -514,6 +515,7 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
     // #1038 — one line per item with its outcome, so the AI fixes exactly
     // the failed item (re-read after a draft conflict, correct a field).
     const lines: string[] = [];
+    const scriptTouched: string[] = [];
     for (const [i, item] of input.items.entries()) {
       if (notFound.has(item.moduleId)) {
         lines.push(`- ${item.moduleId}: module not found — check the id with list_modules.`);
@@ -524,6 +526,7 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
         lines.push(`- ${item.moduleId}: not applied — ${failure}`);
         continue;
       }
+      if (item.js !== undefined || item.html !== undefined) scriptTouched.push(item.moduleId);
       const writtenCss = opItems[i]?.css as string | undefined;
       const notes = await updatedItemNotes(ctx, toolCtx, item, writtenCss, bindingReports[i] ?? "");
       const extracted = extractedById.get(item.moduleId);
@@ -535,6 +538,8 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
       );
     }
     const summary = `Updated ${v.updated} of ${input.items.length} module(s) (notFound=${notFound.size}, failed=${v.failed.length}).`;
-    return { ok: v.updated > 0, content: `${summary}\n${lines.join("\n")}` };
+    // #1198 — one read for every module whose script or markup changed.
+    const jsGuard = await moduleJsGuardSuffix(ctx, toolCtx, scriptTouched);
+    return { ok: v.updated > 0, content: `${summary}\n${lines.join("\n")}${jsGuard}` };
   },
 };

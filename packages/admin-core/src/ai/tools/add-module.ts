@@ -54,6 +54,7 @@ import {
   MODULE_HTML_DESCRIPTION,
   MODULE_JS_CONTRACT,
 } from "./_module-js-contract.js";
+import { moduleJsGuardSuffix } from "./_module-js-guard.js";
 import { resolvePageRef } from "./_page-ref.js";
 import { pluginWriteHintsSuffix, storedModuleWrites } from "./_plugin-write-hints.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
@@ -364,7 +365,7 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     // CSS/design-guard suffixes only apply to freshly authored CSS.
     const cssSuffix = mod.reused
       ? ""
-      : `${await cssVarWarningSuffix(ctx, toolCtx, mod.css)}${await designGuardSuffix(ctx, toolCtx, { css: mod.css, html: input.html, excludeModuleIds: [mod.moduleId] })}${await pluginWriteHintsSuffix(ctx, await storedModuleWrites(ctx, toolCtx, [mod.moduleId]))}`;
+      : `${await cssVarWarningSuffix(ctx, toolCtx, mod.css)}${await designGuardSuffix(ctx, toolCtx, { css: mod.css, html: input.html, excludeModuleIds: [mod.moduleId] })}${await pluginWriteHintsSuffix(ctx, await storedModuleWrites(ctx, toolCtx, [mod.moduleId]))}${await moduleJsGuardSuffix(ctx, toolCtx, [mod.moduleId])}`;
     // §2 — reuse ignored some authoring fields the call also carried; say so
     // loudly so an intended change never vanishes silently.
     const ignoredNote =

@@ -48,6 +48,7 @@ export const MODULE_JS_CONTRACT =
   `Vanilla JS. ${MODULE_SOURCE_VALUE_NOTE} ` +
   "Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. " +
   "Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. " +
+  "Touch ONLY this module's markup — another module's script goes into that module, never into a header/footer because it loads everywhere. Text, links, menu entries live in `html` (crawlers read no js output); js only shows/hides/toggles. Deliberate site-wide behaviour on hooks many modules share: comment `/* caelo:site-wide: <reason> */`. " +
   INTERACTION_MARKUP_CONTRACT;
 
 /** `bindThemeLiterals` parameter description for every module-authoring tool. */
