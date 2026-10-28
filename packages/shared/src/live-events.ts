@@ -96,6 +96,10 @@ const EXACT: Readonly<Record<string, readonly LiveTopic[]>> = {
   "imports.update_run_status": ["crawl"],
   "imports.write_extracted_pages": ["crawl"],
   "deploy.trigger": ["deploys"],
+  // #1211 — the Stage's steps: its run appears, ends failed, ends recorded.
+  "deploy.start_trigger": ["deploys"],
+  "deploy.fail_run": ["deploys"],
+  "deploy.finish_trigger": ["deploys"],
   "deploy.begin_run": ["deploys"],
   "deploy.update_progress": ["deploys"],
   "deploy.promote": ["deploys"],

@@ -5,6 +5,7 @@ import { err, isErr } from "@caelo-cms/shared";
 import type { DatabaseAdapter } from "./adapter.js";
 import { branchNotFound, firstMalformedBranch, namedBranches } from "./branch-access.js";
 import type { QueryError } from "./errors.js";
+import { notifyOperationCommitted } from "./post-commit.js";
 import type { OperationRegistry } from "./registry.js";
 
 /**
@@ -90,11 +91,15 @@ export async function execute(
   // #1211 — a step-wise op holds no transaction: each of its steps is an
   // op of its own, executed (and committed) through the same registry.
   if (op.stepwise) {
-    return op.stepwise(ctx, parsed.data, {
+    const result = await op.stepwise(ctx, parsed.data, {
       registry,
       adapter,
       ...(options.signal ? { signal: options.signal } : {}),
     });
+    // #1215 — like a transactional op that answered ok (adapter.ts): the
+    // change hints hear it, after every step committed.
+    if (result.ok) notifyOperationCommitted(op.name);
+    return result;
   }
   return adapter.runOperation(op, ctx, parsed.data);
 }

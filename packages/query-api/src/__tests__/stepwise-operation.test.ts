@@ -18,6 +18,7 @@ import {
   execute,
   OperationRegistry,
   type OperationSteps,
+  observeCommittedOperations,
 } from "../index.js";
 
 const CTX: ExecutionContext = {
@@ -82,6 +83,33 @@ describe("defineStepwiseOperation", () => {
     expect(transactions).toEqual(["test.step", "test.step"]);
     expect(seen?.signal).toBe(stop.signal);
     expect(seen?.registry).toBe(registry);
+  });
+
+  it("tells the committed-operation listeners once its body answered ok (#1215)", async () => {
+    let fail = false;
+    const op = defineStepwiseOperation({
+      name: "test.heard",
+      actorScope: ["human"],
+      database: "cms_admin",
+      input: z.object({}),
+      output: z.object({}),
+      stepwise: async () => (fail ? err({ kind: "UnknownOperation", name: "test.heard" }) : ok({})),
+    });
+    const registry = new OperationRegistry();
+    registry.register(op);
+    const heard: string[] = [];
+    const stop = observeCommittedOperations((name) => {
+      if (name === "test.heard") heard.push(name);
+    });
+    try {
+      const { adapter } = countingAdapter();
+      expect((await execute(registry, adapter, CTX, "test.heard", {})).ok).toBe(true);
+      fail = true;
+      expect((await execute(registry, adapter, CTX, "test.heard", {})).ok).toBe(false);
+      expect(heard).toEqual(["test.heard"]);
+    } finally {
+      stop();
+    }
   });
 
   it("checks actor scope and input before the body runs", async () => {

@@ -58,6 +58,9 @@ describe("liveTopicsOfOperation over the real op catalogue", () => {
       "imports.update_run_status",
       "imports.write_extracted_pages",
       "deploy.trigger",
+      "deploy.start_trigger",
+      "deploy.fail_run",
+      "deploy.finish_trigger",
       "deploy.begin_run",
       "deploy.update_progress",
       "deploy.promote",
@@ -87,6 +90,7 @@ describe("liveTopicsOfOperation over the real op catalogue", () => {
       "chat.heartbeat_agent_run",
       "chat.renew_turn_lease",
       "quality_audits.claim_next",
+      "deploy.renew_run_lease",
     ]) {
       expect(OP_NAMES).toContain(n);
       expect(liveTopicsOfOperation(n)).toEqual([]);
