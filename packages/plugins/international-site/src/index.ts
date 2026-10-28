@@ -92,7 +92,7 @@ import {
   translateVariantPage,
 } from "./page-translation.js";
 import { batchIn, onceIn, renderMemoOf } from "./render-memo.js";
-import { chunked, listAll, listWhereAnyOf } from "./store-reads.js";
+import { chunked, listAll, listWhereAnyOf, STORE_READ_MAX } from "./store-reads.js";
 import { writeHints } from "./write-hints.js";
 
 /**
@@ -295,13 +295,18 @@ async function loadVariantsByPage(
   const byPage = await batchIn<PageVariantRow | null>(renderMemoOf(ctx), "variantByPage").getMany(
     pageIds,
     async (missing) => {
-      const rows = (await listWhereAnyOf(
-        q,
-        "page_variants",
-        "page_id",
-        missing,
-      )) as PageVariantRow[];
-      return new Map(rows.map((r) => [r.page_id, r]));
+      // A page is at most one variant, so the table holds no more rows
+      // than the site has translated pages. Past one batch of ids (a
+      // preview asks for every page of the site), paging the table is at
+      // most as many reads as the batches and does not grow with the
+      // untranslated pages (#1212 cost test).
+      const rows = (
+        missing.length > STORE_READ_MAX
+          ? await listAll(q, "page_variants")
+          : await listWhereAnyOf(q, "page_variants", "page_id", missing)
+      ) as PageVariantRow[];
+      const asked = new Set(missing);
+      return new Map(rows.filter((r) => asked.has(r.page_id)).map((r) => [r.page_id, r]));
     },
     null,
   );
