@@ -321,4 +321,56 @@ describe("resolveThemeFonts — pinned registry faces", () => {
     expect(res.unresolved).toEqual([]);
     expect(scans).toBe(1);
   });
+
+  // #803 — the resolver read a face once per typography ROLE; four roles on
+  // one face meant four full registry reads per preview.
+  it("reads each bound face once per resolve, however many roles bind it", async () => {
+    const face = registryFace(interTtf);
+    const tokens = pinnedTokens(face.ref, face.metadata.cssFamily, {
+      body: { weight: 400 },
+      heading: { weight: 700 },
+      display: { weight: 800 },
+      mono: { weight: 400 },
+    });
+    const reads: FontRef[] = [];
+    const res = await resolveThemeFonts({
+      tokens,
+      loadFontUsage: async () => themeOnlyUsage(tokens),
+      cacheDir,
+      publicBasePath: "/_assets/fonts",
+      preloadLanguage: "en",
+      readFont: async (ref) => {
+        reads.push(ref);
+        return { metadata: face.metadata, bytes: interTtf };
+      },
+    });
+    expect(res.unresolved).toEqual([]);
+    expect(reads).toEqual([face.ref]);
+  });
+
+  it("fails every role of a face whose bytes do not match the pin, still reading it once", async () => {
+    const face = registryFace(interTtf);
+    const tokens = pinnedTokens(face.ref, face.metadata.cssFamily, {
+      body: { weight: 400 },
+      heading: { weight: 700 },
+    });
+    let reads = 0;
+    const res = await resolveThemeFonts({
+      tokens,
+      loadFontUsage: async () => themeOnlyUsage(tokens),
+      cacheDir,
+      publicBasePath: "/_assets/fonts",
+      preloadLanguage: "en",
+      readFont: async () => {
+        reads++;
+        return { metadata: face.metadata, bytes: interTtf.slice(1) };
+      },
+    });
+    expect(reads).toBe(1);
+    expect(res.unresolved).toEqual([
+      "pinned:body:FontBindingMismatch",
+      "pinned:heading:FontBindingMismatch",
+    ]);
+    expect(res.css).toBe("");
+  });
 });

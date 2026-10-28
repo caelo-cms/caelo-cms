@@ -758,11 +758,7 @@ export async function generateSite(args: {
   if (activeTheme !== undefined) {
     const themeTokens = activeTheme.tokens;
     const resolved = await resolveThemeFonts({
-      readFont: fontReader(tx, {
-        actorId: "00000000-0000-0000-0000-00000000ffff",
-        actorKind: "system",
-        requestId: "font-build",
-      }),
+      readFont: fontReader(tx),
       tokens: activeTheme.tokens,
       loadFontUsage: () => loadSiteFontUsage(tx, themeTokens),
       cacheDir: defaultFontsCacheDir(root),

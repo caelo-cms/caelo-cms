@@ -1123,7 +1123,7 @@ export const renderPagePreviewOp = defineOperation({
     if (composeTheme !== undefined) {
       const themeTokens = composeTheme.tokens;
       const resolvedFonts = await resolveThemeFonts({
-        readFont: fontReader(tx, ctx),
+        readFont: fontReader(tx),
         tokens: composeTheme.tokens,
         // Same loader as the build: the preview instances faces exactly
         // as the deployed site will (preview/production parity).

@@ -166,7 +166,7 @@ test("axis policy: usage scan, face-wide override, read surface and preview/buil
     const common = {
       tokens,
       cacheDir,
-      readFont: fontReader(tx, ctx),
+      readFont: fontReader(tx),
       loadFontUsage: () => loadSiteFontUsage(tx, tokens),
       preloadLanguage: null,
     };

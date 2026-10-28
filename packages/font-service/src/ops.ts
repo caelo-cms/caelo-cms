@@ -15,7 +15,15 @@ import {
   fontResolveInput,
 } from "./types.js";
 
-async function readAsset(tx: TransactionRunner, ref: FontRef) {
+/**
+ * Read one immutable font revision (metadata + complete bytes) in a single
+ * query and verify the bytes against the pin. Runs under the caller's
+ * transaction, so the `font_assets` read policy decides who may read it.
+ *
+ * @throws FontRevisionNotFound when no visible row matches (id, sha256)
+ * @throws FontIntegrityMismatch when the stored bytes do not hash to the pin
+ */
+export async function readFontRevision(tx: TransactionRunner, ref: FontRef) {
   const rows = (await tx.execute(
     sql`SELECT metadata, encode(bytes,'base64') AS data FROM font_assets WHERE id=${ref.id}::uuid AND sha256=${ref.sha256}`,
   )) as unknown as { metadata: unknown; data: string }[];
@@ -24,6 +32,19 @@ async function readAsset(tx: TransactionRunner, ref: FontRef) {
   if (createHash("sha256").update(bytes).digest("hex") !== ref.sha256)
     throw new Error("FontIntegrityMismatch");
   return { metadata: fontMetadata.parse(rows[0].metadata), bytes };
+}
+
+/**
+ * Whether the caller's transaction may read revision (id, sha256): an
+ * index lookup that never touches the stored bytes. Lets an in-process
+ * byte cache keep the `font_assets` read policy as the authority on every
+ * read without re-fetching the bytes.
+ */
+export async function fontRevisionVisible(tx: TransactionRunner, ref: FontRef): Promise<boolean> {
+  const rows = (await tx.execute(
+    sql`SELECT 1 AS found FROM font_assets WHERE id=${ref.id}::uuid AND sha256=${ref.sha256}`,
+  )) as unknown as { found: number }[];
+  return rows.length > 0;
 }
 
 export const importFontOp = defineOperation({
@@ -84,7 +105,7 @@ export const inspectFontOp = defineOperation({
   input: fontRef,
   output: fontMetadata,
   async handler(_ctx, input, tx) {
-    return ok((await readAsset(tx, input)).metadata);
+    return ok((await readFontRevision(tx, input)).metadata);
   },
 });
 export const resolveFontOp = defineOperation({
@@ -94,7 +115,7 @@ export const resolveFontOp = defineOperation({
   input: fontResolveInput,
   output: fontMetadata,
   async handler(_ctx, input, tx) {
-    const { metadata, bytes } = await readAsset(tx, input);
+    const { metadata, bytes } = await readFontRevision(tx, input);
     if (!metadata.embedding[input.use]) throw new Error(`FontEmbeddingNotPermitted:${input.use}`);
     if (!input.formats.includes(metadata.format))
       throw new Error(`FontFormatNotSupportedByConsumer:${metadata.format}`);
