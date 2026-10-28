@@ -104,8 +104,11 @@ test("axis policy: usage scan, face-wide override, read surface and preview/buil
   const tokensOf = async () =>
     ((await run("themes.get", { slug: THEME_SLUG })) as { theme: { tokens: ThemeDocument } }).theme
       .tokens;
+  // Read the tokens first: an op inside the transaction below would be a
+  // second checkout of the pool (#1210).
+  const tokensBefore = await tokensOf();
   await adapter.withAdminTransaction(ctx, async (tx) => {
-    const usage = await loadSiteFontUsage(tx, await tokensOf());
+    const usage = await loadSiteFontUsage(tx, tokensBefore);
     // Other fixtures may make the shared test DB's usage uncertain; when it
     // is certain it must contain the module's weight.
     if (usage.weights !== null) expect(usage.weights).toContain(250);
