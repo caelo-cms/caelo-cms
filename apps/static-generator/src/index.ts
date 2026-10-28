@@ -37,6 +37,8 @@ export {
 // with the build (admin-core `lists/load.ts`).
 export {
   assembleListRenderData,
+  assembleListRenderDataFrom,
+  type ListRenderBase,
   ListRenderDataError,
   type ListRenderSources,
   type LoadedListRenderData,

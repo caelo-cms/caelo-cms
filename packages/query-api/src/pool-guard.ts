@@ -67,9 +67,6 @@ export interface AllowlistEntry {
  * chain is let through, every other one throws.
  */
 const ALLOWLIST: readonly AllowlistEntry[] = [
-  // FIXME(issue #1212): the preview render runs plugin render hooks (which
-  // write their audit rows through their own transactions) inside its op tx.
-  { holder: "pages.render_preview", issue: 1212, nestedCheckouts: true, noSessionTimeouts: false },
   // FIXME(issue #1211): Stage holds its op transaction across the generator
   // run and the upload, reports progress through nested ops, and waits on
   // the staging-publication lock behind another Stage for as long as that

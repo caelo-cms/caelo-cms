@@ -27,6 +27,64 @@ export type OperationHandler<I, O> = (
   tx: TransactionRunner,
 ) => Promise<Result<O, QueryError>>;
 
+/**
+ * Issue #1212 — the database access of a read operation that holds no
+ * transaction. Each {@link ReadScope.read} call opens one short
+ * transaction under the caller's identity (RLS sees the same session
+ * settings as in a transactional op), runs `fn`, and commits; between
+ * calls the handler holds no pooled connection.
+ *
+ * `fn` must only query through the `tx` it is handed: awaiting anything
+ * that takes its own connection (a plugin call, another op, a second
+ * `read`) inside it is exactly the nested checkout that deadlocks a full
+ * pool (#1209).
+ */
+export interface ReadScope {
+  read<T>(fn: (tx: TransactionRunner) => Promise<T>): Promise<T>;
+}
+
+/** Handler of a {@link ReadOperationDefinition}. */
+export type ReadOperationHandler<I, O> = (
+  ctx: ExecutionContext,
+  input: I,
+  reads: ReadScope,
+) => Promise<Result<O, QueryError>>;
+
+/**
+ * Issue #1212 — a read-only operation whose work is mostly NOT database
+ * work (plugin calls, font I/O, composing a page). A transactional op
+ * would hold its connection across all of it, and every plugin storage
+ * access inside takes a second checkout from the same pool: N such ops at
+ * pool size N deadlock forever. A read operation reads in short
+ * transactions ({@link ReadScope}) and holds nothing in between.
+ *
+ * Only for reads: there is no transaction to commit a write into, no
+ * `afterCommit`, and no projection publish. The branch-visibility gate
+ * (#569) still runs before the handler.
+ */
+export interface ReadOperationDefinition<I = unknown, O = unknown> {
+  readonly kind: "reads";
+  readonly name: string;
+  readonly actorScope: readonly ActorKind[];
+  /** Read operations read the authoring database. */
+  readonly database: "cms_admin";
+  readonly input: z.ZodType<I>;
+  readonly output: z.ZodType<O>;
+  readonly handler: ReadOperationHandler<I, O>;
+}
+
+/** Anything the registry holds: a transactional or a read operation. */
+export type AnyOperationDefinition<I = unknown, O = unknown> =
+  | OperationDefinition<I, O>
+  | ReadOperationDefinition<I, O>;
+
+/** Whether `op` is a {@link ReadOperationDefinition}. */
+export function isReadOperation<I, O>(
+  op: AnyOperationDefinition<I, O>,
+): op is ReadOperationDefinition<I, O> {
+  return "kind" in op && op.kind === "reads";
+}
+
 export interface OperationDefinition<I = unknown, O = unknown> {
   readonly name: string;
   /** Which actor kinds may invoke this op. Validator rejects out-of-scope callers before handler runs. */
@@ -108,6 +166,37 @@ export function defineOperation<I, O>(def: OperationDefinition<I, O>): Operation
       // still counts as exercised ("was reached", not "succeeded").
       recordOpInvocation(def.name);
       return original(ctx, input, tx);
+    },
+  };
+}
+
+/**
+ * Constructor of a {@link ReadOperationDefinition} — the read twin of
+ * {@link defineOperation}, with the same coverage instrumentation.
+ *
+ * @example
+ *   export const renderThingOp = defineReadOperation({
+ *     name: "things.render",
+ *     actorScope: ["human", "ai", "system"],
+ *     input: z.object({ id: z.string().uuid() }).strict(),
+ *     output: z.object({ html: z.string() }),
+ *     handler: async (ctx, input, reads) => {
+ *       const row = await reads.read((tx) => loadThing(tx, input.id));
+ *       return ok({ html: await renderWithPlugins(row) }); // no connection held here
+ *     },
+ *   });
+ */
+export function defineReadOperation<I, O>(
+  def: Omit<ReadOperationDefinition<I, O>, "kind" | "database">,
+): ReadOperationDefinition<I, O> {
+  const full: ReadOperationDefinition<I, O> = { ...def, kind: "reads", database: "cms_admin" };
+  if (process.env.CAELO_OP_COVERAGE !== "1") return full;
+  const original = def.handler;
+  return {
+    ...full,
+    handler: (ctx, input, reads) => {
+      recordOpInvocation(def.name);
+      return original(ctx, input, reads);
     },
   };
 }

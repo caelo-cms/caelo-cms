@@ -45,7 +45,8 @@ export interface PageTree {
   readonly childrenOf: ReadonlyMap<string, readonly string[]>;
 }
 
-interface RawNodeRow {
+/** A live page row as the tree reads it. */
+export interface RawNodeRow {
   id: string;
   slug: string;
   parent_page_id: string | null;
@@ -76,12 +77,7 @@ export async function loadPageTree(
     FROM pages
     WHERE deleted_at IS NULL AND ${visibility}
   `)) as unknown as RawNodeRow[];
-  const nodes = new Map<string, PageTreeNode>(
-    rows.map((r) => [
-      r.id,
-      { id: r.id, slug: r.slug, parentPageId: r.parent_page_id, chatBranchId: r.chat_branch_id },
-    ]),
-  );
+  const pending = new Map<string, PendingTreeState>();
   if (chatBranchId && opts.overlay !== false) {
     const overlay = (await tx.execute(sql`
       SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
@@ -91,24 +87,51 @@ export async function loadPageTree(
        ORDER BY ps.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const o of overlay) {
-      const base = nodes.get(o.page_id);
-      if (!base) continue;
-      const s = (typeof o.state === "string" ? JSON.parse(o.state) : o.state) as {
-        slug?: string;
-        parentPageId?: string | null;
-        deletedAt?: string | null;
-      };
-      if (s.deletedAt) {
-        nodes.delete(o.page_id);
-        continue;
-      }
-      nodes.set(o.page_id, {
-        ...base,
-        slug: s.slug ?? base.slug,
-        // A pre-0263 snapshot carries no parent — the live one stands.
-        parentPageId: s.parentPageId === undefined ? base.parentPageId : s.parentPageId,
-      });
+      pending.set(
+        o.page_id,
+        (typeof o.state === "string" ? JSON.parse(o.state) : o.state) as PendingTreeState,
+      );
     }
+  }
+  return pageTreeOf(rows, pending);
+}
+
+/** The fields of a pending page state the tree reads. */
+export interface PendingTreeState {
+  readonly slug?: string;
+  readonly parentPageId?: string | null;
+  readonly deletedAt?: string | null;
+}
+
+/**
+ * The page tree of `rows` (live, non-deleted rows of one scope) with the
+ * branch's pending states applied — the pure half of {@link loadPageTree},
+ * shared with the preview's cached site view (#1212). Pass an empty map
+ * for the stored tree (what `current_path` was last composed from).
+ */
+export function pageTreeOf(
+  rows: readonly RawNodeRow[],
+  pending: ReadonlyMap<string, PendingTreeState>,
+): PageTree {
+  const nodes = new Map<string, PageTreeNode>(
+    rows.map((r) => [
+      r.id,
+      { id: r.id, slug: r.slug, parentPageId: r.parent_page_id, chatBranchId: r.chat_branch_id },
+    ]),
+  );
+  for (const [pageId, s] of pending) {
+    const base = nodes.get(pageId);
+    if (!base) continue;
+    if (s.deletedAt) {
+      nodes.delete(pageId);
+      continue;
+    }
+    nodes.set(pageId, {
+      ...base,
+      slug: s.slug ?? base.slug,
+      // A pre-0263 snapshot carries no parent — the live one stands.
+      parentPageId: s.parentPageId === undefined ? base.parentPageId : s.parentPageId,
+    });
   }
   return indexTree(nodes);
 }
@@ -197,7 +220,15 @@ export async function pendingDriftIds(
   tree: PageTree,
   chatBranchId: string,
 ): Promise<string[]> {
-  const stored = await loadPageTree(tx, chatBranchId, { overlay: false });
+  return driftIdsBetween(tree, await loadPageTree(tx, chatBranchId, { overlay: false }));
+}
+
+/**
+ * The pure half of {@link pendingDriftIds}: the pages whose slug or parent
+ * differ between the chat's `tree` and the `stored` one, plus everything
+ * below them.
+ */
+export function driftIdsBetween(tree: PageTree, stored: PageTree): string[] {
   const changed = [...tree.byId.values()]
     .filter((n) => {
       const s = stored.byId.get(n.id);
