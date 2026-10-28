@@ -12,6 +12,7 @@
 
 import { z } from "zod";
 import { hasEscapedLineBreaks } from "./escaped-line-breaks.js";
+import { DEFAULT_LIST_TYPES, SITE_TEXTS_LIST_TYPE } from "./lists/default-types.js";
 import { listItemInputSchema } from "./lists/items.js";
 import { LIST_MAX_ITEMS, sourceDefSchema } from "./lists/list-type.js";
 import { LIST_REF_RE } from "./lists/refs.js";
@@ -330,13 +331,31 @@ const moduleFieldModuleListSchema = z
  * written, and the renderer reports `list-type-missing:<slug>` for a type
  * that is gone.
  */
+/** The shipped list types, quoted, for the missing-listType message. */
+const SHIPPED_LIST_TYPE_SLUGS = [...DEFAULT_LIST_TYPES.map((t) => t.slug), SITE_TEXTS_LIST_TYPE]
+  .map((slug) => `"${slug}"`)
+  .join(", ");
+
 const moduleFieldListSchema = z
   .object({
     name: moduleFieldName,
     kind: z.literal("list"),
     label: moduleFieldLabel,
-    /** Slug of the list type that defines the entries. */
-    listType: slugSchema,
+    /**
+     * Slug of the list type that defines the entries. REQUIRED — a missing
+     * one says which types exist (#1190), not just "expected string".
+     */
+    listType: z
+      .string({
+        error: (iss) =>
+          iss.input === undefined
+            ? `a list field needs listType: ${SHIPPED_LIST_TYPE_SLUGS} or a custom type's slug (list_list_types shows them)`
+            : undefined,
+      })
+      .regex(
+        /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/,
+        "slug must be lowercase letters, digits, or hyphens (1–64 chars, no leading/trailing hyphen)",
+      ),
     bind: z.enum(["local", "shared", "source"]).optional(),
     /** `bind: "shared"` — fix the list for every placement (`caelo:list/<id>`). */
     list: z.string().regex(LIST_REF_RE, "list must be caelo:list/<id>").optional(),
@@ -777,8 +796,23 @@ export const pageSetModulesSchema = z
         .object({
           blockName: slugSchema,
           moduleIds: z.array(z.string().uuid()),
+          /**
+           * #1195 — the placement each entry of `moduleIds` IS, by its
+           * content instance (same index; null = a new placement). Given,
+           * a placement keeps its content wherever it moves — across
+           * blocks too — and two placements of one module never trade
+           * content. Omitted, bindings carry over per (block, module) in
+           * order, which cannot tell repeated placements apart.
+           */
+          contentInstanceIds: z.array(z.string().uuid().nullable()).optional(),
         })
-        .strict(),
+        .strict()
+        .refine(
+          (b) =>
+            b.contentInstanceIds === undefined ||
+            b.contentInstanceIds.length === b.moduleIds.length,
+          { message: "contentInstanceIds needs one entry (or null) per moduleIds entry" },
+        ),
     ),
   })
   .strict();

@@ -35,8 +35,13 @@ import { claimedListSourceNames } from "../ops/content/list-source-names.js";
 import type { AIProvider } from "./provider.js";
 import {
   MODULE_META_JSON_SCHEMA_PROPS,
-  MODULEIZE_FIELDS_JSON_SCHEMA,
+  moduleizeFieldsJsonSchema,
 } from "./tools/_module-fields-schema.js";
+
+/** The shipped list types moduleize authors local lists of (it never mints a type). */
+const SHIPPED_LIST_TYPES = new Map(
+  DEFAULT_LIST_TYPES.filter((t) => t.role !== "vocabulary").map((t) => [t.slug, t]),
+);
 
 /** The clean module the block produces. */
 export interface ModuleizeResult {
@@ -90,28 +95,37 @@ export interface ModuleizeArgs {
  * constrains the model's response to this shape; `moduleizeOutputSchema`
  * (Zod) re-validates + the module contract checks run on top.
  */
-export const MODULEIZE_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["html", "fields", "displayName", "kind"],
-  properties: {
-    html: { type: "string", minLength: 1 },
-    fields: MODULEIZE_FIELDS_JSON_SCHEMA,
-    displayName: { type: "string", minLength: 1, maxLength: 128 },
-    // ONLY the two META props moduleize actually parses (see
-    // moduleizeOutputSchema below) — `description` + `kind`. The full
-    // MODULE_META_JSON_SCHEMA_PROPS also carries `type` (the reusable-class
-    // slug the add_module TOOLS use), but moduleize neither explains it in
-    // SYSTEM nor reads it. Forcing an unexplained `type` into the output
-    // schema made the model improvise + fall into a repetition loop
-    // ("header-basic-nav-basic-…" forever) that blew the output budget →
-    // truncated JSON → NoObjectGenerated → 3× fail at temp 0. Dropping it
-    // aligns the request with what moduleize consumes (found via the
-    // generateObject failure log).
-    description: MODULE_META_JSON_SCHEMA_PROPS.description,
-    kind: MODULE_META_JSON_SCHEMA_PROPS.kind,
-  },
-} as const;
+export function moduleizeJsonSchema(extraListTypes: readonly string[] = []) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["html", "fields", "displayName", "kind"],
+    properties: {
+      html: { type: "string", minLength: 1 },
+      // #1171 — a list field's listType is one of the types moduleize may
+      // use (the shipped ones, plus a type the caller's field hint names),
+      // as an enum: a free slug let the model invent "menu0demo-x1" and
+      // burn all three attempts on the same repair.
+      fields: moduleizeFieldsJsonSchema([...SHIPPED_LIST_TYPES.keys(), ...extraListTypes]),
+      displayName: { type: "string", minLength: 1, maxLength: 128 },
+      // ONLY the two META props moduleize actually parses (see
+      // moduleizeOutputSchema below) — `description` + `kind`. The full
+      // MODULE_META_JSON_SCHEMA_PROPS also carries `type` (the reusable-class
+      // slug the add_module TOOLS use), but moduleize neither explains it in
+      // SYSTEM nor reads it. Forcing an unexplained `type` into the output
+      // schema made the model improvise + fall into a repetition loop
+      // ("header-basic-nav-basic-…" forever) that blew the output budget →
+      // truncated JSON → NoObjectGenerated → 3× fail at temp 0. Dropping it
+      // aligns the request with what moduleize consumes (found via the
+      // generateObject failure log).
+      description: MODULE_META_JSON_SCHEMA_PROPS.description,
+      kind: MODULE_META_JSON_SCHEMA_PROPS.kind,
+    },
+  } as const;
+}
+
+/** The schema of a call without a field hint (pinned by the schema-budget test). */
+export const MODULEIZE_JSON_SCHEMA = moduleizeJsonSchema();
 
 /** Zod shape the tool-call arguments must satisfy before contract validation. */
 const moduleizeOutputSchema = z.object({
@@ -130,12 +144,19 @@ const SYSTEM = [
   '   A list renders with a MUSTACHE SECTION, never Handlebars (no `{{this}}`, no `{{#each}}`): `{{#field}}…{{/field}}` repeats its block once per entry, and inside it the entry\'s own keys render — "texts": `{{#features}}<li>{{text}}</li>{{/features}}`; "links": `{{#nav_links}}<a href="{{link}}">{{label}}</a>{{/nav_links}}`; "menu": `{{#nav_menu}}<li><a href="{{link}}">{{label}}</a>{{#has_children}}<ul>{{#children}}<li><a href="{{link}}">{{label}}</a></li>{{/children}}</ul>{{/has_children}}</li>{{/nav_menu}}`. Only the section name is a declared field; `{{text}}`, `{{label}}`, `{{link}}`, `{{#children}}` are entry keys.',
   "   Never invent a list type. Repeated parts no shipped type holds (cards of image + heading + text) stay fields of this module, one per visible value, named by role. When the field hint names a `list` field with another `listType`, keep that field (name, listType) and write its section with that type's keys.",
   '4. EVERY field carries `default` = the ORIGINAL value you replaced (the exact heading text, the exact href, …). The copy must never be lost: placements without their own content render these defaults. A list default is its entries with the real text and URLs: "texts" → `[{"node":"text","values":{"text":"Fast"}}]`; "links" → `[{"node":"link","values":{"label":"Home","link":{"href":"/"}}}]`; "menu" → `[{"node":"entry","values":{"label":"Products","link":{"href":"/products"}},"children":[{"node":"entry","values":{"label":"Pricing","link":{"href":"/pricing"}}}]}]`.',
+  "   A section named in the user message as a PLUGIN LIST SOURCE is not content: keep it and everything inside it EXACTLY as written (its `{{key}}`-style tags are entry keys the plugin fills per entry), never unroll it into copies and never declare a field for it.",
   "5. Give the module a short displayName, a kind (chrome|hero|content|cta|utility), and a one-line description (what it is + when to use it).",
   "Every `{{field}}` in html MUST have a matching fields[] entry and vice-versa. Return a single JSON object matching the schema (html, fields, displayName, kind, description) — do not reply with prose.",
 ].join("\n");
 
 function userMessage(args: ModuleizeArgs): string {
   const parts = [`HTML to moduleize:\n\n${args.html}`];
+  const sources = pluginSourceSectionsIn(args.html);
+  if (sources.length > 0) {
+    parts.push(
+      `\nPlugin list sources in this HTML (keep each section verbatim, no field): ${sources.map((n) => `{{#${n}}}…{{/${n}}}`).join(", ")}`,
+    );
+  }
   if (args.displayNameHint) parts.push(`\nSuggested displayName: ${args.displayNameHint}`);
   if (args.kindHint) parts.push(`\nSuggested kind: ${args.kindHint}`);
   if (args.fieldsHint && args.fieldsHint.length > 0)
@@ -149,6 +170,7 @@ async function runOnce(
   systemPrompt: string,
   message: string,
   temperature: number,
+  jsonSchema: Record<string, unknown>,
   abortSignal?: AbortSignal,
 ): Promise<{
   args: unknown | undefined;
@@ -161,7 +183,7 @@ async function runOnce(
     const result = await provider.generateObject({
       systemPrompt,
       messages: [{ role: "user", content: message }],
-      jsonSchema: MODULEIZE_JSON_SCHEMA as unknown as Record<string, unknown>,
+      jsonSchema,
       maxTokens: 8192,
       temperature,
       ...(abortSignal ? { abortSignal } : {}),
@@ -186,11 +208,6 @@ async function runOnce(
     };
   }
 }
-
-/** The shipped list types moduleize authors local lists of (it never mints a type). */
-const SHIPPED_LIST_TYPES = new Map(
-  DEFAULT_LIST_TYPES.filter((t) => t.role !== "vocabulary").map((t) => [t.slug, t]),
-);
 
 /**
  * Check every `list` field against the list types moduleize may use and
@@ -237,6 +254,47 @@ function checkListFields(
   return { ok: true, fields: out };
 }
 
+/** Plugin list sources (`{{#consent_categories}}`) the HTML iterates. */
+function pluginSourceSectionsIn(html: string): string[] {
+  const claimed = claimedListSourceNames();
+  return [...claimed].filter((n) => html.includes(`{{#${n}}}`));
+}
+
+/**
+ * #1186 — a plugin list source is data the plugin fills per page; moduleize
+ * must pass its section through untouched. The model unrolled the consent
+ * banner's `{{#consent_categories}}` loop into hard-coded categories with a
+ * field each, cutting the banner off the plugin's list. Returns the repair
+ * message when a source section of the input is missing, changed, or
+ * shadowed by a declared field; null when every one survived verbatim.
+ */
+function unrolledPluginSources(
+  inputHtml: string,
+  outputHtml: string,
+  fields: readonly ModuleField[],
+): string | null {
+  for (const name of pluginSourceSectionsIn(inputHtml)) {
+    const section = sectionOf(inputHtml, name);
+    if (section === null) continue;
+    if (fields.some((f) => f.name === name)) {
+      return `"${name}" is a plugin list source — declare no field for it.`;
+    }
+    if (!outputHtml.includes(section)) {
+      return `the plugin list source section {{#${name}}}…{{/${name}}} was changed or unrolled — keep it exactly as in the input HTML (its inner tags are entry keys the plugin fills), and parametrise only the copy outside it.`;
+    }
+  }
+  return null;
+}
+
+/** The first `{{#name}}…{{/name}}` span in `html`, or null. */
+function sectionOf(html: string, name: string): string | null {
+  const open = html.indexOf(`{{#${name}}}`);
+  if (open < 0) return null;
+  const closer = `{{/${name}}}`;
+  const close = html.indexOf(closer, open);
+  return close < 0 ? null : html.slice(open, close + closer.length);
+}
+
 /**
  * Validate the tool-call args: shape (Zod), the module contract
  * (placeholder ↔ field), then the list fields. Returns the parsed result or a human error string.
@@ -268,6 +326,8 @@ function validate(
     claimedListSourceNames(),
   );
   if (!contract.ok) return { ok: false, error: contract.message };
+  const unrolled = unrolledPluginSources(inputHtml, parsed.data.html, parsed.data.fields);
+  if (unrolled) return { ok: false, error: unrolled };
   const lists = checkListFields(parsed.data.fields, hint);
   if (!lists.ok) return lists;
   // Content-preservation contract: when the input HTML carried visible
@@ -307,6 +367,10 @@ export async function moduleize(args: ModuleizeArgs): Promise<ModuleizeResult> {
   let outputTokens = 0;
   let model = args.provider.model;
   let message = userMessage(args);
+  const hintedListTypes = (args.fieldsHint ?? []).flatMap((f) =>
+    f.kind === "list" ? [f.listType] : [],
+  );
+  const jsonSchema = moduleizeJsonSchema(hintedListTypes) as unknown as Record<string, unknown>;
 
   for (let attempt = 1; attempt <= maxRepairs + 1; attempt++) {
     // First attempt is deterministic (temp 0 — best single-shot quality).
@@ -320,7 +384,7 @@ export async function moduleize(args: ModuleizeArgs): Promise<ModuleizeResult> {
       outputTokens: ot,
       model: m,
       providerError,
-    } = await runOnce(args.provider, SYSTEM, message, temperature, args.abortSignal);
+    } = await runOnce(args.provider, SYSTEM, message, temperature, jsonSchema, args.abortSignal);
     inputTokens += it;
     outputTokens += ot;
     model = m;

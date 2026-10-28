@@ -158,6 +158,53 @@ describe("templates and free regions", () => {
     expect(freeRegions(root, parseMarkup(stripMustache(template)))).toBeNull();
   });
 
+  it("a section inside a tag is optional: dropped by default, kept on request (#1104)", () => {
+    const t =
+      '<div class="wrapc split {{#reverse}}rev{{/reverse}}" data-x="{{^a}}1{{/a}}"><p>{{t}}</p></div>';
+    expect(stripMustache(t)).toBe('<div class="wrapc split " data-x=""><p></p></div>');
+    expect(stripMustache(t, { keepOptionalAttributeText: true })).toBe(
+      '<div class="wrapc split rev" data-x="1"><p></p></div>',
+    );
+    // A section between elements still renders its body once (a list).
+    expect(stripMustache('<ul>{{#items}}<li class="i">{{.}}</li>{{/items}}</ul>')).toBe(
+      '<ul><li class="i"></li></ul>',
+    );
+    // A `>` inside a quoted value or a partial does not end the tag.
+    expect(stripMustache('<a title="x>y" class="{{#on}}on{{/on}}">{{>p}}</a>')).toBe(
+      '<a title="x>y" class=""></a>',
+    );
+    const started = performance.now();
+    stripMustache(`<a ${"{{#x}}".repeat(50_000)}>`);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it("an optional class does not make renders without it free markup (#1104)", () => {
+    const tpl =
+      '<section class="sec"><div class="wrapc split {{#reverse}}rev{{/reverse}}"><h2>{{t}}</h2><div class="body">{{{body}}}</div></div></section>';
+    const template = parseMarkup(stripMustache(tpl));
+    for (const cls of ["wrapc split", "wrapc split rev"]) {
+      const rendered = parseMarkup(
+        `<section class="sec" data-caelo-module-id="m1"><div class="${cls}"><h2>Hi</h2><div class="body"><p>x</p></div></div></section>`,
+      );
+      const root = moduleRoots(rendered)[0];
+      if (!root) throw new Error("no module root");
+      expect(freeRegions(root, template)?.map((n) => n.tag)).toEqual(["p"]);
+    }
+  });
+
+  it("a root whose classes all sit in sections is still checked (#1104)", () => {
+    const tpl =
+      '<div class="{{#moment}}moment{{/moment}}{{^moment}}sec{{/moment}}"><h2>{{t}}</h2><div class="body">{{{body}}}</div></div>';
+    const rendered = parseMarkup(
+      `<div class="sec" data-caelo-module-id="m1"><h2>Hi</h2><div class="body">${chain(["a", "b"])}</div></div>`,
+    );
+    const root = moduleRoots(rendered)[0];
+    if (!root) throw new Error("no module root");
+    const free = freeRegions(root, parseMarkup(stripMustache(tpl)));
+    expect(free).not.toBeNull();
+    expect(outermostPatterns(free ?? []).map((f) => f.node.classes[0])).toEqual(["chain"]);
+  });
+
   it("templateShape fingerprints the template's root element", () => {
     const t = templateShape(
       '<div class="chain">{{#steps}}<div class="step"><span class="n">{{n}}</span><p>{{t}}</p></div><span class="arrow"></span>{{/steps}}</div>',

@@ -44,7 +44,9 @@ export async function cssVarWarningSuffix(
  *
  * A custom property one source defines (`:root { --gutter: … }` in one
  * module) is known to every source in the call — the modules ship together,
- * so another module using it is not drift.
+ * so another module using it is not drift. So is one a layout or template
+ * defines (#1098): their CSS ships on the pages the module renders on, and
+ * the preview's own scan (`pages.render_preview`) counts the whole bundle.
  */
 export async function cssVarWarnings(
   ctx: ExecutionContext,
@@ -57,13 +59,34 @@ export async function cssVarWarnings(
   if (!res.ok) return empty;
   const theme = (res.value as { theme: { tokens: ThemeDocument } | null }).theme;
   if (theme === null) return empty;
+  const chromeCss = await layoutAndTemplateCss(ctx, toolCtx);
+  if (chromeCss === null) return empty;
   const knownVars = [
     ...listThemeCssVarNames(theme.tokens),
-    ...cssList.flatMap((css) => (css ? [...extractCssVarDefinitions(css)] : [])),
+    ...[...cssList, ...chromeCss].flatMap((css) => (css ? [...extractCssVarDefinitions(css)] : [])),
   ];
   return cssList.map((css) =>
     css === undefined || css.trim().length === 0
       ? ""
       : (formatUnknownCssVarWarning(scanCssVars({ css, knownVars })) ?? ""),
   );
+}
+
+/**
+ * The CSS of every layout and template the caller's branch sees, or null
+ * when either read fails — then no warning is better than a false one.
+ */
+async function layoutAndTemplateCss(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+): Promise<string[] | null> {
+  const [layouts, templates] = await Promise.all([
+    execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.list", {}),
+    execute(toolCtx.registry, toolCtx.adapter, ctx, "templates.list", {}),
+  ]);
+  if (!layouts.ok || !templates.ok) return null;
+  return [
+    ...(layouts.value as { layouts: { css: string }[] }).layouts.map((l) => l.css),
+    ...(templates.value as { templates: { css: string }[] }).templates.map((t) => t.css),
+  ];
 }

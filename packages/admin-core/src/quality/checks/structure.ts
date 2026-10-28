@@ -410,9 +410,13 @@ function layoutCss(
   const findings: Finding[] = [];
   for (const layout of layouts) {
     const own = new Set(
-      parseMarkup(stripMustache(layout.html)).flatMap(function all(n): string[] {
-        return [...n.classes, ...n.children.flatMap(all)];
-      }),
+      // Every class the layout CAN render — an optional `{{#s}}cls{{/s}}`
+      // class is still the layout's own.
+      parseMarkup(stripMustache(layout.html, { keepOptionalAttributeText: true })).flatMap(
+        function all(n): string[] {
+          return [...n.classes, ...n.children.flatMap(all)];
+        },
+      ),
     );
     const specific: string[] = [];
     for (const cls of selectorClasses(layout.css)) {

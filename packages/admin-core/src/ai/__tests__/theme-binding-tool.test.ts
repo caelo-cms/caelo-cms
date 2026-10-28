@@ -39,6 +39,8 @@ function toolCtxRecording(opInputs: Record<string, unknown>[]): ToolContext {
     // execute() calls runOperation(op, ctx, parsedInput).
     runOperation: async (op: { name: string }, _ctx: unknown, input: unknown) => {
       if (op.name === "themes.get_active") return ok({ theme: { tokens: TOKENS } });
+      if (op.name === "layouts.list") return ok({ layouts: [] });
+      if (op.name === "templates.list") return ok({ templates: [] });
       if (op.name === "modules.update_many") {
         const updates = (input as { updates: Record<string, unknown>[] }).updates;
         opInputs.push(...updates);

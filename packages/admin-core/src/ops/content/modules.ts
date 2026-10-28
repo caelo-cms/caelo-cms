@@ -408,7 +408,14 @@ export const createModuleOp = defineOperation({
         succeeded: false,
         resultSummary: `link-canonicalisation: ${linkCanon.issues.length} issue(s)`,
       });
-      return err({ kind: "HandlerError", operation: "modules.create", message: linkCanon.message });
+      return err({
+        kind: "HandlerError",
+        operation: "modules.create",
+        message: linkCanon.message,
+        // A link to a page that does not exist: the guard working, not a
+        // Caelo defect — not auto-filed as a bug (#1097).
+        refusal: true,
+      });
     }
     const persistedHtml = linkCanon.value.html as string;
     // Epic #1107 — `list` field defaults: entries validated, ids assigned.
@@ -690,7 +697,14 @@ export const updateModuleOp = defineOperation({
         entityId: input.moduleId,
         resultSummary: `link-canonicalisation: ${linkCanon.issues.length} issue(s)`,
       });
-      return err({ kind: "HandlerError", operation: "modules.update", message: linkCanon.message });
+      return err({
+        kind: "HandlerError",
+        operation: "modules.update",
+        message: linkCanon.message,
+        // A link to a page that does not exist: the guard working, not a
+        // Caelo defect — not auto-filed as a bug (#1097).
+        refusal: true,
+      });
     }
     const persistedHtml = linkCanon.value.html;
     let persistedFields = linkCanon.value.fields;

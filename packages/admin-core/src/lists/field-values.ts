@@ -20,7 +20,7 @@
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import type { ExecutionContext, ListItem } from "@caelo-cms/shared";
+import type { ExecutionContext, ListItem, ListTypeDef } from "@caelo-cms/shared";
 import { pageQueryPartialSchema, TERM_REF_RE, validateListItems } from "@caelo-cms/shared";
 import { canonicaliseLinksForWrite } from "../links/canonicalise.js";
 import { canonicaliseEntryLinks, checkEntryRefs, describeIssues } from "../ops/lists/_shared.js";
@@ -68,7 +68,8 @@ async function normaliseOne(
     if (validated.issues.length > 0) {
       return {
         ok: false,
-        message: `${describeIssues(validated.issues)}. Entries of list type "${field.listType}" take the fields list_types.get shows.`,
+        // #1149 — name the fields right here, not a read the AI must call.
+        message: `${describeIssues(validated.issues)}. Entries of list type "${field.listType}" take: ${describeNodeFields(type.state.definition)} (* = required).`,
       };
     }
     const n = validated.items.length;
@@ -217,4 +218,14 @@ export async function normaliseListFieldValues(
     values[f.name] = r.value;
   }
   return { ok: true };
+}
+
+/** `link {label*, link*}; …` — each node kind with its fields, `*` = required. */
+function describeNodeFields(def: ListTypeDef): string {
+  return Object.entries(def.nodes)
+    .map(
+      ([kind, n]) =>
+        `${kind} {${n.fields.map((f) => `${f.name}${f.required ? "*" : ""}`).join(", ")}}`,
+    )
+    .join("; ");
 }

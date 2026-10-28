@@ -539,7 +539,9 @@ async function addTemplateToPageType(
         error: {
           kind: "HandlerError",
           operation,
-          message: `no page type "${pageTypeSlug}" — the site has ${known.join(", ") || "none"}. Use one of those, or create it first (page_types.upsert_many).`,
+          // #1177 — a page type lists at least one template, so it cannot
+          // be created before its first template: name the order that works.
+          message: `no page type "${pageTypeSlug}" — the site has ${known.join(", ") || "none"}. Use one of those, or leave pageType out (the template joins the default page type) and then create "${pageTypeSlug}" with page_types.upsert_many, listing this template's id in its templates.`,
         },
       };
     }

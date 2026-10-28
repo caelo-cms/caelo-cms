@@ -13,6 +13,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { createTemplateTool } from "../ai/tools/create-template.js";
+import type { ToolContext } from "../ai/tools/dispatch.js";
 import { loadListRenderData } from "../lists/load.js";
 import { registerAdminOps } from "../register.js";
 
@@ -372,6 +374,39 @@ describe("#1107 page types", () => {
       pageType: `${PFX}no-such-type`,
     });
     expect(bad).toContain("no page type");
+
+    // #1177 — the error names the order that works, and following it works:
+    // a page type needs a template, so the template comes first.
+    expect(bad).toContain("leave pageType out");
+    const viaTool = await createTemplateTool.handler(
+      SYS,
+      {
+        slug: `${PFX}orphan`,
+        displayName: "Orphan",
+        html: "<main></main>",
+        pageType: `${PFX}no-such-type`,
+      },
+      { registry, adapter } as unknown as ToolContext,
+    );
+    expect(viaTool.content).toContain("upsert_page_types_many");
+    expect(viaTool.content).not.toContain("page_types.upsert_many");
+    const first = await op<{ templateId: string }>(SYS, "templates.create", {
+      slug: `${PFX}article-tpl`,
+      displayName: "Article",
+      html: '<main><caelo-slot name="content"></caelo-slot></main>',
+    });
+    const created = await op<{ pageTypes: { slug: string }[] }>(SYS, "page_types.upsert_many", {
+      pageTypes: [
+        {
+          slug: `${PFX}article`,
+          name: "Article",
+          purpose: "Long-form articles.",
+          templates: [first.templateId],
+          defaultTemplate: first.templateId,
+        },
+      ],
+    });
+    expect(created.pageTypes[0]?.slug).toBe(`${PFX}article`);
   });
 
   it("stamps first_published_at once, on the first production publish only", async () => {

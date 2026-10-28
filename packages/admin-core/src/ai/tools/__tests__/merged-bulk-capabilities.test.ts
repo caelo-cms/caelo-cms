@@ -66,7 +66,12 @@ function toolCtx(handlers: Record<string, Handler>, calls: { op: string; input: 
   return { adapter, registry } as ToolContext;
 }
 
-const themed = { "themes.get_active": () => ok({ theme: { tokens: TOKENS } }) };
+const themed = {
+  "themes.get_active": () => ok({ theme: { tokens: TOKENS } }),
+  // The css-var check also reads the vars layouts and templates define (#1098).
+  "layouts.list": () => ok({ layouts: [] }),
+  "templates.list": () => ok({ templates: [] }),
+};
 
 describe("update_modules_many — ported edit_module capabilities", () => {
   it("binds each item's css to the theme before the write and reports it per item", async () => {

@@ -143,11 +143,11 @@ export function formatUnknownCssVarWarning(unknown: readonly UnknownCssVar[]): s
     const hint = u.suggestion !== null ? ` (did you mean \`${u.suggestion}\`?)` : "";
     const fallback = u.hasFallback
       ? " — its hardcoded fallback is what visitors will see, detached from the theme"
-      : " — the declaration is invalid and the property won't apply";
+      : " — nothing defines it, so the property won't apply";
     return `\`${u.name}\`${hint}${fallback}`;
   });
   return (
-    `⚠️ Unknown CSS vars (the active theme does not emit them): ${parts.join("; ")}. ` +
-    "Use the exact names from the `## Theme` inventory, or define the custom property in this CSS if it's intentional."
+    `⚠️ Unknown CSS vars (neither the active theme nor any layout or template CSS defines them): ${parts.join("; ")}. ` +
+    "Use the exact token names (`get_theme`), or define the custom property in this CSS if it's intentional."
   );
 }
