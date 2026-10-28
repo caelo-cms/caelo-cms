@@ -17,7 +17,7 @@
    */
 
   import { Check, ChevronDown, Copy } from "lucide-svelte";
-  import { enhance } from "$app/forms";
+  import { applyAction, enhance, type SubmitFunction } from "$app/forms";
   import { toast } from "svelte-sonner";
   import { Alert, AlertDescription, AlertTitle } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -35,6 +35,7 @@
   import CloudShellUpgrade from "#lib/components/updates/CloudShellUpgrade.svelte";
   import PasswordConfirmDialog from "#lib/components/updates/PasswordConfirmDialog.svelte";
   import UpdateTimeline from "#lib/components/updates/UpdateTimeline.svelte";
+  import { thrownErrorAsFailure } from "#lib/thrown-error-message.js";
   import {
     autoUpdateModeLine,
     checkedAgo,
@@ -54,9 +55,16 @@
   let continueOpen = $state(false);
   /** #868 — "Skip this time" for a scheduled automatic install. */
   let skipOpen = $state(false);
-  /** A wrong or missing password: the dialog it was typed into opens again with the message. */
+  /**
+   * A wrong or missing password, or an error the server threw (a form
+   * token that no longer verifies): the dialog it came from opens again
+   * with the message.
+   */
   const stepUpError = $derived(
-    form && "stepUpRequired" in form && form.stepUpRequired && "action" in form
+    form &&
+      "action" in form &&
+      (("stepUpRequired" in form && form.stepUpRequired) ||
+        ("thrownError" in form && form.thrownError))
       ? { action: form.action as string, error: form.error as string }
       : null,
   );
@@ -66,6 +74,42 @@
     if (stepUpError?.action === "continueUpdate") continueOpen = true;
     if (stepUpError?.action === "skipScheduled") skipOpen = true;
   });
+
+  type DialogAction = "install" | "cancel" | "continueUpdate" | "skipScheduled";
+  function closeDialog(action: DialogAction): void {
+    if (action === "install") confirmOpen = false;
+    else if (action === "cancel") cancelOpen = false;
+    else if (action === "continueUpdate") continueOpen = false;
+    else skipOpen = false;
+  }
+
+  /**
+   * Submits a password dialog's form in place, so what goes wrong shows in
+   * that dialog instead of SvelteKit's error page: a wrong password comes
+   * back as a failure that keeps the dialog open, and an error the server
+   * throws (a CSRF token that no longer verifies) is shown the same way.
+   * Success and any other failure close the dialog: the result shows on the
+   * page, under the status card. The page data is reloaded in every case,
+   * as the plain form post did: a failure can come after the request was
+   * recorded (the upgrader could not be started), and the status card and
+   * history must show that attempt.
+   */
+  function submitInDialog(action: DialogAction): SubmitFunction {
+    return () =>
+      async ({ result, update }) => {
+        if (result.type === "error") {
+          await applyAction(thrownErrorAsFailure(result, action));
+          return;
+        }
+        await update({ refreshAll: true });
+        if (
+          result.type === "success" ||
+          (result.type === "failure" && result.data?.stepUpRequired !== true)
+        ) {
+          closeDialog(action);
+        }
+      };
+  }
 
   const status = $derived(data.status);
 
@@ -242,7 +286,7 @@
           />
         {/key}
         {#if action.kind === "timeline" && action.cancellable && latestRequest.status === "pending"}
-          <form id="cancel-update-form" method="post" action="?/cancel">
+          <form id="cancel-update-form" method="post" action="?/cancel" use:enhance={submitInDialog("cancel")}>
             <input type="hidden" name="_csrf" value={data.csrfToken} />
             <input type="hidden" name="requestId" value={latestRequest.id} />
           </form>
@@ -294,7 +338,12 @@
             </span>
           </div>
           {#if pageState.secondary?.kind === "skip"}
-            <form id="skip-scheduled-form" method="post" action="?/skipScheduled">
+            <form
+              id="skip-scheduled-form"
+              method="post"
+              action="?/skipScheduled"
+              use:enhance={submitInDialog("skipScheduled")}
+            >
               <input type="hidden" name="_csrf" value={data.csrfToken} />
               <input type="hidden" name="version" value={pageState.secondary.version} />
             </form>
@@ -320,7 +369,12 @@
             prominent
           />
         {:else if action.kind === "continue" && latestRequest}
-          <form id="continue-update-form" method="post" action="?/continueUpdate">
+          <form
+            id="continue-update-form"
+            method="post"
+            action="?/continueUpdate"
+            use:enhance={submitInDialog("continueUpdate")}
+          >
             <input type="hidden" name="_csrf" value={data.csrfToken} />
             <input type="hidden" name="requestId" value={latestRequest.id} />
           </form>
@@ -601,7 +655,7 @@
 </div>
 
 {#if installVersion}
-  <form id="install-form" method="post" action="?/install">
+  <form id="install-form" method="post" action="?/install" use:enhance={submitInDialog("install")}>
     <input type="hidden" name="_csrf" value={data.csrfToken} />
     <input type="hidden" name="version" value={installVersion} />
   </form>

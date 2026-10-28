@@ -511,6 +511,87 @@ test("five wrong passwords for an update action sign the session out", async ({ 
   await expect(page).toHaveURL(/\/login/);
 });
 
+test("regression: a form token that no longer verifies shows in the dialog, not as the error page", async ({
+  page,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await page.getByTestId("open-install-dialog").click();
+  // What a tab open for hours sent before the token refresh existed: a
+  // token signed long ago.
+  await page.locator('#install-form input[name="_csrf"]').evaluate((el: HTMLInputElement) => {
+    el.value = "1000.bm9uY2U.c2ln";
+  });
+  const dialog = page.getByTestId("install-dialog");
+  await dialog.getByTestId("install-dialog-password").fill(OWNER_PASSWORD);
+  await dialog.getByTestId("install-dialog-submit").click();
+  await expect(dialog.getByTestId("install-dialog-error")).toHaveText(
+    "This could not be sent (CSRF token mismatch). Reload the page and try again.",
+  );
+  await expect(page).toHaveURL("/settings/updates");
+  await expect(card(page)).toBeVisible();
+  await expect(page.getByTestId("update-timeline")).toHaveCount(0);
+  // The submit button is usable again (the answer settled its loading state).
+  await expect(dialog.getByTestId("install-dialog-submit")).toBeEnabled();
+});
+
+test("regression: a tab open past half the token's lifetime gets a fresh token, keeps what was typed, and installs", async ({
+  page,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  await page.clock.install();
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  const token = page.locator('#install-form input[name="_csrf"]');
+  const before = await token.inputValue();
+
+  await page.getByTestId("open-install-dialog").click();
+  const dialog = page.getByTestId("install-dialog");
+  await dialog.getByTestId("install-dialog-password").fill(OWNER_PASSWORD);
+
+  // The refresh asks for one token and reruns no server load.
+  const requests: string[] = [];
+  page.on("request", (r) => requests.push(new URL(r.url()).pathname));
+  await page.clock.fastForward("31:00");
+  await expect(token).not.toHaveValue(before);
+  expect(requests.filter((p) => p === "/_caelo/csrf-token")).toHaveLength(1);
+  expect(requests.filter((p) => p.endsWith("__data.json"))).toHaveLength(0);
+  // Mid-typing state survives the refresh.
+  await expect(dialog.getByTestId("install-dialog-password")).toHaveValue(OWNER_PASSWORD);
+
+  await dialog.getByTestId("install-dialog-submit").click();
+  await expect(card(page)).toHaveAttribute("data-state", "in_progress");
+});
+
+test("regression: an install whose job could not start shows the recorded attempt without a reload", async ({
+  page,
+  baseURL,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.context().addCookies([
+    {
+      name: "caelo_e2e_upgrader_run",
+      value: "start_fails",
+      url: baseURL ?? "http://localhost:4173",
+    },
+  ]);
+  await page.goto("/settings/updates");
+  await expect(page.getByTestId("section-history")).toHaveCount(0);
+  await page.getByTestId("open-install-dialog").click();
+  const dialog = page.getByTestId("install-dialog");
+  await dialog.getByTestId("install-dialog-password").fill(OWNER_PASSWORD);
+  await dialog.getByTestId("install-dialog-submit").click();
+  await expect(page.getByTestId("install-error")).toContainText(
+    "The upgrader could not be started: e2e stand-in",
+  );
+  await expect(dialog).toHaveCount(0);
+  // The page data was reloaded: the recorded attempt is in the history.
+  await expect(page.getByTestId("history-line")).toContainText("1 entry");
+  await page.context().clearCookies({ name: "caelo_e2e_upgrader_run" });
+});
+
 test("interrupted: a run refused before any change says so and never reads 'Finished'", async ({
   page,
 }) => {
@@ -1070,6 +1151,28 @@ test("Automatic updates: collapsed with a summary; each change confirmed with th
   );
   await expect(policyCard.getByTestId("update-emails")).toContainText("Not sent: no email set up");
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-reset", E2E_EMAIL: REVIEWER_EMAIL });
+});
+
+test("regression: an automatic-update change with a stale form token shows it in the dialog and keeps the edit", async ({
+  page,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-reset", E2E_EMAIL: REVIEWER_EMAIL });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await openSection(page, "section-auto-updates");
+  const policyCard = page.getByTestId("auto-update-policy");
+  await policyCard.getByTestId("policy-mode-auto").check();
+  await page.locator('#policy-form input[name="_csrf"]').evaluate((el: HTMLInputElement) => {
+    el.value = "1000.bm9uY2U.c2ln";
+  });
+  await policyCard.getByTestId("save-policy").click();
+  await confirmPolicy(page);
+  await expect(page.getByTestId("policy-dialog-error")).toHaveText(
+    "This could not be sent (CSRF token mismatch). Reload the page and try again.",
+  );
+  await expect(page).toHaveURL("/settings/updates");
+  await expect(policyCard.getByTestId("policy-mode-auto")).toBeChecked();
 });
 
 test("a Reviewer reads the automatic-update policy but cannot change it", async ({ page }) => {

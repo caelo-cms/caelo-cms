@@ -9,7 +9,8 @@
  * Token shape: `<timestampMs>.<nonceB64>.<hmacB64>` — all url-safe.
  */
 
-const TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
+/** How long a form token verifies after it was signed (1 hour). */
+export const CSRF_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 function urlBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -49,7 +50,7 @@ export async function verifyCsrfToken(secret: string, token: string): Promise<bo
   if (!tsRaw || !nonce || !sigB64) return false;
   const ts = Number(tsRaw);
   if (!Number.isFinite(ts)) return false;
-  if (Date.now() - ts > TOKEN_TTL_MS) return false;
+  if (Date.now() - ts > CSRF_TOKEN_TTL_MS) return false;
   if (Date.now() - ts < -5_000) return false; // guard against clock skew abuse
 
   const expected = await hmacSha256(secret, `${tsRaw}.${nonce}`);
