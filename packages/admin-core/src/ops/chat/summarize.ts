@@ -102,7 +102,7 @@ export const summarizeChatOp = defineOperation({
       SELECT id::text AS id, role, content, tool_calls, tool_call_id, created_at
       FROM chat_messages
       WHERE chat_session_id = ${input.chatSessionId}::uuid
-      ORDER BY created_at ASC
+      ORDER BY created_at ASC, seq ASC
     `)) as unknown as RawMessage[];
 
     // Build tool_call_id → tool_name lookup from assistant messages.
