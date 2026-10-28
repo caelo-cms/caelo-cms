@@ -41,7 +41,7 @@ let pageId = "";
 let videoModuleId = "";
 
 /** What the fixture plugin currently withholds. Mutated per test. */
-let verdicts: Record<string, { reason: string; placeholderModuleSlug: string }> = {};
+let verdicts: Record<string, Record<string, unknown>> = {};
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -220,6 +220,46 @@ describe("#450 — module deferrals through the preview op", () => {
     expect(html).toContain(".t450d{}");
     expect(html.indexOf("youtube.com")).toBeGreaterThan(
       html.indexOf("<template data-caelo-deferred-content>"),
+    );
+  });
+
+  it("shows an omitted module's editor notice in the preview, never its content", async () => {
+    verdicts = {
+      [videoModuleId]: {
+        reason: "unclassified",
+        omit: true,
+        editorNotice: { html: "<div data-t450-notice>Hidden from visitors</div>", css: ".t450n{}" },
+      },
+    };
+    const html = await renderPage();
+    expect(html).toContain("data-t450-notice");
+    expect(html).toContain(".t450n{}");
+    expect(html).not.toContain("youtube.com");
+  });
+
+  it("gives a build nothing for an omitted module", async () => {
+    // The notice is for the operator; a visitor gets no placeholder they
+    // could not act on, and no parked copy nothing would ever release.
+    verdicts = {
+      [videoModuleId]: {
+        reason: "unclassified",
+        omit: true,
+        editorNotice: { html: "<div data-t450-notice>Hidden</div>", css: "" },
+      },
+    };
+    const resolved = await resolveModuleDeferrals([videoCandidate()], MAIN_RENDER);
+    expect(resolved.get(videoModuleId)).toEqual({
+      pluginSlug: "t450-gate",
+      reason: "unclassified",
+      omit: true,
+      editorNotice: null,
+    });
+  });
+
+  it("rejects an omit verdict without an editor notice", async () => {
+    verdicts = { [videoModuleId]: { reason: "unclassified", omit: true } };
+    expect(resolveModuleDeferrals([videoCandidate()], MAIN_RENDER)).rejects.toThrow(
+      /invalid verdict/,
     );
   });
 

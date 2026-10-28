@@ -171,6 +171,7 @@ export const renderPagePreviewOp = defineOperation({
     const renderScope = {
       chatBranchId: chatBranchId ?? null,
       onPluginFailure: pluginFailureSink.onPluginFailure,
+      editorPreview: true,
     };
     // v0.9.0 — branch-aware preview. The iframe shows the caller's
     // branched-create pages / templates / layouts (in addition to
@@ -1061,7 +1062,9 @@ export const renderPagePreviewOp = defineOperation({
     // #450 — which of this page's modules is a plugin withholding? The
     // editor has to see the placeholder the visitor will see; a module
     // that renders here and is gated on the live site would leave the
-    // operator styling something nobody is shown yet.
+    // operator styling something nobody is shown yet. A module the
+    // visitor gets nothing for shows the plugin's editor notice instead
+    // (renderScope.editorPreview), so its absence is explained here.
     // The gate judges the content about to render, not a verdict
     // recorded before the latest edit. Page modules arrive with their
     // content values already substituted into `html` (by
