@@ -485,8 +485,8 @@ describe("P6 deploy.trigger", () => {
     }
   });
 
-  it("#1003 a run that cannot start the generator still records its timings", async () => {
-    setDeployBridge(null);
+  it("#1003 a run whose generator cannot start still records its timings", async () => {
+    process.env.CAELO_GENERATOR_CLI = join(testRoot, "no-such-generator-cli.ts");
     try {
       const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
         targetName: "staging",
@@ -495,14 +495,14 @@ describe("P6 deploy.trigger", () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect("message" in result.error ? String(result.error.message) : "").toContain(
-        "deploy-bridge not configured",
+        "generator failed",
       );
       const timed = await latestRunTimings();
       expect(timed.status).toBe("failed");
       expect(timed.phases).toEqual(["prepare", "generator"]);
       expect(timed.spanCoversSteps).toBe(true);
     } finally {
-      setDeployBridge({ registry, adapter });
+      delete process.env.CAELO_GENERATOR_CLI;
     }
   });
 

@@ -421,6 +421,12 @@ export async function generateSite(args: {
   publishAt: string;
   /** Optional progress callback fired after each page is written. */
   onProgress?: ProgressCallback;
+  /**
+   * #1211 — fired right before the build is mirrored into `current/`
+   * (only when `syncCurrent` is on): from then on the build is being
+   * published and must not be stopped halfway.
+   */
+  onServing?: () => void;
   /** P13 — adapter handle so the plugin render pass can read +
    *  upsert `static_bakes` outside the page-build transaction. */
   adapter: import("@caelo-cms/query-api").DatabaseAdapter;
@@ -457,6 +463,14 @@ export async function generateSite(args: {
    * nothing reads `current/`.
    */
   syncCurrent?: boolean;
+  /**
+   * How many builds to keep under `<outDir>/builds/` (default
+   * {@link DEFAULT_RETAINED_BUILDS}: self-hosted rolls back to them). #1211
+   * — 0 prunes nothing here: a cloud publisher uploads the build and the
+   * admin deletes it right after, so no build stays in the container's
+   * `/tmp` (memory on Cloud Run), and pruning would race a parallel build.
+   */
+  retainBuilds?: number;
 }): Promise<GenerateResult> {
   const start = Date.now();
   const timer = new PhaseTimer();
@@ -1291,16 +1305,22 @@ export async function generateSite(args: {
   // changes. The `builds/<runId>/` archive stays for content-addressed
   // history and for `deploy.rollback` to copy back when invoked.
   if (args.syncCurrent !== false) {
+    // #1211 — from here the build is being published: the caller may no
+    // longer stop it (cli.ts serving-guard.ts).
+    args.onServing?.();
     await mkdir(currentLink, { recursive: true });
     await syncContents(buildDir, currentLink);
     timer.lap("sync-current");
   }
 
-  // Best-effort old-build retention: keep the most recent 5, remove the
+  // Best-effort old-build retention: keep the most recent ones, remove the
   // rest. Failures are swallowed because they don't affect the live
   // serving target (which is `current/`).
-  await pruneOldBuilds(buildsDir, runId, 5);
-  timer.lap("prune");
+  const retainBuilds = args.retainBuilds ?? DEFAULT_RETAINED_BUILDS;
+  if (retainBuilds > 0) {
+    await pruneOldBuilds(buildsDir, runId, retainBuilds);
+    timer.lap("prune");
+  }
 
   return {
     pageCount: pageRows.length,
@@ -1311,6 +1331,9 @@ export async function generateSite(args: {
     unpublishedLinkTargets,
   };
 }
+
+/** Builds a self-hosted target keeps under `builds/` for rollback. */
+export const DEFAULT_RETAINED_BUILDS = 5;
 
 async function pruneOldBuilds(buildsDir: string, keepRunId: string, retain: number): Promise<void> {
   try {

@@ -1,0 +1,85 @@
+-- SPDX-License-Identifier: MPL-2.0
+--
+-- 0393 — a Stage holds no database transaction while it builds (#1211).
+--
+-- `deploy.trigger` used to run the generator and the provider upload inside
+-- one transaction: a pooled connection sat `idle in transaction` for the
+-- whole Stage, and the run's own progress writes took a second connection
+-- from the same pool — on production (2026-10-28) a 34 s Stage took 852 s
+-- while the pool was exhausted, and the chat stayed locked (#1204, #1209).
+-- Two transaction-scoped advisory locks only worked BECAUSE that transaction
+-- stayed open; with short transactions per step they become lease rows:
+--
+--   deploy_runs.lease_expires_at — the run's liveness. A running build
+--     renews it on a heartbeat. A `running` row whose lease lapsed has no
+--     process behind it any more (crash, instance replaced) and is marked
+--     failed by the next run, like the advisory lock it replaces told. NULL
+--     for runs that still hold their transaction (Publish live, plugin-data
+--     builds: they keep the per-run advisory lock until they move too).
+--
+--   deploy_leases — named leases that order publishes across instances.
+--     'staging-publication': which staged build the staging host serves; a
+--     Stage holds it from its preview upload to recording the origin,
+--     Publish live and the preview keep-alive take its row lock inside
+--     their transaction. The holder is the deploy run, released when the
+--     run finishes or fails.
+--
+-- Why a lease may expire: these are not the cross-branch entity locks of
+-- CLAUDE.md §2 (which never expire on a timer, so no editor's change is
+-- silently overwritten). They guard a running process. A process that died
+-- cannot release anything, so the lease lapses once its heartbeat stops —
+-- the same rule as chat_turn_leases (0247). Expiry is judged on the
+-- database clock, never an instance's wall clock.
+--
+-- Expand-safe: a new table, a nullable column and a guard. The previous
+-- release never reads either. During a rolling update this release also
+-- honours the previous release's advisory publication lock and waits for
+-- its in-flight site builds before a Stage takes the lease
+-- (admin-core deploy/staging-publication-lock.ts).
+--
+-- The guard (deploy_runs_keep_leased_running): the previous release tells a
+-- live run only by its advisory lock, which a lease-holding run never
+-- takes, so its `deploy.begin_run` sweep would mark every running Stage of
+-- this release failed. A row whose lease is still live therefore cannot be
+-- ended by an update that leaves the lease as it is; that update skips the
+-- row. Every writer of this release that ends a leased run clears its lease
+-- in the same statement (finish, fail, the sweep of a lapsed lease).
+
+BEGIN;
+SET LOCAL caelo.actor_kind = 'system';
+
+ALTER TABLE deploy_runs ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS deploy_leases (
+  name           text PRIMARY KEY CHECK (name IN ('staging-publication')),
+  -- The run holding the lease. Free when NULL or when expires_at passed.
+  holder_run_id  uuid REFERENCES deploy_runs(id) ON DELETE SET NULL,
+  acquired_at    timestamptz,
+  expires_at     timestamptz
+);
+
+CREATE OR REPLACE FUNCTION deploy_runs_keep_leased_running() RETURNS trigger AS $$
+BEGIN
+  IF OLD.status = 'running' AND NEW.status <> 'running'
+     AND OLD.lease_expires_at IS NOT NULL
+     AND OLD.lease_expires_at > clock_timestamp()
+     AND NEW.lease_expires_at IS NOT DISTINCT FROM OLD.lease_expires_at THEN
+    RETURN NULL;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS deploy_runs_keep_leased_running ON deploy_runs;
+CREATE TRIGGER deploy_runs_keep_leased_running
+  BEFORE UPDATE ON deploy_runs
+  FOR EACH ROW EXECUTE FUNCTION deploy_runs_keep_leased_running();
+
+ALTER TABLE deploy_leases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE deploy_leases FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS deploy_leases_authenticated_scope ON deploy_leases;
+CREATE POLICY deploy_leases_authenticated_scope ON deploy_leases
+  USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL)
+  WITH CHECK (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
+
+COMMIT;

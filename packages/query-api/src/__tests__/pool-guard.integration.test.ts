@@ -211,7 +211,7 @@ describe("nested checkout guard", () => {
   });
 
   it("lets an allowlisted holder nest, and lifts the 0392 timeouts for its transaction only", async () => {
-    const holder = "deploy.trigger";
+    const holder = "deploy.promote";
     expect(NESTED_CHECKOUT_ALLOWLIST.get(holder)?.noSessionTimeouts).toBe(true);
     const inside = await adapter.withAdminTransaction(
       ctx,

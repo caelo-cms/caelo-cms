@@ -16,9 +16,11 @@
  *
  *   stdin, first line — the config:
  *     { adminDatabaseUrl, publicDatabaseUrl, target, runId, repoRoot, publishAt,
- *       changedPageIds?, siteBaseUrlOverride?, syncCurrent? }
+ *       changedPageIds?, siteBaseUrlOverride?, syncCurrent?, retainBuilds? }
  *   stdout — progress and the outcome:
  *     {kind:"progress", pagesDone, pagesTotal}
+ *     {kind:"serving"}  the build is being mirrored into current/: a
+ *                       SIGTERM from now on is ignored (serving-guard.ts)
  *     {kind:"done", pageCount, fileCount, durationMs, buildDir}
  *     {kind:"error", message}
  *   stdout → stdin — #605 plugin calls answered by the admin:
@@ -43,6 +45,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { type DeployTarget, generateSite } from "./generate.js";
+import { installServingGuard } from "./serving-guard.js";
 
 interface CliInput {
   adminDatabaseUrl: string;
@@ -62,6 +65,8 @@ interface CliInput {
   siteBaseUrlOverride?: string;
   /** #650 — see generateSite's `syncCurrent`. */
   syncCurrent?: boolean;
+  /** #1211 — see generateSite's `retainBuilds`. */
+  retainBuilds?: number;
 }
 
 interface PluginResult {
@@ -73,6 +78,9 @@ interface PluginResult {
 }
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
+
+/** #1211 — the admin's Stop ends this process only until the build is being served. */
+const servingGuard = installServingGuard(process);
 
 function emit(line: Record<string, unknown>): void {
   process.stdout.write(`${encodeBuildPayload(line)}\n`);
@@ -147,7 +155,12 @@ async function main(): Promise<void> {
           changedListTypeIds: input.changedListTypeIds,
           siteBaseUrlOverride: input.siteBaseUrlOverride,
           syncCurrent: input.syncCurrent,
+          retainBuilds: input.retainBuilds,
           onProgress: (p) => emit({ kind: "progress", ...p }),
+          onServing: () => {
+            servingGuard.markServing();
+            emit({ kind: "serving" });
+          },
         }),
       // The whole build reads one snapshot; the name puts it on the
       // nested-checkout allowlist (query-api pool-guard.ts).

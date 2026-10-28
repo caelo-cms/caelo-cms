@@ -17,11 +17,13 @@
  *                             page — so the AI never asks twice.
  */
 
+import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import type { classifyStageOp } from "../../ops/quality/classify_stage.js";
 import type { getAuditOp, listAcceptancesOp, listAuditsOp } from "../../ops/quality/read.js";
 import { findingOwner } from "../../quality/platform-audits.js";
 import { droppedSincePrevious } from "../../quality/ratchet.js";
+import { describeError } from "./_describe-error.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
 import {
   formatCheckNotes,
@@ -313,16 +315,153 @@ export async function readUntilSettled<R extends { ok: boolean; value?: unknown 
  */
 export const getQualityAuditTool: typeof readQualityAuditTool = {
   ...readQualityAuditTool,
-  handler: (ctx, input, toolCtx) => {
+  handler: async (ctx, input, toolCtx) => {
     const read = () => readQualityAuditTool.handler(ctx, input, toolCtx);
     if (toolCtx.operatorBrowserAttached === true) return read();
-    return readUntilSettled(read, {
+    const opts = {
       waitMs: AUDIT_WAIT_MS,
       intervalMs: AUDIT_POLL_INTERVAL_MS,
       ...(toolCtx.abortSignal ? { signal: toolCtx.abortSignal } : {}),
-    });
+    };
+    if (!input.deployRunId) return readUntilSettled(read, opts);
+    // #1211 — a Stage that outlasted stage_changes' wait is still building:
+    // wait for its build (and its audit to be queued) first.
+    const runId = input.deployRunId;
+    return readStageAudit(
+      {
+        runId,
+        readRun: async () => {
+          const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "deploy.get_run", {
+            runId,
+          });
+          if (!r.ok) throw new Error(describeError(r.error));
+          return (r.value as { run: StageRun | null }).run;
+        },
+        read,
+      },
+      opts,
+    );
   },
 };
+
+/**
+ * get_quality_audit for a Stage's build run: wait for the build, then for
+ * its audit — both within ONE `waitMs` budget, so the whole call stays
+ * under the MCP client's request timeout however the time splits between
+ * the build and the audit.
+ *
+ * @returns the tool result while the build is not done, else the last
+ *   audit read.
+ */
+export async function readStageAudit<R extends { ok: boolean; value?: unknown }>(
+  args: {
+    readonly runId: string;
+    readonly readRun: () => Promise<StageRun | null>;
+    readonly read: () => Promise<R>;
+  },
+  opts: {
+    readonly waitMs: number;
+    readonly intervalMs: number;
+    readonly signal?: AbortSignal;
+    readonly sleep?: (ms: number) => Promise<void>;
+    readonly now?: () => number;
+  },
+): Promise<R | { ok: boolean; content: string }> {
+  const now = opts.now ?? Date.now;
+  const deadline = now() + opts.waitMs;
+  const build = await waitForStageBuild(
+    args.readRun,
+    async () => {
+      const r = await args.read();
+      return r.ok && (r.value as AuditValue | undefined)?.run != null;
+    },
+    opts,
+  );
+  const blocked = describeStageBuild(args.runId, build);
+  if (blocked) return blocked;
+  return readUntilSettled(args.read, { ...opts, waitMs: Math.max(0, deadline - now()) });
+}
+
+/** What get_quality_audit reads of a Stage's deploy run (deploy.get_run). */
+export interface StageRun {
+  readonly status: "pending" | "running" | "succeeded" | "failed";
+  readonly errorMessage: string | null;
+  readonly progress: { pagesDone: number; pagesTotal: number } | null;
+}
+
+/** Where a Stage's build stood when {@link waitForStageBuild} stopped waiting. */
+type StageBuildState =
+  | { readonly kind: "missing" }
+  | { readonly kind: "running"; readonly run: StageRun }
+  | { readonly kind: "failed"; readonly run: StageRun }
+  | { readonly kind: "audit-pending" }
+  | { readonly kind: "ready" };
+
+/**
+ * Wait while a Stage's build runs, and after it succeeded until its audit
+ * is queued (stage_changes queues it right after the build), within the
+ * same bounded wait as a running audit.
+ */
+export async function waitForStageBuild(
+  readRun: () => Promise<StageRun | null>,
+  auditExists: () => Promise<boolean>,
+  opts: {
+    readonly waitMs: number;
+    readonly intervalMs: number;
+    readonly signal?: AbortSignal;
+    readonly sleep?: (ms: number) => Promise<void>;
+    readonly now?: () => number;
+  },
+): Promise<StageBuildState> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? Date.now;
+  const deadline = now() + opts.waitMs;
+  for (;;) {
+    if (await auditExists()) return { kind: "ready" };
+    const run = await readRun();
+    let state: StageBuildState;
+    if (run === null) state = { kind: "missing" };
+    else if (run.status === "failed") return { kind: "failed", run };
+    else if (run.status === "succeeded") state = { kind: "audit-pending" };
+    else state = { kind: "running", run };
+    if (now() >= deadline || opts.signal?.aborted) return state;
+    await sleep(opts.intervalMs);
+  }
+}
+
+/** The tool result for a Stage build that is not done (null: read the audit). */
+function describeStageBuild(
+  runId: string,
+  state: StageBuildState,
+): { ok: boolean; content: string } | null {
+  switch (state.kind) {
+    case "ready":
+      return null;
+    case "failed":
+      return {
+        ok: false,
+        content: `The Stage's build (run ${runId}) failed, so nothing was staged and there is no quality check: ${state.run.errorMessage ?? "(no reason recorded)"}. Fix that cause, then call stage_changes again.`,
+      };
+    case "running": {
+      const p = state.run.progress;
+      const progress = p ? `: ${p.pagesDone} of ${p.pagesTotal} pages built` : "";
+      return {
+        ok: true,
+        content: `The Stage's build (run ${runId}) is still running${progress}. It continues on the server; do not call stage_changes again. Call get_quality_audit with deployRunId "${runId}" again — it waits for the build and then for its quality check.`,
+      };
+    }
+    case "audit-pending":
+      return {
+        ok: true,
+        content: `The Stage's build (run ${runId}) succeeded; its quality check is being queued. Call get_quality_audit with deployRunId "${runId}" again.`,
+      };
+    case "missing":
+      return {
+        ok: true,
+        content: `No build run ${runId} has started yet: the Stage is still merging the chats' changes, or it failed before its build. Call get_quality_audit with deployRunId "${runId}" again in a minute; if the run still does not exist, call stage_changes again.`,
+      };
+  }
+}
 
 const checkStageInput = z.object({}).strict();
 

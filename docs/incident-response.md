@@ -53,7 +53,9 @@ FROM deploy_runs ORDER BY started_at DESC LIMIT 5;
 
 If `status='failed'`: read `error_message`, fix root cause, then `deploy.trigger` again (admin UI or `bunx cms-provision deploy`).
 
-A Stage or Publish live shows as `status='running'` while it builds (its row is committed when it starts, with `progress` updated about once a second). A run whose process died (crash, restarted instance) stays `running` until the next Stage or Publish live: that one marks it `failed` with "This build stopped without finishing …" — a run still building on another instance holds an advisory lock on its id and is left alone. Nothing a stopped run built was published; start it again. Check the admin's stderr for why it stopped.
+A Stage or Publish live shows as `status='running'` while it builds (its row is committed when it starts, with `progress` updated about once a second). A run whose process died (crash, restarted instance) stays `running` until the next Stage or Publish live: that one marks it `failed` with "This build stopped without finishing …" — a run still building on another instance is left alone (a Stage renews `deploy_runs.lease_expires_at` every 30 s and counts as dead two minutes after its last renewal; a Publish live holds an advisory lock on its id). Nothing a stopped run built was published; start it again. Check the admin's stderr for why it stopped.
+
+A Stage holds no database transaction while it builds and uploads (#1211). Which Stage or Publish live may change what the staging host serves is the `staging-publication` row in `deploy_leases`: `holder_run_id` is the Stage publishing right now, free once `expires_at` passed. A Stage whose caller stopped it (the operator's Stop) ends `failed` with "stopped before it finished" and releases the row at once. An external agent's `stage_changes` answers "still running, build run X" when the build outlasts its wait; the build goes on and `get_quality_audit` with that `deployRunId` reports how it ended.
 
 ### Stage / Publish live slow
 

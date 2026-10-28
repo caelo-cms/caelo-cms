@@ -969,7 +969,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
     return summary;
   },
 
-  async selectStagingPreview({ servedRunId }): Promise<StagingPreviewSelection> {
+  async selectStagingPreview({ servedRunId, retireUntil }): Promise<StagingPreviewSelection> {
     const site = siteName();
     const token = await googleAuthToken();
     const channels = await listRunPreviewChannels(site, token);
@@ -993,6 +993,14 @@ export const firebaseHostingPublisher: StaticPublisher = {
     const notRetired: { preview: string; error: string }[] = [];
     for (const channel of channels) {
       if (channel.id === servedId) continue;
+      if (retireUntil !== undefined && Date.now() >= retireUntil) {
+        notRetired.push({
+          preview: channel.id,
+          error:
+            "not retired: the Stage selecting the served preview could no longer prove it holds the staging publish slot; the next Stage or Publish live retires it",
+        });
+        continue;
+      }
       try {
         await retirePreviewChannel(site, channel, token);
         retired.push(channel.id);

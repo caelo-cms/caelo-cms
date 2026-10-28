@@ -5,7 +5,9 @@ import { dirname } from "node:path";
 import type { ActorKind, ExecutionContext, Result } from "@caelo-cms/shared";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import type { z } from "zod";
+import type { DatabaseAdapter } from "./adapter.js";
 import type { QueryError } from "./errors.js";
+import type { OperationRegistry } from "./registry.js";
 
 /**
  * The database handle a handler receives. We extract it directly from
@@ -25,6 +27,25 @@ export type OperationHandler<I, O> = (
   ctx: ExecutionContext,
   input: I,
   tx: TransactionRunner,
+) => Promise<Result<O, QueryError>>;
+
+/**
+ * What a step-wise operation runs its steps through (see
+ * {@link defineStepwiseOperation}): the registry and adapter of the
+ * `execute()` call that dispatched it, plus that call's abort signal.
+ */
+export interface OperationSteps {
+  readonly registry: OperationRegistry;
+  readonly adapter: DatabaseAdapter;
+  /** The caller stopped the work; the op stops at its next step. */
+  readonly signal?: AbortSignal;
+}
+
+/** The body of a step-wise operation: no transaction, its steps are ops of their own. */
+export type StepwiseOperationHandler<I, O> = (
+  ctx: ExecutionContext,
+  input: I,
+  steps: OperationSteps,
 ) => Promise<Result<O, QueryError>>;
 
 /**
@@ -106,6 +127,14 @@ export interface OperationDefinition<I = unknown, O = unknown> {
    * transaction, the default for every op that only reads and writes.
    */
   readonly transaction?: "none";
+  /**
+   * Set by {@link defineStepwiseOperation} only: `execute()` runs this
+   * instead of opening a transaction around `handler`. A step-wise op is the
+   * detached shape for a body that runs its steps as ops of their own and
+   * needs the caller's registry, adapter and abort signal for that; a
+   * `transaction: "none"` op runs its steps as short transactions instead.
+   */
+  readonly stepwise?: StepwiseOperationHandler<I, O>;
 }
 
 /**
@@ -166,6 +195,60 @@ export function defineOperation<I, O>(def: OperationDefinition<I, O>): Operation
       // still counts as exercised ("was reached", not "succeeded").
       recordOpInvocation(def.name);
       return original(ctx, input, tx);
+    },
+  };
+}
+
+/**
+ * An operation that holds NO transaction while it runs (#1211). Its body
+ * orchestrates foreign work — a subprocess, a provider upload — that may
+ * take minutes, and runs every database step as an op of its own through
+ * `steps` (each one short transaction, committed on its own). Holding one
+ * transaction across that work pinned a pooled connection for the whole
+ * run, and every progress write took a second one from the same pool: the
+ * pool-deadlock class of #1209.
+ *
+ * Dispatched through `execute()` like any op: actor scope, rate limit and
+ * input schema are checked first. There is no transaction to hand a direct
+ * `handler(...)` call, so that call throws.
+ *
+ * @example
+ * export const rebuildOp = defineStepwiseOperation({
+ *   name: "site.rebuild",
+ *   actorScope: ["human", "ai", "system"],
+ *   database: "cms_admin",
+ *   input: z.object({}),
+ *   output: z.object({ runId: z.string() }),
+ *   stepwise: async (ctx, _input, { registry, adapter }) => {
+ *     const started = await execute(registry, adapter, ctx, "site.start_run", {});
+ *     if (!started.ok) return err(started.error);
+ *     // …long work without a transaction, then one short op to finish:
+ *     const finished = await execute(registry, adapter, ctx, "site.finish_run", started.value);
+ *     return finished.ok ? ok(finished.value as { runId: string }) : err(finished.error);
+ *   },
+ * });
+ */
+export function defineStepwiseOperation<I, O>(
+  def: Omit<OperationDefinition<I, O>, "handler" | "stepwise" | "database"> & {
+    readonly database: "cms_admin";
+    readonly stepwise: StepwiseOperationHandler<I, O>;
+  },
+): OperationDefinition<I, O> {
+  const body = def.stepwise;
+  const stepwise: StepwiseOperationHandler<I, O> =
+    process.env.CAELO_OP_COVERAGE === "1"
+      ? (ctx, input, steps) => {
+          recordOpInvocation(def.name);
+          return body(ctx, input, steps);
+        }
+      : body;
+  return {
+    ...def,
+    stepwise,
+    handler: async () => {
+      throw new Error(
+        `operation '${def.name}' holds no transaction (each step is an op of its own): dispatch it through execute(), never call its handler with a transaction`,
+      );
     },
   };
 }

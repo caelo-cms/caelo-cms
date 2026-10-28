@@ -5,6 +5,8 @@ import { err, isErr } from "@caelo-cms/shared";
 import type { DatabaseAdapter } from "./adapter.js";
 import { branchNotFound, firstMalformedBranch, namedBranches } from "./branch-access.js";
 import type { QueryError } from "./errors.js";
+import { isReadOperation } from "./operation.js";
+import { notifyOperationCommitted } from "./post-commit.js";
 import type { OperationRegistry } from "./registry.js";
 
 /**
@@ -27,6 +29,12 @@ export const allowAllRateLimiter: RateLimiter = {
 
 export interface ExecuteOptions {
   readonly rateLimiter?: RateLimiter;
+  /**
+   * #1211 — handed to a step-wise operation (`defineStepwiseOperation`),
+   * which stops at its next step once it aborts. A transactional op runs
+   * to its commit or rollback either way.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -34,6 +42,9 @@ export interface ExecuteOptions {
  *
  *   lookup op → scope-check actor → rate-limit → malformed-branch check →
  *   zod-validate input → adapter runs it in a txn (branch-visibility gate first)
+ *
+ * A step-wise op (`defineStepwiseOperation`) skips the last step: it opens
+ * no transaction and runs its steps as ops of their own.
  *
  * Any step can fail and returns a Result.Err without throwing. A thrown error
  * here is always a real bug (registry corrupt, adapter connection gone).
@@ -78,5 +89,18 @@ export async function execute(
     return err({ kind: "ValidationFailed", issues: parsed.error.issues });
   }
 
+  // #1211 — a step-wise op holds no transaction: each of its steps is an
+  // op of its own, executed (and committed) through the same registry.
+  if (!isReadOperation(op) && op.stepwise) {
+    const result = await op.stepwise(ctx, parsed.data, {
+      registry,
+      adapter,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    // #1215 — like a transactional op that answered ok (adapter.ts): the
+    // change hints hear it, after every step committed.
+    if (result.ok) notifyOperationCommitted(op.name);
+    return result;
+  }
   return adapter.runOperation(op, ctx, parsed.data);
 }

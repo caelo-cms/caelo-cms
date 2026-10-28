@@ -241,8 +241,17 @@ export interface StaticPublisher {
    * that could not be retired are reported in `notRetired`, not thrown:
    * the next selection retries them. Absent on publishers whose staging is
    * not publicly reachable per run.
+   *
+   * `retireUntil` (epoch ms): no preview is retired once that instant has
+   * passed — those are reported in `notRetired`. A Stage passes the end of
+   * the window in which it proved it holds the staging publish slot
+   * (#1211), so it never deletes a preview a later Stage published after
+   * its slot lapsed.
    */
-  selectStagingPreview?(args: { servedRunId: string | null }): Promise<StagingPreviewSelection>;
+  selectStagingPreview?(args: {
+    servedRunId: string | null;
+    retireUntil?: number;
+  }): Promise<StagingPreviewSelection>;
 
   /**
    * #969 — extend the served preview's lifetime again without touching any

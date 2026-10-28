@@ -505,6 +505,22 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
     expect([...fake.channels.keys()]).toEqual(["someone-elses-channel"]);
   });
 
+  it("#1211 selectStagingPreview retires nothing once retireUntil has passed, but keeps the served one", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    for (const runId of ["run-later", "run-late"]) {
+      await firebaseHostingPublisher.publishStaging({ buildDir, runId, target: STAGING });
+    }
+    const r = await firebaseHostingPublisher.selectStagingPreview!({
+      servedRunId: "run-late",
+      retireUntil: Date.now() - 1,
+    });
+    expect(r.retired).toEqual([]);
+    expect(r.notRetired.map((n) => n.preview)).toEqual(["runid-run-later"]);
+    expect(r.notRetired[0]?.error).toContain("staging publish slot");
+    expect([...fake.channels.keys()].sort()).toEqual(["runid-run-late", "runid-run-later"]);
+    expect(r.servedExpiresAt).not.toBeNull();
+  });
+
   it("#908 publishStaging keeps the finite TTL: a Stage that fails before selection leaves nothing beyond a week", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-dies", target: STAGING });

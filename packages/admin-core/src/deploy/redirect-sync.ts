@@ -45,7 +45,7 @@ import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { lockLiveReleases } from "./live-release-lock.js";
 import { resolveOutputRoot } from "./output-root.js";
-import { lockStagingPublication } from "./staging-publication-lock.js";
+import { tryLockStagingPublication } from "./staging-publication-lock.js";
 import { loadStaticPublisher, type StaticPublisher } from "./static-publisher.js";
 
 /** Why a sync ran. */
@@ -150,6 +150,30 @@ export async function requestRedirectSync(
   });
 }
 
+/**
+ * #1211 — mark `targetIds` as behind in the caller's transaction: the build
+ * they serve changed and carries the redirects of its own build time. The
+ * caller pushes the table after its commit (`redirects.sync_provider`), so
+ * no provider I/O runs inside its transaction; should that push fail or
+ * never run, the target stays behind and the worker retries it.
+ */
+export async function markRedirectsBehind(
+  tx: TransactionRunner,
+  targetIds: readonly string[],
+): Promise<void> {
+  if (targetIds.length === 0) return;
+  const ids = sql.join(
+    targetIds.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    INSERT INTO redirect_sync_state (target_id, wanted_revision)
+    SELECT id, 1 FROM deploy_targets WHERE env IN ${SYNC_ENVS} AND id IN (${ids}) ORDER BY id
+    ON CONFLICT (target_id) DO UPDATE
+      SET wanted_revision = redirect_sync_state.wanted_revision + 1, updated_at = now()
+  `);
+}
+
 interface TargetRow {
   id: string;
   name: string;
@@ -171,7 +195,9 @@ interface TargetRow {
  * Takes the live-release lock before any production target and the
  * staging-publication lock before any staging target (that order, as every
  * publish does), so a sync never interleaves with a publish of the same
- * target: whichever runs second sees the other's result.
+ * target: whichever runs second sees the other's result. Staging targets
+ * are skipped (and stay behind) while a Stage holds the staging lease: that
+ * Stage syncs them when it finishes (#1211).
  */
 export async function syncRedirectsInTx(
   tx: TransactionRunner,
@@ -200,11 +226,23 @@ export async function syncRedirectsInTx(
   `)) as unknown as { env: string }[];
   if (envRows.length === 0) return [];
   if (envRows.some((r) => r.env === "production")) await lockLiveReleases(tx);
-  if (envRows.some((r) => r.env === "staging")) await lockStagingPublication(tx);
+  // #1211 — a Stage that is publishing staging right now holds the lease
+  // without a transaction to wait for. Once its run is recorded it syncs the table
+  // as saved by then onto the build it serves, so staging targets are left
+  // behind here (wanted > synced: Settings shows it, the worker retries
+  // should that Stage fail) instead of waiting minutes inside this write.
+  const skipStaging =
+    envRows.some((r) => r.env === "staging") && !(await tryLockStagingPublication(tx)).locked;
+
+  // A skipped staging target's state row is not touched at all: locking it
+  // here would hold it across the provider calls below, and the Stage's own
+  // finish step writes that row (it would wait past lock_timeout and roll
+  // back its publication record).
+  const envs = skipStaging ? sql`('production')` : SYNC_ENVS;
 
   await tx.execute(sql`
     INSERT INTO redirect_sync_state (target_id)
-    SELECT id FROM deploy_targets WHERE env IN ${SYNC_ENVS} ${only("id")} ORDER BY id
+    SELECT id FROM deploy_targets WHERE env IN ${envs} ${only("id")} ORDER BY id
     ON CONFLICT (target_id) DO NOTHING
   `);
   // A new served build carries the redirects of its own build time, so the
@@ -213,7 +251,7 @@ export async function syncRedirectsInTx(
   if (SERVED_BUILD_CHANGED.has(args.trigger)) {
     await tx.execute(sql`
       UPDATE redirect_sync_state SET wanted_revision = wanted_revision + 1, updated_at = now()
-      WHERE target_id IN (SELECT id FROM deploy_targets WHERE env IN ${SYNC_ENVS} ${only("id")})
+      WHERE target_id IN (SELECT id FROM deploy_targets WHERE env IN ${envs} ${only("id")})
     `);
   }
   // The revision first, then the rows (see the module comment).
@@ -221,7 +259,7 @@ export async function syncRedirectsInTx(
     SELECT t.id::text AS id, t.name, t.env, t.out_dir, t.base_url, t.robots_default,
            t.page_url_style, s.wanted_revision, s.failed_attempts
     FROM deploy_targets t JOIN redirect_sync_state s ON s.target_id = t.id
-    WHERE t.env IN ${SYNC_ENVS} ${only("t.id")}
+    WHERE t.env IN ${envs} ${only("t.id")}
     ORDER BY t.id
     FOR UPDATE OF s
   `)) as unknown as TargetRow[];

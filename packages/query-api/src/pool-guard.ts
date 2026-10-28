@@ -67,25 +67,22 @@ export interface AllowlistEntry {
  * chain is let through, every other one throws.
  */
 const ALLOWLIST: readonly AllowlistEntry[] = [
-  // FIXME(issue #1211): Stage holds its op transaction across the generator
-  // run and the upload, reports progress through nested ops, and waits on
-  // the staging-publication lock behind another Stage for as long as that
-  // one takes — longer than any role timeout of migration 0392 allows.
-  { holder: "deploy.trigger", issue: 1211, nestedCheckouts: true, noSessionTimeouts: true },
-  // FIXME(issue #1211): Publish live — same shape as the Stage (nested
-  // `deploy.begin_run`, the live build + upload inside the op transaction).
-  { holder: "deploy.promote", issue: 1211, nestedCheckouts: true, noSessionTimeouts: true },
-  // FIXME(issue #1211): "Publish anyway" past a failed quality check runs
+  // FIXME(issue #1225): Publish live holds its op transaction across the
+  // live build + upload (nested `deploy.begin_run`), and waits for a Stage
+  // that is publishing for longer than any role timeout of migration 0392
+  // allows. The Stage (`deploy.trigger`) holds no transaction since #1211.
+  { holder: "deploy.promote", issue: 1225, nestedCheckouts: true, noSessionTimeouts: true },
+  // FIXME(issue #1225): "Publish anyway" past a failed quality check runs
   // the Publish live handler inside these two ops' transactions.
   {
     holder: "quality_audits.publish_anyway",
-    issue: 1211,
+    issue: 1225,
     nestedCheckouts: true,
     noSessionTimeouts: true,
   },
   {
     holder: "quality_audits.execute_proposal",
-    issue: 1211,
+    issue: 1225,
     nestedCheckouts: true,
     noSessionTimeouts: true,
   },
