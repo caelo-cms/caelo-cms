@@ -191,10 +191,17 @@ export const createChatSessionOp = defineOperation({
     const templateId = input.templateId ?? null;
     const subagentRole = input.subagentRole ?? null;
 
-    // v0.5.8 — per-page chat gate. Two parallel chats editing the same
-    // page would either compete on the per-page lock (when both try to
-    // write) or silently diverge until publish. Reject creation upfront
-    // so the operator gets pointed at the existing chat instead.
+    // v0.5.8 — per-page chat gate: one open page chat per operator, so a
+    // second "Live edit" on the same page resumes the first instead of
+    // splitting the operator's work across two chats.
+    //
+    // #1201 — the gate holds only a chat the caller can resume: their own,
+    // top-level, neither published nor archived nor discarded. That is the
+    // same set `chat.list_sessions` offers for the page, so /edit's resume
+    // step always finds what the gate refuses for. Another operator's chat
+    // never holds the page: chats share the site draft and conflict through
+    // per-entity versioning (#620), and that chat is invisible to the caller,
+    // so the page stayed locked for them with nothing to resume or close.
     //
     // Global chats (pageId IS NULL) stay unrestricted — globals like
     // theme / lists / modules cross many pages, and the
@@ -202,7 +209,10 @@ export const createChatSessionOp = defineOperation({
     if (pageId) {
       const existing = (await tx.execute(sql`
         SELECT id::text AS id, title FROM chat_sessions
-        WHERE page_id = ${pageId}::uuid AND published_at IS NULL
+        WHERE page_id = ${pageId}::uuid
+          AND created_by = ${ctx.actorId}::uuid
+          AND subagent_role IS NULL
+          AND published_at IS NULL AND archived_at IS NULL AND discarded_at IS NULL
         ORDER BY created_at DESC LIMIT 1
       `)) as unknown as { id: string; title: string }[];
       const open = existing[0];
@@ -890,10 +900,12 @@ export const countBranchChangesOp = defineOperation({
 });
 
 /**
- * v0.5.8 — Active-page list for the /edit picker. Returns one row per
- * page that currently has an open (unpublished) chat session. /edit's
- * page picker uses this to dot pages with pending chats so the
- * operator picks "Resume" instead of "New chat".
+ * v0.5.8 — Active-page list for /edit's "New chat" action. Returns one
+ * row per page that has an open chat of the CALLER (unpublished,
+ * unarchived, not discarded, top-level), so "New chat" on such a page
+ * resumes it instead of tripping the per-page gate. Scoped like the gate
+ * in `chat.create_session` (#1201): another operator's chat is neither
+ * resumable by the caller nor a reason to refuse them a chat.
  */
 export const listActivePagesOp = defineOperation({
   name: "chat.list_active_pages",
@@ -912,7 +924,7 @@ export const listActivePagesOp = defineOperation({
         .strict(),
     ),
   }),
-  handler: async (_ctx, _input, tx) => {
+  handler: async (ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT DISTINCT ON (page_id)
              page_id::text       AS page_id,
@@ -920,7 +932,10 @@ export const listActivePagesOp = defineOperation({
              title               AS chat_title,
              created_at          AS created_at
       FROM chat_sessions
-      WHERE page_id IS NOT NULL AND published_at IS NULL AND archived_at IS NULL
+      WHERE page_id IS NOT NULL
+        AND created_by = ${ctx.actorId}::uuid
+        AND subagent_role IS NULL
+        AND published_at IS NULL AND archived_at IS NULL AND discarded_at IS NULL
       ORDER BY page_id, created_at DESC
     `)) as unknown as {
       page_id: string;
