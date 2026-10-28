@@ -336,6 +336,31 @@ describe("Codex round 4 on #1199", () => {
   });
 });
 
+describe("Codex round 5 on #1199", () => {
+  it("let / const in sibling blocks are different bindings; var is function-wide", () => {
+    const facts = analyseModuleJs(
+      "{ const markup = '<svg></svg>'; icon.innerHTML = markup; }\n{ const markup = '<p>Discover our latest products</p>'; track(markup); }",
+    );
+    expect(facts.rendersContent).toEqual([]);
+    const hoisted = analyseModuleJs(
+      "function f() { { var markup = '<p>Discover our latest products</p>'; } panel.innerHTML = markup; }",
+    );
+    expect(hoisted.rendersContent).toHaveLength(1);
+  });
+
+  it("conditional class alternatives are separate hooks", () => {
+    const owners = hookOwners([
+      {
+        id: id(50),
+        html: '<a class="{{#is_current}}current{{/is_current}}{{#is_ancestor}}open{{/is_ancestor}}" href="{{link}}">x</a>',
+      },
+    ]);
+    expect(owners.get(".current")).toEqual(new Set([id(50)]));
+    expect(owners.get(".open")).toEqual(new Set([id(50)]));
+    expect(owners.has(".currentopen")).toBe(false);
+  });
+});
+
 describe("foreignHooks", () => {
   it("separates one module's own hooks from hooks many modules share", () => {
     const owners = hookOwners([DEMO, HERO, TEXT]);

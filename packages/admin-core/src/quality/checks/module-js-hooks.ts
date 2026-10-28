@@ -13,12 +13,11 @@
  * declaration never covers it.
  */
 
-import { stripMustache } from "@caelo-cms/shared";
 import type { ModuleJsFacts } from "./module-js-analysis.js";
 
 /** The hooks a template renders: its classes, ids and `data-*` attribute names. */
 export function templateHooks(html: string): Set<string> {
-  const markup = stripMustache(html);
+  const markup = blankMustache(html);
   const out = new Set<string>();
   // Quoted or unquoted (`class=hero`): both are valid HTML.
   for (const m of markup.matchAll(/\sclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi)) {
@@ -31,6 +30,28 @@ export function templateHooks(html: string): Set<string> {
   for (const m of markup.matchAll(/\s(data-[\w-]+)/gi))
     out.add(`[${(m[1] as string).toLowerCase()}]`);
   return out;
+}
+
+/**
+ * Every `{{…}}` tag replaced by a space, so alternatives in one attribute
+ * stay apart: `class="{{#a}}current{{/a}}{{#b}}open{{/b}}"` renders
+ * `current` or `open`, never `currentopen`. A linear scan, not a regex
+ * (long `{{{{` runs backtrack, see shared `stripMustache`).
+ */
+function blankMustache(template: string): string {
+  let out = "";
+  let at = 0;
+  for (;;) {
+    const open = template.indexOf("{{", at);
+    if (open === -1) break;
+    const close = template.indexOf("}}", open + 2);
+    if (close === -1) break;
+    let end = close + 2;
+    while (template[end] === "}") end++;
+    out += `${template.slice(at, open)} `;
+    at = end;
+  }
+  return out + template.slice(at);
 }
 
 /** Platform hooks every module may use (the interaction kit, composer stamps). */

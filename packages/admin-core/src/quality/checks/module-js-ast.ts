@@ -5,12 +5,12 @@
  * (module-js-analysis.ts): a walk over oxc-parser's ESTree output and the
  * lexical resolution of identifiers to their declarations.
  *
- * Resolution is by function scope: `let` / `const` in a block are treated
- * as declared in the enclosing function. That is enough for what the
- * analysis asks — "is this `items` the content array declared over there?"
- * — where two IIFEs that each declare their own `items` are the case that
- * matters (Codex review on #1199): name matching alone would let one
- * IIFE's DOM write render the other one's array.
+ * Resolution follows JS scoping: `var` and parameters belong to the
+ * enclosing function, `let` / `const` to the enclosing block. The analysis
+ * asks "is this `items` the content array declared over there?" — and two
+ * IIFEs or two sibling blocks that each declare their own `items` must not
+ * be confused (Codex review on #1199): name matching alone would let one
+ * DOM write render another binding's data.
  */
 
 /** A loosely typed ESTree node as oxc-parser returns it. */
@@ -43,11 +43,22 @@ export function* nodes(root: unknown): Generator<Node> {
   }
 }
 
-const SCOPE_TYPES = new Set([
+/** Where `var` and parameters live. */
+const FUNCTION_SCOPES = new Set([
   "Program",
   "FunctionDeclaration",
   "FunctionExpression",
   "ArrowFunctionExpression",
+]);
+/** Where `let` / `const` live as well: blocks and loop heads. */
+const BLOCK_SCOPES = new Set([
+  ...FUNCTION_SCOPES,
+  "BlockStatement",
+  "ForStatement",
+  "ForInStatement",
+  "ForOfStatement",
+  "SwitchStatement",
+  "StaticBlock",
 ]);
 
 /** Identifiers and their declarations in one script. */
@@ -77,9 +88,11 @@ export class JsScopes {
       if (n.type === "Property" && n.computed !== true && isNode(n.key)) this.nonRefs.add(n.key);
       if (n.type === "VariableDeclarator" && isNode(n.id) && n.id.type === "Identifier") {
         this.nonRefs.add(n.id);
-        this.declare(this.scopeOf(n), n.id.name as string, n);
+        const kind = this.parents.get(n)?.kind;
+        const scope = kind === "var" ? this.scopeOf(n, FUNCTION_SCOPES) : this.scopeOf(n);
+        this.declare(scope, n.id.name as string, n);
       }
-      if (SCOPE_TYPES.has(n.type) && n.type !== "Program") {
+      if (FUNCTION_SCOPES.has(n.type) && n.type !== "Program") {
         // A parameter shadows an outer binding of the same name.
         for (const p of (n.params as unknown[] | undefined) ?? []) {
           if (isNode(p) && p.type === "Identifier") {
@@ -116,10 +129,10 @@ export class JsScopes {
     this.decls.set(scope, map);
   }
 
-  /** The function (or the program) a node sits in. */
-  private scopeOf(n: Node): Node {
+  /** The nearest scope (block by default, or function) a node sits in. */
+  private scopeOf(n: Node, kinds: ReadonlySet<string> = BLOCK_SCOPES): Node {
     let p = this.parents.get(n);
-    while (p !== undefined && !SCOPE_TYPES.has(p.type)) p = this.parents.get(p);
+    while (p !== undefined && !kinds.has(p.type)) p = this.parents.get(p);
     return p ?? n;
   }
 
