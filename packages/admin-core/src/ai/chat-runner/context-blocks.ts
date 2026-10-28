@@ -142,16 +142,17 @@ export function buildStatusLine(args: {
     segments.push(`[Site status — base setup still missing] ${missing.join(" | ")}`);
   // What a staging build would refuse right now — mostly state this chat
   // did not create (a homepage left as a draft, an older page without a
-  // description). Every turn that changes the site ends with stage_changes,
-  // so the AI must clear it first; told here, at the start of the turn,
-  // instead of by a refused Stage at its end (e2e-livedit: ~100 refused
-  // Stages in 14 runs, deploy/stage-readiness.ts).
+  // description). Every turn that changes the site ends by offering a Stage,
+  // so the AI clears it first and the Stage the user asks for next (or clicks)
+  // is not refused; told here, at the start of the turn, instead of by a
+  // refused Stage later (e2e-livedit: ~100 refused Stages in 14 runs,
+  // deploy/stage-readiness.ts).
   const readiness = args.stageReadinessValue
     ? describeStageReadiness(args.stageReadinessValue as StageReadiness)
     : null;
   if (readiness !== null)
     segments.push(
-      `[Site status — Stage readiness] ${readiness} Do this as part of the turn's work, before its stage_changes; if this turn changes nothing on the site, leave it.`,
+      `[Site status — Stage readiness] ${readiness} Do this as part of the turn's work, so the next Stage is not refused; if this turn changes nothing on the site, leave it.`,
     );
   if (offers.length > 0)
     segments.push(

@@ -248,7 +248,7 @@ export function createAdminMcpServer(
                   ? `\nResumed the operator's session '${session.title}' — its earlier unstaged work continues here. `
                   : `\nOpened a new session '${session.title}'. `) +
                 "Subsequent caelo tool calls write to the site's shared draft (or this session's experiment branch). " +
-                "Stage finished work with stage_changes; the operator clicks Publish live in the Caelo admin.",
+                "Stage with stage_changes when the operator asks for it (otherwise offer it when a change is done); the operator clicks Publish live in the Caelo admin.",
             },
           ],
         };

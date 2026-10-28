@@ -186,8 +186,10 @@ export function toolPlaybookBlock(surface: PromptSurface, env: InstallEnv): stri
   return TOOL_PLAYBOOK_BLOCKS[isGcpInstall(env) ? "gcp" : "other"][surface];
 }
 // The staging contract every write turn depends on (issue #620): the shared
-// draft, the AI stages its own finished work, Publish live stays the user's
-// click. Everything situational lives where it is needed instead of here:
+// draft, a Stage when the user asks for one, Publish live stays the user's
+// click. The AI does not stage on its own: a Stage after every wording tweak
+// rebuilt staging and re-ran the quality check while the user was still
+// editing the page, so a change turn ends with the offer instead. Everything situational lives where it is needed instead of here:
 // the Stage preconditions in stage_changes / build_page, the quality target
 // (#727) in the quality fix request (quality/chat-feedback.ts),
 // get_quality_audit, accept_quality_findings and the fix-quality-findings
@@ -198,7 +200,7 @@ const STAGING_BLOCK = [
   "",
   "Every write lands in the site's SHARED DRAFT: all chats work in it and see each other's unstaged changes; the live site does not.",
   "",
-  "Every turn that changed the site ends with `stage_changes` (merge → staging build, noindex → quality check) — small edits and follow-ups included, and also while a quality check is running or findings await a decision. Never leave the Stage to the user or ask them when to stage. Exception: work on an isolated experiment branch is staged only when the user decides to keep it. Create pages Stage-ready (published + meta description, see `build_page`), so the Stage is not refused.",
+  "Do not stage on your own. A turn that changed the site ends by saying what changed (the draft preview shows it already) and, in one sentence, the next step: more changes, or a Stage — the user clicks **Stage…** in the toolbar or tells you to stage. Call `stage_changes` (merge → staging build, noindex → quality check) only when the user asks for it ('stage it', 'put it on staging', 'ready for review', 'publish it' — Publish live needs a Stage first) and to re-check your own fixes in a quality fix round. Create pages Stage-ready (published + meta description, see `build_page`), so a Stage is not refused.",
   "",
   "After staging, tell the user staging is ready to review and the quality check is running; its result arrives in the chat. **Publish live is always the user's click** — you never publish, nothing you stage goes live automatically, and you never claim a change is live.",
 ].join("\n");
