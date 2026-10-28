@@ -10,9 +10,9 @@ import { describe, expect, it } from "bun:test";
 import type { LiveTopic } from "@caelo-cms/shared";
 import {
   createLiveHub,
+  LIVE_READ_TIMEOUT_MS,
   type LiveHubEnv,
   type LiveRefreshReason,
-  LIVE_READ_TIMEOUT_MS,
   liveFetch,
 } from "./live-refresh.js";
 
@@ -35,9 +35,7 @@ function fakeEnv() {
           signal: init.signal,
           answer: (topics) =>
             resolve(
-              topics === "fail"
-                ? new Response("down", { status: 503 })
-                : Response.json({ topics }),
+              topics === "fail" ? new Response("down", { status: 503 }) : Response.json({ topics }),
             ),
         });
       }),
@@ -180,6 +178,42 @@ describe("live-refresh hub", () => {
     f.focus();
     await settle();
     expect(bar.calls).toEqual(["focus"]);
+    expect(f.requests).toHaveLength(2);
+  });
+
+  it("an empty wait also re-reads a surface that shows what the waited-on work produces", async () => {
+    const f = fakeEnv();
+    const hub = createLiveHub(f.env);
+    const bar = consumer(["agents"], () => true);
+    const strip = { calls: [] as LiveRefreshReason[] };
+    hub.register({
+      topics: ["pending"],
+      refresh: (r) => void strip.calls.push(r),
+      refreshOnExpiry: true,
+    });
+    const bell = consumer(["deploys"]);
+    hub.register(bar.consumer);
+    hub.register(bell.consumer);
+    await settle();
+    f.requests[0]?.answer([]);
+    await settle();
+    expect(bar.calls).toEqual(["wait-expired"]);
+    expect(strip.calls).toEqual(["wait-expired"]);
+    expect(bell.calls).toEqual([]);
+  });
+
+  it("an own action resumes a failed wait; kick alone does not", async () => {
+    const f = fakeEnv();
+    const hub = createLiveHub(f.env);
+    hub.register(consumer(["quality"], () => true).consumer);
+    await settle();
+    f.requests[0]?.answer("fail");
+    await settle();
+    hub.kick();
+    await settle();
+    expect(f.requests).toHaveLength(1);
+    hub.resume();
+    await settle();
     expect(f.requests).toHaveLength(2);
   });
 

@@ -51,6 +51,14 @@ export interface LiveConsumer {
    * Omitted = never waits; the surface is re-read on topics and focus only.
    */
   readonly waiting?: () => boolean;
+  /**
+   * Re-read also when a wait comes back empty, although this surface does
+   * not wait itself: it shows what the work another surface waits on may
+   * produce (the pending strip shows the proposals of the agent the agents
+   * bar waits on). A change committed on another admin instance announces
+   * no topic here, so the empty answer is the only cue.
+   */
+  readonly refreshOnExpiry?: boolean;
 }
 
 /** What the hub needs from the browser (injectable for tests). */
@@ -70,6 +78,12 @@ export interface LiveHub {
   publish(topics: readonly LiveTopic[]): void;
   /** A surface's `waiting()` may have changed: start the wait if it is needed now. */
   kick(): void;
+  /**
+   * The operator acted (Stage, Retry, Stop …): lift a suspension left by a
+   * failed wait, then {@link kick}. Never call it from an automatic path —
+   * that would turn a broken endpoint into a retry loop.
+   */
+  resume(): void;
   /** This tab's chat stream is open (its `live` events stand in for the wait). @returns the close. */
   openStream(): () => void;
 }
@@ -138,7 +152,11 @@ export function createLiveHub(env: LiveHubEnv): LiveHub {
           return;
         }
         if (answered.length > 0) publish(answered);
-        else for (const c of waitingConsumers()) c.refresh("wait-expired");
+        else {
+          for (const c of [...consumers]) {
+            if (c.refreshOnExpiry === true || c.waiting?.() === true) c.refresh("wait-expired");
+          }
+        }
       }
     } finally {
       waitRunning = false;
@@ -181,6 +199,10 @@ export function createLiveHub(env: LiveHubEnv): LiveHub {
       kick();
     },
     kick,
+    resume() {
+      suspended = false;
+      kick();
+    },
     openStream() {
       openStreams += 1;
       let closed = false;

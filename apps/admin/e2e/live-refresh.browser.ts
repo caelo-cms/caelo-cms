@@ -66,7 +66,8 @@ function recordAdminRequests(page: Page): Request[] {
   return seen;
 }
 
-const describe = (rs: Request[]) => rs.map((r) => `${r.method()} ${r.url().slice(BASE.length)}`);
+const listRequests = (rs: Request[]) =>
+  rs.map((r) => `${r.method()} ${r.url().slice(BASE.length)}`);
 
 test("an idle editor tab makes no request to the admin", async ({ page }) => {
   test.setTimeout(90_000);
@@ -79,7 +80,7 @@ test("an idle editor tab makes no request to the admin", async ({ page }) => {
   await page.waitForLoadState("networkidle");
   const onChat = recordAdminRequests(page);
   await page.waitForTimeout(IDLE_WINDOW_MS);
-  expect(describe(onChat)).toEqual([]);
+  expect(listRequests(onChat)).toEqual([]);
 
   // Live Edit: the preview, the toolbar's quality gate, the header's
   // agents indicator and notification bell — still nothing on a clock.
@@ -87,7 +88,7 @@ test("an idle editor tab makes no request to the admin", async ({ page }) => {
   await page.waitForLoadState("networkidle");
   const onEdit = recordAdminRequests(page);
   await page.waitForTimeout(IDLE_WINDOW_MS);
-  expect(describe(onEdit)).toEqual([]);
+  expect(listRequests(onEdit)).toEqual([]);
 });
 
 test("during a turn the stream's live topics keep the agents bar current", async ({
@@ -139,7 +140,7 @@ test("during a turn the stream's live topics keep the agents bar current", async
   await expect(row).toBeVisible({ timeout: 10_000 });
   // Still mid-turn (three steps 1.5 s apart): what the tab asked for so far.
   await page.waitForTimeout(1_500);
-  const duringTurn = describe(requests);
+  const duringTurn = listRequests(requests);
   await expect(page.getByText("All pages listed.")).toBeVisible({ timeout: 20_000 });
   // … and the turn leaves the bar once it has ended.
   await expect(page.getByTestId("chat-agents-bar")).toHaveCount(0, { timeout: 10_000 });

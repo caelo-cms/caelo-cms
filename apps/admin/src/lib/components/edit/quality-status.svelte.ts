@@ -108,7 +108,8 @@ class QualityStatusPoller {
     void this.refresh();
     const consumer: LiveConsumer = {
       topics: ["quality"],
-      refresh: () => void this.refresh(),
+      // The hub's own re-read: automatic, so it may only kick, never resume.
+      refresh: () => void this.#fetchCoalesced().then(() => liveHub.kick()),
       // The result of a queued / running audit lands without any action here.
       waiting: () => this.#auditBusy(),
     };
@@ -140,12 +141,13 @@ class QualityStatusPoller {
     await this.refresh();
   }
 
-  /** Fetch now (e.g. right after a Stage). Resolves once a fetch that
-   *  started after this call has landed. */
+  /** Fetch now, after an action of this tab (a Stage, a Retry, a claim).
+   *  Resolves once a fetch that started after this call has landed. */
   async refresh(): Promise<void> {
     await this.#fetchCoalesced();
-    // A queued audit may just have appeared: start waiting for its result.
-    liveHub.kick();
+    // A queued audit may just have appeared: wait for its result, also
+    // when an earlier wait failed — this is the operator's own action.
+    liveHub.resume();
   }
 
   async #fetchOnce(): Promise<void> {

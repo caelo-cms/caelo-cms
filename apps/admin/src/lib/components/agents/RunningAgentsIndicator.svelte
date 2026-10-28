@@ -55,6 +55,8 @@
       runId: run.id,
     });
     await refresh();
+    // The operator's own Stop / Allow: a failed wait may wait again.
+    liveHub.resume();
   }
 
   function onDocClick(e: MouseEvent): void {

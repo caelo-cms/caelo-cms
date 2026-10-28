@@ -633,6 +633,8 @@
       unregister();
     };
     void poll();
+    // Following a crawl starts from the operator's approval.
+    liveHub.resume();
   }
 
   $effect(() => {
@@ -963,9 +965,15 @@
   // hand-back status after a decision) appear without a reload. #1215 — not
   // by polling: the strip re-reads on every `pending` topic (this chat's
   // stream while a turn runs; the live-events wait while an agent works
-  // here, held by the running-agents bar) and on focus.
+  // here, held by the running-agents bar) and on focus. An empty wait
+  // re-reads it too: that agent's proposal may have been committed on
+  // another admin instance, which announces no topic here.
   $effect(() =>
-    liveHub.register({ topics: ["pending"], refresh: () => void loadPendingProposals() }),
+    liveHub.register({
+      topics: ["pending"],
+      refresh: () => void loadPendingProposals(),
+      refreshOnExpiry: true,
+    }),
   );
   // While this tab's stream is open its `live` events stand in for the wait.
   $effect(() => {

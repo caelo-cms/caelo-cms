@@ -73,6 +73,8 @@
     actionError = await postAgentAction({ csrfToken, chatSessionId, action, ...(runId ? { runId } : {}) });
     busy = { ...busy, [key]: false };
     await refresh();
+    // The operator's own Stop / Allow: a failed wait may wait again.
+    liveHub.resume();
   }
 
   const active = $derived(activeRuns(runs));
