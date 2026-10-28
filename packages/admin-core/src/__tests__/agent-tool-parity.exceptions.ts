@@ -287,7 +287,7 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   "chat.branch_change_count": { kind: "internal", reason: "/edit toolbar pending-changes pill" },
   "chat.list_active_pages": {
     kind: "internal",
-    reason: "/edit page picker (pages with open chats)",
+    reason: "/edit New chat action (resume the caller's open page chat)",
   },
   "chat.list_open_with_pending": { kind: "internal", reason: "unstaged-work banner in the editor" },
   "imports.get_session_budget_state": {
