@@ -34,7 +34,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
   defineOperation,
   defineStepwiseOperation,
@@ -56,7 +56,7 @@ import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator"
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
-import { removeUploadedBuild, retainedBuildsFor } from "../deploy/build-cleanup.js";
+import { buildDirOf, removeUploadedBuild, retainedBuildsFor } from "../deploy/build-cleanup.js";
 import { buildManifestOf, hostNormaliser } from "../deploy/build-parity.js";
 import {
   DEPLOY_RUN_HEARTBEAT_MS,
@@ -546,7 +546,7 @@ async function runTrigger(
     outDir: effectiveOutDir(provider, plan.target.env, plan.target.outDir),
   };
   // Where the generator writes this run's build (generate.ts).
-  const buildDir = join(resolve(repoRoot, target.outDir), "builds", runId);
+  const buildDir = buildDirOf(repoRoot, target.outDir, runId);
 
   const heartbeat = new DeployRunHeartbeat(async (): Promise<DeployRunBeat> => {
     const r = await execute(registry, adapter, sys, "deploy.renew_run_lease", { runId, ttlMs });

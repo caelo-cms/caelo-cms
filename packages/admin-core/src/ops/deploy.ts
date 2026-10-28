@@ -40,7 +40,7 @@ import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator"
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
-import { removeUploadedBuild, retainedBuildsFor } from "../deploy/build-cleanup.js";
+import { buildDirOf, removeUploadedBuild, retainedBuildsFor } from "../deploy/build-cleanup.js";
 import { buildManifestOf, compareBuildManifests, parityRefusal } from "../deploy/build-parity.js";
 import { holdDeployRun } from "../deploy/deploy-run-lock.js";
 import {
@@ -627,26 +627,30 @@ async function rebuildAndPublishLive(
     ...rowToTarget(args.toTarget),
     outDir: effectiveOutDir(args.provider, args.toTarget.env, args.toTarget.out_dir),
   };
-  const built = await runGenerator(bridge.registry, bridge.adapter, ctx, {
-    cliPath: resolveGeneratorCli(),
-    runId: args.toRunId,
-    target,
-    repoRoot: args.repoRoot,
-    // The staged build's instant: the parity guard compares the two
-    // renders, and Publish live stores this value (#1121 review).
-    publishAt: await deployRunStartedAt(tx, args.stagingRunId),
-    // Nothing may serve this build before the parity guard passed.
-    syncCurrent: false,
-    // #1211 — an uploading publisher keeps no builds in the container.
-    retainBuilds: retainedBuildsFor(args.publisher),
-  });
-  if (built.ok) args.timer.include("generator", built.result.phases);
-  args.timer.lap("generator");
-  if (!built.ok) {
-    const tail = built.stderr ? ` — ${built.stderr.slice(-300).trim()}` : "";
-    throw new Error(`the live rebuild failed: ${built.message}${tail}`);
-  }
+  // #1211 — every way out deletes what the generator wrote, a failed or
+  // refused rebuild included: with `retainBuilds: 0` nothing else prunes
+  // it, and on Cloud Run `/tmp` is memory.
+  const buildDir = buildDirOf(args.repoRoot, target.outDir, args.toRunId);
   try {
+    const built = await runGenerator(bridge.registry, bridge.adapter, ctx, {
+      cliPath: resolveGeneratorCli(),
+      runId: args.toRunId,
+      target,
+      repoRoot: args.repoRoot,
+      // The staged build's instant: the parity guard compares the two
+      // renders, and Publish live stores this value (#1121 review).
+      publishAt: await deployRunStartedAt(tx, args.stagingRunId),
+      // Nothing may serve this build before the parity guard passed.
+      syncCurrent: false,
+      // #1211 — an uploading publisher keeps no builds in the container.
+      retainBuilds: retainedBuildsFor(args.publisher),
+    });
+    if (built.ok) args.timer.include("generator", built.result.phases);
+    args.timer.lap("generator");
+    if (!built.ok) {
+      const tail = built.stderr ? ` — ${built.stderr.slice(-300).trim()}` : "";
+      throw new Error(`the live rebuild failed: ${built.message}${tail}`);
+    }
     const diff = compareBuildManifests(
       stagedManifest,
       await buildManifestOf(built.result.buildDir),
@@ -669,8 +673,8 @@ async function rebuildAndPublishLive(
     args.timer.lap("publish");
     return { summary, pageCount: built.result.pageCount, fileCount: built.result.fileCount };
   } finally {
-    // Uploaded (or refused): the provider holds what goes live, not /tmp.
-    await removeUploadedBuild(args.publisher, built.result.buildDir);
+    // Uploaded, refused or failed: the provider holds what goes live, not /tmp.
+    await removeUploadedBuild(args.publisher, buildDir);
   }
 }
 

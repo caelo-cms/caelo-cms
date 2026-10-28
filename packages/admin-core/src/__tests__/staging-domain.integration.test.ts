@@ -22,7 +22,7 @@
 
 import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -1025,6 +1025,44 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     const message = await promoteRefusal();
     expect(message).toContain("The Caelo version that made this Stage is unknown");
     expect(message).not.toContain("Caelo was updated from");
+  });
+
+  it("#1211 a live rebuild that fails mid-build leaves nothing in the container", async () => {
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    await markAudited(staged.runId);
+    // A generator that writes part of its build, then fails.
+    const stub = join(testRoot, "failing-generator.ts");
+    await writeFile(
+      stub,
+      `import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+for await (const line of console) {
+  const cfg = JSON.parse(line);
+  const dir = join(resolve(cfg.repoRoot, cfg.target.outDir), "builds", cfg.runId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "index.html"), "<p>half</p>");
+  console.log(JSON.stringify({ kind: "error", message: "stub generator failed mid-build" }));
+  process.exit(1);
+}
+`,
+    );
+    const liveBuilds = join(testRoot, "output", "production", "builds");
+    const before = existsSync(liveBuilds) ? await readdir(liveBuilds) : [];
+    const saved = process.env.CAELO_GENERATOR_CLI;
+    process.env.CAELO_GENERATOR_CLI = stub;
+    try {
+      const message = await promoteRefusal();
+      expect(message).toContain("stub generator failed mid-build");
+    } finally {
+      if (saved === undefined) delete process.env.CAELO_GENERATOR_CLI;
+      else process.env.CAELO_GENERATOR_CLI = saved;
+    }
+    // With retainBuilds: 0 nothing else would ever prune it (Cloud Run /tmp is memory).
+    const after = existsSync(liveBuilds) ? await readdir(liveBuilds) : [];
+    expect(after).toEqual(before);
   });
 });
 

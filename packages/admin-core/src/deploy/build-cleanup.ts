@@ -16,7 +16,17 @@
  */
 
 import { rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { StaticPublisher } from "./static-publisher.js";
+
+/**
+ * Where the generator writes run `runId`'s build (static-generator
+ * generate.ts: `<repoRoot>/<outDir>/builds/<runId>`). Known before the
+ * generator runs, so a run that fails mid-build still finds what it wrote.
+ */
+export function buildDirOf(repoRoot: string, outDir: string, runId: string): string {
+  return join(resolve(repoRoot, outDir), "builds", runId);
+}
 
 /**
  * The generator's `retainBuilds` for `publisher`: 0 (prune nothing, the
