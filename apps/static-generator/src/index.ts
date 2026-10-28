@@ -12,7 +12,11 @@ export {
 // for why it lives here). admin-core re-exports this surface.
 // #592 — the build's content-variants pass (resolution + loud refusal).
 export { resolveBuildContentVariants } from "./content-variants-pass.js";
-export { loadSiteFontUsage } from "./font-usage-sources.js";
+export {
+  clearSiteFontUsageCache,
+  loadSiteFontUsage,
+  siteFontUsageScanCount,
+} from "./font-usage-sources.js";
 export {
   clearFontResolverMemo,
   defaultFontsCacheDir,

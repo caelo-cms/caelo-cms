@@ -204,6 +204,28 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
   }
   let usage: Promise<SiteFontUsage> | null = null;
   const specs = new Map<string, EffectiveAxisSpec>();
+  // Several roles usually bind the same face (body + heading + display);
+  // its bytes are read and hashed once per resolve, not once per role
+  // (#803). A failed read fails every role bound to it, as before.
+  const faces = new Map<string, Promise<{ metadata: FontMetadata; bytes: Uint8Array }>>();
+  const readFace = (ref: FontRef) => {
+    const faceKey = `${ref.id}|${ref.sha256}`;
+    let face = faces.get(faceKey);
+    if (face === undefined) {
+      const readFont = args.readFont;
+      if (!readFont) throw new Error("FontReaderUnavailable");
+      face = readFont(ref).then((read) => {
+        if (
+          read.metadata.sha256 !== ref.sha256 ||
+          createHash("sha256").update(read.bytes).digest("hex") !== ref.sha256
+        )
+          throw new Error("FontBindingMismatch");
+        return read;
+      });
+      faces.set(faceKey, face);
+    }
+    return face;
+  };
 
   const typography = (args.tokens as Record<string, unknown>).typography;
   if (typography && typeof typography === "object") {
@@ -219,14 +241,8 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
       try {
         const ref = fontRef.parse(binding);
         if (overrides instanceof Error) throw overrides;
-        if (!args.readFont) throw new Error("FontReaderUnavailable");
-        const { metadata, bytes } = await args.readFont(ref);
-        if (
-          family !== metadata.cssFamily ||
-          !metadata.embedding.web ||
-          metadata.sha256 !== ref.sha256 ||
-          createHash("sha256").update(bytes).digest("hex") !== ref.sha256
-        )
+        const { metadata, bytes } = await readFace(ref);
+        if (family !== metadata.cssFamily || !metadata.embedding.web)
           throw new Error("FontBindingMismatch");
         let spec = specs.get(ref.sha256);
         if (spec === undefined) {
