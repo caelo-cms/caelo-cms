@@ -548,6 +548,13 @@ test("the editor toolbar shows the page's language; its popover opens the other 
     // The English version opens in the editor.
     await slot.click();
     await panel.getByRole("button", { name: /English/ }).click();
+    // Chats share the site draft (#620): when earlier work left changes in
+    // it, the editor asks before switching pages, as for any page switch.
+    const switchAnyway = page.getByRole("button", { name: "Switch anyway" });
+    await switchAnyway
+      .waitFor({ state: "visible", timeout: 3_000 })
+      .then(() => switchAnyway.click())
+      .catch(() => undefined);
     await expect(page).toHaveURL(new RegExp(`page=${s.enPageId}`), { timeout: 15_000 });
     await expect(slot).toContainText("EN", { timeout: 15_000 });
   } finally {
