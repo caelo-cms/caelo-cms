@@ -49,6 +49,15 @@ import {
   usedCategoryKeys,
   vendorEntries,
 } from "./declaration.js";
+import {
+  classifyHosts,
+  type EmbedScan,
+  gatedCategoryKeys,
+  guardsByModule,
+  scanEmbeds,
+  syncGuards,
+  verdictFor,
+} from "./guards.js";
 import { defaultPlaceholder, editorNotice } from "./placeholder.js";
 import { buildRuntimeJs, CONSENT_COOKIE, RUNTIME_CSS } from "./runtime.js";
 import { deferralReason, moduleHosts } from "./scan.js";
@@ -57,7 +66,6 @@ import {
   adminQueryOf,
   bumpPolicyVersion,
   categoriesOf,
-  cmsOf,
   type GuardRow,
   settingsOf,
 } from "./storage.js";
@@ -98,161 +106,22 @@ const settingsArgs = z
   })
   .strict();
 
-/** A module's third-party hosts now, next to the verdict stored for it (if any). */
-interface EmbedScan {
-  readonly moduleId: string;
-  readonly moduleSlug: string;
-  /** Site chrome (header, footer, navigation): withheld, it vanishes from every page. */
-  readonly siteChrome: boolean;
-  readonly hosts: string[];
-  readonly guard: GuardRow | undefined;
-}
-
-/** The verdict a guard row should hold, as stored fields. */
-type GuardVerdict = Pick<GuardRow, "category_key" | "detected_hosts" | "status" | "decided_by">;
-
 /**
- * What a module's guard should say given the hosts it reaches now (the
- * same `moduleHosts` judgement the render-time gate applies):
- *
- * - `null` — no third-party host; any stored guard is stale.
- * - the stored guard — the hosts it was decided about are unchanged.
- * - a fresh verdict — vendor-table classification, else pending.
+ * The module an operator decision is about, read fresh; refuses one with
+ * no third-party host. One module, so one filtered read (#1214), not a
+ * whole-site scan.
  */
-function verdictFor(scan: EmbedScan): GuardVerdict | null {
-  if (scan.hosts.length === 0) return null;
-  const existing = scan.guard;
-  if (existing && JSON.stringify(existing.detected_hosts ?? []) === JSON.stringify(scan.hosts)) {
-    return existing;
-  }
-  // Hosts changed under an existing verdict (or none was recorded): the
-  // decision was made about a different set, so it no longer applies.
-  const known = classifyHosts(scan.hosts);
-  return {
-    category_key: known ?? existing?.category_key ?? "marketing",
-    detected_hosts: scan.hosts,
-    status: known ? "gated" : "pending",
-    decided_by: known ? "vendor-table" : "",
-  };
-}
-
-/**
- * Every module with its current hosts and stored guard. Read-only; in a
- * chat it reads the chat's branch, so the AI sees the modules it just
- * edited.
- */
-async function scanEmbeds(ctx: PluginContextTier1): Promise<EmbedScan[]> {
-  const q = adminQueryOf(ctx);
-  const cms = cmsOf(ctx);
-  const modules = await cms.call<{
-    modules: Array<{
-      id: string;
-      slug: string;
-      kind: string;
-      html: string;
-      css: string;
-      js: string;
-      fields?: unknown;
-    }>;
-  }>("modules.list", {});
-  // The vendor URL is DATA, not markup. Authoring lifts
-  // `src="https://youtube.com/…"` out of the HTML into a field
-  // default, and a placement can point the same module at a
-  // different vendor through its content values. Scanning the HTML
-  // alone would therefore find nothing on exactly the modules that
-  // matter most.
-  const instances = await cms.call<{
-    instances: Array<{ moduleId: string; values: unknown }>;
-  }>("content_instances.list", {});
-  const valuesByModule = new Map<string, unknown[]>();
-  for (const inst of instances.instances) {
-    const bucket = valuesByModule.get(inst.moduleId) ?? [];
-    bucket.push(inst.values ?? {});
-    valuesByModule.set(inst.moduleId, bucket);
-  }
-  const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
-  const byModule = new Map(guards.map((g) => [g.module_id, g]));
-  return modules.modules.map((m) => ({
-    moduleId: m.id,
-    moduleSlug: m.slug,
-    siteChrome: m.kind === "chrome",
-    hosts: moduleHosts({ ...m, contentValues: valuesByModule.get(m.id) ?? [] }),
-    guard: byModule.get(m.id),
-  }));
-}
-
-/** A module the render-time gate withholds now, and why. */
-interface Withheld {
-  readonly scan: EmbedScan;
-  /** A consent category key, or `unclassified` while nobody has ruled. */
-  readonly reason: string;
-}
-
-/**
- * Every module the render-time gate would withhold right now — the same
- * `deferralReason` judgement, over the same scan `list_embeds` reports.
- */
-async function withheldModules(ctx: PluginContextTier1): Promise<Withheld[]> {
-  const out: Withheld[] = [];
-  for (const scan of await scanEmbeds(ctx)) {
-    const reason = deferralReason(scan.hosts, scan.guard, classifyHosts);
-    if (reason !== null) out.push({ scan, reason });
-  }
-  return out;
-}
-
-/** The categories the banner offers: required ones plus everything something uses. */
-async function offeredCategories(ctx: PluginContextTier1, withheld: ReadonlyArray<Withheld>) {
-  const q = adminQueryOf(ctx);
-  const categories = await categoriesOf(q);
-  const used = await usedCategoryKeys(
-    q,
-    categories,
-    await consentPurposesOf(ctx),
-    new Set(withheld.map((w) => w.reason).filter((r) => r !== "unclassified")),
-  );
-  return { categories, used };
-}
-
-/**
- * Bring every module's guard row in line with what it reaches now. The
- * scheduled scan (`scan_modules`, a worker on main) is the only writer;
- * `list_embeds` reports the same verdicts without storing them.
- */
-async function syncGuards(ctx: PluginContextTier1): Promise<{ flagged: number; cleared: number }> {
-  const q = adminQueryOf(ctx);
-  let flagged = 0;
-  let cleared = 0;
-  for (const scan of await scanEmbeds(ctx)) {
-    const verdict = verdictFor(scan);
-    const existing = scan.guard;
-    if (verdict === null) {
-      // The module stopped reaching out — drop the guard rather than
-      // leaving a stale one that withholds a now-harmless module.
-      if (existing) {
-        await q.delete("module_guards", existing.id);
-        cleared += 1;
-      }
-      continue;
-    }
-    if (verdict === existing) continue;
-    if (existing) {
-      await q.update("module_guards", existing.id, verdict);
-    } else {
-      await q.insert("module_guards", { module_id: scan.moduleId, ...verdict });
-    }
-    flagged += 1;
-  }
-  return { flagged, cleared };
-}
-
-/** The module an operator decision is about; refuses one with no third-party host. */
 async function embedToDecide(
   ctx: PluginContextTier1,
   op: string,
-  moduleId: string,
+  moduleId: unknown,
 ): Promise<EmbedScan> {
-  const scan = (await scanEmbeds(ctx)).find((e) => e.moduleId === moduleId);
+  if (typeof moduleId !== "string" || !z.string().uuid().safeParse(moduleId).success) {
+    throw new Error(
+      `${op}: \`moduleId\` must be a module id (a uuid) — list_external_embeds shows them`,
+    );
+  }
+  const [scan] = await scanEmbeds(ctx, [moduleId]);
   if (!scan || scan.hosts.length === 0) {
     throw new Error(
       `${op}: module ${moduleId} has no detected third-party host — nothing to decide. Run list_external_embeds to see what does.`,
@@ -263,9 +132,9 @@ async function embedToDecide(
 
 /**
  * Store a decision about the hosts the module reaches now; the row may
- * not exist yet, since only the scheduled scan records them. A chat call
- * is the AI's decision (an approved one is the approver's), and the
- * stored `decided_by` says so rather than crediting the operator.
+ * not exist yet. A chat call is the AI's decision (an approved one is the
+ * approver's), and the stored `decided_by` says so rather than crediting
+ * the operator.
  */
 async function recordEmbedVerdict(
   ctx: PluginContextTier1,
@@ -292,56 +161,50 @@ const deferralsArgs = z.object({
   ),
 });
 
-/**
- * Which consent category a set of third-party hosts falls under, or
- * null when any of them is unrecognised.
- *
- * Null is deliberately sticky: one unknown host makes the whole module
- * unclassified, because the known ones say nothing about what the
- * unknown one does.
- */
-function classifyHosts(hosts: ReadonlyArray<string>): string | null {
-  let strongest: string | null = null;
-  for (const host of hosts) {
-    const match = Object.entries(HOST_CATEGORIES).find(
-      ([domain]) => host === domain || host.endsWith(`.${domain}`),
-    );
-    if (!match) return null;
-    const category = match[1];
-    // Marketing wins over analytics: a module carrying both must be
-    // held to the stricter of the two.
-    if (category === "marketing" || strongest === null) strongest = category;
-  }
-  return strongest;
+/** What core passes `module_changes` (#1214). */
+const moduleChangesArgs = z.object({
+  moduleIds: z.array(z.string().uuid()).min(1).max(1000),
+});
+
+/** A module the render-time gate withholds now, and why. */
+interface Withheld {
+  readonly scan: EmbedScan;
+  /** A consent category key, or `unclassified` while nobody has ruled. */
+  readonly reason: string;
 }
 
 /**
- * Vendors whose category is not in question, so the common cases need
- * no operator decision. Everything else is `pending` until someone
- * says otherwise — the list is a shortcut, never a judgement that an
- * absent host is harmless.
+ * Every module the render-time gate would withhold right now — the same
+ * `deferralReason` judgement, over the same scan `list_embeds` reports.
+ * Reads the whole site: for the AI's tools, never for a render hook.
  */
-const HOST_CATEGORIES: Readonly<Record<string, string>> = {
-  "youtube.com": "marketing",
-  "youtube-nocookie.com": "functional",
-  "vimeo.com": "marketing",
-  "google.com": "marketing",
-  "googleapis.com": "marketing",
-  "gstatic.com": "functional",
-  "googletagmanager.com": "marketing",
-  "google-analytics.com": "analytics",
-  "doubleclick.net": "marketing",
-  "facebook.net": "marketing",
-  "facebook.com": "marketing",
-  "twitter.com": "marketing",
-  "x.com": "marketing",
-  "linkedin.com": "marketing",
-  "instagram.com": "marketing",
-  "hotjar.com": "analytics",
-  "openstreetmap.org": "functional",
-  "soundcloud.com": "marketing",
-  "spotify.com": "marketing",
-};
+async function withheldModules(ctx: PluginContextTier1): Promise<Withheld[]> {
+  const out: Withheld[] = [];
+  for (const scan of await scanEmbeds(ctx)) {
+    const reason = deferralReason(scan.hosts, scan.guard, classifyHosts);
+    if (reason !== null) out.push({ scan, reason });
+  }
+  return out;
+}
+
+/**
+ * The categories the banner offers: required ones plus everything
+ * something uses — a tag, a plugin's declared purpose, or a module a
+ * stored verdict withholds behind it.
+ *
+ * Reads verdicts, not modules (#1214): this runs on every render, and
+ * the verdicts are kept current by `module_changes` on each write.
+ */
+async function offeredCategories(ctx: PluginContextTier1) {
+  const q = adminQueryOf(ctx);
+  const categories = await categoriesOf(q);
+  const gated = await gatedCategoryKeys(
+    q,
+    categories.filter((c) => !c.required).map((c) => c.key),
+  );
+  const used = await usedCategoryKeys(q, categories, await consentPurposesOf(ctx), gated);
+  return { categories, used };
+}
 
 /** Default placeholder module slug, seeded with the settings row. */
 const DEFAULT_PLACEHOLDER_SLUG = "consent-placeholder";
@@ -356,13 +219,14 @@ const DEFAULT_PLACEHOLDER_SLUG = "consent-placeholder";
  * one category per key (the oldest of each), so its next build passes the
  * duplicate-id check of list sources.
  */
-async function seedDefaults(q: PluginAdminQuery): Promise<void> {
+async function seedDefaults(q: PluginAdminQuery): Promise<{ firstActivation: boolean }> {
   const settings = await q.list<string, { id: string }>("settings", {
     orderBy: "created_at",
     orderDir: "asc",
     limit: 1000,
   });
-  if (settings.length === 0) {
+  const firstActivation = settings.length === 0;
+  if (firstActivation) {
     await q.insert("settings", {
       policy_version: 1,
       retention_days: 365,
@@ -386,13 +250,14 @@ async function seedDefaults(q: PluginAdminQuery): Promise<void> {
         position: c.position,
       });
     }
-    return;
+    return { firstActivation };
   }
   const seen = new Set<string>();
   for (const c of categories) {
     if (seen.has(c.key)) await q.delete("categories", c.id);
     else seen.add(c.key);
   }
+  return { firstActivation };
 }
 
 export default definePlugin<PluginContextTier1>({
@@ -531,6 +396,9 @@ export default definePlugin<PluginContextTier1>({
   /** A pending module blocks Publish live — see `audit_findings`. */
   auditFindingsOperation: "audit_findings",
 
+  /** Keeps each module's verdict current on the write that changed it (#1214). */
+  moduleChangesOperation: "module_changes",
+
   /** Keeps the scan current without anyone remembering to run it. */
   workers: [
     { name: "consent-embed-scan", cron: "*/5 * * * *", operationName: "scan_modules" },
@@ -546,7 +414,13 @@ export default definePlugin<PluginContextTier1>({
    * site cannot afford a blocking request to find out.
    */
   onActivate: async (ctx) => {
-    await seedDefaults(adminQueryOf(ctx));
+    const { firstActivation } = await seedDefaults(adminQueryOf(ctx));
+    // The modules a site already has were written before anyone could
+    // tell this plugin about them: judge them all once, so the render
+    // hooks (which read verdicts only) see them from the first preview.
+    // Not on every boot — that would rescan the whole site on each cold
+    // start; the scheduled scan is the backstop for later gaps.
+    if (firstActivation) await syncGuards(ctx);
   },
 
   buildAssets: async (ctx) => {
@@ -555,7 +429,7 @@ export default definePlugin<PluginContextTier1>({
     // Only what the banner offers can be granted: "accept all" must not
     // record consent to a category the visitor was never shown, or a
     // plugin activated later would run under a consent nobody gave.
-    const { categories: all, used } = await offeredCategories(ctx, await withheldModules(ctx));
+    const { categories: all, used } = await offeredCategories(ctx);
     const categories = all.filter((c) => c.required || used.has(c.key));
     const baked = await bakeTags(ctx);
     return {
@@ -620,7 +494,7 @@ export default definePlugin<PluginContextTier1>({
       const { pageIds } = args as { pageIds: string[] };
       const q = adminQueryOf(ctx);
       const purposes = await consentPurposesOf(ctx);
-      const { categories, used } = await offeredCategories(ctx, await withheldModules(ctx));
+      const { categories, used } = await offeredCategories(ctx);
       // Only real choices (#1129): the required categories, told rather
       // than asked, plus the ones something on the site is pinned to.
       // The category key is the entry id: stable across renders, and the
@@ -659,7 +533,7 @@ export default definePlugin<PluginContextTier1>({
       const declared = await consentPurposesOf(ctx);
       const settings = await settingsOf(q);
       const withheld = await withheldModules(ctx);
-      const { categories, used } = await offeredCategories(ctx, withheld);
+      const { categories, used } = await offeredCategories(ctx);
       // What visitors do not see right now (#1123): reported here so the
       // AI can tell the operator straight after activation, before they
       // find a missing header themselves.
@@ -779,28 +653,29 @@ export default definePlugin<PluginContextTier1>({
       const settings = await settingsOf(q);
       const labelOf = new Map((await categoriesOf(q)).map((c) => [c.key, c.display_name]));
       const deferrals: Record<string, ModuleDeferralSpec> = {};
-      for (const m of modules) {
-        const hosts = moduleHosts(m);
-        if (hosts.length === 0) continue;
-        // Looked up per module: a list capped at 1000 rows would drop the
-        // verdicts of every module past it, and those would ship ungated.
-        const [guard] = (await q.list("module_guards", {
-          module_id: m.moduleId,
-          limit: 1,
-        })) as unknown as GuardRow[];
-        const reason = deferralReason(hosts, guard, classifyHosts);
+      const reaching = modules
+        .map((m) => ({ moduleId: m.moduleId, hosts: moduleHosts(m) }))
+        .filter((m) => m.hosts.length > 0);
+      // One read for the whole pass, by id (#1214) — never a capped list
+      // of every guard, which would drop the verdicts past the cap.
+      const guards = await guardsByModule(
+        q,
+        reaching.map((m) => m.moduleId),
+      );
+      for (const { moduleId, hosts } of reaching) {
+        const reason = deferralReason(hosts, guards.get(moduleId), classifyHosts);
         if (reason === null) continue;
         if (reason === "unclassified") {
-          deferrals[m.moduleId] = { reason, omit: true, editorNotice: editorNotice(hosts) };
+          deferrals[moduleId] = { reason, omit: true, editorNotice: editorNotice(hosts) };
           continue;
         }
         const label = labelOf.get(reason);
         if (label === undefined) {
           throw new Error(
-            `consent_deferrals: module ${m.moduleId} is gated under category "${reason}", which does not exist (categories: ${[...labelOf.keys()].join(", ")}). Re-classify it with classify_external_embed.`,
+            `consent_deferrals: module ${moduleId} is gated under category "${reason}", which does not exist (categories: ${[...labelOf.keys()].join(", ")}). Re-classify it with classify_external_embed.`,
           );
         }
-        deferrals[m.moduleId] = {
+        deferrals[moduleId] = {
           reason,
           placeholderModuleSlug: settings.placeholder_module_slug,
           defaultPlaceholder: defaultPlaceholder(reason, label),
@@ -825,6 +700,13 @@ export default definePlugin<PluginContextTier1>({
      * request went out.
      */
     scan_modules: async (ctx) => syncGuards(ctx),
+
+    /**
+     * Core's notice that a committed write changed these modules (#1214):
+     * re-judge just them, in the writer's scope — on a chat's branch the
+     * rewritten guards stay on that branch and publish with it.
+     */
+    module_changes: async (ctx, args) => syncGuards(ctx, moduleChangesArgs.parse(args).moduleIds),
 
     // Read-only: reports the verdict every module would get now, stored
     // or not, so the list is never older than what the render gate
@@ -851,7 +733,6 @@ export default definePlugin<PluginContextTier1>({
     // everyone, which is allow_embed's decision and needs its approval.
     classify_embed: async (ctx, args) => {
       const { moduleId, category } = args as { moduleId?: unknown; category?: unknown };
-      if (typeof moduleId !== "string") throw new Error("classify_embed: `moduleId` is required");
       const q = adminQueryOf(ctx);
       const scan = await embedToDecide(ctx, "classify_embed", moduleId);
       const consentCategories = (await categoriesOf(q)).filter((c) => !c.required);
@@ -902,7 +783,7 @@ export default definePlugin<PluginContextTier1>({
 
     /** How visitors decide, in aggregate (#1131) — counts only, never a record. */
     consent_stats: async (ctx, args) => {
-      const { categories, used } = await offeredCategories(ctx, await withheldModules(ctx));
+      const { categories, used } = await offeredCategories(ctx);
       return consentStats(ctx.query, args, categories, used);
     },
 

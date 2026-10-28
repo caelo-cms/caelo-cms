@@ -48,10 +48,11 @@ export async function consentPurposesOf(
 /**
  * The category keys something is pinned to.
  *
- * @param embedCategories the categories withheld embeds wait for, as the
- *   render-time gate judges them now (not the 5-minute scan's last
- *   verdict, or a banner built right after an embed was added would
- *   lack the category the embed's placeholder asks for)
+ * @param embedCategories the categories withheld embeds wait for, from
+ *   the stored verdicts. Those are rewritten on the write that adds an
+ *   embed (`module_changes`, #1214), not only by the 5-minute scan, so a
+ *   banner built right after an embed was added offers the category its
+ *   placeholder asks for.
  */
 export async function usedCategoryKeys(
   q: PluginAdminQuery,

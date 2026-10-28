@@ -778,6 +778,12 @@ export interface PluginWriteHintsArgs {
   readonly writes: readonly PluginWrite[];
 }
 
+/** What a `moduleChangesOperation` is called with (#1214). */
+export interface PluginModuleChangesArgs {
+  /** Modules whose rendered content may have changed, deduplicated (1–1000). */
+  readonly moduleIds: readonly string[];
+}
+
 /** What a `writeHintsOperation` returns: sentences for the AI, at most five. */
 export const pluginWriteHints = z
   .object({ hints: z.array(z.string().min(1).max(600)).max(5) })
@@ -971,6 +977,11 @@ export const pluginManifest = z
      *  `operations`. Needs no capability: it reads like a render and only
      *  adds sentences to the AI's tool result. */
     writeHintsOperation: z.string().min(1).max(120).optional(),
+    /** See `PluginDefinition.moduleChangesOperation` (#1214). Must name
+     *  one of `operations`. Needs no capability: it only learns which
+     *  modules changed; reading them and writing its own rows take the
+     *  grants those always take. */
+    moduleChangesOperation: z.string().min(1).max(120).optional(),
     /** Grants this plugin asks for. A request grants nothing: the Owner
      *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
@@ -1144,6 +1155,16 @@ export const pluginManifest = z
           });
         }
       }
+    }
+    if (
+      m.moduleChangesOperation !== undefined &&
+      !m.operations.includes(m.moduleChangesOperation)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["moduleChangesOperation"],
+        message: `moduleChangesOperation "${m.moduleChangesOperation}" is not one of the plugin's operations`,
+      });
     }
     if (m.writeHintsOperation !== undefined && !m.operations.includes(m.writeHintsOperation)) {
       ctx.addIssue({
@@ -2213,6 +2234,26 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly writeHintsOperation?: string;
   /**
+   * #1214 — told which modules a committed write changed: an operation in
+   * `operations` taking {@link PluginModuleChangesArgs}. Core calls it
+   * after every write that changes what a module renders — its source or
+   * field defaults, a content instance's values, a delete, a revert, a
+   * merge — once the write's transaction has committed, in the WRITER's
+   * scope: on the chat's branch (origin `chat`) for a chat write, on main
+   * (origin `system`) otherwise. The call may write the plugin's private
+   * storage, so a verdict derived from module content (an embed scan)
+   * stays current where it is stored and render hooks read it instead of
+   * rescanning the site on every preview. A failing call is recorded
+   * against the plugin and never undoes the write.
+   *
+   * @example
+   *   module_changes: async (ctx, { moduleIds }) => {
+   *     const { modules } = await ctx.cms!.call("modules.list", { moduleIds, includeDeleted: true });
+   *     // … recompute and store one verdict per module …
+   *   },
+   */
+  readonly moduleChangesOperation?: string;
+  /**
    * Epic #1107 — the I/O half of `listSources`: an operation in
    * `operations` taking `{pageIds: string[], pageUrlStyle: PageUrlStyle}`
    * (page links come from `pages.resolve_public_urls`, as for head
@@ -2331,6 +2372,7 @@ export function manifestFromDefinition(def: {
   readonly linkResolveOperation?: string;
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
+  readonly moduleChangesOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
   readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
@@ -2371,6 +2413,7 @@ export function manifestFromDefinition(def: {
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
     ...(def.writeHintsOperation ? { writeHintsOperation: def.writeHintsOperation } : {}),
+    ...(def.moduleChangesOperation ? { moduleChangesOperation: def.moduleChangesOperation } : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
     ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),

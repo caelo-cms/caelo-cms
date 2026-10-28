@@ -165,6 +165,13 @@ export {
   pluginFailedHereReason,
   pluginRunsHere,
 } from "./local-availability.js";
+// #1214 — module changes reach the plugins that keep a per-module verdict.
+export {
+  type ModuleChangeScope,
+  moduleChangeContributors,
+  moduleChangeInvocation,
+  notifyModuleChanges,
+} from "./module-changes.js";
 export {
   activeDependentsOf,
   dependentsMessage,

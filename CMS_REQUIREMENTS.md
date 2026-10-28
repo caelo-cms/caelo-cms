@@ -593,6 +593,13 @@ A plugin with the deferrals contribution declares `deferralsOperation`, receives
 - **Omitted when the visitor cannot release it.** A verdict of the form `{reason, omit: true, editorNotice}` (a consent vendor nobody has classified yet) makes a build emit nothing in the module's place — no placeholder, no parked copy. Only the editor preview shows `editorNotice` there (attributed to the module, with a `data-caelo-ask-ai` button that adds the module to the current chat), and the plugin's Stage-audit finding blocks Publish live until the question is resolved, so a missing header never ships unnoticed.
 - **Generic by design** — core learns "withheld by plugin X for reason Y", nothing about consent.
 
+#### Module changes — keeping a stored per-module verdict current (#1214)
+
+A plugin that derives something from module content (consent-manager's embed scan) declares `moduleChangesOperation`. After every committed write that changes what a module renders — its source, a content instance's values, a delete, a revert, a merge — core calls it with the touched `moduleIds`, in the writer's scope: on the chat's branch for a chat write (so the plugin's rows branch and publish with it), on main otherwise. The plugin re-judges just those modules and stores the verdict, so its render hooks read stored verdicts instead of rescanning the site on every preview: a render's cost stays independent of the site's size.
+
+- **Hooked into the snapshot emitter**, which every write passes, and run after the commit, with no pooled connection held; one call per transaction and scope.
+- **A failure never fails the write.** It is recorded against the plugin (#1008); the plugin's scheduled full scan repairs the verdict.
+
 ### 14.11 Shipped plugins
 
 Shipped with the release under `packages/plugins/<slug>/`, subject to every rule above:
