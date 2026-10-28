@@ -96,7 +96,9 @@ CREATE TRIGGER caelo_font_usage_change
   AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON page_module_content FOR EACH STATEMENT
   EXECUTE FUNCTION caelo_mark_font_usage_change();
 
+-- plugins rows change for many reasons (status, health, cost caps); only
+-- the two columns the scan reads invalidate it.
 DROP TRIGGER IF EXISTS caelo_font_usage_change ON plugins;
 CREATE TRIGGER caelo_font_usage_change
-  AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON plugins FOR EACH STATEMENT
+  AFTER INSERT OR UPDATE OF slug, source_code OR DELETE OR TRUNCATE ON plugins FOR EACH STATEMENT
   EXECUTE FUNCTION caelo_mark_font_usage_change();
