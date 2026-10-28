@@ -30,6 +30,16 @@ import { extractPgFields, isRlsDenial, OperationAbortError, type QueryError } fr
 import type { OperationDefinition, TransactionRunner } from "./operation.js";
 import { type ProvisionOutcome, provisionPluginSchemaInTx } from "./plugin-schema-provision.js";
 import {
+  detachedRunner,
+  exemptFromSessionTimeouts,
+  liftSessionTimeouts,
+  NestedPoolCheckoutError,
+  POOL_ACQUIRE_TIMEOUT_MS,
+  PoolAcquireTimeoutError,
+  PoolGuard,
+  type PoolName,
+} from "./pool-guard.js";
+import {
   collectPostCommitEffects,
   notifyOperationCommitted,
   type PostCommitEffect,
@@ -74,6 +84,11 @@ export interface AdapterConfig {
    */
   readonly poolIdleTimeoutSeconds?: number;
   /**
+   * Overrides {@link POOL_ACQUIRE_TIMEOUT_MS}. Only for the tests that prove
+   * an exhausted pool answers in time instead of queueing forever.
+   */
+  readonly poolAcquireTimeoutMs?: number;
+  /**
    * The identities {@link DatabaseAdapter.verifyRoles} accepts. Defaults to
    * the authoring roles (`admin_role` on cms_admin; `admin_role` or
    * `public_role` on cms_public). Only a process that deliberately runs with
@@ -89,6 +104,16 @@ export interface AdapterConfig {
 }
 
 const DEFAULT_ROLES = { admin: "admin_role", public: ["admin_role", "public_role"] } as const;
+
+/** Options of {@link DatabaseAdapter.withAdminTransaction} / `withPublicTransaction`. */
+export interface TransactionOptions {
+  /**
+   * The name this transaction is known by in a {@link NestedPoolCheckoutError}
+   * and in the guard's allowlist (pool-guard.ts). Name a transaction that
+   * stays open across other work, so an error points at its caller.
+   */
+  readonly holder?: string;
+}
 
 /**
  * Seconds a pooled connection may sit unused in the pool before Bun closes it.
@@ -238,6 +263,9 @@ export class DatabaseAdapter {
   readonly #publicRaw: SQL;
   readonly #skipVerify: boolean;
   readonly #roles: { readonly admin: string | null; readonly public: readonly string[] };
+  readonly #acquireTimeoutMs: number;
+  /** Issue #1210 — which call chains hold a transaction of which pool. */
+  readonly #guard = new PoolGuard();
   #verifyPromise: Promise<void> | null = null;
   #projectionPublisher: (() => Promise<unknown>) | null = null;
 
@@ -259,6 +287,60 @@ export class DatabaseAdapter {
     this.#admin = this.#adminRaw === null ? null : drizzle(this.#adminRaw);
     this.#public = drizzle(this.#publicRaw);
     this.#skipVerify = config.skipRoleVerification === true;
+    this.#acquireTimeoutMs = config.poolAcquireTimeoutMs ?? POOL_ACQUIRE_TIMEOUT_MS;
+  }
+
+  /**
+   * Open a transaction on its own reserved connection of `pool`, with the
+   * call chain marked as holding it (pool-guard.ts). The connection is
+   * reserved with a deadline because Bun.SQL's own `begin()` waits for a
+   * free connection forever.
+   *
+   * @throws NestedPoolCheckoutError when the chain already holds `pool`.
+   * @throws PoolAcquireTimeoutError when no connection frees up in time.
+   */
+  async #transaction<T>(
+    pool: PoolName,
+    holder: string,
+    fn: (tx: TransactionRunner) => Promise<T>,
+  ): Promise<T> {
+    const raw = pool === "admin" ? this.#adminRaw : this.#publicRaw;
+    if (raw === null) throw new AdminDatabaseUnavailableError(holder);
+    const marker = this.#guard.enter(pool, holder);
+    const reserved = await this.#reserve(pool, raw, holder);
+    try {
+      // drizzle's transaction() is `client.begin()`, which on a reserved
+      // connection runs on exactly that connection.
+      const db = drizzle({ client: reserved as unknown as SQL });
+      return await db.transaction((tx) =>
+        this.#guard.run(pool, marker, async () => {
+          if (exemptFromSessionTimeouts(holder)) await liftSessionTimeouts(tx);
+          return fn(tx);
+        }),
+      );
+    } finally {
+      reserved.release();
+    }
+  }
+
+  /** Reserve one connection of `raw`, waiting at most the acquire deadline. */
+  async #reserve(
+    pool: PoolName,
+    raw: SQL,
+    requester: string,
+  ): Promise<Awaited<ReturnType<SQL["reserve"]>>> {
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), this.#acquireTimeoutMs);
+    try {
+      return await raw.reserve({ signal: deadline.signal });
+    } catch (e) {
+      if (deadline.signal.aborted) {
+        throw new PoolAcquireTimeoutError(pool, requester, this.#acquireTimeoutMs);
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -417,9 +499,12 @@ export class DatabaseAdapter {
     ctx: ExecutionContext,
     validatedInput: I,
   ): Promise<Result<O, QueryError>> {
+    const pool: PoolName = op.database === "cms_admin" ? "admin" : "public";
+    this.#guard.assertMayCheckout(pool, op.name);
+    if (op.database === "cms_admin") this.#adminDb(`operation ${op.name}`);
     if (!this.#skipVerify) await this.verifyRoles();
+    if (op.transaction === "none") return this.#runDetached(op, ctx, validatedInput);
 
-    const db = op.database === "cms_admin" ? this.#adminDb(`operation ${op.name}`) : this.#public;
     let publishAfterCommit = false;
     // Filled by handlers via `afterCommit(tx, …)`; only read once the
     // transaction below committed (a throw skips it along with the tx).
@@ -429,7 +514,7 @@ export class DatabaseAdapter {
     // The handler's own error Result, kept for the COMMIT_ROLLED_BACK case below.
     let handlerError: Result<O, QueryError> | null = null;
     try {
-      result = await db.transaction(async (tx) => {
+      result = await this.#transaction(pool, op.name, async (tx) => {
         postCommit = collectPostCommitEffects(tx);
         await this.#setIdentity(tx, ctx);
 
@@ -450,6 +535,9 @@ export class DatabaseAdapter {
         return out;
       });
     } catch (thrown) {
+      // Issue #1210 — a nested checkout is a bug in the code, not an
+      // outcome: an error Result would let the outer handler swallow it.
+      if (thrown instanceof NestedPoolCheckoutError) throw thrown;
       // Run #9 R8 — handler-requested abort: the throw already rolled the
       // transaction back; hand the structured error to the caller as a
       // plain Result. See OperationAbortError for when handlers use this.
@@ -514,6 +602,45 @@ export class DatabaseAdapter {
     return result;
   }
 
+  /**
+   * Issue #1210 — run a `transaction: "none"` op: the branch-visibility gate
+   * in its own short transaction, then the handler with no transaction held
+   * (operation.ts). Errors map to Results exactly as in {@link runOperation}.
+   */
+  async #runDetached<I, O>(
+    op: OperationDefinition<I, O>,
+    ctx: ExecutionContext,
+    validatedInput: I,
+  ): Promise<Result<O, QueryError>> {
+    try {
+      const branches = op.database === "cms_admin" ? namedBranches(ctx, validatedInput) : [];
+      if (branches.length > 0) {
+        const denied = await this.#transaction("admin", op.name, async (tx) => {
+          await this.#setIdentity(tx, ctx);
+          return firstInvisibleBranch(tx, branches);
+        });
+        if (denied !== null) return err(branchNotFound(op.name, denied));
+      }
+      const options = { holder: op.name };
+      const runner = detachedRunner(op.name, (fn) =>
+        op.database === "cms_admin"
+          ? this.withAdminTransaction(ctx, fn, options)
+          : this.withPublicTransaction(ctx, fn, options),
+      );
+      return await op.handler(ctx, validatedInput, runner);
+    } catch (thrown) {
+      if (thrown instanceof NestedPoolCheckoutError) throw thrown;
+      if (thrown instanceof OperationAbortError) return err(thrown.queryError);
+      const pgDetail = extractPgFields(thrown);
+      return err({
+        kind: "HandlerError",
+        operation: op.name,
+        message: thrown instanceof Error ? thrown.message : String(thrown),
+        ...(pgDetail ? { pgDetail } : {}),
+      });
+    }
+  }
+
   /** Session identity every transaction of this adapter runs under (RLS reads it). */
   async #setIdentity(tx: TransactionRunner, ctx: ExecutionContext): Promise<void> {
     await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
@@ -556,7 +683,7 @@ export class DatabaseAdapter {
       });
       if (this.#admin === null) continue;
       try {
-        await this.#admin.transaction(async (tx) => {
+        await this.#transaction("admin", `${operation}.post_commit`, async (tx) => {
           await this.#setIdentity(tx, ctx);
           await recordAudit(tx, {
             actorId: ctx.actorId,
@@ -597,12 +724,15 @@ export class DatabaseAdapter {
   async withAdminTransaction<T>(
     ctx: ExecutionContext,
     fn: (tx: TransactionRunner) => Promise<T>,
+    options: TransactionOptions = {},
   ): Promise<T> {
-    const admin = this.#adminDb("withAdminTransaction");
+    const holder = options.holder ?? "withAdminTransaction";
+    this.#guard.assertMayCheckout("admin", holder);
+    this.#adminDb(holder);
     if (!this.#skipVerify) await this.verifyRoles();
     let publishAfterCommit = false;
     let postCommit: PostCommitEffect[] = [];
-    const out = await admin.transaction(async (tx) => {
+    const out = await this.#transaction("admin", holder, async (tx) => {
       postCommit = collectPostCommitEffects(tx);
       await this.#setIdentity(tx, ctx);
       // Issue #569 — same branch-visibility gate as runOperation.
@@ -615,7 +745,7 @@ export class DatabaseAdapter {
       return result;
     });
     // #585 — deferred in-process effects, after the commit only.
-    const effectFailures = await this.#settlePostCommit("withAdminTransaction", ctx, postCommit);
+    const effectFailures = await this.#settlePostCommit(holder, ctx, postCommit);
     // #635 — published state changed: live on the public side before
     // returning. Runs even when an effect failed: the change is committed.
     if (publishAfterCommit) await this.#publishAfterCommit();
@@ -632,27 +762,37 @@ export class DatabaseAdapter {
   async withPublicTransaction<T>(
     ctx: ExecutionContext,
     fn: (tx: TransactionRunner) => Promise<T>,
+    options: TransactionOptions = {},
   ): Promise<T> {
+    const holder = options.holder ?? "withPublicTransaction";
+    this.#guard.assertMayCheckout("public", holder);
     if (!this.#skipVerify) await this.verifyRoles();
     let postCommit: PostCommitEffect[] = [];
-    const out = await this.#public.transaction(async (tx) => {
+    const out = await this.#transaction("public", holder, async (tx) => {
       postCommit = collectPostCommitEffects(tx);
       await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
       await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
       await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
       return await fn(tx);
     });
-    const effectFailures = await this.#settlePostCommit("withPublicTransaction", ctx, postCommit);
+    const effectFailures = await this.#settlePostCommit(holder, ctx, postCommit);
     if (effectFailures.length > 0) throw new Error(postCommitFailureMessage(effectFailures));
     return out;
   }
 
-  /** Test-only: raw access for fixture setup / adversarial direct queries. */
+  /**
+   * Raw access for fixture setup, adversarial direct queries and the few
+   * workers that open their own transaction. Refused from inside a
+   * transaction of the same pool (issue #1210): a query on the raw pool
+   * there is a second checkout.
+   */
   rawAdmin(): SQL {
     if (this.#adminRaw === null) throw new AdminDatabaseUnavailableError("rawAdmin");
+    this.#guard.assertMayCheckout("admin", "rawAdmin()");
     return this.#adminRaw;
   }
   rawPublic(): SQL {
+    this.#guard.assertMayCheckout("public", "rawPublic()");
     return this.#publicRaw;
   }
 
@@ -675,7 +815,7 @@ export class DatabaseAdapter {
       throw new Error(`provisionPluginPublicSchema: pluginId "${opts.pluginId}" is not a UUID`);
     }
     if (!this.#skipVerify) await this.verifyRoles();
-    const outcome = await this.#public.transaction(async (tx) => {
+    const outcome = await this.#transaction("public", "provisionPluginPublicSchema", async (tx) => {
       // The emitted SQL is constructed entirely from validated identifiers
       // (slug regex `^[a-z][a-z0-9-]*$`, table names regex `^[a-z_][a-z0-9_]*$`)
       // and the plugin id is a UUID column from cms_admin.plugins, never user-provided
@@ -685,8 +825,7 @@ export class DatabaseAdapter {
     });
     if (outcome.droppedColumns.length > 0) {
       // cms_public has no audit log; the drop is recorded on the admin side.
-      const admin = this.#adminDb("provisionPluginPublicSchema");
-      await admin.transaction(async (tx) => {
+      await this.#transaction("admin", "provisionPluginPublicSchema", async (tx) => {
         await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
         await auditDroppedColumns(tx, "cms_public", opts.pluginId, outcome);
       });
@@ -717,9 +856,9 @@ export class DatabaseAdapter {
     if (!/^[0-9a-f-]{36}$/i.test(opts.pluginId)) {
       throw new Error(`provisionPluginAdminSchema: pluginId "${opts.pluginId}" is not a UUID`);
     }
-    const admin = this.#adminDb("provisionPluginAdminSchema");
+    this.#adminDb("provisionPluginAdminSchema");
     if (!this.#skipVerify) await this.verifyRoles();
-    await admin.transaction(async (tx) => {
+    await this.#transaction("admin", "provisionPluginAdminSchema", async (tx) => {
       const outcome = await provisionPluginSchemaInTx(tx, "provisionPluginAdminSchema", opts);
       if (outcome.droppedColumns.length > 0) {
         await auditDroppedColumns(tx, "cms_admin", opts.pluginId, outcome);
@@ -732,14 +871,14 @@ export class DatabaseAdapter {
    * Same watertight name gate as the cms_public variant.
    */
   async dropPluginAdminSchema(opts: { schemaName: string }): Promise<void> {
-    const admin = this.#adminDb("dropPluginAdminSchema");
+    this.#adminDb("dropPluginAdminSchema");
     if (!this.#skipVerify) await this.verifyRoles();
     if (!/^plugin_[a-z][a-z0-9_]*$/.test(opts.schemaName)) {
       throw new Error(
         `dropPluginAdminSchema: refusing to drop schema "${opts.schemaName}" — name doesn't match plugin_<slug> pattern`,
       );
     }
-    await admin.transaction(async (tx) => {
+    await this.#transaction("admin", "dropPluginAdminSchema", async (tx) => {
       await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
       await tx.execute(sql.raw(`DROP SCHEMA IF EXISTS "${opts.schemaName}" CASCADE`));
       await tx.execute(
@@ -755,7 +894,7 @@ export class DatabaseAdapter {
         `dropPluginPublicSchema: refusing to drop schema "${opts.schemaName}" — name doesn't match plugin_<slug> pattern`,
       );
     }
-    await this.#public.transaction(async (tx) => {
+    await this.#transaction("public", "dropPluginPublicSchema", async (tx) => {
       await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
       await tx.execute(sql.raw(`DROP SCHEMA IF EXISTS "${opts.schemaName}" CASCADE`));
       await tx.execute(
@@ -764,10 +903,14 @@ export class DatabaseAdapter {
     });
   }
 
+  /** The drizzle pool handles; refused inside a transaction of the same pool (see {@link rawAdmin}). */
   get admin(): BunSQLDatabase {
-    return this.#adminDb("admin pool");
+    const db = this.#adminDb("admin pool");
+    this.#guard.assertMayCheckout("admin", "adapter.admin");
+    return db;
   }
   get public(): BunSQLDatabase {
+    this.#guard.assertMayCheckout("public", "adapter.public");
     return this.#public;
   }
 }
