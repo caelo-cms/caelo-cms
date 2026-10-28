@@ -41,6 +41,7 @@
   import {
     formResultError,
     offersStageAgain,
+    pendingEntryKey,
     publishButtonState,
     publishErrorNextStep,
     qualityBlockReason,
@@ -546,13 +547,13 @@
               Not staged yet ({branchChangeCount})
             </h3>
             <ul class="max-h-48 space-y-1 overflow-y-auto text-xs" data-testid="pending-list">
-              {#each pendingChanges.pending.pages as e (e.entityId)}
+              {#each pendingChanges.pending.pages as e (pendingEntryKey(e))}
                 <li class="flex items-center gap-2">
                   <span class="rounded bg-link/10 px-1 py-0.5 font-mono text-[10px] text-link">page</span>
                   <span class="truncate">{e.label}</span>
                 </li>
               {/each}
-              {#each pendingChanges.pending.globals as e (e.entityId)}
+              {#each pendingChanges.pending.globals as e (pendingEntryKey(e))}
                 <li class="flex items-center gap-2">
                   <span
                     class="rounded bg-purple-500/10 px-1 py-0.5 font-mono text-[10px] text-purple-700 dark:text-purple-300"
@@ -562,7 +563,7 @@
                   {#if e.detail}<span class="truncate text-muted-foreground">— {e.detail}</span>{/if}
                 </li>
               {/each}
-              {#each pendingChanges.pending.lists as e (e.entityId)}
+              {#each pendingChanges.pending.lists as e (pendingEntryKey(e))}
                 <li class="flex items-center gap-2">
                   <span
                     class="rounded bg-emerald-500/10 px-1 py-0.5 font-mono text-[10px] text-emerald-700 dark:text-emerald-300"

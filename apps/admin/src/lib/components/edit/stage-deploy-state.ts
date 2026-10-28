@@ -147,6 +147,16 @@ export function stageToolbarMode(args: {
 }
 
 /**
+ * The list key of one not-yet-staged entry. The same id appears under
+ * several kinds in one group: a new page has a `page` entry and a
+ * `pageLayout` entry (its placements), both keyed by the page id, so a key
+ * of the id alone repeats and Svelte refuses to render the Staging menu.
+ */
+export function pendingEntryKey(entry: { kind: string; entityId: string }): string {
+  return `${entry.kind}:${entry.entityId}`;
+}
+
+/**
  * #835 — whether the toolbar offers "Stage again" (rebuild staging from
  * main without pending edits). Always in the promote-only shape, whatever
  * the quality gate says: a Publish live refused by the parity guard, a
