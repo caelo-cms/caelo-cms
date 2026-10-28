@@ -17,6 +17,7 @@
 import { assertChatOpenForWrite, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { jsonbParam } from "../sql-helpers.js";
+import { queueModuleChangeNotice } from "./module-change-notify.js";
 import type {
   ContentInstanceState,
   ListState,
@@ -264,6 +265,17 @@ export async function emitSnapshot(
         break;
     }
   }
+
+  // #1214 — plugins keeping a per-module verdict hear about it once the
+  // write commits, in the writer's scope.
+  queueModuleChangeNotice(
+    tx,
+    {
+      actorId: input.actorId,
+      chatBranchId: input.chatBranchId ?? null,
+    },
+    input.entities,
+  );
 
   return { siteSnapshotId };
 }
