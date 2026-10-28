@@ -94,6 +94,18 @@ export interface OperationDefinition<I = unknown, O = unknown> {
   readonly input: z.ZodType<I>;
   readonly output: z.ZodType<O>;
   readonly handler: OperationHandler<I, O>;
+  /**
+   * Issue #1210 — `"none"` for an op that orchestrates other ops around
+   * long foreign work (a whole chat turn, a tool dispatch, downloads): the
+   * adapter opens no transaction for it, so no connection sits idle in
+   * transaction while the model, a tool or the network runs, and the ops it
+   * calls through `execute()` are not nested checkouts. Its handler gets a
+   * `tx` that throws on use (pool-guard.ts `detachedRunner`); each step
+   * that touches the database is its own op or short
+   * `withAdminTransaction`. Omitted: the handler runs inside one
+   * transaction, the default for every op that only reads and writes.
+   */
+  readonly transaction?: "none";
 }
 
 /**

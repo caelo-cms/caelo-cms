@@ -39,6 +39,8 @@ let server: ReturnType<typeof Bun.serve>;
 let baseUrl: string;
 let mediaRoot: string;
 let savedAllowedHosts: string | undefined;
+/** Issue #1210 — idle-in-transaction cms_admin sessions seen while a download was served. */
+let idleInTxDuringDownload: number | null = null;
 
 const AI: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-000000000a1a",
@@ -97,8 +99,17 @@ beforeAll(async () => {
 
   server = Bun.serve({
     port: 0,
-    fetch(req) {
+    async fetch(req) {
       const path = new URL(req.url).pathname;
+      if (path === "/importurls-held.png") {
+        // While the op downloads this, count the transactions left open.
+        const rows = (await sqlc`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = 'cms_admin' AND state LIKE 'idle in transaction%'
+        `) as { n: number }[];
+        idleInTxDuringDownload = rows[0]?.n ?? null;
+        return new Response(PNG_BYTES, { headers: { "Content-Type": "image/png" } });
+      }
       if (path === "/importurls-logo.png" || path === "/importurls-dup.png") {
         return new Response(PNG_BYTES, { headers: { "Content-Type": "image/png" } });
       }
@@ -217,6 +228,17 @@ describe("imports.import_media_urls", () => {
     expect(reasonFor(`${baseUrl}/importurls-missing.png`)).toContain("http-404");
     expect(reasonFor("http://10.0.0.1/private.png")).toContain("blocked-by-ssrf-guard");
     expect(v.skipped).toHaveLength(3);
+  });
+
+  it("holds no transaction while it downloads (issue #1210)", async () => {
+    // Before, the whole call ran in one op transaction that sat idle in
+    // transaction for up to 5 minutes of downloads, holding a connection.
+    idleInTxDuringDownload = null;
+    const r = await execute(registry, adapter, AI, "imports.import_media_urls", {
+      assets: [{ url: `${baseUrl}/importurls-held.png`, name: "importurls held logo" }],
+    });
+    expect(r.ok).toBe(true);
+    expect(idleInTxDuringDownload).toBe(0);
   });
 
   it("rejects an empty asset list at the validator (min 1)", async () => {
