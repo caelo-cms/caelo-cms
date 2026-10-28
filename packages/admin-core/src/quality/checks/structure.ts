@@ -34,6 +34,10 @@
  *   list and bind both. Links of a shared list never count.
  * - `structure/similar-navigation` (warning): near matches of the above
  *   (Jaccard ≥ the near-match threshold) — likely one menu drifting.
+ * - Module JS (#1198, structure-js.ts): `structure/foreign-module-js` and
+ *   `structure/js-rendered-content` (errors), `structure/site-wide-module-js`
+ *   and `structure/js-written-text` (warnings) — a script in the wrong
+ *   module, and content a script builds instead of the HTML carrying it.
  *
  * Deliberate exceptions go through the existing per-rule acceptance.
  */
@@ -58,6 +62,7 @@ import {
   type StructureModule,
   selectorClasses,
 } from "./structure-analysis.js";
+import { moduleJsFindings } from "./structure-js.js";
 
 export const STRUCTURE_CHECK_ID = "structure";
 
@@ -117,10 +122,13 @@ export function structureFindings(
     ...layoutCss(analysis, layouts, byId),
     ...repeatedItems(analysis, [...groups.exact, ...groups.near], byId),
     ...navigationFindings(analysis.linkGroups, byId),
+    ...moduleJsFindings(analysis, modules, layouts),
   ];
-  // Errors come first, so a cut keeps what blocks. The fix of one group
-  // is site-wide, so the next Stage re-reports whatever was cut.
-  return findings.slice(0, MAX_FINDINGS_PER_CALL);
+  // Errors first (stable within a severity), so a cut keeps what blocks.
+  // The fix of one group is site-wide, so the next Stage re-reports
+  // whatever was cut.
+  const rank = (f: Finding) => (f.severity === "error" ? 0 : 1);
+  return findings.sort((a, b) => rank(a) - rank(b)).slice(0, MAX_FINDINGS_PER_CALL);
 }
 
 function groupPatterns(

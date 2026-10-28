@@ -23,6 +23,7 @@ import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
+import { moduleJsGuardSuffix } from "./_module-js-guard.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const editContentInput = z
@@ -172,10 +173,14 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
         }));
     } else if (input.entityKind === "module" && input.field === "html") {
       // #820 — an html edit can turn a module into a copy of another one.
-      suffix = await designGuardSuffix(ctx, toolCtx, {
-        html: applied.content,
-        excludeModuleIds: [input.entityId],
-      });
+      suffix =
+        (await designGuardSuffix(ctx, toolCtx, {
+          html: applied.content,
+          excludeModuleIds: [input.entityId],
+        })) + (await moduleJsGuardSuffix(ctx, toolCtx, [input.entityId]));
+    } else if (input.entityKind === "module" && input.field === "js") {
+      // #1198 — a script edit can reach into another module or build content.
+      suffix = await moduleJsGuardSuffix(ctx, toolCtx, [input.entityId]);
     }
 
     // Return the new sha + a cat -n snippet of each changed region (Claude
