@@ -264,3 +264,28 @@ describe("Power-MCP session lookups (#1216)", () => {
     expect(lookedUp).not.toContain("chat.get_session");
   });
 });
+
+describe("chat history order (0396)", () => {
+  it("returns messages written in one transaction in the order they were written", async () => {
+    const id = await newSession(owner, "issue1216 one-tx order");
+    const texts = ["first", "second", "third", "fourth", "fifth"];
+    const db = new SQL(ADMIN_URL as string);
+    try {
+      await db.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        for (const content of texts) {
+          await tx`INSERT INTO chat_messages (chat_session_id, role, content, origin, status)
+                   VALUES (${id}::uuid, 'user', ${content}, 'system', 'complete')`;
+        }
+      });
+    } finally {
+      await db.end();
+    }
+    for (const input of [{ chatSessionId: id }, { chatSessionId: id, limit: 3 }]) {
+      const r = await execute(registry, adapter, owner, "chat.get_session", input);
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      const got = (r.value as Page).messages.map((m) => m.content);
+      expect(got).toEqual("limit" in input ? texts.slice(-3) : texts);
+    }
+  });
+});
