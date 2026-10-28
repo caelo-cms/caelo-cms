@@ -415,6 +415,15 @@ export interface RenderScope {
    * deferral's `editorNotice`) may appear. Builds leave it unset.
    */
   readonly editorPreview?: boolean;
+  /**
+   * #1213 — one id per render pass, handed to every plugin call of the
+   * pass as `invocation.renderId`, so a plugin can read its data once per
+   * pass instead of once per composition point. Set it only on a scope
+   * that lives for exactly one pass (the editor preview creates one per
+   * render); a long-lived scope such as {@link MAIN_RENDER} leaves it
+   * out, because a plugin would then reuse reads across passes.
+   */
+  readonly renderId?: string;
 }
 
 /** A render of the deployed site / live state: no branch. */
@@ -426,6 +435,7 @@ export function renderInvocation(scope: RenderScope): PluginInvocation {
     origin: "render",
     actorId: hostSystemActorId(),
     ...(scope.chatBranchId ? { chatBranchId: scope.chatBranchId } : {}),
+    ...(scope.renderId ? { renderId: scope.renderId } : {}),
   };
 }
 

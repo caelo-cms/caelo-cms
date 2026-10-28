@@ -1191,8 +1191,26 @@ export type PluginManifest = z.infer<typeof pluginManifest>;
  *   `{column: value}` AND-combined → parameterised WHERE.
  *   Reserved keys: `since` (timestamptz cutoff on `created_at`),
  *   `limit` (int, default 100, max 1000), `orderBy` (column name,
- *   must be in the declared schema), `orderDir` ("asc" | "desc").
+ *   must be in the declared schema, or `"id"`), `orderDir` ("asc" |
+ *   "desc"), `anyOf` (column → list of values, a parameterised IN),
+ *   `afterId` (keyset cursor over `id`, see below).
  *   No raw SQL crosses the boundary — all values are parameterised.
+ *
+ * Reading a whole table past one read's 1000 rows (#1213): page by id.
+ *
+ * @example
+ * ```ts
+ * const all = [];
+ * let afterId: string | undefined;
+ * for (;;) {
+ *   const page = await ctx.adminQuery.list("page_variants", {
+ *     orderBy: "id", orderDir: "asc", limit: 1000, ...(afterId ? { afterId } : {}),
+ *   });
+ *   all.push(...page);
+ *   if (page.length < 1000) break;
+ *   afterId = String(page[page.length - 1]?.id);
+ * }
+ * ```
  */
 export interface PluginQueryFilter {
   /** Rows created strictly after this ISO timestamp. */
@@ -1203,6 +1221,20 @@ export interface PluginQueryFilter {
   readonly limit?: number;
   readonly orderBy?: string;
   readonly orderDir?: "asc" | "desc";
+  /**
+   * #1213 — rows whose column holds one of the listed values, per column
+   * (AND-combined with every other filter). 1–1000 non-null scalar values
+   * per column; jsonb columns are refused. One read instead of one read
+   * per value.
+   */
+  readonly anyOf?: Readonly<Record<string, ReadonlyArray<string | number | boolean>>>;
+  /**
+   * #1213 — keyset cursor: only rows whose `id` sorts after this one.
+   * Requires `orderBy: "id"` with `orderDir: "asc"`; pass the last id of
+   * the previous page to read the next one. Unlike an offset it stays
+   * exact while rows are inserted or deleted between the reads.
+   */
+  readonly afterId?: string;
   readonly [column: string]: unknown;
 }
 
@@ -1595,6 +1627,16 @@ export interface PluginInvocation {
    * instead, naming the tool that takes the agent's answer.
    */
   readonly aiDelegated?: boolean;
+  /**
+   * #1213 — set for origin `render` when the caller renders ONE pass (an
+   * editor preview): the same id on every plugin call of that pass, a new
+   * one for the next. A plugin may reuse what it read for one call of the
+   * pass in the next call of the same pass (the preview asks for hreflang,
+   * the language switcher and the URL annotations of the same page) —
+   * never across passes, because nothing tells it when its data changed
+   * in between. Absent outside a render pass.
+   */
+  readonly renderId?: string;
 }
 
 /** Prefix of the error the host throws when a plugin calls `ctx.ai` or

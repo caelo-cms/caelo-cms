@@ -105,6 +105,24 @@ const plugin = definePlugin({
       return {};
     },
     list: async (ctx) => q(ctx).list("notes", { orderBy: "label", orderDir: "asc" }),
+    // #1213 — keyset paging by id (+ an optional anyOf), `pageSize` rows a read.
+    page_by_id: async (ctx, args) => {
+      const a = args as { pageSize: number; labels?: string[] };
+      const out: { id: string; label: string }[] = [];
+      let afterId: string | undefined;
+      for (let reads = 1; ; reads++) {
+        const page = (await q(ctx).list("notes", {
+          orderBy: "id",
+          orderDir: "asc",
+          limit: a.pageSize,
+          ...(a.labels ? { anyOf: { label: a.labels } } : {}),
+          ...(afterId ? { afterId } : {}),
+        })) as { id: string; label: string }[];
+        out.push(...page);
+        if (page.length < a.pageSize) return { rows: out, reads };
+        afterId = page[page.length - 1]?.id;
+      }
+    },
     note_lists: async (ctx, args) => {
       const notes = await q(ctx).list("notes", { orderBy: "label", orderDir: "asc" });
       const items = notes.map((n) => ({ id: String(n.id), values: { label: String(n.label) } }));
@@ -428,6 +446,52 @@ describe("branch-aware plugin storage", () => {
     // Main never saw the branch write.
     expect(await labels(MAIN)).toContain("cas-base");
     expect((await liveRows()).find((r) => r.id === id)?.label).toBe("cas-base");
+  });
+
+  it("pages by id and filters by anyOf across a chat's overlay, each row once (#1213)", async () => {
+    for (const label of ["p-1", "p-2", "p-3", "p-4", "p-5"]) {
+      expect((await call(MAIN, "add", { label })).ok).toBe(true);
+    }
+    const h = await newChat("h");
+    const live = await liveRows();
+    const p2 = live.find((r) => r.label === "p-2")?.id ?? "";
+    const p4 = live.find((r) => r.label === "p-4")?.id ?? "";
+    // The chat renames one live row, deletes another and adds two of its own.
+    expect((await call(h.invocation, "rename", { id: p2, label: "p-2h" })).ok).toBe(true);
+    expect((await call(h.invocation, "remove", { id: p4 })).ok).toBe(true);
+    expect((await call(h.invocation, "add", { label: "h-1" })).ok).toBe(true);
+    expect((await call(h.invocation, "add", { label: "h-2" })).ok).toBe(true);
+
+    const paged = async (invocation: PluginInvocation, args: object) => {
+      const r = await call(invocation, "page_by_id", args);
+      if (!r.ok) throw new Error(r.error.message);
+      return r.value as { rows: { id: string; label: string }[]; reads: number };
+    };
+    const all = await labels(h.invocation);
+    const byTwo = await paged(h.invocation, { pageSize: 2 });
+    // Every row of the chat's view, none twice, in id order.
+    expect(byTwo.rows.map((r) => r.label).sort()).toEqual([...all].sort());
+    expect(new Set(byTwo.rows.map((r) => r.id)).size).toBe(byTwo.rows.length);
+    expect(byTwo.rows.map((r) => r.id)).toEqual(byTwo.rows.map((r) => r.id).sort());
+    expect(byTwo.reads).toBe(Math.floor(all.length / 2) + 1);
+
+    // anyOf matches the chat's values: the renamed row under its new label,
+    // the deleted row not at all, a branch-created row too.
+    const wanted = ["p-2", "p-2h", "p-4", "h-2", "p-5"];
+    const some = await paged(h.invocation, { pageSize: 2, labels: wanted });
+    expect(some.rows.map((r) => r.label).sort()).toEqual(["h-2", "p-2h", "p-5"]);
+    // Main still sees its own rows only.
+    const mainSome = await paged(MAIN, { pageSize: 1000, labels: wanted });
+    expect(mainSome.rows.map((r) => r.label).sort()).toEqual(["p-2", "p-4", "p-5"]);
+  });
+
+  it("refuses anyOf with more than 1000 values instead of cutting the list (#1213)", async () => {
+    const r = await call(MAIN, "page_by_id", {
+      pageSize: 2,
+      labels: Array.from({ length: 1001 }, (_, i) => `x-${i}`),
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toContain("at most 1000 values");
   });
 
   it("previews the author's chat drafts read-only, and main from the panel", async () => {

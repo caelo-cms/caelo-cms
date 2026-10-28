@@ -172,6 +172,9 @@ export const renderPagePreviewOp = defineOperation({
       chatBranchId: chatBranchId ?? null,
       onPluginFailure: pluginFailureSink.onPluginFailure,
       editorPreview: true,
+      // #1213 — one pass: plugins may read their data once for all of
+      // this render's composition points instead of once per point.
+      renderId: crypto.randomUUID(),
     };
     // v0.9.0 — branch-aware preview. The iframe shows the caller's
     // branched-create pages / templates / layouts (in addition to
