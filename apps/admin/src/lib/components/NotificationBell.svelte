@@ -3,14 +3,19 @@
 
   /**
    * P6.6b — bell icon in the AppShell topbar showing aggregate
-   * counts from `notifications.aggregate`. Polls every 30s while the
-   * tab is visible (paused via the Page Visibility API to avoid
-   * burning DB calls in background tabs). Click opens a dropdown
+   * counts from `notifications.aggregate`. Click opens a dropdown
    * with per-source rows + click-through links.
+   *
+   * #1215 — read on mount, on every `pending` / `deploys` live topic (a
+   * chat stream of this tab, or the live-events wait while work runs) and
+   * when the tab regains focus. Never on a timer (CLAUDE.md §11.B): an idle
+   * tab makes no request.
    */
 
   import { Bell } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
+  import { coalescedRefresh } from "#lib/components/edit/coalesced-refresh.js";
+  import { liveFetch, liveHub } from "#lib/live/live-refresh.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Card, CardContent } from "#lib/components/ui/card/index.js";
@@ -46,12 +51,13 @@
   });
   let loaded = $state(false);
   let open = $state(false);
-  let pollHandle: ReturnType<typeof setInterval> | null = null;
   let dropdownEl: HTMLDivElement | null = $state(null);
+  let unregister: (() => void) | null = null;
 
-  async function fetchCounts() {
+  // One read on the wire at a time; a call meanwhile re-reads once after it.
+  const fetchCounts = coalescedRefresh(async () => {
     try {
-      const r = await fetch("/api/notifications", {
+      const r = await liveFetch("/api/notifications", {
         method: "GET",
         headers: { accept: "application/json" },
       });
@@ -60,24 +66,10 @@
       counts = json;
       loaded = true;
     } catch {
-      // Network failure is non-fatal — leave the last-known counts
-      // visible until the next successful poll.
+      // Network failure or deadline is non-fatal — leave the last-known
+      // counts visible until the next topic or focus re-reads.
     }
-  }
-
-  function startPolling() {
-    if (pollHandle) return;
-    void fetchCounts();
-    pollHandle = setInterval(() => {
-      if (document.visibilityState === "visible") void fetchCounts();
-    }, 30_000);
-  }
-  function stopPolling() {
-    if (pollHandle) {
-      clearInterval(pollHandle);
-      pollHandle = null;
-    }
-  }
+  });
 
   function onDocClick(e: MouseEvent) {
     if (!open || !dropdownEl) return;
@@ -85,11 +77,15 @@
   }
 
   onMount(() => {
-    startPolling();
+    void fetchCounts();
+    unregister = liveHub.register({
+      topics: ["pending", "deploys"],
+      refresh: () => void fetchCounts(),
+    });
     document.addEventListener("click", onDocClick);
   });
   onDestroy(() => {
-    stopPolling();
+    unregister?.();
     if (typeof document !== "undefined") {
       document.removeEventListener("click", onDocClick);
     }

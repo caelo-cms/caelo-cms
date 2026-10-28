@@ -5,7 +5,8 @@
  * agent working in a chat.
  *
  *   1. A turn started by ANOTHER client (not this panel's stream) shows in
- *      the running-agents bar; its Stop ends the turn server-side — no
+ *      the running-agents bar once the operator returns to the tab (#1215:
+ *      no timer polling); its Stop ends the turn server-side — no
  *      further tool call lands — and a later auto-sent nudge is refused.
  *      The stream that started the turn stays connected the whole time, so
  *      only the server-side Stop can have ended it (on 2026-10-12 the
@@ -126,7 +127,13 @@ test("Stop in the running-agents bar ends a turn another client started, server-
   });
 
   const row = page.getByTestId("chat-agent-row").filter({ hasText: "Live Edit AI" });
-  await expect(row).toBeVisible({ timeout: 10_000 });
+  // #1215 — an idle tab polls nothing, so it learns of a turn another
+  // client started when the operator comes back to it (focus / visibility).
+  // From then on it waits on that running agent and follows it live.
+  await expect(async () => {
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(row).toBeVisible({ timeout: 1_500 });
+  }).toPass({ timeout: 10_000 });
   await expect.poll(() => toolRowCount(sessionId), { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
   await row.getByTestId("chat-agent-stop").click();
 

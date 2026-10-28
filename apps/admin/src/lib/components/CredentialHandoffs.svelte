@@ -9,12 +9,16 @@
    * link) and shown in this browser once — nothing secret is stored, so a
    * reload cannot bring it back.
    *
-   * Rendered in the Live Edit chat (`refreshKey` re-reads after approvals)
-   * and on the domain's settings pages (`kind` narrows the list).
+   * Rendered in the Live Edit chat and on the domain's settings pages
+   * (`kind` narrows the list). Re-read on every `credentials` live topic
+   * (#1215 — an approval applied, by this tab or the chat stream), when the
+   * tab regains focus and when `refreshKey` changes; never on a timer.
    */
 
   import { KeyRound } from "lucide-svelte";
+  import { coalescedRefresh } from "#lib/components/edit/coalesced-refresh.js";
   import { Button } from "#lib/components/ui/button/index.js";
+  import { liveFetch, liveHub } from "#lib/live/live-refresh.js";
 
   type Kind = "user_temporary_password" | "mcp_token";
   interface Handoff {
@@ -44,10 +48,13 @@
   let busy = $state<Record<string, boolean>>({});
   let problem = $state<string | null>(null);
 
-  async function load(): Promise<void> {
+  // One read on the wire at a time; a call meanwhile re-reads once after it.
+  const load = coalescedRefresh(async () => {
     try {
       const q = kind ? `?kind=${kind}` : "";
-      const res = await fetch(`/settings/credentials${q}`, { headers: { accept: "application/json" } });
+      const res = await liveFetch(`/settings/credentials${q}`, {
+        headers: { accept: "application/json" },
+      });
       if (!res.ok) return;
       const data = (await res.json()) as { handoffs: Handoff[]; emailAvailable: boolean };
       handoffs = data.handoffs;
@@ -55,12 +62,13 @@
     } catch {
       // Best-effort read: a blip keeps the current list.
     }
-  }
+  });
 
   $effect(() => {
     void refreshKey;
     void load();
   });
+  $effect(() => liveHub.register({ topics: ["credentials"], refresh: () => void load() }));
 
   async function issue(h: Handoff, via: "reveal" | "email"): Promise<void> {
     busy = { ...busy, [h.id]: true };

@@ -4,14 +4,19 @@
   /**
    * Issues #664 / #665 — every AI agent working in THIS chat, with a Stop
    * for each: the Live Edit AI (running or queued turns, also ones another
-   * tab or client started), its subagents, external MCP agents. Polls the
-   * chat's agents endpoint, so work the panel's own stream knows nothing
-   * about still shows up. A stopped external agent stays listed with
-   * "Allow again" — it is blocked in this chat until the operator lifts it.
+   * tab or client started), its subagents, external MCP agents. Work the
+   * panel's own stream knows nothing about still shows up: the list is
+   * re-read on every `agents` live topic (#1215 — from this tab's stream or,
+   * while another agent works here, from the live-events wait) and when the
+   * tab regains focus; it polls nothing on a timer. A stopped external agent
+   * stays listed with "Allow again" — it is blocked in this chat until the
+   * operator lifts it.
    */
 
   import { Bot, Square } from "lucide-svelte";
+  import { coalescedRefresh } from "#lib/components/edit/coalesced-refresh.js";
   import { Button } from "#lib/components/ui/button/index.js";
+  import { liveHub } from "#lib/live/live-refresh.js";
   import {
     type AgentRunView,
     activeRuns,
@@ -25,21 +30,21 @@
     csrfToken: string;
     /** Bump to re-read now (after a send, a Stop, a stream end). */
     refreshKey?: number;
-    /** Poll interval while mounted. */
-    pollMs?: number;
   }
-  let { chatSessionId, csrfToken, refreshKey = 0, pollMs = 3000 }: Props = $props();
+  let { chatSessionId, csrfToken, refreshKey = 0 }: Props = $props();
 
   let runs = $state<AgentRunView[]>([]);
   let nowMs = $state(Date.now());
   let busy = $state<Record<string, boolean>>({});
   let actionError = $state<string | null>(null);
 
-  async function refresh(): Promise<void> {
+  // One read on the wire at a time; a call meanwhile re-reads once after it.
+  const refresh = coalescedRefresh(async () => {
     const next = await fetchAgentRuns(chatSessionId);
     if (next) runs = next;
     nowMs = Date.now();
-  }
+    liveHub.kick();
+  });
 
   $effect(() => {
     // Re-read whenever the parent bumps refreshKey or the chat changes.
@@ -47,10 +52,18 @@
     void chatSessionId;
     void refresh();
   });
+  $effect(() =>
+    liveHub.register({
+      topics: ["agents"],
+      refresh: () => void refresh(),
+      // An agent works here: its changes come from no stream of this tab.
+      waiting: () => activeRuns(runs).length > 0,
+    }),
+  );
+  // The "working · 2 min" ages tick locally while an agent runs; no request.
   $effect(() => {
-    const id = setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, pollMs);
+    if (activeRuns(runs).length === 0) return;
+    const id = setInterval(() => (nowMs = Date.now()), 1000);
     return () => clearInterval(id);
   });
 
