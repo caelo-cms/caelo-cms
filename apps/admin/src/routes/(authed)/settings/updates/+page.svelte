@@ -89,7 +89,10 @@
    * back as a failure that keeps the dialog open, and an error the server
    * throws (a CSRF token that no longer verifies) is shown the same way.
    * Success and any other failure close the dialog: the result shows on the
-   * page, under the status card.
+   * page, under the status card. The page data is reloaded in every case,
+   * as the plain form post did: a failure can come after the request was
+   * recorded (the upgrader could not be started), and the status card and
+   * history must show that attempt.
    */
   function submitInDialog(action: DialogAction): SubmitFunction {
     return () =>
@@ -98,7 +101,7 @@
           await applyAction(thrownErrorAsFailure(result, action));
           return;
         }
-        await update();
+        await update({ refreshAll: true });
         if (
           result.type === "success" ||
           (result.type === "failure" && result.data?.stepUpRequired !== true)

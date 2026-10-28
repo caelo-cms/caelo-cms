@@ -564,6 +564,34 @@ test("regression: a tab open past half the token's lifetime gets a fresh token, 
   await expect(card(page)).toHaveAttribute("data-state", "in_progress");
 });
 
+test("regression: an install whose job could not start shows the recorded attempt without a reload", async ({
+  page,
+  baseURL,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.context().addCookies([
+    {
+      name: "caelo_e2e_upgrader_run",
+      value: "start_fails",
+      url: baseURL ?? "http://localhost:4173",
+    },
+  ]);
+  await page.goto("/settings/updates");
+  await expect(page.getByTestId("section-history")).toHaveCount(0);
+  await page.getByTestId("open-install-dialog").click();
+  const dialog = page.getByTestId("install-dialog");
+  await dialog.getByTestId("install-dialog-password").fill(OWNER_PASSWORD);
+  await dialog.getByTestId("install-dialog-submit").click();
+  await expect(page.getByTestId("install-error")).toContainText(
+    "The upgrader could not be started: e2e stand-in",
+  );
+  await expect(dialog).toHaveCount(0);
+  // The page data was reloaded: the recorded attempt is in the history.
+  await expect(page.getByTestId("history-line")).toContainText("1 entry");
+  await page.context().clearCookies({ name: "caelo_e2e_upgrader_run" });
+});
+
 test("interrupted: a run refused before any change says so and never reads 'Finished'", async ({
   page,
 }) => {
