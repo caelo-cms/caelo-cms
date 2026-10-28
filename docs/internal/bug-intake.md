@@ -19,8 +19,9 @@ Endpoints: `GET /health` and `GET /healthz` (liveness), `POST /v1/installs` (reg
 - **Trust on first use.** The intake pins the first key it sees for an install id and refuses a different key for that id later (409). Registration itself is unauthenticated: anyone can register an install id and, at threshold 1, get an issue filed. Nothing proves that a registering client is a real Caelo install. Spam is therefore **bounded, not prevented**: by the daily issue cap, the kill switch, the per-address and global registration limits, and the per-install request limit.
 - **One issue per defect.** Reports of one defect form a cluster, and a cluster gets one issue. See [How matching works](#how-matching-works).
 - **Threshold.** A cluster gets its issue once `BUG_INTAKE_ISSUE_THRESHOLD_INSTALLS` distinct installs reported it.
-- **Daily cap.** At most `BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY` new issues per UTC calendar day. The counter lives in Firestore, so restarts and scale-to-zero do not reset it. A defect due an issue over the cap is stored and counted as usual and queued; queued defects are filed oldest first, at most three per incoming request, once the next day's slots exist. Every install refreshes its cluster status at least every six hours, so a queued defect waits at most that long past 00:00 UTC. Existing issues are not capped: body refreshes, milestone comments and regression reopens continue.
-- **Kill switch.** `BUG_INTAKE_ISSUES_PAUSED=true` stops every GitHub write (no issue created, edited, reopened or commented). Reports are still accepted, counted and stored, and defects due an issue are queued.
+- **Two kinds.** A report is a defect or a suggestion, and the two never mix. See [Defects and suggestions](#defects-and-suggestions).
+- **Daily caps.** At most `BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY` new defect issues and `BUG_INTAKE_MAX_NEW_SUGGESTIONS_PER_DAY` new suggestion issues per UTC calendar day, each from its own pool. The counters live in Firestore, so restarts and scale-to-zero do not reset them. A cluster due an issue over its kind's cap is stored and counted as usual and queued; queued clusters are filed oldest first, at most three per kind per incoming request, once the next day's slots exist. A full suggestion pool never holds back a defect, and the other way round. Every install refreshes its cluster status at least every six hours, so a queued cluster waits at most that long past 00:00 UTC. Existing issues are not capped: body refreshes, milestone comments and regression reopens continue.
+- **Kill switch.** `BUG_INTAKE_ISSUES_PAUSED=true` stops every GitHub write for both kinds (no issue created, edited, reopened or commented). Reports are still accepted, counted and stored, and clusters due an issue are queued.
 - **Repeat reports** update the counters only: the issue body is refreshed when a new install or Caelo version appears, and a comment is added at 10 / 100 / 1,000 / 10,000 installs.
 - **Privacy.** Reports are redacted on the install before they are queued (email addresses, links, IP addresses, phone numbers, tokens, keys) and redacted again on the intake, so a modified client cannot skip it. The issue shows the structured fields and the redacted description inside code fences (no @mentions, no cross-references). The `evidence` field is never published: it stays in the intake's Firestore database, readable only by its operator.
 
@@ -37,6 +38,25 @@ Steps 2 and 3 handle one report at a time, so a report sees the cluster created 
 The pool is one Firestore document, `candidates/pool`. It replaced per-tool lists (`candidates/t_<tool>`) that held AI clusters only. When the intake finds no pool, it deletes those old documents and builds the pool from the 40 most recently reported clusters, leaving out clusters merged into another one. No step is needed on upgrade.
 
 Clusters that already have separate issues are not merged afterwards: close the extra issues as duplicates (see [what maintainers do](#closing-the-loop-what-maintainers-do-on-an-issue)) and the intake follows the original.
+
+Matching never crosses kinds: a suggestion is only compared with suggestion clusters, a defect only with defect clusters (see below).
+
+### Defects and suggestions
+
+Every report carries a `kind` (#1192):
+
+| | Defect | Suggestion |
+|---|---|---|
+| Meaning | Something in Caelo misbehaved: a tool contradicted its description, a render contradicted stored state, a call failed. | Nothing misbehaved, but the AI needed something Caelo does not have: a capability, an option, documentation. |
+| Filed by | The AI (`bug_report`, `kind: "defect"`), automatic capture of failed tool calls, provider errors. | The AI only (`bug_report`, `kind: "suggestion"`). |
+| Severity | `blocking`, `degraded` or `cosmetic`. | None. |
+| Issue title | `[ai-detected] …` | `[ai-suggested] …` |
+| Labels | `ai-detected`, `severity:<severity>` | `ai-suggested` |
+| Daily cap | `BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY` | `BUG_INTAKE_MAX_NEW_SUGGESTIONS_PER_DAY` |
+
+The two kinds have separate fingerprint indexes, candidate pools (`candidates/pool` and `candidates/suggestion-pool`), daily counters (`issueSlots`, `suggestionIssueSlots`) and queues (`pendingIssues`, `pendingSuggestionIssues`), so a suggestion and a defect with the same text, even the same fingerprint, end in two clusters. A report without `kind`, which is what installs released before #1192 send, is a defect; so is every cluster and pool entry stored before #1192. No step is needed on upgrade: the suggestion pool is built on first use.
+
+A suggestion issue asks maintainers to close it as **not planned** when the idea is rejected (installs then show "Won't be done") and as completed when it ships.
 
 ## One-time setup
 
@@ -85,7 +105,7 @@ Put `app.pem` into the secret manager (step 3) and delete both local files.
 
 Install the App: App settings → Install App → choose the owner → **Only select repositories** → the target repository, nothing else. The installation id (`GITHUB_APP_INSTALLATION_ID`) is the number at the end of the installation's settings URL.
 
-Create the labels the intake applies in the target repository: `ai-detected`, `severity:blocking`, `severity:degraded`, `severity:cosmetic`.
+Create the labels the intake applies in the target repository: `ai-detected`, `ai-suggested`, `severity:blocking`, `severity:degraded`, `severity:cosmetic`.
 
 ### 2. Firestore and a runtime service account
 
@@ -155,7 +175,7 @@ gcloud run deploy bug-intake --project "$PROJECT" --region <region> \
   --image "$MIRROR@$DIGEST" --allow-unauthenticated \
   --min-instances 0 --max-instances 1 --concurrency 20 --memory 256Mi \
   --service-account "$SA" \
-  --set-env-vars "GITHUB_APP_ID=<app id>,GITHUB_APP_INSTALLATION_ID=<installation id>,BUG_INTAKE_PUBLIC_REPO=<owner>/<repo>,BUG_INTAKE_FIRESTORE_PROJECT=$PROJECT,BUG_INTAKE_FIRESTORE_DATABASE=$DB,BUG_INTAKE_ISSUE_THRESHOLD_INSTALLS=1,BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY=20,BUG_INTAKE_ISSUES_PAUSED=false,BUG_INTAKE_MAX_REGISTRATIONS_PER_HOUR=200,BUG_INTAKE_MATCH_MODEL=<model id>" \
+  --set-env-vars "GITHUB_APP_ID=<app id>,GITHUB_APP_INSTALLATION_ID=<installation id>,BUG_INTAKE_PUBLIC_REPO=<owner>/<repo>,BUG_INTAKE_FIRESTORE_PROJECT=$PROJECT,BUG_INTAKE_FIRESTORE_DATABASE=$DB,BUG_INTAKE_ISSUE_THRESHOLD_INSTALLS=1,BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY=20,BUG_INTAKE_MAX_NEW_SUGGESTIONS_PER_DAY=5,BUG_INTAKE_ISSUES_PAUSED=false,BUG_INTAKE_MAX_REGISTRATIONS_PER_HOUR=200,BUG_INTAKE_MATCH_MODEL=<model id>" \
   --set-secrets "GITHUB_APP_PRIVATE_KEY=bug-intake-github-app-key:latest,ANTHROPIC_API_KEY=bug-intake-model-key:latest"
 ```
 
@@ -195,8 +215,9 @@ Every variable is required (`apps/bug-intake/src/config.ts`); there are no defau
 | `BUG_INTAKE_FIRESTORE_PROJECT` | GCP project of the Firestore database. Named explicitly so the intake never writes into whatever project it happens to run in. | GCP project id (6–30 chars, lowercase, digits, hyphens). | Your project. |
 | `BUG_INTAKE_FIRESTORE_DATABASE` | Firestore database holding clusters, pinned keys and raw reports. | `(default)` or a database id (4–63 chars, lowercase, digits, hyphens). | `bug-intake`. |
 | `BUG_INTAKE_ISSUE_THRESHOLD_INSTALLS` | Distinct installs a defect needs before it gets an issue. | Integer ≥ 1. | `1` (every defect gets an issue). |
-| `BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY` | New issues per UTC day; the rest are queued for later days. | Integer ≥ 1. | `20`. |
-| `BUG_INTAKE_ISSUES_PAUSED` | Kill switch: `true` = no GitHub write of any kind. | Exactly `true` or `false`; anything else stops the service at boot. | `false`. |
+| `BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY` | New defect issues per UTC day; the rest are queued for later days. Suggestions do not count against it. | Integer ≥ 1. | `20`. |
+| `BUG_INTAKE_MAX_NEW_SUGGESTIONS_PER_DAY` | New suggestion issues per UTC day, a pool separate from the defect cap; the rest are queued for later days. `0` stores and queues suggestions without filing any. | Integer ≥ 0 (digits only; empty stops the service at boot). | `5`. |
+| `BUG_INTAKE_ISSUES_PAUSED` | Kill switch for defects and suggestions: `true` = no GitHub write of any kind. | Exactly `true` or `false`; anything else stops the service at boot. | `false`. |
 | `BUG_INTAKE_MAX_REGISTRATIONS_PER_HOUR` | Registrations per hour across all clients, on top of the fixed per-address limit (20 per hour). | Integer ≥ 1. | `200`. |
 | `ANTHROPIC_API_KEY` | Key for the model that matches differently worded reports of the same defect. From the secret manager. | Non-empty. | Your key. |
 | `BUG_INTAKE_MATCH_MODEL` | Model id used for that matching. A small, fast model is enough. | Non-empty model id. | The current small Claude model. |
@@ -216,7 +237,9 @@ Installs keep sending and nothing is lost; nothing reaches GitHub. Set it back t
 
 **Raising the threshold.** When the volume grows, set `BUG_INTAKE_ISSUE_THRESHOLD_INSTALLS` higher (for example `2`). It is a config change on the intake, no install release. It applies to defects that have no issue yet; existing issues stay.
 
-**Raising the cap.** If real defects queue for days, raise `BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY`. If the queue is spam, pause first and clean up before raising anything.
+**Raising the cap.** If real defects queue for days, raise `BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY`; for suggestions, `BUG_INTAKE_MAX_NEW_SUGGESTIONS_PER_DAY`. If the queue is spam, pause first and clean up before raising anything.
+
+**Upgrading to kinds (#1192).** Deploy this intake before any install release that sends `kind`: an older intake refuses the field as unknown, and those reports end as "Not sent" on the install until the Owner sends them again. Set `BUG_INTAKE_MAX_NEW_SUGGESTIONS_PER_DAY` and create the `ai-suggested` label in the same change; without the variable the new intake does not start.
 
 **Upgrading.** Verify the new digest as above, copy it, and redeploy with `--image "$MIRROR@<new digest>"`. Configuration and data carry over.
 
@@ -228,7 +251,7 @@ The intake reads an issue's state lazily (at most every 5 minutes per cluster, w
 |---|---|
 | Close as **completed** (e.g. via `Fixes #N` in the PR) | "Fixed", then "Fixed in vX" once the first release published after the close exists |
 | Add label `fixed-in:0.11.2` before or after closing | "Fixed in 0.11.2" (overrides the release guess) |
-| Close as **not planned** | "Won't be fixed" |
+| Close as **not planned** (for a suggestion: the idea is rejected) | "Won't be fixed" ("Won't be done" for a suggestion) |
 | Close as **duplicate** (GitHub writes "Duplicate of #M") | Reports follow #M from then on; counts merge if #M is also an intake issue |
 | Reopen | "Open" again |
 | Nothing; a report arrives from a version ≥ the fix | The intake reopens the issue and comments that it is a regression |
@@ -249,7 +272,7 @@ gcloud emulators firestore start --host-port=127.0.0.1:8915
 PORT=8787 GITHUB_APP_ID=… GITHUB_APP_PRIVATE_KEY="$(cat app.pem)" GITHUB_APP_INSTALLATION_ID=… \
 BUG_INTAKE_PUBLIC_REPO=<owner>/<test repo> FIRESTORE_EMULATOR_HOST=127.0.0.1:8915 \
 BUG_INTAKE_FIRESTORE_PROJECT=bug-intake-local BUG_INTAKE_FIRESTORE_DATABASE='(default)' \
-BUG_INTAKE_ISSUE_THRESHOLD_INSTALLS=1 BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY=5 BUG_INTAKE_ISSUES_PAUSED=false \
+BUG_INTAKE_ISSUE_THRESHOLD_INSTALLS=1 BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY=5 BUG_INTAKE_MAX_NEW_SUGGESTIONS_PER_DAY=2 BUG_INTAKE_ISSUES_PAUSED=false \
 BUG_INTAKE_MAX_REGISTRATIONS_PER_HOUR=50 ANTHROPIC_API_KEY=… BUG_INTAKE_MATCH_MODEL=<model id> \
 bun apps/bug-intake/src/main.ts
 ```

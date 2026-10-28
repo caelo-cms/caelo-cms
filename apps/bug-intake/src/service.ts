@@ -5,12 +5,12 @@
  * issue per cluster, whatever the number of installs reporting it.
  *
  * A report finds its cluster in three steps:
- *   1. the install's fingerprint, if a cluster already claimed it (an exact
- *      repeat: the same normalised error text for auto-captured reports, the
- *      same title for AI-filed ones);
- *   2. otherwise the semantic matcher over the candidate pool: the
- *      `MAX_CANDIDATES` newest clusters of every tool and both sources
- *      (#1049). The AI writes the suspected tool freely ("stage_changes" vs
+ *   1. the install's fingerprint, if a cluster of the report's kind already
+ *      claimed it (an exact repeat: the same normalised error text for
+ *      auto-captured reports, the same title for AI-filed ones);
+ *   2. otherwise the semantic matcher over the candidate pool of the
+ *      report's kind: the `MAX_CANDIDATES` newest clusters of that kind, of
+ *      every tool and both sources (#1049). The AI writes the suspected tool freely ("stage_changes" vs
  *      "stage_changes (Firebase Hosting staging channel promotion)"), so the
  *      tool is a hint shown to the matcher, never a partition. AI and auto
  *      reports may join each other's clusters in both directions: an
@@ -28,16 +28,27 @@
  * the first report), its body is refreshed when a new install or version
  * appears, and a comment is added at install milestones.
  *
+ * Kinds (#1192): a report is a defect or a suggestion, and the two never
+ * meet. Each kind has its own fingerprint index and candidate pool, so a
+ * suggestion never joins a defect's cluster (or the other way round), and
+ * its own daily slots and pending queue, so suggestions never take a
+ * defect's issue slot. A maintainer's "close as duplicate" is the one way
+ * a cluster can follow a cluster of the other kind: that is their decision.
+ *
  * Public issues are bounded (#980), because registration is unauthenticated
  * and at threshold 1 anyone can file:
- *   - at most `maxNewIssuesPerDay` new issues per UTC calendar day (the
- *     window resets at 00:00 UTC). A defect due an issue over the cap is
- *     stored as usual and queued; queued defects are filed oldest first by
- *     later requests once the next day's slots exist. Updates to existing
- *     issues (body refresh, milestones, regression reopen) are not capped.
- *   - `issuesPaused` is the kill switch: reports are still accepted, counted
- *     and queued, but GitHub is never written (no create, edit or comment).
- *     Skipped edits catch up on the next event that would make them.
+ *   - at most `maxNewIssuesPerDay` new defect issues and
+ *     `maxNewSuggestionsPerDay` new suggestion issues per UTC calendar day
+ *     (the windows reset at 00:00 UTC). A cluster due an issue over its
+ *     kind's cap is stored as usual and queued; queued clusters are filed
+ *     oldest first by later requests once the next day's slots exist. One
+ *     kind's cap never holds back the other kind's queue. Updates to
+ *     existing issues (body refresh, milestones, regression reopen) are not
+ *     capped.
+ *   - `issuesPaused` is the kill switch for both kinds: reports are still
+ *     accepted, counted and queued, but GitHub is never written (no create,
+ *     edit or comment). Skipped edits catch up on the next event that would
+ *     make them.
  *
  * Issue state is read lazily (at most every few minutes per cluster) when a
  * report or status request touches the cluster, so the intake needs no
@@ -55,6 +66,7 @@
 import {
   type BugIntakeClusterInfo,
   type BugIntakeReport,
+  type BugReportKind,
   isNewerVersion,
   parseVersion,
   redactBugReportFields,
@@ -62,7 +74,13 @@ import {
 import type { IssueState, ReleaseInfo } from "./github.js";
 import { INSTALL_MILESTONES, issueBody, issueLabels, issueTitle } from "./issue-text.js";
 import type { ClusterMatcher } from "./matcher.js";
-import { type ClusterRecord, clusterSummary, type IntakeStore, type Versioned } from "./store.js";
+import {
+  type ClusterRecord,
+  clusterSummary,
+  type IntakeStore,
+  REPORT_KINDS,
+  type Versioned,
+} from "./store.js";
 
 /** The public tracker, bound to one repository. */
 export interface IssueTracker {
@@ -93,9 +111,15 @@ export interface IntakeServiceDeps {
   tracker: IssueTracker;
   matcher: ClusterMatcher;
   issueThresholdInstalls: number;
-  /** New public issues per UTC day; the rest wait in the store's pending queue. */
+  /** New public defect issues per UTC day; the rest wait in the defect queue. */
   maxNewIssuesPerDay: number;
-  /** Kill switch: true = no GitHub write of any kind (reads still happen). */
+  /**
+   * New public suggestion issues per UTC day, a pool of its own (#1192); the
+   * rest wait in the suggestion queue. 0 = suggestions are stored and queued
+   * but never filed.
+   */
+  maxNewSuggestionsPerDay: number;
+  /** Kill switch for both kinds: true = no GitHub write of any kind (reads still happen). */
   issuesPaused: boolean;
   now?: () => Date;
 }
@@ -128,11 +152,27 @@ const SEVERITY_RANK = { cosmetic: 0, degraded: 1, blocking: 2 } as const;
  */
 const FIND_OR_CREATE_LOCK = "find-or-create";
 
+/**
+ * Id of a new cluster. Derived from the fingerprint so a second intake
+ * process creating the same cluster collides on it; suggestions get their
+ * own prefix because the two kinds' fingerprint indexes are separate and the
+ * same fingerprint may open one cluster of each.
+ */
+function newClusterId(kind: BugReportKind, fingerprint: string): string {
+  return `${kind === "suggestion" ? "c_s" : "c_"}${fingerprint.slice(0, 20)}`;
+}
+
 export class IntakeService {
   readonly #d: Required<IntakeServiceDeps>;
   readonly #locks = new Map<string, Promise<unknown>>();
-  /** UTC day whose issue slots are known to be used up; saves a store round-trip per request. */
-  #capReachedDay: string | null = null;
+  /**
+   * Per kind, the UTC day whose issue slots are known to be used up; saves a
+   * store round-trip per request.
+   */
+  readonly #capReachedDay: Record<BugReportKind, string | null> = {
+    defect: null,
+    suggestion: null,
+  };
   #draining = false;
 
   constructor(deps: IntakeServiceDeps) {
@@ -195,7 +235,7 @@ export class IntakeService {
   }
 
   async #findOrCreateCluster(report: BugIntakeReport): Promise<string> {
-    const known = await this.#d.store.clusterIdForFingerprint(report.fingerprint);
+    const known = await this.#d.store.clusterIdForFingerprint(report.kind, report.fingerprint);
     if (known) return (await this.#resolve(known)).value.id;
     return this.#withLock(FIND_OR_CREATE_LOCK, () => this.#matchOrCreate(report));
   }
@@ -203,15 +243,18 @@ export class IntakeService {
   /** Steps 2 and 3 of the file header; runs under `FIND_OR_CREATE_LOCK`. */
   async #matchOrCreate(report: BugIntakeReport): Promise<string> {
     const { store, matcher } = this.#d;
+    const { kind, fingerprint } = report;
     // The report queued behind may have carried this very fingerprint.
-    const known = await store.clusterIdForFingerprint(report.fingerprint);
+    const known = await store.clusterIdForFingerprint(kind, fingerprint);
     if (known) return (await this.#resolve(known)).value.id;
 
-    const matched = await matcher.match(report, await store.candidates());
+    // Only clusters of the report's kind are offered, so the matcher cannot
+    // put a suggestion into a defect's cluster or the other way round.
+    const matched = await matcher.match(report, await store.candidates(kind));
     if (matched) {
-      const link = await store.linkFingerprint(report.fingerprint, matched);
+      const link = await store.linkFingerprint(kind, fingerprint, matched);
       const id =
-        link === "linked" ? matched : await store.clusterIdForFingerprint(report.fingerprint);
+        link === "linked" ? matched : await store.clusterIdForFingerprint(kind, fingerprint);
       if (id) {
         const owner = await this.#resolve(id);
         await store.addCandidate(clusterSummary(owner.value));
@@ -221,8 +264,9 @@ export class IntakeService {
 
     const now = this.#d.now().toISOString();
     const cluster: ClusterRecord = {
-      id: `c_${report.fingerprint.slice(0, 20)}`,
+      id: newClusterId(kind, fingerprint),
       createdAt: now,
+      kind,
       source: report.source,
       suspectedTool: report.suspectedTool,
       title: report.title,
@@ -246,9 +290,9 @@ export class IntakeService {
     };
     // Another intake instance (the store's backstop) may have created it already.
     await store.putCluster(cluster, null);
-    const link = await store.linkFingerprint(report.fingerprint, cluster.id);
+    const link = await store.linkFingerprint(kind, fingerprint, cluster.id);
     if (link === "taken") {
-      const id = await store.clusterIdForFingerprint(report.fingerprint);
+      const id = await store.clusterIdForFingerprint(kind, fingerprint);
       if (id) return (await this.#resolve(id)).value.id;
     }
     await store.addCandidate(clusterSummary(cluster));
@@ -278,7 +322,15 @@ export class IntakeService {
       if (isNewInstall) c.installHashes.push(installHash);
       if (isNewVersion) c.versions.push(report.caeloVersion);
       if (!c.fingerprints.includes(report.fingerprint)) c.fingerprints.push(report.fingerprint);
-      if (SEVERITY_RANK[report.severity] > SEVERITY_RANK[c.severity]) c.severity = report.severity;
+      // Severity grades defects only; a suggestion cluster (and a suggestion
+      // report) has none.
+      if (
+        c.severity !== null &&
+        report.severity !== null &&
+        SEVERITY_RANK[report.severity] > SEVERITY_RANK[c.severity]
+      ) {
+        c.severity = report.severity;
+      }
       c.blockedTask ||= report.blockedTask;
       c.occurrences += 1;
       c.lastSeen = this.#d.now().toISOString();
@@ -341,20 +393,26 @@ export class IntakeService {
     return this.#info(current);
   }
 
+  /** Today's new-issue limit of a kind. */
+  #dailyCap(kind: BugReportKind): number {
+    return kind === "suggestion" ? this.#d.maxNewSuggestionsPerDay : this.#d.maxNewIssuesPerDay;
+  }
+
   /**
    * Give a cluster that is due one its public issue, if the kill switch and
-   * today's cap allow; otherwise leave it queued. Call under the cluster's lock.
-   * The cluster is queued before GitHub is called, so a failed create is
-   * retried by a later request rather than lost.
+   * today's cap of its kind allow; otherwise leave it queued. Call under the
+   * cluster's lock. The cluster is queued before GitHub is called, so a
+   * failed create is retried by a later request rather than lost.
    */
   async #fileIssue(cluster: ClusterRecord): Promise<ClusterRecord> {
     const { store, tracker } = this.#d;
-    await store.markIssuePending(cluster.id, this.#d.now().toISOString());
+    const { kind } = cluster;
+    await store.markIssuePending(kind, cluster.id, this.#d.now().toISOString());
     if (this.#d.issuesPaused) return cluster;
     const day = utcDay(this.#d.now());
-    if (this.#capReachedDay === day) return cluster;
-    if (!(await store.takeIssueSlot(day, this.#d.maxNewIssuesPerDay))) {
-      this.#capReachedDay = day;
+    if (this.#capReachedDay[kind] === day) return cluster;
+    if (!(await store.takeIssueSlot(kind, day, this.#dailyCap(kind)))) {
+      this.#capReachedDay[kind] = day;
       return cluster;
     }
     let issue: { number: number; url: string };
@@ -365,8 +423,8 @@ export class IntakeService {
         labels: issueLabels(cluster),
       });
     } catch (e) {
-      await store.returnIssueSlot(day);
-      this.#capReachedDay = null;
+      await store.returnIssueSlot(kind, day);
+      this.#capReachedDay[kind] = null;
       throw e;
     }
     await store.linkIssue(issue.number, cluster.id);
@@ -375,41 +433,50 @@ export class IntakeService {
       c.issueUrl = issue.url;
       c.lastIssueSyncAt = this.#d.now().toISOString();
     });
-    await store.clearIssuePending(cluster.id);
+    await store.clearIssuePending(kind, cluster.id);
     return filed;
   }
 
   /**
-   * File queued issues, oldest first, while the kill switch and today's cap
-   * allow. Piggybacks on install requests because the service scales to zero
-   * and has no scheduler; at least one install refreshes status every six
-   * hours, so a queued defect waits at most that long past the daily reset.
-   * A failure here is logged, not thrown: it is the intake's own backlog and
-   * must not fail an unrelated install's request.
+   * File queued issues of each kind, oldest first, while the kill switch and
+   * that kind's cap for today allow. Piggybacks on install requests because
+   * the service scales to zero and has no scheduler; at least one install
+   * refreshes status every six hours, so a queued cluster waits at most that
+   * long past the daily reset. A failure here is logged, not thrown: it is
+   * the intake's own backlog and must not fail an unrelated install's
+   * request. Each kind drains on its own, so one kind's full cap or failure
+   * never holds back the other's queue.
    */
   async #fileQueuedIssues(): Promise<void> {
     if (this.#d.issuesPaused || this.#draining) return;
-    if (this.#capReachedDay === utcDay(this.#d.now())) return;
     this.#draining = true;
     try {
-      for (const id of await this.#d.store.pendingIssueClusters(PENDING_ISSUES_PER_REQUEST)) {
+      for (const kind of REPORT_KINDS) await this.#fileQueuedIssuesOf(kind);
+    } finally {
+      this.#draining = false;
+    }
+  }
+
+  async #fileQueuedIssuesOf(kind: BugReportKind): Promise<void> {
+    if (this.#capReachedDay[kind] === utcDay(this.#d.now())) return;
+    const { store } = this.#d;
+    try {
+      for (const id of await store.pendingIssueClusters(kind, PENDING_ISSUES_PER_REQUEST)) {
         await this.#withLock(id, async () => {
-          const cur = await this.#d.store.getCluster(id);
+          const cur = await store.getCluster(id);
           if (!cur || cur.value.issueNumber !== null) {
-            await this.#d.store.clearIssuePending(id);
+            await store.clearIssuePending(kind, id);
             return;
           }
           await this.#fileIssue(cur.value);
         });
-        if (this.#capReachedDay === utcDay(this.#d.now())) break;
+        if (this.#capReachedDay[kind] === utcDay(this.#d.now())) break;
       }
     } catch (e) {
       console.error(
-        "[bug-intake] filing queued issues failed; retried on a later request:",
+        `[bug-intake] filing queued ${kind} issues failed; retried on a later request:`,
         e instanceof Error ? e.message : e,
       );
-    } finally {
-      this.#draining = false;
     }
   }
 

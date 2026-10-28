@@ -38,6 +38,7 @@ const report: BugIntakeReport = {
   caeloVersion: "0.10.55",
   fingerprint: "f".repeat(64),
   source: "auto",
+  kind: "defect",
   severity: "blocking",
   blockedTask: true,
   suspectedTool: "deploy_staging",
@@ -72,6 +73,7 @@ describe("install client ↔ intake", () => {
         matcher: { match: async () => null },
         issueThresholdInstalls: 1,
         maxNewIssuesPerDay: 100,
+        maxNewSuggestionsPerDay: 100,
         issuesPaused: false,
       }),
       globalRegisterLimiter: new RateLimiter(100, 60 * 60_000),
@@ -96,5 +98,19 @@ describe("install client ↔ intake", () => {
     const status = await client.clusterStatus(identity, [sent.value.clusterId]);
     if (status.kind !== "ok") throw new Error(status.error);
     expect(status.value[0]?.clusterId).toBe(sent.value.clusterId);
+
+    // #1192 — a suggestion crosses the wire with its kind and lands in a
+    // suggestion cluster of its own, even with the defect's fingerprint.
+    const idea = await client.sendReport(identity, {
+      ...report,
+      reportId: "00000000-0000-4000-8000-000000000043",
+      source: "ai",
+      kind: "suggestion",
+      severity: null,
+      blockedTask: false,
+    });
+    if (idea.kind !== "ok") throw new Error(idea.error);
+    expect(idea.value.clusterId).not.toBe(sent.value.clusterId);
+    expect((await store.getCluster(idea.value.clusterId))?.value.kind).toBe("suggestion");
   });
 });

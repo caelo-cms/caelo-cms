@@ -348,6 +348,7 @@ async function fileCoreBug(
       expected: `"${opts.slug}" ${opts.phase === "verify" ? "verifies" : "provisions"} and loads like on every other boot.`,
       suspectedTool: `plugin-host:${opts.phase}`,
       severity: "blocking",
+      kind: "defect",
       source: "auto",
     },
   );

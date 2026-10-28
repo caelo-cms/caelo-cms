@@ -88,6 +88,7 @@ const report = (over: Partial<BugIntakeReport> = {}): BugIntakeReport => ({
   caeloVersion: "0.10.55",
   fingerprint: "a".repeat(64),
   source: "auto",
+  kind: "defect",
   severity: "degraded",
   blockedTask: false,
   suspectedTool: "build_page",
@@ -104,7 +105,7 @@ let matcher: FakeMatcher;
 let clock: Date;
 const service = (
   threshold = 1,
-  opts: { cap?: number; paused?: boolean; matcher?: ClusterMatcher } = {},
+  opts: { cap?: number; suggestionCap?: number; paused?: boolean; matcher?: ClusterMatcher } = {},
 ) =>
   new IntakeService({
     store,
@@ -112,6 +113,7 @@ const service = (
     matcher: opts.matcher ?? matcher,
     issueThresholdInstalls: threshold,
     maxNewIssuesPerDay: opts.cap ?? 100,
+    maxNewSuggestionsPerDay: opts.suggestionCap ?? 100,
     issuesPaused: opts.paused ?? false,
     now: () => clock,
   });
@@ -170,7 +172,7 @@ describe("IntakeService", () => {
     expect(b.clusterId).toBe(a.clusterId);
     expect(tracker.calls.create).toBe(1);
     // The new wording is now a direct hit.
-    expect(await store.clusterIdForFingerprint("c".repeat(64))).toBe(a.clusterId);
+    expect(await store.clusterIdForFingerprint("defect", "c".repeat(64))).toBe(a.clusterId);
 
     // A repeat of a known fingerprint never asks the model.
     const calls = matcher.seen.length;
@@ -287,7 +289,7 @@ describe("IntakeService", () => {
     const capped = await s.ingest(INSTALL_A, report({ fingerprint: "f".repeat(64) }));
     expect(capped.issueUrl).toBeNull();
     expect((await store.getCluster(capped.clusterId))?.value.occurrences).toBe(1);
-    expect(await store.pendingIssueClusters(10)).toEqual([capped.clusterId]);
+    expect(await store.pendingIssueClusters("defect", 10)).toEqual([capped.clusterId]);
     expect(tracker.calls.create).toBe(1);
 
     // The cap is on new issues only: the existing one still gets its counters.
@@ -310,8 +312,8 @@ describe("IntakeService", () => {
     const filed = (await store.getCluster(capped.clusterId))!.value;
     expect(filed.issueUrl).toContain("/issues/101");
     expect(tracker.issues.get(101)?.body).toContain("| Installs reporting it | 2 |");
-    expect(await store.pendingIssueClusters(10)).toEqual([]);
-    expect(store.issueSlots.get("2026-10-21")).toBe(1);
+    expect(await store.pendingIssueClusters("defect", 10)).toEqual([]);
+    expect(store.issueSlots.get("defect:2026-10-21")).toBe(1);
   });
 
   it("files queued defects oldest first, a bounded batch per request", async () => {
@@ -326,22 +328,22 @@ describe("IntakeService", () => {
     clock = new Date("2026-10-21T08:00:00Z");
     await big.status([]);
     // Three per request, in arrival order.
-    expect(await store.pendingIssueClusters(10)).toEqual(queued.slice(3));
+    expect(await store.pendingIssueClusters("defect", 10)).toEqual(queued.slice(3));
     expect((await store.getCluster(queued[0]!))?.value.issueNumber).toBe(101);
     await big.status([]);
-    expect(await store.pendingIssueClusters(10)).toEqual([]);
+    expect(await store.pendingIssueClusters("defect", 10)).toEqual([]);
   });
 
   it("gives the slot back and keeps the defect queued when GitHub refuses the create", async () => {
     const s = service(1, { cap: 1 });
     tracker.failNextCreate = true;
     await expect(s.ingest(INSTALL_A, report())).rejects.toThrow("GitHub said no");
-    expect(store.issueSlots.get("2026-10-20")).toBe(0);
-    expect(await store.pendingIssueClusters(10)).toHaveLength(1);
+    expect(store.issueSlots.get("defect:2026-10-20")).toBe(0);
+    expect(await store.pendingIssueClusters("defect", 10)).toHaveLength(1);
     // The next request retries it within the same day's budget.
     await s.status([]);
     expect(tracker.issues.get(100)).toBeDefined();
-    expect(await store.pendingIssueClusters(10)).toEqual([]);
+    expect(await store.pendingIssueClusters("defect", 10)).toEqual([]);
   });
 
   it("writes nothing to GitHub while paused, then catches up when unpaused", async () => {
@@ -367,7 +369,7 @@ describe("IntakeService", () => {
     // Reports were still accepted, counted and kept.
     expect(store.reports.size).toBe(3);
     expect((await store.getCluster(a.clusterId))?.value.installHashes.length).toBe(2);
-    expect(await store.pendingIssueClusters(10)).toEqual([fresh.clusterId]);
+    expect(await store.pendingIssueClusters("defect", 10)).toEqual([fresh.clusterId]);
 
     // Unpaused: the queued defect is filed, and the regression is caught on its next report.
     const resumed = service();
@@ -593,7 +595,7 @@ describe("IntakeService matching over one candidate pool (#1049)", () => {
       );
       ids.push(r.clusterId);
     }
-    const pool = await store.candidates();
+    const pool = await store.candidates("defect");
     expect(pool.length).toBe(MAX_CANDIDATES);
     expect(pool.map((c) => c.id)).toEqual(ids.slice(-MAX_CANDIDATES).reverse());
     expect(Math.max(...defects.offered.map((o) => o.length))).toBe(MAX_CANDIDATES);
@@ -606,15 +608,15 @@ describe("IntakeService matching over one candidate pool (#1049)", () => {
       await sent({ source: "ai", suspectedTool: "tool_10", title: "Reworded", whatHappened: "x" }),
     );
     expect(joined.clusterId).toBe(old);
-    expect((await store.candidates())[0]?.id).toBe(old);
-    expect((await store.candidates()).length).toBe(MAX_CANDIDATES);
+    expect((await store.candidates("defect"))[0]?.id).toBe(old);
+    expect((await store.candidates("defect")).length).toBe(MAX_CANDIDATES);
   });
 
   it("offers clusters stored before the pool existed, leaving merged ones out", async () => {
     // A store from before #1049: clusters, no pool yet.
     const base = (await service().ingest(INSTALL_A, report())).clusterId;
     const record = (await store.getCluster(base))!.value;
-    store.pool = null;
+    store.pools.defect = null;
     await store.putCluster(
       {
         ...record,
@@ -637,5 +639,153 @@ describe("IntakeService matching over one candidate pool (#1049)", () => {
     );
     expect(r.clusterId).toBe("c_auto_old");
     expect(defects.offered[0]?.map((c) => c.id).sort()).toEqual([base, "c_auto_old"].sort());
+  });
+});
+
+/**
+ * #1192 — AI suggestions (a missing capability, a feature idea, a docs gap)
+ * are their own kind end to end: own title prefix and label, no severity,
+ * own daily slots and queue, and never a cluster shared with a defect.
+ * The suggestion below is modelled on #1129, one of the six filed as
+ * defects on 2026-10-26.
+ */
+describe("IntakeService suggestions (#1192)", () => {
+  const suggestion = (over: Partial<BugIntakeReport> = {}) =>
+    report({
+      kind: "suggestion",
+      source: "ai",
+      severity: null,
+      fingerprint: "5".repeat(64),
+      suspectedTool: "list_pages",
+      title: "No aggregated overview of page quality",
+      whatHappened:
+        "Checking quality across the site needed one get_page_quality call per page; nothing lists every page's findings at once.",
+      expected: "An aggregated overview of quality findings across all pages.",
+      ...over,
+    });
+
+  it("files a suggestion as [ai-suggested] with the ai-suggested label and no severity, from its own slots", async () => {
+    const s = service();
+    const r = await s.ingest(INSTALL_A, suggestion());
+    expect(r.issueUrl).toContain("/issues/100");
+    const issue = tracker.issues.get(100)!;
+    expect(issue.title).toBe("[ai-suggested] No aggregated overview of page quality");
+    expect(issue.labels).toEqual(["ai-suggested"]);
+    expect(issue.body).not.toContain("Severity");
+    expect(issue.body).toContain("### What was missing");
+    expect(issue.body).toContain("close this issue as **not planned**");
+    const c = (await store.getCluster(r.clusterId))!.value;
+    expect(c).toMatchObject({ kind: "suggestion", severity: null });
+    expect(store.issueSlots.get("suggestion:2026-10-20")).toBe(1);
+    expect(store.issueSlots.get("defect:2026-10-20")).toBeUndefined();
+
+    // A defect keeps its own look.
+    await s.ingest(INSTALL_A, report());
+    expect(tracker.issues.get(101)).toMatchObject({
+      title: "[ai-detected] Tool build_page returned an error",
+      labels: ["ai-detected", "severity:degraded"],
+    });
+  });
+
+  it("leaves defects unaffected when the suggestion slots are used up", async () => {
+    const s = service(1, { cap: 5, suggestionCap: 1 });
+    await s.ingest(INSTALL_A, suggestion());
+    const queued = await s.ingest(INSTALL_A, suggestion({ fingerprint: "6".repeat(64) }));
+    expect(queued.issueUrl).toBeNull();
+    expect(await store.pendingIssueClusters("suggestion", 10)).toEqual([queued.clusterId]);
+
+    const defect = await s.ingest(INSTALL_A, report());
+    expect(defect.issueUrl).not.toBeNull();
+    expect(await store.pendingIssueClusters("defect", 10)).toEqual([]);
+    expect(store.issueSlots.get("defect:2026-10-20")).toBe(1);
+    expect(store.issueSlots.get("suggestion:2026-10-20")).toBe(1);
+
+    // The queued suggestion waits for the next day's suggestion slots.
+    clock = new Date("2026-10-21T00:00:01Z");
+    await s.status([]);
+    expect((await store.getCluster(queued.clusterId))?.value.issueUrl).not.toBeNull();
+  });
+
+  it("leaves suggestions unaffected when the defect slots are used up", async () => {
+    const s = service(1, { cap: 1, suggestionCap: 5 });
+    await s.ingest(INSTALL_A, report());
+    const queued = await s.ingest(INSTALL_A, report({ fingerprint: "f".repeat(64) }));
+    expect(queued.issueUrl).toBeNull();
+
+    const idea = await s.ingest(INSTALL_A, suggestion());
+    expect(idea.issueUrl).not.toBeNull();
+    expect(await store.pendingIssueClusters("suggestion", 10)).toEqual([]);
+    expect(await store.pendingIssueClusters("defect", 10)).toEqual([queued.clusterId]);
+  });
+
+  it("drains each kind's queue on its own; the kill switch holds both", async () => {
+    const paused = service(1, { paused: true });
+    const d = await paused.ingest(INSTALL_A, report());
+    const i1 = await paused.ingest(INSTALL_A, suggestion());
+    const i2 = await paused.ingest(INSTALL_A, suggestion({ fingerprint: "6".repeat(64) }));
+    expect(tracker.writes).toBe(0);
+    expect(await store.pendingIssueClusters("defect", 10)).toEqual([d.clusterId]);
+    expect(await store.pendingIssueClusters("suggestion", 10)).toEqual([
+      i1.clusterId,
+      i2.clusterId,
+    ]);
+
+    // Unpaused with one suggestion slot: the full suggestion cap does not
+    // stop the queued defect from being filed.
+    const resumed = service(1, { cap: 5, suggestionCap: 1 });
+    await resumed.status([]);
+    expect((await store.getCluster(d.clusterId))?.value.issueUrl).not.toBeNull();
+    expect((await store.getCluster(i1.clusterId))?.value.issueUrl).not.toBeNull();
+    expect((await store.getCluster(i2.clusterId))?.value.issueUrl).toBeNull();
+    expect(await store.pendingIssueClusters("suggestion", 10)).toEqual([i2.clusterId]);
+  });
+
+  it("only queues suggestions when their cap is 0", async () => {
+    const s = service(1, { suggestionCap: 0 });
+    const r = await s.ingest(INSTALL_A, suggestion());
+    expect(r.issueUrl).toBeNull();
+    expect(tracker.calls.create).toBe(0);
+    expect(await store.pendingIssueClusters("suggestion", 10)).toEqual([r.clusterId]);
+  });
+
+  it("ends a suggestion and a defect with similar text, even the same fingerprint, in two clusters", async () => {
+    // A matcher that merges anything with this wording, whatever its kind:
+    // only the service's partition can keep the two apart.
+    const sameText = new DefectMatcher([/aggregated overview/i]);
+    const s = service(1, { matcher: sameText });
+    const text = {
+      source: "ai" as const,
+      suspectedTool: "list_pages",
+      title: "No aggregated overview of page quality",
+      whatHappened: "get_page_quality has to be called per page for an aggregated overview",
+    };
+    const defect = await s.ingest(
+      INSTALL_A,
+      report({ ...text, fingerprint: "7".repeat(64), expected: "list_pages returns quality" }),
+    );
+    const idea = await s.ingest(
+      INSTALL_B,
+      suggestion({ ...text, fingerprint: "8".repeat(64), expected: "An aggregated overview" }),
+    );
+    // The defect's exact fingerprint, sent as a suggestion.
+    const sameFp = await s.ingest(INSTALL_B, suggestion({ ...text, fingerprint: "7".repeat(64) }));
+    expect(idea.clusterId).not.toBe(defect.clusterId);
+    expect(sameFp.clusterId).toBe(idea.clusterId);
+    expect(sameText.offered.flat().every((c) => c.kind === "suggestion")).toBe(true);
+    expect((await store.getCluster(defect.clusterId))?.value.kind).toBe("defect");
+    expect((await store.getCluster(idea.clusterId))?.value.kind).toBe("suggestion");
+    expect(tracker.calls.create).toBe(2);
+
+    // No matcher hit at all: one fingerprint opens one cluster per kind.
+    const exact = await service().ingest(
+      INSTALL_A,
+      suggestion({ ...text, fingerprint: "9".repeat(64) }),
+    );
+    const exactDefect = await service().ingest(
+      INSTALL_A,
+      report({ ...text, fingerprint: "9".repeat(64) }),
+    );
+    expect(exact.clusterId).not.toBe(exactDefect.clusterId);
+    expect(exact.clusterId.startsWith("c_s")).toBe(true);
   });
 });

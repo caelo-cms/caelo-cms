@@ -35,7 +35,8 @@ const tracker: IssueTracker = {
   releases: async () => [],
 };
 
-const report: BugIntakeReport = {
+/** Without `kind`, as an install released before #1192 sends it. */
+const report: Omit<BugIntakeReport, "kind"> = {
   protocolVersion: 1,
   reportId: "00000000-0000-4000-8000-000000000001",
   caeloVersion: "0.10.55",
@@ -121,6 +122,7 @@ beforeEach(() => {
     matcher: { match: async () => null },
     issueThresholdInstalls: 1,
     maxNewIssuesPerDay: 100,
+    maxNewSuggestionsPerDay: 100,
     issuesPaused: false,
   });
   handler = createIntakeHandler({
@@ -166,6 +168,40 @@ describe("bug intake HTTP", () => {
       ),
     );
     expect(((await status.json()) as { clusters: unknown[] }).clusters.length).toBe(1);
+  });
+
+  it("files a report without kind (an install from before #1192) as a defect and a suggestion as one (#1192)", async () => {
+    await register(keys.publicKey);
+    const old = await handler(await signed("/v1/reports", JSON.stringify(report)));
+    const oldCluster = ((await old.json()) as { clusterId: string }).clusterId;
+    expect((await store.getCluster(oldCluster))?.value.kind).toBe("defect");
+
+    const idea = {
+      ...report,
+      reportId: "00000000-0000-4000-8000-000000000002",
+      source: "ai",
+      kind: "suggestion",
+      severity: null,
+    };
+    const res = await handler(await signed("/v1/reports", JSON.stringify(idea)));
+    expect(res.status).toBe(200);
+    const ideaCluster = ((await res.json()) as { clusterId: string }).clusterId;
+    expect(ideaCluster).not.toBe(oldCluster);
+    expect((await store.getCluster(ideaCluster))?.value).toMatchObject({
+      kind: "suggestion",
+      severity: null,
+    });
+    expect((await store.getReport(idea.reportId))?.report.kind).toBe("suggestion");
+
+    // A graded suggestion breaks the contract: refused for good.
+    const graded = await handler(
+      await signed(
+        "/v1/reports",
+        JSON.stringify({ ...idea, reportId: crypto.randomUUID(), severity: "degraded" }),
+      ),
+    );
+    expect(graded.status).toBe(400);
+    expect((await errorOf(graded)).retryable).toBe(false);
   });
 
   it("asks an unknown install to register (retryable) and refuses a foreign key for good", async () => {

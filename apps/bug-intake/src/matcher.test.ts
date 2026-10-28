@@ -19,6 +19,7 @@ const report: BugIntakeReport = {
   caeloVersion: "0.10.55",
   fingerprint: "a".repeat(64),
   source: "ai",
+  kind: "defect",
   severity: "degraded",
   blockedTask: false,
   suspectedTool: "screenshot_page",
@@ -30,6 +31,7 @@ const report: BugIntakeReport = {
 const candidates: ClusterSummary[] = [
   {
     id: "c_1",
+    kind: "defect",
     title: "Selector crop ignored",
     whatHappened: "full page instead of the element",
     suspectedTool: "screenshot_page (selector crop)",
@@ -37,6 +39,7 @@ const candidates: ClusterSummary[] = [
   },
   {
     id: "c_2",
+    kind: "defect",
     title: "Tool screenshot_page returned an error",
     whatHappened: "no image after 30s",
     suspectedTool: "screenshot_page",
@@ -93,6 +96,32 @@ describe("LlmClusterMatcher", () => {
     expect(p).toContain("When unsure, answer null.");
   });
 
+  it("never names a cluster of the other kind, even when the model does (#1192)", async () => {
+    const suggestion: BugIntakeReport = { ...report, kind: "suggestion", severity: null };
+    const model = modelAnswering({ clusterId: "c_1", confidence: "high" });
+    // Both offered candidates are defects: the model is not even asked.
+    expect(await new LlmClusterMatcher(model).match(suggestion, candidates)).toBeNull();
+    expect(model.doGenerateCalls.length).toBe(0);
+
+    const mixed: ClusterSummary[] = [
+      ...candidates,
+      { ...candidates[0]!, id: "c_s1", kind: "suggestion", title: "No bulk view of pages" },
+    ];
+    const asked = modelAnswering({ clusterId: "c_1", confidence: "high" });
+    expect(await new LlmClusterMatcher(asked).match(suggestion, mixed)).toBeNull();
+    const prompt = JSON.stringify(asked.doGenerateCalls[0]?.prompt);
+    expect(prompt).toContain('<candidate id=\\"c_s1\\">');
+    expect(prompt).not.toContain('<candidate id=\\"c_1\\">');
+  });
+
+  it("asks about the same idea for a suggestion and the same defect for a defect", () => {
+    const s = matchPrompt({ ...report, kind: "suggestion", severity: null }, candidates);
+    expect(s).toContain("You triage suggestions about the Caelo CMS");
+    expect(s).toContain("the same missing capability or the same missing documentation");
+    expect(s).not.toContain("same underlying defect");
+    expect(matchPrompt(report, candidates)).toContain("same underlying defect");
+  });
+
   it("keeps the prompt bounded for a full pool of maximal candidates and a maximal report", () => {
     const big = (n: number) => "x".repeat(n);
     const worst: BugIntakeReport = {
@@ -104,6 +133,7 @@ describe("LlmClusterMatcher", () => {
     };
     const pool: ClusterSummary[] = Array.from({ length: MAX_CANDIDATES }, (_, i) => ({
       id: `c_${String(i).padStart(20, "0")}`,
+      kind: "defect",
       title: big(BUG_INTAKE_LIMITS.title),
       whatHappened: big(CANDIDATE_TEXT_CHARS),
       suspectedTool: big(MAX_TOOL_CHARS),

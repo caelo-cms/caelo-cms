@@ -113,12 +113,14 @@ async function runTurn(
   return { chatSessionId, events };
 }
 
-async function bugReports(chatSessionId: string): Promise<{ title: string; severity: string }[]> {
+async function bugReports(
+  chatSessionId: string,
+): Promise<{ title: string; severity: string; kind: string }[]> {
   return withSql(
     async (tx) =>
       (await tx`
-        SELECT title, severity FROM ai_bug_reports WHERE chat_session_id = ${chatSessionId}::uuid
-      `) as unknown as { title: string; severity: string }[],
+        SELECT title, severity, kind FROM ai_bug_reports WHERE chat_session_id = ${chatSessionId}::uuid
+      `) as unknown as { title: string; severity: string; kind: string }[],
   );
 }
 
@@ -186,7 +188,8 @@ describe("chat-runner: provider account refusals", () => {
     );
     const { chatSessionId } = await runTurn("provider-account-defect", provider);
     expect(await bugReports(chatSessionId)).toEqual([
-      { title: "AI turn failed: provider error", severity: "blocking" },
+      // #1192 — a provider error is always a defect.
+      { title: "AI turn failed: provider error", severity: "blocking", kind: "defect" },
     ]);
   });
 });

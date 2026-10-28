@@ -44,7 +44,18 @@ const intakeEnv = z.object({
    * the cap are stored and get their issue on a later day.
    */
   BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY: z.coerce.number().int().min(1),
-  /** Kill switch: reports are still accepted and stored, GitHub is not written. */
+  /**
+   * New public suggestion issues per UTC day (#1192): a slot pool of its
+   * own, so suggestions never take a defect's slot (the cap above counts
+   * defects only). Same queueing as defects; 0 keeps suggestions stored and
+   * queued without filing any. Digits only: an empty value must not coerce
+   * to that 0.
+   */
+  BUG_INTAKE_MAX_NEW_SUGGESTIONS_PER_DAY: z
+    .string()
+    .regex(/^\d+$/, "expected an integer ≥ 0")
+    .transform(Number),
+  /** Kill switch for defects and suggestions: reports are still accepted and stored, GitHub is not written. */
   BUG_INTAKE_ISSUES_PAUSED: boolFlag,
   /** Registrations per hour across all clients, on top of the per-address limit. */
   BUG_INTAKE_MAX_REGISTRATIONS_PER_HOUR: z.coerce.number().int().min(1),

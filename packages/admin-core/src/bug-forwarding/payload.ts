@@ -20,7 +20,10 @@ export interface ForwardableBugReport {
   id: string;
   fingerprint: string | null;
   source: string;
-  severity: string;
+  /** 'defect' | 'suggestion' (migration 0391; every older row is a defect). */
+  kind: string;
+  /** Null for a suggestion. */
+  severity: string | null;
   blockedTask: boolean;
   suspectedTool: string | null;
   title: string;
@@ -68,6 +71,9 @@ export async function buildIntakeReport(row: ForwardableBugReport): Promise<BugI
     caeloVersion: row.caeloVersion ?? UNKNOWN_FILING_VERSION,
     fingerprint,
     source,
+    // Sent as stored: the intake files a suggestion under its own label and
+    // daily cap (#1192). The contract refuses a kind it does not know.
+    kind: row.kind,
     severity: row.severity,
     blockedTask: row.blockedTask,
     suspectedTool: row.suspectedTool,
