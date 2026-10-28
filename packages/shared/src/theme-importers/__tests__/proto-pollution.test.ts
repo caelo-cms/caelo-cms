@@ -10,6 +10,7 @@
 import { describe, expect, it } from "bun:test";
 import { isUnsafeKey } from "../../safe-keys.js";
 import { applyDtcgWrites, removeDtcgPath } from "../../themes.js";
+import { UnknownTokenName } from "../../themes-errors.js";
 import { importTailwind } from "../tailwind.js";
 
 describe("isUnsafeKey", () => {
@@ -41,10 +42,19 @@ describe("importTailwind prototype-pollution guard (S5)", () => {
 });
 
 describe("applyDtcgWrites / setLeafAtPath path guard (S5)", () => {
-  it("rejects a write whose path contains __proto__ (no pollution, no write)", () => {
-    const out = applyDtcgWrites({}, { "a.__proto__.polluted": "x" }, {});
+  it("refuses a write whose path contains __proto__, naming the path (no pollution)", () => {
+    expect(() => applyDtcgWrites({}, { "a.__proto__.polluted": "x" }, {})).toThrow(
+      /UnknownTokenName: cannot infer canonical path for 'a\.__proto__\.polluted'/,
+    );
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
-    expect(out).not.toHaveProperty("a");
+  });
+
+  it("refuses constructor/prototype segments, including as the leaf", () => {
+    expect(() => applyDtcgWrites({}, { "color.constructor": "#fff" }, {})).toThrow(
+      UnknownTokenName,
+    );
+    expect(() => applyDtcgWrites({}, { "prototype.x": "#fff" }, {})).toThrow(UnknownTokenName);
+    expect(({} as Record<string, unknown>).x).toBeUndefined();
   });
 
   it("still applies a legitimate dotted write", () => {
