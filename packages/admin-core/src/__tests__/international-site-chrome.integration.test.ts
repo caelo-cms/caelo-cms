@@ -28,6 +28,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { resolveBuildContentVariants } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
+import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
@@ -37,6 +38,7 @@ const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
+const AI_ACTOR_ID = "00000000-0000-0000-0000-000000000a1a";
 const SYS_CTX: ExecutionContext = {
   actorId: SYSTEM_ACTOR_ID,
   actorKind: "system",
@@ -190,7 +192,7 @@ beforeAll(async () => {
   restoreBase = await pinSiteBaseUrl(ADMIN_URL, "https://example.com");
   restoreLanguage = await pinSiteLanguage(ADMIN_URL, "en");
   const report = await bootstrap({
-    infra: { adapter, registry, aiProvider: scriptedProvider },
+    infra: { adapter, registry, aiProvider: scriptedProvider, lockPluginRow },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [{ definition: intlPlugin }],
@@ -519,5 +521,90 @@ describe("#592 — menus and footer per language", () => {
       }),
     ).rejects.toThrow(/t592-nowhere/);
     expect(await readRows()).toEqual(before);
+  }, 60_000);
+});
+
+describe("#1196 — chrome translation plans against the chat's draft", () => {
+  it("a field the chat added to the footer is offered by translate_chrome in that chat", async () => {
+    const chat = await sysOp<{ chatSessionId: string; chatBranchId: string }>(
+      "chat.create_session",
+      { title: `${PFX}-chrome-draft` },
+    );
+    // The chat acts for an Owner: translate_chrome needs content.write.
+    const owner = crypto.randomUUID();
+    await sqlSystem(async (tx) => {
+      await tx`INSERT INTO actors (id, kind, display_name) VALUES (${owner}::uuid, 'human', 'Owner')`;
+      await tx`INSERT INTO users (id, email, password_hash) VALUES (${owner}::uuid, ${`${owner}@t1196.test`}, 'test-only')`;
+      await tx`INSERT INTO user_roles (user_id, role_id) SELECT ${owner}::uuid, id FROM roles WHERE name = 'owner'`;
+    });
+    const chatCtx: ExecutionContext = {
+      actorId: AI_ACTOR_ID,
+      actorKind: "ai",
+      requestId: "t1196",
+      chatBranchId: chat.chatBranchId,
+      chatTaskId: chat.chatSessionId,
+    };
+    const [footer] = (await sqlSystem(
+      (tx) => tx`SELECT html, fields FROM modules WHERE id = ${ids.footerModuleId}::uuid`,
+    )) as { html: string; fields: unknown }[];
+    const fields = (
+      typeof footer?.fields === "string" ? JSON.parse(footer.fields) : footer?.fields
+    ) as Record<string, unknown>[];
+    // Since #1156 a layout module edit in a chat is draft state: the live
+    // row keeps the old fields until a Stage.
+    const updated = await execute(registry, adapter, chatCtx, "modules.update", {
+      moduleId: ids.footerModuleId,
+      html: `${footer?.html}<a class="mbar">{{mbar_label}}</a>`,
+      fields: [
+        ...fields,
+        { name: "mbar_label", kind: "text", label: "Demo button", default: "Book a demo" },
+      ],
+    });
+    if (!updated.ok) throw new Error(JSON.stringify(updated.error));
+
+    const inChat = await runPluginOperation({
+      invocation: {
+        origin: "chat",
+        actorId: AI_ACTOR_ID,
+        operatorActorId: owner,
+        chatBranchId: chat.chatBranchId,
+        chatTaskId: chat.chatSessionId,
+      },
+      pluginSlug: "international-site",
+      operationName: "translate_chrome",
+      args: { localeCode: "de" },
+    });
+    if (!inChat.ok) throw new Error(`${inChat.error.kind}: ${inChat.error.message}`);
+    expect(aiPrompts.at(-1)).toContain("Book a demo");
+
+    // Main has not seen the field: the live chrome stays as it was.
+    const live = await sysOp<{
+      layoutPlacements: { moduleId: string; fields: { name: string }[] }[];
+    }>("pages.list_shared_content", {});
+    const liveFooter = live.layoutPlacements.find((p) => p.moduleId === ids.footerModuleId);
+    expect(liveFooter?.fields.map((f) => f.name)).not.toContain("mbar_label");
+
+    // A module the chat places in a layout block is a chrome target on
+    // its branch only.
+    const placed = await execute(registry, adapter, chatCtx, "layout_modules.set", {
+      layoutId: ids.layoutId,
+      blockName: "footer",
+      moduleIds: [ids.footerModuleId, ids.altFooterModuleId],
+    });
+    if (!placed.ok) throw new Error(JSON.stringify(placed.error));
+    const mainView = await sysOp<typeof live>("pages.list_shared_content", {});
+    expect(mainView.layoutPlacements.some((p) => p.moduleId === ids.altFooterModuleId)).toBe(false);
+    const r = await execute(
+      registry,
+      adapter,
+      { ...SYS_CTX, chatBranchId: chat.chatBranchId },
+      "pages.list_shared_content",
+      {},
+    );
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const branchView = r.value as typeof live;
+    expect(branchView.layoutPlacements.some((p) => p.moduleId === ids.altFooterModuleId)).toBe(
+      true,
+    );
   }, 60_000);
 });
