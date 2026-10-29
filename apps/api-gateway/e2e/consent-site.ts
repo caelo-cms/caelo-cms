@@ -218,30 +218,41 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
   const pageId = (page.value as { pageId: string }).pageId;
 
   const runId = `${PFX}-run`;
-  const built = await adminAdapter.withAdminTransaction(
-    SYSTEM,
-    (tx) =>
-      generateSite({
-        publishAt: new Date().toISOString(),
-        tx,
-        plugins: localBuildPluginServices,
-        target: {
-          id: "00000000-0000-0000-0000-000000000677",
-          name: "dev",
-          env: "dev",
-          outDir: "out",
-          baseUrl: "http://localhost",
-          robotsDefault: "noindex",
-        },
-        runId,
-        repoRoot: root,
-        changedPageIds: [pageId],
-        syncCurrent: false,
-      }),
-    // Same holder as the generator CLI: a build reads one snapshot while
-    // plugin build hooks read their storage (pool-guard.ts allowlist, #1220).
-    { holder: "static-generator.build" },
-  );
+  // The build gets an adapter (a pool) of its own, as in production: there
+  // the generator subprocess holds its build transaction on its own pool
+  // while the plugins answer in the admin's process on the admin's pool.
+  // On one shared pool, every plugin storage read would be a nested
+  // checkout of the build's transaction, which the pool guard refuses.
+  const buildAdapter = new DatabaseAdapter({
+    adminDatabaseUrl: ADMIN_URL,
+    publicDatabaseUrl: PUBLIC_ADMIN_URL,
+  });
+  const built = await buildAdapter
+    .withAdminTransaction(
+      SYSTEM,
+      (tx) =>
+        generateSite({
+          publishAt: new Date().toISOString(),
+          tx,
+          plugins: localBuildPluginServices,
+          target: {
+            id: "00000000-0000-0000-0000-000000000677",
+            name: "dev",
+            env: "dev",
+            outDir: "out",
+            baseUrl: "http://localhost",
+            robotsDefault: "noindex",
+          },
+          runId,
+          repoRoot: root,
+          changedPageIds: [pageId],
+          syncCurrent: false,
+        }),
+      // Same holder as the generator CLI (pool-guard.ts long-transaction
+      // allowlist, #1220).
+      { holder: "static-generator.build" },
+    )
+    .finally(() => buildAdapter.close());
   // The admin publishes what the gateway serves from (#635).
   await publishProjectionOnce(adminAdapter, { comments: true });
   resetPluginHost();
