@@ -15,7 +15,13 @@ import {
   type OperationDefinition,
   OperationRegistry,
 } from "@caelo-cms/query-api";
-import { DEFAULT_LIST_TYPES, type ExecutionContext, ok } from "@caelo-cms/shared";
+import {
+  DEFAULT_LIST_TYPES,
+  type ExecutionContext,
+  LIST_RESERVED_NAMES,
+  LIST_RESERVED_PREFIXES,
+  ok,
+} from "@caelo-cms/shared";
 import { z } from "zod";
 import { toolNamesIn } from "../_list-tool-kit.js";
 import { MODULE_FIELDS_JSON_SCHEMA } from "../_module-fields-schema.js";
@@ -119,6 +125,15 @@ describe("list tools (epic #1107)", () => {
       MODULE_FIELDS_JSON_SCHEMA.items as { properties: Record<string, { description?: string }> }
     ).properties;
     expect(fieldProps.bind?.description).toContain("promote_local_list");
+  });
+
+  // #1237: the AI named a children loop `items` and was refused; the names
+  // the engine binds are listed where it designs the type.
+  it("upsert_list_types_many names every reserved loop and field name", () => {
+    for (const n of LIST_RESERVED_NAMES) expect(upsertListTypesManyTool.description).toContain(n);
+    for (const p of LIST_RESERVED_PREFIXES) {
+      expect(upsertListTypesManyTool.description).toContain(`${p}*`);
+    }
   });
 
   it("list_lists renders usage so the AI finds the header's menu instead of minting one", async () => {

@@ -192,7 +192,10 @@ export const upsertPageTypesManyOp = defineOperation({
           wrote,
           handlerError(
             op,
-            `${at}: ${issues.slice(0, 8).join("; ")}. Fix the definition and resend the whole batch.`,
+            `${at}: ${issues
+              .slice(0, 8)
+              .map((i) => i.replace(/\.$/, ""))
+              .join("; ")}. Fix the definition and resend the whole batch.`,
           ),
         );
       }
