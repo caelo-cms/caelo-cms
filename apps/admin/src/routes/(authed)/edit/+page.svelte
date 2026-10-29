@@ -46,6 +46,7 @@
     previewUrl,
     samePreviewDocument,
   } from "#lib/components/edit/iframe-protocol.js";
+  import { persistPreviewCookies } from "#lib/components/edit/preview-cookie-jar.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Combobox } from "#lib/components/ui/combobox/index.js";
   import {
@@ -264,6 +265,10 @@
           kind: "caelo:page-paths",
           pages: data.pages.map((p) => ({ path: p.currentPath, title: p.title })),
         });
+      } else if (msg.kind === "caelo:cookies") {
+        // The sandboxed preview cannot store cookies; the editor keeps
+        // them so a consent decision survives the next load.
+        persistPreviewCookies(msg.cookies);
       } else if (msg.kind === "caelo:navigate") {
         // #946 — the sandboxed preview cannot navigate itself (its own
         // navigations carry no session); the editor does, after checking
