@@ -215,6 +215,7 @@ export {
   type PluginRowState,
   withPluginScope,
 } from "./row-snapshots.js";
+export { stopRuntimeHeartbeat } from "./runtime-health.js";
 export {
   pluginWorkerScheduler,
   type ScheduledWorker,
