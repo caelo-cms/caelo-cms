@@ -32,6 +32,7 @@ import { loadBranchedModuleStates } from "../../snapshots/index.js";
 import type { PageLayoutState } from "../../snapshots/state.js";
 import { findContentInstancesContaining } from "./content-instance-refs.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
+import { findModulePagePlacements } from "./module-placements.js";
 
 /** One placement bound to a content_instance, as the caller sees it. */
 export interface PlacementInView {
@@ -326,7 +327,10 @@ export async function loadContentInstanceReach(
   // 3. Where the closure renders: placements, and the pages / layouts of parent modules.
   const placements = await listPlacementsInView(tx, closure, branchId);
   const parentModuleIds = [...new Set([...moduleParents.values()].flat().map((m) => m.moduleId))];
-  const modulePages = await pagesPlacingModules(tx, branchId, parentModuleIds);
+  // A module default renders on a placement whose own content leaves that
+  // field empty, so these are the pages it MAY render on — the right side
+  // to err on for a blast radius — as the branch's page layouts place it.
+  const modulePages = await findModulePagePlacements(tx, branchId, parentModuleIds);
   const moduleLayouts = await layoutsPlacingModules(tx, branchId, parentModuleIds);
 
   for (const id of ids) {
@@ -412,40 +416,6 @@ async function moduleDefaultParents(
         out.set(child, [...(out.get(child) ?? []), parent]);
       }
     }
-  }
-  return out;
-}
-
-/**
- * Live pages that place any of `moduleIds`, keyed by module id. Read from
- * `page_modules`: a module default renders on a placement whose own
- * content leaves that field empty, so this is the pages it MAY render on —
- * the right side to err on for a blast radius.
- */
-async function pagesPlacingModules(
-  tx: Tx,
-  branchId: string | null,
-  moduleIds: readonly string[],
-): Promise<Map<string, ReachPage[]>> {
-  const out = new Map<string, ReachPage[]>();
-  if (moduleIds.length === 0) return out;
-  const visible = branchId
-    ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
-    : sql`p.chat_branch_id IS NULL`;
-  const rows = (await tx.execute(sql`
-    SELECT DISTINCT pm.module_id::text AS module_id, p.id::text AS page_id,
-           p.current_path AS path, p.title
-      FROM page_modules pm
-      JOIN pages p ON p.id = pm.page_id
-     WHERE p.deleted_at IS NULL AND ${visible}
-       AND pm.module_id IN (${sql.join(
-         moduleIds.map((id) => sql`${id}::uuid`),
-         sql`, `,
-       )})
-  `)) as unknown as { module_id: string; page_id: string; path: string; title: string }[];
-  for (const r of rows) {
-    const page = { pageId: r.page_id, path: r.path, title: r.title };
-    out.set(r.module_id, [...(out.get(r.module_id) ?? []), page]);
   }
   return out;
 }

@@ -11,6 +11,8 @@
  *     refused on delete and reported as site-wide.
  *   - Deleting a nested-only child is refused with the parent and the
  *     pages named; `delete_many` with the unplaced parent first succeeds.
+ *   - Reach through a module default follows a chat's branch page layouts:
+ *     a placement the chat adds counts, one it removes does not.
  *   - `snapshots.publish_impact_pages` and `chat.branch_edited_entities`
  *     carry content-instance edits to the pages they render on.
  *
@@ -338,6 +340,65 @@ describe("#627 — nested-only instances reach the pages their parents render on
     expect(inChat.chromeLayouts.map((l) => l.layoutId)).toEqual([layoutId]);
     const onMain = await op<Got>(SYS, "content_instances.get", { id: child });
     expect(onMain.chromeLayouts).toEqual([]);
+  });
+
+  it("a chat's page layout adds and removes the reach a module default gives", async () => {
+    const child = await instance(cardId, "Default child", { title: "Defaulted" });
+    const teaser = await createModule("teaser", "<aside>{{#items}}{{>.}}{{/items}}</aside>", [
+      { name: "items", kind: "module-list", label: "Items" },
+    ]);
+    await setFieldDefault(teaser, "items", [ref(child)]);
+    const blankPage = async (slug: string): Promise<string> =>
+      (
+        await op<{ pageId: string }>(SYS, "pages.create", {
+          slug: `cireach-${slug}-${TS}`,
+          shortTitle: slug,
+          title: slug,
+          templateId,
+        })
+      ).pageId;
+    const kept = await blankPage("default-kept");
+    const removed = await blankPage("default-removed");
+    const added = await blankPage("default-added");
+    for (const pageId of [kept, removed]) {
+      await op(SYS, "pages.set_modules", {
+        pageId,
+        blocks: [{ blockName: "content", moduleIds: [teaser] }],
+      });
+    }
+    const session = await op<{ chatSessionId: string; chatBranchId: string }>(
+      SYS,
+      "chat.create_session",
+      { title: `cireach-default-layout-${TS}` },
+    );
+    const chat: ExecutionContext = {
+      actorId: HUMAN,
+      actorKind: "ai",
+      requestId: "cireach-default-layout",
+      chatBranchId: session.chatBranchId,
+      chatTaskId: session.chatSessionId,
+    };
+    // Branch page layouts only: page_layout_snapshots, no live page_modules change.
+    await op(chat, "pages.set_modules", {
+      pageId: added,
+      blocks: [{ blockName: "content", moduleIds: [teaser] }],
+    });
+    await op(chat, "pages.set_modules", {
+      pageId: removed,
+      blocks: [{ blockName: "content", moduleIds: [] }],
+    });
+
+    const inChat = await op<Got>(chat, "content_instances.get", { id: child });
+    expect(inChat.renderedOn.map((p) => p.pageId).sort()).toEqual([kept, added].sort());
+    const onMain = await op<Got>(SYS, "content_instances.get", { id: child });
+    expect(onMain.renderedOn.map((p) => p.pageId).sort()).toEqual([kept, removed].sort());
+
+    const written = await op<{ renderedPageCount: number }>(chat, "content_instances.set_values", {
+      id: child,
+      values: { title: "Edited in chat" },
+    });
+    expect(written.renderedPageCount).toBe(2);
+    expect(await pageUpdatedEventsFor(child)).toEqual([kept, added].sort());
   });
 
   it("chat.branch_edited_entities lists the content instances a chat edited", async () => {
