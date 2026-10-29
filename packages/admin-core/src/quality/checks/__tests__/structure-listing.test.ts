@@ -656,4 +656,20 @@ describe("structure/manual-page-listing (#1256)", () => {
     );
     expect(f).toEqual([]);
   });
+  it("a page.terms record condition around hand-kept cards keeps them counted", () => {
+    const TERMS: StructureModule = {
+      ...LINK_LIST,
+      id: id(32),
+      slug: "terms-cond",
+      html: '<section class="ll">{{#page.terms}}<ul>{{#links}}<li><a href="{{link}}">{{label}}</a></li>{{/links}}</ul>{{/page.terms}}</section>',
+    };
+    const html = linkList(GUIDES.slice(0, 7), (n) => local("links", n)).replace(
+      LINK_LIST.id,
+      TERMS.id,
+    );
+    const f = structureFindings(build(html), [...MODULES, TERMS], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f.map((x) => x.severity)).toEqual(["error"]);
+  });
 });

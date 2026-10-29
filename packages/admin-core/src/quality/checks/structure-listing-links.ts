@@ -317,7 +317,7 @@ function flatten(
  * node's generated entries), then the module's fields — a list field
  * iterated there is a new iteration (`boundary`: its entries carry their
  * own stamp or none, never the enclosing entry's), any other field is a
- * condition. Then engine-provided values: `page.terms.…` iterates the
+ * condition. Then engine-provided values: `page.terms.<vocabulary>` iterates the
  * page's terms (generated); other `page.…`, `site_text.…` and the
  * `is_` / `has_` / `count_` flags are conditions. Any other name is a
  * plugin source (`{{#language_links}}`): generated, at any depth.
@@ -343,7 +343,7 @@ function sectionScope(
   }
   if (fields.list.has(name)) return { scope: { kind: "list", field: name }, boundary: inEntry };
   if (fields.all.has(head)) return same;
-  if (name.startsWith("page.terms")) return generated;
+  if (name.startsWith("page.terms.")) return generated;
   return isCondition(name) ? same : generated;
 }
 
