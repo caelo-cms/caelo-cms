@@ -397,11 +397,35 @@ function nestedRefForPartial(
   const name = key.slice(0, sep);
   const list = fieldByName.get(name);
   if (list?.kind !== "module-list") return undefined;
-  const raw = Object.hasOwn(values, name) ? values[name] : list.default;
+  const raw = rendersFieldDefault(list, values) ? list.default : values[name];
   if (!Array.isArray(raw)) return undefined;
   const i = Number(index);
   const el = raw[i];
   return isNestedRef(el) ? { ref: el, field: name, step: `${name}[${i}]` } : undefined;
+}
+
+/**
+ * Whether a module rendered with `values` shows `field`'s DEFAULT instead
+ * of a stored value — the renderer's per-kind fallback, shared with the
+ * reach walk so a content instance's blast radius follows it (#627):
+ *
+ *   - `module-list`: the default when the values do not hold the field
+ *     (an explicit `[]` or `null` overrides it);
+ *   - a local `list`: the default when the value is absent or `null`
+ *     (`resolveListField`);
+ *   - `module` and the rest: the stored value only, never the default.
+ *     (A shared list's default names a list, which embeds nothing here.)
+ */
+export function rendersFieldDefault(
+  field: Pick<TemplateField, "name" | "kind" | "bind">,
+  values: Readonly<Record<string, unknown>>,
+): boolean {
+  if (field.kind === "module-list") return !Object.hasOwn(values, field.name);
+  if (field.kind === "list" && (field.bind ?? "local") === "local") {
+    const value = values[field.name];
+    return value === undefined || value === null;
+  }
+  return false;
 }
 
 /** Partial-key prefix of a list entry's embedded module (`template-sections.ts`). */

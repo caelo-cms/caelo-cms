@@ -24,7 +24,7 @@
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import { collectNestedRefs } from "@caelo-cms/shared";
+import { collectNestedRefs, rendersFieldDefault, type TemplateField } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../../draft.js";
 import { loadListEntities } from "../../lists/store.js";
@@ -295,7 +295,7 @@ export async function loadContentInstanceReach(
 
   // Module field defaults that list an instance, for every instance at
   // once: the walk below and the module-default reach both read it.
-  const moduleParents = await moduleDefaultParents(tx, branchId, null);
+  const moduleParents = await moduleDefaultParents(tx, branchId);
 
   // 1. Parent instances, transitively. Past a few ids one scan of every
   // nested ref answers all levels of the walk. An instance whose module's
@@ -334,7 +334,7 @@ export async function loadContentInstanceReach(
         for (const ci of instancesByModule.get(m.moduleId) ?? []) {
           if (ci.contentInstanceId === id) continue;
           const values = JSON.parse(ci.valuesText) as Record<string, unknown>;
-          if (!Object.hasOwn(values, m.field)) shown.add(ci.contentInstanceId);
+          if (rendersFieldDefault(m.fieldSpec, values)) shown.add(ci.contentInstanceId);
         }
       }
       shownBy.set(id, [...shown]);
@@ -397,7 +397,7 @@ export async function loadContentInstanceReach(
     out.set(id, {
       placements: placements.filter((p) => p.contentInstanceId === id),
       parentInstances: parentsOf.get(id) ?? [],
-      parentModules: moduleParents.get(id) ?? [],
+      parentModules: (moduleParents.get(id) ?? []).map(({ fieldSpec: _spec, ...m }) => m),
       parentLists: listParents.get(id) ?? [],
       pages: [...pages.values()].sort((a, b) => a.path.localeCompare(b.path)),
       chromeLayouts: [...layouts.values()].sort((a, b) => a.slug.localeCompare(b.slug)),
@@ -407,16 +407,20 @@ export async function loadContentInstanceReach(
   return out;
 }
 
+/** A module default parent, with the field it is the default of. */
+interface DefaultParent extends ModuleParent {
+  readonly fieldSpec: Pick<TemplateField, "name" | "kind" | "bind">;
+}
+
 /**
- * Modules (as the caller sees them) whose field defaults reference an
- * instance of `wanted` (every instance when `null`), keyed by child id. The live read is prefiltered on
+ * Modules (as the caller sees them) whose field defaults reference a
+ * content instance, keyed by child id. The live read is prefiltered on
  * the ref key; the branch's pending module states supersede live rows.
  */
 async function moduleDefaultParents(
   tx: Tx,
   branchId: string | null,
-  wanted: ReadonlySet<string> | null,
-): Promise<Map<string, ModuleParent[]>> {
+): Promise<Map<string, DefaultParent[]>> {
   const visible = branchId
     ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${branchId}::uuid)`
     : sql`chat_branch_id IS NULL`;
@@ -438,17 +442,22 @@ async function moduleDefaultParents(
       candidates.set(id, { slug: s.slug, displayName: s.displayName, fields: s.fields });
     }
   }
-  const out = new Map<string, ModuleParent[]>();
+  const out = new Map<string, DefaultParent[]>();
   for (const [moduleId, m] of candidates) {
     if (!Array.isArray(m.fields)) continue;
-    for (const f of m.fields as { name?: unknown; default?: unknown }[]) {
+    for (const f of m.fields as Partial<TemplateField>[]) {
       if (typeof f.name !== "string" || f.default === undefined) continue;
       const children = new Set(
         collectNestedRefs({ [f.name]: f.default }).map((r) => r.contentInstanceId),
       );
       for (const child of children) {
-        if (wanted !== null && !wanted.has(child)) continue;
-        const parent = { moduleId, slug: m.slug, displayName: m.displayName, field: f.name };
+        const parent: DefaultParent = {
+          moduleId,
+          slug: m.slug,
+          displayName: m.displayName,
+          field: f.name,
+          fieldSpec: { name: f.name, kind: f.kind as TemplateField["kind"], bind: f.bind },
+        };
         out.set(child, [...(out.get(child) ?? []), parent]);
       }
     }

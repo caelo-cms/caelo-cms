@@ -14,7 +14,8 @@
  *   - Reach through a module default follows a chat's branch page layouts:
  *     a placement the chat adds counts, one it removes does not.
  *   - An embedded instance that leaves a field unset renders its module's
- *     default there, so the default's child reaches the embedding pages.
+ *     default there (a local list also when it stores null), so the
+ *     default's child reaches the embedding pages.
  *   - `snapshots.publish_impact_pages` and `chat.branch_edited_entities`
  *     carry content-instance edits to the pages they render on.
  *
@@ -439,6 +440,45 @@ describe("#627 — nested-only instances reach the pages their parents render on
 
     const notShown = await op<Got>(SYS, "content_instances.get", { id: hidden });
     expect(notShown.renderedOn).toEqual([]);
+  });
+
+  it("an embedded instance that stores null for a local list shows the list's default", async () => {
+    const typeSlug = `cireach-slots-${TS}`;
+    await op(SYS, "list_types.upsert_many", {
+      listTypes: [
+        {
+          slug: typeSlug,
+          name: "Slots",
+          purpose: "test",
+          role: "content",
+          root: { allow: ["slot"] },
+          nodes: {
+            slot: { label: "Slot", fields: [{ name: "block", label: "Block", type: "module" }] },
+          },
+        },
+      ],
+    });
+    const slots = await createModule("slots", "<div>{{#items}}{{block}}{{/items}}</div>", [
+      { name: "items", kind: "list", label: "Items", listType: typeSlug },
+    ]);
+    const shown = await instance(cardId, "List-default grandchild", { title: "Listed" });
+    await setFieldDefault(slots, "items", [
+      { id: crypto.randomUUID(), node: "slot", values: { block: ref(shown) } },
+    ]);
+    const nullHolder = await instance(slots, "Slots stored null", { items: null });
+    const emptyHolder = await instance(slots, "Slots stored empty", { items: [] });
+    const nullPage = await pageShowing(
+      "list-null",
+      await instance(listModuleId, "Null root", { items: [ref(nullHolder, slots)] }),
+    );
+    await pageShowing(
+      "list-empty",
+      await instance(listModuleId, "Empty root", { items: [ref(emptyHolder, slots)] }),
+    );
+
+    // null falls back to the default (resolveListField); [] overrides it.
+    const got = await op<Got>(SYS, "content_instances.get", { id: shown });
+    expect(got.renderedOn.map((p) => p.pageId)).toEqual([nullPage]);
   });
 
   it("chat.branch_edited_entities lists the content instances a chat edited", async () => {
