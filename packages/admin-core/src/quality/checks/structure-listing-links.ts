@@ -206,13 +206,31 @@ function collectModule(
   const visit = (r: MarkupNode, t: MarkupNode | null, scope: Scope, entryAbove: Entry) => {
     const entry = entryOf(r, entryAbove);
     if (r.tag === "a" && r.href !== null && counts(scope.kind, entry)) out.add(r.href);
+    const candidates = t === null ? [] : flatten(t.children, scope, tpl.fields, false);
+    // The engine stamps only the FIRST element of an entry's body; its
+    // siblings rendered by the same list section belong to the same entry.
+    let run: { readonly field: string | null; readonly entry: Entry } | null = null;
+    const entryIn = (c: MarkupNode, cand: Candidate | null): Entry => {
+      const base = cand?.reset ? "none" : entry;
+      if (cand?.scope.kind !== "list" || cand.scope.field === scope.field) {
+        run = null;
+        return base;
+      }
+      if (c.listItem !== null) {
+        const own = entryOf(c, base);
+        run = { field: cand.scope.field, entry: own };
+        return own;
+      }
+      const current = run as { readonly field: string | null; readonly entry: Entry } | null;
+      return current !== null && current.field === cand.scope.field ? current.entry : base;
+    };
     for (const c of r.children) {
       if (c.moduleId !== null) {
         // A nested module (module / module-list field) is stored content,
         // part of this listing — unless the slot it renders in is generated
         // or a list's entry that is not stored (see nestedSlot).
-        const slot = t === null ? null : nestedSlot(flatten(t.children, scope, tpl.fields, false));
-        const slotEntry = slot?.reset ? "none" : entry;
+        const slot = t === null ? null : nestedSlot(candidates);
+        const slotEntry = entryIn(c, slot);
         if (nestedCounts(slot?.scope ?? scope, entryOf(c, slotEntry), tpl.fields)) {
           collectModule(c, templates, out);
         }
@@ -222,10 +240,10 @@ function collectModule(
         visit(c, null, scope, entry);
         continue;
       }
-      const match = pickTemplateChild(c, flatten(t.children, scope, tpl.fields, false));
+      const match = pickTemplateChild(c, candidates);
       // A module-level list iterated inside an entry starts its own
       // entries: they never borrow the enclosing entry's stamp.
-      visit(c, match?.node ?? null, match?.scope ?? scope, match?.reset ? "none" : entry);
+      visit(c, match?.node ?? null, match?.scope ?? scope, entryIn(c, match));
     }
   };
   visit(root, tpl.root, tpl.rootScope, "none");

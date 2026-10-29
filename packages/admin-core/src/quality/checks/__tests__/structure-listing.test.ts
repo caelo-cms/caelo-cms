@@ -672,4 +672,45 @@ describe("structure/manual-page-listing (#1256)", () => {
     );
     expect(f.map((x) => x.severity)).toEqual(["error"]);
   });
+  it("an entry body of sibling elements is one stored entry (real template engine)", () => {
+    const SIBLINGS: StructureModule = {
+      ...LINK_LIST,
+      id: id(33),
+      slug: "siblings",
+      html: '<section class="sb">{{#links}}<h3>{{label}}</h3><a href="{{link}}">Read</a>{{/links}}</section>',
+    };
+    const lists = createListRenderContext({
+      listTypes: new Map(DEFAULT_LIST_TYPES.map((t) => [t.slug, { id: t.slug, def: t }])),
+      lists: new Map(),
+      pageTypes: new Map(),
+      pages: new Map(),
+      media: new Map(),
+      siteLanguage: "en",
+      homePageId: null,
+    }).forPage(null);
+    const rendered = renderPlacedModule(
+      {
+        html: SIBLINGS.html,
+        fields: [{ name: "links", kind: "list", listType: "links" }],
+        values: {
+          links: GUIDES.slice(0, 7).map((p, i) => ({
+            id: itemId(i),
+            node: "link",
+            values: { label: p.title, link: { href: p.path } },
+          })),
+        },
+      },
+      { getModule: () => null, getContentInstance: () => null },
+      { lists },
+    );
+    expect(rendered.failures).toEqual([]);
+    expect(rendered.html).toContain("<h3 data-caelo-list-item=");
+    const f = structureFindings(
+      build(tagModuleId(rendered.html, SIBLINGS.id)),
+      [...MODULES, SIBLINGS],
+      [],
+      INDEX,
+    ).filter((x) => x.ruleId === "structure/manual-page-listing");
+    expect(f.map((x) => x.severity)).toEqual(["error"]);
+  });
 });
