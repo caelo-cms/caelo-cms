@@ -273,7 +273,7 @@ export async function takeOverEntity(
           opKind: r.op_kind,
         });
         marks.push({ kind: t.markKind, id: r.mark_id });
-        const state = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+        const state = r.state;
         for (const ref of referencedEntities(unit.kind, t.table, state)) {
           const key = `${ref.kind}:${ref.id}`;
           if (seen.has(key)) continue;

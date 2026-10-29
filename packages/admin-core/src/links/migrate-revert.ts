@@ -193,7 +193,7 @@ async function planMain(
       `)) as unknown as { html: string; fields: unknown }[];
       const r = rows[0];
       if (!r) return "deleted since the migration";
-      const fields = typeof r.fields === "string" ? JSON.parse(r.fields) : r.fields;
+      const fields = r.fields;
       if (stableJson({ html: r.html, fields }) !== stableJson(ch.after)) return EDITED;
       return {
         change: ch,
@@ -211,7 +211,7 @@ async function planMain(
       `)) as unknown as { values: unknown }[];
       const r = rows[0];
       if (!r) return "deleted since the migration";
-      const values = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
+      const values = r.values;
       if (stableJson(values) !== stableJson(ch.after.values)) return EDITED;
       return {
         change: ch,

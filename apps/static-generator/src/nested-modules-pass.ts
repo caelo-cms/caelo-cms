@@ -51,12 +51,9 @@ function effectiveValues(m: ComposeModuleValues): Record<string, unknown> {
   return { ...out, ...(m.contentValues ?? {}) };
 }
 
-function parseJson(raw: unknown): unknown {
-  return typeof raw === "string" ? JSON.parse(raw) : raw;
-}
-
-function parseFields(raw: unknown): NestedModuleResource["fields"] {
-  return templateFieldsFromJson(raw);
+/** `fields` is selected as `fields::text`; a NULL column has no fields. */
+function parseFields(raw: string | null): NestedModuleResource["fields"] {
+  return templateFieldsFromJson(raw === null ? null : JSON.parse(raw));
 }
 
 /**
@@ -139,7 +136,7 @@ export async function loadNestedModules(
           AND chat_branch_id IS NULL
       `)) as unknown as { id: string; module_id: string; values: string | null }[];
       for (const r of rows) {
-        const parsed = parseJson(r.values);
+        const parsed = r.values === null ? null : (JSON.parse(r.values) as unknown);
         const values =
           parsed && typeof parsed === "object" && !Array.isArray(parsed)
             ? (parsed as Record<string, unknown>)

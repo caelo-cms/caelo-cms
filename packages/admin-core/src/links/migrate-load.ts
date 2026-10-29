@@ -39,10 +39,6 @@ function forUpdate(opts: LoadOptions): SQL {
   return opts.lock ? sql`FOR UPDATE` : sql``;
 }
 
-function parse<T>(raw: unknown): T {
-  return (typeof raw === "string" ? JSON.parse(raw) : raw) as T;
-}
-
 /** A main-line module as the migration reads it. */
 export interface MainModuleRow {
   readonly id: string;
@@ -64,7 +60,7 @@ export async function loadMainModules(
      ${forUpdate(opts)}
   `)) as unknown as { id: string; display_name: string; html: string; fields: unknown }[];
   return rows.map((r) => {
-    const f = parse<unknown>(r.fields);
+    const f = r.fields;
     return {
       id: r.id,
       displayName: r.display_name,
@@ -93,7 +89,7 @@ export async function loadAllModuleFields(
   `)) as unknown as { id: string; display_name: string; fields: unknown; html: string }[];
   const out = new Map<string, ModuleSchemaRow>();
   for (const r of rows) {
-    const f = parse<unknown>(r.fields);
+    const f = r.fields;
     out.set(r.id, { name: r.display_name, fields: Array.isArray(f) ? f : [], html: r.html });
   }
   return out;
@@ -123,7 +119,7 @@ export async function loadMainInstances(
     id: r.id,
     moduleId: r.module_id,
     label: r.label,
-    values: parse<Record<string, unknown> | null>(r.values) ?? {},
+    values: (r.values as Record<string, unknown> | null) ?? {},
   }));
 }
 
@@ -229,7 +225,7 @@ export async function loadBranchStates<K extends SnapshotKind>(
   `)) as unknown as { id: string; state: unknown; task: string | null }[];
   return rows.map((r) => ({
     entityId: r.id,
-    state: parse<StateOf<K>>(r.state),
+    state: r.state as StateOf<K>,
     chatTaskId: r.task,
   }));
 }

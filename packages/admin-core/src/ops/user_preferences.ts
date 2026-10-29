@@ -36,7 +36,7 @@ export const getUserPreferenceOp = defineOperation({
     const r = rows[0];
     if (!r) return ok({ value: null });
     return ok({
-      value: typeof r.value === "string" ? JSON.parse(r.value) : r.value,
+      value: r.value,
     });
   },
 });

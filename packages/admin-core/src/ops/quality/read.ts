@@ -30,7 +30,6 @@ import {
   categorySchema,
   failingAuditSchema,
   iso,
-  json,
   problemSchema,
   stageClassificationSchema,
 } from "./_shared.js";
@@ -104,13 +103,13 @@ export const RUN_COLUMNS = sql`
   q.publish_override_reason, q.publish_override_at, q.checks`;
 
 export function toRunSummary(r: RunDbRow): RunSummary {
-  const checks = r.checks === null ? null : json<RunChecksSummary>(r.checks);
+  const checks = r.checks === null ? null : (r.checks as RunChecksSummary);
   return {
     id: r.id,
     deployRunId: r.deploy_run_id,
     chatSessionId: r.chat_session_id,
     status: r.status,
-    classification: json<RunSummary["classification"]>(r.classification),
+    classification: r.classification as RunSummary["classification"],
     pageCount: Number(r.page_count),
     checkSummary: checks
       ? {
@@ -296,7 +295,7 @@ export const getAuditOp = defineOperation({
       runRow.id,
       pageRows.map((r) => r.page_id),
     );
-    const checks = runRow.checks === null ? null : json<RunChecksSummary>(runRow.checks);
+    const checks = runRow.checks === null ? null : (runRow.checks as RunChecksSummary);
     return ok({
       run: toRunSummary(runRow),
       pages: pageRows.map((r) => ({
@@ -305,17 +304,17 @@ export const getAuditOp = defineOperation({
         pagePath: r.current_path,
         url: r.url,
         status: r.status,
-        scores: r.scores === null ? null : json<Record<QualityCategory, number>>(r.scores),
+        scores: r.scores === null ? null : (r.scores as Record<QualityCategory, number>),
         previousScores: previousScores.get(r.page_id) ?? null,
         performanceRuns: (r.performance_runs ?? []).map(Number),
-        failingAudits: json<z.infer<typeof failingAuditSchema>[]>(r.failing_audits),
+        failingAudits: r.failing_audits as z.infer<typeof failingAuditSchema>[],
         metrics:
-          r.metrics === null ? null : json<z.infer<typeof performanceMetricsSchema>>(r.metrics),
-        problems: json<z.infer<typeof problemSchema>[]>(r.problems),
-        problemAccepted: json<QualityProblem[]>(r.problems).map((p) =>
+          r.metrics === null ? null : (r.metrics as z.infer<typeof performanceMetricsSchema>),
+        problems: r.problems as z.infer<typeof problemSchema>[],
+        problemAccepted: (r.problems as QualityProblem[]).map((p) =>
           isProblemAccepted(r.page_id, p, acceptances),
         ),
-        checkFindings: json<z.infer<typeof findingSchema>[]>(r.check_findings),
+        checkFindings: r.check_findings as z.infer<typeof findingSchema>[],
         errorCode: r.error_code,
         errorMessage: r.error_message,
       })),

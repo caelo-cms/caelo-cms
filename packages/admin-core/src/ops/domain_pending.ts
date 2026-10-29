@@ -30,7 +30,6 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
-  parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
 import {
@@ -249,7 +248,7 @@ const executeDomainProposalOpDefinition = defineOperation({
     if (row.kind === "add") {
       const r = await addDomainOp.handler(
         ctx,
-        parsePayload<Parameters<typeof addDomainOp.handler>[1]>(row.payload),
+        row.payload as Parameters<typeof addDomainOp.handler>[1],
         tx,
       );
       if (!r.ok) return passthroughError(r.error, "add");
@@ -257,14 +256,14 @@ const executeDomainProposalOpDefinition = defineOperation({
     } else if (row.kind === "remove") {
       const r = await removeDomainOp.handler(
         ctx,
-        parsePayload<Parameters<typeof removeDomainOp.handler>[1]>(row.payload),
+        row.payload as Parameters<typeof removeDomainOp.handler>[1],
         tx,
       );
       if (!r.ok) return passthroughError(r.error, "remove");
     } else if (row.kind === "reconnect") {
       const r = await reconnectHostingDomainOp.handler(
         ctx,
-        parsePayload<Parameters<typeof reconnectHostingDomainOp.handler>[1]>(row.payload),
+        row.payload as Parameters<typeof reconnectHostingDomainOp.handler>[1],
         tx,
       );
       if (!r.ok) return passthroughError(r.error, "reconnect");

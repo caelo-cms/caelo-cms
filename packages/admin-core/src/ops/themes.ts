@@ -132,10 +132,7 @@ interface ThemeDbRow {
 }
 
 function dbRowToTheme(r: ThemeDbRow): Theme {
-  const tokensJson: ThemeDocument =
-    typeof r.tokens === "string"
-      ? (JSON.parse(r.tokens) as ThemeDocument)
-      : (r.tokens as ThemeDocument);
+  const tokensJson = r.tokens as ThemeDocument;
   // URL is built from the media asset's SLUG (public form); the id stays
   // the mediaId. A null slug means the bound asset was deleted — drop it.
   const asset = (

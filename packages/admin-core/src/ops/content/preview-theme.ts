@@ -72,10 +72,7 @@ export async function loadActiveThemeForCompose(
   }>;
   const row = rows[0];
   if (!row) return undefined;
-  let tokens: ThemeDocument =
-    typeof row.tokens === "string"
-      ? (JSON.parse(row.tokens) as ThemeDocument)
-      : (row.tokens as ThemeDocument);
+  let tokens = row.tokens as ThemeDocument;
 
   // Branch overlay — most-recent theme_snapshots row for this branch
   // replaces live tokens.
@@ -91,7 +88,7 @@ export async function loadActiveThemeForCompose(
     `)) as unknown as Array<{ state: unknown }>;
     const raw = branchRows[0]?.state;
     if (raw) {
-      const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
+      const parsed = raw as {
         tokens?: ThemeDocument;
         deletedAt?: string | null;
       };

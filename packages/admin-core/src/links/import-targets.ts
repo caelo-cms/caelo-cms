@@ -146,8 +146,7 @@ export async function loadActiveImportTargets(
     const hosts = hostsOf(r.source_url);
     hostsByRun.set(r.id, new Set(hosts));
     sourceHosts.push(...hosts);
-    const explicit =
-      typeof r.explicit_urls === "string" ? JSON.parse(r.explicit_urls) : r.explicit_urls;
+    const explicit = r.explicit_urls;
     if (Array.isArray(explicit)) {
       for (const u of explicit) if (typeof u === "string") add(pathOf(u), r.id);
     }
@@ -161,8 +160,7 @@ export async function loadActiveImportTargets(
       if (path !== null && p.rebuilt_page_id !== null) rebuiltByPath.set(path, p.rebuilt_page_id);
     }
     const hosts = hostsByRun.get(p.run_id) ?? new Set<string>();
-    const modules =
-      typeof p.proposed_modules === "string" ? JSON.parse(p.proposed_modules) : p.proposed_modules;
+    const modules = p.proposed_modules;
     if (Array.isArray(modules)) {
       for (const m of modules) {
         const html = (m as { html?: unknown } | null)?.html;

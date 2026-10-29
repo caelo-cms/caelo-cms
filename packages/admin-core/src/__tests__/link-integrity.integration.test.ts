@@ -116,7 +116,7 @@ beforeAll(async () => {
                SET html = ${`<nav><a href="/${TARGET_SLUG}">good</a><a href="/does-not-exist">bad html link</a><a href="#top">frag</a><a href="https://example.com">ext</a>{{cta_href}}</nav>`}
                WHERE display_name = 'LINT Linker Nav'`;
       await tx`UPDATE content_instances
-               SET "values" = ${JSON.stringify({ cta_href: "/also-missing" })}::jsonb
+               SET "values" = (${JSON.stringify({ cta_href: "/also-missing" })}::text)::jsonb
                WHERE module_id IN (SELECT id FROM modules WHERE display_name = 'LINT Linker Nav')`;
     });
   } finally {

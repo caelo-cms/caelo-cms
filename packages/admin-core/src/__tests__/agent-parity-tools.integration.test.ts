@@ -226,7 +226,7 @@ describe("delete_modules_many — branched delete + AI in-use guard", () => {
     await sqlAdmin(
       (tx) => tx`
         INSERT INTO content_instances (module_id, "values")
-        VALUES (${parentId}::uuid, ${JSON.stringify({ items: [{ moduleId: childId, contentInstanceId: null }] })}::jsonb)`,
+        VALUES (${parentId}::uuid, (${JSON.stringify({ items: [{ moduleId: childId, contentInstanceId: null }] })}::text)::jsonb)`,
     );
     const { ai } = await openChat("nested");
     const refused = await dispatch("delete_modules_many", { moduleIds: [childId] }, ai);
@@ -378,7 +378,7 @@ describe("delete_media_many — in-use guard sees this chat's unpublished edits"
     await sqlAdmin(
       (tx) => tx`
         INSERT INTO content_instances (module_id, "values")
-        VALUES (${moduleId}::uuid, ${JSON.stringify({ image: `/_caelo/media/${field.slug}/w800.webp` })}::jsonb)`,
+        VALUES (${moduleId}::uuid, (${JSON.stringify({ image: `/_caelo/media/${field.slug}/w800.webp` })}::text)::jsonb)`,
     );
     const { ai } = await openChat("media-exact");
     // Branched embed of the LONGER slug only.

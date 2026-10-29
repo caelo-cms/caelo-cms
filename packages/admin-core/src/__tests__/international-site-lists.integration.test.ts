@@ -338,7 +338,7 @@ beforeAll(async () => {
     const mod = (await tx`
       INSERT INTO modules (slug, display_name, type, html, fields)
       VALUES (${`${PFX}-nav`}, 'Nav', ${`${PFX}-nav`},
-              '<nav class="t1114i"><ul>{{#menu}}<li>{{label}}</li>{{/menu}}</ul></nav>', ${fields}::jsonb)
+              '<nav class="t1114i"><ul>{{#menu}}<li>{{label}}</li>{{/menu}}</ul></nav>', (${fields}::text)::jsonb)
       RETURNING id::text AS id`) as unknown as { id: string }[];
     const ci = (await tx`
       INSERT INTO content_instances (module_id, "values") VALUES (${mod[0]?.id}::uuid, '{}'::jsonb)

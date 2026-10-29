@@ -18,7 +18,6 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { resolveOutputRoot } from "../deploy/output-root.js";
 import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
-import { json } from "./quality/_shared.js";
 
 const unservedTarget = z.object({ fromPath: z.string(), location: z.string() });
 
@@ -150,7 +149,7 @@ export const redirectSyncStatusOp = defineOperation({
                 trigger: r.last_trigger ?? "",
                 finishedAt: iso(r.last_finished_at) ?? "",
                 redirectCount: r.last_redirect_count,
-                unservedTargets: z.array(unservedTarget).parse(json(r.last_unserved)),
+                unservedTargets: z.array(unservedTarget).parse(r.last_unserved),
                 location: r.last_location,
                 error: r.last_error_message,
               },

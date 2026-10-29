@@ -116,20 +116,6 @@ export function isDuplicatePendingError(err: unknown): boolean {
 }
 
 /**
- * Normalizes a jsonb payload column read back from Postgres. The
- * bun-postgres + drizzle stack sometimes returns jsonb as a string,
- * sometimes as a parsed object — depending on how the column was
- * inserted (`::jsonb` cast vs object binding). Every execute_proposal
- * handler needs to spread payload fields into the underlying op's
- * input; spreading a string unpacks character indices, not fields.
- *
- * Helper makes the parse explicit and idempotent.
- */
-export function parsePayload<T>(payload: unknown): T {
-  return (typeof payload === "string" ? JSON.parse(payload) : payload) as T;
-}
-
-/**
  * Type guard the propose helpers use to access ctx.chatBranchId
  * without touching the ExecutionContext type from query-api directly
  * (which lives in a sibling package).

@@ -30,7 +30,6 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
-  parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
 import { setEmailConfigOp } from "./email_config.js";
@@ -207,11 +206,11 @@ const executeEmailConfigProposalOpDefinition = defineOperation({
         message: `proposal is already ${row.status}`,
       });
     }
-    const payload = parsePayload<{
+    const payload = row.payload as {
       transport: z.infer<typeof transportEnum>;
       fromAddress: string;
       config: Record<string, unknown>;
-    }>(row.payload);
+    };
     const merged = mergeOwnerSecrets(payload.transport, payload.config, input);
     const r = await setEmailConfigOp.handler(
       ctx,

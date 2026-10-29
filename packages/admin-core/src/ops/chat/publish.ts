@@ -46,7 +46,6 @@ import {
   parseAndUpgradePageState,
   parseAndUpgradePageTypeState,
   parseAndUpgradeTemplateState,
-  parseSnapshotState,
   type SnapshotEntity,
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
@@ -623,32 +622,32 @@ export async function mergeWindowToMain(
         (r): SnapshotEntity => ({
           kind: "module",
           entityId: r.entity_id,
-          state: parseAndUpgradeModuleState(parseSnapshotState(r.state)),
+          state: parseAndUpgradeModuleState(r.state),
         }),
       ),
       ...templateRows.map(
         (r): SnapshotEntity => ({
           kind: "template",
           entityId: r.entity_id,
-          state: parseAndUpgradeTemplateState(parseSnapshotState(r.state)),
+          state: parseAndUpgradeTemplateState(r.state),
         }),
       ),
       ...pageRows.map(
         (r): SnapshotEntity => ({
           kind: "page",
           entityId: r.entity_id,
-          state: parseAndUpgradePageState(parseSnapshotState(r.state)),
+          state: parseAndUpgradePageState(r.state),
         }),
       ),
       ...layoutRows.map(
         (r): SnapshotEntity => ({
           kind: "pageLayout",
           entityId: r.entity_id,
-          state: parseAndUpgradePageLayoutState(parseSnapshotState(r.state)),
+          state: parseAndUpgradePageLayoutState(r.state),
         }),
       ),
       ...contentRows.map((r): SnapshotEntity => {
-        const raw = parseSnapshotState(r.state) as {
+        const raw = r.state as {
           schemaVersion: 1;
           pageId: string;
           blockName: string;
@@ -662,25 +661,25 @@ export async function mergeWindowToMain(
         (r): SnapshotEntity => ({
           kind: "listType",
           entityId: r.entity_id,
-          state: parseAndUpgradeListTypeState(parseSnapshotState(r.state)),
+          state: parseAndUpgradeListTypeState(r.state),
         }),
       ),
       ...listRows.map(
         (r): SnapshotEntity => ({
           kind: "list",
           entityId: r.entity_id,
-          state: parseAndUpgradeListState(parseSnapshotState(r.state)),
+          state: parseAndUpgradeListState(r.state),
         }),
       ),
       ...pageTypeRows.map(
         (r): SnapshotEntity => ({
           kind: "pageType",
           entityId: r.entity_id,
-          state: parseAndUpgradePageTypeState(parseSnapshotState(r.state)),
+          state: parseAndUpgradePageTypeState(r.state),
         }),
       ),
       ...contentInstanceRows.map((r): SnapshotEntity => {
-        const raw = parseSnapshotState(r.state) as {
+        const raw = r.state as {
           schemaVersion: 1;
           moduleId: string;
           slug: string | null;
@@ -692,7 +691,7 @@ export async function mergeWindowToMain(
         return { kind: "contentInstance", entityId: r.entity_id, state: raw };
       }),
       ...themeRows.map((r): SnapshotEntity => {
-        const raw = parseSnapshotState(r.state) as {
+        const raw = r.state as {
           schemaVersion: 1;
           slug: string;
           displayName: string;
@@ -970,7 +969,7 @@ export async function mergeWindowToMain(
       table: r.table_name,
       rowId: r.entity_id,
     };
-    const state = parseSnapshotState(r.state) as PluginRowState;
+    const state = r.state as PluginRowState;
     await withPluginScope(tx, r.plugin_id, () => applyPluginRowState(tx, ref, state));
     // The main-line copy under the merge's header: undo after publish.
     await insertPluginRowSnapshot(tx, result.siteSnapshotId, ref, state);
@@ -981,7 +980,7 @@ export async function mergeWindowToMain(
   // branch graduates in the same merge). Recorded under the main snapshot
   // with the state it replaced, so the history shows what changed.
   for (const b of layoutBlockRows) {
-    const state = (typeof b.state === "string" ? JSON.parse(b.state) : b.state) as {
+    const state = b.state as {
       moduleIds?: unknown;
     };
     if (!Array.isArray(state.moduleIds)) {

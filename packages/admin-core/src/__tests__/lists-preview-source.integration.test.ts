@@ -315,12 +315,12 @@ describe("#1107 lists.preview_source", () => {
       await tx`
         INSERT INTO modules (id, slug, display_name, html, fields, type)
         VALUES (${moduleId}::uuid, ${`${PFX}latest`}, 'Latest news', '<ul>{{#latest}}<li>{{title}}</li>{{/latest}}</ul>',
-                ${JSON.stringify([field, stored])}::jsonb, 'latest-news')`;
+                (${JSON.stringify([field, stored])}::text)::jsonb, 'latest-news')`;
     });
     const instanceId = (
       await asSystem(
         (tx) =>
-          tx`INSERT INTO content_instances (module_id, "values") VALUES (${moduleId}::uuid, ${JSON.stringify({ latest: { limit: 1 } })}::jsonb) RETURNING id::text AS id`,
+          tx`INSERT INTO content_instances (module_id, "values") VALUES (${moduleId}::uuid, (${JSON.stringify({ latest: { limit: 1 } })}::text)::jsonb) RETURNING id::text AS id`,
       )
     )[0]?.id as string;
     const all = await op<Preview>(SYS, "lists.preview_source", { moduleId, field: "latest" });

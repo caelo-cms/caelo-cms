@@ -150,10 +150,7 @@ export const readToolApprovalForExecuteOp = defineOperation({
         message: status ? `proposal already ${status}` : `proposal ${input.proposalId} not found`,
       });
     }
-    const args = (typeof row.args === "string" ? JSON.parse(row.args) : row.args) as Record<
-      string,
-      unknown
-    >;
+    const args = row.args as Record<string, unknown>;
     return ok({
       toolName: row.tool_name,
       args,
@@ -306,11 +303,8 @@ export const listPendingToolApprovalsOp = defineOperation({
       proposals: rows.map((r) => ({
         id: r.id,
         toolName: r.tool_name,
-        args: (typeof r.args === "string" ? JSON.parse(r.args) : r.args) as Record<string, unknown>,
-        preview: (typeof r.preview === "string" ? JSON.parse(r.preview) : r.preview) as Record<
-          string,
-          unknown
-        >,
+        args: r.args as Record<string, unknown>,
+        preview: r.preview as Record<string, unknown>,
         chatSessionId: r.chat_session_id,
         proposedBy: r.proposed_by,
         status: r.status,

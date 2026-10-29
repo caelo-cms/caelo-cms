@@ -71,7 +71,7 @@ const siteDefaultsRow = z.object({
 /** jsonb → DesignBrief | null; malformed rows read as null (write path validates). */
 function parseDesignBrief(raw: unknown): DesignBrief | null {
   if (raw === null || raw === undefined) return null;
-  const parsed = designBriefSchema.safeParse(typeof raw === "string" ? JSON.parse(raw) : raw);
+  const parsed = designBriefSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }
 

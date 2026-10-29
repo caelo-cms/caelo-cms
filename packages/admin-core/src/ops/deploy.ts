@@ -80,7 +80,6 @@ import {
   type TargetDbRow,
   targetRow,
 } from "./deploy-common.js";
-import { json } from "./quality/_shared.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
 
 export { effectiveOutDir } from "./deploy-common.js";
@@ -141,7 +140,7 @@ interface RunDbRow {
   file_count: number | string | null;
   error_message: string | null;
   build_id: string | null;
-  progress: { pagesDone: number; pagesTotal: number } | string | null;
+  progress: { pagesDone: number; pagesTotal: number } | null;
   build_kind: "site" | "plugin_data";
 }
 
@@ -149,10 +148,6 @@ function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
   const iso = (v: string | Date) => (v instanceof Date ? v.toISOString() : String(v));
   const num = (v: number | string | null) =>
     v === null ? null : typeof v === "string" ? Number.parseInt(v, 10) : v;
-  let progress: { pagesDone: number; pagesTotal: number } | null = null;
-  if (r.progress !== null) {
-    progress = typeof r.progress === "string" ? JSON.parse(r.progress) : r.progress;
-  }
   return {
     id: r.id,
     targetId: r.target_id,
@@ -166,7 +161,7 @@ function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
     fileCount: num(r.file_count),
     errorMessage: r.error_message,
     buildId: r.build_id,
-    progress,
+    progress: r.progress,
     buildKind: r.build_kind,
   };
 }
@@ -608,7 +603,7 @@ async function rebuildAndPublishLive(
   const manifestRows = (await tx.execute(sql`
     SELECT parity_manifest, caelo_version FROM deploy_runs WHERE id = ${args.stagingRunId}::uuid
   `)) as unknown as {
-    parity_manifest: Record<string, string> | string | null;
+    parity_manifest: Record<string, string> | null;
     caelo_version: string | null;
   }[];
   const raw = manifestRows[0]?.parity_manifest ?? null;
@@ -619,7 +614,7 @@ async function rebuildAndPublishLive(
       `staged build ${args.stagingRunId} has no parity manifest, so Publish live cannot prove the live build matches it. Stage again, then Publish live.`,
     );
   }
-  const stagedManifest = json<Record<string, string>>(raw);
+  const stagedManifest = raw as Record<string, string>;
 
   const bridge = getDeployBridge();
   if (!bridge) throw new Error("deploy-bridge not configured");

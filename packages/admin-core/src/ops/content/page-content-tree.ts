@@ -58,9 +58,8 @@ const MAX_NESTING = 8;
 
 /** The fields of a module row's `fields` column. */
 export function placementFieldsOf(raw: unknown): PlacementField[] {
-  const parsed = typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
-  if (!Array.isArray(parsed)) return [];
-  return parsed.flatMap((f): PlacementField[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((f): PlacementField[] => {
     const o = f as Record<string, unknown>;
     if (typeof o.name !== "string" || typeof o.kind !== "string") return [];
     return [
@@ -165,13 +164,7 @@ export async function loadNestedContent(
         )}) AND deleted_at IS NULL
       `)) as unknown as { id: string; values: unknown }[];
       for (const r of rows) {
-        valuesOf.set(
-          r.id,
-          ((typeof r.values === "string" ? JSON.parse(r.values) : r.values) ?? {}) as Record<
-            string,
-            unknown
-          >,
-        );
+        valuesOf.set(r.id, (r.values ?? {}) as Record<string, unknown>);
       }
       if (chatBranchId) {
         for (const [id, state] of await loadContentInstanceBranchStates(tx, ids, chatBranchId)) {

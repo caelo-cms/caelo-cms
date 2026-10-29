@@ -256,10 +256,6 @@ export function assembleListRenderDataFrom(
   };
 }
 
-function json<T>(v: unknown): T {
-  return (typeof v === "string" ? JSON.parse(v) : v) as T;
-}
-
 /**
  * Load the list render data of a build: list types, lists, page types and
  * pages of the MAIN line (a chat's branch never ships; published =
@@ -328,22 +324,22 @@ export async function loadBuildListRenderData(
       ? await opts.plugins.resolveListOverlays(variants)
       : undefined;
   return assembleListRenderData(tx, {
-    listTypes: listTypes.map((t) => ({ id: t.id, def: json<ListTypeDef>(t.definition) })),
+    listTypes: listTypes.map((t) => ({ id: t.id, def: t.definition as ListTypeDef })),
     lists: lists.map((l) => ({
       id: l.id,
       slug: l.slug,
       name: l.name,
       listTypeId: l.list_type_id,
-      items: json<ListItem[]>(l.items),
+      items: l.items as ListItem[],
     })),
-    pageTypes: pageTypes.map((t) => ({ id: t.id, def: json<PageTypeDef>(t.definition) })),
+    pageTypes: pageTypes.map((t) => ({ id: t.id, def: t.definition as PageTypeDef })),
     pages: pages.map((p) => ({
       id: p.id,
       title: p.title,
       shortTitle: p.short_title,
       parentId: p.parent_id,
       pageTypeId: p.page_type_id,
-      properties: json<Record<string, unknown>>(p.properties) ?? {},
+      properties: (p.properties as Record<string, unknown>) ?? {},
       terms: p.terms,
       // A published page this build ships for the first time carries the
       // instant Publish live will store for it.

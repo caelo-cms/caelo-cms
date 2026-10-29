@@ -39,8 +39,8 @@ function seedProposal(maxBodyBytes: number): void {
         INSERT INTO owner_settings_pending_actions
           (kind, proposed_by, payload, preview, status, payload_hash)
         VALUES ('set_gateway_settings', \${actor}::uuid,
-                \${JSON.stringify({ maxBodyBytes: bytes })}::jsonb,
-                \${JSON.stringify({ summary, changes: { maxBodyBytes: { from: 65536, to: bytes } } })}::jsonb,
+                (\${JSON.stringify({ maxBodyBytes: bytes })}::text)::jsonb,
+                (\${JSON.stringify({ summary, changes: { maxBodyBytes: { from: 65536, to: bytes } } })}::text)::jsonb,
                 'pending', \${"e2e-owner-settings-" + bytes})\`;
     });
     await sql.end();

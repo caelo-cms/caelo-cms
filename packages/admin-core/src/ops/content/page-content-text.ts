@@ -73,12 +73,9 @@ const idList = (ids: readonly string[]) =>
     sql`, `,
   );
 
-const parseJson = (raw: unknown): unknown => (typeof raw === "string" ? JSON.parse(raw) : raw);
-
 function parseFields(raw: unknown): NestedModuleResource["fields"] {
-  const arr = parseJson(raw);
-  if (!Array.isArray(arr)) return [];
-  return arr
+  if (!Array.isArray(raw)) return [];
+  return raw
     .filter(
       (f): f is { name: string; kind?: unknown; default?: unknown } =>
         typeof f === "object" && f !== null && typeof (f as { name?: unknown }).name === "string",
@@ -142,7 +139,7 @@ async function loadPageRows(
        ORDER BY ps.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const s of snaps) {
-      const state = parseJson(s.state) as { title?: string; deletedAt?: string | null };
+      const state = s.state as { title?: string; deletedAt?: string | null };
       if (state.deletedAt) byId.delete(s.page_id);
       else if (state.title) {
         const row = byId.get(s.page_id);
@@ -216,7 +213,7 @@ async function loadInstances(
   for (const r of rows) {
     const s = branched?.get(r.id);
     if (s?.deletedAt) continue;
-    const values = s?.values ?? ((parseJson(r.values) ?? {}) as Record<string, unknown>);
+    const values = s?.values ?? ((r.values ?? {}) as Record<string, unknown>);
     out.set(r.id, { id: r.id, moduleId: r.module_id, values, deletedAt: null });
   }
 }

@@ -430,7 +430,6 @@ export const mediaGetOp = defineOperation({
       created_at: string;
     }[];
     const g = generation[0];
-    const json = (v: unknown) => (typeof v === "string" ? JSON.parse(v) : v);
     return ok({
       asset: {
         ...rowToAsset(r, variants),
@@ -439,8 +438,8 @@ export const mediaGetOp = defineOperation({
           ? {
               operation: g.operation,
               prompt: g.prompt,
-              references: (json(g.references_json) as { id: string; sha256: string }[]) ?? [],
-              requested: (json(g.requested) as Record<string, unknown>) ?? {},
+              references: (g.references_json as { id: string; sha256: string }[]) ?? [],
+              requested: (g.requested as Record<string, unknown>) ?? {},
               provider: g.provider,
               model: g.model,
               createdAt: g.created_at,

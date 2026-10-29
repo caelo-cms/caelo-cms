@@ -350,7 +350,7 @@ async function branchCreatedRefs(
       SELECT state FROM ${sql.raw(t.table)} WHERE site_snapshot_id IN (${ids})
     `)) as unknown as { state: unknown }[];
     for (const r of rows) {
-      const state = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+      const state = r.state;
       for (const ref of referencedEntities(t.refKind, t.table, state)) {
         const key = `${ref.kind}:${ref.id}`;
         if (checked.has(key)) continue;

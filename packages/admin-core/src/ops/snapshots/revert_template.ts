@@ -9,7 +9,6 @@ import {
   emitSnapshot,
   loadTemplateState,
   parseAndUpgradeTemplateState,
-  parseSnapshotState,
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 
@@ -43,7 +42,7 @@ export const revertTemplateOp = defineOperation({
     }
     let target: ReturnType<typeof parseAndUpgradeTemplateState>;
     try {
-      target = parseAndUpgradeTemplateState(parseSnapshotState(row.state));
+      target = parseAndUpgradeTemplateState(row.state);
     } catch (e) {
       if (e instanceof SnapshotSchemaError) {
         return err({

@@ -22,7 +22,7 @@
 import type { defineOperation } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import type { QualityCategory } from "../../quality/ratchet.js";
-import { json, uuidList } from "./_shared.js";
+import { uuidList } from "./_shared.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -90,7 +90,7 @@ export async function loadPreviousScores(
     rows.map((r) => [
       r.page_id,
       comparablePreviousScores(
-        json<Record<QualityCategory, number>>(r.scores),
+        r.scores as Record<QualityCategory, number>,
         cpuMultiplier(r.previous_cpu),
         cpuMultiplier(r.current_cpu),
       ),

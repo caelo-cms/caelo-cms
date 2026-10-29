@@ -152,7 +152,7 @@ export async function readMainPluginRow(
     `)) as unknown as { row: unknown }[];
     const raw = rows[0]?.row;
     if (raw === undefined) return null;
-    const row = (typeof raw === "string" ? JSON.parse(raw) : raw) as Record<string, unknown>;
+    const row = raw as Record<string, unknown>;
     return rowToState(row);
   });
 }
@@ -186,7 +186,7 @@ export async function writeMainPluginColumn(
         `link migration: ${ref.schema}.${ref.table} ${ref.rowId} disappeared during the migration`,
       );
     }
-    const row = (typeof raw === "string" ? JSON.parse(raw) : raw) as Record<string, unknown>;
+    const row = raw as Record<string, unknown>;
     return rowToState(row);
   });
 }

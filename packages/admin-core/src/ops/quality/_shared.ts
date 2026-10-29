@@ -108,8 +108,3 @@ export function uuidList(ids: readonly string[]): SQL {
 export function iso(v: string | Date): string {
   return v instanceof Date ? v.toISOString() : new Date(v).toISOString();
 }
-
-/** jsonb column → parsed value (bun-sql may hand back text). */
-export function json<T>(v: unknown): T {
-  return (typeof v === "string" ? JSON.parse(v) : v) as T;
-}

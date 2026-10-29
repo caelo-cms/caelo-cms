@@ -33,8 +33,8 @@ test.beforeAll(() => {
       await tx\`
         INSERT INTO plugin_pending_actions (kind, proposed_by, payload, preview, status, payload_hash)
         VALUES ('revoke_capability', \${actor}::uuid,
-                \${JSON.stringify({ slug, installationId: crypto.randomUUID(), capability: "private_files" })}::jsonb,
-                \${JSON.stringify({ slug, capability: "private_files", effect: "e2e revoke effect " + slug })}::jsonb,
+                (\${JSON.stringify({ slug, installationId: crypto.randomUUID(), capability: "private_files" })}::text)::jsonb,
+                (\${JSON.stringify({ slug, capability: "private_files", effect: "e2e revoke effect " + slug })}::text)::jsonb,
                 'pending', \${"e2e-" + slug})\`;
     });
     await sql.end();

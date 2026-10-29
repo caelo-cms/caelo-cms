@@ -102,7 +102,7 @@ export async function loadModulesInView(
     const b = branched.get(r.id);
     const deleted = b ? b.deletedAt !== null : r.deleted_at !== null;
     if (deleted) continue;
-    const rawFields = b ? b.fields : typeof r.fields === "string" ? JSON.parse(r.fields) : r.fields;
+    const rawFields = b ? b.fields : r.fields;
     out.push({
       id: r.id,
       slug: b ? b.slug : r.slug,
@@ -149,7 +149,7 @@ export async function loadInstancesOfModules(
     const b = branched.get(r.id);
     const deleted = b ? b.deletedAt !== null : r.deleted_at !== null;
     if (deleted) continue;
-    const values = b ? b.values : typeof r.values === "string" ? JSON.parse(r.values) : r.values;
+    const values = b ? b.values : r.values;
     out.push({
       id: r.id,
       moduleId: r.module_id,
@@ -260,7 +260,7 @@ export async function pageTermsOfList(
      ORDER BY ps.page_id, ss.created_at DESC
   `)) as unknown as { page_id: string; state: unknown }[];
   for (const b of branched) {
-    const state = (typeof b.state === "string" ? JSON.parse(b.state) : b.state) as {
+    const state = b.state as {
       terms?: unknown;
       deletedAt?: string | null;
     };

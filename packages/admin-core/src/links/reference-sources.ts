@@ -41,7 +41,6 @@ import { pendingSnapshotSql } from "../draft.js";
 import { loadPagesInView } from "../lists/pages-view.js";
 import { loadListEntities } from "../lists/store.js";
 import { effectiveLayoutModulesSql } from "../ops/content/layout-overlay.js";
-import { parseSnapshotState } from "../snapshots/index.js";
 import {
   parseAndUpgradeModuleState,
   parseAndUpgradePageLayoutState,
@@ -153,16 +152,11 @@ export interface ReferenceSourceModel {
 
 const IDENT_RE = /^[a-z_][a-z0-9_]{0,62}$/;
 
-function json(raw: unknown): unknown {
-  return typeof raw === "string" ? JSON.parse(raw) : raw;
-}
-
 /** Narrow a stored `fields` array to the declared fields it holds. */
 export function parseSourceFields(raw: unknown): SourceField[] {
-  const parsed = json(raw);
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(raw)) return [];
   const out: SourceField[] = [];
-  for (const f of parsed) {
+  for (const f of raw) {
     if (f === null || typeof f !== "object") continue;
     const { name, kind } = f as { name?: unknown; kind?: unknown };
     if (typeof name !== "string" || typeof kind !== "string" || !FIELD_KINDS.has(kind)) continue;
@@ -172,9 +166,8 @@ export function parseSourceFields(raw: unknown): SourceField[] {
 }
 
 function asRecord(raw: unknown): Record<string, unknown> {
-  const v = json(raw);
-  return v !== null && typeof v === "object" && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
+  return raw !== null && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
     : {};
 }
 
@@ -207,7 +200,7 @@ async function overlay(
     WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
     ORDER BY x.${sql.raw(idColumn)}, ss.created_at DESC
   `)) as unknown as { id: string; state: unknown }[];
-  return new Map(rows.map((r) => [r.id, parseSnapshotState<unknown>(r.state)]));
+  return new Map(rows.map((r) => [r.id, r.state]));
 }
 
 /**
@@ -508,7 +501,7 @@ async function loadPluginValues(
             ORDER BY ss.created_at DESC, prs.created_at DESC LIMIT 1
           `)) as unknown as { state: unknown }[];
           const state = pending[0]
-            ? (parseSnapshotState(pending[0].state) as {
+            ? (pending[0].state as {
                 values: Record<string, unknown>;
                 deletedAt: string | null;
               })
@@ -526,7 +519,7 @@ async function loadPluginValues(
           FROM ${sql.raw(`"${set.schema}"."${loc.table}"`)} AS t
           WHERE t.id = ${loc.rowId}::uuid AND t."caelo_deleted_at" IS NULL AND ${rowScope}
         `)) as unknown as { v: unknown }[];
-        return rows[0] === undefined ? undefined : json(rows[0].v);
+        return rows[0] === undefined ? undefined : rows[0].v;
       });
       if (value === undefined || value === null) continue;
       const fields = loc.fields

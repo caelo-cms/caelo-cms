@@ -62,12 +62,7 @@ export const syncPluginListTypesOp = defineOperation({
           ),
         };
       }
-      const stored =
-        row === undefined
-          ? null
-          : typeof row.definition === "string"
-            ? JSON.parse(row.definition)
-            : row.definition;
+      const stored = row === undefined ? null : row.definition;
       if (stored !== null && JSON.stringify(stored) === JSON.stringify(def)) {
         synced.push({ slug: def.slug, changed: false });
         continue;

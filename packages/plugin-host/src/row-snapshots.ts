@@ -64,10 +64,6 @@ function qualifiedTable(schema: string, table: string) {
   return sql.raw(`"${schema}"."${table}"`);
 }
 
-function parseState(raw: unknown): PluginRowState {
-  return (typeof raw === "string" ? JSON.parse(raw) : raw) as PluginRowState;
-}
-
 /** A live row (from `to_jsonb`) as a snapshot state: host columns dropped. */
 export function rowToState(row: Readonly<Record<string, unknown>>): PluginRowState {
   const values = Object.fromEntries(
@@ -173,7 +169,7 @@ export async function loadBranchRowStates(
     ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
   `)) as unknown as { row_id: string; state: unknown }[];
   const out = new Map<string, PluginRowState>();
-  for (const r of rows) out.set(r.row_id, parseState(r.state));
+  for (const r of rows) out.set(r.row_id, r.state as PluginRowState);
   return out;
 }
 

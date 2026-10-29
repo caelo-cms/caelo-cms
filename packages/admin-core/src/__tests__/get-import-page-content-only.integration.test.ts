@@ -108,7 +108,7 @@ async function seed(): Promise<void> {
           INSERT INTO import_pages
             (id, run_id, source_url, proposed_slug, proposed_title, proposed_modules, proposed_theme_tokens)
           VALUES (${p.id}::uuid, ${RUN_ID}::uuid, ${`https://content-only.test/${p.slug}`},
-                  ${p.slug}, ${p.slug}, ${modules}::jsonb, ${JSON.stringify(THEME_TOKENS)}::jsonb)`;
+                  ${p.slug}, ${p.slug}, (${modules}::text)::jsonb, (${JSON.stringify(THEME_TOKENS)}::text)::jsonb)`;
       }
     });
   } finally {

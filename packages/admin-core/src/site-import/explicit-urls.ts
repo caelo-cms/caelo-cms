@@ -31,29 +31,20 @@ export class ExplicitUrlsMalformedError extends Error {
 }
 
 /**
- * Decode `explicit_urls` (jsonb — may arrive as a decoded value or a JSON
- * string depending on the client) into the LIST-mode URL set.
+ * Decode the `explicit_urls` jsonb (read as jsonb, so already parsed)
+ * into the LIST-mode URL set.
  *
  * @returns `null` ONLY when the column is absent (SQL NULL / undefined /
  *   jsonb null), meaning depth/BFS mode. Any present-but-wrong shape —
- *   unparseable JSON, non-array, empty array, non-string entries — throws
+ *   a string scalar, non-array, empty array, non-string entries — throws
  *   {@link ExplicitUrlsMalformedError} so the run fails loudly.
  */
 export function parseExplicitUrls(raw: unknown): string[] | null {
   if (raw === null || raw === undefined) return null;
-  let v: unknown = raw;
-  if (typeof raw === "string") {
-    try {
-      v = JSON.parse(raw);
-    } catch {
-      throw new ExplicitUrlsMalformedError("unparseable JSON string", raw);
-    }
-    // A jsonb `null` serialised by the client — same as SQL NULL.
-    if (v === null) return null;
+  if (!Array.isArray(raw)) {
+    throw new ExplicitUrlsMalformedError("expected a JSON array of strings", raw);
   }
-  if (!Array.isArray(v)) {
-    throw new ExplicitUrlsMalformedError("expected a JSON array of strings", v);
-  }
+  const v: unknown[] = raw;
   if (v.length === 0) {
     throw new ExplicitUrlsMalformedError("array is empty — no URLs to fetch", v);
   }

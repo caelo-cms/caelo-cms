@@ -258,9 +258,7 @@ const executeRoleProposalOpDefinition = defineOperation({
         message: `proposal is already ${row.status}`,
       });
     }
-    const payload = (
-      typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload
-    ) as Record<string, unknown>;
+    const payload = row.payload as Record<string, unknown>;
     let resultRoleId: string | null = row.role_id;
     if (row.kind === "create") {
       const r = await createRoleOp.handler(

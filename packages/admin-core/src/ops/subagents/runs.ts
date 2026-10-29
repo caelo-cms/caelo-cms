@@ -83,8 +83,7 @@ function rowToOut(r: RunDb): z.infer<typeof runRow> {
     modelTier: r.model_tier,
     model: r.model,
     status: r.status,
-    resultJson:
-      typeof r.result_json === "string" ? JSON.parse(r.result_json) : (r.result_json ?? null),
+    resultJson: r.result_json ?? null,
     costMicrocents:
       typeof r.cost_microcents === "string"
         ? Number.parseInt(r.cost_microcents, 10)

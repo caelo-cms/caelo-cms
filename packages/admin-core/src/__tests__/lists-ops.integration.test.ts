@@ -181,7 +181,7 @@ describe("#1107 list types", () => {
       (tx) => tx`
         INSERT INTO modules (id, slug, display_name, html, fields, type)
         VALUES (${moduleId}::uuid, ${`${PFX}card-module`}, 'Card module', '<div>{{#cards}}{{title}}{{/cards}}</div>',
-                ${JSON.stringify([
+                (${JSON.stringify([
                   {
                     name: "cards",
                     label: "Cards",
@@ -189,7 +189,7 @@ describe("#1107 list types", () => {
                     listType: slug,
                     default: [localItem],
                   },
-                ])}::jsonb, 'card-module')`,
+                ])}::text)::jsonb, 'card-module')`,
     );
     const ciId = crypto.randomUUID();
     const ciItem = {
@@ -200,7 +200,7 @@ describe("#1107 list types", () => {
     await asSystem(
       (tx) => tx`
         INSERT INTO content_instances (id, module_id, "values")
-        VALUES (${ciId}::uuid, ${moduleId}::uuid, ${JSON.stringify({ cards: [ciItem] })}::jsonb)`,
+        VALUES (${ciId}::uuid, ${moduleId}::uuid, (${JSON.stringify({ cards: [ciItem] })}::text)::jsonb)`,
     );
 
     const withoutSubtitle = {
@@ -443,7 +443,7 @@ describe("#1107 lists on the shared draft", () => {
       (tx) => tx`
         INSERT INTO modules (id, slug, display_name, html, fields, type)
         VALUES (${moduleId}::uuid, ${`${PFX}nav`}, 'Nav', '<nav>{{#links}}{{label}}{{/links}}</nav>',
-                ${JSON.stringify([
+                (${JSON.stringify([
                   {
                     name: "links",
                     label: "Links",
@@ -452,7 +452,7 @@ describe("#1107 lists on the shared draft", () => {
                     bind: "shared",
                     list: `caelo:list/${listId}`,
                   },
-                ])}::jsonb, 'nav')`,
+                ])}::text)::jsonb, 'nav')`,
     );
     const usage = await op<{
       lists: { slug: string; usage: { modules: { slug: string; field: string }[] } }[];
@@ -483,9 +483,9 @@ describe("#1107 lists on the shared draft", () => {
       await tx`
         INSERT INTO modules (id, slug, display_name, html, fields, type)
         VALUES (${moduleId}::uuid, ${`${PFX}features`}, 'Features', '<ul>{{#bullets}}<li>{{text}}</li>{{/bullets}}</ul>',
-                ${JSON.stringify([{ name: "bullets", label: "Bullets", kind: "list", listType: "texts", default: items }])}::jsonb,
+                (${JSON.stringify([{ name: "bullets", label: "Bullets", kind: "list", listType: "texts", default: items }])}::text)::jsonb,
                 'features')`;
-      await tx`INSERT INTO content_instances (module_id, "values") VALUES (${moduleId}::uuid, ${JSON.stringify({ bullets: items })}::jsonb)`;
+      await tx`INSERT INTO content_instances (module_id, "values") VALUES (${moduleId}::uuid, (${JSON.stringify({ bullets: items })}::text)::jsonb)`;
       await tx`INSERT INTO content_instances (module_id, "values") VALUES (${moduleId}::uuid, '{}'::jsonb)`;
     });
     const r = await op<{ listId: string; listRef: string; itemCount: number }>(
@@ -523,9 +523,9 @@ describe("#1107 lists on the shared draft", () => {
       await tx`
         INSERT INTO modules (id, slug, display_name, html, fields, type)
         VALUES (${other}::uuid, ${`${PFX}chips`}, 'Chips', '<p>{{#chips}}{{text}}{{/chips}}</p>',
-                ${JSON.stringify([{ name: "chips", label: "Chips", kind: "list", listType: "texts" }])}::jsonb, 'chips')`;
-      await tx`INSERT INTO content_instances (module_id, "values") VALUES (${other}::uuid, ${JSON.stringify({ chips: [{ id: crypto.randomUUID(), node: "text", values: { text: "a" } }] })}::jsonb)`;
-      await tx`INSERT INTO content_instances (module_id, "values") VALUES (${other}::uuid, ${JSON.stringify({ chips: [{ id: crypto.randomUUID(), node: "text", values: { text: "b" } }] })}::jsonb)`;
+                (${JSON.stringify([{ name: "chips", label: "Chips", kind: "list", listType: "texts" }])}::text)::jsonb, 'chips')`;
+      await tx`INSERT INTO content_instances (module_id, "values") VALUES (${other}::uuid, (${JSON.stringify({ chips: [{ id: crypto.randomUUID(), node: "text", values: { text: "a" } }] })}::text)::jsonb)`;
+      await tx`INSERT INTO content_instances (module_id, "values") VALUES (${other}::uuid, (${JSON.stringify({ chips: [{ id: crypto.randomUUID(), node: "text", values: { text: "b" } }] })}::text)::jsonb)`;
     });
     const refused = await fail(SYS, "lists.promote_local", {
       moduleId: other,

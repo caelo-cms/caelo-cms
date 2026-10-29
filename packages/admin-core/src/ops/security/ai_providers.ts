@@ -71,7 +71,7 @@ export const listAiProvidersOp = defineOperation({
       id: string;
       name: ProviderName;
       display_name: string;
-      config: Record<string, unknown> | string;
+      config: Record<string, unknown>;
       is_active: boolean;
       has_db_key: boolean;
       api_key_set_at: Date | string | null;
@@ -88,7 +88,7 @@ export const listAiProvidersOp = defineOperation({
           id: r.id,
           name: r.name,
           displayName: r.display_name,
-          config: typeof r.config === "string" ? JSON.parse(r.config) : r.config,
+          config: r.config,
           isActive: r.is_active,
           apiKeySource,
           apiKeySetAt:

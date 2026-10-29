@@ -11,7 +11,7 @@ import type { defineOperation } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { performanceMetricsSchema } from "../../quality/lighthouse-protocol.js";
-import { iso, json, uuidList } from "./_shared.js";
+import { iso, uuidList } from "./_shared.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -67,6 +67,6 @@ export async function lastPageMetrics(
     pagePath: r.current_path,
     auditRunId: r.audit_run_id,
     measuredAt: iso(r.created_at),
-    metrics: json<LastPageMetrics["metrics"]>(r.metrics),
+    metrics: r.metrics as LastPageMetrics["metrics"],
   }));
 }

@@ -96,7 +96,7 @@ beforeAll(async () => {
     // One active provider (anthropic, key via env) with a stored chat model.
     await tx`DELETE FROM ai_providers`;
     await tx`INSERT INTO ai_providers (name, display_name, config, is_active)
-             VALUES ('anthropic', 'Anthropic (Claude)', ${JSON.stringify({ model: CHAT_MODEL })}::jsonb, true)`;
+             VALUES ('anthropic', 'Anthropic (Claude)', (${JSON.stringify({ model: CHAT_MODEL })}::text)::jsonb, true)`;
     await tx`INSERT INTO ai_providers (name, display_name, config, is_active)
              VALUES ('local-openai-compat', 'Local', '{"model":"qwen2.5"}'::jsonb, false)`;
   });
@@ -118,7 +118,7 @@ afterAll(async () => {
       const config = typeof r.config === "string" ? r.config : JSON.stringify(r.config);
       await tx`INSERT INTO ai_providers (id, name, display_name, config, is_active, created_at,
                  api_key_encrypted, api_key_iv, api_key_kek_fp, api_key_set_at, translation_model)
-               VALUES (${r.id}::uuid, ${r.name}, ${r.display_name}, ${config}::jsonb, ${r.is_active},
+               VALUES (${r.id}::uuid, ${r.name}, ${r.display_name}, (${config}::text)::jsonb, ${r.is_active},
                  ${r.created_at}, ${r.api_key_encrypted}, ${r.api_key_iv}, ${r.api_key_kek_fp},
                  ${r.api_key_set_at}, ${r.translation_model})`;
     }

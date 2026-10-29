@@ -33,11 +33,10 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
-  parsePayload,
   resolveChatSessionId,
 } from "../_propose-helpers.js";
 import { actorHasPermission } from "./_permissions.js";
-import { categorySchema, iso, json } from "./_shared.js";
+import { categorySchema, iso } from "./_shared.js";
 import { publishAnywayOp } from "./gate.js";
 import {
   latestSucceededRun,
@@ -235,7 +234,7 @@ async function resolveItems(
     SELECT COALESCE(checks->'siteProblems', '[]'::jsonb) AS site_problems
     FROM quality_audit_runs WHERE id = ${input.auditRunId}::uuid
   `)) as unknown as { site_problems: unknown }[];
-  const siteProblems = json<QualityProblem[]>(siteRows[0]?.site_problems ?? []);
+  const siteProblems = (siteRows[0]?.site_problems ?? []) as QualityProblem[];
   if (rows.length === 0 && siteProblems.length === 0) {
     return {
       ok: false,
@@ -259,7 +258,7 @@ async function resolveItems(
         message: `${pagePath} has no findings in ${input.auditRunId} — pages with findings: ${rows.map((r) => r.current_path).join(", ") || "none"}${siteProblems.length > 0 ? " (site-wide findings: omit pagePath)" : ""}`,
       };
     }
-    const problems = json<QualityProblem[]>(page.problems);
+    const problems = page.problems as QualityProblem[];
     if ("ruleId" in item) {
       const r = resolveCheckItem(page.page_id, page.current_path, problems, item.ruleId);
       if ("message" in r) return { ok: false, message: r.message };
@@ -592,7 +591,7 @@ const executeQualityProposalOpDefinition = defineOperation({
     }
     let result: { kind: "accept" | "publish_anyway"; accepted?: number; toRunId?: string };
     if (row.kind === "accept") {
-      const payload = proposeAcceptInput.parse(parsePayload(row.payload));
+      const payload = proposeAcceptInput.parse(row.payload);
       const current = await currentGateAuditId(tx);
       if (current !== payload.auditRunId) {
         await tx.execute(sql`
@@ -617,7 +616,7 @@ const executeQualityProposalOpDefinition = defineOperation({
       }
       result = { kind: "accept", accepted: applied.accepted };
     } else {
-      const payload = proposePublishAnywayInput.parse(parsePayload(row.payload));
+      const payload = proposePublishAnywayInput.parse(row.payload);
       const published = await publishAnywayOp.handler(
         ctx,
         {
@@ -730,7 +729,7 @@ export const listPendingQualityProposalsOp = defineOperation({
         kind: r.kind,
         proposedBy: r.proposed_by,
         auditRunId: r.audit_run_id,
-        preview: json<Record<string, unknown>>(r.preview),
+        preview: r.preview as Record<string, unknown>,
         status: r.status,
         createdAt: iso(r.created_at),
       })),

@@ -58,9 +58,7 @@ export async function findContentInstancesContaining(
        ORDER BY cis.content_instance_id, ss.created_at DESC
     `)) as unknown as { id: string; state: unknown }[];
     for (const r of rows) {
-      const state = (
-        typeof r.state === "string" ? JSON.parse(r.state) : r.state
-      ) as ContentInstanceState;
+      const state = r.state as ContentInstanceState;
       branched.set(r.id, state);
       if (state.deletedAt) continue;
       const valuesText = JSON.stringify(state.values ?? {});

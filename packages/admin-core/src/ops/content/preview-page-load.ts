@@ -103,10 +103,6 @@ export function parseFields(raw: unknown): TemplateField[] {
   return templateFieldsFromJson(raw);
 }
 
-function json<T>(raw: unknown): T {
-  return (typeof raw === "string" ? JSON.parse(raw) : raw) as T;
-}
-
 const uuidList = (ids: readonly string[]) =>
   sql.join(
     ids.map((id) => sql`${id}::uuid`),
@@ -165,7 +161,7 @@ export async function loadPreviewPage(
       ORDER BY ss.created_at DESC LIMIT 1
     `)) as unknown as { state: unknown }[];
     if (snap[0]?.state) {
-      const s = json<{ slug?: string; title?: string }>(snap[0].state);
+      const s = snap[0].state as { slug?: string; title?: string };
       if (s.slug) pageRow.slug = s.slug;
       if (s.title) pageRow.title = s.title;
     }
@@ -234,13 +230,13 @@ export async function loadPreviewPage(
       LIMIT 1
     `)) as unknown as { state: unknown }[];
     if (layoutSnap[0]?.state) {
-      const parsed = json<{
+      const parsed = layoutSnap[0].state as {
         blocks?: {
           blockName: string;
           moduleIds: string[];
           placements?: { moduleId: string; contentInstanceId: string; syncMode: string }[];
         }[];
-      }>(layoutSnap[0].state);
+      };
       if (Array.isArray(parsed.blocks)) {
         modRows = await branchPlacedModules(tx, parsed.blocks, chatBranchId);
       }
@@ -276,7 +272,7 @@ export async function loadPreviewPage(
       WHERE id IN (${uuidList(allInstanceIds)}) AND deleted_at IS NULL
     `)) as unknown as { id: string; module_id: string; values: unknown }[];
     for (const r of valueRows) {
-      valuesByInstance.set(r.id, (json(r.values) ?? {}) as Record<string, unknown>);
+      valuesByInstance.set(r.id, (r.values ?? {}) as Record<string, unknown>);
       instanceModuleIdById.set(r.id, r.module_id);
     }
     // Branch overlay — content_instance_snapshots tagged with this chat's
@@ -499,7 +495,7 @@ async function overlayPlacedModuleCode(
     ORDER BY ms.module_id, ss.created_at DESC
   `)) as unknown as { module_id: string; state: unknown }[];
   const overlay = new Map<string, Record<string, unknown>>();
-  for (const r of stagedRows) overlay.set(r.module_id, json(r.state));
+  for (const r of stagedRows) overlay.set(r.module_id, r.state as Record<string, unknown>);
   if (chatBranchId) {
     for (const [id, s] of await branchModuleStates(tx, ids, chatBranchId)) overlay.set(id, s);
   }
@@ -543,7 +539,7 @@ async function branchModuleStates(
       AND ms.module_id IN (${uuidList(moduleIds)})
     ORDER BY ms.module_id, ss.created_at DESC
   `)) as unknown as { module_id: string; state: unknown }[];
-  return new Map(rows.map((r) => [r.module_id, json<Record<string, unknown>>(r.state)]));
+  return new Map(rows.map((r) => [r.module_id, r.state as Record<string, unknown>]));
 }
 
 /** The branch's pending values per instance (deleted ones left out). */
@@ -563,7 +559,7 @@ async function branchInstanceValues(
   `)) as unknown as { id: string; state: unknown }[];
   const out = new Map<string, Record<string, unknown>>();
   for (const r of rows) {
-    const state = (json(r.state) ?? {}) as {
+    const state = (r.state ?? {}) as {
       values?: Record<string, unknown>;
       deletedAt?: string | null;
     };
@@ -662,7 +658,7 @@ export async function expandNestedResources(
             )
           : new Map<string, Record<string, unknown>>();
       for (const f of fetched) {
-        const v = overlay.get(f.id) ?? ((json(f.values) ?? {}) as Record<string, unknown>);
+        const v = overlay.get(f.id) ?? ((f.values ?? {}) as Record<string, unknown>);
         resources.instances.set(f.id, {
           id: f.id,
           moduleId: f.module_id,

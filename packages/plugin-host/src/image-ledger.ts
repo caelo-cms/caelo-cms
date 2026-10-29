@@ -112,20 +112,19 @@ export async function readImageRequest(
   }[];
   const row = rows[0];
   if (!row) return null;
-  const json = (v: unknown) => (typeof v === "string" ? JSON.parse(v) : v);
   return {
     id: row.id,
     scope: row.scope,
     inputSha256: row.input_sha256,
     operation: row.operation,
     prompt: row.prompt,
-    references: (json(row.references_json) as unknown[]) ?? [],
-    mask: json(row.mask_json) ?? null,
-    requested: (json(row.requested) as Record<string, unknown>) ?? {},
+    references: (row.references_json as unknown[]) ?? [],
+    mask: row.mask_json ?? null,
+    requested: (row.requested as Record<string, unknown>) ?? {},
     provider: row.provider,
     model: row.model,
     status: row.status,
-    result: json(row.result) ?? null,
+    result: row.result ?? null,
     outputMediaId: row.output_media_id,
     costMicrocents: Number(row.cost),
     createdAt: row.created_at,

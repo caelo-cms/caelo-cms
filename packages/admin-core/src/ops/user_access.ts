@@ -205,7 +205,7 @@ export const operatorAccessRunOp = defineOperation({
     `)) as unknown as {
       execution: string;
       outcome: RecordedSyncRun["outcome"];
-      refused_members: string[] | string;
+      refused_members: string[];
       error_count: number;
       sign_in_client_problem: string | null;
       finished_at: string | Date;
@@ -216,10 +216,7 @@ export const operatorAccessRunOp = defineOperation({
         ? {
             execution: r.execution,
             outcome: r.outcome,
-            refusedMembers:
-              typeof r.refused_members === "string"
-                ? (JSON.parse(r.refused_members) as string[])
-                : r.refused_members,
+            refusedMembers: r.refused_members,
             errorCount: r.error_count,
             signInClientProblem: r.sign_in_client_problem,
             finishedAt:

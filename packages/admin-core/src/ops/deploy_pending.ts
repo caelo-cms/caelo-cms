@@ -31,7 +31,6 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
-  parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
 import { promoteDeployOp, rollbackDeployOp } from "./deploy.js";
@@ -311,7 +310,7 @@ const executeDeployProposalOpDefinition = defineOperation({
       // execute + status flip are atomic. The promoteDeploy / rollbackDeploy
       // handlers expect a system context (their actorScope is human+system);
       // ctx here is human (the Owner clicking Approve).
-      const payload = parsePayload<Record<string, unknown>>(row.payload);
+      const payload = row.payload as Record<string, unknown>;
       let runId: string | null = null;
       if (row.kind === "promote") {
         const r = await promoteDeployOp.handler(

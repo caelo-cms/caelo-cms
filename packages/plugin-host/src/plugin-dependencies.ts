@@ -21,11 +21,9 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
-/** The `requiresPlugins` of a stored manifest (jsonb or its text). */
+/** The `requiresPlugins` of a stored manifest (the `manifest_json` jsonb). */
 export function requiredPluginsOf(manifestJson: unknown): string[] {
-  const manifest =
-    typeof manifestJson === "string" ? (JSON.parse(manifestJson) as unknown) : manifestJson;
-  const raw = (manifest as { requiresPlugins?: unknown } | null)?.requiresPlugins;
+  const raw = (manifestJson as { requiresPlugins?: unknown } | null)?.requiresPlugins;
   return Array.isArray(raw) ? raw.filter((s): s is string => typeof s === "string") : [];
 }
 

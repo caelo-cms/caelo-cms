@@ -112,9 +112,8 @@ export const summarizeChatOp = defineOperation({
       if (m.role === "assistant") {
         loopCount += 1;
         const calls = m.tool_calls;
-        const parsed = typeof calls === "string" ? JSON.parse(calls) : calls;
-        if (Array.isArray(parsed)) {
-          for (const c of parsed as ToolCallRef[]) {
+        if (Array.isArray(calls)) {
+          for (const c of calls as ToolCallRef[]) {
             if (c && typeof c.id === "string" && typeof c.name === "string") {
               toolNameById.set(c.id, c.name);
             }

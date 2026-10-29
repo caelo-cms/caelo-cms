@@ -31,7 +31,6 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
-  parsePayload,
   resolveChatSessionId,
 } from "../_propose-helpers.js";
 import { revokePluginCapabilityOp } from "./installations.js";
@@ -229,13 +228,13 @@ export async function applyRevokeCapabilityProposal(
   proposalId: string,
   rawPayload: unknown,
 ) {
-  const payload = parsePayload<{
+  const payload = rawPayload as {
     slug: string;
     installationId: string;
     capability: string;
     expectedInstallationStatus?: string;
     expectedDisables?: boolean;
-  }>(rawPayload);
+  };
   const capability = pluginCapability.parse(payload.capability);
   const now = (await tx.execute(sql`
     SELECT v.status, v.artifact_digest, p.manifest_json, p.source_code

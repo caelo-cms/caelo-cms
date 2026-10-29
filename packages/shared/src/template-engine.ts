@@ -113,17 +113,16 @@ export interface TemplateField {
 }
 
 /**
- * Parse a stored `modules.fields` jsonb (array or JSON text) into the
+ * Parse a stored `modules.fields` jsonb (the parsed array) into the
  * fields the engine renders with: name, kind (absent = `text`), default,
  * and a `list` field's binding. A typo'd kind passes through as is — the
  * engine reports it loudly (kind-mismatch) instead of the parser hiding
  * it. Entries without a string name are skipped; they cannot be rendered.
  */
 export function templateFieldsFromJson(raw: unknown): TemplateField[] {
-  const parsed = typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(raw)) return [];
   const out: TemplateField[] = [];
-  for (const f of parsed) {
+  for (const f of raw) {
     if (!f || typeof f !== "object") continue;
     const o = f as Record<string, unknown>;
     if (typeof o.name !== "string") continue;

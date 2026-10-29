@@ -71,7 +71,7 @@ async function loadInstancesInView(
     deleted_at: string | Date | null;
   }[];
   for (const r of rows) {
-    const values = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
+    const values = r.values;
     out.set(r.id, {
       moduleId: r.module_id,
       values: (values ?? {}) as Record<string, unknown>,

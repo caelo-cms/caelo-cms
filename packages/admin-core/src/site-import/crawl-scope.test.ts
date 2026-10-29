@@ -8,22 +8,22 @@ import { describe, expect, it } from "bun:test";
 import { CrawlScopeMalformedError, parseCrawlScope } from "./crawl-scope.js";
 
 describe("parseCrawlScope (#425)", () => {
-  it("returns null only for SQL NULL / undefined / jsonb null", () => {
+  it("returns null only for SQL NULL / undefined", () => {
     expect(parseCrawlScope(null)).toBeNull();
     expect(parseCrawlScope(undefined)).toBeNull();
-    expect(parseCrawlScope("null")).toBeNull();
   });
 
-  it("decodes both client paths: decoded object and JSON string", () => {
+  it("decodes the parsed jsonb object", () => {
     expect(parseCrawlScope({ pathPrefix: "/de/" })).toEqual({ pathPrefix: "/de/" });
-    expect(parseCrawlScope('{"locale":"de"}')).toEqual({ locale: "de" });
-    expect(parseCrawlScope('{"pathPrefix":"/de/","locale":"de"}')).toEqual({
+    expect(parseCrawlScope({ pathPrefix: "/de/", locale: "de" })).toEqual({
       pathPrefix: "/de/",
       locale: "de",
     });
   });
 
   it("throws loudly on any present-but-malformed value", () => {
+    // A double-encoded jsonb string scalar (#68) is malformed, not decoded.
+    expect(() => parseCrawlScope('{"locale":"de"}')).toThrow(CrawlScopeMalformedError);
     expect(() => parseCrawlScope("not json")).toThrow(CrawlScopeMalformedError);
     expect(() => parseCrawlScope([])).toThrow(CrawlScopeMalformedError);
     expect(() => parseCrawlScope({})).toThrow(CrawlScopeMalformedError);

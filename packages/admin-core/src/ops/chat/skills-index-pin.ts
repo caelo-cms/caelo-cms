@@ -55,10 +55,6 @@ export const pinSkillsIndexOp = defineOperation({
         message: `Chat ${input.chatSessionId} is not one of your chats — pass the chat being run.`,
       });
     }
-    const stored =
-      typeof row.skills_index_unavailable === "string"
-        ? JSON.parse(row.skills_index_unavailable)
-        : row.skills_index_unavailable;
-    return ok({ unavailableSkillSlugs: slugList.parse(stored) });
+    return ok({ unavailableSkillSlugs: slugList.parse(row.skills_index_unavailable) });
   },
 });

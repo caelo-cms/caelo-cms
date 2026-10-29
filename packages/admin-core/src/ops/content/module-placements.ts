@@ -51,10 +51,6 @@ export interface ModulePlacements {
   readonly nestedIn: readonly string[];
 }
 
-function parseState<T>(raw: unknown): T {
-  return (typeof raw === "string" ? JSON.parse(raw) : raw) as T;
-}
-
 function idList(ids: readonly string[]) {
   return sql.join(
     ids.map((id) => sql`${id}::uuid`),
@@ -94,7 +90,7 @@ export async function findModulePlacements(
        ORDER BY pls.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const r of layoutRows) {
-      branchedLayouts.set(r.page_id, parseState<PageLayoutState>(r.state));
+      branchedLayouts.set(r.page_id, r.state as PageLayoutState);
     }
     const pageRows = (await tx.execute(sql`
       SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
@@ -104,7 +100,7 @@ export async function findModulePlacements(
        ORDER BY ps.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const r of pageRows) {
-      if (parseState<PageState>(r.state).deletedAt) branchedDeletedPages.add(r.page_id);
+      if ((r.state as PageState).deletedAt) branchedDeletedPages.add(r.page_id);
     }
   }
 

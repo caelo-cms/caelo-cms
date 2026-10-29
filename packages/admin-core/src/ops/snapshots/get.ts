@@ -4,7 +4,6 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok, snapshotGetInput } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { parseSnapshotState } from "../../snapshots/index.js";
 
 const entityRowSchema = z.object({
   entityId: z.string(),
@@ -87,10 +86,10 @@ export const getSnapshotWithEntitiesOp = defineOperation({
         createdAt:
           snap.created_at instanceof Date ? snap.created_at.toISOString() : String(snap.created_at),
       },
-      modules: ms.map((r) => ({ entityId: r.entity_id, state: parseSnapshotState(r.state) })),
-      templates: ts.map((r) => ({ entityId: r.entity_id, state: parseSnapshotState(r.state) })),
-      pages: ps.map((r) => ({ entityId: r.entity_id, state: parseSnapshotState(r.state) })),
-      pageLayouts: pls.map((r) => ({ entityId: r.entity_id, state: parseSnapshotState(r.state) })),
+      modules: ms.map((r) => ({ entityId: r.entity_id, state: r.state })),
+      templates: ts.map((r) => ({ entityId: r.entity_id, state: r.state })),
+      pages: ps.map((r) => ({ entityId: r.entity_id, state: r.state })),
+      pageLayouts: pls.map((r) => ({ entityId: r.entity_id, state: r.state })),
     });
   },
 });

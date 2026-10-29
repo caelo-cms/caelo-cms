@@ -121,9 +121,7 @@ export const getProvisioningOutputsOp = defineOperation({
     }>;
     return ok({
       rows: rows.map((r) => {
-        const outputs = (
-          typeof r.outputs_json === "string" ? JSON.parse(r.outputs_json) : r.outputs_json
-        ) as {
+        const outputs = r.outputs_json as {
           dnsRecordsRequired?: Array<z.infer<typeof dnsRecord>>;
           bootstrapUrl?: string;
           adminDatabaseUrl?: string;
@@ -221,9 +219,7 @@ async function siteOwnedHostnames(tx: TransactionRunner): Promise<Set<string>> {
     SELECT outputs_json FROM provisioning_outputs
   `)) as unknown as { outputs_json: unknown }[];
   for (const r of outputs) {
-    const json = (
-      typeof r.outputs_json === "string" ? JSON.parse(r.outputs_json) : r.outputs_json
-    ) as {
+    const json = r.outputs_json as {
       dnsRecordsRequired?: { hostname?: unknown }[];
     };
     for (const rec of json.dnsRecordsRequired ?? []) {

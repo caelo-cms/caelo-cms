@@ -303,7 +303,7 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
     header_enabled: boolean;
     header_name: string;
     header_nonce: string | null;
-    ip_allowlist: string[] | string;
+    ip_allowlist: string[];
     origin_url: string | null;
   }[];
   const row = rows[0];
@@ -322,10 +322,7 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
       headerEnabled: row.header_enabled,
       headerName: row.header_name,
       headerNonce: row.header_nonce,
-      ipAllowlist:
-        typeof row.ip_allowlist === "string"
-          ? (JSON.parse(row.ip_allowlist) as string[])
-          : row.ip_allowlist,
+      ipAllowlist: row.ip_allowlist,
     },
     originUrl: row.origin_url,
   };

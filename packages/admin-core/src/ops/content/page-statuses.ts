@@ -71,7 +71,7 @@ export const listPageStatusesOp = defineOperation({
       `)) as unknown as { page_id: string; state: unknown }[];
       for (const o of overlay) {
         if (!(o.page_id in statuses)) continue;
-        const state = (typeof o.state === "string" ? JSON.parse(o.state) : o.state) as {
+        const state = o.state as {
           status?: "draft" | "published";
           deletedAt?: string | null;
         };

@@ -23,7 +23,6 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
-  parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
 import {
@@ -185,7 +184,7 @@ const executeMcpTokenProposalOpDefinition = defineOperation({
     let resultTokenId: string | null = row.token_id;
     let credentialHandoff: CredentialHandoffRef | null = null;
     if (row.kind === "create") {
-      const payload = parsePayload<Parameters<typeof createMcpTokenOp.handler>[1]>(row.payload);
+      const payload = row.payload as Parameters<typeof createMcpTokenOp.handler>[1];
       const r = await createMcpTokenOp.handler(ctx, payload, tx);
       if (!r.ok) return passthroughError(r.error, "create");
       // #971 — the minted plaintext is dropped here, unseen; the approver
@@ -200,7 +199,7 @@ const executeMcpTokenProposalOpDefinition = defineOperation({
     } else if (row.kind === "revoke") {
       const r = await revokeMcpTokenOp.handler(
         ctx,
-        parsePayload<Parameters<typeof revokeMcpTokenOp.handler>[1]>(row.payload),
+        row.payload as Parameters<typeof revokeMcpTokenOp.handler>[1],
         tx,
       );
       if (!r.ok) return passthroughError(r.error, "revoke");

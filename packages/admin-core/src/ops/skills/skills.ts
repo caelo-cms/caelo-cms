@@ -74,21 +74,14 @@ function notRunningHere(pluginSlug: string | null): string | null {
 }
 
 function rowToOut(r: SkillDb): z.infer<typeof skillRow> {
-  const hintsRaw =
-    typeof r.auto_engagement_hints === "string"
-      ? JSON.parse(r.auto_engagement_hints)
-      : ((r.auto_engagement_hints as Record<string, unknown> | null) ?? {});
+  const hintsRaw = (r.auto_engagement_hints as Record<string, unknown> | null) ?? {};
   return {
     id: r.id,
     slug: r.slug,
     displayName: r.display_name,
     description: r.description,
     body: r.body,
-    allowlistedTools: Array.isArray(r.allowlisted_tools)
-      ? (r.allowlisted_tools as string[])
-      : typeof r.allowlisted_tools === "string"
-        ? (JSON.parse(r.allowlisted_tools) as string[])
-        : [],
+    allowlistedTools: Array.isArray(r.allowlisted_tools) ? (r.allowlisted_tools as string[]) : [],
     hints: skillAutoEngagementHints.parse({
       keywords: (hintsRaw as { keywords?: unknown }).keywords ?? [],
       chipTrigger: (hintsRaw as { chipTrigger?: unknown }).chipTrigger ?? false,

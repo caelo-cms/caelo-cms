@@ -45,7 +45,6 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
-  parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
 import { siteDefaultsSetSeoOp } from "./seo.js";
@@ -72,9 +71,7 @@ async function readStoredSeo(tx: Tx): Promise<StoredSeo | null> {
   return {
     siteBaseUrl: r.site_base_url,
     sitemapEnabled: r.sitemap_enabled,
-    organizationJson: parsePayload<SiteDefaultsSetSeoInput["organizationJson"]>(
-      r.organization_json ?? {},
-    ),
+    organizationJson: (r.organization_json ?? {}) as SiteDefaultsSetSeoInput["organizationJson"],
   };
 }
 
@@ -224,7 +221,7 @@ const executeSiteDefaultsProposalOpDefinition = defineOperation({
         message: `proposal is already ${row.status}`,
       });
     }
-    const payload = parsePayload<SiteSeoProposalInput>(row.payload);
+    const payload = row.payload as SiteSeoProposalInput;
     const current = await readStoredSeo(tx);
     if (!current) {
       return err({ kind: "HandlerError", operation: op, message: MISSING_ROW_MESSAGE });
@@ -366,8 +363,8 @@ export const listPendingSiteDefaultsProposalsOp = defineOperation({
         id: r.id,
         kind: r.kind,
         proposedBy: r.proposed_by,
-        payload: parsePayload<Record<string, unknown>>(r.payload),
-        preview: parsePayload<Record<string, unknown>>(r.preview),
+        payload: r.payload as Record<string, unknown>,
+        preview: r.preview as Record<string, unknown>,
         status: r.status,
         createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
       })),

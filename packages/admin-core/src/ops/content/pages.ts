@@ -198,10 +198,7 @@ async function loadTypeBound(
        ORDER BY ps.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const s of snaps) {
-      overlay.set(
-        s.page_id,
-        (typeof s.state === "string" ? JSON.parse(s.state) : s.state) as PageState,
-      );
+      overlay.set(s.page_id, s.state as PageState);
     }
   }
   const slugs = new Map(
@@ -211,7 +208,7 @@ async function loadTypeBound(
   );
   for (const r of rows) {
     const o = overlay.get(r.id);
-    const liveProps = typeof r.properties === "string" ? JSON.parse(r.properties) : r.properties;
+    const liveProps = r.properties;
     const pageTypeId = o?.pageTypeId ?? r.page_type_id;
     out.set(r.id, {
       pageTypeId,
@@ -228,7 +225,7 @@ function rowToPage(r: RawPageRow, bound: TypeBound | undefined): z.infer<typeof 
   // overflow JS number — for our version counter (will not approach 2^53)
   // both shapes are safe to coerce.
   const version = typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version;
-  const liveProps = typeof r.properties === "string" ? JSON.parse(r.properties) : r.properties;
+  const liveProps = r.properties;
   return {
     id: r.id,
     slug: r.slug,
@@ -323,7 +320,7 @@ export const listPagesOp = defineOperation({
             merged.push(row);
             continue;
           }
-          const s = (typeof rawState === "string" ? JSON.parse(rawState) : rawState) as {
+          const s = rawState as {
             slug?: string;
             parentPageId?: string | null;
             title?: string;
@@ -546,7 +543,7 @@ export const getPageWithModulesOp = withHumanisedLinks(
           for (const row of overlayRows) {
             const detail = detailById.get(row.module_id);
             if (!detail) continue;
-            const s = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as {
+            const s = row.state as {
               html?: string;
               css?: string;
               js?: string;
@@ -738,7 +735,7 @@ async function branchDeletedPageIds(
      ORDER BY ps.page_id, ss.created_at DESC
   `)) as unknown as { page_id: string; state: unknown }[];
   for (const row of overlay) {
-    const s = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as {
+    const s = row.state as {
       deletedAt?: string | null;
     };
     if (s.deletedAt) deleted.add(row.page_id);
@@ -1401,7 +1398,7 @@ async function recordBranchedStatus(
   `)) as unknown as { page_id: string; state: unknown }[];
   if (latest.length === 0) return;
   const entities = latest.map((row) => {
-    const prior = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as PageState;
+    const prior = row.state as PageState;
     return { kind: "page" as const, entityId: row.page_id, state: { ...prior, status } };
   });
   await emitSnapshot(tx, {

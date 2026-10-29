@@ -140,7 +140,7 @@ interface StagingAccessRow {
   header_enabled: boolean;
   header_name: string;
   header_nonce: string | null;
-  ip_allowlist: string[] | string;
+  ip_allowlist: string[];
   origin_run_id: string | null;
   updated_at: string | Date;
 }
@@ -163,12 +163,6 @@ export async function readStagingAccessRow(tx: Tx): Promise<StagingAccessRow> {
   return row;
 }
 
-function allowlistOf(row: StagingAccessRow): string[] {
-  return typeof row.ip_allowlist === "string"
-    ? (JSON.parse(row.ip_allowlist) as string[])
-    : row.ip_allowlist;
-}
-
 function toOutput(row: StagingAccessRow): z.infer<typeof settingsOutput> {
   return {
     cookieEnabled: row.cookie_enabled,
@@ -178,7 +172,7 @@ function toOutput(row: StagingAccessRow): z.infer<typeof settingsOutput> {
     headerEnabled: row.header_enabled,
     headerName: row.header_name,
     headerGenerated: row.header_nonce !== null,
-    ipAllowlist: allowlistOf(row),
+    ipAllowlist: row.ip_allowlist,
     updatedAt:
       row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
   };

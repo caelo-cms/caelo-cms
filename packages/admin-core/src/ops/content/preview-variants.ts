@@ -57,9 +57,8 @@ export interface PreviewContentVariants {
 }
 
 function fieldList(raw: unknown): { name: string; kind: string; default?: unknown }[] {
-  const parsed = typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
-  if (!Array.isArray(parsed)) return [];
-  return parsed
+  if (!Array.isArray(raw)) return [];
+  return raw
     .filter((f): f is { name: string; kind?: string; default?: unknown } => {
       return !!f && typeof f === "object" && typeof (f as { name?: unknown }).name === "string";
     })

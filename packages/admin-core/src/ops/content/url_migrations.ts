@@ -33,7 +33,6 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
-  parsePayload,
   resolveChatSessionId,
 } from "../_propose-helpers.js";
 import { createRedirectOp } from "../redirects.js";
@@ -230,9 +229,7 @@ const executeUrlMigrationOpDefinition = defineOperation({
         message: `proposal is '${row.status}', not pending`,
       });
     }
-    // jsonb can come back as a string depending on how the row was bound;
-    // every other executor normalises it the same way.
-    const payload = parsePayload<{ diff: UrlMigrationDiffEntry[] }>(row.payload);
+    const payload = row.payload as { diff: UrlMigrationDiffEntry[] };
     const { redirectsCreated } = await applyUrlMigrationDiff(ctx, tx, payload.diff);
     await tx.execute(sql`
       UPDATE url_migration_pending_actions
@@ -298,7 +295,7 @@ export const listUrlMigrationPendingOp = defineOperation({
         id: r.id,
         kind: "migrate" as const,
         proposedBy: r.proposed_by,
-        preview: parsePayload<Record<string, unknown>>(r.preview),
+        preview: r.preview as Record<string, unknown>,
         createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
       })),
     });
