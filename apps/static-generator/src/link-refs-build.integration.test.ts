@@ -185,7 +185,6 @@ describe("static build — internal references", () => {
       generateSite({
         publishAt: new Date().toISOString(),
         tx,
-        adapter,
         plugins: localBuildPluginServices,
         target: stagingTarget(),
         runId,
@@ -234,7 +233,6 @@ describe("static build — internal references", () => {
       generateSite({
         publishAt: new Date().toISOString(),
         tx,
-        adapter,
         plugins: localBuildPluginServices,
         target: stagingTarget(),
         runId: `${PFX}-run2`,
@@ -272,7 +270,6 @@ describe("static build — internal references", () => {
       generateSite({
         publishAt: new Date().toISOString(),
         tx,
-        adapter,
         plugins: localBuildPluginServices,
         target: stagingTarget(),
         runId: `${PFX}-run3`,
@@ -324,7 +321,6 @@ describe("static build — internal references", () => {
       generateSite({
         publishAt: new Date().toISOString(),
         tx,
-        adapter,
         plugins: localBuildPluginServices,
         target: stagingTarget(),
         runId,

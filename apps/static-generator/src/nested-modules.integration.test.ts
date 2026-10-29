@@ -197,7 +197,6 @@ function build(pageId: string, runId: string): { run: Promise<unknown>; buildDir
     generateSite({
       publishAt: new Date().toISOString(),
       tx,
-      adapter,
       plugins: localBuildPluginServices,
       target: {
         id: "00000000-0000-0000-0000-0000000000a7",

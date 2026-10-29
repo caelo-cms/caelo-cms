@@ -224,7 +224,6 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
       generateSite({
         publishAt: new Date().toISOString(),
         tx,
-        adapter: adminAdapter,
         plugins: localBuildPluginServices,
         target: {
           id: "00000000-0000-0000-0000-000000000677",
