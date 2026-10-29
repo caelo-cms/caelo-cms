@@ -26,6 +26,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { claimBlocksDecision } from "./_proposal-claim.js";
 
 /** Every `*_pending_actions` table the cancel op searches; exported for the coverage test. */
 export const PENDING_TABLES = [
@@ -127,6 +128,7 @@ async function runCancelOnTable(
         UPDATE deploy_pending_actions SET status='cancelled', decided_at=now(),
           decided_by=${actorId}::uuid, decision_reason=${reason}
         WHERE id=${proposalId}::uuid AND status='pending' AND proposed_by=${actorId}::uuid
+          AND NOT ${claimBlocksDecision()}
         RETURNING id::text AS id
       `)) as unknown as { id: string }[];
     case "layout_pending_actions":
@@ -232,6 +234,7 @@ async function runCancelOnTable(
         UPDATE quality_pending_actions SET status='cancelled', decided_at=now(),
           decided_by=${actorId}::uuid, decision_reason=${reason}
         WHERE id=${proposalId}::uuid AND status='pending' AND proposed_by=${actorId}::uuid
+          AND NOT ${claimBlocksDecision()}
         RETURNING id::text AS id
       `)) as unknown as { id: string }[];
   }

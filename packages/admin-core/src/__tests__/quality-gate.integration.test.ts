@@ -750,6 +750,22 @@ describe("a failed quality check", () => {
         }[],
     )) as { status: string; claimed_at: string | null }[];
     expect(pendingRow[0]).toMatchObject({ status: "pending", claimed_at: null });
+    // The decision is re-checked right before the release: a check that is
+    // no longer the failed one of the staged build releases nothing.
+    const staged = (await withSql(
+      async (tx) =>
+        (await tx`SELECT deploy_run_id::text AS id FROM quality_audit_runs
+                  WHERE id = ${auditRunId}::uuid`) as unknown as { id: string }[],
+    )) as { id: string }[];
+    expect(
+      await opErr(HUMAN, "deploy.recheck_publish_anyway", {
+        fromRunId: staged[0]?.id,
+        auditRunId: crypto.randomUUID(),
+      }),
+    ).toContain("no longer the failed check");
+    expect(
+      await op(HUMAN, "deploy.recheck_publish_anyway", { fromRunId: staged[0]?.id, auditRunId }),
+    ).toEqual({});
     const applied = await op<{ kind: string; toRunId: string }>(
       HUMAN,
       "quality_audits.execute_proposal",

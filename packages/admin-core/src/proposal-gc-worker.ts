@@ -56,6 +56,17 @@ const PENDING_TABLES = [
   "quality_pending_actions",
 ] as const;
 
+/**
+ * #1225 — tables whose approved Publish live claims the row while it
+ * applies outside a transaction (_proposal-claim.ts). A row an apply holds
+ * is not superseded under it; a claim older than a day belongs to an apply
+ * that died.
+ */
+const CLAIMED_TABLES: ReadonlySet<string> = new Set([
+  "deploy_pending_actions",
+  "quality_pending_actions",
+]);
+
 let workerHandle: ReturnType<typeof setInterval> | null = null;
 
 async function gcOnce(opts: ProposalGcWorkerOpts): Promise<{ totalMarked: number }> {
@@ -81,6 +92,7 @@ async function gcOnce(opts: ProposalGcWorkerOpts): Promise<{ totalMarked: number
                 ${reasonColumn} = 'stale: auto-superseded by GC worker'
           WHERE status = 'pending'
             AND ${ageColumn} < now() - make_interval(secs => ${cutoffSeconds})
+            ${CLAIMED_TABLES.has(table) ? "AND (claimed_at IS NULL OR claimed_at < now() - interval '1 day')" : ""}
           RETURNING id`,
       )) as unknown as { id: string }[];
       totalMarked += result.length;

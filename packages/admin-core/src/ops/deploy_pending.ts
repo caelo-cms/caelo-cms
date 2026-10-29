@@ -40,11 +40,15 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
 import { recordAuditFromCtx } from "../audit.js";
-import { LIVE_RELEASE_WAIT_MS } from "../deploy/live-release-lock.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { requiresApproverPermission } from "./_approver-permission.js";
 import { withAudit } from "./_audit.js";
 import { mapRowToOutput, opError, toIso, toIsoRequired } from "./_helpers.js";
+import {
+  CLAIM_WITHOUT_RUN_MS,
+  CLAIMED_PROPOSAL_MESSAGE,
+  claimBlocksDecision,
+} from "./_proposal-claim.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -295,14 +299,6 @@ export const proposeDeployRollbackOp = defineOperation({
     },
   ),
 });
-
-/**
- * How long a claim without a live run blocks a second Approve: the step
- * from the claim to the run's start (Publish live), or a whole rollback
- * including its wait for a running publish (live-release-lock.ts). A claim
- * older than this, whose run is not running, belongs to an apply that died.
- */
-const CLAIM_WITHOUT_RUN_MS = LIVE_RELEASE_WAIT_MS + 5 * 60_000;
 
 const beginExecuteOutput = z.discriminatedUnion("kind", [
   z.object({
@@ -561,6 +557,18 @@ export const executeDeployProposalOp = requiresApproverPermission(
   executeDeployProposalOpDefinition,
 );
 
+/** Whether the proposal is pending with a claim that blocks another decision. */
+async function claimedPending(
+  tx: Parameters<typeof recordAuditFromCtx>[0],
+  proposalId: string,
+): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT 1 AS blocked FROM deploy_pending_actions
+    WHERE id = ${proposalId}::uuid AND status = 'pending' AND ${claimBlocksDecision()}
+  `)) as unknown as { blocked: number }[];
+  return rows.length > 0;
+}
+
 export const rejectDeployProposalOp = defineOperation({
   name: "deploy.reject_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
@@ -576,15 +584,19 @@ export const rejectDeployProposalOp = defineOperation({
   output: z.object({}),
   handler: withAudit(
     async (ctx, input, tx) => {
-      const r = await tx.execute(sql`
+      const r = (await tx.execute(sql`
         UPDATE deploy_pending_actions
         SET status = 'rejected',
             decided_at = now(),
             decided_by = ${ctx.actorId}::uuid,
             decision_reason = ${input.reason ?? null}
         WHERE id = ${input.proposalId}::uuid AND status = 'pending'
-      `);
-      void r;
+          AND NOT ${claimBlocksDecision()}
+        RETURNING id
+      `)) as unknown as { id: string }[];
+      if (r.length === 0 && (await claimedPending(tx, input.proposalId))) {
+        return err(opError("deploy.reject_proposal", CLAIMED_PROPOSAL_MESSAGE));
+      }
       return ok({});
     },
     {

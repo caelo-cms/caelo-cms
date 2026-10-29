@@ -225,7 +225,7 @@ import {
   proposeDeployRollbackOp,
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
-import { finishPromoteOp, startPromoteOp } from "./ops/deploy-promote.js";
+import { finishPromoteOp, recheckPublishAnywayOp, startPromoteOp } from "./ops/deploy-promote.js";
 import {
   acquireLiveReleaseOp,
   acquireStagingPublicationOp,
@@ -1040,6 +1040,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // the plugin-data build, the redirect sync and the CDN purge.
   registry.register(startPromoteOp);
   registry.register(finishPromoteOp);
+  registry.register(recheckPublishAnywayOp);
   registry.register(acquireLiveReleaseOp);
   registry.register(rollbackDeployOp);
   registry.register(releaseRollbackOp);

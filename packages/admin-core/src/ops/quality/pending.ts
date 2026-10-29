@@ -45,6 +45,11 @@ import { auditScorePoints, type QualityProblem } from "../../quality/ratchet.js"
 import { jsonbParam } from "../../sql-helpers.js";
 import { requiresApproverPermission } from "../_approver-permission.js";
 import {
+  CLAIM_WITHOUT_RUN_MS,
+  CLAIMED_PROPOSAL_MESSAGE,
+  claimBlocksDecision,
+} from "../_proposal-claim.js";
+import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
@@ -577,13 +582,6 @@ const executeOutput = z.object({
 });
 type ExecuteOutput = z.infer<typeof executeOutput>;
 
-/**
- * How long a claim without a live Publish live run blocks a second Approve
- * (the step from the claim to the run's start). Older, with no running
- * run, it belongs to an apply that died and is taken over.
- */
-const CLAIM_WITHOUT_RUN_MS = 5 * 60_000;
-
 /** Mark the proposal applied and record the decision (one transaction). */
 async function markQualityApplied(
   tx: Tx,
@@ -868,12 +866,27 @@ export const rejectQualityProposalOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    await tx.execute(sql`
+    const rejected = (await tx.execute(sql`
       UPDATE quality_pending_actions
          SET status = 'rejected', decided_at = now(), decided_by = ${ctx.actorId}::uuid,
              decision_reason = ${input.reason ?? null}
        WHERE id = ${input.proposalId}::uuid AND status = 'pending'
-    `);
+         AND NOT ${claimBlocksDecision()}
+       RETURNING id
+    `)) as unknown as { id: string }[];
+    if (rejected.length === 0) {
+      const blocked = (await tx.execute(sql`
+        SELECT 1 AS blocked FROM quality_pending_actions
+        WHERE id = ${input.proposalId}::uuid AND status = 'pending' AND ${claimBlocksDecision()}
+      `)) as unknown as { blocked: number }[];
+      if (blocked.length > 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "quality_audits.reject_proposal",
+          message: CLAIMED_PROPOSAL_MESSAGE,
+        });
+      }
+    }
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

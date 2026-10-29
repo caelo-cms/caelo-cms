@@ -472,6 +472,23 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
     expect(JSON.stringify(forged)).toMatch(/not a Publish live of this caller|already recorded/);
   });
 
+  it("a card being applied cannot be rejected or cancelled under it", async () => {
+    const owner = await makeOwner();
+    const proposalId = await insertProposal(
+      "promote",
+      { fromTarget: "staging", toTarget: "production", repoRoot: testRoot },
+      {},
+    );
+    // Claimed by an Approve whose Publish live has not committed its run yet.
+    await claimProposal(proposalId);
+    const rejected = await execute(registry, adapter, owner, "deploy.reject_proposal", {
+      proposalId,
+      reason: "changed my mind",
+    });
+    expect(JSON.stringify(rejected)).toContain("being applied right now");
+    expect(await proposalStatus(proposalId)).toBe("pending");
+  });
+
   it("a double click on one card publishes once; the other click is refused", async () => {
     const owner = await makeOwner();
     const staged = await ok<{ runId: string }>("deploy.trigger", {
@@ -529,6 +546,20 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
     expect(await proposalStatus(proposalId)).toBe("applied");
   });
 });
+
+async function claimProposal(proposalId: string): Promise<void> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`UPDATE deploy_pending_actions
+               SET claimed_by_run_id = ${crypto.randomUUID()}::uuid, claimed_at = clock_timestamp()
+               WHERE id = ${proposalId}::uuid`;
+    });
+  } finally {
+    await sql.end();
+  }
+}
 
 async function productionTargetId(): Promise<string> {
   const sql = new SQL(ADMIN_URL!);

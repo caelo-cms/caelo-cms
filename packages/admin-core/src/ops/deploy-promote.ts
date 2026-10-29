@@ -321,6 +321,23 @@ export const startPromoteOp = defineOperation({
   },
 });
 
+export const recheckPublishAnywayOp = defineOperation({
+  name: "deploy.recheck_publish_anyway",
+  // Why human-only: a step of deploy.promote (itself human + system), run
+  // right before the release of a publish-anyway decision. Reads only.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ fromRunId: z.string().uuid(), auditRunId: z.string().uuid() }).strict(),
+  output: z.object({}),
+  handler: async (_ctx, input, tx) => {
+    const gate = await publishGateForRun(tx, input.fromRunId);
+    if (gate.state === "errored" && gate.auditRunId === input.auditRunId) return ok({});
+    return refused(
+      `the quality check this publish-anyway decision was made for is no longer the failed check of the staged build (it is now '${gate.state}'), so nothing was released. ${gate.message}`,
+    );
+  },
+});
+
 export const finishPromoteOp = defineOperation({
   name: "deploy.finish_promote",
   // Why human-only: the last step of deploy.promote (itself human +
@@ -380,20 +397,22 @@ export const finishPromoteOp = defineOperation({
         },
       );
     }
-    // A publish-anyway decision is re-checked as deploy.start_promote took
-    // it: a human holding deploy.trigger, exactly the failed audit of the
-    // staged build this run published.
+    // A publish-anyway decision was checked against the gate before the
+    // release (deploy.recheck_publish_anyway); the gate may have moved on
+    // since (a retried audit), so here only what cannot change is checked:
+    // a human holding deploy.trigger, and an audit of the published build
+    // (review on #1251: the step must authorise nothing on its own).
     if (input.override) {
-      const gate = await publishGateForRun(tx, input.fromRunId);
+      const audit = (await tx.execute(sql`
+        SELECT 1 AS ok FROM quality_audit_runs
+        WHERE id = ${input.override.auditRunId}::uuid AND deploy_run_id = ${input.fromRunId}::uuid
+      `)) as unknown as { ok: number }[];
       if (
         ctx.actorKind !== "human" ||
-        gate.state !== "errored" ||
-        gate.auditRunId !== input.override.auditRunId ||
+        audit.length === 0 ||
         !(await actorHasPermission(tx, ctx, "deploy.trigger"))
       ) {
-        refuse(
-          "the publish-anyway decision does not match the failed quality check of the published build.",
-        );
+        refuse("the publish-anyway decision does not belong to the published build.");
       }
     }
     // Released first: this transaction keeps the rows locked until it
@@ -434,6 +453,11 @@ export const finishPromoteOp = defineOperation({
     return ok({});
   },
 });
+
+/** The run may not release (stopped, lost its lease, or its publish-anyway decision ended). */
+class ReleaseRefusedError extends Error {
+  override readonly name = "ReleaseRefusedError";
+}
 
 /** #650 — the live rebuild differs from the staged build in more than the host. */
 class ParityRefusalError extends Error {
@@ -670,11 +694,27 @@ async function runPromote(
       }
     }
 
-    // The last point a stop is honoured: past the fence the provider
-    // releases the new version and the run must be recorded.
-    if (stop.aborted) return await fail(abortMessage(stop));
-    const proof = await fence();
-    if (!proof.ok) return await fail(proof.message);
+    // The last point a stop is honoured is the fence the publisher runs
+    // right before the new version goes live (`beforeRelease`): an upload
+    // that changes nothing served may take minutes and the leases may lapse
+    // meanwhile, so ownership is proven at the release itself (review on
+    // #1251). Past it the run must be recorded.
+    const beforeRelease = async (): Promise<void> => {
+      if (stop.aborted) throw new ReleaseRefusedError(abortMessage(stop));
+      const proof = await fence();
+      if (!proof.ok) throw new ReleaseRefusedError(proof.message);
+      // #553 — a publish-anyway decision still names the failed check of
+      // this staged build (a retried audit, or another publish anyway that
+      // already recorded its override, ends it): checked before the
+      // release, never after it.
+      if (plan.override) {
+        const still = await execute(registry, adapter, ctx, "deploy.recheck_publish_anyway", {
+          fromRunId: plan.fromRunId,
+          auditRunId: plan.override.auditRunId,
+        });
+        if (!still.ok) throw new ReleaseRefusedError(describeError(still.error));
+      }
+    };
     let summary: PublishResult;
     try {
       // v0.2.78 — delegate to the per-provider StaticPublisher. Self-hosted
@@ -687,6 +727,7 @@ async function runPromote(
               runId,
               target,
               sourceRunId: plan.fromRunId,
+              beforeRelease,
             })
           : await publisher.promoteToProduction({
               sourceRunId: plan.buildId,
@@ -694,9 +735,11 @@ async function runPromote(
               fromTarget: plan.from,
               toTarget: plan.to,
               siteBaseUrl: plan.siteBaseUrl,
+              beforeRelease,
             });
     } catch (e) {
       timer.lap("publish");
+      if (e instanceof ReleaseRefusedError) return await fail(e.message);
       return await fail(`promotion failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     const { phases: publishPhases, ...published } = summary;

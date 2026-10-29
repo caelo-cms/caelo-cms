@@ -1436,6 +1436,39 @@ for await (const line of console) {
     expect(await liveReleaseHolder()).toBeNull();
   });
 
+  it("#1225 a Publish live whose lease lapses during its upload does not release it", async () => {
+    const liveBefore = fake.live.length;
+    let lapsed = false;
+    // The upload of the live rebuild (populateFiles) changes nothing that is
+    // served; the leases lapse there, as if the heartbeat had failed for
+    // longer than the TTL while a large upload ran (review on #1251).
+    const { pending } = await publishInBackground();
+    fake.onPopulate = async () => {
+      if (lapsed) return;
+      const holder = await liveReleaseHolder();
+      if (holder === null) return;
+      lapsed = true;
+      await withSql(async (tx) => {
+        await tx`UPDATE deploy_leases SET expires_at = clock_timestamp() - interval '1 second'
+                 WHERE holder_run_id = ${holder}::uuid`;
+        await tx`UPDATE deploy_runs SET lease_expires_at = clock_timestamp() - interval '1 second'
+                 WHERE id = ${holder}::uuid`;
+      });
+    };
+    try {
+      const r = await pending;
+      expect(r.ok).toBe(false);
+      expect(JSON.stringify(r.ok ? null : r.error)).toContain(
+        "lost its place in the publish order",
+      );
+    } finally {
+      fake.onPopulate = null;
+    }
+    expect(lapsed).toBe(true);
+    expect(fake.live.length).toBe(liveBefore);
+    expect(await liveReleaseHolder()).toBeNull();
+  });
+
   it("#1225 rolling update: Publish live waits while the previous release releases live", async () => {
     const [{ id: targetId } = { id: "" }] = (await withSql(
       (tx) => tx`SELECT id::text AS id FROM deploy_targets WHERE name = 'production'`,

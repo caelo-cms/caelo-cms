@@ -207,7 +207,9 @@ export function createGcsStaticPublisher(
       };
     },
 
-    async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl }) {
+    async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl, beforeRelease }) {
+      // The copy into the live bucket is the release itself.
+      await beforeRelease?.();
       const h = await bucketHandles();
       // List everything under the staging prefix — the only files there
       // are the ones publishStaging actually changed. Server-side copy
@@ -395,7 +397,9 @@ export function createGcsStaticPublisher(
      * changes. Refuses when the bucket's live manifest names another build
      * than the live run recorded.
      */
-    async publishPluginData({ live, runId, files }) {
+    async publishPluginData({ live, runId, files, beforeRelease }) {
+      // The upload into the live bucket is the release itself.
+      await beforeRelease?.();
       const h = await bucketHandles();
       const manifest = await readLiveManifest(h.staticBucket);
       if (manifest && manifest.buildId !== live.buildId) {

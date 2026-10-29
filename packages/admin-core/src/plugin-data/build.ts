@@ -950,15 +950,23 @@ async function runPluginDataBuild(
       return failed(message, [...runIds, runId]);
     };
     try {
-      // Proof, right before the release, that the run still holds the lease.
-      const proof = await fenceRunLeases(steps, sys, {
-        runId,
-        ttlMs,
-        need: { publication: false, liveRelease: true },
-        lostMessage: (renewError) =>
-          `the plugin-data build ${runId} lost its place in the live release order${renewError ? ` (${renewError})` : ""}; nothing was published, the marks stay pending.`,
-      });
-      if (!proof.ok) return await failRun(proof.message);
+      // Proof, right before the new version goes live (after any upload
+      // that changes nothing served), that the run still holds the lease
+      // (review on #1251).
+      let lost: string | null = null;
+      const beforeRelease = async (): Promise<void> => {
+        const proof = await fenceRunLeases(steps, sys, {
+          runId,
+          ttlMs,
+          need: { publication: false, liveRelease: true },
+          lostMessage: (renewError) =>
+            `the plugin-data build ${runId} lost its place in the live release order${renewError ? ` (${renewError})` : ""}; nothing was published, the marks stay pending.`,
+        });
+        if (!proof.ok) {
+          lost = proof.message;
+          throw new Error(proof.message);
+        }
+      };
       let summary: Awaited<ReturnType<StaticPublisher["publishPluginData"]>>;
       try {
         summary = await publisher.publishPluginData({
@@ -967,10 +975,11 @@ async function runPluginDataBuild(
           runId,
           files: bake.files,
           pruneBuildIds: start.pruneBuildIds,
+          beforeRelease,
         });
       } catch (e) {
         return await failRun(
-          `publishing plugin data failed: ${e instanceof Error ? e.message : String(e)}`,
+          lost ?? `publishing plugin data failed: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
       timer.lap(`publish:${t.target.name}`);
