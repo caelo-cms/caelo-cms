@@ -85,20 +85,6 @@ export interface LongTransactionEntry {
  * chain is let through, every other one throws.
  */
 const NESTED_CHECKOUTS: readonly NestedCheckoutEntry[] = [
-  // FIXME(issue #1225): Publish live holds its op transaction across the
-  // live build + upload (nested `deploy.begin_run`).
-  { holder: "deploy.promote", issue: 1225 },
-  // FIXME(issue #1225): "Publish anyway" past a failed quality check runs
-  // the Publish live handler inside these two ops' transactions.
-  { holder: "quality_audits.publish_anyway", issue: 1225 },
-  { holder: "quality_audits.execute_proposal", issue: 1225 },
-  // FIXME(issue #1225): the Owner's Approve on the AI's Publish live card
-  // runs the Publish live handler (and a rollback's publisher call) inside
-  // this op's transaction.
-  { holder: "deploy.execute_proposal", issue: 1225 },
-  // FIXME(issue #1220): the plugin-data build (#1155) has the Stage's shape:
-  // a nested `deploy.begin_run` and the bake + upload inside its op tx.
-  { holder: "deploy.build_plugin_data", issue: 1220 },
   // FIXME(issue #1220): a call site, not a holder (see
   // allowNestedCheckouts): render-origin plugin operations — URL
   // annotations while a page write composes paths, list sources, public
@@ -112,33 +98,6 @@ const NESTED_CHECKOUTS: readonly NestedCheckoutEntry[] = [
  * added without a written reason; a temporary entry names its issue.
  */
 const LONG_TRANSACTIONS: readonly LongTransactionEntry[] = [
-  {
-    holder: "deploy.promote",
-    reason:
-      "Publish live keeps its transaction across the live build and upload, and waits for a Stage that is publishing staging.",
-    issue: 1225,
-  },
-  {
-    holder: "quality_audits.publish_anyway",
-    reason: "runs the Publish live handler (build and upload) inside its transaction.",
-    issue: 1225,
-  },
-  {
-    holder: "quality_audits.execute_proposal",
-    reason: "runs the Publish live handler (build and upload) inside its transaction.",
-    issue: 1225,
-  },
-  {
-    holder: "deploy.execute_proposal",
-    reason: "runs the Publish live (or rollback) handler inside its transaction.",
-    issue: 1225,
-  },
-  {
-    holder: "deploy.build_plugin_data",
-    reason:
-      "keeps its transaction across the bake and upload, and waits on the live-release lock behind a Publish live.",
-    issue: 1220,
-  },
   {
     // Not temporary: a site build runs in one transaction from its first
     // read to its last bake-cache write — minutes on a large site, idle

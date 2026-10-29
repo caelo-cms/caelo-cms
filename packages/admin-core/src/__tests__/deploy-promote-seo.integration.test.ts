@@ -20,8 +20,9 @@
  *   - a legacy staging build (manifest without `envNoindexInHtml:
  *     false`) is refused with a "Stage again" next step;
  *   - the Owner's Approve on the AI's Publish live / rollback card
- *     (`deploy.execute_proposal`) runs the same handlers inside its own
- *     transaction, under the nested-checkout guard of #1210 (issue #1225).
+ *     (`deploy.execute_proposal`) runs Publish live and rollback as ops of
+ *     their own, holding no transaction across them, under the
+ *     nested-checkout guard of #1210 with no allowlist entry (#1225).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -33,12 +34,14 @@ import {
   DatabaseAdapter,
   execute,
   LONG_TRANSACTION_ALLOWLIST,
+  NESTED_CHECKOUT_ALLOWLIST,
   OperationRegistry,
 } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
+import { ensureRoleUser } from "./fixtures/role-user.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -316,10 +319,20 @@ async function proposalStatus(proposalId: string): Promise<string | undefined> {
 }
 
 describe("#1225 — the Owner approves the AI's Publish live / rollback card", () => {
-  it("runs without the session timeouts a build outlasts", () => {
-    // The approve holds its transaction across the live build + upload,
-    // like deploy.promote itself; the 0392 timeouts would kill it.
-    expect(LONG_TRANSACTION_ALLOWLIST.has("deploy.execute_proposal")).toBe(true);
+  it("is on neither pool-guard allowlist, nor is anything it runs", () => {
+    // #1225 — the approve, Publish live and publish anyway hold no
+    // transaction across the live build + upload, so none of them needs to
+    // take a second connection from inside one or outlast the 0392 timeouts.
+    for (const holder of [
+      "deploy.execute_proposal",
+      "deploy.promote",
+      "quality_audits.publish_anyway",
+      "quality_audits.execute_proposal",
+      "deploy.build_plugin_data",
+    ]) {
+      expect(NESTED_CHECKOUT_ALLOWLIST.has(holder)).toBe(false);
+      expect(LONG_TRANSACTION_ALLOWLIST.has(holder)).toBe(false);
+    }
   });
 
   it("an approved promote publishes live and an approved rollback restores, through the guarded adapter", async () => {
@@ -361,4 +374,285 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
     }
     expect(await proposalStatus(rollbackId)).toBe("applied");
   });
+
+  it("an approved rollback that went live but was never marked applied is recorded, not released again", async () => {
+    const owner = await makeOwner();
+    const runs = await productionRunCount();
+    const sql = new SQL(ADMIN_URL!);
+    let liveRunId = "";
+    try {
+      liveRunId = (
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          return (await tx`SELECT r.id::text AS id FROM deploy_runs r JOIN deploy_targets t
+                            ON t.id = r.target_id WHERE t.env = 'production' AND r.status = 'succeeded'
+                            ORDER BY r.finished_at DESC LIMIT 1`) as { id: string }[];
+        })
+      )[0]?.id as string;
+    } finally {
+      await sql.end();
+    }
+    const rollbackId = await insertProposal(
+      "rollback",
+      { target: "production", repoRoot: testRoot },
+      { restoreRunId: liveRunId },
+    );
+    const first = await execute(registry, adapter, owner, "deploy.execute_proposal", {
+      proposalId: rollbackId,
+    });
+    if (!first.ok) throw new Error(`rollback approve failed: ${JSON.stringify(first.error)}`);
+    const rolledBackRun = (first.value as { runId: string }).runId;
+    // The rollback's run carries the claimed id, committed with the rollback.
+    expect(await proposalClaimRun(rollbackId)).toBe(rolledBackRun);
+    expect(await productionRunCount()).toBe(runs + 1);
+    // As if the apply died after the rollback but before marking it applied.
+    await setProposalPending(rollbackId);
+    const retry = await execute(registry, adapter, owner, "deploy.execute_proposal", {
+      proposalId: rollbackId,
+    });
+    if (!retry.ok) throw new Error(`retry failed: ${JSON.stringify(retry.error)}`);
+    expect((retry.value as { runId: string }).runId).toBe(rolledBackRun);
+    expect(await proposalStatus(rollbackId)).toBe("applied");
+    expect(await productionRunCount()).toBe(runs + 1);
+  });
+
+  it("the approval's and Publish live's own steps authorise nothing on their own", async () => {
+    const reviewer: ExecutionContext = {
+      actorId: crypto.randomUUID(),
+      actorKind: "human",
+      requestId: "promote-seo-reviewer",
+    };
+    await ensureRoleUser(ADMIN_URL!, reviewer.actorId, "reviewer");
+    const proposalId = await insertProposal(
+      "promote",
+      { fromTarget: "staging", toTarget: "production", repoRoot: testRoot },
+      {},
+    );
+    // Marking a card applied, or claiming it, needs the approver's permission.
+    const ended = await execute(registry, adapter, reviewer, "deploy.end_execute_proposal", {
+      proposalId,
+      claimedRunId: crypto.randomUUID(),
+      outcome: { ok: true, runId: null },
+    });
+    expect(JSON.stringify(ended)).toContain("permission_denied");
+    const begun = await execute(registry, adapter, reviewer, "deploy.begin_execute_proposal", {
+      proposalId,
+      runId: crypto.randomUUID(),
+    });
+    expect(JSON.stringify(begun)).toContain("permission_denied");
+    expect(await proposalStatus(proposalId)).toBe("pending");
+    expect(await proposalClaim(proposalId)).toBeNull();
+    // Recording a Publish live: only for the caller that started that run.
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    await markAudited(staged.runId);
+    const owner = await makeOwner();
+    const published = await execute(registry, adapter, owner, "deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    if (!published.ok) throw new Error(JSON.stringify(published.error));
+    const { toRunId } = published.value as { toRunId: string };
+    const targetId = await productionTargetId();
+    const forged = await execute(registry, adapter, HUMAN, "deploy.finish_promote", {
+      runId: toRunId,
+      fromRunId: staged.runId,
+      targetId,
+      env: "production",
+      pageCount: 1,
+      fileCount: 1,
+      buildId: "forged",
+      publishSummary: {},
+      siteUrl: null,
+      caeloVersion: null,
+      override: null,
+      phaseTimings: [],
+    });
+    expect(forged.ok).toBe(false);
+    expect(JSON.stringify(forged)).toMatch(/not a Publish live of this caller|already recorded/);
+  });
+
+  it("a card being applied cannot be rejected or cancelled under it", async () => {
+    const owner = await makeOwner();
+    const proposalId = await insertProposal(
+      "promote",
+      { fromTarget: "staging", toTarget: "production", repoRoot: testRoot },
+      {},
+    );
+    // Claimed by an Approve whose Publish live has not committed its run yet.
+    await claimProposal(proposalId);
+    const rejected = await execute(registry, adapter, owner, "deploy.reject_proposal", {
+      proposalId,
+      reason: "changed my mind",
+    });
+    expect(JSON.stringify(rejected)).toContain("being applied right now");
+    expect(await proposalStatus(proposalId)).toBe("pending");
+  });
+
+  it("a failed attempt releases only its own claim, never a later Approve's", async () => {
+    const owner = await makeOwner();
+    const proposalId = await insertProposal(
+      "promote",
+      { fromTarget: "staging", toTarget: "production", repoRoot: testRoot },
+      {},
+    );
+    // A later Approve took the proposal over after the first attempt failed.
+    await claimProposal(proposalId);
+    const later = await proposalClaimRun(proposalId);
+    const ended = await execute(registry, adapter, owner, "deploy.end_execute_proposal", {
+      proposalId,
+      claimedRunId: crypto.randomUUID(),
+      outcome: { ok: false, message: "the first attempt failed" },
+    });
+    expect(ended.ok).toBe(true);
+    expect(await proposalClaimRun(proposalId)).toBe(later);
+    expect(await proposalStatus(proposalId)).toBe("pending");
+  });
+
+  it("a double click on one card publishes once; the other click is refused", async () => {
+    const owner = await makeOwner();
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    await markAudited(staged.runId);
+    const before = await productionRunCount();
+    const proposalId = await insertProposal(
+      "promote",
+      { fromTarget: "staging", toTarget: "production", repoRoot: testRoot },
+      {},
+    );
+    const clicks = await Promise.all(
+      [0, 1].map(() =>
+        execute(registry, adapter, owner, "deploy.execute_proposal", { proposalId }),
+      ),
+    );
+    const applied = clicks.filter((c) => c.ok);
+    const refused = clicks.filter((c) => !c.ok);
+    expect(applied).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(JSON.stringify(refused[0])).toMatch(/being applied right now|already applied/);
+    expect(await proposalStatus(proposalId)).toBe("applied");
+    expect(await productionRunCount()).toBe(before + 1);
+    // A later click finds it applied and publishes nothing.
+    const late = await execute(registry, adapter, owner, "deploy.execute_proposal", { proposalId });
+    expect(late.ok).toBe(false);
+    expect(await productionRunCount()).toBe(before + 1);
+  });
+
+  it("an approve whose Publish live fails leaves the card pending and approvable again", async () => {
+    const owner = await makeOwner();
+    // Staged but never checked: the quality gate refuses Publish live.
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    const proposalId = await insertProposal(
+      "promote",
+      { fromTarget: "staging", toTarget: "production", repoRoot: testRoot },
+      {},
+    );
+    const refused = await execute(registry, adapter, owner, "deploy.execute_proposal", {
+      proposalId,
+    });
+    expect(refused.ok).toBe(false);
+    expect(await proposalStatus(proposalId)).toBe("pending");
+    expect(await proposalClaim(proposalId)).toBeNull();
+    await markAudited(staged.runId);
+    const approved = await execute(registry, adapter, owner, "deploy.execute_proposal", {
+      proposalId,
+    });
+    if (!approved.ok) throw new Error(`retry failed: ${JSON.stringify(approved.error)}`);
+    expect(await proposalStatus(proposalId)).toBe("applied");
+  });
 });
+
+async function claimProposal(proposalId: string): Promise<void> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`UPDATE deploy_pending_actions
+               SET claimed_by_run_id = ${crypto.randomUUID()}::uuid, claimed_at = clock_timestamp()
+               WHERE id = ${proposalId}::uuid`;
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
+async function productionTargetId(): Promise<string> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return (await tx`SELECT id::text AS id FROM deploy_targets WHERE env = 'production' LIMIT 1`) as {
+        id: string;
+      }[];
+    });
+    return rows[0]?.id ?? "";
+  } finally {
+    await sql.end();
+  }
+}
+
+async function productionRunCount(): Promise<number> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return (await tx`
+        SELECT count(*)::int AS n FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+        WHERE t.env = 'production' AND r.status = 'succeeded'`) as { n: number }[];
+    });
+    return rows[0]?.n ?? 0;
+  } finally {
+    await sql.end();
+  }
+}
+
+async function proposalClaimRun(proposalId: string): Promise<string | null> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return (await tx`SELECT claimed_by_run_id::text AS id FROM deploy_pending_actions
+                       WHERE id = ${proposalId}::uuid`) as { id: string | null }[];
+    });
+    return rows[0]?.id ?? null;
+  } finally {
+    await sql.end();
+  }
+}
+
+async function setProposalPending(proposalId: string): Promise<void> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`UPDATE deploy_pending_actions
+               SET status = 'pending', decided_at = NULL, decided_by = NULL, applied_run_id = NULL
+               WHERE id = ${proposalId}::uuid`;
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
+async function proposalClaim(proposalId: string): Promise<string | null> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return (await tx`SELECT claimed_at FROM deploy_pending_actions WHERE id = ${proposalId}::uuid`) as {
+        claimed_at: string | null;
+      }[];
+    });
+    return rows[0]?.claimed_at ?? null;
+  } finally {
+    await sql.end();
+  }
+}

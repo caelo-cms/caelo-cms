@@ -31,7 +31,7 @@ import { unpublishedLinkTargetSchema } from "./unpublished-links.js";
 const PROGRESS_INTERVAL_MS = 1000;
 
 /**
- * The system actor for a run's internal steps (deploy.begin_run,
+ * The system actor for a run's internal steps (deploy.renew_run_lease,
  * deploy.update_progress, …), keeping the trigger's request id for log
  * correlation. Those ops are system callbacks: an AI-started Stage must
  * reach them too.
@@ -176,7 +176,7 @@ export async function runGenerator(
   if (args.signal?.aborted) {
     return { ok: false, message: abortMessage(args.signal), stderr: "" };
   }
-  // #1003 — progress lands on the run row deploy.begin_run committed, at
+  // #1003 — progress lands on the run row the run's start step committed, at
   // most once per interval (it was one transaction per page), as the system
   // actor: update_progress is an internal callback whoever started the run.
   const progress = new ProgressThrottle<{ pagesDone: number; pagesTotal: number }>(

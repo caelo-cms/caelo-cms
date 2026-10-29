@@ -19,7 +19,7 @@ import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
 import { attachGatedExecute } from "../ai/tools/gated-tools.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
-import { LIVE_RELEASE_LOCK_KEY } from "../deploy/live-release-lock.js";
+import { LEGACY_LIVE_RELEASE_LOCK_KEY } from "../deploy/live-release-lock.js";
 import { registerAdminOps } from "../register.js";
 
 const realGoogleAuthExports = { ...realGoogleAuth };
@@ -240,8 +240,33 @@ describe("stuck Firebase custom domain → propose_reconnect_domain", () => {
       const lockTaken = new Promise<void>((r) => {
         locked = r;
       });
+      // #1225 — a Publish live of this release holds the live-release
+      // lease as its run, with no transaction open: the purge skips too.
+      const runId = crypto.randomUUID();
+      await publisher.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+                 SELECT ${runId}::uuid, id, '00000000-0000-0000-0000-00000000ffff'::uuid,
+                        'running', clock_timestamp() + interval '2 minutes'
+                 FROM deploy_targets WHERE env = 'production' LIMIT 1`;
+        await tx`INSERT INTO deploy_leases (name, holder_run_id, acquired_at, expires_at)
+                 VALUES ('live-release', ${runId}::uuid, clock_timestamp(),
+                         clock_timestamp() + interval '2 minutes')
+                 ON CONFLICT (name) DO UPDATE SET holder_run_id = EXCLUDED.holder_run_id,
+                   acquired_at = EXCLUDED.acquired_at, expires_at = EXCLUDED.expires_at`;
+      });
+      const leased = await execute(registry, adapter, AI, "domains.hosting_status", {});
+      expect((leased as { value: { cdnPurge: unknown } }).value.cdnPurge).toBeNull();
+      expect(liveVersions).toEqual(["sites/s/versions/v-live"]);
+      await publisher.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`UPDATE deploy_leases SET holder_run_id = NULL, acquired_at = NULL, expires_at = NULL
+                 WHERE name = 'live-release'`;
+        await tx`DELETE FROM deploy_runs WHERE id = ${runId}::uuid`;
+      });
+      // Rolling update: a publish of the previous release holds the advisory lock.
       const publish = publisher.begin(async (tx) => {
-        await tx`SELECT pg_advisory_xact_lock(hashtext(${LIVE_RELEASE_LOCK_KEY}))`;
+        await tx`SELECT pg_advisory_xact_lock(hashtext(${LEGACY_LIVE_RELEASE_LOCK_KEY}))`;
         locked();
         await held;
       });

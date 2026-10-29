@@ -92,6 +92,9 @@ const EXACT: Readonly<Record<string, readonly LiveTopic[]>> = {
   "quality_audits.ack_chat_notification": ["quality"],
   "quality_audits.release_chat_notification": ["quality"],
   "quality_audits.publish_anyway": ["quality"],
+  // #1225 — an approved quality decision's claim and record steps.
+  "quality_audits.begin_execute_proposal": ["pending", "quality"],
+  "quality_audits.end_execute_proposal": ["pending", "quality"],
   "imports.create_run": ["crawl"],
   "imports.update_run_status": ["crawl"],
   "imports.write_extracted_pages": ["crawl"],
@@ -100,11 +103,19 @@ const EXACT: Readonly<Record<string, readonly LiveTopic[]>> = {
   "deploy.start_trigger": ["deploys"],
   "deploy.fail_run": ["deploys"],
   "deploy.finish_trigger": ["deploys"],
-  "deploy.begin_run": ["deploys"],
   "deploy.update_progress": ["deploys"],
   "deploy.promote": ["deploys"],
+  // #1225 — Publish live's steps, and an approved card's claim and record.
+  "deploy.start_promote": ["deploys"],
+  "deploy.finish_promote": ["deploys"],
+  "deploy.begin_execute_proposal": ["pending", "deploys"],
+  "deploy.end_execute_proposal": ["pending", "deploys"],
   "deploy.rollback": ["deploys"],
+  "deploy.release_rollback": ["deploys"],
   "deploy.build_plugin_data": ["deploys"],
+  // #1220 — the plugin-data build's steps that start and record a run.
+  "deploy.begin_plugin_data_run": ["deploys"],
+  "deploy.finish_plugin_data_run": ["deploys"],
 };
 
 /**

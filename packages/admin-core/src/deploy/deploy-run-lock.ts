@@ -3,34 +3,34 @@
 /**
  * Tells a deploy run that is still building from one that died (#1003).
  *
- * A Stage or Publish live commits its `deploy_runs` row as `running` when
- * it starts — so the deployments page shows it and its progress. If the
- * process building it dies (crash, Cloud Run instance replaced, an
- * unexpected throw), nothing would ever finish the row. Two ways tell a
- * live run, one per kind of run:
+ * A Stage, Publish live or plugin-data build commits its `deploy_runs` row
+ * as `running` when it starts — so the deployments page shows it and its
+ * progress. If the process building it dies (crash, Cloud Run instance
+ * replaced, an unexpected throw), nothing would ever finish the row. Every
+ * run of this release holds NO transaction while it builds (#1211, #1225):
+ * it holds a lease on its own row instead, `deploy_runs.lease_expires_at`,
+ * set when the row is committed and pushed forward by
+ * {@link DeployRunHeartbeat} while it runs. A running row whose lease lapsed
+ * has nothing behind it any more.
  *
- *   - A run that holds NO transaction while it builds (Stage and every
- *     other `deploy.trigger`, #1211) holds a lease on its own row:
- *     `deploy_runs.lease_expires_at`, set when the row is committed and
- *     pushed forward by {@link DeployRunHeartbeat} while it runs. A running
- *     row whose lease lapsed has nothing behind it any more.
- *   - A run that still builds inside one transaction (Publish live, the
- *     plugin-data build) holds a transaction-scoped advisory lock on its
- *     run id from before the row exists until that transaction ends;
- *     Postgres releases it however the transaction ends, on whichever
- *     instance it ran. Its row has no lease (NULL).
+ * Rolling update: the previous release built Publish live and plugin data
+ * inside one transaction and told such a run by a transaction-scoped
+ * advisory lock on its run id ({@link DEPLOY_RUN_LOCK_PREFIX}), held from
+ * before the row existed until that transaction ended. Its rows carry no
+ * lease (NULL), so a lease-less running row is still judged by that lock.
  *
- * Either way such a run is safe to mark failed (`deploy.begin_run` sweeps
- * them). Ending a leased run clears its lease in the same update: the
+ * Either way such a run is safe to mark failed (the start of the next run
+ * sweeps them). Ending a leased run clears its lease in the same update: the
  * database refuses to end a run whose lease is live otherwise (migration
- * 0393's guard, for the previous release's sweep during a rolling update). A lease expiring on a timer is right here: it guards a process,
- * not an editor's change — a dead process cannot release anything.
+ * 0393's guard, for the previous release's sweep during a rolling update).
+ * A lease expiring on a timer is right here: it guards a process, not an
+ * editor's change — a dead process cannot release anything.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
-/** Prefix of the per-run advisory-lock key. Exported for the regression tests. */
+/** Prefix of the previous release's per-run advisory-lock key (rolling updates; regression tests). */
 export const DEPLOY_RUN_LOCK_PREFIX = "caelo:deploy-run:";
 
 /**
@@ -43,13 +43,6 @@ export const DEPLOY_RUN_LEASE_TTL_MS = 120_000;
 
 /** Heartbeat interval: a quarter of the TTL, so three missed beats still keep the lease. */
 export const DEPLOY_RUN_HEARTBEAT_MS = DEPLOY_RUN_LEASE_TTL_MS / 4;
-
-/** Hold `runId` as being built until this transaction ends. Take it BEFORE the row is committed. */
-export async function holdDeployRun(tx: TransactionRunner, runId: string): Promise<void> {
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtext(${DEPLOY_RUN_LOCK_PREFIX} || ${runId}::text))`,
-  );
-}
 
 /**
  * True when nothing builds `runId` any more: its lease lapsed, or — for a
@@ -74,6 +67,8 @@ export interface DeployRunBeat {
   readonly running: boolean;
   /** The staging-publication lease, when the run holds (or held) it. */
   readonly publication: "renewed" | "lost" | "not-held";
+  /** The live-release lease (live-release-lock.ts), when the run holds (or held) it. */
+  readonly liveRelease: "renewed" | "lost" | "not-held";
 }
 
 /**
@@ -87,6 +82,7 @@ export class DeployRunHeartbeat {
   readonly #controller = new AbortController();
   readonly #timer: ReturnType<typeof setInterval>;
   #expectsPublication = false;
+  #expectsLiveRelease = false;
   #inFlight: Promise<void> | null = null;
 
   /**
@@ -100,12 +96,15 @@ export class DeployRunHeartbeat {
       // began before the run acquired the publication lease may answer
       // "not-held" after the acquisition, and says nothing about the lease.
       const expectsPublication = this.#expectsPublication;
+      const expectsLiveRelease = this.#expectsLiveRelease;
       this.#inFlight = beat()
         .then((r) => {
           if (r === null) return;
           if (!r.running) this.#lose("the run was marked failed while it still built");
           else if (expectsPublication && r.publication !== "renewed") {
             this.#lose("its staging-publication lease lapsed");
+          } else if (expectsLiveRelease && r.liveRelease !== "renewed") {
+            this.#lose("its live-release lease lapsed");
           }
         })
         .catch((e: unknown) => {
@@ -127,6 +126,11 @@ export class DeployRunHeartbeat {
   /** From now on (or no longer) a beat must also keep the staging-publication lease. */
   expectPublication(held: boolean): void {
     this.#expectsPublication = held;
+  }
+
+  /** From now on (or no longer) a beat must also keep the live-release lease. */
+  expectLiveRelease(held: boolean): void {
+    this.#expectsLiveRelease = held;
   }
 
   #lose(reason: string): void {

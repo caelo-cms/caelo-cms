@@ -129,7 +129,13 @@ Each domain has 5 ops + 1 AI tool wrapper per propose kind:
   (#589): the approving human must hold the permission the equivalent
   panel action requires. Anyone who can chat sees the in-chat Approve card,
   so the click alone authorises nothing; a refused approval leaves the
-  proposal pending.
+  proposal pending. An executor whose apply runs for minutes (an approved
+  Publish live: `deploy.execute_proposal`, `quality_audits.execute_proposal`,
+  #1225) is a step-wise op instead (`defineStepwiseOperation`, which
+  `requiresApproverPermission` also wraps): it claims the row in one short
+  step (`claimed_by_run_id` / `claimed_at`, so a second click is refused
+  instead of publishing twice), runs the underlying op as its own op, and
+  marks the row applied — or releases the claim — in a last short step.
 - `reject_proposal({proposalId, reason?})` — `actorScope: ["human", "system"]`
 - `list_pending({limit?})` — `actorScope: ["human", "ai", "system"]`
 

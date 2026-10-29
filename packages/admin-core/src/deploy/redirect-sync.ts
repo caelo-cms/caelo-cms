@@ -26,10 +26,12 @@
  *     turn the write itself into an error: the write is saved, and a page
  *     slug change must not fail because the hosting was unreachable.
  *
- * Publish live and rollback run the same sync for their target inside their
- * own transaction after the files are live: the build they ship carries the
- * table as it was at its Stage, and the provider must end up with the table
- * as it is now.
+ * Every change of the build a target serves runs the same sync for that
+ * target once the files are live — a Stage, Publish live and the plugin-data
+ * build in a transaction of their own after their run is recorded (#1211,
+ * #1225), a rollback inside its own transaction: the build they ship
+ * carries the table as it was at its build time, and the provider must end
+ * up with the table as it is now.
  *
  * Revisions make "is the provider current?" exact without comparing tables:
  * the bump and the row change commit together, and the sync reads the
@@ -43,7 +45,7 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
-import { lockLiveReleases } from "./live-release-lock.js";
+import { tryLockLiveRelease } from "./live-release-lock.js";
 import { resolveOutputRoot } from "./output-root.js";
 import { tryLockStagingPublication } from "./staging-publication-lock.js";
 import { loadStaticPublisher, type StaticPublisher } from "./static-publisher.js";
@@ -195,9 +197,10 @@ interface TargetRow {
  * Takes the live-release lock before any production target and the
  * staging-publication lock before any staging target (that order, as every
  * publish does), so a sync never interleaves with a publish of the same
- * target: whichever runs second sees the other's result. Staging targets
- * are skipped (and stay behind) while a Stage holds the staging lease: that
- * Stage syncs them when it finishes (#1211).
+ * target: whichever runs second sees the other's result. Targets are
+ * skipped (and stay behind) while a run holds their lease — staging while a
+ * Stage publishes (#1211), production while a Publish live or plugin-data
+ * build releases (#1225): that run syncs them when it finishes.
  */
 export async function syncRedirectsInTx(
   tx: TransactionRunner,
@@ -225,7 +228,15 @@ export async function syncRedirectsInTx(
     SELECT env FROM deploy_targets WHERE env IN ${SYNC_ENVS} ${only("id")}
   `)) as unknown as { env: string }[];
   if (envRows.length === 0) return [];
-  if (envRows.some((r) => r.env === "production")) await lockLiveReleases(tx);
+  // #1225 — likewise production: a Publish live or plugin-data build that
+  // is releasing the live site right now holds the live-release lease
+  // without a transaction to wait for, and its finish step marks the
+  // target behind and syncs it once its run is recorded. A rollback or CDN
+  // purge holds the row in its transaction; that one is waited for. Lock
+  // order: live release first, then the staging publication.
+  const skipProduction =
+    envRows.some((r) => r.env === "production") &&
+    !(await tryLockLiveRelease(tx, { skipLocked: false })).locked;
   // #1211 — a Stage that is publishing staging right now holds the lease
   // without a transaction to wait for. Once its run is recorded it syncs the table
   // as saved by then onto the build it serves, so staging targets are left
@@ -234,11 +245,18 @@ export async function syncRedirectsInTx(
   const skipStaging =
     envRows.some((r) => r.env === "staging") && !(await tryLockStagingPublication(tx)).locked;
 
-  // A skipped staging target's state row is not touched at all: locking it
-  // here would hold it across the provider calls below, and the Stage's own
-  // finish step writes that row (it would wait past lock_timeout and roll
-  // back its publication record).
-  const envs = skipStaging ? sql`('production')` : SYNC_ENVS;
+  // A skipped target's state row is not touched at all: locking it here
+  // would hold it across the provider calls below, and the publishing
+  // run's own finish step writes that row (it would wait past lock_timeout
+  // and roll back its publication record).
+  const kept = [!skipStaging ? "staging" : null, !skipProduction ? "production" : null].filter(
+    (e): e is string => e !== null,
+  );
+  if (kept.length === 0) return [];
+  const envs = sql`(${sql.join(
+    kept.map((e) => sql`${e}`),
+    sql`, `,
+  )})`;
 
   await tx.execute(sql`
     INSERT INTO redirect_sync_state (target_id)

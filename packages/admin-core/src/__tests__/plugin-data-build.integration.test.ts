@@ -740,4 +740,136 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     );
     expect(home?.toString("utf8")).toContain("eleventh entry");
   });
+
+  it("#1220 a tick skips while another run releases the live site, and bakes on the next one", async () => {
+    await approve("twelfth entry");
+    // A Publish live (or another plugin-data build) holds the live-release
+    // lease as its run, with no transaction open: the tick does not wait.
+    const holder = crypto.randomUUID();
+    await sqlSystem(async (tx) => {
+      await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+               SELECT ${holder}::uuid, id, ${SYSTEM_ACTOR_ID}::uuid, 'running',
+                      clock_timestamp() + interval '10 minutes'
+               FROM deploy_targets WHERE env = 'production' LIMIT 1`;
+      await tx`INSERT INTO deploy_leases (name, holder_run_id, acquired_at, expires_at)
+               VALUES ('live-release', ${holder}::uuid, clock_timestamp(),
+                       clock_timestamp() + interval '10 minutes')
+               ON CONFLICT (name) DO UPDATE SET holder_run_id = EXCLUDED.holder_run_id,
+                 acquired_at = EXCLUDED.acquired_at, expires_at = EXCLUDED.expires_at`;
+    });
+    const before = await pluginDataRuns();
+    try {
+      const busy = await tick();
+      expect(busy.outcome).toBe("busy");
+      expect(busy.message).toContain(holder);
+      expect(busy.runIds).toEqual([]);
+      // Nothing recorded, the mark still pending.
+      expect(await pluginDataRuns()).toHaveLength(before.length);
+      const pending = await sqlSystem(
+        async (tx) =>
+          (await tx`SELECT count(*)::int AS n FROM plugin_data_stale_pages
+                    WHERE baked_through IS NULL OR last_marked_at > baked_through`) as {
+            n: number;
+          }[],
+      );
+      expect(pending[0]?.n).toBeGreaterThan(0);
+    } finally {
+      await sqlSystem(async (tx) => {
+        await tx`UPDATE deploy_leases SET holder_run_id = NULL, acquired_at = NULL, expires_at = NULL
+                 WHERE holder_run_id = ${holder}::uuid`;
+        await tx`DELETE FROM deploy_runs WHERE id = ${holder}::uuid`;
+      });
+    }
+    const built = await tick();
+    expect(built.outcome).toBe("built");
+    expect(await pluginDataRuns()).toHaveLength(before.length + 1);
+    const home = (await filesUnder(join(productionDir(), "current"))).get(
+      await homeOutputPath(join(productionDir(), "current")),
+    );
+    expect(home?.toString("utf8")).toContain("twelfth entry");
+    const lease = await sqlSystem(
+      async (tx) =>
+        (await tx`SELECT holder_run_id FROM deploy_leases WHERE name = 'live-release'`) as {
+          holder_run_id: string | null;
+        }[],
+    );
+    expect(lease[0]?.holder_run_id ?? null).toBeNull();
+  });
+
+  it("#1220 a run starts only while the live build is still the one baked from, checked with the lease held", async () => {
+    const SYS = { actorId: SYSTEM_ACTOR_ID, actorKind: "system" as const, requestId: "t1220" };
+    const [prod] = await sqlSystem(
+      async (tx) =>
+        (await tx`SELECT id::text AS id FROM deploy_targets WHERE env = 'production' LIMIT 1`) as {
+          id: string;
+        }[],
+    );
+    const before = await pluginDataRuns();
+    // A Publish live or rollback committed since the bake read `published.id`.
+    const r = await execute(registry, adapter, SYS, "deploy.begin_plugin_data_run", {
+      runId: crypto.randomUUID(),
+      targetId: prod?.id,
+      liveRunId: published.id,
+      caeloVersion: "x",
+      startedAt: new Date().toISOString(),
+      leaseTtlMs: 120_000,
+    });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    expect(r.value).toMatchObject({ started: false });
+    expect((r.value as { reason: string }).reason).toContain("live build changed");
+    // Rolled back with its savepoint: no run, the lease free.
+    expect(await pluginDataRuns()).toHaveLength(before.length);
+    const lease = await sqlSystem(
+      async (tx) =>
+        (await tx`SELECT holder_run_id FROM deploy_leases WHERE name = 'live-release'`) as {
+          holder_run_id: string | null;
+        }[],
+    );
+    expect(lease[0]?.holder_run_id ?? null).toBeNull();
+  });
+
+  it("#1220 a tick does not mark its bakes done once a release replaced what it published", async () => {
+    const SYS = { actorId: SYSTEM_ACTOR_ID, actorKind: "system" as const, requestId: "t1220" };
+    await approve("thirteenth entry");
+    const [prod] = await sqlSystem(
+      async (tx) =>
+        (await tx`SELECT id::text AS id FROM deploy_targets WHERE env = 'production' LIMIT 1`) as {
+          id: string;
+        }[],
+    );
+    const pending = async () =>
+      (
+        await sqlSystem(
+          async (tx) =>
+            (await tx`SELECT plugin_id::text AS plugin_id, page_id::text AS page_id
+                      FROM plugin_data_stale_pages
+                      WHERE baked_through IS NULL OR last_marked_at > baked_through`) as {
+              plugin_id: string;
+              page_id: string;
+            }[],
+        )
+      ).map((x) => ({ id: x.plugin_id, pages: [x.page_id] }));
+    const marks = await pending();
+    expect(marks.length).toBeGreaterThan(0);
+    // The tick believes the target serves `published.id`; a later release
+    // (the plugin-data build of the previous test, a Publish live, a
+    // rollback) serves something else now.
+    const r = await execute(registry, adapter, SYS, "deploy.finish_plugin_data_tick", {
+      outcome: "built",
+      message: null,
+      pendingPlugins: 1,
+      marks: marks.length,
+      runIds: [],
+      baked: {
+        bakedAt: new Date().toISOString(),
+        plugins: marks,
+        targets: [{ targetId: prod?.id, liveRunId: published.id }],
+      },
+    });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    expect(r.value).toEqual({ marksAdvanced: false });
+    expect(await pending()).toEqual(marks);
+    expect((await tick()).outcome).toBe("built");
+    expect(await pending()).toEqual([]);
+  });
 });

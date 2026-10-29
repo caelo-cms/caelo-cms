@@ -528,10 +528,16 @@ describe("domains.hosting_status / domains.reconnect_hosting ops", () => {
       ((q as { queryChunks?: unknown[] }).queryChunks ?? [])
         .flatMap((c) => (c as { value?: unknown } | null)?.value ?? [])
         .join("");
+    // #1225 — the purge tries the previous release's advisory lock, then
+    // the live-release lease row (free unless a run or transaction holds it).
     const execute = async (q: unknown) => {
-      if (sqlText(q).includes("pg_try_advisory_xact_lock")) {
+      const text = sqlText(q);
+      if (text.includes("pg_try_advisory_xact_lock")) {
         lockAttempts.push(q);
-        return [{ ok: lockHeld }];
+        return [{ free: lockHeld }];
+      }
+      if (text.includes("deploy_leases")) {
+        return text.includes("SKIP LOCKED") ? [{ run_id: null, expires_at: null, free: true }] : [];
       }
       executed.push(q);
       return [];

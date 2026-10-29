@@ -53,7 +53,7 @@ const TIMER_INTERVAL_MS = 30_000;
 /** The fingerprint this instance reconciled at; null before the first. */
 let reconciledAt: string | null = null;
 let lastCheck = 0;
-let inflight: Promise<void> | null = null;
+let inflight: Promise<unknown | null> | null = null;
 let timer: ReturnType<typeof setInterval> | null = null;
 
 /**
@@ -114,31 +114,60 @@ interface PluginRow {
  * the last reconcile. Cheap when nothing changed (one sequence read, at
  * most every {@link CHECK_INTERVAL_MS}); concurrent callers share one run.
  * A no-op until the host is bootstrapped. Never throws: a failure is logged
- * and the next call tries again.
+ * and the next call tries again. A path that must not act on a stale view
+ * calls {@link reconcilePluginHostNow} instead.
  *
  * @param force skip the throttle (an Owner's reload on this instance).
  */
-export function syncPluginHost(force = false): Promise<void> {
+export async function syncPluginHost(force = false): Promise<void> {
+  const failure = await runSync(force);
+  if (failure !== null) {
+    console.error(
+      `[plugin-host] reconcile failed (retried on the next check): ${describeLoadError(failure)}`,
+    );
+  }
+}
+
+/**
+ * #1225 — reconcile now (forced) and THROW when it fails: for the deploy
+ * gates, which decide on what runs here and must not decide on a stale
+ * view. Call it outside any transaction: the reconcile reads the plugin
+ * rows (and may load a plugin) through connections of its own, which the
+ * pool guard refuses from inside a transaction of the same pool.
+ *
+ * @throws Error naming why the host could not be brought in line.
+ */
+export async function reconcilePluginHostNow(): Promise<void> {
+  const failure = await runSync(true);
+  if (failure !== null) {
+    throw new Error(
+      `the plugin host could not be brought in line with the plugin rows: ${describeLoadError(failure)}`,
+    );
+  }
+}
+
+/** One (possibly shared) reconcile; resolves to its failure, or null. */
+function runSync(force: boolean): Promise<unknown | null> {
   const host = pluginHostBootstrapped();
-  if (!host) return Promise.resolve();
+  if (!host) return Promise.resolve(null);
   armTimer();
   // A forced call must see rows newer than any run already in flight.
   if (inflight && !force) return inflight;
   const now = Date.now();
-  if (!force && now - lastCheck < CHECK_INTERVAL_MS) return Promise.resolve();
+  if (!force && now - lastCheck < CHECK_INTERVAL_MS) return Promise.resolve(null);
   lastCheck = now;
-  const run = (async () => {
-    await inflight?.catch(() => undefined);
+  const previous = inflight;
+  const run: Promise<unknown | null> = (async () => {
+    await previous?.catch(() => undefined);
     try {
       const rows = await readPluginRows(host);
       const fingerprint = fingerprintOf(rows);
-      if (!force && fingerprint === reconciledAt) return;
+      if (!force && fingerprint === reconciledAt) return null;
       await reconcile(host, rows);
       reconciledAt = fingerprint;
+      return null;
     } catch (e) {
-      console.error(
-        `[plugin-host] reconcile failed (retried on the next check): ${describeLoadError(e)}`,
-      );
+      return e;
     }
   })().finally(() => {
     if (inflight === run) inflight = null;

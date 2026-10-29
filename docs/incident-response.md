@@ -53,23 +53,9 @@ FROM deploy_runs ORDER BY started_at DESC LIMIT 5;
 
 If `status='failed'`: read `error_message`, fix root cause, then `deploy.trigger` again (admin UI or `bunx cms-provision deploy`).
 
-A Stage or Publish live shows as `status='running'` while it builds (its row is committed when it starts, with `progress` updated about once a second). A run whose process died (crash, restarted instance) stays `running` until the next Stage or Publish live: that one marks it `failed` with "This build stopped without finishing …" — a run still building on another instance is left alone (a Stage renews `deploy_runs.lease_expires_at` every 30 s and counts as dead two minutes after its last renewal; a Publish live holds an advisory lock on its id). Nothing a stopped run built was published; start it again. Check the admin's stderr for why it stopped.
+A Stage or Publish live shows as `status='running'` while it builds (its row is committed when it starts, with `progress` updated about once a second). A run whose process died (crash, restarted instance) stays `running` until the next Stage or Publish live: that one marks it `failed` with "This build stopped without finishing …" — a run still building on another instance is left alone (a Stage, Publish live or plugin-data build renews `deploy_runs.lease_expires_at` every 30 s and counts as dead two minutes after its last renewal; a run of the previous release during an update holds an advisory lock on its id instead). Nothing a stopped run built was published; start it again. Check the admin's stderr for why it stopped.
 
-A Stage holds no database transaction while it builds and uploads (#1211). Which Stage or Publish live may change what the staging host serves is the `staging-publication` row in `deploy_leases`: `holder_run_id` is the Stage publishing right now, free once `expires_at` passed. A Stage whose caller stopped it (the operator's Stop) ends `failed` with "stopped before it finished" and releases the row at once. An external agent's `stage_changes` answers "still running, build run X" when the build outlasts its wait; the build goes on and `get_quality_audit` with that `deployRunId` reports how it ended.
-
-### Stage / Publish live slow
-
-Every Stage and Publish live records where its time went (`deploy_runs.phase_timings`, since 0346) and logs one line per run: `[deploy] stage succeeded in <ms> ms {…}`. The Stage button's whole wait, chat merges included, is logged as `[stage] staged <n> pages in <ms> ms {…}`.
-
-```sql
-SELECT id, status, page_count, file_count,
-       (EXTRACT(EPOCH FROM finished_at - started_at) * 1000)::int AS took_ms,
-       phase_timings
-FROM deploy_runs WHERE phase_timings IS NOT NULL
-ORDER BY started_at DESC LIMIT 5;
-```
-
-Top-level steps (`prepare`, `generator`, `lock-wait`, `publish`, `parity`, `select-preview`, `finish`) add up to the run. A dotted name breaks down the step it starts with: `generator.compose` / `generator.media` / `generator.write` are the build's passes, `publish.hash` / `publish.upload` the provider upload. A long `lock-wait` means another Stage or Publish live held the staging lock.
+A Stage, Publish live and plugin-data build hold no database transaction while they build and upload (#1211, #1225). Which Stage or Publish live may change what the staging host serves is the `staging-publication` row in `deploy_leases`; which run may release a new version on the live site is the `live-release` row (Publish live, the plugin-data build; rollback, the redirect sync and the CDN purge wait for it or step aside). `holder_run_id` is the run publishing right now, free once `expires_at` passed. A Publish live that lost its lease before its release (its heartbeat stopped) releases nothing and ends `failed` with "lost its place in the publish order"; Publish live again. A plugin-data tick that finds the live release held answers `busy` and leaves its marks for the next tick. A Stage whose caller stopped it (the operator's Stop) ends `failed` with "stopped before it finished" and releases the row at once. An external agent's `stage_changes` answers "still running, build run X" when the build outlasts its wait; the build goes on and `get_quality_audit` with that `deployRunId` reports how it ended.
 
 ### Stage / Publish live slow
 
@@ -83,7 +69,21 @@ FROM deploy_runs WHERE phase_timings IS NOT NULL
 ORDER BY started_at DESC LIMIT 5;
 ```
 
-Top-level steps (`prepare`, `generator`, `lock-wait`, `publish`, `parity`, `select-preview`, `finish`) add up to the run. A dotted name breaks down the step it starts with: `generator.compose` / `generator.media` / `generator.write` are the build's passes, `publish.hash` / `publish.upload` the provider upload. A long `lock-wait` means another Stage or Publish live held the staging lock.
+Top-level steps (`prepare`, `generator`, `lock-wait`, `publish`, `parity`, `select-preview`, `finish`) add up to the run. A dotted name breaks down the step it starts with: `generator.compose` / `generator.media` / `generator.write` are the build's passes, `publish.hash` / `publish.upload` the provider upload. A long `lock-wait` means another Stage or Publish live held the staging lease, or (Publish live) a rollback or plugin-data build held the live release.
+
+### Stage / Publish live slow
+
+Every Stage and Publish live records where its time went (`deploy_runs.phase_timings`, since 0346) and logs one line per run: `[deploy] stage succeeded in <ms> ms {…}`. The Stage button's whole wait, chat merges included, is logged as `[stage] staged <n> pages in <ms> ms {…}`.
+
+```sql
+SELECT id, status, page_count, file_count,
+       (EXTRACT(EPOCH FROM finished_at - started_at) * 1000)::int AS took_ms,
+       phase_timings
+FROM deploy_runs WHERE phase_timings IS NOT NULL
+ORDER BY started_at DESC LIMIT 5;
+```
+
+Top-level steps (`prepare`, `generator`, `lock-wait`, `publish`, `parity`, `select-preview`, `finish`) add up to the run. A dotted name breaks down the step it starts with: `generator.compose` / `generator.media` / `generator.write` are the build's passes, `publish.hash` / `publish.upload` the provider upload. A long `lock-wait` means another Stage or Publish live held the staging lease, or (Publish live) a rollback or plugin-data build held the live release.
 
 ## §C — AI calls failing or budget hit
 

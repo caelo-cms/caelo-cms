@@ -22,6 +22,7 @@ import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {
+  allowNestedCheckouts,
   DatabaseAdapter,
   defineOperation,
   execute,
@@ -211,29 +212,40 @@ describe("nested checkout guard", () => {
     await later;
   });
 
-  it("lets an allowlisted holder nest, and lifts the 0392 timeouts for its transaction only", async () => {
-    const holder = "deploy.promote";
-    expect(NESTED_CHECKOUT_ALLOWLIST.has(holder)).toBe(true);
-    expect(LONG_TRANSACTION_ALLOWLIST.has(holder)).toBe(true);
-    const inside = await adapter.withAdminTransaction(
-      ctx,
-      async (tx) => {
-        const own = (await tx.execute(
-          sql`SELECT current_setting('idle_in_transaction_session_timeout') AS v`,
-        )) as unknown as { v: string }[];
-        const nested = await adapter.withAdminTransaction(ctx, async (inner) => {
+  it("lets an allowlisted call site nest; its transaction stays under the 0392 timeouts", async () => {
+    // #1225 — no holder is on both lists any more: Publish live and the
+    // approvals hold no transaction across their build and upload.
+    const label = "plugins.render_hook";
+    expect(NESTED_CHECKOUT_ALLOWLIST.has(label)).toBe(true);
+    expect(LONG_TRANSACTION_ALLOWLIST.has(label)).toBe(false);
+    const inside = await adapter.withAdminTransaction(ctx, async (tx) => {
+      const own = (await tx.execute(
+        sql`SELECT current_setting('idle_in_transaction_session_timeout') AS v`,
+      )) as unknown as { v: string }[];
+      const nested = await allowNestedCheckouts(label, () =>
+        adapter.withAdminTransaction(ctx, async (inner) => {
           const rows = (await inner.execute(
             sql`SELECT current_setting('idle_in_transaction_session_timeout') AS v`,
           )) as unknown as { v: string }[];
           return rows[0]?.v;
-        });
-        return { own: own[0]?.v, nested };
-      },
-      { holder },
-    );
-    expect(inside.own).toBe("0");
-    // The nested transaction is an ordinary one, under the limits.
-    expect(inside.nested).toBe("1min");
+        }),
+      );
+      return { own: own[0]?.v, nested };
+    });
+    expect(inside).toEqual({ own: "1min", nested: "1min" });
+  });
+
+  it("#1225 — Publish live, the approvals and the plugin-data build are on neither list", () => {
+    for (const holder of [
+      "deploy.promote",
+      "deploy.execute_proposal",
+      "quality_audits.publish_anyway",
+      "quality_audits.execute_proposal",
+      "deploy.build_plugin_data",
+    ]) {
+      expect(NESTED_CHECKOUT_ALLOWLIST.has(holder)).toBe(false);
+      expect(LONG_TRANSACTION_ALLOWLIST.has(holder)).toBe(false);
+    }
   });
 });
 

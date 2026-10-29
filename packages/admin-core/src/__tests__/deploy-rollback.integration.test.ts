@@ -12,10 +12,15 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  DatabaseAdapter,
+  execute,
+  OperationRegistry,
+  observeCommittedOperations,
+} from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { LIVE_RELEASE_LOCK_KEY } from "../deploy/live-release-lock.js";
+import { LEGACY_LIVE_RELEASE_LOCK_KEY, LIVE_RELEASE_LEASE } from "../deploy/live-release-lock.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { openQualityGate } from "./fixtures/quality-gate.js";
@@ -168,6 +173,7 @@ describe("deploy.rollback", () => {
       repoRoot: testRoot,
     });
     if (!b2.ok) throw new Error("b2");
+    const b2RunId = (b2.value as { runId: string }).runId;
 
     // current/ now reflects VERSION_TWO.
     const currentDir = join(testRoot, "output", "production", "current");
@@ -179,46 +185,120 @@ describe("deploy.rollback", () => {
     // Rollback to build 1 — while a Firebase CDN purge holds the
     // live-release lock: the rollback must wait for it, never release in
     // between (the purge would re-release the version it read before).
-    const purge = new SQL(ADMIN_URL!);
-    let rb: Awaited<ReturnType<typeof execute>>;
+    // #1225 — it waits outside any transaction and tries again: once for a
+    // purge of this release (the lease row locked in its transaction), once
+    // for a purge of the previous release (its advisory lock).
+    const holds: ((tx: SQL) => Promise<unknown>)[] = [
+      async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`INSERT INTO deploy_leases (name) VALUES (${LIVE_RELEASE_LEASE}) ON CONFLICT DO NOTHING`;
+        await tx`UPDATE deploy_leases SET name = name WHERE name = ${LIVE_RELEASE_LEASE}`;
+      },
+      (tx) => tx`SELECT pg_advisory_xact_lock(hashtext(${LEGACY_LIVE_RELEASE_LOCK_KEY}))`,
+    ];
+    let rb: Awaited<ReturnType<typeof execute>> | null = null;
+    for (const [i, hold] of holds.entries()) {
+      const purge = new SQL(ADMIN_URL!);
+      try {
+        let endPurge!: () => void;
+        const purgeDone = new Promise<void>((r) => {
+          endPurge = r;
+        });
+        let purgeLocked!: () => void;
+        const locked = new Promise<void>((r) => {
+          purgeLocked = r;
+        });
+        const purgeTx = purge.begin(async (tx) => {
+          await hold(tx as unknown as SQL);
+          purgeLocked();
+          await purgeDone;
+        });
+        await locked;
+        let settled = false;
+        const pending = execute(registry, adapter, HUMAN, "deploy.rollback", {
+          targetName: "production",
+          runId: i === 0 ? b1RunId : b2RunId,
+          repoRoot: testRoot,
+        }).finally(() => {
+          settled = true;
+        });
+        await Bun.sleep(600);
+        expect(settled).toBe(false);
+        // Waiting holds no connection in a transaction.
+        const open = (await purge`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = 'cms_admin' AND state LIKE 'idle in transaction%'
+            AND pid <> pg_backend_pid()`) as { n: number }[];
+        // The purge's own transaction is the only one open.
+        expect(open[0]?.n).toBe(1);
+        expect(await readFile(pageFile, "utf8")).toContain(i === 0 ? "VERSION_TWO" : "VERSION_ONE");
+        endPurge();
+        await purgeTx;
+        rb = await pending;
+        expect(rb.ok).toBe(true);
+      } finally {
+        await purge.end();
+      }
+      if (i === 0) {
+        expect(await readFile(pageFile, "utf8")).toContain("VERSION_ONE");
+      }
+    }
+    // A Publish live or plugin-data build of this release holds the lease
+    // as its run, with no transaction to wait for: the rollback waits
+    // outside any transaction until the run released it.
+    const db0 = new SQL(ADMIN_URL!);
+    const holder = crypto.randomUUID();
     try {
-      let endPurge!: () => void;
-      const purgeDone = new Promise<void>((r) => {
-        endPurge = r;
+      await db0.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+                 SELECT ${holder}::uuid, id, ${HUMAN.actorId}::uuid, 'running',
+                        clock_timestamp() + interval '10 minutes'
+                 FROM deploy_targets WHERE name = 'production'`;
+        await tx`UPDATE deploy_leases SET holder_run_id = ${holder}::uuid,
+                   acquired_at = clock_timestamp(), expires_at = clock_timestamp() + interval '10 minutes'
+                 WHERE name = ${LIVE_RELEASE_LEASE}`;
       });
-      let purgeLocked!: () => void;
-      const locked = new Promise<void>((r) => {
-        purgeLocked = r;
-      });
-      const purgeTx = purge.begin(async (tx) => {
-        await tx`SELECT pg_advisory_xact_lock(hashtext(${LIVE_RELEASE_LOCK_KEY}))`;
-        purgeLocked();
-        await purgeDone;
-      });
-      await locked;
       let settled = false;
       const pending = execute(registry, adapter, HUMAN, "deploy.rollback", {
         targetName: "production",
-        runId: b1RunId,
+        runId: b2RunId,
         repoRoot: testRoot,
       }).finally(() => {
         settled = true;
       });
-      // Wait until the rollback is queued on the lock.
-      for (let i = 0; i < 200; i++) {
-        const waiting = await purge`
-          SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`;
-        if ((waiting[0] as { n: number }).n > 0) break;
-        await Bun.sleep(25);
-      }
+      await Bun.sleep(600);
       expect(settled).toBe(false);
+      const open = (await db0`
+        SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = 'cms_admin' AND state LIKE 'idle in transaction%'
+          AND clock_timestamp() - state_change > interval '300 milliseconds'`) as { n: number }[];
+      expect(open[0]?.n).toBe(0);
+      await db0.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`UPDATE deploy_leases SET holder_run_id = NULL, acquired_at = NULL, expires_at = NULL
+                 WHERE name = ${LIVE_RELEASE_LEASE}`;
+        await tx`DELETE FROM deploy_runs WHERE id = ${holder}::uuid`;
+      });
+      expect((await pending).ok).toBe(true);
       expect(await readFile(pageFile, "utf8")).toContain("VERSION_TWO");
-      endPurge();
-      await purgeTx;
-      rb = await pending;
     } finally {
-      await purge.end();
+      await db0.end();
     }
+    // Back on build 1 for the checks below — and the live refresh hears
+    // the rollback once it committed (review on #1251).
+    const committed: string[] = [];
+    const stopObserving = observeCommittedOperations((name) => {
+      committed.push(name);
+    });
+    rb = await execute(registry, adapter, HUMAN, "deploy.rollback", {
+      targetName: "production",
+      runId: b1RunId,
+      repoRoot: testRoot,
+    });
+    stopObserving();
+    expect(committed).toContain("deploy.rollback");
+    if (rb === null) throw new Error("no rollback ran");
     expect(rb.ok).toBe(true);
     if (!rb.ok) return;
     const v1 = await readFile(pageFile, "utf8");
