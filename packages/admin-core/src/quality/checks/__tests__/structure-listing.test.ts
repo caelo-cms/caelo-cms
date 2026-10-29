@@ -79,7 +79,7 @@ const LINK_LIST: StructureModule = {
   js: "",
   listFields: ["links"],
   fieldNames: ["links"],
-  entryKeys: ["label", "link"],
+  entryKeys: { links: ["label", "link"] },
 };
 /** The hub holding cards in a `module-list`. */
 const CARD_GRID: StructureModule = {
@@ -90,7 +90,7 @@ const CARD_GRID: StructureModule = {
   js: "",
   listFields: ["cards"],
   fieldNames: ["title", "cards"],
-  entryKeys: [],
+  entryKeys: {},
 };
 const CARD: StructureModule = {
   id: id(12),
@@ -100,7 +100,7 @@ const CARD: StructureModule = {
   js: "",
   listFields: [],
   fieldNames: ["title", "href"],
-  entryKeys: [],
+  entryKeys: {},
 };
 /** Numbered scalar fields — the template owns every link. */
 const SCALAR_CARDS: StructureModule = {
@@ -116,7 +116,7 @@ const SCALAR_CARDS: StructureModule = {
   js: "",
   listFields: [],
   fieldNames: [1, 2, 3, 4].flatMap((i) => [`card${i}_href`, `card${i}_title`]),
-  entryKeys: [],
+  entryKeys: {},
 };
 /** The right way: a list field bound to a page query (entries unstamped). */
 const QUERY_LIST: StructureModule = {
@@ -127,7 +127,7 @@ const QUERY_LIST: StructureModule = {
   js: "",
   listFields: ["guides"],
   fieldNames: ["guides"],
-  entryKeys: [],
+  entryKeys: {},
 };
 /** A local menu whose entry is a source node generating `items`. */
 const MEGA: StructureModule = {
@@ -138,7 +138,7 @@ const MEGA: StructureModule = {
   js: "",
   listFields: ["menu"],
   fieldNames: ["menu"],
-  entryKeys: ["label", "link"],
+  entryKeys: { menu: ["label", "link"] },
 };
 const MODULES = [LINK_LIST, CARD_GRID, CARD, SCALAR_CARDS, QUERY_LIST, MEGA];
 
@@ -265,7 +265,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       js: "",
       listFields: [],
       fieldNames: ["body"],
-      entryKeys: [],
+      entryKeys: {},
     };
     const body = GUIDES.slice(0, 6)
       .map((p) => `<p><a href="${p.path}">${p.title}</a></p>`)
@@ -359,7 +359,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       js: "",
       listFields: [],
       fieldNames: [],
-      entryKeys: [],
+      entryKeys: {},
     };
     const nav = `<nav class="langs" data-caelo-module-id="${SWITCHER.id}">${GUIDES.map(
       (p) => `<a class="lang" href="${p.path}">x</a>`,
@@ -379,7 +379,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       js: "",
       listFields: ["items"],
       fieldNames: ["items"],
-      entryKeys: [],
+      entryKeys: {},
     };
     const html = `<ul class="il" data-caelo-module-id="${ITEMS.id}">${GUIDES.slice(0, 7)
       .map(
@@ -400,7 +400,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       js: "",
       listFields: ["menu", "guides"],
       fieldNames: ["menu", "guides"],
-      entryKeys: ["label", "link"],
+      entryKeys: { menu: ["label", "link"] },
     };
     const generated = GUIDES.slice(0, 7)
       .map((p) => `<a class="g" href="${p.path}">${p.title}</a>`)
@@ -454,7 +454,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       js: "",
       listFields: ["menu"],
       fieldNames: ["menu"],
-      entryKeys: ["label", "link"],
+      entryKeys: { menu: ["label", "link"] },
     };
     const langs = GUIDES.slice(0, 7)
       .map((p) => `<a class="lang" href="${p.path}">x</a>`)
@@ -492,7 +492,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       js: "",
       listFields: ["has_guides"],
       fieldNames: ["has_guides"],
-      entryKeys: ["label", "link"],
+      entryKeys: {},
     };
     const html = `<section class="fl" data-caelo-module-id="${FLAGGED.id}">${GUIDES.slice(0, 7)
       .map((p) => `<a class="g" href="${p.path}">x</a>`)
@@ -531,5 +531,42 @@ describe("structure/manual-page-listing (#1256)", () => {
       (x) => x.ruleId === "structure/manual-page-listing",
     );
     expect(f).toEqual([]);
+  });
+  it("entry keys belong to their own list field: another type's children never shadow a source", () => {
+    const MIXED: StructureModule = {
+      id: id(26),
+      slug: "mixed",
+      displayName: "Mixed",
+      html: '<section class="mx">{{#menu}}<a class="m" href="{{link}}">{{label}}</a>{{/menu}}{{#links}}<div class="col">{{#children}}<a class="c" href="{{link}}">{{title}}</a>{{/children}}</div>{{/links}}</section>',
+      js: "",
+      listFields: ["menu", "links", "children"],
+      fieldNames: ["menu", "links", "children"],
+      entryKeys: { menu: ["label", "link", "children"], links: ["label", "link"] },
+    };
+    const generated = GUIDES.slice(0, 7)
+      .map((p) => `<a class="c" href="${p.path}">${p.title}</a>`)
+      .join("");
+    const html = `<section class="mx" data-caelo-module-id="${MIXED.id}"><div class="col" data-caelo-list-item="${local("links", 0)}">${generated}</div></section>`;
+    const f = structureFindings(build(html), [...MODULES, MIXED], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f).toEqual([]);
+  });
+
+  it("a condition on a built-in entry value keeps the entry's link counted", () => {
+    const IDX: StructureModule = {
+      ...LINK_LIST,
+      id: id(27),
+      slug: "idx",
+      html: '<section class="ll"><ul>{{#links}}<li>{{#index}}<a href="{{link}}">{{label}}</a>{{/index}}</li>{{/links}}</ul></section>',
+    };
+    const html = linkList(GUIDES.slice(0, 7), (n) => local("links", n)).replace(
+      LINK_LIST.id,
+      IDX.id,
+    );
+    const f = structureFindings(build(html), [...MODULES, IDX], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f.map((x) => x.severity)).toEqual(["error"]);
   });
 });

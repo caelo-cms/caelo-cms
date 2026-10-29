@@ -56,16 +56,32 @@ type Kind = "scalar" | "list" | "generated";
 /** The nearest list entry stamp above a rendered node. */
 type Entry = "none" | "own" | "shared";
 
-/** A module's declared field names (all, list-like) and the keys its list entries carry. */
+/** Where a template node sits, and inside the entries of which list field. */
+interface Scope {
+  readonly kind: Kind;
+  /** The list field whose entry renders it (kind `list`), else null. */
+  readonly field: string | null;
+}
+
+const MODULE_SCOPE: Scope = { kind: "scalar", field: null };
+const GENERATED: Scope = { kind: "generated", field: null };
+
+/** A module's declared field names (all, list-like) and the keys each list field's entries carry. */
 interface FieldNames {
   readonly all: ReadonlySet<string>;
   readonly list: ReadonlySet<string>;
-  readonly entry: ReadonlySet<string>;
+  readonly entry: ReadonlyMap<string, ReadonlySet<string>>;
 }
+
+/**
+ * Values the template engine gives every entry (`docs/lists.md` §8):
+ * scalars, so a section over one is a condition.
+ */
+const SYSTEM_ENTRY_KEYS = new Set(["id", "node", "index", "depth", "first", "last"]);
 
 interface ListingTemplate {
   readonly root: MarkupNode;
-  readonly rootKind: Kind;
+  readonly rootScope: Scope;
   readonly fields: FieldNames;
 }
 
@@ -81,11 +97,11 @@ export function listingTemplates(
     const fields = {
       all: new Set(m.fieldNames),
       list: new Set(m.listFields),
-      entry: new Set(m.entryKeys),
+      entry: new Map(Object.entries(m.entryKeys).map(([f, keys]) => [f, new Set(keys)])),
     };
     const forest = parseMarkup(stripMustache(m.html, { markSections: true }));
-    const first = flatten(forest, "scalar", fields, false)[0];
-    if (first) out.set(m.id, { root: first.node, rootKind: first.kind, fields });
+    const first = flatten(forest, MODULE_SCOPE, fields, false)[0];
+    if (first) out.set(m.id, { root: first.node, rootScope: first.scope, fields });
   }
   return out;
 }
@@ -177,29 +193,29 @@ function collectModule(
   // A root its template does not render (a module the composer fills from
   // other data) cannot be attributed: nothing in it counts.
   if (!tpl || !accounts(tpl.root, root)) return;
-  const visit = (r: MarkupNode, t: MarkupNode | null, kind: Kind, entryAbove: Entry) => {
+  const visit = (r: MarkupNode, t: MarkupNode | null, scope: Scope, entryAbove: Entry) => {
     const entry = entryOf(r, entryAbove);
-    if (r.tag === "a" && r.href !== null && counts(kind, entry)) out.add(r.href);
+    if (r.tag === "a" && r.href !== null && counts(scope.kind, entry)) out.add(r.href);
     for (const c of r.children) {
       if (c.moduleId !== null) {
         // A nested module (module / module-list field) is stored content,
         // part of this listing — unless a shared or generated entry renders it.
-        if (kind !== "generated" && entryOf(c, entry) !== "shared") {
+        if (scope.kind !== "generated" && entryOf(c, entry) !== "shared") {
           collectModule(c, templates, out);
         }
         continue;
       }
       if (t === null) {
-        visit(c, null, kind, entry);
+        visit(c, null, scope, entry);
         continue;
       }
-      const match = pickTemplateChild(c, flatten(t.children, kind, tpl.fields, false));
+      const match = pickTemplateChild(c, flatten(t.children, scope, tpl.fields, false));
       // A module-level list iterated inside an entry starts its own
       // entries: they never borrow the enclosing entry's stamp.
-      visit(c, match?.node ?? null, match?.kind ?? kind, match?.reset ? "none" : entry);
+      visit(c, match?.node ?? null, match?.scope ?? scope, match?.reset ? "none" : entry);
     }
   };
-  visit(root, tpl.root, tpl.rootKind, "none");
+  visit(root, tpl.root, tpl.rootScope, "none");
 }
 
 /** Shared entries and generated links never count; list links only in a stored entry. */
@@ -218,7 +234,7 @@ function entryOf(n: MarkupNode, above: Entry): Entry {
 
 interface Candidate {
   readonly node: MarkupNode;
-  readonly kind: Kind;
+  readonly scope: Scope;
   /** Rendered inside a new iteration nested in an entry (see {@link sectionKind}). */
   readonly reset: boolean;
 }
@@ -229,29 +245,31 @@ interface Candidate {
  */
 function flatten(
   nodes: readonly MarkupNode[],
-  kind: Kind,
+  scope: Scope,
   fields: FieldNames,
   reset: boolean,
 ): Candidate[] {
   const out: Candidate[] = [];
   for (const n of nodes) {
     if (n.tag !== SECTION_MARKER_TAG) {
-      out.push({ node: n, kind, reset });
+      out.push({ node: n, scope, reset });
       continue;
     }
-    const inner = sectionKind(n, kind, fields);
-    out.push(...flatten(n.children, inner.kind, fields, reset || inner.boundary));
+    const inner = sectionScope(n, scope, fields);
+    out.push(...flatten(n.children, inner.scope, fields, reset || inner.boundary));
   }
   return out;
 }
 
 /**
- * The kind inside a section marker (`s:<name>` iterates or tests, `i:<name>`
+ * The scope inside a section marker (`s:<name>` iterates or tests, `i:<name>`
  * is inverted), and whether it starts a new iteration inside an entry.
  *
  * Names resolve the way the template engine resolves them (a dotted name
- * by its head): inside an entry the entry's own keys first (its fields and children loop: conditions or
- * stamped children, the kind stays), then the reserved `items` (a source
+ * by its head): inside an entry of list field F first the keys of F's
+ * entries (node fields and children loop, from F's list type — conditions
+ * or stamped children, the scope stays) and the engine's per-entry values
+ * (`index`, `depth` …: conditions), then the reserved `items` (a source
  * node's generated entries), then the module's fields — a list field
  * iterated there is a new iteration (`boundary`: its entries carry their
  * own stamp or none, never the enclosing entry's), any other field is a
@@ -260,25 +278,26 @@ function flatten(
  * `is_` / `has_` / `count_` flags are conditions. Any other name is a
  * plugin source (`{{#language_links}}`): generated, at any depth.
  */
-function sectionKind(
+function sectionScope(
   marker: MarkupNode,
-  outer: Kind,
+  outer: Scope,
   fields: FieldNames,
-): { readonly kind: Kind; readonly boundary: boolean } {
+): { readonly scope: Scope; readonly boundary: boolean } {
   const cls = marker.classes[0] ?? "";
-  const same = { kind: outer, boundary: false };
-  const generated = { kind: "generated" as const, boundary: false };
-  if (!cls.startsWith("s:") || outer === "generated") return same;
+  const same = { scope: outer, boundary: false };
+  const generated = { scope: GENERATED, boundary: false };
+  if (!cls.startsWith("s:") || outer.kind === "generated") return same;
   const name = cls.slice(2);
   // `link.href` resolves its head (`link`) and reads into the value: a
   // condition on that key, never an iteration of its own.
   const head = name.split(".")[0] ?? name;
-  const inEntry = outer === "list";
+  const inEntry = outer.kind === "list";
   if (inEntry) {
-    if (fields.entry.has(head)) return same;
+    const keys = outer.field === null ? undefined : fields.entry.get(outer.field);
+    if (keys?.has(head) || SYSTEM_ENTRY_KEYS.has(head)) return same;
     if (name === "items") return generated;
   }
-  if (fields.list.has(name)) return { kind: "list", boundary: inEntry };
+  if (fields.list.has(name)) return { scope: { kind: "list", field: name }, boundary: inEntry };
   if (fields.all.has(head)) return same;
   if (name.startsWith("page.terms")) return generated;
   return isCondition(name) ? same : generated;
@@ -302,7 +321,7 @@ function pickTemplateChild(c: MarkupNode, candidates: readonly Candidate[]): Can
     const rank = [
       cand.node.classes.length === c.classes.length ? 1 : 0,
       cand.node.classes.length,
-      weight[cand.kind],
+      weight[cand.scope.kind],
     ];
     if (!best || outranks(rank, best.rank)) best = { cand, rank };
   }

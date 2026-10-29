@@ -53,7 +53,7 @@ function mod(n: number, displayName: string, html: string, js = ""): StructureMo
     js,
     listFields: [],
     fieldNames: [],
-    entryKeys: [],
+    entryKeys: {},
   };
 }
 

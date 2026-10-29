@@ -51,7 +51,7 @@ const TEXT: StructureModule = {
   js: "",
   listFields: [],
   fieldNames: [],
-  entryKeys: [],
+  entryKeys: {},
 };
 const DIFF_TEMPLATE =
   '<div class="split"><div class="copy"><h2>{{title}}</h2><p>{{lead}}</p></div>' +
@@ -64,7 +64,7 @@ const DIFF: StructureModule = {
   js: "",
   listFields: [],
   fieldNames: [],
-  entryKeys: [],
+  entryKeys: {},
 };
 const DIFF_COPY: StructureModule = {
   id: id(103),
@@ -74,7 +74,7 @@ const DIFF_COPY: StructureModule = {
   js: "",
   listFields: [],
   fieldNames: [],
-  entryKeys: [],
+  entryKeys: {},
 };
 const NAV: StructureModule = {
   id: id(104),
@@ -84,7 +84,7 @@ const NAV: StructureModule = {
   js: "",
   listFields: [],
   fieldNames: [],
-  entryKeys: [],
+  entryKeys: {},
 };
 const MODULES = [TEXT, DIFF, DIFF_COPY, NAV];
 
@@ -203,7 +203,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     js: "",
     listFields: ["items"],
     fieldNames: ["title", "items", "featured"],
-    entryKeys: [],
+    entryKeys: {},
     fields: [
       { name: "title", kind: "text" as const },
       { name: "items", kind: "module-list" as const },
@@ -234,7 +234,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     js: "",
     listFields: ["karten"],
     fieldNames: ["title", "karten"],
-    entryKeys: [],
+    entryKeys: {},
     fields: [
       { name: "title", kind: "text" as const },
       { name: "karten", kind: "module-list" as const },
@@ -250,7 +250,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
       .filter((f) => f.kind === "list" || f.kind === "module-list")
       .map((f) => f.name),
     fieldNames: m.fields.map((f) => f.name),
-    entryKeys: [],
+    entryKeys: {},
   });
   const nestedModules = [asStructure(FAQ_ENTRY), asStructure(TOOL_CARD)];
 
@@ -551,7 +551,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     js: "",
     listFields: [],
     fieldNames: [],
-    entryKeys: [],
+    entryKeys: {},
   };
   const FOOTER: StructureModule = {
     id: id(111),
@@ -561,7 +561,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     js: "",
     listFields: [],
     fieldNames: [],
-    entryKeys: [],
+    entryKeys: {},
   };
   const NAV_MODULES = [...MODULES, HEADER, FOOTER];
   const SHARED = "00000000-0000-4000-8000-000000000900";

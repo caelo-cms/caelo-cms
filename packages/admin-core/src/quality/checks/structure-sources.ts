@@ -87,13 +87,11 @@ export function structureSourcesFromOps(
         js: m.js,
         listFields: m.fields.filter((f) => LIST_KINDS.has(f.kind)).map((f) => f.name),
         fieldNames: m.fields.map((f) => f.name),
-        entryKeys: [
-          ...new Set(
-            m.fields.flatMap((f) =>
-              f.kind === "list" && f.listType ? (entryKeysOf.get(f.listType) ?? []) : [],
-            ),
+        entryKeys: Object.fromEntries(
+          m.fields.flatMap((f) =>
+            f.kind === "list" && f.listType ? [[f.name, entryKeysOf.get(f.listType) ?? []]] : [],
           ),
-        ],
+        ),
       }));
     },
     layouts: () =>
