@@ -87,8 +87,9 @@ describe("preview cookie shim", () => {
     doc.cookie = "consent=no";
     const last = posts.at(-1)?.msg;
     expect(iframeToParentSchema.safeParse(last).success).toBe(true);
-    expect((last?.cookies as PreviewCookieJar).consent).toBe("no");
-    expect(Object.keys(last?.cookies as PreviewCookieJar)).toHaveLength(50);
+    const cookies = (last?.cookies ?? {}) as PreviewCookieJar;
+    expect(cookies.consent).toBe("no");
+    expect(Object.keys(cookies)).toHaveLength(50);
   });
 
   it("leaves a working native document.cookie alone", () => {
