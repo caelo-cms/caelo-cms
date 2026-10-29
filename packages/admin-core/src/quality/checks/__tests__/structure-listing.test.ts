@@ -569,4 +569,38 @@ describe("structure/manual-page-listing (#1256)", () => {
     );
     expect(f.map((x) => x.severity)).toEqual(["error"]);
   });
+  it("a select-option flag of the entry is a condition", () => {
+    const FLAG: StructureModule = {
+      ...LINK_LIST,
+      id: id(28),
+      slug: "flag",
+      html: '<section class="ll"><ul>{{#links}}<li>{{#badge_new}}<a href="{{link}}">{{label}}</a>{{/badge_new}}</li>{{/links}}</ul></section>',
+      entryKeys: { links: ["label", "link", "badge", "badge_new"] },
+    };
+    const html = linkList(GUIDES.slice(0, 7), (n) => local("links", n)).replace(
+      LINK_LIST.id,
+      FLAG.id,
+    );
+    const f = structureFindings(build(html), [...MODULES, FLAG], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f.map((x) => x.severity)).toEqual(["error"]);
+  });
+
+  it("a source entry whose class carries a placeholder is still a source entry", () => {
+    const TYPED: StructureModule = {
+      ...QUERY_LIST,
+      id: id(29),
+      slug: "typed",
+      html: '<section class="gi">{{#guides}}<a class="card card--{{page_type}}" href="{{link}}">{{title}}</a>{{/guides}}</section>',
+    };
+    const items = GUIDES.slice(0, 7)
+      .map((p) => `<a class="card card--guide" href="${p.path}">${p.title}</a>`)
+      .join("");
+    const html = `<section class="gi" data-caelo-module-id="${TYPED.id}">${items}</section>`;
+    const f = structureFindings(build(html), [...MODULES, TYPED], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f).toEqual([]);
+  });
 });

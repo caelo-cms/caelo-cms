@@ -26,19 +26,31 @@ interface ListTypeRows {
     readonly slug: string;
     readonly definition: {
       readonly nodes: Readonly<
-        Record<string, { fields: readonly { name: string }[]; children?: { name: string } }>
+        Record<
+          string,
+          {
+            fields: readonly { name: string; type?: string; options?: readonly string[] }[];
+            children?: { name: string };
+          }
+        >
       >;
     };
   }[];
 }
 
-/** List type slug -> the keys its entries carry: node field names and children loop names. */
+/**
+ * List type slug -> the keys its entries carry: node field names, the
+ * `<select>_<option>` flags of select fields, and children loop names.
+ */
 function entryKeysByType(rows: ListTypeRows): Map<string, string[]> {
   return new Map(
     rows.listTypes.map((t) => [
       t.slug,
       Object.values(t.definition.nodes).flatMap((n) => [
-        ...n.fields.map((f) => f.name),
+        ...n.fields.flatMap((f) => [
+          f.name,
+          ...(f.type === "select" ? (f.options ?? []).map((o) => `${f.name}_${o}`) : []),
+        ]),
         ...(n.children ? [n.children.name] : []),
       ]),
     ]),

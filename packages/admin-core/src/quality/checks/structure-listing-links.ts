@@ -31,7 +31,13 @@
  * not count, so a source binding is never mistaken for hand-kept cards.
  */
 
-import { type MarkupNode, parseMarkup, SECTION_MARKER_TAG, stripMustache } from "@caelo-cms/shared";
+import {
+  type MarkupNode,
+  PLACEHOLDER_MARK,
+  parseMarkup,
+  SECTION_MARKER_TAG,
+  stripMustache,
+} from "@caelo-cms/shared";
 import type { StagedPage } from "./check.js";
 import type { StructureModule } from "./structure-analysis.js";
 
@@ -337,8 +343,23 @@ function outranks(a: readonly number[], b: readonly number[]): boolean {
   return false;
 }
 
+/**
+ * Whether a template element can have rendered `rendered`: same tag, every
+ * template class present. A class built from a placeholder
+ * (`card--{{type}}`, marked by `markSections`) matches any rendered class
+ * with the same text around it; a class that is only a placeholder may
+ * render empty.
+ */
 function accounts(template: MarkupNode, rendered: MarkupNode): boolean {
-  return (
-    template.tag === rendered.tag && template.classes.every((k) => rendered.classes.includes(k))
-  );
+  if (template.tag !== rendered.tag) return false;
+  return template.classes.every((k) => {
+    if (!k.includes(PLACEHOLDER_MARK)) return rendered.classes.includes(k);
+    const parts = k.split(PLACEHOLDER_MARK);
+    if (parts.every((p) => p === "")) return true;
+    const head = parts[0] ?? "";
+    const tail = parts[parts.length - 1] ?? "";
+    return rendered.classes.some(
+      (r) => r.length >= head.length + tail.length && r.startsWith(head) && r.endsWith(tail),
+    );
+  });
 }
