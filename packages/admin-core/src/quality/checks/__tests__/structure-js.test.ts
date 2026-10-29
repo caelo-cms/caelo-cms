@@ -45,7 +45,14 @@ const REVEAL_JS = `(function () {
 })();`;
 
 function mod(n: number, displayName: string, html: string, js = ""): StructureModule {
-  return { id: id(n), slug: displayName.toLowerCase().replace(/\W+/g, "-"), displayName, html, js };
+  return {
+    id: id(n),
+    slug: displayName.toLowerCase().replace(/\W+/g, "-"),
+    displayName,
+    html,
+    js,
+    listFields: [],
+  };
 }
 
 const HEADER_HTML =
@@ -78,7 +85,8 @@ function page(n: number, path: string, ...modules: string[]): StagedPage {
 const noLayouts: StructureLayout[] = [];
 
 function jsFindings(pages: StagedPage[], modules: StructureModule[], layouts = noLayouts) {
-  return structureFindings(pages, modules, layouts).filter((f) =>
+  const noTypes = { defaultPageTypeId: "page", pageTypes: new Map(), pages: new Map() };
+  return structureFindings(pages, modules, layouts, noTypes).filter((f) =>
     /module-js|js-rendered|js-written/.test(f.ruleId),
   );
 }

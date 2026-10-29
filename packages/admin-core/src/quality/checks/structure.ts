@@ -34,6 +34,12 @@
  *   list and bind both. Links of a shared list never count.
  * - `structure/similar-navigation` (warning): near matches of the above
  *   (Jaccard ≥ the near-match threshold) — likely one menu drifting.
+ * - `structure/manual-page-listing` (#1256, structure-listing.ts): a
+ *   module keeps links to most published pages of one page type by hand
+ *   (local list entries, cards in a module-list, scalar href fields)
+ *   instead of a list field bound to a page query. Error while pages of
+ *   the type are missing, warning when the set is complete; the default
+ *   page type is exempt.
  * - Module JS (#1198, structure-js.ts): `structure/foreign-module-js` and
  *   `structure/js-rendered-content` (errors), `structure/site-wide-module-js`
  *   and `structure/js-written-text` (warnings) — a script in the wrong
@@ -63,6 +69,7 @@ import {
   selectorClasses,
 } from "./structure-analysis.js";
 import { moduleJsFindings } from "./structure-js.js";
+import { manualListingFindings, type StructurePageIndex } from "./structure-listing.js";
 
 export const STRUCTURE_CHECK_ID = "structure";
 
@@ -74,10 +81,12 @@ export interface StructureLayout {
   readonly css: string;
 }
 
-/** Where the check reads the module templates and layouts (main, = staged). */
+/** Where the check reads the module templates, layouts and pages (main, = staged). */
 export interface StructureSources {
   modules(): Promise<readonly StructureModule[]>;
   layouts(): Promise<readonly StructureLayout[]>;
+  /** Page types and every page's type (#1256). */
+  pageIndex(): Promise<StructurePageIndex>;
 }
 
 /** Most distinct one-page patterns compared pairwise for near matches. */
@@ -100,8 +109,12 @@ export function createStructureCheck(sources: StructureSources): SiteCheck {
     title: "Markup structure",
     scope: "site",
     async run({ pages }) {
-      const [modules, layouts] = await Promise.all([sources.modules(), sources.layouts()]);
-      return structureFindings(pages, modules, layouts);
+      const [modules, layouts, pageIndex] = await Promise.all([
+        sources.modules(),
+        sources.layouts(),
+        sources.pageIndex(),
+      ]);
+      return structureFindings(pages, modules, layouts, pageIndex);
     },
   };
 }
@@ -111,6 +124,7 @@ export function structureFindings(
   pages: readonly StagedPage[],
   modules: readonly StructureModule[],
   layouts: readonly StructureLayout[],
+  pageIndex: StructurePageIndex,
 ): Finding[] {
   const analysis = analyseStructure(pages, modules);
   const byId = new Map(modules.map((m) => [m.id, m]));
@@ -122,6 +136,7 @@ export function structureFindings(
     ...layoutCss(analysis, layouts, byId),
     ...repeatedItems(analysis, [...groups.exact, ...groups.near], byId),
     ...navigationFindings(analysis.linkGroups, byId),
+    ...manualListingFindings(analysis.listingGroups, pages, pageIndex, byId),
     ...moduleJsFindings(analysis, pages, modules, layouts),
   ];
   // Errors first (stable within a severity), so a cut keeps what blocks.

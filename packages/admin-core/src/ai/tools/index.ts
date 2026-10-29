@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { withFieldMarkupGuard } from "./_markup-guard.js";
+import { listingGroupsByPage } from "./_page-listing-guard.js";
 import { withPluginModuleHints } from "./_plugin-write-hints.js";
 import { placementTargets } from "./_repeated-value-guard.js";
 import { activatePluginTool } from "./activate-plugin.js";
@@ -282,15 +283,28 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // incremental passes on existing pages. #820 — every field-value write
   // carries the repeated-markup hint (withFieldMarkupGuard).
   registry.register(
-    withFieldMarkupGuard(buildPageTool, buildPageValues, (i) => ({
-      moduleIds: i.modules.flatMap((m) => (typeof m.moduleId === "string" ? [m.moduleId] : [])),
-    })),
+    withFieldMarkupGuard(
+      buildPageTool,
+      buildPageValues,
+      (i) => ({
+        moduleIds: i.modules.flatMap((m) => (typeof m.moduleId === "string" ? [m.moduleId] : [])),
+      }),
+      // #1256 — one page: its cards (detached card modules included) are one listing.
+      (i) => [buildPageValues(i)],
+    ),
   );
   registry.register(
     withFieldMarkupGuard(
       setPageModuleContentManyTool,
       (i) => i.items.map((x) => x.contentValues),
       (i) => placementTargets(i.items),
+      // #1256 — the placements of one page are one page's links.
+      (i) =>
+        listingGroupsByPage(
+          i.items,
+          (x) => x.pageId,
+          (x) => x.contentValues,
+        ),
     ),
   );
   registry.register(

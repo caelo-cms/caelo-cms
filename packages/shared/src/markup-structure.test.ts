@@ -113,6 +113,17 @@ describe("templates and free regions", () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 
+  it("stripMustache markSections keeps sections between elements as markers (#1256)", () => {
+    const t =
+      '<ul class="x {{#on}}on{{/on}}">{{#links}}<li><a href="{{link}}">{{label}}</a></li>{{/links}}{{^links}}<p>none</p>{{/links}}</ul>';
+    expect(stripMustache(t, { markSections: true })).toBe(
+      '<ul class="x "><caelo-section class="s:links"><li><a href=""></a></li></caelo-section><caelo-section class="i:links"><p>none</p></caelo-section></ul>',
+    );
+    // Default output is unchanged.
+    expect(stripMustache(t)).toBe('<ul class="x "><li><a href=""></a></li><p>none</p></ul>');
+    stripMustache(`{{#${" ".repeat(50_000)}`, { markSections: true });
+  });
+
   it("stripMustache keeps the markup a template renders", () => {
     expect(stripMustache("<p>{{a}}{{{b}}}</p>{{#s}}<i></i>{{/s}}{{>n}}")).toBe("<p></p><i></i>");
   });

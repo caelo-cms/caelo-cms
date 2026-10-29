@@ -2,7 +2,8 @@
 
 /**
  * Issue #820 — the structure check's sources, read through the Query API
- * (`modules.list`, `layouts.list`) as the audit worker's system actor. A
+ * (`modules.list`, `layouts.list`; #1256 adds `pages.list`,
+ * `page_types.list` and `site_defaults.get`) as the audit worker's system actor. A
  * system actor carries no chat branch, so it reads main — the state the
  * staged build was rendered from.
  *
@@ -16,6 +17,10 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { describeError } from "../../ai/tools/_describe-error.js";
 import type { StructureLayout, StructureSources } from "./structure.js";
 import type { StructureModule } from "./structure-analysis.js";
+import type { StructurePageIndex } from "./structure-listing.js";
+
+/** The `kind`s of fields whose sections render entries (#1256). */
+const LIST_KINDS = new Set(["list", "module-list"]);
 
 /** Sources backed by the Query API. */
 export function structureSourcesFromOps(
@@ -23,20 +28,31 @@ export function structureSourcesFromOps(
   adapter: DatabaseAdapter,
   ctx: ExecutionContext,
 ): StructureSources {
-  const read = async <T>(op: string, pick: (value: unknown) => T): Promise<T> => {
-    const r = await execute(registry, adapter, ctx, op, { includeDeleted: false });
+  const read = async <T>(
+    op: string,
+    pick: (value: unknown) => T,
+    input: Record<string, unknown> = { includeDeleted: false },
+  ): Promise<T> => {
+    const r = await execute(registry, adapter, ctx, op, input);
     if (!r.ok) throw new Error(`${op} failed: ${describeError(r.error)}`);
     return pick(r.value);
   };
   return {
     modules: () =>
       read("modules.list", (v) =>
-        (v as { modules: StructureModule[] }).modules.map((m) => ({
+        (
+          v as {
+            modules: (Omit<StructureModule, "listFields"> & {
+              fields: { name: string; kind: string }[];
+            })[];
+          }
+        ).modules.map((m) => ({
           id: m.id,
           slug: m.slug,
           displayName: m.displayName,
           html: m.html,
           js: m.js,
+          listFields: m.fields.filter((f) => LIST_KINDS.has(f.kind)).map((f) => f.name),
         })),
       ),
     layouts: () =>
@@ -48,5 +64,35 @@ export function structureSourcesFromOps(
           css: l.css,
         })),
       ),
+    pageIndex: async (): Promise<StructurePageIndex> => {
+      const [defaults, types, pages] = await Promise.all([
+        read(
+          "site_defaults.get",
+          (v) => (v as { defaults: { defaultPageTypeId: string } | null }).defaults,
+          {},
+        ),
+        read(
+          "page_types.list",
+          (v) => (v as { pageTypes: { id: string; slug: string; name: string }[] }).pageTypes,
+          {},
+        ),
+        read(
+          "pages.list",
+          (v) => (v as { pages: { id: string; pageTypeId: string; title: string }[] }).pages,
+        ),
+      ]);
+      // No fallback (CLAUDE.md §2): without the stored default the rule
+      // cannot tell ordinary pages from typed ones.
+      if (defaults === null) {
+        throw new Error(
+          "site_defaults.get returned no site defaults — the structure check needs default_page_type_id",
+        );
+      }
+      return {
+        defaultPageTypeId: defaults.defaultPageTypeId,
+        pageTypes: new Map(types.map((t) => [t.id, { slug: t.slug, name: t.name }])),
+        pages: new Map(pages.map((p) => [p.id, { pageTypeId: p.pageTypeId, title: p.title }])),
+      };
+    },
   };
 }

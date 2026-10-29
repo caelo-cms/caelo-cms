@@ -21,6 +21,7 @@ import { findingSchema } from "../findings.js";
 import { runFindingChecks } from "../runner.js";
 import { createStructureCheck, type StructureLayout, structureFindings } from "../structure.js";
 import { type StructureModule, selectorClasses } from "../structure-analysis.js";
+import type { StructurePageIndex } from "../structure-listing.js";
 import { NO_PROBE_BUILD } from "./fixtures/test-checks.js";
 
 /** Local lists of the shipped types need nothing but the types (epic #1107). */
@@ -33,6 +34,12 @@ const LISTS = createListRenderContext({
   siteLanguage: "en",
   homePageId: null,
 }).forPage(null);
+/** No typed pages: the listing rule (#1256) stays silent in these fixtures. */
+const NO_TYPES: StructurePageIndex = {
+  defaultPageTypeId: "page",
+  pageTypes: new Map(),
+  pages: new Map(),
+};
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
 const TEXT: StructureModule = {
@@ -41,6 +48,7 @@ const TEXT: StructureModule = {
   displayName: "Text",
   html: '<section class="prose"><h2>{{title}}</h2><div class="body">{{body}}</div></section>',
   js: "",
+  listFields: [],
 };
 const DIFF_TEMPLATE =
   '<div class="split"><div class="copy"><h2>{{title}}</h2><p>{{lead}}</p></div>' +
@@ -51,6 +59,7 @@ const DIFF: StructureModule = {
   displayName: "Split with diff",
   html: DIFF_TEMPLATE,
   js: "",
+  listFields: [],
 };
 const DIFF_COPY: StructureModule = {
   id: id(103),
@@ -58,6 +67,7 @@ const DIFF_COPY: StructureModule = {
   displayName: "Split with diff (pricing)",
   html: DIFF_TEMPLATE.replace("{{title}}", "Pricing"),
   js: "",
+  listFields: [],
 };
 const NAV: StructureModule = {
   id: id(104),
@@ -65,6 +75,7 @@ const NAV: StructureModule = {
   displayName: "Main menu",
   html: '<nav class="menu"><ul>{{#menu}}<li><a class="item" href="{{link}}">{{label}}</a></li>{{/menu}}</ul></nav>',
   js: "",
+  listFields: [],
 };
 const MODULES = [TEXT, DIFF, DIFF_COPY, NAV];
 
@@ -106,6 +117,7 @@ describe("structure/repeated-markup", () => {
       ],
       MODULES,
       noLayouts,
+      NO_TYPES,
     );
     const repeated = findings.filter((f) => f.ruleId === "structure/repeated-markup");
     expect(repeated.map((f) => [f.pageId, f.severity])).toEqual([
@@ -120,7 +132,9 @@ describe("structure/repeated-markup", () => {
   });
 
   it("one-off free markup on a single page is allowed", () => {
-    expect(structureFindings([page(1, "/a", text(chain(3)))], MODULES, noLayouts)).toEqual([]);
+    expect(
+      structureFindings([page(1, "/a", text(chain(3)))], MODULES, noLayouts, NO_TYPES),
+    ).toEqual([]);
   });
 
   it("the same pattern rendered by one module on many pages is the reuse we want", () => {
@@ -128,6 +142,7 @@ describe("structure/repeated-markup", () => {
       [1, 2, 3].map((n) => page(n, `/p${n}`, placed(DIFF, diffMarkup(`Title ${n}`)))),
       [TEXT, DIFF],
       noLayouts,
+      NO_TYPES,
     );
     expect(findings).toEqual([]);
   });
@@ -137,6 +152,7 @@ describe("structure/repeated-markup", () => {
       [page(1, "/a", text(diffMarkup("Copied")))],
       [TEXT, DIFF],
       noLayouts,
+      NO_TYPES,
     );
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({ ruleId: "structure/repeated-markup", severity: "error" });
@@ -148,9 +164,9 @@ describe("structure/repeated-markup", () => {
     const entry = (n: number, label: string) =>
       `<li data-caelo-list-item="00000000-0000-4000-8000-000000000101/00000000-0000-4000-9000-00000000000${n}"><a class="item" href="/${label}">${label}</a></li>`;
     const nav = `<nav class="menu" data-caelo-module-id="${NAV.id}"><ul>${entry(1, "home")}${entry(2, "about")}${entry(3, "news")}</ul></nav>`;
-    expect(structureFindings([page(1, "/a", nav), page(2, "/b", nav)], MODULES, noLayouts)).toEqual(
-      [],
-    );
+    expect(
+      structureFindings([page(1, "/a", nav), page(2, "/b", nav)], MODULES, noLayouts, NO_TYPES),
+    ).toEqual([]);
   });
 });
 
@@ -176,6 +192,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     displayName: "FAQ",
     html: '<section class="faq-wrap"><h2>{{title}}</h2><div class="faq">{{#items}}{{/items}}</div>{{>featured}}</section>',
     js: "",
+    listFields: ["items"],
     fields: [
       { name: "title", kind: "text" as const },
       { name: "items", kind: "module-list" as const },
@@ -204,6 +221,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     displayName: "Tool-Karten-Liste",
     html: '<section class="tcl"><h2>{{title}}</h2><div class="tcg">{{#karten}}{{/karten}}</div></section>',
     js: "",
+    listFields: ["karten"],
     fields: [
       { name: "title", kind: "text" as const },
       { name: "karten", kind: "module-list" as const },
@@ -215,6 +233,9 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     displayName: m.slug,
     html: m.html,
     js: "",
+    listFields: m.fields
+      .filter((f) => f.kind === "list" || f.kind === "module-list")
+      .map((f) => f.name),
   });
   const nestedModules = [asStructure(FAQ_ENTRY), asStructure(TOOL_CARD)];
 
@@ -297,6 +318,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
       pages,
       [...MODULES, FAQ, TOOL_LIST, ...nestedModules],
       noLayouts,
+      NO_TYPES,
     );
     expect(findings).toEqual([]);
   });
@@ -311,6 +333,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
       pages,
       [...MODULES, FAQ, TOOL_LIST, ...nestedModules],
       noLayouts,
+      NO_TYPES,
     );
     expect(findings.map((f) => [f.ruleId, f.pageId])).toEqual([
       ["structure/repeated-markup", id(1)],
@@ -326,6 +349,7 @@ describe("structure/similar-markup", () => {
       [page(1, "/a", text(chain(3))), page(2, "/b", text(chain(3, "<small>note</small>")))],
       MODULES,
       noLayouts,
+      NO_TYPES,
     );
     expect(findings.map((f) => [f.ruleId, f.severity])).toEqual([
       ["structure/similar-markup", "warning"],
@@ -344,6 +368,7 @@ describe("structure/duplicate-module", () => {
       ],
       MODULES,
       noLayouts,
+      NO_TYPES,
     );
     expect(findings.map((f) => [f.ruleId, f.pageId])).toEqual([
       ["structure/duplicate-module", id(1)],
@@ -357,6 +382,7 @@ describe("structure/duplicate-module", () => {
       [page(1, "/a", placed(DIFF, diffMarkup("A")))],
       MODULES,
       noLayouts,
+      NO_TYPES,
     );
     expect(findings).toEqual([]);
   });
@@ -411,6 +437,7 @@ describe("createStructureCheck", () => {
     const check = createStructureCheck({
       modules: async () => MODULES,
       layouts: async () => [],
+      pageIndex: async () => NO_TYPES,
     });
     const result = await runFindingChecks(
       [
@@ -436,6 +463,7 @@ describe("createStructureCheck", () => {
         throw new Error("modules.list failed: boom");
       },
       layouts: async () => [],
+      pageIndex: async () => NO_TYPES,
     });
     const result = await runFindingChecks(
       [
@@ -463,7 +491,12 @@ describe("structure/repeated-items (#1068)", () => {
 
   it("three copies side by side in one field on one page warn", () => {
     for (const body of [cards(3), `<div class="grid">${cards(5)}</div>`]) {
-      const findings = structureFindings([page(1, "/compare", text(body))], MODULES, noLayouts);
+      const findings = structureFindings(
+        [page(1, "/compare", text(body))],
+        MODULES,
+        noLayouts,
+        NO_TYPES,
+      );
       expect(findings.map((f) => [f.ruleId, f.severity, f.pageId])).toEqual([
         ["structure/repeated-items", "warning", id(1)],
       ]);
@@ -475,7 +508,9 @@ describe("structure/repeated-items (#1068)", () => {
   });
 
   it("two copies stay silent", () => {
-    expect(structureFindings([page(1, "/pair", text(cards(2)))], MODULES, noLayouts)).toEqual([]);
+    expect(
+      structureFindings([page(1, "/pair", text(cards(2)))], MODULES, noLayouts, NO_TYPES),
+    ).toEqual([]);
   });
 
   it("a page whose copies already block as repeated markup gets only that finding", () => {
@@ -483,6 +518,7 @@ describe("structure/repeated-items (#1068)", () => {
       [page(1, "/a", text(cards(3))), page(2, "/b", text(cards(3)))],
       MODULES,
       noLayouts,
+      NO_TYPES,
     );
     expect(findings.map((f) => f.ruleId)).toEqual([
       "structure/repeated-markup",
@@ -498,6 +534,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     displayName: "Site header",
     html: '<header class="hd"><ul>{{#nav}}<li><a href="{{link}}">{{label}}</a></li>{{/nav}}</ul></header>',
     js: "",
+    listFields: [],
   };
   const FOOTER: StructureModule = {
     id: id(111),
@@ -505,6 +542,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     displayName: "Site footer",
     html: '<footer class="ft"><p>{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}</p></footer>',
     js: "",
+    listFields: [],
   };
   const NAV_MODULES = [...MODULES, HEADER, FOOTER];
   const SHARED = "00000000-0000-4000-8000-000000000900";
@@ -531,6 +569,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
       [page(1, "/", header(MENU), footer(MENU)), page(2, "/docs", header(MENU), footer(MENU))],
       NAV_MODULES,
       noLayouts,
+      NO_TYPES,
     );
     const nav = findings.filter((f) => f.ruleId.includes("navigation"));
     expect(nav).toHaveLength(1);
@@ -552,6 +591,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
         [page(1, "/", header(MENU, sharedStamp), footer(MENU, sharedStamp))],
         NAV_MODULES,
         noLayouts,
+        NO_TYPES,
       ),
     ).toEqual([]);
   });
@@ -562,6 +602,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
       [page(1, "/", header(MENU), handWritten)],
       NAV_MODULES,
       noLayouts,
+      NO_TYPES,
     );
     expect(findings.map((f) => f.ruleId)).toEqual(["structure/duplicate-navigation"]);
     expect(findings[0]?.message).toContain('"Text"');
@@ -572,6 +613,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
       [page(1, "/", header(MENU), footer([...MENU, "/imprint"]))],
       NAV_MODULES,
       noLayouts,
+      NO_TYPES,
     );
     expect(findings.map((f) => [f.ruleId, f.severity])).toEqual([
       ["structure/similar-navigation", "warning"],
@@ -584,6 +626,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
         [page(1, "/", header(MENU)), page(2, "/docs", header(MENU))],
         NAV_MODULES,
         noLayouts,
+        NO_TYPES,
       ),
     ).toEqual([]);
     expect(
@@ -591,6 +634,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
         [page(1, "/", header(MENU), footer(["/imprint", "/privacy", "/terms"]))],
         NAV_MODULES,
         noLayouts,
+        NO_TYPES,
       ),
     ).toEqual([]);
     expect(
@@ -598,6 +642,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
         [page(1, "/", header(["/a", "/b"]), footer(["/a", "/b"]))],
         NAV_MODULES,
         noLayouts,
+        NO_TYPES,
       ),
     ).toEqual([]);
   });
@@ -611,12 +656,14 @@ describe("structure messages recommend a list field (epic #1107)", () => {
       [page(1, "/compare", text([1, 2, 3].map((n) => card(`T${n}`)).join("")))],
       MODULES,
       noLayouts,
+      NO_TYPES,
     );
     expect(items[0]?.fix?.hint).toStartWith("give the host module a `list` field");
     const repeated = structureFindings(
       [page(1, "/a", text(chain(3))), page(2, "/b", text(chain(4)))],
       MODULES,
       noLayouts,
+      NO_TYPES,
     );
     expect(repeated[0]?.fix?.hint).toContain("a `list` field for repeated entries");
   });

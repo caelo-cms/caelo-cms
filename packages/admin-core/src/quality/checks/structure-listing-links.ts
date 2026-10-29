@@ -1,0 +1,244 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Issue #1256 — the links a page keeps BY HAND, per outermost module root:
+ * the input of `structure/manual-page-listing` (structure-listing.ts).
+ *
+ * An overview page built as cards is caught only if every way of writing
+ * the cards counts, and the right way never does:
+ *
+ * - counted: entries of a LOCAL list (`data-caelo-list-item`
+ *   `instance/…` / `local/…`), links in free markup (field values), links
+ *   in template-owned scalar fields (`<a href="{{card1_href}}">`), and all
+ *   of these inside nested modules — a `module-list` of card modules is
+ *   one listing of the module that holds it;
+ * - never counted: entries of a SHARED list (`<listId>/<itemId>`: menus),
+ *   entries a source generates (a page query, `children`, `term_pages`, a
+ *   source node's `items`) and the page's own term loops (`page.…`).
+ *
+ * Stored entries carry the stamp, generated ones do not, and a scalar link
+ * carries none either. What tells a scalar link from a generated entry is
+ * the template: a link inside a section over a `list` / `module-list`
+ * field (or a reserved `items` loop) renders per entry; a link outside
+ * one, or inside a mere condition, is the template's own. So each rendered
+ * node is matched to the template node that rendered it — the template
+ * parsed with its sections kept as marker elements (`stripMustache`
+ * `markSections`). When a rendered node could come from a list section or
+ * from a scalar spot, the list section wins: an unstamped link then does
+ * not count, so a source binding is never mistaken for hand-kept cards.
+ */
+
+import { type MarkupNode, parseMarkup, SECTION_MARKER_TAG, stripMustache } from "@caelo-cms/shared";
+import type { StagedPage } from "./check.js";
+import { pathKey } from "./links-analysis.js";
+import type { StructureModule } from "./structure-analysis.js";
+
+/** The hand-kept internal links of one outermost module root on one page. */
+export interface ListingLinkGroup {
+  readonly pageId: string;
+  readonly moduleId: string;
+  /** Distinct same-site targets as {@link pathKey} keys, sorted. */
+  readonly targets: readonly string[];
+}
+
+/** Fewer hand-kept links than this are never a listing (a CTA pair). */
+export const MIN_LISTING_LINKS = 3;
+
+/** Where a template node sits: the template's own, a stored entry, generated. */
+type Kind = "scalar" | "list" | "generated";
+
+/** The nearest list entry stamp above a rendered node. */
+type Entry = "none" | "own" | "shared";
+
+interface ListingTemplate {
+  readonly root: MarkupNode;
+  readonly rootKind: Kind;
+  readonly listFields: ReadonlySet<string>;
+}
+
+// `<listId>/<itemId>` — a shared list's entry stamp.
+const SHARED_ENTRY_RE = /^[0-9a-f-]{36}\/[0-9a-f-]{36}$/i;
+
+/** Parse every module template once, sections kept as markers. */
+export function listingTemplates(
+  modules: readonly StructureModule[],
+): ReadonlyMap<string, ListingTemplate> {
+  const out = new Map<string, ListingTemplate>();
+  for (const m of modules) {
+    const listFields = new Set(m.listFields);
+    const forest = parseMarkup(stripMustache(m.html, { markSections: true }));
+    const first = flatten(forest, "scalar", listFields)[0];
+    if (first) out.set(m.id, { root: first.node, rootKind: first.kind, listFields });
+  }
+  return out;
+}
+
+/**
+ * The listing link groups of one staged page: one per outermost module
+ * root with at least {@link MIN_LISTING_LINKS} same-site targets.
+ */
+export function listingLinkGroups(
+  page: StagedPage,
+  roots: readonly MarkupNode[],
+  templates: ReadonlyMap<string, ListingTemplate>,
+): ListingLinkGroup[] {
+  let base: URL;
+  try {
+    base = new URL(page.url);
+  } catch {
+    return [];
+  }
+  const out: ListingLinkGroup[] = [];
+  const walk = (n: MarkupNode) => {
+    if (n.moduleId !== null) {
+      const hrefs = new Set<string>();
+      collectModule(n, templates, hrefs);
+      const targets = new Set<string>();
+      for (const href of hrefs) {
+        const key = sameSiteKey(href, base);
+        if (key !== null) targets.add(key);
+      }
+      if (targets.size >= MIN_LISTING_LINKS) {
+        out.push({ pageId: page.pageId, moduleId: n.moduleId, targets: [...targets].sort() });
+      }
+      return;
+    }
+    for (const c of n.children) walk(c);
+  };
+  for (const r of roots) walk(r);
+  return out;
+}
+
+/** The path key of a same-site link, or null (fragment, other site, other scheme). */
+function sameSiteKey(href: string, base: URL): string | null {
+  const raw = href.trim();
+  if (raw === "" || raw.startsWith("#")) return null;
+  let url: URL;
+  try {
+    url = new URL(raw, base);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (url.host.toLowerCase() !== base.host.toLowerCase()) return null;
+  return pathKey(url.pathname);
+}
+
+/** Adds the hand-kept hrefs of one module root (nested modules included). */
+function collectModule(
+  root: MarkupNode,
+  templates: ReadonlyMap<string, ListingTemplate>,
+  out: Set<string>,
+): void {
+  const tpl = root.moduleId === null ? undefined : templates.get(root.moduleId);
+  // A root its template does not render (a module the composer fills from
+  // other data) cannot be attributed: nothing in it counts.
+  if (!tpl || !accounts(tpl.root, root)) return;
+  const visit = (r: MarkupNode, t: MarkupNode | null, kind: Kind, entryAbove: Entry) => {
+    const entry = entryOf(r, entryAbove);
+    if (r.tag === "a" && r.href !== null && counts(kind, entry)) out.add(r.href);
+    for (const c of r.children) {
+      if (c.moduleId !== null) {
+        // A nested module (module / module-list field) is stored content,
+        // part of this listing — unless a shared or generated entry renders it.
+        if (kind !== "generated" && entryOf(c, entry) !== "shared") {
+          collectModule(c, templates, out);
+        }
+        continue;
+      }
+      if (t === null) {
+        visit(c, null, kind, entry);
+        continue;
+      }
+      const match = pickTemplateChild(c, flatten(t.children, kind, tpl.listFields));
+      visit(c, match?.node ?? null, match?.kind ?? kind, entry);
+    }
+  };
+  visit(root, tpl.root, tpl.rootKind, "none");
+}
+
+/** Shared entries and generated links never count; list links only in a stored entry. */
+function counts(kind: Kind, entry: Entry): boolean {
+  if (entry === "shared" || kind === "generated") return false;
+  return kind === "scalar" || entry === "own";
+}
+
+function entryOf(n: MarkupNode, above: Entry): Entry {
+  const stamp = n.listItem;
+  if (stamp === null || above === "shared") return above;
+  if (SHARED_ENTRY_RE.test(stamp)) return "shared";
+  if (stamp.startsWith("instance/") || stamp.startsWith("local/")) return "own";
+  return above;
+}
+
+interface Candidate {
+  readonly node: MarkupNode;
+  readonly kind: Kind;
+}
+
+/**
+ * Template children with section markers dissolved: each element carries
+ * the kind of the innermost section around it.
+ */
+function flatten(
+  nodes: readonly MarkupNode[],
+  kind: Kind,
+  listFields: ReadonlySet<string>,
+): Candidate[] {
+  const out: Candidate[] = [];
+  for (const n of nodes) {
+    if (n.tag !== SECTION_MARKER_TAG) {
+      out.push({ node: n, kind });
+      continue;
+    }
+    out.push(...flatten(n.children, sectionKind(n, kind, listFields), listFields));
+  }
+  return out;
+}
+
+/** The kind inside a section marker (`s:<name>` iterates or tests, `i:<name>` is inverted). */
+function sectionKind(marker: MarkupNode, outer: Kind, listFields: ReadonlySet<string>): Kind {
+  const cls = marker.classes[0] ?? "";
+  if (!cls.startsWith("s:") || outer === "generated") return outer;
+  const name = cls.slice(2);
+  // `items` is reserved for a source node's generated entries; `page.…`
+  // iterates the rendering page's own data (its terms).
+  if (name === "items" || name.startsWith("page.")) return "generated";
+  if (outer === "scalar" && listFields.has(name)) return "list";
+  return outer;
+}
+
+/**
+ * The template node that rendered `c`: the exact class set first, then the
+ * most classes in common, then the per-entry kinds (see the file header),
+ * then template order.
+ */
+function pickTemplateChild(c: MarkupNode, candidates: readonly Candidate[]): Candidate | null {
+  const weight = { generated: 2, list: 1, scalar: 0 } as const;
+  let best: { readonly cand: Candidate; readonly rank: readonly number[] } | null = null;
+  for (const cand of candidates) {
+    if (!accounts(cand.node, c)) continue;
+    const rank = [
+      cand.node.classes.length === c.classes.length ? 1 : 0,
+      cand.node.classes.length,
+      weight[cand.kind],
+    ];
+    if (!best || outranks(rank, best.rank)) best = { cand, rank };
+  }
+  return best?.cand ?? null;
+}
+
+function outranks(a: readonly number[], b: readonly number[]): boolean {
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
+
+function accounts(template: MarkupNode, rendered: MarkupNode): boolean {
+  return (
+    template.tag === rendered.tag && template.classes.every((k) => rendered.classes.includes(k))
+  );
+}

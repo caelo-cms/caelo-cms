@@ -22,6 +22,12 @@
  * modules showing one shared list is the goal, not a copy. Links of
  * generated entries (queries, system sources) carry no stamp and sit in
  * the template's own markup, so they never count either.
+ *
+ * Listing links (#1256, structure-listing-links.ts): per OUTERMOST module
+ * root, every internal link the page keeps by hand — the link groups'
+ * links plus those of nested card modules and template-owned scalar
+ * fields (`card1_href`) — resolved to site paths. A separate collection,
+ * so `duplicate-navigation` keeps its meaning.
  */
 
 import {
@@ -37,6 +43,11 @@ import {
   stripMustache,
 } from "@caelo-cms/shared";
 import type { StagedPage } from "./check.js";
+import {
+  type ListingLinkGroup,
+  listingLinkGroups,
+  listingTemplates,
+} from "./structure-listing-links.js";
 
 /** A module as the structure check needs it. */
 export interface StructureModule {
@@ -47,6 +58,11 @@ export interface StructureModule {
   readonly html: string;
   /** The module's script (#1198: whose markup it drives, whether it builds content). */
   readonly js: string;
+  /**
+   * Names of its `list` and `module-list` fields (#1256): a section over
+   * one of them renders entries, any other section is a condition.
+   */
+  readonly listFields: readonly string[];
 }
 
 /** A pattern found in free markup on one page. */
@@ -96,6 +112,8 @@ export interface StructureAnalysis {
   readonly occurrences: readonly PatternOccurrence[];
   readonly siblingRepeats: readonly SiblingRepeat[];
   readonly linkGroups: readonly LinkGroup[];
+  /** Hand-kept internal links per outermost module root (#1256). */
+  readonly listingGroups: readonly ListingLinkGroup[];
   readonly classUse: ReadonlyMap<string, ClassUse>;
   /** Module id → the pages it is rendered on. */
   readonly placements: ReadonlyMap<string, ReadonlySet<string>>;
@@ -125,6 +143,8 @@ export function analyseStructure(
     if (shape) templateShapes.set(m.id, shape);
   }
 
+  const listing = listingTemplates(modules);
+  const listingGroups: ListingLinkGroup[] = [];
   const occurrences: PatternOccurrence[] = [];
   const siblingRepeats: SiblingRepeat[] = [];
   const linkGroups: LinkGroup[] = [];
@@ -145,6 +165,7 @@ export function analyseStructure(
     markChrome(roots, (cls) => {
       use(cls).chrome = true;
     });
+    listingGroups.push(...listingLinkGroups(page, roots, listing));
     for (const root of moduleRoots(roots)) {
       const id = root.moduleId as string;
       let onPages = placements.get(id);
@@ -192,6 +213,7 @@ export function analyseStructure(
     occurrences,
     siblingRepeats,
     linkGroups,
+    listingGroups,
     classUse,
     placements,
     templateShapes,

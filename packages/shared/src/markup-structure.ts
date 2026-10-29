@@ -128,7 +128,19 @@ export interface StripMustacheOptions {
    * such a section is dropped, leaving the classes it ALWAYS renders.
    */
   readonly keepOptionalAttributeText?: boolean;
+  /**
+   * Issue #1256 — keep every section between elements as a marker element
+   * instead of dropping its tags: `{{#f}}…{{/f}}` becomes
+   * `<caelo-section class="s:f">…</caelo-section>`, an inverted
+   * `{{^f}}` the class `i:f`. The structure check reads from them which
+   * links a template renders per list entry. Ignored with
+   * `keepOptionalAttributeText` (in-tag sections must be dropped first).
+   */
+  readonly markSections?: boolean;
 }
+
+/** The marker element {@link stripMustache} `markSections` emits. */
+export const SECTION_MARKER_TAG = "caelo-section";
 
 /**
  * Remove Mustache tags (`{{x}}`, `{{{x}}}`, `{{#s}}`, `{{/s}}`, `{{>p}}`)
@@ -146,7 +158,21 @@ export interface StripMustacheOptions {
  */
 export function stripMustache(template: string, opts: StripMustacheOptions = {}): string {
   const base = opts.keepOptionalAttributeText ? template : dropInTagSections(template);
-  return stripDelimited(stripDelimited(base, 3), 2);
+  const marked = opts.markSections && !opts.keepOptionalAttributeText ? markSections(base) : base;
+  return stripDelimited(stripDelimited(marked, 3), 2);
+}
+
+/**
+ * Turn the section tags left after {@link dropInTagSections} (all between
+ * elements) into marker elements. `[^{}]*` before the closer keeps the
+ * match linear.
+ */
+function markSections(text: string): string {
+  return text.replace(/\{\{([#^/])([^{}]*)\}\}/g, (_, sigil: string, raw: string) => {
+    if (sigil === "/") return `</${SECTION_MARKER_TAG}>`;
+    const name = raw.trim();
+    return `<${SECTION_MARKER_TAG} class="${sigil === "#" ? "s" : "i"}:${name.replace(/[\s"<>]/g, "")}">`;
+  });
 }
 
 /**
