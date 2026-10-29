@@ -122,6 +122,7 @@ export const actions: Actions = {
       draftPageCount,
       draftPageTitles,
       unpublishedLinkWarning,
+      truncatedListWarning,
       pluginProblemWarning,
     } = await describeStagedBuild(locals.ctx, staged.value, null);
     return {
@@ -138,6 +139,7 @@ export const actions: Actions = {
         draftPageCount,
         draftPageTitles,
         unpublishedLinkWarning,
+        truncatedListWarning,
         pluginProblemWarning,
       },
     };

@@ -407,6 +407,7 @@ class SectionRenderer {
         ...(field.list !== undefined ? { list: field.list } : {}),
         ...(field.source !== undefined ? { source: field.source } : {}),
         ...(field.default !== undefined ? { default: field.default } : {}),
+        ...(field.paginate !== undefined ? { paginate: field.paginate } : {}),
       };
       const value = Object.hasOwn(env.values, name) ? env.values[name] : undefined;
       const res = env.lists.resolveField(spec, value, env.holder);

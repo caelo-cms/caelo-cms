@@ -91,6 +91,7 @@ import {
   STAGING_PUBLICATION_WAIT_MS,
 } from "../deploy/staging-publication-lock.js";
 import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publisher.js";
+import { truncatedListSchema } from "../deploy/truncated-lists.js";
 import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { jsonbParam } from "../sql-helpers.js";
@@ -175,6 +176,11 @@ const triggerOutput = z.object({
    * A Stage warning; Publish live blocks on them (rollout F).
    */
   unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
+  /**
+   * #1257 — page lists cut at the query cap: more pages match than they
+   * show. A Stage warning; paginating the list fixes it.
+   */
+  truncatedLists: z.array(truncatedListSchema),
   /**
    * #1008 — active plugins that were not running when this build ran,
    * so it lacks their output. A Stage warning; such a Stage is never
@@ -747,6 +753,7 @@ async function runTrigger(
       ...(previewUrl ? { previewUrl } : {}),
       draftPages: (finished.value as { draftPages: z.infer<typeof draftPagesSummary> }).draftPages,
       unpublishedLinkTargets: built.unpublishedLinkTargets,
+      truncatedLists: built.truncatedLists,
       pluginProblems: plan.pluginProblems,
     });
   } catch (e) {

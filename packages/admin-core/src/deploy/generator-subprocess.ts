@@ -25,6 +25,7 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
 import { z } from "zod";
 import { SYSTEM_ACTOR_ID } from "../audit.js";
 import { ProgressThrottle } from "./progress-throttle.js";
+import { truncatedListSchema } from "./truncated-lists.js";
 import { unpublishedLinkTargetSchema } from "./unpublished-links.js";
 
 /** Minimum gap between two progress writes of one build (#1003). */
@@ -83,6 +84,8 @@ const subprocessDoneSchema = z.object({
   phases: z.array(phaseTimingSchema),
   buildDir: z.string(),
   unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
+  /** #1257 — page lists cut at the query cap (a Stage warning). */
+  truncatedLists: z.array(truncatedListSchema),
 });
 
 /** What a finished generator run reports. */

@@ -15,6 +15,7 @@ import { hasEscapedLineBreaks } from "./escaped-line-breaks.js";
 import { DEFAULT_LIST_TYPES, SITE_TEXTS_LIST_TYPE } from "./lists/default-types.js";
 import { listItemInputSchema } from "./lists/items.js";
 import { LIST_MAX_ITEMS, sourceDefSchema } from "./lists/list-type.js";
+import { listPaginationSchema } from "./lists/pagination.js";
 import { LIST_REF_RE } from "./lists/refs.js";
 
 /** Lowercase slug, hyphenated, 1–64 chars, no leading/trailing hyphen. */
@@ -361,6 +362,14 @@ const moduleFieldListSchema = z
     list: z.string().regex(LIST_REF_RE, "list must be caelo:list/<id>").optional(),
     /** `bind: "source"` — where generated entries come from. */
     source: sourceDefSchema.optional(),
+    /**
+     * #1257 — list EVERY match across follow-up pages (`<path>/page/<n>/`)
+     * instead of cutting at `limit`: a query or the term_pages source.
+     * `per_page` (1..50, default 50) and `follow_ups` (`index` default |
+     * `noindex`) are defaults a placement may override with its own
+     * `paginate`. At most one paginated field per module.
+     */
+    paginate: listPaginationSchema.optional(),
     min: z.number().int().nonnegative().optional(),
     max: z.number().int().positive().max(LIST_MAX_ITEMS).optional(),
     /** `local`: entries; `shared`: `caelo:list/<id>`. */
@@ -413,7 +422,34 @@ function listFieldIssues(f: z.infer<typeof moduleFieldListSchema>): string[] {
   if (f.min !== undefined && f.max !== undefined && f.min > f.max) {
     issues.push(`list field "${f.name}": min is greater than max.`);
   }
+  if (f.paginate !== undefined) issues.push(...paginateIssues(f));
   return issues;
+}
+
+/**
+ * #1257 — a paginated field lists a page query (or term_pages) across
+ * follow-up pages; its page size replaces the query's `limit`.
+ */
+function paginateIssues(f: z.infer<typeof moduleFieldListSchema>): string[] {
+  const where = `list field "${f.name}"`;
+  const src = f.source;
+  const pageable =
+    (f.bind ?? "local") === "source" &&
+    (src?.kind === "query" || (src?.kind === "system" && src.name === "term_pages"));
+  if (!pageable) {
+    return [
+      `${where}: paginate needs bind "source" with a query or the term_pages source — an overview of pages. Remove paginate, or bind the field to {kind:"query", …}.`,
+    ];
+  }
+  if (
+    src?.kind === "query" &&
+    (src.defaults.limit !== undefined || src.editable.includes("limit"))
+  ) {
+    return [
+      `${where}: a paginated query takes its page size from paginate.per_page — remove "limit" from source.defaults and source.editable.`,
+    ];
+  }
+  return [];
 }
 
 export const moduleFieldSchema = z.discriminatedUnion("kind", [
@@ -500,6 +536,13 @@ const moduleFieldsArray = z
           ctx.addIssue({ code: z.ZodIssueCode.custom, message });
         }
       }
+    }
+    const paginated = arr.filter((f) => f.kind === "list" && f.paginate !== undefined);
+    if (paginated.length > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `only one paginated list field per module (${paginated.map((f) => `"${f.name}"`).join(", ")}) — a page has one page sequence. Keep paginate on the overview's main list; give the others a limit.`,
+      });
     }
     for (const run of findNumberedScalarFanoutRuns(arr)) {
       ctx.addIssue({

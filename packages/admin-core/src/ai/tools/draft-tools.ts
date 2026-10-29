@@ -26,6 +26,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeDraftPages } from "../../deploy/draft-pages.js";
 import { describeStagedPluginProblems } from "../../deploy/plugin-problems.js";
+import { describeTruncatedLists } from "../../deploy/truncated-lists.js";
 import { describeUnpublishedLinks } from "../../deploy/unpublished-links.js";
 import type { AffectedChat } from "../../draft.js";
 import { stageChatSessions } from "../../stage/stage-chats.js";
@@ -208,10 +209,12 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
     // #724 — a link to such a page leads nowhere on staging (a warning
     // now; Publish live blocks on it).
     const unpublishedNote = describeUnpublishedLinks(v.unpublishedLinks);
+    // #1257 — an overview cut at 50 pages lists only part of them.
+    const truncatedNote = describeTruncatedLists(v.truncatedLists);
     // #1008 — built while an active plugin did not run: staging lacks its
     // output and Publish live refuses this Stage; the operator must hear it.
     const pluginNote = describeStagedPluginProblems(v.pluginProblems);
-    const drafts = `${draftNote ? ` ${draftNote}` : ""}${unpublishedNote ? ` ${unpublishedNote}` : ""}${pluginNote ? ` ${pluginNote} Tell the operator.` : ""}`;
+    const drafts = `${draftNote ? ` ${draftNote}` : ""}${unpublishedNote ? ` ${unpublishedNote}` : ""}${truncatedNote ? ` ${truncatedNote}` : ""}${pluginNote ? ` ${pluginNote} Tell the operator.` : ""}`;
     if (v.mergedEntityCount === 0) {
       return {
         ok: true,

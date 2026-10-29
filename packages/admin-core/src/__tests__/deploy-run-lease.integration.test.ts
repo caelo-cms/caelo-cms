@@ -74,7 +74,7 @@ for await (const line of console) {
     process.exit(1);
   }
   console.log(JSON.stringify({ kind: "done", pageCount: 1, fileCount: 1, durationMs: 1,
-    phases: [], buildDir, unpublishedLinkTargets: [] }));
+    phases: [], buildDir, unpublishedLinkTargets: [], truncatedLists: [] }));
   process.exit(0);
 }
 `;

@@ -85,6 +85,7 @@ import Mustache from "mustache";
 import { MODULE_FIELD_SECTION_KINDS, type ModuleFieldKind } from "./content.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import { type SourceDef, sourceDefSchema } from "./lists/list-type.js";
+import type { ListPaginationSettings } from "./lists/pagination.js";
 import type { ListHolder, ListPageContext } from "./lists/resolve.js";
 import { stripCdataGuards } from "./strip-cdata.js";
 import { renderSections } from "./template-sections.js";
@@ -110,6 +111,8 @@ export interface TemplateField {
   readonly bind?: "local" | "shared" | "source";
   readonly list?: string;
   readonly source?: SourceDef;
+  /** #1257 — a paginated source field. */
+  readonly paginate?: ListPaginationSettings;
 }
 
 /**
@@ -137,6 +140,9 @@ export function templateFieldsFromJson(raw: unknown): TemplateField[] {
       // A source that fails its schema stays absent: the resolver then
       // reports `list-malformed:<field>[source]` instead of guessing.
       ...(sourceDefSchema.safeParse(o.source).success ? { source: o.source as SourceDef } : {}),
+      // Passed as stored: the resolver validates it and reports a
+      // malformed one as `list-malformed:<field>[paginate]`.
+      ...(o.paginate !== undefined ? { paginate: o.paginate as ListPaginationSettings } : {}),
     });
   }
   return out;

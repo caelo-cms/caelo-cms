@@ -930,6 +930,7 @@ export const actions: Actions = {
       draftPageCount,
       draftPageTitles,
       unpublishedLinkWarning,
+      truncatedListWarning,
       pluginProblemWarning,
     } = await describeStagedBuild(locals.ctx, summary, pageId || null);
 
@@ -945,6 +946,7 @@ export const actions: Actions = {
         draftPageCount,
         draftPageTitles,
         unpublishedLinkWarning,
+        truncatedListWarning,
         pluginProblemWarning,
         // Issue #620 — other chats' changes to the same things rode along.
         alsoIncludes: summary.alsoIncludes.map((a) => a.title),

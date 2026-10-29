@@ -45,6 +45,8 @@ export const SYSTEM_SOURCE_NAMES = [
   "siblings",
   "page_terms",
   "term_pages",
+  // #1257 — the pager of the page's paginated list (`pagination.ts`).
+  "pagination",
 ] as const;
 export type SystemSourceName = (typeof SYSTEM_SOURCE_NAMES)[number];
 

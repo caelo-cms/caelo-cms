@@ -71,6 +71,11 @@ import {
   type NestedModuleResource,
   type NestedRenderResolver,
   ok,
+  type PaginationRequest,
+  pagedPath,
+  pagedUrl,
+  paginationMarkers,
+  parsePagedPath,
   type Result,
   renderModuleWithContent,
   renderSeoHead,
@@ -83,6 +88,7 @@ import {
 } from "@caelo-cms/shared";
 import {
   defaultFontsCacheDir,
+  followUpHeadEntries,
   loadSiteFontUsage,
   resolveThemeFonts,
   withListOverlays,
@@ -139,6 +145,11 @@ const inputSchema = z
      * sets this; published output never carries markers.
      */
     editMarkers: z.boolean().optional(),
+    /**
+     * #1257 — page `n` ≥ 2 of a paginated overview given by `pageId` (a
+     * `path` names it as `<overview path>/page/<n>`).
+     */
+    pageNumber: z.number().int().min(2).optional(),
   })
   .strict()
   .refine((v) => (v.pageId === undefined) !== (v.path === undefined), {
@@ -184,6 +195,26 @@ export const renderPagePreviewOp = defineReadOperation({
     }
   },
 });
+
+/**
+ * The page `path` names in the view, and which page of its sequence:
+ * a page's own path, else (#1257) a follow-up page of a paginated
+ * overview (`/guides/page/2` → the overview at `/guides`, page 2 — a
+ * page actually at that path wins). Whether the overview HAS that page
+ * is decided by its render.
+ */
+function pageAtPathOrFollowUp(
+  view: SiteView,
+  driftPaths: ReadonlyMap<string, string>,
+  path: string,
+): { pageId: string; page: number } | null {
+  const own = pageAtPath(view, driftPaths, path);
+  if (own !== null) return { pageId: own, page: 1 };
+  const paged = parsePagedPath(path);
+  if (paged === null) return null;
+  const base = pageAtPath(view, driftPaths, paged.basePath);
+  return base === null ? null : { pageId: base, page: paged.page };
+}
 
 /**
  * The page `path` names in the view: the composed-path match, else — for
@@ -241,12 +272,14 @@ async function renderPreview(
   const view = first.view;
   const driftPaths = await siteViewDriftPaths(view, renderScope);
   let page: PreviewPageBundle;
+  let requestedPage = input.pageNumber ?? 1;
   if (first.page) {
     page = first.page;
   } else {
-    const pageId = pageAtPath(view, driftPaths, input.path as string);
-    if (pageId === null) return failure("page not found");
-    page = await reads.read((tx) => loadPage(tx, pageId));
+    const found = pageAtPathOrFollowUp(view, driftPaths, input.path as string);
+    if (found === null) return failure("page not found");
+    requestedPage = found.page;
+    page = await reads.read((tx) => loadPage(tx, found.pageId));
   }
   const pageId = page.pageRow.page_id;
   const { pageRow, modRows, layoutModRows, placementBindings, resources, pageUrlStyle } = page;
@@ -329,10 +362,6 @@ async function renderPreview(
   const listContext = createListRenderContext(listData, {
     dormantPluginSources: dormantListSourceNames(),
   });
-  const lists = listContext.forPage(pageId, {
-    linkResolver,
-    pluginSources: resolvedSources.get(pageId) ?? {},
-  });
   for (const [key, values] of variants.pageValues) {
     const binding = placementBindings.get(key);
     const m = modRows.find((r) => `${r.block_name}#${r.position}` === key);
@@ -384,85 +413,6 @@ async function renderPreview(
     return id;
   }
 
-  const nestedCssJsByModuleId = new Map<string, NestedModuleResource>();
-  // Epic #724 — broken internal references of the page's modules; the
-  // layout modules' and nav menus' join from the composer's failures.
-  const pageLinkMarkers: string[] = [];
-  // Epic #1107 — an unbound / deleted / malformed list of a page module
-  // or of the chrome: loud on the missing-content surface too.
-  const pageListMarkers: string[] = [];
-  for (const m of modRows) {
-    const key = `${m.block_name}#${m.position}`;
-    const binding = placementBindings.get(key);
-    if (!binding) {
-      m.html = "";
-      continue;
-    }
-    const markers = editMarkers ? editMarkedInstance(key, binding, m.module_id) : null;
-    const result = renderModuleWithContent(
-      m.module_id,
-      markers ?? binding.contentInstanceId,
-      resolver,
-      renderThemeAssets,
-      lists,
-      linkResolver,
-    );
-    m.html = markers
-      ? finalizeEditMarkers(
-          result.html,
-          key,
-          // A synced placement this chat created is not in live
-          // page_modules yet: then this page is the only one showing it.
-          binding.synced ? (page.sharedPageCounts.get(binding.contentInstanceId) ?? 1) : 0,
-        )
-      : result.html;
-    pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
-    pageListMarkers.push(...result.missingSlots.filter(isListFailureMarker));
-    // Every module the recursion touched gets its CSS/JS staged (the
-    // composer dedupes by moduleId, issue #158) through a virtual
-    // "__nested__" block below; their HTML is already inline.
-    for (const touchedId of result.touchedModuleIds) {
-      if (touchedId === m.module_id) continue;
-      const mod = moduleByIdResource.get(touchedId);
-      if (!mod || (!mod.css && !mod.js)) continue;
-      if (!nestedCssJsByModuleId.has(touchedId)) nestedCssJsByModuleId.set(touchedId, mod);
-    }
-  }
-
-  const grouped = new Map<
-    string,
-    { moduleId: string; slug: string; displayName: string; html: string; css: string; js: string }[]
-  >();
-  for (const r of modRows) {
-    const arr = grouped.get(r.block_name) ?? [];
-    arr.push({
-      moduleId: r.module_id,
-      slug: r.slug,
-      displayName: r.display_name,
-      html: r.html,
-      css: r.css,
-      js: r.js,
-    });
-    grouped.set(r.block_name, arr);
-  }
-  // v0.12.1 — nested-module CSS/JS in a virtual block (html '' to avoid
-  // double-rendering: renderModuleWithContent inlined it).
-  if (nestedCssJsByModuleId.size > 0) {
-    const arr = grouped.get("__nested__") ?? [];
-    for (const m of nestedCssJsByModuleId.values()) {
-      arr.push({
-        moduleId: m.moduleId,
-        slug: m.slug,
-        displayName: m.slug,
-        html: "",
-        css: m.css,
-        js: m.js,
-      });
-    }
-    grouped.set("__nested__", arr);
-  }
-  const blocks = [...grouped.entries()].map(([blockName, modules]) => ({ blockName, modules }));
-
   const layoutGrouped = new Map<
     string,
     {
@@ -498,29 +448,6 @@ async function renderPreview(
     modules,
   }));
 
-  // #450 — which of this page's modules is a plugin withholding? The
-  // editor has to see the placeholder the visitor will see; a module the
-  // visitor gets nothing for shows the plugin's editor notice instead
-  // (renderScope.editorPreview), so its absence is explained here. The gate
-  // judges the content about to render: page modules arrive with their
-  // values substituted into `html`; layout modules carry `fields`, whose
-  // defaults the composer substitutes.
-  const candidates = new Map<string, DeferralCandidate>();
-  for (const m of [...blocks, ...layoutBlocks].flatMap((b) => b.modules)) {
-    if (candidates.has(m.moduleId)) continue;
-    candidates.set(m.moduleId, {
-      moduleId: m.moduleId,
-      html: m.html,
-      css: m.css,
-      js: m.js,
-      fields: "fields" in m ? m.fields : [],
-      contentValues: [],
-    });
-  }
-  const deferredModules = Object.fromEntries(
-    await resolveModuleDeferrals([...candidates.values()], renderScope),
-  );
-
   // issue #150 — preview/production font parity: the theme's web fonts
   // through the SAME resolver the static generator uses, served from the
   // admin's /_caelo/fonts route. Unresolvable families do NOT fail the
@@ -551,24 +478,160 @@ async function renderPreview(
     for (const family of resolvedFonts.unresolved) fontMarkers.push(fontUnresolvableMarker(family));
   }
 
-  const composed = composePageWithLayout({
-    deferredModules,
-    // Page-block modules already had their lists applied; LAYOUT modules
-    // reach the composer raw, so it needs the list context and the nested
-    // resolver too (the generator passes the same two).
-    lists,
-    nestedModules: resolver,
-    templateHtml: pageRow.template_html,
-    templateCss: pageRow.template_css,
-    blocks,
-    theme: composeTheme,
-    fonts: previewFonts,
-    layoutHtml: pageRow.layout_html,
-    layoutCss: pageRow.layout_css,
-    layoutBlocks,
-    layoutSlug: pageRow.layout_slug,
-    linkResolver,
-  });
+  // #1257 — one render of the page body. A paginated overview may render
+  // twice (the pager came before the list, or a follow-up page is asked
+  // for): see `renderFirstPage` in shared `lists/paginated-render.ts`.
+  const renderBody = async (pagination?: PaginationRequest) => {
+    const lists = listContext.forPage(pageId, {
+      linkResolver,
+      pluginSources: resolvedSources.get(pageId) ?? {},
+      pageUrlStyle,
+      ...(pagination ? { pagination } : {}),
+    });
+    const htmlByRow = new Map<(typeof modRows)[number], string>();
+    const nestedCssJsByModuleId = new Map<string, NestedModuleResource>();
+    // Epic #724 — broken internal references of the page's modules; the
+    // layout modules' and nav menus' join from the composer's failures.
+    const pageLinkMarkers: string[] = [];
+    // Epic #1107 — an unbound / deleted / malformed list of a page module
+    // or of the chrome: loud on the missing-content surface too.
+    const pageListMarkers: string[] = [];
+    for (const m of modRows) {
+      const key = `${m.block_name}#${m.position}`;
+      const binding = placementBindings.get(key);
+      if (!binding) {
+        htmlByRow.set(m, "");
+        continue;
+      }
+      const markers = editMarkers ? editMarkedInstance(key, binding, m.module_id) : null;
+      const result = renderModuleWithContent(
+        m.module_id,
+        markers ?? binding.contentInstanceId,
+        resolver,
+        renderThemeAssets,
+        lists,
+        linkResolver,
+      );
+      const html = markers
+        ? finalizeEditMarkers(
+            result.html,
+            key,
+            // A synced placement this chat created is not in live
+            // page_modules yet: then this page is the only one showing it.
+            binding.synced ? (page.sharedPageCounts.get(binding.contentInstanceId) ?? 1) : 0,
+          )
+        : result.html;
+      htmlByRow.set(m, html);
+      pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
+      pageListMarkers.push(...result.missingSlots.filter(isListFailureMarker));
+      // Every module the recursion touched gets its CSS/JS staged (the
+      // composer dedupes by moduleId, issue #158) through a virtual
+      // "__nested__" block below; their HTML is already inline.
+      for (const touchedId of result.touchedModuleIds) {
+        if (touchedId === m.module_id) continue;
+        const mod = moduleByIdResource.get(touchedId);
+        if (!mod || (!mod.css && !mod.js)) continue;
+        if (!nestedCssJsByModuleId.has(touchedId)) nestedCssJsByModuleId.set(touchedId, mod);
+      }
+    }
+
+    const grouped = new Map<
+      string,
+      {
+        moduleId: string;
+        slug: string;
+        displayName: string;
+        html: string;
+        css: string;
+        js: string;
+      }[]
+    >();
+    for (const r of modRows) {
+      const arr = grouped.get(r.block_name) ?? [];
+      arr.push({
+        moduleId: r.module_id,
+        slug: r.slug,
+        displayName: r.display_name,
+        html: htmlByRow.get(r) ?? "",
+        css: r.css,
+        js: r.js,
+      });
+      grouped.set(r.block_name, arr);
+    }
+    // v0.12.1 — nested-module CSS/JS in a virtual block (html '' to avoid
+    // double-rendering: renderModuleWithContent inlined it).
+    if (nestedCssJsByModuleId.size > 0) {
+      const arr = grouped.get("__nested__") ?? [];
+      for (const m of nestedCssJsByModuleId.values()) {
+        arr.push({
+          moduleId: m.moduleId,
+          slug: m.slug,
+          displayName: m.slug,
+          html: "",
+          css: m.css,
+          js: m.js,
+        });
+      }
+      grouped.set("__nested__", arr);
+    }
+    const blocks = [...grouped.entries()].map(([blockName, modules]) => ({ blockName, modules }));
+
+    // #450 — which of this page's modules is a plugin withholding? The
+    // editor has to see the placeholder the visitor will see; a module the
+    // visitor gets nothing for shows the plugin's editor notice instead
+    // (renderScope.editorPreview), so its absence is explained here. The gate
+    // judges the content about to render: page modules arrive with their
+    // values substituted into `html`; layout modules carry `fields`, whose
+    // defaults the composer substitutes.
+    const candidates = new Map<string, DeferralCandidate>();
+    for (const m of [...blocks, ...layoutBlocks].flatMap((b) => b.modules)) {
+      if (candidates.has(m.moduleId)) continue;
+      candidates.set(m.moduleId, {
+        moduleId: m.moduleId,
+        html: m.html,
+        css: m.css,
+        js: m.js,
+        fields: "fields" in m ? m.fields : [],
+        contentValues: [],
+      });
+    }
+    const deferredModules = Object.fromEntries(
+      await resolveModuleDeferrals([...candidates.values()], renderScope),
+    );
+
+    const composed = composePageWithLayout({
+      deferredModules,
+      // Page-block modules already had their lists applied; LAYOUT modules
+      // reach the composer raw, so it needs the list context and the nested
+      // resolver too (the generator passes the same two).
+      lists,
+      nestedModules: resolver,
+      templateHtml: pageRow.template_html,
+      templateCss: pageRow.template_css,
+      blocks,
+      theme: composeTheme,
+      fonts: previewFonts,
+      layoutHtml: pageRow.layout_html,
+      layoutCss: pageRow.layout_css,
+      layoutBlocks,
+      layoutSlug: pageRow.layout_slug,
+      linkResolver,
+    });
+    return { lists, composed, pageLinkMarkers, pageListMarkers };
+  };
+  let body = await renderBody();
+  const firstPagination = body.lists.pagination();
+  if (requestedPage > 1) {
+    // A follow-up page exists only while the list needs it.
+    if (firstPagination === null || requestedPage > firstPagination.pageCount) {
+      return failure("page not found");
+    }
+    body = await renderBody({ page: requestedPage, pageCount: firstPagination.pageCount });
+  } else if (firstPagination?.pagerEarly && firstPagination.pageCount > 1) {
+    body = await renderBody({ page: 1, pageCount: firstPagination.pageCount });
+  }
+  const { lists, composed, pageLinkMarkers, pageListMarkers } = body;
+  const pagination = lists.pagination();
   // Epic #1107 — overlay entries this render refused are the plugin's
   // fault: the stored value rendered, and the plugin's error channel
   // (plugin_errors → list_plugins, Settings → Plugins) names them.
@@ -603,7 +666,9 @@ async function renderPreview(
 
   // #390 — canonical follows the MATERIALIZED composed path; #590 —
   // through the same builder as the generator and plugin hreflang.
-  const canonicalOverride = page.seo?.canonicalUrl || null;
+  // #1257 — a follow-up page is self-canonical (never the override).
+  const followUp = requestedPage > 1 ? requestedPage : null;
+  const canonicalOverride = followUp === null ? page.seo?.canonicalUrl || null : null;
   const canonical = siteBaseUrl
     ? ((
         await resolvePublicPageUrls(
@@ -623,8 +688,12 @@ async function renderPreview(
   const headBlock = renderSeoHead({
     title: pageRow.title,
     metaDescription: page.seo?.metaDescription ?? "",
-    canonical,
-    noindex: page.seo?.noindex ?? false,
+    canonical:
+      followUp !== null && canonical !== null
+        ? pagedUrl(canonical, followUp, pageUrlStyle)
+        : canonical,
+    noindex:
+      (page.seo?.noindex ?? false) || (followUp !== null && pagination?.followUps === "noindex"),
     ogImageUrl: page.ogImageUrl,
     organization,
     breadcrumbs: siteBaseUrl
@@ -642,7 +711,14 @@ async function renderPreview(
   const contributions = siteBaseUrl
     ? await collectContributions([pageId], { siteBaseUrl, pageUrlStyle, ...renderScope })
     : null;
-  html = injectSeoIntoHead(html, composeHeadBlock(headBlock, contributions?.head.get(pageId)));
+  const contributedHead = contributions?.head.get(pageId);
+  html = injectSeoIntoHead(
+    html,
+    composeHeadBlock(
+      headBlock,
+      followUp === null ? contributedHead : followUpHeadEntries(contributedHead),
+    ),
+  );
   html = applyDocumentLanguage(
     html,
     resolveDocumentLanguage({
@@ -698,13 +774,18 @@ async function renderPreview(
       ]),
       ...new Set([
         ...pageListMarkers,
+        // #1257 — a paginated page without a pager strands its entries.
+        ...paginationMarkers(pagination),
         ...composed.moduleFailures.map((f) => f.reason).filter(isListFailureMarker),
       ]),
     ],
     pluginFailures: pluginFailureSink.failures().map((f) => ({ slug: f.slug, reason: f.reason })),
     pageId,
     pageSlug: pageRow.slug,
-    pagePath: driftPaths.get(pageId) ?? pageRow.current_path,
+    pagePath:
+      followUp === null
+        ? (driftPaths.get(pageId) ?? pageRow.current_path)
+        : pagedPath(driftPaths.get(pageId) ?? pageRow.current_path, followUp),
   });
 }
 

@@ -38,6 +38,7 @@ import {
   breadcrumbJsonLdItems,
   injectSeoIntoHead,
   type PageUrlStyle,
+  pagedUrl,
   renderSeoHead,
   resolveDocumentLanguage,
   type SiteSeoSettings,
@@ -68,6 +69,11 @@ export interface SeoPagesContext {
   html: string;
   /** #1142 — the trail the page's breadcrumbs rendered (`ListPageContext.breadcrumbTrail`). */
   breadcrumbTrail?: readonly string[] | null;
+  /**
+   * #1257 — page `n` ≥ 2 of a paginated overview (same page id as page
+   * 1): self-canonical, `noindex` and out of the sitemap unless indexable.
+   */
+  followUp?: { readonly page: number; readonly indexable: boolean };
 }
 
 export async function runSeoPass(args: {
@@ -95,7 +101,8 @@ export async function runSeoPass(args: {
   // across parents once pages nest (epic #690).
   // Per-id query — same Bun-SQL constraint as media.list.
   const seoBundles: PageSeoBundle[] = [];
-  for (const pageId of args.pages.map((p) => p.pageId)) {
+  // A paginated overview's follow-up pages share its id (#1257): one bundle each.
+  for (const pageId of new Set(args.pages.map((p) => p.pageId))) {
     const rows = (await args.tx.execute(sql`
       SELECT
         p.id::text AS page_id, p.slug, p.current_path, p.title, p.short_title,
@@ -234,6 +241,28 @@ export async function runSeoPass(args: {
     if (url === undefined) throw new Error(`seo-pass: no public URL resolved for page ${b.pageId}`);
     return url;
   };
+  // #1257 — follow-up pages are self-canonical: built from the overview's
+  // own public URL, never from a canonical override pointing elsewhere.
+  const pagedIds = new Set(args.pages.filter((p) => p.followUp).map((p) => p.pageId));
+  const ownUrls =
+    pagedIds.size === 0
+      ? new Map<string, string>()
+      : await args.plugins.resolvePublicPageUrls(
+          seoBundles
+            .filter((b) => pagedIds.has(b.pageId))
+            .map((b) => ({
+              id: b.pageId,
+              slug: b.slug,
+              currentPath: b.currentPath,
+              canonicalOverride: null,
+            })),
+          { siteBaseUrl: args.settings.siteBaseUrl, pageUrlStyle: args.pageUrlStyle },
+        );
+  const followUpUrlOf = (b: PageSeoBundle, n: number): string => {
+    const url = ownUrls.get(b.pageId);
+    if (url === undefined) throw new Error(`seo-pass: no public URL resolved for page ${b.pageId}`);
+    return pagedUrl(url, n, args.pageUrlStyle);
+  };
 
   // #390 — canonical follows the MATERIALIZED composed path; home
   // designation, prefixes, and slug formats are already baked into
@@ -262,18 +291,19 @@ export async function runSeoPass(args: {
       ...(isNotFoundPage
         ? notFoundPageSeo()
         : {
-            canonical: publicUrlOf(bundle),
-            noindex: bundle.noindex,
+            canonical: p.followUp ? followUpUrlOf(bundle, p.followUp.page) : publicUrlOf(bundle),
+            noindex: bundle.noindex || (p.followUp !== undefined && !p.followUp.indexable),
             breadcrumbs: breadcrumbJsonLdItems(p.breadcrumbTrail ?? null, crumbOf),
           }),
     });
+    const head = contributions.head.get(bundle.pageId);
     p.html = injectSeoIntoHead(
       p.html,
       // #802 — no plugin head contributions on the 404 page: it answers
       // every unknown URL, so hreflang alternates would be false claims.
       composeHeadBlock(
         headBlock,
-        isNotFoundPage ? undefined : contributions.head.get(bundle.pageId),
+        isNotFoundPage ? undefined : p.followUp ? followUpHeadEntries(head) : head,
       ),
     );
     // `<html lang>` — same resolution as the admin preview.
@@ -293,15 +323,31 @@ export async function runSeoPass(args: {
   // `sitemapEmitted`, so turning it off also drops the `Sitemap:` line.
   const sitemapEnabled = args.settings.sitemapEnabled && args.settings.siteBaseUrl.length > 0;
   if (sitemapEnabled) {
+    // #1257 — indexable follow-up pages of each overview, after page 1.
+    const followUpsOf = new Map<string, number[]>();
+    for (const p of args.pages) {
+      if (!p.followUp?.indexable) continue;
+      followUpsOf.set(p.pageId, [...(followUpsOf.get(p.pageId) ?? []), p.followUp.page]);
+    }
     const entries = seoBundles
       .filter((b) => isSitemapEntry(b, args.notFoundPageId))
       // #391 — plugin-contributed exclusion (e.g. an unpublished
       // variant URL must not appear; clean-404 semantics).
       .filter((b) => contributions.sitemap.get(b.pageId)?.exclude !== true)
-      .map((b) => {
-        const canonical = publicUrlOf(b);
+      .flatMap((b) => {
+        const urlEntry = (loc: string, alternates: readonly string[]): string =>
+          [
+            "  <url>",
+            `    <loc>${enc(loc)}</loc>`,
+            ...alternates,
+            `    <lastmod>${b.updatedAt.slice(0, 10)}</lastmod>`,
+            `    <changefreq>${b.changefreq}</changefreq>`,
+            `    <priority>${b.priority.toFixed(1)}</priority>`,
+            "  </url>",
+          ].join("\n");
         // #391 — contributed xhtml alternates (hreflang) inside the
-        // page's <url> entry, sorted for deterministic output.
+        // page's <url> entry, sorted for deterministic output. Follow-up
+        // pages carry none: the alternates are page 1's twins.
         const alternates = [...(contributions.sitemap.get(b.pageId)?.alternates ?? [])]
           .sort((x, y) => x.hreflang.localeCompare(y.hreflang))
           .map(
@@ -309,14 +355,9 @@ export async function runSeoPass(args: {
               `    <xhtml:link rel="alternate" hreflang="${enc(a.hreflang)}" href="${enc(a.href)}" />`,
           );
         return [
-          "  <url>",
-          `    <loc>${enc(canonical)}</loc>`,
-          ...alternates,
-          `    <lastmod>${b.updatedAt.slice(0, 10)}</lastmod>`,
-          `    <changefreq>${b.changefreq}</changefreq>`,
-          `    <priority>${b.priority.toFixed(1)}</priority>`,
-          "  </url>",
-        ].join("\n");
+          urlEntry(publicUrlOf(b), alternates),
+          ...(followUpsOf.get(b.pageId) ?? []).map((n) => urlEntry(followUpUrlOf(b, n), [])),
+        ];
       });
     const xml = [
       '<?xml version="1.0" encoding="UTF-8"?>',
@@ -329,6 +370,18 @@ export async function runSeoPass(args: {
     await writeFile(join(args.buildDir, "sitemap.xml"), xml, "utf8");
   }
   return { sitemapEmitted: sitemapEnabled };
+}
+
+/**
+ * #1257 — the plugin head entries a follow-up page keeps: everything but
+ * hreflang alternates. Those name the overview's versions in other
+ * languages — equivalents of page 1, not of page n — and a follow-up page
+ * has no translated twin to point at.
+ */
+export function followUpHeadEntries<
+  E extends { readonly kind: string; readonly hreflang?: string },
+>(entries: readonly E[] | undefined): E[] | undefined {
+  return entries?.filter((e) => !(e.kind === "link" && e.hreflang !== undefined));
 }
 
 /**
