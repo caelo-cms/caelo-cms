@@ -136,6 +136,10 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       // The AI layer: chat-runner, system prompt, providers, the whole tool
       // catalogue (every definition rides in every request).
       `${A}/ai/**`,
+      // #1217 — where screenshot_page's server-side renders run (in-process
+      // on the CI install; the GCP job shares the protocol and preview hand-over).
+      `${A}/capture/**`,
+      `${A}/preview-document.ts`,
       // What a homepage build → Stage → Publish → re-edit writes and reads.
       `${A}/ops/chat/**`,
       `${A}/ops/content/**`,
