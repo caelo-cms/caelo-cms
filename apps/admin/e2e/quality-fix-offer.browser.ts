@@ -469,7 +469,8 @@ test("the Staging menu lists what blocks Publish live; a row asks to fix it (#12
   const ownerId = await login(page);
   const chatSessionId = await newChat(page);
   seedProblemAudit(chatSessionId, ownerId, "operator", "grouped");
-  await page.reload();
+  // The Staging menu is the live editor's toolbar, not the chat page's.
+  await page.goto(`/edit?chat=${chatSessionId}`);
 
   await page.getByTestId("staging-menu").click();
   const rows = page.getByTestId("quality-top-problems").getByTestId("quality-top-problem");

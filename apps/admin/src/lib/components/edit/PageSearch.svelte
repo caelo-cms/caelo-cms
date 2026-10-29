@@ -12,6 +12,7 @@
    */
 
   import { Combobox } from "bits-ui";
+  import { tick } from "svelte";
   import { Search } from "lucide-svelte";
   import { cn } from "#lib/utils.js";
   import { pageSearchGroups, type SearchablePage } from "./page-search.js";
@@ -32,6 +33,24 @@
   let open = $state(false);
   let query = $state("");
   let picked = $state("");
+  let inputEl = $state<HTMLInputElement | null>(null);
+
+  /**
+   * Hands the pick on and empties the field. bits-ui writes the picked
+   * item's label into the input after `onValueChange`, so the field is
+   * cleared once that has happened, and left so the placeholder shows.
+   */
+  async function pick(pageId: string): Promise<void> {
+    query = "";
+    picked = "";
+    open = false;
+    onPick(pageId);
+    await tick();
+    if (inputEl) {
+      inputEl.value = "";
+      inputEl.blur();
+    }
+  }
 
   const recentIds = $derived("pageIds" in recent ? recent.pageIds : []);
   const groups = $derived(pageSearchGroups(pages, recentIds, query));
@@ -43,11 +62,7 @@
   bind:value={picked}
   inputValue={query}
   onValueChange={(v) => {
-    if (v === "") return;
-    query = "";
-    picked = "";
-    open = false;
-    onPick(v);
+    if (v !== "") void pick(v);
   }}
 >
   <div class="relative min-w-0 flex-1">
@@ -56,6 +71,7 @@
       aria-hidden="true"
     />
     <Combobox.Input
+      bind:ref={inputEl}
       class="h-7 w-full min-w-0 rounded-md bg-transparent pl-7 pr-2 text-sm placeholder:text-muted-foreground focus-visible:bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       placeholder="Search pages…"
       aria-label="Search pages"
