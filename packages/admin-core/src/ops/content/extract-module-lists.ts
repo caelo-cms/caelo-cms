@@ -34,6 +34,7 @@
 
 import type { ListItemInput, ModuleField } from "@caelo-cms/shared";
 import { parseDocument } from "htmlparser2";
+import { overlapsAny, templateSectionRanges } from "./template-section-ranges.js";
 
 /** The structural view of a parsed node this pass reads (domhandler). */
 interface DomNode {
@@ -326,6 +327,9 @@ export function extractRepeatedLists(html: string, usedNames: Set<string>): List
   }) as unknown as DomNode;
   const replacements: { start: number; end: number; text: string }[] = [];
   const fields: ModuleField[] = [];
+  // A group inside an authored section (`{{#breadcrumbs}}<li>…</li>{{/breadcrumbs}}`)
+  // is already template: converting it would nest a second loop (#1236).
+  const sections = templateSectionRanges(html);
 
   const visit = (node: DomNode, ancestors: readonly string[]): void => {
     const converted = new Set<DomNode>();
@@ -337,6 +341,7 @@ export function extractRepeatedLists(html: string, usedNames: Set<string>): List
       const second = run[1];
       if (!shape || !first || !last || !second) continue;
       if (first.startIndex === null || last.endIndex === null || first.endIndex === null) continue;
+      if (overlapsAny(sections, first.startIndex, last.endIndex + 1)) continue;
       // Keep the whitespace between two members inside the block, so
       // inline entries (`<a>`, `<span>`) stay visually separated.
       const gap = html.slice(first.endIndex + 1, second.startIndex ?? first.endIndex + 1);

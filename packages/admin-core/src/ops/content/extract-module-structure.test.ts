@@ -16,7 +16,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
+import {
+  extractModuleStructure,
+  extractorRefusalMessage,
+  validateTemplatizedModule,
+} from "./extract-module-structure.js";
 
 describe("extractModuleStructure — heading inference", () => {
   it("h1 mints `title` (singular)", () => {
@@ -236,6 +240,69 @@ describe("template syntax survives extraction", () => {
       ok: false,
       message: 'placeholder {{language_links}} references undeclared field "language_links"',
     });
+  });
+
+  // #1236: text inside a loop body was lifted into an invented field
+  // (`{{spantext}}`), and the validator — which reads only top-level
+  // references — then refused that same field: add_module failed with
+  // 'field "spantext" declared but not referenced in HTML'.
+  it("leaves the text of a section body as written (#1236)", () => {
+    const html = "<ul>{{#breadcrumbs}}<li><span>Sep</span></li>{{/breadcrumbs}}</ul>";
+    const e = extractModuleStructure(html, undefined);
+    expect(e.templatizedHtml).toBe(html);
+    expect(e.fields).toEqual([]);
+    expect(
+      validateTemplatizedModule(e.templatizedHtml, e.fields, new Set(["breadcrumbs"])),
+    ).toEqual({ ok: true });
+  });
+
+  it("does not turn a repeated group inside a section into a nested list", () => {
+    const html =
+      '<nav>{{#crumbs}}<ul><li><a href="/a">A</a></li><li><a href="/b">B</a></li></ul>{{/crumbs}}</nav>';
+    const e = extractModuleStructure(html, undefined);
+    expect(e.templatizedHtml).toBe(html);
+    expect(e.fields).toEqual([]);
+  });
+
+  it("leaves text that mixes copy with a tag as written", () => {
+    const html = "<p>Hello {{page.title}}</p>";
+    expect(extractModuleStructure(html, undefined).templatizedHtml).toBe(html);
+  });
+
+  it("refuses a helper block with a message that names the grammar", () => {
+    const html = "<div>{{#if subtitle}}<p>{{subtitle}}</p>{{/if}}</div>";
+    const e = extractModuleStructure(html, undefined);
+    expect(e.templatizedHtml).toBe(html);
+    const r = validateTemplatizedModule(e.templatizedHtml, e.fields);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).toContain("{{#if subtitle}} is not template syntax");
+      expect(r.message).toContain("{{^name}}");
+    }
+  });
+
+  it("extractor output always validates for section and inverted-section inputs", () => {
+    const sources = new Set(["breadcrumbs", "language_links"]);
+    const inputs = [
+      "<ul>{{#breadcrumbs}}<li><span>Sep</span></li>{{/breadcrumbs}}</ul>",
+      '<header><h1>Acme</h1><nav>{{#language_links}}<a href="{{href}}" title="Switch">{{label}}</a>{{/language_links}}</nav></header>',
+      '<section><h2>News</h2>{{#breadcrumbs}}<p>Before</p><img src="/x.png" alt="x">{{/breadcrumbs}}<p>After</p></section>',
+      "<div>{{^breadcrumbs}}<p>No trail</p>{{/breadcrumbs}}<p>Footer</p></div>",
+      "<div>{{#breadcrumbs}}<span>A</span>{{#breadcrumbs}}<span>B</span>{{/breadcrumbs}}{{/breadcrumbs}}<b>Tail</b></div>",
+      "<ul>{{#breadcrumbs}}<li>One</li><li>Two</li>{{/breadcrumbs}}<li>Three</li><li>Four</li></ul>",
+    ];
+    for (const html of inputs) {
+      const e = extractModuleStructure(html, undefined);
+      expect({
+        html,
+        result: validateTemplatizedModule(e.templatizedHtml, e.fields, sources),
+      }).toEqual({ html, result: { ok: true } });
+    }
+  });
+
+  it("an extractor-path refusal tells the AI to declare its own fields", () => {
+    const msg = extractorRefusalMessage('field "x" declared but not referenced in HTML');
+    expect(msg).toContain("pass explicit semantic `fields`");
   });
 });
 
