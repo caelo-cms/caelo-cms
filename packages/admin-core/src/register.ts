@@ -216,15 +216,18 @@ import {
   updateDeployProgressOp,
 } from "./ops/deploy.js";
 import {
+  beginExecuteDeployProposalOp,
+  endExecuteDeployProposalOp,
   executeDeployProposalOp,
   listPendingDeployProposalsOp,
   proposeDeployPromoteOp,
   proposeDeployRollbackOp,
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
+import { finishPromoteOp, startPromoteOp } from "./ops/deploy-promote.js";
 import {
+  acquireLiveReleaseOp,
   acquireStagingPublicationOp,
-  beginDeployRunOp,
   failDeployRunOp,
   renewDeployRunLeaseOp,
 } from "./ops/deploy-run-lifecycle.js";
@@ -442,6 +445,7 @@ import { classifyStageOp } from "./ops/quality/classify_stage.js";
 import {
   ackChatNotificationOp,
   chatStatusOp,
+  checkPublishAnywayOp,
   claimChatNotificationOp,
   gateStatusOp,
   publishAnywayOp,
@@ -450,6 +454,8 @@ import {
 } from "./ops/quality/gate.js";
 import { claimNextAuditOp, enqueueAuditOp } from "./ops/quality/lifecycle.js";
 import {
+  beginExecuteQualityProposalOp,
+  endExecuteQualityProposalOp,
   executeQualityProposalOp,
   listPendingQualityProposalsOp,
   proposeAcceptOp,
@@ -653,7 +659,13 @@ import {
   setUserEmailOp,
   setUserRolesOp,
 } from "./ops/users.js";
-import { buildPluginDataOp } from "./plugin-data/build.js";
+import {
+  beginPluginDataRunOp,
+  buildPluginDataOp,
+  finishPluginDataRunOp,
+  finishPluginDataTickOp,
+  startPluginDataOp,
+} from "./plugin-data/build.js";
 
 export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(importFontOp);
@@ -827,9 +839,13 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(ackChatNotificationOp);
   registry.register(releaseChatNotificationOp);
   registry.register(publishAnywayOp);
+  // #1225 — publish anyway is step-wise: its check, then Publish live.
+  registry.register(checkPublishAnywayOp);
   registry.register(proposeAcceptOp);
   registry.register(proposePublishAnywayOp);
   registry.register(executeQualityProposalOp);
+  registry.register(beginExecuteQualityProposalOp);
+  registry.register(endExecuteQualityProposalOp);
   registry.register(rejectQualityProposalOp);
   registry.register(listPendingQualityProposalsOp);
   registry.register(revokeAcceptancesOp);
@@ -1018,21 +1034,33 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(failDeployRunOp);
   registry.register(getDeployRunOp);
   registry.register(promoteDeployOp);
+  // #1225 — deploy.promote's steps: it holds no transaction while it
+  // rebuilds and uploads; the live-release lease orders it with rollback,
+  // the plugin-data build, the redirect sync and the CDN purge.
+  registry.register(startPromoteOp);
+  registry.register(finishPromoteOp);
+  registry.register(acquireLiveReleaseOp);
   registry.register(rollbackDeployOp);
   registry.register(updateDeployProgressOp);
-  // #1003 — a run's row, committed when it starts (visible while it runs).
-  registry.register(beginDeployRunOp);
   // #969 — the keep-alive worker's refresh of the served staging preview.
   registry.register(refreshStagingPreviewOp);
   // #1155 — plugin data into the live HTML: stale marks + the plugin-data build.
   registry.register(markPluginDataPagesOp);
   registry.register(buildPluginDataOp);
+  // #1220 — deploy.build_plugin_data's steps (no transaction across the upload).
+  registry.register(startPluginDataOp);
+  registry.register(beginPluginDataRunOp);
+  registry.register(finishPluginDataRunOp);
+  registry.register(finishPluginDataTickOp);
   // v0.2.19 — propose/execute pair for promote + rollback. AI proposes
   // (human + ai + system); Owner approves at /settings/deployments/pending
   // which calls execute_proposal (human + system) → runs the underlying op.
   registry.register(proposeDeployPromoteOp);
   registry.register(proposeDeployRollbackOp);
   registry.register(executeDeployProposalOp);
+  // #1225 — the approval's claim and record steps around Publish live.
+  registry.register(beginExecuteDeployProposalOp);
+  registry.register(endExecuteDeployProposalOp);
   registry.register(rejectDeployProposalOp);
   registry.register(listPendingDeployProposalsOp);
   // P6.7 — live-edit overlay

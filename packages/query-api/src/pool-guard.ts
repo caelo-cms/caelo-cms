@@ -67,43 +67,6 @@ export interface AllowlistEntry {
  * chain is let through, every other one throws.
  */
 const ALLOWLIST: readonly AllowlistEntry[] = [
-  // FIXME(issue #1225): Publish live holds its op transaction across the
-  // live build + upload (nested `deploy.begin_run`), and waits for a Stage
-  // that is publishing for longer than any role timeout of migration 0392
-  // allows. The Stage (`deploy.trigger`) holds no transaction since #1211.
-  { holder: "deploy.promote", issue: 1225, nestedCheckouts: true, noSessionTimeouts: true },
-  // FIXME(issue #1225): "Publish anyway" past a failed quality check runs
-  // the Publish live handler inside these two ops' transactions.
-  {
-    holder: "quality_audits.publish_anyway",
-    issue: 1225,
-    nestedCheckouts: true,
-    noSessionTimeouts: true,
-  },
-  {
-    holder: "quality_audits.execute_proposal",
-    issue: 1225,
-    nestedCheckouts: true,
-    noSessionTimeouts: true,
-  },
-  // FIXME(issue #1225): the Owner's Approve on the AI's Publish live card
-  // runs the Publish live handler (and a rollback's publisher call) inside
-  // this op's transaction.
-  {
-    holder: "deploy.execute_proposal",
-    issue: 1225,
-    nestedCheckouts: true,
-    noSessionTimeouts: true,
-  },
-  // FIXME(issue #1220): the plugin-data build (#1155) has the Stage's shape:
-  // a nested `deploy.begin_run` and the bake + upload inside its op tx,
-  // which also waits on the live-release lock behind a Publish live.
-  {
-    holder: "deploy.build_plugin_data",
-    issue: 1220,
-    nestedCheckouts: true,
-    noSessionTimeouts: true,
-  },
   // FIXME(issue #1220): a plugin's onActivate runs while this transaction
   // holds the per-plugin advisory lock (plugin-host activation-lock.ts);
   // the plugin's storage writes open their own transactions.

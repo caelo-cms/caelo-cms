@@ -93,14 +93,19 @@ export async function checkProductionBuildGate(
 }
 
 /**
- * Record a publish-anyway override once the production build it allowed
- * has succeeded: on the audit run (the gate reads it) and in the audit
+ * Record a publish-anyway override once the production build or Publish
+ * live it allowed has succeeded — in the transaction that records the run
+ * as succeeded: on the audit run (the gate reads it) and in the audit
  * trail.
+ *
+ * @param via - the op that published (`deploy.trigger` for a production
+ *   build, `deploy.promote` for Publish live).
  */
 export async function recordProductionOverride(
   tx: Tx,
   ctx: ExecutionContext,
   override: ProductionOverride,
+  via: "deploy.trigger" | "deploy.promote",
 ): Promise<void> {
   await tx.execute(sql`
     UPDATE quality_audit_runs
@@ -113,9 +118,12 @@ export async function recordProductionOverride(
     actorId: ctx.actorId,
     requestId: ctx.requestId,
     operation: "quality_audits.publish_anyway",
-    input: { auditRunId: override.auditRunId, reason: override.reason, via: "deploy.trigger" },
+    input: { auditRunId: override.auditRunId, reason: override.reason, via },
     succeeded: true,
     entityId: override.auditRunId,
-    resultSummary: `production build over a failed quality check: ${override.reason}`,
+    resultSummary:
+      via === "deploy.promote"
+        ? `published over a failed quality check: ${override.reason}`
+        : `production build over a failed quality check: ${override.reason}`,
   });
 }

@@ -740,4 +740,59 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     );
     expect(home?.toString("utf8")).toContain("eleventh entry");
   });
+
+  it("#1220 a tick skips while another run releases the live site, and bakes on the next one", async () => {
+    await approve("twelfth entry");
+    // A Publish live (or another plugin-data build) holds the live-release
+    // lease as its run, with no transaction open: the tick does not wait.
+    const holder = crypto.randomUUID();
+    await sqlSystem(async (tx) => {
+      await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+               SELECT ${holder}::uuid, id, ${SYSTEM_ACTOR_ID}::uuid, 'running',
+                      clock_timestamp() + interval '10 minutes'
+               FROM deploy_targets WHERE env = 'production' LIMIT 1`;
+      await tx`INSERT INTO deploy_leases (name, holder_run_id, acquired_at, expires_at)
+               VALUES ('live-release', ${holder}::uuid, clock_timestamp(),
+                       clock_timestamp() + interval '10 minutes')
+               ON CONFLICT (name) DO UPDATE SET holder_run_id = EXCLUDED.holder_run_id,
+                 acquired_at = EXCLUDED.acquired_at, expires_at = EXCLUDED.expires_at`;
+    });
+    const before = await pluginDataRuns();
+    try {
+      const busy = await tick();
+      expect(busy.outcome).toBe("busy");
+      expect(busy.message).toContain(holder);
+      expect(busy.runIds).toEqual([]);
+      // Nothing recorded, the mark still pending.
+      expect(await pluginDataRuns()).toHaveLength(before.length);
+      const pending = await sqlSystem(
+        async (tx) =>
+          (await tx`SELECT count(*)::int AS n FROM plugin_data_stale_pages
+                    WHERE baked_through IS NULL OR last_marked_at > baked_through`) as {
+            n: number;
+          }[],
+      );
+      expect(pending[0]?.n).toBeGreaterThan(0);
+    } finally {
+      await sqlSystem(async (tx) => {
+        await tx`UPDATE deploy_leases SET holder_run_id = NULL, acquired_at = NULL, expires_at = NULL
+                 WHERE holder_run_id = ${holder}::uuid`;
+        await tx`DELETE FROM deploy_runs WHERE id = ${holder}::uuid`;
+      });
+    }
+    const built = await tick();
+    expect(built.outcome).toBe("built");
+    expect(await pluginDataRuns()).toHaveLength(before.length + 1);
+    const home = (await filesUnder(join(productionDir(), "current"))).get(
+      await homeOutputPath(join(productionDir(), "current")),
+    );
+    expect(home?.toString("utf8")).toContain("twelfth entry");
+    const lease = await sqlSystem(
+      async (tx) =>
+        (await tx`SELECT holder_run_id FROM deploy_leases WHERE name = 'live-release'`) as {
+          holder_run_id: string | null;
+        }[],
+    );
+    expect(lease[0]?.holder_run_id ?? null).toBeNull();
+  });
 });

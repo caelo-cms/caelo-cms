@@ -61,11 +61,18 @@ describe("liveTopicsOfOperation over the real op catalogue", () => {
       "deploy.start_trigger",
       "deploy.fail_run",
       "deploy.finish_trigger",
-      "deploy.begin_run",
       "deploy.update_progress",
       "deploy.promote",
+      "deploy.start_promote",
+      "deploy.finish_promote",
+      "deploy.begin_execute_proposal",
+      "deploy.end_execute_proposal",
+      "quality_audits.begin_execute_proposal",
+      "quality_audits.end_execute_proposal",
       "deploy.rollback",
       "deploy.build_plugin_data",
+      "deploy.begin_plugin_data_run",
+      "deploy.finish_plugin_data_run",
     ];
     const missing = named.filter((n) => !OP_NAMES.includes(n));
     expect(missing).toEqual([]);
@@ -91,6 +98,7 @@ describe("liveTopicsOfOperation over the real op catalogue", () => {
       "chat.renew_turn_lease",
       "quality_audits.claim_next",
       "deploy.renew_run_lease",
+      "deploy.acquire_live_release",
     ]) {
       expect(OP_NAMES).toContain(n);
       expect(liveTopicsOfOperation(n)).toEqual([]);

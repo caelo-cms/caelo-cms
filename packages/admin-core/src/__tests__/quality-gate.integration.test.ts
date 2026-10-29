@@ -709,6 +709,47 @@ describe("a failed quality check", () => {
       auditRunId,
       reason: "launch deadline, the checker is down",
     });
+    // #1225 — a publish that fails after its run started records no
+    // override and no audit event, and leaves the card approvable: the
+    // decision is written in the transaction that records the published run.
+    const overrideTrail = async () =>
+      (
+        (await withSql(
+          async (tx) =>
+            (await tx`SELECT count(*)::int AS n FROM audit_events
+                      WHERE operation = 'quality_audits.publish_anyway' AND entity_id = ${auditRunId}`) as unknown as {
+              n: number;
+            }[],
+        )) as { n: number }[]
+      )[0]?.n;
+    const prevProvider = process.env.CAELO_PROVIDER;
+    process.env.CAELO_PROVIDER = "no-such-provider";
+    try {
+      expect(
+        await opErr(HUMAN, "quality_audits.publish_anyway", { auditRunId, reason: "deadline" }),
+      ).toContain("promotion failed");
+      expect(
+        await opErr(HUMAN, "quality_audits.execute_proposal", { proposalId: proposal.proposalId }),
+      ).toContain("promotion failed");
+    } finally {
+      if (prevProvider === undefined) delete process.env.CAELO_PROVIDER;
+      else process.env.CAELO_PROVIDER = prevProvider;
+    }
+    expect(await gate()).toMatchObject({ open: false, state: "errored" });
+    expect(
+      (await op<{ run: { publishOverride: unknown } }>(AI, "quality_audits.get", { auditRunId }))
+        .run.publishOverride,
+    ).toBeNull();
+    expect(await overrideTrail()).toBe(0);
+    const pendingRow = (await withSql(
+      async (tx) =>
+        (await tx`SELECT status, claimed_at FROM quality_pending_actions
+                  WHERE id = ${proposal.proposalId}::uuid`) as unknown as {
+          status: string;
+          claimed_at: string | null;
+        }[],
+    )) as { status: string; claimed_at: string | null }[];
+    expect(pendingRow[0]).toMatchObject({ status: "pending", claimed_at: null });
     const applied = await op<{ kind: string; toRunId: string }>(
       HUMAN,
       "quality_audits.execute_proposal",

@@ -105,6 +105,7 @@ import {
   type TargetDbRow,
   targetRow,
 } from "./deploy-common.js";
+import { acquireLeaseStep, fenceRunLeases } from "./deploy-lease-steps.js";
 import { beginRunInTx } from "./deploy-run-lifecycle.js";
 import {
   checkProductionBuildGate,
@@ -428,7 +429,9 @@ export const finishTriggerOp = defineOperation({
     }
     // The publish-anyway decision is recorded only now that the build it
     // allowed is live; a failed build leaves the quality gate closed.
-    if (input.override) await recordProductionOverride(tx, ctx, input.override);
+    if (input.override) {
+      await recordProductionOverride(tx, ctx, input.override, "deploy.trigger");
+    }
     // Epic #1107 — a production build is a Publish live: pages it ships
     // for the first time get their first_published_at.
     if (input.env === "production") await stampFirstPublished(tx, input.runId);
@@ -454,96 +457,6 @@ export const finishTriggerOp = defineOperation({
     return ok({ draftPages: await mainDraftPages(tx) });
   },
 });
-
-/** Sleep that ends early (false) when `signal` aborts. */
-function abortableSleep(ms: number, signal: AbortSignal): Promise<boolean> {
-  if (signal.aborted) return Promise.resolve(false);
-  return new Promise((done) => {
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      done(false);
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      done(true);
-    }, ms);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-/**
- * Take the staging-publication lease for `runId`, waiting (outside any
- * transaction) while another Stage or a Publish live holds it.
- */
-async function acquireStagingPublicationLease(
-  steps: OperationSteps,
-  sys: ExecutionContext,
-  args: { readonly runId: string; readonly ttlMs: number; readonly stop: AbortSignal },
-): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
-  const deadline = Date.now() + STAGING_PUBLICATION_WAIT_MS;
-  let pause = 100;
-  for (;;) {
-    if (args.stop.aborted) return { ok: false, message: abortMessage(args.stop) };
-    const r = await execute(
-      steps.registry,
-      steps.adapter,
-      sys,
-      "deploy.acquire_staging_publication",
-      {
-        runId: args.runId,
-        ttlMs: args.ttlMs,
-      },
-    );
-    if (!r.ok) {
-      return {
-        ok: false,
-        message: `could not take the staging publish slot: ${describeError(r.error)}. Nothing was published; Stage again.`,
-      };
-    }
-    const v = r.value as { acquired: boolean; heldByRunId: string | null };
-    if (v.acquired) return { ok: true };
-    if (Date.now() >= deadline) {
-      return {
-        ok: false,
-        message: `${v.heldByRunId ? `another Stage or Publish live (build ${v.heldByRunId})` : "a Publish live"} kept publishing the staging site for ${Math.round(STAGING_PUBLICATION_WAIT_MS / 60_000)} minutes, so this build was not published. Stage again once it finished (Settings → Deployments shows it).`,
-      };
-    }
-    await abortableSleep(pause, args.stop);
-    pause = Math.min(pause * 2, 2_000);
-  }
-}
-
-/**
- * Prove that `runId` still holds its run lease and the staging-publication
- * lease, renewing both. The leases then hold until at least a TTL after
- * this call started; the returned `retireUntil` is half of that window, the
- * rest is the margin for a retirement already in flight.
- */
-async function fenceStagingPublication(
-  steps: OperationSteps,
-  sys: ExecutionContext,
-  args: { readonly runId: string; readonly ttlMs: number },
-): Promise<
-  | { readonly ok: true; readonly retireUntil: number }
-  | { readonly ok: false; readonly message: string }
-> {
-  const startedAt = Date.now();
-  const r = await execute(steps.registry, steps.adapter, sys, "deploy.renew_run_lease", args);
-  if (!r.ok) {
-    return {
-      ok: false,
-      message: `staging build ${args.runId} was published, but could not confirm it still holds the staging publish slot (${describeError(r.error)}), so it did not take over staging. Staging still serves the previous build; Stage again.`,
-    };
-  }
-  const beat = r.value as DeployRunBeat;
-  if (!beat.running || beat.publication !== "renewed") {
-    return {
-      ok: false,
-      message: `staging build ${args.runId} lost its place in the staging publish order (its lease lapsed), so it did not take over staging: another Stage or Publish live may have changed what staging serves. Stage again.`,
-    };
-  }
-  return { ok: true, retireUntil: startedAt + Math.floor(args.ttlMs / 2) };
-}
 
 type TriggerOutput = z.infer<typeof triggerOutput>;
 
@@ -664,7 +577,16 @@ async function runTrigger(
     // pruning the others is one ordered step per Stage: a concurrent Stage
     // must not prune this channel between its creation and our record.
     if (plan.stagingOrigin) {
-      const slot = await acquireStagingPublicationLease(steps, sys, { runId, ttlMs, stop });
+      const slot = await acquireLeaseStep(steps, sys, {
+        op: "deploy.acquire_staging_publication",
+        runId,
+        ttlMs,
+        stop,
+        waitMs: STAGING_PUBLICATION_WAIT_MS,
+        what: "staging publish slot",
+        busyMessage: (heldBy) =>
+          `${heldBy ? `another Stage or Publish live (build ${heldBy})` : "a Publish live"} kept publishing the staging site for ${Math.round(STAGING_PUBLICATION_WAIT_MS / 60_000)} minutes, so this build was not published. Stage again once it finished (Settings → Deployments shows it).`,
+      });
       timer.lap("lock-wait");
       if (!slot.ok) return await fail(slot.message);
       heartbeat.expectPublication(true);
@@ -739,13 +661,21 @@ async function runTrigger(
       // last word, which may be minutes old when beats failed. One renewal
       // now proves it and keeps it for a full TTL from before the call;
       // retiring stops halfway through that window.
-      const fence = await fenceStagingPublication(steps, sys, { runId, ttlMs });
+      const fence = await fenceRunLeases(steps, sys, {
+        runId,
+        ttlMs,
+        need: { publication: true, liveRelease: false },
+        lostMessage: (renewError) =>
+          renewError !== null
+            ? `staging build ${runId} was published, but could not confirm it still holds the staging publish slot (${renewError}), so it did not take over staging. Staging still serves the previous build; Stage again.`
+            : `staging build ${runId} lost its place in the staging publish order (its lease lapsed), so it did not take over staging: another Stage or Publish live may have changed what staging serves. Stage again.`,
+      });
       if (!fence.ok) return await fail(fence.message);
       // #650 / #908 — staging.<domain> now serves this build: its preview
       // becomes the served one (kept alive, every other preview retired);
       // deploy.finish_trigger records it as the origin.
       try {
-        await selectServedStagingPreview(publisher, runId, { retireUntil: fence.retireUntil });
+        await selectServedStagingPreview(publisher, runId, { retireUntil: fence.until });
       } catch (e) {
         timer.lap("select-preview");
         return await fail(
