@@ -463,6 +463,29 @@ test("'Fix with AI' is refused while an external agent works in the chat", async
   expect((await qualityStatus(page.request, chatSessionId)).notified).toBe(false);
 });
 
+test("the Staging menu lists what blocks Publish live; a row asks to fix it (#1207)", async ({
+  page,
+}) => {
+  const ownerId = await login(page);
+  const chatSessionId = await newChat(page);
+  seedProblemAudit(chatSessionId, ownerId, "operator", "grouped");
+  // The Staging menu is the live editor's toolbar, not the chat page's.
+  await page.goto(`/edit?chat=${chatSessionId}`);
+
+  await page.getByTestId("staging-menu").click();
+  const rows = page.getByTestId("quality-top-problems").getByTestId("quality-top-problem");
+  // Largest group first: the rule failing on all three pages.
+  await expect(rows).toHaveCount(2, { timeout: 30_000 });
+  await expect(rows.first()).toContainText("Missing meta description");
+  await expect(rows.first()).toContainText("3 pages");
+  await expect(rows.nth(1)).toContainText("1 page");
+
+  await rows.first().click();
+  await expect(page.getByTestId("chat-composer")).toHaveValue(
+    /^Fix the quality problem "Missing meta description" \(seo-check\/description-missing\) on /,
+  );
+});
+
 test("bulk decisions per group: pick and accept, accept all, fix one group (#727)", async ({
   context,
   page,

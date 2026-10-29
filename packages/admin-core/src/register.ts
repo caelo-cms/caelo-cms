@@ -179,6 +179,7 @@ import {
   updatePageOp,
   updatePagesManyOp,
 } from "./ops/content/pages.js";
+import { listRecentlyEditedPagesOp } from "./ops/content/pages-recently-edited.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
 import { resolvePublicUrlsOp } from "./ops/content/public-urls.js";
 import { listSharedContentOp } from "./ops/content/shared-content.js";
@@ -769,6 +770,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listSharedContentOp);
   registry.register(resolvePublicUrlsOp);
   registry.register(listPageStatusesOp);
+  registry.register(listRecentlyEditedPagesOp);
   registry.register(canonicaliseLinkValuesOp);
   // Epic #724 (rollout F) — reference integrity read (check_links, Publish-live check).
   registry.register(checkReferencesOp);

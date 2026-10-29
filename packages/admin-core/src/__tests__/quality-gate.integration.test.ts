@@ -1010,11 +1010,16 @@ describe("bulk decisions (#727 'optimum, not good enough')", () => {
     } | null;
   };
   const openGate = () =>
-    op<{ gate: { open: boolean; state: string; openProblemCount: number; message: string } }>(
-      AI,
-      "quality_audits.gate_status",
-      {},
-    ).then((g) => g.gate);
+    op<{
+      gate: {
+        open: boolean;
+        state: string;
+        openProblemCount: number;
+        message: string;
+        topProblems: { key: string; pageCount: number }[];
+        problemGroupCount: number;
+      };
+    }>(AI, "quality_audits.gate_status", {}).then((g) => g.gate);
 
   it("every value below 100 blocks; the card groups it by rule across pages", async () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
@@ -1033,8 +1038,14 @@ describe("bulk decisions (#727 'optimum, not good enough')", () => {
         failing: [unusedJs],
       })),
     );
-    expect(await openGate()).toMatchObject({ open: false, state: "problems", openProblemCount: 6 });
+    const blocked = await openGate();
+    expect(blocked).toMatchObject({ open: false, state: "problems", openProblemCount: 6 });
     const st = await op<Status>(HUMAN, "quality_audits.chat_status", { chatSessionId });
+    // #1207 — the gate lists the same groups as the card, for the Staging menu.
+    expect(blocked.topProblems.map((g) => [g.key, g.pageCount])).toEqual(
+      (st.feedback?.groups ?? []).slice(0, 5).map((g) => [g.key, g.pages.length]),
+    );
+    expect(blocked.problemGroupCount).toBe(st.feedback?.groups.length);
     expect(st.feedback?.groups.map((g) => [g.key, g.pages.length])).toEqual([
       ["lighthouse/accessibility/score", 2],
       ["lighthouse/performance/score", 2],

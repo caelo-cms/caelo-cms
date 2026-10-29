@@ -2,7 +2,12 @@
 
 import { describe, expect, it } from "bun:test";
 import type { OpenProblem } from "../gate.js";
-import { groupOpenProblems, groupSummaryLine, problemGroupKey } from "../problem-groups.js";
+import {
+  groupOpenProblems,
+  groupSummaryLine,
+  problemGroupKey,
+  topProblemGroups,
+} from "../problem-groups.js";
 
 const missing = (pageId: string | null, pagePath: string, count = 1): OpenProblem => ({
   pageId,
@@ -75,5 +80,24 @@ describe("groupOpenProblems", () => {
     expect(groupSummaryLine(group as NonNullable<typeof group>)).toBe(
       "seo-check/description-missing — Missing meta description: 312 page(s) (/p0, /p1, /p2, +309)",
     );
+  });
+});
+
+describe("topProblemGroups (#1207)", () => {
+  it("keeps the largest groups and a few pages of each, with the full page count", () => {
+    const many = Array.from({ length: 40 }, (_v, i) => missing(`p${i}`, `/p${i}`));
+    const groups = groupOpenProblems([...many, unusedJs("p1", "/")]);
+    expect(topProblemGroups(groups, 1, 2)).toEqual([
+      {
+        key: "seo-check/description-missing",
+        title: "Missing meta description",
+        pageCount: 40,
+        pages: [
+          { pagePath: "/p0", detail: "1×" },
+          { pagePath: "/p1", detail: "1×" },
+        ],
+      },
+    ]);
+    expect(topProblemGroups(groups)).toHaveLength(2);
   });
 });

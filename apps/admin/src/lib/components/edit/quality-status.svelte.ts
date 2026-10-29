@@ -31,6 +31,15 @@ export interface QualityGate {
   readonly message: string;
   readonly canPublishAnyway: boolean;
   readonly openProblemCount: number;
+  /** #1207 — the largest problem groups (at most 5), for the Staging menu. */
+  readonly topProblems: readonly {
+    readonly key: string;
+    readonly title: string;
+    readonly pageCount: number;
+    readonly pages: readonly { readonly pagePath: string; readonly detail: string }[];
+  }[];
+  /** All groups; more than `topProblems` lists shows "and N more". */
+  readonly problemGroupCount: number;
 }
 
 /**
