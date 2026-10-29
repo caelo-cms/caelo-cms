@@ -43,9 +43,8 @@ function runShim(jar: PreviewCookieJar, opts: { nativeThrows?: boolean } = {}) {
   };
   const win = { parent };
   const location = { search: `?channel=${CHANNEL}`, origin: "https://admin.example" };
-  const body = previewCookieShimScript(jar)
-    .replace(/^<script[^>]*>/, "")
-    .replace(/<\/script>$/, "");
+  const tag = previewCookieShimScript(jar);
+  const body = tag.slice(tag.indexOf(">") + 1, tag.lastIndexOf("<"));
   new Function("document", "window", "parent", "location", body)(doc, win, parent, location);
   return { doc: doc as { cookie: string }, posts };
 }
@@ -75,6 +74,21 @@ describe("preview cookie shim", () => {
     doc.cookie = "b=x; expires=Thu, 01 Jan 1970 00:00:00 GMT";
     expect(doc.cookie).toBe("");
     expect(posts.at(-1)?.msg.cookies).toEqual({});
+  });
+
+  it("drops a cookie out of bounds, so every jar it posts is one the editor accepts", () => {
+    const { doc, posts } = runShim({ consent: "yes" });
+    doc.cookie = `big=${"x".repeat(PREVIEW_COOKIE_JAR_MAX_BYTES + 1)}`;
+    doc.cookie = "a,b=1";
+    for (let i = 0; i < 60; i++) doc.cookie = `c${i}=1`;
+    expect(doc.cookie).not.toContain("big=");
+    expect(doc.cookie).not.toContain("c49=");
+    // A later change (withdrawing consent) still reaches the editor.
+    doc.cookie = "consent=no";
+    const last = posts.at(-1)?.msg;
+    expect(iframeToParentSchema.safeParse(last).success).toBe(true);
+    expect((last?.cookies as PreviewCookieJar).consent).toBe("no");
+    expect(Object.keys(last?.cookies as PreviewCookieJar)).toHaveLength(50);
   });
 
   it("leaves a working native document.cookie alone", () => {

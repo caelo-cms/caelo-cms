@@ -42,15 +42,17 @@ export const PREVIEW_COOKIE_JAR_PATH = "/edit/";
 export const PREVIEW_COOKIE_JAR_MAX_BYTES = 3800;
 
 const MAX_COOKIES = 50;
+const MAX_NAME_LENGTH = 256;
+const COOKIE_NAME_RE = /^[^=;,\s]+$/;
 
-/** The jar: cookie name → value, bounded like a browser bounds one site's cookies. */
+/**
+ * The jar: cookie name → value, bounded like a browser bounds one site's
+ * cookies. The shim applies the same bounds before it posts, so the jar it
+ * sends always passes (a rejected message would leave the stored jar stale).
+ */
 export const previewCookieJarSchema = z
   .record(
-    z
-      .string()
-      .min(1)
-      .max(256)
-      .regex(/^[^=;,\s]+$/),
+    z.string().min(1).max(MAX_NAME_LENGTH).regex(COOKIE_NAME_RE),
     z.string().max(PREVIEW_COOKIE_JAR_MAX_BYTES),
   )
   .refine((jar) => Object.keys(jar).length <= MAX_COOKIES, {
@@ -109,6 +111,10 @@ export function previewCookieShimScript(jar: PreviewCookieJar): string {
     return;
   } catch (e) {}
   var jar = ${inlineJson(jar)};
+  var NAME_RE = ${COOKIE_NAME_RE.toString()};
+  var MAX_NAME = ${MAX_NAME_LENGTH};
+  var MAX_VALUE = ${PREVIEW_COOKIE_JAR_MAX_BYTES};
+  var MAX_COOKIES = ${MAX_COOKIES};
   var channel = new URLSearchParams(location.search).get("channel");
   if (channel && !/^[0-9a-f-]{36}$/.test(channel)) channel = null;
   function save() {
@@ -145,9 +151,23 @@ export function previewCookieShimScript(jar: PreviewCookieJar): string {
       var eq = first.indexOf("=");
       if (eq < 1) return;
       var name = first.slice(0, eq).trim();
-      if (!name) return;
-      if (expired(parts.slice(1))) delete jar[name];
-      else jar[name] = first.slice(eq + 1).trim();
+      var value = first.slice(eq + 1).trim();
+      var has = Object.prototype.hasOwnProperty.call(jar, name);
+      if (expired(parts.slice(1))) {
+        if (!has) return;
+        delete jar[name];
+      } else {
+        // Out of bounds: dropped, as a browser drops an oversized cookie.
+        if (!NAME_RE.test(name) || name.length > MAX_NAME || value.length > MAX_VALUE) {
+          console.warn("[caelo-preview-cookies] cookie " + name.slice(0, 64) + " exceeds the preview's limits; not stored");
+          return;
+        }
+        if (!has && Object.keys(jar).length >= MAX_COOKIES) {
+          console.warn("[caelo-preview-cookies] the preview keeps at most " + MAX_COOKIES + " cookies; " + name.slice(0, 64) + " not stored");
+          return;
+        }
+        jar[name] = value;
+      }
       save();
     },
   });
