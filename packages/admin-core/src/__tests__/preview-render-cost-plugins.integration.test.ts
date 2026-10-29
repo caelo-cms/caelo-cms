@@ -8,6 +8,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { pluginWorkerScheduler } from "@caelo-cms/plugin-host";
 import { type CostSite, setupCostSite } from "./_preview-cost.js";
 
 let site: CostSite;
@@ -21,6 +22,12 @@ afterAll(async () => {
 });
 
 describe("pages.render_preview database cost with plugins (#1212)", () => {
+  it("counts no plugin worker tick", () => {
+    // A cron tick (international-site fires at every :00 and :30) inside a
+    // counted render made the counts depend on the wall clock.
+    expect(pluginWorkerScheduler.list()).toEqual([]);
+  });
+
   it("does not grow with the number of pages", async () => {
     const small = await site.measure();
     await site.seedFillerPages(150, 2000);

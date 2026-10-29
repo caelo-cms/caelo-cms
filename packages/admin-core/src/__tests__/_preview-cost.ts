@@ -10,7 +10,13 @@
  */
 
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
-import { bootstrap, resetPluginHost, runPluginOperation } from "@caelo-cms/plugin-host";
+import {
+  bootstrap,
+  pluginWorkerScheduler,
+  resetPluginHost,
+  runPluginOperation,
+  stopRuntimeHeartbeat,
+} from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -147,6 +153,14 @@ export async function setupCostSite(opts: {
       testPlugins: [{ definition: intlPlugin }, { definition: consentPlugin }],
     });
     if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
+    // The counter sees every statement on this adapter, and bootstrap
+    // starts the plugins' timed background work on it: the cron workers
+    // (international-site ticks at every :00 and :30 of the wall clock)
+    // and the runtime heartbeat. A tick inside a counted render added its
+    // own ~50-160 statements to that render whenever the test crossed such
+    // a second. The benchmark measures the render, so nothing ticks here.
+    pluginWorkerScheduler.shutdown();
+    stopRuntimeHeartbeat();
     const locales = await runPluginOperation({
       invocation: { origin: "system", actorId: COST_SYSTEM.actorId },
       pluginSlug: "international-site",
