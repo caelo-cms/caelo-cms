@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #68 — migration 0404 repairs jsonb values the pre-#283 write idiom
+ * #68 — migration 0421 repairs jsonb values the pre-#283 write idiom
  * stored double-encoded (a jsonb string scalar holding JSON text).
  *
  * Rows of that shape are written the way bun:SQL wrote them (a JS string
@@ -25,7 +25,7 @@ const FILE = join(
   "..",
   "migrations",
   "cms_admin",
-  "0404_repair_jsonb_double_encoding.sql",
+  "0421_repair_jsonb_double_encoding.sql",
 );
 
 /** Migration body without its BEGIN/COMMIT, so it replays inside our transaction. */
@@ -43,7 +43,7 @@ const FIELDS = [{ name: "title", kind: "text", label: "Title" }];
 
 class Rollback extends Error {}
 
-describe("0404 repairs double-encoded jsonb (#68)", () => {
+describe("0421 repairs double-encoded jsonb (#68)", () => {
   it("turns string scalars holding JSON objects/arrays back into objects/arrays, idempotently", async () => {
     const sql = new SQL(ADMIN_URL);
     let seen: Record<string, unknown> = {};
@@ -109,7 +109,7 @@ describe("0404 repairs double-encoded jsonb (#68)", () => {
   });
 });
 
-describe("0404 applies 0353's list conversion to the rows it repairs (#68, #1107)", () => {
+describe("0421 applies 0353's list conversion to the rows it repairs (#68, #1107)", () => {
   it("leaves no text-list / link-list field or value behind in a repaired module", async () => {
     const MODULE = "00000000-0000-0000-0000-0000000068c1";
     const INSTANCE = "00000000-0000-0000-0000-0000000068c2";

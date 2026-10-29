@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0404 — repair jsonb values stored double-encoded (#68).
+-- 0421 — repair jsonb values stored double-encoded (#68).
 --
 -- Until #283 (migration 0136 was the newest then) the ops wrote jsonb as
 -- `${JSON.stringify(x)}::jsonb`. bun:SQL binds a JS string under a bare
@@ -28,7 +28,7 @@
 -- skipped and, once repaired here, would come back with a field kind no
 -- reader supports. So after the repair this migration runs 0353's
 -- conversion again, copied from 0353 (CREATE OR REPLACE, messages name
--- 0404). It touches only fields still of the old kinds, and leaves values
+-- 0421). It touches only fields still of the old kinds, and leaves values
 -- already in list shape alone, so on an install without such rows it
 -- changes nothing.
 --
@@ -149,7 +149,7 @@ BEGIN
         WHERE jsonb_typeof(%I) = ''string'' AND pg_temp.caelo_unwrap_jsonb(%I) IS NOT NULL',
       col.tbl, col.col, col.col) INTO left_over;
     IF left_over > 0 THEN
-      RAISE EXCEPTION '0404: % row(s) of %.% are still double-encoded after the repair',
+      RAISE EXCEPTION '0421: % row(s) of %.% are still double-encoded after the repair',
         left_over, col.tbl, col.col;
     END IF;
   END LOOP;
@@ -194,7 +194,7 @@ BEGIN
       ELSIF jsonb_typeof(e) = 'object' AND jsonb_typeof(e->'label') = 'string' THEN
         txt := e->>'label';
       ELSE
-        RAISE EXCEPTION 'migration 0404 (the list conversion of 0353): % holds a text-list item that is not text: %', at, e;
+        RAISE EXCEPTION 'migration 0421 (the list conversion of 0353): % holds a text-list item that is not text: %', at, e;
       END IF;
       out := out || jsonb_build_array(jsonb_build_object(
         'id', gen_random_uuid()::text,
@@ -212,7 +212,7 @@ BEGIN
         label := e #>> '{}';
         link := jsonb_build_object('href', '#');
       ELSE
-        RAISE EXCEPTION 'migration 0404 (the list conversion of 0353): % holds a link-list item that is not a {label, href} object: %', at, e;
+        RAISE EXCEPTION 'migration 0421 (the list conversion of 0353): % holds a link-list item that is not a {label, href} object: %', at, e;
       END IF;
       out := out || jsonb_build_array(jsonb_build_object(
         'id', gen_random_uuid()::text,
@@ -321,7 +321,7 @@ DECLARE
 BEGIN
   SELECT module_id, name INTO dup FROM _list_fields GROUP BY module_id, name HAVING count(*) > 1 LIMIT 1;
   IF FOUND THEN
-    RAISE EXCEPTION 'migration 0404 (the list conversion of 0353): field "%" of module % is a text-list in one version and a link-list in another — make the versions agree (or revert the module), then migrate again', dup.name, dup.module_id;
+    RAISE EXCEPTION 'migration 0421 (the list conversion of 0353): field "%" of module % is a text-list in one version and a link-list in another — make the versions agree (or revert the module), then migrate again', dup.name, dup.module_id;
   END IF;
 END $$;
 
