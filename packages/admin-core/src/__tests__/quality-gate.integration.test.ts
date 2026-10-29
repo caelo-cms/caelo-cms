@@ -1019,11 +1019,7 @@ describe("bulk decisions (#727 'optimum, not good enough')", () => {
         topProblems: { key: string; pageCount: number }[];
         problemGroupCount: number;
       };
-    }>(
-      AI,
-      "quality_audits.gate_status",
-      {},
-    ).then((g) => g.gate);
+    }>(AI, "quality_audits.gate_status", {}).then((g) => g.gate);
 
   it("every value below 100 blocks; the card groups it by rule across pages", async () => {
     const s = await op<{ chatSessionId: string; chatBranchId: string }>(
