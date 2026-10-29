@@ -372,6 +372,47 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
     expect(await proposalStatus(rollbackId)).toBe("applied");
   });
 
+  it("an approved rollback that went live but was never marked applied is recorded, not released again", async () => {
+    const owner = await makeOwner();
+    const runs = await productionRunCount();
+    const sql = new SQL(ADMIN_URL!);
+    let liveRunId = "";
+    try {
+      liveRunId = (
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          return (await tx`SELECT r.id::text AS id FROM deploy_runs r JOIN deploy_targets t
+                            ON t.id = r.target_id WHERE t.env = 'production' AND r.status = 'succeeded'
+                            ORDER BY r.finished_at DESC LIMIT 1`) as { id: string }[];
+        })
+      )[0]?.id as string;
+    } finally {
+      await sql.end();
+    }
+    const rollbackId = await insertProposal(
+      "rollback",
+      { target: "production", repoRoot: testRoot },
+      { restoreRunId: liveRunId },
+    );
+    const first = await execute(registry, adapter, owner, "deploy.execute_proposal", {
+      proposalId: rollbackId,
+    });
+    if (!first.ok) throw new Error(`rollback approve failed: ${JSON.stringify(first.error)}`);
+    const rolledBackRun = (first.value as { runId: string }).runId;
+    // The rollback's run carries the claimed id, committed with the rollback.
+    expect(await proposalClaimRun(rollbackId)).toBe(rolledBackRun);
+    expect(await productionRunCount()).toBe(runs + 1);
+    // As if the apply died after the rollback but before marking it applied.
+    await setProposalPending(rollbackId);
+    const retry = await execute(registry, adapter, owner, "deploy.execute_proposal", {
+      proposalId: rollbackId,
+    });
+    if (!retry.ok) throw new Error(`retry failed: ${JSON.stringify(retry.error)}`);
+    expect((retry.value as { runId: string }).runId).toBe(rolledBackRun);
+    expect(await proposalStatus(rollbackId)).toBe("applied");
+    expect(await productionRunCount()).toBe(runs + 1);
+  });
+
   it("a double click on one card publishes once; the other click is refused", async () => {
     const owner = await makeOwner();
     const staged = await ok<{ runId: string }>("deploy.trigger", {
@@ -440,6 +481,34 @@ async function productionRunCount(): Promise<number> {
         WHERE t.env = 'production' AND r.status = 'succeeded'`) as { n: number }[];
     });
     return rows[0]?.n ?? 0;
+  } finally {
+    await sql.end();
+  }
+}
+
+async function proposalClaimRun(proposalId: string): Promise<string | null> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return (await tx`SELECT claimed_by_run_id::text AS id FROM deploy_pending_actions
+                       WHERE id = ${proposalId}::uuid`) as { id: string | null }[];
+    });
+    return rows[0]?.id ?? null;
+  } finally {
+    await sql.end();
+  }
+}
+
+async function setProposalPending(proposalId: string): Promise<void> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`UPDATE deploy_pending_actions
+               SET status = 'pending', decided_at = NULL, decided_by = NULL, applied_run_id = NULL
+               WHERE id = ${proposalId}::uuid`;
+    });
   } finally {
     await sql.end();
   }

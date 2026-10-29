@@ -108,7 +108,11 @@ import {
   type DeployRunBeat,
   DeployRunHeartbeat,
 } from "../deploy/deploy-run-lock.js";
-import { acquireLiveRelease, releaseLiveRelease } from "../deploy/live-release-lock.js";
+import {
+  acquireLiveRelease,
+  releaseLiveRelease,
+  tryLockLiveRelease,
+} from "../deploy/live-release-lock.js";
 import { resolveOutputRoot } from "../deploy/output-root.js";
 import { activePluginProblems } from "../deploy/plugin-problems.js";
 import { markRedirectsBehind } from "../deploy/redirect-sync.js";
@@ -646,14 +650,6 @@ export const beginPluginDataRunOp = defineOperation({
       // A savepoint: a busy lease leaves no run row behind (a tick that
       // publishes nothing records no run).
       await tx.transaction(async (sp) => {
-        // What is live cannot have changed since the bake read it: Publish
-        // live, a rollback or another plugin-data build would have moved it.
-        const liveNow = await liveRunOf(sp as TransactionRunner, input.targetId);
-        if (liveNow?.id !== input.liveRunId) {
-          throw new LiveReleaseBusy(
-            "the live build changed while plugin data was baked; the marks stay pending for the next tick",
-          );
-        }
         await beginRunInTx(sp as TransactionRunner, {
           runId: input.runId,
           targetId: input.targetId,
@@ -673,6 +669,17 @@ export const beginPluginDataRunOp = defineOperation({
         if (!lease.acquired) {
           throw new LiveReleaseBusy(
             `${lease.heldBy ? `run ${lease.heldBy.runId}` : "a rollback, CDN purge or a release of the previous Caelo version"} is releasing the live site right now; the marks stay pending for the next tick`,
+          );
+        }
+        // What is live cannot have changed since the bake read it: Publish
+        // live, a rollback or another plugin-data build would have moved it.
+        // Checked with the lease held (a release that committed before the
+        // claim is seen here; none can start after it), so the files baked
+        // from the live build never replace a newer one (review on #1251).
+        const liveNow = await liveRunOf(sp as TransactionRunner, input.targetId);
+        if (liveNow?.id !== input.liveRunId) {
+          throw new LiveReleaseBusy(
+            "the live build changed while plugin data was baked; the marks stay pending for the next tick",
           );
         }
       });
@@ -712,8 +719,11 @@ export const finishPluginDataRunOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
-    // Released first: this transaction keeps the row locked until it
-    // commits, so nobody else releases in between.
+    // The run row first, then the lease: the same order as the heartbeat
+    // (deploy.renew_run_lease), so the two cannot deadlock (review on #1251).
+    await tx.execute(sql`SELECT 1 FROM deploy_runs WHERE id = ${input.runId}::uuid FOR UPDATE`);
+    // Released before the run is recorded: this transaction keeps the lease
+    // row locked until it commits, so nobody else releases in between.
     await releaseLiveRelease(tx, input.runId);
     await tx.execute(sql`
       UPDATE deploy_runs
@@ -746,12 +756,19 @@ export const finishPluginDataTickOp = defineOperation({
       .object({
         bakedAt: z.string(),
         plugins: z.array(z.object({ id: z.string(), pages: z.array(z.string()) })),
+        /**
+         * The run each target serves with this data: the plugin-data run
+         * this tick published, or the live run its unchanged bake read.
+         */
+        targets: z.array(z.object({ targetId: z.string(), liveRunId: z.string() })),
       })
       .nullable(),
   }),
-  output: z.object({}),
+  output: z.object({ marksAdvanced: z.boolean() }),
   handler: async (ctx, input, tx) => {
-    if (input.baked) {
+    let marksAdvanced = false;
+    if (input.baked && (await stillServed(tx, input.baked.targets))) {
+      marksAdvanced = true;
       // Every target now carries the data read at `bakedAt` for the pages
       // of the plugins that rendered (or had nothing new). A mark that came
       // in after that instant stays pending.
@@ -766,9 +783,28 @@ export const finishPluginDataTickOp = defineOperation({
       }
     }
     await recordOutcome(tx, ctx, input);
-    return ok({});
+    return ok({ marksAdvanced });
   },
 });
+
+/**
+ * Whether every target still serves the run this tick left it with — read
+ * under the live-release row lock, so no Publish live or rollback commits in
+ * between. A release since then rewound or forgot the bakes (it serves
+ * older data); advancing the marks over that would leave the data out of
+ * the HTML until the next mark (review on #1251). Busy or moved: the marks
+ * stay pending and the next tick bakes them again.
+ */
+async function stillServed(
+  tx: TransactionRunner,
+  targets: readonly { readonly targetId: string; readonly liveRunId: string }[],
+): Promise<boolean> {
+  if (!(await tryLockLiveRelease(tx, { skipLocked: false })).locked) return false;
+  for (const t of targets) {
+    if ((await liveRunOf(tx, t.targetId))?.id !== t.liveRunId) return false;
+  }
+  return true;
+}
 
 /** The body of deploy.build_plugin_data (see the module comment). */
 async function runPluginDataBuild(
@@ -788,6 +824,8 @@ async function runPluginDataBuild(
   timer.lap("prepare");
 
   const tally = { pendingPlugins: plan.pendingPlugins, marks: plan.marks };
+  /** The run each target serves once this tick is done (see finish_plugin_data_tick). */
+  const served = new Map(plan.targets.map((t) => [t.target.id, t.liveRunId]));
   const finishTick = async (
     outcome: "unchanged" | "built" | "blocked" | "failed",
     message: string | null,
@@ -803,6 +841,7 @@ async function runPluginDataBuild(
         ? {
             bakedAt: plan.bakedAt,
             plugins: plan.plugins.map((p) => ({ id: p.id, pages: p.pages })),
+            targets: [...served].map(([targetId, liveRunId]) => ({ targetId, liveRunId })),
           }
         : null,
     });
@@ -967,6 +1006,7 @@ async function runPluginDataBuild(
       });
     }
     runIds.push(runId);
+    served.set(t.target.id, runId);
     bakedPages += bake.bakedPages;
     changedFiles += bake.files.size;
   }

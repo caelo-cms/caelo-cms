@@ -312,7 +312,7 @@ const beginExecuteOutput = z.discriminatedUnion("kind", [
     /** A rollback's run to restore, captured at propose time. */
     restoreRunId: z.string().nullable(),
   }),
-  /** An earlier click's Publish live succeeded but was never marked applied; now it is. */
+  /** An earlier click's Publish live or rollback succeeded but was never marked applied; now it is. */
   z.object({ kind: z.literal("applied"), runId: z.string() }),
 ]);
 
@@ -352,9 +352,10 @@ export const beginExecuteDeployProposalOp = defineOperation({
     if (row.status !== "pending") {
       return err(opError("deploy.execute_proposal", `proposal is already ${row.status}`));
     }
-    // An earlier click's Publish live went live, but its approval was never
-    // marked applied (the apply died between the two): record it now
-    // instead of publishing a second time.
+    // An earlier click's Publish live or rollback went live, but its
+    // approval was never marked applied (the apply died between the two):
+    // record it now instead of releasing a second time. A rollback's run
+    // carries the claimed id and is committed with the rollback itself.
     if (row.claimed_by_run_id !== null && row.run_status === "succeeded") {
       await markApplied(tx, ctx, input.proposalId, row.claimed_by_run_id);
       return ok({ kind: "applied" as const, runId: row.claimed_by_run_id });
@@ -382,8 +383,7 @@ export const beginExecuteDeployProposalOp = defineOperation({
     }
     await tx.execute(sql`
       UPDATE deploy_pending_actions
-      SET claimed_by_run_id = ${row.kind === "promote" ? sql`${input.runId}::uuid` : sql`NULL`},
-          claimed_at = clock_timestamp()
+      SET claimed_by_run_id = ${input.runId}::uuid, claimed_at = clock_timestamp()
       WHERE id = ${input.proposalId}::uuid
     `);
     return ok({
@@ -471,11 +471,11 @@ async function runExecuteDeployProposal(
   steps: OperationSteps,
 ): Promise<Result<{ runId: string | null }, QueryError>> {
   const { registry, adapter } = steps;
-  // The Publish live run's id, minted now so the claim can name it.
-  const promoteRunId = randomUUID();
+  // The run's id (Publish live or rollback), minted now so the claim names it.
+  const claimedRunId = randomUUID();
   const begun = await execute(registry, adapter, ctx, "deploy.begin_execute_proposal", {
     proposalId: input.proposalId,
-    runId: promoteRunId,
+    runId: claimedRunId,
   });
   if (!begun.ok) return err(begun.error);
   const plan = begun.value as z.infer<typeof beginExecuteOutput>;
@@ -495,7 +495,7 @@ async function runExecuteDeployProposal(
         fromTarget: payload.fromTarget,
         toTarget: payload.toTarget,
         ...(payload.repoRoot ? { repoRoot: payload.repoRoot } : {}),
-        runId: promoteRunId,
+        runId: claimedRunId,
       },
       steps.signal ? { signal: steps.signal } : {},
     );
@@ -505,6 +505,7 @@ async function runExecuteDeployProposal(
     applied = await execute(registry, adapter, ctx, "deploy.rollback", {
       targetName: (plan.payload as { target: string }).target,
       runId: plan.restoreRunId,
+      newRunId: claimedRunId,
       ...(typeof plan.payload.repoRoot === "string" ? { repoRoot: plan.payload.repoRoot } : {}),
     });
   }

@@ -25,6 +25,7 @@
  * uploads (#1211, #1225).
  */
 
+import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import {
   type DatabaseAdapter,
@@ -327,6 +328,13 @@ export const rollbackDeployOp = defineOperation({
       targetName: z.string(),
       runId: z.string().uuid(),
       repoRoot: z.string().optional(),
+      /**
+       * The id the rollback's run gets, minted by an approved card that
+       * claims its proposal first (deploy.execute_proposal): a retry finds
+       * the rollback by it instead of releasing the old build again.
+       * Default: a fresh id.
+       */
+      newRunId: z.string().uuid().optional(),
     })
     .strict(),
   output: z.object({ buildId: z.string(), newRunId: z.string() }),
@@ -352,7 +360,12 @@ export const rollbackDeployOp = defineOperation({
 /** One rollback attempt, in one transaction: done, or the live release is busy. */
 async function rollbackOnce(
   ctx: ExecutionContext,
-  input: { targetName: string; runId: string; repoRoot?: string | undefined },
+  input: {
+    targetName: string;
+    runId: string;
+    repoRoot?: string | undefined;
+    newRunId?: string | undefined;
+  },
   tx: TransactionRunner,
 ): Promise<
   | {
@@ -434,9 +447,10 @@ async function rollbackOnce(
   // is what is live now, and a plugin-data build refreshes regions only
   // while the running version rendered the live build.
   const newRunRows = (await tx.execute(sql`
-    INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id,
+    INSERT INTO deploy_runs (id, target_id, actor_id, status, started_at, finished_at, build_id,
                              publish_summary, caelo_version)
-    VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'succeeded', ${startedAt}::timestamptz,
+    VALUES (${input.newRunId ?? randomUUID()}::uuid, ${target.id}::uuid, ${ctx.actorId}::uuid,
+            'succeeded', ${startedAt}::timestamptz,
             clock_timestamp(), ${buildId}, ${jsonbParam(summary)},
             ${priorRows[0]?.caelo_version ?? null})
     RETURNING id::text AS id
