@@ -203,9 +203,11 @@ function collectModule(
   out: Set<string>,
 ): void {
   const tpl = root.moduleId === null ? undefined : templates.get(root.moduleId);
-  // A root its template does not render (a module the composer fills from
-  // other data) cannot be attributed: nothing in it counts.
-  if (!tpl || !accounts(tpl.root, root)) return;
+  // A root of another element than its template's cannot be attributed:
+  // nothing in it counts. Only the tag is compared — a root class the
+  // template renders conditionally (`cards{{#featured}}--featured{{/featured}}`)
+  // must not hide the whole module.
+  if (!tpl || tpl.root.tag !== root.tag) return;
   const visit = (r: MarkupNode, t: MarkupNode | null, scope: Scope, entryAbove: Entry) => {
     const entry = entryOf(r, entryAbove);
     if (r.tag === "a" && r.href !== null && counts(scope.kind, entry)) out.add(r.href);

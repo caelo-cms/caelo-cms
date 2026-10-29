@@ -729,4 +729,20 @@ describe("structure/manual-page-listing (#1256)", () => {
     );
     expect(f).toEqual([]);
   });
+  it("a root class rendered conditionally does not hide the module", () => {
+    const FEAT: StructureModule = {
+      ...LINK_LIST,
+      id: id(35),
+      slug: "feat",
+      html: '<section class="ll{{#featured}}--featured{{/featured}}"><ul>{{#links}}<li><a href="{{link}}">{{label}}</a></li>{{/links}}</ul></section>',
+      fieldNames: ["links", "featured"],
+    };
+    const html = linkList(GUIDES.slice(0, 7), (n) => local("links", n))
+      .replace(LINK_LIST.id, FEAT.id)
+      .replace('class="ll"', 'class="ll--featured"');
+    const f = structureFindings(build(html), [...MODULES, FEAT], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f.map((x) => x.severity)).toEqual(["error"]);
+  });
 });

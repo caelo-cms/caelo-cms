@@ -128,7 +128,9 @@ describe("templates and free regions", () => {
       stripMustache('<a class="card card--{{type}}" href="{{link}}">{{title}}</a>', {
         markSections: true,
       }),
-    ).toBe('<a class="card card--\u001f" href="\u001f"><caelo-partial class="v:title"></caelo-partial></a>');
+    ).toBe(
+      '<a class="card card--\u001f" href="\u001f"><caelo-partial class="v:title"></caelo-partial></a>',
+    );
     expect(
       stripMustache("<div>{{#g}}{{> props.teaser }}{{/g}}</div>", { markSections: true }),
     ).toBe(
