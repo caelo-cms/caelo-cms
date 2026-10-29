@@ -83,7 +83,10 @@ export function structureSourcesFromOps(
           (v) =>
             (
               v as {
-                modules: (Omit<StructureModule, "listFields" | "fieldNames" | "entryKeys"> & {
+                modules: (Omit<
+                  StructureModule,
+                  "listFields" | "moduleListFields" | "fieldNames" | "entryKeys"
+                > & {
                   fields: { name: string; kind: string; listType?: string }[];
                 })[];
               }
@@ -98,6 +101,7 @@ export function structureSourcesFromOps(
         html: m.html,
         js: m.js,
         listFields: m.fields.filter((f) => LIST_KINDS.has(f.kind)).map((f) => f.name),
+        moduleListFields: m.fields.filter((f) => f.kind === "module-list").map((f) => f.name),
         fieldNames: m.fields.map((f) => f.name),
         entryKeys: Object.fromEntries(
           m.fields.flatMap((f) =>

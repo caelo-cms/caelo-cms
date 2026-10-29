@@ -63,6 +63,8 @@ export interface StructureModule {
    * one of them renders entries, any other section is a condition.
    */
   readonly listFields: readonly string[];
+  /** The `module-list` fields among `listFields` (#1256): their entries are stored modules. */
+  readonly moduleListFields: readonly string[];
   /** Names of all its declared fields (#1256): a section over none of them is generated. */
   readonly fieldNames: readonly string[];
   /**

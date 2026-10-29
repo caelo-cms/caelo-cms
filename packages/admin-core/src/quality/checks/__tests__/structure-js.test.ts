@@ -52,6 +52,7 @@ function mod(n: number, displayName: string, html: string, js = ""): StructureMo
     html,
     js,
     listFields: [],
+    moduleListFields: [],
     fieldNames: [],
     entryKeys: {},
   };

@@ -50,6 +50,7 @@ const TEXT: StructureModule = {
   html: '<section class="prose"><h2>{{title}}</h2><div class="body">{{body}}</div></section>',
   js: "",
   listFields: [],
+  moduleListFields: [],
   fieldNames: [],
   entryKeys: {},
 };
@@ -63,6 +64,7 @@ const DIFF: StructureModule = {
   html: DIFF_TEMPLATE,
   js: "",
   listFields: [],
+  moduleListFields: [],
   fieldNames: [],
   entryKeys: {},
 };
@@ -73,6 +75,7 @@ const DIFF_COPY: StructureModule = {
   html: DIFF_TEMPLATE.replace("{{title}}", "Pricing"),
   js: "",
   listFields: [],
+  moduleListFields: [],
   fieldNames: [],
   entryKeys: {},
 };
@@ -83,6 +86,7 @@ const NAV: StructureModule = {
   html: '<nav class="menu"><ul>{{#menu}}<li><a class="item" href="{{link}}">{{label}}</a></li>{{/menu}}</ul></nav>',
   js: "",
   listFields: [],
+  moduleListFields: [],
   fieldNames: [],
   entryKeys: {},
 };
@@ -202,6 +206,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     html: '<section class="faq-wrap"><h2>{{title}}</h2><div class="faq">{{#items}}{{/items}}</div>{{>featured}}</section>',
     js: "",
     listFields: ["items"],
+    moduleListFields: ["items"],
     fieldNames: ["title", "items", "featured"],
     entryKeys: {},
     fields: [
@@ -233,6 +238,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     html: '<section class="tcl"><h2>{{title}}</h2><div class="tcg">{{#karten}}{{/karten}}</div></section>',
     js: "",
     listFields: ["karten"],
+    moduleListFields: ["karten"],
     fieldNames: ["title", "karten"],
     entryKeys: {},
     fields: [
@@ -249,6 +255,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     listFields: m.fields
       .filter((f) => f.kind === "list" || f.kind === "module-list")
       .map((f) => f.name),
+    moduleListFields: m.fields.filter((f) => f.kind === "module-list").map((f) => f.name),
     fieldNames: m.fields.map((f) => f.name),
     entryKeys: {},
   });
@@ -550,6 +557,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     html: '<header class="hd"><ul>{{#nav}}<li><a href="{{link}}">{{label}}</a></li>{{/nav}}</ul></header>',
     js: "",
     listFields: [],
+    moduleListFields: [],
     fieldNames: [],
     entryKeys: {},
   };
@@ -560,6 +568,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     html: '<footer class="ft"><p>{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}</p></footer>',
     js: "",
     listFields: [],
+    moduleListFields: [],
     fieldNames: [],
     entryKeys: {},
   };

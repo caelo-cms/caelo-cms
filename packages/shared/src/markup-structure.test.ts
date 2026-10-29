@@ -129,6 +129,11 @@ describe("templates and free regions", () => {
         markSections: true,
       }),
     ).toBe('<a class="card card--\u001f" href="\u001f"></a>');
+    expect(
+      stripMustache("<div>{{#g}}{{> props.teaser }}{{/g}}</div>", { markSections: true }),
+    ).toBe(
+      '<div><caelo-section class="s:g"><caelo-partial class="p:props.teaser"></caelo-partial></caelo-section></div>',
+    );
     stripMustache(`{{#${" ".repeat(50_000)}`, { markSections: true });
     stripMustache(`<a ${"{{".repeat(50_000)}`, { markSections: true });
   });

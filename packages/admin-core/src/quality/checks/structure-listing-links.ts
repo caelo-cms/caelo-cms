@@ -33,6 +33,7 @@
 
 import {
   type MarkupNode,
+  PARTIAL_MARKER_TAG,
   PLACEHOLDER_MARK,
   parseMarkup,
   SECTION_MARKER_TAG,
@@ -76,6 +77,8 @@ const GENERATED: Scope = { kind: "generated", field: null };
 interface FieldNames {
   readonly all: ReadonlySet<string>;
   readonly list: ReadonlySet<string>;
+  /** The `module-list` fields among `list`: their entries are stored modules. */
+  readonly moduleList: ReadonlySet<string>;
   readonly entry: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
@@ -103,6 +106,7 @@ export function listingTemplates(
     const fields = {
       all: new Set(m.fieldNames),
       list: new Set(m.listFields),
+      moduleList: new Set(m.moduleListFields),
       entry: new Map(Object.entries(m.entryKeys).map(([f, keys]) => [f, new Set(keys)])),
     };
     const forest = parseMarkup(stripMustache(m.html, { markSections: true }));
@@ -205,8 +209,11 @@ function collectModule(
     for (const c of r.children) {
       if (c.moduleId !== null) {
         // A nested module (module / module-list field) is stored content,
-        // part of this listing — unless a shared or generated entry renders it.
-        if (scope.kind !== "generated" && entryOf(c, entry) !== "shared") {
+        // part of this listing — unless the slot it renders in is generated
+        // or a list's entry that is not stored (see nestedSlot).
+        const slot = t === null ? null : nestedSlot(flatten(t.children, scope, tpl.fields, false));
+        const slotEntry = slot?.reset ? "none" : entry;
+        if (nestedCounts(slot?.scope ?? scope, entryOf(c, slotEntry), tpl.fields)) {
           collectModule(c, templates, out);
         }
         continue;
@@ -222,6 +229,37 @@ function collectModule(
     }
   };
   visit(root, tpl.root, tpl.rootScope, "none");
+}
+
+/**
+ * Where a nested module root renders: the partial markers (`{{>f}}`) among
+ * the template children, the most cautious one when there are several
+ * (generated, then a list's entry, then anything else). Null when the
+ * children hold none — a `module-list` section renders its modules in place.
+ */
+function nestedSlot(candidates: readonly Candidate[]): Candidate | null {
+  const rank = (c: Candidate) =>
+    c.scope.kind === "generated" ? 2 : c.scope.kind === "list" ? 1 : 0;
+  let best: Candidate | null = null;
+  for (const c of candidates) {
+    if (c.node.tag !== PARTIAL_MARKER_TAG) continue;
+    if (!best || rank(c) > rank(best)) best = c;
+  }
+  return best;
+}
+
+/**
+ * Whether a nested module in `slot` is hand-kept: never in a shared or
+ * generated entry; inside a `list` field's entry (a page query's
+ * `{{>props.teaser}}`) only when the entry is stored; elsewhere (a
+ * `module` field, a `module-list`) always.
+ */
+function nestedCounts(slot: Scope, entry: Entry, fields: FieldNames): boolean {
+  if (entry === "shared" || slot.kind === "generated") return false;
+  if (slot.kind === "list" && slot.field !== null && !fields.moduleList.has(slot.field)) {
+    return entry === "own";
+  }
+  return true;
 }
 
 /** Shared entries and generated links never count; list links only in a stored entry. */

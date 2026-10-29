@@ -78,6 +78,7 @@ const LINK_LIST: StructureModule = {
   html: '<section class="ll"><ul>{{#links}}<li><a href="{{link}}">{{label}}</a></li>{{/links}}</ul></section>',
   js: "",
   listFields: ["links"],
+  moduleListFields: [],
   fieldNames: ["links"],
   entryKeys: { links: ["label", "link"] },
 };
@@ -89,6 +90,7 @@ const CARD_GRID: StructureModule = {
   html: '<section class="grid"><h2>{{title}}</h2><div class="cards">{{#cards}}{{/cards}}</div></section>',
   js: "",
   listFields: ["cards"],
+  moduleListFields: ["cards"],
   fieldNames: ["title", "cards"],
   entryKeys: {},
 };
@@ -99,6 +101,7 @@ const CARD: StructureModule = {
   html: '<article class="card"><h3>{{title}}</h3>{{#href}}<a class="more" href="{{href}}">Read</a>{{/href}}</article>',
   js: "",
   listFields: [],
+  moduleListFields: [],
   fieldNames: ["title", "href"],
   entryKeys: {},
 };
@@ -115,6 +118,7 @@ const SCALAR_CARDS: StructureModule = {
     "</section>",
   js: "",
   listFields: [],
+  moduleListFields: [],
   fieldNames: [1, 2, 3, 4].flatMap((i) => [`card${i}_href`, `card${i}_title`]),
   entryKeys: {},
 };
@@ -126,6 +130,7 @@ const QUERY_LIST: StructureModule = {
   html: '<section class="gi">{{#guides}}<a class="gi-item" href="{{link}}">{{title}}</a>{{/guides}}</section>',
   js: "",
   listFields: ["guides"],
+  moduleListFields: [],
   fieldNames: ["guides"],
   entryKeys: {},
 };
@@ -137,6 +142,7 @@ const MEGA: StructureModule = {
   html: '<nav class="mega">{{#menu}}<div class="col"><a class="top" href="{{link}}">{{label}}</a>{{#items}}<a class="sub" href="{{link}}">{{title}}</a>{{/items}}</div>{{/menu}}</nav>',
   js: "",
   listFields: ["menu"],
+  moduleListFields: [],
   fieldNames: ["menu"],
   entryKeys: { menu: ["label", "link"] },
 };
@@ -264,6 +270,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       html: '<section class="prose">{{body}}</section>',
       js: "",
       listFields: [],
+      moduleListFields: [],
       fieldNames: ["body"],
       entryKeys: {},
     };
@@ -358,6 +365,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       html: '<nav class="langs">{{#language_links}}<a class="lang" href="{{href}}">{{label}}</a>{{/language_links}}</nav>',
       js: "",
       listFields: [],
+      moduleListFields: [],
       fieldNames: [],
       entryKeys: {},
     };
@@ -378,6 +386,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       html: '<ul class="il">{{#items}}<li><a href="{{link}}">{{label}}</a></li>{{/items}}</ul>',
       js: "",
       listFields: ["items"],
+      moduleListFields: ["items"],
       fieldNames: ["items"],
       entryKeys: {},
     };
@@ -399,6 +408,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       html: '<nav class="nwg">{{#menu}}<div class="col"><a class="top" href="{{link}}">{{label}}</a>{{#guides}}<a class="g" href="{{link}}">{{title}}</a>{{/guides}}</div>{{/menu}}</nav>',
       js: "",
       listFields: ["menu", "guides"],
+      moduleListFields: [],
       fieldNames: ["menu", "guides"],
       entryKeys: { menu: ["label", "link"] },
     };
@@ -453,6 +463,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       html: '<nav class="nl">{{#menu}}<div class="col"><a class="top" href="{{link}}">{{label}}</a>{{#language_links}}<a class="lang" href="{{href}}">{{label}}</a>{{/language_links}}</div>{{/menu}}</nav>',
       js: "",
       listFields: ["menu"],
+      moduleListFields: [],
       fieldNames: ["menu"],
       entryKeys: { menu: ["label", "link"] },
     };
@@ -491,6 +502,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       html: '<section class="fl">{{#has_guides}}<a class="g" href="{{link}}">{{title}}</a>{{/has_guides}}</section>',
       js: "",
       listFields: ["has_guides"],
+      moduleListFields: [],
       fieldNames: ["has_guides"],
       entryKeys: {},
     };
@@ -540,6 +552,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       html: '<section class="mx">{{#menu}}<a class="m" href="{{link}}">{{label}}</a>{{/menu}}{{#links}}<div class="col">{{#children}}<a class="c" href="{{link}}">{{title}}</a>{{/children}}</div>{{/links}}</section>',
       js: "",
       listFields: ["menu", "links", "children"],
+      moduleListFields: [],
       fieldNames: ["menu", "links", "children"],
       entryKeys: { menu: ["label", "link", "children"], links: ["label", "link"] },
     };
@@ -599,6 +612,30 @@ describe("structure/manual-page-listing (#1256)", () => {
       .join("");
     const html = `<section class="gi" data-caelo-module-id="${TYPED.id}">${items}</section>`;
     const f = structureFindings(build(html), [...MODULES, TYPED], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f).toEqual([]);
+  });
+  it("embedded modules a page query renders are generated cards", () => {
+    const TEASERS: StructureModule = {
+      id: id(30),
+      slug: "teasers",
+      displayName: "Teasers",
+      html: '<section class="ts">{{#guides}}{{>props.teaser}}{{/guides}}</section>',
+      js: "",
+      listFields: ["guides"],
+      moduleListFields: [],
+      fieldNames: ["guides"],
+      entryKeys: {},
+    };
+    const cards = GUIDES.slice(0, 7)
+      .map(
+        (p) =>
+          `<article class="card" data-caelo-module-id="${CARD.id}"><h3>${p.title}</h3><a class="more" href="${p.path}">Read</a></article>`,
+      )
+      .join("");
+    const html = `<section class="ts" data-caelo-module-id="${TEASERS.id}">${cards}</section>`;
+    const f = structureFindings(build(html), [...MODULES, TEASERS], [], INDEX).filter(
       (x) => x.ruleId === "structure/manual-page-listing",
     );
     expect(f).toEqual([]);
