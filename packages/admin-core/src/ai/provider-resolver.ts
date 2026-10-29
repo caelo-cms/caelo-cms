@@ -305,12 +305,12 @@ async function loadActiveProviderMeta(d: ResolverDeps): Promise<{
     `,
   )) as unknown as {
     name: ProviderName;
-    config: Record<string, unknown> | string;
+    config: Record<string, unknown>;
     translation_model: string | null;
   }[];
   const row = rows[0];
   if (!row) return null;
-  const config = typeof row.config === "string" ? JSON.parse(row.config) : row.config;
+  const config = row.config;
   const model = typeof config.model === "string" ? config.model : DEFAULT_MODEL[row.name];
   const baseUrl = typeof config.baseUrl === "string" ? config.baseUrl : undefined;
   const maxOutputTokens = readMaxOutputTokens(config);
@@ -334,10 +334,10 @@ async function loadProviderMeta(
     (tx) => tx`
       SELECT config FROM ai_providers WHERE name = ${name} LIMIT 1
     `,
-  )) as unknown as { config: Record<string, unknown> | string }[];
+  )) as unknown as { config: Record<string, unknown> }[];
   const row = rows[0];
   if (!row) return null;
-  const config = typeof row.config === "string" ? JSON.parse(row.config) : row.config;
+  const config = row.config;
   const model = typeof config.model === "string" ? config.model : DEFAULT_MODEL[name];
   const baseUrl = typeof config.baseUrl === "string" ? config.baseUrl : undefined;
   const maxOutputTokens = readMaxOutputTokens(config);

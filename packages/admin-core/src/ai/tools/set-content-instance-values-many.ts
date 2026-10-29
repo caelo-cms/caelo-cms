@@ -8,44 +8,50 @@
  * `content_instances.set_values_many`, which reuses the singular op handler
  * per item. All-or-nothing: any invalid item aborts the whole batch.
  *
- * The blast radius of each item equals that instance's placement count:
- * editing a shared instance propagates to every page bound to it, so the
- * result names, per item, where the edit shows.
+ * The blast radius of each item is every page the instance renders on —
+ * its own placements and everything its parents render on — so the result
+ * names, per item, where the edit shows.
  */
 
 import { setContentInstanceValuesToolInput } from "@caelo-cms/shared";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import { makeBulkTool } from "./_make-bulk-tool.js";
 
-/**
- * Where an edit shows. An instance listed in another instance's
- * `module` / `module-list` field has no placement of its own yet renders
- * inside its parents — calling it an orphan sent the AI looking for a
- * problem that was not there.
- */
-export function reachSummary(placementCount: number, nestedParentCount: number): string {
-  const nested =
-    nestedParentCount > 0
-      ? `Nested in ${nestedParentCount} parent content instance(s) — shows wherever those render.`
-      : "";
-  if (placementCount > 0) {
-    return `Propagated to ${placementCount} placement(s).${nested ? ` ${nested}` : ""}`;
-  }
-  return nested || "Orphan — not placed on any page and not nested in another module.";
-}
-
 /** One `content_instances.set_values` result, as the bulk op returns it per item. */
 interface SetValuesResult {
   readonly placementCount: number;
   readonly nestedParentCount: number;
+  /** Direct parents of any kind (instances, module defaults, shared lists). */
+  readonly parentCount: number;
+  /** Live pages the edit shows on, directly or through its parents (#627). */
+  readonly renderedPageCount: number;
+  /** It also renders in layout chrome or a shared list. */
+  readonly rendersSiteWide: boolean;
   readonly version: number;
+}
+
+/**
+ * Where an edit shows. An instance listed in another instance's
+ * `module` / `module-list` field, a module default or a shared list has no
+ * placement of its own yet renders inside its parents — calling it an
+ * orphan sent the AI looking for a problem that was not there (#1067), and
+ * counting only placements hid the pages the edit really changed (#627).
+ */
+export function reachSummary(r: SetValuesResult): string {
+  const pages = `Shows on ${r.renderedPageCount} page(s)`;
+  const siteWide = r.rendersSiteWide ? " plus site-wide (layout chrome or a shared list)" : "";
+  const parents = r.parentCount > 0 ? `, through ${r.parentCount} parent(s) that show it` : "";
+  if (r.placementCount === 0 && r.parentCount === 0) {
+    return "Orphan — not placed on any page and not shown by any parent.";
+  }
+  return `${pages}${siteWide}: ${r.placementCount} placement(s) of its own${parents}.`;
 }
 
 export const setContentInstanceValuesManyTool = makeBulkTool({
   name: "set_content_instance_values_many",
   description: [
-    "Edit values of 1..N shared content_instances in one transaction. Each item propagates to EVERY placement bound to that instance with sync_mode `synced` (blast radius = its placement count).",
-    "USE FOR: deliberate shared-content changes — check `purpose`, sample pages, placement count first (`list_content_instances` / `get_content_instance`).",
+    "Edit values of 1..N shared content_instances in one transaction. Each item propagates to EVERY page it renders on: its `synced` placements and every page of the parents that show it (blast radius = `pages` in `list_content_instances`).",
+    "USE FOR: deliberate shared-content changes — check `purpose`, pages and parents first (`list_content_instances` / `get_content_instance`).",
     "DO NOT USE FOR: an edit meant for ONE page -> `set_page_module_content_many` (unsynced placement) or `fork_placement_content` first (synced); module structure -> `update_modules_many`.",
     "CORE RULES:",
     "- All-or-nothing: an invalid item aborts the batch (error names `items[i]`); nothing is written.",
@@ -83,7 +89,7 @@ export const setContentInstanceValuesManyTool = makeBulkTool({
     const results = (value as { results: SetValuesResult[] }).results;
     const lines = results.map((r, i) => {
       const id = input.items[i]?.id ?? `items[${i}]`;
-      return `- ${id} -> v${r.version}. ${reachSummary(r.placementCount, r.nestedParentCount)}`;
+      return `- ${id} -> v${r.version}. ${reachSummary(r)}`;
     });
     return `${results.length} content_instance(s) updated:\n${lines.join("\n")}`;
   },

@@ -21,7 +21,6 @@ import {
   parseAndUpgradePageState,
   parseAndUpgradePageTypeState,
   parseAndUpgradeTemplateState,
-  parseSnapshotState,
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
@@ -91,7 +90,7 @@ export const revertSiteOp = defineOperation({
           WHERE site_snapshot_id = ${input.snapshotId}::uuid
         `)) as unknown as Row[];
         for (const r of rows) {
-          const raw = parseSnapshotState(r.state);
+          const raw = r.state;
           if (spec.kind === "listType") {
             listStates.push({
               kind: "listType",
@@ -143,19 +142,19 @@ export const revertSiteOp = defineOperation({
     try {
       parsedModules = ms.map((r) => ({
         entity_id: r.entity_id,
-        state: parseAndUpgradeModuleState(parseSnapshotState(r.state)),
+        state: parseAndUpgradeModuleState(r.state),
       }));
       parsedTemplates = ts.map((r) => ({
         entity_id: r.entity_id,
-        state: parseAndUpgradeTemplateState(parseSnapshotState(r.state)),
+        state: parseAndUpgradeTemplateState(r.state),
       }));
       parsedPages = ps.map((r) => ({
         entity_id: r.entity_id,
-        state: parseAndUpgradePageState(parseSnapshotState(r.state)),
+        state: parseAndUpgradePageState(r.state),
       }));
       parsedLayouts = pls.map((r) => ({
         entity_id: r.entity_id,
-        state: parseAndUpgradePageLayoutState(parseSnapshotState(r.state)),
+        state: parseAndUpgradePageLayoutState(r.state),
       }));
     } catch (e) {
       if (e instanceof SnapshotSchemaError) {

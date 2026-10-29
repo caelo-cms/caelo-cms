@@ -66,8 +66,8 @@ async function seed(): Promise<void> {
            proposed_modules, proposed_theme_tokens, screenshot_object_key)
         VALUES (${PAGE_ID}::uuid, ${RUN_ID}::uuid, 'https://gist.test/pricing',
                 'pricing', 'Pricing', ${SOURCE_DESCRIPTION},
-                ${modules}::jsonb,
-                ${'{"color-primary":"#ff2244","font-body":"Inter"}'}::jsonb,
+                (${modules}::text)::jsonb,
+                (${'{"color-primary":"#ff2244","font-body":"Inter"}'}::text)::jsonb,
                 'crawl/shot-abc.png')`;
     });
   } finally {

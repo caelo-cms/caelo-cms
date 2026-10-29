@@ -88,9 +88,9 @@ beforeAll(async () => {
   // Simulate #192's finished-run state slice + #196's acceptance.
   await sqlc.begin(async (tx) => {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-    await tx`UPDATE import_runs SET crawl_state = ${JSON.stringify({
+    await tx`UPDATE import_runs SET crawl_state = (${JSON.stringify({
       errors: [{ url: "https://issue197.example/kaputt", reason: "non-OK status" }],
-    })}::jsonb WHERE id = ${runId}::uuid`;
+    })}::text)::jsonb WHERE id = ${runId}::uuid`;
     // accepted_page_id has an FK to pages — mint a real page to point
     // at (the shared dev DB may have zero pages between suites).
     const anchor = await tx`

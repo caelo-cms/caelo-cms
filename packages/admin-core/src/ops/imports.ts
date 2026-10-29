@@ -100,18 +100,10 @@ const siteDesignTokensSchema: z.ZodType<SiteDesignTokens> = z.object({
   pageCount: z.number().int().min(0),
 });
 
-/** jsonb columns may come back decoded or as a JSON string depending on
- *  the SQL client path — normalise like `estimate` does. */
-function parseJsonbColumn(raw: unknown): unknown {
-  return typeof raw === "string" ? JSON.parse(raw) : (raw ?? null);
-}
-
-/** issue #229 — the `explicit_urls` jsonb decodes to a string[] (LIST
- *  mode) or null (depth mode). Normalise both client paths (decoded
- *  array vs JSON string) to `string[] | null` for the read surface. */
+/** issue #229 — the `explicit_urls` jsonb is a string[] (LIST mode) or
+ *  null (depth mode); the read surface gets `string[] | null`. */
 function normalizeExplicitUrls(raw: unknown): string[] | null {
-  const parsed = parseJsonbColumn(raw);
-  return Array.isArray(parsed) ? parsed.filter((u): u is string => typeof u === "string") : null;
+  return Array.isArray(raw) ? raw.filter((u): u is string => typeof u === "string") : null;
 }
 
 const runRow = z.object({
@@ -218,7 +210,7 @@ function toRunApi(r: RunDb): z.infer<typeof runRow> {
     pagesExtracted: row.pages_extracted,
     errorMessage: row.error_message,
     chatSessionId: row.chat_session_id ?? null,
-    estimate: typeof row.estimate === "string" ? JSON.parse(row.estimate) : (row.estimate ?? null),
+    estimate: row.estimate ?? null,
     explicitUrls: normalizeExplicitUrls(row.explicit_urls),
     crawlScope: normalizeStoredCrawlScope(row.crawl_scope),
     createdAt: toIsoRequired(row.created_at, "import_runs.created_at"),
@@ -329,7 +321,7 @@ export const getImportRunOp = defineOperation({
         clusterKey: p.cluster_key,
         clusterLabel: p.cluster_label,
         screenshotObjectKey: p.screenshot_object_key,
-        sampledDesignTokens: parseJsonbColumn(p.sampled_design_tokens),
+        sampledDesignTokens: p.sampled_design_tokens ?? null,
         acceptedPageId: p.accepted_page_id,
         acceptedAt: p.accepted_at
           ? p.accepted_at instanceof Date
@@ -755,8 +747,7 @@ const executeImportProposalOpDefinition = defineOperation({
         message: "proposal not found or not in proposed status",
       });
     }
-    const estimate =
-      typeof run.estimate === "string" ? JSON.parse(run.estimate) : (run.estimate ?? null);
+    const estimate = run.estimate ?? null;
 
     let ceilingMicrocents: number | null = null;
     let ceilingCurrency: string | null = null;
@@ -1351,10 +1342,7 @@ export const getImportPageGistOp = defineOperation({
         message: IMPORT_PAGE_NOT_FOUND_MSG,
       });
     }
-    const modules =
-      (typeof r.proposed_modules === "string"
-        ? (JSON.parse(r.proposed_modules) as unknown)
-        : r.proposed_modules) ?? [];
+    const modules = r.proposed_modules ?? [];
     const ordered = (
       Array.isArray(modules)
         ? (modules as Array<{ blockName?: string; position?: number; html?: string }>)
@@ -1383,10 +1371,10 @@ export const getImportPageGistOp = defineOperation({
       html,
       contentHtml,
       chromeModuleBlocks,
-      themeTokens: parseJsonbColumn(r.proposed_theme_tokens),
-      sampledDesignTokens: parseJsonbColumn(r.sampled_design_tokens),
+      themeTokens: r.proposed_theme_tokens ?? null,
+      sampledDesignTokens: r.sampled_design_tokens ?? null,
       screenshotObjectKey: r.screenshot_object_key,
-      boilerplateSummary: parseJsonbColumn(r.boilerplate_summary),
+      boilerplateSummary: r.boilerplate_summary ?? null,
     });
   },
 });
@@ -1519,8 +1507,6 @@ async function acceptImportedPage(
   `)) as unknown as Array<{
     proposed_slug: string;
     proposed_title: string;
-    // jsonb may come back as an already-decoded array OR a JSON string
-    // depending on the SQL client + how the column was written.
     proposed_modules: unknown;
     accepted_page_id: string | null;
   }>;
@@ -1532,9 +1518,12 @@ async function acceptImportedPage(
       message: `import page ${input.importPageId} was already accepted (page ${r.accepted_page_id}) — edit that page instead, or rebuild it with build_page({page:{importPageId}})`,
     };
   }
-  const proposedModules = (
-    typeof r.proposed_modules === "string" ? JSON.parse(r.proposed_modules) : r.proposed_modules
-  ) as Array<{ blockName: string; position: number; html: string; displayName: string }>;
+  const proposedModules = r.proposed_modules as Array<{
+    blockName: string;
+    position: number;
+    html: string;
+    displayName: string;
+  }>;
   const title = r.proposed_title || r.proposed_slug;
   const built = await buildPageOp.handler(
     ctx,
@@ -1760,8 +1749,7 @@ interface ProposedModuleShape {
 }
 
 function parseProposedModules(raw: unknown): ProposedModuleShape[] {
-  const parsed = typeof raw === "string" ? JSON.parse(raw) : (raw ?? []);
-  return Array.isArray(parsed) ? (parsed as ProposedModuleShape[]) : [];
+  return Array.isArray(raw) ? (raw as ProposedModuleShape[]) : [];
 }
 
 /**
@@ -2240,18 +2228,11 @@ export const getImportRunReportOp = defineOperation({
     }
 
     // Crawl errors + skipped from the #192/#425 checkpoint slice.
-    const state =
-      typeof run.crawl_state === "string"
-        ? (JSON.parse(run.crawl_state) as {
-            errors?: unknown;
-            skipped?: unknown;
-            skippedOutOfScope?: unknown;
-          })
-        : ((run.crawl_state ?? {}) as {
-            errors?: unknown;
-            skipped?: unknown;
-            skippedOutOfScope?: unknown;
-          });
+    const state = (run.crawl_state ?? {}) as {
+      errors?: unknown;
+      skipped?: unknown;
+      skippedOutOfScope?: unknown;
+    };
     const isUrlReason = (e: unknown): e is { url: string; reason: string } =>
       typeof e === "object" &&
       e !== null &&
@@ -2278,7 +2259,7 @@ export const getImportRunReportOp = defineOperation({
       }
     >();
     for (const p of pages) {
-      const parsed = typeof p.notes === "string" ? (JSON.parse(p.notes) as unknown) : p.notes;
+      const parsed = p.notes;
       if (!Array.isArray(parsed)) continue;
       for (const n of parsed as Note[]) {
         if (!n || typeof n.note !== "string") continue;
@@ -2301,7 +2282,7 @@ export const getImportRunReportOp = defineOperation({
         captureStats.captured += 1;
         continue;
       }
-      const parsed = typeof p.notes === "string" ? (JSON.parse(p.notes) as unknown) : p.notes;
+      const parsed = p.notes;
       const noted =
         Array.isArray(parsed) &&
         parsed.some((n) => (n as { category?: unknown } | null)?.category === "screenshot_missing");
@@ -2337,7 +2318,7 @@ export const getImportRunReportOp = defineOperation({
         severity: e.severity,
         phase: e.phase,
         message: e.message,
-        detail: parseJsonbColumn(e.detail),
+        detail: e.detail ?? null,
         pageId: e.page_id,
         createdAt: toIso(e.created_at),
       };
@@ -2360,8 +2341,8 @@ export const getImportRunReportOp = defineOperation({
       crawlSkipped,
       pagesMissingScreenshot: pages.filter((p) => p.screenshot_object_key === null).length,
       captureStats,
-      siteDesignTokens: parseJsonbColumn(run.site_design_tokens),
-      boilerplate: parseJsonbColumn(run.boilerplate_summary),
+      siteDesignTokens: run.site_design_tokens ?? null,
+      boilerplate: run.boilerplate_summary ?? null,
       notes: [...byCategory.entries()].map(([category, v]) => ({
         category: category as z.infer<typeof noteCategory>,
         ...v,
@@ -2738,8 +2719,7 @@ export const getSessionBudgetStateOp = defineOperation({
       typeof run.cost_ceiling_microcents === "string"
         ? Number.parseInt(run.cost_ceiling_microcents, 10)
         : run.cost_ceiling_microcents;
-    const estimate =
-      typeof run.estimate === "string" ? JSON.parse(run.estimate) : (run.estimate ?? null);
+    const estimate = run.estimate ?? null;
     const band =
       estimate !== null && typeof estimate === "object" && !("failed" in estimate)
         ? (estimate as { aiCostUsd?: { low?: unknown; high?: unknown } }).aiCostUsd
@@ -2940,7 +2920,7 @@ export const getRunCalibrationOp = defineOperation({
     // The stored estimate is jsonb-as-unknown; read defensively (same
     // stance as #297's deriveCeilingFromEstimate) — an old or failed
     // estimate yields `estimated: null`, never a throw.
-    const est = (typeof run.estimate === "string" ? JSON.parse(run.estimate) : run.estimate) as {
+    const est = run.estimate as {
       failed?: unknown;
       pages?: unknown;
       aiCostUsd?: { low?: unknown; high?: unknown } | null;

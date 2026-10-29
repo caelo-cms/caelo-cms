@@ -201,5 +201,5 @@ export async function stagedRenderFingerprint(
   `)) as unknown as { render_fingerprint: unknown }[];
   const raw = rows[0]?.render_fingerprint;
   if (raw === null || raw === undefined) return null;
-  return renderFingerprintSchema.parse(typeof raw === "string" ? JSON.parse(raw) : raw);
+  return renderFingerprintSchema.parse(raw);
 }

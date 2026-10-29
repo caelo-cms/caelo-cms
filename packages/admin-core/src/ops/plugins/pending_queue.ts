@@ -18,7 +18,6 @@ import { ok, proposalStatus } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { parsePayload } from "../_propose-helpers.js";
 
 const pendingRow = z.object({
   id: z.string(),
@@ -55,7 +54,7 @@ export const listPluginPendingActionsOp = defineOperation({
         id: r.id,
         kind: r.kind,
         proposedBy: r.proposed_by,
-        preview: parsePayload<Record<string, unknown>>(r.preview),
+        preview: r.preview as Record<string, unknown>,
         status: r.status,
         createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
       })),

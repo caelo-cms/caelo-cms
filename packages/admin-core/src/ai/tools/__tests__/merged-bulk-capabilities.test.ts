@@ -233,22 +233,51 @@ describe("set_content_instance_values_many — reach per item", () => {
         "content_instances.set_values_many": () =>
           ok({
             results: [
-              { placementCount: 3, nestedParentCount: 0, version: 2 },
-              { placementCount: 0, nestedParentCount: 2, version: 5 },
+              {
+                placementCount: 3,
+                nestedParentCount: 0,
+                parentCount: 0,
+                renderedPageCount: 3,
+                rendersSiteWide: false,
+                version: 2,
+              },
+              {
+                placementCount: 0,
+                nestedParentCount: 2,
+                parentCount: 2,
+                renderedPageCount: 4,
+                rendersSiteWide: false,
+                version: 5,
+              },
             ],
             count: 2,
           }),
       }),
     );
     expect(res.ok).toBe(true);
-    expect(res.content).toContain(`- ${M1} -> v2. Propagated to 3 placement(s).`);
-    expect(res.content).toContain(`- ${M2} -> v5. Nested in 2 parent content instance(s)`);
+    expect(res.content).toContain(`- ${M1} -> v2. Shows on 3 page(s): 3 placement(s) of its own.`);
+    // #627 — a nested-only child names the pages its parents render on.
+    expect(res.content).toContain(
+      `- ${M2} -> v5. Shows on 4 page(s): 0 placement(s) of its own, through 2 parent(s) that show it.`,
+    );
   });
 
   it("reachSummary distinguishes nested from orphan", () => {
-    expect(reachSummary(0, 0)).toContain("Orphan");
-    expect(reachSummary(1, 1)).toBe(
-      "Propagated to 1 placement(s). Nested in 1 parent content instance(s) — shows wherever those render.",
+    const base = {
+      placementCount: 0,
+      nestedParentCount: 0,
+      parentCount: 0,
+      renderedPageCount: 0,
+      rendersSiteWide: false,
+      version: 1,
+    };
+    expect(reachSummary(base)).toContain("Orphan");
+    expect(reachSummary({ ...base, placementCount: 1, parentCount: 1, renderedPageCount: 2 })).toBe(
+      "Shows on 2 page(s): 1 placement(s) of its own, through 1 parent(s) that show it.",
+    );
+    // A module default in layout chrome: no page placement, still not an orphan.
+    expect(reachSummary({ ...base, parentCount: 1, rendersSiteWide: true })).toBe(
+      "Shows on 0 page(s) plus site-wide (layout chrome or a shared list): 0 placement(s) of its own, through 1 parent(s) that show it.",
     );
   });
 });

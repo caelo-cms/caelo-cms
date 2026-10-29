@@ -66,10 +66,7 @@ interface ProposalDb {
 }
 
 function rowToOut(r: ProposalDb): z.infer<typeof proposalRow> {
-  const hintsRaw =
-    typeof r.auto_engagement_hints === "string"
-      ? JSON.parse(r.auto_engagement_hints)
-      : ((r.auto_engagement_hints as Record<string, unknown> | null) ?? {});
+  const hintsRaw = (r.auto_engagement_hints as Record<string, unknown> | null) ?? {};
   return {
     id: r.id,
     slug: r.slug,
@@ -77,11 +74,7 @@ function rowToOut(r: ProposalDb): z.infer<typeof proposalRow> {
     description: r.description,
     body: r.body,
     rationale: r.rationale,
-    allowlistedTools: Array.isArray(r.allowlisted_tools)
-      ? (r.allowlisted_tools as string[])
-      : typeof r.allowlisted_tools === "string"
-        ? (JSON.parse(r.allowlisted_tools) as string[])
-        : [],
+    allowlistedTools: Array.isArray(r.allowlisted_tools) ? (r.allowlisted_tools as string[]) : [],
     hints: skillAutoEngagementHints.parse({
       keywords: (hintsRaw as { keywords?: unknown }).keywords ?? [],
       chipTrigger: (hintsRaw as { chipTrigger?: unknown }).chipTrigger ?? false,
@@ -272,9 +265,7 @@ export const reviewSkillProposalOp = defineOperation({
       // the bad entries so the Owner rejects or the AI re-proposes.
       const proposedAllowlist: string[] = Array.isArray(proposal.allowlisted_tools)
         ? (proposal.allowlisted_tools as string[])
-        : typeof proposal.allowlisted_tools === "string"
-          ? (JSON.parse(proposal.allowlisted_tools) as string[])
-          : [];
+        : [];
       const validated = validateAllowlistEntries(proposedAllowlist, liveToolNames());
       if (!validated.ok) {
         return err({

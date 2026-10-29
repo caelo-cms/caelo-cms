@@ -151,8 +151,7 @@ function rowToOut(
     version: row.version,
     tier: row.tier === 1 ? 1 : 2,
     status: row.status as z.infer<typeof pluginStatus>,
-    manifestJson:
-      typeof row.manifest_json === "string" ? JSON.parse(row.manifest_json) : row.manifest_json,
+    manifestJson: row.manifest_json,
     sourceCode: row.source_code,
     sourcePath: row.source_path,
     validationErrors: parseValidationErrors(row.validation_errors),
@@ -174,7 +173,7 @@ function rowToOut(
 }
 
 function parseValidationErrors(v: unknown): z.infer<typeof validationFailureRow>[] {
-  const raw = typeof v === "string" ? JSON.parse(v) : (v ?? []);
+  const raw = v ?? [];
   if (!Array.isArray(raw)) return [];
   return raw
     .map((entry) => validationFailureRow.safeParse(entry))
@@ -456,10 +455,7 @@ export const listPendingPluginsOp = defineOperation({
         }>);
     return ok({
       plugins: rows.map((r) => {
-        const errs =
-          typeof r.validation_errors === "string"
-            ? (JSON.parse(r.validation_errors) as unknown)
-            : (r.validation_errors ?? []);
+        const errs = r.validation_errors ?? [];
         return {
           slug: r.slug,
           version: r.version,
@@ -590,10 +586,7 @@ export const preparePluginActivationOp = defineOperation({
         provisionedByLoader: true,
       });
     }
-    const manifest =
-      typeof r.manifest_json === "string"
-        ? (JSON.parse(r.manifest_json) as { schema?: Record<string, Record<string, string>> })
-        : (r.manifest_json as { schema?: Record<string, Record<string, string>> });
+    const manifest = r.manifest_json as { schema?: Record<string, Record<string, string>> };
     if (!manifest?.schema || typeof manifest.schema !== "object") {
       return err({
         kind: "HandlerError",
@@ -1061,8 +1054,7 @@ export const revalidatePluginOp = defineOperation({
         message: "plugins.revalidate runs only on Tier 2 (source_code in DB)",
       });
     }
-    const manifestObj =
-      typeof r.manifest_json === "string" ? JSON.parse(r.manifest_json) : r.manifest_json;
+    const manifestObj = r.manifest_json;
     const validation = validatePlugin({
       manifest: manifestObj,
       source: r.source_code,

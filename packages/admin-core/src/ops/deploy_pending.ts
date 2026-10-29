@@ -53,7 +53,6 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
-  parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
 
@@ -343,7 +342,7 @@ export const beginExecuteDeployProposalOp = requiresApproverPermission(
     `)) as unknown as Array<{
         kind: "promote" | "rollback";
         payload: unknown;
-        preview: { restoreRunId?: string } | string | null;
+        preview: { restoreRunId?: string } | null;
         status: string;
         claimed_by_run_id: string | null;
         claim_recent: boolean;
@@ -378,7 +377,7 @@ export const beginExecuteDeployProposalOp = requiresApproverPermission(
           ),
         );
       }
-      const preview = parsePayload<{ restoreRunId?: string }>(row.preview ?? {});
+      const preview = row.preview ?? {};
       if (row.kind === "rollback" && !preview.restoreRunId) {
         return err(
           opError("deploy.execute_proposal", "rollback proposal preview missing restoreRunId"),
@@ -392,7 +391,7 @@ export const beginExecuteDeployProposalOp = requiresApproverPermission(
       return ok({
         kind: "apply" as const,
         proposalKind: row.kind,
-        payload: parsePayload<Record<string, unknown>>(row.payload),
+        payload: row.payload as Record<string, unknown>,
         restoreRunId: row.kind === "rollback" ? (preview.restoreRunId ?? null) : null,
       });
     },

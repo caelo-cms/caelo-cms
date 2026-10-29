@@ -137,25 +137,8 @@ export const listPageLogOp = defineOperation({
     // each row against the shared schema and fail loud, pointing at the row.
     const entries: PageLogEntry[] = [];
     for (const r of rows) {
-      let detail: Record<string, unknown> | null;
-      if (r.detail === null || r.detail === undefined) {
-        detail = null;
-      } else if (typeof r.detail === "string") {
-        // bun-postgres returns jsonb already parsed; a string only appears on
-        // the double-encoded legacy path. Parse explicitly so a corrupt value
-        // becomes a clear error, not an unhandled throw.
-        try {
-          detail = JSON.parse(r.detail) as Record<string, unknown>;
-        } catch {
-          return err({
-            kind: "HandlerError",
-            operation: "page_log.list",
-            message: `page_edit_log row ${r.id} has a jsonb detail that is not valid JSON — the stored value is corrupt.`,
-          });
-        }
-      } else {
-        detail = r.detail as Record<string, unknown>;
-      }
+      const detail =
+        r.detail === null || r.detail === undefined ? null : (r.detail as Record<string, unknown>);
 
       const parsed = pageLogEntrySchema.safeParse({
         id: r.id,

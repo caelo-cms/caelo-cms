@@ -41,8 +41,8 @@ test.beforeAll(() => {
       await tx\`
         INSERT INTO url_migration_pending_actions (kind, proposed_by, payload, preview, status, payload_hash)
         VALUES ('migrate', \${actor}::uuid,
-                \${JSON.stringify({ diff, reason: "e2e " + slug })}::jsonb,
-                \${JSON.stringify({ pagesMoved: 1, redirectsToCreate: 1, sample: [from + " → " + to], reason: "e2e " + slug })}::jsonb,
+                (\${JSON.stringify({ diff, reason: "e2e " + slug })}::text)::jsonb,
+                (\${JSON.stringify({ pagesMoved: 1, redirectsToCreate: 1, sample: [from + " → " + to], reason: "e2e " + slug })}::text)::jsonb,
                 'pending', \${"e2e-" + slug})\`;
     });
     await sql.end();

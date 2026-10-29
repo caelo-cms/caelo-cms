@@ -171,7 +171,7 @@ beforeAll(async () => {
           tx,
         ) => tx`INSERT INTO import_pages (run_id, source_url, proposed_slug, proposed_title, proposed_modules)
                    VALUES (${runId}::uuid, ${`${SOURCE}/${PFX}-${slug}`}, ${`${PFX}-${slug}`}, ${slug},
-                           ${JSON.stringify([{ blockName: "content", position: 0, html, displayName: "Body" }])}::jsonb)
+                           (${JSON.stringify([{ blockName: "content", position: 0, html, displayName: "Body" }])}::text)::jsonb)
                    RETURNING id::text AS id`,
       )) as { id: string }[]
     )[0]?.id as string;

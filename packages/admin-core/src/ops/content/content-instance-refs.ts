@@ -19,7 +19,7 @@
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../../draft.js";
 import type { ContentInstanceState } from "../../snapshots/state.js";
 
@@ -43,11 +43,55 @@ export async function findContentInstancesContaining(
   needles: readonly string[],
 ): Promise<ContentInstanceRef[]> {
   if (needles.length === 0) return [];
-  const branchId = chatBranchId ?? null;
+  return loadInstancesInView(
+    tx,
+    chatBranchId ?? null,
+    sql.join(
+      needles.map((n) => sql`ci."values"::text LIKE ${`%${n}%`}`),
+      sql` OR `,
+    ),
+    (_moduleId, valuesText) => needles.some((n) => valuesText.includes(n)),
+  );
+}
+
+/**
+ * Content instances (the caller's view) that fill any of `moduleIds` —
+ * the instances a module's field default renders through when they leave
+ * that field unset (#627).
+ */
+export async function findContentInstancesOfModules(
+  tx: TransactionRunner,
+  chatBranchId: string | null | undefined,
+  moduleIds: readonly string[],
+): Promise<ContentInstanceRef[]> {
+  if (moduleIds.length === 0) return [];
+  const wanted = new Set(moduleIds);
+  return loadInstancesInView(
+    tx,
+    chatBranchId ?? null,
+    sql`ci.module_id IN (${sql.join(
+      moduleIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    )})`,
+    (moduleId) => wanted.has(moduleId),
+  );
+}
+
+/**
+ * The live rows matching `liveFilter`, with the branch's pending states
+ * superseding them (kept when `matchesBranched` accepts the branched
+ * values) and instances the branch deleted dropped.
+ */
+async function loadInstancesInView(
+  tx: TransactionRunner,
+  branchId: string | null,
+  liveFilter: SQL,
+  matchesBranched: (moduleId: string, valuesText: string) => boolean,
+): Promise<ContentInstanceRef[]> {
   const out = new Map<string, ContentInstanceRef>();
 
   // Branched states first: they supersede the live row for this caller.
-  const branched = new Map<string, ContentInstanceState>();
+  const branched = new Set<string>();
   if (branchId) {
     const rows = (await tx.execute(sql`
       SELECT DISTINCT ON (cis.content_instance_id)
@@ -58,13 +102,11 @@ export async function findContentInstancesContaining(
        ORDER BY cis.content_instance_id, ss.created_at DESC
     `)) as unknown as { id: string; state: unknown }[];
     for (const r of rows) {
-      const state = (
-        typeof r.state === "string" ? JSON.parse(r.state) : r.state
-      ) as ContentInstanceState;
-      branched.set(r.id, state);
+      const state = r.state as ContentInstanceState;
+      branched.add(r.id);
       if (state.deletedAt) continue;
       const valuesText = JSON.stringify(state.values ?? {});
-      if (needles.some((n) => valuesText.includes(n))) {
+      if (matchesBranched(state.moduleId, valuesText)) {
         out.set(r.id, { contentInstanceId: r.id, moduleId: state.moduleId, valuesText });
       }
     }
@@ -73,14 +115,10 @@ export async function findContentInstancesContaining(
   const visible = branchId
     ? sql`(ci.chat_branch_id IS NULL OR ci.chat_branch_id = ${branchId}::uuid)`
     : sql`ci.chat_branch_id IS NULL`;
-  const likeAny = sql.join(
-    needles.map((n) => sql`ci."values"::text LIKE ${`%${n}%`}`),
-    sql` OR `,
-  );
   const liveRows = (await tx.execute(sql`
     SELECT ci.id::text AS id, ci.module_id::text AS module_id, ci."values"::text AS values_text
       FROM content_instances ci
-     WHERE ci.deleted_at IS NULL AND ${visible} AND (${likeAny})
+     WHERE ci.deleted_at IS NULL AND ${visible} AND (${liveFilter})
   `)) as unknown as { id: string; module_id: string; values_text: string }[];
   for (const r of liveRows) {
     if (branched.has(r.id)) continue; // the branch's own state decided above

@@ -71,8 +71,8 @@ async function seedSkill(slug: string, allowlist: string[]): Promise<void> {
       await tx`
         INSERT INTO skills (slug, display_name, description, body, allowlisted_tools, auto_engagement_hints, status)
         VALUES (${slug}, ${slug}, 'test', 'test body',
-                ${JSON.stringify(allowlist)}::jsonb,
-                ${JSON.stringify({ chipTrigger: false, alwaysOn: false })}::jsonb,
+                (${JSON.stringify(allowlist)}::text)::jsonb,
+                (${JSON.stringify({ chipTrigger: false, alwaysOn: false })}::text)::jsonb,
                 'active')
         ON CONFLICT (slug) DO UPDATE SET
           allowlisted_tools = EXCLUDED.allowlisted_tools,

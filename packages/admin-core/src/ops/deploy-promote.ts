@@ -124,7 +124,6 @@ import {
 import { acquireLeaseStep, fenceRunLeases } from "./deploy-lease-steps.js";
 import { beginRunInTx } from "./deploy-run-lifecycle.js";
 import { actorHasPermission } from "./quality/_permissions.js";
-import { json } from "./quality/_shared.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
 import { recordProductionOverride } from "./quality/production-gate.js";
 
@@ -226,7 +225,7 @@ export const startPromoteOp = defineOperation({
       build_id: string | null;
       site_url: string | null;
       plugin_problems: unknown;
-      parity_manifest: Record<string, string> | string | null;
+      parity_manifest: Record<string, string> | null;
       caelo_version: string | null;
       page_count: number | string | null;
       file_count: number | string | null;
@@ -309,10 +308,7 @@ export const startPromoteOp = defineOperation({
       // The staged build's instant: the parity guard compares the two
       // renders, and Publish live stores this value (#1121 review).
       publishAt: await deployRunStartedAt(tx, fromRow.id),
-      parityManifest:
-        fromRow.parity_manifest === null
-          ? null
-          : json<Record<string, string>>(fromRow.parity_manifest),
+      parityManifest: fromRow.parity_manifest,
       stagedCaeloVersion: fromRow.caelo_version,
       stagedPageCount: num(fromRow.page_count),
       stagedFileCount: num(fromRow.file_count),

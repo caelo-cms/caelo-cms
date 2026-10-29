@@ -64,7 +64,7 @@ async function writeCrawlStateSlice(
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx`UPDATE import_runs SET crawl_state = ${JSON.stringify(slice)}::jsonb WHERE id = ${runId}::uuid`;
+      await tx`UPDATE import_runs SET crawl_state = (${JSON.stringify(slice)}::text)::jsonb WHERE id = ${runId}::uuid`;
     });
   } finally {
     await sql.end();

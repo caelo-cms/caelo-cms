@@ -77,9 +77,10 @@
  * data instead of destroying it — loud failure over silent data loss.
  */
 
-import { beforeAll, setDefaultTimeout } from "bun:test";
+import { afterAll, beforeAll, setDefaultTimeout } from "bun:test";
 import { SQL } from "bun";
 import { SEED_SITE_TEXTS_LIST_SQL } from "../packages/migrations/src/seed-site-texts.ts";
+import { findDoubleEncodedJsonb } from "./jsonb-double-encoding-scan.ts";
 
 // Bound every DatabaseAdapter constructed during the test run. This preload
 // runs before any test module builds an adapter, so all ~83 inline
@@ -258,11 +259,40 @@ async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promis
 
 const RESET_OPTED_IN = process.env.CAELO_TEST_DB_RESET === "1";
 
+/**
+ * #68 — after each integration file, no jsonb value may be stored
+ * double-encoded (a string scalar holding JSON text). Whatever write path
+ * the file exercised — op, helper or the file's own seed SQL — that bound
+ * `JSON.stringify(x)` to a jsonb column fails the file here, naming the
+ * column, instead of surfacing later as a reader that gets a string.
+ */
+async function assertNoDoubleEncodedJsonb(url: string): Promise<void> {
+  const sql = new SQL(url, { max: 1 });
+  try {
+    const found = await findDoubleEncodedJsonb(sql);
+    if (found.length > 0) {
+      throw new Error(
+        `jsonb stored double-encoded (#68) in ${found.map((f) => `${f.column} (e.g. ${f.sample})`).join("; ")}. ` +
+          "A write bound a JSON string to a jsonb column: pass the value through jsonbParam() " +
+          "(packages/admin-core/src/sql-helpers.ts) or cast the JSON text with ::text before ::jsonb.",
+      );
+    }
+  } finally {
+    await sql.end();
+  }
+}
+
 if (ADMIN_URL && PUBLIC_URL && RESET_OPTED_IN) {
   beforeAll(async () => {
     await Promise.all([
       resetDatabase(ADMIN_URL, ADMIN_PRESERVE),
       resetDatabase(PUBLIC_URL, PUBLIC_PRESERVE),
+    ]);
+  });
+  afterAll(async () => {
+    await Promise.all([
+      assertNoDoubleEncodedJsonb(ADMIN_URL),
+      assertNoDoubleEncodedJsonb(PUBLIC_URL),
     ]);
   });
 } else if (ADMIN_URL && PUBLIC_URL) {

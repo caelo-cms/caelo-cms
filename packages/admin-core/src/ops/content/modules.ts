@@ -88,10 +88,7 @@ function rowToModule(r: {
   deleted_at: string | Date | null;
 }): z.infer<typeof moduleRowSchema> {
   const iso = (v: string | Date) => (v instanceof Date ? v.toISOString() : String(v));
-  // `fields` arrives as jsonb. Postgres returns it as a parsed array; coerce
-  // defensively for the (unlikely) string case.
-  const rawFields = typeof r.fields === "string" ? JSON.parse(r.fields) : r.fields;
-  const fields = Array.isArray(rawFields) ? (rawFields as ModuleField[]) : [];
+  const fields = Array.isArray(r.fields) ? (r.fields as ModuleField[]) : [];
   // v0.12.0 — description / kind default for legacy rows that pre-date
   // migration 0095. The migration backfills both columns NOT NULL so
   // this only matters for in-flight branched rows whose snapshot was
@@ -652,11 +649,7 @@ export const updateModuleOp = defineOperation({
     // modules.create conservative-extraction rule above so the rewriter
     // / media-usage / chained-edit fixtures don't get their literal
     // hrefs / srcs templatised out from under them.
-    const rawPrevFields = branchBase
-      ? branchBase.fields
-      : typeof prev.fields === "string"
-        ? JSON.parse(prev.fields)
-        : prev.fields;
+    const rawPrevFields = branchBase ? branchBase.fields : prev.fields;
     const prevFields = Array.isArray(rawPrevFields) ? (rawPrevFields as ModuleField[]) : [];
     const explicitFieldsPresent = input.fields !== undefined && input.fields.length > 0;
     const liveFieldsPresent = prevFields.length > 0;

@@ -21,7 +21,7 @@ import {
   scoreKey,
 } from "../../quality/gate.js";
 import type { QualityCategory, QualityProblem } from "../../quality/ratchet.js";
-import { json, uuidList } from "./_shared.js";
+import { uuidList } from "./_shared.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -77,9 +77,9 @@ async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null>
     pages: pages.map((p) => ({
       pageId: p.page_id,
       pagePath: p.current_path,
-      problems: json<QualityProblem[]>(p.problems),
+      problems: p.problems as QualityProblem[],
     })),
-    siteProblems: json<CheckRuleProblem[]>(run.site_problems),
+    siteProblems: run.site_problems as CheckRuleProblem[],
   };
 }
 

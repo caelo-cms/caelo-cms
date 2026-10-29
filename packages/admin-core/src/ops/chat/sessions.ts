@@ -78,9 +78,8 @@ interface PinnedElement {
 }
 
 function parsePinnedElements(raw: unknown): PinnedElement[] {
-  const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
-  if (!Array.isArray(arr)) return [];
-  return arr.filter(
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
     (e): e is PinnedElement =>
       typeof e === "object" &&
       e !== null &&
@@ -521,44 +520,30 @@ export const getChatSessionOp = defineOperation({
       session,
       hasMore,
       messages: msgs.map((m) => {
-        const parsedTools =
-          typeof m.tool_calls === "string" ? (JSON.parse(m.tool_calls) as unknown) : m.tool_calls;
-        const parsedThinking =
-          typeof m.thinking_blocks === "string"
-            ? (JSON.parse(m.thinking_blocks) as unknown)
-            : m.thinking_blocks;
-        const parsedAttachments =
-          typeof m.attachments === "string"
-            ? (JSON.parse(m.attachments) as unknown)
-            : m.attachments;
-        const parsedResponseMessages =
-          typeof m.response_messages === "string"
-            ? (JSON.parse(m.response_messages) as unknown)
-            : m.response_messages;
         return {
           id: m.id,
           role: m.role,
           content: m.content,
           origin: m.origin,
-          toolCalls: parsedTools ?? null,
+          toolCalls: m.tool_calls ?? null,
           toolCallId: m.tool_call_id,
           tokensIn: m.tokens_in,
           tokensOut: m.tokens_out,
           createdAt: isoOrNull(m.created_at) ?? "",
           thinkingBlocks:
-            Array.isArray(parsedThinking) && parsedThinking.length > 0
-              ? (parsedThinking as { thinking: string; signature: string }[])
+            Array.isArray(m.thinking_blocks) && m.thinking_blocks.length > 0
+              ? (m.thinking_blocks as { thinking: string; signature: string }[])
               : null,
           attachments:
-            Array.isArray(parsedAttachments) && parsedAttachments.length > 0
-              ? (parsedAttachments as import("@caelo-cms/shared").ChatAttachment[])
+            Array.isArray(m.attachments) && m.attachments.length > 0
+              ? (m.attachments as import("@caelo-cms/shared").ChatAttachment[])
               : null,
           // Option C — the SDK-canonical ModelMessage assembly for an
           // assistant turn; replayed verbatim as history (CLAUDE.md §12).
           // Null unless the caller asked for it (`includeResponseMessages`).
           responseMessages:
-            Array.isArray(parsedResponseMessages) && parsedResponseMessages.length > 0
-              ? (parsedResponseMessages as unknown[])
+            Array.isArray(m.response_messages) && m.response_messages.length > 0
+              ? (m.response_messages as unknown[])
               : null,
           status: m.status,
         };
@@ -829,6 +814,10 @@ export const listBranchEditedEntitiesOp = defineOperation({
      *  surface them as pageIds (alongside the snapshot pageIds) so
      *  the cascade union covers them. */
     pageLayoutPageIds: z.array(z.string()),
+    /** #627 — content instances whose values the chat edited; the pages
+     *  they render on (through their parents too) come from
+     *  snapshots.publish_impact_pages. */
+    contentInstanceIds: z.array(z.string()),
   }),
   handler: async (_ctx, input, tx) => {
     const binding = await loadChatBinding(tx, input.chatSessionId);
@@ -858,23 +847,29 @@ export const listBranchEditedEntitiesOp = defineOperation({
       UNION ALL
       SELECT 'page_layout'::text AS kind, page_id::text AS entity_id
         FROM page_layout_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)
+      UNION ALL
+      SELECT 'content_instance'::text AS kind, content_instance_id::text AS entity_id
+        FROM content_instance_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)
     `)) as unknown as { kind: string; entity_id: string }[];
 
     const moduleIds = new Set<string>();
     const pageIds = new Set<string>();
     const templateIds = new Set<string>();
     const pageLayoutPageIds = new Set<string>();
+    const contentInstanceIds = new Set<string>();
     for (const r of rows) {
       if (r.kind === "module") moduleIds.add(r.entity_id);
       else if (r.kind === "page") pageIds.add(r.entity_id);
       else if (r.kind === "template") templateIds.add(r.entity_id);
       else if (r.kind === "page_layout") pageLayoutPageIds.add(r.entity_id);
+      else if (r.kind === "content_instance") contentInstanceIds.add(r.entity_id);
     }
     return ok({
       moduleIds: [...moduleIds],
       pageIds: [...pageIds],
       templateIds: [...templateIds],
       pageLayoutPageIds: [...pageLayoutPageIds],
+      contentInstanceIds: [...contentInstanceIds],
     });
   },
 });

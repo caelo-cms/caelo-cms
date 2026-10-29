@@ -208,7 +208,7 @@ interface ModuleRow {
 function parseModuleFields(raw: string | null): ComposeField[] | undefined {
   if (!raw) return undefined;
   try {
-    const out = templateFieldsFromJson(raw);
+    const out = templateFieldsFromJson(JSON.parse(raw));
     return out.length > 0 ? out : undefined;
   } catch {
     return undefined;
@@ -733,10 +733,7 @@ export async function generateSite(args: {
   let activeTheme: ComposeTheme | undefined;
   const tr = themeRows[0];
   if (tr) {
-    const tokens: ThemeDocument =
-      typeof tr.tokens === "string"
-        ? (JSON.parse(tr.tokens) as ThemeDocument)
-        : (tr.tokens as ThemeDocument);
+    const tokens = tr.tokens as ThemeDocument;
     const asset = (
       id: string | null,
       slug: string | null,

@@ -53,11 +53,10 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
-  parsePayload,
   resolveChatSessionId,
 } from "../_propose-helpers.js";
 import { actorHasPermission } from "./_permissions.js";
-import { categorySchema, iso, json } from "./_shared.js";
+import { categorySchema, iso } from "./_shared.js";
 import {
   latestSucceededRun,
   loadAcceptances,
@@ -254,7 +253,7 @@ async function resolveItems(
     SELECT COALESCE(checks->'siteProblems', '[]'::jsonb) AS site_problems
     FROM quality_audit_runs WHERE id = ${input.auditRunId}::uuid
   `)) as unknown as { site_problems: unknown }[];
-  const siteProblems = json<QualityProblem[]>(siteRows[0]?.site_problems ?? []);
+  const siteProblems = (siteRows[0]?.site_problems ?? []) as QualityProblem[];
   if (rows.length === 0 && siteProblems.length === 0) {
     return {
       ok: false,
@@ -278,7 +277,7 @@ async function resolveItems(
         message: `${pagePath} has no findings in ${input.auditRunId} — pages with findings: ${rows.map((r) => r.current_path).join(", ") || "none"}${siteProblems.length > 0 ? " (site-wide findings: omit pagePath)" : ""}`,
       };
     }
-    const problems = json<QualityProblem[]>(page.problems);
+    const problems = page.problems as QualityProblem[];
     if ("ruleId" in item) {
       const r = resolveCheckItem(page.page_id, page.current_path, problems, item.ruleId);
       if ("message" in r) return { ok: false, message: r.message };
@@ -677,7 +676,7 @@ export const beginExecuteQualityProposalOp = requiresApproverPermission(
         });
       }
       if (row.kind === "accept") {
-        const payload = proposeAcceptInput.parse(parsePayload(row.payload));
+        const payload = proposeAcceptInput.parse(row.payload);
         const current = await currentGateAuditId(tx);
         if (current !== payload.auditRunId) {
           await tx.execute(sql`
@@ -723,7 +722,7 @@ export const beginExecuteQualityProposalOp = requiresApproverPermission(
           message: `this decision is being applied right now${row.claimed_by_run_id ? ` (Publish live run ${row.claimed_by_run_id})` : ""} — wait for it to finish; Settings → Deployments shows it. Nothing else was started.`,
         });
       }
-      const payload = proposePublishAnywayInput.parse(parsePayload(row.payload));
+      const payload = proposePublishAnywayInput.parse(row.payload);
       await tx.execute(sql`
       UPDATE quality_pending_actions
          SET claimed_by_run_id = ${input.runId}::uuid, claimed_at = clock_timestamp()
@@ -945,7 +944,7 @@ export const listPendingQualityProposalsOp = defineOperation({
         kind: r.kind,
         proposedBy: r.proposed_by,
         auditRunId: r.audit_run_id,
-        preview: json<Record<string, unknown>>(r.preview),
+        preview: r.preview as Record<string, unknown>,
         status: r.status,
         createdAt: iso(r.created_at),
       })),

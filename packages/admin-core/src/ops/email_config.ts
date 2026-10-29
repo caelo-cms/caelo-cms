@@ -227,7 +227,7 @@ export const sendTestEmailOp = defineOperation({
     `)) as unknown as {
       transport: "none" | "smtp" | "resend" | "ses";
       from_address: string;
-      config_json: Record<string, unknown> | string;
+      config_json: Record<string, unknown>;
     }[];
     const row = rows[0];
     const fail = (message: string) =>
@@ -246,10 +246,7 @@ export const sendTestEmailOp = defineOperation({
     const transport = buildEmailTransport({
       transport: row.transport,
       fromAddress: row.from_address,
-      config:
-        typeof row.config_json === "string"
-          ? (JSON.parse(row.config_json) as Record<string, unknown>)
-          : row.config_json,
+      config: row.config_json,
     });
     if (!transport) {
       return fail(`transport \`${row.transport}\` is not implemented yet — use \`resend\`.`);

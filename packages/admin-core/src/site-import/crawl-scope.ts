@@ -33,30 +33,20 @@ export class CrawlScopeMalformedError extends Error {
 }
 
 /**
- * Decode `crawl_scope` (jsonb — may arrive decoded or as a JSON string
- * depending on the client) into a {@link CrawlScope}.
+ * Decode the `crawl_scope` jsonb (read as jsonb, so already parsed) into
+ * a {@link CrawlScope}.
  *
  * @returns `null` ONLY when the column is absent (SQL NULL / undefined /
  *   jsonb null), meaning an unscoped crawl. Any present-but-wrong shape —
- *   unparseable JSON, non-object, wrong field types, no recognised rule —
+ *   a string scalar, non-object, wrong field types, no recognised rule —
  *   throws {@link CrawlScopeMalformedError} so the run fails loudly.
  */
 export function parseCrawlScope(raw: unknown): CrawlScope | null {
   if (raw === null || raw === undefined) return null;
-  let v: unknown = raw;
-  if (typeof raw === "string") {
-    try {
-      v = JSON.parse(raw);
-    } catch {
-      throw new CrawlScopeMalformedError("unparseable JSON string", raw);
-    }
-    // A jsonb `null` serialised by the client — same as SQL NULL.
-    if (v === null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new CrawlScopeMalformedError("expected a JSON object", raw);
   }
-  if (typeof v !== "object" || Array.isArray(v)) {
-    throw new CrawlScopeMalformedError("expected a JSON object", v);
-  }
-  const o = v as { pathPrefix?: unknown; locale?: unknown };
+  const o = raw as { pathPrefix?: unknown; locale?: unknown };
   if (o.pathPrefix !== undefined && typeof o.pathPrefix !== "string") {
     throw new CrawlScopeMalformedError("pathPrefix is not a string", o.pathPrefix);
   }
@@ -64,7 +54,7 @@ export function parseCrawlScope(raw: unknown): CrawlScope | null {
     throw new CrawlScopeMalformedError("locale is not a string", o.locale);
   }
   if (o.pathPrefix === undefined && o.locale === undefined) {
-    throw new CrawlScopeMalformedError("neither pathPrefix nor locale is set", v);
+    throw new CrawlScopeMalformedError("neither pathPrefix nor locale is set", raw);
   }
   const scope: { pathPrefix?: string; locale?: string } = {};
   if (typeof o.pathPrefix === "string") scope.pathPrefix = o.pathPrefix;

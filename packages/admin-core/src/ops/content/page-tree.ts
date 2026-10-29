@@ -87,10 +87,7 @@ export async function loadPageTree(
        ORDER BY ps.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const o of overlay) {
-      pending.set(
-        o.page_id,
-        (typeof o.state === "string" ? JSON.parse(o.state) : o.state) as PendingTreeState,
-      );
+      pending.set(o.page_id, o.state as PendingTreeState);
     }
   }
   return pageTreeOf(rows, pending);

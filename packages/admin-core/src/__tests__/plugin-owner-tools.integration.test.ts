@@ -292,7 +292,7 @@ describe("plugins.execute_proposal kind guard", () => {
         INSERT INTO plugin_pending_actions
           (kind, proposed_by, plugin_id, payload, preview, status, payload_hash)
         VALUES ('activate', ${system.actorId}::uuid, ${inst.pluginId}::uuid,
-                ${JSON.stringify({ slug: inst.slug, pluginId: inst.pluginId })}::jsonb,
+                (${JSON.stringify({ slug: inst.slug, pluginId: inst.pluginId })}::text)::jsonb,
                 '{}'::jsonb, 'pending', ${`kindguard-${RUN}`})
         RETURNING id::text AS id`),
     )) as unknown as { id: string }[];

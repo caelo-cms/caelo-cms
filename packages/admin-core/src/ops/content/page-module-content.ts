@@ -55,8 +55,7 @@ function rowTo(r: {
   updated_at: string | Date;
 }): z.infer<typeof pageModuleContentRowSchema> {
   const iso = (v: string | Date) => (v instanceof Date ? v.toISOString() : String(v));
-  const raw =
-    typeof r.content_values === "string" ? JSON.parse(r.content_values) : r.content_values;
+  const raw = r.content_values;
   return {
     id: r.id,
     pageId: r.page_id,
@@ -120,10 +119,7 @@ async function resolveNestedTarget(
   const rows = (await tx.execute(sql`
     SELECT "values" FROM content_instances WHERE id = ${rootId}::uuid AND deleted_at IS NULL
   `)) as unknown as { values: unknown }[];
-  let values = rows[0]
-    ? (((typeof rows[0].values === "string" ? JSON.parse(rows[0].values) : rows[0].values) ??
-        {}) as Record<string, unknown>)
-    : undefined;
+  let values = rows[0] ? ((rows[0].values ?? {}) as Record<string, unknown>) : undefined;
   if (chatBranchId) {
     const branched = (await loadContentInstanceBranchStates(tx, [rootId], chatBranchId)).get(
       rootId,
@@ -465,13 +461,7 @@ export const listPageModuleContentOp = withHumanisedLinks(
         )})
       `)) as unknown as { id: string; values: unknown }[];
       const values = new Map<string, Record<string, unknown>>(
-        instanceRows.map((r) => [
-          r.id,
-          ((typeof r.values === "string" ? JSON.parse(r.values) : r.values) ?? {}) as Record<
-            string,
-            unknown
-          >,
-        ]),
+        instanceRows.map((r) => [r.id, (r.values ?? {}) as Record<string, unknown>]),
       );
       if (branchId) {
         for (const [id, state] of await loadBranchedModuleStates(tx, branchId, moduleIds)) {

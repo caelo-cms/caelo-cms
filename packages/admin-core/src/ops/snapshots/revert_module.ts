@@ -9,7 +9,6 @@ import {
   emitSnapshot,
   loadModuleState,
   parseAndUpgradeModuleState,
-  parseSnapshotState,
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 
@@ -42,7 +41,7 @@ export const revertModuleOp = defineOperation({
     }
     let target: ReturnType<typeof parseAndUpgradeModuleState>;
     try {
-      target = parseAndUpgradeModuleState(parseSnapshotState(row.state));
+      target = parseAndUpgradeModuleState(row.state);
     } catch (e) {
       if (e instanceof SnapshotSchemaError) {
         return err({

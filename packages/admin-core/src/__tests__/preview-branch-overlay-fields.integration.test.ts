@@ -146,7 +146,7 @@ beforeAll(async () => {
         INSERT INTO content_instances (module_id, "values")
         VALUES (
           ${seeded.moduleId}::uuid,
-          ${JSON.stringify({
+          (${JSON.stringify({
             nav_items: [
               {
                 id: "00000000-0000-4000-9000-000000000001",
@@ -159,7 +159,7 @@ beforeAll(async () => {
                 values: { label: "Blog", link: { href: "/blog" } },
               },
             ],
-          })}::jsonb
+          })}::text)::jsonb
         )
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
@@ -184,7 +184,7 @@ beforeAll(async () => {
       `) as unknown as { id: string }[];
       await tx`
         INSERT INTO module_snapshots (site_snapshot_id, module_id, state)
-        VALUES (${ss[0]?.id}::uuid, ${seeded.moduleId}::uuid, ${BRANCH_STATE}::jsonb)
+        VALUES (${ss[0]?.id}::uuid, ${seeded.moduleId}::uuid, (${BRANCH_STATE}::text)::jsonb)
       `;
     });
   } finally {

@@ -150,7 +150,7 @@ test.beforeAll(() => {
       INSERT INTO modules (slug, display_name, type, html, fields)
       VALUES (\${E.MOD}, 'Lists spec nav', \${E.MOD},
         '<nav class="spec-nav">{{#menu}}<a class="spec-entry" href="{{link}}">{{label}}</a>{{/menu}}</nav>',
-        \${JSON.stringify([{ name: "menu", label: "Menu", kind: "list", listType: E.NAV_TYPE, bind: "shared", list: "caelo:list/" + menu.id }])}::jsonb)
+        (\${JSON.stringify([{ name: "menu", label: "Menu", kind: "list", listType: E.NAV_TYPE, bind: "shared", list: "caelo:list/" + menu.id }])}::text)::jsonb)
       RETURNING id::text AS id\`);
     const pg = await asSystem((tx) => tx\`
       INSERT INTO pages (slug, title, template_id, status, page_type_id)

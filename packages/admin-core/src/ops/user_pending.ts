@@ -265,9 +265,7 @@ const executeUserProposalOpDefinition = defineOperation({
         message: `proposal is already ${row.status}`,
       });
     }
-    const payload = (
-      typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload
-    ) as Record<string, unknown>;
+    const payload = row.payload as Record<string, unknown>;
     // The apply writes OTHER users' rows (`actors`, `users`), whose RLS is
     // self-or-system — with the approving Owner's human session it failed
     // with "RLS denied" (in-chat Approve and /settings/users/pending alike).

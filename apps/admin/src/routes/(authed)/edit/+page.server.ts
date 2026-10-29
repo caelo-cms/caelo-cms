@@ -18,6 +18,7 @@ import { opErrorMessage } from "#lib/server/op-error.js";
 import { loadPageSeoInfo } from "#lib/server/page-seo-info.js";
 import { loadEditorToolbar } from "#lib/server/plugin-toolbar.js";
 import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
+import { publishChangedPages } from "#lib/server/publish-changed-pages.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { describeStagedBuild } from "#lib/server/stage-result.js";
 import { openStagingHref } from "#lib/server/staging-link.js";
@@ -961,7 +962,8 @@ export const actions: Actions = {
    *
    * Kind options surfaced in the picker:
    *   - "pages"     — page metadata (slug, title, status) + per-page
-   *                   layout + per-placement content edits
+   *                   layout + per-placement and content-instance edits
+   *                   (the pages each instance renders on, #627)
    *   - "modules"   — module HTML/CSS/JS/fields edits
    *   - "templates" — template body / block layout changes
    *   - "lists"     — shared lists, list types and page types
@@ -1024,6 +1026,7 @@ export const actions: Actions = {
           pageIds: string[];
           templateIds: string[];
           pageLayoutPageIds: string[];
+          contentInstanceIds: string[];
         };
         const impactR = await execute(
           registry,
@@ -1034,29 +1037,18 @@ export const actions: Actions = {
             moduleIds: checked.has("modules") ? entities.moduleIds : [],
             templateIds: checked.has("templates") ? entities.templateIds : [],
             layoutIds: [],
+            // #627 — "pages" covers per-placement content edits: a content
+            // instance re-bakes every page it renders on, through its
+            // parents too (a nested-only child has no placement of its own).
+            contentInstanceIds: checked.has("pages") ? entities.contentInstanceIds : [],
           },
         );
-        const all = new Set<string>();
-        if (impactR.ok) {
-          const impact = impactR.value as { pageIds: string[]; fullSite: boolean };
-          if (impact.fullSite) {
-            // Defensive fallback — publish_impact_pages currently only
-            // returns fullSite for list-model edits, which we routed
-            // through `fullRebuild` above. Reaching this branch means
-            // the impact op gained another fan-out we don't know about;
-            // skip the filter so the deploy is conservatively complete.
-            changedPageIds = undefined;
-          } else {
-            for (const id of impact.pageIds) all.add(id);
-          }
-        }
-        if (checked.has("pages")) {
-          for (const id of entities.pageIds) all.add(id);
-          for (const id of entities.pageLayoutPageIds) all.add(id);
-        }
-        if (changedPageIds === undefined && all.size > 0) {
-          changedPageIds = [...all];
-        }
+        changedPageIds = publishChangedPages({
+          impact: impactR.ok ? (impactR.value as { pageIds: string[]; fullSite: boolean }) : null,
+          pagesChecked: checked.has("pages"),
+          editedPageIds: entities.pageIds,
+          editedPageLayoutPageIds: entities.pageLayoutPageIds,
+        });
       }
     }
 

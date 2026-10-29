@@ -99,24 +99,24 @@ test.beforeAll(() => {
         INSERT INTO quality_audit_runs
           (id, deploy_run_id, requested_by, status, classification, finished_at, problem_count, checks)
         VALUES (\${process.env.RUN_ID}::uuid, \${deploy.id}::uuid, \${actor}::uuid, 'problems',
-          \${JSON.stringify({ auditNeeded: false, reasons: [], skipped: ["field values: hero"] })}::jsonb,
+          (\${JSON.stringify({ auditNeeded: false, reasons: [], skipped: ["field values: hero"] })}::text)::jsonb,
           now(), 2,
-          \${JSON.stringify({
+          (\${JSON.stringify({
             ran: [{ id: "seo-check", title: "SEO checks", scope: "page", source: { kind: "plugin", slug: "seo-check" } }],
             pagesChecked: 3,
             findingCounts: { error: 2, warning: 1, info: 0 },
             siteFindings: [{ ruleId: "robots/blocked", severity: "error", message: site.findings[0].message }],
             siteProblems: [site],
             errors: [],
-          })}::jsonb)\`;
+          })}::text)::jsonb)\`;
       await tx\`
         INSERT INTO quality_audit_pages
           (audit_run_id, page_id, url, status, scores, performance_runs, metrics, problems, check_findings)
         VALUES (\${process.env.RUN_ID}::uuid, \${page.id}::uuid, 'http://staging.test/', 'problems',
-          \${JSON.stringify({ performance: 71, accessibility: 100, "best-practices": 100, seo: 100 })}::jsonb,
-          '{71}', \${process.env.METRICS}::jsonb,
-          \${JSON.stringify([problem])}::jsonb,
-          \${JSON.stringify([{ ruleId: problem.ruleId, severity: "error", pageId: page.id, message: problem.findings[0].message }, warning])}::jsonb)\`;
+          (\${JSON.stringify({ performance: 71, accessibility: 100, "best-practices": 100, seo: 100 })}::text)::jsonb,
+          '{71}', (\${process.env.METRICS}::text)::jsonb,
+          (\${JSON.stringify([problem])}::text)::jsonb,
+          (\${JSON.stringify([{ ruleId: problem.ruleId, severity: "error", pageId: page.id, message: problem.findings[0].message }, warning])}::text)::jsonb)\`;
       await tx\`
         INSERT INTO quality_acceptances (page_id, kind, audit_id, accepted_count, reason, accepted_by)
         VALUES (NULL, 'check', 'robots/allowed-test', 2, \${process.env.REASON}, \${actor}::uuid)\`;

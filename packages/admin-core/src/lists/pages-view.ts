@@ -107,10 +107,7 @@ export async function loadPageRows(
        ORDER BY ps.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const s of snaps) {
-      pending.set(
-        s.page_id,
-        (typeof s.state === "string" ? JSON.parse(s.state) : s.state) as PageState,
-      );
+      pending.set(s.page_id, s.state as PageState);
     }
   }
   return { rows, pending };
@@ -130,7 +127,7 @@ export function pagesInViewOf(
     const o = pending.get(r.id);
     const deleted = o ? o.deletedAt !== null : r.deleted_at !== null;
     if (deleted) continue;
-    const liveProps = typeof r.properties === "string" ? JSON.parse(r.properties) : r.properties;
+    const liveProps = r.properties;
     const page: PageInView = {
       id: r.id,
       slug: o?.slug ?? r.slug,

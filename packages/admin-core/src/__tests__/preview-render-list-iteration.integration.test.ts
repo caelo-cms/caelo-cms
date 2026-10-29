@@ -141,13 +141,13 @@ beforeAll(async () => {
       seeded.tagsModuleId = tagsMod[0]?.id ?? "";
       const tagsCi = (await tx`
         INSERT INTO content_instances (module_id, "values")
-        VALUES (${seeded.tagsModuleId}::uuid, ${JSON.stringify({
+        VALUES (${seeded.tagsModuleId}::uuid, (${JSON.stringify({
           tags: ["a", "b", "c"].map((text, i) => ({
             id: entryId(i + 1),
             node: "text",
             values: { text },
           })),
-        })}::jsonb)
+        })}::text)::jsonb)
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       const tagsPage = (await tx`
@@ -178,12 +178,12 @@ beforeAll(async () => {
         INSERT INTO content_instances (module_id, "values")
         VALUES (
           ${seeded.navModuleId}::uuid,
-          ${JSON.stringify({
+          (${JSON.stringify({
             nav_items: [
               { id: entryId(1), node: "link", values: { label: "Docs", link: { href: "/docs" } } },
               { id: entryId(2), node: "link", values: { label: "Blog", link: { href: "/blog" } } },
             ],
-          })}::jsonb
+          })}::text)::jsonb
         )
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
@@ -242,7 +242,7 @@ beforeAll(async () => {
       });
       const cardsCi = (await tx`
         INSERT INTO content_instances (module_id, "values")
-        VALUES (${seeded.cardsModuleId}::uuid, ${cardsValuesJson}::jsonb)
+        VALUES (${seeded.cardsModuleId}::uuid, (${cardsValuesJson}::text)::jsonb)
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       const cardsPage = (await tx`
@@ -275,7 +275,7 @@ beforeAll(async () => {
       });
       const missingCi = (await tx`
         INSERT INTO content_instances (module_id, "values")
-        VALUES (${seeded.missingParentModuleId}::uuid, ${missingValuesJson}::jsonb)
+        VALUES (${seeded.missingParentModuleId}::uuid, (${missingValuesJson}::text)::jsonb)
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       const missingPage = (await tx`

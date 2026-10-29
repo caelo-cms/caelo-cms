@@ -41,7 +41,7 @@ export async function loadModuleState(
   }[];
   const r = rows[0];
   if (!r) return null;
-  const rawFields = typeof r.fields === "string" ? JSON.parse(r.fields) : r.fields;
+  const rawFields = r.fields;
   return {
     schemaVersion: 1,
     slug: r.slug,
@@ -85,8 +85,7 @@ export async function loadPageModuleContentState(
   }[];
   const r = rows[0];
   if (!r) return null;
-  const raw =
-    typeof r.content_values === "string" ? JSON.parse(r.content_values) : r.content_values;
+  const raw = r.content_values;
   return {
     schemaVersion: 1,
     pageId: r.page_id,
@@ -161,7 +160,7 @@ export async function loadPageState(
     FROM page_terms WHERE page_id = ${pageId}::uuid
     ORDER BY created_at, list_id, item_id
   `)) as unknown as { ref: string }[];
-  const properties = typeof r.properties === "string" ? JSON.parse(r.properties) : r.properties;
+  const properties = r.properties;
   return {
     schemaVersion: 1,
     slug: r.slug,
@@ -266,7 +265,7 @@ export async function loadBranchedModuleStates(
      ORDER BY ms.module_id, ss.created_at DESC
   `)) as unknown as { module_id: string; state: unknown }[];
   for (const row of rows) {
-    const raw = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as ModuleState;
+    const raw = row.state as ModuleState;
     // v0.12.3 — a branched snapshot written before 0103 lacks `type`;
     // fall back to slug so downstream consumers always see a value.
     out.set(row.module_id, raw.type ? raw : { ...raw, type: raw.slug });
@@ -291,7 +290,7 @@ export async function loadPageStateWithBranchOverlay(
     `)) as unknown as { state: unknown }[];
     const row = rows[0];
     if (row !== undefined) {
-      const raw = typeof row.state === "string" ? JSON.parse(row.state) : row.state;
+      const raw = row.state;
       return raw as PageState;
     }
   }
@@ -327,7 +326,7 @@ export async function loadPageLayoutStateWithBranchOverlay(
     `)) as unknown as { state: unknown }[];
     const row = rows[0];
     if (row !== undefined) {
-      const raw = typeof row.state === "string" ? JSON.parse(row.state) : row.state;
+      const raw = row.state;
       return raw as PageLayoutState;
     }
   }
@@ -358,7 +357,7 @@ export async function loadContentInstanceState(
   }[];
   const r = rows[0];
   if (!r) return null;
-  const rawValues = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
+  const rawValues = r.values;
   return {
     schemaVersion: 1,
     moduleId: r.module_id,
@@ -393,7 +392,7 @@ export async function loadContentInstanceStateWithBranchOverlay(
     `)) as unknown as { state: unknown }[];
     const row = rows[0];
     if (row !== undefined) {
-      const raw = typeof row.state === "string" ? JSON.parse(row.state) : row.state;
+      const raw = row.state;
       return raw as ContentInstanceState;
     }
   }
@@ -426,7 +425,7 @@ export async function loadContentInstanceBranchStates(
      ORDER BY cis.content_instance_id, ss.created_at DESC
   `)) as unknown as { id: string; state: unknown }[];
   for (const r of rows) {
-    const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+    const raw = r.state;
     out.set(r.id, raw as ContentInstanceState);
   }
   return out;

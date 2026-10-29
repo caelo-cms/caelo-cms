@@ -36,7 +36,6 @@ import { z } from "zod";
 import { lookupPricing } from "../ai/pricing-cache.js";
 import { recordAudit } from "../audit.js";
 import { requiresApproverPermission } from "./_approver-permission.js";
-import { parsePayload } from "./_propose-helpers.js";
 import { gatewaySettingsInput, getGatewaySettingsOp, setGatewaySettingsOp } from "./gateway.js";
 import {
   errorMessage,
@@ -410,19 +409,14 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
     if (row.status !== "pending") return handlerError(op, `proposal is already ${row.status}`);
 
     if (OWNER_SECURITY_KINDS.has(row.kind)) {
-      const problem = await applyOwnerSecurityProposal(
-        ctx,
-        tx,
-        row.kind,
-        parsePayload(row.payload),
-      );
+      const problem = await applyOwnerSecurityProposal(ctx, tx, row.kind, row.payload);
       if (problem) return handlerError(op, problem);
     } else if (OWNER_STAGING_KINDS.has(row.kind)) {
-      const applied = await applyOwnerStagingProposal(ctx, tx, row.kind, parsePayload(row.payload));
+      const applied = await applyOwnerStagingProposal(ctx, tx, row.kind, row.payload);
       if ("error" in applied) return handlerError(op, applied.error);
       nextStep = applied.nextStep;
     } else if (row.kind === "set_ai_budget") {
-      const payload = proposeAiBudgetInput.parse(parsePayload(row.payload));
+      const payload = proposeAiBudgetInput.parse(row.payload);
       for (const cell of payload.budgets) {
         const r = await setAiBudgetOp.handler(
           ctx,
@@ -432,13 +426,13 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
         if (!r.ok) return handlerError(op, `ai_budgets.set failed: ${errorMessage(r.error)}`);
       }
     } else if (row.kind === "set_ai_pricing") {
-      const payload = proposeAiPricingInput.parse(parsePayload(row.payload));
+      const payload = proposeAiPricingInput.parse(row.payload);
       for (const pricing of payload.rows) {
         const r = await setAiPricingOp.handler(ctx, pricing, tx);
         if (!r.ok) return handlerError(op, `ai_pricing.set failed: ${errorMessage(r.error)}`);
       }
     } else if (row.kind === "set_translation_model") {
-      const payload = queuedTranslationModel.parse(parsePayload(row.payload));
+      const payload = queuedTranslationModel.parse(row.payload);
       const r = await setTranslationModelOp.handler(ctx, payload, tx);
       if (!r.ok) {
         return handlerError(
@@ -447,7 +441,7 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
         );
       }
     } else if (row.kind === "set_gateway_settings") {
-      const patch = proposeGatewaySettingsInput.parse(parsePayload(row.payload));
+      const patch = proposeGatewaySettingsInput.parse(row.payload);
       const m = await mergedGatewaySettings(ctx, tx, patch);
       if (!m.ok) return handlerError(op, m.message);
       const r = await setGatewaySettingsOp.handler(ctx, m.merged, tx);
@@ -467,7 +461,7 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
                     END
       WHERE id = ${input.proposalId}::uuid
     `);
-    const summary = String(parsePayload<{ summary?: unknown }>(row.preview).summary ?? row.kind);
+    const summary = String((row.preview as { summary?: unknown }).summary ?? row.kind);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -561,8 +555,8 @@ export const listPendingOwnerSettingsProposalsOp = defineOperation({
         id: r.id,
         kind: r.kind,
         proposedBy: r.proposed_by,
-        payload: parsePayload<Record<string, unknown>>(r.payload),
-        preview: parsePayload<Record<string, unknown>>(r.preview),
+        payload: r.payload as Record<string, unknown>,
+        preview: r.preview as Record<string, unknown>,
         status: r.status,
         createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
         chatSessionId: r.chat_session_id,

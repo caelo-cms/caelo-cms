@@ -15,8 +15,14 @@
  *   - dangerous: `${expr}::jsonb`   → the char before `::jsonb` is `}`
  *   - safe:      `(${expr}::text)::jsonb` → the char before `::jsonb` is `)`
  *
- * So this static scan fails the build if any `}::jsonb` appears in source. It
- * runs as a plain unit test (no DB) so it gates every PR.
+ * So this static scan fails the build if any `}::jsonb` appears in source —
+ * and, for `tx.unsafe(text, params)` queries, any `$1::jsonb` placeholder
+ * (a string param there double-encodes the same way). It scans the `src/`
+ * of every package AND app (server routes write jsonb too) and runs as a
+ * plain unit test (no DB) so it gates every PR. Writes that double-encode
+ * through the column type (`VALUES (${JSON.stringify(x)})`, no cast) have
+ * no fixed spelling; the test preload's after-file scan
+ * (`scripts/jsonb-double-encoding-scan.ts`) catches those from the data.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -26,9 +32,13 @@ import { join } from "node:path";
 /** Repo root, four levels up from this file (packages/admin-core/src/__tests__). */
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 const PACKAGES_DIR = join(REPO_ROOT, "packages");
+const APPS_DIR = join(REPO_ROOT, "apps");
 
-/** The dangerous literal: a template-expression close-brace immediately cast to jsonb. */
-const DANGEROUS = "}::jsonb";
+/**
+ * The dangerous forms: a template-expression close-brace immediately cast
+ * to jsonb, or a positional placeholder cast to jsonb (`tx.unsafe`).
+ */
+const DANGEROUS = /\}::jsonb|\$\d+::jsonb/;
 
 /**
  * Files that legitimately contain the dangerous literal as documentation, not
@@ -51,7 +61,7 @@ function collectTsFiles(dir: string, out: string[]): void {
     }
     // Only scan the source tree; the guarded write sites are production code.
     // Test files may quote the anti-pattern in fixtures/comments.
-    if (!full.endsWith(".ts")) continue;
+    if (!full.endsWith(".ts") && !full.endsWith(".svelte")) continue;
     if (full.endsWith(".test.ts")) continue;
     if (full.includes(`${"/"}__tests__${"/"}`)) continue;
     out.push(full);
@@ -59,16 +69,28 @@ function collectTsFiles(dir: string, out: string[]): void {
 }
 
 describe("jsonb write encoding (issue #68 regression guard)", () => {
+  it("flags the double-encoding forms and passes the safe ones", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: source text under test
+    expect(DANGEROUS.test("SET v = ${JSON.stringify(x)}::jsonb")).toBe(true);
+    expect(DANGEROUS.test("tx.unsafe('UPDATE t SET v = $2::jsonb', [id, json])")).toBe(true);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: source text under test
+    expect(DANGEROUS.test("SET v = (${json}::text)::jsonb")).toBe(false);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: source text under test
+    expect(DANGEROUS.test("SET v = ${jsonbParam(x)}")).toBe(false);
+  });
+
   // biome-ignore lint/suspicious/noTemplateCurlyInString: literal double-encoding form we are asserting against
   it("no source file writes jsonb via the double-encoding `${expr}::jsonb` form", () => {
-    // Only `src/` dirs of each package hold shippable source.
+    // Only `src/` dirs of each package and app hold shippable source.
     const roots: string[] = [];
-    for (const pkg of readdirSync(PACKAGES_DIR)) {
-      const src = join(PACKAGES_DIR, pkg, "src");
-      try {
-        if (statSync(src).isDirectory()) roots.push(src);
-      } catch {
-        // package without a src/ dir — skip.
+    for (const parent of [PACKAGES_DIR, APPS_DIR]) {
+      for (const pkg of readdirSync(parent)) {
+        const src = join(parent, pkg, "src");
+        try {
+          if (statSync(src).isDirectory()) roots.push(src);
+        } catch {
+          // package without a src/ dir — skip.
+        }
       }
     }
 
@@ -79,18 +101,19 @@ describe("jsonb write encoding (issue #68 regression guard)", () => {
     for (const file of files) {
       if (ALLOWLIST.has(file)) continue;
       const text = readFileSync(file, "utf8");
-      if (!text.includes(DANGEROUS)) continue;
+      if (!DANGEROUS.test(text)) continue;
       const lines = text.split("\n");
       lines.forEach((line, i) => {
-        if (line.includes(DANGEROUS)) {
+        if (DANGEROUS.test(line)) {
           offenders.push(`${file.slice(REPO_ROOT.length + 1)}:${i + 1}: ${line.trim()}`);
         }
       });
     }
 
-    // Sanity: the scan actually walked a meaningful number of files, otherwise a
-    // broken path would make this guard silently pass.
+    // Sanity: the scan actually walked a meaningful number of files (apps
+    // included), otherwise a broken path would make this guard silently pass.
     expect(files.length).toBeGreaterThan(50);
+    expect(files.some((f) => f.startsWith(APPS_DIR))).toBe(true);
 
     expect(
       offenders,

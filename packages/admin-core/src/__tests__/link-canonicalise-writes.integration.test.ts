@@ -370,7 +370,7 @@ describe("content values", () => {
     // Pre-#724 content: a literal to a path that no longer answers.
     await asSystem(
       (tx) => tx`UPDATE content_instances
-                 SET "values" = ${JSON.stringify({ cta_label: "Legacy", cta_href: "/gone-before-724" })}::jsonb
+                 SET "values" = (${JSON.stringify({ cta_label: "Legacy", cta_href: "/gone-before-724" })}::text)::jsonb
                  WHERE id = ${contentInstanceId}::uuid`,
     );
     await run("content_instances.set_values", {

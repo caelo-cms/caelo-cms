@@ -92,10 +92,6 @@ function iso(v: string | Date | null): string | null {
   return v instanceof Date ? v.toISOString() : String(v);
 }
 
-function parseJson(v: unknown): unknown {
-  return typeof v === "string" ? JSON.parse(v) : v;
-}
-
 function parseState<K extends ListEntityKind>(kind: K, raw: unknown): StateOf<K> {
   const parsed =
     kind === "listType"
@@ -131,7 +127,7 @@ function liveState<K extends ListEntityKind>(kind: K, r: LiveRow): StateOf<K> {
       name: r.name ?? "",
       purpose: r.purpose ?? "",
       listTypeId: r.list_type_id ?? "",
-      items: (parseJson(r.items) ?? []) as ListItem[],
+      items: (r.items ?? []) as ListItem[],
       version,
       deletedAt,
     };
@@ -140,7 +136,7 @@ function liveState<K extends ListEntityKind>(kind: K, r: LiveRow): StateOf<K> {
   const state: ListTypeState | PageTypeState = {
     schemaVersion: 1,
     slug: r.slug,
-    definition: parseJson(r.definition) as ListTypeDef & PageTypeDef,
+    definition: r.definition as ListTypeDef & PageTypeDef,
     version,
     deletedAt,
   };
@@ -216,7 +212,7 @@ export async function loadListEntities<K extends ListEntityKind>(
        ORDER BY es.${sql.raw(spec.idColumn)}, ss.created_at DESC
     `)) as unknown as { id: string; state: unknown; at: string }[];
     for (const s of snap) {
-      overlay.set(s.id, { state: parseState(kind, parseJson(s.state)), at: s.at });
+      overlay.set(s.id, { state: parseState(kind, s.state), at: s.at });
     }
   }
 

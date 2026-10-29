@@ -481,7 +481,9 @@ describe("list_content_instances carries the reuse decision support", () => {
       registry,
       adapter,
     } as unknown as Parameters<typeof listContentInstancesTool.handler>[2]);
-    expect(tool.content).toContain("{id,module,kind,slug,displayName,purpose,placements,parents}");
+    expect(tool.content).toContain(
+      "{id,module,kind,slug,displayName,purpose,placements,parents,pages}",
+    );
     expect(tool.content).toContain("Brand hero shown on every product page");
     expect(tool.content.indexOf(shared.contentInstanceId)).toBeLessThan(
       tool.content.indexOf(lonely.contentInstanceId),

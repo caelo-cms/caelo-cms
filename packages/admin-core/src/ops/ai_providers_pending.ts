@@ -25,7 +25,6 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
-  parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
 import { clearAiProviderKeyOp, setAiProvidersOp } from "./security/ai_providers.js";
@@ -195,7 +194,7 @@ const executeAiProvidersProposalOpDefinition = defineOperation({
     }
     let apiKeyChanged = false;
     if (row.kind === "set") {
-      const payload = parsePayload<z.infer<typeof proposeSetInput>>(row.payload);
+      const payload = row.payload as z.infer<typeof proposeSetInput>;
       const r = await setAiProvidersOp.handler(
         ctx,
         // Only attach apiKey when the Owner actually supplied one;
@@ -216,7 +215,7 @@ const executeAiProvidersProposalOpDefinition = defineOperation({
     } else if (row.kind === "clear_key") {
       const r = await clearAiProviderKeyOp.handler(
         ctx,
-        parsePayload<Parameters<typeof clearAiProviderKeyOp.handler>[1]>(row.payload),
+        row.payload as Parameters<typeof clearAiProviderKeyOp.handler>[1],
         tx,
       );
       if (!r.ok) return passthroughError(r.error, "clear_key");

@@ -165,7 +165,7 @@ describe("skill pin defaults", () => {
         await tx`
           INSERT INTO skills (slug, display_name, description, body, allowlisted_tools, auto_engagement_hints, status)
           VALUES (${slug}, ${slug}, 'test', 'body', '[]'::jsonb,
-                  ${JSON.stringify({ keywords: [], chipTrigger: false, alwaysOn: false })}::jsonb, 'active')
+                  (${JSON.stringify({ keywords: [], chipTrigger: false, alwaysOn: false })}::text)::jsonb, 'active')
           ON CONFLICT (slug) DO UPDATE SET status = 'active'`;
       }
     });
@@ -217,7 +217,7 @@ describe("operator dashboards", () => {
       const p = (await tx`
         INSERT INTO plugins (slug, version, tier, status, manifest_json, source_code, submitted_by, ai_cost_cap_microcents)
         VALUES (${`${P}-plug`}, '1.0.0', 2, 'awaiting_activation',
-                ${JSON.stringify({ tools: [{ name: "plug_tool" }] })}::jsonb,
+                (${JSON.stringify({ tools: [{ name: "plug_tool" }] })}::text)::jsonb,
                 'const SOURCE_MARKER = 1;', ${OWNER.actorId}::uuid, 200000000)
         RETURNING id::text AS id`) as { id: string }[];
       const id = p[0]?.id as string;

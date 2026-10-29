@@ -53,10 +53,9 @@ const fieldShape = z.object({
 });
 
 function parseFields(raw: unknown): z.infer<typeof fieldShape>[] {
-  const parsed = typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(raw)) return [];
   const out: z.infer<typeof fieldShape>[] = [];
-  for (const f of parsed) {
+  for (const f of raw) {
     if (!f || typeof f !== "object") continue;
     const o = f as {
       name?: unknown;
@@ -257,9 +256,7 @@ export const listSharedContentOp = defineOperation({
     );
     const sharedInstances = sharedInstanceRows.map((r) => {
       const fields = parseFields(r.fields);
-      const raw =
-        branchedInstances.get(r.id)?.values ??
-        (typeof r.values === "string" ? (JSON.parse(r.values) as unknown) : r.values);
+      const raw = branchedInstances.get(r.id)?.values ?? r.values;
       const pageIds = Array.isArray(r.page_ids)
         ? r.page_ids
         : String(r.page_ids)

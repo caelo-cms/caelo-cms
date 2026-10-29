@@ -10,11 +10,9 @@ import { describe, expect, it } from "bun:test";
 import { ExplicitUrlsMalformedError, parseExplicitUrls } from "./explicit-urls.js";
 
 describe("parseExplicitUrls (#229)", () => {
-  it("returns null ONLY for absent values (SQL NULL / undefined / jsonb null)", () => {
+  it("returns null ONLY for absent values (SQL NULL / undefined)", () => {
     expect(parseExplicitUrls(null)).toBeNull();
     expect(parseExplicitUrls(undefined)).toBeNull();
-    // jsonb null serialised to a JSON string by the client.
-    expect(parseExplicitUrls("null")).toBeNull();
   });
 
   it("decodes an already-parsed jsonb array", () => {
@@ -24,12 +22,8 @@ describe("parseExplicitUrls (#229)", () => {
     ]);
   });
 
-  it("decodes a JSON-string-encoded array", () => {
-    expect(parseExplicitUrls('["https://a.example/x"]')).toEqual(["https://a.example/x"]);
-  });
-
-  it("throws on an unparseable JSON string, naming the bad value", () => {
-    expect(() => parseExplicitUrls("{not json")).toThrow(ExplicitUrlsMalformedError);
+  it("throws on a double-encoded jsonb string scalar (#68), naming the bad value", () => {
+    expect(() => parseExplicitUrls('["https://a.example/x"]')).toThrow(ExplicitUrlsMalformedError);
     expect(() => parseExplicitUrls("{not json")).toThrow(/\{not json/);
     expect(() => parseExplicitUrls("{not json")).toThrow(/refusing to fall back/);
   });
@@ -44,7 +38,7 @@ describe("parseExplicitUrls (#229)", () => {
 
   it("throws on an empty array — an approved LIST run with zero URLs is a bug", () => {
     expect(() => parseExplicitUrls([])).toThrow(ExplicitUrlsMalformedError);
-    expect(() => parseExplicitUrls("[]")).toThrow(/array is empty/);
+    expect(() => parseExplicitUrls([])).toThrow(/array is empty/);
   });
 
   it("throws on non-string entries rather than silently dropping them", () => {

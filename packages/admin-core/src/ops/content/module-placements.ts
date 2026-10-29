@@ -51,10 +51,6 @@ export interface ModulePlacements {
   readonly nestedIn: readonly string[];
 }
 
-function parseState<T>(raw: unknown): T {
-  return (typeof raw === "string" ? JSON.parse(raw) : raw) as T;
-}
-
 function idList(ids: readonly string[]) {
   return sql.join(
     ids.map((id) => sql`${id}::uuid`),
@@ -62,24 +58,29 @@ function idList(ids: readonly string[]) {
   );
 }
 
-/**
- * Resolve the placements of `moduleIds` as `ctx` sees the site. Modules
- * with no placement map to empty lists (every requested id is present).
- */
-export async function findModulePlacements(
-  tx: TransactionRunner,
-  ctx: Pick<ExecutionContext, "chatBranchId">,
-  moduleIds: readonly string[],
-): Promise<Map<string, ModulePlacements>> {
-  const pagesByModule = new Map<string, Set<string>>();
-  const layoutsByModule = new Map<string, Set<string>>();
-  for (const id of moduleIds) {
-    pagesByModule.set(id, new Set());
-    layoutsByModule.set(id, new Set());
-  }
-  if (moduleIds.length === 0) return new Map();
+/** One page that places a module, as the caller's branch sees it. */
+export interface ModulePagePlacement {
+  readonly pageId: string;
+  readonly path: string;
+  readonly title: string;
+}
 
-  const branchId = ctx.chatBranchId ?? null;
+/**
+ * The pages that place each of `moduleIds` as `branchId` sees them: live
+ * `page_modules`, with every page the branch re-laid-out (pending
+ * `page_layout_snapshots`) read from that snapshot instead and pages the
+ * branch deleted dropped — the view the preview renders. Shared by the
+ * delete guard and content-instance reach (#627) so both follow the
+ * branch the same way. Every requested id is present (empty when unplaced).
+ */
+export async function findModulePagePlacements(
+  tx: TransactionRunner,
+  branchId: string | null,
+  moduleIds: readonly string[],
+): Promise<Map<string, ModulePagePlacement[]>> {
+  const pagesByModule = new Map<string, Map<string, ModulePagePlacement>>();
+  for (const id of moduleIds) pagesByModule.set(id, new Map());
+  if (moduleIds.length === 0) return new Map();
 
   // Branched page layouts + page states: latest snapshot per page on this
   // branch. Empty for callers without a branch.
@@ -94,7 +95,7 @@ export async function findModulePlacements(
        ORDER BY pls.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const r of layoutRows) {
-      branchedLayouts.set(r.page_id, parseState<PageLayoutState>(r.state));
+      branchedLayouts.set(r.page_id, r.state as PageLayoutState);
     }
     const pageRows = (await tx.execute(sql`
       SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
@@ -104,7 +105,7 @@ export async function findModulePlacements(
        ORDER BY ps.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const r of pageRows) {
-      if (parseState<PageState>(r.state).deletedAt) branchedDeletedPages.add(r.page_id);
+      if ((r.state as PageState).deletedAt) branchedDeletedPages.add(r.page_id);
     }
   }
 
@@ -114,16 +115,18 @@ export async function findModulePlacements(
     : sql`p.chat_branch_id IS NULL`;
   const liveRows = (await tx.execute(sql`
     SELECT DISTINCT pm.module_id::text AS module_id, p.id::text AS page_id,
-           p.current_path AS path
+           p.current_path AS path, p.title
       FROM page_modules pm
       JOIN pages p ON p.id = pm.page_id
      WHERE pm.module_id IN (${idList(moduleIds)})
        AND p.deleted_at IS NULL AND ${visible}
-  `)) as unknown as { module_id: string; page_id: string; path: string }[];
+  `)) as unknown as { module_id: string; page_id: string; path: string; title: string }[];
   for (const r of liveRows) {
     // A branched layout for this page supersedes its live rows.
     if (branchedLayouts.has(r.page_id) || branchedDeletedPages.has(r.page_id)) continue;
-    pagesByModule.get(r.module_id)?.add(r.path);
+    pagesByModule
+      .get(r.module_id)
+      ?.set(r.page_id, { pageId: r.page_id, path: r.path, title: r.title });
   }
 
   // Branched layouts that (still) place a requested module.
@@ -139,16 +142,44 @@ export async function findModulePlacements(
   }
   if (branchedHits.length > 0) {
     const pageIds = [...new Set(branchedHits.map((h) => h.pageId))];
-    const pathRows = (await tx.execute(sql`
-      SELECT id::text AS id, current_path AS path FROM pages
+    const pageRows = (await tx.execute(sql`
+      SELECT id::text AS id, current_path AS path, title FROM pages
        WHERE id IN (${idList(pageIds)}) AND deleted_at IS NULL
-    `)) as unknown as { id: string; path: string }[];
-    const pathById = new Map(pathRows.map((r) => [r.id, r.path]));
+    `)) as unknown as { id: string; path: string; title: string }[];
+    const pageById = new Map(pageRows.map((r) => [r.id, r]));
     for (const h of branchedHits) {
-      const path = pathById.get(h.pageId);
-      if (path !== undefined) pagesByModule.get(h.moduleId)?.add(path);
+      const page = pageById.get(h.pageId);
+      if (page === undefined) continue;
+      pagesByModule
+        .get(h.moduleId)
+        ?.set(page.id, { pageId: page.id, path: page.path, title: page.title });
     }
   }
+
+  const out = new Map<string, ModulePagePlacement[]>();
+  for (const [moduleId, pages] of pagesByModule) {
+    out.set(
+      moduleId,
+      [...pages.values()].sort((a, b) => a.path.localeCompare(b.path)),
+    );
+  }
+  return out;
+}
+
+/**
+ * Resolve the placements of `moduleIds` as `ctx` sees the site. Modules
+ * with no placement map to empty lists (every requested id is present).
+ */
+export async function findModulePlacements(
+  tx: TransactionRunner,
+  ctx: Pick<ExecutionContext, "chatBranchId">,
+  moduleIds: readonly string[],
+): Promise<Map<string, ModulePlacements>> {
+  if (moduleIds.length === 0) return new Map();
+  const branchId = ctx.chatBranchId ?? null;
+  const pagesByModule = await findModulePagePlacements(tx, branchId, moduleIds);
+  const layoutsByModule = new Map<string, Set<string>>();
+  for (const id of moduleIds) layoutsByModule.set(id, new Set());
 
   const layoutRows = (await tx.execute(sql`
     SELECT DISTINCT lm.module_id::text AS module_id, l.slug
@@ -188,7 +219,7 @@ export async function findModulePlacements(
   const out = new Map<string, ModulePlacements>();
   for (const id of moduleIds) {
     out.set(id, {
-      pages: [...(pagesByModule.get(id) ?? [])].sort(),
+      pages: [...new Set((pagesByModule.get(id) ?? []).map((p) => p.path))].sort(),
       layouts: [...(layoutsByModule.get(id) ?? [])].sort(),
       // A parent that is itself deleted no longer renders the child.
       nestedIn: [...(nestedByModule.get(id) ?? [])]

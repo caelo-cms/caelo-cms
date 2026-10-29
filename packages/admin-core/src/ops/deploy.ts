@@ -115,7 +115,7 @@ interface RunDbRow {
   file_count: number | string | null;
   error_message: string | null;
   build_id: string | null;
-  progress: { pagesDone: number; pagesTotal: number } | string | null;
+  progress: { pagesDone: number; pagesTotal: number } | null;
   build_kind: "site" | "plugin_data";
 }
 
@@ -123,10 +123,6 @@ function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
   const iso = (v: string | Date) => (v instanceof Date ? v.toISOString() : String(v));
   const num = (v: number | string | null) =>
     v === null ? null : typeof v === "string" ? Number.parseInt(v, 10) : v;
-  let progress: { pagesDone: number; pagesTotal: number } | null = null;
-  if (r.progress !== null) {
-    progress = typeof r.progress === "string" ? JSON.parse(r.progress) : r.progress;
-  }
   return {
     id: r.id,
     targetId: r.target_id,
@@ -140,7 +136,7 @@ function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
     fileCount: num(r.file_count),
     errorMessage: r.error_message,
     buildId: r.build_id,
-    progress,
+    progress: r.progress,
     buildKind: r.build_kind,
   };
 }

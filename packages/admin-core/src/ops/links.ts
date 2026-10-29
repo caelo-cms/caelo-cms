@@ -110,7 +110,7 @@ function iso(v: string | Date | null): string | null {
 }
 
 function toSummary(r: RunRow): LinkMigrationRunSummary {
-  const counts = typeof r.counts === "string" ? JSON.parse(r.counts) : r.counts;
+  const counts = r.counts;
   return {
     runId: r.id,
     mode: r.mode,
@@ -255,9 +255,7 @@ export const getLinkMigrationReportOp = defineOperation({
         recentRuns: recent.map(toSummary),
       });
     }
-    const all = (
-      typeof row.unresolved === "string" ? JSON.parse(row.unresolved) : row.unresolved
-    ) as UnresolvedLink[];
+    const all = row.unresolved as UnresolvedLink[];
     const q = input.search?.toLowerCase();
     const matching = q
       ? all.filter((u) => `${u.value} ${u.label} ${u.where}`.toLowerCase().includes(q))
@@ -314,9 +312,7 @@ export const revertLinkMigrationOp = defineOperation({
     if (run.mode === "dry_run")
       return fail("a dry run changed nothing; there is nothing to revert.");
     if (run.reverted_at !== null) return fail("this run was already reverted.");
-    const changes = (
-      typeof run.changes === "string" ? JSON.parse(run.changes) : run.changes
-    ) as LinkMigrationChange[];
+    const changes = run.changes as LinkMigrationChange[];
     const outcome = await revertLinkMigration(tx, changes, {
       actorId: ctx.actorId,
       description: `Reverted link migration ${input.runId.slice(0, 8)} (#724)`,

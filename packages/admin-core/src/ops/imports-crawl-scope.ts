@@ -75,22 +75,13 @@ export function refineCrawlScopeAgainstSourceUrl(
 
 /**
  * Normalise the stored `import_runs.crawl_scope` jsonb for read
- * surfaces (may arrive decoded or as a JSON string depending on the SQL
- * client path — the `estimate` precedent). Defensive shape-filter, not
- * validation: writes went through `importCrawlScopeSchema`, and a read
- * surface must never brick on schema evolution.
+ * surfaces. Defensive shape-filter, not validation: writes went through
+ * `importCrawlScopeSchema`, and a read surface must never brick on
+ * schema evolution.
  */
 export function normalizeStoredCrawlScope(raw: unknown): CrawlScope | null {
-  let v: unknown = raw;
-  if (typeof raw === "string") {
-    try {
-      v = JSON.parse(raw);
-    } catch {
-      return null;
-    }
-  }
-  if (typeof v !== "object" || v === null) return null;
-  const o = v as { pathPrefix?: unknown; locale?: unknown };
+  if (typeof raw !== "object" || raw === null) return null;
+  const o = raw as { pathPrefix?: unknown; locale?: unknown };
   const scope: { pathPrefix?: string; locale?: string } = {};
   if (typeof o.pathPrefix === "string") scope.pathPrefix = o.pathPrefix;
   if (typeof o.locale === "string") scope.locale = o.locale;

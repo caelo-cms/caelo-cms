@@ -13,7 +13,6 @@ import {
   loadPageState,
   parseAndUpgradePageLayoutState,
   parseAndUpgradePageState,
-  parseSnapshotState,
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
@@ -59,7 +58,7 @@ export const revertPageOp = defineOperation({
     if (pageRows[0]) {
       let target: ReturnType<typeof parseAndUpgradePageState>;
       try {
-        target = parseAndUpgradePageState(parseSnapshotState(pageRows[0].state));
+        target = parseAndUpgradePageState(pageRows[0].state);
       } catch (e) {
         if (e instanceof SnapshotSchemaError) {
           return err({
@@ -102,7 +101,7 @@ export const revertPageOp = defineOperation({
     if (layoutRows[0]) {
       let target: ReturnType<typeof parseAndUpgradePageLayoutState>;
       try {
-        target = parseAndUpgradePageLayoutState(parseSnapshotState(layoutRows[0].state));
+        target = parseAndUpgradePageLayoutState(layoutRows[0].state);
       } catch (e) {
         if (e instanceof SnapshotSchemaError) {
           return err({
@@ -189,9 +188,7 @@ export const revertPageOp = defineOperation({
     // Emit fresh snapshot capturing whichever side(s) were restored.
     const loadedPageState = await loadPageState(tx, input.pageId);
     // #1156 — the restored SEO is part of what this revert wrote.
-    const restoredSeo = pageRows[0]
-      ? parseAndUpgradePageState(parseSnapshotState(pageRows[0].state)).seo
-      : undefined;
+    const restoredSeo = pageRows[0] ? parseAndUpgradePageState(pageRows[0].state).seo : undefined;
     const newPageState =
       loadedPageState && restoredSeo ? { ...loadedPageState, seo: restoredSeo } : loadedPageState;
     const newLayoutState = layoutRows[0] ? await loadPageLayoutState(tx, input.pageId) : null;

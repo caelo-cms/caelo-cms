@@ -341,14 +341,14 @@ beforeAll(async () => {
   // The pre-#724 state: literal paths everywhere.
   await asSystem(async (tx) => {
     await tx`UPDATE modules SET html = ${`<nav><img src="/_caelo/media/${mediaSlug}" alt=""><a href="${ABOUT}">About</a><a href="${GONE}">Old</a>{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}</nav>`},
-             fields = ${JSON.stringify([{ name: "links", kind: "list", listType: "links", label: "Links", default: [navEntry(`${PRICING}#plans`)] }])}::jsonb
+             fields = (${JSON.stringify([{ name: "links", kind: "list", listType: "links", label: "Links", default: [navEntry(`${PRICING}#plans`)] }])}::text)::jsonb
              WHERE id = ${ids.nav}::uuid`;
-    await tx`UPDATE content_instances SET "values" = ${JSON.stringify({
+    await tx`UPDATE content_instances SET "values" = (${JSON.stringify({
       cta_label: "Buy",
       cta_href: PRICING,
       price_note: "/month",
       body_html: `<p>See <a href="${ABOUT}">about</a> and <a href="https://example.com/ext">ext</a></p>`,
-    })}::jsonb WHERE id = ${ids.instance}::uuid`;
+    })}::text)::jsonb WHERE id = ${ids.instance}::uuid`;
     await tx`UPDATE layouts SET html = ${`<body><a class="frame" href="${ABOUT}">About</a><caelo-slot name="content">_</caelo-slot></body>`}
              WHERE id = ${ids.layout}::uuid`;
     // Plugin tables are RLS-scoped to their plugin.

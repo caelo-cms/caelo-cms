@@ -191,14 +191,14 @@ function seedProblemAudit(
           (deploy_run_id, chat_session_id, requested_by, status, classification, target_page_ids,
            problem_count, started_at, finished_at, fix_round, staged_by)
         VALUES (\${run.id}::uuid, \${process.env.CHAT_ID}::uuid, \${process.env.OWNER_ID}::uuid, \${process.env.STATUS},
-          \${JSON.stringify({ auditNeeded: true, reasons: [], skipped: [] })}::jsonb,
+          (\${JSON.stringify({ auditNeeded: true, reasons: [], skipped: [] })}::text)::jsonb,
           ARRAY[\${page.id}::uuid], \${total}, now(),
           \${process.env.STATUS === "running" ? null : new Date()}, 0, \${process.env.STAGED_BY})
         RETURNING id::text AS id\`)[0];
       for (const [i, p] of pages.entries()) {
         await tx\`INSERT INTO quality_audit_pages (audit_run_id, page_id, url, status, problems)
           VALUES (\${audit.id}::uuid, \${p.id}::uuid, 'http://staging.invalid/', 'problems',
-            \${JSON.stringify(problemsOf(i))}::jsonb)\`;
+            (\${JSON.stringify(problemsOf(i))}::text)::jsonb)\`;
       }
       return run.id;
     });
