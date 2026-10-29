@@ -37,6 +37,7 @@
         draftPageTitles?: string[];
         alsoIncludes?: string[];
         unpublishedLinkWarning?: string | null;
+        truncatedListWarning?: string | null;
         pluginProblemWarning?: string | null;
       };
       // Run #9 R10 — say what is NOT in the staged build. Staging ships
@@ -62,6 +63,8 @@
       }
       // #724 — links to pages the build does not contain lead nowhere.
       if (typeof s.unpublishedLinkWarning === "string") parts.push(s.unpublishedLinkWarning);
+      // #1257 — an overview cut at the query cap lists only part of its pages.
+      if (typeof s.truncatedListWarning === "string") parts.push(s.truncatedListWarning);
       const description = parts.length > 0 ? parts.join(" — ") : undefined;
       // #1008 — a Stage built without an active plugin is not a plain
       // success: staging lacks the plugin's output and Publish live will

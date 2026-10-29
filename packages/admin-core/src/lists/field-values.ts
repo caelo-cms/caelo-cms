@@ -21,7 +21,13 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext, ListItem, ListTypeDef } from "@caelo-cms/shared";
-import { pageQueryPartialSchema, TERM_REF_RE, validateListItems } from "@caelo-cms/shared";
+import {
+  listPaginationSchema,
+  pageQueryPartialSchema,
+  splitPaginationValue,
+  TERM_REF_RE,
+  validateListItems,
+} from "@caelo-cms/shared";
 import { canonicaliseLinksForWrite } from "../links/canonicalise.js";
 import { canonicaliseEntryLinks, checkEntryRefs, describeIssues } from "../ops/lists/_shared.js";
 import { bindingOf, type ListFieldDef, listFieldsOf, parseListRef } from "./local.js";
@@ -111,6 +117,35 @@ async function normaliseOne(
       };
     }
     return { ok: true, value };
+  }
+  // #1257 — a paginated field's placement may set its own `paginate`
+  // (page size, follow-up indexing) next to the source's knobs.
+  if (field.paginate !== undefined) {
+    const { paginate, rest } = splitPaginationValue(value);
+    if (paginate !== undefined) {
+      const p = listPaginationSchema.safeParse(paginate);
+      if (!p.success) {
+        return {
+          ok: false,
+          message: `${where}.paginate: {per_page?: 1..50, follow_ups?: "index" | "noindex"} — ${p.error.issues[0]?.message ?? "invalid"}.`,
+        };
+      }
+    }
+    // The knobs are checked as for the unpaginated source.
+    const { paginate: _settings, ...plain } = field;
+    const inner = await normaliseOne(tx, ctx, branchId, plain, rest ?? {}, where);
+    if (!inner.ok) return inner;
+    const knobs = inner.value as Record<string, unknown>;
+    return {
+      ok: true,
+      value: { ...knobs, ...(paginate !== undefined ? { paginate } : {}) },
+    };
+  }
+  if (value !== null && typeof value === "object" && Object.hasOwn(value as object, "paginate")) {
+    return {
+      ok: false,
+      message: `${where}.paginate: the module field "${field.name}" is not paginated — set paginate on the field itself (update_modules_many) to list every match across follow-up pages.`,
+    };
   }
   // source: a system source takes only what the resolver reads from the
   // placement — `terms` for term_pages (#1121 review); no other system

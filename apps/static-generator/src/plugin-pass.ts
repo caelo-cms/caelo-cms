@@ -187,7 +187,14 @@ export async function runPluginRenderPass(args: {
     const ids: string[] = [];
     for (const page of pages) {
       const target = bakeTargets.get(page.pageId);
-      if (target && hasPlaceholder(page.html, plugin.slug, target.pageId)) ids.push(target.pageId);
+      // A paginated overview's follow-up pages share its id (#1257): ask once.
+      if (
+        target &&
+        !ids.includes(target.pageId) &&
+        hasPlaceholder(page.html, plugin.slug, target.pageId)
+      ) {
+        ids.push(target.pageId);
+      }
     }
     placedPages.set(plugin.slug, ids);
   }
@@ -210,12 +217,21 @@ export async function runPluginRenderPass(args: {
 
   let bakedCount = 0;
   let skippedCount = 0;
+  // (plugin, page) → its region, so the follow-up pages of a paginated
+  // overview (#1257) splice the same bake instead of rendering again.
+  const regions = new Map<string, string>();
 
   for (const page of pages) {
     const target = bakeTargets.get(page.pageId);
     if (!target) continue;
     for (const plugin of activePlugins) {
       if (!(placedPages.get(plugin.slug) ?? []).includes(target.pageId)) continue;
+      const regionKey = bakeKey(plugin.id, target.pageId);
+      const done = regions.get(regionKey);
+      if (done !== undefined) {
+        page.html = page.html.replace(placeholderRegex(plugin.slug, target.pageId), () => done);
+        continue;
+      }
       // P13 audit fix #4 — the plugin's own data signature IS the
       // cache key (plus plugin version): plugin render output depends
       // on plugin data + pageId, not on the page's own content.
@@ -271,6 +287,7 @@ export async function runPluginRenderPass(args: {
         bakedAt: bakedAtIso,
         html,
       });
+      regions.set(regionKey, region);
       page.html = page.html.replace(re, () => region);
     }
   }

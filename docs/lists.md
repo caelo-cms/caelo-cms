@@ -190,7 +190,7 @@ PageQuery = {
   limit: number;                  // 1..50
 }
 QueryKnob = "page_type" | "terms" | "terms_mode" | "parent" | "exclude_current" | "order" | "limit"
-SystemSourceName = "breadcrumbs" | "children" | "siblings" | "page_terms" | "term_pages"
+SystemSourceName = "breadcrumbs" | "children" | "siblings" | "page_terms" | "term_pages" | "pagination"
 ```
 
 A query matches pages that are published in the build being rendered
@@ -217,7 +217,106 @@ a source node, the vocabularies of the node's `term` fields; neither =
 all of the page's terms), `term_pages` (published pages of the rendering
 page's variant carrying any of the terms, title order, at most 50; the
 terms come from the placement value's `terms` on a module field, from
-the node's `term` field values on a source node).
+the node's `term` field values on a source node). `pagination` is the
+pager of the page's paginated list (below).
+
+A list cut at its limit is never cut silently (#1257): the resolver
+records it (`ListPageContext.truncatedLists()`), `preview_list_source`
+answers `total` next to `count` ("shows 50 of 63"), and a build reports
+every list cut at the query cap of 50 (`GenerateResult.truncatedLists`,
+`deploy/truncated-lists.ts`) as a Stage warning in the stage tool, the
+Stage toast and Open changes. A smaller `limit` someone chose ("latest
+3 news") is a teaser, not a defect, so a Stage does not report it; the
+tool still shows its total.
+
+### Pagination (#1257)
+
+An overview page — a guides hub, a category landing page — lists every
+page its query matches, however many: its list field is **paginated**.
+Code: `lists/pagination.ts` (settings, URL shape), `lists/resolve.ts`
+(slice, pager), `lists/paginated-render.ts` (render passes), the
+generator's `pagination-pass.ts` and `seo-pass.ts`, the preview op.
+
+```ts
+// module list field
+{ name: "guides", kind: "list", listType: "links", bind: "source",
+  source: { kind: "query", editable: [], defaults: { page_type: "guide", order: "title_asc" } },
+  paginate: { per_page?: 1..50 /* default 50 */, follow_ups?: "index" /* default */ | "noindex" } }
+// placement value (content instance): the source's knobs plus, optionally,
+{ paginate: { per_page?, follow_ups? } }   // overrides the field's settings for this overview
+// the pager, a second list field (any module on the page)
+{ name: "pager", kind: "list", listType: "links", bind: "source",
+  source: { kind: "system", name: "pagination" } }
+```
+
+Rules (module field schema `content.ts`, placement values
+`admin-core/src/lists/field-values.ts`): `paginate` only on a
+`bind: "source"` field with a query or `term_pages`; a paginated query
+has no `limit` in `defaults` or `editable` (the page size replaces it);
+at most one paginated field per module, and at render time one per page
+— a second, different paginated list renders
+`list-pagination-conflict:<field>`. A placement value carrying `paginate`
+on a field that is not paginated is refused with the fix.
+
+Decisions (maintainer, #1257), with the reason:
+
+| Decision | Why |
+|---|---|
+| Page 1 at the page's own URL; page `n` ≥ 2 at `<path>/page/<n>/` (`/page/<n>` in the no-extension style; `/page/2/` under the home page). `/page/1/` is never emitted. | A static host serves files: `?page=2` would serve page 1 for every page. One URL per page of content, no duplicate of page 1. |
+| Follow-up pages are self-canonical and indexable by default; `follow_ups: "noindex"` (field or placement) gives them `<meta name="robots" content="noindex">` and keeps them out of the sitemap. | Google indexes paginated series page by page and advises against canonicalising page 2… to page 1 (their entries would be invisible); some operators still want only page 1 in search. A page that is `noindex` itself keeps its follow-ups `noindex` too. |
+| Page size configurable, default 50 = `LIST_QUERY_MAX_LIMIT`. | Static HTML costs nothing per entry; fewer follow-up pages are fewer thin pages. |
+| One paginated list per page. | One page number per URL. |
+| No `rel=prev/next` in the head; a visible pager is required instead. | Google ignores `rel=prev/next`; crawlers and visitors follow the pager's links. |
+| Title and meta description of follow-up pages are page 1's. | Core knows no language to word "Page 2" in (§9); the self-canonical URL already distinguishes them. |
+| Follow-up pages carry no hreflang alternates (plugin head entries with `hreflang` are dropped, sitemap entries have no `xhtml:link`). | The alternates name the overview's twins in other languages — equivalents of page 1, not of page `n`. |
+
+The `pagination` source returns one entry per page — `number`, `link`
+(the URL in the target's style), `is_current`, `is_prev`, `is_next`,
+plus `index` / `first` / `last` — and nothing while everything fits on
+one page, so the pager disappears by itself:
+
+```html
+<nav aria-label="{{site_text.pagination_label}}">
+  {{#pager}}{{#is_prev}}<a rel="prev" href="{{link}}">←</a>{{/is_prev}}{{/pager}}
+  {{#pager}}{{#is_current}}<span aria-current="page">{{number}}</span>{{/is_current}}{{^is_current}}<a href="{{link}}">{{number}}</a>{{/is_current}}{{/pager}}
+  {{#pager}}{{#is_next}}<a rel="next" href="{{link}}">→</a>{{/is_next}}{{/pager}}
+</nav>
+```
+
+A page that splits its list over several pages but renders no pager is
+refused: the build throws (`assertPaginationRenderable`), the preview
+flags `list-pager-missing:<field>`. The 404 page cannot paginate (it has
+no URL of its own).
+
+Rendering. The page count is known only once the list resolved, so a
+pager rendered before the list (above it, or in an earlier module) gets
+it on a second pass: `renderFirstPage` renders page 1 again when the
+context reports `pagerEarly`; follow-up pages render with
+`ListPageOptions.pagination = { page, pageCount }` directly. The generator
+renders every page (`renderEveryPage`) and writes them next to page 1;
+the routing manifest lists them per page (`followUpOutputPaths`), so the
+plugin-data build re-bakes their plugin regions too. A page whose path
+is `<overview>/page` or below collides with the follow-up URLs: the build
+fails and names it. In the `no-extension` URL style a page is a file
+(`guides`), so nothing can be served below it — neither nested pages nor
+follow-up pages (only the home page, `index.html`, can paginate there):
+the build refuses such a site before writing a file
+(`outputPathCollisionError`) and says to switch the target to the
+`directory` style. The editor preview serves `<path>/page/<n>` (and
+`pages.render_preview` takes `pageNumber`); a page number beyond the
+sequence is "page not found".
+
+SEO pass: a follow-up page's canonical (and `og:url`, JSON-LD `url`) is
+the overview's own public URL — never its canonical override — plus
+`/page/<n>/`; indexable follow-ups follow page 1 in `sitemap.xml`.
+Render dependencies: the overview's entry in `render-deps.json` is the
+union of all its pages' reads (`mergeListRenderDeps`), so a new page of
+the type rebuilds the whole sequence. The `link-resolve` variant
+partition applies as everywhere: a query only matches pages of the
+overview's variant, and the follow-up pages are the overview's, in its
+variant. The quality audit fetches the published pages; the links
+check probes the pager's links on page 1 against the staged build like
+any other same-site URL.
 
 ### Breadcrumbs (#1142)
 
@@ -284,6 +383,7 @@ modules, lists carry data).
   bind?: "local" | "shared" | "source";   // default "local"
   list?: string;                          // shared: caelo:list/<id>; fixed for every placement when set
   source?: SourceDef;                     // bind: source
+  paginate?: { per_page?: number; follow_ups?: "index" | "noindex" }; // §6 "Pagination"
   min?: number; max?: number;
   default?: ListItem[] | string;          // local: items; shared: caelo:list/<id>
 }
@@ -384,7 +484,8 @@ Details the table leaves open:
 - Values are data: every value the section pass pastes is wrapped in the
   engine's sentinels (#1053), so `{{…}}` inside content stays literal.
 
-New markers: `list-unbound:<field>`, `list-missing:<listId>` (and
+New markers: `list-pagination-conflict:<field>` and
+`list-pager-missing:<field>` (§6 "Pagination"), `list-unbound:<field>`, `list-missing:<listId>` (and
 `list-missing:<listId>/item/<itemId>` for a term whose vocabulary entry is
 gone), `list-type-missing:<slug>`, `list-source-unavailable:<name>
 plugin=<slug>` (`plugin=unknown` when no installed plugin declares the
@@ -543,7 +644,8 @@ tools (`translate_chrome`, `apply_translations` with `kind: "addresses"`,
   membership changed. Without a deps file the build renders every page.
   A list-domain write whose audit row names no entity, and every page
   type write, rebuild every page.
-- Limits: depth ≤ 8, ≤ 500 entries per list, ≤ 50 per query, embedded
+- Limits: depth ≤ 8, ≤ 500 entries per list, ≤ 50 per query (per page
+  of a paginated list, §6 "Pagination"), embedded
   module recursion limited by the nested renderer's existing depth guard.
 - Interaction: modules use the interaction kit (`data-caelo-ui`, e.g.
   `mobile-nav` with the markup in `INTERACTION_MARKUP_CONTRACT`); there
@@ -633,7 +735,10 @@ values).
 
 `pageId` names the rendering page (breadcrumbs, children, siblings,
 page_terms need one; a query leaves it out by default). The answer is
-`{ source, count, items }`, each item `{id, title?, name?, label?, slug?,
+`{ source, count, total, pagination?, items }` — `total` is every match
+(more than `count` for a cut list), `pagination` (`perPage`,
+`pageCount`, `followUps`) is set for a paginated module field, whose
+`items` are page 1 — each item `{id, title?, name?, label?, slug?,
 link?, published_at?, updated_at?, page_type?, summary?, is_current?}` with
 links as paths. It runs the render's own resolver over
 `loadListRenderData` in the caller's draft view; plugin sources are asked

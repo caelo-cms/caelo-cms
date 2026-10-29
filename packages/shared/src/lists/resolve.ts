@@ -24,6 +24,7 @@
 
 import type { LinkResolver } from "../link-refs.js";
 import { parseLinkRef } from "../link-refs.js";
+import type { PageUrlStyle } from "../seo.js";
 import { SITE_TEXTS_LIST_TYPE } from "./default-types.js";
 import { type FieldDef, TERM_REF_RE, validateFieldValue } from "./fields.js";
 import type { ListItem } from "./items.js";
@@ -38,6 +39,16 @@ import {
   type SourceDef,
   type SystemSourceName,
 } from "./list-type.js";
+import {
+  type EffectivePagination,
+  effectivePagination,
+  type ListPaginationSettings,
+  listPaginationSchema,
+  type PaginationFollowUps,
+  pageCountOf,
+  pagedUrl,
+  splitPaginationValue,
+} from "./pagination.js";
 import { parseListRef } from "./refs.js";
 import type {
   ListPageRecord,
@@ -71,6 +82,9 @@ const LIST_MARKER_PREFIXES = [
   "list-source-unavailable:",
   "list-malformed:",
   "list-context-unavailable:",
+  // #1257 — a second paginated list on one page; a paginated page without a pager.
+  "list-pagination-conflict:",
+  "list-pager-missing:",
 ] as const;
 
 /** True for a list failure marker — the editor's missing-content surface shows these. */
@@ -86,6 +100,8 @@ export interface ListFieldSpec {
   readonly list?: string;
   readonly source?: SourceDef;
   readonly default?: unknown;
+  /** #1257 — the field lists every match across follow-up pages. */
+  readonly paginate?: ListPaginationSettings;
 }
 
 /** Result of resolving one list field for one page. */
@@ -116,6 +132,66 @@ export interface ListPageOptions {
   readonly linkResolver?: LinkResolver;
   /** Entries of every ACTIVE plugin list source for this page, keyed by source name. */
   readonly pluginSources?: Readonly<Record<string, readonly PluginSourceEntry[]>>;
+  /**
+   * #1257 — the target's URL style, for the pager's links to follow-up
+   * pages. Without it a rendered `pagination` source is
+   * `list-context-unavailable:pagination`.
+   */
+  readonly pageUrlStyle?: PageUrlStyle;
+  /**
+   * #1257 — which page of the paginated list this render is (1 = the
+   * page's own URL; default 1), and — once a first render found it —
+   * how many pages there are, so a pager rendered BEFORE the list knows.
+   */
+  readonly pagination?: { readonly page: number; readonly pageCount?: number };
+}
+
+/**
+ * #1257 — the page's paginated list as one render saw it
+ * ({@link ListPageContext.pagination}).
+ */
+export interface ListPaginationState {
+  /** The paginated module field. */
+  readonly field: string;
+  readonly perPage: number;
+  /** Every match of the query. */
+  readonly total: number;
+  readonly pageCount: number;
+  /** The page this render showed. */
+  readonly page: number;
+  readonly followUps: PaginationFollowUps;
+  /** A `pagination` source rendered on this page. */
+  readonly pagerShown: boolean;
+  /**
+   * The pager rendered before the list was resolved, so it did not know
+   * the page count yet: render the page again with
+   * `pagination: { page, pageCount }`.
+   */
+  readonly pagerEarly: boolean;
+}
+
+/**
+ * #1257 — a list cut at its limit: more pages match than it shows. Never
+ * silent: the Stage result and `preview_list_source` report it.
+ */
+export interface TruncatedList {
+  /** The module field (or source node's field) that rendered the list. */
+  readonly field: string;
+  readonly shown: number;
+  readonly total: number;
+  /** The limit that cut it (the query's `limit`; 50 for term_pages). */
+  readonly limit: number;
+}
+
+/**
+ * The markers a finished render's pagination asks for: a paginated page
+ * that shows no pager strands every entry after the first page
+ * (`list-pager-missing:<field>`). Exported so the preview and the
+ * generator apply one rule.
+ */
+export function paginationMarkers(state: ListPaginationState | null): string[] {
+  if (state === null || state.pageCount <= 1 || state.pagerShown) return [];
+  return [`list-pager-missing:${state.field}`];
 }
 
 /** The list view of ONE rendering page, handed to the template engine. */
@@ -149,6 +225,10 @@ export interface ListPageContext {
   deps(): ListRenderDeps;
   /** Overlay values this page's render refused (also the render-wide ones). */
   overlayIssues(): readonly ListOverlayIssue[];
+  /** #1257 — the paginated list this render resolved, or null. */
+  pagination(): ListPaginationState | null;
+  /** #1257 — lists this render cut at their limit (not paginated). */
+  truncatedLists(): readonly TruncatedList[];
 }
 
 /** Render-wide options of {@link createListRenderContext}. */
@@ -435,6 +515,14 @@ function createPageContext(
   let depTree = false;
   const depPages = new Set<string>();
   let trail: readonly string[] | null = null;
+  // #1257 — pagination and cut lists of this render.
+  const requestedPage = opts.pagination?.page ?? 1;
+  let paged:
+    | (Omit<ListPaginationState, "pagerShown" | "pagerEarly" | "page"> & { readonly key: string })
+    | null = null;
+  let pagerShown = false;
+  let pagerEarly = false;
+  const truncated = new Map<string, TruncatedList>();
   /** Entries of a page-shaped system source: their pages become deps. */
   const readPages = (pages: ListPageRecord[]): ListPageRecord[] => {
     for (const pg of pages) depPages.add(pg.id);
@@ -790,7 +878,8 @@ function createPageContext(
   const sameVariant = (p: ListPageRecord): boolean =>
     variant === null || data.pageVariants?.get(p.id)?.variant === variant;
 
-  const runQuery = (q: PageQuery): ScopeValue => {
+  /** Every page a query matches, in its order (deps recorded). */
+  const queryHits = (q: PageQuery): ListPageRecord[] => {
     const parent = q.parent
       ? ((parseLinkRef(q.parent) as { pageId: string } | null)?.pageId ?? null)
       : null;
@@ -814,7 +903,108 @@ function createPageContext(
             : terms.some((t) => p.terms.includes(t)))),
     );
     hits.sort(pageOrder(q.order, s.collator));
-    return listValue(pageEntries(hits.slice(0, q.limit)));
+    return hits;
+  };
+
+  /** The first `limit` hits; a cut is recorded, never silent (#1257). */
+  const cutAt = (hits: readonly ListPageRecord[], limit: number, field: string): ScopeValue => {
+    if (hits.length > limit) {
+      const key = `${field}:${limit}:${hits.length}`;
+      if (!truncated.has(key))
+        truncated.set(key, { field, shown: limit, total: hits.length, limit });
+    }
+    return listValue(pageEntries(hits.slice(0, limit)));
+  };
+
+  const runQuery = (q: PageQuery, field: string): ScopeValue => cutAt(queryHits(q), q.limit, field);
+
+  /**
+   * The slice of a paginated list this render shows. One paginated list
+   * per page: a second one (another query or page size) is refused.
+   */
+  const paginate = (
+    field: string,
+    key: string,
+    hits: readonly ListPageRecord[],
+    eff: EffectivePagination,
+  ): ScopeValue => {
+    const fullKey = JSON.stringify([key, eff.perPage, eff.followUps]);
+    if (paged !== null && paged.key !== fullKey) {
+      return { kind: "failed", marker: `list-pagination-conflict:${field}` };
+    }
+    paged = {
+      key: fullKey,
+      field,
+      perPage: eff.perPage,
+      total: hits.length,
+      pageCount: pageCountOf(hits.length, eff.perPage),
+      followUps: eff.followUps,
+    };
+    const from = (requestedPage - 1) * eff.perPage;
+    return listValue(pageEntries(hits.slice(from, from + eff.perPage)));
+  };
+
+  /** Hits of the term_pages source for `terms` (deps recorded). */
+  const termPageHits = (terms: readonly string[]): ListPageRecord[] => {
+    depTree = true;
+    if (terms.length === 0) return [];
+    const sorted = [...terms].sort();
+    const key = JSON.stringify([null, sorted, null]);
+    if (!depQueries.has(key)) depQueries.set(key, { pageType: null, terms: sorted, parent: null });
+    return s.pageList
+      .filter(
+        (p) =>
+          p.inBuild && sameVariant(p) && p.id !== pageId && terms.some((t) => p.terms.includes(t)),
+      )
+      .sort(byTitle);
+  };
+
+  /**
+   * The `pagination` source: one entry per page of the page's paginated
+   * list (`number`, `link`, `is_current`, `is_prev`, `is_next`); empty
+   * while everything fits on one page.
+   */
+  const pagerEntries = (): ScopeValue => {
+    pagerShown = true;
+    const known = opts.pagination?.pageCount ?? paged?.pageCount;
+    if (known === undefined) {
+      // The list renders later on this page: the caller renders again
+      // with the page count (ListPaginationState.pagerEarly).
+      pagerEarly = true;
+      return EMPTY_LIST;
+    }
+    if (known <= 1) return EMPTY_LIST;
+    const self = pageId === null ? null : parseLinkRef(`caelo:page/${pageId}`);
+    const r = self !== null && resolver ? resolver.resolve(self) : null;
+    const style = opts.pageUrlStyle;
+    if (
+      r === null ||
+      style === undefined ||
+      (r.status !== "resolved" && r.status !== "unpublished")
+    ) {
+      return { kind: "failed", marker: "list-context-unavailable:pagination" };
+    }
+    const entries: ScopeEntry[] = [];
+    for (let n = 1; n <= known; n += 1) {
+      const href = n === 1 ? r.url : pagedUrl(r.url, n, style);
+      const pos = { index: n - 1, count: known, depth: 1 };
+      const values: Record<string, ScopeValue> = {
+        number: text(String(n)),
+        link: linkValue({ href }, null),
+        is_current: bool(n === requestedPage),
+        is_prev: bool(n === requestedPage - 1),
+        is_next: bool(n === requestedPage + 1),
+        is_ancestor: bool(false),
+      };
+      entries.push({
+        id: `page-${n}`,
+        itemAttr: null,
+        childrenKey: null,
+        depth: 1,
+        get: (key) => values[key] ?? positionValue(key, pos),
+      });
+    }
+    return listValue(entries);
   };
 
   const byTitle = (a: ListPageRecord, b: ListPageRecord): number =>
@@ -877,24 +1067,10 @@ function createPageContext(
           field,
         );
       }
-      case "term_pages": {
-        depTree = true;
-        if (terms.length === 0) return EMPTY_LIST;
-        const sorted = [...terms].sort();
-        const key = JSON.stringify([null, sorted, null]);
-        if (!depQueries.has(key))
-          depQueries.set(key, { pageType: null, terms: sorted, parent: null });
-        const hits = s.pageList
-          .filter(
-            (p) =>
-              p.inBuild &&
-              sameVariant(p) &&
-              p.id !== pageId &&
-              terms.some((t) => p.terms.includes(t)),
-          )
-          .sort(byTitle);
-        return listValue(pageEntries(hits.slice(0, LIST_QUERY_MAX_LIMIT)));
-      }
+      case "term_pages":
+        return cutAt(termPageHits(terms), LIST_QUERY_MAX_LIMIT, field);
+      case "pagination":
+        return pagerEntries();
     }
   };
 
@@ -955,7 +1131,7 @@ function createPageContext(
     switch (source.kind) {
       case "query": {
         const q = mergedQuery(source, item.query, field, `${item.id}.query`);
-        return "marker" in q ? { kind: "failed", marker: q.marker } : runQuery(q);
+        return "marker" in q ? { kind: "failed", marker: q.marker } : runQuery(q, field);
       }
       case "system": {
         const termFields = node.fields.filter((f) => f.type === "term");
@@ -980,19 +1156,61 @@ function createPageContext(
       ? { ok: false, marker: v.marker }
       : { ok: true, entries: v.kind === "list" ? v.entries : [] };
 
+  /**
+   * A paginated source field (#1257): a query, or the term_pages system
+   * source. The page size replaces the query's `limit`; the placement
+   * value may carry `paginate` overrides next to its knobs.
+   */
+  const resolvePaginated = (
+    field: ListFieldSpec,
+    settings: ListPaginationSettings,
+    value: unknown,
+  ): ListFieldResolution => {
+    const { paginate: overrides, rest } = splitPaginationValue(value);
+    const valid = listPaginationSchema.safeParse(settings);
+    const eff = valid.success ? effectivePagination(valid.data, overrides) : null;
+    if (eff === null) return { ok: false, marker: `list-malformed:${field.name}[paginate]` };
+    const source = field.source;
+    if (source?.kind === "query") {
+      const q = mergedQuery(
+        { ...source, defaults: { ...source.defaults, limit: eff.perPage } },
+        rest,
+        field.name,
+        "query",
+      );
+      if ("marker" in q) return { ok: false, marker: q.marker };
+      const key = JSON.stringify(["query", { ...q, limit: null }]);
+      return fromValue(paginate(field.name, key, queryHits(q), eff));
+    }
+    if (source?.kind === "system" && source.name === "term_pages") {
+      const terms = (rest as { terms?: unknown } | undefined)?.terms;
+      const list = Array.isArray(terms)
+        ? terms.filter((t): t is string => typeof t === "string")
+        : [];
+      const key = JSON.stringify(["term_pages", [...list].sort()]);
+      return fromValue(paginate(field.name, key, termPageHits(list), eff));
+    }
+    return { ok: false, marker: `list-malformed:${field.name}[paginate]` };
+  };
+
   const resolveField = (
     field: ListFieldSpec,
     value: unknown,
     holder: ListHolder,
   ): ListFieldResolution => {
     const bind = field.bind ?? "local";
+    if (bind === "source" && field.paginate !== undefined) {
+      return resolvePaginated(field, field.paginate, value);
+    }
     if (bind === "source") {
       const source = field.source;
       if (!source) return { ok: false, marker: `list-malformed:${field.name}[source]` };
       switch (source.kind) {
         case "query": {
           const q = mergedQuery(source, value, field.name, "query");
-          return "marker" in q ? { ok: false, marker: q.marker } : fromValue(runQuery(q));
+          return "marker" in q
+            ? { ok: false, marker: q.marker }
+            : fromValue(runQuery(q, field.name));
         }
         case "system": {
           const overrides = (value ?? {}) as { terms?: unknown };
@@ -1163,6 +1381,20 @@ function createPageContext(
       pages: [...depPages].sort(),
     }),
     overlayIssues: () => [...renderIssues, ...pageIssues],
+    pagination: () =>
+      paged === null
+        ? null
+        : {
+            field: paged.field,
+            perPage: paged.perPage,
+            total: paged.total,
+            pageCount: paged.pageCount,
+            page: requestedPage,
+            followUps: paged.followUps,
+            pagerShown,
+            pagerEarly,
+          },
+    truncatedLists: () => [...truncated.values()],
   };
 }
 

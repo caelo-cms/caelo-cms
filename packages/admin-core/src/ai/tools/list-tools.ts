@@ -225,11 +225,20 @@ export const previewListSourceTool = makeOpTool({
   opName: "lists.preview_source",
   input: previewListSourceOp.input,
   format: (value) => {
-    const v = value as { source: string; count: number; items: Record<string, unknown>[] };
+    const v = value as {
+      source: string;
+      count: number;
+      total: number;
+      pagination?: { perPage: number; pageCount: number; followUps: string };
+      items: Record<string, unknown>[];
+    };
     if (v.count === 0) return `${v.source}: no entries for this page.`;
-    return [
-      `${v.source}: ${v.count} entr${v.count === 1 ? "y" : "ies"}`,
-      ...v.items.map((e) => `- ${JSON.stringify(e)}`),
-    ].join("\n");
+    // #1257 — a cut list says so: the AI decides teaser (fine) vs overview (paginate).
+    const head = v.pagination
+      ? `${v.source}: page 1 of ${v.pagination.pageCount} (${v.count} of ${v.total}, ${v.pagination.perPage} per page, follow-up pages ${v.pagination.followUps})`
+      : v.total > v.count
+        ? `${v.source}: shows ${v.count} of ${v.total} matching pages — an overview must list all: set paginate on the field`
+        : `${v.source}: ${v.count} entr${v.count === 1 ? "y" : "ies"}`;
+    return [head, ...v.items.map((e) => `- ${JSON.stringify(e)}`)].join("\n");
   },
 });

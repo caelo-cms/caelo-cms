@@ -9,6 +9,8 @@ export * from "./item-attr.js";
 export * from "./items.js";
 export * from "./list-type.js";
 export * from "./page-type.js";
+export * from "./paginated-render.js";
+export * from "./pagination.js";
 export * from "./refs.js";
 export * from "./render-data.js";
 export * from "./render-deps.js";

@@ -10,7 +10,9 @@
 import {
   type DeployPluginProblem,
   describeStagedPluginProblems,
+  describeTruncatedLists,
   describeUnpublishedLinks,
+  type TruncatedListReport,
   type UnpublishedLinkTarget,
 } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
@@ -37,6 +39,8 @@ export async function describeStagedBuild(
     readonly draftPages: { readonly count: number; readonly pages: readonly { title: string }[] };
     /** #724 — links in the build to pages it does not contain. */
     readonly unpublishedLinks: readonly UnpublishedLinkTarget[];
+    /** #1257 — page lists cut at the query cap. */
+    readonly truncatedLists: readonly TruncatedListReport[];
     /** #1008 — active plugins that did not run while the build ran. */
     readonly pluginProblems: readonly DeployPluginProblem[];
   },
@@ -47,6 +51,7 @@ export async function describeStagedBuild(
   draftPageCount: number;
   draftPageTitles: string[];
   unpublishedLinkWarning: string | null;
+  truncatedListWarning: string | null;
   pluginProblemWarning: string | null;
 }> {
   const { adapter, registry } = getQueryContext();
@@ -89,6 +94,7 @@ export async function describeStagedBuild(
     draftPageCount: build.draftPages.count,
     draftPageTitles: build.draftPages.pages.map((p) => p.title),
     unpublishedLinkWarning: describeUnpublishedLinks(build.unpublishedLinks),
+    truncatedListWarning: describeTruncatedLists(build.truncatedLists),
     pluginProblemWarning: describeStagedPluginProblems(build.pluginProblems),
   };
 }

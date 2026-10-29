@@ -88,6 +88,11 @@ export {
 } from "./deploy/staged-build-files.js";
 // #650 — which installs serve staging at a protected staging.<domain>.
 export { providerHasStagingDomain } from "./deploy/staging-domain.js";
+// #1257 — the Stage warning for page lists cut at the query cap.
+export {
+  describeTruncatedLists,
+  type TruncatedListReport,
+} from "./deploy/truncated-lists.js";
 // #724 — the Stage warning for links to pages a build does not contain.
 export {
   describeUnpublishedLinks,

@@ -159,7 +159,22 @@ function moduleFieldItemSchema(): Record<string, unknown> {
       source: {
         type: "object",
         description:
-          'bind "source": {kind:"query", editable, defaults} | {kind:"system", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:"plugin", name} (a plugin list iterated by name needs no field).',
+          'bind "source": {kind:"query", editable, defaults} | {kind:"system", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:"plugin", name} (a plugin list iterated by name needs no field).',
+      },
+      // #1257 — an overview listing every match over follow-up pages.
+      paginate: {
+        type: "object",
+        additionalProperties: false,
+        description:
+          'Overview of ALL matching pages (query without `limit`, or term_pages): page 1 here, then <path>/page/2/…; one per module. Needs a pager field (source system "pagination": {{number}}, {{link}}, is_current/is_prev/is_next). A placement may override with value `paginate`.',
+        properties: {
+          per_page: { type: "integer", minimum: 1, maximum: 50, description: "Default 50." },
+          follow_ups: {
+            type: "string",
+            enum: ["index", "noindex"],
+            description: 'Default "index" (self-canonical, in sitemap).',
+          },
+        },
       },
       // issue #106 — mirror the Zod bound `z.array(slugSchema).max(32)`.
       allowedModuleTypes: {

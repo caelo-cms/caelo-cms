@@ -14,7 +14,7 @@
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import type { SourceDef } from "@caelo-cms/shared";
+import type { ListPaginationSettings, SourceDef } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
 import { loadBranchedModuleStates, loadContentInstanceBranchStates } from "../snapshots/index.js";
@@ -28,6 +28,8 @@ export interface ListFieldDef {
   readonly bind?: "local" | "shared" | "source";
   readonly list?: string;
   readonly source?: SourceDef;
+  /** #1257 — the field lists every match across follow-up pages. */
+  readonly paginate?: ListPaginationSettings;
   readonly min?: number;
   readonly max?: number;
   readonly default?: unknown;

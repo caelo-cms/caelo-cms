@@ -54,4 +54,9 @@ export {
   type PinnedSlice,
   type SliceManifest,
 } from "./pinned-font-delivery.js";
-export { buildRobotsTxtWithSitemap, readSeoSettings, runSeoPass } from "./seo-pass.js";
+export {
+  buildRobotsTxtWithSitemap,
+  followUpHeadEntries,
+  readSeoSettings,
+  runSeoPass,
+} from "./seo-pass.js";

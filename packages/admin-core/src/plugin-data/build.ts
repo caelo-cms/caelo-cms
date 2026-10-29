@@ -194,6 +194,8 @@ const routingManifestSchema = z.object({
     z.object({
       pageId: z.string().uuid().optional(),
       outputPath: z.string().min(1),
+      /** #1257 — the files of pages 2… of a paginated overview. */
+      followUpOutputPaths: z.array(z.string().min(1)).optional(),
     }),
   ),
 });
@@ -249,8 +251,12 @@ async function bakeTarget(args: {
       `the live build's routing-manifest.json lists no pages Caelo can read (${manifest.error.issues[0]?.message ?? "invalid"}). Publish live again.`,
     );
   }
-  const pathOf = new Map<string, string>();
-  for (const p of manifest.data.pages) if (p.pageId) pathOf.set(p.pageId, p.outputPath);
+  // Every file a page ships: its own and, for a paginated overview, the
+  // follow-up pages, which carry the same bake regions (#1257).
+  const pathOf = new Map<string, readonly string[]>();
+  for (const p of manifest.data.pages) {
+    if (p.pageId) pathOf.set(p.pageId, [p.outputPath, ...(p.followUpOutputPaths ?? [])]);
+  }
   if (pathOf.size === 0 && manifest.data.pages.length > 0) {
     throw new BlockedError(
       "the live build was published before plugin-data builds existed (its routing manifest names no page ids). Plugin data reaches the HTML with the next Publish live; until then the delta feed serves it.",
@@ -261,14 +267,16 @@ async function bakeTarget(args: {
   let notLive = 0;
   for (const plugin of plugins) {
     for (const pageId of plugin.pages) {
-      const path = pathOf.get(pageId);
-      if (!path) {
+      const paths = pathOf.get(pageId);
+      if (!paths) {
         notLive += 1;
         continue;
       }
-      const set = wantedByPath.get(path) ?? new Set<string>();
-      set.add(`${plugin.slug}:${pageId}`);
-      wantedByPath.set(path, set);
+      for (const path of paths) {
+        const set = wantedByPath.get(path) ?? new Set<string>();
+        set.add(`${plugin.slug}:${pageId}`);
+        wantedByPath.set(path, set);
+      }
     }
   }
   const files = await publisher.readLiveFiles({ target, live, paths: [...wantedByPath.keys()] });

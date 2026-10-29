@@ -35,6 +35,7 @@ import { type ExecutionContext, PhaseTimer, type PhaseTiming } from "@caelo-cms/
 import { describeError } from "../ai/tools/_describe-error.js";
 import type { DraftPagesSummary } from "../deploy/draft-pages.js";
 import type { DeployPluginProblem } from "../deploy/plugin-problems.js";
+import type { TruncatedListReport } from "../deploy/truncated-lists.js";
 import type { UnpublishedLinkTarget } from "../deploy/unpublished-links.js";
 import type { AffectedChat } from "../draft.js";
 import { STAGE_CHANGED_PREFIX } from "../ops/chat/publish.js";
@@ -85,6 +86,8 @@ export interface StagedChats {
   readonly draftPages: DraftPagesSummary;
   /** #724 — links in the build to pages it does NOT contain (a Stage warning). */
   readonly unpublishedLinks: readonly UnpublishedLinkTarget[];
+  /** #1257 — page lists cut at the query cap (a Stage warning). */
+  readonly truncatedLists: readonly TruncatedListReport[];
   /**
    * #1008 — active plugins that were not running when the build ran: the
    * staging site lacks their output and Publish live refuses this Stage.
@@ -472,6 +475,7 @@ export async function stageChatSessions(
     previewUrl?: string;
     draftPages: DraftPagesSummary;
     unpublishedLinkTargets: UnpublishedLinkTarget[];
+    truncatedLists: TruncatedListReport[];
     pluginProblems: DeployPluginProblem[];
   };
   // The audit's findings go to one chat: the first selected chat whose
@@ -521,6 +525,7 @@ export async function stageChatSessions(
       alsoIncludes: merged.flatMap((m) => m.alsoIncludes),
       draftPages: summary.draftPages,
       unpublishedLinks: summary.unpublishedLinkTargets,
+      truncatedLists: summary.truncatedLists,
       pluginProblems: summary.pluginProblems,
     },
   };

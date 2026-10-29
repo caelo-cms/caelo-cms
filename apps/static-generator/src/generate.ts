@@ -41,11 +41,16 @@ import {
   FAVICON_VARIANT,
   fontUnresolvableMarker,
   isRasterImageMime,
+  LIST_QUERY_MAX_LIMIT,
   type ListRenderDeps,
   linkMarkersOf,
+  mergeListRenderDeps,
+  type PaginationRequest,
   PhaseTimer,
   type PhaseTiming,
+  pagedPath,
   redirectTargetIssue,
+  renderEveryPage,
   runBatched,
   type ThemeDocument,
   templateFieldsFromJson,
@@ -81,6 +86,11 @@ import {
   notFoundPageBuildError,
   readNotFoundPageId,
 } from "./not-found-page.js";
+import {
+  assertPaginationRenderable,
+  followUpCollisionError,
+  type TruncatedListReport,
+} from "./pagination-pass.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { rewritePreviewFontUrls } from "./preview-font-urls.js";
 import { writeRedirectFiles } from "./redirects-pass.js";
@@ -143,6 +153,11 @@ export interface GenerateResult {
    * they fail the build in the render gate.
    */
   readonly unpublishedLinkTargets: readonly UnpublishedLinkTarget[];
+  /**
+   * #1257 — page lists cut at the query cap (50): the overview shows 50
+   * of more matches. A warning at Stage; paginating the list fixes it.
+   */
+  readonly truncatedLists: readonly TruncatedListReport[];
 }
 
 /** One page linking to a page this build does not ship. */
@@ -336,6 +351,35 @@ export function missingRootPageError(args: {
     "Designate the intended homepage and make sure it is published (AI: `set_home_page`, then `set_pages_status_many` if it is a draft; UI: the page's settings), then re-run the deploy. " +
     "Do not rename another page's slug to 'home' — that moves its URL. " +
     `Root-eligible slugs in this build: ${sample}${args.rootEligibleSlugs.length > 10 ? ", …" : ""}`
+  );
+}
+
+/**
+ * #1257 — a page file that other pages would need as a directory. In the
+ * `no-extension` style a page IS a file (`guides`), so nothing can be
+ * served below its URL: neither a nested page (`guides/intro`) nor a
+ * paginated overview's follow-up page (`guides/page/2`). Writing both
+ * fails with EISDIR halfway through the write pass; this names the pages
+ * and the fix before any file is written.
+ *
+ * @returns the error message to throw, or null. Pure for tests.
+ */
+export function outputPathCollisionError(relPaths: readonly string[]): string | null {
+  const files = new Set(relPaths);
+  const hits = new Set<string>();
+  for (const p of relPaths) {
+    const segs = p.split("/");
+    for (let i = 1; i < segs.length; i += 1) {
+      const dir = segs.slice(0, i).join("/");
+      if (files.has(dir)) hits.add(`${dir} (needed as a folder by ${p})`);
+    }
+  }
+  if (hits.size === 0) return null;
+  const listed = [...hits].slice(0, 10).join(", ");
+  return (
+    `static-generator: ${hits.size} page(s) are served as files but other pages sit below their URL: ${listed}. ` +
+    "In the no-extension URL style a page cannot have nested pages or follow-up pages of a paginated list (<path>/page/<n>). " +
+    "Next step: switch the deploy target to the directory URL style (Ops → Deploy), or move the nested pages / remove paginate from that page's list."
   );
 }
 
@@ -808,6 +852,8 @@ export async function generateSite(args: {
     relPath: string;
     /** #1142 — the trail the page's breadcrumbs showed, for the BreadcrumbList JSON-LD. */
     breadcrumbTrail: readonly string[] | null;
+    /** #1257 — page `n` ≥ 2 of a paginated overview, and whether it may be indexed. */
+    followUp?: { page: number; indexable: boolean };
   }[] = [];
   // P13 — per-page bake target for the plugin render pass, keyed by page
   // id: slugs are not unique once pages nest (epic #690).
@@ -964,6 +1010,10 @@ export async function generateSite(args: {
   const renderDeps = new Map<string, ListRenderDeps>();
   const overlayIssues = [...listContext.overlayIssues];
   const unpublishedLinkTargets: UnpublishedLinkTarget[] = [];
+  // #1257 — paginated overviews: their follow-up files, and lists cut at the cap.
+  const paginatedOverviews: { path: string; slug: string }[] = [];
+  const followUpOutputPaths = new Map<string, string[]>();
+  const truncatedLists: TruncatedListReport[] = [];
   timer.lap("load-content");
 
   for (let i = 0; i < pageRows.length; i++) {
@@ -976,70 +1026,104 @@ export async function generateSite(args: {
     // (e.g. layout HTML missing the required `content` slot). Surface
     // it with the page slug so the deploy operator can locate the
     // offending row, rather than silently emitting a body-less page.
-    let composed: ReturnType<typeof composePageWithLayout>;
-    const linkResolver = linkIndex.forPage(page.page_id);
-    const lists = listContext.forPage(page.page_id, {
-      linkResolver,
-      pluginSources: allSources.get(page.page_id) ?? {},
-    });
-    try {
-      composed = composePageWithLayout({
-        templateHtml: page.template_html,
-        templateCss: page.template_css,
-        blocks,
-        theme: activeTheme,
-        fonts: themeFonts,
-        layoutHtml: page.layout_html,
-        layoutCss: page.layout_css,
-        layoutBlocks,
-        layoutSlug: page.layout_slug,
-        lists,
-        deferredModules,
-        nestedModules,
+    const renderAt = (pagination?: PaginationRequest) => {
+      const linkResolver = linkIndex.forPage(page.page_id);
+      const lists = listContext.forPage(page.page_id, {
         linkResolver,
+        pluginSources: allSources.get(page.page_id) ?? {},
+        pageUrlStyle,
+        ...(pagination ? { pagination } : {}),
       });
-    } catch (e) {
-      if (e instanceof ComposeError) {
-        throw new Error(`static-generator: page slug=${page.slug}: ${e.message}`);
+      try {
+        const composed = composePageWithLayout({
+          templateHtml: page.template_html,
+          templateCss: page.template_css,
+          blocks,
+          theme: activeTheme,
+          fonts: themeFonts,
+          layoutHtml: page.layout_html,
+          layoutCss: page.layout_css,
+          layoutBlocks,
+          layoutSlug: page.layout_slug,
+          lists,
+          deferredModules,
+          nestedModules,
+          linkResolver,
+        });
+        return { composed, lists, linkResolver };
+      } catch (e) {
+        if (e instanceof ComposeError) {
+          throw new Error(`static-generator: page slug=${page.slug}: ${e.message}`);
+        }
+        throw e;
       }
-      throw e;
-    }
+    };
+    // #1257 — a paginated overview renders every page of its sequence:
+    // page 1 at its own path, page n at `<path>/page/<n>/`.
+    const renders = renderEveryPage(renderAt);
+    const pagination = renders[0]?.lists.pagination() ?? null;
+    assertPaginationRenderable(page, pagination, notFoundPageId);
+    if (renders.length > 1) paginatedOverviews.push({ path: page.current_path, slug: page.slug });
 
-    renderDeps.set(page.page_id, lists.deps());
-    for (const issue of lists.overlayIssues()) {
-      if (!overlayIssues.some((i) => i.address === issue.address && i.variant === issue.variant)) {
-        overlayIssues.push(issue);
-      }
-    }
-    composedPages.push({
-      html: composed.html,
-      pageId: page.page_id,
-      pageSlug: page.slug,
-      pageTitle: page.title,
-      relPath: outputPathOf(page),
-      breadcrumbTrail: lists.breadcrumbTrail(),
-    });
-    renderedForGate.push({
-      pageSlug: page.slug,
-      html: composed.html,
-      moduleFailures: composed.moduleFailures,
-      // #724 — a reference in the layout's own HTML that did not resolve.
-      layoutLinkMarkers: linkMarkersOf(composed.missingSlots),
-    });
+    renderDeps.set(page.page_id, mergeListRenderDeps(renders.map((r) => r.lists.deps())));
     const seenTargets = new Set<string>();
-    for (const o of linkResolver.observed) {
-      if (o.resolution.status !== "unpublished") continue;
-      // The page the link renders to — the referenced page, or its
-      // sibling in this page's variant (link-resolve point).
-      const targetPageId = o.resolution.pageId;
-      if (seenTargets.has(targetPageId)) continue;
-      seenTargets.add(targetPageId);
-      unpublishedLinkTargets.push({
+    renders.forEach(({ composed, lists, linkResolver }, index) => {
+      const n = index + 1;
+      for (const issue of lists.overlayIssues()) {
+        if (
+          !overlayIssues.some((i) => i.address === issue.address && i.variant === issue.variant)
+        ) {
+          overlayIssues.push(issue);
+        }
+      }
+      composedPages.push({
+        html: composed.html,
+        pageId: page.page_id,
         pageSlug: page.slug,
-        pagePath: page.current_path,
-        targetPageId,
-        targetUrl: o.resolution.url,
+        pageTitle: page.title,
+        relPath:
+          n === 1
+            ? outputPathOf(page)
+            : pageOutputPath(pagedPath(page.current_path, n), target.pageUrlStyle),
+        breadcrumbTrail: lists.breadcrumbTrail(),
+        ...(n > 1 && pagination
+          ? { followUp: { page: n, indexable: pagination.followUps === "index" } }
+          : {}),
       });
+      renderedForGate.push({
+        pageSlug: n === 1 ? page.slug : `${page.slug} (page ${n})`,
+        html: composed.html,
+        moduleFailures: composed.moduleFailures,
+        // #724 — a reference in the layout's own HTML that did not resolve.
+        layoutLinkMarkers: linkMarkersOf(composed.missingSlots),
+      });
+      for (const o of linkResolver.observed) {
+        if (o.resolution.status !== "unpublished") continue;
+        // The page the link renders to — the referenced page, or its
+        // sibling in this page's variant (link-resolve point).
+        const targetPageId = o.resolution.pageId;
+        if (seenTargets.has(targetPageId)) continue;
+        seenTargets.add(targetPageId);
+        unpublishedLinkTargets.push({
+          pageSlug: page.slug,
+          pagePath: page.current_path,
+          targetPageId,
+          targetUrl: o.resolution.url,
+        });
+      }
+    });
+    for (const cut of renders[0]?.lists.truncatedLists() ?? []) {
+      // #1257 — a list cut by the query cap (not a chosen teaser limit).
+      if (cut.limit < LIST_QUERY_MAX_LIMIT) continue;
+      truncatedLists.push({ pageSlug: page.slug, pagePath: page.current_path, ...cut });
+    }
+    if (renders.length > 1) {
+      followUpOutputPaths.set(
+        page.page_id,
+        renders
+          .slice(1)
+          .map((_, i) => pageOutputPath(pagedPath(page.current_path, i + 2), target.pageUrlStyle)),
+      );
     }
     // P13 — record per-page bake target for the plugin render pass.
     bakeTargets.set(page.page_id, {
@@ -1054,6 +1138,20 @@ export async function generateSite(args: {
   // malformed list item, …) would ship as a silently empty section.
   // Refuse the build and name every page / module / field instead.
   assertNoRenderFailures(renderedForGate);
+  // #1257 — a page where an overview puts its follow-up pages.
+  if (paginatedOverviews.length > 0) {
+    const pathRows = (await tx.execute(sql`
+      SELECT p.current_path FROM pages p
+      WHERE p.deleted_at IS NULL AND p.chat_branch_id IS NULL ${statusFilter}
+    `)) as unknown as { current_path: string }[];
+    const collision = followUpCollisionError(
+      paginatedOverviews,
+      pathRows.map((r) => r.current_path),
+    );
+    if (collision !== null) throw new Error(collision);
+  }
+  const fileCollision = outputPathCollisionError(composedPages.map((p) => p.relPath));
+  if (fileCollision !== null) throw new Error(fileCollision);
   // A `list-resolve` overlay entry the resolver refused (unknown address,
   // structural change) is the plugin's fault, not the site's: the stored
   // value rendered instead, and the plugin's error channel says so
@@ -1217,12 +1315,17 @@ export async function generateSite(args: {
     // #1155 — `pageId` lets a plugin-data build find a page's file in the
     // build that is live, without reading the (possibly unpublished)
     // current page paths from cms_admin.
-    pages: pageRows.map((p) => ({
-      pageId: p.page_id,
-      slug: p.slug,
-      path: p.current_path,
-      outputPath: outputPathOf(p),
-    })),
+    pages: pageRows.map((p) => {
+      const followUps = followUpOutputPaths.get(p.page_id);
+      return {
+        pageId: p.page_id,
+        slug: p.slug,
+        path: p.current_path,
+        outputPath: outputPathOf(p),
+        // #1257 — the files of pages 2… of a paginated overview.
+        ...(followUps ? { followUpOutputPaths: followUps } : {}),
+      };
+    }),
     // #802 — the error page every provider serves for unknown URLs, or
     // null when none is designated (the host's generic page answers).
     notFoundPage:
@@ -1323,6 +1426,7 @@ export async function generateSite(args: {
     phases: timer.phases(),
     buildDir,
     unpublishedLinkTargets,
+    truncatedLists,
   };
 }
 

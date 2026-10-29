@@ -313,6 +313,20 @@ export const previewListSourceOp = withHumanisedLinks(
     output: z.object({
       source: z.string(),
       count: z.number().int().nonnegative(),
+      /**
+       * #1257 — every page that matches: more than `count` when the list
+       * is cut at its limit, or (paginated) the length of the whole
+       * sequence whose first page `items` is.
+       */
+      total: z.number().int().nonnegative(),
+      /** #1257 — a paginated field: its page size, page count and follow-up indexing. */
+      pagination: z
+        .object({
+          perPage: z.number().int(),
+          pageCount: z.number().int(),
+          followUps: z.enum(["index", "noindex"]),
+        })
+        .optional(),
       items: z.array(entrySchema),
     }),
     handler: async (ctx, input, tx) => {
@@ -403,9 +417,22 @@ export const previewListSourceOp = withHumanisedLinks(
         }
         entries = hit.value?.kind === "list" ? hit.value.entries : [];
       }
+      // #1257 — never cut silently: say how many pages match in all.
+      const paged = page.pagination();
+      const cut = page.truncatedLists().find((c) => c.shown === entries.length);
       return ok({
         source: spec.describe,
         count: entries.length,
+        total: paged?.total ?? cut?.total ?? entries.length,
+        ...(paged
+          ? {
+              pagination: {
+                perPage: paged.perPage,
+                pageCount: paged.pageCount,
+                followUps: paged.followUps,
+              },
+            }
+          : {}),
         items: entries.map(entryJson),
       });
     },

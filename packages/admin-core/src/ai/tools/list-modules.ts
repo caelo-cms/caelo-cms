@@ -53,6 +53,8 @@ interface CatalogFieldMeta {
   bind?: "local" | "shared" | "source";
   list?: string;
   source?: { kind: string; name?: string; defaults?: Record<string, unknown> };
+  /** #1257 — a paginated overview list. */
+  paginate?: { per_page?: number; follow_ups?: string };
 }
 
 /** `caelo:list/<id>` → `<slug>` for the catalog; the ref itself when the list is unknown. */
@@ -78,7 +80,11 @@ export function catalogField(f: CatalogFieldMeta, listSlug: ListSlugLookup = (re
               .map(([k, v]) => `${k}=${String(v)}`)
               .join(" ")})`
           : `${s.kind}:${s.name ?? "?"}`;
-      return `${head} source=${what}`;
+      // #1257 — the AI sees an overview's page size and indexing (§1A).
+      const paged = f.paginate
+        ? ` paginate(per_page=${f.paginate.per_page ?? 50} follow_ups=${f.paginate.follow_ups ?? "index"})`
+        : "";
+      return `${head} source=${what}${paged}`;
     }
     return `${head} ${bind}`;
   }
@@ -96,7 +102,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
     "List the module catalog (metadata, no HTML/CSS/JS): id, slug, type, kind, description, fields, placement usage.\n" +
     "USE FOR: a reuse candidate before placing/creating (prefer `add_module` with `moduleId` over a near-duplicate); the accepted child types before filling a `module`/`module-list` field.\n" +
     "Fields column: `blocks:module-list allowed=faq/cta` -> child `type` must be one of them (`allowed=any` = unrestricted). " +
-    "`nav:list(menu) shared=main-nav` = shared list (edit entries via `patch_list_items_many`) | `items:list(texts) local` = entries per placement | `latest:list(links) source=query(…)`.",
+    "`nav:list(menu) shared=main-nav` = shared list (edit entries via `patch_list_items_many`) | `items:list(texts) local` = entries per placement | `latest:list(links) source=query(…)` | `… paginate(per_page=50 follow_ups=index)` = overview of every match over follow-up pages.",
   schema: listModulesInput,
   inputSchema: z.toJSONSchema(listModulesInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {
@@ -216,6 +222,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
                 bind: f.bind ?? "local",
                 ...(f.list !== undefined ? { list: f.list } : {}),
                 ...(f.source !== undefined ? { source: f.source } : {}),
+                ...(f.paginate !== undefined ? { paginate: f.paginate } : {}),
               }
             : {}),
         })),
