@@ -12,7 +12,12 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  DatabaseAdapter,
+  execute,
+  OperationRegistry,
+  observeCommittedOperations,
+} from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { LEGACY_LIVE_RELEASE_LOCK_KEY, LIVE_RELEASE_LEASE } from "../deploy/live-release-lock.js";
@@ -280,12 +285,19 @@ describe("deploy.rollback", () => {
     } finally {
       await db0.end();
     }
-    // Back on build 1 for the checks below.
+    // Back on build 1 for the checks below — and the live refresh hears
+    // the rollback once it committed (review on #1251).
+    const committed: string[] = [];
+    const stopObserving = observeCommittedOperations((name) => {
+      committed.push(name);
+    });
     rb = await execute(registry, adapter, HUMAN, "deploy.rollback", {
       targetName: "production",
       runId: b1RunId,
       repoRoot: testRoot,
     });
+    stopObserving();
+    expect(committed).toContain("deploy.rollback");
     if (rb === null) throw new Error("no rollback ran");
     expect(rb.ok).toBe(true);
     if (!rb.ok) return;

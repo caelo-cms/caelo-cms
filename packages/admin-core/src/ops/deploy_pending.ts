@@ -316,16 +316,23 @@ const beginExecuteOutput = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("applied"), runId: z.string() }),
 ]);
 
-export const beginExecuteDeployProposalOp = defineOperation({
-  name: "deploy.begin_execute_proposal",
-  // Why human-only: the first step of deploy.execute_proposal (the Owner's
-  // Approve click, §11.A), run as the approver; no AI tool wraps it.
-  actorScope: ["human", "system"],
-  database: "cms_admin",
-  input: z.object({ proposalId: z.string().uuid(), runId: z.string().uuid() }).strict(),
-  output: beginExecuteOutput,
-  handler: async (ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
+/**
+ * #589 / review on #1251 — the claim and record steps are ops of their own,
+ * so each one requires the same approver permission as
+ * deploy.execute_proposal: calling a step directly authorises nothing more.
+ */
+export const beginExecuteDeployProposalOp = requiresApproverPermission(
+  ["deploy.trigger"],
+  defineOperation({
+    name: "deploy.begin_execute_proposal",
+    // Why human-only: the first step of deploy.execute_proposal (the Owner's
+    // Approve click, §11.A), run as the approver; no AI tool wraps it.
+    actorScope: ["human", "system"],
+    database: "cms_admin",
+    input: z.object({ proposalId: z.string().uuid(), runId: z.string().uuid() }).strict(),
+    output: beginExecuteOutput,
+    handler: async (ctx, input, tx) => {
+      const rows = (await tx.execute(sql`
       SELECT p.kind, p.payload, p.preview, p.status,
              p.claimed_by_run_id::text AS claimed_by_run_id,
              (p.claimed_at IS NOT NULL
@@ -338,62 +345,63 @@ export const beginExecuteDeployProposalOp = defineOperation({
       WHERE p.id = ${input.proposalId}::uuid
       FOR UPDATE OF p
     `)) as unknown as Array<{
-      kind: "promote" | "rollback";
-      payload: unknown;
-      preview: { restoreRunId?: string } | string | null;
-      status: string;
-      claimed_by_run_id: string | null;
-      claim_recent: boolean;
-      run_status: string | null;
-      run_live: boolean | null;
-    }>;
-    const row = rows[0];
-    if (!row) return err(opError("deploy.execute_proposal", "proposal not found"));
-    if (row.status !== "pending") {
-      return err(opError("deploy.execute_proposal", `proposal is already ${row.status}`));
-    }
-    // An earlier click's Publish live or rollback went live, but its
-    // approval was never marked applied (the apply died between the two):
-    // record it now instead of releasing a second time. A rollback's run
-    // carries the claimed id and is committed with the rollback itself.
-    if (row.claimed_by_run_id !== null && row.run_status === "succeeded") {
-      await markApplied(tx, ctx, input.proposalId, row.claimed_by_run_id);
-      return ok({ kind: "applied" as const, runId: row.claimed_by_run_id });
-    }
-    // A second click (another tab, a retried request) while the first one
-    // still applies: the Publish live it started is running, or it is
-    // between the claim and its run's start, or a rollback is waiting.
-    const claimLive =
-      row.run_status === "running"
-        ? row.run_live === true
-        : row.run_status === null && row.claim_recent;
-    if (claimLive) {
-      return err(
-        opError(
-          "deploy.execute_proposal",
-          `this proposal is being applied right now${row.claimed_by_run_id ? ` (run ${row.claimed_by_run_id})` : ""} — wait for it to finish; Settings → Deployments shows it. Nothing else was started.`,
-        ),
-      );
-    }
-    const preview = parsePayload<{ restoreRunId?: string }>(row.preview ?? {});
-    if (row.kind === "rollback" && !preview.restoreRunId) {
-      return err(
-        opError("deploy.execute_proposal", "rollback proposal preview missing restoreRunId"),
-      );
-    }
-    await tx.execute(sql`
+        kind: "promote" | "rollback";
+        payload: unknown;
+        preview: { restoreRunId?: string } | string | null;
+        status: string;
+        claimed_by_run_id: string | null;
+        claim_recent: boolean;
+        run_status: string | null;
+        run_live: boolean | null;
+      }>;
+      const row = rows[0];
+      if (!row) return err(opError("deploy.execute_proposal", "proposal not found"));
+      if (row.status !== "pending") {
+        return err(opError("deploy.execute_proposal", `proposal is already ${row.status}`));
+      }
+      // An earlier click's Publish live or rollback went live, but its
+      // approval was never marked applied (the apply died between the two):
+      // record it now instead of releasing a second time. A rollback's run
+      // carries the claimed id and is committed with the rollback itself.
+      if (row.claimed_by_run_id !== null && row.run_status === "succeeded") {
+        await markApplied(tx, ctx, input.proposalId, row.claimed_by_run_id);
+        return ok({ kind: "applied" as const, runId: row.claimed_by_run_id });
+      }
+      // A second click (another tab, a retried request) while the first one
+      // still applies: the Publish live it started is running, or it is
+      // between the claim and its run's start, or a rollback is waiting.
+      const claimLive =
+        row.run_status === "running"
+          ? row.run_live === true
+          : row.run_status === null && row.claim_recent;
+      if (claimLive) {
+        return err(
+          opError(
+            "deploy.execute_proposal",
+            `this proposal is being applied right now${row.claimed_by_run_id ? ` (run ${row.claimed_by_run_id})` : ""} — wait for it to finish; Settings → Deployments shows it. Nothing else was started.`,
+          ),
+        );
+      }
+      const preview = parsePayload<{ restoreRunId?: string }>(row.preview ?? {});
+      if (row.kind === "rollback" && !preview.restoreRunId) {
+        return err(
+          opError("deploy.execute_proposal", "rollback proposal preview missing restoreRunId"),
+        );
+      }
+      await tx.execute(sql`
       UPDATE deploy_pending_actions
       SET claimed_by_run_id = ${input.runId}::uuid, claimed_at = clock_timestamp()
       WHERE id = ${input.proposalId}::uuid
     `);
-    return ok({
-      kind: "apply" as const,
-      proposalKind: row.kind,
-      payload: parsePayload<Record<string, unknown>>(row.payload),
-      restoreRunId: row.kind === "rollback" ? (preview.restoreRunId ?? null) : null,
-    });
-  },
-});
+      return ok({
+        kind: "apply" as const,
+        proposalKind: row.kind,
+        payload: parsePayload<Record<string, unknown>>(row.payload),
+        restoreRunId: row.kind === "rollback" ? (preview.restoreRunId ?? null) : null,
+      });
+    },
+  }),
+);
 
 /** Mark the proposal applied by `runId` and record the approval (one transaction). */
 async function markApplied(
@@ -408,7 +416,7 @@ async function markApplied(
         decided_at = now(),
         decided_by = ${ctx.actorId}::uuid,
         applied_run_id = ${runId === null ? null : sql`${runId}::uuid`}
-    WHERE id = ${proposalId}::uuid
+    WHERE id = ${proposalId}::uuid AND status = 'pending'
   `);
   await recordAuditFromCtx(tx, ctx, {
     operation: "deploy.execute_proposal",
@@ -419,43 +427,46 @@ async function markApplied(
   });
 }
 
-export const endExecuteDeployProposalOp = defineOperation({
-  name: "deploy.end_execute_proposal",
-  // Why human-only: the last step of deploy.execute_proposal (the Owner's
-  // Approve click, §11.A), run as the approver; no AI tool wraps it.
-  actorScope: ["human", "system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      proposalId: z.string().uuid(),
-      outcome: z.discriminatedUnion("ok", [
-        z.object({ ok: z.literal(true), runId: z.string().nullable() }),
-        z.object({ ok: z.literal(false), message: z.string() }),
-      ]),
-    })
-    .strict(),
-  output: z.object({}),
-  handler: async (ctx, input, tx) => {
-    if (input.outcome.ok) {
-      await markApplied(tx, ctx, input.proposalId, input.outcome.runId);
-      return ok({});
-    }
-    // Nothing went live: release the claim so the card can be approved
-    // again once the cause is fixed.
-    await tx.execute(sql`
+export const endExecuteDeployProposalOp = requiresApproverPermission(
+  ["deploy.trigger"],
+  defineOperation({
+    name: "deploy.end_execute_proposal",
+    // Why human-only: the last step of deploy.execute_proposal (the Owner's
+    // Approve click, §11.A), run as the approver; no AI tool wraps it.
+    actorScope: ["human", "system"],
+    database: "cms_admin",
+    input: z
+      .object({
+        proposalId: z.string().uuid(),
+        outcome: z.discriminatedUnion("ok", [
+          z.object({ ok: z.literal(true), runId: z.string().nullable() }),
+          z.object({ ok: z.literal(false), message: z.string() }),
+        ]),
+      })
+      .strict(),
+    output: z.object({}),
+    handler: async (ctx, input, tx) => {
+      if (input.outcome.ok) {
+        await markApplied(tx, ctx, input.proposalId, input.outcome.runId);
+        return ok({});
+      }
+      // Nothing went live: release the claim so the card can be approved
+      // again once the cause is fixed.
+      await tx.execute(sql`
       UPDATE deploy_pending_actions SET claimed_by_run_id = NULL, claimed_at = NULL
       WHERE id = ${input.proposalId}::uuid AND status = 'pending'
     `);
-    await recordAuditFromCtx(tx, ctx, {
-      operation: "deploy.execute_proposal",
-      input: { proposalId: input.proposalId },
-      succeeded: false,
-      entityId: input.proposalId,
-      resultSummary: input.outcome.message,
-    });
-    return ok({});
-  },
-});
+      await recordAuditFromCtx(tx, ctx, {
+        operation: "deploy.execute_proposal",
+        input: { proposalId: input.proposalId },
+        succeeded: false,
+        entityId: input.proposalId,
+        resultSummary: input.outcome.message,
+      });
+      return ok({});
+    },
+  }),
+);
 
 /**
  * Apply an approved deploy proposal (the body of deploy.execute_proposal).

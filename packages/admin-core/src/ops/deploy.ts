@@ -30,6 +30,8 @@ import { join, resolve } from "node:path";
 import {
   type DatabaseAdapter,
   defineOperation,
+  defineStepwiseOperation,
+  execute,
   type OperationRegistry,
   type QueryError,
   type TransactionRunner,
@@ -52,6 +54,7 @@ import {
   type TargetDbRow,
   targetRow,
 } from "./deploy-common.js";
+import { abortableSleep } from "./deploy-lease-steps.js";
 
 export { effectiveOutDir } from "./deploy-common.js";
 export { promoteDeployOp } from "./deploy-promote.js";
@@ -316,34 +319,79 @@ export const refreshStagingPreviewOp = defineOperation({
  * it, the rollback waits OUTSIDE any transaction and tries again; once it
  * gets the row, the release and its record are one short transaction.
  */
-export const rollbackDeployOp = defineOperation({
+const rollbackInput = z
+  .object({
+    targetName: z.string(),
+    runId: z.string().uuid(),
+    repoRoot: z.string().optional(),
+    /**
+     * The id the rollback's run gets, minted by an approved card that
+     * claims its proposal first (deploy.execute_proposal): a retry finds
+     * the rollback by it instead of releasing the old build again.
+     * Default: a fresh id.
+     */
+    newRunId: z.string().uuid().optional(),
+  })
+  .strict();
+const rollbackOutput = z.object({ buildId: z.string(), newRunId: z.string() });
+
+export const releaseRollbackOp = defineOperation({
+  name: "deploy.release_rollback",
+  // Why human-only: the one transactional step of deploy.rollback (itself
+  // human + system, CMS_REQUIREMENTS §6), run as the rollback's caller.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: rollbackInput,
+  output: z.discriminatedUnion("kind", [
+    rollbackOutput.extend({ kind: z.literal("done") }),
+    z.object({ kind: z.literal("busy"), heldBy: z.string().nullable() }),
+  ]),
+  handler: async (ctx, input, tx) => {
+    const attempt = await rollbackOnce(ctx, input, tx);
+    if (attempt.kind === "busy") return ok(attempt);
+    if (!attempt.result.ok) return attempt.result;
+    return ok({ kind: "done" as const, ...attempt.result.value });
+  },
+});
+
+/**
+ * Rollback: re-target a target's `current` symlink at any prior
+ * succeeded build for that target. Atomic, no rebuild. The caller
+ * passes the deploy_runs.id whose `build_id` should become live.
+ *
+ * #1225 — ordered with every other live release by the live-release lease
+ * (live-release-lock.ts). A step-wise op: while a Publish live or
+ * plugin-data build holds the lease it waits OUTSIDE any transaction and
+ * tries again; once it gets the row, the release and its record are one
+ * short transaction (deploy.release_rollback).
+ */
+export const rollbackDeployOp = defineStepwiseOperation({
   name: "deploy.rollback",
   // Why human-only: Ops-level decision per CMS_REQUIREMENTS §6.
   actorScope: ["human", "system"],
   database: "cms_admin",
-  // #1225 — no connection is held while it waits for a running publish.
-  transaction: "none",
-  input: z
-    .object({
-      targetName: z.string(),
-      runId: z.string().uuid(),
-      repoRoot: z.string().optional(),
-      /**
-       * The id the rollback's run gets, minted by an approved card that
-       * claims its proposal first (deploy.execute_proposal): a retry finds
-       * the rollback by it instead of releasing the old build again.
-       * Default: a fresh id.
-       */
-      newRunId: z.string().uuid().optional(),
-    })
-    .strict(),
-  output: z.object({ buildId: z.string(), newRunId: z.string() }),
-  handler: async (ctx, input, detached) => {
+  input: rollbackInput,
+  output: rollbackOutput,
+  stepwise: async (ctx, input, steps) => {
     const deadline = Date.now() + LIVE_RELEASE_WAIT_MS;
+    const stop = steps.signal ?? new AbortController().signal;
     let pause = 100;
     for (;;) {
-      const attempt = await detached.transaction((tx) => rollbackOnce(ctx, input, tx));
-      if (attempt.kind === "done") return attempt.result;
+      if (stop.aborted) {
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.rollback",
+          message: "the rollback was stopped before it started; nothing was rolled back.",
+        });
+      }
+      const r = await execute(steps.registry, steps.adapter, ctx, "deploy.release_rollback", input);
+      if (!r.ok) return err(r.error);
+      const attempt = r.value as
+        | ({ kind: "done" } & z.infer<typeof rollbackOutput>)
+        | { kind: "busy"; heldBy: string | null };
+      if (attempt.kind === "done") {
+        return ok({ buildId: attempt.buildId, newRunId: attempt.newRunId });
+      }
       if (Date.now() >= deadline) {
         return err({
           kind: "HandlerError",
@@ -351,7 +399,7 @@ export const rollbackDeployOp = defineOperation({
           message: `${attempt.heldBy ? `a Publish live or plugin-data build (run ${attempt.heldBy})` : "a release of the previous Caelo version (during the update)"} kept releasing the live site for ${Math.round(LIVE_RELEASE_WAIT_MS / 60_000)} minutes, so nothing was rolled back. Roll back again once it finished (Settings → Deployments shows it).`,
         });
       }
-      await new Promise((r) => setTimeout(r, pause));
+      await abortableSleep(pause, stop);
       pause = Math.min(pause * 2, 2_000);
     }
   },

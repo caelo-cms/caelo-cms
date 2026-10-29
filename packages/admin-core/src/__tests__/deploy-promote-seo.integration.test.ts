@@ -40,6 +40,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
+import { ensureRoleUser } from "./fixtures/role-user.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -413,6 +414,64 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
     expect(await productionRunCount()).toBe(runs + 1);
   });
 
+  it("the approval's and Publish live's own steps authorise nothing on their own", async () => {
+    const reviewer: ExecutionContext = {
+      actorId: crypto.randomUUID(),
+      actorKind: "human",
+      requestId: "promote-seo-reviewer",
+    };
+    await ensureRoleUser(ADMIN_URL!, reviewer.actorId, "reviewer");
+    const proposalId = await insertProposal(
+      "promote",
+      { fromTarget: "staging", toTarget: "production", repoRoot: testRoot },
+      {},
+    );
+    // Marking a card applied, or claiming it, needs the approver's permission.
+    const ended = await execute(registry, adapter, reviewer, "deploy.end_execute_proposal", {
+      proposalId,
+      outcome: { ok: true, runId: null },
+    });
+    expect(JSON.stringify(ended)).toContain("permission_denied");
+    const begun = await execute(registry, adapter, reviewer, "deploy.begin_execute_proposal", {
+      proposalId,
+      runId: crypto.randomUUID(),
+    });
+    expect(JSON.stringify(begun)).toContain("permission_denied");
+    expect(await proposalStatus(proposalId)).toBe("pending");
+    expect(await proposalClaim(proposalId)).toBeNull();
+    // Recording a Publish live: only for the caller that started that run.
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    await markAudited(staged.runId);
+    const owner = await makeOwner();
+    const published = await execute(registry, adapter, owner, "deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    if (!published.ok) throw new Error(JSON.stringify(published.error));
+    const { toRunId } = published.value as { toRunId: string };
+    const targetId = await productionTargetId();
+    const forged = await execute(registry, adapter, HUMAN, "deploy.finish_promote", {
+      runId: toRunId,
+      fromRunId: staged.runId,
+      targetId,
+      env: "production",
+      pageCount: 1,
+      fileCount: 1,
+      buildId: "forged",
+      publishSummary: {},
+      siteUrl: null,
+      caeloVersion: null,
+      override: null,
+      phaseTimings: [],
+    });
+    expect(forged.ok).toBe(false);
+    expect(JSON.stringify(forged)).toMatch(/not a Publish live of this caller|already recorded/);
+  });
+
   it("a double click on one card publishes once; the other click is refused", async () => {
     const owner = await makeOwner();
     const staged = await ok<{ runId: string }>("deploy.trigger", {
@@ -470,6 +529,21 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
     expect(await proposalStatus(proposalId)).toBe("applied");
   });
 });
+
+async function productionTargetId(): Promise<string> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return (await tx`SELECT id::text AS id FROM deploy_targets WHERE env = 'production' LIMIT 1`) as {
+        id: string;
+      }[];
+    });
+    return rows[0]?.id ?? "";
+  } finally {
+    await sql.end();
+  }
+}
 
 async function productionRunCount(): Promise<number> {
   const sql = new SQL(ADMIN_URL!);

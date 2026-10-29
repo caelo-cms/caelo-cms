@@ -347,29 +347,54 @@ export const finishPromoteOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    const refuse = (message: string): never => {
+      throw new OperationAbortError({ kind: "HandlerError", operation: "deploy.promote", message });
+    };
     const rows = (await tx.execute(sql`
-      SELECT status FROM deploy_runs WHERE id = ${input.runId}::uuid FOR UPDATE
-    `)) as unknown as { status: string }[];
-    if (rows.length === 0) {
-      throw new OperationAbortError({
-        kind: "HandlerError",
-        operation: "deploy.promote",
-        message: `Publish live run ${input.runId} has no row any more; its release is live but cannot be recorded. Publish live again.`,
-      });
+      SELECT status, actor_id::text AS actor_id, target_id::text AS target_id
+      FROM deploy_runs WHERE id = ${input.runId}::uuid FOR UPDATE
+    `)) as unknown as { status: string; actor_id: string; target_id: string }[];
+    const run = rows[0];
+    if (!run) {
+      refuse(
+        `Publish live run ${input.runId} has no row any more; its release is live but cannot be recorded. Publish live again.`,
+      );
     }
+    // Only the Publish live that started this run records it (review on
+    // #1251: the step is an op of its own and must authorise nothing more).
+    if (run?.actor_id !== ctx.actorId || run.target_id !== input.targetId) {
+      refuse(`run ${input.runId} is not a Publish live of this caller to this target.`);
+    }
+    if (run?.status === "succeeded") refuse(`run ${input.runId} is already recorded.`);
     // The provider released this build: production serves it, whatever the
     // row says. A row the sweep ended (its heartbeat stopped for longer than
     // the lease mid-release) is corrected rather than left claiming the
     // previous build is live — the plugin-data build and rollback read
     // what is live from here.
-    if (rows[0]?.status !== "running") {
+    if (run?.status !== "running") {
       console.error(
         "[deploy] Publish live released after its run was marked failed; recording it",
         {
           runId: input.runId,
-          status: rows[0]?.status,
+          status: run?.status,
         },
       );
+    }
+    // A publish-anyway decision is re-checked as deploy.start_promote took
+    // it: a human holding deploy.trigger, exactly the failed audit of the
+    // staged build this run published.
+    if (input.override) {
+      const gate = await publishGateForRun(tx, input.fromRunId);
+      if (
+        ctx.actorKind !== "human" ||
+        gate.state !== "errored" ||
+        gate.auditRunId !== input.override.auditRunId ||
+        !(await actorHasPermission(tx, ctx, "deploy.trigger"))
+      ) {
+        refuse(
+          "the publish-anyway decision does not match the failed quality check of the published build.",
+        );
+      }
     }
     // Released first: this transaction keeps the rows locked until it
     // commits, so nobody else publishes in between.
