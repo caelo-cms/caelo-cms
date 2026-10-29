@@ -194,6 +194,10 @@ export async function runActivationSerialized<T>(
   try {
     const out = await fn();
     await stopBeating();
+    // The beats prove nothing when they kept failing (no pooled
+    // connection, say): only a lease that is still this activation's and
+    // unexpired right now shows that no other activation took it over.
+    if (!lost && !(await renew(lease))) lost = true;
     if (lost) {
       throw new Error(
         `plugin "${slug}": the activation lease lapsed while onActivate ran (not renewed within ${Math.round(ttlMs / 1000)} s), so another activation may have run its seed at the same time. Reload the plugin (Settings → Plugins) and check the data it seeds.`,

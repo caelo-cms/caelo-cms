@@ -160,6 +160,23 @@ describe("runActivationSerialized", () => {
     expect(lapsedDuringSeed).toBe(false);
   });
 
+  it("fails the activation when its lease lapsed while the seed ran, even with no beat at all", async () => {
+    // A heartbeat that never ran (or kept failing) must not let a seed
+    // report success after another activation could have taken over.
+    await expect(
+      runActivationSerialized(
+        { adapter: a },
+        SYSTEM_ACTOR_ID,
+        "t1220-lapsed",
+        async () => {
+          await Bun.sleep(300);
+        },
+        { ttlMs: 100, heartbeatMs: 60_000 },
+      ),
+    ).rejects.toThrow(/activation lease lapsed/);
+    expect(await leaseRows("t1220-lapsed")).toEqual([]);
+  });
+
   it("waits while the previous release's advisory lock is held (rolling update)", async () => {
     const raw = new SQL(ADMIN_URL as string, { max: 1 });
     const order: string[] = [];
