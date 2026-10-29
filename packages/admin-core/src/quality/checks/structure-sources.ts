@@ -15,6 +15,7 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { describeError } from "../../ai/tools/_describe-error.js";
+import { siteHostsOf } from "./links-analysis.js";
 import type { StructureLayout, StructureSources } from "./structure.js";
 import type { StructureModule } from "./structure-analysis.js";
 import type { StructurePageIndex } from "./structure-listing.js";
@@ -42,7 +43,7 @@ export function structureSourcesFromOps(
       read("modules.list", (v) =>
         (
           v as {
-            modules: (Omit<StructureModule, "listFields"> & {
+            modules: (Omit<StructureModule, "listFields" | "fieldNames"> & {
               fields: { name: string; kind: string }[];
             })[];
           }
@@ -53,6 +54,7 @@ export function structureSourcesFromOps(
           html: m.html,
           js: m.js,
           listFields: m.fields.filter((f) => LIST_KINDS.has(f.kind)).map((f) => f.name),
+          fieldNames: m.fields.map((f) => f.name),
         })),
       ),
     layouts: () =>
@@ -65,7 +67,7 @@ export function structureSourcesFromOps(
         })),
       ),
     pageIndex: async (): Promise<StructurePageIndex> => {
-      const [defaults, types, pages] = await Promise.all([
+      const [defaults, types, pages, siteUrls] = await Promise.all([
         read(
           "site_defaults.get",
           (v) => (v as { defaults: { defaultPageTypeId: string } | null }).defaults,
@@ -80,6 +82,7 @@ export function structureSourcesFromOps(
           "pages.list",
           (v) => (v as { pages: { id: string; pageTypeId: string; title: string }[] }).pages,
         ),
+        readSiteUrls((op, input) => read(op, (v) => v, input)),
       ]);
       // No fallback (CLAUDE.md §2): without the stored default the rule
       // cannot tell ordinary pages from typed ones.
@@ -92,7 +95,30 @@ export function structureSourcesFromOps(
         defaultPageTypeId: defaults.defaultPageTypeId,
         pageTypes: new Map(types.map((t) => [t.id, { slug: t.slug, name: t.name }])),
         pages: new Map(pages.map((p) => [p.id, { pageTypeId: p.pageTypeId, title: p.title }])),
+        siteHosts: siteHostsOf(siteUrls),
       };
     },
   };
+}
+
+/**
+ * The URLs the public site answers on: the SEO base URL and the public
+ * domains (#849; #1256 reuses it so a card linking the public domain is a
+ * link to the site, not an external one).
+ */
+export async function readSiteUrls(
+  run: (op: string, input: Record<string, unknown>) => Promise<unknown>,
+): Promise<string[]> {
+  const [seo, domains] = (await Promise.all([
+    run("site_defaults.get_seo", {}),
+    run("domains.list", {}),
+  ])) as [
+    { siteBaseUrl: string | null },
+    { domains: { hostname: string; kind: "admin" | "public" }[] },
+  ];
+  return [
+    ...(seo.siteBaseUrl ? [seo.siteBaseUrl] : []),
+    // The admin domain is not the site: a link there is not a page of it.
+    ...domains.domains.filter((d) => d.kind === "public").map((d) => d.hostname),
+  ];
 }

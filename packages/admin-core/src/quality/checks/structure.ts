@@ -59,6 +59,7 @@ import {
 } from "@caelo-cms/shared";
 import type { SiteCheck, StagedPage } from "./check.js";
 import type { Finding } from "./findings.js";
+import { siteHostsOf } from "./links-analysis.js";
 import { MAX_FINDINGS_PER_CALL } from "./runner.js";
 import {
   analyseStructure,
@@ -108,13 +109,17 @@ export function createStructureCheck(sources: StructureSources): SiteCheck {
     id: STRUCTURE_CHECK_ID,
     title: "Markup structure",
     scope: "site",
-    async run({ pages }) {
+    async run({ pages, build }) {
       const [modules, layouts, pageIndex] = await Promise.all([
         sources.modules(),
         sources.layouts(),
         sources.pageIndex(),
       ]);
-      return structureFindings(pages, modules, layouts, pageIndex);
+      const siteHosts = new Set([
+        ...pageIndex.siteHosts,
+        ...siteHostsOf([build.baseUrl, build.displayBaseUrl]),
+      ]);
+      return structureFindings(pages, modules, layouts, { ...pageIndex, siteHosts });
     },
   };
 }

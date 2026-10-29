@@ -50,6 +50,13 @@ export interface StructurePageIndex {
   readonly pageTypes: ReadonlyMap<string, { readonly slug: string; readonly name: string }>;
   /** Page id → its page type and title. */
   readonly pages: ReadonlyMap<string, { readonly pageTypeId: string; readonly title: string }>;
+  /**
+   * Hosts that are the site besides the staged origin (`host[:port]`):
+   * the SEO base URL and public domains, plus the staged build's display
+   * origin — a card linking `https://www.example.com/guides/x` links a
+   * page of the site.
+   */
+  readonly siteHosts: ReadonlySet<string>;
 }
 
 /** One listing seen on one or more pages (the same module, type and gap). */
@@ -71,14 +78,21 @@ export function manualListingFindings(
 ): Finding[] {
   if (groups.length === 0) return [];
   const live = pages.filter((p) => !p.notFoundPage);
+  const hosts = new Set(index.siteHosts);
   const pageByKey = new Map<string, string>();
   for (const p of live) {
     try {
-      pageByKey.set(pathKey(new URL(p.url).pathname), p.pageId);
+      const url = new URL(p.url);
+      hosts.add(url.host.toLowerCase());
+      pageByKey.set(pathKey(url.pathname), p.pageId);
     } catch {
       // A page without a parsable URL is no link target.
     }
   }
+  const pageOf = (target: string): string | undefined => {
+    const url = new URL(target);
+    return hosts.has(url.host) ? pageByKey.get(pathKey(url.pathname)) : undefined;
+  };
   const pagesOfType = new Map<string, string[]>();
   for (const p of live) {
     const typeId = index.pages.get(p.pageId)?.pageTypeId;
@@ -91,8 +105,8 @@ export function manualListingFindings(
   const listings = new Map<string, Listing>();
   for (const g of groups) {
     const linkedByType = new Map<string, Set<string>>();
-    for (const key of g.targets) {
-      const target = pageByKey.get(key);
+    for (const t of g.targets) {
+      const target = pageOf(t);
       if (target === undefined || target === g.pageId) continue;
       const typeId = index.pages.get(target)?.pageTypeId;
       if (typeId === undefined || typeId === index.defaultPageTypeId) continue;

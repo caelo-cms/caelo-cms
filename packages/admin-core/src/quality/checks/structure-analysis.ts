@@ -63,6 +63,8 @@ export interface StructureModule {
    * one of them renders entries, any other section is a condition.
    */
   readonly listFields: readonly string[];
+  /** Names of all its declared fields (#1256): a section over none of them is generated. */
+  readonly fieldNames: readonly string[];
 }
 
 /** A pattern found in free markup on one page. */

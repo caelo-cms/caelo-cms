@@ -39,6 +39,7 @@ const NO_TYPES: StructurePageIndex = {
   defaultPageTypeId: "page",
   pageTypes: new Map(),
   pages: new Map(),
+  siteHosts: new Set(),
 };
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -49,6 +50,7 @@ const TEXT: StructureModule = {
   html: '<section class="prose"><h2>{{title}}</h2><div class="body">{{body}}</div></section>',
   js: "",
   listFields: [],
+  fieldNames: [],
 };
 const DIFF_TEMPLATE =
   '<div class="split"><div class="copy"><h2>{{title}}</h2><p>{{lead}}</p></div>' +
@@ -60,6 +62,7 @@ const DIFF: StructureModule = {
   html: DIFF_TEMPLATE,
   js: "",
   listFields: [],
+  fieldNames: [],
 };
 const DIFF_COPY: StructureModule = {
   id: id(103),
@@ -68,6 +71,7 @@ const DIFF_COPY: StructureModule = {
   html: DIFF_TEMPLATE.replace("{{title}}", "Pricing"),
   js: "",
   listFields: [],
+  fieldNames: [],
 };
 const NAV: StructureModule = {
   id: id(104),
@@ -76,6 +80,7 @@ const NAV: StructureModule = {
   html: '<nav class="menu"><ul>{{#menu}}<li><a class="item" href="{{link}}">{{label}}</a></li>{{/menu}}</ul></nav>',
   js: "",
   listFields: [],
+  fieldNames: [],
 };
 const MODULES = [TEXT, DIFF, DIFF_COPY, NAV];
 
@@ -193,6 +198,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     html: '<section class="faq-wrap"><h2>{{title}}</h2><div class="faq">{{#items}}{{/items}}</div>{{>featured}}</section>',
     js: "",
     listFields: ["items"],
+    fieldNames: ["title", "items", "featured"],
     fields: [
       { name: "title", kind: "text" as const },
       { name: "items", kind: "module-list" as const },
@@ -222,6 +228,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     html: '<section class="tcl"><h2>{{title}}</h2><div class="tcg">{{#karten}}{{/karten}}</div></section>',
     js: "",
     listFields: ["karten"],
+    fieldNames: ["title", "karten"],
     fields: [
       { name: "title", kind: "text" as const },
       { name: "karten", kind: "module-list" as const },
@@ -236,6 +243,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     listFields: m.fields
       .filter((f) => f.kind === "list" || f.kind === "module-list")
       .map((f) => f.name),
+    fieldNames: m.fields.map((f) => f.name),
   });
   const nestedModules = [asStructure(FAQ_ENTRY), asStructure(TOOL_CARD)];
 
@@ -535,6 +543,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     html: '<header class="hd"><ul>{{#nav}}<li><a href="{{link}}">{{label}}</a></li>{{/nav}}</ul></header>',
     js: "",
     listFields: [],
+    fieldNames: [],
   };
   const FOOTER: StructureModule = {
     id: id(111),
@@ -543,6 +552,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     html: '<footer class="ft"><p>{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}</p></footer>',
     js: "",
     listFields: [],
+    fieldNames: [],
   };
   const NAV_MODULES = [...MODULES, HEADER, FOOTER];
   const SHARED = "00000000-0000-4000-8000-000000000900";

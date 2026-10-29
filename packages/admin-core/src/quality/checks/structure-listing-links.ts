@@ -14,13 +14,16 @@
  *   one listing of the module that holds it;
  * - never counted: entries of a SHARED list (`<listId>/<itemId>`: menus),
  *   entries a source generates (a page query, `children`, `term_pages`, a
- *   source node's `items`) and the page's own term loops (`page.…`).
+ *   source node's `items`, a plugin source such as a language switcher)
+ *   and the page's own term loops (`page.…`).
  *
  * Stored entries carry the stamp, generated ones do not, and a scalar link
  * carries none either. What tells a scalar link from a generated entry is
  * the template: a link inside a section over a `list` / `module-list`
- * field (or a reserved `items` loop) renders per entry; a link outside
- * one, or inside a mere condition, is the template's own. So each rendered
+ * field renders per entry; a link inside a section over no declared field
+ * (a plugin source, `page.…`) or an entry's reserved `items` loop is
+ * generated; a link outside any section, or inside a condition over a
+ * declared field, is the template's own. So each rendered
  * node is matched to the template node that rendered it — the template
  * parsed with its sections kept as marker elements (`stripMustache`
  * `markSections`). When a rendered node could come from a list section or
@@ -30,14 +33,17 @@
 
 import { type MarkupNode, parseMarkup, SECTION_MARKER_TAG, stripMustache } from "@caelo-cms/shared";
 import type { StagedPage } from "./check.js";
-import { pathKey } from "./links-analysis.js";
 import type { StructureModule } from "./structure-analysis.js";
 
 /** The hand-kept internal links of one outermost module root on one page. */
 export interface ListingLinkGroup {
   readonly pageId: string;
   readonly moduleId: string;
-  /** Distinct same-site targets as {@link pathKey} keys, sorted. */
+  /**
+   * Distinct http(s) targets, resolved against the page URL, without
+   * query or fragment, sorted. Which hosts are the site is decided by the
+   * rule (the staged origin AND the public domains, structure-listing.ts).
+   */
   readonly targets: readonly string[];
 }
 
@@ -50,10 +56,16 @@ type Kind = "scalar" | "list" | "generated";
 /** The nearest list entry stamp above a rendered node. */
 type Entry = "none" | "own" | "shared";
 
+/** A module's declared field names: all of them, and its list-like ones. */
+interface FieldNames {
+  readonly all: ReadonlySet<string>;
+  readonly list: ReadonlySet<string>;
+}
+
 interface ListingTemplate {
   readonly root: MarkupNode;
   readonly rootKind: Kind;
-  readonly listFields: ReadonlySet<string>;
+  readonly fields: FieldNames;
 }
 
 // `<listId>/<itemId>` — a shared list's entry stamp.
@@ -65,10 +77,10 @@ export function listingTemplates(
 ): ReadonlyMap<string, ListingTemplate> {
   const out = new Map<string, ListingTemplate>();
   for (const m of modules) {
-    const listFields = new Set(m.listFields);
+    const fields = { all: new Set(m.fieldNames), list: new Set(m.listFields) };
     const forest = parseMarkup(stripMustache(m.html, { markSections: true }));
-    const first = flatten(forest, "scalar", listFields)[0];
-    if (first) out.set(m.id, { root: first.node, rootKind: first.kind, listFields });
+    const first = flatten(forest, "scalar", fields)[0];
+    if (first) out.set(m.id, { root: first.node, rootKind: first.kind, fields });
   }
   return out;
 }
@@ -95,7 +107,7 @@ export function listingLinkGroups(
       collectModule(n, templates, hrefs);
       const targets = new Set<string>();
       for (const href of hrefs) {
-        const key = sameSiteKey(href, base);
+        const key = absoluteTarget(href, base);
         if (key !== null) targets.add(key);
       }
       if (targets.size >= MIN_LISTING_LINKS) {
@@ -109,8 +121,8 @@ export function listingLinkGroups(
   return out;
 }
 
-/** The path key of a same-site link, or null (fragment, other site, other scheme). */
-function sameSiteKey(href: string, base: URL): string | null {
+/** The http(s) URL a link leads to without query or fragment, or null (fragment only, other scheme). */
+function absoluteTarget(href: string, base: URL): string | null {
   const raw = href.trim();
   if (raw === "" || raw.startsWith("#")) return null;
   let url: URL;
@@ -120,8 +132,7 @@ function sameSiteKey(href: string, base: URL): string | null {
     return null;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  if (url.host.toLowerCase() !== base.host.toLowerCase()) return null;
-  return pathKey(url.pathname);
+  return `${url.protocol}//${url.host.toLowerCase()}${url.pathname}`;
 }
 
 /** Adds the hand-kept hrefs of one module root (nested modules included). */
@@ -150,7 +161,7 @@ function collectModule(
         visit(c, null, kind, entry);
         continue;
       }
-      const match = pickTemplateChild(c, flatten(t.children, kind, tpl.listFields));
+      const match = pickTemplateChild(c, flatten(t.children, kind, tpl.fields));
       visit(c, match?.node ?? null, match?.kind ?? kind, entry);
     }
   };
@@ -180,32 +191,36 @@ interface Candidate {
  * Template children with section markers dissolved: each element carries
  * the kind of the innermost section around it.
  */
-function flatten(
-  nodes: readonly MarkupNode[],
-  kind: Kind,
-  listFields: ReadonlySet<string>,
-): Candidate[] {
+function flatten(nodes: readonly MarkupNode[], kind: Kind, fields: FieldNames): Candidate[] {
   const out: Candidate[] = [];
   for (const n of nodes) {
     if (n.tag !== SECTION_MARKER_TAG) {
       out.push({ node: n, kind });
       continue;
     }
-    out.push(...flatten(n.children, sectionKind(n, kind, listFields), listFields));
+    out.push(...flatten(n.children, sectionKind(n, kind, fields), fields));
   }
   return out;
 }
 
-/** The kind inside a section marker (`s:<name>` iterates or tests, `i:<name>` is inverted). */
-function sectionKind(marker: MarkupNode, outer: Kind, listFields: ReadonlySet<string>): Kind {
+/**
+ * The kind inside a section marker (`s:<name>` iterates or tests, `i:<name>`
+ * is inverted). At module scope a section names a declared field — a
+ * `list` / `module-list` field iterates stored or bound entries, any other
+ * field is a condition — or something the engine resolves elsewhere: a
+ * plugin source (`{{#language_links}}`), the page's own data (`page.…`).
+ * Those are generated. Inside an entry, `items` is a source node's
+ * generated entries (a reserved name, never an entry field).
+ */
+function sectionKind(marker: MarkupNode, outer: Kind, fields: FieldNames): Kind {
   const cls = marker.classes[0] ?? "";
   if (!cls.startsWith("s:") || outer === "generated") return outer;
   const name = cls.slice(2);
-  // `items` is reserved for a source node's generated entries; `page.…`
-  // iterates the rendering page's own data (its terms).
-  if (name === "items" || name.startsWith("page.")) return "generated";
-  if (outer === "scalar" && listFields.has(name)) return "list";
-  return outer;
+  if (outer === "scalar") {
+    if (fields.list.has(name)) return "list";
+    return fields.all.has(name) ? "scalar" : "generated";
+  }
+  return name === "items" ? "generated" : outer;
 }
 
 /**

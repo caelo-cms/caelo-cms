@@ -52,6 +52,7 @@ function mod(n: number, displayName: string, html: string, js = ""): StructureMo
     html,
     js,
     listFields: [],
+    fieldNames: [],
   };
 }
 
@@ -85,7 +86,12 @@ function page(n: number, path: string, ...modules: string[]): StagedPage {
 const noLayouts: StructureLayout[] = [];
 
 function jsFindings(pages: StagedPage[], modules: StructureModule[], layouts = noLayouts) {
-  const noTypes = { defaultPageTypeId: "page", pageTypes: new Map(), pages: new Map() };
+  const noTypes = {
+    defaultPageTypeId: "page",
+    pageTypes: new Map(),
+    pages: new Map(),
+    siteHosts: new Set<string>(),
+  };
   return structureFindings(pages, modules, layouts, noTypes).filter((f) =>
     /module-js|js-rendered|js-written/.test(f.ruleId),
   );
