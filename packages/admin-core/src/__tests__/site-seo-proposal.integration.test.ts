@@ -150,7 +150,6 @@ function build(runId: string) {
     generateSite({
       publishAt: new Date().toISOString(),
       tx,
-      adapter,
       plugins: localBuildPluginServices,
       runId,
       repoRoot,

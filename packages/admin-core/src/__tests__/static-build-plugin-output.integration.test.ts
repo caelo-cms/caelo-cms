@@ -343,6 +343,21 @@ describe("#605 — the published site carries every plugin's output", () => {
     expect(about).toContain(`href="${BASE}/de/${PFX}ueber-uns/" hreflang="de"`);
   });
 
+  it("#1220 — the bake cache is written over the build's own transaction", async () => {
+    // The generator's build transaction is on the long-transaction
+    // allowlist only: a bake-cache read or write in a transaction of its
+    // own would be a nested checkout and fail the builds above.
+    const rows = (await sqlSystem(
+      (tx) => tx`
+        SELECT b.rendered_html FROM static_bakes b JOIN plugins p ON p.id = b.plugin_id
+        WHERE p.slug = 'international-site'
+      `,
+    )) as unknown as { rendered_html: string }[];
+    expect(rows.some((r) => r.rendered_html.includes('class="caelo-language-selector"'))).toBe(
+      true,
+    );
+  });
+
   it("the consent banner's categories, runtime and withheld embed", () => {
     const home = published("index.html");
     expect(home).toContain('data-consent-category="necessary"');

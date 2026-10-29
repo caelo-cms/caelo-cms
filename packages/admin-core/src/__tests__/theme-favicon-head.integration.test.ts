@@ -291,7 +291,6 @@ describe("theme favicon is emitted into <head>", () => {
       generateSite({
         publishAt: new Date().toISOString(),
         tx,
-        adapter,
         plugins: localBuildPluginServices,
         runId: crypto.randomUUID(),
         repoRoot,
@@ -505,7 +504,6 @@ describe("theme favicon is emitted into <head>", () => {
       generateSite({
         publishAt: new Date().toISOString(),
         tx,
-        adapter,
         plugins: localBuildPluginServices,
         runId: crypto.randomUUID(),
         repoRoot,

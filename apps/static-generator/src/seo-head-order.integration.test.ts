@@ -128,7 +128,6 @@ describe("built page head order (#1017)", () => {
       generateSite({
         publishAt: new Date().toISOString(),
         tx,
-        adapter,
         plugins: localBuildPluginServices,
         target: {
           id: "00000000-0000-0000-0000-0000000000a8",

@@ -25,6 +25,7 @@ import {
   DatabaseAdapter,
   defineOperation,
   execute,
+  LONG_TRANSACTION_ALLOWLIST,
   NESTED_CHECKOUT_ALLOWLIST,
   NestedPoolCheckoutError,
   OperationRegistry,
@@ -212,7 +213,8 @@ describe("nested checkout guard", () => {
 
   it("lets an allowlisted holder nest, and lifts the 0392 timeouts for its transaction only", async () => {
     const holder = "deploy.promote";
-    expect(NESTED_CHECKOUT_ALLOWLIST.get(holder)?.noSessionTimeouts).toBe(true);
+    expect(NESTED_CHECKOUT_ALLOWLIST.has(holder)).toBe(true);
+    expect(LONG_TRANSACTION_ALLOWLIST.has(holder)).toBe(true);
     const inside = await adapter.withAdminTransaction(
       ctx,
       async (tx) => {
@@ -232,6 +234,35 @@ describe("nested checkout guard", () => {
     expect(inside.own).toBe("0");
     // The nested transaction is an ordinary one, under the limits.
     expect(inside.nested).toBe("1min");
+  });
+});
+
+describe("#1220 — the long-transaction allowlist lifts the timeouts, never the guard", () => {
+  it("static-generator.build runs without the 0392 timeouts and still may not nest", async () => {
+    const holder = "static-generator.build";
+    expect(LONG_TRANSACTION_ALLOWLIST.get(holder)?.reason).toBeTruthy();
+    expect(NESTED_CHECKOUT_ALLOWLIST.has(holder)).toBe(false);
+    let own: string | undefined;
+    await expect(
+      adapter.withAdminTransaction(
+        ctx,
+        async (tx) => {
+          const rows = (await tx.execute(
+            sql`SELECT current_setting('statement_timeout') AS v`,
+          )) as unknown as { v: string }[];
+          own = rows[0]?.v;
+          await adapter.withAdminTransaction(ctx, async (inner) => inner.execute(sql`SELECT 1`));
+        },
+        { holder },
+      ),
+    ).rejects.toBeInstanceOf(NestedPoolCheckoutError);
+    expect(own).toBe("0");
+  });
+
+  it("every long-transaction entry says why", () => {
+    for (const entry of LONG_TRANSACTION_ALLOWLIST.values()) {
+      expect(entry.reason.length).toBeGreaterThan(20);
+    }
   });
 });
 
