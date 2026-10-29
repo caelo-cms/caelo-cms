@@ -13,8 +13,10 @@
  * The seeded module carries a probe script that tries exactly what an
  * attacker would and writes what it could do into the page. The spec then
  * checks that Live Edit itself still works: media loads through the
- * read-only grant, right-click → chip lands in the composer, and a reload
- * after an edit keeps working (it is now driven by the editor).
+ * read-only grant, right-click → chip lands in the composer, a reload
+ * after an edit keeps working (it is now driven by the editor), and a
+ * cookie the page sets — a consent decision — survives that reload in the
+ * preview's own jar (`preview-cookie-jar.ts`).
  */
 
 import { expect, type Request, test } from "@playwright/test";
@@ -146,7 +148,8 @@ test("a module script in the Live Edit preview cannot act as the operator; Live 
     origin: "null",
     top: false,
     parentDoc: "blocked",
-    cookie: "blocked",
+    // The preview's own cookie jar, empty so far: never the admin's cookies.
+    cookie: "",
     storage: "blocked",
     adminFetch: "blocked",
   });
@@ -195,6 +198,18 @@ test("a module script in the Live Edit preview cannot act as the operator; Live 
   await expect(preview.locator("h1")).toHaveText("SANDBOX_PROBE", { timeout: 15_000 });
   await expect(probe).not.toHaveText("STALE", { timeout: 15_000 });
 
+  // A cookie the page sets (the consent banner's decision) survives the
+  // reload: before, the sandbox kept it in memory and the banner asked again.
+  await preview.locator("body").evaluate(() => {
+    document.cookie = "caelo_consent=accepted;path=/;max-age=3600;samesite=lax";
+    const channel = new URLSearchParams(window.location.search).get("channel");
+    window.parent.postMessage(
+      { kind: "caelo:navigate", channel, href: window.location.pathname + window.location.search },
+      window.location.origin,
+    );
+  });
+  await expect(probe).toHaveText(/"cookie":"caelo_consent=accepted"/, { timeout: 15_000 });
+
   // --- opened directly in a tab, the preview sandboxes itself -----------------
   const direct = await page.goto(`/edit/preview-by-path/${PAGE_SLUG}`);
   expect(direct?.headers()["content-security-policy"]).toBe("sandbox allow-scripts");
@@ -203,6 +218,7 @@ test("a module script in the Live Edit preview cannot act as the operator; Live 
   await expect(topProbe).not.toHaveText("pending", { timeout: 15_000 });
   const topReport = JSON.parse((await topProbe.textContent()) ?? "{}") as Record<string, unknown>;
   expect(topReport.origin).toBe("null");
-  expect(topReport.cookie).toBe("blocked");
+  // Only the preview's own jar, never the operator's session.
+  expect(topReport.cookie).toBe("caelo_consent=accepted");
   expect(topReport.adminFetch).toBe("blocked");
 });
