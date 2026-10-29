@@ -107,6 +107,32 @@ export function groupOpenProblems(open: readonly OpenProblem[]): ProblemGroup[] 
   );
 }
 
+/** One group as the editor's Staging menu lists it: the name, how many pages, a few of them. */
+export interface ProblemGroupSummary {
+  readonly key: string;
+  readonly title: string;
+  readonly pageCount: number;
+  readonly pages: { readonly pagePath: string; readonly detail: string }[];
+}
+
+/**
+ * #1207 — the largest groups (by pages), for the short list under a closed
+ * Publish live, so the operator sees what blocks it without opening the
+ * chat card. Capped both ways: a site-wide rule can fail on 50k pages.
+ */
+export function topProblemGroups(
+  groups: readonly ProblemGroup[],
+  limit = 5,
+  samplePages = 3,
+): ProblemGroupSummary[] {
+  return groups.slice(0, limit).map((g) => ({
+    key: g.key,
+    title: g.title,
+    pageCount: g.pages.length,
+    pages: g.pages.slice(0, samplePages).map((p) => ({ pagePath: p.pagePath, detail: p.detail })),
+  }));
+}
+
 /** "seo-check/description-missing: 312 page(s)" — one line per group. */
 export function groupSummaryLine(group: ProblemGroup, samplePaths = 3): string {
   const shown = group.pages.slice(0, samplePaths).map((p) => p.pagePath);

@@ -30,7 +30,7 @@ import {
   fixPromptFor,
 } from "../../quality/chat-feedback.js";
 import { CURRENT_GATE_RULES, decideGate, type GateDecision } from "../../quality/gate.js";
-import { groupOpenProblems } from "../../quality/problem-groups.js";
+import { groupOpenProblems, topProblemGroups } from "../../quality/problem-groups.js";
 import { appendChatMessageOp } from "../chat/messages.js";
 import { promoteDeployOp } from "../deploy.js";
 import { actorHasPermission } from "./_permissions.js";
@@ -53,6 +53,17 @@ const gateSchema = z.object({
   message: z.string(),
   canPublishAnyway: z.boolean(),
   openProblemCount: z.number().int(),
+  /** #1207 — the open problems grouped by rule, largest groups first (at most 5). */
+  topProblems: z.array(
+    z.object({
+      key: z.string(),
+      title: z.string(),
+      pageCount: z.number().int(),
+      pages: z.array(z.object({ pagePath: z.string(), detail: z.string() })),
+    }),
+  ),
+  /** How many groups there are in all; more than `topProblems` lists means "and N more". */
+  problemGroupCount: z.number().int(),
 });
 
 const gateStatusOutput = z.object({
@@ -66,6 +77,7 @@ function gateView(
   g: GateDecision | null,
 ): z.infer<typeof gateStatusOutput> {
   if (deployRunId === null || g === null) return { deployRunId: null, gate: null };
+  const groups = groupOpenProblems(g.openProblems);
   return {
     deployRunId,
     gate: {
@@ -75,6 +87,8 @@ function gateView(
       message: g.message,
       canPublishAnyway: g.canPublishAnyway,
       openProblemCount: g.openProblems.length,
+      topProblems: topProblemGroups(groups),
+      problemGroupCount: groups.length,
     },
   };
 }

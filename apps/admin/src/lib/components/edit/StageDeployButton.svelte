@@ -37,7 +37,11 @@
     DialogHeader,
     DialogTitle,
   } from "#lib/components/ui/dialog/index.js";
-  import { postQualityAction, qualityStatusFor } from "./quality-status.svelte.js";
+  import {
+    postQualityAction,
+    type QualityGate,
+    qualityStatusFor,
+  } from "./quality-status.svelte.js";
   import {
     formResultError,
     offersStageAgain,
@@ -209,6 +213,22 @@
   let qualityBusy = $state(false);
   let publishAnywayOpen = $state(false);
   let publishAnywayError = $state<string | null>(null);
+
+  type TopProblem = QualityGate["topProblems"][number];
+
+  /** #1207 — the composer text of a top problem's row: fix just this group. */
+  function fixOnePrompt(problem: TopProblem): string {
+    const paths = problem.pages.map((p) => p.pagePath).join(", ");
+    const where =
+      problem.pageCount === problem.pages.length ? paths : `${problem.pageCount} pages, e.g. ${paths}`;
+    return `Fix the quality problem "${problem.title}" (${problem.key}) on ${where}.`;
+  }
+
+  /** The row's second line: a few pages with their measured value. */
+  function problemPagesLine(problem: TopProblem): string {
+    const shown = problem.pages.map((p) => (p.detail ? `${p.pagePath} (${p.detail})` : p.pagePath));
+    return shown.join(", ") + (problem.pageCount > problem.pages.length ? ", …" : "");
+  }
 
   async function retryQualityCheck(): Promise<void> {
     qualityBusy = true;
@@ -540,6 +560,41 @@
           </Button>
         {/if}
       </div>
+      {#if gate.state === "problems" && gate.topProblems.length > 0}
+        <!-- #1207 — what blocks Publish live, without opening the chat card:
+             the largest groups by pages; a row asks the AI to fix just that one. -->
+        <ul class="-mx-2 space-y-0.5" data-testid="quality-top-problems">
+          {#each gate.topProblems as problem (problem.key)}
+            <li>
+              <button
+                type="button"
+                class="w-full rounded px-2 py-1.5 text-left hover:bg-accent"
+                title="Ask the AI to fix this one"
+                data-testid="quality-top-problem"
+                onclick={() => {
+                  stagingMenuOpen = false;
+                  askInChat(fixOnePrompt(problem));
+                }}
+              >
+                <span class="flex items-baseline gap-2 text-xs">
+                  <span class="min-w-0 flex-1 truncate font-medium">{problem.title}</span>
+                  <span class="shrink-0 text-muted-foreground tabular-nums">
+                    {problem.pageCount} {problem.pageCount === 1 ? "page" : "pages"}
+                  </span>
+                </span>
+                <span class="block truncate font-mono text-[11px] text-muted-foreground">
+                  {problemPagesLine(problem)}
+                </span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+        {#if gate.problemGroupCount > gate.topProblems.length}
+          <p class="text-xs text-muted-foreground">
+            And {gate.problemGroupCount - gate.topProblems.length} more kinds of problems — Fix in chat covers all of them.
+          </p>
+        {/if}
+      {/if}
       {#if qualityActionError}
         <p role="alert" class="text-xs font-medium text-red-700 dark:text-red-300" data-testid="quality-action-error">
           {qualityActionError}
