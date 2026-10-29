@@ -9,6 +9,11 @@
  *   - Module edit → every page that uses the module (page_modules join).
  *   - Template edit → every page on that template.
  *   - Layout edit → every page on a template bound to that layout.
+ *   - Content instance edit → every page it renders on: its own
+ *     placements and everything a parent shows it on, transitively
+ *     (#627 — a nested-only child has no placement of its own); a module
+ *     default in layout chrome counts as a layout edit, a shared list
+ *     that shows it as a list edit.
  *   - List / list type / page type edit → site-wide rebuild: lists
  *     render through module fields, page queries and system sources on
  *     pages this op cannot enumerate; the generator's per-page render
@@ -23,6 +28,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { loadContentInstanceReach } from "../content/content-instance-reach.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function uuidArrayLiteral(ids: ReadonlyArray<string>): string {
@@ -47,6 +53,8 @@ const inputSchema = z
     listTypeIds: z.array(z.string().uuid()).default([]),
     /** Page types touched — a full-site rebuild. */
     pageTypeIds: z.array(z.string().uuid()).default([]),
+    /** #627 — content instances touched: the pages they render on, through their parents too. */
+    contentInstanceIds: z.array(z.string().uuid()).default([]),
   })
   .strict();
 
@@ -64,26 +72,57 @@ export const publishImpactPagesOp = defineOperation({
       fromModules: z.number().int().nonnegative(),
       fromTemplates: z.number().int().nonnegative(),
       fromLayouts: z.number().int().nonnegative(),
+      fromContentInstances: z.number().int().nonnegative(),
     }),
   }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     // Fast paths.
     if (input.listIds.length + input.listTypeIds.length + input.pageTypeIds.length > 0) {
       return ok({
         pageIds: [],
         fullSite: true,
-        breakdown: { fromModules: 0, fromTemplates: 0, fromLayouts: 0 },
+        breakdown: { fromModules: 0, fromTemplates: 0, fromLayouts: 0, fromContentInstances: 0 },
       });
     }
-    if (
-      input.moduleIds.length === 0 &&
-      input.templateIds.length === 0 &&
-      input.layoutIds.length === 0
-    ) {
+
+    // #627 — content instances reach pages through placements, through
+    // parent instances (nested module / module-list fields), through
+    // module defaults (layout chrome) and through shared lists.
+    const contentPageIds = new Set<string>();
+    const layoutIds = new Set(input.layoutIds);
+    if (input.contentInstanceIds.length > 0) {
+      const reach = await loadContentInstanceReach(
+        tx,
+        ctx.chatBranchId ?? null,
+        input.contentInstanceIds,
+      );
+      for (const r of reach.values()) {
+        if (r.viaLists.length > 0) {
+          return ok({
+            pageIds: [],
+            fullSite: true,
+            breakdown: {
+              fromModules: 0,
+              fromTemplates: 0,
+              fromLayouts: 0,
+              fromContentInstances: 0,
+            },
+          });
+        }
+        for (const p of r.pages) contentPageIds.add(p.pageId);
+        for (const l of r.chromeLayouts) layoutIds.add(l.layoutId);
+      }
+    }
+    if (input.moduleIds.length === 0 && input.templateIds.length === 0 && layoutIds.size === 0) {
       return ok({
-        pageIds: [],
+        pageIds: [...contentPageIds],
         fullSite: false,
-        breakdown: { fromModules: 0, fromTemplates: 0, fromLayouts: 0 },
+        breakdown: {
+          fromModules: 0,
+          fromTemplates: 0,
+          fromLayouts: 0,
+          fromContentInstances: contentPageIds.size,
+        },
       });
     }
 
@@ -96,7 +135,7 @@ export const publishImpactPagesOp = defineOperation({
     type Row = { page_id: string; src: "module" | "template" | "layout" };
     const moduleArr = uuidArrayLiteral(input.moduleIds);
     const templateArr = uuidArrayLiteral(input.templateIds);
-    const layoutArr = uuidArrayLiteral(input.layoutIds);
+    const layoutArr = uuidArrayLiteral([...layoutIds]);
 
     const moduleCte =
       input.moduleIds.length > 0
@@ -115,7 +154,7 @@ export const publishImpactPagesOp = defineOperation({
         : sql`SELECT NULL::text AS page_id, NULL::text AS src WHERE FALSE`;
 
     const layoutCte =
-      input.layoutIds.length > 0
+      layoutIds.size > 0
         ? sql`SELECT DISTINCT p.id::text AS page_id, 'layout'::text AS src
               FROM pages p
               JOIN templates t ON t.id = p.template_id
@@ -129,7 +168,7 @@ export const publishImpactPagesOp = defineOperation({
       UNION ALL ${layoutCte}
     `)) as unknown as Row[];
 
-    const pageIdSet = new Set<string>();
+    const pageIdSet = new Set<string>(contentPageIds);
     let fromModules = 0;
     let fromTemplates = 0;
     let fromLayouts = 0;
@@ -147,6 +186,7 @@ export const publishImpactPagesOp = defineOperation({
         fromModules,
         fromTemplates,
         fromLayouts,
+        fromContentInstances: contentPageIds.size,
       },
     });
   },

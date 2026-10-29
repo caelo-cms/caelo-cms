@@ -21,7 +21,7 @@ import {
   loadContentInstanceBranchStates,
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
-import { countPlacementsInView } from "./content-instances.js";
+import { countPlacementsInView } from "./content-instance-reach.js";
 
 const MAX_TARGETS = 200;
 
@@ -113,7 +113,7 @@ export const listModulePeersOp = defineOperation({
     );
     return ok({
       instances: live.map((r) => {
-        const raw = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
+        const raw = r.values;
         return {
           id: r.id,
           moduleId: r.module_id,

@@ -961,7 +961,8 @@ export const actions: Actions = {
    *
    * Kind options surfaced in the picker:
    *   - "pages"     — page metadata (slug, title, status) + per-page
-   *                   layout + per-placement content edits
+   *                   layout + per-placement and content-instance edits
+   *                   (the pages each instance renders on, #627)
    *   - "modules"   — module HTML/CSS/JS/fields edits
    *   - "templates" — template body / block layout changes
    *   - "lists"     — shared lists, list types and page types
@@ -1024,6 +1025,7 @@ export const actions: Actions = {
           pageIds: string[];
           templateIds: string[];
           pageLayoutPageIds: string[];
+          contentInstanceIds: string[];
         };
         const impactR = await execute(
           registry,
@@ -1034,6 +1036,10 @@ export const actions: Actions = {
             moduleIds: checked.has("modules") ? entities.moduleIds : [],
             templateIds: checked.has("templates") ? entities.templateIds : [],
             layoutIds: [],
+            // #627 — "pages" covers per-placement content edits: a content
+            // instance re-bakes every page it renders on, through its
+            // parents too (a nested-only child has no placement of its own).
+            contentInstanceIds: checked.has("pages") ? entities.contentInstanceIds : [],
           },
         );
         const all = new Set<string>();

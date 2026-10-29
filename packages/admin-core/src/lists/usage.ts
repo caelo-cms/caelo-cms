@@ -11,8 +11,8 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { countPlacementsInView } from "../ops/content/content-instance-reach.js";
 import { findContentInstancesContaining } from "../ops/content/content-instance-refs.js";
-import { countPlacementsInView } from "../ops/content/content-instances.js";
 import { listFieldsOf, loadModulesInView, pageTermsOfList } from "./local.js";
 import { loadListEntities } from "./store.js";
 

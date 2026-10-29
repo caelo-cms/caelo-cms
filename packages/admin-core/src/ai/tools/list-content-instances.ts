@@ -2,8 +2,9 @@
 
 /**
  * v0.12.0 — `list_content_instances` (2026-07: makeListReadTool — TOON
- * output, uniform filter/limit/offset/full). placementCount = blast
- * radius; check it BEFORE set_content_instance_values_many.
+ * output, uniform filter/limit/offset/full). `pages` = blast radius (#627:
+ * own placements plus every page a parent renders on); check it BEFORE
+ * set_content_instance_values_many.
  *
  * It is also the decision support the retired `## Content Library`
  * prompt block carried (CLAUDE.md §1A, §11: site state is fetched, never
@@ -32,21 +33,24 @@ export const listContentInstancesTool = makeListReadTool<
     displayName: string | null;
     purpose: string | null;
     placementCount: number;
-    nestedParentCount: number;
+    parentCount: number;
+    renderedPageCount: number;
+    rendersSiteWide: boolean;
   }
 >({
   name: "list_content_instances",
   description: [
-    "List content_instances — values filling module placeholders (TOON rows: id, module, kind, slug, displayName, purpose, placements, parents), most-placed first; counts as this chat's draft sees them.",
+    "List content_instances — values filling module placeholders (TOON rows: id, module, kind, slug, displayName, purpose, placements, parents, pages), widest reach first; counts as this chat's draft sees them.",
     "- `purpose` = why a shared row exists: read it BEFORE minting (`create_content_instances`); reuse a row whose purpose + module fit.",
-    "- `placements` = blast radius: >1 = SHARED, edits propagate to every bound page -> check BEFORE `set_content_instance_values_many`.",
-    "- `parents` = instances showing this one in a `module`/`module-list` field. ORPHAN (safe to delete) = placements 0 AND parents 0.",
+    "- `placements` = its own placements; `parents` = instances, module defaults (layout chrome) and shared lists that show it inside them.",
+    "- `pages` = blast radius: every page it renders on, its own placements plus everything its parents render on (`+site` = also layout chrome or a shared list) -> check BEFORE `set_content_instance_values_many`; `get_content_instance` names them.",
+    "- ORPHAN (safe to delete) = placements 0 AND parents 0.",
     "Narrow by `moduleId` / `slug` / `pageId` (instances used on that page).",
   ].join("\n"),
   opName: "content_instances.list",
   input: listContentInstancesInput,
   label: "content_instances",
-  // Most-placed first: the shared rows that matter for a reuse decision stay
+  // Widest reach first: the shared rows that matter for a reuse decision stay
   // on the first page instead of behind older single-placement rows (the op
   // orders by creation time). The id tiebreak keeps offsets stable.
   rows: (value) =>
@@ -61,11 +65,19 @@ export const listContentInstancesTool = makeListReadTool<
             displayName: string | null;
             purpose: string | null;
             placementCount: number;
-            nestedParentCount: number;
+            parentCount: number;
+            renderedPageCount: number;
+            rendersSiteWide: boolean;
           }[];
         }
       ).instances,
-    ].sort((a, b) => b.placementCount - a.placementCount || a.id.localeCompare(b.id)),
+    ].sort(
+      (a, b) =>
+        Number(b.rendersSiteWide) - Number(a.rendersSiteWide) ||
+        b.renderedPageCount - a.renderedPageCount ||
+        b.placementCount - a.placementCount ||
+        a.id.localeCompare(b.id),
+    ),
   columns: [
     { key: "id", value: (i) => i.id },
     { key: "module", value: (i) => i.moduleSlug },
@@ -74,7 +86,11 @@ export const listContentInstancesTool = makeListReadTool<
     { key: "displayName", value: (i) => i.displayName ?? "" },
     { key: "purpose", value: (i) => i.purpose ?? "" },
     { key: "placements", value: (i) => i.placementCount },
-    { key: "parents", value: (i) => i.nestedParentCount },
+    { key: "parents", value: (i) => i.parentCount },
+    {
+      key: "pages",
+      value: (i) => (i.rendersSiteWide ? `${i.renderedPageCount}+site` : i.renderedPageCount),
+    },
   ],
   emptyMessage: "No content_instances match. Call create_content_instances to mint one.",
 });
