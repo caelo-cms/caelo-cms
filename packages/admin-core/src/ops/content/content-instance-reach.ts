@@ -30,7 +30,11 @@ import { pendingSnapshotSql } from "../../draft.js";
 import { loadListEntities } from "../../lists/store.js";
 import { loadBranchedModuleStates } from "../../snapshots/index.js";
 import type { PageLayoutState } from "../../snapshots/state.js";
-import { findContentInstancesContaining } from "./content-instance-refs.js";
+import {
+  type ContentInstanceRef,
+  findContentInstancesContaining,
+  findContentInstancesOfModules,
+} from "./content-instance-refs.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 import { findModulePagePlacements } from "./module-placements.js";
 
@@ -289,9 +293,19 @@ export async function loadContentInstanceReach(
   const ids = [...new Set(contentInstanceIds)];
   if (ids.length === 0) return out;
 
+  // Module field defaults that list an instance, for every instance at
+  // once: the walk below and the module-default reach both read it.
+  const moduleParents = await moduleDefaultParents(tx, branchId, null);
+
   // 1. Parent instances, transitively. Past a few ids one scan of every
-  // nested ref answers all levels of the walk.
+  // nested ref answers all levels of the walk. An instance whose module's
+  // field default lists the child, and which leaves that field unset,
+  // renders the child too (the renderer falls back to the default), so it
+  // is walked as a parent as well — `parentsOf` keeps only the stored
+  // references, `shownBy` every parent the walk follows.
   const parentsOf = new Map<string, string[]>();
+  const shownBy = new Map<string, string[]>();
+  const instancesByModule = new Map<string, ContentInstanceRef[]>();
   let everyParent: Map<string, string[]> | null = null;
   let frontier = ids;
   for (let depth = 0; depth < MAX_NESTING_DEPTH && frontier.length > 0; depth += 1) {
@@ -299,19 +313,39 @@ export async function loadContentInstanceReach(
       everyParent = await nestedParentsInView(tx, branchId, "all");
     }
     const found = everyParent ?? (await nestedParentsInView(tx, branchId, frontier));
+    const unloaded = new Set<string>();
+    for (const id of frontier) {
+      for (const m of moduleParents.get(id) ?? []) {
+        if (!instancesByModule.has(m.moduleId)) unloaded.add(m.moduleId);
+      }
+    }
+    if (unloaded.size > 0) {
+      for (const moduleId of unloaded) instancesByModule.set(moduleId, []);
+      for (const ci of await findContentInstancesOfModules(tx, branchId, [...unloaded])) {
+        instancesByModule.get(ci.moduleId)?.push(ci);
+      }
+    }
     const next = new Set<string>();
     for (const id of frontier) {
       const parents = found.get(id) ?? [];
       parentsOf.set(id, parents);
-      for (const p of parents) if (!parentsOf.has(p)) next.add(p);
+      const shown = new Set(parents);
+      for (const m of moduleParents.get(id) ?? []) {
+        for (const ci of instancesByModule.get(m.moduleId) ?? []) {
+          if (ci.contentInstanceId === id) continue;
+          const values = JSON.parse(ci.valuesText) as Record<string, unknown>;
+          if (!Object.hasOwn(values, m.field)) shown.add(ci.contentInstanceId);
+        }
+      }
+      shownBy.set(id, [...shown]);
+      for (const p of shown) if (!parentsOf.has(p)) next.add(p);
     }
     frontier = [...next];
   }
   const closure = [...parentsOf.keys()];
   const inClosure = new Set(closure);
 
-  // 2. Module defaults and shared lists that show any instance of the closure.
-  const moduleParents = await moduleDefaultParents(tx, branchId, inClosure);
+  // 2. Shared lists that show any instance of the closure.
   const listParents = new Map<string, ListParent[]>();
   for (const list of await loadListEntities(tx, "list", branchId)) {
     const parent = { listId: list.id, slug: list.state.slug, name: list.state.name };
@@ -326,7 +360,9 @@ export async function loadContentInstanceReach(
 
   // 3. Where the closure renders: placements, and the pages / layouts of parent modules.
   const placements = await listPlacementsInView(tx, closure, branchId);
-  const parentModuleIds = [...new Set([...moduleParents.values()].flat().map((m) => m.moduleId))];
+  const parentModuleIds = [
+    ...new Set(closure.flatMap((id) => moduleParents.get(id) ?? []).map((m) => m.moduleId)),
+  ];
   // A module default renders on a placement whose own content leaves that
   // field empty, so these are the pages it MAY render on — the right side
   // to err on for a blast radius — as the branch's page layouts place it.
@@ -338,7 +374,7 @@ export async function loadContentInstanceReach(
     const stack = [id];
     while (stack.length > 0) {
       const cur = stack.pop() as string;
-      for (const p of parentsOf.get(cur) ?? []) {
+      for (const p of shownBy.get(cur) ?? []) {
         if (ancestors.has(p)) continue;
         ancestors.add(p);
         stack.push(p);
@@ -373,13 +409,13 @@ export async function loadContentInstanceReach(
 
 /**
  * Modules (as the caller sees them) whose field defaults reference an
- * instance of `wanted`, keyed by child id. The live read is prefiltered on
+ * instance of `wanted` (every instance when `null`), keyed by child id. The live read is prefiltered on
  * the ref key; the branch's pending module states supersede live rows.
  */
 async function moduleDefaultParents(
   tx: Tx,
   branchId: string | null,
-  wanted: ReadonlySet<string>,
+  wanted: ReadonlySet<string> | null,
 ): Promise<Map<string, ModuleParent[]>> {
   const visible = branchId
     ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${branchId}::uuid)`
@@ -411,7 +447,7 @@ async function moduleDefaultParents(
         collectNestedRefs({ [f.name]: f.default }).map((r) => r.contentInstanceId),
       );
       for (const child of children) {
-        if (!wanted.has(child)) continue;
+        if (wanted !== null && !wanted.has(child)) continue;
         const parent = { moduleId, slug: m.slug, displayName: m.displayName, field: f.name };
         out.set(child, [...(out.get(child) ?? []), parent]);
       }

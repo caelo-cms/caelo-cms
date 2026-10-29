@@ -13,6 +13,8 @@
  *     pages named; `delete_many` with the unplaced parent first succeeds.
  *   - Reach through a module default follows a chat's branch page layouts:
  *     a placement the chat adds counts, one it removes does not.
+ *   - An embedded instance that leaves a field unset renders its module's
+ *     default there, so the default's child reaches the embedding pages.
  *   - `snapshots.publish_impact_pages` and `chat.branch_edited_entities`
  *     carry content-instance edits to the pages they render on.
  *
@@ -399,6 +401,44 @@ describe("#627 — nested-only instances reach the pages their parents render on
     });
     expect(written.renderedPageCount).toBe(2);
     expect(await pageUpdatedEventsFor(child)).toEqual([kept, added].sort());
+  });
+
+  it("an embedded instance that leaves a field unset shows its module's default there", async () => {
+    // page → A (placed) → B (embedded in A) → C (only in B's module default).
+    const holder = await createModule("holder", "<div>{{#items}}{{>.}}{{/items}}</div>", [
+      { name: "items", kind: "module-list", label: "Items" },
+    ]);
+    const viaDefault = await instance(cardId, "Default-only grandchild", { title: "Shown" });
+    await setFieldDefault(holder, "items", [ref(viaDefault)]);
+    const usesDefault = await instance(holder, "Holder without items", {});
+    const root = await instance(listModuleId, "Embedding root", {
+      items: [ref(usesDefault, holder)],
+    });
+    const pageId = await pageShowing("embedded-default", root);
+
+    const got = await op<Got>(SYS, "content_instances.get", { id: viaDefault });
+    expect(got.instance.placementCount).toBe(0);
+    expect(got.renderedOn.map((p) => p.pageId)).toEqual([pageId]);
+    await op(SYS, "content_instances.set_values", {
+      id: viaDefault,
+      values: { title: "Shown, edited" },
+    });
+    expect(await pageUpdatedEventsFor(viaDefault)).toEqual([pageId]);
+
+    // The same chain where B sets the field: the default does not render.
+    const overrider = await createModule("overrider", "<div>{{#items}}{{>.}}{{/items}}</div>", [
+      { name: "items", kind: "module-list", label: "Items" },
+    ]);
+    const hidden = await instance(cardId, "Overridden grandchild", { title: "Hidden" });
+    await setFieldDefault(overrider, "items", [ref(hidden)]);
+    const overrides = await instance(overrider, "Holder with items", { items: [] });
+    const otherRoot = await instance(listModuleId, "Overriding root", {
+      items: [ref(overrides, overrider)],
+    });
+    await pageShowing("embedded-override", otherRoot);
+
+    const notShown = await op<Got>(SYS, "content_instances.get", { id: hidden });
+    expect(notShown.renderedOn).toEqual([]);
   });
 
   it("chat.branch_edited_entities lists the content instances a chat edited", async () => {
