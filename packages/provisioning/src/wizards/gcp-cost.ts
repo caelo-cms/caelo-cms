@@ -110,6 +110,12 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
         "one container per Lighthouse run, all in parallel (up to 5 pages x 3 runs, ~90 s at 2 vCPU each): ~$0.05 per audited Stage, partly in the free tier; results bucket ~$0",
     },
     {
+      name: "Screenshots (Cloud Run capture job)",
+      monthlyUsd: 1,
+      notes:
+        "one short container per server-side screenshot or page render (~20-40 s at 1 vCPU / 2 GiB): ~$0.001 each, a 50-page site import ~$0.05; mostly in the free tier; capture bucket ~$0",
+    },
+    {
       name: "Cloud Run gateway",
       monthlyUsd: inputs.gatewayMinInstances === 0 ? 1 : 1 + inputs.gatewayMinInstances * 15,
       notes:

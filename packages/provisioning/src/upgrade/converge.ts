@@ -29,6 +29,7 @@
  */
 
 import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
+import { ensureCaptureJob } from "../capture-job-setup.js";
 import { ensureConvergeJob } from "../converge-job-setup.js";
 import { findSqlInstance, planPublicRoleSwitch } from "../gateway-credentials.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
@@ -49,6 +50,8 @@ import { selfCommand } from "../self-command.js";
 import {
   AUDIT_JOB_ENV_VAR,
   AUDIT_RESULTS_BUCKET_ENV_VAR,
+  CAPTURE_BUCKET_ENV_VAR,
+  CAPTURE_JOB_ENV_VAR,
   type CloudRunEnvVar,
   CONVERGE_JOB_ENV_VAR,
   MCP_ENV_VAR,
@@ -331,6 +334,42 @@ export function startConverge(
     leaveUntouched.push(AUDIT_JOB_ENV_VAR, AUDIT_RESULTS_BUCKET_ENV_VAR);
   }
 
+  async function captureJob(): Promise<void> {
+    // #1217 — the job every server-side browser render runs in, so no
+    // Chromium runs in the admin. Deployed with the admin's CURRENT image
+    // (the app-roll then moves both together; the job refuses an order from
+    // another version). A failure only costs server-side screenshots, so it
+    // warns and the admin keeps its current env.
+    const s = r.step("Ensuring the capture job (server-side screenshots outside the admin)...");
+    const image = await resolveAdminImage(
+      { projectId: install.projectId, region: install.region, env: install.env },
+      { run },
+    );
+    const cj = image.ok
+      ? await ensureCaptureJob(
+          {
+            provider: install.provider,
+            projectId: install.projectId,
+            region: install.region,
+            env: install.env,
+            adminImageRef: image.imageRef,
+          },
+          runDeps,
+        )
+      : { ok: false as const, done: [], error: image.error };
+    for (const step of cj.done) r.info(`  ${step}`);
+    if (cj.ok) {
+      s.done("Capture job ready (screenshots run outside the admin)");
+      return;
+    }
+    s.warned(`Capture job not set up: ${cj.error}`);
+    r.warn(
+      "The upgrade continues; server-side screenshots fail with the missing job until this succeeds. Re-run upgrade once the cause is fixed.",
+    );
+    incomplete = true;
+    leaveUntouched.push(CAPTURE_JOB_ENV_VAR, CAPTURE_BUCKET_ENV_VAR);
+  }
+
   async function remoteMcpEdge(): Promise<void> {
     // #806 — on `gcp` the load balancer routes the remote-MCP discovery
     // paths to the gateway and Cloud Armor lets agent traffic through on
@@ -592,6 +631,7 @@ export function startConverge(
       await mcpAccess();
       await urlMapRedirectsAccess();
       await auditJob();
+      await captureJob();
       await remoteMcpEdge();
       return true;
     },

@@ -55,7 +55,7 @@ import {
   rollService,
   serviceRollArgs,
 } from "../stack-converge.js";
-import { describeAuditJobImage, setAuditJobImage } from "./audit-job-roll.js";
+import { adminImageJobs, describeJobImage, setJobImage } from "./admin-image-jobs.js";
 import { restoreCommand, type SqlBackup } from "./backup.js";
 import {
   describeServiceJson,
@@ -494,15 +494,15 @@ export async function executeAppRoll(
   }
 
   const rolled: RollPlan[] = [];
-  /** The audit job's image before this roll moved it (#875); null = not moved. */
-  let auditJobPriorImage: string | null = null;
+  /** Jobs this roll moved onto the admin's image (#875, #1217), with their prior image. */
+  const movedJobs: { readonly name: string; readonly label: string; readonly prior: string }[] = [];
   const rollBack = async (alsoCurrent?: RollPlan): Promise<void> => {
-    if (auditJobPriorImage) {
-      const back = await setAuditJobImage(run, install, auditJobPriorImage);
-      if (back.ok) r.info(`  audit job image restored to ${auditJobPriorImage.slice(-19)}`);
+    for (const j of movedJobs) {
+      const back = await setJobImage(run, install, j.name, j.prior);
+      if (back.ok) r.info(`  ${j.label} image restored to ${j.prior.slice(-19)}`);
       else
         r.error(
-          `  audit job rollback FAILED (${back.error}) — set its image to ${auditJobPriorImage} by hand`,
+          `  ${j.label} rollback FAILED (${back.error}) — set its image to ${j.prior} by hand`,
         );
     }
     const services = alsoCurrent ? [...rolled, alsoCurrent] : rolled;
@@ -589,31 +589,34 @@ export async function executeAppRoll(
     rolled.push(p);
   }
 
-  // #875 — the audit job runs the admin's image; it follows the admin. A
-  // failure here does not undo the release: audits then fail loudly with
-  // the version mismatch and the fix, until the next upgrade moves it.
-  const sAudit = r.step("Moving the quality-audit job onto the admin's image...");
-  const described = await describeAuditJobImage(run, install);
-  const auditPrior = described.ok ? described.image : null;
-  if (!described.ok) {
-    sAudit.warned(
-      `Could not read the quality-audit job (${described.error}); Stage audits fail until the next upgrade moves it.`,
-    );
-  } else if (!auditPrior) {
-    sAudit.warned(
-      "The install has no quality-audit job yet; Stage audits fail until `cms-provision upgrade` sets it up.",
-    );
-  } else if (auditPrior === admin.imageRef) {
-    sAudit.done("Quality-audit job already on the admin's image");
-  } else {
-    const moved = await setAuditJobImage(run, install, admin.imageRef);
-    if (moved.ok) {
-      auditJobPriorImage = auditPrior;
-      sAudit.done(`Quality-audit job on ${admin.digest.slice(0, 19)}...`);
-    } else {
-      sAudit.warned(
-        `Quality-audit job not moved (${moved.error}); Stage audits fail until the next upgrade moves it.`,
+  // #875 / #1217 — the audit and capture jobs run the admin's image; they
+  // follow the admin. A failure here does not undo the release: the job then
+  // refuses with the version mismatch and the fix, until the next upgrade
+  // moves it.
+  for (const job of adminImageJobs(install.env)) {
+    const sJob = r.step(`Moving the ${job.label} onto the admin's image...`);
+    const described = await describeJobImage(run, install, job.name);
+    const prior = described.ok ? described.image : null;
+    if (!described.ok) {
+      sJob.warned(
+        `Could not read the ${job.label} (${described.error}); ${job.lagging} until the next upgrade moves it.`,
       );
+    } else if (!prior) {
+      sJob.warned(
+        `The install has no ${job.label} yet; ${job.lagging} until \`cms-provision upgrade\` sets it up.`,
+      );
+    } else if (prior === admin.imageRef) {
+      sJob.done(`The ${job.label} is already on the admin's image`);
+    } else {
+      const moved = await setJobImage(run, install, job.name, admin.imageRef);
+      if (moved.ok) {
+        movedJobs.push({ name: job.name, label: job.label, prior });
+        sJob.done(`The ${job.label} is on ${admin.digest.slice(0, 19)}...`);
+      } else {
+        sJob.warned(
+          `The ${job.label} was not moved (${moved.error}); ${job.lagging} until the next upgrade moves it.`,
+        );
+      }
     }
   }
 

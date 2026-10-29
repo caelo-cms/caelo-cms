@@ -52,6 +52,7 @@
 import { z } from "zod";
 import {
   auditServiceAccountEmail,
+  captureServiceAccountEmail,
   gatewayServiceAccountEmail,
   mcpIapServiceAccountEmail,
   runServiceAccountEmail,
@@ -187,7 +188,7 @@ export function upgraderAccessChecks(target: {
     },
     {
       // #875 — every app-roll moves the audit job onto the new admin image
-      // (upgrade/audit-job-roll.ts), and upgrader-setup.ts grants actAs on
+      // (upgrade/admin-image-jobs.ts), and upgrader-setup.ts grants actAs on
       // the job's account for exactly that.
       need: "move the quality-audit job onto the new admin image",
       resource: project,
@@ -196,6 +197,12 @@ export function upgraderAccessChecks(target: {
     {
       need: "run the quality-audit job as its service account after moving it",
       resource: sa(auditServiceAccountEmail(projectId, env)),
+      permissions: ["iam.serviceAccounts.actAs"],
+    },
+    {
+      // #1217 — the capture job follows the admin's image the same way.
+      need: "run the capture job as its service account after moving it",
+      resource: sa(captureServiceAccountEmail(projectId, env)),
       permissions: ["iam.serviceAccounts.actAs"],
     },
     {

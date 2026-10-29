@@ -56,7 +56,7 @@ import {
 } from "./gcp-names.js";
 import { readAdminConfig } from "./migration-runner.js";
 import type { GcpProvider } from "./stack-contract.js";
-import { describeAuditJobImage } from "./upgrade/audit-job-roll.js";
+import { describeJobImage } from "./upgrade/admin-image-jobs.js";
 
 /** Where the admin image ships the task's entry point. */
 export const AUDIT_TASK_SCRIPT = "/app/packages/admin-core/src/quality/audit-task.ts";
@@ -285,7 +285,7 @@ export async function ensureAuditJob(
   //    cap; an existing job keeps its own.
   let parallelism = target.parallelism;
   if (parallelism === undefined) {
-    const existing = await describeAuditJobImage(run, { projectId, region, env });
+    const existing = await describeJobImage(run, { projectId, region, env }, job);
     if (!existing.ok) return { ok: false, done, error: `read job ${job}: ${existing.error}` };
     if (existing.image === null) parallelism = AUDIT_PARALLELISM_DEFAULT;
   }
