@@ -18,7 +18,10 @@
  *     and robots.txt allows crawling with a `Sitemap:` line;
  *   - page HTML is byte-identical between staging and production;
  *   - a legacy staging build (manifest without `envNoindexInHtml:
- *     false`) is refused with a "Stage again" next step.
+ *     false`) is refused with a "Stage again" next step;
+ *   - the Owner's Approve on the AI's Publish live / rollback card
+ *     (`deploy.execute_proposal`) runs the same handlers inside its own
+ *     transaction, under the nested-checkout guard of #1210 (issue #1225).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -26,7 +29,12 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  DatabaseAdapter,
+  execute,
+  NESTED_CHECKOUT_ALLOWLIST,
+  OperationRegistry,
+} from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
@@ -70,6 +78,7 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`DELETE FROM deploy_pending_actions WHERE payload_hash LIKE 'promote-seo-%'`;
       await tx`DELETE FROM deploy_runs`;
       await tx`DELETE FROM pages_seo WHERE page_id IN (SELECT id FROM pages WHERE slug IN (${PAGE_SLUG}, ${HIDDEN_SLUG}, ${HOME_SLUG}))`;
       await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN (${PAGE_SLUG}, ${HIDDEN_SLUG}, ${HOME_SLUG}))`;
@@ -247,5 +256,109 @@ describe("deploy.promote ships production SEO semantics", () => {
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(JSON.stringify(r.error)).toContain("run Stage again");
+  });
+});
+
+/** A human holding the Owner role — the approver `deploy.execute_proposal` requires (#589). */
+async function makeOwner(): Promise<ExecutionContext> {
+  const id = crypto.randomUUID();
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`INSERT INTO actors (id, kind, display_name) VALUES (${id}::uuid, 'human', 'promote-seo owner')`;
+      await tx`INSERT INTO users (id, email, password_hash) VALUES (${id}::uuid, ${`${id}@promote-seo.test`}, 'test-only')`;
+      await tx`INSERT INTO user_roles (user_id, role_id) SELECT ${id}::uuid, id FROM roles WHERE name = 'owner'`;
+    });
+  } finally {
+    await sql.end();
+  }
+  return { actorId: id, actorKind: "human", requestId: "promote-seo-owner" };
+}
+
+/** A pending AI proposal as `propose_deploy_promote` / `_rollback` leave it. */
+async function insertProposal(
+  kind: "promote" | "rollback",
+  payload: Record<string, unknown>,
+  preview: Record<string, unknown>,
+): Promise<string> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return (await tx`
+        INSERT INTO deploy_pending_actions (kind, proposed_by, payload, preview, status, payload_hash)
+        VALUES (${kind}, '00000000-0000-0000-0000-000000000a1a'::uuid, ${payload}::jsonb,
+                ${preview}::jsonb, 'pending', ${`promote-seo-${kind}-${crypto.randomUUID()}`})
+        RETURNING id::text AS id`) as { id: string }[];
+    });
+    const id = rows[0]?.id;
+    if (!id) throw new Error("proposal insert returned no id");
+    return id;
+  } finally {
+    await sql.end();
+  }
+}
+
+async function proposalStatus(proposalId: string): Promise<string | undefined> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    const rows = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return (await tx`SELECT status FROM deploy_pending_actions WHERE id = ${proposalId}::uuid`) as {
+        status: string;
+      }[];
+    });
+    return rows[0]?.status;
+  } finally {
+    await sql.end();
+  }
+}
+
+describe("#1225 — the Owner approves the AI's Publish live / rollback card", () => {
+  it("runs without the session timeouts a build outlasts", () => {
+    // The approve holds its transaction across the live build + upload,
+    // like deploy.promote itself; the 0392 timeouts would kill it.
+    expect(NESTED_CHECKOUT_ALLOWLIST.get("deploy.execute_proposal")?.noSessionTimeouts).toBe(true);
+  });
+
+  it("an approved promote publishes live and an approved rollback restores, through the guarded adapter", async () => {
+    const owner = await makeOwner();
+    const staged = await ok<{ buildId: string; runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    await markAudited(staged.runId);
+
+    const promoteId = await insertProposal(
+      "promote",
+      { fromTarget: "staging", toTarget: "production", repoRoot: testRoot },
+      {},
+    );
+    const promoted = await execute(registry, adapter, owner, "deploy.execute_proposal", {
+      proposalId: promoteId,
+    });
+    if (!promoted.ok) throw new Error(`promote approve failed: ${JSON.stringify(promoted.error)}`);
+    const liveRunId = (promoted.value as { runId: string | null }).runId;
+    expect(liveRunId).not.toBeNull();
+    expect(await proposalStatus(promoteId)).toBe("applied");
+    const production = join(testRoot, "output", "production", "current");
+    const manifest = JSON.parse(
+      await readFile(join(production, "routing-manifest.json"), "utf8"),
+    ) as { runId: string };
+    expect(manifest.runId).toBe(staged.buildId);
+
+    const rollbackId = await insertProposal(
+      "rollback",
+      { target: "production", repoRoot: testRoot },
+      { restoreRunId: liveRunId },
+    );
+    const rolledBack = await execute(registry, adapter, owner, "deploy.execute_proposal", {
+      proposalId: rollbackId,
+    });
+    if (!rolledBack.ok) {
+      throw new Error(`rollback approve failed: ${JSON.stringify(rolledBack.error)}`);
+    }
+    expect(await proposalStatus(rollbackId)).toBe("applied");
   });
 });
