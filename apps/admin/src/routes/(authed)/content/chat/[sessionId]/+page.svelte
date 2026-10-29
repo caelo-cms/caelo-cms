@@ -11,6 +11,7 @@
     previewNavigationTarget,
     previewUrl,
   } from "#lib/components/edit/iframe-protocol.js";
+  import { persistPreviewCookies } from "#lib/components/edit/preview-cookie-jar.js";
 
   let { data, form } = $props();
 
@@ -91,10 +92,13 @@
   }
 
   // The sandboxed preview cannot navigate itself (#946): link clicks and
-  // the answer to caelo:reload arrive as caelo:navigate requests.
+  // the answer to caelo:reload arrive as caelo:navigate requests. Nor can
+  // it store cookies: those arrive as caelo:cookies.
   onMount(() => {
     const handler = (ev: MessageEvent): void => {
       const msg = previewMessage(ev, iframe?.contentWindow, previewChannel);
+      // Cookies the page set, kept for the next load (preview-cookie-jar.ts).
+      if (msg?.kind === "caelo:cookies") persistPreviewCookies(msg.cookies);
       if (msg?.kind !== "caelo:navigate" || !iframe) return;
       const target = previewNavigationTarget(msg.href, previewChannel, window.location.origin);
       if (target) iframe.src = target;

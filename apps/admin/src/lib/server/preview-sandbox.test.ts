@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { mintPreviewScreenshotToken, PREVIEW_SCREENSHOT_TOKEN_HEADER } from "@caelo-cms/admin-core";
 import type { Cookies } from "@sveltejs/kit";
 import { isHttpError, isRedirect } from "@sveltejs/kit";
+import { PREVIEW_COOKIE_JAR } from "../components/edit/preview-cookie-jar.js";
 import {
   mintPreviewAssetGrant,
   PREVIEW_ASSET_GRANT_COOKIE,
@@ -78,11 +79,21 @@ describe("preview document headers", () => {
     const cookies = fakeCookies();
     const res = await previewDocumentResponse("<p>x</p>", { cookies, userId: "u1" });
     expect(res.headers.get("content-security-policy")).toBe(PREVIEW_DOCUMENT_CSP);
-    expect(await res.text()).toBe("<p>x</p>");
+    const body = await res.text();
+    expect(body.endsWith("<p>x</p>")).toBe(true);
+    expect(body).toContain("data-caelo-preview-cookies");
     expect(cookies.sets.map((s) => s.name)).toEqual([PREVIEW_ASSET_GRANT_COOKIE]);
     const none = fakeCookies();
-    await previewDocumentResponse("<p>x</p>", null);
+    const capture = await previewDocumentResponse("<p>x</p>", null);
     expect(none.sets).toEqual([]);
+    // A screenshot capture starts without the operator's preview cookies.
+    expect(await capture.text()).toBe("<p>x</p>");
+  });
+
+  it("restores the operator's preview cookies (a consent decision survives a reload)", async () => {
+    const cookies = fakeCookies({ [PREVIEW_COOKIE_JAR]: JSON.stringify({ caelo_consent: "v" }) });
+    const res = await previewDocumentResponse("<head></head><p>x</p>", { cookies, userId: "u1" });
+    expect(await res.text()).toContain('var jar = {"caelo_consent":"v"};');
   });
 });
 

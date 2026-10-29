@@ -23,10 +23,18 @@
  *   loads through a read-only grant cookie (`preview-asset-grant.ts`);
  *   fonts are CORS loads, which an opaque origin makes WITHOUT credentials,
  *   so `inlinePreviewFonts` embeds them as `data:` URIs.
+ * - The opaque origin cannot store cookies either. The operator's preview
+ *   gets a jar of its own that survives reloads (`preview-cookie-jar.ts`),
+ *   so a consent decision does not have to be made again on every load.
  */
 
 import { inlinePreviewFonts, previewDocumentHeaders } from "@caelo-cms/admin-core";
 import type { Cookies } from "@sveltejs/kit";
+import {
+  injectPreviewCookieShim,
+  PREVIEW_COOKIE_JAR,
+  readPreviewCookieJar,
+} from "../components/edit/preview-cookie-jar.js";
 import { setPreviewAssetGrant } from "./preview-asset-grant.js";
 
 // #1217 — the document shape lives in admin-core (the capture job serves the
@@ -51,15 +59,20 @@ export const STAGED_DOCUMENT_CSP =
 /**
  * The response for one sandboxed preview document: fonts inlined, the
  * sandbox headers set, and — for a logged-in operator — the read-only media
- * grant refreshed.
+ * grant refreshed and the operator's preview cookies restored.
  *
  * @param grant - the operator the media grant is minted for; null for a
- *   caller with its own asset credential (the screenshot capture token).
+ *   caller with its own asset credential (the screenshot capture token),
+ *   whose capture starts without cookies like a first-time visitor.
  */
 export async function previewDocumentResponse(
   html: string,
   grant: { readonly cookies: Cookies; readonly userId: string } | null,
 ): Promise<Response> {
-  if (grant) await setPreviewAssetGrant(grant.cookies, grant.userId);
-  return new Response(await inlinePreviewFonts(html), { headers: previewDocumentHeaders() });
+  let doc = html;
+  if (grant) {
+    await setPreviewAssetGrant(grant.cookies, grant.userId);
+    doc = injectPreviewCookieShim(doc, readPreviewCookieJar(grant.cookies.get(PREVIEW_COOKIE_JAR)));
+  }
+  return new Response(await inlinePreviewFonts(doc), { headers: previewDocumentHeaders() });
 }

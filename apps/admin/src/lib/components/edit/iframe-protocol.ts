@@ -25,6 +25,9 @@
  *     and reloads the iframe.
  *   - iframe → parent: `caelo:image-replace` (#918) — open the media
  *     picker for a marked image, then save the pick.
+ *   - iframe → parent: `caelo:cookies` — the preview's cookie jar after
+ *     the page changed a cookie, kept for the next load (a consent
+ *     decision survives a reload; `preview-cookie-jar.ts`).
  *   - parent → iframe: `caelo:page-paths` (#918) — the site's pages, for
  *     link-target suggestions.
  *   - parent → iframe: `caelo:reload` to refetch the iframe's source
@@ -57,6 +60,7 @@
 
 import { LIST_ITEM_ATTR_RE } from "@caelo-cms/shared";
 import { z } from "zod";
+import { previewCookieJarSchema } from "./preview-cookie-jar.js";
 
 /** A fresh channel id (a v4 UUID — the runtime accepts `/^[0-9a-f-]{36}$/`) for one editor mount. */
 export function newPreviewChannel(): string {
@@ -159,6 +163,15 @@ const navigateSchema = z.object({
   href: z.string().min(1).max(4000),
 });
 
+/**
+ * The preview's cookie jar after the page set or deleted a cookie; the
+ * editor keeps it for the next load (`preview-cookie-jar.ts`).
+ */
+const cookiesSchema = z.object({
+  kind: z.literal("caelo:cookies"),
+  cookies: previewCookieJarSchema,
+});
+
 /** Every message the preview may send the editor. Unknown keys are stripped. */
 export const iframeToParentSchema = z.discriminatedUnion("kind", [
   readySchema,
@@ -167,6 +180,7 @@ export const iframeToParentSchema = z.discriminatedUnion("kind", [
   elementReferencedSchema,
   fieldEditMessageSchema,
   imageReplaceMessageSchema,
+  cookiesSchema,
 ]);
 
 export type FieldEdit = z.infer<typeof fieldEditSchema>;
