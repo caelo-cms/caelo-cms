@@ -110,7 +110,10 @@ export function listingTemplates(
       entry: new Map(Object.entries(m.entryKeys).map(([f, keys]) => [f, new Set(keys)])),
     };
     const forest = parseMarkup(stripMustache(m.html, { markSections: true }));
-    const first = flatten(forest, MODULE_SCOPE, fields, false)[0];
+    // The root is the first element, never a placeholder marker.
+    const first = flatten(forest, MODULE_SCOPE, fields, false).find(
+      (c) => c.node.tag !== PARTIAL_MARKER_TAG,
+    );
     if (first) out.set(m.id, { root: first.node, rootScope: first.scope, fields });
   }
   return out;
@@ -260,7 +263,7 @@ function nestedSlot(candidates: readonly Candidate[]): Candidate | null {
     c.scope.kind === "generated" ? 2 : c.scope.kind === "list" ? 1 : 0;
   let best: Candidate | null = null;
   for (const c of candidates) {
-    if (c.node.tag !== PARTIAL_MARKER_TAG) continue;
+    if (c.node.tag !== PARTIAL_MARKER_TAG || !c.node.classes[0]?.startsWith("p:")) continue;
     if (!best || rank(c) > rank(best)) best = c;
   }
   return best;
@@ -375,12 +378,14 @@ function isCondition(name: string): boolean {
  * most classes in common, then the per-entry kinds (see the file header),
  * then template order.
  *
- * When no template element accounts for `c` but one with the same tag sits
- * in an entry or a generated section, `c` is taken as rendered there (the
- * most cautious such scope): a class the template only renders sometimes
- * (`card{{#summary}}--summary{{/summary}}`) must not turn a page query's
- * entries into free, hand-kept markup. Only an element no section could
- * have rendered falls back to the parent's scope.
+ * When no template element accounts for `c` but one with the same tag, or
+ * a placeholder that may emit markup (`{{props.card_html}}`), sits in an
+ * entry or a generated section, `c` is taken as rendered there (the most
+ * cautious such scope): a class the template only renders sometimes
+ * (`card{{#summary}}--summary{{/summary}}`) or markup a source entry's
+ * value carries must not turn a page query's entries into free, hand-kept
+ * markup. Only an element no section could have rendered falls back to the
+ * parent's scope.
  */
 function pickTemplateChild(c: MarkupNode, candidates: readonly Candidate[]): Candidate | null {
   const weight = { generated: 2, list: 1, scalar: 0 } as const;
@@ -397,7 +402,8 @@ function pickTemplateChild(c: MarkupNode, candidates: readonly Candidate[]): Can
   if (best) return best.cand;
   let loose: Candidate | null = null;
   for (const cand of candidates) {
-    if (cand.node.tag !== c.tag || cand.scope.kind === "scalar") continue;
+    const slot = cand.node.tag === PARTIAL_MARKER_TAG;
+    if ((cand.node.tag !== c.tag && !slot) || cand.scope.kind === "scalar") continue;
     if (!loose || weight[cand.scope.kind] > weight[loose.scope.kind]) loose = cand;
   }
   return loose;

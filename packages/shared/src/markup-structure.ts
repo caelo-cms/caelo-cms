@@ -143,9 +143,11 @@ export interface StripMustacheOptions {
 export const SECTION_MARKER_TAG = "caelo-section";
 
 /**
- * The empty element `markSections` leaves where a partial renders a nested
- * module (`{{>teaser}}` → `<caelo-partial class="p:teaser">`), so a reader
- * knows which section the nested module sits in.
+ * The empty element `markSections` leaves where a placeholder between
+ * elements renders: a partial's nested module (`{{>teaser}}` →
+ * `<caelo-partial class="p:teaser">`) or a value that may hold markup
+ * (`{{body}}` → `class="v:body"`), so a reader knows which section the
+ * rendered content sits in.
  */
 export const PARTIAL_MARKER_TAG = "caelo-partial";
 
@@ -220,8 +222,8 @@ function markTagPlaceholders(text: string): string {
 
 /**
  * Turn the section tags left after {@link dropInTagSections} (all between
- * elements) into marker elements, and every partial into an empty
- * {@link PARTIAL_MARKER_TAG}. Whitespace around the sigil and the name
+ * elements) into marker elements, and every partial and value placeholder
+ * into an empty {@link PARTIAL_MARKER_TAG}. Whitespace around the sigil and the name
  * is allowed, as the template engine allows it (`{{ #guides }}`). `[^{}]*`
  * before the closer keeps the match linear.
  */
@@ -231,7 +233,12 @@ function markSections(text: string): string {
     const sigil = body[0];
     const name = body.slice(1).replace(/[\s"<>]/g, "");
     if (sigil === ">") return `<${PARTIAL_MARKER_TAG} class="p:${name}"></${PARTIAL_MARKER_TAG}>`;
-    if (sigil !== "#" && sigil !== "^" && sigil !== "/") return tag;
+    if (sigil !== "#" && sigil !== "^" && sigil !== "/") {
+      const value = body.replace(/[\s"<>{}]/g, "");
+      return value === ""
+        ? tag
+        : `<${PARTIAL_MARKER_TAG} class="v:${value}"></${PARTIAL_MARKER_TAG}>`;
+    }
     if (sigil === "/") return `</${SECTION_MARKER_TAG}>`;
     return `<${SECTION_MARKER_TAG} class="${sigil === "#" ? "s" : "i"}:${name}">`;
   });

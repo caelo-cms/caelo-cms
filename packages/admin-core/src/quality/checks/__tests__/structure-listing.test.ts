@@ -713,4 +713,20 @@ describe("structure/manual-page-listing (#1256)", () => {
     ).filter((x) => x.ruleId === "structure/manual-page-listing");
     expect(f.map((x) => x.severity)).toEqual(["error"]);
   });
+  it("markup a source entry's value carries stays generated", () => {
+    const RAW: StructureModule = {
+      ...QUERY_LIST,
+      id: id(34),
+      slug: "raw",
+      html: '<section class="gi">{{#guides}}{{props.card_html}}{{/guides}}</section>',
+    };
+    const cards = GUIDES.slice(0, 7)
+      .map((p) => `<div class="c"><a href="${p.path}">${p.title}</a></div>`)
+      .join("");
+    const html = `<section class="gi" data-caelo-module-id="${RAW.id}">${cards}</section>`;
+    const f = structureFindings(build(html), [...MODULES, RAW], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f).toEqual([]);
+  });
 });

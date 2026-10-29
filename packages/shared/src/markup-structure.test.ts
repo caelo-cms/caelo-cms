@@ -117,7 +117,7 @@ describe("templates and free regions", () => {
     const t =
       '<ul class="x {{#on}}on{{/on}}">{{#links}}<li><a href="{{link}}">{{label}}</a></li>{{/links}}{{^links}}<p>none</p>{{/links}}</ul>';
     expect(stripMustache(t, { markSections: true })).toBe(
-      '<ul class="x "><caelo-section class="s:links"><li><a href="\u001f"></a></li></caelo-section><caelo-section class="i:links"><p>none</p></caelo-section></ul>',
+      '<ul class="x "><caelo-section class="s:links"><li><a href="\u001f"><caelo-partial class="v:label"></caelo-partial></a></li></caelo-section><caelo-section class="i:links"><p>none</p></caelo-section></ul>',
     );
     // Default output is unchanged.
     expect(stripMustache(t)).toBe('<ul class="x "><li><a href=""></a></li><p>none</p></ul>');
@@ -128,7 +128,7 @@ describe("templates and free regions", () => {
       stripMustache('<a class="card card--{{type}}" href="{{link}}">{{title}}</a>', {
         markSections: true,
       }),
-    ).toBe('<a class="card card--\u001f" href="\u001f"></a>');
+    ).toBe('<a class="card card--\u001f" href="\u001f"><caelo-partial class="v:title"></caelo-partial></a>');
     expect(
       stripMustache("<div>{{#g}}{{> props.teaser }}{{/g}}</div>", { markSections: true }),
     ).toBe(
