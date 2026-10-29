@@ -86,6 +86,15 @@ const ALLOWLIST: readonly AllowlistEntry[] = [
     nestedCheckouts: true,
     noSessionTimeouts: true,
   },
+  // FIXME(issue #1225): the Owner's Approve on the AI's Publish live card
+  // runs the Publish live handler (and a rollback's publisher call) inside
+  // this op's transaction.
+  {
+    holder: "deploy.execute_proposal",
+    issue: 1225,
+    nestedCheckouts: true,
+    noSessionTimeouts: true,
+  },
   // FIXME(issue #1220): the plugin-data build (#1155) has the Stage's shape:
   // a nested `deploy.begin_run` and the bake + upload inside its op tx,
   // which also waits on the live-release lock behind a Publish live.
