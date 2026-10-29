@@ -20,6 +20,31 @@ import type { StructureLayout, StructureSources } from "./structure.js";
 import type { StructureModule } from "./structure-analysis.js";
 import type { StructurePageIndex } from "./structure-listing.js";
 
+/** `list_types.list` as the entry keys need it. */
+interface ListTypeRows {
+  readonly listTypes: readonly {
+    readonly slug: string;
+    readonly definition: {
+      readonly nodes: Readonly<
+        Record<string, { fields: readonly { name: string }[]; children?: { name: string } }>
+      >;
+    };
+  }[];
+}
+
+/** List type slug -> the keys its entries carry: node field names and children loop names. */
+function entryKeysByType(rows: ListTypeRows): Map<string, string[]> {
+  return new Map(
+    rows.listTypes.map((t) => [
+      t.slug,
+      Object.values(t.definition.nodes).flatMap((n) => [
+        ...n.fields.map((f) => f.name),
+        ...(n.children ? [n.children.name] : []),
+      ]),
+    ]),
+  );
+}
+
 /** The `kind`s of fields whose sections render entries (#1256). */
 const LIST_KINDS = new Set(["list", "module-list"]);
 
@@ -39,24 +64,38 @@ export function structureSourcesFromOps(
     return pick(r.value);
   };
   return {
-    modules: () =>
-      read("modules.list", (v) =>
-        (
-          v as {
-            modules: (Omit<StructureModule, "listFields" | "fieldNames"> & {
-              fields: { name: string; kind: string }[];
-            })[];
-          }
-        ).modules.map((m) => ({
-          id: m.id,
-          slug: m.slug,
-          displayName: m.displayName,
-          html: m.html,
-          js: m.js,
-          listFields: m.fields.filter((f) => LIST_KINDS.has(f.kind)).map((f) => f.name),
-          fieldNames: m.fields.map((f) => f.name),
-        })),
-      ),
+    modules: async () => {
+      const [rows, entryKeysOf] = await Promise.all([
+        read(
+          "modules.list",
+          (v) =>
+            (
+              v as {
+                modules: (Omit<StructureModule, "listFields" | "fieldNames" | "entryKeys"> & {
+                  fields: { name: string; kind: string; listType?: string }[];
+                })[];
+              }
+            ).modules,
+        ),
+        read("list_types.list", (v) => entryKeysByType(v as ListTypeRows), {}),
+      ]);
+      return rows.map((m) => ({
+        id: m.id,
+        slug: m.slug,
+        displayName: m.displayName,
+        html: m.html,
+        js: m.js,
+        listFields: m.fields.filter((f) => LIST_KINDS.has(f.kind)).map((f) => f.name),
+        fieldNames: m.fields.map((f) => f.name),
+        entryKeys: [
+          ...new Set(
+            m.fields.flatMap((f) =>
+              f.kind === "list" && f.listType ? (entryKeysOf.get(f.listType) ?? []) : [],
+            ),
+          ),
+        ],
+      }));
+    },
     layouts: () =>
       read("layouts.list", (v) =>
         (v as { layouts: StructureLayout[] }).layouts.map((l) => ({

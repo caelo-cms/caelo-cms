@@ -56,10 +56,11 @@ type Kind = "scalar" | "list" | "generated";
 /** The nearest list entry stamp above a rendered node. */
 type Entry = "none" | "own" | "shared";
 
-/** A module's declared field names: all of them, and its list-like ones. */
+/** A module's declared field names (all, list-like) and the keys its list entries carry. */
 interface FieldNames {
   readonly all: ReadonlySet<string>;
   readonly list: ReadonlySet<string>;
+  readonly entry: ReadonlySet<string>;
 }
 
 interface ListingTemplate {
@@ -77,7 +78,11 @@ export function listingTemplates(
 ): ReadonlyMap<string, ListingTemplate> {
   const out = new Map<string, ListingTemplate>();
   for (const m of modules) {
-    const fields = { all: new Set(m.fieldNames), list: new Set(m.listFields) };
+    const fields = {
+      all: new Set(m.fieldNames),
+      list: new Set(m.listFields),
+      entry: new Set(m.entryKeys),
+    };
     const forest = parseMarkup(stripMustache(m.html, { markSections: true }));
     const first = flatten(forest, "scalar", fields, false)[0];
     if (first) out.set(m.id, { root: first.node, rootKind: first.kind, fields });
@@ -244,17 +249,16 @@ function flatten(
  * The kind inside a section marker (`s:<name>` iterates or tests, `i:<name>`
  * is inverted), and whether it starts a new iteration inside an entry.
  *
- * At module scope a section names a declared field — a `list` /
- * `module-list` field iterates stored or bound entries, any other field is
- * a condition — or a value the engine provides: `page.terms.…` iterates
- * the page's terms (generated); other `page.…`, `site_text.…` and the
+ * Names resolve the way the template engine resolves them: inside an entry
+ * the entry's own keys first (its fields and children loop: conditions or
+ * stamped children, the kind stays), then the reserved `items` (a source
+ * node's generated entries), then the module's fields — a list field
+ * iterated there is a new iteration (`boundary`: its entries carry their
+ * own stamp or none, never the enclosing entry's), any other field is a
+ * condition. Then engine-provided values: `page.terms.…` iterates the
+ * page's terms (generated); other `page.…`, `site_text.…` and the
  * `is_` / `has_` / `count_` flags are conditions. Any other name is a
- * plugin source (`{{#language_links}}`): generated.
- *
- * Inside an entry, `items` is a source node's generated entries (a reserved
- * name, never an entry field). A module-level list field iterated inside an
- * entry is a new iteration (`boundary`): its entries carry their own stamp
- * or none, never the enclosing entry's.
+ * plugin source (`{{#language_links}}`): generated, at any depth.
  */
 function sectionKind(
   marker: MarkupNode,
@@ -263,16 +267,18 @@ function sectionKind(
 ): { readonly kind: Kind; readonly boundary: boolean } {
   const cls = marker.classes[0] ?? "";
   const same = { kind: outer, boundary: false };
+  const generated = { kind: "generated" as const, boundary: false };
   if (!cls.startsWith("s:") || outer === "generated") return same;
   const name = cls.slice(2);
-  if (name.startsWith("page.terms")) return { kind: "generated", boundary: false };
-  if (isCondition(name)) return same;
-  if (outer === "scalar") {
-    if (fields.list.has(name)) return { kind: "list", boundary: false };
-    return fields.all.has(name) ? same : { kind: "generated", boundary: false };
+  const inEntry = outer === "list";
+  if (inEntry) {
+    if (fields.entry.has(name)) return same;
+    if (name === "items") return generated;
   }
-  if (name === "items") return { kind: "generated", boundary: false };
-  return fields.list.has(name) ? { kind: "list", boundary: true } : same;
+  if (fields.list.has(name)) return { kind: "list", boundary: inEntry };
+  if (fields.all.has(name)) return same;
+  if (name.startsWith("page.terms")) return generated;
+  return isCondition(name) ? same : generated;
 }
 
 /** Engine-provided values that only test truthiness (never iterate entries). */

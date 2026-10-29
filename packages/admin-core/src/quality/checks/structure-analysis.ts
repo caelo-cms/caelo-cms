@@ -65,6 +65,12 @@ export interface StructureModule {
   readonly listFields: readonly string[];
   /** Names of all its declared fields (#1256): a section over none of them is generated. */
   readonly fieldNames: readonly string[];
+  /**
+   * The keys an entry of its `list` fields carries (#1256): the node
+   * fields and children loop names of the fields' list types. Inside an
+   * entry they resolve before anything else.
+   */
+  readonly entryKeys: readonly string[];
 }
 
 /** A pattern found in free markup on one page. */

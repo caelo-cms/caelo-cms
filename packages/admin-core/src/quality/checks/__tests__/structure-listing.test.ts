@@ -79,6 +79,7 @@ const LINK_LIST: StructureModule = {
   js: "",
   listFields: ["links"],
   fieldNames: ["links"],
+  entryKeys: ["label", "link"],
 };
 /** The hub holding cards in a `module-list`. */
 const CARD_GRID: StructureModule = {
@@ -89,6 +90,7 @@ const CARD_GRID: StructureModule = {
   js: "",
   listFields: ["cards"],
   fieldNames: ["title", "cards"],
+  entryKeys: [],
 };
 const CARD: StructureModule = {
   id: id(12),
@@ -98,6 +100,7 @@ const CARD: StructureModule = {
   js: "",
   listFields: [],
   fieldNames: ["title", "href"],
+  entryKeys: [],
 };
 /** Numbered scalar fields — the template owns every link. */
 const SCALAR_CARDS: StructureModule = {
@@ -113,6 +116,7 @@ const SCALAR_CARDS: StructureModule = {
   js: "",
   listFields: [],
   fieldNames: [1, 2, 3, 4].flatMap((i) => [`card${i}_href`, `card${i}_title`]),
+  entryKeys: [],
 };
 /** The right way: a list field bound to a page query (entries unstamped). */
 const QUERY_LIST: StructureModule = {
@@ -123,6 +127,7 @@ const QUERY_LIST: StructureModule = {
   js: "",
   listFields: ["guides"],
   fieldNames: ["guides"],
+  entryKeys: [],
 };
 /** A local menu whose entry is a source node generating `items`. */
 const MEGA: StructureModule = {
@@ -133,6 +138,7 @@ const MEGA: StructureModule = {
   js: "",
   listFields: ["menu"],
   fieldNames: ["menu"],
+  entryKeys: ["label", "link"],
 };
 const MODULES = [LINK_LIST, CARD_GRID, CARD, SCALAR_CARDS, QUERY_LIST, MEGA];
 
@@ -259,6 +265,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       js: "",
       listFields: [],
       fieldNames: ["body"],
+      entryKeys: [],
     };
     const body = GUIDES.slice(0, 6)
       .map((p) => `<p><a href="${p.path}">${p.title}</a></p>`)
@@ -352,6 +359,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       js: "",
       listFields: [],
       fieldNames: [],
+      entryKeys: [],
     };
     const nav = `<nav class="langs" data-caelo-module-id="${SWITCHER.id}">${GUIDES.map(
       (p) => `<a class="lang" href="${p.path}">x</a>`,
@@ -371,6 +379,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       js: "",
       listFields: ["items"],
       fieldNames: ["items"],
+      entryKeys: [],
     };
     const html = `<ul class="il" data-caelo-module-id="${ITEMS.id}">${GUIDES.slice(0, 7)
       .map(
@@ -391,6 +400,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       js: "",
       listFields: ["menu", "guides"],
       fieldNames: ["menu", "guides"],
+      entryKeys: ["label", "link"],
     };
     const generated = GUIDES.slice(0, 7)
       .map((p) => `<a class="g" href="${p.path}">${p.title}</a>`)
@@ -434,5 +444,62 @@ describe("structure/manual-page-listing (#1256)", () => {
       html: hub.html.replace("<body>", '<head><base href="/"></head><body>'),
     };
     expect(listing(pages).map((f) => f.severity)).toEqual(["error"]);
+  });
+  it("a plugin source nested in a stored entry never counts", () => {
+    const NAV: StructureModule = {
+      id: id(21),
+      slug: "nav-langs",
+      displayName: "Nav with languages",
+      html: '<nav class="nl">{{#menu}}<div class="col"><a class="top" href="{{link}}">{{label}}</a>{{#language_links}}<a class="lang" href="{{href}}">{{label}}</a>{{/language_links}}</div>{{/menu}}</nav>',
+      js: "",
+      listFields: ["menu"],
+      fieldNames: ["menu"],
+      entryKeys: ["label", "link"],
+    };
+    const langs = GUIDES.slice(0, 7)
+      .map((p) => `<a class="lang" href="${p.path}">x</a>`)
+      .join("");
+    const html = `<nav class="nl" data-caelo-module-id="${NAV.id}"><div class="col" data-caelo-list-item="${local("menu", 0)}"><a class="top" href="/guides">Guides</a>${langs}</div></nav>`;
+    const f = structureFindings(build(html), [...MODULES, NAV], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f).toEqual([]);
+  });
+
+  it("an entry-field condition around the entry's link keeps it counted", () => {
+    const COND: StructureModule = {
+      ...LINK_LIST,
+      id: id(22),
+      slug: "cond",
+      html: '<section class="ll"><ul>{{#links}}<li>{{#link}}<a href="{{link}}">{{label}}</a>{{/link}}</li>{{/links}}</ul></section>',
+    };
+    const html = linkList(GUIDES.slice(0, 7), (n) => local("links", n)).replace(
+      LINK_LIST.id,
+      COND.id,
+    );
+    const f = structureFindings(build(html), [...MODULES, COND], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f.map((x) => x.severity)).toEqual(["error"]);
+  });
+
+  it("a declared list field with a flag-like name is its own iteration", () => {
+    const FLAGGED: StructureModule = {
+      id: id(23),
+      slug: "flagged",
+      displayName: "Flagged",
+      html: '<section class="fl">{{#has_guides}}<a class="g" href="{{link}}">{{title}}</a>{{/has_guides}}</section>',
+      js: "",
+      listFields: ["has_guides"],
+      fieldNames: ["has_guides"],
+      entryKeys: ["label", "link"],
+    };
+    const html = `<section class="fl" data-caelo-module-id="${FLAGGED.id}">${GUIDES.slice(0, 7)
+      .map((p) => `<a class="g" href="${p.path}">x</a>`)
+      .join("")}</section>`;
+    const f = structureFindings(build(html), [...MODULES, FLAGGED], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f).toEqual([]);
   });
 });
