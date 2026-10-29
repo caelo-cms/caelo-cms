@@ -12,12 +12,12 @@ import { execute } from "@caelo-cms/query-api";
 import {
   aggregateSiteDesignTokens,
   type CrawledPage,
-  createPlaywrightScreenshotter,
   deriveDesignTokens,
   type PageDesignTokens,
   type Screenshot,
   type Screenshotter,
 } from "@caelo-cms/site-importer";
+import { getExternalScreenshotter } from "../ai/tools/_external-screenshotter.js";
 
 const SYSTEM_CTX = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -268,7 +268,8 @@ export async function captureImportGroundTruth(args: {
   const screenshotter =
     args.screenshotter !== undefined
       ? args.screenshotter
-      : await createPlaywrightScreenshotter({ allowedHosts: importerAllowedHosts() });
+      : // issue #1217 — the install's one screenshotter (capture job on GCP).
+        await getExternalScreenshotter({ allowedHosts: importerAllowedHosts() });
   if (!screenshotter) {
     // Pre-#247 this returned silently and the run looked "done" with
     // zero screenshots (F9). Every page now reads as UNVERIFIED.

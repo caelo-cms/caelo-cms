@@ -24,8 +24,9 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { isScreenshotTargetNotRendered } from "@caelo-cms/shared";
+import { type ExecutionContext, isScreenshotTargetNotRendered } from "@caelo-cms/shared";
 import { z } from "zod";
+import { previewSourceFromQueryApi } from "../../capture/preview-source.js";
 import { capturePreviewScreenshot } from "../preview-screenshot.js";
 import { awaitScreenshot, type ScreenshotViewportSource } from "../screenshot-orchestrator.js";
 import { describeError } from "./_describe-error.js";
@@ -79,6 +80,8 @@ const screenshotInput = z
     width: z.number().int().min(320).max(3840).optional(),
     /** issue #250 (WS4) — CSS selector for a single-element capture. */
     selector: z.string().min(1).max(300).optional(),
+    /** issue #1217 — server render only: the whole page instead of the viewport. */
+    fullPage: z.boolean().optional(),
   })
   .strict();
 
@@ -111,6 +114,7 @@ const HANDOFF_SUCCESS_NOTE: Record<ServerSideHandoff, string> = {
 };
 
 async function captureServerSide(
+  ctx: ExecutionContext,
   input: ScreenshotPageInput,
   chatBranchId: string | undefined,
   toolCtx: ToolContext,
@@ -126,16 +130,26 @@ async function captureServerSide(
         "screenshot again once the window has passed.",
     };
   }
-  const r = await capturePreviewScreenshot({
-    pageId: input.pageId,
-    ...(chatBranchId ? { chatBranchId } : {}),
-    ...(input.viewport ? { viewport: input.viewport } : {}),
-    ...(input.width !== undefined ? { width: input.width } : {}),
-    ...(input.selector ? { selector: input.selector } : {}),
-  });
+  const r = await capturePreviewScreenshot(
+    {
+      pageId: input.pageId,
+      ...(chatBranchId ? { chatBranchId } : {}),
+      ...(input.viewport ? { viewport: input.viewport } : {}),
+      ...(input.width !== undefined ? { width: input.width } : {}),
+      ...(input.selector ? { selector: input.selector } : {}),
+      ...(input.fullPage !== undefined ? { fullPage: input.fullPage } : {}),
+    },
+    previewSourceFromQueryApi({
+      registry: toolCtx.registry,
+      adapter: toolCtx.adapter,
+      ctx,
+      pageId: input.pageId,
+      ...(chatBranchId ? { chatBranchId } : {}),
+    }),
+  );
   if (!r.ok) {
     const alsoTimedOut = handoff ? HANDOFF_FAILURE_NOTE[handoff] : "";
-    if (r.reason === "playwright-unavailable") {
+    if (r.reason === "playwright-unavailable" || r.reason === "capture-unavailable") {
       return {
         ok: false,
         content:
@@ -163,7 +177,11 @@ async function captureServerSide(
     ok: true,
     content:
       `Screenshot captured (${input.viewport ?? "desktop"} viewport${
-        input.selector ? `, element ${input.selector}` : ""
+        input.selector
+          ? `, element ${input.selector}`
+          : input.fullPage
+            ? ", full page"
+            : ", visible viewport only"
       }) by the server-side renderer — a real Chromium render of this chat's branch preview, no html2canvas approximation.${dims}${viewportNote}` +
       `${handoff ? HANDOFF_SUCCESS_NOTE[handoff] : ""} ` +
       "The image is available to you in THIS turn — analyse it on your next step; do not end the turn to wait for it.",
@@ -214,6 +232,11 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
         description:
           "CSS selector: capture only the first match (e.g. '[data-caelo-module-id=\"<uuid>\"]', 'footer.caelo-layout-footer') — cheaper when checking one module. Error if nothing matches.",
       },
+      fullPage: {
+        type: "boolean",
+        description:
+          "Server render only: true = the whole page; default = the visible viewport. Prefer `selector` for one section below the fold.",
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {
@@ -248,7 +271,7 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
     // everything else (Power-MCP dispatch, headless send_chat, subagent
     // child turns, tests) renders server-side directly — no 30s timeout.
     if (!toolCtx.pushClientEvent || toolCtx.operatorBrowserAttached !== true) {
-      return captureServerSide(input, chatBranchId, toolCtx);
+      return captureServerSide(ctx, input, chatBranchId, toolCtx);
     }
     const requestId = crypto.randomUUID();
     // Yield the SSE event for ChatPanel — it'll mount the preview
@@ -306,13 +329,13 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
       // browser and stay loud — the server render would mask a real
       // browser-side problem the model should see.
       if (/timed out/i.test(message)) {
-        return captureServerSide(input, chatBranchId, toolCtx, "browser-timeout");
+        return captureServerSide(ctx, input, chatBranchId, toolCtx, "browser-timeout");
       }
       // The browser capture runs without the page's scripts (#946), so an
       // element a script reveals has no size there — a limit of that
       // backend, not a page problem. The server renderer runs scripts.
       if (isScreenshotTargetNotRendered(message)) {
-        return captureServerSide(input, chatBranchId, toolCtx, "not-rendered-in-browser");
+        return captureServerSide(ctx, input, chatBranchId, toolCtx, "not-rendered-in-browser");
       }
       return {
         ok: false,

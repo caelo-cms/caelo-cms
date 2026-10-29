@@ -21,6 +21,7 @@ import {
   FAVICON_VARIANT,
   MEDIA_VARIANT_TAGS,
   type MediaVariantTag,
+  mediaFormatContentType,
   mediaSecurityHeaders,
 } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
@@ -70,7 +71,7 @@ export const GET: RequestHandler = async ({ params, locals, request, cookies }) 
 
   // Content-addressed → safe for long caching. Etag = sha is implicit
   // via the assetId (which is keyed by sha in the upload pipeline).
-  const contentType = contentTypeFor(v.format);
+  const contentType = mediaFormatContentType(v.format);
   return new Response(file.body, {
     status: 200,
     headers: {
@@ -81,28 +82,3 @@ export const GET: RequestHandler = async ({ params, locals, request, cookies }) 
     },
   });
 };
-
-function contentTypeFor(format: string): string {
-  switch (format) {
-    case "jpeg":
-      return "image/jpeg";
-    case "png":
-      return "image/png";
-    case "webp":
-      return "image/webp";
-    case "avif":
-      return "image/avif";
-    case "gif":
-      return "image/gif";
-    case "svg":
-      return "image/svg+xml";
-    case "ico":
-      return "image/x-icon";
-    case "pdf":
-      return "application/pdf";
-    case "mp4":
-      return "video/mp4";
-    default:
-      return "application/octet-stream";
-  }
-}

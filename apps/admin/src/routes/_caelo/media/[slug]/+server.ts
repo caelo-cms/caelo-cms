@@ -19,7 +19,7 @@
 
 import { getMediaStorage } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
-import { mediaSecurityHeaders } from "@caelo-cms/shared";
+import { mediaFormatContentType, mediaSecurityHeaders } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { requirePreviewAssetAccess } from "#lib/server/preview-screenshot-auth.js";
 import { getQueryContext } from "#lib/server/query.js";
@@ -57,7 +57,7 @@ export const GET: RequestHandler = async ({ params, locals, request, cookies }) 
     throw error(404, "storage object missing");
   }
 
-  const contentType = contentTypeFor(v.format);
+  const contentType = mediaFormatContentType(v.format);
   return new Response(file.body, {
     status: 200,
     headers: {
@@ -68,28 +68,3 @@ export const GET: RequestHandler = async ({ params, locals, request, cookies }) 
     },
   });
 };
-
-function contentTypeFor(format: string): string {
-  switch (format) {
-    case "jpeg":
-      return "image/jpeg";
-    case "png":
-      return "image/png";
-    case "webp":
-      return "image/webp";
-    case "avif":
-      return "image/avif";
-    case "gif":
-      return "image/gif";
-    case "svg":
-      return "image/svg+xml";
-    case "ico":
-      return "image/x-icon";
-    case "pdf":
-      return "application/pdf";
-    case "mp4":
-      return "video/mp4";
-    default:
-      return "application/octet-stream";
-  }
-}
