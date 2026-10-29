@@ -164,7 +164,6 @@ import {
 import { patchPageModuleFieldsOp } from "./ops/content/page-module-patch.js";
 import { movePagesManyOp, planPageMovesOp } from "./ops/content/page-moves.js";
 import { listPageStatusesOp } from "./ops/content/page-statuses.js";
-import { listRecentlyEditedPagesOp } from "./ops/content/pages-recently-edited.js";
 import {
   changeTemplateOp,
   createPageOp,
@@ -180,6 +179,7 @@ import {
   updatePageOp,
   updatePagesManyOp,
 } from "./ops/content/pages.js";
+import { listRecentlyEditedPagesOp } from "./ops/content/pages-recently-edited.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
 import { resolvePublicUrlsOp } from "./ops/content/public-urls.js";
 import { listSharedContentOp } from "./ops/content/shared-content.js";
