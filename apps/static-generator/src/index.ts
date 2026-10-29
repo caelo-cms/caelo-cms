@@ -43,6 +43,7 @@ export {
   type ListRenderSources,
   type LoadedListRenderData,
   renderVariants,
+  withListOverlays,
 } from "./list-data.js";
 // #802 — the file the designated 404 page ships as (the quality audit
 // loads it there, not at the page's own path).

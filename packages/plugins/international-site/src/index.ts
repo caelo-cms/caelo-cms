@@ -72,6 +72,7 @@ import {
 } from "./chrome-ops.js";
 import { languageToolbarState } from "./editor-toolbar.js";
 import { chromeLinkLocations } from "./link-locations.js";
+import { resolveListOverlays } from "./list-resolve.js";
 import { entryStates, LIST_EXT_FIELD_SCHEMA } from "./list-translation.js";
 import {
   lastLiveBuildAt,
@@ -79,7 +80,6 @@ import {
   listStatus,
   loadListTranslationState,
   reconcileListTranslations,
-  resolveListOverlays,
   setListItemVisibility,
 } from "./list-translation-ops.js";
 import {
@@ -1087,7 +1087,13 @@ export default definePlugin<PluginContextTier1>({
      * language, the translated list values (by address) and the entries
      * hidden there. Read-only; a chat's preview sees the chat's rows.
      */
-    list_resolve: async (ctx, args) => resolveListOverlays(await chromeDepsOf(ctx), args),
+    list_resolve: async (ctx, args) => {
+      const deps = await chromeDepsOf(ctx);
+      return resolveListOverlays(deps, args, {
+        byPage: (pageIds) => loadVariantsByPage(deps.q, pageIds, ctx),
+        groupMembers: (groupIds) => loadGroupMembers(deps.q, groupIds, ctx),
+      });
+    },
 
     /** Epic #1107 — hide or show list entries in one language. */
     set_list_item_visibility: async (ctx, args) =>

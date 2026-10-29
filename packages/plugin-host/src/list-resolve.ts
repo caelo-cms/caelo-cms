@@ -19,10 +19,13 @@
  * channel (`plugin_errors`, #1008) — loud, attributed, and never a
  * reason to switch the plugin off.
  *
- * Called once per preview and once per build — the variants are known
+ * Called once per build for every variant — the variants are known
  * before the first page renders, and the template engine resolves
- * synchronously. Without an active contributor (or without variants)
- * nothing is called.
+ * synchronously — and once per editor preview for the rendered page's
+ * variant, with the page's `scope` (#1223: the lists, content instances
+ * and pages that page can show), so a preview costs what its page
+ * costs. Without an active contributor (or without variants) nothing is
+ * called.
  *
  * Loud (CLAUDE.md §2): a failing plugin op throws (a preview reports it
  * and renders without the overlays, #1087); an ill-formed answer, an
@@ -30,7 +33,7 @@
  * the same address throw everywhere.
  */
 
-import { listResolveVariantOverlay } from "@caelo-cms/plugin-sdk";
+import { type ListResolveScope, listResolveVariantOverlay } from "@caelo-cms/plugin-sdk";
 import type { ListOverlayIssue, ListVariantOverlay } from "@caelo-cms/shared";
 import { z } from "zod";
 import {
@@ -86,10 +89,13 @@ function contributors() {
  *
  * @param variants the output variants of this render (the distinct
  *   variants of the `link-resolve` partition).
+ * @param pageScope what the one page a preview renders can show from
+ *   lists; absent = the whole site (a build).
  */
 export async function resolveListOverlays(
   variants: ReadonlyArray<string>,
   scope: RenderScope,
+  pageScope?: ListResolveScope,
 ): Promise<ResolvedListOverlays> {
   const plugins: PluginListOverlays[] = [];
   if (variants.length === 0) return { plugins };
@@ -101,7 +107,7 @@ export async function resolveListOverlays(
       invocation: renderInvocation(scope),
       pluginSlug: lp.slug,
       operationName,
-      args: { variants: [...variants] },
+      args: { variants: [...variants], ...(pageScope ? { scope: pageScope } : {}) },
     });
     if (!r.ok) {
       const reason = `${label} failed: ${r.error.kind}: ${r.error.message}`;
