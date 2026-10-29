@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { ListPaginationState } from "@caelo-cms/shared";
+import { outputPathCollisionError } from "./generate.js";
 import { assertPaginationRenderable, followUpCollisionError } from "./pagination-pass.js";
 import { followUpHeadEntries } from "./seo-pass.js";
 
@@ -64,5 +65,18 @@ describe("followUpHeadEntries", () => {
     ];
     expect(followUpHeadEntries(entries)).toEqual([entries[1], entries[2]]);
     expect(followUpHeadEntries(undefined)).toBeUndefined();
+  });
+});
+
+describe("outputPathCollisionError (no-extension style)", () => {
+  it("names a page file that a follow-up or nested page needs as a folder", () => {
+    const msg = outputPathCollisionError(["index.html", "guides", "guides/page/2"]);
+    expect(msg).toContain("guides (needed as a folder by guides/page/2)");
+    expect(msg).toContain("directory URL style");
+  });
+
+  it("is null for the directory style and a paginated home page", () => {
+    expect(outputPathCollisionError(["guides/index.html", "guides/page/2/index.html"])).toBeNull();
+    expect(outputPathCollisionError(["index.html", "page/2", "about"])).toBeNull();
   });
 });

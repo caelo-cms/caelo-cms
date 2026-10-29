@@ -355,6 +355,35 @@ export function missingRootPageError(args: {
 }
 
 /**
+ * #1257 — a page file that other pages would need as a directory. In the
+ * `no-extension` style a page IS a file (`guides`), so nothing can be
+ * served below its URL: neither a nested page (`guides/intro`) nor a
+ * paginated overview's follow-up page (`guides/page/2`). Writing both
+ * fails with EISDIR halfway through the write pass; this names the pages
+ * and the fix before any file is written.
+ *
+ * @returns the error message to throw, or null. Pure for tests.
+ */
+export function outputPathCollisionError(relPaths: readonly string[]): string | null {
+  const files = new Set(relPaths);
+  const hits = new Set<string>();
+  for (const p of relPaths) {
+    const segs = p.split("/");
+    for (let i = 1; i < segs.length; i += 1) {
+      const dir = segs.slice(0, i).join("/");
+      if (files.has(dir)) hits.add(`${dir} (needed as a folder by ${p})`);
+    }
+  }
+  if (hits.size === 0) return null;
+  const listed = [...hits].slice(0, 10).join(", ");
+  return (
+    `static-generator: ${hits.size} page(s) are served as files but other pages sit below their URL: ${listed}. ` +
+    "In the no-extension URL style a page cannot have nested pages or follow-up pages of a paginated list (<path>/page/<n>). " +
+    "Next step: switch the deploy target to the directory URL style (Ops → Deploy), or move the nested pages / remove paginate from that page's list."
+  );
+}
+
+/**
  * Renders the robots.txt body. `index` mode allows everything; `noindex`
  * blocks all crawlers — required for staging per CMS_REQUIREMENTS §6.
  */
@@ -1124,6 +1153,8 @@ export async function generateSite(args: {
     );
     if (collision !== null) throw new Error(collision);
   }
+  const fileCollision = outputPathCollisionError(composedPages.map((p) => p.relPath));
+  if (fileCollision !== null) throw new Error(fileCollision);
   // A `list-resolve` overlay entry the resolver refused (unknown address,
   // structural change) is the plugin's fault, not the site's: the stored
   // value rendered instead, and the plugin's error channel says so

@@ -297,7 +297,12 @@ renders every page (`renderEveryPage`) and writes them next to page 1;
 the routing manifest lists them per page (`followUpOutputPaths`), so the
 plugin-data build re-bakes their plugin regions too. A page whose path
 is `<overview>/page` or below collides with the follow-up URLs: the build
-fails and names it. The editor preview serves `<path>/page/<n>` (and
+fails and names it. In the `no-extension` URL style a page is a file
+(`guides`), so nothing can be served below it — neither nested pages nor
+follow-up pages (only the home page, `index.html`, can paginate there):
+the build refuses such a site before writing a file
+(`outputPathCollisionError`) and says to switch the target to the
+`directory` style. The editor preview serves `<path>/page/<n>` (and
 `pages.render_preview` takes `pageNumber`); a page number beyond the
 sequence is "page not found".
 
