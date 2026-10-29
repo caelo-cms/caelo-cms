@@ -144,7 +144,6 @@ async function main(): Promise<void> {
       (tx) =>
         generateSite({
           tx,
-          adapter,
           plugins,
           target: input.target,
           runId: input.runId,
@@ -162,8 +161,10 @@ async function main(): Promise<void> {
             emit({ kind: "serving" });
           },
         }),
-      // The whole build reads one snapshot; the name puts it on the
-      // nested-checkout allowlist (query-api pool-guard.ts).
+      // The whole build runs in this one transaction, so it lasts as long
+      // as the build: the name puts it on the
+      // long-transaction allowlist (query-api pool-guard.ts), which lifts
+      // the 0392 timeouts and allows no nested checkout.
       { holder: "static-generator.build" },
     );
     emit({ kind: "done", ...result });

@@ -749,6 +749,8 @@ export const endExecuteQualityProposalOp = requiresApproverPermission(
     input: z
       .object({
         proposalId: z.string().uuid(),
+        /** The run id this attempt claimed the proposal with. */
+        claimedRunId: z.string().uuid(),
         /** The Publish live run that went live, or null when it failed. */
         toRunId: z.string().nullable(),
         message: z.string().nullable(),
@@ -768,6 +770,9 @@ export const endExecuteQualityProposalOp = requiresApproverPermission(
       await tx.execute(sql`
       UPDATE quality_pending_actions SET claimed_by_run_id = NULL, claimed_at = NULL
        WHERE id = ${input.proposalId}::uuid AND status = 'pending'
+         -- Only this attempt's claim: a later Approve may have taken the
+         -- proposal over once this attempt's run failed (review on #1251).
+         AND claimed_by_run_id = ${input.claimedRunId}::uuid
     `);
       await recordAudit(tx, {
         actorId: ctx.actorId,
@@ -822,6 +827,7 @@ async function runExecuteQualityProposal(
   const toRunId = published.ok ? (published.value as { toRunId: string }).toRunId : null;
   const ended = await execute(registry, adapter, ctx, "quality_audits.end_execute_proposal", {
     proposalId: input.proposalId,
+    claimedRunId: runId,
     toRunId,
     message: published.ok ? null : describeError(published.error),
   });

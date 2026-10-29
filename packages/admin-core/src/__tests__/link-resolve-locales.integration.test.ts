@@ -206,7 +206,6 @@ async function build(pageIds: string[], runId: string): Promise<string> {
     generateSite({
       publishAt: new Date().toISOString(),
       tx,
-      adapter,
       plugins: localBuildPluginServices,
       target: stagingTarget(),
       runId,

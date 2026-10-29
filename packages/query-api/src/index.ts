@@ -34,6 +34,7 @@ export {
 } from "./operation.js";
 export {
   allowNestedCheckouts,
+  LONG_TRANSACTION_ALLOWLIST,
   NESTED_CHECKOUT_ALLOWLIST,
   NestedPoolCheckoutError,
   POOL_ACQUIRE_TIMEOUT_MS,

@@ -114,7 +114,7 @@ import {
   tryLockLiveRelease,
 } from "../deploy/live-release-lock.js";
 import { resolveOutputRoot } from "../deploy/output-root.js";
-import { activePluginProblems } from "../deploy/plugin-problems.js";
+import { activePluginProblems, reconcilePluginsForBuild } from "../deploy/plugin-problems.js";
 import { markRedirectsBehind } from "../deploy/redirect-sync.js";
 import {
   type LiveBuildRef,
@@ -814,6 +814,16 @@ async function runPluginDataBuild(
 ): Promise<Result<BuildOutput, QueryError>> {
   const { registry, adapter } = steps;
   const timer = new PhaseTimer();
+  // #1008 — only plugins that run are re-rendered; what runs here is
+  // reconciled first, outside any transaction (plugin-problems.ts).
+  const unreconciled = await reconcilePluginsForBuild();
+  if (unreconciled !== null) {
+    return err({
+      kind: "HandlerError",
+      operation: "deploy.build_plugin_data",
+      message: unreconciled,
+    });
+  }
   const started = await execute(registry, adapter, ctx, "deploy.start_plugin_data", {
     minIntervalSeconds: input.minIntervalSeconds,
     maxMarks: input.maxMarks,

@@ -191,7 +191,6 @@ async function buildHtml(pageId: string, pagePath: string, runId: string): Promi
     generateSite({
       publishAt: new Date().toISOString(),
       tx,
-      adapter,
       plugins: localBuildPluginServices,
       target,
       runId,

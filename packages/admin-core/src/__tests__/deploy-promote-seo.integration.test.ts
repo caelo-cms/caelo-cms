@@ -33,6 +33,7 @@ import { join } from "node:path";
 import {
   DatabaseAdapter,
   execute,
+  LONG_TRANSACTION_ALLOWLIST,
   NESTED_CHECKOUT_ALLOWLIST,
   OperationRegistry,
 } from "@caelo-cms/query-api";
@@ -318,7 +319,7 @@ async function proposalStatus(proposalId: string): Promise<string | undefined> {
 }
 
 describe("#1225 — the Owner approves the AI's Publish live / rollback card", () => {
-  it("is not on the nested-checkout allowlist, nor is anything it runs", () => {
+  it("is on neither pool-guard allowlist, nor is anything it runs", () => {
     // #1225 — the approve, Publish live and publish anyway hold no
     // transaction across the live build + upload, so none of them needs to
     // take a second connection from inside one or outlast the 0392 timeouts.
@@ -330,6 +331,7 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
       "deploy.build_plugin_data",
     ]) {
       expect(NESTED_CHECKOUT_ALLOWLIST.has(holder)).toBe(false);
+      expect(LONG_TRANSACTION_ALLOWLIST.has(holder)).toBe(false);
     }
   });
 
@@ -429,6 +431,7 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
     // Marking a card applied, or claiming it, needs the approver's permission.
     const ended = await execute(registry, adapter, reviewer, "deploy.end_execute_proposal", {
       proposalId,
+      claimedRunId: crypto.randomUUID(),
       outcome: { ok: true, runId: null },
     });
     expect(JSON.stringify(ended)).toContain("permission_denied");
@@ -486,6 +489,26 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
       reason: "changed my mind",
     });
     expect(JSON.stringify(rejected)).toContain("being applied right now");
+    expect(await proposalStatus(proposalId)).toBe("pending");
+  });
+
+  it("a failed attempt releases only its own claim, never a later Approve's", async () => {
+    const owner = await makeOwner();
+    const proposalId = await insertProposal(
+      "promote",
+      { fromTarget: "staging", toTarget: "production", repoRoot: testRoot },
+      {},
+    );
+    // A later Approve took the proposal over after the first attempt failed.
+    await claimProposal(proposalId);
+    const later = await proposalClaimRun(proposalId);
+    const ended = await execute(registry, adapter, owner, "deploy.end_execute_proposal", {
+      proposalId,
+      claimedRunId: crypto.randomUUID(),
+      outcome: { ok: false, message: "the first attempt failed" },
+    });
+    expect(ended.ok).toBe(true);
+    expect(await proposalClaimRun(proposalId)).toBe(later);
     expect(await proposalStatus(proposalId)).toBe("pending");
   });
 

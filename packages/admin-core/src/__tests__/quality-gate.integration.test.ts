@@ -912,12 +912,16 @@ describe("fix-all loop (#771)", () => {
       { isolation: "experiment", title: `${PFX}loop-spend` },
     );
     const branch = { ...HUMAN, chatBranchId: s.chatBranchId };
-    const spend = (microcents: number, at: string) =>
+    // `at` null: now, on the DATABASE clock. The fix chain starts at the
+    // claim's `now()` (microseconds); a JS timestamp is truncated to the
+    // millisecond and can sort before it within the same millisecond, so
+    // the spend would silently fall outside the chain.
+    const spend = (microcents: number, at: string | null) =>
       withSql(async (tx) => {
         await tx`INSERT INTO ai_calls (chat_session_id, actor_id, provider, model, input_tokens,
                                        output_tokens, cost_estimate_microcents, created_at)
                  VALUES (${s.chatSessionId}::uuid, ${SYSTEM_ID}::uuid, 'anthropic', 'test-model',
-                         1, 1, ${microcents}, ${at}::timestamptz)`;
+                         1, 1, ${microcents}, coalesce(${at}::timestamptz, clock_timestamp()))`;
       });
     const roundWith = async (performance: number, by: "operator" | "live_edit_ai") => {
       await editModule(branch, `<p>spend ${performance} ${by}</p>`);
@@ -935,7 +939,7 @@ describe("fix-all loop (#771)", () => {
       auditRunId: first.audit.id,
       fixScope: "all",
     });
-    await spend(AUTO_FIX_COST_CAP_MICROCENTS / 2, new Date().toISOString());
+    await spend(AUTO_FIX_COST_CAP_MICROCENTS / 2, null);
     const second = await roundWith(70, "live_edit_ai");
     expect(second.feedback.autoContinue).toBe(true);
     // The panel's own send of round 2; that round spends up to the cap.
@@ -943,7 +947,7 @@ describe("fix-all loop (#771)", () => {
       auditRunId: second.audit.id,
       fixScope: "all",
     });
-    await spend(AUTO_FIX_COST_CAP_MICROCENTS / 2, new Date().toISOString());
+    await spend(AUTO_FIX_COST_CAP_MICROCENTS / 2, null);
     const third = await roundWith(80, "live_edit_ai");
     expect(third.feedback.autoContinue).toBe(false);
     expect(third.feedback.actionLabel).toBe("Keep fixing with AI");

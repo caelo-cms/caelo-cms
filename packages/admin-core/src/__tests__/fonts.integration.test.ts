@@ -248,7 +248,6 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
       const published = await generateSite({
         publishAt: new Date().toISOString(),
         tx,
-        adapter,
         plugins: localBuildPluginServices,
         runId: crypto.randomUUID(),
         repoRoot: cacheDir,

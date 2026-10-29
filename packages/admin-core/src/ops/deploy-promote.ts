@@ -98,6 +98,7 @@ import { resolveOutputRoot } from "../deploy/output-root.js";
 import {
   activePluginProblems,
   describePluginProblems,
+  reconcilePluginsForBuild,
   stagedWithoutPlugins,
 } from "../deploy/plugin-problems.js";
 import { markRedirectsBehind } from "../deploy/redirect-sync.js";
@@ -542,6 +543,10 @@ async function runPromote(
   const { registry, adapter } = steps;
   const runId = input.runId ?? randomUUID();
   const ttlMs = DEPLOY_RUN_LEASE_TTL_MS;
+  // #1008 — the plugin gate decides on what runs here; reconciled first,
+  // outside any transaction (plugin-problems.ts).
+  const unreconciled = await reconcilePluginsForBuild();
+  if (unreconciled !== null) return refused(unreconciled);
   const started = await execute(registry, adapter, ctx, "deploy.start_promote", {
     fromTarget: input.fromTarget,
     toTarget: input.toTarget,

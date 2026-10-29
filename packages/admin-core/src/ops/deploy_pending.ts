@@ -434,6 +434,8 @@ export const endExecuteDeployProposalOp = requiresApproverPermission(
     input: z
       .object({
         proposalId: z.string().uuid(),
+        /** The run id this attempt claimed the proposal with. */
+        claimedRunId: z.string().uuid(),
         outcome: z.discriminatedUnion("ok", [
           z.object({ ok: z.literal(true), runId: z.string().nullable() }),
           z.object({ ok: z.literal(false), message: z.string() }),
@@ -451,6 +453,9 @@ export const endExecuteDeployProposalOp = requiresApproverPermission(
       await tx.execute(sql`
       UPDATE deploy_pending_actions SET claimed_by_run_id = NULL, claimed_at = NULL
       WHERE id = ${input.proposalId}::uuid AND status = 'pending'
+        -- Only this attempt's claim: a later Approve may have taken the
+        -- proposal over once this attempt's run failed (review on #1251).
+        AND claimed_by_run_id = ${input.claimedRunId}::uuid
     `);
       await recordAuditFromCtx(tx, ctx, {
         operation: "deploy.execute_proposal",
@@ -526,6 +531,7 @@ async function runExecuteDeployProposal(
     : `underlying ${plan.proposalKind} failed: ${describeError(applied.error)}`;
   const ended = await execute(registry, adapter, ctx, "deploy.end_execute_proposal", {
     proposalId: input.proposalId,
+    claimedRunId,
     outcome: message === null ? { ok: true, runId } : { ok: false, message },
   });
   if (message !== null) return err(opError("deploy.execute_proposal", message));
