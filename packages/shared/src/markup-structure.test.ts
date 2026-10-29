@@ -121,6 +121,9 @@ describe("templates and free regions", () => {
     );
     // Default output is unchanged.
     expect(stripMustache(t)).toBe('<ul class="x "><li><a href=""></a></li><p>none</p></ul>');
+    expect(
+      stripMustache("<ul>{{ #links }}<li></li>{{ /links }}</ul>", { markSections: true }),
+    ).toBe('<ul><caelo-section class="s:links"><li></li></caelo-section></ul>');
     stripMustache(`{{#${" ".repeat(50_000)}`, { markSections: true });
   });
 

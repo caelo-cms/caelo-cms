@@ -249,8 +249,8 @@ function flatten(
  * The kind inside a section marker (`s:<name>` iterates or tests, `i:<name>`
  * is inverted), and whether it starts a new iteration inside an entry.
  *
- * Names resolve the way the template engine resolves them: inside an entry
- * the entry's own keys first (its fields and children loop: conditions or
+ * Names resolve the way the template engine resolves them (a dotted name
+ * by its head): inside an entry the entry's own keys first (its fields and children loop: conditions or
  * stamped children, the kind stays), then the reserved `items` (a source
  * node's generated entries), then the module's fields — a list field
  * iterated there is a new iteration (`boundary`: its entries carry their
@@ -270,13 +270,16 @@ function sectionKind(
   const generated = { kind: "generated" as const, boundary: false };
   if (!cls.startsWith("s:") || outer === "generated") return same;
   const name = cls.slice(2);
+  // `link.href` resolves its head (`link`) and reads into the value: a
+  // condition on that key, never an iteration of its own.
+  const head = name.split(".")[0] ?? name;
   const inEntry = outer === "list";
   if (inEntry) {
-    if (fields.entry.has(name)) return same;
+    if (fields.entry.has(head)) return same;
     if (name === "items") return generated;
   }
   if (fields.list.has(name)) return { kind: "list", boundary: inEntry };
-  if (fields.all.has(name)) return same;
+  if (fields.all.has(head)) return same;
   if (name.startsWith("page.terms")) return generated;
   return isCondition(name) ? same : generated;
 }

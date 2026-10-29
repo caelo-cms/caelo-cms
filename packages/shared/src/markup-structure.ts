@@ -164,14 +164,18 @@ export function stripMustache(template: string, opts: StripMustacheOptions = {})
 
 /**
  * Turn the section tags left after {@link dropInTagSections} (all between
- * elements) into marker elements. `[^{}]*` before the closer keeps the
- * match linear.
+ * elements) into marker elements. Whitespace around the sigil and the name
+ * is allowed, as the template engine allows it (`{{ #guides }}`). `[^{}]*`
+ * before the closer keeps the match linear.
  */
 function markSections(text: string): string {
-  return text.replace(/\{\{([#^/])([^{}]*)\}\}/g, (_, sigil: string, raw: string) => {
+  return text.replace(/\{\{([^{}]*)\}\}/g, (tag: string, raw: string) => {
+    const body = raw.trim();
+    const sigil = body[0];
+    if (sigil !== "#" && sigil !== "^" && sigil !== "/") return tag;
     if (sigil === "/") return `</${SECTION_MARKER_TAG}>`;
-    const name = raw.trim();
-    return `<${SECTION_MARKER_TAG} class="${sigil === "#" ? "s" : "i"}:${name.replace(/[\s"<>]/g, "")}">`;
+    const name = body.slice(1).replace(/[\s"<>]/g, "");
+    return `<${SECTION_MARKER_TAG} class="${sigil === "#" ? "s" : "i"}:${name}">`;
   });
 }
 

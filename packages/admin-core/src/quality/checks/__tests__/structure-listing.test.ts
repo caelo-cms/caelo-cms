@@ -502,4 +502,34 @@ describe("structure/manual-page-listing (#1256)", () => {
     );
     expect(f).toEqual([]);
   });
+  it("a dotted entry condition around the entry's link keeps it counted", () => {
+    const DOT: StructureModule = {
+      ...LINK_LIST,
+      id: id(24),
+      slug: "dot",
+      html: '<section class="ll"><ul>{{ #links }}<li>{{#link.href}}<a href="{{link}}">{{label}}</a>{{/link.href}}</li>{{ /links }}</ul></section>',
+    };
+    const html = linkList(GUIDES.slice(0, 7), (n) => local("links", n)).replace(
+      LINK_LIST.id,
+      DOT.id,
+    );
+    const f = structureFindings(build(html), [...MODULES, DOT], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f.map((x) => x.severity)).toEqual(["error"]);
+  });
+
+  it("a source list written with spaces around the sigil is still a source", () => {
+    const SPACED: StructureModule = {
+      ...QUERY_LIST,
+      id: id(25),
+      slug: "spaced",
+      html: '<section class="gi">{{ #guides }}<a class="gi-item" href="{{link}}">{{title}}</a>{{ /guides }}</section>',
+    };
+    const html = queryList(GUIDES.slice(0, 7)).replace(QUERY_LIST.id, SPACED.id);
+    const f = structureFindings(build(html), [...MODULES, SPACED], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f).toEqual([]);
+  });
 });
