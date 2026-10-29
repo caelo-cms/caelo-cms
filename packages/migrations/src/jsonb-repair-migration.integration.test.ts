@@ -177,4 +177,55 @@ describe("0404 applies 0353's list conversion to the rows it repairs (#68, #1107
       ["link", { label: "Home", link: { href: "/" } }],
     ]);
   });
+  it("leaves a field alone that an old snapshot calls a text-list but the module now calls text", async () => {
+    const MODULE = "00000000-0000-0000-0000-0000000068d1";
+    const INSTANCE = "00000000-0000-0000-0000-0000000068d2";
+    const legacy = [{ name: "tagline", label: "Tagline", kind: "text-list" }];
+    const current = [{ name: "tagline", label: "Tagline", kind: "text" }];
+    const sql = new SQL(ADMIN_URL);
+    let seen: { live: unknown; snapshotKind: unknown } | null = null;
+    try {
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`
+          INSERT INTO modules (id, slug, type, display_name, html, fields) VALUES
+            (${MODULE}::uuid, 'jsonb68-retyped', 'jsonb68-retyped', 'R', '<p>{{tagline}}</p>',
+             (${JSON.stringify(current)}::text)::jsonb)
+        `;
+        // The old version's snapshot was double-encoded, so 0353 never read it.
+        const [snap] = (await tx`
+          INSERT INTO site_snapshots (actor_id, op_kind, description)
+          VALUES ('00000000-0000-0000-0000-00000000ffff'::uuid, 'unknown', 'jsonb68 retyped')
+          RETURNING id::text AS id
+        `) as { id: string }[];
+        await tx`
+          INSERT INTO module_snapshots (site_snapshot_id, module_id, state) VALUES
+            (${snap?.id}::uuid, ${MODULE}::uuid, ${JSON.stringify({
+              html: "<ul>{{#tagline}}<li>{{.}}</li>{{/tagline}}</ul>",
+              fields: legacy,
+            })}::jsonb)
+        `;
+        await tx`
+          INSERT INTO content_instances (id, module_id, "values")
+          VALUES (${INSTANCE}::uuid, ${MODULE}::uuid, (${JSON.stringify({ tagline: "Fast" })}::text)::jsonb)
+        `;
+
+        await tx.unsafe(body());
+
+        const [ci] = (await tx`
+          SELECT "values"->'tagline' AS live FROM content_instances WHERE id = ${INSTANCE}::uuid
+        `) as { live: unknown }[];
+        const [ms] = (await tx`
+          SELECT state->'fields'->0->>'kind' AS kind FROM module_snapshots WHERE module_id = ${MODULE}::uuid
+        `) as { kind: unknown }[];
+        seen = { live: ci?.live, snapshotKind: ms?.kind };
+        throw new Rollback();
+      });
+    } catch (e) {
+      if (!(e instanceof Rollback)) throw e;
+    } finally {
+      await sql.end();
+    }
+    expect(seen).toEqual({ live: "Fast", snapshotKind: "list" });
+  });
 });

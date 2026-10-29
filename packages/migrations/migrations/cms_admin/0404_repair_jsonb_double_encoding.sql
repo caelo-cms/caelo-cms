@@ -303,6 +303,18 @@ FROM (
 CROSS JOIN LATERAL jsonb_array_elements(src.fields) AS f
 WHERE jsonb_typeof(src.fields) = 'array' AND f->>'kind' IN ('text-list', 'link-list');
 
+-- A field the live module now declares as another kind (a text-list that
+-- became a text field) holds values of that kind: an old snapshot's
+-- legacy kind, readable only since the repair above, must not convert
+-- them. 0353 never saw such a snapshot, so this keeps what it left alone.
+DELETE FROM _list_fields lf
+ USING modules m
+ CROSS JOIN LATERAL jsonb_array_elements(
+   CASE WHEN jsonb_typeof(m.fields) = 'array' THEN m.fields ELSE '[]'::jsonb END) AS f
+ WHERE m.id = lf.module_id
+   AND f->>'name' = lf.name
+   AND f->>'kind' NOT IN ('text-list', 'link-list', 'list');
+
 DO $$
 DECLARE
   dup record;
