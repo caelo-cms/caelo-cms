@@ -157,6 +157,12 @@ export interface Screenshotter {
        *  security-review finding — a context-wide extraHTTPHeaders would
        *  leak it to every embedded CDN host). */
       sameOriginHeaders?: Record<string, string>;
+      /** issue #1217 — answer every request to the navigation URL's own
+       *  origin from this function instead of the network (the capture
+       *  job renders a preview the admin prepared; it has no admin to
+       *  reach). A null answer is a 404; cross-origin requests are
+       *  aborted. Only for own-origin captures (`external` unset). */
+      serve?: ServeOwnOrigin;
     },
   ): Promise<Screenshot>;
   /**
@@ -188,6 +194,72 @@ export interface Screenshotter {
     opts: { cssSelector?: string; xpath?: string; maxMatches?: number },
   ): Promise<string[]>;
   dispose(): Promise<void>;
+}
+
+/** One answer of a {@link ServeOwnOrigin} function. */
+export interface ServedResponse {
+  readonly status: number;
+  readonly headers: Record<string, string>;
+  readonly body: Uint8Array;
+}
+
+/**
+ * issue #1217 — answers the requests of a capture whose page is not on the
+ * network: the capture job renders a branch preview the admin rendered and
+ * handed over, so the document and its media come from that hand-over.
+ * Return null for a URL the hand-over does not contain (answered 404).
+ */
+export type ServeOwnOrigin = (url: URL) => Promise<ServedResponse | null>;
+
+/**
+ * issue #1217 — route handler of a served capture (`capture({ serve })`):
+ * GET/HEAD to `selfOrigin` are fulfilled from `serve` (404 when it has
+ * nothing), every other request is aborted fail-closed — the rendered
+ * preview runs untrusted module scripts and must reach nothing else.
+ */
+export async function handleServedRoute(
+  route: PlaywrightRoute,
+  selfOrigin: string,
+  serve: ServeOwnOrigin,
+): Promise<void> {
+  const req = route.request();
+  const method = req.method().toUpperCase();
+  let url: URL;
+  try {
+    url = new URL(req.url());
+  } catch {
+    await route.abort("blockedbyclient");
+    return;
+  }
+  if ((method !== "GET" && method !== "HEAD") || url.origin !== selfOrigin) {
+    await route.abort("blockedbyclient");
+    return;
+  }
+  let res: ServedResponse | null;
+  try {
+    res = await serve(url);
+  } catch {
+    await route.abort("failed");
+    return;
+  }
+  // A Buffer, never a bare Uint8Array: Playwright under Bun hangs the
+  // navigation on a Uint8Array body (handleExternalRoute does the same).
+  if (!res) {
+    await route.fulfill({
+      status: 404,
+      headers: { "content-type": "text/plain" },
+      body: Buffer.alloc(0),
+    });
+    return;
+  }
+  await route.fulfill({
+    status: res.status,
+    headers: res.headers,
+    body:
+      method === "HEAD"
+        ? Buffer.alloc(0)
+        : Buffer.from(res.body.buffer, res.body.byteOffset, res.body.byteLength),
+  });
 }
 
 /**
@@ -256,6 +328,28 @@ export type BundledChromiumLaunch =
     };
 
 /**
+ * issue #1217 — keep a screenshot browser small. It runs next to other work
+ * (the self-hosted admin) or in a 2 GiB job container whose filesystem is
+ * memory too:
+ * - `/dev/shm` is a small tmpfs in containers; shared memory goes to the
+ *   profile's temp files instead, so a large page cannot crash the renderer.
+ * - no GPU process (headless renders in software anyway);
+ * - at most two renderer processes, however many contexts are open;
+ * - a capped V8 heap per renderer, so one heavy page fails alone instead of
+ *   taking the host's memory;
+ * - no disk or media cache: the profile directory (in the OS temp dir) stays
+ *   a few files, wherever that directory lives.
+ */
+export const SCREENSHOT_MEMORY_ARGS = [
+  "--disable-dev-shm-usage",
+  "--disable-gpu",
+  "--renderer-process-limit=2",
+  "--js-flags=--max-old-space-size=512",
+  "--disk-cache-size=1",
+  "--media-cache-size=1",
+] as const;
+
+/**
  * Playwright launch options for the bundled Chromium. Pure (exported for
  * the regression test).
  *
@@ -281,7 +375,11 @@ export function bundledChromiumLaunchOptions(remoteDebuggingPort?: number): {
   // The screenshotter renders untrusted pages: WebRTC must not send UDP
   // around the black-hole proxy (see browser-egress.ts).
   if (remoteDebuggingPort === undefined) {
-    return { headless: true, channel: "chromium", args: [NO_UNPROXIED_WEBRTC_UDP_ARG] };
+    return {
+      headless: true,
+      channel: "chromium",
+      args: [NO_UNPROXIED_WEBRTC_UDP_ARG, ...SCREENSHOT_MEMORY_ARGS],
+    };
   }
   return {
     headless: true,
@@ -461,6 +559,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       width?: number;
       height?: number;
       sameOriginHeaders?: Record<string, string>;
+      serve?: ServeOwnOrigin;
     },
     // biome-ignore lint/suspicious/noExplicitAny: Playwright page + response handles (dynamic import, no @types)
     fn: (page: any, gotoResponse: any, navFinalUrl?: string) => Promise<T>,
@@ -470,6 +569,9 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       // browser context is even opened.
       assertPublicHttpUrl(url, { allowedHosts });
     }
+    if (opts.serve && opts.external) {
+      throw new Error("a served capture is an own-origin capture; it cannot be external");
+    }
     const selfUrl = new URL(url);
     const ctx = await browser.newContext({
       viewport: { width: opts.width ?? 1280, height: opts.height ?? 800 },
@@ -478,7 +580,11 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       // Own-origin captures (`external: false`) bypass the black-hole proxy
       // ONLY for the navigation URL's `host:port` so `route.continue()` reaches
       // the local preview route while every other host/port is black-holed.
-      ...lockedDownContextOptions(blackhole.server, opts.external ? undefined : selfUrl.host),
+      // A served capture never reaches the network, so nothing bypasses it.
+      ...lockedDownContextOptions(
+        blackhole.server,
+        opts.external || opts.serve ? undefined : selfUrl.host,
+      ),
     });
     let navTarget = navigationKey(url);
     let navFinalUrl: string | undefined;
@@ -494,6 +600,12 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             if (navigationKey(reqUrl) === navTarget) navFinalUrl = finalUrl;
           },
         });
+      });
+    } else if (opts.serve) {
+      const serve = opts.serve;
+      const selfOrigin = selfUrl.origin;
+      await ctx.route("**/*", async (route: PlaywrightRoute) => {
+        await handleServedRoute(route, selfOrigin, serve);
       });
     } else {
       // Deliberately NOT `newContext({ extraHTTPHeaders })`: that would send
@@ -563,6 +675,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
           width: opts?.width,
           height: opts?.height,
           ...(opts?.sameOriginHeaders ? { sameOriginHeaders: opts.sameOriginHeaders } : {}),
+          ...(opts?.serve ? { serve: opts.serve } : {}),
         },
         async (page, gotoResponse, navFinalUrl) => {
           let png: Uint8Array;

@@ -14,6 +14,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { type ExecutionContext, screenshotTargetNotRendered } from "@caelo-cms/shared";
 import type { Screenshot, Screenshotter } from "@caelo-cms/site-importer";
 import {
+  captureBackendFromEnv,
+  setCaptureBackendForTests,
+} from "../../../capture/capture-backend.js";
+import {
   PREVIEW_SCREENSHOT_TOKEN_HEADER,
   verifyPreviewScreenshotToken,
 } from "../../preview-screenshot-token.js";
@@ -191,6 +195,36 @@ describe("server-side backend selection", () => {
     );
     expect(result.ok).toBe(true);
     expect(recorded[0]?.opts?.selector).toBe("footer.caelo-layout-footer");
+  });
+
+  it("#1217: captures the viewport by default and the whole page only when asked", async () => {
+    const recorded: RecordedCapture[] = [];
+    installFakeScreenshotter(recorded);
+    const viewport = await screenshotPageTool.handler(aiCtx, { pageId: PAGE_ID }, toolCtx());
+    expect(recorded[0]?.opts?.fullPage).toBe(false);
+    expect(viewport.content).toContain("visible viewport only");
+    const whole = await screenshotPageTool.handler(
+      aiCtx,
+      { pageId: PAGE_ID, fullPage: true },
+      toolCtx(),
+    );
+    expect(recorded[1]?.opts?.fullPage).toBe(true);
+    expect(whole.content).toContain("full page");
+  });
+
+  it("#1217: on an install without a capture job it refuses instead of starting a browser", async () => {
+    const recorded: RecordedCapture[] = [];
+    installFakeScreenshotter(recorded);
+    setCaptureBackendForTests(captureBackendFromEnv({ CAELO_PROVIDER: "aws" }));
+    try {
+      const result = await screenshotPageTool.handler(aiCtx, { pageId: PAGE_ID }, toolCtx());
+      expect(result.ok).toBe(false);
+      expect(result.content).toContain("UNAVAILABLE");
+      expect(result.content).toContain("#749");
+      expect(recorded).toHaveLength(0);
+    } finally {
+      setCaptureBackendForTests(null);
+    }
   });
 
   it("fails loudly when the preview route answers an error status", async () => {

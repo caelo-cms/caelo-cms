@@ -157,6 +157,8 @@ export {
   type RenderedHtml,
   type Screenshot,
   type Screenshotter,
+  type ServedResponse,
+  type ServeOwnOrigin,
 } from "./screenshot.js";
 export {
   discoverSitemapUrls,

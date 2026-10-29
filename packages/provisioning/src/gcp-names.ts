@@ -69,7 +69,7 @@ export function staticPublisherServiceAccountId(env: string): string {
 export function gcpBucketName(
   projectId: string,
   env: string,
-  bucket: "media" | "static" | "staging" | "audit-results",
+  bucket: "media" | "static" | "staging" | "audit-results" | "capture",
 ): string {
   return `${projectId}-${gcpNamePrefix(env)}-${bucket}`;
 }
@@ -160,6 +160,34 @@ export function auditServiceAccountId(env: string): string {
 /** Email of the audit job's service account. */
 export function auditServiceAccountEmail(projectId: string, env: string): string {
   return `${auditServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+}
+
+/**
+ * #1217 — Cloud Run job that runs every server-side browser render
+ * (screenshots, rendered HTML) of the install, one execution per render, so
+ * no Chromium runs in the admin (capture-job-setup.ts).
+ */
+export function captureJobName(env: string): string {
+  return `${gcpNamePrefix(env)}-capture`;
+}
+
+/** Full resource name of the capture job, as the admin's env carries it. */
+export function captureJobResource(projectId: string, region: string, env: string): string {
+  return `projects/${projectId}/locations/${region}/jobs/${captureJobName(env)}`;
+}
+
+/**
+ * Account id of the capture job's own service account: creates capture
+ * results and writes logs — nothing else; it reads only through the signed
+ * URLs the admin hands it (capture-job-setup.ts).
+ */
+export function captureServiceAccountId(env: string): string {
+  return `${gcpNamePrefix(env)}-capture`;
+}
+
+/** Email of the capture job's service account. */
+export function captureServiceAccountEmail(projectId: string, env: string): string {
+  return `${captureServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
 }
 
 /**

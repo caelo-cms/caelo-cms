@@ -35,6 +35,7 @@ import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { checkAdcImpersonation } from "../adc-impersonation.js";
 import { type AdoptionCandidate, AdoptionError, formatAdopted } from "../adopt-existing.js";
 import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
+import { ensureCaptureJob } from "../capture-job-setup.js";
 import { CERT_WAIT_TIMEOUT_MS, lbCertProbe, waitForCert } from "../cert-wait.js";
 import { redactCredentials } from "../checkpoint-secrets.js";
 import { ensureConvergeJob } from "../converge-job-setup.js";
@@ -506,6 +507,10 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // === 11.3. The quality-audit job: parallel Lighthouse runs (#875) ===
   // Before the upgrader, which gets actAs on the job's service account.
   await stepAuditJob(projectId, region, provider);
+
+  // === 11.35. The capture job: server-side screenshots outside the admin (#1217) ===
+  // Before the upgrader as well, which gets actAs on its service account.
+  await stepCaptureJob(projectId, region, provider);
 
   // === 11.4. The upgrader job: Settings → Updates → Install update (#696) ===
   // Before operator access, which keeps the upgrader's caelo-mcp grant.
@@ -1147,6 +1152,37 @@ async function stepAuditJob(
     process.exit(1);
   }
   s.stop(green(`Quality-audit job ready (${r.done.length} steps)`));
+}
+
+/**
+ * Set up the capture job (capture-job-setup.ts) on the deployed admin's
+ * image. A failure stops the wizard: without the job every server-side
+ * screenshot fails. Idempotent, so it runs on every wizard pass.
+ */
+async function stepCaptureJob(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+): Promise<void> {
+  const s = spinner();
+  s.start("Setting up the capture job (server-side screenshots outside the admin)...");
+  const image = await resolveAdminImage({ projectId, region, env: GCP_STACK_ENV });
+  const r = image.ok
+    ? await ensureCaptureJob({
+        provider,
+        projectId,
+        region,
+        env: GCP_STACK_ENV,
+        adminImageRef: image.imageRef,
+      })
+    : { ok: false as const, done: [], error: image.error };
+  if (!r.ok) {
+    s.stop(red(`Failed: ${r.error}`));
+    log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(green(`Capture job ready (${r.done.length} steps)`));
 }
 
 /**

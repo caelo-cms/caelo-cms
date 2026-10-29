@@ -361,6 +361,15 @@ const logWorkspace = new azure.operationalinsights.Workspace(`${namePrefix}-logs
 // instead of measuring on its own shared CPU. Nothing is staged on Azure
 // before #750 either.
 //
+// FIXME(issue #750): no capture Container Apps job yet. On GCP every
+// server-side browser render (screenshots, external page renders, the
+// site-import crawl) runs in its own short-lived container (#1217,
+// src/capture-job-setup.ts) so the admin never starts Chromium; the Azure
+// equivalent is a Container Apps job execution per render behind admin-core
+// capture/capture-client.ts `CaptureLauncher`. Until it exists the admin
+// refuses every server-side render with that gap
+// (capture/capture-backend.ts) instead of running a browser in its own app.
+//
 // FIXME(issue #696): no in-cloud upgrader or converge job (#819) yet. On
 // GCP Settings → Updates hands app-roll releases to the upgrader job and
 // cloud-setup releases to the converge job; on Azure the admin refuses a

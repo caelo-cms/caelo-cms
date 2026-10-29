@@ -112,7 +112,7 @@ function fakeInstall(events: string[], overrides: [RegExp, Answer][] = []) {
     [new RegExp(`describe ${GATEWAY} .*--format=json`), ok(GATEWAY_JSON)],
     [/describe (\S+) .*status\.url/, (l) => ok(`https://${l.split(" ")[3]}-xyz.a.run.app\n`)],
     [
-      /^run jobs describe caelo-production-audit .*containers\[0\]\.image/,
+      /^run jobs describe caelo-production-(audit|capture) .*containers\[0\]\.image/,
       ok(`${OLD_ADMIN_IMAGE}\n`),
     ],
     [/^sql instances list/, ok(`${SQL}\n`)],
@@ -242,7 +242,7 @@ const CONVERGE_WRITE =
   /add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|service-accounts create|secrets create|secrets versions add|services enable|roles create|roles update|roles undelete|firewall-rules delete|users assign-roles/;
 /** Calls that move a service or run migrations — app-roll-only. */
 const APP_ROLL_WRITE =
-  /^run services update |^run services update-traffic|jobs execute caelo-migrate|^run jobs update caelo-production-audit /;
+  /^run services update |^run services update-traffic|jobs execute caelo-migrate|^run jobs update caelo-production-(audit|capture) /;
 /** Any gcloud call that changes something. */
 const ANY_WRITE =
   /\b(create|update|update-traffic|delete|add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|execute|enable|add|restore)\b/;
@@ -328,6 +328,39 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(lines.some((l) => l.includes("Quality-audit job not set up"))).toBe(true);
     expect(
       events.some((e) => /services update caelo-production-admin.*CAELO_AUDIT_JOB=/.test(e)),
+    ).toBe(false);
+  });
+
+  it("sets up the capture job on the CURRENT admin image before the roll, then moves it with the admin (#1217)", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const deploy = indexOf(events, /^gcloud run jobs deploy caelo-production-capture /);
+    const adminRoll = indexOf(events, new RegExp(`^gcloud run services update ${ADMIN} `));
+    const move = indexOf(events, /^gcloud run jobs update caelo-production-capture /);
+    const deep = indexOf(events, /^health deep/);
+    expect(events[deploy]).toContain(`--image=${OLD_ADMIN_IMAGE}`);
+    expect(deploy < adminRoll && adminRoll < move && move < deep).toBe(true);
+    expect(events[move]).toContain(`--image=${IMAGES.admin.imageRef}`);
+    expect(events[adminRoll]).toContain(
+      "CAELO_CAPTURE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-capture",
+    );
+    expect(lines).toContain("done: Capture job ready (screenshots run outside the admin)");
+  });
+
+  it("a failed capture-job setup leaves the converge incomplete and the admin's capture env untouched", async () => {
+    const events: string[] = [];
+    const { deps, recorded, lines } = upgradeDeps(events, {
+      overrides: [[/^run jobs deploy caelo-production-capture/, fail("PERMISSION_DENIED")]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(recorded.contract).toEqual([]);
+    expect(lines.some((l) => l.includes("Capture job not set up"))).toBe(true);
+    expect(
+      events.some((e) => /services update caelo-production-admin.*CAELO_CAPTURE_JOB=/.test(e)),
+    ).toBe(false);
+    expect(
+      events.some((e) => /services update caelo-production-admin.*CAELO_CAPTURE_BUCKET=/.test(e)),
     ).toBe(false);
   });
 
@@ -465,6 +498,11 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
       .slice(deep)
       .filter((e) => e.startsWith("gcloud run jobs update caelo-production-audit "));
     expect(jobBack).toEqual([expect.stringContaining(`--image=${OLD_ADMIN_IMAGE}`)]);
+    // ... and so does the capture job (#1217).
+    const captureBack = events
+      .slice(deep)
+      .filter((e) => e.startsWith("gcloud run jobs update caelo-production-capture "));
+    expect(captureBack).toEqual([expect.stringContaining(`--image=${OLD_ADMIN_IMAGE}`)]);
     expect(recorded.digests).toEqual([]);
     expect(recorded.contract).toEqual([]);
     const restore = `gcloud sql backups restore ${BACKUP_ID} --restore-instance=${SQL} --project=acme`;

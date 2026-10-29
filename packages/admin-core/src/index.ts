@@ -226,6 +226,14 @@ export {
   runPluginDataBuildIfDue,
   startPluginDataBuildWorker,
 } from "./plugin-data/worker.js";
+// issue #946 / #1217 — the preview document's shape (CSP sandbox, inlined
+// fonts), shared by the admin's preview routes and the capture job.
+export {
+  fontCacheFile,
+  inlinePreviewFonts,
+  PREVIEW_DOCUMENT_CSP,
+  previewDocumentHeaders,
+} from "./preview-document.js";
 export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
 export * from "./public-projection.js";
 // #553 — quality-audit worker (Lighthouse after a substantial Stage).

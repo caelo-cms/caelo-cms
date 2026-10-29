@@ -71,6 +71,7 @@ describe("adminEnvContract", () => {
       CAELO_GENERATOR_CLI: "/app/apps/static-generator/src/cli.ts",
       MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
       CAELO_MCP_IAP_SERVICE_ACCOUNT: "caelo-mcp@acme.iam.gserviceaccount.com",
+      CAELO_MEDIA_BUCKET: "acme-caelo-production-media",
       // #806 — where Settings → MCP → Remote writes the OAuth client.
       CAELO_OPERATOR_OAUTH_CLIENT_STORE:
         "projects/acme/secrets/caelo-production-operator-oauth-client",
@@ -80,6 +81,8 @@ describe("adminEnvContract", () => {
       CAELO_CONVERGE_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-converge",
       CAELO_AUDIT_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-audit",
       CAELO_AUDIT_RESULTS_BUCKET: "acme-caelo-production-audit-results",
+      CAELO_CAPTURE_BUCKET: "acme-caelo-production-capture",
+      CAELO_CAPTURE_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-capture",
       CAELO_STATIC_BUCKET: "acme-caelo-production-static",
       CAELO_STAGING_BUCKET: "acme-caelo-production-staging",
       ...ADMIN_SECRETS,
@@ -107,6 +110,7 @@ describe("adminEnvContract", () => {
       CAELO_GENERATOR_CLI: "/app/apps/static-generator/src/cli.ts",
       MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
       CAELO_MCP_IAP_SERVICE_ACCOUNT: "caelo-mcp@acme.iam.gserviceaccount.com",
+      CAELO_MEDIA_BUCKET: "acme-caelo-production-media",
       // #806 — where Settings → MCP → Remote writes the OAuth client.
       CAELO_OPERATOR_OAUTH_CLIENT_STORE:
         "projects/acme/secrets/caelo-production-operator-oauth-client",
@@ -116,6 +120,8 @@ describe("adminEnvContract", () => {
       CAELO_CONVERGE_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-converge",
       CAELO_AUDIT_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-audit",
       CAELO_AUDIT_RESULTS_BUCKET: "acme-caelo-production-audit-results",
+      CAELO_CAPTURE_BUCKET: "acme-caelo-production-capture",
+      CAELO_CAPTURE_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-capture",
       CAELO_FIREBASE_SITE: "caelo-production-site-abc123",
       CAELO_GATEWAY_SERVICE: "caelo-production-gateway-1a2b3c4",
       CAELO_GATEWAY_REGION: "europe-west1",

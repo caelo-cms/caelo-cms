@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 13;
+export const INFRA_CONTRACT_VERSION = 14;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -101,6 +101,15 @@ export const INFRA_CONTRACT_VERSION = 13;
 //       a Front Door rule set (static-security-headers.ts). Backend-bucket,
 //       object-metadata and CDN writes the in-cloud upgrader holds no rights
 //       for, so the converge applies them.
+//  14 — #1217: the capture job (`caelo-<env>-capture`, capture-job-setup.ts)
+//       every server-side browser render runs in, its service account, the
+//       capture bucket and their grants (job: create under out/ only; admin:
+//       object user on the bucket, run-with-overrides on the job, and
+//       tokenCreator on its own account to sign the job's URLs), the
+//       upgrader's actAs on the job's account, plus CAELO_CAPTURE_JOB /
+//       CAELO_CAPTURE_BUCKET / CAELO_MEDIA_BUCKET on the admin. The new admin
+//       runs no browser itself on GCP and the app-roll moves the job's image,
+//       so it must exist before an in-cloud upgrader rolls onto it.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -121,6 +130,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   11: "Google sign-in: the renamed sign-in client secret, its IAM and mounts, the operator-access job's read access to it, and the admin's URL and organisation domain (#914)",
   12: "Google sign-in at project level: the operator-access job's permission to set the sign-in client in the project's IAP settings (#914)",
   13: "the public site's security headers at the edge: nosniff on every file, uploaded SVGs no longer run as documents on the site's origin, and a one-time CDN purge (#891)",
+  14: "the capture job that takes server-side screenshots outside the admin, its service account, bucket and grants (#1217)",
 };
 
 /**

@@ -38,6 +38,7 @@ import { z } from "zod";
 import type { SupportedProvider } from "./adapter.js";
 import {
   auditJobResource,
+  captureJobResource,
   convergeJobResource,
   gatewayServiceAccountEmail,
   gcpBucketName,
@@ -187,6 +188,16 @@ export const CONVERGE_JOB_ENV_VAR = "CAELO_CONVERGE_JOB";
  */
 export const AUDIT_JOB_ENV_VAR = "CAELO_AUDIT_JOB";
 export const AUDIT_RESULTS_BUCKET_ENV_VAR = "CAELO_AUDIT_RESULTS_BUCKET";
+
+/**
+ * #1217 — the admin env vars naming the capture job, the bucket it hands
+ * inputs and results through, and the media bucket whose objects the admin
+ * signs read URLs for (admin-core capture/capture-backend.ts). `upgrade`
+ * leaves the first two untouched when it could not set the job up.
+ */
+export const CAPTURE_JOB_ENV_VAR = "CAELO_CAPTURE_JOB";
+export const CAPTURE_BUCKET_ENV_VAR = "CAELO_CAPTURE_BUCKET";
+export const MEDIA_BUCKET_ENV_VAR = "CAELO_MEDIA_BUCKET";
 
 /** Where the admin image ships the static-generator CLI. */
 const GENERATOR_CLI = "/app/apps/static-generator/src/cli.ts";
@@ -916,6 +927,12 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     // where the tasks write their results (audit-job-setup.ts).
     { name: AUDIT_JOB_ENV_VAR, value: auditJobResource(projectId, inputs.region, env) },
     { name: AUDIT_RESULTS_BUCKET_ENV_VAR, value: gcpBucketName(projectId, env, "audit-results") },
+    // #1217 — the job every server-side browser render runs in, the bucket
+    // it exchanges inputs and results through, and the media bucket the
+    // admin signs a preview's media URLs for (capture-job-setup.ts).
+    { name: CAPTURE_JOB_ENV_VAR, value: captureJobResource(projectId, inputs.region, env) },
+    { name: CAPTURE_BUCKET_ENV_VAR, value: gcpBucketName(projectId, env, "capture") },
+    { name: MEDIA_BUCKET_ENV_VAR, value: gcpBucketName(projectId, env, "media") },
     // #914 — where Settings → Google sign-in writes the install's Google
     // sign-in client (add-version only, see the run SA's secretVersionAdder
     // invariant).

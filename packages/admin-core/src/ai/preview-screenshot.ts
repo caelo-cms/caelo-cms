@@ -17,10 +17,21 @@
  * so it cannot land in access logs or leave the admin's origin.
  *
  * The browser is the SAME shared Chromium `screenshot_external_page`
- * uses (`_external-screenshotter.ts`) — one instance, idle-closed, no
- * second cold-start path.
+ * uses (`_external-screenshotter.ts`) — one instance, idle-closed, one
+ * render at a time, no second cold-start path.
+ *
+ * issue #1217 — that loopback path is the self-hosted one. On a GCP install
+ * no browser runs in the admin: the admin renders the preview document
+ * itself and the capture job screenshots it from a signed hand-over
+ * (`capture/preview-capture.ts`); aws / azure have no capture job yet and
+ * refuse. Either way the image is the viewport unless `fullPage` is asked
+ * for: a full-page PNG of a long page is many MB of pixels to hold, send
+ * and look at.
  */
 
+import { captureBackend } from "../capture/capture-backend.js";
+import { captureServedPreview, type ServedPreviewSource } from "../capture/preview-capture.js";
+import { inlinePreviewFonts } from "../preview-document.js";
 import {
   mintPreviewScreenshotToken,
   PREVIEW_SCREENSHOT_TOKEN_HEADER,
@@ -53,7 +64,11 @@ export type PreviewScreenshotResult =
     }
   | {
       readonly ok: false;
-      readonly reason: "playwright-unavailable" | "self-origin-unresolvable" | "capture-failed";
+      readonly reason:
+        | "playwright-unavailable"
+        | "capture-unavailable"
+        | "self-origin-unresolvable"
+        | "capture-failed";
       /** Operator/AI-facing detail; never contains token material. */
       readonly message: string;
     };
@@ -91,14 +106,48 @@ export function resolvePreviewSelfOrigin():
  * throws — every failure mode returns a structured, loud result the tool
  * handler can turn into AI-actionable content.
  */
-export async function capturePreviewScreenshot(args: {
-  readonly pageId: string;
-  readonly chatBranchId?: string;
-  readonly viewport?: PreviewScreenshotViewport;
-  /** Explicit layout width in CSS px; overrides the preset's width (height stays the preset's). */
-  readonly width?: number;
-  readonly selector?: string;
-}): Promise<PreviewScreenshotResult> {
+export async function capturePreviewScreenshot(
+  args: {
+    readonly pageId: string;
+    readonly chatBranchId?: string;
+    readonly viewport?: PreviewScreenshotViewport;
+    /** Explicit layout width in CSS px; overrides the preset's width (height stays the preset's). */
+    readonly width?: number;
+    readonly selector?: string;
+    /** The whole page instead of the viewport (issue #1217: only when asked). */
+    readonly fullPage?: boolean;
+  },
+  source: ServedPreviewSource,
+): Promise<PreviewScreenshotResult> {
+  const preset = PREVIEW_SCREENSHOT_VIEWPORTS[args.viewport ?? "desktop"];
+  const vp = { width: args.width ?? preset.width, height: preset.height };
+  const fullPage = args.fullPage ?? false;
+  const backend = captureBackend();
+  if (backend.kind === "unavailable") {
+    return { ok: false, reason: "capture-unavailable", message: backend.message };
+  }
+  if (backend.kind === "job") {
+    const doc = await source.renderDocument();
+    if (!doc.ok) return { ok: false, reason: "capture-failed", message: doc.message };
+    try {
+      const shot = await captureServedPreview(backend.client, {
+        pageId: args.pageId,
+        html: await inlinePreviewFonts(doc.html),
+        resolveMedia: source.resolveMedia,
+        width: vp.width,
+        height: vp.height,
+        fullPage,
+        ...(args.selector ? { selector: args.selector } : {}),
+      });
+      return shotResult(shot.bytes, vp);
+    } catch (e) {
+      return {
+        ok: false,
+        reason: "capture-failed",
+        message: e instanceof Error ? e.message : String(e),
+      };
+    }
+  }
   const origin = resolvePreviewSelfOrigin();
   if (!origin.ok) {
     return { ok: false, reason: "self-origin-unresolvable", message: origin.message };
@@ -116,8 +165,6 @@ export async function capturePreviewScreenshot(args: {
         "on self-hosted installs)",
     };
   }
-  const preset = PREVIEW_SCREENSHOT_VIEWPORTS[args.viewport ?? "desktop"];
-  const vp = { width: args.width ?? preset.width, height: preset.height };
   const token = mintPreviewScreenshotToken({
     pageId: args.pageId,
     ...(args.chatBranchId ? { chatBranchId: args.chatBranchId } : {}),
@@ -131,7 +178,7 @@ export async function capturePreviewScreenshot(args: {
         // Our own loopback origin — the external SSRF guard must NOT run
         // (it would block the private address by design).
         external: false,
-        fullPage: true,
+        fullPage,
         ...(args.selector ? { selector: args.selector } : {}),
         sameOriginHeaders: { [PREVIEW_SCREENSHOT_TOKEN_HEADER]: token },
       },
@@ -146,14 +193,7 @@ export async function capturePreviewScreenshot(args: {
         } — the page or branch may not exist`,
       };
     }
-    const dims = pngDimensions(shot.bytes);
-    return {
-      ok: true,
-      image: { base64: Buffer.from(shot.bytes).toString("base64"), mediaType: "image/png" },
-      ...(dims ? { widthPx: dims.width, heightPx: dims.height } : {}),
-      viewportWidth: vp.width,
-      viewportHeight: vp.height,
-    };
+    return shotResult(shot.bytes, vp);
   } catch (e) {
     return {
       ok: false,
@@ -164,4 +204,18 @@ export async function capturePreviewScreenshot(args: {
     // No-op on the shared reuse wrapper — the idle timer owns teardown.
     await screenshotter.dispose().catch(() => undefined);
   }
+}
+
+function shotResult(
+  bytes: Uint8Array,
+  vp: { readonly width: number; readonly height: number },
+): PreviewScreenshotResult {
+  const dims = pngDimensions(bytes);
+  return {
+    ok: true,
+    image: { base64: Buffer.from(bytes).toString("base64"), mediaType: "image/png" },
+    ...(dims ? { widthPx: dims.width, heightPx: dims.height } : {}),
+    viewportWidth: vp.width,
+    viewportHeight: vp.height,
+  };
 }

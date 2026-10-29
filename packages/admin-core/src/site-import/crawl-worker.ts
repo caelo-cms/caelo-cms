@@ -22,6 +22,7 @@ import {
   type Screenshot,
 } from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
+import { getExternalScreenshotter } from "../ai/tools/_external-screenshotter.js";
 import { parseCrawlScope } from "./crawl-scope.js";
 import { parseExplicitUrls } from "./explicit-urls.js";
 import {
@@ -250,6 +251,10 @@ async function crawlNextImportRun(cfg: SiteImportWorkerConfig): Promise<void> {
       // issue #191 — explicit, visible exemption list for the SSRF
       // guard (e2e fixture servers, deliberate private crawls).
       allowedHosts: importerAllowedHosts(),
+      // issue #1217 — the install's one screenshotter: the capture job on
+      // GCP, the shared one-at-a-time browser on self-hosted installs. Never
+      // a browser of the crawl's own next to it.
+      screenshotter: await getExternalScreenshotter({ allowedHosts: importerAllowedHosts() }),
       // issue #192 — stream batches to the DB (UNIQUE(run_id,
       // source_url) makes resume replays idempotent) + checkpoint the
       // frontier so a crash resumes instead of restarting.

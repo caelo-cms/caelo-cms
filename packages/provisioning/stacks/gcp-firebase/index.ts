@@ -965,6 +965,19 @@ new gcp.iap.WebCloudRunServiceIamMember(
 // the next wizard run. The app-roll moves the job's image with the admin's.
 
 // =========================================================================
+// Capture job — deliberately NOT here
+// =========================================================================
+//
+// #1217 — every server-side browser render (screenshots, rendered HTML of
+// external pages, the site-import crawl) runs in a short-lived Cloud Run job,
+// one execution per render, so no Chromium runs in the admin. Its service
+// account may only create results under `out/` of the capture bucket; it
+// reads its input and a preview's media through URLs the admin signs per
+// capture. The CLI owns the job, its account, the bucket and the grants
+// (packages/provisioning/src/capture-job-setup.ts), for the same reason as
+// the audit job above.
+
+// =========================================================================
 // Operator access — deliberately NOT here
 // =========================================================================
 //

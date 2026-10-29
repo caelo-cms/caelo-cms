@@ -243,6 +243,49 @@ export function extractMediaRefs(html: string): MediaRef[] {
   return out;
 }
 
+/**
+ * Issue #1217 — every editor media URL in an HTML string as the browser
+ * will request it (`/_caelo/media/<slug>` or `/_caelo/media/<ref>/<variant>`),
+ * deduped, with the asset reference and variant the admin's media routes
+ * resolve it to. The capture job serves exactly these paths.
+ */
+export function extractMediaUrlPaths(
+  html: string,
+): { readonly path: string; readonly ref: string; readonly variant: string }[] {
+  const out = new Map<string, { path: string; ref: string; variant: string }>();
+  for (const m of html.matchAll(mediaUrlPattern)) {
+    const path = m[0];
+    if (!out.has(path)) out.set(path, { path, ref: m[1] as string, variant: m[2] ?? "orig" });
+  }
+  return [...out.values()];
+}
+
+/** The Content-Type the admin serves a stored media variant with, by its `format`. */
+export function mediaFormatContentType(format: string): string {
+  switch (format) {
+    case "jpeg":
+      return "image/jpeg";
+    case "png":
+      return "image/png";
+    case "webp":
+      return "image/webp";
+    case "avif":
+      return "image/avif";
+    case "gif":
+      return "image/gif";
+    case "svg":
+      return "image/svg+xml";
+    case "ico":
+      return "image/x-icon";
+    case "pdf":
+      return "application/pdf";
+    case "mp4":
+      return "video/mp4";
+    default:
+      return "application/octet-stream";
+  }
+}
+
 const mediaRefPattern =
   /caelo:media\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/([a-z][a-z0-9-]{0,63}))?/g;
 

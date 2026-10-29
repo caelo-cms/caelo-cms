@@ -4,7 +4,9 @@ import { describe, expect, it } from "bun:test";
 import {
   bundledChromiumLaunchOptions,
   handleExternalRoute,
+  handleServedRoute,
   type PlaywrightRoute,
+  SCREENSHOT_MEMORY_ARGS,
 } from "./screenshot.js";
 
 describe("bundledChromiumLaunchOptions", () => {
@@ -20,15 +22,21 @@ describe("bundledChromiumLaunchOptions", () => {
     expect(opts.args?.some((a) => a.includes("back-forward-cache"))).toBe(false);
   });
 
-  it("keeps Playwright's defaults without a DevTools port and locks WebRTC UDP to the proxy (screenshots)", () => {
+  it("keeps Playwright's defaults without a DevTools port, locks WebRTC UDP to the proxy and caps memory (screenshots)", () => {
     // PR #869: a rendered page's RTCPeerConnection sent STUN over UDP to a
     // page-chosen internal address; only this switch stops it. The
     // look-alike `--force-webrtc-ip-handling-policy` does NOT.
+    // #1217: shm off the small /dev/shm tmpfs, two renderers at most, a
+    // capped V8 heap and no caches in the profile.
     expect(bundledChromiumLaunchOptions()).toEqual({
       headless: true,
       channel: "chromium",
-      args: ["--webrtc-ip-handling-policy=disable_non_proxied_udp"],
+      args: ["--webrtc-ip-handling-policy=disable_non_proxied_udp", ...SCREENSHOT_MEMORY_ARGS],
     });
+    expect(SCREENSHOT_MEMORY_ARGS).toContain("--disable-dev-shm-usage");
+    expect(SCREENSHOT_MEMORY_ARGS).toContain("--renderer-process-limit=2");
+    // The Lighthouse browser keeps measuring like a visitor's Chrome.
+    expect(bundledChromiumLaunchOptions(9333).args).not.toContain("--disable-dev-shm-usage");
   });
 });
 
@@ -149,5 +157,68 @@ describe("handleExternalRoute (SSRF connect-time fulfillment)", () => {
     });
     expect(m.getFulfilled()?.headers).toEqual({ "content-type": "text/html" });
     expect(m.getContinued()).toBe(false);
+  });
+});
+
+describe("handleServedRoute (#1217: a capture served from a hand-over, never the network)", () => {
+  function route(url: string, method = "GET") {
+    const seen: { aborted?: string; fulfilled?: { status: number; body?: Uint8Array | Buffer } } =
+      {};
+    const r: PlaywrightRoute = {
+      request: () => ({ url: () => url, method: () => method, headers: () => ({}) }),
+      abort: async (code) => {
+        seen.aborted = code ?? "";
+      },
+      continue: async () => {
+        throw new Error("a served capture never continues to the network");
+      },
+      fulfill: async (o) => {
+        seen.fulfilled = { status: o.status, ...(o.body ? { body: o.body } : {}) };
+      },
+    };
+    return { r, seen };
+  }
+  const ORIGIN = "https://preview.caelo.invalid";
+  const serve = async (u: URL) =>
+    u.pathname === "/doc"
+      ? {
+          status: 200,
+          headers: { "content-type": "text/html" },
+          body: new TextEncoder().encode("<p>x</p>"),
+        }
+      : null;
+
+  it("fulfills a same-origin GET from the hand-over", async () => {
+    const { r, seen } = route(`${ORIGIN}/doc`);
+    await handleServedRoute(r, ORIGIN, serve);
+    expect(seen.fulfilled?.status).toBe(200);
+    // Playwright under Bun hangs the navigation on a bare Uint8Array body.
+    expect(Buffer.isBuffer(seen.fulfilled?.body)).toBe(true);
+  });
+
+  it("answers 404 for a same-origin path the hand-over lacks", async () => {
+    const { r, seen } = route(`${ORIGIN}/_caelo/media/other`);
+    await handleServedRoute(r, ORIGIN, serve);
+    expect(seen.fulfilled?.status).toBe(404);
+  });
+
+  it("aborts every cross-origin request (metadata server, CDNs, other ports)", async () => {
+    for (const url of [
+      "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+      "https://cdn.example.com/x.js",
+      "https://preview.caelo.invalid:8443/doc",
+      "http://127.0.0.1:3000/_caelo/preview-screenshot/x",
+    ]) {
+      const { r, seen } = route(url);
+      await handleServedRoute(r, ORIGIN, serve);
+      expect(seen.aborted).toBe("blockedbyclient");
+      expect(seen.fulfilled).toBeUndefined();
+    }
+  });
+
+  it("aborts non-GET/HEAD requests even on its own origin", async () => {
+    const { r, seen } = route(`${ORIGIN}/doc`, "POST");
+    await handleServedRoute(r, ORIGIN, serve);
+    expect(seen.aborted).toBe("blockedbyclient");
   });
 });

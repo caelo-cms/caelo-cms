@@ -264,7 +264,7 @@ erDiagram
 | `apps/admin/` | SvelteKit admin app + every authenticated route (`/edit`, `/content/*`, `/settings/*`). |
 | `apps/static-generator/` | Subprocess invoked by `deploy.trigger`; reads composed pages + emits HTML to `output/<env>/`. |
 | `apps/api-gateway/` | Public `/api/*` endpoints for plugin writes (forms, comments, ratings, newsletter) with rate limits, proof-of-work captcha and honeypots; connects to cms_public only, as `public_role`, and holds no cms_admin login (#635). |
-| `packages/admin-core/` | Ops registry + AI tool dispatch + chat-runner + audit + snapshot emitter. The orchestrator. |
+| `packages/admin-core/` | Ops registry + AI tool dispatch + chat-runner + audit + snapshot emitter. The orchestrator. Its two pieces of work that leave the admin process on GCP, each as a short-lived Cloud Run job running the admin image: the quality audit's Lighthouse runs (`quality/`, #875) and every server-side browser render (`capture/`, [docs/dev/capture-job.md](./docs/dev/capture-job.md), #1217). |
 | `packages/query-api/` | `defineOperation`, the Validator, the Database Adapter. Every DB call goes through here. |
 | `packages/shared/` | Zod schemas, the two-pass composer, the slot scanner, list types and the list resolver. Shared between admin and static-gen. |
 | `packages/migrations/` | SQL migrations for both `cms_admin` and `cms_public`; applied in order at boot. |
