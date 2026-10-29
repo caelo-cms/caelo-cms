@@ -162,6 +162,54 @@ async function publish<T>(input: Record<string, unknown>): Promise<T> {
   return r.value as T;
 }
 
+/**
+ * #1225 — samples cms_admin's backends while a run is in flight and keeps
+ * every transaction that sat `idle in transaction` for more than a second
+ * (longest age per query). A Stage or Publish live that holds a pooled
+ * connection across its build or upload shows up here; the static
+ * generator's own read transaction (a subprocess with its own connection,
+ * #1220) is reported separately, by the query it last ran.
+ */
+function sampleIdleTransactions(): { stop: () => Promise<Map<string, number>> } {
+  const sql = new SQL(ADMIN_URL!);
+  const longest = new Map<string, number>();
+  let running = true;
+  const loop = (async () => {
+    while (running) {
+      const rows = (await sql`
+        SELECT left(regexp_replace(query, '[[:space:]]+', ' ', 'g'), 80) AS q,
+               (extract(epoch FROM clock_timestamp() - xact_start) * 1000)::int AS ms
+        FROM pg_stat_activity
+        WHERE datname = 'cms_admin' AND pid <> pg_backend_pid()
+          AND state LIKE 'idle in transaction%'
+          AND clock_timestamp() - state_change > interval '1 second'`) as {
+        q: string;
+        ms: number;
+      }[];
+      for (const r of rows) longest.set(r.q, Math.max(longest.get(r.q) ?? 0, r.ms));
+      await Bun.sleep(250);
+    }
+  })();
+  return {
+    stop: async () => {
+      running = false;
+      await loop;
+      await sql.end();
+      return longest;
+    },
+  };
+}
+
+function reportIdle(label: string, longest: Map<string, number>): void {
+  if (longest.size === 0) {
+    console.info(`[bench] ${label}: no transaction idle for more than 1 s`);
+    return;
+  }
+  for (const [q, ms] of longest) {
+    console.info(`[bench] ${label}: idle in transaction up to ${ms} ms — ${q}`);
+  }
+}
+
 async function system<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL!);
   try {
@@ -361,11 +409,13 @@ describe("#1003 Stage / Publish live scaling", () => {
 
         for (const label of ["Stage (cold)", "Stage (nothing changed)"]) {
           const t = performance.now();
+          const idle = sampleIdleTransactions();
           const staged = await ok<{ runId: string; phases: PhaseTiming[] }>("deploy.trigger", {
             targetName: "staging",
             repoRoot: root,
           });
           console.info(`[bench] ${label} wall ${Math.round(performance.now() - t)} ms`);
+          reportIdle(label, await idle.stop());
           report(label, n, staged.phases);
           if (label.endsWith("changed)")) {
             await system(
@@ -377,12 +427,14 @@ describe("#1003 Stage / Publish live scaling", () => {
           }
         }
         const t = performance.now();
+        const idle = sampleIdleTransactions();
         const promoted = await publish<{ toRunId: string }>({
           fromTarget: "staging",
           toTarget: "production",
           repoRoot: root,
         });
         console.info(`[bench] Publish live wall ${Math.round(performance.now() - t)} ms`);
+        reportIdle("Publish live", await idle.stop());
         report("Publish live", n, await runPhases(promoted.toRunId));
       },
       { timeout: 60 * 60 * 1000 },
