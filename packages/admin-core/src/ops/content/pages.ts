@@ -2436,7 +2436,13 @@ export const duplicatePageOp = defineOperation({
       description: `pages.duplicate layout from=${source.slug}`,
       chatTaskId: ctx.chatTaskId ?? null,
       chatBranchId: ctx.chatBranchId ?? null,
-      entities: [{ kind: "pageLayout", entityId: newPageId, state: layoutState }],
+      // The copied content rides with the layout that binds it — nested
+      // copies too, so an undo or revert of the duplicate reaches every
+      // row it minted (#1126).
+      entities: [
+        { kind: "pageLayout", entityId: newPageId, state: layoutState },
+        ...clones.snapshotEntities,
+      ],
     });
     return ok({ pageId: newPageId });
   },

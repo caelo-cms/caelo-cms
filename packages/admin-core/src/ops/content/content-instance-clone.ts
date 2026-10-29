@@ -17,12 +17,18 @@
  * content-instance snapshot (a chat's own edits exist only there until
  * Stage). New rows carry the caller's `chat_branch_id`, like every
  * branched create.
+ *
+ * Every row the copy mints comes back as a `contentInstance` snapshot
+ * entity, nested copies included, so the caller's snapshot records them
+ * (CLAUDE.md §2). Without it an undo of the duplicate or fork dropped the
+ * page but left the copies behind as orphans, and revert/audit never saw
+ * them (#1126).
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { collectNestedRefs, rewriteNestedRefs } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { loadContentInstanceBranchStates } from "../../snapshots/index.js";
+import { loadContentInstanceBranchStates, type SnapshotEntity } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
 
 interface InstanceInView {
@@ -97,13 +103,17 @@ async function loadInstancesInView(
  * deleted, or not visible to the caller: copying around it would either
  * keep a reference into the source or silently drop content.
  *
- * @returns the new id for each entry of `sourceIds`, in the same order.
+ * @returns `ids`: the new id for each entry of `sourceIds`, in the same
+ *   order; `snapshotEntities`: one `contentInstance` entity per row
+ *   written (roots and nested copies), for the caller's `emitSnapshot`.
  */
 export async function cloneContentInstancesDeep(
   tx: TransactionRunner,
   actor: CloneActor,
   sourceIds: readonly string[],
-): Promise<{ ok: true; ids: string[] } | { ok: false; message: string }> {
+): Promise<
+  { ok: true; ids: string[]; snapshotEntities: SnapshotEntity[] } | { ok: false; message: string }
+> {
   const branchId = actor.chatBranchId ?? null;
   const inView = new Map<string, InstanceInView>();
   const nestedIds = new Set<string>();
@@ -155,20 +165,44 @@ export async function cloneContentInstancesDeep(
     ...sourceIds.map((sourceId) => ({ id: crypto.randomUUID(), sourceId })),
     ...[...nestedCopy].map(([sourceId, id]) => ({ id, sourceId })),
   ];
-  const valueRows = rows.map(({ id, sourceId }) => {
+  const copies = rows.map(({ id, sourceId }) => {
     const inst = inView.get(sourceId);
     if (!inst) throw new Error(`content copy: instance ${sourceId} was not loaded`);
-    return sql`(
-      ${id}::uuid, ${inst.moduleId}::uuid, NULL, NULL,
-      ${jsonbParam(rewriteNestedRefs(inst.values, remap))},
-      ${actor.actorId}::uuid, ${branchId}::uuid
-    )`;
+    return { id, moduleId: inst.moduleId, values: rewriteNestedRefs(inst.values, remap) };
   });
-  if (valueRows.length > 0) {
-    await tx.execute(sql`
+  const snapshotEntities: SnapshotEntity[] = [];
+  if (copies.length > 0) {
+    const inserted = (await tx.execute(sql`
       INSERT INTO content_instances (id, module_id, slug, display_name, "values", updated_by, chat_branch_id)
-      VALUES ${sql.join(valueRows, sql`, `)}
-    `);
+      VALUES ${sql.join(
+        copies.map(
+          (c) => sql`(
+            ${c.id}::uuid, ${c.moduleId}::uuid, NULL, NULL, ${jsonbParam(c.values)},
+            ${actor.actorId}::uuid, ${branchId}::uuid
+          )`,
+        ),
+        sql`, `,
+      )}
+      RETURNING id::text AS id, version
+    `)) as unknown as { id: string; version: number | string }[];
+    const versions = new Map(inserted.map((r) => [r.id, Number(r.version)]));
+    for (const c of copies) {
+      const version = versions.get(c.id);
+      if (version === undefined) throw new Error(`content copy: row ${c.id} was not inserted`);
+      snapshotEntities.push({
+        kind: "contentInstance",
+        entityId: c.id,
+        state: {
+          schemaVersion: 1,
+          moduleId: c.moduleId,
+          slug: null,
+          displayName: null,
+          values: c.values,
+          version,
+          deletedAt: null,
+        },
+      });
+    }
   }
-  return { ok: true, ids: rows.slice(0, sourceIds.length).map((r) => r.id) };
+  return { ok: true, ids: rows.slice(0, sourceIds.length).map((r) => r.id), snapshotEntities };
 }

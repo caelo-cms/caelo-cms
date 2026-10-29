@@ -76,6 +76,40 @@ async function rowsOf(
   }
 }
 
+/** Run `query` as the system actor (RLS reads need the actor kind). */
+async function asSystem<T>(query: (tx: SQL) => Promise<T>): Promise<T> {
+  const db = new SQL(ADMIN_URL!);
+  try {
+    return (await db.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return query(tx as unknown as SQL);
+    })) as T;
+  } finally {
+    await db.end();
+  }
+}
+
+/** The site snapshot that recorded each content instance, by id (#1126). */
+async function snapshotOfInstances(ids: readonly string[]): Promise<Map<string, string>> {
+  const rows = (await asSystem(
+    (tx) => tx`
+      SELECT content_instance_id::text AS id, site_snapshot_id::text AS snap
+        FROM content_instance_snapshots
+       WHERE content_instance_id = ANY(${`{${ids.join(",")}}`}::uuid[])`,
+  )) as { id: string; snap: string }[];
+  return new Map(rows.map((r) => [r.id, r.snap]));
+}
+
+/** Ids of the given content instances that are soft-deleted. */
+async function deletedInstances(ids: readonly string[]): Promise<string[]> {
+  const rows = (await asSystem(
+    (tx) => tx`
+      SELECT id::text AS id FROM content_instances
+       WHERE id = ANY(${`{${ids.join(",")}}`}::uuid[]) AND deleted_at IS NOT NULL`,
+  )) as { id: string }[];
+  return rows.map((r) => r.id);
+}
+
 async function valuesOf(ctx: ExecutionContext, id: string): Promise<Record<string, unknown>> {
   return (await op<Got>(ctx, "content_instances.get", { id })).instance.values;
 }
@@ -402,6 +436,80 @@ describe("pages.duplicate — in a chat", () => {
       { heading: "Draft holder", cta: expect.anything(), items: expect.anything() },
     ]);
     expect((await valuesOf(SYS, src.itemCard)).title).toBe("Draft item");
+  });
+});
+
+describe("pages.duplicate / fork — every copied instance is snapshotted (#1126)", () => {
+  it("a duplicate's nested copies ride its layout snapshot, and undo drops them all", async () => {
+    const src = await nestedHolder("Snap");
+    const pageId = await createPage("snap-src");
+    await op(SYS, "pages.set_modules", {
+      pageId,
+      blocks: [{ blockName: "content", moduleIds: [sectionId, holderId] }],
+    });
+    await op(SYS, "placement.set_content", {
+      pageId,
+      blockName: "content",
+      position: 1,
+      contentInstanceId: src.holder,
+      syncMode: "unsynced",
+    });
+    const chat = await draftChat("snap");
+    const copyId = await duplicate(chat, pageId, "snap-copy");
+    const placements = (await placementsOf(chat, copyId)) as unknown as {
+      contentInstanceId: string;
+    }[];
+    const holderCopy = placements[1]?.contentInstanceId;
+    expect(holderCopy).toBeDefined();
+    const copied = [
+      placements[0]!.contentInstanceId,
+      ...(await tree(chat, holderCopy!)).map((n) => n.id),
+    ];
+    expect(copied).toHaveLength(6);
+
+    const snaps = await snapshotOfInstances(copied);
+    expect([...snaps.keys()].sort()).toEqual([...copied].sort());
+    // One site snapshot: the layout snapshot that binds the copies.
+    expect(new Set(snaps.values()).size).toBe(1);
+    const layoutSnap = (await asSystem(
+      (tx) => tx`
+        SELECT site_snapshot_id::text AS snap FROM page_layout_snapshots
+         WHERE page_id = ${copyId}::uuid`,
+    )) as { snap: string }[];
+    expect(layoutSnap.map((r) => r.snap)).toContain([...snaps.values()][0]!);
+
+    await op(chat, "chat.undo_changes", { chatSessionId: chat.chatTaskId });
+    expect((await deletedInstances(copied)).sort()).toEqual([...copied].sort());
+  });
+
+  it("a fork snapshots its nested copies, not just the root", async () => {
+    const src = await nestedHolder("ForkSnap");
+    const pageId = await createPage("fork-snap");
+    await op(SYS, "pages.set_modules", {
+      pageId,
+      blocks: [{ blockName: "content", moduleIds: [holderId] }],
+    });
+    await op(SYS, "placement.set_content", {
+      pageId,
+      blockName: "content",
+      position: 0,
+      contentInstanceId: src.holder,
+      syncMode: "synced",
+    });
+    const chat = await draftChat("fork-snap");
+    const forked = await op<{ contentInstanceId: string }>(chat, "placement.fork_content", {
+      pageId,
+      blockName: "content",
+      position: 0,
+    });
+    const copied = (await tree(chat, forked.contentInstanceId)).map((n) => n.id);
+    expect(copied).toHaveLength(5);
+    const snaps = await snapshotOfInstances(copied);
+    expect([...snaps.keys()].sort()).toEqual([...copied].sort());
+    expect(new Set(snaps.values()).size).toBe(1);
+
+    await op(chat, "chat.undo_changes", { chatSessionId: chat.chatTaskId });
+    expect((await deletedInstances(copied)).sort()).toEqual([...copied].sort());
   });
 });
 
