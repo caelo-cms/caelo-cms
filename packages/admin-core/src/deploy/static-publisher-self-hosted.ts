@@ -64,7 +64,9 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     };
   },
 
-  async promoteToProduction({ sourceBuildDir, fromTarget, toTarget, siteBaseUrl }) {
+  async promoteToProduction({ sourceBuildDir, fromTarget, toTarget, siteBaseUrl, beforeRelease }) {
+    // The sync into `current/` is the release itself.
+    await beforeRelease?.();
     if (fromTarget.name === toTarget.name) {
       throw new Error("fromTarget and toTarget must differ");
     }
@@ -208,7 +210,9 @@ export const selfHostedStaticPublisher: StaticPublisher = {
    * rollback. The archive is a complete build, so the new one is too, and
    * a later rollback to this run finds it.
    */
-  async publishPluginData({ target, live, runId, files, pruneBuildIds }) {
+  async publishPluginData({ target, live, runId, files, pruneBuildIds, beforeRelease }) {
+    // The sync into `current/` is the release itself.
+    await beforeRelease?.();
     if (!existsSync(join(live.localBuildDir, "routing-manifest.json"))) {
       throw new Error(
         `self-hosted publisher: the archive of the live build (${live.localBuildDir}) is missing, so there is nothing to publish plugin data on top of. Publish live again; the next plugin-data build then starts from that build.`,

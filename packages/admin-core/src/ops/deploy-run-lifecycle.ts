@@ -1,24 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #1003 / #1211 — the lifecycle of a deploy run, one short transaction per
- * step.
+ * #1003 / #1211 / #1225 — the lifecycle of a deploy run, one short
+ * transaction per step.
  *
- *   deploy.begin_run                  commit the run's row as `running`
- *   deploy.renew_run_lease            heartbeat of a run without a transaction
+ *   beginRunInTx                       commit the run's row as `running` with
+ *                                      its lease (inside each run's start step)
+ *   deploy.renew_run_lease             heartbeat of a run: its own lease and
+ *                                      every publish lease it holds
  *   deploy.acquire_staging_publication take the staging-publication lease
- *   deploy.fail_run                   finish a run as failed, release its leases
+ *   deploy.acquire_live_release        take the live-release lease
+ *   deploy.fail_run                    finish a run as failed, release its leases
  *
  * Their `deploy_runs` row used to be inserted in the long transaction that
- * builds and publishes, so nobody saw a run while it ran. A Stage now holds
- * no transaction at all while it builds (#1211): its steps commit on their
- * own, its liveness is a lease on its row (deploy-run-lock.ts) and its
- * place in the staging-publication order a lease row
- * (staging-publication-lock.ts). Publish live and the plugin-data build
- * still build inside one transaction; they hold the run's advisory lock
- * before calling begin_run instead and their row carries no lease.
+ * builds and publishes, so nobody saw a run while it ran. A Stage, a
+ * Publish live and a plugin-data build now hold no transaction at all while
+ * they build (#1211, #1225): their steps commit on their own, their
+ * liveness is a lease on their row (deploy-run-lock.ts) and their place in
+ * the publish order a lease row (staging-publication-lock.ts,
+ * live-release-lock.ts).
  *
- * begin_run's sweep marks runs that died mid-build as failed — never one
+ * The start's sweep marks runs that died mid-build as failed — never one
  * still being built, on this instance or any other.
  */
 
@@ -27,6 +29,11 @@ import { ok, phaseTimingSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { deployRunIsOrphaned } from "../deploy/deploy-run-lock.js";
+import {
+  acquireLiveRelease,
+  releaseLiveRelease,
+  renewLiveRelease,
+} from "../deploy/live-release-lock.js";
 import { deployPluginProblem } from "../deploy/plugin-problems.js";
 import {
   acquireStagingPublication,
@@ -41,7 +48,14 @@ export const ORPHANED_RUN_MESSAGE =
 
 const leaseTtl = z.number().int().min(1_000).max(3_600_000);
 
-/** The row a run starts with (deploy.begin_run's input, also used by deploy.start_trigger). */
+/** What a lease acquisition answers. */
+const leaseAcquired = z.object({
+  acquired: z.boolean(),
+  /** The run holding it; null when acquired, or when a transaction (or the previous release) holds it. */
+  heldByRunId: z.string().nullable(),
+});
+
+/** The row a run starts with (the start steps of deploy.trigger / .promote / the plugin-data build). */
 export const beginRunInput = z
   .object({
     runId: z.string().uuid(),
@@ -68,12 +82,8 @@ export const beginRunInput = z
     buildKind: z.enum(["site", "plugin_data"]).default("site"),
     /** #1155 — a plugin-data run's base: the live run its files came from. */
     baseRunId: z.string().uuid().nullable().default(null),
-    /**
-     * #1211 — the run's lease, for a run that holds no transaction while it
-     * builds (it renews it, deploy.renew_run_lease). Null: the caller holds
-     * the run's advisory lock in its own transaction instead.
-     */
-    leaseTtlMs: leaseTtl.nullable().default(null),
+    /** #1211 — the run's lease; the run renews it (deploy.renew_run_lease). */
+    leaseTtlMs: leaseTtl,
   })
   .strict()
   .refine((i) => (i.buildKind === "plugin_data") === (i.baseRunId !== null), {
@@ -82,7 +92,7 @@ export const beginRunInput = z
 
 /**
  * Sweep runs that died mid-build, then insert `input`'s row as running.
- * Runs in the caller's transaction (deploy.begin_run, deploy.start_trigger).
+ * Runs in the caller's (start step's) transaction.
  *
  * @returns the ids of the runs marked failed.
  */
@@ -104,6 +114,7 @@ export async function beginRunInTx(
     `);
     // A lease the dead run held has lapsed too; free it so the row says so.
     await releaseStagingPublication(tx, id);
+    await releaseLiveRelease(tx, id);
     orphanedRunIds.push(id);
   }
   await tx.execute(sql`
@@ -117,11 +128,7 @@ export async function beginRunInTx(
             ${input.pluginProblems === null ? sql`NULL` : jsonbParam(input.pluginProblems)},
             ${input.buildKind},
             ${input.baseRunId === null ? sql`NULL` : sql`${input.baseRunId}::uuid`},
-            ${
-              input.leaseTtlMs === null
-                ? sql`NULL`
-                : sql`clock_timestamp() + ${input.leaseTtlMs}::int * interval '1 millisecond'`
-            })
+            clock_timestamp() + ${input.leaseTtlMs}::int * interval '1 millisecond')
   `);
   if (orphanedRunIds.length > 0) {
     console.error("[deploy] marked runs that stopped mid-build as failed", { orphanedRunIds });
@@ -129,22 +136,11 @@ export async function beginRunInTx(
   return orphanedRunIds;
 }
 
-export const beginDeployRunOp = defineOperation({
-  name: "deploy.begin_run",
-  // Why human-only: internal step of deploy.promote and the plugin-data
-  // build, which call it under the system actor; it carries no decision of
-  // its own.
-  actorScope: ["human", "system"],
-  database: "cms_admin",
-  input: beginRunInput,
-  output: z.object({ orphanedRunIds: z.array(z.string()) }),
-  handler: async (_ctx, input, tx) => ok({ orphanedRunIds: await beginRunInTx(tx, input) }),
-});
-
 export const renewDeployRunLeaseOp = defineOperation({
   name: "deploy.renew_run_lease",
-  // Why human-only: the heartbeat of a running build (deploy.trigger runs
-  // it under the system actor); it decides nothing.
+  // Why human-only: the heartbeat of a running build (deploy.trigger,
+  // deploy.promote and the plugin-data build run it under the system
+  // actor); it decides nothing.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid(), ttlMs: leaseTtl }).strict(),
@@ -152,6 +148,7 @@ export const renewDeployRunLeaseOp = defineOperation({
     /** False when the row is no longer running (it was swept as orphaned). */
     running: z.boolean(),
     publication: z.enum(["renewed", "lost", "not-held"]),
+    liveRelease: z.enum(["renewed", "lost", "not-held"]),
   }),
   // No audit row: a heartbeat only moves an expiry forward.
   handler: async (_ctx, input, tx) => {
@@ -164,24 +161,50 @@ export const renewDeployRunLeaseOp = defineOperation({
     return ok({
       running: rows.length > 0,
       publication: await renewStagingPublication(tx, input),
+      liveRelease: await renewLiveRelease(tx, input),
     });
   },
 });
 
 export const acquireStagingPublicationOp = defineOperation({
   name: "deploy.acquire_staging_publication",
-  // Why human-only: internal step of deploy.trigger (system actor); a
-  // Stage takes the lease before it publishes its preview.
+  // Why human-only: internal step of deploy.trigger / deploy.promote
+  // (system actor); a Stage takes the lease before it publishes its
+  // preview, a Publish live before it changes which preview staging serves.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid(), ttlMs: leaseTtl }).strict(),
-  output: z.object({
-    acquired: z.boolean(),
-    /** The run holding it; null when acquired, or when a transaction holds the row. */
-    heldByRunId: z.string().nullable(),
+  output: leaseAcquired.extend({
+    /**
+     * The run staging serves (`staging_access.origin_run_id`), read with
+     * the lease taken: nobody else changes it until the lease is released.
+     * Null when not acquired or nothing was ever staged.
+     */
+    servedRunId: z.string().nullable(),
   }),
   handler: async (_ctx, input, tx) => {
     const r = await acquireStagingPublication(tx, input);
+    if (!r.acquired) {
+      return ok({ acquired: false, heldByRunId: r.heldBy?.runId ?? null, servedRunId: null });
+    }
+    const served = (await tx.execute(sql`
+      SELECT origin_run_id::text AS run_id FROM staging_access WHERE id = 1
+    `)) as unknown as { run_id: string | null }[];
+    return ok({ acquired: true, heldByRunId: null, servedRunId: served[0]?.run_id ?? null });
+  },
+});
+
+export const acquireLiveReleaseOp = defineOperation({
+  name: "deploy.acquire_live_release",
+  // Why human-only: internal step of deploy.promote and the plugin-data
+  // build (system actor); they take the lease before they release a new
+  // version on the live channel.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ runId: z.string().uuid(), ttlMs: leaseTtl }).strict(),
+  output: leaseAcquired,
+  handler: async (_ctx, input, tx) => {
+    const r = await acquireLiveRelease(tx, input);
     return ok(
       r.acquired
         ? { acquired: true, heldByRunId: null }
@@ -192,7 +215,7 @@ export const acquireStagingPublicationOp = defineOperation({
 
 export const failDeployRunOp = defineOperation({
   name: "deploy.fail_run",
-  // Why human-only: internal step of deploy.trigger (system actor) — the
+  // Why human-only: internal step of every deploy run (system actor) — the
   // run's own failure record.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -213,6 +236,7 @@ export const failDeployRunOp = defineOperation({
       WHERE id = ${input.runId}::uuid AND status = 'running'
     `);
     await releaseStagingPublication(tx, input.runId);
+    await releaseLiveRelease(tx, input.runId);
     return ok({});
   },
 });

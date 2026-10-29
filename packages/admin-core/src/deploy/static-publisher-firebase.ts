@@ -519,6 +519,8 @@ async function releasePluginDataVersion(args: {
   token: string;
   liveVersionName: string;
   files: ReadonlyMap<string, Buffer>;
+  /** See StaticPublisher.publishPluginData. */
+  beforeRelease?: () => Promise<void>;
 }): Promise<{ versionName: string; uploadedCount: number; skippedUnchangedCount: number }> {
   const { site, token } = args;
   const liveVersionId = args.liveVersionName.split("/").pop() ?? "";
@@ -558,6 +560,7 @@ async function releasePluginDataVersion(args: {
     body: JSON.stringify({ status: "FINALIZED" }),
     token,
   });
+  await args.beforeRelease?.();
   await firebaseFetch(`sites/${site}/releases?versionName=${versionName}`, {
     method: "POST",
     body: JSON.stringify({ message: "Caelo: plugin data (#1155)" }),
@@ -586,6 +589,8 @@ async function releaseAsTarget(args: {
   sourceConfig: FirebaseVersionConfig;
   target: DeployTarget;
   siteBaseUrl: string;
+  /** See StaticPublisher.promoteToProduction. */
+  beforeRelease?: () => Promise<void>;
 }): Promise<{ versionName: string; uploadedCount: number; skippedUnchangedCount: number }> {
   const { site, token } = args;
   const sourceVersionId = args.sourceVersionName.split("/").pop() ?? "";
@@ -636,6 +641,7 @@ async function releaseAsTarget(args: {
     body: JSON.stringify({ status: "FINALIZED" }),
     token,
   });
+  await args.beforeRelease?.();
   await firebaseFetch(`sites/${site}/releases?versionName=${versionName}`, {
     method: "POST",
     body: JSON.stringify({}),
@@ -944,12 +950,14 @@ export const firebaseHostingPublisher: StaticPublisher = {
     return summary;
   },
 
-  async publishLiveBuild({ buildDir, target, sourceRunId }) {
+  async publishLiveBuild({ buildDir, target, sourceRunId, beforeRelease }) {
     const timer = new PhaseTimer();
     const site = siteName();
     const token = await googleAuthToken();
     timer.lap("auth");
     const version = await createVersionFromBuild({ site, token, buildDir, target, timer });
+    // The upload above changes nothing that is served; the release does.
+    await beforeRelease?.();
     await firebaseFetch(`sites/${site}/releases?versionName=${version.versionName}`, {
       method: "POST",
       body: JSON.stringify({}),
@@ -1027,7 +1035,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
     return { expiresAt };
   },
 
-  async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl }) {
+  async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl, beforeRelease }) {
     const site = siteName();
     const token = await googleAuthToken();
     // The preview channel for the source runId — its latest release's
@@ -1049,6 +1057,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
       sourceConfig,
       target: toTarget,
       siteBaseUrl,
+      ...(beforeRelease ? { beforeRelease } : {}),
     });
     const summary: PromoteSummary = {
       provider: "gcp-firebase",
@@ -1096,11 +1105,17 @@ export const firebaseHostingPublisher: StaticPublisher = {
     return out;
   },
 
-  async publishPluginData({ live, runId, files }) {
+  async publishPluginData({ live, runId, files, beforeRelease }) {
     const site = siteName();
     const token = await googleAuthToken();
     const liveVersionName = await assertLiveIs(site, token, live.location);
-    const released = await releasePluginDataVersion({ site, token, liveVersionName, files });
+    const released = await releasePluginDataVersion({
+      site,
+      token,
+      liveVersionName,
+      files,
+      ...(beforeRelease ? { beforeRelease } : {}),
+    });
     return {
       provider: "gcp-firebase",
       uploadedCount: released.uploadedCount,

@@ -9,24 +9,46 @@
  *   → AI tool → deploy.propose_promote (AI-callable)
  *     → row at status='pending' in deploy_pending_actions
  *     → AI replies "I prepared a proposal — click Approve at /settings/deployments/pending"
- *   Operator clicks Approve
- *   → /settings/deployments/pending form action → deploy.execute_proposal (human-only)
- *     → reads the row, dispatches the underlying op (deploy.promote / .rollback)
- *     → marks row status='applied'
+ *   Operator clicks Approve (in the chat, or /settings/deployments/pending)
+ *   → deploy.execute_proposal (human-only, step-wise: #1225)
+ *     → claims the row (deploy.begin_execute_proposal)
+ *     → dispatches the underlying op (deploy.promote / .rollback) as its own op
+ *     → marks row status='applied' (deploy.end_execute_proposal)
  *
  * The execute-side stays human-only so AI cannot self-approve. The
  * preview is computed at propose time so the operator's click decision
  * has full blast-radius context (build id, file count, etc.).
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared";
+import { randomUUID } from "node:crypto";
+import {
+  defineOperation,
+  defineStepwiseOperation,
+  execute,
+  type OperationSteps,
+  type QueryError,
+} from "@caelo-cms/query-api";
+import {
+  type ExecutionContext,
+  err,
+  ok,
+  type ProposalStatus,
+  proposalStatus,
+  type Result,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { describeError } from "../ai/tools/_describe-error.js";
+import { recordAuditFromCtx } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { requiresApproverPermission } from "./_approver-permission.js";
 import { withAudit } from "./_audit.js";
 import { mapRowToOutput, opError, toIso, toIsoRequired } from "./_helpers.js";
+import {
+  CLAIM_WITHOUT_RUN_MS,
+  CLAIMED_PROPOSAL_MESSAGE,
+  claimBlocksDecision,
+} from "./_proposal-claim.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -34,7 +56,6 @@ import {
   parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
-import { promoteDeployOp, rollbackDeployOp } from "./deploy.js";
 
 const proposalRowSchema = z.object({
   id: z.string(),
@@ -279,7 +300,253 @@ export const proposeDeployRollbackOp = defineOperation({
   ),
 });
 
-const executeDeployProposalOpDefinition = defineOperation({
+const beginExecuteOutput = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("apply"),
+    proposalKind: z.enum(["promote", "rollback"]),
+    payload: z.record(z.string(), z.unknown()),
+    /** A rollback's run to restore, captured at propose time. */
+    restoreRunId: z.string().nullable(),
+  }),
+  /** An earlier click's Publish live or rollback succeeded but was never marked applied; now it is. */
+  z.object({ kind: z.literal("applied"), runId: z.string() }),
+]);
+
+/**
+ * #589 / review on #1251 — the claim and record steps are ops of their own,
+ * so each one requires the same approver permission as
+ * deploy.execute_proposal: calling a step directly authorises nothing more.
+ */
+export const beginExecuteDeployProposalOp = requiresApproverPermission(
+  ["deploy.trigger"],
+  defineOperation({
+    name: "deploy.begin_execute_proposal",
+    // Why human-only: the first step of deploy.execute_proposal (the Owner's
+    // Approve click, §11.A), run as the approver; no AI tool wraps it.
+    actorScope: ["human", "system"],
+    database: "cms_admin",
+    input: z.object({ proposalId: z.string().uuid(), runId: z.string().uuid() }).strict(),
+    output: beginExecuteOutput,
+    handler: async (ctx, input, tx) => {
+      const rows = (await tx.execute(sql`
+      SELECT p.kind, p.payload, p.preview, p.status,
+             p.claimed_by_run_id::text AS claimed_by_run_id,
+             (p.claimed_at IS NOT NULL
+              AND p.claimed_at > clock_timestamp() - ${CLAIM_WITHOUT_RUN_MS}::int * interval '1 millisecond')
+               AS claim_recent,
+             r.status AS run_status,
+             (r.lease_expires_at IS NOT NULL AND r.lease_expires_at > clock_timestamp()) AS run_live
+      FROM deploy_pending_actions p
+      LEFT JOIN deploy_runs r ON r.id = p.claimed_by_run_id
+      WHERE p.id = ${input.proposalId}::uuid
+      FOR UPDATE OF p
+    `)) as unknown as Array<{
+        kind: "promote" | "rollback";
+        payload: unknown;
+        preview: { restoreRunId?: string } | string | null;
+        status: string;
+        claimed_by_run_id: string | null;
+        claim_recent: boolean;
+        run_status: string | null;
+        run_live: boolean | null;
+      }>;
+      const row = rows[0];
+      if (!row) return err(opError("deploy.execute_proposal", "proposal not found"));
+      if (row.status !== "pending") {
+        return err(opError("deploy.execute_proposal", `proposal is already ${row.status}`));
+      }
+      // An earlier click's Publish live or rollback went live, but its
+      // approval was never marked applied (the apply died between the two):
+      // record it now instead of releasing a second time. A rollback's run
+      // carries the claimed id and is committed with the rollback itself.
+      if (row.claimed_by_run_id !== null && row.run_status === "succeeded") {
+        await markApplied(tx, ctx, input.proposalId, row.claimed_by_run_id);
+        return ok({ kind: "applied" as const, runId: row.claimed_by_run_id });
+      }
+      // A second click (another tab, a retried request) while the first one
+      // still applies: the Publish live it started is running, or it is
+      // between the claim and its run's start, or a rollback is waiting.
+      const claimLive =
+        row.run_status === "running"
+          ? row.run_live === true
+          : row.run_status === null && row.claim_recent;
+      if (claimLive) {
+        return err(
+          opError(
+            "deploy.execute_proposal",
+            `this proposal is being applied right now${row.claimed_by_run_id ? ` (run ${row.claimed_by_run_id})` : ""} — wait for it to finish; Settings → Deployments shows it. Nothing else was started.`,
+          ),
+        );
+      }
+      const preview = parsePayload<{ restoreRunId?: string }>(row.preview ?? {});
+      if (row.kind === "rollback" && !preview.restoreRunId) {
+        return err(
+          opError("deploy.execute_proposal", "rollback proposal preview missing restoreRunId"),
+        );
+      }
+      await tx.execute(sql`
+      UPDATE deploy_pending_actions
+      SET claimed_by_run_id = ${input.runId}::uuid, claimed_at = clock_timestamp()
+      WHERE id = ${input.proposalId}::uuid
+    `);
+      return ok({
+        kind: "apply" as const,
+        proposalKind: row.kind,
+        payload: parsePayload<Record<string, unknown>>(row.payload),
+        restoreRunId: row.kind === "rollback" ? (preview.restoreRunId ?? null) : null,
+      });
+    },
+  }),
+);
+
+/** Mark the proposal applied by `runId` and record the approval (one transaction). */
+async function markApplied(
+  tx: Parameters<typeof recordAuditFromCtx>[0],
+  ctx: Parameters<typeof recordAuditFromCtx>[1],
+  proposalId: string,
+  runId: string | null,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE deploy_pending_actions
+    SET status = 'applied',
+        decided_at = now(),
+        decided_by = ${ctx.actorId}::uuid,
+        applied_run_id = ${runId === null ? null : sql`${runId}::uuid`}
+    WHERE id = ${proposalId}::uuid AND status = 'pending'
+  `);
+  await recordAuditFromCtx(tx, ctx, {
+    operation: "deploy.execute_proposal",
+    input: { proposalId },
+    succeeded: true,
+    entityId: proposalId,
+    resultSummary: `applied (runId=${runId ?? "(none)"})`,
+  });
+}
+
+export const endExecuteDeployProposalOp = requiresApproverPermission(
+  ["deploy.trigger"],
+  defineOperation({
+    name: "deploy.end_execute_proposal",
+    // Why human-only: the last step of deploy.execute_proposal (the Owner's
+    // Approve click, §11.A), run as the approver; no AI tool wraps it.
+    actorScope: ["human", "system"],
+    database: "cms_admin",
+    input: z
+      .object({
+        proposalId: z.string().uuid(),
+        /** The run id this attempt claimed the proposal with. */
+        claimedRunId: z.string().uuid(),
+        outcome: z.discriminatedUnion("ok", [
+          z.object({ ok: z.literal(true), runId: z.string().nullable() }),
+          z.object({ ok: z.literal(false), message: z.string() }),
+        ]),
+      })
+      .strict(),
+    output: z.object({}),
+    handler: async (ctx, input, tx) => {
+      if (input.outcome.ok) {
+        await markApplied(tx, ctx, input.proposalId, input.outcome.runId);
+        return ok({});
+      }
+      // Nothing went live: release the claim so the card can be approved
+      // again once the cause is fixed.
+      await tx.execute(sql`
+      UPDATE deploy_pending_actions SET claimed_by_run_id = NULL, claimed_at = NULL
+      WHERE id = ${input.proposalId}::uuid AND status = 'pending'
+        -- Only this attempt's claim: a later Approve may have taken the
+        -- proposal over once this attempt's run failed (review on #1251).
+        AND claimed_by_run_id = ${input.claimedRunId}::uuid
+    `);
+      await recordAuditFromCtx(tx, ctx, {
+        operation: "deploy.execute_proposal",
+        input: { proposalId: input.proposalId },
+        succeeded: false,
+        entityId: input.proposalId,
+        resultSummary: input.outcome.message,
+      });
+      return ok({});
+    },
+  }),
+);
+
+/**
+ * Apply an approved deploy proposal (the body of deploy.execute_proposal).
+ * #1225 — no transaction is held while Publish live (or a rollback that
+ * waits for one) runs: the proposal is claimed in one short step, the
+ * underlying op runs as its own step-wise op, and the outcome is recorded
+ * in a last short step. The claim keeps a second click from publishing
+ * twice.
+ */
+async function runExecuteDeployProposal(
+  ctx: ExecutionContext,
+  input: { proposalId: string },
+  steps: OperationSteps,
+): Promise<Result<{ runId: string | null }, QueryError>> {
+  const { registry, adapter } = steps;
+  // The run's id (Publish live or rollback), minted now so the claim names it.
+  const claimedRunId = randomUUID();
+  const begun = await execute(registry, adapter, ctx, "deploy.begin_execute_proposal", {
+    proposalId: input.proposalId,
+    runId: claimedRunId,
+  });
+  if (!begun.ok) return err(begun.error);
+  const plan = begun.value as z.infer<typeof beginExecuteOutput>;
+  if (plan.kind === "applied") return ok({ runId: plan.runId });
+
+  // The underlying ops expect a human or system context (their actorScope
+  // is human + system); ctx is the human who clicked Approve.
+  let applied: Result<unknown, QueryError>;
+  if (plan.proposalKind === "promote") {
+    const payload = plan.payload as { fromTarget: string; toTarget: string; repoRoot?: string };
+    applied = await execute(
+      registry,
+      adapter,
+      ctx,
+      "deploy.promote",
+      {
+        fromTarget: payload.fromTarget,
+        toTarget: payload.toTarget,
+        ...(payload.repoRoot ? { repoRoot: payload.repoRoot } : {}),
+        runId: claimedRunId,
+      },
+      steps.signal ? { signal: steps.signal } : {},
+    );
+  } else {
+    // The propose-time preview captured `restoreRunId`; the Owner's click
+    // reproduces what they previewed.
+    applied = await execute(registry, adapter, ctx, "deploy.rollback", {
+      targetName: (plan.payload as { target: string }).target,
+      runId: plan.restoreRunId,
+      newRunId: claimedRunId,
+      ...(typeof plan.payload.repoRoot === "string" ? { repoRoot: plan.payload.repoRoot } : {}),
+    });
+  }
+  const runId = applied.ok
+    ? plan.proposalKind === "promote"
+      ? (applied.value as { toRunId: string }).toRunId
+      : (applied.value as { newRunId: string }).newRunId
+    : null;
+  const message = applied.ok
+    ? null
+    : `underlying ${plan.proposalKind} failed: ${describeError(applied.error)}`;
+  const ended = await execute(registry, adapter, ctx, "deploy.end_execute_proposal", {
+    proposalId: input.proposalId,
+    claimedRunId,
+    outcome: message === null ? { ok: true, runId } : { ok: false, message },
+  });
+  if (message !== null) return err(opError("deploy.execute_proposal", message));
+  if (!ended.ok) {
+    return err(
+      opError(
+        "deploy.execute_proposal",
+        `the ${plan.proposalKind} was applied (run ${runId}), but marking the proposal applied failed: ${describeError(ended.error)}. Approving it again records it without publishing twice.`,
+      ),
+    );
+  }
+  return ok({ runId });
+}
+
+const executeDeployProposalOpDefinition = defineStepwiseOperation({
   name: "deploy.execute_proposal",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
@@ -287,97 +554,7 @@ const executeDeployProposalOpDefinition = defineOperation({
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
   output: z.object({ runId: z.string().nullable() }),
-  handler: withAudit(
-    async (ctx, input, tx) => {
-      const rows = (await tx.execute(sql`
-      SELECT id::text AS id, kind, payload, status
-      FROM deploy_pending_actions
-      WHERE id = ${input.proposalId}::uuid
-      LIMIT 1
-    `)) as unknown as Array<{
-        id: string;
-        kind: "promote" | "rollback";
-        payload: unknown;
-        status: string;
-      }>;
-      const row = rows[0];
-      if (!row) {
-        return err(opError("deploy.execute_proposal", "proposal not found"));
-      }
-      if (row.status !== "pending") {
-        return err(opError("deploy.execute_proposal", `proposal is already ${row.status}`));
-      }
-      // Dispatch the underlying op's handler directly with the same tx so
-      // execute + status flip are atomic. The promoteDeploy / rollbackDeploy
-      // handlers expect a system context (their actorScope is human+system);
-      // ctx here is human (the Owner clicking Approve).
-      const payload = parsePayload<Record<string, unknown>>(row.payload);
-      let runId: string | null = null;
-      if (row.kind === "promote") {
-        const r = await promoteDeployOp.handler(
-          ctx,
-          payload as { fromTarget: string; toTarget: string; repoRoot?: string },
-          tx,
-        );
-        if (!r.ok) {
-          return err(
-            opError(
-              "deploy.execute_proposal",
-              `underlying promote failed: ${r.error.kind in r.error && "message" in r.error ? (r.error as { message: string }).message : r.error.kind}`,
-            ),
-          );
-        }
-        runId = (r.value as { toRunId: string }).toRunId;
-      } else if (row.kind === "rollback") {
-        // Rollback's underlying op needs the explicit runId to restore.
-        // The propose-time preview captured `restoreRunId`; pass it
-        // along so the Owner's click reproduces what they previewed.
-        const previewRows = (await tx.execute(sql`
-        SELECT preview FROM deploy_pending_actions
-        WHERE id = ${input.proposalId}::uuid
-      `)) as unknown as Array<{ preview: { restoreRunId?: string } }>;
-        const restoreRunId = previewRows[0]?.preview?.restoreRunId;
-        if (!restoreRunId) {
-          return err(
-            opError("deploy.execute_proposal", "rollback proposal preview missing restoreRunId"),
-          );
-        }
-        const r = await rollbackDeployOp.handler(
-          ctx,
-          {
-            targetName: (payload as { target: string }).target,
-            runId: restoreRunId,
-            ...(payload as { repoRoot?: string }),
-          },
-          tx,
-        );
-        if (!r.ok) {
-          return err(
-            opError(
-              "deploy.execute_proposal",
-              `underlying rollback failed: ${r.error.kind in r.error && "message" in r.error ? (r.error as { message: string }).message : r.error.kind}`,
-            ),
-          );
-        }
-        runId = (r.value as { newRunId: string }).newRunId;
-      }
-      await tx.execute(sql`
-      UPDATE deploy_pending_actions
-      SET status = 'applied',
-          decided_at = now(),
-          decided_by = ${ctx.actorId}::uuid,
-          applied_run_id = ${runId === null ? null : sql`${runId}::uuid`}
-      WHERE id = ${input.proposalId}::uuid
-    `);
-      return ok({ runId });
-    },
-    {
-      operation: "deploy.execute_proposal",
-      entityId: (input) => input.proposalId,
-      resultSummary: (_input, result) =>
-        result.ok ? `applied (runId=${result.value.runId ?? "(none)"})` : null,
-    },
-  ),
+  stepwise: runExecuteDeployProposal,
 });
 
 /** #589 — the approver must hold deploy.trigger (see _approver-permission.ts). */
@@ -385,6 +562,18 @@ export const executeDeployProposalOp = requiresApproverPermission(
   ["deploy.trigger"],
   executeDeployProposalOpDefinition,
 );
+
+/** Whether the proposal is pending with a claim that blocks another decision. */
+async function claimedPending(
+  tx: Parameters<typeof recordAuditFromCtx>[0],
+  proposalId: string,
+): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT 1 AS blocked FROM deploy_pending_actions
+    WHERE id = ${proposalId}::uuid AND status = 'pending' AND ${claimBlocksDecision()}
+  `)) as unknown as { blocked: number }[];
+  return rows.length > 0;
+}
 
 export const rejectDeployProposalOp = defineOperation({
   name: "deploy.reject_proposal",
@@ -401,15 +590,19 @@ export const rejectDeployProposalOp = defineOperation({
   output: z.object({}),
   handler: withAudit(
     async (ctx, input, tx) => {
-      const r = await tx.execute(sql`
+      const r = (await tx.execute(sql`
         UPDATE deploy_pending_actions
         SET status = 'rejected',
             decided_at = now(),
             decided_by = ${ctx.actorId}::uuid,
             decision_reason = ${input.reason ?? null}
         WHERE id = ${input.proposalId}::uuid AND status = 'pending'
-      `);
-      void r;
+          AND NOT ${claimBlocksDecision()}
+        RETURNING id
+      `)) as unknown as { id: string }[];
+      if (r.length === 0 && (await claimedPending(tx, input.proposalId))) {
+        return err(opError("deploy.reject_proposal", CLAIMED_PROPOSAL_MESSAGE));
+      }
       return ok({});
     },
     {

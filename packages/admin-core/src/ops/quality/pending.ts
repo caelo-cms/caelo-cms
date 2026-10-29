@@ -19,16 +19,36 @@
  * then recorded as `accepted_by` / `publish_override_by`).
  */
 
-import { defineOperation, type QueryError } from "@caelo-cms/query-api";
-import { err, ok, type ProposalStatus, proposalStatus, type Result } from "@caelo-cms/shared";
+import { randomUUID } from "node:crypto";
+import {
+  defineOperation,
+  defineStepwiseOperation,
+  execute,
+  type OperationSteps,
+  type QueryError,
+} from "@caelo-cms/query-api";
+import {
+  type ExecutionContext,
+  err,
+  ok,
+  type ProposalStatus,
+  proposalStatus,
+  type Result,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { describeError } from "../../ai/tools/_describe-error.js";
 import { recordAudit } from "../../audit.js";
 import { ruleIdSchema } from "../../quality/checks/findings.js";
 import { decideGate, SITE_WIDE_PATH } from "../../quality/gate.js";
 import { auditScorePoints, type QualityProblem } from "../../quality/ratchet.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { requiresApproverPermission } from "../_approver-permission.js";
+import {
+  CLAIM_WITHOUT_RUN_MS,
+  CLAIMED_PROPOSAL_MESSAGE,
+  claimBlocksDecision,
+} from "../_proposal-claim.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -38,7 +58,6 @@ import {
 } from "../_propose-helpers.js";
 import { actorHasPermission } from "./_permissions.js";
 import { categorySchema, iso, json } from "./_shared.js";
-import { publishAnywayOp } from "./gate.js";
 import {
   latestSucceededRun,
   loadAcceptances,
@@ -556,100 +575,281 @@ async function applyAcceptances(
   return { ok: true, accepted: inserted.length };
 }
 
-const executeQualityProposalOpDefinition = defineOperation({
-  name: "quality_audits.execute_proposal",
-  // Why human-only: the click the §11.A gate exists to obtain.
-  actorScope: ["human", "system"],
-  database: "cms_admin",
-  input: z.object({ proposalId: z.string().uuid() }).strict(),
-  output: z.object({
-    kind: z.enum(["accept", "publish_anyway"]),
-    accepted: z.number().int().optional(),
-    toRunId: z.string().optional(),
+const executeOutput = z.object({
+  kind: z.enum(["accept", "publish_anyway"]),
+  accepted: z.number().int().optional(),
+  toRunId: z.string().optional(),
+});
+type ExecuteOutput = z.infer<typeof executeOutput>;
+
+/** Mark the proposal applied and record the decision (one transaction). */
+async function markQualityApplied(
+  tx: Tx,
+  ctx: { actorId: string; requestId: string },
+  proposalId: string,
+  result: ExecuteOutput,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE quality_pending_actions
+       SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid
+     WHERE id = ${proposalId}::uuid AND status = 'pending'
+  `);
+  await recordAudit(tx, {
+    actorId: ctx.actorId,
+    requestId: ctx.requestId,
+    operation: "quality_audits.execute_proposal",
+    input: { proposalId },
+    succeeded: true,
+    entityId: proposalId,
+    resultSummary:
+      result.kind === "accept"
+        ? `accepted ${result.accepted} quality finding(s)`
+        : `published anyway (run ${result.toRunId})`,
+  });
+}
+
+const beginExecuteOutput = z.discriminatedUnion("next", [
+  /** Decided in the step itself (an acceptance, or an earlier publish now recorded). */
+  z.object({ next: z.literal("done"), result: executeOutput }),
+  /** Claimed: publish anyway with this payload. */
+  z.object({
+    next: z.literal("publish"),
+    auditRunId: z.string(),
+    reason: z.string(),
   }),
-  handler: async (ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
-      SELECT kind, payload, status FROM quality_pending_actions
-      WHERE id = ${input.proposalId}::uuid FOR UPDATE
-    `)) as unknown as { kind: "accept" | "publish_anyway"; payload: unknown; status: string }[];
-    const row = rows[0];
-    if (row?.status !== "pending") {
-      return err({
-        kind: "HandlerError",
-        operation: "quality_audits.execute_proposal",
-        message: row ? `proposal is already ${row.status}` : "proposal not found",
-      });
-    }
-    // The approval card applies this op as the chat's operator without a
-    // route in front, so the persisted kind decides the permission here.
-    const needed = row.kind === "accept" ? "content.write" : "deploy.trigger";
-    if (!(await actorHasPermission(tx, ctx, needed))) {
-      return err({
-        kind: "HandlerError",
-        operation: "quality_audits.execute_proposal",
-        message: `permission_denied: this decision needs the ${needed} permission — ask an editor who has it. The proposal stays pending.`,
-      });
-    }
-    let result: { kind: "accept" | "publish_anyway"; accepted?: number; toRunId?: string };
-    if (row.kind === "accept") {
-      const payload = proposeAcceptInput.parse(parsePayload(row.payload));
-      const current = await currentGateAuditId(tx);
-      if (current !== payload.auditRunId) {
-        await tx.execute(sql`
+]);
+
+/**
+ * #589 / review on #1251 — the claim and record steps are ops of their own,
+ * so each one requires the approver permission of
+ * quality_audits.execute_proposal (and the record step, which only settles
+ * a publish-anyway decision, deploy.trigger too): calling a step directly
+ * authorises nothing more.
+ */
+export const beginExecuteQualityProposalOp = requiresApproverPermission(
+  ["content.write"],
+  defineOperation({
+    name: "quality_audits.begin_execute_proposal",
+    // Why human-only: the first step of quality_audits.execute_proposal (the
+    // click the §11.A gate exists to obtain), run as the approver.
+    actorScope: ["human", "system"],
+    database: "cms_admin",
+    input: z.object({ proposalId: z.string().uuid(), runId: z.string().uuid() }).strict(),
+    output: beginExecuteOutput,
+    handler: async (ctx, input, tx) => {
+      const rows = (await tx.execute(sql`
+      SELECT p.kind, p.payload, p.status,
+             p.claimed_by_run_id::text AS claimed_by_run_id,
+             (p.claimed_at IS NOT NULL
+              AND p.claimed_at > clock_timestamp() - ${CLAIM_WITHOUT_RUN_MS}::int * interval '1 millisecond')
+               AS claim_recent,
+             r.status AS run_status,
+             (r.lease_expires_at IS NOT NULL AND r.lease_expires_at > clock_timestamp()) AS run_live
+      FROM quality_pending_actions p
+      LEFT JOIN deploy_runs r ON r.id = p.claimed_by_run_id
+      WHERE p.id = ${input.proposalId}::uuid
+      FOR UPDATE OF p
+    `)) as unknown as {
+        kind: "accept" | "publish_anyway";
+        payload: unknown;
+        status: string;
+        claimed_by_run_id: string | null;
+        claim_recent: boolean;
+        run_status: string | null;
+        run_live: boolean | null;
+      }[];
+      const row = rows[0];
+      if (row?.status !== "pending") {
+        return err({
+          kind: "HandlerError",
+          operation: "quality_audits.execute_proposal",
+          message: row ? `proposal is already ${row.status}` : "proposal not found",
+        });
+      }
+      // The approval card applies this op as the chat's operator without a
+      // route in front, so the persisted kind decides the permission here.
+      const needed = row.kind === "accept" ? "content.write" : "deploy.trigger";
+      if (!(await actorHasPermission(tx, ctx, needed))) {
+        return err({
+          kind: "HandlerError",
+          operation: "quality_audits.execute_proposal",
+          message: `permission_denied: this decision needs the ${needed} permission — ask an editor who has it. The proposal stays pending.`,
+        });
+      }
+      if (row.kind === "accept") {
+        const payload = proposeAcceptInput.parse(parsePayload(row.payload));
+        const current = await currentGateAuditId(tx);
+        if (current !== payload.auditRunId) {
+          await tx.execute(sql`
           UPDATE quality_pending_actions
              SET status = 'superseded', decided_at = now(), decided_by = ${ctx.actorId}::uuid,
                  decision_reason = 'a newer quality check replaced the audit it was made for'
            WHERE id = ${input.proposalId}::uuid
         `);
+          return err({
+            kind: "HandlerError",
+            operation: "quality_audits.execute_proposal",
+            message: staleAuditMessage(payload.auditRunId, current),
+          });
+        }
+        const applied = await applyAcceptances(tx, ctx, payload);
+        if (!applied.ok) {
+          return err({
+            kind: "HandlerError",
+            operation: "quality_audits.execute_proposal",
+            message: applied.message,
+          });
+        }
+        const result: ExecuteOutput = { kind: "accept", accepted: applied.accepted };
+        await markQualityApplied(tx, ctx, input.proposalId, result);
+        return ok({ next: "done" as const, result });
+      }
+      // Publish anyway. An earlier click's Publish live went live but its
+      // approval was never marked applied: record it instead of publishing
+      // a second time.
+      if (row.claimed_by_run_id !== null && row.run_status === "succeeded") {
+        const result: ExecuteOutput = { kind: "publish_anyway", toRunId: row.claimed_by_run_id };
+        await markQualityApplied(tx, ctx, input.proposalId, result);
+        return ok({ next: "done" as const, result });
+      }
+      const claimLive =
+        row.run_status === "running"
+          ? row.run_live === true
+          : row.run_status === null && row.claim_recent;
+      if (claimLive) {
         return err({
           kind: "HandlerError",
           operation: "quality_audits.execute_proposal",
-          message: staleAuditMessage(payload.auditRunId, current),
+          message: `this decision is being applied right now${row.claimed_by_run_id ? ` (Publish live run ${row.claimed_by_run_id})` : ""} — wait for it to finish; Settings → Deployments shows it. Nothing else was started.`,
         });
       }
-      const applied = await applyAcceptances(tx, ctx, payload);
-      if (!applied.ok) {
-        return err({
-          kind: "HandlerError",
-          operation: "quality_audits.execute_proposal",
-          message: applied.message,
-        });
-      }
-      result = { kind: "accept", accepted: applied.accepted };
-    } else {
       const payload = proposePublishAnywayInput.parse(parsePayload(row.payload));
-      const published = await publishAnywayOp.handler(
-        ctx,
-        {
-          auditRunId: payload.auditRunId,
-          reason: payload.reason,
-          fromTarget: "staging",
-          toTarget: "production",
-        },
-        tx,
-      );
-      if (!published.ok) return published;
-      result = { kind: "publish_anyway", toRunId: published.value.toRunId };
-    }
-    await tx.execute(sql`
+      await tx.execute(sql`
       UPDATE quality_pending_actions
-         SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid
+         SET claimed_by_run_id = ${input.runId}::uuid, claimed_at = clock_timestamp()
        WHERE id = ${input.proposalId}::uuid
     `);
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
+      return ok({
+        next: "publish" as const,
+        auditRunId: payload.auditRunId,
+        reason: payload.reason,
+      });
+    },
+  }),
+);
+
+export const endExecuteQualityProposalOp = requiresApproverPermission(
+  ["content.write", "deploy.trigger"],
+  defineOperation({
+    name: "quality_audits.end_execute_proposal",
+    // Why human-only: the last step of quality_audits.execute_proposal, run
+    // as the approver.
+    actorScope: ["human", "system"],
+    database: "cms_admin",
+    input: z
+      .object({
+        proposalId: z.string().uuid(),
+        /** The run id this attempt claimed the proposal with. */
+        claimedRunId: z.string().uuid(),
+        /** The Publish live run that went live, or null when it failed. */
+        toRunId: z.string().nullable(),
+        message: z.string().nullable(),
+      })
+      .strict(),
+    output: z.object({}),
+    handler: async (ctx, input, tx) => {
+      if (input.toRunId !== null) {
+        await markQualityApplied(tx, ctx, input.proposalId, {
+          kind: "publish_anyway",
+          toRunId: input.toRunId,
+        });
+        return ok({});
+      }
+      // Nothing went live: release the claim; the proposal stays pending so
+      // the decision can be approved again.
+      await tx.execute(sql`
+      UPDATE quality_pending_actions SET claimed_by_run_id = NULL, claimed_at = NULL
+       WHERE id = ${input.proposalId}::uuid AND status = 'pending'
+         -- Only this attempt's claim: a later Approve may have taken the
+         -- proposal over once this attempt's run failed (review on #1251).
+         AND claimed_by_run_id = ${input.claimedRunId}::uuid
+    `);
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "quality_audits.execute_proposal",
+        input: { proposalId: input.proposalId },
+        succeeded: false,
+        entityId: input.proposalId,
+        resultSummary: input.message ?? "publish anyway failed",
+      });
+      return ok({});
+    },
+  }),
+);
+
+/**
+ * Apply an approved quality decision (the body of
+ * quality_audits.execute_proposal). #1225 — an acceptance is one short
+ * step; a publish-anyway decision is claimed in one short step, Publish
+ * live runs as its own op (no transaction across its rebuild and upload),
+ * and the outcome is recorded in a last short step. The claim keeps a
+ * second click from publishing twice.
+ */
+async function runExecuteQualityProposal(
+  ctx: ExecutionContext,
+  input: { proposalId: string },
+  steps: OperationSteps,
+): Promise<Result<ExecuteOutput, QueryError>> {
+  const { registry, adapter } = steps;
+  const runId = randomUUID();
+  const begun = await execute(registry, adapter, ctx, "quality_audits.begin_execute_proposal", {
+    proposalId: input.proposalId,
+    runId,
+  });
+  if (!begun.ok) return err(begun.error);
+  const plan = begun.value as z.infer<typeof beginExecuteOutput>;
+  if (plan.next === "done") return ok(plan.result);
+  const published = await execute(
+    registry,
+    adapter,
+    ctx,
+    "quality_audits.publish_anyway",
+    {
+      auditRunId: plan.auditRunId,
+      reason: plan.reason,
+      fromTarget: "staging",
+      toTarget: "production",
+      runId,
+    },
+    steps.signal ? { signal: steps.signal } : {},
+  );
+  const toRunId = published.ok ? (published.value as { toRunId: string }).toRunId : null;
+  const ended = await execute(registry, adapter, ctx, "quality_audits.end_execute_proposal", {
+    proposalId: input.proposalId,
+    claimedRunId: runId,
+    toRunId,
+    message: published.ok ? null : describeError(published.error),
+  });
+  if (!published.ok) return err(published.error);
+  if (!ended.ok) {
+    return err({
+      kind: "HandlerError",
       operation: "quality_audits.execute_proposal",
-      input,
-      succeeded: true,
-      entityId: input.proposalId,
-      resultSummary:
-        result.kind === "accept"
-          ? `accepted ${result.accepted} quality finding(s)`
-          : `published anyway (run ${result.toRunId})`,
+      message: `the build was published (run ${toRunId}), but marking the decision applied failed: ${describeError(ended.error)}. Approving it again records it without publishing twice.`,
     });
-    return ok(result);
-  },
+  }
+  return ok({ kind: "publish_anyway", toRunId: toRunId ?? undefined });
+}
+
+const executeQualityProposalOpDefinition = defineStepwiseOperation({
+  name: "quality_audits.execute_proposal",
+  // Why human-only: the click the §11.A gate exists to obtain.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ proposalId: z.string().uuid() }).strict(),
+  output: executeOutput,
+  stepwise: runExecuteQualityProposal,
 });
 
 /**
@@ -672,12 +872,27 @@ export const rejectQualityProposalOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    await tx.execute(sql`
+    const rejected = (await tx.execute(sql`
       UPDATE quality_pending_actions
          SET status = 'rejected', decided_at = now(), decided_by = ${ctx.actorId}::uuid,
              decision_reason = ${input.reason ?? null}
        WHERE id = ${input.proposalId}::uuid AND status = 'pending'
-    `);
+         AND NOT ${claimBlocksDecision()}
+       RETURNING id
+    `)) as unknown as { id: string }[];
+    if (rejected.length === 0) {
+      const blocked = (await tx.execute(sql`
+        SELECT 1 AS blocked FROM quality_pending_actions
+        WHERE id = ${input.proposalId}::uuid AND status = 'pending' AND ${claimBlocksDecision()}
+      `)) as unknown as { blocked: number }[];
+      if (blocked.length > 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "quality_audits.reject_proposal",
+          message: CLAIMED_PROPOSAL_MESSAGE,
+        });
+      }
+    }
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

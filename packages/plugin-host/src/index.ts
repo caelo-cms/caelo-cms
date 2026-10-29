@@ -196,6 +196,7 @@ export {
   pluginNotRunningReason,
   pluginNotRunningSlug,
   pluginsNotRunningHere,
+  reconcilePluginHostNow,
   resetPluginHostSync,
   syncPluginHost,
 } from "./reconcile.js";

@@ -10,7 +10,6 @@ import type { ExecutionContext, PhaseTimer } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { StaticPublisher } from "../deploy/static-publisher.js";
-import { jsonbParam } from "../sql-helpers.js";
 
 /**
  * The directory a target's builds are written to. v0.2.78 — on Cloud Run
@@ -65,14 +64,6 @@ export function rowToTarget(r: TargetDbRow): z.infer<typeof targetRow> {
     isDefault: r.is_default,
     pageUrlStyle: r.page_url_style ?? "directory",
   };
-}
-
-/**
- * A run's step timings as stored in deploy_runs.phase_timings, so "why was
- * this Stage slow" has an answer per step.
- */
-export function phaseTimingsParam(timer: PhaseTimer) {
-  return jsonbParam(timer.phases());
 }
 
 /**

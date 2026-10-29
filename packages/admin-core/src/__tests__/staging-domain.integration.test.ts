@@ -32,6 +32,11 @@ import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
 import { DEPLOY_RUN_LOCK_PREFIX } from "../deploy/deploy-run-lock.js";
 import {
+  LEGACY_LIVE_RELEASE_LOCK_KEY,
+  LIVE_RELEASE_LEASE,
+  tryLockLiveRelease,
+} from "../deploy/live-release-lock.js";
+import {
   LEGACY_STAGING_PUBLICATION_LOCK_KEY,
   STAGING_PUBLICATION_LEASE,
   tryLockStagingPublication,
@@ -779,10 +784,11 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     };
   }
 
-  it("a Stage waits for a Publish live (in its transaction) before it publishes and prunes (codex review on #652)", async () => {
+  it("a Stage waits for a transaction holding the staging publication before it publishes and prunes (codex review on #652)", async () => {
     // Without ordering, Stage A prunes Stage B's fresh channel and B then
-    // records that deleted channel as the staging origin. Publish live
-    // holds the lease row locked in its transaction (#1211).
+    // records that deleted channel as the staging origin. The keep-alive
+    // and the redirect sync hold the lease row locked in their transaction
+    // (#1211); Publish live holds the lease as its run (#1225).
     await withSql(
       (tx) => tx`INSERT INTO deploy_leases (name) VALUES (${STAGING_PUBLICATION_LEASE})
                  ON CONFLICT (name) DO NOTHING`,
@@ -901,7 +907,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     }
   });
 
-  it("#1211 rolling update: Publish live and the keep-alive hold the previous release's lock too", async () => {
+  it("#1211 rolling update: the keep-alive and the redirect sync hold the previous release's lock too", async () => {
     const hold = await previousReleaseHolds(LEGACY_STAGING_PUBLICATION_LOCK_KEY);
     try {
       const busy = await adapter.withAdminTransaction(SYSTEM, (tx) =>
@@ -1230,6 +1236,276 @@ for await (const line of console) {
     // With retainBuilds: 0 nothing else would ever prune it (Cloud Run /tmp is memory).
     const after = existsSync(liveBuilds) ? await readdir(liveBuilds) : [];
     expect(after).toEqual(before);
+  });
+
+  /** Transactions open longer than a short op's gap between statements. */
+  async function longIdleTransactions(): Promise<{ n: number; q: string | null }> {
+    const rows = (await withSql(
+      (tx) => tx`SELECT count(*)::int AS n, string_agg(query, ' | ') AS q FROM pg_stat_activity
+                 WHERE datname = 'cms_admin' AND pid <> pg_backend_pid()
+                   AND state LIKE 'idle in transaction%'
+                   AND clock_timestamp() - state_change > interval '300 milliseconds'`,
+    )) as { n: number; q: string | null }[];
+    return rows[0] ?? { n: 0, q: null };
+  }
+
+  async function liveReleaseHolder(): Promise<string | null> {
+    const rows = (await withSql(
+      (tx) => tx`SELECT holder_run_id::text AS run_id FROM deploy_leases
+                 WHERE name = ${LIVE_RELEASE_LEASE} AND expires_at > clock_timestamp()`,
+    )) as { run_id: string | null }[];
+    return rows[0]?.run_id ?? null;
+  }
+
+  /** A committed `running` production run holding the live-release lease (a Publish live or plugin-data build). */
+  async function liveLeaseHeldByAnotherRun(
+    opts: { lapsed?: boolean } = {},
+  ): Promise<{ runId: string; release: () => Promise<void> }> {
+    const [{ id: targetId } = { id: "" }] = (await withSql(
+      (tx) => tx`SELECT id::text AS id FROM deploy_targets WHERE name = 'production'`,
+    )) as { id: string }[];
+    const runId = crypto.randomUUID();
+    const expiry = opts.lapsed ? "-1 second" : "10 minutes";
+    await withSql(async (tx) => {
+      await tx`
+        INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+        VALUES (${runId}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running',
+                clock_timestamp() + ${expiry}::interval)`;
+      await tx`
+        INSERT INTO deploy_leases (name, holder_run_id, acquired_at, expires_at)
+        VALUES (${LIVE_RELEASE_LEASE}, ${runId}::uuid, clock_timestamp(),
+                clock_timestamp() + ${expiry}::interval)
+        ON CONFLICT (name) DO UPDATE SET holder_run_id = EXCLUDED.holder_run_id,
+          acquired_at = EXCLUDED.acquired_at, expires_at = EXCLUDED.expires_at`;
+    });
+    return {
+      runId,
+      release: async () => {
+        await withSql(async (tx) => {
+          await tx`UPDATE deploy_leases SET holder_run_id = NULL, acquired_at = NULL, expires_at = NULL
+                   WHERE holder_run_id = ${runId}::uuid`;
+          await tx`DELETE FROM deploy_runs WHERE id = ${runId}::uuid`;
+        });
+      },
+    };
+  }
+
+  /** Stage + audit, then Publish live in the background; resolves to its result. */
+  async function publishInBackground(opts: { staged?: boolean } = {}): Promise<{
+    pending: Promise<Awaited<ReturnType<typeof execute>>>;
+    settled: () => boolean;
+  }> {
+    if (!opts.staged) await stageAudited();
+    let done = false;
+    const pending = execute(registry, adapter, PUBLISHER, "deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    }).finally(() => {
+      done = true;
+    });
+    return { pending, settled: () => done };
+  }
+
+  async function stageAudited(): Promise<void> {
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    await markAudited(staged.runId);
+  }
+
+  it("#1225 Publish live holds no transaction while it uploads, and holds the live-release lease as its run", async () => {
+    let resume!: () => void;
+    const resumed = new Promise<void>((r) => {
+      resume = r;
+    });
+    let uploading!: () => void;
+    const reached = new Promise<void>((r) => {
+      uploading = r;
+    });
+    const liveBefore = fake.live.length;
+    const { pending } = await publishInBackground();
+    // The live rebuild's upload (populateFiles), mid-run.
+    fake.onPopulate = async () => {
+      uploading();
+      await resumed;
+    };
+    try {
+      await reached;
+      await Bun.sleep(400);
+      expect(await longIdleTransactions()).toEqual({ n: 0, q: null });
+      const holder = await liveReleaseHolder();
+      expect(holder).not.toBeNull();
+      const run = (await withSql(
+        (tx) => tx`SELECT status FROM deploy_runs WHERE id = ${holder}::uuid`,
+      )) as { status: string }[];
+      expect(run[0]?.status).toBe("running");
+      // A rollback cannot release in between: the lease is held by a run.
+      const locked = await adapter.withAdminTransaction(SYSTEM, (tx) =>
+        tryLockLiveRelease(tx, { skipLocked: true }),
+      );
+      expect(locked).toMatchObject({ locked: false, heldBy: { runId: holder } });
+    } finally {
+      fake.onPopulate = null;
+      resume();
+    }
+    const r = await pending;
+    if (!r.ok) throw new Error(`deploy.promote failed: ${JSON.stringify(r.error)}`);
+    expect(fake.live.length).toBe(liveBefore + 1);
+    expect(await liveReleaseHolder()).toBeNull();
+  });
+
+  it("#1225 Publish live waits outside any transaction while another run releases live; redirects and plugin data step aside", async () => {
+    const other = await liveLeaseHeldByAnotherRun();
+    try {
+      const liveBefore = fake.live.length;
+      const { pending, settled } = await publishInBackground();
+      await Bun.sleep(1_000);
+      expect(settled()).toBe(false);
+      expect(fake.live.length).toBe(liveBefore);
+      expect(await longIdleTransactions()).toEqual({ n: 0, q: null });
+      // The redirect sync leaves production behind while a run releases it
+      // (that run syncs it when it finishes); it never waits for minutes.
+      const synced = await ok<{ targets: { env: string }[] }>("redirects.sync_provider", {
+        trigger: "manual",
+        repoRoot: testRoot,
+      });
+      expect(synced.targets.map((t) => t.env)).not.toContain("production");
+      await other.release();
+      const r = await pending;
+      if (!r.ok) throw new Error(`deploy.promote failed: ${JSON.stringify(r.error)}`);
+      expect(fake.live.length).toBe(liveBefore + 1);
+    } finally {
+      await other.release();
+    }
+  });
+
+  it("#1225 a Publish live whose heartbeat stopped is taken over once its lease lapsed, and marked failed", async () => {
+    const { ORPHANED_RUN_MESSAGE } = await import("../ops/deploy-run-lifecycle.js");
+    const dead = await liveLeaseHeldByAnotherRun({ lapsed: true });
+    try {
+      const { pending } = await publishInBackground();
+      const r = await pending;
+      if (!r.ok) throw new Error(`deploy.promote failed: ${JSON.stringify(r.error)}`);
+      const row = (await withSql(
+        (tx) => tx`SELECT status, error_message, lease_expires_at FROM deploy_runs
+                   WHERE id = ${dead.runId}::uuid`,
+      )) as { status: string; error_message: string | null; lease_expires_at: string | null }[];
+      expect(row[0]).toMatchObject({
+        status: "failed",
+        error_message: ORPHANED_RUN_MESSAGE,
+        lease_expires_at: null,
+      });
+      expect(await liveReleaseHolder()).toBeNull();
+    } finally {
+      await dead.release();
+    }
+  });
+
+  it("#1225 a Publish live that lost its lease mid-run releases nothing and ends failed", async () => {
+    const liveBefore = fake.live.length;
+    let lapsed = false;
+    // The first Hosting call of Publish live is the served preview's
+    // selection, after the first proof: let the leases lapse there, as if
+    // the heartbeat had stopped for longer than the TTL.
+    fake.onRequest = async () => {
+      if (lapsed) return;
+      const holder = await liveReleaseHolder();
+      if (holder === null) return;
+      lapsed = true;
+      await withSql(async (tx) => {
+        await tx`UPDATE deploy_leases SET expires_at = clock_timestamp() - interval '1 second'
+                 WHERE holder_run_id = ${holder}::uuid`;
+        await tx`UPDATE deploy_runs SET lease_expires_at = clock_timestamp() - interval '1 second'
+                 WHERE id = ${holder}::uuid`;
+      });
+    };
+    try {
+      const { pending } = await publishInBackground();
+      const r = await pending;
+      expect(r.ok).toBe(false);
+      expect(JSON.stringify(r.ok ? null : r.error)).toContain(
+        "lost its place in the publish order",
+      );
+    } finally {
+      fake.onRequest = null;
+    }
+    expect(lapsed).toBe(true);
+    expect(fake.live.length).toBe(liveBefore);
+    expect(await liveReleaseHolder()).toBeNull();
+  });
+
+  it("#1225 a Publish live whose lease lapses during its upload does not release it", async () => {
+    const liveBefore = fake.live.length;
+    let lapsed = false;
+    // The upload of the live rebuild (populateFiles) changes nothing that is
+    // served; the leases lapse there, as if the heartbeat had failed for
+    // longer than the TTL while a large upload ran (review on #1251).
+    const { pending } = await publishInBackground();
+    fake.onPopulate = async () => {
+      if (lapsed) return;
+      const holder = await liveReleaseHolder();
+      if (holder === null) return;
+      lapsed = true;
+      await withSql(async (tx) => {
+        await tx`UPDATE deploy_leases SET expires_at = clock_timestamp() - interval '1 second'
+                 WHERE holder_run_id = ${holder}::uuid`;
+        await tx`UPDATE deploy_runs SET lease_expires_at = clock_timestamp() - interval '1 second'
+                 WHERE id = ${holder}::uuid`;
+      });
+    };
+    try {
+      const r = await pending;
+      expect(r.ok).toBe(false);
+      expect(JSON.stringify(r.ok ? null : r.error)).toContain(
+        "lost its place in the publish order",
+      );
+    } finally {
+      fake.onPopulate = null;
+    }
+    expect(lapsed).toBe(true);
+    expect(fake.live.length).toBe(liveBefore);
+    expect(await liveReleaseHolder()).toBeNull();
+  });
+
+  it("#1225 rolling update: Publish live waits while the previous release releases live", async () => {
+    const [{ id: targetId } = { id: "" }] = (await withSql(
+      (tx) => tx`SELECT id::text AS id FROM deploy_targets WHERE name = 'production'`,
+    )) as { id: string }[];
+    const legacyRun = crypto.randomUUID();
+    // Its advisory live-release lock (a Publish live, rollback, purge or
+    // plugin-data build of the previous release), then its run lock alone
+    // (a Publish live that committed its lease-less run but has not taken
+    // the advisory lock yet).
+    for (const key of [LEGACY_LIVE_RELEASE_LOCK_KEY, `${DEPLOY_RUN_LOCK_PREFIX}${legacyRun}`]) {
+      const runLock = key !== LEGACY_LIVE_RELEASE_LOCK_KEY;
+      // Staged first: a Stage waits for the previous release's site builds too.
+      await stageAudited();
+      if (runLock) {
+        await withSql(
+          (tx) => tx`INSERT INTO deploy_runs (id, target_id, actor_id, status)
+                     VALUES (${legacyRun}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running')`,
+        );
+      }
+      const hold = await previousReleaseHolds(key);
+      try {
+        const liveBefore = fake.live.length;
+        const { pending, settled } = await publishInBackground({ staged: true });
+        await Bun.sleep(1_000);
+        expect(settled()).toBe(false);
+        expect(fake.live.length).toBe(liveBefore);
+        await hold.release();
+        const r = await pending;
+        if (!r.ok) throw new Error(`deploy.promote failed: ${JSON.stringify(r.error)}`);
+        expect(fake.live.length).toBe(liveBefore + 1);
+      } finally {
+        await hold.release();
+        if (runLock) {
+          await withSql((tx) => tx`DELETE FROM deploy_runs WHERE id = ${legacyRun}::uuid`);
+        }
+      }
+    }
   });
 });
 

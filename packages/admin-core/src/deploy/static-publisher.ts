@@ -143,6 +143,14 @@ export interface StaticPublisher {
     /** site_defaults.site_base_url — the absolute base of the
      *  destination robots.txt `Sitemap:` line. */
     siteBaseUrl: string;
+    /**
+     * #1225 — called right before the new version goes live (after any
+     * upload that does not change what is served). It throws when the run
+     * no longer holds its place in the publish order; the publisher then
+     * releases nothing. A publisher whose upload IS the release calls it
+     * before the upload.
+     */
+    beforeRelease?: () => Promise<void>;
   }): Promise<PromoteSummary>;
 
   /**
@@ -179,6 +187,14 @@ export interface StaticPublisher {
     target: DeployTarget;
     /** The staged run the build was checked against. */
     sourceRunId: string;
+    /**
+     * #1225 — called right before the new version goes live (after any
+     * upload that does not change what is served). It throws when the run
+     * no longer holds its place in the publish order; the publisher then
+     * releases nothing. A publisher whose upload IS the release calls it
+     * before the upload.
+     */
+    beforeRelease?: () => Promise<void>;
   }): Promise<PromoteSummary>;
 
   /**
@@ -223,6 +239,14 @@ export interface StaticPublisher {
      * build (self-hosted) has anything to drop; the others ignore it.
      */
     pruneBuildIds: readonly string[];
+    /**
+     * #1225 — called right before the new version goes live (after any
+     * upload that does not change what is served). It throws when the run
+     * no longer holds its place in the publish order; the publisher then
+     * releases nothing. A publisher whose upload IS the release calls it
+     * before the upload.
+     */
+    beforeRelease?: () => Promise<void>;
   }): Promise<PromoteSummary>;
 
   /**

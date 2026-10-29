@@ -106,6 +106,27 @@ export function requiresApproverPermission<I, O>(
   approverPermissions: readonly [Permission, ...Permission[]],
   op: OperationDefinition<I, O>,
 ): ApprovalOperationDefinition<I, O> {
+  const body = op.stepwise;
+  if (body) {
+    // #1225 — a step-wise executor (one that applies a Publish live) holds
+    // no transaction: the check runs in a short one of its own, before any
+    // step touches the proposal.
+    return {
+      ...op,
+      approverPermissions,
+      stepwise: async (ctx, input, steps) => {
+        const refusal = await steps.adapter.withAdminTransaction(
+          ctx,
+          (tx) => approverRefusal(tx, ctx, op.name, approverPermissions),
+          { holder: op.name },
+        );
+        if (refusal !== null) {
+          return err({ kind: "HandlerError", operation: op.name, message: refusal });
+        }
+        return body(ctx, input, steps);
+      },
+    };
+  }
   const inner = op.handler;
   return {
     ...op,

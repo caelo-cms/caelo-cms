@@ -49,13 +49,49 @@
  * `base_run_id` = the live run it built on), audited as
  * `deploy.build_plugin_data`. A tick with nothing to change publishes
  * nothing and records no run.
+ *
+ * #1220 — the build holds NO database transaction while it renders and
+ * uploads. It is a step-wise op, like Stage and Publish live (#1211,
+ * #1225); every database step is a short op of its own:
+ *
+ *   deploy.start_plugin_data       claim the tick, pick the marks and the
+ *                                  live build per target
+ *   (bake)                         read the live files, render the regions
+ *   deploy.begin_plugin_data_run   the run row with its lease + the
+ *                                  live-release lease, only while the live
+ *                                  build is still the one baked from
+ *   deploy.renew_run_lease         the fence right before the release
+ *   (publishPluginData)            no transaction
+ *   deploy.finish_plugin_data_run  record the run, release the lease
+ *   redirects.sync_provider        push the redirects
+ *   deploy.finish_plugin_data_tick mark what was baked, record the outcome
+ *
+ * While Publish live, a rollback or a CDN purge holds the live release the
+ * tick SKIPS (`busy`) instead of waiting: its marks stay pending, and the
+ * next tick bakes them. One tick at a time across every admin instance:
+ * the start step claims the tick (`plugin_data_build_state.last_tick_at`).
  */
 
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { bakedDataPlugin, localBuildPluginServices } from "@caelo-cms/plugin-host";
-import { defineOperation, execute, type TransactionRunner } from "@caelo-cms/query-api";
-import { CAELO_VERSION, err, ok, PhaseTimer } from "@caelo-cms/shared";
+import {
+  defineOperation,
+  defineStepwiseOperation,
+  execute,
+  type OperationSteps,
+  type QueryError,
+  type TransactionRunner,
+} from "@caelo-cms/query-api";
+import {
+  CAELO_VERSION,
+  type ExecutionContext,
+  err,
+  ok,
+  PhaseTimer,
+  phaseTimingSchema,
+  type Result,
+} from "@caelo-cms/shared";
 import {
   bakeRegion,
   type DeployTarget,
@@ -66,17 +102,27 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
 import { recordAuditFromCtx, SYSTEM_ACTOR_ID } from "../audit.js";
-import { holdDeployRun } from "../deploy/deploy-run-lock.js";
-import { lockLiveReleases } from "../deploy/live-release-lock.js";
+import {
+  DEPLOY_RUN_HEARTBEAT_MS,
+  DEPLOY_RUN_LEASE_TTL_MS,
+  type DeployRunBeat,
+  DeployRunHeartbeat,
+} from "../deploy/deploy-run-lock.js";
+import {
+  acquireLiveRelease,
+  releaseLiveRelease,
+  tryLockLiveRelease,
+} from "../deploy/live-release-lock.js";
 import { resolveOutputRoot } from "../deploy/output-root.js";
-import { activePluginProblems } from "../deploy/plugin-problems.js";
-import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
+import { activePluginProblems, reconcilePluginsForBuild } from "../deploy/plugin-problems.js";
+import { markRedirectsBehind } from "../deploy/redirect-sync.js";
 import {
   type LiveBuildRef,
   loadStaticPublisher,
   type StaticPublisher,
 } from "../deploy/static-publisher.js";
-import { getDeployBridge } from "../ops/deploy.js";
+import { fenceRunLeases } from "../ops/deploy-lease-steps.js";
+import { beginRunInTx } from "../ops/deploy-run-lifecycle.js";
 import { uuidList } from "../ops/quality/_shared.js";
 import { jsonbParam } from "../sql-helpers.js";
 
@@ -89,9 +135,6 @@ export const MAX_MARKS_PER_BUILD = 2000;
  * plugin-data build drops the rest.
  */
 export const PLUGIN_DATA_ARCHIVES_KEPT = 5;
-
-/** Advisory lock: one plugin-data build at a time across every admin instance. */
-const BUILD_LOCK_KEY = "caelo:plugin-data-build";
 
 const outcomeSchema = z.enum([
   "not_due",
@@ -328,56 +371,118 @@ const buildOutput = z.object({
 });
 type BuildOutput = z.infer<typeof buildOutput>;
 
-export const buildPluginDataOp = defineOperation({
-  name: "deploy.build_plugin_data",
-  // Why human-only: the plugin-data tick (plugin-data/worker.ts) runs it as
-  // the system actor; it carries no decision — it republishes the build a
-  // human published, with fresher data in plugin-owned regions only. No AI
-  // tool: there is nothing for the AI to choose.
+function result(
+  outcome: PluginDataBuildOutcome,
+  message: string | null,
+  extra: Partial<BuildOutput> = {},
+): BuildOutput {
+  return { outcome, message, runIds: [], bakedPages: 0, changedFiles: 0, ...extra };
+}
+
+const outcomeRecord = z
+  .object({
+    outcome: z.enum(["unchanged", "built", "blocked", "failed"]),
+    message: z.string().nullable(),
+    pendingPlugins: z.number().int(),
+    marks: z.number().int(),
+    runIds: z.array(z.string()),
+  })
+  .strict();
+
+/** Record a tick's outcome (state row + audit) in the caller's transaction. */
+async function recordOutcome(
+  tx: TransactionRunner,
+  ctx: Parameters<typeof recordAuditFromCtx>[1],
+  o: z.infer<typeof outcomeRecord>,
+): Promise<void> {
+  await recordState(tx, o.outcome, o.message);
+  await recordAuditFromCtx(tx, ctx, {
+    operation: "deploy.build_plugin_data",
+    input: { pendingPlugins: o.pendingPlugins, marks: o.marks },
+    succeeded: o.outcome === "unchanged" || o.outcome === "built",
+    entityId: o.runIds[0] ?? null,
+    resultSummary: o.outcome,
+  });
+}
+
+const liveTarget = z.object({
+  target: z.object({
+    id: z.string(),
+    name: z.string(),
+    env: z.enum(["dev", "staging", "production"]),
+    outDir: z.string(),
+    baseUrl: z.string(),
+    robotsDefault: z.enum(["index", "noindex"]),
+    pageUrlStyle: z.enum(["directory", "no-extension"]),
+  }),
+  liveRunId: z.string(),
+  liveBuildId: z.string(),
+  liveLocation: z.string().nullable(),
+  liveCaeloVersion: z.string(),
+});
+
+/** What deploy.start_plugin_data hands the build. */
+const pluginDataPlan = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("done"), result: buildOutput }),
+  z.object({
+    kind: z.literal("bake"),
+    /** The bake's `data-baked-at` (see the start step). */
+    bakedAt: z.string(),
+    plugins: z.array(
+      z.object({
+        id: z.string(),
+        slug: z.string(),
+        version: z.string(),
+        pages: z.array(z.string()),
+      }),
+    ),
+    targets: z.array(liveTarget),
+    waitingNote: z.string().nullable(),
+    pendingPlugins: z.number().int(),
+    marks: z.number().int(),
+  }),
+]);
+type PluginDataPlan = z.infer<typeof pluginDataPlan>;
+
+const buildInput = z
+  .object({
+    /** Skip when the previous tick (any instance) ran this recently. */
+    minIntervalSeconds: z.number().int().min(0).max(3600).default(240),
+    /** At most this many stale (plugin, page) marks per build (tests lower it). */
+    maxMarks: z.number().int().min(1).max(MAX_MARKS_PER_BUILD).default(MAX_MARKS_PER_BUILD),
+    /** Tests: the root relative `deploy_targets.out_dir` values resolve against. */
+    repoRoot: z.string().optional(),
+  })
+  .strict();
+
+export const startPluginDataOp = defineOperation({
+  name: "deploy.start_plugin_data",
+  // Why system-only: the first step of deploy.build_plugin_data (the
+  // plugin-data tick, system actor); it decides nothing of its own.
   actorScope: ["system"],
   database: "cms_admin",
-  input: z
-    .object({
-      /** Skip when the previous tick (any instance) ran this recently. */
-      minIntervalSeconds: z.number().int().min(0).max(3600).default(240),
-      /** At most this many stale (plugin, page) marks per build (tests lower it). */
-      maxMarks: z.number().int().min(1).max(MAX_MARKS_PER_BUILD).default(MAX_MARKS_PER_BUILD),
-      /** Tests: the root relative `deploy_targets.out_dir` values resolve against. */
-      repoRoot: z.string().optional(),
-    })
-    .strict(),
-  output: buildOutput,
+  input: buildInput.omit({ repoRoot: true }),
+  output: pluginDataPlan,
   handler: async (ctx, input, tx) => {
-    const timer = new PhaseTimer();
-    const result = (
-      outcome: PluginDataBuildOutcome,
-      message: string | null,
-      extra: Partial<BuildOutput> = {},
-    ): BuildOutput => ({
-      outcome,
-      message,
-      runIds: [],
-      bakedPages: 0,
-      changedFiles: 0,
-      ...extra,
-    });
-
-    const locked = (await tx.execute(sql`
-      SELECT pg_try_advisory_xact_lock(hashtext(${BUILD_LOCK_KEY})) AS ok
-    `)) as unknown as { ok: boolean }[];
-    if (locked[0]?.ok !== true) {
-      return ok(result("busy", "another plugin-data build is running"));
+    // The tick is claimed here, so a tick of another instance in the same
+    // window finds it not due: one plugin-data build at a time. A tick
+    // that dies mid-build only delays the next by `minIntervalSeconds`.
+    const claimed = (await tx.execute(sql`
+      UPDATE plugin_data_build_state SET last_tick_at = clock_timestamp()
+      WHERE id = 1
+        AND (last_tick_at IS NULL
+             OR last_tick_at < clock_timestamp() - make_interval(secs => ${input.minIntervalSeconds}))
+      RETURNING 1 AS claimed
+    `)) as unknown as { claimed: number }[];
+    if (claimed.length === 0) {
+      const exists = (await tx.execute(sql`
+        SELECT 1 AS present FROM plugin_data_build_state WHERE id = 1
+      `)) as unknown as { present: number }[];
+      if (exists.length === 0) {
+        throw new Error("plugin_data_build_state has no row — run the database migrations (0371)");
+      }
+      return ok({ kind: "done" as const, result: result("not_due", null) });
     }
-    const due = (await tx.execute(sql`
-      SELECT last_tick_at IS NULL
-          OR last_tick_at < clock_timestamp() - make_interval(secs => ${input.minIntervalSeconds})
-          AS due
-      FROM plugin_data_build_state WHERE id = 1
-    `)) as unknown as { due: boolean }[];
-    if (due.length === 0) {
-      throw new Error("plugin_data_build_state has no row — run the database migrations (0371)");
-    }
-    if (due[0]?.due !== true) return ok(result("not_due", null));
 
     // Which plugins have stale bakes — eligibility is decided per plugin
     // BEFORE the batch is limited, so the marks of a plugin that cannot
@@ -389,38 +494,24 @@ export const buildPluginDataOp = defineOperation({
     `)) as unknown as { plugin_id: string }[];
     if (pendingPlugins.length === 0) {
       await recordState(tx, "nothing_pending", null);
-      return ok(result("nothing_pending", null));
+      return ok({ kind: "done" as const, result: result("nothing_pending", null) });
     }
-
-    let markCount = 0;
-    const finish = async (
-      outcome: "unchanged" | "built" | "blocked" | "failed",
-      message: string | null,
-      extra: Partial<BuildOutput> = {},
-    ): Promise<BuildOutput> => {
-      await recordState(tx, outcome, message);
-      await recordAuditFromCtx(tx, ctx, {
-        operation: "deploy.build_plugin_data",
-        input: { pendingPlugins: pendingPlugins.length, marks: markCount },
-        succeeded: outcome === "unchanged" || outcome === "built",
-        entityId: extra.runIds?.[0] ?? null,
-        resultSummary: outcome,
+    const done = async (outcome: "blocked", message: string | null, marks = 0) => {
+      await recordOutcome(tx, ctx, {
+        outcome,
+        message,
+        pendingPlugins: pendingPlugins.length,
+        marks,
+        runIds: [],
       });
-      return result(outcome, message, extra);
+      return ok({ kind: "done" as const, result: result(outcome, message) });
     };
 
     const targets = (await tx.execute(sql`
       SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default, page_url_style
       FROM deploy_targets WHERE env = 'production' ORDER BY is_default DESC, name
     `)) as unknown as TargetRow[];
-    if (targets.length === 0) {
-      return ok(await finish("blocked", "no production deploy target is configured"));
-    }
-
-    // Ordered with every other write to the live site (Publish live,
-    // rollback, the CDN purge): what is live cannot change under this build.
-    await lockLiveReleases(tx);
-    timer.lap("lock-wait");
+    if (targets.length === 0) return done("blocked", "no production deploy target is configured");
 
     // #1008 — re-render only plugins that run; their marks wait otherwise.
     const problems = new Map((await activePluginProblems(tx)).map((p) => [p.slug, p.reason]));
@@ -443,9 +534,7 @@ export const buildPluginDataOp = defineOperation({
       waiting.length > 0
         ? `Waiting for ${waiting.join("; ")} — their pages are baked once they run.`
         : null;
-    if (eligible.size === 0) {
-      return ok(await finish("blocked", waitingNote));
-    }
+    if (eligible.size === 0) return done("blocked", waitingNote);
 
     const pending = (await tx.execute(sql`
       SELECT plugin_id::text AS plugin_id, page_id::text AS page_id
@@ -455,17 +544,16 @@ export const buildPluginDataOp = defineOperation({
       ORDER BY last_marked_at
       LIMIT ${input.maxMarks}
     `)) as unknown as { plugin_id: string; page_id: string }[];
-    markCount = pending.length;
     const byPlugin = new Map<string, Set<string>>();
     for (const row of pending) {
       const set = byPlugin.get(row.plugin_id) ?? new Set<string>();
       set.add(row.page_id);
       byPlugin.set(row.plugin_id, set);
     }
-    const renderable: RenderablePlugin[] = [];
+    const plugins: { id: string; slug: string; version: string; pages: string[] }[] = [];
     for (const [pluginId, pages] of byPlugin) {
       const plugin = eligible.get(pluginId);
-      if (plugin) renderable.push({ ...plugin, pages });
+      if (plugin) plugins.push({ ...plugin, pages: [...pages] });
     }
 
     // The bake's `data-baked-at`: the database clock BEFORE any plugin data
@@ -476,177 +564,494 @@ export const buildPluginDataOp = defineOperation({
     }[];
     const dataAsOf = clock[0]?.at;
     if (dataAsOf === undefined) throw new Error("clock_timestamp() returned no row");
-    const bakedAt = iso(dataAsOf);
-    timer.lap("prepare");
 
-    const publisher = await loadStaticPublisher(process.env.CAELO_PROVIDER);
-    const root = resolveOutputRoot(input.repoRoot);
-    const runIds: string[] = [];
-    let bakedPages = 0;
-    let changedFiles = 0;
-    const notes: string[] = [];
+    const live: z.infer<typeof liveTarget>[] = [];
     for (const t of targets) {
-      const liveRows = (await tx.execute(sql`
-        SELECT id::text AS id, build_id, publish_summary->>'location' AS location, caelo_version
-        FROM deploy_runs
-        WHERE target_id = ${t.id}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
-        ORDER BY finished_at DESC NULLS LAST, started_at DESC
-        LIMIT 1
-      `)) as unknown as LiveRunRow[];
-      const liveRow = liveRows[0];
+      const liveRow = await liveRunOf(tx, t.id);
       if (!liveRow) {
-        return ok(
-          await finish(
-            "blocked",
-            `nothing is published on "${t.name}" yet — plugin data is baked with the first Publish live`,
-          ),
+        return done(
+          "blocked",
+          `nothing is published on "${t.name}" yet — plugin data is baked with the first Publish live`,
+          pending.length,
         );
       }
       if (liveRow.caelo_version !== CAELO_VERSION) {
-        return ok(
-          await finish(
-            "blocked",
-            `the live build of "${t.name}" was rendered by Caelo ${liveRow.caelo_version ?? "(unknown)"}, this server runs ${CAELO_VERSION}. Plugin data reaches the HTML with the next Publish live (a new release's markup never goes live on a data tick); until then the delta feed serves it.`,
-          ),
+        return done(
+          "blocked",
+          `the live build of "${t.name}" was rendered by Caelo ${liveRow.caelo_version ?? "(unknown)"}, this server runs ${CAELO_VERSION}. Plugin data reaches the HTML with the next Publish live (a new release's markup never goes live on a data tick); until then the delta feed serves it.`,
+          pending.length,
         );
       }
-      const target = toDeployTarget(t);
-      const live: LiveBuildRef = {
-        runId: liveRow.id,
-        buildId: liveRow.build_id,
-        location: liveRow.location,
-        localBuildDir: resolve(root, t.out_dir, "builds", liveRow.build_id),
-      };
-      let bake: TargetBake;
-      try {
-        bake = await bakeTarget({ publisher, target, live, plugins: renderable, bakedAt });
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        if (e instanceof BlockedError) return ok(await finish("blocked", message));
-        await finish("failed", `could not bake "${t.name}": ${message}`);
-        return err({
-          kind: "HandlerError",
-          operation: "deploy.build_plugin_data",
-          message: `could not bake "${t.name}": ${message}`,
-        });
-      }
-      timer.lap(`bake:${t.name}`);
-      if (bake.versionMismatch.length > 0) {
-        notes.push(
-          `On "${t.name}" ${bake.versionMismatch.join(", ")} rendered the live regions; the running version's markup goes live with the next Publish live.`,
-        );
-      }
-      if (bake.files.size === 0) continue;
+      live.push({
+        target: toDeployTarget(t) as z.infer<typeof liveTarget>["target"],
+        liveRunId: liveRow.id,
+        liveBuildId: liveRow.build_id,
+        liveLocation: liveRow.location,
+        liveCaeloVersion: liveRow.caelo_version,
+      });
+    }
+    return ok({
+      kind: "bake" as const,
+      bakedAt: iso(dataAsOf),
+      plugins,
+      targets: live,
+      waitingNote,
+      pendingPlugins: pendingPlugins.length,
+      marks: pending.length,
+    });
+  },
+});
 
-      const bridge = getDeployBridge();
-      if (!bridge) throw new Error("deploy-bridge not configured");
-      const runId = randomUUID();
-      await holdDeployRun(tx, runId);
-      const begun = await execute(
-        bridge.registry,
-        bridge.adapter,
-        { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: ctx.requestId },
-        "deploy.begin_run",
-        {
-          runId,
-          targetId: t.id,
+/** The build a target serves: its last succeeded run (any kind). */
+async function liveRunOf(tx: TransactionRunner, targetId: string): Promise<LiveRunRow | null> {
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id, build_id, publish_summary->>'location' AS location, caelo_version
+    FROM deploy_runs
+    WHERE target_id = ${targetId}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
+    ORDER BY finished_at DESC NULLS LAST, started_at DESC
+    LIMIT 1
+  `)) as unknown as LiveRunRow[];
+  return rows[0] ?? null;
+}
+
+/** The live-release lease was busy (or the live build moved); the savepoint rolls back. */
+class LiveReleaseBusy extends Error {
+  override readonly name = "LiveReleaseBusy";
+  constructor(readonly reason: string) {
+    super(reason);
+  }
+}
+
+export const beginPluginDataRunOp = defineOperation({
+  name: "deploy.begin_plugin_data_run",
+  // Why system-only: a step of deploy.build_plugin_data (system actor).
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      targetId: z.string().uuid(),
+      liveRunId: z.string().uuid(),
+      caeloVersion: z.string(),
+      startedAt: z.string(),
+      leaseTtlMs: z.number().int().min(1_000).max(3_600_000),
+    })
+    .strict(),
+  output: z.discriminatedUnion("started", [
+    z.object({
+      started: z.literal(true),
+      /** Older plugin-data archives the publisher may drop (never the live one). */
+      pruneBuildIds: z.array(z.string()),
+    }),
+    z.object({ started: z.literal(false), reason: z.string() }),
+  ]),
+  handler: async (ctx, input, tx) => {
+    try {
+      // A savepoint: a busy lease leaves no run row behind (a tick that
+      // publishes nothing records no run).
+      await tx.transaction(async (sp) => {
+        await beginRunInTx(sp as TransactionRunner, {
+          runId: input.runId,
+          targetId: input.targetId,
           actorId: ctx.actorId,
-          startedAt: bakedAt,
+          startedAt: input.startedAt,
           renderFingerprint: null,
-          caeloVersion: liveRow.caelo_version,
+          caeloVersion: input.caeloVersion,
           pluginProblems: null,
           buildKind: "plugin_data",
-          baseRunId: liveRow.id,
-        },
-      );
-      if (!begun.ok) {
-        const message = `could not start the plugin-data run: ${describeError(begun.error)}`;
-        await finish("failed", message);
-        return err({ kind: "HandlerError", operation: "deploy.build_plugin_data", message });
+          baseRunId: input.liveRunId,
+          leaseTtlMs: input.leaseTtlMs,
+        });
+        const lease = await acquireLiveRelease(sp as TransactionRunner, {
+          runId: input.runId,
+          ttlMs: input.leaseTtlMs,
+        });
+        if (!lease.acquired) {
+          throw new LiveReleaseBusy(
+            `${lease.heldBy ? `run ${lease.heldBy.runId}` : "a rollback, CDN purge or a release of the previous Caelo version"} is releasing the live site right now; the marks stay pending for the next tick`,
+          );
+        }
+        // What is live cannot have changed since the bake read it: Publish
+        // live, a rollback or another plugin-data build would have moved it.
+        // Checked with the lease held (a release that committed before the
+        // claim is seen here; none can start after it), so the files baked
+        // from the live build never replace a newer one (review on #1251).
+        const liveNow = await liveRunOf(sp as TransactionRunner, input.targetId);
+        if (liveNow?.id !== input.liveRunId) {
+          throw new LiveReleaseBusy(
+            "the live build changed while plugin data was baked; the marks stay pending for the next tick",
+          );
+        }
+      });
+    } catch (e) {
+      if (e instanceof LiveReleaseBusy) return ok({ started: false as const, reason: e.reason });
+      throw e;
+    }
+    // The live build (which may itself be one) is never dropped.
+    const older = (await tx.execute(sql`
+      SELECT build_id FROM deploy_runs
+      WHERE target_id = ${input.targetId}::uuid AND build_kind = 'plugin_data'
+        AND status = 'succeeded' AND build_id IS NOT NULL
+        AND id <> ${input.liveRunId}::uuid
+      ORDER BY finished_at DESC NULLS LAST, started_at DESC
+      OFFSET ${PLUGIN_DATA_ARCHIVES_KEPT}
+    `)) as unknown as { build_id: string }[];
+    return ok({ started: true as const, pruneBuildIds: older.map((r) => r.build_id) });
+  },
+});
+
+export const finishPluginDataRunOp = defineOperation({
+  name: "deploy.finish_plugin_data_run",
+  // Why system-only: a step of deploy.build_plugin_data (system actor).
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      targetId: z.string().uuid(),
+      pageCount: z.number().int(),
+      fileCount: z.number().int(),
+      buildId: z.string(),
+      publishSummary: z.record(z.string(), z.unknown()),
+      pluginData: z.record(z.string(), z.unknown()),
+      phaseTimings: z.array(phaseTimingSchema),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (_ctx, input, tx) => {
+    // The run row first, then the lease: the same order as the heartbeat
+    // (deploy.renew_run_lease), so the two cannot deadlock (review on #1251).
+    await tx.execute(sql`SELECT 1 FROM deploy_runs WHERE id = ${input.runId}::uuid FOR UPDATE`);
+    // Released before the run is recorded: this transaction keeps the lease
+    // row locked until it commits, so nobody else releases in between.
+    await releaseLiveRelease(tx, input.runId);
+    await tx.execute(sql`
+      UPDATE deploy_runs
+         SET status = 'succeeded', finished_at = clock_timestamp(), error_message = NULL,
+             page_count = ${input.pageCount}, file_count = ${input.fileCount},
+             build_id = ${input.buildId},
+             publish_summary = ${jsonbParam(input.publishSummary)},
+             plugin_data = ${jsonbParam(input.pluginData)},
+             phase_timings = ${jsonbParam(input.phaseTimings)},
+             lease_expires_at = NULL
+       WHERE id = ${input.runId}::uuid
+    `);
+    // #1157 — the release starts from the live build's files, which carry
+    // the redirects of that build's time (self-hosted copies its archive
+    // over `current/`); redirects saved since must stay live. Pushed after
+    // this commit (deploy.build_plugin_data), never inside it.
+    await markRedirectsBehind(tx, [input.targetId]);
+    return ok({});
+  },
+});
+
+export const finishPluginDataTickOp = defineOperation({
+  name: "deploy.finish_plugin_data_tick",
+  // Why system-only: the last step of deploy.build_plugin_data (system actor).
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: outcomeRecord.extend({
+    /** Set when the targets now carry the data read at `bakedAt`. */
+    baked: z
+      .object({
+        bakedAt: z.string(),
+        plugins: z.array(z.object({ id: z.string(), pages: z.array(z.string()) })),
+        /**
+         * The run each target serves with this data: the plugin-data run
+         * this tick published, or the live run its unchanged bake read.
+         */
+        targets: z.array(z.object({ targetId: z.string(), liveRunId: z.string() })),
+      })
+      .nullable(),
+  }),
+  output: z.object({ marksAdvanced: z.boolean() }),
+  handler: async (ctx, input, tx) => {
+    let marksAdvanced = false;
+    if (input.baked && (await stillServed(tx, input.baked.targets))) {
+      marksAdvanced = true;
+      // Every target now carries the data read at `bakedAt` for the pages
+      // of the plugins that rendered (or had nothing new). A mark that came
+      // in after that instant stays pending.
+      for (const plugin of input.baked.plugins) {
+        await tx.execute(sql`
+          UPDATE plugin_data_stale_pages
+             SET baked_through = ${input.baked.bakedAt}::timestamptz,
+                 last_run_id = ${input.runIds.at(-1) ?? null}
+           WHERE plugin_id = ${plugin.id}::uuid
+             AND page_id = ANY(${uuidList(plugin.pages)})
+        `);
       }
-      const summaryOfBake = {
-        bakedPages: bake.bakedPages,
-        notLive: bake.notLive,
-        versionMismatch: bake.versionMismatch,
-        plugins: renderable.map((p) => ({ slug: p.slug, version: p.version, pages: p.pages.size })),
-        dataAsOf: bakedAt,
+    }
+    await recordOutcome(tx, ctx, input);
+    return ok({ marksAdvanced });
+  },
+});
+
+/**
+ * Whether every target still serves the run this tick left it with — read
+ * under the live-release row lock, so no Publish live or rollback commits in
+ * between. A release since then rewound or forgot the bakes (it serves
+ * older data); advancing the marks over that would leave the data out of
+ * the HTML until the next mark (review on #1251). Busy or moved: the marks
+ * stay pending and the next tick bakes them again.
+ */
+async function stillServed(
+  tx: TransactionRunner,
+  targets: readonly { readonly targetId: string; readonly liveRunId: string }[],
+): Promise<boolean> {
+  if (!(await tryLockLiveRelease(tx, { skipLocked: false })).locked) return false;
+  for (const t of targets) {
+    if ((await liveRunOf(tx, t.targetId))?.id !== t.liveRunId) return false;
+  }
+  return true;
+}
+
+/** The body of deploy.build_plugin_data (see the module comment). */
+async function runPluginDataBuild(
+  ctx: ExecutionContext,
+  input: z.infer<typeof buildInput>,
+  steps: OperationSteps,
+): Promise<Result<BuildOutput, QueryError>> {
+  const { registry, adapter } = steps;
+  const timer = new PhaseTimer();
+  // #1008 — only plugins that run are re-rendered; what runs here is
+  // reconciled first, outside any transaction (plugin-problems.ts).
+  const unreconciled = await reconcilePluginsForBuild();
+  if (unreconciled !== null) {
+    return err({
+      kind: "HandlerError",
+      operation: "deploy.build_plugin_data",
+      message: unreconciled,
+    });
+  }
+  const started = await execute(registry, adapter, ctx, "deploy.start_plugin_data", {
+    minIntervalSeconds: input.minIntervalSeconds,
+    maxMarks: input.maxMarks,
+  });
+  if (!started.ok) return err(started.error);
+  const plan = started.value as PluginDataPlan;
+  if (plan.kind === "done") return ok(plan.result);
+  timer.lap("prepare");
+
+  const tally = { pendingPlugins: plan.pendingPlugins, marks: plan.marks };
+  /** The run each target serves once this tick is done (see finish_plugin_data_tick). */
+  const served = new Map(plan.targets.map((t) => [t.target.id, t.liveRunId]));
+  const finishTick = async (
+    outcome: "unchanged" | "built" | "blocked" | "failed",
+    message: string | null,
+    runIds: string[],
+    baked: boolean,
+  ): Promise<Result<BuildOutput, QueryError> | null> => {
+    const r = await execute(registry, adapter, ctx, "deploy.finish_plugin_data_tick", {
+      outcome,
+      message,
+      ...tally,
+      runIds,
+      baked: baked
+        ? {
+            bakedAt: plan.bakedAt,
+            plugins: plan.plugins.map((p) => ({ id: p.id, pages: p.pages })),
+            targets: [...served].map(([targetId, liveRunId]) => ({ targetId, liveRunId })),
+          }
+        : null,
+    });
+    return r.ok ? null : err(r.error);
+  };
+  const failed = async (
+    message: string,
+    runIds: string[],
+  ): Promise<Result<BuildOutput, QueryError>> => {
+    const recorded = await finishTick("failed", message, runIds, false);
+    if (recorded && !recorded.ok) {
+      console.error("[plugin-data] could not record the failed tick", recorded.error);
+    }
+    return err({ kind: "HandlerError", operation: "deploy.build_plugin_data", message });
+  };
+
+  const publisher = await loadStaticPublisher(process.env.CAELO_PROVIDER);
+  const root = resolveOutputRoot(input.repoRoot);
+  const renderable: RenderablePlugin[] = plan.plugins.map((p) => ({
+    ...p,
+    pages: new Set(p.pages),
+  }));
+  const sys = { actorId: SYSTEM_ACTOR_ID, actorKind: "system" as const, requestId: ctx.requestId };
+  const runIds: string[] = [];
+  let bakedPages = 0;
+  let changedFiles = 0;
+  const notes: string[] = [];
+  for (const t of plan.targets) {
+    const target: DeployTarget = t.target;
+    const live: LiveBuildRef = {
+      runId: t.liveRunId,
+      buildId: t.liveBuildId,
+      location: t.liveLocation,
+      localBuildDir: resolve(root, t.target.outDir, "builds", t.liveBuildId),
+    };
+    // Reading the live files and rendering hold no lease: nothing here
+    // writes, and the run's start below refuses when the live build moved.
+    let bake: TargetBake;
+    try {
+      bake = await bakeTarget({
+        publisher,
+        target,
+        live,
+        plugins: renderable,
+        bakedAt: plan.bakedAt,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (e instanceof BlockedError) {
+        const recorded = await finishTick("blocked", message, runIds, false);
+        return recorded ?? ok(result("blocked", message, { runIds }));
+      }
+      return failed(`could not bake "${t.target.name}": ${message}`, runIds);
+    }
+    timer.lap(`bake:${t.target.name}`);
+    if (bake.versionMismatch.length > 0) {
+      notes.push(
+        `On "${t.target.name}" ${bake.versionMismatch.join(", ")} rendered the live regions; the running version's markup goes live with the next Publish live.`,
+      );
+    }
+    if (bake.files.size === 0) continue;
+
+    const runId = randomUUID();
+    const ttlMs = DEPLOY_RUN_LEASE_TTL_MS;
+    const begun = await execute(registry, adapter, sys, "deploy.begin_plugin_data_run", {
+      runId,
+      targetId: t.target.id,
+      liveRunId: t.liveRunId,
+      caeloVersion: t.liveCaeloVersion,
+      startedAt: plan.bakedAt,
+      leaseTtlMs: ttlMs,
+    });
+    if (!begun.ok) {
+      return failed(`could not start the plugin-data run: ${describeError(begun.error)}`, runIds);
+    }
+    const start = begun.value as
+      | { started: true; pruneBuildIds: string[] }
+      | { started: false; reason: string };
+    if (!start.started) {
+      // Another release owns the live site right now. Nothing is recorded:
+      // the marks stay pending and the next tick bakes them.
+      console.info(`[plugin-data] skipped: ${start.reason}`);
+      return ok(result("busy", start.reason, { runIds }));
+    }
+    const heartbeat = new DeployRunHeartbeat(async (): Promise<DeployRunBeat> => {
+      const r = await execute(registry, adapter, sys, "deploy.renew_run_lease", { runId, ttlMs });
+      if (!r.ok) throw new Error(describeError(r.error));
+      return r.value as DeployRunBeat;
+    }, DEPLOY_RUN_HEARTBEAT_MS);
+    heartbeat.expectLiveRelease(true);
+    const summaryOfBake = {
+      bakedPages: bake.bakedPages,
+      notLive: bake.notLive,
+      versionMismatch: bake.versionMismatch,
+      plugins: renderable.map((p) => ({ slug: p.slug, version: p.version, pages: p.pages.size })),
+      dataAsOf: plan.bakedAt,
+    };
+    const failRun = async (message: string): Promise<Result<BuildOutput, QueryError>> => {
+      const r = await execute(registry, adapter, sys, "deploy.fail_run", {
+        runId,
+        message,
+        phaseTimings: timer.phases(),
+      });
+      if (!r.ok)
+        console.error("[plugin-data] could not record the failed run", { runId, error: r.error });
+      return failed(message, [...runIds, runId]);
+    };
+    try {
+      // Proof, right before the new version goes live (after any upload
+      // that changes nothing served), that the run still holds the lease
+      // (review on #1251).
+      let lost: string | null = null;
+      const beforeRelease = async (): Promise<void> => {
+        const proof = await fenceRunLeases(steps, sys, {
+          runId,
+          ttlMs,
+          need: { publication: false, liveRelease: true },
+          lostMessage: (renewError) =>
+            `the plugin-data build ${runId} lost its place in the live release order${renewError ? ` (${renewError})` : ""}; nothing was published, the marks stay pending.`,
+        });
+        if (!proof.ok) {
+          lost = proof.message;
+          throw new Error(proof.message);
+        }
       };
-      // The live build (which may itself be one) is never dropped.
-      const older = (await tx.execute(sql`
-        SELECT build_id FROM deploy_runs
-        WHERE target_id = ${t.id}::uuid AND build_kind = 'plugin_data' AND status = 'succeeded'
-          AND build_id IS NOT NULL AND build_id <> ${liveRow.build_id}
-        ORDER BY finished_at DESC NULLS LAST, started_at DESC
-        OFFSET ${PLUGIN_DATA_ARCHIVES_KEPT}
-      `)) as unknown as { build_id: string }[];
+      let summary: Awaited<ReturnType<StaticPublisher["publishPluginData"]>>;
       try {
-        const summary = await publisher.publishPluginData({
+        summary = await publisher.publishPluginData({
           target,
           live,
           runId,
           files: bake.files,
-          pruneBuildIds: older.map((r) => r.build_id),
-        });
-        timer.lap(`publish:${t.name}`);
-        await tx.execute(sql`
-          UPDATE deploy_runs
-             SET status = 'succeeded', finished_at = clock_timestamp(),
-                 page_count = ${bake.bakedPages}, file_count = ${bake.files.size},
-                 build_id = ${summary.destinationBuildId},
-                 publish_summary = ${jsonbParam(summary)},
-                 plugin_data = ${jsonbParam(summaryOfBake)},
-                 phase_timings = ${jsonbParam(timer.phases())}
-           WHERE id = ${runId}::uuid
-        `);
-        // #1157 — the release starts from the live build's files, which
-        // carry the redirects of that build's time (self-hosted copies its
-        // archive over `current/`); redirects saved since must stay live.
-        // A failed push is recorded and retried, never fails this release.
-        await syncRedirectsInTx(tx, ctx, {
-          trigger: "publish",
-          targetIds: [t.id],
-          outputRoot: root,
+          pruneBuildIds: start.pruneBuildIds,
+          beforeRelease,
         });
       } catch (e) {
-        const message = `publishing plugin data failed: ${e instanceof Error ? e.message : String(e)}`;
-        await tx.execute(sql`
-          UPDATE deploy_runs
-             SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
-                 plugin_data = ${jsonbParam(summaryOfBake)},
-                 phase_timings = ${jsonbParam(timer.phases())}
-           WHERE id = ${runId}::uuid
-        `);
-        await finish("failed", message, { runIds: [runId] });
-        return err({ kind: "HandlerError", operation: "deploy.build_plugin_data", message });
+        return await failRun(
+          lost ?? `publishing plugin data failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
-      runIds.push(runId);
-      bakedPages += bake.bakedPages;
-      changedFiles += bake.files.size;
+      timer.lap(`publish:${t.target.name}`);
+      const finished = await execute(registry, adapter, sys, "deploy.finish_plugin_data_run", {
+        runId,
+        targetId: t.target.id,
+        pageCount: bake.bakedPages,
+        fileCount: bake.files.size,
+        buildId: summary.destinationBuildId,
+        publishSummary: summary as unknown as Record<string, unknown>,
+        pluginData: summaryOfBake,
+        phaseTimings: timer.phases(),
+      });
+      if (!finished.ok) {
+        return await failRun(
+          `plugin data is live, but recording the run failed: ${describeError(finished.error)}`,
+        );
+      }
+    } finally {
+      await heartbeat.stop();
     }
+    // The run is recorded; push the redirects onto the build the target now
+    // serves (a failure is recorded and retried by the redirect-sync worker).
+    const synced = await execute(registry, adapter, sys, "redirects.sync_provider", {
+      trigger: "publish",
+      targetIds: [t.target.id],
+      ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
+    });
+    if (!synced.ok) {
+      console.error("[plugin-data] redirects not synced; retried automatically", {
+        runId,
+        error: describeError(synced.error),
+      });
+    }
+    runIds.push(runId);
+    served.set(t.target.id, runId);
+    bakedPages += bake.bakedPages;
+    changedFiles += bake.files.size;
+  }
 
-    // Every target now carries the data read at `dataAsOf` for the pages
-    // of the plugins that rendered (or had nothing new). A mark that came
-    // in after that instant stays pending.
-    for (const plugin of renderable) {
-      await tx.execute(sql`
-        UPDATE plugin_data_stale_pages
-           SET baked_through = ${bakedAt}::timestamptz,
-               last_run_id = ${runIds.at(-1) ?? null}
-         WHERE plugin_id = ${plugin.id}::uuid
-           AND page_id = ANY(${uuidList([...plugin.pages])})
-      `);
-    }
-    const message = [waitingNote, ...notes].filter((m): m is string => m !== null).join(" ");
-    console.info(
-      `[plugin-data] ${runIds.length > 0 ? "built" : "unchanged"} in ${timer.totalMs()} ms`,
-      JSON.stringify({ runIds, bakedPages, changedFiles, phases: timer.phases() }),
-    );
-    return ok(
-      await finish(runIds.length > 0 ? "built" : "unchanged", message.length > 0 ? message : null, {
-        runIds,
-        bakedPages,
-        changedFiles,
-      }),
-    );
-  },
+  const message = [plan.waitingNote, ...notes].filter((m): m is string => m !== null).join(" ");
+  const outcome = runIds.length > 0 ? "built" : "unchanged";
+  const recorded = await finishTick(outcome, message.length > 0 ? message : null, runIds, true);
+  if (recorded) return recorded;
+  console.info(
+    `[plugin-data] ${outcome} in ${timer.totalMs()} ms`,
+    JSON.stringify({ runIds, bakedPages, changedFiles, phases: timer.phases() }),
+  );
+  return ok(
+    result(outcome, message.length > 0 ? message : null, { runIds, bakedPages, changedFiles }),
+  );
+}
+
+export const buildPluginDataOp = defineStepwiseOperation({
+  name: "deploy.build_plugin_data",
+  // Why human-only: the plugin-data tick (plugin-data/worker.ts) runs it as
+  // the system actor; it carries no decision — it republishes the build a
+  // human published, with fresher data in plugin-owned regions only. No AI
+  // tool: there is nothing for the AI to choose.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: buildInput,
+  output: buildOutput,
+  stepwise: runPluginDataBuild,
 });

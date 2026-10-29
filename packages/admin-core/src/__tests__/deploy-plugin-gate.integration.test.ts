@@ -311,6 +311,36 @@ describe("#1008 — Publish live never ships without an active plugin", () => {
     expect(rendered.missingSlots).not.toContain(`plugin-not-running:${PLUGIN}`);
   });
 
+  it("the gate reconciles first: a plugin another instance re-activated a moment ago runs for the Stage (#1225)", async () => {
+    // Another instance disables the (now healthy) plugin, this host follows…
+    await sqlSystem(
+      (tx) => tx`UPDATE plugins SET status = 'disabled', updated_at = now() WHERE slug = ${PLUGIN}`,
+    );
+    await syncPluginHost(true);
+    // …then re-activates it; this host has not reconciled since.
+    await sqlSystem(
+      (tx) => tx`UPDATE plugins SET status = 'active', updated_at = now() WHERE slug = ${PLUGIN}`,
+    );
+    const errors: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+      realError(...args);
+    };
+    let staged: { pluginProblems: { slug: string }[] };
+    try {
+      staged = await ok<{ pluginProblems: { slug: string }[] }>("deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+    } finally {
+      console.error = realError;
+    }
+    // Reconciled before the start step's transaction, not refused inside it.
+    expect(errors.filter((e) => e.includes("reconcile failed"))).toEqual([]);
+    expect(staged.pluginProblems).toEqual([]);
+  });
+
   it("a plugin another instance activated a moment ago, that this host cannot load, blocks too", async () => {
     // Written straight to the row (another instance's activation, from here):
     // no reconcile has run yet, and this host has no code for the plugin.

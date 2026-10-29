@@ -16,7 +16,11 @@
  *     plugin recovered: it was rendered without it.
  */
 
-import { pluginNotRunningReason, pluginRunsHere, syncPluginHost } from "@caelo-cms/plugin-host";
+import {
+  pluginNotRunningReason,
+  pluginRunsHere,
+  reconcilePluginHostNow,
+} from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -32,17 +36,36 @@ export type DeployPluginProblem = z.infer<typeof deployPluginProblem>;
 const LIVE_WINDOW = "2 minutes";
 
 /**
+ * Bring this server's plugin host in line with the plugin rows before a
+ * build decides on them (forced, past the request throttle), so a change
+ * another instance made a moment ago is seen. Call it OUTSIDE any
+ * transaction, before the build's start step: the reconcile reads the rows
+ * and may load a plugin through connections of its own, which the pool
+ * guard refuses from inside a transaction (#1225 — it used to run inside
+ * the start step, was refused there, and the failure was swallowed).
+ *
+ * @returns null, or the AI-actionable refusal when it failed.
+ */
+export async function reconcilePluginsForBuild(): Promise<string | null> {
+  try {
+    await reconcilePluginHostNow();
+    return null;
+  } catch (e) {
+    return `${e instanceof Error ? e.message : String(e)}. Nothing was built or published, because the plugin check could not see what runs on this server. Try again; if it repeats, the server log names the cause.`;
+  }
+}
+
+/**
  * The active plugins that do not run: on this server (the one that would
  * build) and, from their runtime rows, on any other live server.
  *
  * Derived from the plugin rows, not only from this instance's memory: the
- * host is reconciled first (forced, past the request throttle), and every
- * active row must then be running here — so a change another instance made
- * a moment ago, or a host that never finished booting, cannot let a build
- * through.
+ * caller reconciled the host first ({@link reconcilePluginsForBuild}), and
+ * every active row must then be running here — so a change another
+ * instance made a moment ago, or a host that never finished booting, cannot
+ * let a build through.
  */
 export async function activePluginProblems(tx: TransactionRunner): Promise<DeployPluginProblem[]> {
-  await syncPluginHost(true);
   const active = (await tx.execute(sql`
     SELECT slug FROM plugins WHERE status = 'active' ORDER BY slug
   `)) as unknown as { slug: string }[];

@@ -18,7 +18,12 @@
  *                                            publish over a FAILED audit.
  */
 
-import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
+import {
+  defineOperation,
+  defineStepwiseOperation,
+  execute,
+  OperationAbortError,
+} from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -32,7 +37,6 @@ import {
 import { CURRENT_GATE_RULES, decideGate, type GateDecision } from "../../quality/gate.js";
 import { groupOpenProblems, topProblemGroups } from "../../quality/problem-groups.js";
 import { appendChatMessageOp } from "../chat/messages.js";
-import { promoteDeployOp } from "../deploy.js";
 import { actorHasPermission } from "./_permissions.js";
 import { categorySchema, uuidList } from "./_shared.js";
 import {
@@ -549,22 +553,28 @@ export const releaseChatNotificationOp = defineOperation({
   },
 });
 
-export const publishAnywayOp = defineOperation({
-  name: "quality_audits.publish_anyway",
-  // Why human-only: this IS the human decision the gate exists to obtain
-  // (#553: never the AI on its own). The AI reaches it only through the
-  // approval card of publish_despite_failed_audit, applied as the human.
+const publishAnywayInput = z
+  .object({
+    auditRunId: z.string().uuid(),
+    reason: z.string().trim().min(3).max(500),
+    fromTarget: z.string().min(1).default("staging"),
+    toTarget: z.string().min(1).default("production"),
+    /**
+     * The Publish live run's id, minted by an approval card that claims its
+     * proposal first (quality_audits.execute_proposal). Default: a fresh id.
+     */
+    runId: z.string().uuid().optional(),
+  })
+  .strict();
+
+export const checkPublishAnywayOp = defineOperation({
+  name: "quality_audits.check_publish_anyway",
+  // Why human-only: the first step of quality_audits.publish_anyway (a
+  // human's decision, #553); it writes nothing and no AI tool wraps it.
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: z
-    .object({
-      auditRunId: z.string().uuid(),
-      reason: z.string().trim().min(3).max(500),
-      fromTarget: z.string().min(1).default("staging"),
-      toTarget: z.string().min(1).default("production"),
-    })
-    .strict(),
-  output: z.object({ fromRunId: z.string(), toRunId: z.string(), buildId: z.string() }),
+  input: publishAnywayInput,
+  output: z.object({}),
   handler: async (ctx, input, tx) => {
     if (!(await actorHasPermission(tx, ctx, "deploy.trigger"))) {
       return err({
@@ -587,31 +597,51 @@ export const publishAnywayOp = defineOperation({
             : `publish anyway only applies to a FAILED quality check; the staged build's check is '${gate.state}'. ${gate.message}`,
       });
     }
-    await tx.execute(sql`
-      UPDATE quality_audit_runs
-         SET publish_override_by = ${ctx.actorId}::uuid,
-             publish_override_reason = ${input.reason},
-             publish_override_at = now()
-       WHERE id = ${input.auditRunId}::uuid
-    `);
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "quality_audits.publish_anyway",
-      input,
-      succeeded: true,
-      entityId: input.auditRunId,
-      resultSummary: `published over a failed quality check: ${input.reason}`,
-    });
-    const promoted = await promoteDeployOp.handler(
+    return ok({});
+  },
+});
+
+/**
+ * #553 — publish over a FAILED quality check (a human's decision).
+ * #1225 — step-wise: the decision is checked in one short step, then
+ * Publish live runs as its own op (no transaction across its rebuild and
+ * upload) carrying the decision. Publish live records the override and its
+ * audit event in the transaction that records its run as succeeded, so a
+ * publish that fails leaves neither behind and the decision can be made
+ * again (an approval card stays retryable).
+ */
+export const publishAnywayOp = defineStepwiseOperation({
+  name: "quality_audits.publish_anyway",
+  // Why human-only: this IS the human decision the gate exists to obtain
+  // (#553: never the AI on its own). The AI reaches it only through the
+  // approval card of publish_despite_failed_audit, applied as the human.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: publishAnywayInput,
+  output: z.object({ fromRunId: z.string(), toRunId: z.string(), buildId: z.string() }),
+  stepwise: async (ctx, input, steps) => {
+    const checked = await execute(
+      steps.registry,
+      steps.adapter,
       ctx,
-      { fromTarget: input.fromTarget, toTarget: input.toTarget },
-      tx,
+      "quality_audits.check_publish_anyway",
+      input,
     );
-    // Nothing went live: roll the override and its audit event back with
-    // it, so the trail never claims a publish that did not happen and the
-    // decision can be made again (an approval card stays retryable).
-    if (!promoted.ok) throw new OperationAbortError(promoted.error);
-    return promoted;
+    if (!checked.ok) return err(checked.error);
+    const promoted = await execute(
+      steps.registry,
+      steps.adapter,
+      ctx,
+      "deploy.promote",
+      {
+        fromTarget: input.fromTarget,
+        toTarget: input.toTarget,
+        ...(input.runId ? { runId: input.runId } : {}),
+        publishAnyway: { auditRunId: input.auditRunId, reason: input.reason },
+      },
+      steps.signal ? { signal: steps.signal } : {},
+    );
+    if (!promoted.ok) return err(promoted.error);
+    return ok(promoted.value as { fromRunId: string; toRunId: string; buildId: string });
   },
 });
