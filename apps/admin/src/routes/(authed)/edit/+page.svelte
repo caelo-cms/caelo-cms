@@ -27,6 +27,7 @@
   import { editorRefreshUrl, unpinChatParam } from "#lib/components/edit/chat-pin.js";
   import CrossChatBanner from "#lib/components/edit/CrossChatBanner.svelte";
   import DiffPanel from "#lib/components/edit/DiffPanel.svelte";
+  import PageSearch from "#lib/components/edit/PageSearch.svelte";
   import PageSeoInfo from "#lib/components/edit/PageSeoInfo.svelte";
   import PluginPreview from "#lib/components/edit/PluginPreview.svelte";
   import PluginToolbarSlots from "#lib/components/edit/PluginToolbarSlots.svelte";
@@ -47,7 +48,6 @@
     samePreviewDocument,
   } from "#lib/components/edit/iframe-protocol.js";
   import { Button } from "#lib/components/ui/button/index.js";
-  import { Combobox } from "#lib/components/ui/combobox/index.js";
   import {
     DropdownMenu,
     DropdownMenuContent,
@@ -551,17 +551,12 @@
           class="hidden max-w-[12rem] shrink-0 truncate font-mono text-xs text-foreground sm:inline"
           data-testid="edit-url"
         >{urlText}</code>
-        <div class="min-w-0 flex-1" data-testid="edit-page-picker">
-          <Combobox
-            items={data.pages.map((p) => ({
-              value: p.id,
-              label: `${p.currentPath}  ·  ${p.title}`,
-            }))}
-            bind:value={activePageId}
-            onValueChange={onPageChange}
-            selectedText={activePage?.title}
-            placeholder="Switch page…"
-            inputClass="h-7 border-0 bg-transparent px-1.5 text-muted-foreground shadow-none focus-visible:ring-0"
+        <div class="flex min-w-0 flex-1" data-testid="edit-page-picker">
+          <PageSearch
+            pages={data.pages}
+            recent={data.recentPages}
+            currentPageId={activePageId}
+            onPick={onPageChange}
           />
         </div>
         <!-- v0.9.9 — per-page status toggle. Drafts are LIVE-EDIT ONLY
@@ -672,6 +667,7 @@
           lastStaged={data.lastStaged ?? null}
           lastPublishedLive={data.lastPublishedLive ?? null}
           productionMatchesStaging={data.productionMatchesStaging ?? null}
+          lastStageFailure={data.lastStageFailure ?? null}
           live={data.live}
         />
       </div>

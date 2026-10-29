@@ -238,3 +238,52 @@ describe("pendingEntryKey", () => {
     expect(new Set(keys).size).toBe(pages.length);
   });
 });
+
+describe("#1207 — a failed Stage closes Publish live", () => {
+  const ready = { busy: false, hasStagedBuild: true, productionMatchesStaging: false };
+
+  it("closes an otherwise open Publish live, says why, and lets the Live menu override", () => {
+    const st = publishButtonState({ ...ready, stageFailure: "Merge refused: conflict" });
+    expect(st.disabled).toBe(true);
+    expect(st.visibleReason).toContain("The last Stage failed");
+    expect(st.tooltip).toContain("Merge refused: conflict");
+    expect(st.overridable).toBe(true);
+  });
+
+  it("offers no override when the staged build could not be published anyway", () => {
+    const gate = { open: false, state: "problems", message: "", openProblemCount: 2 };
+    expect(
+      publishButtonState({ ...ready, qualityGate: gate, stageFailure: "x" }).overridable,
+    ).toBe(false);
+    expect(
+      publishButtonState({ ...ready, productionMatchesStaging: true, stageFailure: "x" })
+        .overridable,
+    ).toBe(false);
+  });
+
+  it("keeps the nothing-staged reason when there is no build at all", () => {
+    const st = publishButtonState({ ...ready, hasStagedBuild: false, stageFailure: "x" });
+    expect(st.visibleReason).toContain("Nothing staged yet");
+    expect(st.overridable).toBe(false);
+  });
+
+  it("leaves Publish live alone without a failure", () => {
+    expect(publishButtonState({ ...ready, stageFailure: null })).toMatchObject({
+      disabled: false,
+      overridable: false,
+    });
+  });
+
+  it("labels the Staging button Stage failed, also with pending changes", () => {
+    expect(
+      stagingMenuState({
+        mode: "pending",
+        busy: false,
+        hasStagedBuild: true,
+        branchChangeCount: 3,
+        qualityGate: null,
+        stageFailure: "Build failed",
+      }),
+    ).toEqual({ label: "Stage failed", tone: "problem", tooltip: "Build failed" });
+  });
+});

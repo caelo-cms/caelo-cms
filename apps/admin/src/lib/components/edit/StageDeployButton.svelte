@@ -23,7 +23,7 @@
    *                            staging.
    */
   import { Check, ChevronDown, ExternalLink, LoaderCircle } from "lucide-svelte";
-  import { enhance } from "$app/forms";
+  import { enhance, type SubmitFunction } from "$app/forms";
   import StateDot from "#lib/components/StateDot.svelte";
   import { Button, buttonVariants } from "#lib/components/ui/button/index.js";
   import { Popover, PopoverContent, PopoverTrigger } from "#lib/components/ui/popover/index.js";
@@ -77,6 +77,7 @@
     lastStaged = null,
     lastPublishedLive = null,
     productionMatchesStaging = null,
+    lastStageFailure = null,
     live,
   }: {
     pendingChanges: PendingChangesView;
@@ -114,6 +115,8 @@
     productionMatchesStaging?: boolean | null;
     /** The latest succeeded production deploy, for the live-site menu. */
     lastPublishedLive?: { finishedAt: string } | null;
+    /** #1207 — the newest staging build, when it failed. */
+    lastStageFailure?: { error: string } | null;
     /** Where the shown page and the site are live (`#lib/server/live-links.ts`). */
     live: {
       error: string | null;
@@ -219,6 +222,12 @@
     }
   }
 
+  /**
+   * #1207 — why the newest Stage failed: refused in this view (kept until
+   * the next attempt), or a failed staging build the server reports.
+   */
+  const stageFailure = $derived(stageError ?? restageError ?? lastStageFailure?.error ?? null);
+
   /** The Staging button's label: where staging stands, at a glance. */
   const stagingView = $derived(
     stagingMenuState({
@@ -227,6 +236,7 @@
       hasStagedBuild: lastStaged !== null,
       branchChangeCount,
       qualityGate: gate,
+      stageFailure,
     }),
   );
   const STAGING_TONE: Record<StagingTone, string> = {
@@ -244,8 +254,25 @@
       hasStagedBuild: lastStaged !== null,
       productionMatchesStaging: productionMatchesStaging ?? null,
       qualityGate: gate,
+      stageFailure,
     }),
   );
+
+  /** Publish live's form submit, shared by the button and the Live menu's override. */
+  const publishEnhance: SubmitFunction = () => {
+    publishing = true;
+    publishError = null;
+    liveMenuOpen = false;
+    return async ({ result, update }) => {
+      try {
+        await update({ reset: false });
+      } finally {
+        publishing = false;
+      }
+      publishError = formResultError(result);
+      void quality.refresh();
+    };
+  };
 
   let userPagesChoice = $state(true);
   let userModulesChoice = $state(true);
@@ -282,19 +309,7 @@
     <form
       method="post"
       action="?/promoteToProduction"
-      use:enhance={() => {
-        publishing = true;
-        publishError = null;
-        return async ({ result, update }) => {
-          try {
-            await update({ reset: false });
-          } finally {
-            publishing = false;
-          }
-          publishError = formResultError(result);
-          void quality.refresh();
-        };
-      }}
+      use:enhance={publishEnhance}
       class="contents"
     >
       <input type="hidden" name="_csrf" value={csrfToken} />
@@ -353,6 +368,26 @@
             </p>
           {/if}
         </div>
+        {#if publishState.overridable && lastStaged}
+          <!-- #1207 — the staged build passed its own checks; publishing it
+               over a failed Stage is allowed, as a choice that says what goes live. -->
+          <form
+            method="post"
+            action="?/promoteToProduction"
+            use:enhance={publishEnhance}
+            class="space-y-2 border-t p-3"
+            data-testid="publish-older-build"
+          >
+            <input type="hidden" name="_csrf" value={csrfToken} />
+            <p class="text-xs text-muted-foreground">
+              Staging still holds the build from {formatRelativeTime(lastStaged.finishedAt)}, without
+              the changes of the failed Stage.
+            </p>
+            <Button type="submit" size="sm" variant="outline" class="w-full" disabled={publishing}>
+              Publish that build live anyway
+            </Button>
+          </form>
+        {/if}
         <div class="border-t p-1">
           {#if live.error}
             <p class="px-2 py-1.5 text-xs text-red-700 dark:text-red-300" role="alert">

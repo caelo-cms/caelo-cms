@@ -318,7 +318,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // and re-resolves activePage so the iframe lands on the new home on
   // fresh installs (URL has neither ?page= nor a queryPage match in
   // main-only pages).
-  const branchPagesR = await execute(registry, adapter, ctxWithBranch, "pages.list", {});
+  const [branchPagesR, recentR] = await Promise.all([
+    execute(registry, adapter, ctxWithBranch, "pages.list", {}),
+    // #1207 — what the page search offers before anything is typed.
+    execute(registry, adapter, ctxWithBranch, "pages.list_recently_edited", { limit: 8 }),
+  ]);
+  const recentPages: { pageIds: string[] } | { error: string } = recentR.ok
+    ? { pageIds: (recentR.value as { pages: { pageId: string }[] }).pages.map((p) => p.pageId) }
+    : { error: opErrorMessage(recentR.error, "Recently edited pages could not be loaded.") };
   if (branchPagesR.ok) {
     pages = (branchPagesR.value as { pages: PageRow[] }).pages;
     activePage =
@@ -502,6 +509,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   let lastPublishedLive: { runId: string; finishedAt: string; fromRunId: string | null } | null =
     null;
   let productionMatchesStaging: boolean | null = null;
+  /** #1207 — the newest staging build when it failed: Publish live then closes. */
+  let lastStageFailure: { runId: string; error: string } | null = null;
   try {
     // #1155 — site builds only: plugin-data builds run every tick and
     // would push the last Stage and Publish live out of the window.
@@ -517,9 +526,19 @@ export const load: PageServerLoad = async ({ locals, url }) => {
           status: string;
           finishedAt: string | null;
           buildId: string | null;
+          errorMessage: string | null;
           publishSummary?: { previewUrl?: string };
         }[];
       };
+      // Runs come newest first: a failed staging build newer than every
+      // succeeded one means staging lacks what that Stage was to carry.
+      const newestStaging = v.runs.find((row) => row.targetName === "staging");
+      if (newestStaging?.status === "failed") {
+        lastStageFailure = {
+          runId: newestStaging.id,
+          error: newestStaging.errorMessage ?? "The staging build failed without a message.",
+        };
+      }
       const r = v.runs.find(
         (row) => row.targetName === "staging" && row.status === "succeeded" && row.finishedAt,
       );
@@ -605,6 +624,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       currentPath: p.currentPath,
     })),
     activePageId,
+    /** #1207 — the pages changed last, newest first, for the page search. */
+    recentPages,
     /** #1156 — the active page's SEO for the editor's SEO info, or null without a page. */
     pageSeo,
     /** The plugin places in the toolbar for the shown page (streamed). */
@@ -643,6 +664,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     /** v0.10.12 — latest succeeded production deploy + sync indicator for the toolbar. */
     lastPublishedLive,
     productionMatchesStaging,
+    lastStageFailure,
   };
 };
 

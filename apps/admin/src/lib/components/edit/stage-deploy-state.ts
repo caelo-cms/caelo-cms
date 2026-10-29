@@ -33,10 +33,19 @@ export interface PublishButtonState {
   readonly visibleReason: string | null;
   /** Hover tooltip (title attribute) — always set. */
   readonly tooltip: string;
+  /**
+   * #1207 — the button is closed only because the last Stage failed, so
+   * the staged build is older than the changes it was meant to carry.
+   * That build itself passed its checks, so the Live menu still offers to
+   * publish it as an explicit choice.
+   */
+  readonly overridable: boolean;
 }
 
 /**
  * @param args.busy a Stage or Publish request is in flight.
+ * @param args.stageFailure why the newest Stage failed, or null when it
+ *   did not (a failed staging build, or a Stage refused in this view).
  * @param args.hasStagedBuild a succeeded staging deploy exists to copy.
  * @param args.productionMatchesStaging null = unknown (no production
  *   deploy yet, or nothing staged to compare against).
@@ -48,27 +57,53 @@ export function publishButtonState(args: {
   /** #553 — the quality gate of the staged build; null while unknown (the
    *  server enforces the gate regardless, so unknown never blocks here). */
   qualityGate?: QualityGateView | null;
+  stageFailure?: string | null;
+}): PublishButtonState {
+  const state = readyState(args);
+  if (!args.stageFailure || !args.hasStagedBuild) return state;
+  const reason = "The last Stage failed, so staging does not have the newest changes. Fix it and Stage again.";
+  return {
+    disabled: true,
+    visibleReason: reason,
+    tooltip: `${reason} (${args.stageFailure})`,
+    overridable: !state.disabled,
+  };
+}
+
+/** The Publish live state from the staged build alone, before a failed Stage closes it. */
+function readyState(args: {
+  busy: boolean;
+  hasStagedBuild: boolean;
+  productionMatchesStaging: boolean | null;
+  qualityGate?: QualityGateView | null;
 }): PublishButtonState {
   if (!args.hasStagedBuild) {
     const reason = "Nothing staged yet — run Stage first; Publish live copies the staged build.";
-    return { disabled: true, visibleReason: reason, tooltip: reason };
+    return { disabled: true, visibleReason: reason, tooltip: reason, overridable: false };
   }
   if (args.productionMatchesStaging === true) {
     return {
       disabled: true,
       visibleReason: null,
       tooltip: "Live already matches the current staging build — nothing to publish",
+      overridable: false,
     };
   }
   const gate = args.qualityGate;
   if (gate && !gate.open) {
     const reason = qualityBlockReason(gate);
-    return { disabled: true, visibleReason: reason, tooltip: gate.message || reason };
+    return {
+      disabled: true,
+      visibleReason: reason,
+      tooltip: gate.message || reason,
+      overridable: false,
+    };
   }
   return {
     disabled: args.busy,
     visibleReason: null,
     tooltip: "Publish the latest staging build live (atomic, no rebuild)",
+    overridable: false,
   };
 }
 
@@ -201,12 +236,17 @@ export function stagingMenuState(args: {
   hasStagedBuild: boolean;
   branchChangeCount: number;
   qualityGate: QualityGateView | null;
+  /** Why the newest Stage failed, or null (see {@link publishButtonState}). */
+  stageFailure?: string | null;
 }): StagingMenuState {
   if (args.busy) {
     return { label: "Staging…", tone: "busy", tooltip: "Building staging and checking it" };
   }
   if (args.mode === "published") {
     return { label: "Chat published", tone: "neutral", tooltip: "This chat's work is live" };
+  }
+  if (args.stageFailure) {
+    return { label: "Stage failed", tone: "problem", tooltip: args.stageFailure };
   }
   if (args.mode === "pending") {
     const n = args.branchChangeCount;
