@@ -51,9 +51,13 @@ export function failBatch(wrote: boolean, error: QueryError): { ok: false; error
   return { ok: false, error };
 }
 
-/** "path: message; path: message" — at most `max` issues, then a count. */
+/**
+ * "path: message; path: message" — at most `max` issues, then a count.
+ * Issue messages are sentences ending in "."; the trailing period is
+ * dropped so a caller that ends the sentence itself does not print "..".
+ */
 export function describeIssues(issues: readonly ListIssue[], max = 8): string {
-  const shown = issues.slice(0, max).map((i) => `${i.path}: ${i.message}`);
+  const shown = issues.slice(0, max).map((i) => `${i.path}: ${i.message.replace(/\.$/, "")}`);
   const more = issues.length > max ? `; and ${issues.length - max} more` : "";
   return `${shown.join("; ")}${more}`;
 }

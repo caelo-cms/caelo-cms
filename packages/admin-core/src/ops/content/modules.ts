@@ -36,7 +36,11 @@ import {
 } from "../../snapshots/index.js";
 import type { ModuleState } from "../../snapshots/state.js";
 import { buildPatchSet, jsonbParam } from "../../sql-helpers.js";
-import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
+import {
+  extractModuleStructure,
+  extractorRefusalMessage,
+  validateTemplatizedModule,
+} from "./extract-module-structure.js";
 import { claimedListSourceNames } from "./list-source-names.js";
 import { applyMediaUsageDelta } from "./media-usage.js";
 import { moduleJsSyntaxError } from "./module-js-syntax.js";
@@ -396,7 +400,7 @@ export const createModuleOp = defineOperation({
         return err({
           kind: "HandlerError",
           operation: "modules.create",
-          message: validation.message,
+          message: extractorRefusalMessage(validation.message),
         });
       }
     }
@@ -679,7 +683,7 @@ export const updateModuleOp = defineOperation({
         return err({
           kind: "HandlerError",
           operation: "modules.update",
-          message: validation.message,
+          message: extractorRefusalMessage(validation.message),
         });
       }
       extractedHtml = extracted.templatizedHtml;

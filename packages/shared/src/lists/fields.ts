@@ -53,11 +53,12 @@ export const LIST_RESERVED_NAMES: ReadonlySet<string> = new Set([
   "site_text",
   "recurse",
 ]);
-const RESERVED_PREFIXES = ["is_", "has_", "count_"] as const;
+/** Name prefixes reserved as a family (see {@link LIST_RESERVED_NAMES}). */
+export const LIST_RESERVED_PREFIXES = ["is_", "has_", "count_"] as const;
 
 /** True when `name` is taken by the engine (see {@link LIST_RESERVED_NAMES}). */
 export function isReservedListName(name: string): boolean {
-  return LIST_RESERVED_NAMES.has(name) || RESERVED_PREFIXES.some((p) => name.startsWith(p));
+  return LIST_RESERVED_NAMES.has(name) || LIST_RESERVED_PREFIXES.some((p) => name.startsWith(p));
 }
 
 export const listNameSchema = z

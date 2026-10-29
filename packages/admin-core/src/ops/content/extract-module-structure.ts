@@ -46,6 +46,7 @@
 import type { ModuleField } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
 import { extractRepeatedLists } from "./extract-module-lists.js";
+import { overlapsAny, templateSectionRanges } from "./template-section-ranges.js";
 
 export interface ExtractResult {
   readonly templatizedHtml: string;
@@ -67,7 +68,15 @@ export interface ExtractResult {
  * module still validated in some shapes, and the page rendered
  * `{{#consent_categories}}` as literal text to visitors.
  */
-const PLACEHOLDER_RE = /^\s*\{\{\s*[#/>]?\s*[a-z][a-z0-9_]*\s*\}\}\s*$/;
+const PLACEHOLDER_RE = /^\s*\{\{\s*[#^/>]?\s*[a-z][a-z0-9_.]*\s*\}\}\s*$/;
+
+/**
+ * Text that MIXES copy with a template tag (`Hello {{name}}`,
+ * `© {{page.year}} Acme`) is authored template too: lifting it whole into
+ * a new field would bury the tag in a default value, where it never
+ * renders. Such text is left as written.
+ */
+const CONTAINS_TAG_RE = /\{\{[^{}]*\}\}/;
 
 const EXTRACT_ATTRS = new Set(["href", "src", "alt", "aria-label", "title", "placeholder"]);
 
@@ -84,7 +93,7 @@ function isWhitespaceOnly(s: string): boolean {
 }
 
 function isAlreadyPlaceholder(s: string): boolean {
-  return PLACEHOLDER_RE.test(s);
+  return PLACEHOLDER_RE.test(s) || CONTAINS_TAG_RE.test(s);
 }
 
 function snakeCase(name: string): string {
@@ -127,6 +136,9 @@ export function extractModuleStructure(
   // (`{{label}}`, `{{link}}`), which the scalar pass below skips.
   const lists = extractRepeatedLists(sourceHtml, usedNames);
   const html = lists.html;
+  // Section bodies (`{{#breadcrumbs}}…{{/breadcrumbs}}`, `{{#if x}}…{{/if}}`)
+  // are authored template; nothing inside them becomes a field (#1236).
+  const sections = templateSectionRanges(html);
   const fields: ModuleField[] = [...lists.fields];
   const defaultValues: Record<string, unknown> = Object.fromEntries(
     lists.fields.map((f) => [f.name, "default" in f ? f.default : undefined]),
@@ -210,6 +222,7 @@ export function extractModuleStructure(
           const valueIndexInMatch = m[0].lastIndexOf(valueGroup);
           const start = tagStart + m.index + valueIndexInMatch;
           const end = start + valueGroup.length;
+          if (overlapsAny(sections, start, end)) continue;
 
           let inferred: { name: string; kind: ModuleField["kind"] };
           if (name === "a" && attrName === "href") {
@@ -253,6 +266,7 @@ export function extractModuleStructure(
         if (isAlreadyPlaceholder(text)) return;
         const start = parser.startIndex;
         const end = parser.endIndex + 1;
+        if (overlapsAny(sections, start, end)) return;
         const pendingP = pStack.length > 0 ? pStack[pStack.length - 1] : undefined;
         const pendingButton = buttonStack[buttonStack.length - 1];
         const pendingA = aStack[aStack.length - 1];
@@ -417,13 +431,30 @@ export function extractModuleStructure(
 }
 
 /**
+ * Handlebars-style helper tags (`{{#if x}}`, `{{#each xs}}`, `{{else}}`),
+ * which the template grammar does not have: Mustache would read
+ * `{{/if}}` as a section named `if` and the block would vanish.
+ */
+const HELPER_TAG_RE = /\{\{\s*(?:#\s*(?:if|unless|each|with)\s[^{}]*|else\s*)\}\}/;
+
+/**
+ * Turns a validator refusal on the extractor path into one the authoring
+ * AI can act on: the field it names was inferred from hardcoded text, so
+ * the fix is to declare the fields itself, not to rename anything.
+ */
+export function extractorRefusalMessage(message: string): string {
+  return `${message}. The html was passed without \`fields\`, so its hardcoded text was turned into inferred fields; pass explicit semantic \`fields\` that declare every {{placeholder}} the html uses (text inside a {{#section}}…{{/section}} is left as written).`;
+}
+
+/**
  * Validation pass — checks the (templatizedHtml, fields) pair for the
  * two hard-reject conditions per the issue: orphan field declared but
  * never referenced, and placeholder referencing an undeclared field.
  *
  * The extractor's own output never triggers either of these by
- * construction; the validator fires when the AI passes explicit
- * `fields` that don't line up with explicit `{{…}}` placeholders.
+ * construction (it leaves section bodies alone, #1236); the validator
+ * fires when the HTML already carries `{{…}}` placeholders that no field
+ * declares, or helper syntax the grammar lacks.
  */
 /**
  * @param knownListSources names a plugin claims as a list source (#447,
@@ -436,6 +467,13 @@ export function validateTemplatizedModule(
   fields: readonly ModuleField[],
   knownListSources?: ReadonlySet<string>,
 ): { ok: true } | { ok: false; message: string } {
+  const helper = HELPER_TAG_RE.exec(html);
+  if (helper) {
+    return {
+      ok: false,
+      message: `${helper[0]} is not template syntax: write {{#name}}…{{/name}} (renders when field "name" has a value, or once per list entry) or {{^name}}…{{/name}} (renders when it is empty)`,
+    };
+  }
   const declared = new Set(fields.map((f) => f.name));
   const referenced = new Set<string>();
   // List-loop scoping: placeholders INSIDE a `{{#listField}}…{{/listField}}`

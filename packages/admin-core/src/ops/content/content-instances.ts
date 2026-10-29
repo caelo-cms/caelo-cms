@@ -1735,13 +1735,13 @@ export const forkPlacementContentOp = defineOperation({
       `);
     }
 
-    // Emit a content_instance snapshot for the new row (so revert + audit
-    // see the fork) plus a pageLayout snapshot reflecting the rebound
+    // Emit a content_instance snapshot for every row the fork minted —
+    // the root copy and its nested copies (#1126), so revert + audit see
+    // the fork — plus a pageLayout snapshot reflecting the rebound
     // placement. On a chat branch live page_modules stays as it is, so the
     // rebinding exists only in this snapshot: the branch-overlaid layout
     // with this placement swapped to the new, unsynced instance (the same
     // shape placement.set_content emits).
-    const ciState = await loadContentInstanceState(tx, newCiId);
     const layoutState = ctx.chatBranchId
       ? {
           schemaVersion: 1 as const,
@@ -1766,9 +1766,7 @@ export const forkPlacementContentOp = defineOperation({
       chatTaskId: ctx.chatTaskId ?? null,
       chatBranchId: ctx.chatBranchId ?? null,
       entities: [
-        ...(ciState
-          ? [{ kind: "contentInstance" as const, entityId: newCiId, state: ciState }]
-          : []),
+        ...forked.snapshotEntities,
         { kind: "pageLayout", entityId: input.pageId, state: layoutState },
       ],
     });
