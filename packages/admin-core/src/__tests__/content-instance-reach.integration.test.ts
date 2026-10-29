@@ -312,6 +312,34 @@ describe("#627 — nested-only instances reach the pages their parents render on
     expect(impact.pageIds).toContain(pageId);
   });
 
+  it("chrome a chat adds on its branch gives the child site-wide reach there, not on main", async () => {
+    const child = await instance(cardId, "Branch chrome child", { title: "Footer item" });
+    const footer = await createModule("footer", "<footer>{{#items}}{{>.}}{{/items}}</footer>", [
+      { name: "items", kind: "module-list", label: "Items" },
+    ]);
+    await setFieldDefault(footer, "items", [ref(child)]);
+    const session = await op<{ chatSessionId: string; chatBranchId: string }>(
+      SYS,
+      "chat.create_session",
+      { title: `cireach-branch-chrome-${TS}` },
+    );
+    const chat: ExecutionContext = {
+      actorId: HUMAN,
+      actorKind: "ai",
+      requestId: "cireach-branch-chrome",
+      chatBranchId: session.chatBranchId,
+      chatTaskId: session.chatSessionId,
+    };
+    // The chat places the footer in the layout chrome: a branch snapshot,
+    // no live layout_modules row.
+    await op(chat, "layout_modules.set", { layoutId, blockName: "header", moduleIds: [footer] });
+
+    const inChat = await op<Got>(chat, "content_instances.get", { id: child });
+    expect(inChat.chromeLayouts.map((l) => l.layoutId)).toEqual([layoutId]);
+    const onMain = await op<Got>(SYS, "content_instances.get", { id: child });
+    expect(onMain.chromeLayouts).toEqual([]);
+  });
+
   it("chat.branch_edited_entities lists the content instances a chat edited", async () => {
     const child = await instance(cardId, "Chat child", { title: "Before" });
     const parent = await instance(listModuleId, "Chat parent", { items: [ref(child)] });

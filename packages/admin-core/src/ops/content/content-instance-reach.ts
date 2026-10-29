@@ -31,6 +31,7 @@ import { loadListEntities } from "../../lists/store.js";
 import { loadBranchedModuleStates } from "../../snapshots/index.js";
 import type { PageLayoutState } from "../../snapshots/state.js";
 import { findContentInstancesContaining } from "./content-instance-refs.js";
+import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 
 /** One placement bound to a content_instance, as the caller sees it. */
 export interface PlacementInView {
@@ -449,7 +450,11 @@ async function pagesPlacingModules(
   return out;
 }
 
-/** Layouts whose chrome places any of `moduleIds`, keyed by module id. */
+/**
+ * Layouts whose chrome places any of `moduleIds`, keyed by module id — as
+ * the branch sees the chrome (its pending `layout_modules.set` snapshots),
+ * the same view the preview renders.
+ */
 async function layoutsPlacingModules(
   tx: Tx,
   branchId: string | null,
@@ -462,7 +467,7 @@ async function layoutsPlacingModules(
     : sql`l.chat_branch_id IS NULL`;
   const rows = (await tx.execute(sql`
     SELECT DISTINCT lm.module_id::text AS module_id, l.id::text AS layout_id, l.slug
-      FROM layout_modules lm
+      FROM (${effectiveLayoutModulesSql(branchId)}) lm
       JOIN layouts l ON l.id = lm.layout_id
      WHERE l.deleted_at IS NULL AND ${visible}
        AND lm.module_id IN (${sql.join(
