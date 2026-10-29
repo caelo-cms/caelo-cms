@@ -24,6 +24,12 @@
  * {@link loadListRenderData}'s own reads), the plugin answers
  * ({@link resolveListPluginInputs}), and the pure assembly
  * ({@link listRenderDataOf}).
+ *
+ * The editor preview renders one page, so it asks `list-resolve` for that
+ * page only (#1223): the partition first ({@link resolveLinkPartition}),
+ * the assembly without overlays, then the page's variant with what the
+ * page can show ({@link resolvePageListOverlays}, `./overlay-scope.ts`),
+ * applied with `withListOverlays`.
  */
 
 import {
@@ -45,6 +51,7 @@ import {
   renderVariants,
 } from "@caelo-cms/static-generator";
 import type { SiteView } from "../site-view.js";
+import type { ListOverlayScope } from "./overlay-scope.js";
 import { loadPagesInView, type PageInView } from "./pages-view.js";
 import { type ListEntityView, loadListEntities } from "./store.js";
 
@@ -85,10 +92,7 @@ export async function resolveListPluginInputs(
   pageIds: readonly string[],
   scope: RenderScope,
 ): Promise<ListPluginInputs> {
-  const pageVariants =
-    pageIds.length > 0 && hasLinkResolveContributors()
-      ? await resolveLinkVariants(pageIds, scope)
-      : undefined;
+  const pageVariants = await resolveLinkPartition(pageIds, scope);
   const variants = renderVariants(pageVariants);
   const overlaySources =
     variants.length > 0 && hasListResolveContributors()
@@ -98,6 +102,38 @@ export async function resolveListPluginInputs(
     ...(pageVariants ? { pageVariants } : {}),
     ...(overlaySources ? { overlaySources } : {}),
   };
+}
+
+/**
+ * The `link-resolve` partition of `pageIds`; undefined when no plugin
+ * contributes (or no page is asked). Call it with no transaction held.
+ */
+export async function resolveLinkPartition(
+  pageIds: readonly string[],
+  scope: RenderScope,
+): Promise<ResolvedLinkVariants | undefined> {
+  return pageIds.length > 0 && hasLinkResolveContributors()
+    ? await resolveLinkVariants(pageIds, scope)
+    : undefined;
+}
+
+/**
+ * #1223 — the `list-resolve` overlays one editor preview page needs: its
+ * own variant only, scoped to what the page can show from lists
+ * (`pageListOverlayScope`). Undefined — and no plugin is asked — when the
+ * page has no variant in the partition, shows nothing a list overlay can
+ * change (`scope` null), or no plugin contributes. Call it with no
+ * transaction held.
+ */
+export async function resolvePageListOverlays(
+  variant: string | undefined,
+  pageScope: ListOverlayScope | null,
+  scope: RenderScope,
+): Promise<ResolvedListOverlays | undefined> {
+  if (variant === undefined || pageScope === null || !hasListResolveContributors()) {
+    return undefined;
+  }
+  return resolveListOverlays([variant], scope, pageScope);
 }
 
 /** The scope-dependent rows of a list render. */

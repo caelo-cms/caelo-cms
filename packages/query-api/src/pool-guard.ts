@@ -25,8 +25,17 @@
  * The fix for a flagged caller is always the same: pass the holder's `tx` to
  * the inner work (compose op handlers with `op.handler(ctx, input, tx)`), or
  * do the inner work outside the holder's transaction (a detached op,
- * `transaction: "none"`). {@link NESTED_CHECKOUT_ALLOWLIST} names the
- * holders still being fixed; each entry points at its issue.
+ * `transaction: "none"`).
+ *
+ * Two allowlists, two different things (#1220):
+ *
+ *  - {@link NESTED_CHECKOUT_ALLOWLIST} — holders that still take a second
+ *    checkout of their own pool. Each is a deadlock risk being removed; every
+ *    entry is a FIXME pointing at its issue, and the list only shrinks.
+ *  - {@link LONG_TRANSACTION_ALLOWLIST} — holders whose one transaction
+ *    legitimately outlasts the role timeouts of migration 0392 and runs
+ *    without them. Being on it allows no nested checkout. Each entry says
+ *    why its transaction is long; a temporary one also names its issue.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -46,18 +55,27 @@ export type PoolName = "admin" | "public";
 export const POOL_ACQUIRE_TIMEOUT_MS = 10_000;
 
 /**
- * What an allowlisted holder may still do while issue `issue` is open:
- * take further checkouts of the same pool from inside its transaction
- * (`nestedCheckouts`), and run without the role timeouts of migration 0392
- * (`noSessionTimeouts`) because its transaction stays open across a build or
- * an upload that takes longer than they allow.
+ * A holder that may still take further checkouts of the same pool from
+ * inside its transaction while issue `issue` is open.
  */
-export interface AllowlistEntry {
+export interface NestedCheckoutEntry {
   /** The op name, or the `holder` label a `withAdminTransaction` caller passes. */
   readonly holder: string;
   readonly issue: number;
-  readonly nestedCheckouts: boolean;
-  readonly noSessionTimeouts: boolean;
+}
+
+/**
+ * A holder whose transaction runs without the role timeouts of migration
+ * 0392 (statement, lock and idle-in-transaction), because it stays open
+ * across a build or an upload that takes longer than they allow.
+ */
+export interface LongTransactionEntry {
+  /** The op name, or the `holder` label a `withAdminTransaction` caller passes. */
+  readonly holder: string;
+  /** Why this transaction is long — what would break if it were cut short. */
+  readonly reason: string;
+  /** Set when the long transaction itself is being removed (a FIXME). */
+  readonly issue?: number;
 }
 
 /**
@@ -66,68 +84,82 @@ export interface AllowlistEntry {
  * be added without one (CLAUDE.md §4). A nested checkout from an entry's
  * chain is let through, every other one throws.
  */
-const ALLOWLIST: readonly AllowlistEntry[] = [
+const NESTED_CHECKOUTS: readonly NestedCheckoutEntry[] = [
   // FIXME(issue #1225): Publish live holds its op transaction across the
-  // live build + upload (nested `deploy.begin_run`), and waits for a Stage
-  // that is publishing for longer than any role timeout of migration 0392
-  // allows. The Stage (`deploy.trigger`) holds no transaction since #1211.
-  { holder: "deploy.promote", issue: 1225, nestedCheckouts: true, noSessionTimeouts: true },
+  // live build + upload (nested `deploy.begin_run`).
+  { holder: "deploy.promote", issue: 1225 },
   // FIXME(issue #1225): "Publish anyway" past a failed quality check runs
   // the Publish live handler inside these two ops' transactions.
-  {
-    holder: "quality_audits.publish_anyway",
-    issue: 1225,
-    nestedCheckouts: true,
-    noSessionTimeouts: true,
-  },
-  {
-    holder: "quality_audits.execute_proposal",
-    issue: 1225,
-    nestedCheckouts: true,
-    noSessionTimeouts: true,
-  },
+  { holder: "quality_audits.publish_anyway", issue: 1225 },
+  { holder: "quality_audits.execute_proposal", issue: 1225 },
   // FIXME(issue #1225): the Owner's Approve on the AI's Publish live card
   // runs the Publish live handler (and a rollback's publisher call) inside
   // this op's transaction.
-  {
-    holder: "deploy.execute_proposal",
-    issue: 1225,
-    nestedCheckouts: true,
-    noSessionTimeouts: true,
-  },
+  { holder: "deploy.execute_proposal", issue: 1225 },
   // FIXME(issue #1220): the plugin-data build (#1155) has the Stage's shape:
-  // a nested `deploy.begin_run` and the bake + upload inside its op tx,
-  // which also waits on the live-release lock behind a Publish live.
-  {
-    holder: "deploy.build_plugin_data",
-    issue: 1220,
-    nestedCheckouts: true,
-    noSessionTimeouts: true,
-  },
-  // FIXME(issue #1220): a plugin's onActivate runs while this transaction
-  // holds the per-plugin advisory lock (plugin-host activation-lock.ts);
-  // the plugin's storage writes open their own transactions.
-  {
-    holder: "plugins.activation_lock",
-    issue: 1220,
-    nestedCheckouts: true,
-    noSessionTimeouts: false,
-  },
-  // FIXME(issue #1220): the static generator reads the whole site in one
-  // transaction for as long as the build takes, and its plugin pass reads
-  // and writes the bake cache (static_bakes) in transactions of its own.
-  { holder: "static-generator.build", issue: 1220, nestedCheckouts: true, noSessionTimeouts: true },
+  // a nested `deploy.begin_run` and the bake + upload inside its op tx.
+  { holder: "deploy.build_plugin_data", issue: 1220 },
   // FIXME(issue #1220): a call site, not a holder (see
   // allowNestedCheckouts): render-origin plugin operations — URL
   // annotations while a page write composes paths, list sources, public
   // URLs — run inside the calling op's transaction, and the plugin's
   // storage reads and failure audit rows are ops of their own.
-  { holder: "plugins.render_hook", issue: 1220, nestedCheckouts: true, noSessionTimeouts: false },
+  { holder: "plugins.render_hook", issue: 1220 },
 ];
 
-/** {@link ALLOWLIST} by holder. */
-export const NESTED_CHECKOUT_ALLOWLIST: ReadonlyMap<string, AllowlistEntry> = new Map(
-  ALLOWLIST.map((entry) => [entry.holder, entry]),
+/**
+ * Transaction holders that run without the 0392 timeouts. Nothing may be
+ * added without a written reason; a temporary entry names its issue.
+ */
+const LONG_TRANSACTIONS: readonly LongTransactionEntry[] = [
+  {
+    holder: "deploy.promote",
+    reason:
+      "Publish live keeps its transaction across the live build and upload, and waits for a Stage that is publishing staging.",
+    issue: 1225,
+  },
+  {
+    holder: "quality_audits.publish_anyway",
+    reason: "runs the Publish live handler (build and upload) inside its transaction.",
+    issue: 1225,
+  },
+  {
+    holder: "quality_audits.execute_proposal",
+    reason: "runs the Publish live handler (build and upload) inside its transaction.",
+    issue: 1225,
+  },
+  {
+    holder: "deploy.execute_proposal",
+    reason: "runs the Publish live (or rollback) handler inside its transaction.",
+    issue: 1225,
+  },
+  {
+    holder: "deploy.build_plugin_data",
+    reason:
+      "keeps its transaction across the bake and upload, and waits on the live-release lock behind a Publish live.",
+    issue: 1220,
+  },
+  {
+    // Not temporary: a site build runs in one transaction from its first
+    // read to its last bake-cache write — minutes on a large site, idle
+    // while plugins render through the admin and files are written. It
+    // runs in the generator subprocess on a pool of its own and takes no
+    // second checkout of it (the bake cache rides on this transaction,
+    // static-generator plugin-pass.ts).
+    holder: "static-generator.build",
+    reason:
+      "a static site build runs in one transaction for as long as the build takes, idle while plugins render and files are written.",
+  },
+];
+
+/** {@link NESTED_CHECKOUTS} by holder. */
+export const NESTED_CHECKOUT_ALLOWLIST: ReadonlyMap<string, NestedCheckoutEntry> = new Map(
+  NESTED_CHECKOUTS.map((entry) => [entry.holder, entry]),
+);
+
+/** {@link LONG_TRANSACTIONS} by holder. */
+export const LONG_TRANSACTION_ALLOWLIST: ReadonlyMap<string, LongTransactionEntry> = new Map(
+  LONG_TRANSACTIONS.map((entry) => [entry.holder, entry]),
 );
 
 /** The marker a transaction leaves on its async call chain. */
@@ -199,7 +231,7 @@ const allowances = new AsyncLocalStorage<string>();
  * @throws Error when `label` is not on the allowlist.
  */
 export function allowNestedCheckouts<T>(label: string, fn: () => Promise<T>): Promise<T> {
-  if (NESTED_CHECKOUT_ALLOWLIST.get(label)?.nestedCheckouts !== true) {
+  if (!NESTED_CHECKOUT_ALLOWLIST.has(label)) {
     throw new Error(`allowNestedCheckouts: "${label}" is not on the nested-checkout allowlist`);
   }
   return allowances.run(label, fn);
@@ -235,7 +267,7 @@ export class PoolGuard {
     if (outer === undefined || !outer.active) return null;
     const allowedBy =
       outer.allowedBy ??
-      (NESTED_CHECKOUT_ALLOWLIST.get(outer.holder)?.nestedCheckouts ? outer.holder : null) ??
+      (NESTED_CHECKOUT_ALLOWLIST.has(outer.holder) ? outer.holder : null) ??
       allowances.getStore() ??
       null;
     if (allowedBy === null) throw new NestedPoolCheckoutError(pool, outer.holder, requester);
@@ -252,12 +284,9 @@ export class PoolGuard {
   }
 }
 
-/**
- * Whether `holder` runs without the role timeouts (see
- * {@link AllowlistEntry.noSessionTimeouts}).
- */
+/** Whether `holder` runs without the role timeouts ({@link LONG_TRANSACTION_ALLOWLIST}). */
 export function exemptFromSessionTimeouts(holder: string): boolean {
-  return NESTED_CHECKOUT_ALLOWLIST.get(holder)?.noSessionTimeouts === true;
+  return LONG_TRANSACTION_ALLOWLIST.has(holder);
 }
 
 /**

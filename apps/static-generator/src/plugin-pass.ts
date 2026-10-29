@@ -7,8 +7,8 @@
  * `staticRender(ctx, {pageId}) => string`, this pass:
  *   1. Computes a cache key (plugin.version + page content hash).
  *   2. Skips render when the existing `static_bakes` row matches.
- *   3. On miss / on bust: calls the plugin via `runPluginStaticRender`,
- *      writes the row.
+ *   3. On miss / on bust: calls the plugin via `runPluginStaticRender`
+ *      and writes the row.
  *   4. Splices the rendered HTML into a stable
  *      `<div data-caelo-plugin="<slug>" data-page-id="<id>"
  *           data-baked-at="<iso>">` placeholder, wrapped in the bake
@@ -18,19 +18,28 @@
  * Pages without the placeholder for a given plugin emit no HTML for it
  * (matches "you didn't put the widget on this page, so we don't render
  * it" UX).
+ *
+ * The bake cache is read and written over the build's own transaction
+ * (#1220): one bulk read of every row the pass can hit before it renders,
+ * one bulk upsert of every fresh bake after. It used to open two
+ * transactions per page and plugin from inside the build's transaction —
+ * tens of thousands of nested checkouts of the same pool on a large site,
+ * the deadlock class the pool guard refuses (query-api pool-guard.ts).
+ * The renders themselves are calls back into the admin's plugin host
+ * (cli.ts), which hold nothing of this transaction.
  */
 
 import type { BuildPluginServices } from "@caelo-cms/plugin-host";
-import type { DatabaseAdapter } from "@caelo-cms/query-api";
+import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { PageUrlStyle } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { bakeRegion, neutralizeBakeMarkers } from "./bake-regions.js";
 
-const SYSTEM_CTX = {
-  actorId: "00000000-0000-0000-0000-00000000ffff",
-  actorKind: "system" as const,
-  requestId: "static-bake",
-};
+/**
+ * Rows per bulk statement of the bake cache. Bounds one statement's
+ * parameter size (rendered HTML travels in it) on a site with many pages.
+ */
+const BAKE_BATCH = 500;
 
 export interface BakeTarget {
   readonly pageId: string;
@@ -51,9 +60,83 @@ export interface PluginPassResult {
 }
 
 interface BakeRow {
+  plugin_id: string;
+  page_id: string;
   cache_key: string;
   rendered_html: string;
   baked_at: string | Date;
+}
+
+/** A fresh bake the pass writes back once every page is rendered. */
+interface FreshBake {
+  readonly plugin_id: string;
+  readonly page_id: string;
+  readonly baked_at: string;
+  readonly cache_key: string;
+  readonly rendered_html: string;
+}
+
+const bakeKey = (pluginId: string, pageId: string): string => `${pluginId}:${pageId}`;
+
+function chunks<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/** A JSON value bound as one jsonb parameter (parsed by Postgres, not stored as a string). */
+function jsonb(value: unknown): ReturnType<typeof sql> {
+  return sql`(${JSON.stringify(value)}::text)::jsonb`;
+}
+
+/**
+ * Every cached bake of the placed (plugin, page) pairs, keyed by
+ * {@link bakeKey}, read in a few bulk statements.
+ */
+async function loadBakes(
+  tx: TransactionRunner,
+  placed: ReadonlyArray<{ readonly pluginId: string; readonly pageIds: readonly string[] }>,
+): Promise<Map<string, BakeRow>> {
+  const out = new Map<string, BakeRow>();
+  for (const { pluginId, pageIds } of placed) {
+    for (const ids of chunks(pageIds, BAKE_BATCH)) {
+      const rows = (await tx.execute(sql`
+        SELECT plugin_id::text AS plugin_id, page_id::text AS page_id,
+               cache_key, rendered_html, baked_at
+        FROM static_bakes
+        WHERE plugin_id = ${pluginId}::uuid
+          AND page_id IN (SELECT jsonb_array_elements_text(${jsonb(ids)})::uuid)
+      `)) as unknown as BakeRow[];
+      for (const row of rows) out.set(bakeKey(row.plugin_id, row.page_id), row);
+    }
+  }
+  return out;
+}
+
+/**
+ * Upsert every fresh bake in a few bulk statements. The rows stay locked
+ * until the build commits, so they are written in one fixed order: two
+ * builds at once (a Stage and an Owner's production build) then wait for
+ * each other instead of deadlocking.
+ */
+async function storeBakes(tx: TransactionRunner, bakes: readonly FreshBake[]): Promise<void> {
+  const ordered = [...bakes].sort((x, y) =>
+    x.plugin_id === y.plugin_id
+      ? x.page_id.localeCompare(y.page_id)
+      : x.plugin_id.localeCompare(y.plugin_id),
+  );
+  for (const batch of chunks(ordered, BAKE_BATCH)) {
+    await tx.execute(sql`
+      INSERT INTO static_bakes (plugin_id, page_id, baked_at, cache_key, rendered_html)
+      SELECT b.plugin_id, b.page_id, b.baked_at, b.cache_key, b.rendered_html
+      FROM jsonb_to_recordset(${jsonb(batch)})
+        AS b(plugin_id uuid, page_id uuid, baked_at timestamptz, cache_key text, rendered_html text)
+      ON CONFLICT (plugin_id, page_id) DO UPDATE SET
+        baked_at = EXCLUDED.baked_at,
+        cache_key = EXCLUDED.cache_key,
+        rendered_html = EXCLUDED.rendered_html
+    `);
+  }
 }
 
 function escapeForRegex(s: string): string {
@@ -73,7 +156,8 @@ function placeholderRegex(slug: string, pageId: string): RegExp {
 }
 
 export async function runPluginRenderPass(args: {
-  adapter: DatabaseAdapter;
+  /** The build's transaction: the bake cache is read and written over it. */
+  tx: TransactionRunner;
   /** #605 — the plugin host rendering the placeholders. */
   plugins: BuildPluginServices;
   pages: BakedPage[];
@@ -82,7 +166,7 @@ export async function runPluginRenderPass(args: {
   /** The target's page URL style, handed to every `staticRender`. */
   pageUrlStyle: PageUrlStyle;
 }): Promise<PluginPassResult> {
-  const { adapter, plugins, pages, bakeTargets, pageUrlStyle } = args;
+  const { tx, plugins, pages, bakeTargets, pageUrlStyle } = args;
 
   // #1155 — a bake marker in the page itself (module HTML anyone wrote)
   // must never open or close a region a plugin-data build rewrites.
@@ -118,6 +202,12 @@ export async function runPluginRenderPass(args: {
     if (m.size > 0) batchedSigs.set(plugin.slug, m);
   }
 
+  const cache = await loadBakes(
+    tx,
+    activePlugins.map((p) => ({ pluginId: p.id, pageIds: placedPages.get(p.slug) ?? [] })),
+  );
+  const fresh: FreshBake[] = [];
+
   let bakedCount = 0;
   let skippedCount = 0;
 
@@ -138,26 +228,14 @@ export async function runPluginRenderPass(args: {
       // different hrefs per style (#590).
       const cacheKey = `${plugin.version}:${pageUrlStyle}:${metaSig}`;
 
-      const cached = await adapter.withAdminTransaction(
-        SYSTEM_CTX,
-        async (tx) =>
-          (await tx.execute(sql`
-          SELECT cache_key, rendered_html, baked_at
-          FROM static_bakes
-          WHERE plugin_id = ${plugin.id}::uuid
-            AND page_id   = ${target.pageId}::uuid
-          LIMIT 1
-        `)) as unknown as BakeRow[],
-      );
+      const cached = cache.get(bakeKey(plugin.id, target.pageId));
 
       let html: string;
       let bakedAtIso: string;
-      if (cached[0] && cached[0].cache_key === cacheKey) {
-        html = cached[0].rendered_html;
+      if (cached && cached.cache_key === cacheKey) {
+        html = cached.rendered_html;
         bakedAtIso =
-          cached[0].baked_at instanceof Date
-            ? cached[0].baked_at.toISOString()
-            : String(cached[0].baked_at);
+          cached.baked_at instanceof Date ? cached.baked_at.toISOString() : String(cached.baked_at);
         skippedCount += 1;
       } else {
         // Taken BEFORE the render: it becomes the delta feed's `since`
@@ -173,15 +251,12 @@ export async function runPluginRenderPass(args: {
             `static-generator: plugin "${plugin.slug}" staticRender failed for page ${target.pageId}: ${e instanceof Error ? e.message : String(e)}`,
           );
         }
-        await adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
-          await tx.execute(sql`
-            INSERT INTO static_bakes (plugin_id, page_id, baked_at, cache_key, rendered_html)
-            VALUES (${plugin.id}::uuid, ${target.pageId}::uuid, ${bakedAtIso}, ${cacheKey}, ${html})
-            ON CONFLICT (plugin_id, page_id) DO UPDATE SET
-              baked_at = EXCLUDED.baked_at,
-              cache_key = EXCLUDED.cache_key,
-              rendered_html = EXCLUDED.rendered_html
-          `);
+        fresh.push({
+          plugin_id: plugin.id,
+          page_id: target.pageId,
+          baked_at: bakedAtIso,
+          cache_key: cacheKey,
+          rendered_html: html,
         });
         bakedCount += 1;
       }
@@ -200,5 +275,6 @@ export async function runPluginRenderPass(args: {
     }
   }
 
+  await storeBakes(tx, fresh);
   return { bakedCount, skippedCount };
 }

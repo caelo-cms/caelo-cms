@@ -11,14 +11,20 @@ lands on the chat's branch and goes live with its Stage).
 This file documents the list translation (epic #1107 part G), what a
 page translation covers, and the plugin's own checks of a staged build.
 The list model is in `src/list-translation.ts` (pure), the I/O in
-`src/list-translation-ops.ts`; core's side is `docs/lists.md` §9.
+`src/list-translation-ops.ts`, the `list-resolve` answer in
+`src/list-resolve.ts`; core's side is `docs/lists.md` §9.
 
 ## How lists are translated
 
 Core gives every stored value an address and lets this plugin answer
 the `list-resolve` composition point with an overlay per language:
 values by address, plus hidden entries. The site's lists keep their one
-structure; a language only replaces texts and hides entries.
+structure; a language only replaces texts and hides entries. A build
+asks for every language of the whole site; the editor preview asks for
+the previewed page's language with a `scope` (the shared lists, the
+page's content instances, the pages whose properties it shows), and the
+plugin then reads only those sources and their stored translations
+(#1223).
 
 What is translated (a *unit*):
 

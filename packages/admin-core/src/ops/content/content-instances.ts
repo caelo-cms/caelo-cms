@@ -495,6 +495,9 @@ export const listContentInstancesOp = withHumanisedLinks(
         /** #1214 — the instances of any of these modules (a plugin
          *  re-reading just the modules a write touched). */
         moduleIds: z.array(z.string().uuid()).min(1).max(1000).optional(),
+        /** #1223 — exactly these instances (a plugin reading what one
+         *  page renders instead of every instance of the site). */
+        ids: z.array(z.string().uuid()).min(1).max(1000).optional(),
         slug: z.string().min(1).max(64).optional(),
         search: z.string().min(1).max(128).optional(),
         pageId: z.string().uuid().optional(),
@@ -515,6 +518,12 @@ export const listContentInstancesOp = withHumanisedLinks(
       const moduleIdsFilter = input.moduleIds
         ? sql`AND ci.module_id IN (${sql.join(
             input.moduleIds.map((id) => sql`${id}::uuid`),
+            sql`, `,
+          )})`
+        : sql``;
+      const idsFilter = input.ids
+        ? sql`AND ci.id IN (${sql.join(
+            input.ids.map((id) => sql`${id}::uuid`),
             sql`, `,
           )})`
         : sql``;
@@ -566,6 +575,7 @@ export const listContentInstancesOp = withHumanisedLinks(
         ${deletedFilter}
         ${moduleFilter}
         ${moduleIdsFilter}
+        ${idsFilter}
         ${slugFilter}
         ${searchFilter}
         ${pageFilter}

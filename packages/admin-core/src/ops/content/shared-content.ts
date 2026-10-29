@@ -29,9 +29,9 @@
  * content-instance snapshots).
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   loadBranchedModuleStates,
@@ -117,7 +117,17 @@ export const listSharedContentOp = defineOperation({
   // job, and through get_layout / list_content_instances.
   actorScope: ["plugin", "system"],
   database: "cms_admin",
-  input: z.object({}).strict(),
+  input: z
+    .object({
+      /**
+       * #1223 — only the `listInstances` part, for these instances (a
+       * render asking about the instances its page shows instead of every
+       * instance of the site); `layoutPlacements` and `sharedInstances`
+       * then come back empty.
+       */
+      listInstanceIds: z.array(z.string().uuid()).min(1).max(1000).optional(),
+    })
+    .strict(),
   output: z.object({
     layoutPlacements: z.array(
       z.object({
@@ -156,12 +166,19 @@ export const listSharedContentOp = defineOperation({
       z.object({ contentInstanceId: z.string(), pageIds: z.array(z.string()) }),
     ),
   }),
-  handler: async (ctx, _input, tx) => {
+  handler: async (ctx, input, tx) => {
     const branchId = ctx.chatBranchId ?? null;
     const visible = (alias: string) =>
       branchId
         ? sql`(${sql.raw(alias)}.chat_branch_id IS NULL OR ${sql.raw(alias)}.chat_branch_id = ${branchId}::uuid)`
         : sql`${sql.raw(alias)}.chat_branch_id IS NULL`;
+    if (input.listInstanceIds) {
+      return ok({
+        layoutPlacements: [],
+        sharedInstances: [],
+        listInstances: await listInstancePages(tx, visible, input.listInstanceIds),
+      });
+    }
     const layoutRows = await withBranchedModules(
       tx,
       branchId,
@@ -257,33 +274,53 @@ export const listSharedContentOp = defineOperation({
         pageIds,
       };
     });
-    const listRows = (await tx.execute(sql`
-      SELECT pm.content_instance_id::text AS id,
-             array_agg(DISTINCT pm.page_id::text) AS page_ids
-      FROM page_modules pm
-      JOIN content_instances ci ON ci.id = pm.content_instance_id
-      JOIN modules m ON m.id = ci.module_id
-      JOIN pages p ON p.id = pm.page_id
-      WHERE ci.deleted_at IS NULL AND ${visible("ci")}
-        AND p.deleted_at IS NULL AND ${visible("p")}
-        AND EXISTS (
-          SELECT 1 FROM jsonb_array_elements(
-            CASE WHEN jsonb_typeof(m.fields) = 'array' THEN m.fields ELSE '[]'::jsonb END
-          ) f
-          WHERE f->>'kind' = 'list' AND COALESCE(f->>'bind', 'local') = 'local'
-        )
-      GROUP BY pm.content_instance_id
-      ORDER BY pm.content_instance_id
-    `)) as unknown as { id: string; page_ids: string[] | string }[];
-    const listInstances = listRows.map((r) => ({
-      contentInstanceId: r.id,
-      pageIds: Array.isArray(r.page_ids)
-        ? r.page_ids
-        : String(r.page_ids)
-            .replace(/^\{|\}$/g, "")
-            .split(",")
-            .filter(Boolean),
-    }));
+    const listInstances = await listInstancePages(tx, visible, null);
     return ok({ layoutPlacements, sharedInstances, listInstances });
   },
 });
+
+/**
+ * The `listInstances` part: every content instance holding a local list,
+ * with the pages it is placed on — of the whole site, or of `ids` only.
+ */
+async function listInstancePages(
+  tx: TransactionRunner,
+  visible: (alias: string) => SQL,
+  ids: readonly string[] | null,
+): Promise<{ contentInstanceId: string; pageIds: string[] }[]> {
+  const only =
+    ids === null
+      ? sql``
+      : sql`AND pm.content_instance_id IN (${sql.join(
+          ids.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})`;
+  const listRows = (await tx.execute(sql`
+    SELECT pm.content_instance_id::text AS id,
+           array_agg(DISTINCT pm.page_id::text) AS page_ids
+    FROM page_modules pm
+    JOIN content_instances ci ON ci.id = pm.content_instance_id
+    JOIN modules m ON m.id = ci.module_id
+    JOIN pages p ON p.id = pm.page_id
+    WHERE ci.deleted_at IS NULL AND ${visible("ci")}
+      AND p.deleted_at IS NULL AND ${visible("p")}
+      ${only}
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(
+          CASE WHEN jsonb_typeof(m.fields) = 'array' THEN m.fields ELSE '[]'::jsonb END
+        ) f
+        WHERE f->>'kind' = 'list' AND COALESCE(f->>'bind', 'local') = 'local'
+      )
+    GROUP BY pm.content_instance_id
+    ORDER BY pm.content_instance_id
+  `)) as unknown as { id: string; page_ids: string[] | string }[];
+  return listRows.map((r) => ({
+    contentInstanceId: r.id,
+    pageIds: Array.isArray(r.page_ids)
+      ? r.page_ids
+      : String(r.page_ids)
+          .replace(/^\{|\}$/g, "")
+          .split(",")
+          .filter(Boolean),
+  }));
+}

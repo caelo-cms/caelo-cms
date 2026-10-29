@@ -241,19 +241,34 @@ export function assembleListRenderDataFrom(
       "site_defaults.site_language is not set — set the site language (set_site_identity siteLanguage) before lists can render",
     );
   }
-  return {
-    listTypes,
-    lists,
-    pageTypes,
-    pages,
-    media,
-    siteLanguage: siteLanguage ?? "und",
-    homePageId: base.homePageId,
-    ...(src.pageVariants ? { pageVariants: src.pageVariants } : {}),
-    ...(src.overlaySources && src.overlaySources.plugins.length > 0
-      ? { overlays: mergeListOverlays(src.overlaySources), overlaySources: src.overlaySources }
-      : {}),
-  };
+  return withListOverlays(
+    {
+      listTypes,
+      lists,
+      pageTypes,
+      pages,
+      media,
+      siteLanguage: siteLanguage ?? "und",
+      homePageId: base.homePageId,
+      ...(src.pageVariants ? { pageVariants: src.pageVariants } : {}),
+    },
+    src.overlaySources,
+  );
+}
+
+/**
+ * `data` with the `list-resolve` answers applied: merged into
+ * `overlays`, the answers kept as `overlaySources`. Unchanged without an
+ * answer. The editor preview asks for its page's overlay only once it
+ * knows what the page renders (#1223), so it applies them after the
+ * assembly.
+ */
+export function withListOverlays(
+  data: LoadedListRenderData,
+  sources: ResolvedListOverlays | undefined,
+): LoadedListRenderData {
+  if (!sources || sources.plugins.length === 0) return data;
+  return { ...data, overlays: mergeListOverlays(sources), overlaySources: sources };
 }
 
 /**

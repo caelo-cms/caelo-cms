@@ -85,11 +85,17 @@ import {
   defaultFontsCacheDir,
   loadSiteFontUsage,
   resolveThemeFonts,
+  withListOverlays,
 } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { previewLinkIndexOf, siteViewDriftPaths } from "../../links/link-targets.js";
-import { listRenderDataOf, resolveListPluginInputs } from "../../lists/load.js";
+import {
+  listRenderDataOf,
+  resolveLinkPartition,
+  resolvePageListOverlays,
+} from "../../lists/load.js";
+import { pageListOverlayScope } from "../../lists/overlay-scope.js";
 import { loadSiteView, type SiteView } from "../../site-view.js";
 import { previewBreadcrumbs } from "./preview-breadcrumbs.js";
 import {
@@ -250,16 +256,17 @@ async function renderPreview(
   // 2. Plugins, with no connection held. Epic #1107 — the lists this
   // render resolves; epic #724 — internal references resolve against the
   // chat's view of the site in the publish target's URL style, so a link
-  // in the iframe navigates to the path `path` looks up.
-  const listPlugins = await resolveListPluginInputs(
+  // in the iframe navigates to the path `path` looks up. The list
+  // overlays come later (#1223), once the page's modules are known.
+  const pageVariants = await resolveLinkPartition(
     view.pages.map((p) => p.id),
     renderScope,
   );
-  const listData = listRenderDataOf(view, listPlugins);
+  const baseListData = listRenderDataOf(view, pageVariants ? { pageVariants } : {});
   const linkResolver = previewLinkIndexOf({
     view,
     driftPaths,
-    pageVariants: listPlugins.pageVariants,
+    pageVariants,
     env: "preview",
     pageUrlStyle,
   }).forPage(pageId);
@@ -283,7 +290,7 @@ async function renderPreview(
 
   // Shared list entries can embed modules, and a variant can render
   // another module: loaded now, in a second short read, only when needed.
-  const listSeeds = [{ listRefs: collectListModuleRefs(listData) }];
+  const listSeeds = [{ listRefs: collectListModuleRefs(baseListData) }];
   const needsListModules = hasUnloadedRefs(resources, listSeeds);
   const variantModules =
     needsListModules || variantAnswers.moduleIds.length > 0
@@ -295,6 +302,29 @@ async function renderPreview(
         })
       : new Map();
   const variants = finishContentVariants(variantAnswers, variantModules);
+
+  // #1223 — the list overlays of this page's variant, for what the page
+  // can show from lists; none asked when it shows nothing a list overlay
+  // changes. Before the variant values below get render-local ids.
+  const overlaySources = await resolvePageListOverlays(
+    pageVariants?.get(pageId)?.variant,
+    pageListOverlayScope({
+      pageId,
+      data: baseListData,
+      modules: [
+        ...resources.modules.values(),
+        ...layoutModRows.map((m) => ({ fields: parseFields(m.fields), html: m.html })),
+        ...[...variantModules.values()].map((m) => ({
+          fields: parseFields(m.fields),
+          html: m.html,
+        })),
+      ],
+      markup: [pageRow.template_html, pageRow.layout_html],
+      contentInstanceIds: instanceByIdResource.keys(),
+    }),
+    renderScope,
+  );
+  const listData = withListOverlays(baseListData, overlaySources);
 
   const listContext = createListRenderContext(listData, {
     dormantPluginSources: dormantListSourceNames(),

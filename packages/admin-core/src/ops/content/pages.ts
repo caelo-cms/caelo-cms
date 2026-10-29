@@ -27,7 +27,7 @@ import {
   slugSchema,
   trimSlashes,
 } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
@@ -270,12 +270,39 @@ export const listPagesOp = defineOperation({
     includeDeleted: z.boolean().default(false),
     /** 0263 — only the pages BELOW this page (its whole subtree). */
     underPageId: z.string().uuid().optional(),
+    /**
+     * #1223 — only these pages and the pages at these paths (as the
+     * caller's view shows them; a trailing slash, query or fragment does
+     * not count), so a plugin reading what one page renders does not
+     * read the site. Both given = either matches.
+     */
+    pageIds: z.array(z.string().uuid()).min(1).max(1000).optional(),
+    paths: z.array(z.string().min(1).max(2048)).min(1).max(1000).optional(),
   }),
   output: z.object({ pages: z.array(pageListRowSchema) }),
   handler: async (ctx, input, tx) => {
     // v0.9.0 — branch-aware: chats see main + their own branched creates.
     const filters = [];
     if (!input.includeDeleted) filters.push(sql`pages.deleted_at IS NULL`);
+    const only = pageSelectionOf(input);
+    if (only) {
+      // A chat's pending rename moves a page's path without touching the
+      // row, so on a branch only the ids narrow the read; the paths are
+      // matched on the composed view below.
+      const byId = only.ids.length > 0 ? sql`pages.id IN (${uuidSqlList(only.ids)})` : null;
+      const byPath =
+        only.paths.size > 0
+          ? sql`(CASE WHEN length(pages.current_path) > 1
+                      THEN rtrim(pages.current_path, '/') ELSE pages.current_path END)
+                IN (${sql.join(
+                  [...only.paths].map((p) => sql`${p}`),
+                  sql`, `,
+                )})`
+          : null;
+      if (!ctx.chatBranchId || only.paths.size === 0) {
+        filters.push(byId && byPath ? sql`(${byId} OR ${byPath})` : ((byId ?? byPath) as SQL));
+      }
+    }
     if (ctx.chatBranchId) {
       filters.push(
         sql`(pages.chat_branch_id IS NULL OR pages.chat_branch_id = ${ctx.chatBranchId}::uuid)`,
@@ -350,6 +377,7 @@ export const listPagesOp = defineOperation({
             ctx,
             merged.map((r) => rowToPage(r, bound.get(r.id))),
             input.underPageId,
+            only,
           ),
         });
       }
@@ -361,6 +389,7 @@ export const listPagesOp = defineOperation({
         ctx,
         rows.map((r) => rowToPage(r, bound.get(r.id))),
         input.underPageId,
+        only,
       ),
     });
   },
@@ -378,6 +407,7 @@ async function withTreeView(
   ctx: ExecutionContext,
   pages: z.infer<typeof pageRowSchema>[],
   underPageId: string | undefined,
+  only: PageSelection | null = null,
 ): Promise<z.infer<typeof pageListRowSchema>[]> {
   const tree = await loadPageTree(tx, ctx.chatBranchId ?? null);
   let visible = pages;
@@ -395,11 +425,42 @@ async function withTreeView(
       branchPaths = await composePaths(tx, tree, drifted, renderScopeOf(ctx));
     }
   }
-  return visible.map((p) => ({
+  const out = visible.map((p) => ({
     ...p,
     currentPath: branchPaths.get(p.id) ?? p.currentPath,
     depth: tree.byId.has(p.id) ? ancestorIdsOf(tree, p.id).length + 1 : 1,
   }));
+  if (only === null) return out;
+  const ids = new Set(only.ids);
+  return out.filter((p) => ids.has(p.id) || only.paths.has(normalisedPath(p.currentPath)));
+}
+
+/** The `pageIds` / `paths` filter of pages.list (#1223). */
+interface PageSelection {
+  readonly ids: readonly string[];
+  /** Normalised by {@link normalisedPath}. */
+  readonly paths: ReadonlySet<string>;
+}
+
+function pageSelectionOf(input: {
+  readonly pageIds?: readonly string[] | undefined;
+  readonly paths?: readonly string[] | undefined;
+}): PageSelection | null {
+  if (input.pageIds === undefined && input.paths === undefined) return null;
+  return { ids: input.pageIds ?? [], paths: new Set((input.paths ?? []).map(normalisedPath)) };
+}
+
+/** A path without query, fragment or trailing slash ("/" stays "/"). */
+function normalisedPath(path: string): string {
+  const bare = path.split(/[?#]/)[0] ?? path;
+  return bare.length > 1 ? bare.replace(/\/+$/, "") : bare;
+}
+
+function uuidSqlList(ids: readonly string[]): SQL {
+  return sql.join(
+    ids.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
 }
 
 export const getPageOp = defineOperation({

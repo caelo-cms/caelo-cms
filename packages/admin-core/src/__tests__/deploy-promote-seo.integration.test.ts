@@ -32,7 +32,7 @@ import { join } from "node:path";
 import {
   DatabaseAdapter,
   execute,
-  NESTED_CHECKOUT_ALLOWLIST,
+  LONG_TRANSACTION_ALLOWLIST,
   OperationRegistry,
 } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -319,7 +319,7 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
   it("runs without the session timeouts a build outlasts", () => {
     // The approve holds its transaction across the live build + upload,
     // like deploy.promote itself; the 0392 timeouts would kill it.
-    expect(NESTED_CHECKOUT_ALLOWLIST.get("deploy.execute_proposal")?.noSessionTimeouts).toBe(true);
+    expect(LONG_TRANSACTION_ALLOWLIST.has("deploy.execute_proposal")).toBe(true);
   });
 
   it("an approved promote publishes live and an approved rollback restores, through the guarded adapter", async () => {

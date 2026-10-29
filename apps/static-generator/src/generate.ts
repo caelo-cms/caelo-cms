@@ -427,9 +427,6 @@ export async function generateSite(args: {
    * published and must not be stopped halfway.
    */
   onServing?: () => void;
-  /** P13 — adapter handle so the plugin render pass can read +
-   *  upsert `static_bakes` outside the page-build transaction. */
-  adapter: import("@caelo-cms/query-api").DatabaseAdapter;
   /**
    * #605 — every plugin answer the build needs. In the admin process the
    * local plugin host (`localBuildPluginServices`); in the generator
@@ -1131,7 +1128,7 @@ export async function generateSite(args: {
   // the matching `<div data-caelo-plugin="<slug>" ...>` placeholder.
   // Cache hits via static_bakes.cache_key skip the render entirely.
   await runPluginRenderPass({
-    adapter: args.adapter,
+    tx,
     plugins: args.plugins,
     pages: composedPages,
     bakeTargets,

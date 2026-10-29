@@ -425,12 +425,20 @@ provides five neutral hooks:
    the resolver: unknown addresses are dropped and reported as plugin
    errors). Wiring (`plugin-host/src/list-resolve.ts`): a plugin names a
    `listResolveOperation` (grant `list_resolve`), called with
-   `{ variants }` — the distinct variants of the `link-resolve` partition
-   — as a read-only render invocation in the render's scope (a chat's
-   preview sees the chat's plugin storage). Both loaders
-   (`admin-core/src/lists/load.ts`, the generator's `list-data.ts`) ask
-   it right after `link-resolve` and pass the merged overlays as
-   `ListRenderData.overlays` (with `overlaySources`, who sent what). An
+   `{ variants, scope? }` (plugin-sdk `listResolveArgs`) as a read-only
+   render invocation in the render's scope (a chat's preview sees the
+   chat's plugin storage). A build (the generator's `list-data.ts`) asks
+   once, right after `link-resolve`, for every variant of the partition
+   and no `scope`: the whole site. The editor preview (#1223) asks for
+   the rendered page's variant only, with `scope = { listIds,
+   contentInstanceIds, pageIds }` — every shared list, the instances the
+   page renders, and the pages whose `props` it can show
+   (`admin-core/src/lists/overlay-scope.ts`) — so the answer costs what
+   the page costs; a page that renders no list field and reads no
+   `page.*` / `site_text.*` asks nothing. A scoped answer must hold the
+   whole-site answer's values for every address in the scope (it may
+   hold more). Both pass the merged overlays as `ListRenderData.overlays`
+   (with `overlaySources`, who sent what). An
    answer for a variant that was not asked about, two plugins setting one
    address, or more than 16 MiB throws. After the render the preview and
    the generator hand `overlayIssues` to `reportListOverlayIssues`: one
