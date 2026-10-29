@@ -34,8 +34,6 @@ import {
   indexKey,
   type ListSourceSnapshot,
   type ListTranslationFinding,
-  type LocaleOverlay,
-  overlayFor,
   type ReconcileRow,
   reconcile,
   type SourceInstance,
@@ -93,7 +91,7 @@ export interface VisibilityRow {
 }
 
 /** Page fields the list translation reads (`pages.list`). */
-interface PageInfo {
+export interface PageInfo {
   id: string;
   title: string;
   currentPath: string;
@@ -115,7 +113,8 @@ export interface ListTranslationState {
 }
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-const PAGE_REF_RE = new RegExp(`^caelo:page/(${UUID})`);
+/** An internal page reference as stored: `caelo:page/<id>[…]`. */
+export const PAGE_REF_RE = new RegExp(`^caelo:page/(${UUID})`);
 
 /** Every row of a private table, paged past one read's 1000 rows (#1213). */
 async function readAll<T>(deps: ChromeDeps, table: string): Promise<T[]> {
@@ -129,80 +128,52 @@ function iso(v: unknown): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-function normalisePath(href: string): string {
+/** A path without query, fragment or trailing slash ("/" stays "/"). */
+export function normalisePath(href: string): string {
   const bare = href.split(/[?#]/)[0] ?? href;
   return bare.length > 1 ? bare.replace(/\/+$/, "") : bare;
 }
 
+/** An instance row as `content_instances.list` returns it. */
+export interface InstanceInfo {
+  id: string;
+  moduleId: string;
+  moduleDisplayName: string;
+  slug: string | null;
+  displayName: string | null;
+  values: Record<string, unknown>;
+}
+
+/** A module row as `modules.list` returns it (the fields only matter). */
+export interface ModuleInfo {
+  id: string;
+  displayName: string;
+  fields: unknown[];
+}
+
 /**
- * Load the source state and the stored translations as the caller sees
- * them (a chat sees its branch's lists, instance values and its own
- * translation rows; pages-to-instance placement and page variants are
- * main-line data).
+ * Local lists: instances shared between the default language and other
+ * languages. An instance that renders only on pages of other languages
+ * (a variant page's own copy, made by create_variant / translate_variant)
+ * already holds that language's text — translating it again would hide
+ * its entries as "missing" on the very pages it was written for.
  */
-export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTranslationState> {
-  const { cms } = deps;
-  const def = [...deps.locales.values()].find((l) => l.is_default) ?? null;
-  const nonDefault = [...deps.locales.values()].filter((l) => !l.is_default).map((l) => l.code);
-
-  const [types, lists, modules, instances, shared, pages, pageTypes] = await Promise.all([
-    cms.call<{ listTypes: { slug: string; definition: ListTypeDef }[] }>("list_types.list", {}),
-    cms.call<{
-      lists: { id: string; slug: string; name: string; type: string; items?: ListItem[] }[];
-    }>("lists.list", { includeItems: true }),
-    cms.call<{ modules: { id: string; displayName: string; fields: unknown[] }[] }>(
-      "modules.list",
-      {},
-    ),
-    cms.call<{
-      instances: {
-        id: string;
-        moduleId: string;
-        moduleDisplayName: string;
-        slug: string | null;
-        displayName: string | null;
-        values: Record<string, unknown>;
-      }[];
-    }>("content_instances.list", {}),
-    cms.call<{ listInstances: { contentInstanceId: string; pageIds: string[] }[] }>(
-      "pages.list_shared_content",
-      {},
-    ),
-    cms.call<{ pages: PageInfo[] }>("pages.list", {}),
-    // page_types.list returns each definition's fields on the row itself.
-    cms.call<{ pageTypes: PageTypeDef[] }>("page_types.list", {}),
-  ]);
-  const listTypes = new Map(types.listTypes.map((t) => [t.slug, t.definition]));
-  const variants = (await readAll<PageVariantRow>(deps, "page_variants")).filter((v) =>
-    deps.locales.has(v.locale_code),
-  );
-  const variantByPage = new Map(variants.map((v) => [v.page_id, v]));
-  const localeOfPage = (pageId: string): string | null =>
-    variantByPage.get(pageId)?.locale_code ?? def?.code ?? null;
-  const pageById = new Map(pages.pages.map((p) => [p.id, p]));
-  const pageIdByPath = new Map(pages.pages.map((p) => [normalisePath(p.currentPath), p.id]));
-  const groupLocales = new Map<string, Set<string>>();
-  for (const v of variants) {
-    const set = groupLocales.get(v.group_id) ?? new Set<string>();
-    set.add(v.locale_code);
-    groupLocales.set(v.group_id, set);
-  }
-
-  // Local lists: instances shared between the default language and other
-  // languages. An instance that renders only on pages of other languages
-  // (a variant page's own copy, made by create_variant / translate_variant)
-  // already holds that language's text — translating it again would hide
-  // its entries as "missing" on the very pages it was written for.
-  const defaultCode = def?.code ?? null;
-  const pagesOfInstance = new Map(
-    shared.listInstances.map((r) => [r.contentInstanceId, r.pageIds]),
-  );
-  const moduleById = new Map(modules.modules.map((m) => [m.id, m]));
+export function localListSources(input: {
+  readonly instances: readonly InstanceInfo[];
+  readonly modules: readonly ModuleInfo[];
+  /** Instance id → the pages it is placed on (`pages.list_shared_content`). */
+  readonly pagesOfInstance: ReadonlyMap<string, readonly string[]>;
+  readonly localeOfPage: (pageId: string) => string | null;
+  readonly defaultCode: string | null;
+  readonly nonDefault: readonly string[];
+}): SourceInstance[] {
+  const { defaultCode, nonDefault } = input;
+  const moduleById = new Map(input.modules.map((m) => [m.id, m]));
   const sourceInstances: SourceInstance[] = [];
-  for (const ci of instances.instances) {
-    const pageIds = pagesOfInstance.get(ci.id);
+  for (const ci of input.instances) {
+    const pageIds = input.pagesOfInstance.get(ci.id);
     if (!pageIds) continue;
-    const pageLocales = pageIds.map(localeOfPage);
+    const pageLocales = pageIds.map(input.localeOfPage);
     if (defaultCode === null || !pageLocales.includes(defaultCode)) continue;
     const locales = new Set(
       pageLocales.filter((l): l is string => l !== null && nonDefault.includes(l)),
@@ -232,17 +203,28 @@ export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTr
       locales,
     });
   }
+  return sourceInstances;
+}
 
-  // Page properties of language versions: the source page's value is the text.
-  const typeBySlug = new Map(pageTypes.pageTypes.map((t) => [t.slug, t]));
-  const sourceByGroup = new Map(
-    variants.filter((v) => v.translation_status === "source").map((v) => [v.group_id, v.page_id]),
-  );
+/**
+ * Page properties of language versions: for every non-source variant in
+ * a non-default language whose page type declares properties, the source
+ * page's values are the text.
+ */
+export function pagePropSources(input: {
+  readonly variants: Iterable<PageVariantRow>;
+  /** Group id → its source page. */
+  readonly sourceByGroup: ReadonlyMap<string, string>;
+  readonly pageById: ReadonlyMap<string, PageInfo>;
+  readonly pageTypes: readonly PageTypeDef[];
+  readonly nonDefault: readonly string[];
+}): SourcePageProps[] {
+  const typeBySlug = new Map(input.pageTypes.map((t) => [t.slug, t]));
   const pageProps: SourcePageProps[] = [];
-  for (const v of variants) {
-    if (v.translation_status === "source" || !nonDefault.includes(v.locale_code)) continue;
-    const page = pageById.get(v.page_id);
-    const source = pageById.get(sourceByGroup.get(v.group_id) ?? "");
+  for (const v of input.variants) {
+    if (v.translation_status === "source" || !input.nonDefault.includes(v.locale_code)) continue;
+    const page = input.pageById.get(v.page_id);
+    const source = input.pageById.get(input.sourceByGroup.get(v.group_id) ?? "");
     const pageType = page ? typeBySlug.get(page.pageType) : undefined;
     if (!page || !source || !pageType || pageType.properties.length === 0) continue;
     pageProps.push({
@@ -253,6 +235,138 @@ export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTr
       source: source.properties,
     });
   }
+  return pageProps;
+}
+
+/**
+ * The stored translations of `rows` as a lookup by language and address
+ * (terms answer for their name and slug, page properties by their
+ * address), and the entries hidden per language.
+ */
+export function translationIndexOf(rows: {
+  readonly values: readonly ValueTranslationRow[];
+  readonly terms: readonly TermTranslationRow[];
+  readonly props: readonly PagePropTranslationRow[];
+  readonly visibility: readonly VisibilityRow[];
+}): { index: TranslationIndex; hiddenByOperator: Map<string, Set<string>> } {
+  const index = new Map<string, StoredTranslation>();
+  for (const r of rows.values)
+    index.set(indexKey(r.locale_code, r.address), { value: r.value, hash: r.source_hash });
+  for (const r of rows.terms) {
+    const base = `list/${r.list_id}/item/${r.item_id}`;
+    index.set(indexKey(r.locale_code, `${base}/name`), { value: r.name, hash: r.source_hash });
+    index.set(indexKey(r.locale_code, `${base}/slug`), { value: r.slug, hash: r.source_hash });
+  }
+  for (const r of rows.props) {
+    index.set(indexKey(r.locale_code, `page/${r.page_id}/props/${r.field}`), {
+      value: r.value,
+      hash: r.source_hash,
+    });
+  }
+  const hiddenByOperator = new Map<string, Set<string>>();
+  for (const r of rows.visibility) {
+    if (!r.hidden) continue;
+    const set = hiddenByOperator.get(r.locale_code) ?? new Set<string>();
+    set.add(r.address);
+    hiddenByOperator.set(r.locale_code, set);
+  }
+  return { index, hiddenByOperator };
+}
+
+/** The languages each variant group has a version in. */
+export function groupLocalesOf(variants: Iterable<PageVariantRow>): Map<string, Set<string>> {
+  const groupLocales = new Map<string, Set<string>>();
+  for (const v of variants) {
+    const set = groupLocales.get(v.group_id) ?? new Set<string>();
+    set.add(v.locale_code);
+    groupLocales.set(v.group_id, set);
+  }
+  return groupLocales;
+}
+
+/**
+ * Whether a link `href` (as read: a page reference or a path) resolves to
+ * a page that has a version in `locale`. A page in no group belongs to
+ * the default language.
+ */
+export function linkVersionCheck(input: {
+  readonly pageIdByPath: ReadonlyMap<string, string>;
+  readonly variantByPage: ReadonlyMap<string, PageVariantRow>;
+  readonly groupLocales: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly defaultCode: string | null;
+}): (href: string, locale: string) => boolean {
+  return (href, locale) => {
+    const ref = PAGE_REF_RE.exec(href);
+    const pageId = ref
+      ? ref[1]
+      : href.startsWith("/")
+        ? input.pageIdByPath.get(normalisePath(href))
+        : undefined;
+    // Not a page of this site (external URL, mail, anchor): nothing to map.
+    if (!pageId) return true;
+    const variant = input.variantByPage.get(pageId);
+    if ((variant?.locale_code ?? input.defaultCode) === locale) return true;
+    const group = variant?.group_id;
+    return group !== undefined && (input.groupLocales.get(group)?.has(locale) ?? false);
+  };
+}
+
+/**
+ * Load the source state and the stored translations as the caller sees
+ * them (a chat sees its branch's lists, instance values and its own
+ * translation rows; pages-to-instance placement and page variants are
+ * main-line data).
+ */
+export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTranslationState> {
+  const { cms } = deps;
+  const def = [...deps.locales.values()].find((l) => l.is_default) ?? null;
+  const nonDefault = [...deps.locales.values()].filter((l) => !l.is_default).map((l) => l.code);
+
+  const [types, lists, modules, instances, shared, pages, pageTypes] = await Promise.all([
+    cms.call<{ listTypes: { slug: string; definition: ListTypeDef }[] }>("list_types.list", {}),
+    cms.call<{
+      lists: { id: string; slug: string; name: string; type: string; items?: ListItem[] }[];
+    }>("lists.list", { includeItems: true }),
+    cms.call<{ modules: ModuleInfo[] }>("modules.list", {}),
+    cms.call<{ instances: InstanceInfo[] }>("content_instances.list", {}),
+    cms.call<{ listInstances: { contentInstanceId: string; pageIds: string[] }[] }>(
+      "pages.list_shared_content",
+      {},
+    ),
+    cms.call<{ pages: PageInfo[] }>("pages.list", {}),
+    // page_types.list returns each definition's fields on the row itself.
+    cms.call<{ pageTypes: PageTypeDef[] }>("page_types.list", {}),
+  ]);
+  const listTypes = new Map(types.listTypes.map((t) => [t.slug, t.definition]));
+  const variants = (await readAll<PageVariantRow>(deps, "page_variants")).filter((v) =>
+    deps.locales.has(v.locale_code),
+  );
+  const variantByPage = new Map(variants.map((v) => [v.page_id, v]));
+  const localeOfPage = (pageId: string): string | null =>
+    variantByPage.get(pageId)?.locale_code ?? def?.code ?? null;
+  const pageById = new Map(pages.pages.map((p) => [p.id, p]));
+  const pageIdByPath = new Map(pages.pages.map((p) => [normalisePath(p.currentPath), p.id]));
+
+  const defaultCode = def?.code ?? null;
+  const sourceInstances = localListSources({
+    instances: instances.instances,
+    modules: modules.modules,
+    pagesOfInstance: new Map(shared.listInstances.map((r) => [r.contentInstanceId, r.pageIds])),
+    localeOfPage,
+    defaultCode,
+    nonDefault,
+  });
+
+  // Page properties of language versions: the source page's value is the text.
+  const pageProps = pagePropSources({
+    variants,
+    sourceByGroup: new Map(
+      variants.filter((v) => v.translation_status === "source").map((v) => [v.group_id, v.page_id]),
+    ),
+    pageById,
+    pageTypes: pageTypes.pageTypes,
+    nonDefault,
+  });
 
   const snapshot = collectSources({
     listTypes,
@@ -269,71 +383,19 @@ export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTr
     readAll<PagePropTranslationRow>(deps, "page_prop_translations"),
     readAll<VisibilityRow>(deps, "list_item_visibility"),
   ]);
-  const index = new Map<string, StoredTranslation>();
-  for (const r of values)
-    index.set(indexKey(r.locale_code, r.address), { value: r.value, hash: r.source_hash });
-  for (const r of terms) {
-    const base = `list/${r.list_id}/item/${r.item_id}`;
-    index.set(indexKey(r.locale_code, `${base}/name`), { value: r.name, hash: r.source_hash });
-    index.set(indexKey(r.locale_code, `${base}/slug`), { value: r.slug, hash: r.source_hash });
-  }
-  for (const r of props) {
-    index.set(indexKey(r.locale_code, `page/${r.page_id}/props/${r.field}`), {
-      value: r.value,
-      hash: r.source_hash,
-    });
-  }
-  const hiddenByOperator = new Map<string, Set<string>>();
-  for (const r of visibility) {
-    if (!r.hidden) continue;
-    const set = hiddenByOperator.get(r.locale_code) ?? new Set<string>();
-    set.add(r.address);
-    hiddenByOperator.set(r.locale_code, set);
-  }
+  const { index, hiddenByOperator } = translationIndexOf({ values, terms, props, visibility });
 
-  const linkHasVersion = (href: string, locale: string): boolean => {
-    const ref = PAGE_REF_RE.exec(href);
-    const pageId = ref
-      ? ref[1]
-      : href.startsWith("/")
-        ? pageIdByPath.get(normalisePath(href))
-        : undefined;
-    // Not a page of this site (external URL, mail, anchor): nothing to map.
-    if (!pageId) return true;
-    if (localeOfPage(pageId) === locale) return true;
-    const group = variantByPage.get(pageId)?.group_id;
-    return group !== undefined && (groupLocales.get(group)?.has(locale) ?? false);
-  };
+  const linkHasVersion = linkVersionCheck({
+    pageIdByPath,
+    variantByPage,
+    groupLocales: groupLocalesOf(variants),
+    defaultCode,
+  });
 
   return { snapshot, index, hiddenByOperator, values, terms, props, visibility, linkHasVersion };
 }
 
 const EMPTY = new Set<string>();
-
-/** The `list-resolve` answer: one overlay per requested non-default language. */
-export async function resolveListOverlays(
-  deps: ChromeDeps,
-  rawArgs: unknown,
-): Promise<{ overlays: Record<string, LocaleOverlay> }> {
-  const { variants } = z
-    .object({ variants: z.array(z.string().min(1).max(64)) })
-    .strict()
-    .parse(rawArgs);
-  const overlays: Record<string, LocaleOverlay> = {};
-  const wanted = variants.filter((v) => deps.locales.get(v)?.is_default === false);
-  if (wanted.length === 0) return { overlays };
-  const state = await loadListTranslationState(deps);
-  for (const code of wanted) {
-    overlays[code] = overlayFor(
-      state.snapshot,
-      code,
-      state.index,
-      (h) => state.linkHasVersion(h, code),
-      state.hiddenByOperator.get(code) ?? EMPTY,
-    );
-  }
-  return { overlays };
-}
 
 /** The list texts a language still needs, grouped per list / local list / page. */
 export function listWorkTargets(

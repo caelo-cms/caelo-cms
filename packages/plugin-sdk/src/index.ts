@@ -427,6 +427,40 @@ export const listResolveVariantOverlay = z
 
 export type ListResolveVariantOverlay = z.infer<typeof listResolveVariantOverlay>;
 
+/**
+ * #1223 — what one page's render can show from lists, so a `list-resolve`
+ * answer can cost what the page costs instead of what the site costs:
+ * the shared lists, the content instances whose local lists render, and
+ * the pages whose `props` render. The editor preview sends it; a build
+ * renders every page and sends none (absent = the whole site). An answer
+ * to a scoped call needs to carry only these addresses; it may carry
+ * more (the render uses only what the page shows).
+ */
+export const listResolveScope = z
+  .object({
+    listIds: z.array(z.string().min(1).max(64)).max(50_000),
+    contentInstanceIds: z.array(z.string().uuid()).max(50_000),
+    pageIds: z.array(z.string().uuid()).max(50_000),
+  })
+  .strict();
+
+export type ListResolveScope = z.infer<typeof listResolveScope>;
+
+/**
+ * The arguments of a plugin's `listResolveOperation`: the output
+ * variants of the render and, from a host rendering one page, the
+ * optional {@link listResolveScope}. Parse them with this schema so a
+ * call with a scope and one without both pass.
+ */
+export const listResolveArgs = z
+  .object({
+    variants: z.array(z.string().min(1).max(64)),
+    scope: listResolveScope.optional(),
+  })
+  .strict();
+
+export type ListResolveArgs = z.infer<typeof listResolveArgs>;
+
 const deferralReasonKey = z
   .string()
   .min(1)
@@ -2285,12 +2319,15 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly listSourcesOperation?: string;
   /**
    * Epic #1107 — the `list-resolve` composition point (`docs/lists.md`
-   * §9.3): an operation in `operations` taking `{variants: string[]}`
-   * (the output variants of this render, from the `link-resolve`
-   * partition) and returning `{overlays: Record<variant,
-   * ListResolveVariantOverlay>}`. Called once per preview and once per
-   * build, as a read-only render invocation (so a chat's preview sees
-   * the chat's private storage). Requires the `list_resolve` capability.
+   * §9.3): an operation in `operations` taking {@link ListResolveArgs}
+   * (`variants`: the output variants of this render, from the
+   * `link-resolve` partition; `scope`, optional: what the one page an
+   * editor preview renders can show from lists, #1223) and returning
+   * `{overlays: Record<variant, ListResolveVariantOverlay>}`. Called once
+   * per build for every variant without a scope, and once per preview
+   * for the page's variant with its scope, as a read-only render
+   * invocation (so a chat's preview sees the chat's private storage).
+   * Requires the `list_resolve` capability.
    *
    * @example
    *   list_resolve: async () => ({

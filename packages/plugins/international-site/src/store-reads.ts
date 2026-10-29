@@ -47,21 +47,22 @@ export async function listAll(
 }
 
 /**
- * Every row of `table` whose `column` holds one of `values`: one `anyOf`
- * read per 1000 values (each paged in case one value matches many rows).
- * No read at all for an empty list.
+ * Every row of `table` whose `column` holds one of `values` (and that
+ * matches `filter`): one `anyOf` read per 1000 values (each paged in case
+ * one value matches many rows). No read at all for an empty list.
  */
 export async function listWhereAnyOf(
   q: PluginAdminQuery,
   table: string,
   column: string,
   values: readonly string[],
+  filter: PluginQueryFilter = {},
 ): Promise<unknown[]> {
   const unique = [...new Set(values)];
   const out: unknown[] = [];
   for (let i = 0; i < unique.length; i += STORE_READ_MAX) {
     const chunk = unique.slice(i, i + STORE_READ_MAX);
-    out.push(...(await listAll(q, table, { anyOf: { [column]: chunk } })));
+    out.push(...(await listAll(q, table, { ...filter, anyOf: { [column]: chunk } })));
   }
   return out;
 }
