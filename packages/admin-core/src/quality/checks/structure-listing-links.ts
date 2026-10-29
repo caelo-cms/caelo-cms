@@ -79,7 +79,7 @@ export function listingTemplates(
   for (const m of modules) {
     const fields = { all: new Set(m.fieldNames), list: new Set(m.listFields) };
     const forest = parseMarkup(stripMustache(m.html, { markSections: true }));
-    const first = flatten(forest, "scalar", fields)[0];
+    const first = flatten(forest, "scalar", fields, false)[0];
     if (first) out.set(m.id, { root: first.node, rootKind: first.kind, fields });
   }
   return out;
@@ -96,7 +96,7 @@ export function listingLinkGroups(
 ): ListingLinkGroup[] {
   let base: URL;
   try {
-    base = new URL(page.url);
+    base = documentBase(page.url, roots);
   } catch {
     return [];
   }
@@ -119,6 +119,33 @@ export function listingLinkGroups(
   };
   for (const r of roots) walk(r);
   return out;
+}
+
+/**
+ * The URL relative links resolve against: the first `<base href>`, resolved
+ * against the page URL (as a browser does), else the page URL. Throws when
+ * the page URL itself does not parse.
+ */
+function documentBase(pageUrl: string, roots: readonly MarkupNode[]): URL {
+  const page = new URL(pageUrl);
+  const find = (n: MarkupNode): string | null => {
+    if (n.tag === "base" && n.href !== null) return n.href;
+    for (const c of n.children) {
+      const found = find(c);
+      if (found !== null) return found;
+    }
+    return null;
+  };
+  for (const r of roots) {
+    const href = find(r);
+    if (href === null) continue;
+    try {
+      return new URL(href, page);
+    } catch {
+      return page;
+    }
+  }
+  return page;
 }
 
 /** The http(s) URL a link leads to without query or fragment, or null (fragment only, other scheme). */
@@ -161,8 +188,10 @@ function collectModule(
         visit(c, null, kind, entry);
         continue;
       }
-      const match = pickTemplateChild(c, flatten(t.children, kind, tpl.fields));
-      visit(c, match?.node ?? null, match?.kind ?? kind, entry);
+      const match = pickTemplateChild(c, flatten(t.children, kind, tpl.fields, false));
+      // A module-level list iterated inside an entry starts its own
+      // entries: they never borrow the enclosing entry's stamp.
+      visit(c, match?.node ?? null, match?.kind ?? kind, match?.reset ? "none" : entry);
     }
   };
   visit(root, tpl.root, tpl.rootKind, "none");
@@ -185,42 +214,70 @@ function entryOf(n: MarkupNode, above: Entry): Entry {
 interface Candidate {
   readonly node: MarkupNode;
   readonly kind: Kind;
+  /** Rendered inside a new iteration nested in an entry (see {@link sectionKind}). */
+  readonly reset: boolean;
 }
 
 /**
  * Template children with section markers dissolved: each element carries
  * the kind of the innermost section around it.
  */
-function flatten(nodes: readonly MarkupNode[], kind: Kind, fields: FieldNames): Candidate[] {
+function flatten(
+  nodes: readonly MarkupNode[],
+  kind: Kind,
+  fields: FieldNames,
+  reset: boolean,
+): Candidate[] {
   const out: Candidate[] = [];
   for (const n of nodes) {
     if (n.tag !== SECTION_MARKER_TAG) {
-      out.push({ node: n, kind });
+      out.push({ node: n, kind, reset });
       continue;
     }
-    out.push(...flatten(n.children, sectionKind(n, kind, fields), fields));
+    const inner = sectionKind(n, kind, fields);
+    out.push(...flatten(n.children, inner.kind, fields, reset || inner.boundary));
   }
   return out;
 }
 
 /**
  * The kind inside a section marker (`s:<name>` iterates or tests, `i:<name>`
- * is inverted). At module scope a section names a declared field — a
- * `list` / `module-list` field iterates stored or bound entries, any other
- * field is a condition — or something the engine resolves elsewhere: a
- * plugin source (`{{#language_links}}`), the page's own data (`page.…`).
- * Those are generated. Inside an entry, `items` is a source node's
- * generated entries (a reserved name, never an entry field).
+ * is inverted), and whether it starts a new iteration inside an entry.
+ *
+ * At module scope a section names a declared field — a `list` /
+ * `module-list` field iterates stored or bound entries, any other field is
+ * a condition — or a value the engine provides: `page.terms.…` iterates
+ * the page's terms (generated); other `page.…`, `site_text.…` and the
+ * `is_` / `has_` / `count_` flags are conditions. Any other name is a
+ * plugin source (`{{#language_links}}`): generated.
+ *
+ * Inside an entry, `items` is a source node's generated entries (a reserved
+ * name, never an entry field). A module-level list field iterated inside an
+ * entry is a new iteration (`boundary`): its entries carry their own stamp
+ * or none, never the enclosing entry's.
  */
-function sectionKind(marker: MarkupNode, outer: Kind, fields: FieldNames): Kind {
+function sectionKind(
+  marker: MarkupNode,
+  outer: Kind,
+  fields: FieldNames,
+): { readonly kind: Kind; readonly boundary: boolean } {
   const cls = marker.classes[0] ?? "";
-  if (!cls.startsWith("s:") || outer === "generated") return outer;
+  const same = { kind: outer, boundary: false };
+  if (!cls.startsWith("s:") || outer === "generated") return same;
   const name = cls.slice(2);
+  if (name.startsWith("page.terms")) return { kind: "generated", boundary: false };
+  if (isCondition(name)) return same;
   if (outer === "scalar") {
-    if (fields.list.has(name)) return "list";
-    return fields.all.has(name) ? "scalar" : "generated";
+    if (fields.list.has(name)) return { kind: "list", boundary: false };
+    return fields.all.has(name) ? same : { kind: "generated", boundary: false };
   }
-  return name === "items" ? "generated" : outer;
+  if (name === "items") return { kind: "generated", boundary: false };
+  return fields.list.has(name) ? { kind: "list", boundary: true } : same;
+}
+
+/** Engine-provided values that only test truthiness (never iterate entries). */
+function isCondition(name: string): boolean {
+  return name.startsWith("page.") || name.startsWith("site_text.") || /^(is|has|count)_/.test(name);
 }
 
 /**

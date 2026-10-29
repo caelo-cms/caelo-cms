@@ -382,4 +382,57 @@ describe("structure/manual-page-listing (#1256)", () => {
     );
     expect(f.map((x) => x.severity)).toEqual(["error"]);
   });
+  it("a page query iterated inside a local entry does not borrow the entry's stamp", () => {
+    const NAV: StructureModule = {
+      id: id(19),
+      slug: "nav-with-guides",
+      displayName: "Nav with guides",
+      html: '<nav class="nwg">{{#menu}}<div class="col"><a class="top" href="{{link}}">{{label}}</a>{{#guides}}<a class="g" href="{{link}}">{{title}}</a>{{/guides}}</div>{{/menu}}</nav>',
+      js: "",
+      listFields: ["menu", "guides"],
+      fieldNames: ["menu", "guides"],
+    };
+    const generated = GUIDES.slice(0, 7)
+      .map((p) => `<a class="g" href="${p.path}">${p.title}</a>`)
+      .join("");
+    const html = `<nav class="nwg" data-caelo-module-id="${NAV.id}"><div class="col" data-caelo-list-item="${local("menu", 0)}"><a class="top" href="/guides">Guides</a>${generated}</div></nav>`;
+    const f = structureFindings(build(html), [...MODULES, NAV], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f).toEqual([]);
+  });
+
+  it("a page-data condition around hand-kept cards keeps them counted", () => {
+    const WRAPPED: StructureModule = {
+      ...LINK_LIST,
+      id: id(20),
+      slug: "wrapped",
+      html: '<section class="ll">{{#page.summary}}<ul>{{#links}}<li><a href="{{link}}">{{label}}</a></li>{{/links}}</ul>{{/page.summary}}</section>',
+    };
+    const html = linkList(GUIDES.slice(0, 7), (n) => local("links", n)).replace(
+      LINK_LIST.id,
+      WRAPPED.id,
+    );
+    const f = structureFindings(build(html), [...MODULES, WRAPPED], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f.map((x) => x.severity)).toEqual(["error"]);
+  });
+
+  it("relative links resolve against the document's <base href>", () => {
+    const rel = `<section class="ll" data-caelo-module-id="${LINK_LIST.id}"><ul>${GUIDES.slice(0, 7)
+      .map(
+        (p, i) =>
+          `<li data-caelo-list-item="${local("links", i)}"><a href="${p.path.slice(1)}">x</a></li>`,
+      )
+      .join("")}</ul></section>`;
+    const pages = build(rel);
+    const hub = pages[0] as StagedPage;
+    pages[0] = {
+      ...hub,
+      url: "https://staging.example.test/guides/overview",
+      html: hub.html.replace("<body>", '<head><base href="/"></head><body>'),
+    };
+    expect(listing(pages).map((f) => f.severity)).toEqual(["error"]);
+  });
 });
