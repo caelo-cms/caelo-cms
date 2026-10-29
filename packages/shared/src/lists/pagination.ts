@@ -113,7 +113,11 @@ export function pagedPath(path: string, n: number): string {
  */
 export function pagedUrl(url: string, n: number, style: PageUrlStyle): string {
   assertFollowUp(n);
-  const base = (url.split(/[?#]/, 1)[0] ?? url).replace(/\/+$/, "");
+  // Trailing slashes cut by index, not a regex: no backtracking on input.
+  let base = url.split(/[?#]/, 1)[0] ?? url;
+  let end = base.length;
+  while (end > 0 && base.charCodeAt(end - 1) === 47) end -= 1;
+  base = base.slice(0, end);
   return `${base}/${PAGINATION_SEGMENT}/${n}${style === "directory" ? "/" : ""}`;
 }
 
