@@ -108,3 +108,73 @@ describe("0404 repairs double-encoded jsonb (#68)", () => {
     });
   });
 });
+
+describe("0404 applies 0353's list conversion to the rows it repairs (#68, #1107)", () => {
+  it("leaves no text-list / link-list field or value behind in a repaired module", async () => {
+    const MODULE = "00000000-0000-0000-0000-0000000068c1";
+    const INSTANCE = "00000000-0000-0000-0000-0000000068c2";
+    const fields = [
+      { name: "bullets", label: "Bullets", kind: "text-list", default: ["x"] },
+      { name: "nav", label: "Nav", kind: "link-list" },
+    ];
+    const values = { bullets: ["a", "b"], nav: [{ label: "Home", href: "/" }] };
+    const sql = new SQL(ADMIN_URL);
+    let seen: {
+      html: string;
+      fields: { name: string; kind: string; listType?: string; default?: unknown }[];
+      values: Record<string, { node: string; values: Record<string, unknown> }[]>;
+    } | null = null;
+    try {
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        // Double-encoded before 0353 ran, so 0353 could not read (or convert) them.
+        await tx`
+          INSERT INTO modules (id, slug, type, display_name, html, fields) VALUES
+            (${MODULE}::uuid, 'jsonb68-lists', 'jsonb68-lists', 'L',
+             '<ul>{{#bullets}}<li>{{.}}</li>{{/bullets}}</ul><nav>{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}</nav>',
+             ${JSON.stringify(fields)}::jsonb)
+        `;
+        await tx`
+          INSERT INTO content_instances (id, module_id, "values")
+          VALUES (${INSTANCE}::uuid, ${MODULE}::uuid, ${JSON.stringify(values)}::jsonb)
+        `;
+
+        await tx.unsafe(body());
+        await tx.unsafe(body());
+
+        const [m] = (await tx`SELECT html, fields FROM modules WHERE id = ${MODULE}::uuid`) as {
+          html: string;
+          fields: NonNullable<typeof seen>["fields"];
+        }[];
+        const [ci] = (await tx`
+          SELECT "values" FROM content_instances WHERE id = ${INSTANCE}::uuid
+        `) as { values: NonNullable<typeof seen>["values"] }[];
+        if (m && ci) seen = { html: m.html, fields: m.fields, values: ci.values };
+        throw new Rollback();
+      });
+    } catch (e) {
+      if (!(e instanceof Rollback)) throw e;
+    } finally {
+      await sql.end();
+    }
+    if (seen === null) throw new Error("fixture rows not read back");
+    const got = seen as NonNullable<typeof seen>;
+    expect(got.fields.map((f) => [f.name, f.kind, f.listType])).toEqual([
+      ["bullets", "list", "texts"],
+      ["nav", "list", "links"],
+    ]);
+    expect(got.fields[0]?.default).toEqual([
+      expect.objectContaining({ node: "text", values: { text: "x" } }),
+    ]);
+    expect(got.html).toBe(
+      '<ul>{{#bullets}}<li>{{text}}</li>{{/bullets}}</ul><nav>{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}</nav>',
+    );
+    expect(got.values.bullets?.map((e) => [e.node, e.values])).toEqual([
+      ["text", { text: "a" }],
+      ["text", { text: "b" }],
+    ]);
+    expect(got.values.nav?.map((e) => [e.node, e.values])).toEqual([
+      ["link", { label: "Home", link: { href: "/" } }],
+    ]);
+  });
+});
