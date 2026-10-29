@@ -640,4 +640,20 @@ describe("structure/manual-page-listing (#1256)", () => {
     );
     expect(f).toEqual([]);
   });
+  it("a source entry whose class only sometimes renders is still a source entry", () => {
+    const SUFFIX: StructureModule = {
+      ...QUERY_LIST,
+      id: id(31),
+      slug: "suffix",
+      html: '<section class="gi">{{#guides}}<a class="card{{#summary}}--summary{{/summary}}" href="{{link}}">{{title}}</a>{{/guides}}</section>',
+    };
+    const items = GUIDES.slice(0, 7)
+      .map((p) => `<a class="card--summary" href="${p.path}">${p.title}</a>`)
+      .join("");
+    const html = `<section class="gi" data-caelo-module-id="${SUFFIX.id}">${items}</section>`;
+    const f = structureFindings(build(html), [...MODULES, SUFFIX], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f).toEqual([]);
+  });
 });
