@@ -291,8 +291,7 @@ $$ LANGUAGE plpgsql;
 
 -- Every (module, field) that is a text-list / link-list anywhere: the
 -- live row or any of its snapshots. Collected before anything changes.
-DROP TABLE IF EXISTS _list_fields;
-CREATE TEMP TABLE _list_fields ON COMMIT DROP AS
+CREATE TEMP TABLE _list_fields_0421 ON COMMIT DROP AS
 SELECT DISTINCT module_id, f->>'name' AS name, f->>'kind' AS kind
 FROM (
   SELECT m.id AS module_id, m.fields AS fields FROM modules m
@@ -307,7 +306,7 @@ WHERE jsonb_typeof(src.fields) = 'array' AND f->>'kind' IN ('text-list', 'link-l
 -- became a text field) holds values of that kind: an old snapshot's
 -- legacy kind, readable only since the repair above, must not convert
 -- them. 0353 never saw such a snapshot, so this keeps what it left alone.
-DELETE FROM _list_fields lf
+DELETE FROM _list_fields_0421 lf
  USING modules m
  CROSS JOIN LATERAL jsonb_array_elements(
    CASE WHEN jsonb_typeof(m.fields) = 'array' THEN m.fields ELSE '[]'::jsonb END) AS f
@@ -319,7 +318,7 @@ DO $$
 DECLARE
   dup record;
 BEGIN
-  SELECT module_id, name INTO dup FROM _list_fields GROUP BY module_id, name HAVING count(*) > 1 LIMIT 1;
+  SELECT module_id, name INTO dup FROM _list_fields_0421 GROUP BY module_id, name HAVING count(*) > 1 LIMIT 1;
   IF FOUND THEN
     RAISE EXCEPTION 'migration 0421 (the list conversion of 0353): field "%" of module % is a text-list in one version and a link-list in another — make the versions agree (or revert the module), then migrate again', dup.name, dup.module_id;
   END IF;
@@ -332,7 +331,7 @@ BEGIN
   IF vals IS NULL OR jsonb_typeof(vals) <> 'object' THEN
     RETURN vals;
   END IF;
-  FOR lf IN SELECT name, kind FROM _list_fields WHERE _list_fields.module_id = lists_convert_values.module_id LOOP
+  FOR lf IN SELECT name, kind FROM _list_fields_0421 WHERE _list_fields_0421.module_id = lists_convert_values.module_id LOOP
     IF vals ? lf.name THEN
       vals := jsonb_set(vals, ARRAY[lf.name],
         COALESCE(pg_temp.lists_convert_value(lf.kind, vals->lf.name, at || ' field "' || lf.name || '"'), 'null'::jsonb));
@@ -344,14 +343,14 @@ $$ LANGUAGE plpgsql;
 
 UPDATE content_instances ci
    SET "values" = pg_temp.lists_convert_values(ci.module_id, ci."values", 'content_instance ' || ci.id)
- WHERE ci.module_id IN (SELECT module_id FROM _list_fields);
+ WHERE ci.module_id IN (SELECT module_id FROM _list_fields_0421);
 
 UPDATE content_instance_snapshots cis
    SET state = jsonb_set(cis.state, '{values}',
      pg_temp.lists_convert_values((cis.state->>'moduleId')::uuid, cis.state->'values',
        'content_instance_snapshot ' || cis.id))
  WHERE jsonb_typeof(cis.state->'values') = 'object'
-   AND cis.state->>'moduleId' IN (SELECT module_id::text FROM _list_fields);
+   AND cis.state->>'moduleId' IN (SELECT module_id::text FROM _list_fields_0421);
 
 UPDATE modules m
    SET html = pg_temp.lists_rewrite_html(m.html, m.fields),

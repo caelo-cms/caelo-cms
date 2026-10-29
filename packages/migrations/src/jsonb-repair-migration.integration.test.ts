@@ -28,6 +28,13 @@ const FILE = join(
   "0421_repair_jsonb_double_encoding.sql",
 );
 
+/**
+ * The runner applies each migration in its own transaction, whose commit
+ * drops the migration's ON COMMIT DROP temp table; replaying it a second
+ * time inside our one transaction needs that table gone first.
+ */
+const SECOND_RUN = "DROP TABLE _list_fields_0421;";
+
 /** Migration body without its BEGIN/COMMIT, so it replays inside our transaction. */
 function body(): string {
   return readFileSync(FILE, "utf8")
@@ -75,6 +82,7 @@ describe("0421 repairs double-encoded jsonb (#68)", () => {
         await tx.unsafe("SELECT set_config('caelo.actor_id', '', true)");
 
         await tx.unsafe(body());
+        await tx.unsafe(SECOND_RUN);
         await tx.unsafe(body());
 
         await tx.unsafe(`SELECT set_config('caelo.actor_id', '${USER}', true)`);
@@ -140,6 +148,7 @@ describe("0421 applies 0353's list conversion to the rows it repairs (#68, #1107
         `;
 
         await tx.unsafe(body());
+        await tx.unsafe(SECOND_RUN);
         await tx.unsafe(body());
 
         const [m] = (await tx`SELECT html, fields FROM modules WHERE id = ${MODULE}::uuid`) as {
