@@ -121,7 +121,9 @@ test("the page search opens on click with recent pages and switches to a found p
   // One click opens the list, the edited page under "Recently edited".
   await input.click();
   const recent = page.locator('[data-testid="page-search-group"][data-heading="Recently edited"]');
-  await expect(recent.getByTestId("page-search-item").filter({ hasText: EDITED_SLUG })).toBeVisible();
+  await expect(
+    recent.getByTestId("page-search-item").filter({ hasText: EDITED_SLUG }),
+  ).toBeVisible();
 
   // Typing finds a page by path; picking it opens it and clears the field.
   await input.fill(EDITED_SLUG);

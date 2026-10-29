@@ -61,7 +61,8 @@ export function publishButtonState(args: {
 }): PublishButtonState {
   const state = readyState(args);
   if (!args.stageFailure || !args.hasStagedBuild) return state;
-  const reason = "The last Stage failed, so staging does not have the newest changes. Fix it and Stage again.";
+  const reason =
+    "The last Stage failed, so staging does not have the newest changes. Fix it and Stage again.";
   return {
     disabled: true,
     visibleReason: reason,

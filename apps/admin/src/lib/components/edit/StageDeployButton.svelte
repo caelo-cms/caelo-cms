@@ -455,7 +455,10 @@
     action="?/stageAndDeployStaging"
     use:enhance={() => {
       staging = true;
+      // #1207 — one failure state for both Stage paths: a new attempt
+      // replaces whatever the last one said, whichever button it came from.
       restageError = null;
+      stageError = null;
       stagingMenuOpen = false;
       return async ({ result, update }) => {
         try {
@@ -615,7 +618,6 @@
               data-testid="stage-btn"
               onclick={() => {
                 stagingMenuOpen = false;
-                stageError = null;
                 dialogOpen = true;
               }}
             >
@@ -703,6 +705,7 @@
       use:enhance={() => {
         publishing = true;
         stageError = null;
+        restageError = null;
         return async ({ result, update }) => {
           try {
             await update({ reset: false });

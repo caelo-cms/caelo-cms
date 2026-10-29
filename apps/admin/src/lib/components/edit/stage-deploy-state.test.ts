@@ -252,9 +252,9 @@ describe("#1207 — a failed Stage closes Publish live", () => {
 
   it("offers no override when the staged build could not be published anyway", () => {
     const gate = { open: false, state: "problems", message: "", openProblemCount: 2 };
-    expect(
-      publishButtonState({ ...ready, qualityGate: gate, stageFailure: "x" }).overridable,
-    ).toBe(false);
+    expect(publishButtonState({ ...ready, qualityGate: gate, stageFailure: "x" }).overridable).toBe(
+      false,
+    );
     expect(
       publishButtonState({ ...ready, productionMatchesStaging: true, stageFailure: "x" })
         .overridable,
