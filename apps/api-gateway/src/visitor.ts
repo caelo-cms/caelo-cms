@@ -44,7 +44,11 @@ import {
   visitorConsentGranted,
 } from "@caelo-cms/plugin-host";
 import { verifySignedCookie } from "./middleware/signed-cookie.js";
-import { publishedCacheUsable } from "./published-changes.js";
+import {
+  mayCacheRead,
+  publishedCacheGeneration,
+  publishedCacheUsable,
+} from "./published-changes.js";
 
 export const VISITOR_COOKIE = "caelo_visitor_id";
 export const VISITOR_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
@@ -128,8 +132,9 @@ export async function loadVisitorConsentRule(): Promise<VisitorConsentRule | nul
   if (cachedRule && cachedRule.declarations === declarations && publishedCacheUsable()) {
     return cachedRule.rule;
   }
+  const startedAt = publishedCacheGeneration();
   const rule = await resolveVisitorConsentRule();
-  cachedRule = { rule, declarations };
+  if (mayCacheRead(startedAt)) cachedRule = { rule, declarations };
   return rule;
 }
 

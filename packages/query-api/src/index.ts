@@ -12,13 +12,16 @@ export {
 } from "./adapter.js";
 export { recordAudit, recordAuditFromCtx, SYSTEM_ACTOR_ID } from "./audit.js";
 export {
+  beginConsumerRebuild,
   type ChangeBatch,
   checkJournalMark,
   claimConsumer,
   collectJournalGarbage,
   commitChanges,
+  consumerRebuildPending,
   currentJournalCursor,
   dropConsumers,
+  finishConsumerRebuild,
   JOURNAL_RETENTION_MS,
   type JournalChange,
   type JournalCheck,
@@ -28,7 +31,6 @@ export {
   readChanges,
   registerConsumer,
   releaseConsumer,
-  resetConsumer,
   textArray,
   uuidArray,
 } from "./change-journal.js";

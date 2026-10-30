@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import {
+  checkJournalMark,
   collectJournalGarbage,
   commitChanges,
   DatabaseAdapter,
@@ -310,6 +311,28 @@ describe("#1267 — every committed change, on every path, is journaled", () => 
 });
 
 describe("#1267 — the journal never serialises writers and its cursor never skips", () => {
+  it("a cache check under a human's identity sees another transaction's committed change", async () => {
+    const HUMAN: ExecutionContext = {
+      actorId: ACTOR,
+      actorKind: "human",
+      requestId: "t1267-human",
+    };
+    const filter = { kinds: ["module"] };
+    const first = await adapter.withAdminTransaction(HUMAN, (tx) =>
+      checkJournalMark(tx, null, filter),
+    );
+    expect(first.fresh).toBe(false);
+    const unchanged = await adapter.withAdminTransaction(HUMAN, (tx) =>
+      checkJournalMark(tx, first.mark, filter),
+    );
+    expect(unchanged.fresh).toBe(true);
+    await createModule("seen-by-human");
+    const after = await adapter.withAdminTransaction(HUMAN, (tx) =>
+      checkJournalMark(tx, first.mark, filter),
+    );
+    expect(after.fresh).toBe(false);
+  });
+
   it("two transactions writing different rows never wait on each other", async () => {
     const a = await createModule("conc-a");
     const b = await createModule("conc-b");

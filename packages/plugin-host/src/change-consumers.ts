@@ -28,12 +28,15 @@
 
 import type { PluginChange, PluginChangeKind, PluginInvocation } from "@caelo-cms/plugin-sdk";
 import {
+  beginConsumerRebuild,
   type ChangeBatch,
   claimConsumer,
   commitChanges,
+  consumerRebuildPending,
   type DatabaseAdapter,
   defineOperation,
   execute,
+  finishConsumerRebuild,
   type JournalChange,
   type JournalFilter,
   type ListenHandle,
@@ -42,7 +45,6 @@ import {
   pollChanges,
   registerConsumer,
   releaseConsumer,
-  resetConsumer,
 } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, JOURNAL_CHANNEL, ok } from "@caelo-cms/shared";
 import { z } from "zod";
@@ -122,11 +124,11 @@ const claimOp = defineOperation({
       holder: z.string().min(1).max(200),
     })
     .strict(),
-  output: z.object({ created: z.boolean(), claimed: z.boolean() }),
+  output: z.object({ claimed: z.boolean(), rebuildPending: z.boolean() }),
   handler: async (_ctx, input, tx) => {
-    const created = await registerConsumer(tx, input.name, input.pluginId);
+    await registerConsumer(tx, input.name, input.pluginId);
     const claimed = await claimConsumer(tx, input.name, input.holder, CLAIM_MS);
-    return ok({ created, claimed });
+    return ok({ claimed, rebuildPending: await consumerRebuildPending(tx, input.name) });
   },
 });
 
@@ -198,22 +200,41 @@ const commitOp = defineOperation({
   },
 });
 
-/** `plugin_changes.reset` — cursor to "now", after the rebuild ran. */
-const resetOp = defineOperation({
-  name: "plugin_changes.reset",
-  // Why human-only: only the host's consumer runner resets a cursor.
+/**
+ * `plugin_changes.begin_rebuild` — the cursor moves to "now" BEFORE the
+ * rebuild reads its source, and the rebuild is marked pending, so a change
+ * committed during it is delivered after it and a failed one runs again.
+ */
+const beginRebuildOp = defineOperation({
+  name: "plugin_changes.begin_rebuild",
+  // Why human-only: only the host's consumer runner starts a rebuild.
   actorScope: SYSTEM_ONLY,
   readScope: "request",
   database: "cms_admin",
   input: z.object({ name: consumerName }).strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
-    await resetConsumer(tx, input.name);
+    await beginConsumerRebuild(tx, input.name);
     return ok({});
   },
 });
 
-const OPS = [claimOp, releaseOp, pollOp, commitOp, resetOp];
+/** `plugin_changes.finish_rebuild` — the rebuild succeeded. */
+const finishRebuildOp = defineOperation({
+  name: "plugin_changes.finish_rebuild",
+  // Why human-only: only the host's consumer runner finishes a rebuild.
+  actorScope: SYSTEM_ONLY,
+  readScope: "request",
+  database: "cms_admin",
+  input: z.object({ name: consumerName }).strict(),
+  output: z.object({}),
+  handler: async (_ctx, input, tx) => {
+    await finishConsumerRebuild(tx, input.name);
+    return ok({});
+  },
+});
+
+const OPS = [claimOp, releaseOp, pollOp, commitOp, beginRebuildOp, finishRebuildOp];
 
 /** Register the `plugin_changes.*` operations (idempotent). */
 export function registerPluginChangeOps(registry: OperationRegistry): void {
@@ -297,20 +318,24 @@ async function drainOne(
   let rebuilt = false;
   let released = false;
   const claim = { name, pluginId: plugin.pluginId, holder };
-  const { created, claimed } = await run<{ created: boolean; claimed: boolean }>(
+  const { claimed, rebuildPending } = await run<{ claimed: boolean; rebuildPending: boolean }>(
     adapter,
     registry,
     "plugin_changes.claim",
     claim,
   );
   if (!claimed) return { slug: plugin.slug, changes, rebuilt, skipped: true };
+  // The rebuild-from-source: derive everything, then read the journal from
+  // where the rebuild began (its cursor was taken before it ran).
+  const rebuild = async () => {
+    await dispatch(plugin, spec.rebuildOperationName, {}, batchInvocation(null));
+    await run(adapter, registry, "plugin_changes.finish_rebuild", { name });
+    rebuilt = true;
+  };
   try {
-    if (created) {
-      // First sight of this consumer (a first activation, or a
-      // re-activation after its cursor was dropped): derive from source.
-      await dispatch(plugin, spec.rebuildOperationName, {}, batchInvocation(null));
-      rebuilt = true;
-    }
+    // First sight of this consumer (a first activation, or a re-activation
+    // after its cursor was dropped), or a rebuild that did not finish.
+    if (rebuildPending) await rebuild();
     const filter = pluginChangeFilter(plugin);
     for (let i = 0; i < MAX_BATCHES; i++) {
       const batch = await run<ChangeBatch>(adapter, registry, "plugin_changes.poll", {
@@ -319,9 +344,8 @@ async function drainOne(
         limit: BATCH,
       });
       if (batch.needsRebuild) {
-        await dispatch(plugin, spec.rebuildOperationName, {}, batchInvocation(null));
-        await run(adapter, registry, "plugin_changes.reset", { name });
-        rebuilt = true;
+        await run(adapter, registry, "plugin_changes.begin_rebuild", { name });
+        await rebuild();
         continue;
       }
       const byBranch = new Map<string | null, PluginChange[]>();

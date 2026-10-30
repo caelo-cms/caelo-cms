@@ -138,7 +138,14 @@ describe("#1267 — the change journal's registered table set", () => {
       const mine = triggers.filter((t) => t.schema === schema && t.table === table);
       expect({ schema, table, events: mine.length }).toEqual({ schema, table, events: 4 });
       for (const t of mine) {
-        expect(t.args.slice(0, 4)).toEqual(["plugin_storage", "id", "row", "id"]);
+        expect(t.args.slice(0, 6)).toEqual([
+          "plugin_storage",
+          "id",
+          "row",
+          "id",
+          "",
+          "caelo_chat_branch_id",
+        ]);
         expect(t.args[7]).toMatch(/^[0-9a-f-]{36}$/);
       }
     }

@@ -104,12 +104,18 @@ CREATE POLICY entity_changes_merge ON entity_changes FOR UPDATE
     OR current_setting('caelo.actor_kind', true) = 'system'
   )
   WITH CHECK (xid = pg_current_xact_id());
--- Readers are the host (system) and plugin consumers, whose kinds the host
--- filters by grant before a row leaves it. The own-transaction clause lets
--- the merge above see its row.
+-- Every authenticated session reads it: a cached read proves itself
+-- current under the reader's own identity (the editor's preview checks its
+-- site view as the human or AI it renders for), and that proof must see
+-- every committed change that could alter what it read — on any branch,
+-- because a lock takeover moves a branch's pending state to a branch the
+-- reader may not see. A row is metadata only (ids, kinds, column names, op
+-- names), never content. Plugin consumers never query it: the host reads
+-- for them (as system) and filters their kinds by grant. The
+-- own-transaction clause lets the merge above see its row.
 CREATE POLICY entity_changes_read ON entity_changes FOR SELECT
   USING (
-    current_setting('caelo.actor_kind', true) IN ('system', 'plugin')
+    NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL
     OR xid = pg_current_xact_id()
   );
 CREATE POLICY entity_changes_gc ON entity_changes FOR DELETE
@@ -136,6 +142,12 @@ CREATE TABLE change_consumers (
   plugin_id        uuid NULL REFERENCES plugins(id) ON DELETE CASCADE,
   -- Every journal row visible in this snapshot was delivered.
   cursor_snapshot  pg_snapshot NOT NULL,
+  -- The consumer's derived state is not built yet (it was just created, or
+  -- its cursor fell behind the horizon). Set together with a cursor taken
+  -- BEFORE the rebuild runs, cleared only after the rebuild succeeded: a
+  -- change committed during the rebuild is delivered after it, and a failed
+  -- rebuild is retried on the next run.
+  rebuild_pending  boolean NOT NULL DEFAULT true,
   -- A read in progress: rows visible in page_target and not in the cursor,
   -- delivered up to (page_after_xid, page_after_table, page_after_row).
   page_target      pg_snapshot NULL,
@@ -448,7 +460,9 @@ BEGIN
     SELECT c.oid::regclass AS rel FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
      WHERE ns.nspname = schema_name AND c.relkind = 'r'
   LOOP
-    PERFORM caelo_journal_attach(t.rel, 'plugin_storage', 'id', 'row', 'id', '', '', '', plugin::text);
+    -- caelo_chat_branch_id is the host column a branch-created row carries.
+    PERFORM caelo_journal_attach(t.rel, 'plugin_storage', 'id', 'row', 'id', '',
+                                 'caelo_chat_branch_id', '', plugin::text);
     n := n + 1;
   END LOOP;
   RETURN n;
@@ -489,8 +503,8 @@ CREATE TRIGGER caelo_drop_inactive_plugin_consumers
 -- The plugins that consumed the retired outbox keep reading from here on:
 -- their journal cursor starts now, so no rebuild runs after the upgrade.
 -- (A cursor created later, on a first activation, runs the plugin's rebuild.)
-INSERT INTO change_consumers (name, plugin_id, cursor_snapshot)
-SELECT 'plugin:' || p.id::text, p.id, pg_current_snapshot()
+INSERT INTO change_consumers (name, plugin_id, cursor_snapshot, rebuild_pending)
+SELECT 'plugin:' || p.id::text, p.id, pg_current_snapshot(), false
   FROM plugins p
  WHERE p.status = 'active'
    AND (p.manifest_json -> 'requestedCapabilities') ? 'domain_events'

@@ -31,11 +31,26 @@ import type { DatabaseAdapter, ListenHandle } from "@caelo-cms/query-api";
 export const GATEWAY_PROJECTION_CHANNEL = "caelo_gateway_settings";
 
 let subscribed = false;
+let generation = 0;
 const invalidators = new Set<() => void>();
 
 /** Whether in-memory copies of published state may be served now. */
 export function publishedCacheUsable(): boolean {
   return subscribed;
+}
+
+/**
+ * Take before reading published state; pass to {@link mayCacheRead} after.
+ * A notification that arrives while the read is in flight moves it, so the
+ * read's (possibly older) result is not cached over the invalidation.
+ */
+export function publishedCacheGeneration(): number {
+  return generation;
+}
+
+/** Whether a read that started at `startedAt` may be stored in a cache. */
+export function mayCacheRead(startedAt: number): boolean {
+  return subscribed && startedAt === generation;
 }
 
 /** Register a cache's drop function; called on every notification and reconnect. */
@@ -44,6 +59,7 @@ export function onPublishedChange(invalidate: () => void): void {
 }
 
 function invalidateAll(): void {
+  generation += 1;
   for (const invalidate of invalidators) invalidate();
 }
 

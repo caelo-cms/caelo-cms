@@ -16,7 +16,9 @@ import { SQL } from "bun";
 import {
   GATEWAY_PROJECTION_CHANNEL,
   listenForPublishedChanges,
+  mayCacheRead,
   onPublishedChange,
+  publishedCacheGeneration,
   publishedCacheUsable,
 } from "./published-changes.js";
 
@@ -49,6 +51,10 @@ describe("#1267 — gateway caches follow publish notifications", () => {
     handle = await listenForPublishedChanges(adapter);
     expect(publishedCacheUsable()).toBe(true);
     const afterListen = dropped;
+    // A read that started before the notification must not be cached
+    // after it: its result may be the state the notification replaced.
+    const readStartedAt = publishedCacheGeneration();
+    expect(mayCacheRead(readStartedAt)).toBe(true);
 
     const pub = new SQL(PUBLIC_URL);
     try {
@@ -61,5 +67,7 @@ describe("#1267 — gateway caches follow publish notifications", () => {
     const deadline = Date.now() + 5000;
     while (dropped === afterListen && Date.now() < deadline) await Bun.sleep(20);
     expect(dropped).toBe(afterListen + 1);
+    expect(mayCacheRead(readStartedAt)).toBe(false);
+    expect(mayCacheRead(publishedCacheGeneration())).toBe(true);
   });
 });

@@ -254,8 +254,9 @@ export interface ChangeBatch {
   /** More rows of the same read are waiting: poll again after committing. */
   readonly more: boolean;
   /**
-   * The cursor is below the GC horizon: rows may be lost. Run the
-   * consumer's rebuild-from-source, then {@link resetConsumer}.
+   * The cursor is below the GC horizon: rows may be lost. Run
+   * {@link beginConsumerRebuild}, the consumer's rebuild-from-source, then
+   * {@link finishConsumerRebuild}.
    */
   readonly needsRebuild: boolean;
 }
@@ -278,10 +279,11 @@ interface Token {
 }
 
 /**
- * Create the consumer if it does not exist, with its cursor at "now": a
- * consumer derives its initial state with its rebuild, and changes from
- * this moment on are delivered (register BEFORE the rebuild reads, so a
- * change during the rebuild is delivered once more rather than missed).
+ * Create the consumer if it does not exist, with its cursor at "now" and
+ * its rebuild pending: a consumer derives its initial state with its
+ * rebuild, and changes from this moment on are delivered (registered
+ * BEFORE the rebuild reads, so a change during the rebuild is delivered
+ * once more rather than missed). Finish with {@link finishConsumerRebuild}.
  *
  * @returns whether the consumer was created by this call
  */
@@ -299,16 +301,45 @@ export async function registerConsumer(
   return rows.length > 0;
 }
 
-/** Move a consumer's cursor to "now" (after its rebuild ran). */
-export async function resetConsumer(tx: TransactionRunner, name: string): Promise<void> {
+/**
+ * Start a rebuild: the cursor moves to "now" BEFORE the rebuild reads its
+ * source, and the consumer is marked `rebuild_pending`. A change committed
+ * while the rebuild runs is thus delivered after it (at least once), and a
+ * rebuild that fails or is interrupted stays pending and runs again.
+ */
+export async function beginConsumerRebuild(tx: TransactionRunner, name: string): Promise<void> {
   const rows = (await tx.execute(sql`
     UPDATE change_consumers
        SET cursor_snapshot = pg_current_snapshot(), page_target = NULL, page_after_xid = NULL,
-           page_after_table = NULL, page_after_row = NULL, updated_at = now()
+           page_after_table = NULL, page_after_row = NULL, rebuild_pending = true,
+           updated_at = now()
      WHERE name = ${name}
     RETURNING 1
   `)) as unknown as unknown[];
   if (rows.length === 0) throw unknownConsumer(name);
+}
+
+/** The rebuild succeeded: the consumer reads the journal again. The cursor stays where the rebuild began. */
+export async function finishConsumerRebuild(tx: TransactionRunner, name: string): Promise<void> {
+  const rows = (await tx.execute(sql`
+    UPDATE change_consumers SET rebuild_pending = false, updated_at = now()
+     WHERE name = ${name}
+    RETURNING 1
+  `)) as unknown as unknown[];
+  if (rows.length === 0) throw unknownConsumer(name);
+}
+
+/** Whether the consumer's derived state still has to be rebuilt ({@link beginConsumerRebuild}). */
+export async function consumerRebuildPending(
+  tx: TransactionRunner,
+  name: string,
+): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT rebuild_pending FROM change_consumers WHERE name = ${name}
+  `)) as unknown as { rebuild_pending: boolean }[];
+  const row = rows[0];
+  if (!row) throw unknownConsumer(name);
+  return row.rebuild_pending;
 }
 
 /** Remove consumers by name (a deactivated plugin's). */

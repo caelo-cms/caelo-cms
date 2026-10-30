@@ -23,12 +23,19 @@ import {
   type PluginChange,
   type PluginChangesArgs,
 } from "@caelo-cms/plugin-sdk";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  beginConsumerRebuild,
+  DatabaseAdapter,
+  execute,
+  OperationRegistry,
+} from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import {
   bootstrap,
+  changeConsumerName,
   drainChangeConsumers,
+  loadedPlugins,
   type PluginHostInfra,
   resetPluginHost,
   runPluginOperation,
@@ -59,6 +66,9 @@ interface Received {
 const received: Received[] = [];
 let rebuilds = 0;
 let failNext = false;
+/** Runs inside the rebuild while it reads its source (a concurrent write). */
+let duringRebuild: (() => Promise<void>) | null = null;
+let failRebuild = false;
 
 type AdminCtx = {
   adminQuery?: PluginAdminQuery;
@@ -95,6 +105,11 @@ const consumer = definePlugin({
     },
     rebuild: async () => {
       rebuilds += 1;
+      if (failRebuild) {
+        failRebuild = false;
+        throw new Error("the rebuild failed this once");
+      }
+      if (duringRebuild) await duringRebuild();
       return {};
     },
     add_note: async (ctx, args) => {
@@ -154,6 +169,12 @@ async function op<T>(ctx: ExecutionContext, name: string, input: unknown): Promi
   const r = await execute(registry, adapter, ctx, name, input);
   if (!r.ok) throw new Error(`${name}: ${JSON.stringify(r.error)}`);
   return r.value as T;
+}
+
+function listenerId(): string {
+  const id = loadedPlugins.bySlug("t1267c-listener")?.pluginId;
+  if (!id) throw new Error("listener not loaded");
+  return id;
 }
 
 async function drain(): Promise<void> {
@@ -262,6 +283,38 @@ describe("#1267 — a plugin's change consumer", () => {
     expect(received).toEqual([]);
     await drain();
     expect(received.flatMap((r) => r.changes).some((c) => c.rowId === m.moduleId)).toBe(true);
+  });
+
+  it("delivers a change committed while the rebuild ran, and retries a failed rebuild", async () => {
+    await drain();
+    const name = changeConsumerName(listenerId());
+    // A rebuild is due (as after a cursor fell behind the horizon).
+    await adapter.withAdminTransaction(SYS, (tx) => beginConsumerRebuild(tx, name));
+    received.length = 0;
+    let written = "";
+    duringRebuild = async () => {
+      duringRebuild = null;
+      written = (
+        await op<{ moduleId: string }>(SYS, "modules.create", {
+          slug: `${PFX}during-rebuild`,
+          displayName: "During rebuild",
+          html: "<p>written while the rebuild read</p>",
+        })
+      ).moduleId;
+    };
+    const before = rebuilds;
+    await drain();
+    expect(rebuilds).toBe(before + 1);
+    // The rebuild may have read it or not: either way it is delivered.
+    expect(received.flatMap((r) => r.changes).some((c) => c.rowId === written)).toBe(true);
+
+    // A rebuild that fails stays pending and runs on the next drain.
+    await adapter.withAdminTransaction(SYS, (tx) => beginConsumerRebuild(tx, name));
+    failRebuild = true;
+    const failed = await drainChangeConsumers(infra);
+    expect(failed.find((r) => r.slug === "t1267c-listener")?.error).toContain("rebuild failed");
+    const retried = await drainChangeConsumers(infra);
+    expect(retried.find((r) => r.slug === "t1267c-listener")?.rebuilt).toBe(true);
   });
 
   it("is woken by the journal's NOTIFY", async () => {

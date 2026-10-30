@@ -22,7 +22,11 @@
 import type { LoadedPlugin } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
-import { publishedCacheUsable } from "../published-changes.js";
+import {
+  mayCacheRead,
+  publishedCacheGeneration,
+  publishedCacheUsable,
+} from "../published-changes.js";
 
 export interface RateLimitSpec {
   readonly perVisitorMax: number;
@@ -71,6 +75,7 @@ export async function resolveRateLimitSpec(
   const cacheKey = `${pluginSlug}:${operation}`;
   const cached = specCache.get(cacheKey);
   if (cached && publishedCacheUsable()) return cached;
+  const startedAt = publishedCacheGeneration();
   // 1. Check overrides table.
   // The override as the admin published it (#635), its profile already
   // dereferenced at publish time.
@@ -102,7 +107,7 @@ export async function resolveRateLimitSpec(
         ? { perVisitorMax: opSpec.max, windowSeconds: opSpec.windowSec }
         : DEFAULT_SPEC;
   }
-  specCache.set(cacheKey, resolved);
+  if (mayCacheRead(startedAt)) specCache.set(cacheKey, resolved);
   return resolved;
 }
 

@@ -92,7 +92,9 @@ import {
 import { signCookieValue } from "./middleware/signed-cookie.js";
 import {
   listenForPublishedChanges,
+  mayCacheRead,
   onPublishedChange,
+  publishedCacheGeneration,
   publishedCacheUsable,
 } from "./published-changes.js";
 import {
@@ -172,6 +174,7 @@ let cachedSettings: GatewaySettings | null = null;
 
 async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> {
   if (cachedSettings && publishedCacheUsable()) return cachedSettings;
+  const startedAt = publishedCacheGeneration();
   const { published, rows } = await adapter.withPublicTransaction(SYSTEM_CTX, async (tx) => ({
     published: await sectionPublished(tx, "settings"),
     rows: (await tx.execute(sql`
@@ -203,7 +206,7 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
       powTargetPrefix: row?.captcha_pow_target_prefix ?? "000fff",
     },
   };
-  cachedSettings = settings;
+  if (mayCacheRead(startedAt)) cachedSettings = settings;
   return settings;
 }
 
@@ -273,6 +276,7 @@ let cachedStagingState: StagingState | null = null;
 
 async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState> {
   if (cachedStagingState && publishedCacheUsable()) return cachedStagingState;
+  const startedAt = publishedCacheGeneration();
   const rows = (await adapter.withPublicTransaction(
     SYSTEM_CTX,
     async (tx) =>
@@ -316,7 +320,7 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
     },
     originUrl: row.origin_url,
   };
-  cachedStagingState = state;
+  if (mayCacheRead(startedAt)) cachedStagingState = state;
   return state;
 }
 
