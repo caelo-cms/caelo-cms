@@ -71,6 +71,13 @@ export const GENERATOR_POOL_MAX = 2;
  */
 export const LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE = 1;
 
+/**
+ * The connection each gateway instance keeps open for `LISTEN
+ * caelo_gateway_settings` on cms_public (api-gateway server.ts): outside the
+ * gateway's pool, held for the instance's lifetime.
+ */
+export const LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE = 1;
+
 /** What the budget is computed from: the server and the scale-out limits. */
 export interface PoolBudgetInput {
   /** The server's `max_connections`, as provisioning sets it. */
@@ -108,6 +115,8 @@ export type PoolBudgetReserveName =
   | "gateway"
   /** #1267 — one LISTEN connection per admin instance ({@link LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE}). */
   | "listen"
+  /** The gateway's settings LISTEN, one per gateway instance ({@link LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE}). */
+  | "gateway-listen"
   | "admin-public";
 
 /** One consumer of the server's connections the budget sets aside. */
@@ -144,7 +153,8 @@ function positiveInteger(value: number, name: string, min: number): void {
  * where the reserves are the fixed consumers of {@link PoolBudgetInput} plus
  * `gateway = gatewayMaxInstances × GATEWAY_POOL_MAX`,
  * `generator = concurrentBuilds × 2 × GENERATOR_POOL_MAX`,
- * `listen = adminMaxInstances × LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE` and
+ * `listen = adminMaxInstances × LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE`,
+ * `gateway-listen = gatewayMaxInstances × LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE` and
  * `admin-public = adminMaxInstances × ADMIN_PUBLIC_POOL_MAX`.
  *
  * @throws Error naming what to change when the server cannot give every
@@ -173,6 +183,10 @@ export function computePoolBudget(input: PoolBudgetInput): PoolBudget {
     {
       name: "listen",
       connections: input.adminMaxInstances * LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE,
+    },
+    {
+      name: "gateway-listen",
+      connections: input.gatewayMaxInstances * LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE,
     },
     { name: "admin-public", connections: input.adminMaxInstances * ADMIN_PUBLIC_POOL_MAX },
   ];

@@ -22,6 +22,7 @@ adminPoolMax = floor((maxConnections − Σ reserves) / adminMaxInstances)
 | `generator` | `concurrentBuilds` (2) × 2 pools × `GENERATOR_POOL_MAX` (2) | static-generator subprocesses: a Stage, a Publish live and a plugin-data build can overlap. A build runs in one transaction, so the admin sets the minimum pool on the child (`generatorEnv`, admin-core `deploy/generator-subprocess.ts`) |
 | `gateway` | `gatewayMaxInstances` × `GATEWAY_POOL_MAX` (2) | the gateway's only pool (`public_role` on `cms_public`) |
 | `listen` | `adminMaxInstances` × 1 | the change journal's `LISTEN` connection, one per admin instance (#1267, `LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE`). A LISTEN connection stays open for the instance's lifetime and never serves a pool query, so it is budgeted outside the pools |
+| `gateway-listen` | `gatewayMaxInstances` × 1 | the gateway's `LISTEN caelo_gateway_settings` connection on `cms_public` (`LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE`), held outside its pool |
 | `admin-public` | `adminMaxInstances` × `ADMIN_PUBLIC_POOL_MAX` (4) | the admin's `cms_public` pool: plugin-data reads and the gateway projection |
 
 If the remainder cannot give every admin instance at least `ADMIN_POOL_FLOOR` (4) connections, the formula throws. The message names the breakdown and the `max_connections` that would be needed, so a stack fails at `pulumi preview`, never under load.
@@ -41,10 +42,10 @@ Each adapter computes the budget from its own inputs (provisioning `src/pool-bud
 
 | Adapter | `max_connections` | Admin-side instances | Gateway instances | cms_admin pool per admin instance |
 |---|---|---|---|---|
-| `gcp`, `gcp-firebase` | 100 (`maxConnections`, Cloud SQL flag) | 5 (`adminMaxInstances`) | 10 (`gatewayMaxInstances`, was a fixed 100) | 7 |
-| `aws` | 100 (`maxConnections`, RDS parameter group) | 5 | 10 | 7, exported as `poolBudgetEnvOut` until the task definitions exist (#749) |
+| `gcp`, `gcp-firebase` | 100 (`maxConnections`, Cloud SQL flag) | 5 (`adminMaxInstances`) | 10 (`gatewayMaxInstances`, was a fixed 100) | 5 |
+| `aws` | 100 (`maxConnections`, RDS parameter group) | 5 | 10 | 5, exported as `poolBudgetEnvOut` until the task definitions exist (#749) |
 | `azure` | 429 (`maxConnections`, server parameter; the Standard_B2s limit) | 30 (admin, orchestrator and runner apps, 10 replicas each) | 10 | 7 |
-| `self-hosted` | 100 (Compose `command`) | 1 | 1 | 78 |
+| `self-hosted` | 100 (Compose `command`) | 1 | 1 | 77 |
 
 On the GCP stacks the pool env sits next to the env contract, like the remote-MCP identity env. It is derived from stack config that an upgrade roll cannot see, so `upgrade` never sets it. A roll never removes a var the contract does not own, so an install keeps its pool sizes across app releases. A new budget reaches an existing install with the next converge (`pulumi up`).
 

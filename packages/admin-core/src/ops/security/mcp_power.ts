@@ -586,6 +586,7 @@ export async function powerExecuteTool(
     session,
     agent,
     label,
+    toolName: input.toolName,
     ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
     ...(capped ? { costCapMicrocents: principal.aiCostCapMicrocents as number } : {}),
   });
@@ -630,6 +631,10 @@ export async function powerExecuteTool(
           approval: start.approval,
         },
       };
+    case "in_progress":
+      return refused(
+        `in_progress: the same call (toolCallId ${toolCallId}) is still running, so it was not started again. Wait for it, then repeat the call to get its result.`,
+      );
     case "cost_capped":
       return refused(
         `cost cap reached: spent ~${start.spent} µ¢ / cap ${principal.aiCostCapMicrocents} µ¢ of the install's AI on this session — ` +
@@ -719,6 +724,13 @@ export async function powerExecuteTool(
   let raw: ToolResult;
   try {
     raw = await withToolCallVersion({ callId: requestId, snapshot }, dispatch);
+  } catch (e) {
+    // Recorded like any failed result, so the reserved key holds the
+    // outcome and a repeat does not run the tool again.
+    raw = {
+      ok: false,
+      content: `tool_failed: '${input.toolName}' threw: ${e instanceof Error ? e.message : String(e)}`,
+    };
   } finally {
     clearInterval(keepPresent);
   }

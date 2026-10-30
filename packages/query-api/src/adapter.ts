@@ -49,11 +49,11 @@ import {
 } from "./pool-guard.js";
 import {
   collectPostCommitEffects,
+  mergeSavepointEffects,
   notifyOperationCommitted,
   type PostCommitEffect,
   type PostCommitFailure,
   runPostCommitEffects,
-  shareCommitEffects,
 } from "./post-commit.js";
 
 /**
@@ -388,7 +388,8 @@ export class DatabaseAdapter {
    * time (one connection, one savepoint stack). `fn` sets its own identity
    * like any transaction of the adapter; the holder's is restored when the
    * savepoint is released (a rolled-back savepoint reverts it by itself).
-   * Its post-commit effects wait for the holder's commit.
+   * Its post-commit effects wait for the holder's commit, and are dropped
+   * when the savepoint rolls back.
    */
   #joinHeld<T>(
     pool: PoolName,
@@ -398,17 +399,19 @@ export class DatabaseAdapter {
   ): Promise<T> {
     return outer.joined.run(async () => {
       const outerTx = outer.tx;
-      const rootTx = (outer.root ?? outer).tx;
-      if (outerTx === null || rootTx === null || !outer.active) {
+      if (outerTx === null || !outer.active) {
         throw new NestedPoolCheckoutError(pool, outer.holder, marker.holder);
       }
+      let effects: PostCommitEffect[] = [];
       const out = await outerTx.transaction((savepoint) =>
         this.#guard.run(pool, marker, async () => {
           marker.tx = savepoint;
-          shareCommitEffects(savepoint, rootTx);
+          effects = collectPostCommitEffects(savepoint);
           return fn(savepoint, true);
         }),
       );
+      // Released: its effects ride on the transaction it joined.
+      mergeSavepointEffects(effects, outerTx);
       // The full identity: a superset of what either pool's transactions
       // set, and an extra custom setting is harmless.
       if (outer.identity !== null) await this.#setIdentity(outerTx, outer.identity);

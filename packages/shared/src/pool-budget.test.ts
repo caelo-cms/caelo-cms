@@ -29,8 +29,8 @@ const GCP_DEFAULT: PoolBudgetInput = {
 describe("computePoolBudget", () => {
   it("splits what the reserves leave across the admin instances", () => {
     const b = computePoolBudget(GCP_DEFAULT);
-    // 100 - (5 + 2 + 4 + 8 + 20 + 5 + 20) = 36 → floor(36 / 5) = 7, 1 left.
-    expect(b.adminPoolMax).toBe(7);
+    // 100 - (5 + 2 + 4 + 8 + 20 + 5 + 10 + 20) = 26 → floor(26 / 5) = 5, 1 left.
+    expect(b.adminPoolMax).toBe(5);
     expect(b.unassigned).toBe(1);
     expect(b.adminPublicPoolMax).toBe(ADMIN_PUBLIC_POOL_MAX);
     expect(b.gatewayPoolMax).toBe(GATEWAY_POOL_MAX);
@@ -69,7 +69,7 @@ describe("computePoolBudget", () => {
   it("refuses a budget below the admin floor, naming the connections needed", () => {
     // The pre-#1254 GCP shape: 100 gateway instances can never fit 100 slots.
     expect(() => computePoolBudget({ ...GCP_DEFAULT, gatewayMaxInstances: 100 })).toThrow(
-      /Raise maxConnections to at least 264/,
+      /Raise maxConnections to at least 364/,
     );
     expect(() => computePoolBudget({ ...GCP_DEFAULT, maxConnections: 50 })).toThrow(
       new RegExp(`minimum of ${ADMIN_POOL_FLOOR}`),
@@ -77,9 +77,9 @@ describe("computePoolBudget", () => {
   });
 
   it("accepts exactly the floor", () => {
-    // reserves 64 + 5 × 4 = 84.
-    expect(computePoolBudget({ ...GCP_DEFAULT, maxConnections: 84 }).adminPoolMax).toBe(4);
-    expect(() => computePoolBudget({ ...GCP_DEFAULT, maxConnections: 83 })).toThrow();
+    // reserves 74 + 5 × 4 = 94.
+    expect(computePoolBudget({ ...GCP_DEFAULT, maxConnections: 94 }).adminPoolMax).toBe(4);
+    expect(() => computePoolBudget({ ...GCP_DEFAULT, maxConnections: 93 })).toThrow();
   });
 
   it("rejects malformed input instead of guessing", () => {
@@ -98,7 +98,7 @@ describe("poolBudgetEnv", () => {
 
   it("sizes both admin pools", () => {
     expect(poolBudgetEnv(b, "admin")).toEqual([
-      { name: DB_POOL_MAX_ENV, value: "7" },
+      { name: DB_POOL_MAX_ENV, value: "5" },
       { name: DB_PUBLIC_POOL_MAX_ENV, value: String(ADMIN_PUBLIC_POOL_MAX) },
     ]);
   });

@@ -261,10 +261,11 @@ describe("#1254 — render-time work joins the held transaction", () => {
         name: "pool_guard.join_effect",
         actorScope: ["system"],
         database: "cms_admin",
-        input: z.object({ label: z.string() }),
+        input: z.object({ label: z.string(), fail: z.boolean().optional() }),
         output: z.object({}),
         handler: async (_c, input, tx) => {
           afterCommit(tx, { label: input.label, run: () => void effects.push(input.label) });
+          if (input.fail) throw new Error("effect op failed after registering");
           return ok({});
         },
       }),
@@ -361,6 +362,19 @@ describe("#1254 — render-time work joins the held transaction", () => {
         throw new Error("holder rolls back");
       }),
     ).rejects.toThrow("holder rolls back");
+    expect(effects).toEqual(["kept"]);
+    // A joined call that fails after registering an effect rolls back its
+    // savepoint; the holder handles the failure and commits — the effect
+    // of the undone work must not run (PR #1273 review).
+    await holderWithProbeTable(async () => {
+      const failed = await joinHeldTransaction(() =>
+        execute(registry, adapter, pluginCtx, "pool_guard.join_effect", {
+          label: "undone",
+          fail: true,
+        }),
+      );
+      expect(failed.ok).toBe(false);
+    });
     expect(effects).toEqual(["kept"]);
   });
 

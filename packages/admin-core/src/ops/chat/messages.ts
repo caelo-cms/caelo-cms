@@ -312,6 +312,7 @@ export const lookupToolResultOp = defineOperation({
       SELECT tool_name, result_ok, result_content
       FROM chat_tool_results
       WHERE chat_session_id = ${input.chatSessionId}::uuid AND tool_call_id = ${input.toolCallId}
+        AND NOT pending
       LIMIT 1
     `)) as unknown as { tool_name: string; result_ok: boolean; result_content: string }[];
     const r = rows[0];

@@ -42,6 +42,13 @@ import { findMcpHandoffByToolCall, recordMcpHandoff } from "../mcp_approval_hand
 /** How old the presence row and `last_active_at` may get before a call renews them. */
 export const STALE_AFTER_MS = 30_000;
 
+/**
+ * How long a reserved idempotency key (0406) holds before a repeat may take
+ * it over: longer than any tool call runs (image generation takes minutes),
+ * so only a call whose process died leaves one behind that long.
+ */
+export const RESERVATION_TIMEOUT_MS = 15 * 60_000;
+
 const agentShape = z
   .object(mcpAgentInputShape)
   .refine((v) => namesMcpAgent(v) && atMostOneMcpAgent.check(v), {
@@ -190,7 +197,12 @@ export const mcpBeginToolCallOp = defineOperation({
       session: sessionChoice,
       agent: agentShape,
       label: z.string().min(1).max(200),
-      /** Caller-supplied idempotency key; a cached first result is returned instead. */
+      toolName: z.string().min(1).max(120),
+      /**
+       * Caller-supplied idempotency key: a cached first result is returned
+       * instead, and the key is reserved before the tool runs so a repeat
+       * that arrives meanwhile does not run it again.
+       */
       toolCallId: z.string().min(1).max(128).optional(),
       /** Set when the tool spends the install's AI under a capped credential. */
       costCapMicrocents: z.number().int().nonnegative().optional(),
@@ -208,6 +220,8 @@ export const mcpBeginToolCallOp = defineOperation({
       approval: approvalHandle,
     }),
     z.object({ status: z.literal("cost_capped"), chatSessionId: z.string(), spent: z.string() }),
+    /** The same call (session + toolCallId) is still running; it is not started again. */
+    z.object({ status: z.literal("in_progress"), chatSessionId: z.string() }),
     z.object({
       status: z.literal("ready"),
       chatSessionId: z.string(),
@@ -225,11 +239,22 @@ export const mcpBeginToolCallOp = defineOperation({
     }
     if (input.toolCallId !== undefined) {
       const rows = (await tx.execute(sql`
-        SELECT result_ok, result_content FROM chat_tool_results
+        SELECT result_ok, result_content, pending,
+               (created_at < now() - ${RESERVATION_TIMEOUT_MS}::int * interval '1 millisecond')
+                 AS abandoned
+        FROM chat_tool_results
         WHERE chat_session_id = ${session.id}::uuid AND tool_call_id = ${input.toolCallId}
-      `)) as unknown as { result_ok: boolean; result_content: string }[];
+      `)) as unknown as {
+        result_ok: boolean;
+        result_content: string;
+        pending: boolean;
+        abandoned: boolean;
+      }[];
       const hit = rows[0];
-      if (hit) {
+      if (hit?.pending === true && !hit.abandoned) {
+        return ok({ status: "in_progress" as const, chatSessionId: session.id });
+      }
+      if (hit && !hit.pending) {
         return ok({
           status: "cached" as const,
           chatSessionId: session.id,
@@ -249,6 +274,9 @@ export const mcpBeginToolCallOp = defineOperation({
           spent: spent.toString(),
         });
       }
+    }
+    if (input.toolCallId !== undefined && !(await reserveToolCall(tx, session.id, input))) {
+      return ok({ status: "in_progress" as const, chatSessionId: session.id });
     }
     // Issue #620 — MCP work is activity in this session (the chat list
     // sorts by it); renewed only when stale (see the file header).
@@ -276,6 +304,31 @@ export const mcpBeginToolCallOp = defineOperation({
     });
   },
 });
+
+/**
+ * Reserve the call's idempotency key (0406) — a fresh `pending` row, or one
+ * whose call was abandoned ({@link RESERVATION_TIMEOUT_MS}).
+ *
+ * @returns false when another request holds it: the same call is running.
+ */
+async function reserveToolCall(
+  tx: TransactionRunner,
+  chatSessionId: string,
+  input: { toolCallId?: string | undefined; toolName: string },
+): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    INSERT INTO chat_tool_results
+      (chat_session_id, tool_call_id, tool_name, result_ok, result_content, pending)
+    VALUES (${chatSessionId}::uuid, ${input.toolCallId ?? null}, ${input.toolName}, false, '', true)
+    ON CONFLICT (chat_session_id, tool_call_id) DO UPDATE
+      SET created_at = now(), tool_name = EXCLUDED.tool_name
+      WHERE chat_tool_results.pending
+        AND chat_tool_results.created_at
+            < now() - ${RESERVATION_TIMEOUT_MS}::int * interval '1 millisecond'
+    RETURNING id
+  `)) as unknown as { id: string }[];
+  return rows.length === 1;
+}
 
 /**
  * The canonical shape gated tools' queued results start with (enforced by
@@ -316,12 +369,16 @@ export const mcpFinishToolCallOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     if (input.cache) {
+      // The reservation mcp.begin_tool_call made becomes the result.
       await tx.execute(sql`
         INSERT INTO chat_tool_results
           (chat_session_id, tool_call_id, tool_name, result_ok, result_content)
         VALUES (${input.chatSessionId}::uuid, ${input.toolCallId}, ${input.toolName},
                 ${input.result.ok}, ${input.result.content})
-        ON CONFLICT (chat_session_id, tool_call_id) DO NOTHING
+        ON CONFLICT (chat_session_id, tool_call_id) DO UPDATE
+          SET result_ok = EXCLUDED.result_ok, result_content = EXCLUDED.result_content,
+              pending = false
+          WHERE chat_tool_results.pending
       `);
     }
     const approval = await handOffQueuedProposal(tx, ctx.actorId, input);

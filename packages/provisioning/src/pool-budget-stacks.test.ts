@@ -32,11 +32,11 @@ const DEFAULT_SCALE: Record<BudgetProvider, { admin: number; gateway: number }> 
 
 /** [cms_admin pool per admin instance, connections left unassigned]. */
 const EXPECTED: Record<BudgetProvider, [number, number]> = {
-  gcp: [7, 1],
-  "gcp-firebase": [7, 1],
-  aws: [7, 3],
-  azure: [7, 22],
-  "self-hosted": [78, 0],
+  gcp: [5, 1],
+  "gcp-firebase": [5, 1],
+  aws: [5, 3],
+  azure: [7, 12],
+  "self-hosted": [77, 0],
 };
 
 describe("stack pool budgets at the default config", () => {

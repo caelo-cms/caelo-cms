@@ -304,6 +304,43 @@ describe("#1253 — concurrent writes of one entity conflict, never overwrite", 
   });
 });
 
+describe("#1253 — a repeated call never runs twice", () => {
+  it("a repeat that arrives while the first call runs is not started; a later one gets the cached result", async () => {
+    const p = await principal();
+    const opened = await powerOpenSession(bridge, p, { title: "t1253 idempotent" });
+    if (!opened.ok) throw new Error(opened.message);
+    const { chatSessionId } = opened.value;
+    const moduleId = await makeModule("t1253-idem");
+    const send = () =>
+      powerExecuteTool(bridge, p, {
+        toolName: "update_modules_many",
+        args: rename(moduleId, "once"),
+        chatSessionId,
+        toolCallId: "t1253-same-call",
+      });
+    const [a, b] = await Promise.all([send(), send()]);
+    const outcomes = [a, b].map((r) => (r.ok ? (r.value.cached ? "cached" : "ran") : r.message));
+    // Exactly one ran; the other was told it runs (or, when it came after
+    // the first finished, served its result).
+    expect(outcomes.filter((o) => o === "ran")).toHaveLength(1);
+    expect(
+      outcomes
+        .filter((o) => o !== "ran")
+        .every((o) => o === "cached" || o.startsWith("in_progress")),
+    ).toBe(true);
+    const later = await send();
+    expect(later.ok && later.value.cached).toBe(true);
+    const writes = await withSql(
+      async (tx) =>
+        (await tx`SELECT count(*)::int AS n FROM module_snapshots ms
+                  JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+                  WHERE ms.module_id = ${moduleId}::uuid
+                    AND ss.chat_task_id = ${chatSessionId}::uuid`) as { n: number }[],
+    );
+    expect(writes[0]?.n).toBe(1);
+  });
+});
+
 describe("#1253 — the cost of one write call", () => {
   it("≤ 3 transactions outside the tool, no row lock on the credential, last_used_at at most once a minute", async () => {
     const p0 = await principal();
