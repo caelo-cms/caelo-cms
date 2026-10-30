@@ -189,7 +189,7 @@ export class TokenCategoryMismatch extends Error {
   readonly got: string;
   constructor(canonicalPath: string, expected: string, got: string) {
     super(
-      `TokenCategoryMismatch: '${canonicalPath}' expects a ${expected} value, got a ${got} — re-send with a value matching ${expected}.`,
+      `TokenCategoryMismatch: '${canonicalPath}' expects a ${expected} value, got a ${got} — use a value matching ${expected}.`,
     );
     this.name = "TokenCategoryMismatch";
     this.canonicalPath = canonicalPath;

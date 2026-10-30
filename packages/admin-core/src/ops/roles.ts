@@ -88,7 +88,12 @@ export const createRoleOp = defineOperation({
     `)) as unknown as { id: string }[];
     const roleId = rows[0]?.id;
     if (!roleId) {
-      return err({ kind: "HandlerError", operation: "roles.create", message: "no id returned" });
+      return err({
+        kind: "HandlerError",
+        operation: "roles.create",
+        message: "no id returned",
+        internal: true,
+      });
     }
     if (input.permissions.length > 0) {
       for (const perm of input.permissions) {

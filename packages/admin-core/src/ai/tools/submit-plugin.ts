@@ -8,7 +8,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { type SubmitPluginToolInput, submitPluginToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> = {
@@ -69,7 +69,7 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
         },
       );
       if (!staged.ok)
-        return { ok: false, content: `submit_plugin failed: ${describeError(staged.error)}` };
+        return toolError(staged.error, `submit_plugin failed: ${describeError(staged.error)}`);
       return {
         ok: true,
         content: `Submitted plugin ${input.slug} v${input.version} for installation review. An Owner must review its exact source and grant each requested capability at /settings/plugins/installations. The package has not been activated.`,
@@ -77,7 +77,7 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
     }
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.submit", input);
     if (!r.ok) {
-      return { ok: false, content: `submit_plugin failed: ${describeError(r.error)}` };
+      return toolError(r.error, `submit_plugin failed: ${describeError(r.error)}`);
     }
     const { pluginId, status, validationErrors } = r.value as {
       pluginId: string;

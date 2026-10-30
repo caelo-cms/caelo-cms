@@ -35,7 +35,7 @@ import {
 import { blockNotFoundError } from "./_block-name-enum.js";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import {
@@ -51,8 +51,8 @@ import {
 import {
   MODULE_BIND_THEME_LITERALS_DESCRIPTION,
   MODULE_CSS_DESCRIPTION,
-  MODULE_HTML_DESCRIPTION,
-  MODULE_JS_CONTRACT,
+  MODULE_HTML_DESCRIPTION_KIT_REF,
+  MODULE_JS_CONTRACT_KIT_REF,
 } from "./_module-js-contract.js";
 import { moduleJsGuardSuffix } from "./_module-js-guard.js";
 import { resolvePageRef } from "./_page-ref.js";
@@ -272,9 +272,9 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     "DO NOT USE FOR: a new page or a page needing >1 module -> `build_page` (whole ordered list WITH content, one transaction).",
     "CORE RULES:",
     "- Two modes, all targets. Reuse (check `list_modules` first): `moduleId` places a SHARED module without a duplicate; a later `update_modules_many` changes it everywhere. Placement-only: authoring fields passed alongside are NOT applied (result says so) — to change the module, place by `moduleId`, then `update_modules_many`. Mint: `html` + `displayName` + `kind` + `fields[]` (`[]` = no fields of its own, used verbatim).",
-    "- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).",
+    "- AUTHOR EXPLICITLY: `fields[]` names in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).",
     '- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:"texts"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.',
-    "- Initial content comes IN THIS CALL via `values`. A mint with `fields` but neither `values` nor field defaults is REJECTED (would render empty placeholders).",
+    "- Initial content: `values` in this call (or field `default`s).",
     INTERNAL_LINK_CONTRACT,
   ].join("\n"),
   // 2026-07 — STATIC on purpose (prompt-cache): the per-turn describe
@@ -317,10 +317,10 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
         type: "string",
         minLength: 1,
         maxLength: 50_000,
-        description: MODULE_HTML_DESCRIPTION,
+        description: MODULE_HTML_DESCRIPTION_KIT_REF,
       },
       css: { type: "string", maxLength: 50_000, description: MODULE_CSS_DESCRIPTION },
-      js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT },
+      js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT_KIT_REF },
       bindThemeLiterals: {
         type: "boolean",
         description: MODULE_BIND_THEME_LITERALS_DESCRIPTION,
@@ -396,7 +396,7 @@ async function placeOnPage(
     pageId,
   });
   if (!got.ok)
-    return { ok: false, content: `pages.get_with_modules failed: ${describeError(got.error)}` };
+    return toolError(got.error, `pages.get_with_modules failed: ${describeError(got.error)}`);
   const page = (got.value as { page: PageWithModules }).page;
   const targetBlock = page.blocks.find((b) => b.blockName === input.blockName);
   if (!targetBlock)
@@ -415,8 +415,7 @@ async function placeOnPage(
     pageId,
     blocks: withBlockIds(page.blocks, input.blockName, ids),
   });
-  if (!set.ok)
-    return { ok: false, content: `pages.set_modules failed: ${describeError(set.error)}` };
+  if (!set.ok) return toolError(set.error, `pages.set_modules failed: ${describeError(set.error)}`);
   // 2026-07 — apply the placement's initial content IN THIS CALL (a
   // fresh module must never render empty waiting for a second
   // set_page_module_content_many round-trip).
@@ -457,7 +456,7 @@ async function fillPlacementValues(
     pageId,
   });
   if (!got.ok)
-    return { ok: false, content: `pages.get_with_modules failed: ${describeError(got.error)}` };
+    return toolError(got.error, `pages.get_with_modules failed: ${describeError(got.error)}`);
   const page = (got.value as { page: PageWithModules }).page;
   const block = page.blocks.find((b) => b.blockName === blockName);
   const placement = block?.modules[position] as { contentInstanceId?: string | null } | undefined;
@@ -501,7 +500,7 @@ async function placeOnLayout(
 ): Promise<ToolResult> {
   const slug = await resolveLayoutSlug(ctx, toolCtx, input.targetRef);
   const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.get", { slug });
-  if (!got.ok) return { ok: false, content: `layouts.get failed: ${describeError(got.error)}` };
+  if (!got.ok) return toolError(got.error, `layouts.get failed: ${describeError(got.error)}`);
   const layout = (got.value as { layout: LayoutDetail | null }).layout;
   if (!layout) return refNotFound("layout", input.targetRef);
   if (!layout.blocks.some((b) => b.name === input.blockName)) {
@@ -520,7 +519,7 @@ async function placeOnLayout(
     blockName: input.blockName,
   });
   if (!existing.ok)
-    return { ok: false, content: `layout_modules.get failed: ${describeError(existing.error)}` };
+    return toolError(existing.error, `layout_modules.get failed: ${describeError(existing.error)}`);
   const { ids, idx } = spliceAt(
     (existing.value as { moduleIds: string[] }).moduleIds,
     mod.moduleId,
@@ -532,7 +531,7 @@ async function placeOnLayout(
     moduleIds: ids,
   });
   if (!set.ok)
-    return { ok: false, content: `layout_modules.set failed: ${describeError(set.error)}` };
+    return toolError(set.error, `layout_modules.set failed: ${describeError(set.error)}`);
   return {
     ok: true,
     content: `${label} ${mod.moduleId} (slug=${mod.slug}) added to layout "${layout.slug}" block "${input.blockName}" at position ${idx}; chrome now reaches every page on every template bound to this layout.${fieldsSummary(mod.fields)}${mod.note}${suffix}`,
@@ -551,7 +550,7 @@ async function placeOnTemplate(
   if (templateId === null) return refNotFound("template", input.targetRef);
   const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.list", {});
   if (!listed.ok)
-    return { ok: false, content: `pages.list failed: ${describeError(listed.error)}` };
+    return toolError(listed.error, `pages.list failed: ${describeError(listed.error)}`);
   const targetPages = (listed.value as { pages: PageRow[] }).pages.filter(
     (p) => p.templateId === templateId,
   );

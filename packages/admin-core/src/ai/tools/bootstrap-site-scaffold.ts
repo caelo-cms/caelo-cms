@@ -30,7 +30,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { bootstrapSiteScaffoldToolInput } from "@caelo-cms/shared";
 import { blockPlacementGuide } from "./_block-roles.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const DEFAULT_LAYOUT_HTML = `<!doctype html>
@@ -128,7 +128,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       includeDeleted: false,
     });
     if (!layoutsR.ok) {
-      return { ok: false, content: `layouts.list failed: ${describeError(layoutsR.error)}` };
+      return toolError(layoutsR.error, `layouts.list failed: ${describeError(layoutsR.error)}`);
     }
     const layouts = (layoutsR.value as { layouts: ScaffoldEntity[] }).layouts;
     if (layouts.length === 0) {
@@ -141,10 +141,10 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
         blocks,
       });
       if (!res.ok) {
-        return {
-          ok: false,
-          content: `bootstrap stage-0 (layouts.propose_create) failed: ${describeError(res.error)}`,
-        };
+        return toolError(
+          res.error,
+          `bootstrap stage-0 (layouts.propose_create) failed: ${describeError(res.error)}`,
+        );
       }
       const v = res.value as { proposalId: string; preview: { blockCount: number } };
       // Canonical "Queued proposal …" prefix so ChatPanel renders the
@@ -161,7 +161,10 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       includeDeleted: false,
     });
     if (!templatesR.ok) {
-      return { ok: false, content: `templates.list failed: ${describeError(templatesR.error)}` };
+      return toolError(
+        templatesR.error,
+        `templates.list failed: ${describeError(templatesR.error)}`,
+      );
     }
     const templates = (templatesR.value as { templates: ScaffoldEntity[] }).templates;
     // layouts.length > 0 was checked above (STAGE 0 returned early when
@@ -184,10 +187,10 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
         layoutId: targetLayout.id,
       });
       if (!res.ok) {
-        return {
-          ok: false,
-          content: `bootstrap stage-1 (templates.create) failed: ${describeError(res.error)}`,
-        };
+        return toolError(
+          res.error,
+          `bootstrap stage-1 (templates.create) failed: ${describeError(res.error)}`,
+        );
       }
       createdTemplateId = (res.value as { templateId: string }).templateId;
     }
@@ -211,10 +214,10 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       {},
     );
     if (!defaultsR.ok) {
-      return {
-        ok: false,
-        content: `bootstrap stage-2 (site_defaults.get) failed: ${describeError(defaultsR.error)}`,
-      };
+      return toolError(
+        defaultsR.error,
+        `bootstrap stage-2 (site_defaults.get) failed: ${describeError(defaultsR.error)}`,
+      );
     }
     const existingDefaults = (
       defaultsR.value as {
@@ -260,10 +263,10 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       defaultTemplateId: targetTemplate.id,
     });
     if (!setRes.ok) {
-      return {
-        ok: false,
-        content: `bootstrap stage-2 (site_defaults.set) failed: ${describeError(setRes.error)}`,
-      };
+      return toolError(
+        setRes.error,
+        `bootstrap stage-2 (site_defaults.set) failed: ${describeError(setRes.error)}`,
+      );
     }
     // v0.7.4 — stronger continuation directive. Pre-v0.7.4 the message
     // was "Bootstrap complete + you can omit templateId now", which the

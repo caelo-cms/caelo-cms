@@ -298,6 +298,7 @@ export const createTemplateOp = defineOperation({
         kind: "HandlerError",
         operation: "templates.create",
         message: "no id returned",
+        internal: true,
       });
     }
     // v0.5.21 — auto-derive template_blocks from <caelo-slot name="X">

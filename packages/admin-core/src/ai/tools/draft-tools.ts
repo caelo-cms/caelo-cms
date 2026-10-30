@@ -30,7 +30,7 @@ import { describeTruncatedLists } from "../../deploy/truncated-lists.js";
 import { describeUnpublishedLinks } from "../../deploy/unpublished-links.js";
 import type { AffectedChat } from "../../draft.js";
 import { stageChatSessions } from "../../stage/stage-chats.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 import { AUDIT_WAIT_MS } from "./quality-audit-tools.js";
 
@@ -137,7 +137,7 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
         mineOnly: true,
       });
       if (!r.ok) {
-        return { ok: false, content: `chat.list_open_changes failed: ${describeError(r.error)}` };
+        return toolError(r.error, `chat.list_open_changes failed: ${describeError(r.error)}`);
       }
       ids = (r.value as { chats: { chatSessionId: string; pendingCount: number }[] }).chats
         .filter((c) => c.pendingCount > 0)
@@ -281,7 +281,7 @@ export const undoThisChatTool: ToolDefinitionWithHandler<z.infer<typeof undoInpu
         ...(input.confirmOverlap ? { confirmOverlap: true } : {}),
       },
     );
-    if (!r.ok) return { ok: false, content: `chat.undo_changes failed: ${describeError(r.error)}` };
+    if (!r.ok) return toolError(r.error, `chat.undo_changes failed: ${describeError(r.error)}`);
     const v = r.value as {
       applied: boolean;
       undoneSnapshots: number;
@@ -341,7 +341,7 @@ export const startIsolatedBranchTool: ToolDefinitionWithHandler<z.infer<typeof i
       },
     );
     if (!r.ok) {
-      return { ok: false, content: `chat.isolate_session failed: ${describeError(r.error)}` };
+      return toolError(r.error, `chat.isolate_session failed: ${describeError(r.error)}`);
     }
     return {
       ok: true,

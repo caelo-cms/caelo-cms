@@ -150,7 +150,12 @@ export const proposeSkillOp = defineOperation({
     `)) as unknown as { id: string }[];
     const proposalId = rows[0]?.id;
     if (!proposalId) {
-      return err({ kind: "HandlerError", operation: "skills.propose", message: "no id returned" });
+      return err({
+        kind: "HandlerError",
+        operation: "skills.propose",
+        message: "no id returned",
+        internal: true,
+      });
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,

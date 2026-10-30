@@ -21,6 +21,7 @@ import {
   loadContentInstanceBranchStates,
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
+import { runEveryItem } from "../_bulk.js";
 import { setContentInstanceValuesOp } from "./content-instances.js";
 import { loadNestedContent, placementFieldsOf } from "./page-content-tree.js";
 
@@ -331,11 +332,11 @@ export const setPageModuleContentOp = defineOperation({
  * (branch-aware), synced-placement refusal, nested-ref + field-shape
  * validation, lock, snapshot — inside ONE shared transaction.
  *
- * All-or-nothing: a failure at index i throws `OperationAbortError` so
- * items 0..i-1 roll back too. The message names `items[i]`, the
- * placement coordinates, and forwards the singular error verbatim
- * (which for value-shape problems names the failing FIELD, and for
- * synced placements carries the fork/commit guidance).
+ * All-or-nothing: every item runs, and any failure throws
+ * `OperationAbortError` so the written items roll back too. The error
+ * names every failing `items[i]` and forwards each singular error under
+ * it (field paths for value-shape problems, the fork/commit guidance for
+ * synced placements) (#1277).
  */
 export const setPageModuleContentManyOp = defineOperation({
   name: "page_module_content.set_many",
@@ -344,25 +345,15 @@ export const setPageModuleContentManyOp = defineOperation({
   input: pageModuleContentSetManySchema,
   output: z.object({ updated: z.number().int().nonnegative() }),
   handler: async (ctx, input, tx) => {
-    let updated = 0;
-    for (let i = 0; i < input.items.length; i += 1) {
-      const item = input.items[i];
-      if (item === undefined) continue;
-      const r = await setPageModuleContentOp.handler(ctx, item, tx);
-      if (!r.ok) {
-        const inner = r.error as { message?: string };
-        const queryError = {
-          kind: "HandlerError" as const,
-          operation: "page_module_content.set_many",
-          message: `items[${i}] (page ${item.pageId}, ${item.blockName}#${item.position}): ${
-            inner.message ?? r.error.kind
-          }. The whole batch was rolled back — fix this item and resend all ${input.items.length}.`,
-        };
-        if (updated > 0) throw new OperationAbortError(queryError);
-        return err(queryError);
-      }
-      updated += 1;
+    // #1277 — every item runs; every failing index is reported at once.
+    const run = await runEveryItem("page_module_content.set_many", "items", input.items, (item) =>
+      setPageModuleContentOp.handler(ctx, item, tx),
+    );
+    if (!run.ok) {
+      if (run.writtenItems === 0) return err(run.error);
+      throw new OperationAbortError(run.error);
     }
+    const updated = run.results.length;
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

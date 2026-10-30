@@ -95,7 +95,7 @@ const TOOL_LIST_ENTRY_SCHEMA = {
   type: "object",
   required: ["node", "values"],
   description:
-    'texts {node:"text", values:{text}} · links {node:"link", values:{label, link:{href}}} · menu {node:"entry", …, children}; keep `id` on resend.',
+    'texts {node:"text", values:{text}} · links {node:"link", values:{label, link:{href}}} · menu {node:"entry", …, children}; keep the `id` of existing entries.',
   properties: {
     id: { type: "string" },
     node: {

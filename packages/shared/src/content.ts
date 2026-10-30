@@ -185,7 +185,7 @@ const noCdata = (value: string): boolean => !value.includes(CDATA_OPEN);
 const cdataMessage = (field: "css" | "js"): string =>
   `${field} contains an XML CDATA marker (${CDATA_OPEN}) — module ${field} is stored and served ` +
   `verbatim, so CDATA wrappers reach the browser unparsed and break rendering. ` +
-  `Remove the wrapper and resend plain ${field === "css" ? "CSS" : "JavaScript"}.`;
+  `Remove the wrapper: pass plain ${field === "css" ? "CSS" : "JavaScript"}.`;
 
 const moduleCss = z
   .string()

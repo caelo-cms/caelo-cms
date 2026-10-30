@@ -2,12 +2,21 @@
 
 /**
  * Shared error-string helper for AI tools. Turns a Query API
- * `QueryError` into a single human-readable line the AI can surface
- * back to the user. Picks out the ZodError issues for ValidationFailed
- * (path: message), the .message field for HandlerError, the .detail
- * for RLSDenied. Keeps the AI from saying "unknown error" when the
- * underlying op had a specific reason.
+ * `QueryError` into human-readable text the AI can act on: every Zod
+ * issue of a ValidationFailed (shared path format, #1277), the .message
+ * of a HandlerError, the .detail of an RLSDenied. A Postgres failure is
+ * described by the caller's value, never by constraint / table / SQL.
  */
+
+import {
+  describePgFailure,
+  errorDetailsOf,
+  extractPgFields,
+  failureKindOf,
+  formatErrorDetails,
+  type PgFailureFields,
+} from "@caelo-cms/query-api";
+import type { ToolResult } from "./dispatch.js";
 
 export function describeError(error: unknown): string {
   if (!error || typeof error !== "object") return "unknown";
@@ -16,13 +25,7 @@ export function describeError(error: unknown): string {
     message?: string;
     issues?: unknown[];
     detail?: string;
-    pgDetail?: {
-      code?: string;
-      constraint?: string;
-      table?: string;
-      column?: string;
-      detail?: string;
-    };
+    pgDetail?: PgFailureFields;
     nextAction?: {
       tool?: string;
       args?: Record<string, unknown>;
@@ -30,7 +33,7 @@ export function describeError(error: unknown): string {
       autoExecute?: boolean;
     };
   };
-  const primary = describePrimary(e, error);
+  const primary = withListToolHint(describePrimary(e, error));
   // v0.6.0 W3 — append the structured recovery hint after the primary
   // message so the AI sees both "what went wrong" and "what to try
   // next" in one tool-result string. The chat-runner consumes
@@ -53,38 +56,24 @@ function describePrimary(
     message?: string;
     issues?: unknown[];
     detail?: string;
-    pgDetail?: {
-      code?: string;
-      constraint?: string;
-      table?: string;
-      column?: string;
-      detail?: string;
-    };
+    pgDetail?: PgFailureFields;
   },
   rawError: unknown,
 ): string {
   if (e.kind === "ValidationFailed" && Array.isArray(e.issues)) {
-    return `validation: ${e.issues
-      .slice(0, 3)
-      .map((i) => {
-        const z = i as { path?: unknown[]; message?: string };
-        return `${(z.path ?? []).join(".")}: ${z.message ?? "?"}`;
-      })
-      .join("; ")}`;
+    return `validation: ${formatErrorDetails(errorDetailsOf(e))}`;
   }
-  if (e.pgDetail) {
-    const parts: string[] = [];
-    if (e.pgDetail.code) parts.push(`SQLSTATE ${e.pgDetail.code}`);
-    if (e.pgDetail.constraint) parts.push(`constraint=${e.pgDetail.constraint}`);
-    if (e.pgDetail.table) parts.push(`table=${e.pgDetail.table}`);
-    if (e.pgDetail.column) parts.push(`column=${e.pgDetail.column}`);
-    if (e.pgDetail.detail) parts.push(e.pgDetail.detail);
-    if (parts.length > 0) return parts.join(" — ").slice(0, 240);
+  // #1277 — Postgres internals (constraint, table, SQL text) never reach
+  // the AI; the failure is described in terms of the caller's value.
+  if (e.pgDetail?.code && /^[0-9A-Z]{5}$/.test(e.pgDetail.code)) {
+    return describePgFailure(e.pgDetail).message;
   }
   const message = typeof e.message === "string" ? e.message : null;
   if (message?.startsWith("Failed query")) {
-    const pgDetail = extractPgDetail(rawError);
-    if (pgDetail) return pgDetail;
+    const fields = extractPgFields(rawError);
+    return fields?.code
+      ? describePgFailure(fields).message
+      : "a database error the call cannot fix — a defect in Caelo, reported automatically";
   }
   if (message) return message;
   if (typeof e.detail === "string") return e.detail;
@@ -92,14 +81,76 @@ function describePrimary(
 }
 
 /**
- * Walk a Bun.SQL / drizzle error chain looking for the underlying
- * PostgreSQL detail. The shape varies by driver:
- *   - bun-postgres: error.code (SQLSTATE), error.detail, error.constraint,
- *     error.message (sometimes carries "violates foreign key constraint")
- *   - drizzle: wraps the above as error.cause
- * Returns a compact one-liner — e.g.
- *   "FK violation: page_snapshots_page_id_fkey (Key (page_id)=(…) is not present in table pages)"
+ * Issue #1277 — which tool lists the valid ids, per entity noun of a
+ * "… not found" message. First match wins, so the longer nouns
+ * (`content_instance`, `import run`, `page type`) come before the
+ * shorter ones they contain.
  */
+const LIST_TOOL_BY_NOUN: readonly (readonly [RegExp, string])[] = [
+  [/content[_ ]instance/i, "list_content_instances"],
+  [/import run/i, "list_import_runs"],
+  [/import page/i, "list_import_pages"],
+  [/page type/i, "list_page_types"],
+  [/list type/i, "list_list_types"],
+  [/\b(media|asset|crop|image)\b/i, "find_media"],
+  [/\btheme\b/i, "list_themes"],
+  [/\btemplate\b/i, "list_templates"],
+  [/\blayout\b/i, "list_layouts"],
+  [/\bmodule\b/i, "list_modules"],
+  [/\bpage\b/i, "list_pages"],
+  [/\buser\b/i, "list_users"],
+  [/\brole\b/i, "list_roles"],
+  [/\bsnapshot\b/i, "list_snapshots"],
+  [/\bproposal\b/i, "list_pending_proposals"],
+  [/\bdomain\b/i, "list_domains"],
+  [/\bredirect\b/i, "find_redirects"],
+  [/\bplugin\b/i, "list_plugins"],
+  [/\blist\b/i, "list_lists"],
+];
+
+/**
+ * Issue #1277 — every "… not found" names the tool that lists the valid
+ * ids. Ops write the bare fact; a message that already names a list /
+ * find / get tool is left alone.
+ */
+function withListToolHint(message: string): string {
+  if (!/not found/i.test(message) || /\b(list|find|get)_[a-z_]+/.test(message)) return message;
+  const subject = message.slice(0, message.search(/not found/i));
+  const hit = LIST_TOOL_BY_NOUN.find(([re]) => re.test(subject));
+  return hit ? `${message.replace(/[.\s]+$/, "")} — \`${hit[1]}\` shows the valid ones.` : message;
+}
+
+/**
+ * Issue #1277 — the failed {@link ToolResult} for a Query API error: the
+ * caller's text plus the structure #1275 keys on (`failureKind`, the
+ * absolute-path `errors[]`) and the #1091 refusal flag. `content` is the
+ * text the tool already wrote, usually built around {@link describeError}.
+ *
+ * @param error - the op's `QueryError`.
+ * @param content - the tool's rendering of it.
+ * @param rootRename - when the tool names the op's top-level array
+ *   differently (the op's `instances` are the tool's `items`), the op
+ *   name and the tool name, so every path addresses the TOOL's arguments.
+ */
+export function toolError(
+  error: unknown,
+  content: string,
+  rootRename?: { readonly from: string; readonly to: string },
+): ToolResult & { readonly ok: false } {
+  const errors = errorDetailsOf(error).map((d) =>
+    rootRename && d.path[0] === rootRename.from
+      ? { ...d, path: [rootRename.to, ...d.path.slice(1)] }
+      : d,
+  );
+  return {
+    ok: false,
+    content,
+    failureKind: failureKindOf(error),
+    ...(errors.length > 0 ? { errors } : {}),
+    ...forwardRefusal(error),
+  };
+}
+
 /**
  * v0.6.0 W3 — pull the `nextAction` block off a `QueryError.HandlerError`
  * so tool handlers can forward it onto their `ToolResult.nextAction`.
@@ -161,41 +212,4 @@ export function forwardRefusal(error: unknown): { refusal?: true } {
   if (!error || typeof error !== "object") return {};
   const e = error as { kind?: unknown; refusal?: unknown };
   return e.kind === "HandlerError" && e.refusal === true ? { refusal: true } : {};
-}
-
-function extractPgDetail(error: unknown, depth = 0): string | null {
-  if (!error || typeof error !== "object" || depth > 4) return null;
-  const e = error as {
-    code?: string;
-    errno?: string;
-    detail?: string;
-    constraint?: string;
-    table?: string;
-    column?: string;
-    message?: string;
-    cause?: unknown;
-  };
-  const sqlstate = e.code ?? e.errno ?? null;
-  const msg = typeof e.message === "string" ? e.message : "";
-  const hasPgSignal =
-    sqlstate !== null ||
-    (typeof e.detail === "string" && e.detail.length > 0) ||
-    typeof e.constraint === "string" ||
-    msg.includes("violates") ||
-    msg.includes("constraint");
-  if (hasPgSignal) {
-    const parts: string[] = [];
-    if (sqlstate) parts.push(`SQLSTATE ${sqlstate}`);
-    if (e.constraint) parts.push(`constraint=${e.constraint}`);
-    if (e.table) parts.push(`table=${e.table}`);
-    if (e.column) parts.push(`column=${e.column}`);
-    if (typeof e.detail === "string" && e.detail.length > 0) parts.push(e.detail);
-    if (parts.length === 0 && msg && !msg.startsWith("Failed query")) {
-      // Last resort: take the first non-Failed-query line of msg.
-      const firstLine = msg.split("\n").find((l) => l && !l.startsWith("Failed query")) ?? msg;
-      return firstLine.slice(0, 240);
-    }
-    if (parts.length > 0) return parts.join(" — ").slice(0, 240);
-  }
-  return extractPgDetail(e.cause, depth + 1);
 }

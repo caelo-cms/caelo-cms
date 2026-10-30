@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type { z } from "zod";
+import type { ErrorDetail } from "./error-details.js";
 
 /**
  * Tagged error union returned from `execute()`. Each case is the app-level response
@@ -26,6 +27,21 @@ export type QueryError =
        * deliberate guard, never on a failure the caller cannot fix.
        */
       readonly refusal?: true;
+      /**
+       * #1277 — every input problem the handler found, each with its
+       * absolute input path (Zod `issue.path` form). When set, `message`
+       * is their rendering (`handlerErrorFromDetails`), so the text and
+       * the structure agree. Absent on failures that are not about one
+       * input value (a missing row the caller did not name, a defect).
+       */
+      readonly errors?: readonly ErrorDetail[];
+      /**
+       * #1277 — a defect in Caelo's code, not a problem the caller can fix
+       * by changing the call (a thrown driver error that is not a
+       * constraint violation, an INSERT that returned no row). Never
+       * offered for a patch (#1275); reported to the bug intake.
+       */
+      readonly internal?: true;
       /**
        * v0.5.17 — when the throw originated from a SQL driver (Bun.SQL,
        * drizzle, pg-postgres), the adapter walks `.cause` and lifts the
@@ -209,8 +225,12 @@ export function extractPgFields(error: unknown): {
       column?: unknown;
       cause?: unknown;
     };
-    const code =
-      typeof e.code === "string" ? e.code : typeof e.errno === "string" ? e.errno : undefined;
+    // Bun.SQL sets `.code` to its own class (`ERR_POSTGRES_SERVER_ERROR`)
+    // and the SQLSTATE on `.errno`; prefer the SQLSTATE so callers can
+    // classify the failure (#1277). Bun's own codes (no errno) pass through.
+    const sqlstate =
+      typeof e.errno === "string" && /^[0-9A-Z]{5}$/.test(e.errno) ? e.errno : undefined;
+    const code = sqlstate ?? (typeof e.code === "string" ? e.code : undefined);
     const constraint = typeof e.constraint === "string" ? e.constraint : undefined;
     const table = typeof e.table === "string" ? e.table : undefined;
     const column = typeof e.column === "string" ? e.column : undefined;

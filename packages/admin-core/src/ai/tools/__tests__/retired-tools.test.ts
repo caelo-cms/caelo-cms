@@ -242,7 +242,11 @@ describe("ToolRegistry alias resolution", () => {
 
   it("dispatch() still reports a genuinely unknown tool", async () => {
     const res = await live.dispatch("no_such_tool", {}, AI, recordingToolCtx([]));
-    expect(res).toEqual({ ok: false, content: "unknown tool: no_such_tool" });
+    expect(res).toEqual({
+      ok: false,
+      content: "unknown tool: no_such_tool",
+      failureKind: "UnknownTool",
+    });
   });
 });
 

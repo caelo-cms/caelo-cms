@@ -135,7 +135,7 @@ export const listUsersTool = makeListReadTool<
 >({
   name: "list_users",
   description:
-    "List site users (email, display name, roles); read-only. Changes: propose_create_user / propose_set_user_roles / propose_delete_user (Owner-approved). Re-call after an Owner approved one.",
+    "List site users (email, display name, roles); read-only. Changes: propose_create_user / propose_set_user_roles / propose_delete_user (Owner-approved).",
   opName: "users.list",
   input: noInput,
   label: "users",

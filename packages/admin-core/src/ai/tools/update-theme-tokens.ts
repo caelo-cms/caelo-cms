@@ -27,7 +27,7 @@ import {
   TOKEN_SHAPE_HINTS,
   TYPOGRAPHY_COMPOSITION_HINTS,
 } from "../theme-guidance.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 const setThemeTokensToolInput = z
@@ -154,7 +154,7 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
       opInput,
     );
     if (!r.ok) {
-      return { ok: false, content: `themes.update_tokens failed: ${describeError(r.error)}` };
+      return toolError(r.error, `themes.update_tokens failed: ${describeError(r.error)}`);
     }
     const v = r.value as {
       themeId: string;

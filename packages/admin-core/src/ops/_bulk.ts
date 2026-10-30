@@ -11,7 +11,8 @@
  * properties with zero logic duplication:
  *
  *  - **One-transaction atomicity.** Every item commits together or none do.
- *    If any item's handler returns an `err` Result we THROW
+ *    Every item runs (so every failing index is reported at once, #1277);
+ *    if any item's handler returned an `err` Result we THROW
  *    `OperationAbortError`, which the adapter catches to roll the WHOLE
  *    transaction back (a bare `return err` after an earlier item already
  *    wrote would COMMIT that partial work — see query-api/errors.ts). A
@@ -27,10 +28,17 @@
 
 import {
   defineOperation,
+  type ErrorDetail,
+  errorDetailsOf,
+  failureKindOf,
+  handlerErrorFromDetails,
   OperationAbortError,
   type OperationDefinition,
+  prefixErrorDetails,
+  type QueryError,
+  thrownToQueryError,
 } from "@caelo-cms/query-api";
-import { ok } from "@caelo-cms/shared";
+import { ok, type Result } from "@caelo-cms/shared";
 import { z } from "zod";
 
 /** Default cap on items per bulk call — bounds the per-tx work + token cost. */
@@ -70,26 +78,89 @@ export function defineBulkOp<I, O>(
     input: z.object({ items: z.array(singular.input).min(1).max(maxItems) }).strict(),
     output: z.object({ results: z.array(singular.output), count: z.number() }),
     handler: async (ctx, input, tx) => {
-      const results: O[] = [];
-      for (let i = 0; i < input.items.length; i += 1) {
-        const item = input.items[i] as I;
-        const r = await singular.handler(ctx, item, tx);
-        if (!r.ok) {
-          const inner = r.error as { message?: string; kind: string; refusal?: true };
-          // THROW (never `return err`) so the framework rolls back every item
-          // written so far — a partial batch would otherwise commit. The
-          // message names the failing index so the AI can fix + resend.
-          throw new OperationAbortError({
-            kind: "HandlerError",
-            operation: name,
-            message: `items[${i}]: ${inner.message ?? inner.kind}. The whole batch was rolled back — fix this item and resend all ${input.items.length}.`,
-            // #1091 — an item's guard refusal stays a refusal for the batch.
-            ...(inner.kind === "HandlerError" && inner.refusal ? { refusal: true as const } : {}),
-          });
-        }
-        results.push(r.value);
-      }
-      return ok({ results, count: results.length });
+      const run = await runEveryItem(name, "items", input.items, (item) =>
+        singular.handler(ctx, item, tx),
+      );
+      // THROW (never `return err`) so the framework rolls back every item
+      // written — a partial batch would otherwise commit.
+      if (!run.ok) throw new OperationAbortError(run.error);
+      return ok({ results: run.results, count: run.results.length });
     },
   });
+}
+
+/**
+ * Issue #1277 — run every item of a batch and report EVERY failing index
+ * at once, each problem under `[arrayKey, i, …]`. Items keep running after
+ * a failure so the caller fixes all of them in one go; only a throw that
+ * is not an `OperationAbortError` (a driver error, which leaves Postgres'
+ * transaction aborted) stops the loop. The caller decides how to fail:
+ * throw `OperationAbortError(error)` when anything may have been written.
+ *
+ * @returns every item's value, or one HandlerError naming all failures
+ *   (`refusal` when an item's guard refused, `internal` when an item hit
+ *   a defect) plus how many items succeeded (and so wrote).
+ */
+export async function runEveryItem<T, R>(
+  operation: string,
+  arrayKey: string,
+  items: readonly T[],
+  run: (item: T, index: number) => Promise<Result<R, QueryError>>,
+): Promise<{ ok: true; results: R[] } | { ok: false; error: QueryError; writtenItems: number }> {
+  const results: R[] = [];
+  const failures: ErrorDetail[] = [];
+  const failedIndices = new Set<number>();
+  let refusal = false;
+  let internal = false;
+  for (let i = 0; i < items.length; i += 1) {
+    let r: Result<R, QueryError>;
+    try {
+      r = await run(items[i] as T, i);
+    } catch (thrown) {
+      if (!(thrown instanceof OperationAbortError)) {
+        const error = thrownToQueryError(operation, thrown, "write");
+        if (failureKindOf(error) === "internal") internal = true;
+        failures.push(...itemFailures(arrayKey, i, error));
+        failedIndices.add(i);
+        break;
+      }
+      r = { ok: false, error: thrown.queryError };
+    }
+    if (r.ok) {
+      results.push(r.value);
+      continue;
+    }
+    failures.push(...itemFailures(arrayKey, i, r.error));
+    failedIndices.add(i);
+    if (r.error.kind === "HandlerError" && r.error.refusal) refusal = true;
+    if (failureKindOf(r.error) === "internal") internal = true;
+  }
+  if (failures.length === 0) return { ok: true, results };
+  return {
+    ok: false,
+    // Items that succeeded wrote; a failed item is assumed to have failed
+    // before its first write (the singular op contract, errors.ts).
+    writtenItems: results.length,
+    error: handlerErrorFromDetails(operation, failures, {
+      lead: `${failedIndices.size} of ${items.length} ${arrayKey} failed; nothing was written.`,
+      refusal,
+      internal,
+    }),
+  };
+}
+
+/**
+ * One failed item's problems under `[arrayKey, i]`: its own `errors[]`
+ * with their paths prefixed, or its whole message at `[arrayKey, i]`.
+ */
+export function itemFailures(arrayKey: string, index: number, error: QueryError): ErrorDetail[] {
+  const details = errorDetailsOf(error);
+  if (details.length > 0) return prefixErrorDetails([arrayKey, index], details);
+  const message =
+    "message" in error && typeof error.message === "string"
+      ? error.message
+      : "detail" in error && typeof error.detail === "string"
+        ? error.detail
+        : error.kind;
+  return [{ path: [arrayKey, index], message }];
 }

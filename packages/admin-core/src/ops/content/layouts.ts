@@ -261,7 +261,12 @@ export const createLayoutOp = defineOperation({
     `)) as unknown as { id: string }[];
     const layoutId = rows[0]?.id;
     if (!layoutId) {
-      return err({ kind: "HandlerError", operation: "layouts.create", message: "no id returned" });
+      return err({
+        kind: "HandlerError",
+        operation: "layouts.create",
+        message: "no id returned",
+        internal: true,
+      });
     }
     for (const b of input.blocks) {
       await tx.execute(sql`

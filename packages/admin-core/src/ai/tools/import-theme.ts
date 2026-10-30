@@ -19,7 +19,7 @@ import {
   TailwindImportError,
 } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const importThemeToolInput = z
@@ -71,7 +71,7 @@ export const importThemeTool: ToolDefinitionWithHandler<ImportThemeToolInput> = 
       tokens: detected.tokens,
     });
     if (!r.ok) {
-      return { ok: false, content: `themes.import failed: ${describeError(r.error)}` };
+      return toolError(r.error, `themes.import failed: ${describeError(r.error)}`);
     }
     const v = r.value as { themeId: string };
     return {

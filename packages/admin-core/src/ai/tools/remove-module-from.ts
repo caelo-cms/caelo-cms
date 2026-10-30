@@ -15,7 +15,7 @@
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { type RemoveModuleFromToolInput, removeModuleFromToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { resolvePageRef } from "./_page-ref.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
@@ -70,7 +70,7 @@ async function removeFromPage(
     pageId,
   });
   if (!got.ok)
-    return { ok: false, content: `pages.get_with_modules failed: ${describeError(got.error)}` };
+    return toolError(got.error, `pages.get_with_modules failed: ${describeError(got.error)}`);
   const page = (got.value as { page: PageWithModules }).page;
   let removed = false;
   const blocks = page.blocks.map((b) => {
@@ -83,7 +83,7 @@ async function removeFromPage(
     pageId,
     blocks,
   });
-  if (!r.ok) return { ok: false, content: `pages.set_modules failed: ${describeError(r.error)}` };
+  if (!r.ok) return toolError(r.error, `pages.set_modules failed: ${describeError(r.error)}`);
   return { ok: true, content: `module ${input.moduleId} removed from page ${pageId}` };
 }
 
@@ -94,7 +94,7 @@ async function removeFromLayout(
 ): Promise<ToolResult> {
   const slug = await resolveLayoutSlug(ctx, toolCtx, input.targetRef);
   const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.get", { slug });
-  if (!got.ok) return { ok: false, content: `layouts.get failed: ${describeError(got.error)}` };
+  if (!got.ok) return toolError(got.error, `layouts.get failed: ${describeError(got.error)}`);
   const layout = (got.value as { layout: LayoutDetail | null }).layout;
   if (!layout) return refNotFound("layout", input.targetRef);
   let removed = 0;

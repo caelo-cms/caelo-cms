@@ -73,6 +73,7 @@ export const queueToolApprovalOp = defineOperation({
         kind: "HandlerError",
         operation: "tool_approvals.queue",
         message: "no id returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {

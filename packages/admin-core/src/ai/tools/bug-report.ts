@@ -31,7 +31,7 @@ import { execute } from "@caelo-cms/query-api";
 import { bugReportKind, bugReportSeverity } from "@caelo-cms/shared";
 import { z } from "zod";
 import type { BugForwardingState } from "../../ops/ai/bug-reports.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const BUG_REPORT_FIELDS = [
@@ -199,7 +199,7 @@ export function describeBugForwarding(state: BugForwardingState): string {
     case "failed":
       return (
         "Sending it to the Caelo team failed; it is stored on this site (Settings → Detected bugs). " +
-        'Do not tell the operator the Caelo team was told. The Owner can send it again with one click on Settings → Detected bugs ("Send unsent reports"); you cannot re-send it yourself.'
+        'Do not tell the operator the Caelo team was told. The Owner can send it again with one click on Settings → Detected bugs ("Send unsent reports"); you cannot send it yourself.'
       );
   }
 }
@@ -279,7 +279,7 @@ export const bugReportTool: ToolDefinitionWithHandler<BugReportToolInput> = {
       blockedTask: input.blockedTask,
     });
     if (!r.ok) {
-      return { ok: false, content: `ai_bug_reports.create failed: ${describeError(r.error)}` };
+      return toolError(r.error, `ai_bug_reports.create failed: ${describeError(r.error)}`);
     }
     const { id, forwardingState } = r.value as { id: string; forwardingState: BugForwardingState };
     const blocked = input.blockedTask ? ", task blocked" : "";

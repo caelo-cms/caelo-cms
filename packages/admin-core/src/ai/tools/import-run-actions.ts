@@ -19,7 +19,7 @@ import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { getMediaStorage } from "../../media/storage.js";
 import { UNRESOLVED_IMPORT_LINK_NEXT_STEP } from "../../ops/links-import.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const resolveImportLinksInput = z
@@ -49,7 +49,7 @@ export const resolveImportLinksTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.resolve_links", input);
     if (!r.ok) {
-      return { ok: false, content: `resolve_import_links failed: ${describeError(r.error)}` };
+      return toolError(r.error, `resolve_import_links failed: ${describeError(r.error)}`);
     }
     const v = r.value as {
       resolved: number;
@@ -99,7 +99,7 @@ export const acceptImportPagesTool: ToolDefinitionWithHandler<AcceptImportPagesI
       ...(input.templateId ? { templateId: input.templateId } : {}),
     });
     if (!r.ok) {
-      return { ok: false, content: `imports.accept_pages failed: ${describeError(r.error)}` };
+      return toolError(r.error, `imports.accept_pages failed: ${describeError(r.error)}`);
     }
     const v = r.value as { accepted: { importPageId: string; pageId: string; slug: string }[] };
     return {
@@ -143,7 +143,7 @@ export const cleanupImportRunTool: ToolDefinitionWithHandler<CleanupImportRunInp
       runId: input.runId,
     });
     if (!before.ok) {
-      return { ok: false, content: `imports.get failed: ${describeError(before.error)}` };
+      return toolError(before.error, `imports.get failed: ${describeError(before.error)}`);
     }
     const snapshot = before.value as { run: { id: string } | null };
     if (!snapshot.run) {
@@ -153,7 +153,7 @@ export const cleanupImportRunTool: ToolDefinitionWithHandler<CleanupImportRunInp
       runId: input.runId,
     });
     if (!r.ok) {
-      return { ok: false, content: `imports.cleanup_run failed: ${describeError(r.error)}` };
+      return toolError(r.error, `imports.cleanup_run failed: ${describeError(r.error)}`);
     }
     // The op returns the screenshot keys of exactly the rows it deleted, so
     // a page accepted between the approval and this call keeps its

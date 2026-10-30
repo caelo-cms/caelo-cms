@@ -16,7 +16,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { setPlacementContentToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setPlacementContentTool: ToolDefinitionWithHandler<
@@ -41,7 +41,7 @@ export const setPlacementContentTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "placement.set_content", input);
     if (!r.ok) {
-      return { ok: false, content: `placement.set_content failed: ${describeError(r.error)}` };
+      return toolError(r.error, `placement.set_content failed: ${describeError(r.error)}`);
     }
     const { contentInstanceId } = r.value as { contentInstanceId: string };
     return {

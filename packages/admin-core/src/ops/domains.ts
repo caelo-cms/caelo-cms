@@ -121,6 +121,7 @@ export const addDomainOp = defineOperation({
         kind: "HandlerError",
         operation: "domains.add",
         message: "no row returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {

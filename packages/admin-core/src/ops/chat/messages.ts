@@ -431,6 +431,7 @@ export const recordAiCallOp = defineOperation({
         kind: "HandlerError",
         operation: "chat.record_ai_call",
         message: "no id returned",
+        internal: true,
       });
     }
     return ok({ aiCallId: id, costMicrocents });

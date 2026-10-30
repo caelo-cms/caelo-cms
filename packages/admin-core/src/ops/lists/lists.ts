@@ -14,7 +14,7 @@
  * rolls the whole batch back and names the item.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type ErrorDetail, handlerErrorFromDetails } from "@caelo-cms/query-api";
 import {
   applyListItemPatches,
   LIST_TYPE_ROLES,
@@ -300,7 +300,7 @@ async function writeList(
   if (validated.issues.length > 0) {
     return {
       ok: false,
-      message: `${args.at}: ${describeIssues(validated.issues)}. Fix those entries and resend (list_types.get "${args.typeSlug}" shows the fields each node kind takes).`,
+      message: `${args.at}: ${describeIssues(validated.issues)}. Fix those entries (list_types.get "${args.typeSlug}" shows the fields each node kind takes).`,
     };
   }
   const refIssues = await checkEntryRefs(tx, branchId, type.def, validated.items, id);
@@ -415,13 +415,17 @@ export const upsertListsManyOp = defineOperation({
     );
     let wrote = false;
     const seen = new Set<string>();
+    // #1277 — every failing list is reported at once, each at `lists[i]`.
+    const problems: ErrorDetail[] = [];
+    let refused = false;
     for (const [i, item] of input.lists.entries()) {
       const at = `lists[${i}] ("${item.slug}")`;
       if (seen.has(item.slug)) {
-        return failBatch(
-          wrote,
-          handlerError(op, `${at}: slug appears twice in this call — send each list once.`),
-        );
+        problems.push({
+          path: ["lists", i, "slug"],
+          message: "slug appears twice in this call — send each list once",
+        });
+        continue;
       }
       seen.add(item.slug);
       const found = await loadListEntityForUpsert(tx, "list", branchId, item.slug);
@@ -430,13 +434,11 @@ export const upsertListsManyOp = defineOperation({
         item.expectedVersion !== undefined &&
         (existing?.state.version ?? null) !== item.expectedVersion
       ) {
-        return failBatch(
-          wrote,
-          handlerError(
-            op,
-            conflictMessage(at, existing?.state.version ?? null, item.expectedVersion),
-          ),
-        );
+        problems.push({
+          path: ["lists", i, "expectedVersion"],
+          message: conflictMessage(at, existing?.state.version ?? null, item.expectedVersion),
+        });
+        continue;
       }
       if (found) {
         const lock = await lockList(ctx, tx, op, found.id);
@@ -451,11 +453,11 @@ export const upsertListsManyOp = defineOperation({
         typeSlug: item.type,
         items: item.items,
       });
-      if (!r.ok)
-        return failBatch(
-          wrote,
-          handlerError(op, `${r.message} The whole batch was rolled back.`, r.refusal === true),
-        );
+      if (!r.ok) {
+        problems.push({ path: ["lists", i], message: r.message });
+        if (r.refusal === true) refused = true;
+        continue;
+      }
       wrote = true;
       entities.push({ kind: "list", entityId: r.id, state: r.state });
       await emitListItemsChanged(
@@ -477,6 +479,15 @@ export const upsertListsManyOp = defineOperation({
           return def ? sourceEntriesOf(def, r.state.items) : [];
         })(),
       });
+    }
+    if (problems.length > 0) {
+      return failBatch(
+        wrote,
+        handlerErrorFromDetails(op, problems, {
+          lead: `${new Set(problems.map((p) => p.path[1])).size} of ${input.lists.length} lists failed; nothing was written.`,
+          refusal: refused,
+        }),
+      );
     }
     await emitSnapshot(tx, {
       actorId: ctx.actorId,
@@ -644,7 +655,7 @@ export const patchListItemsManyOp = defineOperation({
       if (!r.ok)
         return failBatch(
           wrote,
-          handlerError(op, `${r.message} The whole batch was rolled back.`, r.refusal === true),
+          handlerError(op, `${r.message} Nothing was written.`, r.refusal === true),
         );
       wrote = true;
       entities.push({ kind: "list", entityId: r.id, state: r.state });

@@ -151,16 +151,21 @@ function collectRefHandles(value: unknown, out: string[]): void {
  * order on the page is still the array order.
  *
  * @returns the entry indices in minting order, or the AI-actionable
- *   message for a handle no entry declares, a self-reference or a cycle.
+ *   message for every handle no entry declares and every self-reference
+ *   (`issues`, per entry index), or for a cycle (`index: -1`).
  */
 export function orderBuildEntries(
   entries: readonly BuildEntryRefs[],
-): { ok: true; order: number[] } | { ok: false; message: string } {
+):
+  | { ok: true; order: number[] }
+  | { ok: false; message: string; issues: { index: number; message: string }[] } {
   const byHandle = new Map<string, number>();
   for (const [i, e] of entries.entries()) if (e.ref !== undefined) byHandle.set(e.ref, i);
   const declared = [...byHandle.keys()].join(", ") || "(none)";
 
   const deps: Set<number>[] = [];
+  // #1277 — every unknown or self handle is reported, not only the first.
+  const issues: { index: number; message: string }[] = [];
   for (const [i, e] of entries.entries()) {
     const handles: string[] = [];
     if (e.moduleId !== undefined && typeof e.moduleId !== "string") handles.push(e.moduleId.$ref);
@@ -171,23 +176,32 @@ export function orderBuildEntries(
     for (const h of handles) {
       const target = byHandle.get(h);
       if (target === undefined) {
-        return {
-          ok: false,
+        issues.push({
+          index: i,
           message:
-            `modules[${i}]: {"$ref": ${JSON.stringify(h)}} does not match any entry's \`ref\` in this call. ` +
+            `{"$ref": ${JSON.stringify(h)}} does not match any entry's \`ref\` in this call. ` +
             `Refs declared: ${declared} — give the module you mean \`ref: ${JSON.stringify(h)}\` (its position in the array does not matter), ` +
-            "or pass an existing module's UUID as moduleId.",
-        };
+            "or pass an existing module's UUID as moduleId",
+        });
+        continue;
       }
       if (target === i) {
-        return {
-          ok: false,
-          message: `modules[${i}]: {"$ref": ${JSON.stringify(h)}} names the entry itself — a module cannot embed itself.`,
-        };
+        issues.push({
+          index: i,
+          message: `{"$ref": ${JSON.stringify(h)}} names the entry itself — a module cannot embed itself`,
+        });
+        continue;
       }
       need.add(target);
     }
     deps.push(need);
+  }
+  if (issues.length > 0) {
+    return {
+      ok: false,
+      message: issues.map((x) => `modules[${x.index}]: ${x.message}.`).join(" "),
+      issues,
+    };
   }
 
   // Kahn's algorithm, always taking the lowest ready index so a call
@@ -207,12 +221,10 @@ export function orderBuildEntries(
       const stuck = entries
         .map((e, i) => (done.has(i) ? null : `modules[${i}]${e.ref ? ` (ref '${e.ref}')` : ""}`))
         .filter((x): x is string => x !== null);
-      return {
-        ok: false,
-        message:
-          `{"$ref"} cycle between ${stuck.join(", ")}: each embeds another, so none can be created first. ` +
-          "Nesting must form a tree — remove the reference that points back.",
-      };
+      const message =
+        `{"$ref"} cycle between ${stuck.join(", ")}: each embeds another, so none can be created first. ` +
+        "Nesting must form a tree — remove the reference that points back.";
+      return { ok: false, message, issues: [{ index: -1, message }] };
     }
     order.push(next);
     done.add(next);

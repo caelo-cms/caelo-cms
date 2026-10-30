@@ -93,7 +93,7 @@ function correctQuotedAnchor(
     return {
       error:
         `${cause} ${count} times (${matchLines(body, oldRaw).join("; ")}). ` +
-        'Resend it as raw text (no wrapping quotes, no \\" escapes) with enough surrounding context to match once, or pass replaceAll:true.',
+        'Pass it as raw text (no wrapping quotes, no \\" escapes) with enough surrounding context to match once, or pass replaceAll:true.',
     };
   }
   return {

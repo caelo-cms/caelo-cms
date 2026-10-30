@@ -12,7 +12,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { duplicatePageToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const duplicatePageTool: ToolDefinitionWithHandler<
@@ -49,7 +49,7 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.duplicate", input);
     if (!res.ok) {
-      return { ok: false, content: `pages.duplicate failed: ${describeError(res.error)}` };
+      return toolError(res.error, `pages.duplicate failed: ${describeError(res.error)}`);
     }
     const newPageId = (res.value as { pageId: string }).pageId;
     return {

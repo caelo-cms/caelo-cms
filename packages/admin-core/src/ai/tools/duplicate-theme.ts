@@ -10,7 +10,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const duplicateThemeToolInput = z
@@ -49,7 +49,7 @@ export const duplicateThemeTool: ToolDefinitionWithHandler<DuplicateThemeToolInp
   },
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.duplicate", input);
-    if (!r.ok) return { ok: false, content: `themes.duplicate failed: ${describeError(r.error)}` };
+    if (!r.ok) return toolError(r.error, `themes.duplicate failed: ${describeError(r.error)}`);
     const v = r.value as { themeId: string; slug: string };
     return {
       ok: true,

@@ -11,7 +11,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { formatMicrocentsAsMoney } from "../../ops/imports-cost.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const notesInput = z
@@ -81,7 +81,7 @@ export const addImportPageNotesTool: ToolDefinitionWithHandler<NotesInput> = {
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `add_import_page_notes failed: ${describeError(r.error)}` };
+      return toolError(r.error, `add_import_page_notes failed: ${describeError(r.error)}`);
     }
     const v = r.value as { totalNotes: number };
     return {
@@ -166,7 +166,7 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `get_import_run_report failed: ${describeError(r.error)}` };
+      return toolError(r.error, `get_import_run_report failed: ${describeError(r.error)}`);
     }
     const v = r.value as Report;
 

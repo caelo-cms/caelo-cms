@@ -23,7 +23,7 @@ import {
   type Theme,
 } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const AS_VALUES = ["dtcg", "css-vars", "tailwind", "summary", "font-delivery"] as const;
@@ -82,7 +82,7 @@ export const getThemeTool: ToolDefinitionWithHandler<GetThemeToolInput> = {
         ...(input.slug === undefined ? {} : { themeSlug: input.slug }),
       });
       if (!r.ok) {
-        return { ok: false, content: `themes.font_delivery failed: ${describeError(r.error)}` };
+        return toolError(r.error, `themes.font_delivery failed: ${describeError(r.error)}`);
       }
       return { ok: true, content: JSON.stringify(r.value, null, 2) };
     }
@@ -92,8 +92,7 @@ export const getThemeTool: ToolDefinitionWithHandler<GetThemeToolInput> = {
       // No slug → the active theme, plus a one-liner naming the others
       // so the model knows variants exist without a list round-trip.
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.get_active", {});
-      if (!r.ok)
-        return { ok: false, content: `themes.get_active failed: ${describeError(r.error)}` };
+      if (!r.ok) return toolError(r.error, `themes.get_active failed: ${describeError(r.error)}`);
       theme = (r.value as { theme: Theme | null }).theme;
       if (!theme) {
         return { ok: false, content: "no active theme on this site — call list_themes." };
@@ -103,7 +102,7 @@ export const getThemeTool: ToolDefinitionWithHandler<GetThemeToolInput> = {
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.get", {
         slug: input.slug,
       });
-      if (!r.ok) return { ok: false, content: `themes.get failed: ${describeError(r.error)}` };
+      if (!r.ok) return toolError(r.error, `themes.get failed: ${describeError(r.error)}`);
       theme = (r.value as { theme: Theme | null }).theme;
       if (!theme) {
         // Miss → answer with the inventory INLINE so the model corrects

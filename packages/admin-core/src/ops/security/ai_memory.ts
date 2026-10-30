@@ -142,6 +142,7 @@ export const proposeAiMemoryOp = defineOperation({
         kind: "HandlerError",
         operation: "ai_memory.propose",
         message: "no id returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {

@@ -20,7 +20,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { proposeRevokeCapabilityInput } from "../../ops/plugins/capability_proposals.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 import { makeListReadTool } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -118,7 +118,7 @@ export const rejectPluginTool: ToolDefinitionWithHandler<z.infer<typeof rejectIn
   schema: rejectInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.reject", input);
-    if (!r.ok) return { ok: false, content: `reject_plugin failed: ${describeError(r.error)}` };
+    if (!r.ok) return toolError(r.error, `reject_plugin failed: ${describeError(r.error)}`);
     return { ok: true, content: `Plugin "${input.slug}" rejected. revalidate_plugin re-files it.` };
   },
 };
@@ -132,7 +132,7 @@ export const revalidatePluginTool: ToolDefinitionWithHandler<z.infer<typeof reva
   schema: revalidateInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.revalidate", input);
-    if (!r.ok) return { ok: false, content: `revalidate_plugin failed: ${describeError(r.error)}` };
+    if (!r.ok) return toolError(r.error, `revalidate_plugin failed: ${describeError(r.error)}`);
     const v = r.value as { status: string; validationErrors: Array<{ kind: string }> };
     return {
       ok: true,
@@ -167,7 +167,7 @@ export const reloadPluginTool: ToolDefinitionWithHandler<z.infer<typeof reloadIn
   schema: reloadInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.reload", input);
-    if (!r.ok) return { ok: false, content: `reload_plugin failed: ${describeError(r.error)}` };
+    if (!r.ok) return toolError(r.error, `reload_plugin failed: ${describeError(r.error)}`);
     const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.get", input);
     if (!got.ok) {
       return {

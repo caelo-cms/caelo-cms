@@ -7,7 +7,14 @@
  * (embedded modules, terms) that `validateListItems` cannot do.
  */
 
-import { OperationAbortError, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
+import {
+  type ErrorDetail,
+  type ErrorPathSegment,
+  OperationAbortError,
+  parseErrorPath,
+  type QueryError,
+  type TransactionRunner,
+} from "@caelo-cms/query-api";
 import {
   canonicaliseHtmlLinks,
   canonicaliseUrl,
@@ -60,6 +67,21 @@ export function describeIssues(issues: readonly ListIssue[], max = 8): string {
   const shown = issues.slice(0, max).map((i) => `${i.path}: ${i.message.replace(/\.$/, "")}`);
   const more = issues.length > max ? `; and ${issues.length - max} more` : "";
   return `${shown.join("; ")}${more}`;
+}
+
+/**
+ * List-validator issues (string paths) as error details under `prefix`
+ * (#1277): `nodes.entry.fields[0]` at `["listTypes", 2]` becomes
+ * `["listTypes", 2, "nodes", "entry", "fields", 0]`.
+ */
+export function listIssuesToDetails(
+  prefix: readonly ErrorPathSegment[],
+  issues: readonly ListIssue[],
+): ErrorDetail[] {
+  return issues.map((i) => ({
+    path: [...prefix, ...parseErrorPath(i.path)],
+    message: i.message.replace(/\.$/, ""),
+  }));
 }
 
 /** The caller's branch (null outside a chat). */

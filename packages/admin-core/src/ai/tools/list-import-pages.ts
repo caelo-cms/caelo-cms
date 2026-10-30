@@ -15,7 +15,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const input = z
@@ -101,7 +101,7 @@ export const listImportPagesTool: ToolDefinitionWithHandler<Input> = {
       toolInput,
     );
     if (!r.ok) {
-      return { ok: false, content: `list_import_pages failed: ${describeError(r.error)}` };
+      return toolError(r.error, `list_import_pages failed: ${describeError(r.error)}`);
     }
     const v = r.value as ListResult;
     const lines = [

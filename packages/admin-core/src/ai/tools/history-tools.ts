@@ -18,7 +18,7 @@ import type { listPendingChangesOp } from "../../ops/chat/stage.js";
 import type { getSnapshotWithEntitiesOp } from "../../ops/snapshots/get.js";
 import type { moduleImpactOp } from "../../ops/snapshots/impact.js";
 import type { listSnapshotsOp } from "../../ops/snapshots/list.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
@@ -171,7 +171,7 @@ async function renderOpenChanges(ctx: ExecutionContext, toolCtx: ToolContext): P
     {},
   );
   if (!r.ok) {
-    return { ok: false, content: `chat.list_open_changes failed: ${describeError(r.error)}` };
+    return toolError(r.error, `chat.list_open_changes failed: ${describeError(r.error)}`);
   }
   const v = r.value as OpValue<typeof listOpenChangesOp>;
   if (v.chats.length === 0) {
@@ -225,7 +225,7 @@ export const listUnpublishedChangesTool: ToolDefinitionWithHandler<
       chatSessionId: toolCtx.chatSessionId,
     });
     if (!r.ok) {
-      return { ok: false, content: `chat.list_pending_changes failed: ${describeError(r.error)}` };
+      return toolError(r.error, `chat.list_pending_changes failed: ${describeError(r.error)}`);
     }
     const v = r.value as OpValue<typeof listPendingChangesOp>;
     const lines = [

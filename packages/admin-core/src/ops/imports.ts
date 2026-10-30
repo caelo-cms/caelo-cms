@@ -513,6 +513,7 @@ export const createImportRunOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.create_run",
         message: "no row returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {
@@ -642,6 +643,7 @@ export const proposeImportRunOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.propose_run",
         message: "no row returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {
@@ -923,6 +925,7 @@ export const logImportRunEventOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.log_event",
         message: "no row returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {

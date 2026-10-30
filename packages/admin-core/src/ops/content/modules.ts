@@ -513,6 +513,7 @@ export const createModuleOp = defineOperation({
         kind: "HandlerError",
         operation: "modules.create",
         message: "no id returned",
+        internal: true,
       });
     }
     // P7 usage-tracker: a fresh module's HTML may already reference

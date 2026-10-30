@@ -13,7 +13,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { setSiteDefaultsToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface LayoutDetail {
@@ -59,10 +59,10 @@ export const setSiteDefaultsTool: ToolDefinitionWithHandler<
       {},
     );
     if (!currentRes.ok) {
-      return {
-        ok: false,
-        content: `site_defaults.get failed: ${describeError(currentRes.error)}`,
-      };
+      return toolError(
+        currentRes.error,
+        `site_defaults.get failed: ${describeError(currentRes.error)}`,
+      );
     }
     const current = (
       currentRes.value as {
@@ -76,7 +76,7 @@ export const setSiteDefaultsTool: ToolDefinitionWithHandler<
         slug: input.defaultLayoutSlug,
       });
       if (!got.ok) {
-        return { ok: false, content: `layouts.get failed: ${describeError(got.error)}` };
+        return toolError(got.error, `layouts.get failed: ${describeError(got.error)}`);
       }
       const layout = (got.value as { layout: LayoutDetail | null }).layout;
       if (!layout) {
@@ -89,7 +89,7 @@ export const setSiteDefaultsTool: ToolDefinitionWithHandler<
     if (input.defaultTemplateSlug !== undefined) {
       const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "templates.list", {});
       if (!listed.ok) {
-        return { ok: false, content: `templates.list failed: ${describeError(listed.error)}` };
+        return toolError(listed.error, `templates.list failed: ${describeError(listed.error)}`);
       }
       const tpl = (listed.value as { templates: TemplateDetail[] }).templates.find(
         (t) => t.slug === input.defaultTemplateSlug,
@@ -113,7 +113,7 @@ export const setSiteDefaultsTool: ToolDefinitionWithHandler<
       defaultTemplateId: templateId,
     });
     if (!res.ok) {
-      return { ok: false, content: `site_defaults.set failed: ${describeError(res.error)}` };
+      return toolError(res.error, `site_defaults.set failed: ${describeError(res.error)}`);
     }
     return {
       ok: true,

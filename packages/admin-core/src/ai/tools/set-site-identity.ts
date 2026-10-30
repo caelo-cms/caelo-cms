@@ -21,7 +21,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { designBriefSchema, languageTagSchema } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const setSiteIdentityToolInput = z
@@ -118,7 +118,7 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `site_defaults.set_identity failed: ${describeError(r.error)}` };
+      return toolError(r.error, `site_defaults.set_identity failed: ${describeError(r.error)}`);
     }
     const parts: string[] = [];
     if (input.siteName !== undefined) {

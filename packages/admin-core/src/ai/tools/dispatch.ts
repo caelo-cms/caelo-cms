@@ -11,8 +11,13 @@
  * they flow back to the model so it can correct course.
  */
 
-import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
-import { execute } from "@caelo-cms/query-api";
+import type {
+  DatabaseAdapter,
+  ErrorDetail,
+  FailureKind,
+  OperationRegistry,
+} from "@caelo-cms/query-api";
+import { execute, formatErrorPath, zodIssuesToErrorDetails } from "@caelo-cms/query-api";
 import type {
   ChatSendMessageInput,
   ExecutionContext,
@@ -261,6 +266,20 @@ export interface ToolResult {
    * CLAUDE.md §4), so those stay captured.
    */
   readonly refusal?: true;
+  /**
+   * #1277 — what kind of failure this is (only on `ok: false`): a
+   * `QueryError` kind, `InvalidArguments` (the tool's schema refused the
+   * call), `UnknownTool`, or `internal` (a defect no change to the call
+   * fixes). Absent on a failure the tool did not classify. #1275 keys on
+   * it to decide whether a failed call is kept for a patch.
+   */
+  readonly failureKind?: FailureKind;
+  /**
+   * #1277 — every input problem, each with its absolute path into THIS
+   * tool's arguments (Zod `issue.path` form, e.g. `["modules", 3, "html"]`).
+   * `content` renders the same entries with `formatErrorPath`.
+   */
+  readonly errors?: readonly ErrorDetail[];
 }
 
 /**
@@ -597,7 +616,7 @@ function nestingIntentHint(
     `- a list of plain strings (tags, bullets) → one \`list\` field with \`listType:"texts"\` and a \`default\` of entries, rendered with \`{{#name}}…{{text}}…{{/name}}\`;\n` +
     `- repeating rich sub-modules (cards with image + title + body) → one \`module-list\` field ` +
     `(note: \`module\`/\`module-list\` need a content_instance to fill them, so they do NOT render on layout/template chrome — use a \`list\` field there).\n` +
-    `Re-call with the nesting moved into a \`fields\` entry; drop ${keyList}.`
+    `Move the nesting into a \`fields\` entry and drop ${keyList}.`
   );
 }
 
@@ -679,8 +698,10 @@ function formatToolArgError(
   inputSchema: ToolInputSchema,
   args?: unknown,
 ): string {
-  const lines = issues.slice(0, 6).map((issue) => {
-    const path = issue.path.join(".") || "(root)";
+  const lines = issues.slice(0, MAX_ARG_ISSUES_SHOWN).map((issue) => {
+    const path = formatErrorPath(
+      issue.path.filter((s): s is string | number => typeof s !== "symbol"),
+    );
     switch (issue.code) {
       case "unrecognized_keys": {
         // #1151 — say WHERE: a key nested in `page` or `modules[i]` is not a
@@ -743,15 +764,20 @@ function formatToolArgError(
   // the first retry instead of re-sending the rejected key until the loop cap.
   const nesting = nestingIntentHint(issues, inputSchema);
 
+  const more =
+    issues.length > MAX_ARG_ISSUES_SHOWN ? [`+${issues.length - MAX_ARG_ISSUES_SHOWN} more`] : [];
   return (
     `invalid arguments for ${name}:\n` +
-    lines.map((l) => `- ${l}`).join("\n") +
+    [...lines, ...more].map((l) => `- ${l}`).join("\n") +
     `\n${shape}\n` +
     schemaRecoveryBlock(inputSchema, calledEmpty) +
     (nesting ? `${nesting}\n` : "") +
-    `Re-call \`${name}\` with only the listed properties (drop any unrecognized keys) and retry — do not ask the operator.`
+    "Change only the values listed above (remove unrecognized keys); everything else in the call is fine. Do not ask the operator."
   );
 }
+
+/** Schema issues rendered as text per call; `errors[]` carries every one. */
+const MAX_ARG_ISSUES_SHOWN = 20;
 
 export class ToolRegistry {
   readonly #tools = new Map<string, RegisteredTool>();
@@ -834,7 +860,7 @@ export class ToolRegistry {
     const resolved = resolveToolCall(requestedName, rawArgs, (n) => this.#tools.has(n), "dispatch");
     const tool = resolved ? this.#tools.get(resolved.name) : undefined;
     if (!resolved || !tool) {
-      return { ok: false, content: `unknown tool: ${requestedName}` };
+      return { ok: false, content: `unknown tool: ${requestedName}`, failureKind: "UnknownTool" };
     }
     const name = resolved.name;
     // issue #251 (WS5) — repair provider-side encoding damage
@@ -856,6 +882,8 @@ export class ToolRegistry {
       return {
         ok: false,
         content: formatToolArgError(name, parsed.error.issues, tool.inputSchema, normalized.args),
+        failureKind: "InvalidArguments",
+        errors: zodIssuesToErrorDetails(parsed.error.issues),
       };
     }
     // v0.6.0 W5 — approval gate. When the tool declares

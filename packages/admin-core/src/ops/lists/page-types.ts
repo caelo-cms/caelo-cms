@@ -15,7 +15,7 @@
  */
 
 import { activeListExt } from "@caelo-cms/plugin-host";
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type ErrorDetail, handlerErrorFromDetails } from "@caelo-cms/query-api";
 import { checkPageTypeDef, ok, type PageTypeDef, pageTypeDefSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -35,7 +35,14 @@ import { emitSnapshot } from "../../snapshots/index.js";
 import type { PageTypeState } from "../../snapshots/state.js";
 import { updatePageOp } from "../content/pages.js";
 import { structureWriteRefusal } from "./_permission.js";
-import { branchOf, failBatch, handlerError, listTypesBySlug, type Tx } from "./_shared.js";
+import {
+  branchOf,
+  failBatch,
+  handlerError,
+  listIssuesToDetails,
+  listTypesBySlug,
+  type Tx,
+} from "./_shared.js";
 
 const pageTypeRowSchema = pageTypeDefSchema.extend({
   id: z.string(),
@@ -173,39 +180,43 @@ export const upsertPageTypesManyOp = defineOperation({
     }[] = [];
     let wrote = false;
     const seen = new Set<string>();
+    // #1277 — every definition problem of every page type, before the first write.
+    const definitionProblems: ErrorDetail[] = [];
+    for (const [i, item] of input.pageTypes.entries()) {
+      const { expectedVersion: _v, ...def } = item;
+      if (input.pageTypes.findIndex((t) => t.slug === def.slug) !== i) {
+        definitionProblems.push({
+          path: ["pageTypes", i, "slug"],
+          message: "slug appears twice in this call — send each page type once",
+        });
+      }
+      definitionProblems.push(
+        ...listIssuesToDetails(["pageTypes", i], checkPageTypeDef(def)),
+        ...(await checkReferences(tx, branchId, def)).map((message) => ({
+          path: ["pageTypes", i],
+          message,
+        })),
+      );
+    }
+    if (definitionProblems.length > 0) {
+      return {
+        ok: false,
+        error: handlerErrorFromDetails(op, definitionProblems, {
+          lead: "No page type was written.",
+        }),
+      };
+    }
     for (const [i, item] of input.pageTypes.entries()) {
       const { expectedVersion, ...def } = item;
       const at = `pageTypes[${i}] ("${def.slug}")`;
-      if (seen.has(def.slug)) {
-        return failBatch(
-          wrote,
-          handlerError(op, `${at}: slug appears twice in this call — send each page type once.`),
-        );
-      }
       seen.add(def.slug);
-      const issues = [
-        ...checkPageTypeDef(def).map((x) => `${x.path}: ${x.message}`),
-        ...(await checkReferences(tx, branchId, def)),
-      ];
-      if (issues.length > 0) {
-        return failBatch(
-          wrote,
-          handlerError(
-            op,
-            `${at}: ${issues
-              .slice(0, 8)
-              .map((i) => i.replace(/\.$/, ""))
-              .join("; ")}. Fix the definition and resend the whole batch.`,
-          ),
-        );
-      }
       const found = await loadListEntityForUpsert(tx, "pageType", branchId, def.slug);
       const existing = found && found.state.deletedAt === null ? found : null;
       const extIssues = checkDefinitionExt(def, existing?.state.definition ?? null, activeListExt);
       if (extIssues.length > 0) {
         return failBatch(
           wrote,
-          handlerError(op, `${at}: ${extIssues.join(" ")} Resend the whole batch.`, true),
+          handlerError(op, `${at}: ${extIssues.join(" ")} Nothing was written.`, true),
         );
       }
       if (expectedVersion !== undefined && (existing?.state.version ?? 0) !== expectedVersion) {
@@ -278,7 +289,7 @@ export const upsertPageTypesManyOp = defineOperation({
           handlerError(
             op,
             `${at}: ${blocked.length} page(s) of this type would not fit the new definition — ${blocked.slice(0, 6).join("; ")}${blocked.length > 6 ? `; and ${blocked.length - 6} more` : ""}. ` +
-              "Move them to an allowed template or another page type first (pages.update_many), give new required properties a default, or resend with dropValues: true to delete the dropped values.",
+              "Move them to an allowed template or another page type first (pages.update_many), give new required properties a default, or set dropValues: true to delete the dropped values.",
             true,
           ),
         );

@@ -558,7 +558,7 @@ describe("review fixes (#873)", () => {
         },
       ],
     });
-    expect(built).toContain('modules[0] ("Bulk CTA")');
+    expect(built).toContain("`modules[0].content`");
     expect(built).toContain(`values.cta_href: "/${PFX}-bulk-ghost"`);
 
     const moduleId = await makeModule("bulk", '<a href="{{cta_href}}">x</a>', CTA_FIELDS);

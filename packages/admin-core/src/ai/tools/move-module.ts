@@ -19,7 +19,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { type MoveModuleToolInput, moveModuleToolInput } from "@caelo-cms/shared";
 import { blockNotFoundError } from "./_block-name-enum.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageWithModules {
@@ -106,7 +106,7 @@ export const moveModuleTool: ToolDefinitionWithHandler<MoveModuleToolInput> = {
       pageId: input.pageId,
     });
     if (!got.ok) {
-      return { ok: false, content: `pages.get_with_modules failed: ${describeError(got.error)}` };
+      return toolError(got.error, `pages.get_with_modules failed: ${describeError(got.error)}`);
     }
     const detail = (got.value as { page: PageWithModules }).page;
     const placementsOf = (b: PageWithModules["blocks"][number]): Placement[] =>
@@ -143,7 +143,7 @@ export const moveModuleTool: ToolDefinitionWithHandler<MoveModuleToolInput> = {
                 .filter((x) => x !== "")
                 .join(
                   " ",
-                )} — its placements: ${describePlacements(found)}. Re-call with one of them as fromBlockName + fromPosition.`
+                )} — its placements: ${describePlacements(found)}. Set fromBlockName + fromPosition to one of them.`
             : `module ${input.moduleId} is placed ${found.length} times on page ${input.pageId} (${describePlacements(found)}) — pass fromBlockName + fromPosition to say which one to move.`,
       };
     }
@@ -211,7 +211,7 @@ export const moveModuleTool: ToolDefinitionWithHandler<MoveModuleToolInput> = {
       blocks,
     });
     if (!setRes.ok) {
-      return { ok: false, content: `pages.set_modules failed: ${describeError(setRes.error)}` };
+      return toolError(setRes.error, `pages.set_modules failed: ${describeError(setRes.error)}`);
     }
     return {
       ok: true,

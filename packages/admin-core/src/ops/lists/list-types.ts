@@ -15,7 +15,7 @@
  */
 
 import { activeListExt } from "@caelo-cms/plugin-host";
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type ErrorDetail, handlerErrorFromDetails } from "@caelo-cms/query-api";
 import {
   checkListTypeDef,
   LIST_TYPE_ROLES,
@@ -56,6 +56,7 @@ import {
   emitListItemsChanged,
   failBatch,
   handlerError,
+  listIssuesToDetails,
 } from "./_shared.js";
 
 const listTypeRowSchema = z.object({
@@ -257,29 +258,35 @@ export const upsertListTypesManyOp = defineOperation({
     let wrote = false;
     const seen = new Set<string>();
 
+    // #1277 — every definition problem of every list type, before the first write.
+    const definitionProblems = input.listTypes.flatMap((item, i): ErrorDetail[] => {
+      const { expectedVersion: _v, ...def } = item;
+      const twice = input.listTypes.findIndex((t) => t.slug === def.slug) !== i;
+      return [
+        ...(twice
+          ? [
+              {
+                path: ["listTypes", i, "slug"],
+                message: `slug "${def.slug}" appears twice in this call — send each list type once`,
+              },
+            ]
+          : []),
+        ...listIssuesToDetails(["listTypes", i], checkListTypeDef(def)),
+      ];
+    });
+    if (definitionProblems.length > 0) {
+      return {
+        ok: false,
+        error: handlerErrorFromDetails(op, definitionProblems, {
+          lead: "No list type was written.",
+        }),
+      };
+    }
+
     for (const [i, item] of input.listTypes.entries()) {
       const { expectedVersion, ...def } = item;
       const at = `listTypes[${i}] ("${def.slug}")`;
-      if (seen.has(def.slug)) {
-        return failBatch(
-          wrote,
-          handlerError(
-            op,
-            `${at}: slug "${def.slug}" appears twice in this call — send each list type once.`,
-          ),
-        );
-      }
       seen.add(def.slug);
-      const issues = checkListTypeDef(def);
-      if (issues.length > 0) {
-        return failBatch(
-          wrote,
-          handlerError(
-            op,
-            `${at}: ${describeIssues(issues)}. Fix the definition and resend the whole batch.`,
-          ),
-        );
-      }
       const found = await loadListEntityForUpsert(tx, "listType", branchId, def.slug);
       const existing = found && found.state.deletedAt === null ? found : null;
       const owned = pluginOwnedRefusal(ctx, at, def.slug, found?.ownerPlugin ?? null);
@@ -288,7 +295,7 @@ export const upsertListTypesManyOp = defineOperation({
       if (extIssues.length > 0) {
         return failBatch(
           wrote,
-          handlerError(op, `${at}: ${extIssues.join(" ")} Resend the whole batch.`, true),
+          handlerError(op, `${at}: ${extIssues.join(" ")} Nothing was written.`, true),
         );
       }
       if (expectedVersion !== undefined && (existing?.state.version ?? 0) !== expectedVersion) {
@@ -368,7 +375,7 @@ export const upsertListTypesManyOp = defineOperation({
           handlerError(
             op,
             `${at}: the new definition removes data that lists still hold — ${removals.slice(0, 8).join("; ")}${removals.length > 8 ? `; and ${removals.length - 8} more` : ""}. ` +
-              "Keep those node kinds / fields, or resend with dropValues: true to delete the values (undoable like any change).",
+              "Keep those node kinds / fields, or set dropValues: true to delete the values (undoable like any change).",
             true,
           ),
         );

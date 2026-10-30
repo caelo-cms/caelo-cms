@@ -7,7 +7,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { type SetNotFoundPageToolInput, setNotFoundPageToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setNotFoundPageTool: ToolDefinitionWithHandler<SetNotFoundPageToolInput> = {
@@ -42,10 +42,7 @@ export const setNotFoundPageTool: ToolDefinitionWithHandler<SetNotFoundPageToolI
       input,
     );
     if (!res.ok) {
-      return {
-        ok: false,
-        content: `pages.set_not_found_page failed: ${describeError(res.error)}`,
-      };
+      return toolError(res.error, `pages.set_not_found_page failed: ${describeError(res.error)}`);
     }
     const value = res.value as { pageId: string | null };
     return {

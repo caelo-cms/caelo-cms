@@ -10,7 +10,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { getContentInstanceToolInput } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const getContentInstanceTool: ToolDefinitionWithHandler<
@@ -44,10 +44,10 @@ export const getContentInstanceTool: ToolDefinitionWithHandler<
         rows.length > 0
           ? `\nExisting instances (first ${rows.length}): ${rows.map((i) => `${i.id} (${i.moduleSlug}${i.displayName ? `, "${i.displayName}"` : ""})`).join("; ")}`
           : "\nNo content_instances exist (or are visible on this branch) yet — create one via create_content_instances or build_page.";
-      return {
-        ok: false,
-        content: `content_instances.get failed: ${describeError(r.error)}${inventory}`,
-      };
+      return toolError(
+        r.error,
+        `content_instances.get failed: ${describeError(r.error)}${inventory}`,
+      );
     }
     const v = r.value as {
       instance: {
