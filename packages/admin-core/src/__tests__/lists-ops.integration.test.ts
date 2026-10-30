@@ -370,8 +370,9 @@ describe("#1107 lists on the shared draft", () => {
         },
       ],
     });
-    expect(msg).toContain("items[0].values.label");
-    expect(msg).toContain("rolled back");
+    // #1277 — the problem sits at its absolute path; nothing was written.
+    expect(msg).toContain("`lists[0].items[0].values.label`");
+    expect(msg).toContain("nothing was written");
   });
 
   it("undo of the chat restores the list; a revert restores a live list", async () => {

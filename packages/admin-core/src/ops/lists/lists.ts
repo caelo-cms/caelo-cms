@@ -50,6 +50,7 @@ import {
   emitListItemsChanged,
   failBatch,
   handlerError,
+  listIssuesToDetails,
   listTypesBySlug,
   sourceEntriesOf,
   type Tx,
@@ -259,7 +260,14 @@ async function writeList(
     readonly items: unknown;
   },
 ): Promise<
-  { ok: true; id: string; state: ListState } | { ok: false; message: string; refusal?: true }
+  | { ok: true; id: string; state: ListState }
+  | {
+      ok: false;
+      message: string;
+      refusal?: true;
+      /** #1277 — entry problems, paths relative to the list entry (`["items", 0, …]`). */
+      details?: ErrorDetail[];
+    }
 > {
   const branchId = branchOf(ctx);
   const types = await listTypesBySlug(tx, branchId);
@@ -299,14 +307,20 @@ async function writeList(
   }
   const validated = validateListItems(type.def, input);
   if (validated.issues.length > 0) {
+    const next = `list_types.get "${args.typeSlug}" shows the fields each node kind takes.`;
     return {
       ok: false,
-      message: `${args.at}: ${describeIssues(validated.issues)}. Fix those entries (list_types.get "${args.typeSlug}" shows the fields each node kind takes).`,
+      message: `${args.at}: ${describeIssues(validated.issues)}. Fix those entries (${next.replace(/\.$/, "")}).`,
+      details: listIssuesToDetails([], validated.issues).map((d) => ({ ...d, next })),
     };
   }
   const refIssues = await checkEntryRefs(tx, branchId, type.def, validated.items, id);
   if (refIssues.length > 0) {
-    return { ok: false, message: `${args.at}: ${describeIssues(refIssues)}.` };
+    return {
+      ok: false,
+      message: `${args.at}: ${describeIssues(refIssues)}.`,
+      details: listIssuesToDetails([], refIssues),
+    };
   }
   const state: ListState = {
     schemaVersion: 1,
@@ -455,7 +469,11 @@ export const upsertListsManyOp = defineOperation({
         items: item.items,
       });
       if (!r.ok) {
-        problems.push({ path: ["lists", i], message: r.message });
+        if (r.details && r.details.length > 0) {
+          problems.push(...r.details.map((d) => ({ ...d, path: ["lists", i, ...d.path] })));
+        } else {
+          problems.push({ path: ["lists", i], message: r.message });
+        }
         if (r.refusal === true) refused = true;
         continue;
       }

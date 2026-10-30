@@ -34,9 +34,16 @@ export interface PgFailureDescription {
 /** `Key (a, b)=(x, y) …` → its columns and values, or null. */
 function parseKey(detail: string | undefined): { columns: string; values: string } | null {
   if (!detail) return null;
-  const m = /Key \(([^)]*)\)=\((.*)\)/.exec(detail);
-  if (!m) return null;
-  return { columns: m[1] as string, values: m[2] as string };
+  // indexOf, not a regex: Postgres' detail is driver input, and the
+  // backtracking pattern was polynomial on repeated "Key ((" (CodeQL).
+  const start = detail.indexOf("Key (");
+  if (start === -1) return null;
+  const sep = detail.indexOf(")=(", start + 5);
+  const end = detail.lastIndexOf(")");
+  if (sep === -1 || end <= sep + 2) return null;
+  const columns = detail.slice(start + 5, sep);
+  if (columns.includes(")")) return null;
+  return { columns, values: detail.slice(sep + 3, end) };
 }
 
 function keyPhrase(key: { columns: string; values: string }): string {

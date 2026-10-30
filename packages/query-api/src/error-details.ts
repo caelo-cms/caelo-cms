@@ -79,14 +79,30 @@ export function formatErrorPath(path: readonly ErrorPathSegment[]): string {
   return out;
 }
 
+/**
+ * `text` without trailing dots and whitespace. A loop, not `/[.\s]+$/`:
+ * that pattern is polynomial on long whitespace runs (CodeQL
+ * js/polynomial-redos), and error messages carry caller input.
+ */
+export function trimTrailingPunctuation(text: string): string {
+  let end = text.length;
+  while (end > 0) {
+    const c = text.charCodeAt(end - 1);
+    // "." or any whitespace String.prototype.trim removes
+    if (c !== 46 && text.charAt(end - 1).trim() !== "") break;
+    end -= 1;
+  }
+  return text.slice(0, end);
+}
+
 /** One problem as one line: `` `path`: message (allowed: a | b). next ``. */
 export function formatErrorDetail(detail: ErrorDetail): string {
-  const message = detail.message.replace(/[.\s]+$/, "");
+  const message = trimTrailingPunctuation(detail.message);
   const allowed =
     detail.allowed && detail.allowed.length > 0
       ? ` (allowed: ${detail.allowed.slice(0, 40).join(" | ")}${detail.allowed.length > 40 ? " | …" : ""})`
       : "";
-  const next = detail.next ? ` ${detail.next.replace(/\s+$/, "")}` : "";
+  const next = detail.next ? ` ${detail.next.trimEnd()}` : "";
   return `\`${formatErrorPath(detail.path)}\`: ${message}${allowed}.${next}`;
 }
 
@@ -194,7 +210,7 @@ export function handlerErrorFromDetails(
   options: { lead?: string; trailer?: string; refusal?: boolean; internal?: boolean } = {},
 ): Extract<QueryError, { kind: "HandlerError" }> {
   const body = formatErrorDetails(details);
-  const lead = options.lead ? `${options.lead.replace(/\s+$/, "")} ` : "";
+  const lead = options.lead ? `${options.lead.trimEnd()} ` : "";
   const trailer = options.trailer ? ` ${options.trailer}` : "";
   return {
     kind: "HandlerError",

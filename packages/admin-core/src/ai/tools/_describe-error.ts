@@ -15,6 +15,7 @@ import {
   failureKindOf,
   formatErrorDetails,
   type PgFailureFields,
+  trimTrailingPunctuation,
 } from "@caelo-cms/query-api";
 import type { ToolResult } from "./dispatch.js";
 
@@ -117,7 +118,9 @@ function withListToolHint(message: string): string {
   if (!/not found/i.test(message) || /\b(list|find|get)_[a-z_]+/.test(message)) return message;
   const subject = message.slice(0, message.search(/not found/i));
   const hit = LIST_TOOL_BY_NOUN.find(([re]) => re.test(subject));
-  return hit ? `${message.replace(/[.\s]+$/, "")} — \`${hit[1]}\` shows the valid ones.` : message;
+  return hit
+    ? `${trimTrailingPunctuation(message)} — \`${hit[1]}\` shows the valid ones.`
+    : message;
 }
 
 /**

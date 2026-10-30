@@ -25,6 +25,7 @@ export {
   MAX_RENDERED_ERRORS,
   parseErrorPath,
   prefixErrorDetails,
+  trimTrailingPunctuation,
   zodIssuesToErrorDetails,
 } from "./error-details.js";
 export {

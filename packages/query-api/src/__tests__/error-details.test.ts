@@ -181,3 +181,29 @@ describe("thrownToQueryError — no Postgres internals in the text", () => {
     expect(describePgFailure({ code: "40P01" }).internal).toBe(true);
   });
 });
+
+describe("linear-time text helpers (CodeQL js/polynomial-redos)", () => {
+  it("trimTrailingPunctuation strips trailing dots and whitespace only", async () => {
+    const { trimTrailingPunctuation } = await import("../error-details.js");
+    expect(trimTrailingPunctuation("slug exists. \n\t ")).toBe("slug exists");
+    expect(trimTrailingPunctuation("a.b")).toBe("a.b");
+    expect(trimTrailingPunctuation("...")).toBe("");
+    const long = `x${"\t".repeat(200_000)}y`;
+    const t0 = performance.now();
+    expect(trimTrailingPunctuation(long)).toBe(long);
+    expect(performance.now() - t0).toBeLessThan(500);
+  });
+
+  it("describePgFailure reads Key (...)=(...) without backtracking", async () => {
+    const { describePgFailure } = await import("../pg-failure.js");
+    const ok = describePgFailure({
+      code: "23505",
+      detail: "Key (slug)=(hero-3) already exists.",
+    });
+    expect(ok.message).toContain('"hero-3"');
+    const evil = `Key (${"Key ((".repeat(50_000)}`;
+    const t0 = performance.now();
+    describePgFailure({ code: "23505", detail: evil });
+    expect(performance.now() - t0).toBeLessThan(500);
+  });
+});
