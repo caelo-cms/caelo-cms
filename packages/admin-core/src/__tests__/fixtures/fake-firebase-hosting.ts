@@ -21,6 +21,10 @@ export class FakeFirebaseHosting {
   readonly blobs = new Set<string>();
   /** Every hash uploaded, in order. */
   readonly uploaded: string[] = [];
+  /** Gzipped bytes received over every upload. */
+  uploadedBytes = 0;
+  /** `populateFiles` calls, with how many files each named. */
+  readonly populateSizes: number[] = [];
   #seq = 0;
 
   /**
@@ -40,7 +44,7 @@ export class FakeFirebaseHosting {
     if (url.startsWith(UPLOAD)) {
       // Read the body as Hosting does: a streamed media upload is sent only
       // while the server reads it.
-      await new Response(init?.body ?? null).arrayBuffer();
+      this.uploadedBytes += (await new Response(init?.body ?? null).arrayBuffer()).byteLength;
       const hash = url.split("/").pop() ?? "";
       this.uploaded.push(hash);
       this.blobs.add(hash);
@@ -59,6 +63,7 @@ export class FakeFirebaseHosting {
     if (populate) {
       const id = populate[1] ?? "";
       const files = parsed.files as Record<string, string>;
+      this.populateSizes.push(Object.keys(files).length);
       // Calls add up (the publisher populates in batches, as firebase-tools does).
       this.versions.set(id, { ...this.versions.get(id), ...files });
       return json({

@@ -22,7 +22,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
@@ -185,14 +185,60 @@ interface StageResult {
   startMb: number;
   /** Media files (by gzip hash) this Stage uploaded. */
   mediaUploaded: number;
+  /**
+   * The most bytes the build ever had on the admin's disk. On Cloud Run that
+   * disk is memory (tmpfs), so it counts like RSS (#1271: only the build's
+   * description may be there; the files stream to the provider).
+   */
+  localPeakBytes: number;
+  /** Bytes the build uploaded to Hosting (its pages, bundles, manifests). */
+  uploadedPages: number;
+}
+
+/** The largest total size the build directories under `dir` reached while `run` ran. */
+async function peakDiskBytes<T>(dir: string, run: () => Promise<T>): Promise<[T, number]> {
+  let peak = 0;
+  let running = true;
+  const size = async (d: string): Promise<number> => {
+    let total = 0;
+    for (const e of await readdir(d, { withFileTypes: true }).catch(() => [])) {
+      const path = join(d, e.name);
+      if (e.isDirectory()) total += await size(path);
+      else total += (await stat(path).catch(() => ({ size: 0 }))).size;
+    }
+    return total;
+  };
+  const loop = (async () => {
+    while (running) {
+      peak = Math.max(peak, await size(dir));
+      await Bun.sleep(100);
+    }
+  })();
+  try {
+    const out = await run();
+    return [out, peak];
+  } finally {
+    running = false;
+    await loop;
+    peak = Math.max(peak, await size(dir));
+  }
 }
 
 async function stage(): Promise<StageResult> {
   const before = hosting.uploaded.length;
-  const staged = await ok<{ runId: string; phases: PhaseTiming[] }>("deploy.trigger", {
-    targetName: "staging",
-    repoRoot: root,
-  });
+  const pagesBefore = hosting.uploadedBytes;
+  const [staged, localPeakBytes] = await peakDiskBytes(join(root, "output"), () =>
+    ok<{ runId: string; phases: PhaseTiming[] }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: root,
+    }),
+  );
+  console.info(
+    "[build-memory] phases",
+    staged.phases
+      .map((p) => `${p.phase}:${p.ms}ms/${p.cpuMs ?? "-"}cpu/${p.peakRssMb ?? "-"}MB`)
+      .join(" "),
+  );
   const peak = (prefix: string) =>
     Math.max(
       0,
@@ -204,6 +250,8 @@ async function stage(): Promise<StageResult> {
     startMb: staged.phases.find((p) => p.phase === "prepare")?.peakRssMb ?? 0,
     mediaUploaded: (await mediaHashes()).filter((h) => hosting.uploaded.slice(before).includes(h))
       .length,
+    localPeakBytes,
+    uploadedPages: hosting.uploadedBytes - pagesBefore,
   };
 }
 
@@ -340,6 +388,13 @@ describe("#1271 Stage memory is flat in the site's size", () => {
       expect(large.mediaUploaded).toBe(0);
 
       expect(large.generatorPeakMb - small.generatorPeakMb).toBeLessThan(MAX_GROWTH_MB);
+      // tmpfs: the HTML went to Hosting as it was written; what stayed on
+      // disk is the build's description (asset references, parity digests,
+      // render deps) — a small fraction of what was uploaded.
+      // Every page carries ~2.8 KB of copy, so 10k pages are ≥ 28 MB of HTML;
+      // the description is a few hundred bytes per page.
+      expect(large.uploadedPages).toBeGreaterThan(0);
+      expect(large.localPeakBytes).toBeLessThan(SIZES[1] * 1024);
       // The admin process is this test runner; compare what the upload
       // added to where the Stage started.
       expect(

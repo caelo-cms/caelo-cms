@@ -298,10 +298,16 @@ export class MediaPass {
     return path;
   }
 
-  /** Write `cdn_manifest.json` (always — an empty list when CDN copy is off). */
-  async finish(): Promise<void> {
-    await writeFile(
-      join(this.#buildDir, "cdn_manifest.json"),
+  /**
+   * Write `cdn_manifest.json` (always — an empty list when CDN copy is off)
+   * through `write` (the build's output; default: the build directory).
+   */
+  async finish(
+    write: (relPath: string, content: string) => Promise<void> = (relPath, content) =>
+      writeFile(join(this.#buildDir, relPath), content, "utf8"),
+  ): Promise<void> {
+    await write(
+      "cdn_manifest.json",
       JSON.stringify(
         {
           enabled: this.#settings.cdnEnabled,
@@ -315,7 +321,6 @@ export class MediaPass {
         null,
         2,
       ),
-      "utf8",
     );
   }
 
@@ -431,7 +436,7 @@ export class MediaPass {
       throw new Error(
         `static-generator: ${named.length} media file(s) have no stored digests: ${named.slice(0, 20).join(", ")}${named.length > 20 ? ", …" : ""}. ` +
           "Stage digests them before every build (media.rebuild_digests); this build was started without that step. " +
-          'Next step: Stage again, or run media.rebuild_digests (AI tool: rebuild_media_digests, scope "missing") and build again.',
+          "Next step: Stage again — every Stage digests such rows before the build.",
       );
     }
     await runBatched([...items], FS_PARALLELISM, async ({ ref, isSlug, row }) => {

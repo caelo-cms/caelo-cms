@@ -33,7 +33,7 @@ import { fontReader } from "@caelo-cms/font-service";
  */
 
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { type BuildPluginServices, injectPluginAssets } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
@@ -53,6 +53,7 @@ import {
   linkMarkersOf,
   mergeListRenderDeps,
   type PaginationRequest,
+  type PartTiming,
   PhaseTimer,
   type PhaseTiming,
   pagedPath,
@@ -64,11 +65,8 @@ import {
   trimSlashes,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import {
-  ASSET_REFERENCES_FILE,
-  BUILD_INTERNAL_FILES,
-  serializeAssetReferences,
-} from "./asset-references.js";
+import { ASSET_REFERENCES_FILE, serializeAssetReferences } from "./asset-references.js";
+import { type BuildOutput, DiskOutput } from "./build-output.js";
 import type { VariantComposeModule } from "./content-variants-pass.js";
 import { publishFontFiles } from "./font-assets.js";
 import { loadSiteFontUsage } from "./font-usage-sources.js";
@@ -109,7 +107,7 @@ import {
 import { hostNormaliser, ParityRecorder } from "./parity-digest.js";
 import { BakeStore, type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { rewritePreviewFontUrls } from "./preview-font-urls.js";
-import { writeRedirectFiles } from "./redirects-pass.js";
+import { redirectFiles } from "./redirects-pass.js";
 import {
   buildRobotsTxtWithSitemap,
   prepareSeoPass,
@@ -507,6 +505,14 @@ export async function generateSite(args: {
    * GCS), so not one media byte passes through the build.
    */
   mediaDelivery?: MediaDelivery;
+  /**
+   * #1271 — where the served files go. Default: the build directory
+   * ({@link DiskOutput}). An uploading publisher passes the stream to the
+   * admin (`StreamOutput`, cli.ts): every file goes to the provider as it is
+   * written and only the build's description (`BUILD_INTERNAL_FILES`) stays
+   * in the build directory — on Cloud Run that directory is memory.
+   */
+  output?: BuildOutput;
 }): Promise<GenerateResult> {
   const start = Date.now();
   const timer = PhaseTimer.withMemory();
@@ -857,6 +863,12 @@ async function buildSite(
   // as a small record per page. Media and fonts are referenced by their
   // stored digests (asset-references.ts): the publisher delivers them.
   const delivery: MediaDelivery = args.mediaDelivery ?? "link";
+  const output = args.output ?? new DiskOutput(buildDir);
+  if (!output.local && (delivery === "link" || args.syncCurrent !== false)) {
+    throw new Error(
+      'static-generator: a streamed build has no build directory to link media into or to mirror into current/ — pass mediaDelivery "reference" and syncCurrent false',
+    );
+  }
   const mediaSettings = await readMediaSettings(tx);
   const mediaRoot = resolve(root, process.env.MEDIA_ROOT_DIR ?? "data/media");
   const media = new MediaPass({ tx, buildDir, mediaRoot, settings: mediaSettings, delivery });
@@ -879,14 +891,16 @@ async function buildSite(
       ? hostNormaliser(args.siteBaseUrlOverride, storedSeo.siteBaseUrl)
       : null,
   );
-  const writeBuildFile = async (relPath: string, content: string): Promise<void> => {
-    const filePath = resolve(buildDir, relPath);
-    if (!filePath.startsWith(`${buildDir}/`)) {
-      throw new Error(`static-generator: output path "${relPath}" escapes build directory`);
-    }
-    await mkdir(dirname(filePath), { recursive: true });
-    await writeFile(filePath, content, "utf8");
+  // Every served path the build wrote (the redirect plan checks against them).
+  const servedPaths = new Set<string>();
+  const writeBuildFile = async (
+    relPath: string,
+    content: string,
+    contentType?: string,
+  ): Promise<void> => {
+    await output.write({ relPath, content, ...(contentType ? { contentType } : {}) });
     parity.record(relPath, content);
+    servedPaths.add(relPath);
   };
 
   // Plugin list sources are resolved per batch (one call per contributing
@@ -947,7 +961,7 @@ async function buildSite(
   for (const p of pageRows) outputPaths.add(outputPathOf(p));
   outputPaths.assertNone();
 
-  const parts = new Map<string, { ms: number; peakRssMb?: number }>();
+  const parts = new Map<string, PartTiming>();
   let pagesDone = 0;
   for (let at = 0; at < pageRows.length; at += PAGE_BATCH) {
     const batch = pageRows.slice(at, at + PAGE_BATCH);
@@ -1156,10 +1170,20 @@ async function buildSite(
       }
       // #1003 — the files in parallel batches: written one at a time this
       // was seconds on a few thousand pages.
-      await runBatched(pages, WRITE_PARALLELISM, (p) => writeBuildFile(p.relPath, p.html));
+      // #1271 — on an uploading publisher each file goes to the provider
+      // as it is written (the stream output); WRITE_PARALLELISM files at once.
+      await runBatched(pages, WRITE_PARALLELISM, (p) =>
+        writeBuildFile(p.relPath, p.html, contentTypeOverrides[p.relPath]),
+      );
     });
     fileCount += pages.length;
     args.onProgress?.({ pagesDone, pagesTotal: pageRows.length });
+    // #1271 — a full collection after each batch. What the batch held is
+    // garbage now, but the engine grows its heap with the allocation rate,
+    // so without this the resident peak grew with the site although the
+    // live heap did not (1k → 10k pages: 189 → 381 MB; with it 129 → 170 MB).
+    // It costs ~10 ms a batch, run on every core by the collector.
+    await timer.measure(parts, "gc", () => Bun.gc(true));
   }
   timer.lapParts(parts, "batches");
   // P13 — every fresh plugin bake of the build, upserted in one order.
@@ -1182,14 +1206,13 @@ async function buildSite(
   const sitemapEmitted = await seo.writeSitemap(writeBuildFile);
   if (sitemapEmitted) fileCount += 1;
   // cdn_manifest.json is always written.
-  await media.finish();
+  await media.finish(writeBuildFile);
   fileCount += 1;
   timer.lap("finish-pages");
 
-  await writeFile(
-    join(buildDir, "robots.txt"),
+  await writeBuildFile(
+    "robots.txt",
     buildRobotsTxtWithSitemap(target.robotsDefault, seoSettings.siteBaseUrl, sitemapEmitted),
-    "utf8",
   );
   fileCount += 1;
 
@@ -1222,16 +1245,12 @@ async function buildSite(
     // Promote guard — see manifestBakesEnvNoindex.
     envNoindexInHtml: false,
   };
-  await writeFile(
-    join(buildDir, "routing-manifest.json"),
-    JSON.stringify(manifest, null, 2),
-    "utf8",
-  );
+  await writeBuildFile("routing-manifest.json", JSON.stringify(manifest, null, 2));
   fileCount += 1;
   // Epic #1107 — what every page's render read, for the next incremental build.
   await writeRenderDeps({
     outDir,
-    buildDir,
+    write: writeBuildFile,
     previous: previousDeps,
     rebuilt: renderDeps,
     data: listData,
@@ -1266,33 +1285,30 @@ async function buildSite(
   await writeBuildFile("_content-types.json", JSON.stringify(contentTypeOverrides, null, 2));
   fileCount += 1;
 
-  fileCount += await writeRedirectFiles({
-    buildDir,
+  const assets = [...media.assets(), ...fontAssets];
+  for (const file of redirectFiles({
     rows: redirectRows.map((r) => ({
       fromPath: r.from_path,
       toPath: r.to_path,
       statusCode: r.status_code,
     })),
     pageUrlStyle,
-  });
+    // Every file the build serves: what it wrote and what it references.
+    servedFiles: new Set([...servedPaths, ...assets.map((a) => a.path)]),
+  })) {
+    await writeBuildFile(file.name, file.content);
+    fileCount += 1;
+  }
 
-  // #1271 — what the publisher delivers from the stores, and the parity
-  // digests of every served file (pages were digested as they were
-  // written; the few files other passes wrote are read now).
-  const assets = [...media.assets(), ...fontAssets];
+  // #1271 — the build's description, kept in the build directory on every
+  // provider: what the publisher delivers from the stores, and the parity
+  // digests of every served file (each digested as it was written).
   await writeFile(
     join(buildDir, ASSET_REFERENCES_FILE),
     serializeAssetReferences({ version: 1, mediaRoot, fontsCacheDir, assets }),
     "utf8",
   );
-  const assetPaths = new Set(assets.map((a) => a.path));
-  await parity.finish({
-    buildDir,
-    assets,
-    unrecorded: (await listBuildFiles(buildDir)).filter(
-      (rel) => !parity.has(rel) && !assetPaths.has(rel) && !BUILD_INTERNAL_FILES.has(rel),
-    ),
-  });
+  await parity.finish({ buildDir, assets });
   timer.lap("manifests");
   // Atomic-ish swap. `current/` is a regular directory (not a symlink)
   // because Docker Desktop / VirtioFS bind mounts on macOS don't follow
@@ -1330,20 +1346,6 @@ async function buildSite(
     unpublishedLinkTargets,
     truncatedLists,
   };
-}
-
-/** Every file below `dir`, relative and `/`-separated. */
-async function listBuildFiles(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  const walk = async (rel: string): Promise<void> => {
-    for (const entry of await readdir(join(dir, rel), { withFileTypes: true })) {
-      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) await walk(childRel);
-      else out.push(childRel);
-    }
-  };
-  await walk("");
-  return out;
 }
 
 /** #1257 — every page path of the build's env (the follow-up collision check). */

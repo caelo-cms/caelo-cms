@@ -8,10 +8,9 @@
  * Before #1271 the admin read every file of a finished build again to hash
  * it — a third read of the whole site after the generator's write and the
  * publisher's upload, and with media in the build, every image. Now:
- *   - a page or other written file is digested in memory as it is written;
+ *   - every written file is digested in memory as it is written;
  *   - a referenced media or font file contributes its stored content hash
- *     (the same value a read of its bytes would give);
- *   - the few small files written by other passes are read at the end.
+ *     (the same value a read of its bytes would give).
  *
  * Two manifests per build: `plain` (the bytes as written — what a live
  * rebuild is compared with), and, for a build rendered with another origin
@@ -147,23 +146,18 @@ export class ParityRecorder {
   }
 
   /**
-   * Add the referenced assets (by stored hash; never host-dependent) and
-   * read the build files in `unrecorded` (the small files other passes
-   * wrote), then write the digests to the build.
+   * Add the referenced assets (by stored hash; never host-dependent), then
+   * write the digests to the build directory. Every served file was
+   * recorded as it was written (generate.ts writes through one output).
    */
   async finish(args: {
     readonly buildDir: string;
     readonly assets: readonly AssetReference[];
-    readonly unrecorded: readonly string[];
   }): Promise<void> {
     for (const a of args.assets) {
       const h = parityHashOfSha256(a.contentSha256);
       this.#plain.set(a.path, h);
       if (this.#normalise) this.#normalised.set(a.path, h);
-    }
-    for (const rel of args.unrecorded) {
-      if (this.has(rel)) continue;
-      this.record(rel, await readFile(join(args.buildDir, rel)));
     }
     const sorted = (m: Map<string, string>) =>
       Object.fromEntries([...m.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));

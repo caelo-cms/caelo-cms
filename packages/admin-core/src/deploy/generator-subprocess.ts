@@ -9,6 +9,11 @@
  * The generator reads cms_admin over its own connections. The admin side
  * holds none while it waits (#1211): progress lands on the committed run
  * row through short `deploy.update_progress` ops.
+ *
+ * #1271 — given an `upload`, the generator streams every served file here
+ * instead of writing it to the build directory, and each one goes straight
+ * into the provider's staging version; the generator keeps a bounded window
+ * of unacknowledged files, so neither process holds the site.
  */
 
 import { spawn } from "node:child_process";
@@ -25,6 +30,7 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
 import { z } from "zod";
 import { SYSTEM_ACTOR_ID } from "../audit.js";
 import { ProgressThrottle } from "./progress-throttle.js";
+import type { BuildUpload } from "./static-publisher.js";
 import { truncatedListSchema } from "./truncated-lists.js";
 import { unpublishedLinkTargetSchema } from "./unpublished-links.js";
 
@@ -97,6 +103,15 @@ interface SubprocessError {
   kind: "error";
   message: string;
 }
+/** #1271 — one served file the generator streams to the upload. */
+interface SubprocessFile {
+  kind: "file";
+  id: number;
+  relPath: string;
+  /** base64 */
+  body: string;
+  contentType?: string;
+}
 /** #605 — the generator asks the admin's plugin host (build-services.ts). */
 interface SubprocessPluginCall {
   kind: "plugin-call";
@@ -117,7 +132,8 @@ type SubprocessEvent =
   | SubprocessServing
   | GeneratorDone
   | SubprocessError
-  | SubprocessPluginCall;
+  | SubprocessPluginCall
+  | SubprocessFile;
 
 /** Everything one generator run is told on stdin. */
 export interface GeneratorRunArgs {
@@ -154,6 +170,12 @@ export interface GeneratorRunArgs {
    * See {@link mediaDeliveryFor}.
    */
   readonly mediaDelivery: "link" | "reference";
+  /**
+   * #1271 — the provider upload every served file goes into as it is
+   * written ({@link StaticPublisher.openBuildUpload}); the build directory
+   * then holds only the build's description. Omitted: files go to disk.
+   */
+  readonly upload?: BuildUpload;
   /**
    * #1211 — kills the generator (SIGTERM) when it aborts, until the
    * generator reports that it mirrors the build into `current/`: from then
@@ -246,6 +268,7 @@ export async function runGenerator(
         ...(args.syncCurrent === false ? { syncCurrent: false } : {}),
         ...(args.retainBuilds !== undefined ? { retainBuilds: args.retainBuilds } : {}),
         mediaDelivery: args.mediaDelivery,
+        ...(args.upload ? { outputMode: "stream" } : {}),
       })}\n`,
     );
     // Answer one plugin call with THIS process's plugin host — the same
@@ -260,6 +283,28 @@ export async function runGenerator(
         reply = {
           kind: "plugin-result",
           id: call.id,
+          ok: false,
+          message: e instanceof Error ? e.message : String(e),
+        };
+      }
+      if (!child.stdin.destroyed) child.stdin.write(`${encodeBuildPayload(reply)}\n`);
+    };
+
+    // #1271 — hand a streamed file to the upload and answer when it took it.
+    const takeFile = async (file: SubprocessFile): Promise<void> => {
+      let reply: Record<string, unknown>;
+      try {
+        if (!args.upload) throw new Error("the generator streamed a file but no upload is open");
+        await args.upload.put({
+          relPath: file.relPath,
+          body: Buffer.from(file.body, "base64"),
+          ...(file.contentType ? { contentType: file.contentType } : {}),
+        });
+        reply = { kind: "file-ack", id: file.id, ok: true };
+      } catch (e) {
+        reply = {
+          kind: "file-ack",
+          id: file.id,
           ok: false,
           message: e instanceof Error ? e.message : String(e),
         };
@@ -283,6 +328,8 @@ export async function runGenerator(
         }
         if (ev.kind === "plugin-call") {
           void answerPluginCall(ev);
+        } else if (ev.kind === "file") {
+          void takeFile(ev);
         } else if (ev.kind === "serving") {
           serving = true;
         } else if (ev.kind === "progress") {

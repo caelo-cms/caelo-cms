@@ -551,7 +551,7 @@ describe("media-pass", () => {
     }
     expect((thrown as Error).message).toContain("have no stored digests");
     expect((thrown as Error).message).toContain(`${assetSlug}/orig`);
-    expect((thrown as Error).message).toContain("rebuild_media_digests");
+    expect((thrown as Error).message).toContain("Stage again");
   });
 
   it("#1271 — a row without digests whose file is gone is reported as a missing file, with the way back", async () => {

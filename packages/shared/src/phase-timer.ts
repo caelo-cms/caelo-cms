@@ -10,10 +10,14 @@
  * since the previous lap, so a long function gets one line per boundary
  * and keeps its control flow (early throws, shared locals) as it is.
  *
- * #1271 — with `{ memory: true }` every step also carries the peak resident
- * memory of the process while it ran (`peakRssMb`): sampled every
- * {@link RSS_SAMPLE_MS} by one shared timer that runs only while a memory
- * timer is open ({@link PhaseTimer.close}), plus a reading at every lap.
+ * #1271 — with `{ memory: true }` every step also carries
+ *   - the peak resident memory of the process while it ran (`peakRssMb`):
+ *     sampled every {@link RSS_SAMPLE_MS} by one shared timer that runs only
+ *     while a memory timer is open ({@link PhaseTimer.close}), plus a reading
+ *     at every lap;
+ *   - the CPU time the process spent in it (`cpuMs`, user + system, every
+ *     thread of the process — zlib and the other runtime workers included).
+ *     `cpuMs / ms` is the number of cores the step kept busy.
  */
 
 import { z } from "zod";
@@ -24,6 +28,8 @@ export const phaseTimingSchema = z.object({
   ms: z.number().int().nonnegative(),
   /** #1271 — the process's peak resident memory during the step, in MiB. */
   peakRssMb: z.number().int().nonnegative().optional(),
+  /** #1271 — CPU time (user + system, all threads) the process spent in the step, in ms. */
+  cpuMs: z.number().int().nonnegative().optional(),
 });
 export type PhaseTiming = z.infer<typeof phaseTimingSchema>;
 
@@ -31,6 +37,13 @@ export type PhaseTiming = z.infer<typeof phaseTimingSchema>;
 export const RSS_SAMPLE_MS = 25;
 
 const MIB = 1024 * 1024;
+
+/** Process CPU time so far (user + system), in ms; 0 where there is no process. */
+function cpuNow(): number {
+  if (typeof process === "undefined" || typeof process.cpuUsage !== "function") return 0;
+  const u = process.cpuUsage();
+  return (u.user + u.system) / 1000;
+}
 
 function rssNow(): number {
   return typeof process !== "undefined" && typeof process.memoryUsage === "function"
@@ -67,6 +80,13 @@ const sampler = (() => {
   };
 })();
 
+/** What {@link PhaseTimer.measure} adds up for one repeated step. */
+export interface PartTiming {
+  ms: number;
+  peakRssMb?: number;
+  cpuMs?: number;
+}
+
 export class PhaseTimer {
   readonly #now: () => number;
   readonly #phases: PhaseTiming[] = [];
@@ -74,6 +94,7 @@ export class PhaseTimer {
   readonly #listener: ((rss: number) => void) | null;
   #last: number;
   #peak = 0;
+  #lastCpu = 0;
 
   /**
    * @param now clock in milliseconds; injectable for tests.
@@ -86,6 +107,7 @@ export class PhaseTimer {
     this.#last = this.#start;
     if (opts.memory) {
       this.#peak = rssNow();
+      this.#lastCpu = cpuNow();
       this.#listener = (rss) => {
         if (rss > this.#peak) this.#peak = rss;
       };
@@ -107,6 +129,7 @@ export class PhaseTimer {
       phase,
       ms: Math.round(t - this.#last),
       ...this.#takePeak(),
+      ...this.#takeCpu(0),
     });
     this.#last = t;
   }
@@ -116,22 +139,26 @@ export class PhaseTimer {
    * inside it (`parts`, ms and peak each — e.g. the passes of every page
    * batch summed), plus `rest` for whatever of the step they do not cover.
    */
-  lapParts(parts: ReadonlyMap<string, { ms: number; peakRssMb?: number }>, rest: string): void {
+  lapParts(parts: ReadonlyMap<string, PartTiming>, rest: string): void {
     const t = this.#now();
     const elapsed = t - this.#last;
     let covered = 0;
+    let coveredCpu = 0;
     for (const [phase, p] of parts) {
       covered += p.ms;
+      coveredCpu += p.cpuMs ?? 0;
       this.#phases.push({
         phase,
         ms: Math.round(p.ms),
         ...(p.peakRssMb !== undefined ? { peakRssMb: p.peakRssMb } : {}),
+        ...(p.cpuMs !== undefined ? { cpuMs: Math.round(p.cpuMs) } : {}),
       });
     }
     this.#phases.push({
       phase: rest,
       ms: Math.max(0, Math.round(elapsed - covered)),
       ...this.#takePeak(),
+      ...this.#takeCpu(coveredCpu),
     });
     this.#last = t;
   }
@@ -142,13 +169,14 @@ export class PhaseTimer {
    * {@link lapParts}.
    */
   async measure<T>(
-    into: Map<string, { ms: number; peakRssMb?: number }>,
+    into: Map<string, PartTiming>,
     phase: string,
     fn: () => Promise<T> | T,
   ): Promise<T> {
     const peakBefore = this.#peak;
     if (this.#listener) this.#peak = rssNow();
     const t0 = this.#now();
+    const cpu0 = this.#listener ? cpuNow() : 0;
     try {
       return await fn();
     } finally {
@@ -156,7 +184,11 @@ export class PhaseTimer {
       const ms = prev.ms + (this.#now() - t0);
       if (this.#listener) {
         const peak = Math.max(this.#peak, rssNow());
-        into.set(phase, { ms, peakRssMb: Math.max(prev.peakRssMb ?? 0, Math.round(peak / MIB)) });
+        into.set(phase, {
+          ms,
+          peakRssMb: Math.max(prev.peakRssMb ?? 0, Math.round(peak / MIB)),
+          cpuMs: (prev.cpuMs ?? 0) + (cpuNow() - cpu0),
+        });
         this.#peak = Math.max(peakBefore, peak);
       } else {
         into.set(phase, { ms });
@@ -187,6 +219,15 @@ export class PhaseTimer {
   /** Stop sampling memory (a memory timer must be closed; idempotent). */
   close(): void {
     if (this.#listener) sampler.remove(this.#listener);
+  }
+
+  /** CPU time since the previous lap, less what parts already account for. */
+  #takeCpu(covered: number): { cpuMs?: number } {
+    if (!this.#listener) return {};
+    const now = cpuNow();
+    const spent = now - this.#lastCpu - covered;
+    this.#lastCpu = now;
+    return { cpuMs: Math.max(0, Math.round(spent)) };
   }
 
   /** The peak since the previous lap, then restart it from now. */

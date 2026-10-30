@@ -95,7 +95,11 @@ import {
   releaseStagingPublication,
   STAGING_PUBLICATION_WAIT_MS,
 } from "../deploy/staging-publication-lock.js";
-import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publisher.js";
+import {
+  type BuildUpload,
+  loadStaticPublisher,
+  type StaticPublisher,
+} from "../deploy/static-publisher.js";
 import { truncatedListSchema } from "../deploy/truncated-lists.js";
 import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
@@ -515,6 +519,8 @@ async function runTrigger(
   }, DEPLOY_RUN_HEARTBEAT_MS);
   const stop = steps.signal ? AbortSignal.any([steps.signal, heartbeat.lost]) : heartbeat.lost;
   let publisher: StaticPublisher | null = null;
+  /** #1271 — the provider upload the generator streams the build into. */
+  let upload: BuildUpload | null = null;
 
   /** Record the failure (releasing every lease) and answer with `reply`. */
   const fail = async (
@@ -528,6 +534,8 @@ async function runTrigger(
     });
     // Unrecorded, the run's lease lapses and the next run marks it failed.
     if (!r.ok) console.error("[deploy] could not record the failed run", { runId, error: r.error });
+    // A given-up upload serves nothing (no-op once publishStaging finished it).
+    await upload?.abort();
     logRunTimings(runKind, runId, timer, { status: "failed" });
     return err({ kind: "HandlerError", operation: "deploy.trigger", message: reply });
   };
@@ -559,6 +567,12 @@ async function runTrigger(
     // needs the copy) and whether builds stay on disk (#1211).
     try {
       publisher = await loadStaticPublisher(provider);
+      // #1271 — an uploading publisher takes the build file by file while it
+      // is written, so it never lands on this container's disk (memory on
+      // Cloud Run).
+      upload = publisher.openBuildUpload
+        ? await publisher.openBuildUpload({ runId, target })
+        : null;
     } catch (e) {
       timer.lap("prepare");
       return await fail(`publish failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -578,6 +592,7 @@ async function runTrigger(
       syncCurrent: publisher.servesCurrentDir,
       retainBuilds: retainedBuildsFor(publisher),
       mediaDelivery: mediaDeliveryFor(publisher),
+      ...(upload ? { upload } : {}),
       signal: stop,
     });
     if (subprocess.ok) timer.include("generator", subprocess.result.phases);
@@ -628,6 +643,7 @@ async function runTrigger(
         buildDir: built.buildDir,
         runId,
         target,
+        ...(upload ? { upload } : {}),
       });
       publishSummary = summary as Record<string, unknown>;
       timer.include("publish", publishPhases ?? []);

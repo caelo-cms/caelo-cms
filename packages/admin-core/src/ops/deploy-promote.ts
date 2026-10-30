@@ -111,7 +111,11 @@ import {
   releaseStagingPublication,
   STAGING_PUBLICATION_WAIT_MS,
 } from "../deploy/staging-publication-lock.js";
-import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publisher.js";
+import {
+  type BuildUpload,
+  loadStaticPublisher,
+  type StaticPublisher,
+} from "../deploy/static-publisher.js";
 import { rewindBakesToRun } from "../plugin-data/stale-pages.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
@@ -488,21 +492,47 @@ async function rebuildForLive(
     readonly timer: PhaseTimer;
     readonly stop: AbortSignal;
   },
-): Promise<{ buildDir: string; pageCount: number; fileCount: number }> {
+): Promise<{
+  buildDir: string;
+  pageCount: number;
+  fileCount: number;
+  upload: BuildUpload | null;
+}> {
   const { plan } = args;
   if (!args.publisher.publishLiveBuild) {
     throw new Error(
       `staged build ${plan.fromRunId} was rendered for a separate staging host, but the ${args.provider ?? "self-hosted"} publisher cannot publish a rebuilt tree. Stage again so the build carries the live host.`,
     );
   }
+  // #1271 — the build names media by their stored digests (see deploy.trigger).
+  const digested = await digestUndigestedMedia(steps.registry, steps.adapter, systemContextOf(ctx));
+  if (digested !== null) throw new Error(`the media digests could not be stored: ${digested}`);
+  // #1271 — streamed into the provider as it is written; nothing of it is
+  // served before the parity guard passed and the release ran.
+  const upload = args.publisher.openBuildUpload
+    ? await args.publisher.openBuildUpload({ runId: plan.toRunId, target: args.target })
+    : null;
+  try {
+    return await rebuildInto(ctx, steps, args, upload);
+  } catch (e) {
+    await upload?.abort();
+    throw e;
+  }
+}
+
+/** The live rebuild itself (see {@link rebuildForLive}). */
+async function rebuildInto(
+  ctx: ExecutionContext,
+  steps: OperationSteps,
+  args: Parameters<typeof rebuildForLive>[2],
+  upload: BuildUpload | null,
+): Promise<Awaited<ReturnType<typeof rebuildForLive>>> {
+  const { plan } = args;
   if (plan.parityManifest === null) {
     throw new Error(
       `staged build ${plan.fromRunId} has no parity manifest, so Publish live cannot prove the live build matches it. Stage again, then Publish live.`,
     );
   }
-  // #1271 — the build names media by their stored digests (see deploy.trigger).
-  const digested = await digestUndigestedMedia(steps.registry, steps.adapter, systemContextOf(ctx));
-  if (digested !== null) throw new Error(`the media digests could not be stored: ${digested}`);
   const built = await runGenerator(steps.registry, steps.adapter, ctx, {
     cliPath: resolveGeneratorCli(),
     runId: plan.toRunId,
@@ -514,6 +544,7 @@ async function rebuildForLive(
     // #1211 — an uploading publisher keeps no builds in the container.
     retainBuilds: retainedBuildsFor(args.publisher),
     mediaDelivery: mediaDeliveryFor(args.publisher),
+    ...(upload ? { upload } : {}),
     signal: args.stop,
   });
   if (built.ok) args.timer.include("generator", built.result.phases);
@@ -537,6 +568,7 @@ async function rebuildForLive(
     buildDir: built.result.buildDir,
     pageCount: built.result.pageCount,
     fileCount: built.result.fileCount,
+    upload,
   };
 }
 
@@ -681,7 +713,7 @@ async function runPromote(
     // (every absolute URL names staging.<domain>): rebuild the same content
     // with the live host, prove it differs only in the host, and publish the
     // rebuild. A build staged with the live host is copied as before.
-    let rebuilt: { buildDir: string; pageCount: number; fileCount: number } | null = null;
+    let rebuilt: Awaited<ReturnType<typeof rebuildForLive>> | null = null;
     if (withStagingHost) {
       // #1211 — every way out deletes what the generator wrote (finally).
       buildDir = buildDirOf(repoRoot, target.outDir, runId);
@@ -740,6 +772,7 @@ async function runPromote(
               target,
               sourceRunId: plan.fromRunId,
               beforeRelease,
+              ...(rebuilt.upload ? { upload: rebuilt.upload } : {}),
             })
           : await publisher.promoteToProduction({
               sourceRunId: plan.buildId,
@@ -751,6 +784,8 @@ async function runPromote(
             });
     } catch (e) {
       timer.lap("publish");
+      // Nothing of a given-up rebuild is served (no-op once released).
+      await rebuilt?.upload?.abort();
       if (e instanceof ReleaseRefusedError) return await fail(e.message);
       return await fail(`promotion failed: ${e instanceof Error ? e.message : String(e)}`);
     }

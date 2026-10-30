@@ -8,8 +8,8 @@
  * Every write path stores them with the variant; this op computes them for
  * the rows that have none — written before 0443, or by the previous
  * release during an upgrade — and, in `scope: "all"`, recomputes every row
- * and reports what was wrong (the repair after a file was replaced outside
- * Caelo). `deploy.trigger` runs it with `scope: "missing"` before the
+ * and reports what was wrong (maintenance after a file was replaced outside
+ * Caelo). System-only: nothing asks a person or the AI to run it. `deploy.trigger` runs it with `scope: "missing"` before the
  * generator starts, the way it creates a missing favicon rendition, so an
  * upgraded install needs no manual step and the build never reads a media
  * file to name it.
@@ -74,9 +74,8 @@ const scopeInput = z
 /** Step 1 of media.rebuild_digests: the rows to digest. */
 export const listDigestTargetsOp = defineOperation({
   name: "media.list_digest_targets",
-  // Why every actor: the first step of media.rebuild_digests, run under the
-  // caller's context; it only lists rows. No AI tool wraps it.
-  actorScope: ["human", "ai", "system"],
+  // Why system-only: a step of media.rebuild_digests (system-only, below).
+  actorScope: ["system"],
   database: "cms_admin",
   input: scopeInput.extend({ profile: z.string().min(1) }),
   output: z.object({ targets: z.array(targetRow) }),
@@ -139,10 +138,8 @@ const digestRow = z.object({
 /** Step 3 of media.rebuild_digests: store what was computed. */
 export const storeDigestsOp = defineOperation({
   name: "media.store_digests",
-  // Why every actor: the last step of media.rebuild_digests, run under the
-  // caller's context; it writes values derived from the stored files only.
-  // No AI tool wraps it.
-  actorScope: ["human", "ai", "system"],
+  // Why system-only: a step of media.rebuild_digests (system-only, below).
+  actorScope: ["system"],
   database: "cms_admin",
   input: z.object({ digests: z.array(digestRow) }).strict(),
   output: z.object({ updated: z.number().int() }),
@@ -218,9 +215,13 @@ export async function digestUndigestedMedia(
  */
 export const rebuildMediaDigestsOp = defineStepwiseOperation({
   name: "media.rebuild_digests",
-  // Routine (CLAUDE.md §11): it derives values from files already stored
-  // and changes nothing a visitor sees; running it again is harmless.
-  actorScope: ["human", "ai", "system"],
+  // Why system-only: derived state no one decides about. Every Stage and
+  // Publish live rebuild runs the `missing` backfill before the generator
+  // (as the system actor), so an AI or operator never has to ask for it;
+  // a file changed outside Caelo is fixed by restoring the file, and the
+  // `all` scope exists for that maintenance and for tests, not as a tool
+  // (the tool catalogue shrinks, CLAUDE.md §11).
+  actorScope: ["system"],
   database: "cms_admin",
   input: scopeInput,
   output: z.object({

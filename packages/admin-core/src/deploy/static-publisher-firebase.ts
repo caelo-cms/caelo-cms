@@ -39,7 +39,6 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import {
   CONTENT_HASHED_PATH_PATTERN,
@@ -53,17 +52,21 @@ import {
 } from "@caelo-cms/shared";
 import {
   type AssetReference,
+  type AssetReferences,
   assetSourcePath,
   chunkedFileStream,
   type DeployTarget,
   digestProfile,
   hostingGzip,
+  readAssetReferences,
 } from "@caelo-cms/static-generator";
 import { CPU_PARALLELISM, readBuildFiles, uniqueAssets } from "./build-files.js";
 import { readFirebaseBuiltFile } from "./firebase-channel-file.js";
 import { syncFirebaseRedirects } from "./firebase-redirect-sync.js";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
 import type {
+  BuildUpload,
+  BuildUploadFile,
   PromoteSummary,
   PublishSummary,
   StagingPreviewRefresh,
@@ -282,27 +285,10 @@ function hasRobotsHeader(config: FirebaseVersionConfig): boolean {
 }
 
 /**
- * Gzip a file's contents + compute the sha256 of the gzipped bytes.
- * Firebase Hosting's populateFiles API keys on this hash.
- */
-async function gzipAndHash(absolutePath: string): Promise<{ body: Buffer; sha256: string }> {
-  const gz = hostingGzip();
-  const stream = chunkedFileStream(absolutePath);
-  stream.on("error", (e) => gz.destroy(e));
-  stream.pipe(gz);
-  const chunks: Buffer[] = [];
-  for await (const chunk of gz as unknown as AsyncIterable<Buffer>) {
-    chunks.push(chunk);
-  }
-  const body = Buffer.concat(chunks);
-  const sha256 = createHash("sha256").update(body).digest("hex");
-  return { body, sha256 };
-}
-
-/**
- * v0.10.11 — Same as `gzipAndHash` but for in-memory bytes. Used by
- * `releaseAsTarget` to patch robots.txt with the destination target's
- * policy before releasing on the live channel.
+ * Gzip in-memory bytes the way Hosting stores them (the hosting gzip of the
+ * stored media digests) and hash the result: Hosting keys every file by the
+ * sha256 of its gzipped body. Every file of a build passes here (#1271), and
+ * `releaseAsTarget` patches robots.txt with it.
  */
 async function gzipAndHashBytes(input: Buffer): Promise<{ body: Buffer; sha256: string }> {
   return await new Promise((resolve, reject) => {
@@ -636,81 +622,239 @@ async function releaseAsTarget(args: {
   };
 }
 
-/** Files per `populateFiles` call (the batch size firebase-tools uses). */
-const POPULATE_BATCH = 1000;
+/**
+ * Files per `populateFiles` call. Hosting is told about the files of a
+ * batch at once and the ones it lacks are uploaded before the batch is
+ * dropped, so this many gzipped bodies are the most the upload holds.
+ */
+const POPULATE_BATCH = 250;
 
-/** One file of a version being created: its served path, hash, and where its bytes are. */
-interface VersionFile {
+/** A built file gzipped and waiting for its batch's `populateFiles`. */
+interface PendingFile {
   readonly path: string;
   readonly sha256: string;
-  readonly source:
-    | { readonly kind: "built"; readonly absolutePath: string }
-    | { readonly kind: "asset"; readonly asset: AssetReference; readonly absolutePath: string };
+  readonly gzipped: Buffer;
 }
 
 /**
- * Create, upload and finalize a Hosting version holding exactly the files
- * of `buildDir`, with the site config for `target`: the redirects table,
- * the `/api/**` rewrite to the gateway, the cache headers and the target's
- * env-level robots header. Shared by Stage (released on a preview channel)
- * and #650's Publish live rebuild (released on the live channel).
+ * #1271 — a Hosting version filled while the generator writes the build.
  *
- * #1271 — memory stays flat whatever the site's size:
- *   - the built files (pages, bundles, manifests) are gzipped + hashed
- *     {@link CPU_PARALLELISM} at a time on the runtime's worker threads,
- *     keeping only `(path, hash)`; a file Hosting asks for is gzipped again
- *     from disk when it is uploaded;
- *   - the media and fonts the build references are named by their stored
- *     gzip hash, never read; Hosting's `populateFiles` answers which it
- *     lacks, and only those are streamed from the store, gzipped on the way.
+ * Created at the start without config (as firebase-tools does); every
+ * served file is gzipped + hashed as it arrives and told to Hosting in
+ * batches of {@link POPULATE_BATCH} (`populateFiles`), and the files of the
+ * batch Hosting lacks are uploaded right away, {@link PARALLEL_UPLOADS} at a
+ * time, before the batch is dropped. The media and fonts the build
+ * references are named by their stored gzip hash and streamed from their
+ * store only when Hosting lacks them. {@link finish} sets the site config —
+ * the redirects need every served path — and finalizes the version.
+ * Memory: a batch of gzipped files plus the paths, whatever the site's size.
  */
-async function createVersionFromBuild(args: {
-  site: string;
-  token: string;
-  buildDir: string;
-  target: DeployTarget;
-  /** Laps `hash`, `create-version`, `populate`, `upload`, `finalize`. */
-  timer: PhaseTimer;
-}): Promise<{ versionName: string; uploadedCount: number; skippedUnchangedCount: number }> {
-  const { site, token, buildDir, target, timer } = args;
-  const build = await readBuildFiles(buildDir);
-  const profile = await digestProfile();
-  const files: VersionFile[] = [];
-  for (const asset of uniqueAssets(build.references)) {
-    if (asset.digestProfile !== profile) {
+class FirebaseBuildUpload implements BuildUpload {
+  readonly #site: string;
+  readonly #token: string;
+  readonly #versionName: string;
+  readonly #versionId: string;
+  readonly #paths = new Set<string>();
+  /** Hashes this version uploaded or Hosting said it has. */
+  readonly #known = new Set<string>();
+  #batch: PendingFile[] = [];
+  /** Batches are told to Hosting one after another. */
+  #flushing: Promise<void> = Promise.resolve();
+  #uploadUrl: string | null = null;
+  #uploaded = 0;
+  #redirectsFile: string | null = null;
+  #state: "open" | "finished" | "aborted" = "open";
+
+  private constructor(site: string, token: string, versionName: string) {
+    this.#site = site;
+    this.#token = token;
+    this.#versionName = versionName;
+    this.#versionId = versionName.split("/").pop() ?? "";
+  }
+
+  /** Create the (empty) version the build goes into. */
+  static async open(): Promise<FirebaseBuildUpload> {
+    const site = siteName();
+    const token = await googleAuthToken();
+    const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
+      method: "POST",
+      body: JSON.stringify({}),
+      token,
+    });
+    return new FirebaseBuildUpload(site, token, created.name);
+  }
+
+  async put(file: BuildUploadFile): Promise<void> {
+    if (this.#state !== "open") throw new Error(`firebase upload is ${this.#state}`);
+    if (this.#paths.has(file.relPath)) {
+      throw new Error(`static-publisher-firebase: ${file.relPath} was written twice`);
+    }
+    this.#paths.add(file.relPath);
+    // The redirects ride the version config, built at finish().
+    if (file.relPath === "_redirects")
+      this.#redirectsFile = Buffer.from(file.body).toString("utf8");
+    const { body, sha256 } = await gzipAndHashBytes(Buffer.from(file.body));
+    this.#batch.push({ path: file.relPath, sha256, gzipped: body });
+    if (this.#batch.length >= POPULATE_BATCH) await this.#flush();
+  }
+
+  /** Tell Hosting about the waiting files and upload the ones it lacks. */
+  #flush(): Promise<void> {
+    const batch = this.#batch;
+    this.#batch = [];
+    this.#flushing = this.#flushing.then(async () => {
+      if (batch.length === 0) return;
+      const required = await this.#populate(batch.map((f) => [f.path, f.sha256]));
+      const toUpload = new Map<string, PendingFile>();
+      for (const f of batch) {
+        if (required.has(f.sha256) && !toUpload.has(f.sha256)) toUpload.set(f.sha256, f);
+      }
+      await runBatched([...toUpload.values()], PARALLEL_UPLOADS, async (f) => {
+        await uploadGzippedFile(this.#url(), f.sha256, f.gzipped, this.#token);
+      });
+      this.#uploaded += toUpload.size;
+    });
+    return this.#flushing;
+  }
+
+  /** One `populateFiles` call; returns the hashes Hosting still needs (not yet uploaded here). */
+  async #populate(files: readonly (readonly [string, string])[]): Promise<Set<string>> {
+    const filesMap: Record<string, string> = {};
+    // Firebase expects paths to start with `/` (e.g. "/about").
+    for (const [path, sha] of files) filesMap[`/${path}`] = sha;
+    const populate = await firebaseFetch<PopulateFilesResponse>(
+      `sites/${this.#site}/versions/${this.#versionId}:populateFiles`,
+      { method: "POST", body: JSON.stringify({ files: filesMap }), token: this.#token },
+    );
+    this.#uploadUrl = populate.uploadUrl;
+    const required = new Set<string>();
+    for (const h of populate.uploadRequiredHashes ?? []) {
+      if (!this.#known.has(h)) required.add(h);
+    }
+    for (const [, sha] of files) this.#known.add(sha);
+    return required;
+  }
+
+  #url(): string {
+    if (this.#uploadUrl === null) {
+      throw new Error("static-publisher-firebase: populateFiles returned no upload URL");
+    }
+    return this.#uploadUrl;
+  }
+
+  /**
+   * Put the referenced media and fonts, set the site config for `target`
+   * and finalize the version. Laps `populate`, `upload-assets`, `finalize`.
+   */
+  async finish(args: {
+    references: AssetReferences;
+    target: DeployTarget;
+    timer: PhaseTimer;
+  }): Promise<{ versionName: string; uploadedCount: number; skippedUnchangedCount: number }> {
+    if (this.#state !== "open") throw new Error(`firebase upload is ${this.#state}`);
+    const { references, target, timer } = args;
+    await this.#flush();
+    timer.lap("populate");
+    const profile = await digestProfile();
+    const assets = uniqueAssets(references);
+    for (const asset of assets) {
+      if (asset.digestProfile !== profile) {
+        throw new Error(
+          `static-publisher-firebase: ${asset.path} carries gzip digests of another gzip (${asset.digestProfile}; this Caelo gzips as ${profile}), so Hosting could not match the upload. Stage again: every Stage first digests such media anew (media.rebuild_digests).`,
+        );
+      }
+      if (this.#paths.has(asset.path)) {
+        throw new Error(
+          `static-publisher-firebase: ${asset.path} is both a file of the build and a referenced asset. Re-run the build.`,
+        );
+      }
+    }
+    let assetUploads = 0;
+    for (let at = 0; at < assets.length; at += POPULATE_BATCH) {
+      const batch = assets.slice(at, at + POPULATE_BATCH);
+      const required = await this.#populate(batch.map((a) => [a.path, a.gzipSha256]));
+      const toUpload = new Map<string, AssetReference>();
+      for (const a of batch) {
+        if (required.has(a.gzipSha256) && !toUpload.has(a.gzipSha256))
+          toUpload.set(a.gzipSha256, a);
+      }
+      await runBatched([...toUpload.values()], PARALLEL_UPLOADS, async (a) => {
+        await uploadAsset(this.#url(), a, assetSourcePath(references, a), this.#token);
+      });
+      assetUploads += toUpload.size;
+    }
+    timer.lap("upload-assets");
+
+    // The redirects table rides the version config — Hosting ignores the
+    // `_redirects` file the generator writes. Every build carries that
+    // file; a build without it is not one the generator produced.
+    if (this.#redirectsFile === null) {
       throw new Error(
-        `static-publisher-firebase: ${asset.path} carries gzip digests of another gzip (${asset.digestProfile}; this Caelo gzips as ${profile}), so Hosting could not match the upload. Stage again: every Stage first digests such media anew (media.rebuild_digests).`,
+        "static-publisher-firebase: the build has no _redirects file. The static generator writes it on every build; re-run the build instead of deploying a partial one.",
       );
     }
-    files.push({
-      path: asset.path,
-      sha256: asset.gzipSha256,
-      source: { kind: "asset", asset, absolutePath: assetSourcePath(build.references, asset) },
-    });
+    const served = new Set([...this.#paths, ...assets.map((a) => a.path)]);
+    const config = siteConfig(
+      target,
+      firebaseRedirectsFromFile(this.#redirectsFile, target.pageUrlStyle ?? "directory", served),
+    );
+    // Config and status in one update, as firebase-tools finalizes.
+    await firebaseFetch(
+      `sites/${this.#site}/versions/${this.#versionId}?updateMask=status,config`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ status: "FINALIZED", config }),
+        token: this.#token,
+      },
+    );
+    timer.lap("finalize");
+    this.#state = "finished";
+    const uploadedCount = this.#uploaded + assetUploads;
+    return {
+      versionName: this.#versionName,
+      uploadedCount,
+      skippedUnchangedCount: served.size - uploadedCount,
+    };
   }
-  // 1. Gzip + hash every file the generator wrote, a bounded number at once.
-  await runBatched([...build.built], CPU_PARALLELISM, async (f) => {
-    const { sha256 } = await gzipAndHash(f.absolutePath);
-    files.push({
-      path: f.relativePath,
-      sha256,
-      source: { kind: "built", absolutePath: f.absolutePath },
-    });
-  });
-  timer.lap("hash");
 
-  // 2. Create a new version with site config — rewrites for the
-  //    gateway + per-extension caching headers. The rewrites send
-  //    `/api/**` traffic to the gateway Cloud Run service so visitor
-  //    form submissions, comments, ratings, etc. work end-to-end.
-  //    Without rewrites those requests would 404 against the static
-  //    bucket — v0.3.0 shipped without them which was the launch
-  //    blocker the v0.3.1 audit surfaced.
-  //
-  //    Gateway service name + region come from env vars set by the
-  //    gcp-firebase Pulumi stack on the admin Cloud Run service.
-  //    No fallback per CLAUDE.md §2 — failing to set these env vars
-  //    means the gcp-firebase Pulumi stack is misconfigured.
+  async abort(): Promise<void> {
+    if (this.#state !== "open") return;
+    this.#state = "aborted";
+    try {
+      await firebaseFetch(`sites/${this.#site}/versions/${this.#versionId}`, {
+        method: "DELETE",
+        token: this.#token,
+      });
+    } catch (e) {
+      // An unfinalized version is never served; one left behind is only clutter.
+      console.error("[deploy] could not delete an abandoned Hosting version", {
+        version: this.#versionName,
+        error: messageOf(e),
+      });
+    }
+  }
+
+  /** The token the upload authenticated with (for the release calls after it). */
+  get token(): string {
+    return this.#token;
+  }
+
+  get site(): string {
+    return this.#site;
+  }
+}
+
+/**
+ * The Hosting config of a build for `target`: the redirects, the `/api/**`
+ * rewrite to the gateway, the cache headers and the env-level robots header.
+ *
+ * Gateway service name + region come from env vars set by the gcp-firebase
+ * Pulumi stack on the admin Cloud Run service. No fallback per CLAUDE.md §2
+ * — failing to set these env vars means the stack is misconfigured. Without
+ * the rewrites `/api/**` (visitor forms, comments, ratings) would 404
+ * against the static site (the v0.3.0 launch blocker the v0.3.1 audit found).
+ */
+function siteConfig(target: DeployTarget, redirects: unknown): FirebaseVersionConfig {
   const gatewayService = process.env.CAELO_GATEWAY_SERVICE;
   const gatewayRegion = process.env.CAELO_GATEWAY_REGION;
   if (!gatewayService || !gatewayRegion) {
@@ -718,102 +862,42 @@ async function createVersionFromBuild(args: {
       "static-publisher-firebase: CAELO_GATEWAY_SERVICE / CAELO_GATEWAY_REGION not set. The gcp-firebase Pulumi stack must set these env vars on the admin Cloud Run service.",
     );
   }
-  // The redirects table rides the version config — Hosting ignores the
-  // `_redirects` file the generator writes. Every build carries that
-  // file; a build without it is not one the generator produced.
-  let redirectsFile: string;
-  try {
-    redirectsFile = await readFile(join(buildDir, "_redirects"), "utf8");
-  } catch (e) {
-    throw new Error(
-      `static-publisher-firebase: ${join(buildDir, "_redirects")} is missing (${(e as Error).message}). The static generator writes it on every build; re-run the build instead of deploying a partial directory.`,
-    );
-  }
-  const redirects = firebaseRedirectsFromFile(
-    redirectsFile,
-    target.pageUrlStyle ?? "directory",
-    build.paths,
-  );
-  const config = withTargetRobotsHeader(
+  return withTargetRobotsHeader(
     {
       redirects,
-      rewrites: [
-        {
-          glob: "/api/**",
-          run: { serviceId: gatewayService, region: gatewayRegion },
-        },
-      ],
+      rewrites: [{ glob: "/api/**", run: { serviceId: gatewayService, region: gatewayRegion } }],
       headers: VERSION_CONFIG_HEADERS,
     },
     target.robotsDefault,
   );
-  const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
-    method: "POST",
-    body: JSON.stringify({ config }),
-    token,
-  });
-  const versionName = created.name; // "sites/<site>/versions/<versionId>"
-  const versionId = versionName.split("/").pop() ?? "";
-  timer.lap("create-version");
+}
 
-  // 3. populateFiles — tell Firebase which files this version has, in
-  //    batches. Each answer says which of its hashes still need upload.
-  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  const required = new Set<string>();
-  let uploadUrl: string | null = null;
-  for (let at = 0; at < files.length; at += POPULATE_BATCH) {
-    const filesMap: Record<string, string> = {};
-    // Firebase expects paths to start with `/` (e.g. "/about").
-    for (const f of files.slice(at, at + POPULATE_BATCH)) filesMap[`/${f.path}`] = f.sha256;
-    const populate = await firebaseFetch<PopulateFilesResponse>(
-      `sites/${site}/versions/${versionId}:populateFiles`,
-      { method: "POST", body: JSON.stringify({ files: filesMap }), token },
-    );
-    for (const h of populate.uploadRequiredHashes ?? []) required.add(h);
-    uploadUrl = populate.uploadUrl;
-  }
-  timer.lap("populate");
-
-  // 4. Upload only the required hashes (Firebase already has the rest),
-  //    once per hash: identical files share one upload.
-  const toUpload = new Map<string, VersionFile>();
-  for (const f of files) {
-    if (required.has(f.sha256) && !toUpload.has(f.sha256)) toUpload.set(f.sha256, f);
-  }
-  const target_ = uploadUrl;
-  if (toUpload.size > 0 && target_ === null) {
-    throw new Error(
-      "static-publisher-firebase: populateFiles named files to upload but returned no upload URL",
-    );
-  }
-  await runBatched([...toUpload.values()], PARALLEL_UPLOADS, async (f) => {
-    const url = target_ as string;
-    if (f.source.kind === "built") {
-      const { body, sha256 } = await gzipAndHash(f.source.absolutePath);
-      if (sha256 !== f.sha256) {
-        throw new Error(
-          `static-publisher-firebase: ${f.path} changed on disk while it was published (hash ${f.sha256} → ${sha256}). Stage again.`,
-        );
-      }
-      await uploadGzippedFile(url, f.sha256, body, token);
-    } else {
-      await uploadAsset(url, f.source.asset, f.source.absolutePath, token);
+/**
+ * The upload of a build: the one the generator streamed into, or — for a
+ * build on disk (a test, a build made before the upload existed) — a new
+ * one fed from `buildDir`, {@link CPU_PARALLELISM} files at a time.
+ */
+async function uploadOf(
+  upload: BuildUpload | undefined,
+  buildDir: string,
+): Promise<FirebaseBuildUpload> {
+  if (upload !== undefined) {
+    if (!(upload instanceof FirebaseBuildUpload)) {
+      throw new Error("static-publisher-firebase: the build was streamed into another publisher");
     }
-  });
-  timer.lap("upload");
-
-  // 5. Finalize the version.
-  await firebaseFetch(`sites/${site}/versions/${versionId}?updateMask=status`, {
-    method: "PATCH",
-    body: JSON.stringify({ status: "FINALIZED" }),
-    token,
-  });
-  timer.lap("finalize");
-  return {
-    versionName,
-    uploadedCount: toUpload.size,
-    skippedUnchangedCount: files.length - toUpload.size,
-  };
+    return upload;
+  }
+  const opened = await FirebaseBuildUpload.open();
+  try {
+    const build = await readBuildFiles(buildDir);
+    await runBatched([...build.built], CPU_PARALLELISM, async (f) => {
+      await opened.put({ relPath: f.relativePath, body: await readFile(f.absolutePath) });
+    });
+  } catch (e) {
+    await opened.abort();
+    throw e;
+  }
+  return opened;
 }
 
 /**
@@ -891,7 +975,7 @@ async function uploadAsset(
 /** The refusal for a stored file that no longer matches its stored digest. */
 function changedOutsideCaelo(asset: AssetReference): Error {
   return new Error(
-    `static-publisher-firebase: the stored file of ${asset.path} no longer matches its stored digest (it was changed outside Caelo). Next step: run media.rebuild_digests with scope "all" (AI tool: rebuild_media_digests), then Stage again.`,
+    `static-publisher-firebase: the stored file of ${asset.path} no longer matches its stored digest (it was changed outside Caelo, in the media store). Next step: restore the original file in the media store (or re-upload the image as a new asset and point the pages at it), then Stage again.`,
   );
 }
 
@@ -1013,13 +1097,20 @@ async function retirePreviewChannel(
 
 export const firebaseHostingPublisher: StaticPublisher = {
   servesCurrentDir: false,
-  async publishStaging({ buildDir, runId, target }) {
+  openBuildUpload: () => FirebaseBuildUpload.open(),
+
+  async publishStaging({ buildDir, runId, target, upload }) {
     const timer = PhaseTimer.withMemory();
     try {
-      const site = siteName();
-      const token = await googleAuthToken();
-      timer.lap("auth");
-      const version = await createVersionFromBuild({ site, token, buildDir, target, timer });
+      const filled = await uploadOf(upload, buildDir);
+      const site = filled.site;
+      const token = filled.token;
+      timer.lap("upload-files");
+      const version = await filled.finish({
+        references: await readAssetReferences(buildDir),
+        target,
+        timer,
+      });
       const versionName = version.versionName;
 
       // 6. Create a per-runId preview channel with a 7-day TTL.
@@ -1072,13 +1163,18 @@ export const firebaseHostingPublisher: StaticPublisher = {
     }
   },
 
-  async publishLiveBuild({ buildDir, target, sourceRunId, beforeRelease }) {
+  async publishLiveBuild({ buildDir, target, sourceRunId, beforeRelease, upload }) {
     const timer = PhaseTimer.withMemory();
     try {
-      const site = siteName();
-      const token = await googleAuthToken();
-      timer.lap("auth");
-      const version = await createVersionFromBuild({ site, token, buildDir, target, timer });
+      const filled = await uploadOf(upload, buildDir);
+      const site = filled.site;
+      const token = filled.token;
+      timer.lap("upload-files");
+      const version = await filled.finish({
+        references: await readAssetReferences(buildDir),
+        target,
+        timer,
+      });
       // The upload above changes nothing that is served; the release does.
       await beforeRelease?.();
       await firebaseFetch(`sites/${site}/releases?versionName=${version.versionName}`, {

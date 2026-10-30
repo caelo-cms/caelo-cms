@@ -323,7 +323,11 @@ async function seedTo(n: number): Promise<void> {
 
 function report(label: string, pages: number, phases: readonly PhaseTiming[]): void {
   const total = phases.filter((p) => !p.phase.includes(".")).reduce((s, p) => s + p.ms, 0);
-  const rows = phases.map((p) => `  ${p.phase.padEnd(28)} ${String(p.ms).padStart(8)} ms`);
+  // #1271 — CPU time and cores kept busy (cpuMs / ms) and peak RSS per step.
+  const rows = phases.map((p) => {
+    const cores = p.cpuMs !== undefined && p.ms > 0 ? (p.cpuMs / p.ms).toFixed(1) : "-";
+    return `  ${p.phase.padEnd(28)} ${String(p.ms).padStart(8)} ms  cpu ${String(p.cpuMs ?? "-").padStart(7)} ms (${cores.padStart(4)} cores)  ${String(p.peakRssMb ?? "-").padStart(5)} MB`;
+  });
   console.info(`\n[bench] ${label} — ${pages} pages — ${total} ms\n${rows.join("\n")}`);
 }
 

@@ -76,6 +76,8 @@ class FakeFirebase {
   live: string[] = []; // versionNames released on the live channel (newest first)
   blobs = new Map<string, Buffer>(); // sha256 → gzipped body
   deletedChannels: string[] = [];
+  /** `populateFiles` calls (#1271: in batches as files arrive). */
+  populateCalls = 0;
   /** When each channel expires, as the live API keeps it (#969). */
   lifetimes = new FakeChannelLifetimes();
   /** Live-channel paths that answer 503, as a transient Hosting failure would (#1155). */
@@ -148,6 +150,7 @@ class FakeFirebase {
       return json({ name: this.versionName(id) });
     }
     if (populate) {
+      this.populateCalls += 1;
       const m = populate;
       const v = this.versions.get(m[1]!);
       if (!v) throw new Error("populate on unknown version");
@@ -169,8 +172,16 @@ class FakeFirebase {
       const m = version;
       const v = this.versions.get(m[1]!);
       if (!v) throw new Error("unknown version");
+      if (method === "DELETE") {
+        this.versions.delete(m[1]!);
+        return json({});
+      }
       if (method === "PATCH") {
-        v.status = parsed.status;
+        // #1271 — the config is set when the version is finalized (as
+        // firebase-tools does): the redirects need every served path.
+        const mask = (params.get("updateMask") ?? "").split(",");
+        if (mask.includes("status")) v.status = parsed.status;
+        if (mask.includes("config")) v.config = parsed.config ?? {};
         return json({});
       }
       return json({ name: this.versionName(m[1]!), config: v.config });
@@ -466,12 +477,12 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
       runId: "run-timed",
       target: STAGING,
     });
+    // #1271 — the files go into the version as they arrive ("upload-files":
+    // gzip, hash, batched populate + upload), the referenced media after.
     expect(staged.phases?.map((p) => p.phase)).toEqual([
-      "auth",
-      "hash",
-      "create-version",
+      "upload-files",
       "populate",
-      "upload",
+      "upload-assets",
       "finalize",
       "channel",
       "release",
@@ -483,11 +494,9 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
       sourceRunId: "run-timed",
     });
     expect(live.phases?.map((p) => p.phase)).toEqual([
-      "auth",
-      "hash",
-      "create-version",
+      "upload-files",
       "populate",
-      "upload",
+      "upload-assets",
       "finalize",
       "release",
     ]);
@@ -899,7 +908,7 @@ describe("firebaseHostingPublisher — referenced media (#1271)", () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await expect(
       firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-changed", target: STAGING }),
-    ).rejects.toThrow("rebuild_media_digests");
+    ).rejects.toThrow("restore the original file");
   });
 
   it("refuses digests of another gzip instead of uploading what Hosting would reject", async () => {
@@ -918,5 +927,56 @@ describe("firebaseHostingPublisher — referenced media (#1271)", () => {
     await expect(
       firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-profile", target: STAGING }),
     ).rejects.toThrow("digests of another gzip");
+  });
+});
+
+describe("firebaseHostingPublisher — a build streamed into the version (#1271)", () => {
+  async function descriptionOnly(): Promise<string> {
+    // What a streamed build leaves on disk: its description, nothing served.
+    const dir = await mkdtemp(join(tmpdir(), "caelo-fb-stream-"));
+    await writeAssetReferences(dir);
+    return dir;
+  }
+
+  it("takes each file as it is written, populates in batches, and needs no file on disk", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    const dir = await descriptionOnly();
+    const upload = await firebaseHostingPublisher.openBuildUpload!({
+      runId: "run-stream",
+      target: STAGING,
+    });
+    await upload.put({ relPath: "_redirects", body: Buffer.from("# generated\n/old / 301\n") });
+    await upload.put({ relPath: "robots.txt", body: Buffer.from("User-agent: *\nDisallow: /\n") });
+    for (let i = 0; i < 600; i += 1) {
+      await upload.put({ relPath: `p${i}/index.html`, body: Buffer.from(`<p>page ${i}</p>`) });
+    }
+    const summary = await firebaseHostingPublisher.publishStaging({
+      buildDir: dir,
+      runId: "run-stream",
+      target: STAGING,
+      upload,
+    });
+    const version = fake.versions.get(summary.location.split("/").pop() ?? "");
+    expect(version?.status).toBe("FINALIZED");
+    expect(Object.keys(version?.files ?? {})).toHaveLength(602);
+    expect(fake.populateCalls).toBeGreaterThanOrEqual(3);
+    expect(fake.fileBody(version!, "/p599/index.html")).toBe("<p>page 599</p>");
+    // The redirects ride the config set at finalize.
+    expect(version?.config.redirects).toEqual([
+      expect.objectContaining({ regex: "^/old/?$", statusCode: 301 }),
+    ]);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("an aborted upload deletes its unfinished version", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    const upload = await firebaseHostingPublisher.openBuildUpload!({
+      runId: "run-abort",
+      target: STAGING,
+    });
+    await upload.put({ relPath: "index.html", body: Buffer.from("<p>x</p>") });
+    expect(fake.versions.size).toBe(1);
+    await upload.abort();
+    expect(fake.versions.size).toBe(0);
   });
 });

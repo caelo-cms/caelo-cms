@@ -182,9 +182,8 @@ describe("buildManifestOf on real build trees (#1271: digests taken by the gener
   }
 
   /**
-   * A build as the generator writes it, rendered for `origin`: pages
-   * digested as written, sitemap written by another pass (read at the end),
-   * the logo referenced by its stored hash.
+   * A build as the generator writes it, rendered for `origin`: every file
+   * digested as it is written, the logo referenced by its stored hash.
    */
   async function build(
     dir: string,
@@ -205,18 +204,19 @@ describe("buildManifestOf on real build trees (#1271: digests taken by the gener
       await put(dir, rel, html);
       parity.record(rel, html);
     }
-    await put(dir, "sitemap.xml", `<urlset><url><loc>${origin}/</loc></url></urlset>`);
+    const sitemap = `<urlset><url><loc>${origin}/</loc></url></urlset>`;
+    await put(dir, "sitemap.xml", sitemap);
+    parity.record("sitemap.xml", sitemap);
     await put(
       dir,
       "robots.txt",
       env === "staging" ? "User-agent: *\nDisallow: /\n" : `Sitemap: ${origin}/sitemap.xml\n`,
     );
     await put(dir, "routing-manifest.json", JSON.stringify({ env, runId: `${env}-run` }));
-    await parity.finish({
-      buildDir: dir,
-      assets: [logo(opts.logo ?? LOGO)],
-      unrecorded: ["sitemap.xml", "robots.txt", "routing-manifest.json"],
-    });
+    // Per-build files are written through the same output; the recorder skips them.
+    parity.record("robots.txt", "x");
+    parity.record("routing-manifest.json", "{}");
+    await parity.finish({ buildDir: dir, assets: [logo(opts.logo ?? LOGO)] });
   }
 
   beforeEach(async () => {

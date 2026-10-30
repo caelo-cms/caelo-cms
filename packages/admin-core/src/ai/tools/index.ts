@@ -212,7 +212,6 @@ import {
 import { queryPageHtmlTool } from "./query-page-html.js";
 import { readContentTool } from "./read-content.js";
 import { readPageMoreTool } from "./read-page-more.js";
-import { rebuildMediaDigestsTool } from "./rebuild-media-digests.js";
 import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./rebuild-quality.js";
 import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromTool } from "./remove-module-from.js";
@@ -474,8 +473,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(setMediaVisibilityManyTool);
   // run #10 D4 — recovery for "media references unresolved" deploy failures.
   registry.register(regenerateMediaVariantsTool);
-  // #1271 — recovery for "no stored digests" / "no longer matches its stored digest".
-  registry.register(rebuildMediaDigestsTool);
   // Recovery for "stored files … are missing" deploy failures.
   registry.register(listMissingMediaTool);
   // P16 — AI image generation via the active provider's image endpoint.

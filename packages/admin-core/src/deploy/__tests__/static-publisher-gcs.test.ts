@@ -725,7 +725,7 @@ describe("gcsStaticPublisher — redirects on the load balancer (#587)", () => {
     const gcsStaticPublisher = await publisher();
     await expect(
       gcsStaticPublisher.publishStaging({ buildDir, runId: "run-x", target: TARGET }),
-    ).rejects.toThrow(/_redirects is missing/);
+    ).rejects.toThrow(/has no _redirects file/);
   });
 
   it("Publish live refuses a run staged without a plan (older release) before copying anything", async () => {
@@ -1050,5 +1050,35 @@ describe("gcsStaticPublisher — referenced media (#1271)", () => {
     const summary = await gcs.publishStaging({ buildDir, runId: "run-have", target: TARGET });
     expect(stagingBucket.files.has(`run-have/${PATH}`)).toBe(false);
     expect(summary.skippedUnchangedCount).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("gcsStaticPublisher — a build streamed into the staging prefix (#1271)", () => {
+  it("saves each changed file as it is written and needs no file on disk", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "caelo-gcs-stream-"));
+    await writeAssetReferences(dir);
+    const gcs = await publisher();
+    const upload = await gcs.openBuildUpload!({ runId: "run-stream", target: TARGET });
+    await upload.put({ relPath: "_redirects", body: Buffer.from("# generated\n") });
+    await upload.put({
+      relPath: "en/about",
+      body: Buffer.from("<html>about</html>"),
+      contentType: "text/html; charset=utf-8",
+    });
+    const summary = await gcs.publishStaging({
+      buildDir: dir,
+      runId: "run-stream",
+      target: TARGET,
+      upload,
+    });
+    expect(summary.uploadedCount).toBe(2);
+    const page = stagingBucket.files.get("run-stream/en/about");
+    expect(page?.body?.toString()).toBe("<html>about</html>");
+    expect((page?.metadata as { contentType?: string }).contentType).toContain("text/html");
+    const list = JSON.parse(
+      stagingBucket.files.get("_build-files/run-stream.json")?.body?.toString() ?? "{}",
+    ) as { files?: string[] };
+    expect(list.files).toEqual(["_redirects", "en/about"]);
+    await rm(dir, { recursive: true, force: true });
   });
 });
