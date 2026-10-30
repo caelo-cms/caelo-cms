@@ -39,6 +39,7 @@ import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { azureFrontDoorDnsRecords } from "../../dist/azure-front-door.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
+import { DEFAULT_MAX_CONNECTIONS, stackPoolBudget } from "../../dist/pool-budget-stack.js";
 import {
   ADMIN_MEMORY_DEFAULT,
   azureContainerAppResources,
@@ -67,6 +68,22 @@ if (legacyLocation !== undefined) {
 }
 const location = cfg.require("region");
 const flexibleServerSku = cfg.get("flexibleServerSku") ?? "Standard_B2s";
+// #1254 — the server's max_connections, set explicitly below (the default
+// Standard_B2s allows up to 429); every app's pool size is computed from it.
+const maxConnections = Number.parseInt(
+  cfg.get("maxConnections") ?? String(DEFAULT_MAX_CONNECTIONS.azure),
+  10,
+);
+/** Replicas each Container App may scale to (see containerApp). */
+const MAX_REPLICAS = 10;
+// The admin, orchestrator and runner apps all open the admin's two pools,
+// so the budget counts their replicas together as admin instances.
+const ADMIN_SIDE_APPS = 3;
+const poolBudget = stackPoolBudget("azure", {
+  maxConnections,
+  adminMaxInstances: ADMIN_SIDE_APPS * MAX_REPLICAS,
+  gatewayMaxInstances: MAX_REPLICAS,
+});
 // #553 — the admin runs the Lighthouse quality audit; same knob + default
 // as every adapter (stack-contract.ts). Container Apps only accepts fixed
 // CPU/memory pairs (2 GiB per vCPU), so the admin's CPU follows its memory
@@ -148,6 +165,18 @@ const pgServer = new azure.dbforpostgresql.Server(`${namePrefix}-pg`, {
   highAvailability: { mode: env === "production" ? "ZoneRedundant" : "Disabled" },
   network: { publicNetworkAccess: "Disabled" },
 });
+
+// #1254 — pinned so the pool budget never depends on the SKU's default.
+const _pgMaxConnections = new azure.dbforpostgresql.Configuration(
+  `${namePrefix}-pg-max-connections`,
+  {
+    resourceGroupName: rg.name,
+    serverName: pgServer.name,
+    configurationName: "max_connections",
+    value: String(maxConnections),
+    source: "user-override",
+  },
+);
 
 const _pgAdmin = new azure.dbforpostgresql.Database(`${namePrefix}-cms-admin-db`, {
   resourceGroupName: rg.name,
@@ -425,7 +454,7 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
       },
     },
     template: {
-      scale: { minReplicas: env === "production" ? 1 : 0, maxReplicas: 10 },
+      scale: { minReplicas: env === "production" ? 1 : 0, maxReplicas: MAX_REPLICAS },
       containers: [
         {
           name: args.serviceName,
@@ -453,6 +482,7 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
 const adminDatabaseEnv = [
   { name: "ADMIN_DATABASE_URL", value: adminDatabaseUrl },
   { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl },
+  ...poolBudget.env.admin,
 ];
 const adminApp = containerApp({
   serviceName: "admin",
@@ -464,7 +494,10 @@ const adminApp = containerApp({
 });
 const _gatewayApp = containerApp({
   serviceName: "gateway",
-  databaseEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
+  databaseEnv: [
+    { name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl },
+    ...poolBudget.env.gateway,
+  ],
   // Which X-Forwarded-For entry is the visitor (api-gateway client-ip.ts).
   // #806 — no remote-MCP env: remote MCP rides Google IAP (gcp stacks
   // only); unset, the gateway answers /api/mcp/* with 503

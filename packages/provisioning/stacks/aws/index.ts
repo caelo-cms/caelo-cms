@@ -39,6 +39,11 @@ import {
   secretsReadPolicy,
 } from "../../dist/aws-task-roles.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
+import {
+  DEFAULT_GATEWAY_MAX_INSTANCES,
+  DEFAULT_MAX_CONNECTIONS,
+  stackPoolBudget,
+} from "../../dist/pool-budget-stack.js";
 import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "../../dist/stack-contract.js";
 import {
   CLOUDFRONT_SVG_BEHAVIORS,
@@ -68,6 +73,25 @@ const _fargateMemoryMb = cfg.get("fargateMemoryMb") ?? "1024";
 // ignored, and the admin task definition sizes itself from it.
 const adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
 const _adminMemoryMiB = memoryQuantityMiB(adminMemory);
+// #1254 — the connection budget. RDS derives max_connections from instance
+// memory; the parameter group below pins it, so the pool sizes computed
+// here hold on every instance class. The task definitions (#749) set
+// `poolBudgetEnvOut` on the admin and gateway tasks and scale to the same
+// instance counts.
+const maxConnections = Number.parseInt(
+  cfg.get("maxConnections") ?? String(DEFAULT_MAX_CONNECTIONS.aws),
+  10,
+);
+const adminMaxInstances = Number.parseInt(cfg.get("adminMaxInstances") ?? "5", 10);
+const gatewayMaxInstances = Number.parseInt(
+  cfg.get("gatewayMaxInstances") ?? String(DEFAULT_GATEWAY_MAX_INSTANCES),
+  10,
+);
+const poolBudget = stackPoolBudget("aws", {
+  maxConnections,
+  adminMaxInstances,
+  gatewayMaxInstances,
+});
 if (_adminMemoryMiB === null) {
   throw new Error(`caelo-aws:adminMemory "${adminMemory}" is not a memory quantity (e.g. 2Gi)`);
 }
@@ -141,10 +165,20 @@ const dbSecurityGroup = new aws.ec2.SecurityGroup(`${namePrefix}-db-sg`, {
   egress: [{ protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] }],
 });
 
+// #1254 — max_connections is the input of the pool budget, so it is set,
+// never left to the instance class's memory-derived default.
+const dbParameters = new aws.rds.ParameterGroup(`${namePrefix}-pg-params`, {
+  family: "postgres16",
+  parameters: [
+    { name: "max_connections", value: String(maxConnections), applyMethod: "pending-reboot" },
+  ],
+});
+
 const db = new aws.rds.Instance(`${namePrefix}-pg`, {
   engine: "postgres",
   engineVersion: "16.4",
   instanceClass: rdsInstanceClass,
+  parameterGroupName: dbParameters.name,
   allocatedStorage: 20,
   storageEncrypted: true,
   multiAz: env === "production",
@@ -529,6 +563,8 @@ export const rdsAddressOut = db.address;
 // The task roles the admin-side and gateway task definitions run as.
 export const adminTaskRoleArnOut = taskRoles.admin.arn;
 export const gatewayTaskRoleArnOut = taskRoles.gateway.arn;
+// #1254 — the pool env the admin and gateway task definitions set.
+export const poolBudgetEnvOut = poolBudget.env;
 
 // Note: the bootstrap token (and other secrets like postgres-password,
 // CSRF/cookie secrets, Anthropic key) are stored in Pulumi's encrypted

@@ -157,6 +157,8 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
     const env = gateway.slice(gateway.indexOf("    environment:"));
     const keys = [...env.matchAll(/^ {6}([A-Z_][A-Z0-9_]*):/gm)].map((m) => m[1]);
     expect(keys.sort()).toEqual([
+      // #1254 — its cms_public pool size (pool-budget-stack.ts).
+      "CAELO_DB_PUBLIC_POOL_MAX",
       "CAELO_TRUSTED_PROXY_HOPS",
       "GATEWAY_PORT",
       "NODE_ENV",

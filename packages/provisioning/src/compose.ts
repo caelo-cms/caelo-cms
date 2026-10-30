@@ -29,6 +29,7 @@
 
 import { CADDY_REDIRECTS_FILE } from "@caelo-cms/shared";
 import { caddyRedirectReloadCommand } from "./caddy-redirects.js";
+import { DEFAULT_MAX_CONNECTIONS, stackPoolBudget } from "./pool-budget-stack.js";
 import {
   ADMIN_MEMORY_DEFAULT,
   GATEWAY_TRUSTED_PROXY_HOPS,
@@ -58,6 +59,23 @@ export type ComposeImages = ReleaseImages | DevImages;
 
 /** The admin's HTTP port inside the Compose network (the Caddyfile proxies to it). */
 export const COMPOSE_ADMIN_PORT = 5173;
+
+/**
+ * #1254 — the Compose install's connection budget: one admin and one
+ * gateway container on a Postgres started with exactly
+ * `DEFAULT_MAX_CONNECTIONS["self-hosted"]` slots (the postgres service's
+ * `command`), so the pool sizes below always match the server.
+ */
+export const COMPOSE_POOL_BUDGET = stackPoolBudget("self-hosted", {
+  maxConnections: DEFAULT_MAX_CONNECTIONS["self-hosted"],
+  adminMaxInstances: 1,
+  gatewayMaxInstances: 1,
+});
+
+/** The budget's env as Compose `environment:` lines for `service`. */
+function poolEnvLines(service: "admin" | "gateway"): string {
+  return COMPOSE_POOL_BUDGET.env[service].map((e) => `      ${e.name}: "${e.value}"`).join("\n");
+}
 /** `.caelo/<this>/` holds the pending Owner-bootstrap token the admin consumes. */
 export const BOOTSTRAP_DIR = "bootstrap";
 
@@ -265,6 +283,8 @@ name: ${spec.project}
 services:
   postgres:
     image: postgres:16-alpine
+    # The pool budget (COMPOSE_POOL_BUDGET) is computed from this number.
+    command: ["postgres", "-c", "max_connections=${DEFAULT_MAX_CONNECTIONS["self-hosted"]}"]
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: "${escapeYaml(spec.postgresPassword)}"
@@ -394,6 +414,7 @@ ${serviceRuntime(
       CAELO_OUTPUT_ROOT: "${SITE_OUTPUT_ROOT}"
       MEDIA_ROOT_DIR: "${MEDIA_ROOT}"
       CAELO_PROVIDER: "self-hosted"
+${poolEnvLines("admin")}
       NODE_ENV: production
 ${env("ANTHROPIC_API_KEY", spec.anthropicApiKey)}
 ${env("RESEND_API_KEY", spec.resendApiKey)}`;
@@ -412,6 +433,7 @@ ${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts
       GATEWAY_PORT: "${COMPOSE_GATEWAY_PORT}"
       # Caddy is the one proxy in front (client-ip.ts in the gateway).
       ${TRUSTED_PROXY_HOPS_ENV}: "${GATEWAY_TRUSTED_PROXY_HOPS["self-hosted"]}"
+${poolEnvLines("gateway")}
       # #806 — no remote MCP here: it rides Google IAP, which this install
       # does not have. CAELO_ADMIN_URL / CAELO_MCP_PUBLIC_URL /
       # CAELO_OPERATOR_OAUTH_CLIENT_FILE stay unset, so the gateway's /api/mcp/*

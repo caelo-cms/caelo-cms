@@ -63,11 +63,15 @@ config:
   caelo-gcp-firebase:maxConnections:
     type: string
     default: "100"
-    description: Postgres max_connections.
+    description: Postgres max_connections; every service's pool size is computed from it (docs/dev/connection-budget.md).
   caelo-gcp-firebase:gatewayMinInstances:
     type: string
     default: "0"
     description: Gateway Cloud Run min instances.
+  caelo-gcp-firebase:gatewayMaxInstances:
+    type: string
+    default: "10"
+    description: Gateway Cloud Run max instances; part of the connection budget (2 connections each).
   caelo-gcp-firebase:iapAllowlist:
     type: string
     default: ""

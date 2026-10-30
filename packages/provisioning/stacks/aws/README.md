@@ -7,6 +7,7 @@ Pulumi stack provisioning Caelo on AWS managed services. Implements the shared `
 | Concern | AWS resource |
 |---|---|
 | Managed Postgres | RDS Postgres 16 Multi-AZ + automated backups + encryption (`db.t4g.small` default) |
+| Connection budget | `max_connections` pinned by a parameter group (`maxConnections`, default 100); the pool sizes for `adminMaxInstances` 5 / `gatewayMaxInstances` 10 are exported as `poolBudgetEnvOut` for the task definitions (#749): cms_admin 7, admin cms_public 4, gateway 2 per task (docs/dev/connection-budget.md) |
 | Blob storage | Two S3 buckets (`caelo-<env>-media` + `caelo-<env>-static`) |
 | CDN | CloudFront distribution with two origins (S3 static + S3 media); static files are served as files, no edge compute on the request path |
 | Container runtime | ECS Fargate cluster + four services (admin / gateway / orchestrator / runner) |

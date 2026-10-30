@@ -26,11 +26,15 @@ pulumi config set caelo-gcp:project my-gcp-project
 # Required (#607): no default, fixed after install.
 pulumi config set caelo-gcp:region europe-west1
 
-# Optional: scale up beyond the safe-by-default ceiling. The defaults
-# size for a small editorial install (admin maxScale 5 × Bun SQL pool
-# max 10 × 2 pools = 100 conns, matching Postgres max_connections=100).
+# Optional: scale up beyond the safe-by-default ceiling. Every service's
+# pool size is computed from max_connections and the instance counts
+# (docs/dev/connection-budget.md): at the defaults (max_connections 100,
+# 5 admin, 10 gateway instances) each admin instance gets a cms_admin
+# pool of 7. A scale-out the server cannot afford fails at preview with
+# the max_connections it needs.
 # pulumi config set caelo-gcp:adminMaxInstances 10
 # pulumi config set caelo-gcp:maxConnections 200
+# pulumi config set caelo-gcp:gatewayMaxInstances 20
 
 # Build + push images. Operator does this once + on every release.
 gcloud auth configure-docker us-central1-docker.pkg.dev

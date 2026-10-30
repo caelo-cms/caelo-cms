@@ -27,6 +27,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [dev/mcp-access.md](./dev/mcp-access.md) — MCP access as one concept: token vs remote chat vs remote admin, who may use which, per-app connections, revoke/restore/block (#968).
 - [dev/password-management.md](./dev/password-management.md) — password policy, change, reset and Owner reset in code.
 - [dev/capture-job.md](./dev/capture-job.md) — server-side screenshots and page renders outside the admin: the GCP capture job, the signed hand-over of a branch preview, the one-at-a-time in-process browser on self-hosted installs (#1217).
+- [dev/connection-budget.md](./dev/connection-budget.md) — how every pool's size derives from the server's `max_connections`: the named reserves (gateway, generator, jobs, the #1267 LISTEN connection), the per-adapter numbers, why pools are not just raised (#1254).
 - [dev/live-refresh.md](./dev/live-refresh.md) — how the editor stays current without timer polling: live topics over the chat stream and `/api/live-events`, the client hub, adding a live surface (#1215).
 - [internal/bug-intake.md](./internal/bug-intake.md) — how to operate a bug intake (setup, signed image, configuration) that files one GitHub issue per defect.
 

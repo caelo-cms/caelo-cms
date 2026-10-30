@@ -32,6 +32,10 @@ pulumi stack output bootstrapUrl
 
 Open that URL once Caddy has issued the cert (~30 s).
 
+## Connection budget
+
+The generated Compose file starts Postgres with `max_connections=100` and sizes every pool from it (#1254, docs/dev/connection-budget.md): the admin gets a cms_admin pool of 78 and a cms_public pool of 4, the gateway a pool of 2, and static builds 2 per pool.
+
 ## Destroy
 
 ```bash

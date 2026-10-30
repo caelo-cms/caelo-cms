@@ -28,6 +28,18 @@ config:
     type: string
     default: db.t4g.small
     description: RDS instance class. db.t4g.small is the cheapest Multi-AZ-capable Graviton class.
+  caelo-aws:maxConnections:
+    type: string
+    default: "100"
+    description: RDS max_connections (parameter group); every service's pool size is computed from it (docs/dev/connection-budget.md).
+  caelo-aws:adminMaxInstances:
+    type: string
+    default: "5"
+    description: Most admin tasks at once; part of the connection budget.
+  caelo-aws:gatewayMaxInstances:
+    type: string
+    default: "10"
+    description: Most gateway tasks at once; part of the connection budget (2 connections each).
   caelo-aws:fargateCpu:
     type: string
     default: "512"
