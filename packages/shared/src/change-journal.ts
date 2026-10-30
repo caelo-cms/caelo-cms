@@ -177,7 +177,9 @@ const LOG = "an append-only log or history; nothing is derived from it";
 const LEASE = "a lease or lock that coordinates processes; nothing is derived from it";
 const SECURITY = "identity and permission rows, read per request by the auth layer";
 const RUNTIME = "runtime bookkeeping of a process (health, progress, cache)";
-const RETIRED = "retired by #1267; no writer remains, migration 0442 drops it";
+const RETIRED = "retired by #1267; nothing reads it any more, migration 0442 drops it";
+const RETIRED_SIGNAL =
+  "retired by #1267; nothing reads it, its writer triggers stay one release for the previous image (roll, rollback), migration 0442 drops both";
 
 /**
  * Every `cms_admin` table that writes no journal rows, with the reason.
@@ -189,8 +191,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   entity_change_horizons: "the journal's garbage-collection horizons",
   change_consumers: "the journal's consumer cursors",
   domain_events: RETIRED,
-  font_usage_changes: RETIRED,
-  site_view_generation: RETIRED,
+  font_usage_changes: RETIRED_SIGNAL,
+  site_view_generation: RETIRED_SIGNAL,
   plugin_event_cursors: RETIRED,
 
   actors: SECURITY,

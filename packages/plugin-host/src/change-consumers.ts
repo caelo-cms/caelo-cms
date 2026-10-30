@@ -32,6 +32,7 @@ import {
   type ChangeBatch,
   claimConsumer,
   commitChanges,
+  consumerClaimExpiresInMs,
   consumerCursorContinuous,
   consumerRebuildPending,
   type DatabaseAdapter,
@@ -86,6 +87,8 @@ export interface DrainLimits {
 }
 /** How long a wake-up waits for the rest of its burst before it drains. */
 const WAKE_COALESCE_MS = 50;
+/** How long after another instance's claim lapses the takeover retry runs. */
+const TAKEOVER_SLACK_MS = 250;
 
 const OWN_KINDS = ["plugin_storage", "plugin_row"] as const;
 
@@ -141,11 +144,20 @@ const claimOp = defineOperation({
       leaseMs: z.number().int().min(1000).max(CLAIM_MS).optional(),
     })
     .strict(),
-  output: z.object({ claimed: z.boolean(), rebuildPending: z.boolean() }),
+  output: z.object({
+    claimed: z.boolean(),
+    rebuildPending: z.boolean(),
+    /** When not claimed: ms until the other holder's claim lapses. */
+    retryInMs: z.number().int().nonnegative().nullable(),
+  }),
   handler: async (_ctx, input, tx) => {
     await registerConsumer(tx, input.name, input.pluginId);
     const claimed = await claimConsumer(tx, input.name, input.holder, input.leaseMs ?? CLAIM_MS);
-    return ok({ claimed, rebuildPending: await consumerRebuildPending(tx, input.name) });
+    return ok({
+      claimed,
+      rebuildPending: await consumerRebuildPending(tx, input.name),
+      retryInMs: claimed ? null : await consumerClaimExpiresInMs(tx, input.name),
+    });
   },
 });
 
@@ -352,6 +364,12 @@ export interface DrainReport {
   readonly error?: string;
   /** The batch budget ran out with changes left: drain this consumer again. */
   readonly more: boolean;
+  /**
+   * Skipped because another instance holds the claim: ms until that claim
+   * lapses. A holder that died mid-batch leaves no notification behind, so
+   * the loop retries once then instead of waiting for an unrelated write.
+   */
+  readonly retryInMs?: number;
 }
 
 async function dispatch(
@@ -382,13 +400,21 @@ async function drainOne(
   let released = false;
   let more = false;
   const claim = { name, pluginId: plugin.pluginId, holder, leaseMs: claimMs };
-  const { claimed, rebuildPending } = await run<{ claimed: boolean; rebuildPending: boolean }>(
-    adapter,
-    registry,
-    "plugin_changes.claim",
-    claim,
-  );
-  if (!claimed) return { slug: plugin.slug, changes, rebuilt, skipped: true, more };
+  const { claimed, rebuildPending, retryInMs } = await run<{
+    claimed: boolean;
+    rebuildPending: boolean;
+    retryInMs: number | null;
+  }>(adapter, registry, "plugin_changes.claim", claim);
+  if (!claimed) {
+    return {
+      slug: plugin.slug,
+      changes,
+      rebuilt,
+      skipped: true,
+      more,
+      ...(retryInMs !== null ? { retryInMs } : {}),
+    };
+  }
   // A dispatch or a rebuild may run longer than the claim: renew it while it
   // runs. A renewal that fails (another instance took the consumer over)
   // stops this drain after the operation; the fenced commit or finish
@@ -533,6 +559,22 @@ export async function startChangeConsumers(
 ): Promise<ChangeConsumersHandle> {
   let running: Promise<void> | null = null;
   let again = false;
+  let stopped = false;
+  // One pending takeover retry at a time, at the earliest lapse of a claim
+  // another instance held when this one skipped its consumer.
+  let retry: { at: number; timer: ReturnType<typeof setTimeout> } | null = null;
+  function scheduleRetry(inMs: number): void {
+    if (stopped) return;
+    const at = Date.now() + inMs + TAKEOVER_SLACK_MS;
+    if (retry && retry.at <= at) return;
+    if (retry) clearTimeout(retry.timer);
+    const timer = setTimeout(() => {
+      retry = null;
+      void wake();
+    }, at - Date.now());
+    timer.unref?.();
+    retry = { at, timer };
+  }
   function wake(): Promise<void> {
     if (running) {
       again = true;
@@ -547,6 +589,8 @@ export async function startChangeConsumers(
           again = false;
           const reports = await drainChangeConsumers(infra, undefined, limits);
           if (reports.some((r) => r.more)) again = true;
+          const waits = reports.flatMap((r) => (r.retryInMs !== undefined ? [r.retryInMs] : []));
+          if (waits.length > 0) scheduleRetry(Math.min(...waits));
         } while (again);
       } catch (thrown) {
         console.error("[plugin-host] draining the change consumers failed", thrown);
@@ -564,6 +608,9 @@ export async function startChangeConsumers(
   );
   return {
     async stop() {
+      stopped = true;
+      if (retry) clearTimeout(retry.timer);
+      retry = null;
       await handle.unlisten();
       await running;
     },

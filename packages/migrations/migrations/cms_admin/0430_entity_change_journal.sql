@@ -57,11 +57,12 @@
 -- notification per transaction). It is only a wake-up; the cursor is the
 -- truth.
 --
--- Expand/contract (#696): this release stops WRITING site_view_generation
--- and font_usage_changes (their triggers are dropped here) and
--- domain_events (the ops no longer insert). The tables stay for the
--- previous release's readers during the roll; 0442 drops them in the next
--- release, marked caelo:requires-earlier-run.
+-- Expand/contract (#696): this release stops READING site_view_generation
+-- and font_usage_changes and stops writing domain_events (the ops no longer
+-- insert). The first two keep their writer triggers, so the previous
+-- release's caches stay correct during the roll and after a rollback; 0442
+-- drops their triggers and all three tables in the next release, marked
+-- caelo:requires-earlier-run.
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
@@ -568,27 +569,10 @@ SELECT 'plugin:' || p.id::text, p.id, pg_current_snapshot(), false
    AND (p.manifest_json -> 'requestedCapabilities') ? 'domain_events'
 ON CONFLICT (name) DO NOTHING;
 
--- Stop writing the retired change signals (the tables stay until 0442).
-DO $do$
-DECLARE
-  t text;
-BEGIN
-  FOREACH t IN ARRAY ARRAY[
-    'pages', 'page_terms', 'pages_seo', 'media_assets', 'site_defaults',
-    'list_types', 'lists', 'page_types',
-    'list_type_snapshots', 'list_snapshots', 'page_type_snapshots',
-    'site_snapshots', 'page_snapshots',
-    'plugins', 'plugin_installation_versions', 'plugin_capability_grants'
-  ] LOOP
-    EXECUTE format('DROP TRIGGER IF EXISTS caelo_site_view_generation ON %I', t);
-    EXECUTE format('DROP TRIGGER IF EXISTS caelo_site_view_generation_truncate ON %I', t);
-  END LOOP;
-  FOREACH t IN ARRAY ARRAY[
-    'modules', 'templates', 'layouts', 'content_instances', 'page_module_content', 'plugins'
-  ] LOOP
-    EXECUTE format('DROP TRIGGER IF EXISTS caelo_font_usage_change ON %I', t);
-  END LOOP;
-END
-$do$;
+-- The retired change signals (site_view_generation, font_usage_changes)
+-- keep their writer triggers in this release: the previous admin image
+-- serves during the roll and after a failed rollout's rollback, and its
+-- caches validate only through them. New code no longer reads them.
+-- 0442 (the contract release) drops the triggers with the tables.
 
 COMMIT;

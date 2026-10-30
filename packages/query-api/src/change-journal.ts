@@ -360,6 +360,23 @@ export async function consumerRebuildPending(
 }
 
 /**
+ * Milliseconds until another holder's claim on a consumer lapses (0 when it
+ * already did), or null when nobody holds it.
+ */
+export async function consumerClaimExpiresInMs(
+  tx: TransactionRunner,
+  name: string,
+): Promise<number | null> {
+  const rows = (await tx.execute(sql`
+    SELECT CASE WHEN claim_expires_at IS NULL THEN NULL
+                ELSE GREATEST(0, ceil(EXTRACT(EPOCH FROM claim_expires_at - now()) * 1000))::int
+           END AS ms
+      FROM change_consumers WHERE name = ${name}
+  `)) as unknown as { ms: number | null }[];
+  return rows[0]?.ms ?? null;
+}
+
+/**
  * Whether a consumer's cursor is continuous: it exists, no rebuild is
  * pending, and garbage collection has not passed it. Only then has every
  * change since the consumer's derived state was last correct been (or is

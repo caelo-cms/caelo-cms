@@ -406,6 +406,34 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
     expect(second.changes.map((c) => c.rowId)).toEqual([early]);
   });
 
+  it("keeps the previous release's change signals written for one release, and trims the font log", async () => {
+    const generation = async () =>
+      (
+        (await asSystem(
+          (tx) => tx`SELECT generation::text AS g FROM site_view_generation`,
+        )) as unknown as { g: string }[]
+      )[0]?.g;
+    const before = await generation();
+    const moduleId = await createModule("legacy-signals");
+    await asSystem((tx) => tx`UPDATE site_defaults SET site_base_url = site_base_url WHERE id = 1`);
+    // The previous image's site view and font caches validate only through
+    // these: a write must still move them (0442 drops them).
+    expect(await generation()).not.toBe(before);
+    const changes = (await asSystem(
+      (tx) => tx`SELECT count(*)::int AS n FROM font_usage_changes WHERE kind = 'change'`,
+    )) as unknown as { n: number }[];
+    expect(changes[0]?.n ?? 0).toBeGreaterThan(0);
+    expect(moduleId).toBeTruthy();
+    // The journal's GC trims ended font-log rows and leaves a horizon, as
+    // the previous image's own trimming did.
+    await op(SYS, "change_journal.collect_garbage", {});
+    const left = (await asSystem(
+      (tx) =>
+        tx`SELECT kind, count(*)::int AS n FROM font_usage_changes GROUP BY kind ORDER BY kind`,
+    )) as unknown as { kind: string; n: number }[];
+    expect(left).toEqual([{ kind: "horizon", n: 1 }]);
+  });
+
   it("GC never passes a live consumer idle past the retention window; a stalled one holds nothing back", async () => {
     const name = `${PFX}idle-consumer`;
     await adapter.withAdminTransaction(SYS, (tx) => registerConsumer(tx, name));

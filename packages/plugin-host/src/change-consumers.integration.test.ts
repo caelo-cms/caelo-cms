@@ -413,6 +413,39 @@ describe("#1267 — a plugin's change consumer", () => {
     expect(received.flatMap((r) => r.changes).length).toBeGreaterThan(0);
   }, 30_000);
 
+  it("takes over from a holder that died mid-batch without any new write", async () => {
+    await drain();
+    const name = changeConsumerName(listenerId());
+    const m = await op<{ moduleId: string }>(SYS, "modules.create", {
+      slug: `${PFX}orphaned`,
+      displayName: "Orphaned",
+      html: "<p>orphaned</p>",
+    });
+    // Another instance claimed the consumer, polled the batch and died: its
+    // claim lapses in a second and nothing will notify about that.
+    await adapter.withAdminTransaction(SYS, async (tx) => {
+      expect(await claimConsumer(tx, name, "dead-instance", 1_000)).toBe(true);
+      await pollChanges(tx, name, { filter: { kinds: ["module"] }, limit: 100 });
+    });
+    received.length = 0;
+    const loop = await startChangeConsumers(infra);
+    try {
+      // The wake-up of the LISTEN connection finds the claim held and skips.
+      await loop.drain();
+      expect(received.flatMap((r) => r.changes).some((c) => c.rowId === m.moduleId)).toBe(false);
+      const deadline = Date.now() + 10_000;
+      while (
+        !received.flatMap((r) => r.changes).some((c) => c.rowId === m.moduleId) &&
+        Date.now() < deadline
+      ) {
+        await Bun.sleep(50);
+      }
+      expect(received.flatMap((r) => r.changes).some((c) => c.rowId === m.moduleId)).toBe(true);
+    } finally {
+      await loop.stop();
+    }
+  }, 20_000);
+
   it("is woken by the journal's NOTIFY", async () => {
     const loop = await startChangeConsumers(infra);
     try {
