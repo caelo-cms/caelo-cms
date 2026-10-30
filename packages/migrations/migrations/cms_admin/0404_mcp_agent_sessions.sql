@@ -27,9 +27,11 @@
 --     for by an external agent ("Claude Code", a token's label). Non-null
 --     marks an agent chat: the chat list groups them per client, and Live
 --     Edit never picks one as the operator's chat.
---   - the connection row's `current_chat_session_id` goes. A release that
---     still reads it fails its remote MCP requests until the roll finishes;
---     its clients reconnect (pre-1.0, delete-don't-migrate).
+--   - the connection row's `current_chat_session_id` is no longer read or
+--     written by this release. It stays (expand-only): the previous
+--     release's images still read and write it while the roll runs. Its
+--     DROP is the contract half, shipped in a later release with
+--     `caelo:requires-earlier-run 0404_mcp_agent_sessions.sql`.
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
@@ -65,6 +67,5 @@ ALTER TABLE chat_sessions
   ADD COLUMN IF NOT EXISTS agent_client text NULL
     CHECK (agent_client IS NULL OR char_length(agent_client) BETWEEN 1 AND 200);
 
-ALTER TABLE mcp_remote_connections DROP COLUMN IF EXISTS current_chat_session_id;
 
 COMMIT;
