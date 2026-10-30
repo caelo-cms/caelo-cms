@@ -124,8 +124,17 @@ export function structureSourcesFromOps(
         read(
           "page_types.list",
           (v) =>
-            (v as { pageTypes: { id: string; slug: string; name: string; purpose: string }[] })
-              .pageTypes,
+            (
+              v as {
+                pageTypes: {
+                  id: string;
+                  slug: string;
+                  name: string;
+                  purpose: string;
+                  collection: boolean;
+                }[];
+              }
+            ).pageTypes,
           {},
         ),
         read(
@@ -147,7 +156,10 @@ export function structureSourcesFromOps(
       ]);
       return {
         pageTypes: new Map(
-          types.map((t) => [t.id, { slug: t.slug, name: t.name, purpose: t.purpose }]),
+          types.map((t) => [
+            t.id,
+            { slug: t.slug, name: t.name, purpose: t.purpose, collection: t.collection },
+          ]),
         ),
         pages: new Map(
           pages.map((p) => [

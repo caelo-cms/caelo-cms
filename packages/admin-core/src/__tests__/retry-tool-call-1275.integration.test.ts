@@ -278,7 +278,12 @@ beforeAll(async () => {
     slug: `t1275-tpl-${TS}`,
     displayName: "T1275 TPL",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
-    newPageType: { slug: TYPE, name: "T1275 Article", purpose: "Articles of the #1275 test." },
+    newPageType: {
+      slug: TYPE,
+      name: "T1275 Article",
+      purpose: "Articles of the #1275 test.",
+      collection: true,
+    },
   });
   if (!tpl.ok) throw new Error(`template: ${JSON.stringify(tpl.error)}`);
   templateId = (tpl.value as { templateId: string }).templateId;

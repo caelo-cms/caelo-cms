@@ -55,13 +55,18 @@ export const createTemplateTool: ToolDefinitionWithHandler<
       newPageType: {
         type: "object",
         additionalProperties: false,
-        required: ["slug", "name", "purpose"],
+        required: ["slug", "name", "purpose", "collection"],
         description:
-          "New page type for this template, e.g. `{slug:'news', name:'News article', purpose:'Dated company news, listed newest first'}`.",
+          "New page type for this template, e.g. `{slug:'news', name:'News article', purpose:'Dated company news, listed newest first', collection:true}`.",
         properties: {
           slug: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
           name: { type: "string", minLength: 1, maxLength: 200 },
           purpose: { type: "string", minLength: 1, maxLength: 1000 },
+          collection: {
+            type: "boolean",
+            description:
+              "true: many similar pages meant to be listed or queried (blog, news, products, jobs, docs); false: standalone pages (home, about, contact, legal, landing).",
+          },
           properties: {
             type: "array",
             items: {

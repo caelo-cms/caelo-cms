@@ -111,6 +111,7 @@ beforeAll(async () => {
         slug: NEWS,
         name: "News",
         purpose: "Dated news articles",
+        collection: true,
         templates: [templateId],
         defaultTemplate: templateId,
         properties: [],

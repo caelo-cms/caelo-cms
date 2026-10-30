@@ -443,6 +443,7 @@ describe("the core structure check (#820)", () => {
           slug: guideType,
           name: "Guide",
           purpose: "How-to guides, listed on the guides hub.",
+          collection: true,
           templates: [templateId],
           defaultTemplate: templateId,
         },

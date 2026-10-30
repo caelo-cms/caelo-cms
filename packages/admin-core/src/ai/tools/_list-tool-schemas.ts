@@ -160,11 +160,16 @@ export const UPSERT_PAGE_TYPES_JSON_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["slug", "name", "purpose", "templates", "defaultTemplate"],
+        required: ["slug", "name", "purpose", "collection", "templates", "defaultTemplate"],
         properties: {
           slug: { type: "string" },
           name: { type: "string" },
           purpose: { type: "string" },
+          collection: {
+            type: "boolean",
+            description:
+              "true: many similar pages meant to be listed or queried (blog, news, products, jobs, docs); false: standalone pages (home, about, contact, legal, landing).",
+          },
           templates: { type: "array", items: { type: "string" } },
           defaultTemplate: { type: "string" },
           properties: {

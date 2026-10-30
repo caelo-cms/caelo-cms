@@ -16,6 +16,7 @@ import {
   OperationRegistry,
 } from "@caelo-cms/query-api";
 import {
+  checkListTypeDef,
   DEFAULT_LIST_TYPES,
   type ExecutionContext,
   LIST_RESERVED_NAMES,
@@ -127,13 +128,28 @@ describe("list tools (epic #1107)", () => {
     expect(fieldProps.bind?.description).toContain("promote_local_list");
   });
 
-  // #1237: the AI named a children loop `items` and was refused; the names
-  // the engine binds are listed where it designs the type.
-  it("upsert_list_types_many names every reserved loop and field name", () => {
-    for (const n of LIST_RESERVED_NAMES) expect(upsertListTypesManyTool.description).toContain(n);
-    for (const p of LIST_RESERVED_PREFIXES) {
-      expect(upsertListTypesManyTool.description).toContain(`${p}*`);
-    }
+  // #1237: the AI named a children loop `items` and was refused. #1277:
+  // a rare, server-detected mistake — the refusal lists every reserved
+  // name, so the description does not carry them.
+  it("a reserved loop or field name is refused with every reserved name", () => {
+    const issues = checkListTypeDef({
+      slug: "t1237",
+      name: "T",
+      purpose: "test",
+      role: "content",
+      root: { allow: ["entry"] },
+      nodes: {
+        entry: {
+          label: "Entry",
+          fields: [{ name: "index", label: "Index", type: "text" }],
+          children: { name: "items", allow: ["entry"] },
+        },
+      },
+    } as never);
+    const text = issues.map((i) => i.message).join("\n");
+    expect(issues.length).toBeGreaterThanOrEqual(2);
+    for (const n of LIST_RESERVED_NAMES) expect(text).toContain(n);
+    for (const p of LIST_RESERVED_PREFIXES) expect(text).toContain(`${p}*`);
   });
 
   it("list_lists renders usage so the AI finds the header's menu instead of minting one", async () => {
@@ -444,6 +460,7 @@ describe("list tools (epic #1107)", () => {
             slug: "news",
             name: "News",
             purpose: "Articles",
+            collection: true,
             templates: ["t1"],
             defaultTemplate: "t1",
             properties: [{ name: "author", type: "text", label: "Author", required: true }],

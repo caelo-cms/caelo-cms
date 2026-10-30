@@ -131,6 +131,7 @@ async function taggedPage(slug: string, vocabId: string, terms: string[]): Promi
         slug: typeSlug,
         name: `Tagged ${slug}`,
         purpose: "Pages carrying topics",
+        collection: false,
         templates: [own],
         defaultTemplate: own,
         properties: [],

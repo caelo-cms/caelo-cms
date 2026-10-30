@@ -56,6 +56,7 @@ const DEFAULT_TEMPLATE_PAGE_TYPE = {
   slug: "home",
   name: "Home page",
   purpose: "The front page of the site: the first impression and the way into every section.",
+  collection: false,
 };
 
 /** The slice of a layouts.list / templates.list row this tool reads. */
@@ -107,13 +108,17 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       templatePageType: {
         type: "object",
         additionalProperties: false,
-        required: ["slug", "name", "purpose"],
+        required: ["slug", "name", "purpose", "collection"],
         description:
           "Page type the template serves (joins it when the slug exists, else creates it). Default `home`.",
         properties: {
           slug: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
           name: { type: "string", minLength: 1, maxLength: 200 },
           purpose: { type: "string", minLength: 1, maxLength: 1000 },
+          collection: {
+            type: "boolean",
+            description: "true: many similar pages to list or query; false: standalone pages.",
+          },
         },
       },
       setAsDefaults: { type: "boolean" },

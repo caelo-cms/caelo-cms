@@ -122,6 +122,13 @@
         <Label for="pt-purpose">What pages of this type are</Label>
         <Textarea id="pt-purpose" value={def.purpose} disabled={ro} oninput={(e) => edit({ ...def, purpose: (e.currentTarget as HTMLTextAreaElement).value })} />
       </div>
+      <div class="space-y-1 md:col-span-2">
+        <Label for="pt-collection">Kind of pages</Label>
+        <Select id="pt-collection" value={String(def.collection)} disabled={ro} onchange={(e: Event) => edit({ ...def, collection: (e.currentTarget as HTMLSelectElement).value === "true" })}>
+          <option value="true">Many similar pages, listed together (blog posts, news, products, jobs, docs)</option>
+          <option value="false">Standalone pages (home, about, contact, legal, landing)</option>
+        </Select>
+      </div>
       <fieldset class="space-y-1 md:col-span-2">
         <legend class="text-sm font-medium">Templates pages of this type may use</legend>
         <div class="flex flex-wrap gap-x-4 gap-y-1">

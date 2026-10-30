@@ -124,6 +124,14 @@
               <Label for="newPageTypePurpose">Purpose</Label>
               <Input id="newPageTypePurpose" name="newPageTypePurpose" type="text" required />
             </div>
+            <div class="space-y-2 md:col-span-3">
+              <Label for="newPageTypeCollection">Kind of pages</Label>
+              <Select id="newPageTypeCollection" name="newPageTypeCollection" required>
+                <option value="">Choose…</option>
+                <option value="true">Many similar pages, listed together (blog posts, news, products, jobs, docs)</option>
+                  <option value="false">Standalone pages (home, about, contact, legal, landing)</option>
+              </Select>
+            </div>
           </div>
         {/if}
         <div class="space-y-2">

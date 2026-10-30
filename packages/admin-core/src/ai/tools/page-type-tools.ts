@@ -50,7 +50,7 @@ function describePageType(t: PageTypeRow): string {
     .join("; ");
   return [
     `${t.slug} — ${t.name}: ${t.purpose}`,
-    `  id ${t.id}; ${t.pageCount} page(s); version ${t.version}`,
+    `  id ${t.id}; ${t.collection ? "collection" : "standalone pages"}; ${t.pageCount} page(s); version ${t.version}`,
     `  templates: ${t.templates.join(", ")} (default ${t.defaultTemplate})`,
     `  properties: ${t.properties.map(describeProperty).join(", ") || "none"}`,
     `  vocabularies: ${vocab || "none"}`,

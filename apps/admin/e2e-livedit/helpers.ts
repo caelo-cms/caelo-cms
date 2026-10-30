@@ -1382,7 +1382,7 @@ export function seedNewsArticles(count: number): void {
         pt = await tx\`
           INSERT INTO page_types (slug, definition)
           VALUES ('news', jsonb_build_object(
-            'slug', 'news', 'name', 'News article', 'purpose', \${purpose}::text,
+            'slug', 'news', 'name', 'News article', 'purpose', \${purpose}::text, 'collection', true,
             'templates', jsonb_build_array(\${tpl[0].id}::text), 'defaultTemplate', \${tpl[0].id}::text,
             'properties', '[]'::jsonb, 'vocabularies', '[]'::jsonb))
           RETURNING id::text AS id

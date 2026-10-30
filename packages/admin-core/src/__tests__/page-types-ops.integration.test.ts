@@ -153,6 +153,7 @@ async function seedNews(suffix: string): Promise<{
       slug: typeSlug,
       name: "News",
       purpose: "Dated news articles",
+      collection: true,
       properties: [
         { name: "teaser", label: "Teaser", type: "text" },
         { name: "featured", label: "Featured", type: "boolean", default: false },
@@ -322,6 +323,7 @@ describe("#1107 page types", () => {
       slug: news.typeSlug,
       name: "News",
       purpose: "Dated news articles",
+      collection: true,
       templates: [news.templateId],
       defaultTemplate: news.templateId,
       properties: [
@@ -390,7 +392,12 @@ describe("#1107 page types", () => {
       slug: `${PFX}article-tpl`,
       displayName: "Article",
       html: '<main><caelo-slot name="content"></caelo-slot></main>',
-      newPageType: { slug: `${PFX}article`, name: "Article", purpose: "Long-form articles." },
+      newPageType: {
+        slug: `${PFX}article`,
+        name: "Article",
+        purpose: "Long-form articles.",
+        collection: true,
+      },
     });
     const listed = await op<{ pageTypes: { slug: string; defaultTemplate: string }[] }>(
       SYS,

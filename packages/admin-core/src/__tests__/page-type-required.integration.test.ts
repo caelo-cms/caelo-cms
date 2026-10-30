@@ -109,7 +109,12 @@ async function typeWithTemplate(slug: string): Promise<{ templateId: string; slu
     slug: `${PFX}${slug}-tpl`,
     displayName: `${slug} template`,
     html: HTML,
-    newPageType: { slug: typeSlug, name: slug, purpose: `${slug} pages of the test site` },
+    newPageType: {
+      slug: typeSlug,
+      name: slug,
+      purpose: `${slug} pages of the test site`,
+      collection: true,
+    },
   });
   return { templateId, slug: typeSlug };
 }
@@ -236,7 +241,7 @@ describe("#1276 templates.create names its page type", () => {
       displayName: "Both",
       html: HTML,
       pageType: "home",
-      newPageType: { slug: `${PFX}both`, name: "Both", purpose: "Both" },
+      newPageType: { slug: `${PFX}both`, name: "Both", purpose: "Both", collection: false },
     });
     expect(both).toContain("only one of");
 
@@ -253,7 +258,7 @@ describe("#1276 templates.create names its page type", () => {
       slug: `${PFX}job-tpl-2`,
       displayName: "Job 2",
       html: HTML,
-      newPageType: { slug: job.slug, name: "Job", purpose: "Jobs" },
+      newPageType: { slug: job.slug, name: "Job", purpose: "Jobs", collection: true },
     });
     expect(taken).toContain(`pass pageType:"${job.slug}"`);
     const after = await op<{ pageTypes: { slug: string; templates: string[] }[] }>(
@@ -272,6 +277,7 @@ describe("#1276 duplicate guard on page_types.upsert_many", () => {
       slug,
       name: slug,
       purpose: `${slug} test pages`,
+      collection: false,
       templates: [blog.templateId],
       defaultTemplate: blog.templateId,
     });
@@ -285,7 +291,12 @@ describe("#1276 duplicate guard on page_types.upsert_many", () => {
       slug: `${PFX}blog-post-tpl`,
       displayName: "Blog post",
       html: HTML,
-      newPageType: { slug: `${PFX}blog-post`, name: "Blog post", purpose: "Posts" },
+      newPageType: {
+        slug: `${PFX}blog-post`,
+        name: "Blog post",
+        purpose: "Posts",
+        collection: true,
+      },
     });
     expect(viaTemplate).toContain(`same kind of content as "${blog.slug}"`);
 

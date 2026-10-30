@@ -262,6 +262,7 @@ export function fixtureData(
             slug: "news",
             name: "News",
             purpose: "News posts.",
+            collection: true,
             templates: [id(801)],
             defaultTemplate: id(801),
             properties: [

@@ -801,6 +801,7 @@ describe("pages.build_page — page type, properties, terms (epic #1107)", () =>
           slug: typeSlug,
           name: "Article",
           purpose: "build_page page type test",
+          collection: false,
           templates: [templateId],
           defaultTemplate: templateId,
           properties: [{ name: "teaser", label: "Teaser", type: "text" }],

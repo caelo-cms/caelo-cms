@@ -568,6 +568,7 @@ describe("international-site lists — tools", () => {
           slug: `${PFX}-article`,
           name: "Article",
           purpose: "Test articles with an author line",
+          collection: true,
           templates: [templateId],
           defaultTemplate: templateId,
           properties: [{ name: "author", label: "Author", type: "text" }],

@@ -161,6 +161,7 @@ list (checked by the op with DB access). Errors carry the entry path
 ```ts
 {
   slug: string; name: string; purpose: string;
+  collection: boolean;            // many similar pages to list or query (blog, news, products, jobs, docs) vs standalone pages
   templates: string[];            // template ids allowed for pages of this type (non-empty)
   defaultTemplate: string;        // one of templates
   properties: FieldDef[];         // no `module` fields
@@ -187,9 +188,21 @@ with every type's slug, purpose and page count plus how to create one
 (`lists/page-type-resolve.ts`). A duplicate keeps the source's type unless
 it names another.
 
+**`collection`** (required, no default) says whether the type's pages are
+many similar pages meant to be listed or queried — blog, news, products,
+jobs, docs — or standalone pages — home, about / team / contact, legal,
+landing, utility. The AI sets it with the type (`upsert_page_types_many`,
+`create_template` `newPageType`), the panel asks for it, `list_page_types`
+shows it. Only collection types count for `structure/manual-page-listing`:
+a footer linking About, Team and Contact is navigation, a hand-kept list of
+blog posts is a listing. Migration 0450 backfilled existing types (true for
+the 0351 kinds blog, doc, product and any type with vocabularies or a
+`date` property, false otherwise) and their snapshots (maintainer decision
+2026-10-30).
+
 A type needs at least one template, so a new kind of content is ONE call:
-`templates.create` with `newPageType: {slug, name, purpose, properties?,
-vocabularies?}` creates the template and the type (template as
+`templates.create` with `newPageType: {slug, name, purpose, collection,
+properties?, vocabularies?}` creates the template and the type (template as
 `defaultTemplate`) in one transaction; `pageType` instead adds the
 template to an existing type. A template names exactly one of the two.
 
@@ -211,7 +224,8 @@ of the page snapshot state, so merge, `revert_page` / `revert_site`,
 the page settings' type picker), which is how a page on the old default
 type is confirmed. The structure check reports the rest as one Stage
 warning, `structure/unconfirmed-page-type`, with paths and the type list;
-the manual-page-listing rule treats unconfirmed pages as ordinary pages.
+the manual-page-listing rule treats unconfirmed pages as ordinary pages and
+looks only at collection types.
 Migration 0351's write-time trigger (an out-of-op INSERT without
 `page_type_id` gets the one type listing its template) stays: it never
 consulted the default.
@@ -726,7 +740,7 @@ structure check reports two modules keeping the same links as their own
 copies (`structure/duplicate-navigation`, see `docs/quality-checks.md`), and
 an overview of pages kept as hand-written cards or links instead of a source
 binding (`structure/manual-page-listing`, #1256): links to at least half of a
-page type's published pages are a page query, never cards. All writes are routine (no §11.A gate).
+collection page type's published pages are a page query, never cards. All writes are routine (no §11.A gate).
 Writing list or page types needs `content.structure`, granted by default
 to every role that holds `content.write`.
 

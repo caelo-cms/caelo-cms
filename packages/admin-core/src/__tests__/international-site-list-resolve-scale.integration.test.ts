@@ -329,6 +329,7 @@ beforeAll(async () => {
         slug: `${PFX}-product`,
         name: "Product",
         purpose: "Test products with a tagline",
+        collection: true,
         templates: [ids.template],
         defaultTemplate: ids.template,
         properties: [{ name: "tagline", label: "Tagline", type: "text" }],

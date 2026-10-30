@@ -17,8 +17,11 @@ const TYPE_NEWS = "00000000-0000-4000-8000-000000000002";
 function index(pages: [string, boolean][]): StructurePageIndex {
   return {
     pageTypes: new Map([
-      [TYPE_PAGE, { slug: "page", name: "Page", purpose: "An ordinary content page" }],
-      [TYPE_NEWS, { slug: "news", name: "News", purpose: "Dated company news" }],
+      [
+        TYPE_PAGE,
+        { slug: "page", name: "Page", purpose: "An ordinary content page", collection: false },
+      ],
+      [TYPE_NEWS, { slug: "news", name: "News", purpose: "Dated company news", collection: true }],
     ]),
     pages: new Map(
       pages.map(([path, confirmed], i) => [

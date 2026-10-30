@@ -91,8 +91,15 @@ export const actions: Actions = {
     if (types.some((t) => t.slug === b.slug)) {
       return fail(400, { error: `A page type named "${b.slug}" already exists.` });
     }
+    const collection = String(form.get("collection") ?? "");
+    if (collection !== "true" && collection !== "false") {
+      return fail(400, {
+        error: "Say whether these are many similar pages listed together, or standalone pages.",
+      });
+    }
     const definition: PageTypeDef = {
       ...b,
+      collection: collection === "true",
       templates: [templateId],
       defaultTemplate: templateId,
       properties: [],

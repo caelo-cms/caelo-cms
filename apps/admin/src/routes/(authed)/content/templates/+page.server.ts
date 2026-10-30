@@ -45,6 +45,12 @@ export const actions: Actions = {
     if (!pageType) {
       return fail(400, { error: "Choose the page type this template serves, or a new one." });
     }
+    const newCollection = String(form.get("newPageTypeCollection") ?? "");
+    if (pageType === NEW_PAGE_TYPE && newCollection !== "true" && newCollection !== "false") {
+      return fail(400, {
+        error: "Say whether the new type's pages are many similar pages or standalone pages.",
+      });
+    }
     const typeInput =
       pageType === NEW_PAGE_TYPE
         ? {
@@ -52,6 +58,7 @@ export const actions: Actions = {
               slug: String(form.get("newPageTypeSlug") ?? "").trim(),
               name: String(form.get("newPageTypeName") ?? "").trim(),
               purpose: String(form.get("newPageTypePurpose") ?? "").trim(),
+              collection: form.get("newPageTypeCollection") === "true",
             },
           }
         : { pageType };

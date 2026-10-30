@@ -56,6 +56,12 @@ export const LIST_RESERVED_NAMES: ReadonlySet<string> = new Set([
 /** Name prefixes reserved as a family (see {@link LIST_RESERVED_NAMES}). */
 export const LIST_RESERVED_PREFIXES = ["is_", "has_", "count_"] as const;
 
+/**
+ * The reserved names as one clause for an error (#1277: the tool
+ * description no longer lists them, so the refusal does).
+ */
+export const LIST_RESERVED_NAMES_CLAUSE = `reserved: ${[...LIST_RESERVED_NAMES].join(", ")}, ${LIST_RESERVED_PREFIXES.map((p) => `${p}*`).join(", ")}`;
+
 /** True when `name` is taken by the engine (see {@link LIST_RESERVED_NAMES}). */
 export function isReservedListName(name: string): boolean {
   return LIST_RESERVED_NAMES.has(name) || LIST_RESERVED_PREFIXES.some((p) => name.startsWith(p));
@@ -256,7 +262,7 @@ export function checkFieldDef(field: FieldDef, path: string): ListIssue[] {
   if (isReservedListName(field.name)) {
     issues.push({
       path,
-      message: `field name "${field.name}" is reserved by the template engine — pick another name.`,
+      message: `field name "${field.name}" is reserved by the template engine (${LIST_RESERVED_NAMES_CLAUSE}) — pick another name.`,
     });
   }
   if (field.default !== undefined) {

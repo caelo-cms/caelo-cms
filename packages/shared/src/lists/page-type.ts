@@ -17,6 +17,13 @@ export const pageTypeDefSchema = z
     slug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/),
     name: z.string().min(1).max(200),
     purpose: z.string().min(1).max(1000),
+    /**
+     * A collection of many similar pages meant to be listed or queried
+     * (blog, news, products, jobs, docs) — true; standalone pages (home,
+     * about / team / contact, legal, landing, utility) — false. The
+     * manual-page-listing check looks only at collection types (0450).
+     */
+    collection: z.boolean(),
     /** Template ids a page of this type may bind to. */
     templates: z.array(z.string().uuid()).min(1).max(64),
     defaultTemplate: z.string().uuid(),
