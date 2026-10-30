@@ -67,10 +67,13 @@ jobs:
             -c shared_buffers=128MB -c effective_cache_size=400MB -c work_mem=4MB \
             -c maintenance_work_mem=64MB \
             -c deadlock_timeout=100ms -c log_lock_waits=on
-          for i in $(seq 1 60); do
-            docker exec scale-gate-pg pg_isready -U "$POSTGRES_USER" && break
+          # Over TCP: the image's init phase answers on its socket only, then
+          # restarts; a socket check would pass before the server is up.
+          for i in $(seq 1 90); do
+            docker exec scale-gate-pg pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" && break
             sleep 1
           done
+          docker exec scale-gate-pg pg_isready -h 127.0.0.1 -U "$POSTGRES_USER"
           docker logs -f scale-gate-pg > postgres.log 2>&1 &
 
       - name: Bootstrap databases and migrate

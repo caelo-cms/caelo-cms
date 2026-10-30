@@ -10,7 +10,6 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { definePlugin } from "@caelo-cms/plugin-sdk";
 import {
   AWAITING_CAPABILITY_APPROVAL,
   bootstrap,
@@ -18,6 +17,7 @@ import {
   loadedPlugins,
   resetPluginHost,
 } from "@caelo-cms/plugin-host";
+import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
@@ -28,7 +28,11 @@ const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
-const OWNER: ExecutionContext = { actorId: SYSTEM_ACTOR_ID, actorKind: "human", requestId: "t1267a" };
+const OWNER: ExecutionContext = {
+  actorId: SYSTEM_ACTOR_ID,
+  actorKind: "human",
+  requestId: "t1267a",
+};
 const SLUG = "t1267a-upgraded";
 
 let adapter: DatabaseAdapter;
@@ -58,8 +62,12 @@ async function asSystem<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
 async function cleanup(): Promise<void> {
   resetPluginHost();
   await asSystem(async (tx) => {
-    await tx.unsafe(`DELETE FROM audit_events WHERE entity_id IN (SELECT id FROM plugins WHERE slug = '${SLUG}')`);
-    await tx.unsafe(`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = '${SLUG}')`);
+    await tx.unsafe(
+      `DELETE FROM audit_events WHERE entity_id IN (SELECT id FROM plugins WHERE slug = '${SLUG}')`,
+    );
+    await tx.unsafe(
+      `DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = '${SLUG}')`,
+    );
     await tx.unsafe(`DELETE FROM plugins WHERE slug = '${SLUG}'`);
   });
 }
@@ -94,7 +102,8 @@ describe("#1267 — a new release's capabilities wait for the Owner", () => {
     // The previous release had been approved for less (what 0431 backfills).
     resetPluginHost();
     await asSystem(
-      (tx) => tx`UPDATE plugins SET approved_capabilities = ARRAY['cms_admin'] WHERE slug = ${SLUG}`,
+      (tx) =>
+        tx`UPDATE plugins SET approved_capabilities = ARRAY['cms_admin'] WHERE slug = ${SLUG}`,
     );
     const upgraded = await boot();
     expect(upgraded.loaded).toEqual([]);
@@ -123,7 +132,8 @@ describe("#1267 — a new release's capabilities wait for the Owner", () => {
     const after = await execute(registry, adapter, OWNER, "plugins.get", { slug: SLUG });
     if (!after.ok) throw new Error(JSON.stringify(after.error));
     expect(
-      (after.value as { plugin: { unapprovedCapabilities: string[] } }).plugin.unapprovedCapabilities,
+      (after.value as { plugin: { unapprovedCapabilities: string[] } }).plugin
+        .unapprovedCapabilities,
     ).toEqual([]);
   });
 
