@@ -69,6 +69,12 @@ const sessionRow = z.object({
   extendedThinkingEnabled: z.boolean(),
   /** v0.2.54 — per-chat thinking budget override; null = chat-runner default. */
   extendedThinkingBudgetTokens: z.number().int().nullable(),
+  /**
+   * Issue #1253 — set on an external agent's chat: the client app it works
+   * for. The chat list groups agent chats by it; Live Edit never resumes one
+   * as the operator's own chat.
+   */
+  agentClient: z.string().nullable(),
 });
 
 interface PinnedElement {
@@ -104,6 +110,12 @@ export const listChatSessionsOp = defineOperation({
     templateId: z.string().uuid().nullable().optional(),
     /** §11 AI-first — substring search on the session title. */
     query: z.string().max(256).optional(),
+    /**
+     * Issue #1253 — external agents' chats (`agentClient` set): "exclude"
+     * lists only the caller's own chats, "only" only the agents'. Omitted =
+     * both.
+     */
+    agentChats: z.enum(["exclude", "only"]).optional(),
   }),
   output: z.object({ sessions: z.array(sessionRow) }),
   handler: async (ctx, input, tx) => {
@@ -114,6 +126,12 @@ export const listChatSessionsOp = defineOperation({
       : sql``;
     const queryFilter =
       input.query && input.query.length > 0 ? sql`AND title ILIKE ${`%${input.query}%`}` : sql``;
+    const agentFilter =
+      input.agentChats === "exclude"
+        ? sql`AND agent_client IS NULL`
+        : input.agentChats === "only"
+          ? sql`AND agent_client IS NOT NULL`
+          : sql``;
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, title, created_by::text AS created_by,
              chat_branch_id::text AS chat_branch_id, branch_kind,
@@ -122,11 +140,12 @@ export const listChatSessionsOp = defineOperation({
              page_id::text     AS page_id,
              template_id::text AS template_id,
              extended_thinking_enabled,
-             extended_thinking_budget_tokens
+             extended_thinking_budget_tokens,
+             agent_client
       FROM chat_sessions
       WHERE created_by = ${ctx.actorId}::uuid
         AND subagent_role IS NULL
-        ${archivedFilter} ${pageFilter} ${templateFilter} ${queryFilter}
+        ${archivedFilter} ${pageFilter} ${templateFilter} ${queryFilter} ${agentFilter}
       ORDER BY last_active_at DESC
       LIMIT 100
     `)) as unknown as {
@@ -145,6 +164,7 @@ export const listChatSessionsOp = defineOperation({
       template_id: string | null;
       extended_thinking_enabled: boolean;
       extended_thinking_budget_tokens: number | null;
+      agent_client: string | null;
     }[];
     const iso = (v: string | Date | null): string | null => {
       if (v === null) return null;
@@ -167,6 +187,7 @@ export const listChatSessionsOp = defineOperation({
         templateId: r.template_id,
         extendedThinkingEnabled: r.extended_thinking_enabled,
         extendedThinkingBudgetTokens: r.extended_thinking_budget_tokens,
+        agentClient: r.agent_client,
       })),
     });
   },
@@ -190,6 +211,7 @@ export const createChatSessionOp = defineOperation({
     const pageId = input.pageId ?? null;
     const templateId = input.templateId ?? null;
     const subagentRole = input.subagentRole ?? null;
+    const agentClient = input.agentClient ?? null;
 
     // v0.5.8 — per-page chat gate: one open page chat per operator, so a
     // second "Live edit" on the same page resumes the first instead of
@@ -206,12 +228,16 @@ export const createChatSessionOp = defineOperation({
     // Global chats (pageId IS NULL) stay unrestricted — globals like
     // theme / lists / modules cross many pages, and the
     // per-entity lock + staging picker handle their conflict surface.
-    if (pageId) {
+    //
+    // #1253 — agent chats are outside the gate on both sides: each agent
+    // works in a chat of its own (one per agent, also on one page), and an
+    // agent's chat never holds the page against the operator's Live Edit.
+    if (pageId && agentClient === null) {
       const existing = (await tx.execute(sql`
         SELECT id::text AS id, title FROM chat_sessions
         WHERE page_id = ${pageId}::uuid
           AND created_by = ${ctx.actorId}::uuid
-          AND subagent_role IS NULL
+          AND subagent_role IS NULL AND agent_client IS NULL
           AND published_at IS NULL AND archived_at IS NULL AND discarded_at IS NULL
         ORDER BY created_at DESC LIMIT 1
       `)) as unknown as { id: string; title: string }[];
@@ -259,7 +285,8 @@ export const createChatSessionOp = defineOperation({
 
     const rows = (await tx.execute(sql`
       INSERT INTO chat_sessions
-        (title, created_by, chat_branch_id, branch_kind, page_id, template_id, subagent_role, parent_chat_session_id)
+        (title, created_by, chat_branch_id, branch_kind, page_id, template_id, subagent_role,
+         parent_chat_session_id, agent_client)
       VALUES (
         ${title},
         ${ctx.actorId}::uuid,
@@ -268,7 +295,8 @@ export const createChatSessionOp = defineOperation({
         ${pageId ? sql`${pageId}::uuid` : sql`NULL`},
         ${templateId ? sql`${templateId}::uuid` : sql`NULL`},
         ${subagentRole},
-        ${parentId ? sql`${parentId}::uuid` : sql`NULL`}
+        ${parentId ? sql`${parentId}::uuid` : sql`NULL`},
+        ${agentClient}
       )
       RETURNING id::text AS id, chat_branch_id::text AS chat_branch_id
     `)) as unknown as { id: string; chat_branch_id: string }[];
@@ -333,6 +361,7 @@ interface SessionDbRow {
   template_id: string | null;
   extended_thinking_enabled: boolean;
   extended_thinking_budget_tokens: number | null;
+  agent_client: string | null;
 }
 
 function isoOrNull(v: string | Date | null): string | null {
@@ -359,7 +388,8 @@ async function readOwnSessionRow(
            page_id::text     AS page_id,
            template_id::text AS template_id,
            extended_thinking_enabled,
-           extended_thinking_budget_tokens
+           extended_thinking_budget_tokens,
+           agent_client
     FROM chat_sessions
     WHERE id = ${chatSessionId}::uuid AND created_by = ${actorId}::uuid
     LIMIT 1
@@ -382,6 +412,7 @@ async function readOwnSessionRow(
     templateId: s.template_id,
     extendedThinkingEnabled: s.extended_thinking_enabled,
     extendedThinkingBudgetTokens: s.extended_thinking_budget_tokens,
+    agentClient: s.agent_client,
   };
 }
 

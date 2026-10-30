@@ -782,6 +782,7 @@
     activePageId={pluginPreviewUrl ? null : activePageId || null}
     pageChats={data.pageChats}
     globalChats={data.globalChats}
+    agentChatGroups={data.agentChatGroups}
     onToolResult={onAiToolResult}
     onSpendUpdate={(microcents) => {
       aiSpendLiveMicrocents = microcents;

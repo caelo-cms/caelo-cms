@@ -48,7 +48,6 @@ test("an external agent's proposal is decided in the chat and handed back to the
 }) => {
   const token = mintAdminMcpToken(ensureIsolatedOwner(OWNER_EMAIL), "mcp-handoff-e2e");
   const session = await mcpPost<{ chatSessionId: string }>(request, token, "/api/mcp/session", {
-    newSession: true,
     title: `mcp-handoff-e2e-${Date.now()}`,
   });
   const propose = async (displayName: string) =>
@@ -161,7 +160,6 @@ test("an external agent's needs-approval tool call is approved in the chat and h
 }) => {
   const token = mintAdminMcpToken(ensureIsolatedOwner(OWNER_EMAIL), "mcp-gated-e2e");
   const session = await mcpPost<{ chatSessionId: string }>(request, token, "/api/mcp/session", {
-    newSession: true,
     title: `mcp-gated-e2e-${Date.now()}`,
   });
   const pageIds = seedPages(`e2e-mcp-gated-${Date.now()}`, 5);

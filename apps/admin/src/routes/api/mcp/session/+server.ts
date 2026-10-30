@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #376 — Power-MCP: work-session endpoint. Resumes the token owner's
- * most recent open chat session (issue #620), resumes a named one, or opens
- * a fresh one (newSession) — the session whose preview branch every
- * subsequent /api/mcp/tool call writes to. Auth lives inside the op; this
- * is just the HTTP shell.
+ * Issue #376 — Power-MCP: work-session endpoint. Opens a new session for
+ * the calling agent (one chat per agent, #1253) or resumes a named one of
+ * the token owner's — the session every subsequent /api/mcp/tool call
+ * writes in. Auth lives inside the op; this is just the HTTP shell.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -20,7 +19,7 @@ export const POST: RequestHandler = async ({ request }) => {
   const token = request.headers.get("x-caelo-mcp-token");
   if (!token) throw error(401, "missing x-caelo-mcp-token header");
 
-  let body: { chatSessionId?: unknown; newSession?: unknown; title?: unknown; pageId?: unknown };
+  let body: { chatSessionId?: unknown; title?: unknown; pageId?: unknown };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -31,7 +30,6 @@ export const POST: RequestHandler = async ({ request }) => {
   const r = await execute(registry, adapter, SYSTEM_CTX, "mcp.open_session", {
     plaintextToken: token,
     ...(typeof body.chatSessionId === "string" ? { chatSessionId: body.chatSessionId } : {}),
-    ...(typeof body.newSession === "boolean" ? { newSession: body.newSession } : {}),
     ...(typeof body.title === "string" ? { title: body.title } : {}),
     ...(typeof body.pageId === "string" ? { pageId: body.pageId } : {}),
   });

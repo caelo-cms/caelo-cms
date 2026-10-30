@@ -249,7 +249,6 @@ describe("#1204 a Stage whose caller goes away leaves nothing held", () => {
       const opened = await execute(registry, adapter, SYSTEM, "mcp.open_session", {
         plaintextToken: token,
         title: "deploy-run-lease session",
-        newSession: true,
       });
       if (!opened.ok) throw new Error(`open_session: ${JSON.stringify(opened.error)}`);
       const { chatSessionId } = opened.value as { chatSessionId: string };

@@ -35,7 +35,8 @@ export const CHAT_MCP_INSTRUCTIONS = [
  */
 export const ADMIN_MCP_INSTRUCTIONS = [
   "This server edits a Caelo CMS site. Before any other caelo tool:",
-  "1. Call caelo_open_session once. It resumes the operator's most recent open session (pass newSession: true only when the operator asks for a fresh one; chatSessionId resumes a specific one). Every write lands in the site's shared draft (or the session's own experiment branch); stage with stage_changes when the operator asks for it (otherwise offer it when a change is done), but nothing reaches the live site until the operator clicks Publish live in the Caelo admin.",
+  "1. Call caelo_open_session once. It opens your own work session — a chat of yours in the Caelo admin, where the operator can follow, undo and stop your work (pass chatSessionId only to continue a session you opened earlier). Every write lands in the site's shared draft (or the session's own experiment branch); stage with stage_changes when the operator asks for it (otherwise offer it when a change is done), but nothing reaches the live site until the operator clicks Publish live in the Caelo admin.",
+  "When several agents work in parallel over this connection (sub-agents), each one calls caelo_open_session itself and passes the workSessionId it got on every caelo call, so each works in its own session. Parallel agents never block each other; two calls that edit the same page or entity at once get a conflict that says to re-read and redo the edit.",
   "2. Call caelo_get_context once and follow it: it carries the site model, tool playbook, staging rules, site memory (brand voice, glossary) and the skills index.",
   "3. Load every skill the context marks ALWAYS APPLIES with load_skill before the work it covers (e.g. before writing any visitor-facing copy).",
   "Every tool in this list works over MCP, including approval-gated ones (marked APPROVAL-GATED — deploys, users/roles, languages/locales, plugin settings, bulk deletes …). Call them yourself: Caelo shows the operator an approval card in the Caelo admin (their Live Edit chat and the pending-approvals page), the call waits for Approve/Reject and returns the decision; if the wait times out, call caelo_await_approval with the proposalId. Tell the operator what you requested and that they approve the card in Caelo. Never ask the operator to paste a prompt into the Caelo admin chat or to do a step there that a tool here can do, and never re-propose a pending proposal.",
@@ -217,7 +218,6 @@ export const openSessionInput = z
     title: z.string().min(1).max(200).optional(),
     pageId: z.string().uuid().optional(),
     chatSessionId: z.string().uuid().optional(),
-    newSession: z.boolean().optional(),
   })
   .strict();
 export type OpenSessionInput = z.infer<typeof openSessionInput>;
@@ -225,28 +225,39 @@ export type OpenSessionInput = z.infer<typeof openSessionInput>;
 export const OPEN_SESSION_TOOL = {
   name: "caelo_open_session",
   description:
-    "Open the Caelo work session your subsequent tool calls run in. Every write lands in the site's shared " +
-    "draft — invisible to the live site until it is staged and the operator clicks Publish live in the Caelo admin. " +
-    "Call this ONCE before any other caelo tool. By default it RESUMES the operator's own most recent open " +
-    "session (so earlier unstaged work continues in the same chat); pass newSession: true only when the " +
-    "operator wants a separate fresh session, or chatSessionId to resume a specific one. Optional pageId " +
-    "resumes (or opens) that page's session.",
+    "Open your Caelo work session: a chat of your own in the operator's Caelo admin, in the site's shared " +
+    "draft — your writes are invisible to the live site until they are staged and the operator clicks Publish live. " +
+    "Call this ONCE before any other caelo tool; every call opens a NEW session (each agent gets its own, so the " +
+    "operator can undo or stop each agent's work on its own). Pass chatSessionId only to continue a session you " +
+    "opened earlier. When several agents share this connection, each passes the returned chatSessionId as " +
+    "workSessionId on every caelo call. Optional pageId binds the new session to that page.",
   inputSchema: {
     type: "object" as const,
     properties: {
       title: { type: "string", description: "Session title shown in the Caelo admin chat list." },
-      pageId: { type: "string", description: "Optional page UUID to bind the session to." },
+      pageId: { type: "string", description: "Optional page UUID to bind the new session to." },
       chatSessionId: {
         type: "string",
-        description: "Resume this specific session instead of the most recent one.",
-      },
-      newSession: {
-        type: "boolean",
-        description: "Open a fresh session instead of resuming the most recent open one.",
+        description: "Continue this session (one you opened earlier) instead of opening a new one.",
       },
     },
   },
 };
+
+/**
+ * Issue #1253 — the per-call work session. Every catalogue tool gains this
+ * optional argument on the Power-MCP surface (and loses it again before the
+ * call reaches Caelo): agents sharing one connection each name their own
+ * session, because a connection has one current session at most.
+ */
+export const WORK_SESSION_ARG = "workSessionId";
+
+/** The JSON-Schema property {@link WORK_SESSION_ARG} adds to each tool. */
+export const WORK_SESSION_PROPERTY = {
+  type: "string",
+  description:
+    "Your work session (the chatSessionId from caelo_open_session). Required when several agents share this connection; otherwise the session you opened last.",
+} as const;
 
 export const adminAwaitApprovalInput = z.object({ proposalId: z.string().uuid() }).strict();
 

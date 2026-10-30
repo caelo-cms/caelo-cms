@@ -5,8 +5,8 @@
  * driven by the MCP SDK's own Streamable HTTP client (its fetch routed into
  * the route handlers): initialize + tools/list per surface, every auth
  * refusal (HTTP status + structured body), sticky revocation, the admin
- * surface's permission gate, and the stateless work session persisted on
- * the connection row across requests. IAP assertions are signed with
+ * surface's permission gate, and the work session per agent bound to the
+ * client's MCP session id (#1253). IAP assertions are signed with
  * generated ES256 keys through the verifier's test seam.
  */
 
@@ -364,55 +364,126 @@ describe("remote MCP: refusals", () => {
   });
 });
 
-describe("remote MCP: stateless work session", () => {
-  it("caelo_open_session persists current_chat_session_id; a later request writes to it", async () => {
-    const first = await connect("admin", OWNER.email);
-    const opened = await first.callTool({
-      name: "caelo_open_session",
-      arguments: { newSession: true, title: "t806 route session" },
-    });
+describe("remote MCP: one work session per agent (#1253)", () => {
+  async function openSession(client: Client, title: string): Promise<string> {
+    const opened = await client.callTool({ name: "caelo_open_session", arguments: { title } });
     expect(opened.isError).toBeFalsy();
-    const { chatSessionId } = JSON.parse(`${text(opened).split("\n}")[0]}\n}`) as {
-      chatSessionId: string;
-    };
-    await first.close();
+    return (JSON.parse(`${text(opened).split("\n}")[0]}\n}`) as { chatSessionId: string })
+      .chatSessionId;
+  }
 
+  async function agentRuns(chatSessionId: string): Promise<number> {
     const rows = await withSql(
-      async (tx) =>
-        (await tx`SELECT current_chat_session_id::text AS current FROM mcp_remote_connections
-                  WHERE actor_id = ${OWNER.id}::uuid AND surface = 'admin'`) as {
-          current: string | null;
-        }[],
-    );
-    expect(rows[0]?.current).toBe(chatSessionId);
-
-    // A fresh connection (any instance) continues in that session.
-    const second = await connect("admin", OWNER.email);
-    const listed = await second.callTool({ name: "list_pages", arguments: {} });
-    expect(listed.isError).toBeFalsy();
-    const runs = await withSql(
       async (tx) =>
         (await tx`SELECT count(*)::int AS n FROM chat_agent_runs
                   WHERE chat_session_id = ${chatSessionId}::uuid
                     AND mcp_remote_connection_id IS NOT NULL`) as { n: number }[],
     );
-    expect(runs[0]?.n).toBe(1);
-    await second.close();
-  });
+    return rows[0]?.n ?? 0;
+  }
 
-  it("a tool call before any session points at caelo_open_session", async () => {
-    await withSql(
-      (tx) =>
-        tx`UPDATE mcp_remote_connections SET current_chat_session_id = NULL
-           WHERE actor_id = ${OWNER.id}::uuid AND surface = 'admin'`,
-    );
+  it("binds the session to the client's MCP session id; later requests of that client write to it", async () => {
     const client = await connect("admin", OWNER.email);
-    const r = await client.callTool({ name: "list_pages", arguments: {} });
-    expect(r.isError).toBe(true);
-    expect(text(r)).toContain("caelo_open_session");
+    const chatSessionId = await openSession(client, "t1253 route session");
+    const listed = await client.callTool({ name: "list_pages", arguments: {} });
+    expect(listed.isError).toBeFalsy();
+    expect(await agentRuns(chatSessionId)).toBe(1);
+    const agentClient = await withSql(
+      async (tx) =>
+        (await tx`SELECT agent_client FROM chat_sessions WHERE id = ${chatSessionId}::uuid`) as {
+          agent_client: string | null;
+        }[],
+    );
+    expect(agentClient[0]?.agent_client).toBeTruthy();
     await client.close();
   });
 
+  it("two agents on two connections of one client open two sessions; workSessionId names one explicitly", async () => {
+    const a = await connect("admin", OWNER.email);
+    const b = await connect("admin", OWNER.email);
+    const sessionA = await openSession(a, "t1253 agent A");
+    const sessionB = await openSession(b, "t1253 agent B");
+    expect(sessionA).not.toBe(sessionB);
+    // A third agent that shares A's connection names its own session per call.
+    const c = await connect("admin", OWNER.email);
+    const r = await c.callTool({ name: "list_pages", arguments: { workSessionId: sessionB } });
+    expect(r.isError).toBeFalsy();
+    expect(await agentRuns(sessionB)).toBe(1);
+    // Without a session of its own, a new connection is pointed at caelo_open_session.
+    const none = await c.callTool({ name: "list_pages", arguments: {} });
+    expect(none.isError).toBe(true);
+    expect(text(none)).toContain("caelo_open_session");
+    for (const x of [a, b, c]) await x.close();
+  });
+
+  it("every catalogue tool advertises the optional workSessionId", async () => {
+    const client = await connect("admin", OWNER.email);
+    const { tools } = await client.listTools();
+    const listPages = tools.find((t) => t.name === "list_pages");
+    expect(
+      (listPages?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties,
+    ).toHaveProperty("workSessionId");
+    await client.close();
+  });
+
+  it("a repeated tools/call (same MCP session, same JSON-RPC id) returns the cached first result", async () => {
+    const init = await callRoute(
+      "admin",
+      new Request("http://admin.test/api/mcp/remote/admin", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "x-goog-iap-jwt-assertion": assertion(OWNER.email),
+          ...clientHeader(),
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+            clientInfo: { name: "t1253-raw", version: "1" },
+          },
+        }),
+      }),
+    );
+    const mcpSession = init.headers.get("mcp-session-id");
+    expect(mcpSession).toMatch(/^[A-Za-z0-9_-]{16,128}$/);
+    await init.text();
+    const rpc = async (id: number, name: string, args: Record<string, unknown>) => {
+      const res = await callRoute(
+        "admin",
+        new Request("http://admin.test/api/mcp/remote/admin", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            "mcp-session-id": mcpSession as string,
+            "mcp-protocol-version": "2025-06-18",
+            "x-goog-iap-jwt-assertion": assertion(OWNER.email),
+            ...clientHeader(),
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: { name, arguments: args },
+          }),
+        }),
+      );
+      return res.text();
+    };
+    expect(await rpc(2, "caelo_open_session", { title: "t1253 raw" })).toContain("chatSessionId");
+    const first = await rpc(3, "list_pages", {});
+    expect(first).toContain('\\"cached\\":false');
+    const repeat = await rpc(3, "list_pages", {});
+    expect(repeat).toContain('\\"cached\\":true');
+  });
+});
+
+describe("remote MCP: uploads", () => {
   it("caelo_upload_images refuses filePath remotely with a base64 hint", async () => {
     const client = await connect("chat", EDITOR.email);
     const r = await client.callTool({

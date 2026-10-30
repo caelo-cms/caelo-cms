@@ -2,6 +2,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
+import { groupAgentChats } from "#lib/agent-chat-groups.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
@@ -12,6 +13,8 @@ type ChatSessionRow = {
   title: string;
   lastActiveAt: string;
   publishedAt: string | null;
+  /** #1253 — set on an external agent's chat (the client app it works for). */
+  agentClient: string | null;
 };
 
 /**
@@ -28,9 +31,11 @@ type ChatSessionRow = {
 export const load: PageServerLoad = ({ locals }) => {
   requirePermission(locals, "content.read");
   const { adapter, registry } = getQueryContext();
-  const sessions = (async (): Promise<ChatSessionRow[]> => {
+  // #1253 — the operator's own chats, then the external agents' chats
+  // grouped per client app (one chat per agent).
+  const sessions = (async () => {
     const r = await execute(registry, adapter, locals.ctx, "chat.list_sessions", {});
-    return r.ok ? (r.value as { sessions: ChatSessionRow[] }).sessions : [];
+    return groupAgentChats(r.ok ? (r.value as { sessions: ChatSessionRow[] }).sessions : []);
   })();
   return { sessions };
 };

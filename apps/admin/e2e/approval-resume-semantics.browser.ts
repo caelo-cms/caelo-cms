@@ -147,7 +147,7 @@ test("an external agent's caelo_chat card records the decision for the agent and
   const token = mintAdminMcpToken(actorId, agentName);
   const sessionRes = await request.post("/api/mcp/session", {
     headers: { "x-caelo-mcp-token": token },
-    data: { newSession: true, title: `approval-resume-e2e-${Date.now()}` },
+    data: { title: `approval-resume-e2e-${Date.now()}` },
   });
   expect(sessionRes.ok()).toBe(true);
   const { chatSessionId } = (await sessionRes.json()) as { chatSessionId: string };

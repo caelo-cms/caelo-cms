@@ -28,6 +28,7 @@ export {
   createAdminMcpServer,
   type ExecuteToolResponse,
   type GetContextResponse,
+  NoWorkSessionError,
   type OpenSessionResponse,
   type RemoteTool,
 } from "./admin-surface.js";

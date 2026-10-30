@@ -332,7 +332,6 @@ describe("case 2 — a Power-MCP proposal is handed back, never starting a chat 
     const adminToken = (minted.value as { plaintextToken: string }).plaintextToken;
     const opened = await execute(registry, adapter, SYSTEM, "mcp.open_session", {
       plaintextToken: adminToken,
-      newSession: true,
     });
     if (!opened.ok) throw new Error(JSON.stringify(opened.error));
     const { chatSessionId } = opened.value as { chatSessionId: string };

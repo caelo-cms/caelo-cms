@@ -112,9 +112,28 @@ export const loadedPlugins = new LoadedPluginsRegistry();
  */
 const disabledSlugs = new Set<string>();
 
+let toolSurfaceGeneration = 0;
+
+/**
+ * #1253 — a counter that moves whenever the plugin tools the AI can call
+ * may have changed (a plugin's tools registered or removed, a plugin
+ * disabled or re-enabled). A catalogue built from them is valid exactly
+ * as long as this number stays the same, so it can be built once and
+ * reused instead of rebuilt on every MCP request.
+ */
+export function pluginToolSurfaceGeneration(): number {
+  return toolSurfaceGeneration;
+}
+
+/** Host-internal: the plugin tool surface changed ({@link pluginToolSurfaceGeneration}). */
+export function bumpPluginToolSurfaceGeneration(): void {
+  toolSurfaceGeneration += 1;
+}
+
 export function setPluginDisabled(slug: string, disabled: boolean): void {
   if (disabled) disabledSlugs.add(slug);
   else disabledSlugs.delete(slug);
+  bumpPluginToolSurfaceGeneration();
 }
 
 export function isPluginDisabled(slug: string): boolean {
@@ -123,6 +142,7 @@ export function isPluginDisabled(slug: string): boolean {
 
 export function resetDisabledSet(): void {
   disabledSlugs.clear();
+  bumpPluginToolSurfaceGeneration();
 }
 
 /** Bag of host machinery passed to the capability factory. Bootstrap

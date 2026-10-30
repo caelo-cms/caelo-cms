@@ -249,7 +249,7 @@ export const revokeMcpRemoteConnectionOp = defineOperation({
       "mcp_remote_connections.revoke",
       input.id,
       sql`revoked_by = CASE WHEN revoked_at IS NULL THEN ${changedBy(ctx)}::uuid ELSE revoked_by END,
-          revoked_at = COALESCE(revoked_at, now()), current_chat_session_id = NULL`,
+          revoked_at = COALESCE(revoked_at, now())`,
     );
     if (!updated.ok) return updated;
     const [row] = await selectRows(tx, ctx, input.id);

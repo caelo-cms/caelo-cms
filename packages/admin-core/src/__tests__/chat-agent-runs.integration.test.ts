@@ -888,7 +888,9 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
     expect(await userRows(chatSessionId)).toEqual(["Build it."]);
   });
 
-  it("refuses an external write while a Live Edit turn writes; reads still work", async () => {
+  // #1253 — no per-chat write slot: a Live Edit turn and an external agent
+  // never block each other; per-entity versioning catches real conflicts.
+  it("runs an external write while a Live Edit turn writes in the same chat", async () => {
     const token = await mintAdminToken();
     const chatSessionId = await createChat("t664 live edit busy");
     const t = gatedTools();
@@ -908,25 +910,14 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
       "bulk_create_redirects",
       redirectWrite("t664-d"),
     );
-    expect(write.ok).toBe(false);
-    expect(write.content).toStartWith("chat_busy:");
+    expect(write.ok).toBe(true);
     const exists = await withSql(async (tx) => {
       const rows = (await tx`SELECT 1 FROM redirects WHERE from_path = '/t664-d'`) as unknown[];
       return rows.length > 0;
     });
-    expect(exists).toBe(false);
-    const read = await mcpCall(token, chatSessionId, "list_pages", {});
-    expect(read.ok).toBe(true);
+    expect(exists).toBe(true);
 
     t.finish();
     await turn;
-    // The lease is free again once the turn ended.
-    const after = await mcpCall(
-      token,
-      chatSessionId,
-      "bulk_create_redirects",
-      redirectWrite("t664-e"),
-    );
-    expect(after.ok).toBe(true);
   });
 });

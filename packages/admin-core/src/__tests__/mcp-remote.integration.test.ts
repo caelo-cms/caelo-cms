@@ -95,13 +95,12 @@ async function connectionRow(actorId: string, surface: string, client: string = 
   return withSql(
     async (tx) =>
       (
-        (await tx`SELECT id::text AS id, revoked_at, current_chat_session_id::text AS current
+        (await tx`SELECT id::text AS id, revoked_at
                   FROM mcp_remote_connections
                   WHERE actor_id = ${actorId}::uuid AND surface = ${surface}
                     AND client_key = ${client}`) as {
           id: string;
           revoked_at: Date | null;
-          current: string | null;
         }[]
       )[0],
   );
@@ -538,23 +537,26 @@ describe("mcp.* ops on a remote credential", () => {
     expect(neither.ok).toBe(false);
   });
 
-  it("opens a session, persists it on the connection, and attributes tool calls to the connection", async () => {
+  it("opens an agent session of the connection's client and attributes tool calls to the connection", async () => {
     const remote = cred(USERS.owner.email, "admin");
     const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
       remote,
-      newSession: true,
       title: "t806 remote session",
     });
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const { chatSessionId } = opened.value as { chatSessionId: string };
-    const row = await connectionRow(USERS.owner.id, "admin");
-    expect(row?.current).toBe(chatSessionId);
-
+    // #1253 — an agent's own chat, grouped under its client.
     const p = await resolveRemoteMcpPrincipal(adapter, remote);
-    expect(p.ok && p.value.via.kind === "remote" && p.value.via.currentChatSessionId).toBe(
-      chatSessionId,
+    const client = p.ok && p.value.via.kind === "remote" ? p.value.via.clientName : null;
+    expect(client).toBeTruthy();
+    const marked = await withSql(
+      async (tx) =>
+        (await tx`SELECT agent_client FROM chat_sessions WHERE id = ${chatSessionId}::uuid`) as {
+          agent_client: string | null;
+        }[],
     );
+    expect(marked[0]?.agent_client).toBe(client);
 
     const exec = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
       remote,
@@ -574,7 +576,7 @@ describe("mcp.* ops on a remote credential", () => {
     );
     expect(runs).toHaveLength(1);
     expect(runs[0]?.mcp_token_id).toBeNull();
-    expect(runs[0]?.conn).toBe(row!.id);
+    expect(runs[0]?.conn).toBe((await connectionRow(USERS.owner.id, "admin"))?.id);
     expect(runs[0]?.label).toContain("(remote MCP)");
   });
 
