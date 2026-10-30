@@ -1,0 +1,2 @@
+{"totalMicrocents" : 685385701, "calls" : 19, "inputTokens" : 10063930, "outputTokens" : 117654, "cachedTokens" : 9450876, "unpricedCalls" : 0, "byModel" : [{"model":"claude-sonnet-5","calls":17,"microcents":677545980}, 
+ {"model":"gemini-2.5-flash-image","calls":2,"microcents":7839721}]}
