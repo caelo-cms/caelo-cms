@@ -3330,35 +3330,6 @@
       }
     },
     {
-      "name": "rebuild_media_digests",
-      "description": "Recompute the stored digests of media files (what a build names and uploads them by).\nUSE FOR: Stage fails with 'have no stored digests' (scope 'missing') or 'no longer matches its stored digest' (a file changed outside Caelo: scope 'all', optionally `assetIds`). Every Stage already digests missing rows itself; then Stage again.\nResult: `updated` rows, `corrected` (wrong digests fixed), `missingFiles` (no file in storage -> `list_missing_media`).",
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "scope": {
-            "type": "string",
-            "enum": [
-              "missing",
-              "all"
-            ],
-            "default": "missing",
-            "description": "'missing' = rows without digests; 'all' = recompute and compare every row."
-          },
-          "assetIds": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "minItems": 1,
-            "maxItems": 500,
-            "description": "Only these assets."
-          }
-        }
-      }
-    },
-    {
       "name": "list_missing_media",
       "description": "List media assets whose stored files are gone (row exists, bytes lost). Use when Stage/deploy fails with 'stored files of … media asset(s) are missing', or before publishing after such a failure. Missing derived variants of an existing file -> `regenerate_media_variants`.\nPer asset: `source` is a URL -> `import_media_from_urls` on it (same bytes refill the same asset, fixing every page); else ask the operator to re-upload the same file at /content/media (identical files reuse the asset). Unrestorable -> take it off its pages (`list_media_usages`), then `delete_media_many`.",
       "inputSchema": {
