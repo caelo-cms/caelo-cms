@@ -16,7 +16,6 @@ import {
 import {
   type ExecutionContext,
   err,
-  extractMediaRefs,
   ok,
   pageCreateSchema,
   pageSetModulesSchema,
@@ -2418,45 +2417,13 @@ export const duplicatePageOp = defineOperation({
         VALUES ${sql.join(rows, sql`, `)}
       `);
     }
-    // P7 review-pass: bump media usage_count for every distinct asset
-    // referenced from the cloned modules' HTML. A duplicated page adds
-    // a fresh set of live references, so find_media's `most_used` sort
-    // surfaces the asset as more popular. Same diff helper that
-    // modules.update calls; HTML is unchanged so we treat the empty
-    // string as "before" and the union of all module HTML as "after".
-    const clonedModules = (await tx.execute(sql`
-      SELECT m.html FROM page_modules pm
-      JOIN modules m ON m.id = pm.module_id AND m.deleted_at IS NULL
-      WHERE pm.page_id = ${newPageId}::uuid
-    `)) as unknown as { html: string }[];
-    if (clonedModules.length > 0) {
-      // `extractMediaRefs` yields slug refs (current embeds) + legacy UUID
-      // id refs; resolve the slugs to ids (one batched query) so the
-      // usage bump below operates purely on asset ids.
-      const ids = new Set<string>();
-      const slugs = new Set<string>();
-      for (const r of clonedModules) {
-        for (const ref of extractMediaRefs(r.html)) {
-          if (ref.isSlug) slugs.add(ref.ref);
-          else ids.add(ref.ref);
-        }
-      }
-      if (slugs.size > 0) {
-        const slugFrags = [...slugs].map((s) => sql`${s}`);
-        const slugRows = (await tx.execute(sql`
-          SELECT id::text AS id FROM media_assets
-          WHERE slug IN (${sql.join(slugFrags, sql`, `)}) AND deleted_at IS NULL
-        `)) as unknown as { id: string }[];
-        for (const row of slugRows) ids.add(row.id);
-      }
-      for (const assetId of ids) {
-        await tx.execute(sql`
-          UPDATE media_assets
-          SET usage_count = usage_count + 1, last_used_at = now()
-          WHERE id = ${assetId}::uuid AND deleted_at IS NULL
-        `);
-      }
-    }
+    // No media usage bump (#1254): `usage_count` counts module ROWS whose
+    // HTML embeds an asset (media-usage.ts invariant), and a duplicate
+    // reuses the source's modules — it adds no module row, and deleting
+    // the copy later never decrements. The former per-duplicate bump drifted
+    // the count upward forever, skipped branch duplicates (their merge does
+    // not count pages), and row-locked every shared asset in unsorted order,
+    // so two concurrent duplicates of pages sharing media could deadlock.
     const droppedDeleted = totalSource - liveSource;
     await recordAudit(tx, {
       actorId: ctx.actorId,
