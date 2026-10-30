@@ -446,9 +446,13 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
         "generator.compose",
         "generator.media",
         "generator.write",
-        "publish.hash",
+        "generator.gc",
+        // #1271 — files are uploaded while the generator writes them; the
+        // publish phase finishes the version.
+        "publish.upload-files",
         "publish.populate",
-        "publish.upload",
+        "publish.upload-assets",
+        "publish.finalize",
         "publish.channel",
       ]),
     );
@@ -489,8 +493,8 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     expect(names(liveRun)).toEqual(
       expect.arrayContaining([
         "generator.compose",
-        "publish.hash",
-        "publish.upload",
+        "publish.populate",
+        "publish.finalize",
         "publish.release",
       ]),
     );
