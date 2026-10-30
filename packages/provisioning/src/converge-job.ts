@@ -403,11 +403,15 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
   ): Promise<UpgraderRunResult> {
     const installId = judged.installId;
     const own = await deps.ownImageDigest();
-    if (own !== m.digests.ops) {
+    // Cloud Run records the linux/amd64 platform manifest it resolved, not
+    // the index the hand-over pinned (#1025), so an execution of the right
+    // image reads back as the platform form the manifest also signs.
+    const signedForms = [m.digests.ops, ...(m.platformDigests ? [m.platformDigests.ops] : [])];
+    if (own === null || !signedForms.includes(own)) {
       return stopWith(
         "refused",
         ["ops-image"],
-        `Nothing was changed: this run's installer image (${own ?? "unknown"}) is not the one Caelo's release workflow signed for ${m.version} (${m.digests.ops}). Start the update again from Settings → Updates.`,
+        `Nothing was changed: this run's installer image (${own ?? "unknown"}) is not the one Caelo's release workflow signed for ${m.version} (${signedForms.join(" or ")}). Start the update again from Settings → Updates.`,
       );
     }
     // The checkpoint's run, if it is not this one, must have ended.
