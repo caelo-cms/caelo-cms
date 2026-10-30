@@ -9,6 +9,9 @@
 
 import {
   defineOperation,
+  type ErrorDetail,
+  handlerErrorFromDetails,
+  internalError,
   OperationAbortError,
   type QueryError,
   type TransactionRunner,
@@ -37,7 +40,7 @@ import { pendingSnapshotSql } from "../../draft.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { fitPageToType, loadVocabularyIndex } from "../../lists/page-fit.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
-import { resolvePageTypeForWrite } from "../../lists/page-type-resolve.js";
+import { fitIssueDetails, resolvePageTypeForWrite } from "../../lists/page-type-resolve.js";
 import { loadListEntities } from "../../lists/store.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
@@ -908,7 +911,7 @@ export const createPageOp = defineOperation({
         succeeded: false,
         resultSummary: "page-type-unresolved",
       });
-      return err({ kind: "HandlerError", operation: "pages.create", message: resolved.message });
+      return err(handlerErrorFromDetails("pages.create", [resolved.detail]));
     }
     const templateId = resolved.templateId;
     const fit = fitPageToType(
@@ -925,11 +928,11 @@ export const createPageOp = defineOperation({
         succeeded: false,
         resultSummary: "page-type-mismatch",
       });
-      return err({
-        kind: "HandlerError",
-        operation: "pages.create",
-        message: `the page does not fit page type "${resolved.def.slug}": ${fit.issues.join(" ")}`,
-      });
+      return err(
+        handlerErrorFromDetails("pages.create", fitIssueDetails(resolved.def.slug, fit.issues), {
+          lead: `The page does not fit page type "${resolved.def.slug}":`,
+        }),
+      );
     }
     // v0.9.0 — cross-chat write-block: the templateId must be usable
     // by the caller's branch (either main or branched to this chat).
@@ -1116,7 +1119,7 @@ export const createPageOp = defineOperation({
     `)) as unknown as { id: string }[];
     const pageId = rows[0]?.id;
     if (!pageId) {
-      return err({ kind: "HandlerError", operation: "pages.create", message: "no id returned" });
+      return err(internalError("pages.create", "the page insert returned no id"));
     }
     // The page's row data — on a branch the row (and so its terms) is
     // invisible to everyone else until the merge graduates it.
@@ -1274,7 +1277,7 @@ export const updatePageOp = defineOperation({
         entityId: input.pageId,
         resultSummary: "page-type-mismatch",
       });
-      return err({ kind: "HandlerError", operation: "pages.update", message: typeBound.message });
+      return err(handlerErrorFromDetails("pages.update", typeBound.details));
     }
 
     let state: import("../../snapshots/state.js").PageState | null;
@@ -1401,14 +1404,14 @@ async function nextTypeBound(
       properties: Record<string, unknown>;
       terms: string[];
     }
-  | { ok: false; message: string }
+  | { ok: false; details: ErrorDetail[] }
 > {
   const resolved = await resolvePageTypeForWrite(tx, ctx.chatBranchId ?? null, {
     ...(input.pageType !== undefined ? { pageType: input.pageType } : {}),
     ...(input.templateId !== undefined ? { templateId: input.templateId } : {}),
     current: { pageTypeId: base.pageTypeId, templateId: base.templateId },
   });
-  if (!resolved.ok) return resolved;
+  if (!resolved.ok) return { ok: false, details: [resolved.detail] };
   const properties: Record<string, unknown> = { ...base.properties };
   for (const [k, v] of Object.entries(input.properties ?? {})) {
     if (v === null) delete properties[k];
@@ -1424,10 +1427,7 @@ async function nextTypeBound(
     await loadVocabularyIndex(tx, ctx.chatBranchId ?? null, [resolved.def]),
   );
   if (fit.issues.length > 0) {
-    return {
-      ok: false,
-      message: `the page does not fit page type "${resolved.def.slug}": ${fit.issues.join(" ")}`,
-    };
+    return { ok: false, details: fitIssueDetails(resolved.def.slug, fit.issues) };
   }
   return {
     ok: true,
@@ -2390,7 +2390,16 @@ export const duplicatePageOp = defineOperation({
       sourceState,
     );
     if (!dupType.ok) {
-      return err({ kind: "HandlerError", operation: "pages.duplicate", message: dupType.message });
+      return err(
+        handlerErrorFromDetails(
+          "pages.duplicate",
+          dupType.details.map((d) =>
+            d.path[0] === "templateId"
+              ? { ...d, path: ["targetTemplateId", ...d.path.slice(1)] }
+              : d,
+          ),
+        ),
+      );
     }
     // Branched like pages.create: a copy made in a chat is that chat's
     // page until publish, not a live draft other chats and the site see.
@@ -2411,11 +2420,7 @@ export const duplicatePageOp = defineOperation({
     `)) as unknown as { id: string }[];
     const newPageId = inserted[0]?.id;
     if (!newPageId) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages.duplicate",
-        message: "no id returned",
-      });
+      return err(internalError("pages.duplicate", "the page copy insert returned no id"));
     }
     await replacePageTerms(tx, newPageId, dupType.terms);
     // Modules carry over by reference — same module ids, same block
@@ -2632,11 +2637,18 @@ export const changeTemplateOp = defineOperation({
       liveState,
     );
     if (!typeBound.ok) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages.change_template",
-        message: `${typeBound.message} To move the page to another page type together with the template, use pages.update with pageType and templateId.`,
-      });
+      return err(
+        handlerErrorFromDetails(
+          "pages.change_template",
+          typeBound.details.map((d) =>
+            d.path[0] === "templateId" ? { ...d, path: ["newTemplateId", ...d.path.slice(1)] } : d,
+          ),
+          {
+            trailer:
+              "To move the page to another page type together with the template, use pages.update with pageType and templateId.",
+          },
+        ),
+      );
     }
     const newBlockRows = (await tx.execute(sql`
       SELECT name FROM template_blocks WHERE template_id = ${input.newTemplateId}::uuid

@@ -194,7 +194,12 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     // empty); first-element access here is safe.
     const targetLayout = layouts.find((l) => l.slug === layoutSlug) ?? layouts[0];
     if (!targetLayout) {
-      return { ok: false, content: "bootstrap_site_scaffold: no layout available (unexpected)" };
+      return {
+        ok: false,
+        content:
+          "bootstrap_site_scaffold: no layout available — a defect in Caelo, reported automatically",
+        failureKind: "internal",
+      };
     }
 
     let createdTemplateId: string | null = null;
@@ -205,7 +210,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       // type: an existing one of that slug, else one created with it.
       const typesR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "page_types.list", {});
       if (!typesR.ok) {
-        return { ok: false, content: `page_types.list failed: ${describeError(typesR.error)}` };
+        return toolError(typesR.error, `page_types.list failed: ${describeError(typesR.error)}`);
       }
       const typeExists = (typesR.value as { pageTypes: { slug: string }[] }).pageTypes.some(
         (t) => t.slug === templatePageType.slug,
@@ -265,7 +270,12 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       : templates;
     const targetTemplate = finalTemplates.find((t) => t.slug === templateSlug) ?? finalTemplates[0];
     if (!targetTemplate) {
-      return { ok: false, content: "bootstrap_site_scaffold: no template available (unexpected)" };
+      return {
+        ok: false,
+        content:
+          "bootstrap_site_scaffold: no template available — a defect in Caelo, reported automatically",
+        failureKind: "internal",
+      };
     }
 
     if (existingDefaults) {

@@ -62,6 +62,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
+import { resolvePageTypeForWrite } from "../../lists/page-type-resolve.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { pageSeoViewSql } from "../../seo/page-seo.js";
 import {
@@ -362,6 +363,8 @@ export const buildPageOp = defineOperation({
     let pageId = "";
     let createdPage = false;
     let templateId: string | undefined;
+    /** Create mode: the template the page type resolves to (#1276). */
+    let typeTemplateId: string | undefined;
     let pageSlug = "";
     const existingTargetId = input.page.pageId ?? rebuildTargetPageId;
     let pageCreateInput: z.infer<typeof pageCreateSchema> | undefined;
@@ -412,6 +415,15 @@ export const buildPageOp = defineOperation({
       } else {
         pageCreateInput = parsed.data;
         pageSlug = parsed.data.slug;
+        // #1276 — the page type is a read-only check too: a missing or
+        // unknown type is reported with the other problems, before the
+        // first write (pages.create resolves it again when it runs).
+        const resolved = await resolvePageTypeForWrite(tx, ctx.chatBranchId ?? null, {
+          ...(parsed.data.pageType !== undefined ? { pageType: parsed.data.pageType } : {}),
+          ...(parsed.data.templateId !== undefined ? { templateId: parsed.data.templateId } : {}),
+        });
+        if (resolved.ok) typeTemplateId = resolved.templateId;
+        else problems.push(...prefixErrorDetails(["page"], [resolved.detail]));
       }
     }
 
@@ -538,7 +550,7 @@ export const buildPageOp = defineOperation({
         );
       }
     };
-    const knownTemplateId = templateId ?? pageCreateInput?.templateId;
+    const knownTemplateId = templateId ?? pageCreateInput?.templateId ?? typeTemplateId;
     if (knownTemplateId !== undefined) await checkBlocks(knownTemplateId);
     if (problems.length > 0 || !ordering.ok) return failProblems();
 

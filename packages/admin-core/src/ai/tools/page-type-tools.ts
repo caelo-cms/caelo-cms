@@ -17,7 +17,7 @@ import { execute } from "@caelo-cms/query-api";
 import type { FieldDef, PageTypeDef } from "@caelo-cms/shared";
 import { z } from "zod";
 import { deletePageTypesManyOp, upsertPageTypesManyOp } from "../../ops/lists/page-types.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { makeOpTool, toolNamesIn } from "./_list-tool-kit.js";
 import { UPSERT_PAGE_TYPES_JSON_SCHEMA } from "./_list-tool-schemas.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -69,7 +69,7 @@ export const listPageTypesTool: ToolDefinitionWithHandler<ListPageTypesInput> = 
         slug: input.slug,
       });
       if (!r.ok) {
-        return { ok: false, content: `list_page_types: ${toolNamesIn(describeError(r.error))}` };
+        return toolError(r.error, `list_page_types: ${toolNamesIn(describeError(r.error))}`);
       }
       const v = r.value as {
         pageType: PageTypeRow;
@@ -84,7 +84,7 @@ export const listPageTypesTool: ToolDefinitionWithHandler<ListPageTypesInput> = 
     const { slug: _slug, ...filters } = input;
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "page_types.list", filters);
     if (!r.ok) {
-      return { ok: false, content: `list_page_types: ${toolNamesIn(describeError(r.error))}` };
+      return toolError(r.error, `list_page_types: ${toolNamesIn(describeError(r.error))}`);
     }
     const rows = (r.value as { pageTypes: PageTypeRow[] }).pageTypes;
     return {

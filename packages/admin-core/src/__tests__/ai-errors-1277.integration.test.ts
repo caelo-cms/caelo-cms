@@ -80,6 +80,7 @@ beforeAll(async () => {
     slug: TPL_SLUG,
     displayName: "I1277 TPL",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
+    pageType: "home",
   });
   if (!tpl.ok) throw new Error(`template seed failed: ${JSON.stringify(tpl.error)}`);
   templateId = (tpl.value as { templateId: string }).templateId;

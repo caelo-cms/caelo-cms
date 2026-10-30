@@ -7,6 +7,8 @@
 
 import {
   defineOperation,
+  type ErrorDetail,
+  handlerErrorFromDetails,
   OperationAbortError,
   type QueryError,
   type TransactionRunner,
@@ -22,7 +24,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
-import { describePageTypeChoices } from "../../lists/page-type-resolve.js";
+import { pageTypeChoiceDetail } from "../../lists/page-type-resolve.js";
 import { loadListEntities, loadListEntityBySlug, persistListEntity } from "../../lists/store.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { emitSnapshot, loadTemplateState } from "../../snapshots/index.js";
@@ -213,33 +215,48 @@ export const createTemplateOp = defineOperation({
     // or one created with it. There is no default type to fall into.
     const branchId = ctx.chatBranchId ?? null;
     if ((input.pageType === undefined) === (input.newPageType === undefined)) {
-      return err({
-        kind: "HandlerError",
-        operation: "templates.create",
-        message: `${input.pageType === undefined ? "pass" : "pass only one of"} pageType (an existing page type the template serves) or newPageType ({slug, name, purpose, properties?, vocabularies?}: a new type created with this template as its default). ${await describePageTypeChoices(tx, branchId)}`,
-      });
+      return err(
+        handlerErrorFromDetails("templates.create", [
+          await pageTypeChoiceDetail(
+            tx,
+            branchId,
+            input.pageType === undefined ? ["pageType"] : ["newPageType"],
+            input.pageType === undefined
+              ? "pass pageType (an existing page type the template serves) or newPageType ({slug, name, purpose, properties?, vocabularies?}: a new type created with this template as its default)"
+              : "pass only one of pageType and newPageType — remove one",
+          ),
+        ]),
+      );
     }
     if (input.pageType !== undefined) {
       const known = await loadListEntityBySlug(tx, "pageType", branchId, input.pageType);
       if (!known) {
-        return err({
-          kind: "HandlerError",
-          operation: "templates.create",
-          // #1177 — a type lists at least one template, so a new type is
-          // created together with its first template: newPageType.
-          message: `no page type "${input.pageType}" — to create it with this template, pass newPageType:{slug:"${input.pageType}", name, purpose} instead of pageType. ${await describePageTypeChoices(tx, branchId)}`,
-        });
+        // #1177 — a type lists at least one template, so a new type is
+        // created together with its first template: newPageType.
+        return err(
+          handlerErrorFromDetails("templates.create", [
+            await pageTypeChoiceDetail(
+              tx,
+              branchId,
+              ["pageType"],
+              `no page type "${input.pageType}" — to create it with this template, remove pageType and pass newPageType:{slug:"${input.pageType}", name, purpose}`,
+            ),
+          ]),
+        );
       }
     } else if (input.newPageType !== undefined) {
       // An upsert of an existing slug would REPLACE that type's template
       // list with this one template: refuse before anything is written.
       const slug = input.newPageType.slug;
       if (await loadListEntityBySlug(tx, "pageType", branchId, slug)) {
-        return err({
-          kind: "HandlerError",
-          operation: "templates.create",
-          message: `page type "${slug}" already exists — pass pageType:"${slug}" to add the template to it, or pick a new slug for newPageType.`,
-        });
+        return err(
+          handlerErrorFromDetails("templates.create", [
+            {
+              path: ["newPageType", "slug"],
+              message: `page type "${slug}" already exists — remove newPageType and pass pageType:"${slug}" to add the template to it, or pick a new slug`,
+            },
+          ]),
+        );
       }
     }
     // v0.9.0 — same-branch uniqueness only (each branch + main own their
@@ -423,7 +440,7 @@ export const createTemplateOp = defineOperation({
         },
         tx,
       );
-      if (!created.ok) throw new OperationAbortError(created.error);
+      if (!created.ok) throw new OperationAbortError(asNewPageTypeError(created.error));
       const hints = created.value.hints ?? [];
       return ok({ templateId, ...(hints.length > 0 ? { hints } : {}) });
     }
@@ -564,6 +581,24 @@ export const updateTemplateOp = defineOperation({
 });
 
 /**
+ * #1277 — a `page_types.upsert_many` error of the `newPageType` it ran
+ * for, addressed at the templates.create input (`pageTypes[0].slug` →
+ * `newPageType.slug`), so a patch lands on the caller's own argument.
+ */
+function asNewPageTypeError(error: QueryError): QueryError {
+  if (error.kind !== "HandlerError" || !error.errors) return error;
+  const errors: ErrorDetail[] = error.errors.map((d) =>
+    d.path[0] === "pageTypes" && d.path[1] === 0
+      ? { ...d, path: ["newPageType", ...d.path.slice(2)] }
+      : d,
+  );
+  return {
+    ...handlerErrorFromDetails("templates.create", errors),
+    ...(error.refusal ? { refusal: true as const } : {}),
+  };
+}
+
+/**
  * Epic #1107 — append a template to a page type's `templates` (a page
  * type write: lock, snapshot, in the caller's view). A no-op when already
  * listed. The type must exist: a new type is `templates.create`
@@ -581,13 +616,16 @@ async function addTemplateToPageType(
   if (!type) {
     return {
       ok: false,
-      error: {
-        kind: "HandlerError",
-        operation,
-        // #1177 — a page type lists at least one template, so a new type
-        // is created together with its first template.
-        message: `no page type "${pageTypeSlug}" — create it together with a template (create_template with newPageType), or use an existing one. ${await describePageTypeChoices(tx, branchId)}`,
-      },
+      // #1177 — a page type lists at least one template, so a new type
+      // is created together with its first template.
+      error: handlerErrorFromDetails(operation, [
+        await pageTypeChoiceDetail(
+          tx,
+          branchId,
+          ["pageType"],
+          `no page type "${pageTypeSlug}" — create it together with a template (create_template with newPageType), or use an existing one`,
+        ),
+      ]),
     };
   }
   if (type.state.definition.templates.includes(templateId)) return { ok: true };
