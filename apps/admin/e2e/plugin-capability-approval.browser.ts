@@ -86,8 +86,11 @@ test("a new permission waits for the Owner, is named on Updates, and one click a
       timeout: 30_000,
     });
 
+    // Other specs may leave other plugins waiting; this one is approved.
     await page.goto("/settings/updates");
-    await expect(page.getByTestId("plugins-awaiting-approval")).toHaveCount(0);
+    await expect(page.getByTestId("update-status-card")).toBeVisible();
+    const after = page.getByTestId("plugins-awaiting-approval");
+    if ((await after.count()) > 0) await expect(after).not.toContainText(SLUG);
   } finally {
     setApproved(null);
   }

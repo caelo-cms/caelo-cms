@@ -602,7 +602,10 @@ export const getContentInstanceOp = withHumanisedLinks(
   defineOperation({
     name: "content_instances.get",
     readScope: "request",
-    actorScope: ["human", "ai", "system"],
+    // Why plugin: a change consumer (#1267, international-site) resolves the
+    // pages an edited shared instance renders on (`renderedOn`) to flag
+    // their translations. Read only, with the cms_admin read grant.
+    actorScope: ["human", "ai", "plugin", "system"],
     database: "cms_admin",
     input: z.object({ id: z.string().uuid() }).strict(),
     output: z.object({

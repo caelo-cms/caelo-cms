@@ -358,6 +358,35 @@ describe("#397 — context-aware translation", () => {
     );
     expect(stale[0]?.translation_status).toBe("needs_update");
 
+    // #1267 — a live edit of the source's content instance (no page row
+    // changes) reaches the consumer as a content_instance change; it
+    // resolves the pages the instance renders on and flags the sibling.
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `UPDATE plugin_international_site.page_variants SET translation_status = 'up_to_date' WHERE page_id = '${variant.pageId}'`,
+      );
+    });
+    await drain();
+    const [ci] = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT pm.content_instance_id::text AS id FROM page_modules pm WHERE pm.page_id = '${sourceId}' LIMIT 1`,
+        )) as { id: string }[],
+    );
+    const ciEdit = await execute(registry, adapter, SYS_CTX, "content_instances.set_values", {
+      id: ci?.id ?? "",
+      values: { headline: "Welcome back", body_html: "<p>Hello <b>World</b></p>" },
+    });
+    if (!ciEdit.ok) throw new Error(JSON.stringify(ciEdit.error));
+    await drain();
+    const staleAgain = await sqlAsPlugin(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT translation_status FROM plugin_international_site.page_variants WHERE page_id = '${variant.pageId}'`,
+        )) as { translation_status: string }[],
+    );
+    expect(staleAgain[0]?.translation_status).toBe("needs_update");
+
     // --- Bulk pass in UPDATE mode (variant already differs from source).
     aiScript.push(() => ({
       title: "Preise v2",
