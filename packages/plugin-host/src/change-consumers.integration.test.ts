@@ -446,6 +446,35 @@ describe("#1267 — a plugin's change consumer", () => {
     }
   }, 20_000);
 
+  it("retries a failed drain with a backoff and delivers without any new write", async () => {
+    await drain();
+    received.length = 0;
+    const loop = await startChangeConsumers(infra);
+    try {
+      await loop.drain();
+      // A transient failure in the dispatch of this change's batch.
+      failNext = true;
+      const m = await op<{ moduleId: string }>(SYS, "modules.create", {
+        slug: `${PFX}transient`,
+        displayName: "Transient",
+        html: "<p>transient</p>",
+      });
+      const deadline = Date.now() + 15_000;
+      while (
+        !received.flatMap((r) => r.changes).some((c) => c.rowId === m.moduleId) &&
+        Date.now() < deadline
+      ) {
+        await Bun.sleep(50);
+      }
+      // The NOTIFY's drain failed (failNext was consumed); the backoff retry
+      // delivered it — no write happened in between.
+      expect(failNext).toBe(false);
+      expect(received.flatMap((r) => r.changes).some((c) => c.rowId === m.moduleId)).toBe(true);
+    } finally {
+      await loop.stop();
+    }
+  }, 30_000);
+
   it("is woken by the journal's NOTIFY", async () => {
     const loop = await startChangeConsumers(infra);
     try {

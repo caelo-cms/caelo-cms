@@ -250,6 +250,11 @@ export async function growFixture(
     // only: in production snapshots this old are past the journal's
     // retention, so their rows would be gone; and the per-row previous-
     // snapshot lookup of a 200k-row bulk insert is not what is measured.
+    // The previous release's site-view trigger (0394) is a DEFERRED
+    // constraint trigger, kept until 0442: its events would be pending
+    // at the ALTER TABLE below ("pending trigger events"). Firing it per
+    // statement in this transaction keeps it running, just not deferred.
+    await tx.unsafe("SET CONSTRAINTS ALL IMMEDIATE");
     for (const t of ["site_snapshots", "page_snapshots", "plugin_row_snapshots"]) {
       await tx.unsafe(`ALTER TABLE ${t} DISABLE TRIGGER caelo_journal_insert`);
     }
