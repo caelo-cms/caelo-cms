@@ -1,9 +1,9 @@
 {
-  "version": "0.0.0",
+  "version": "0.11.5",
   "tools": [
     {
       "name": "read_content",
-      "description": "Read a module's, template's or layout's body with line numbers — the Read step before a surgical `edit_content` (NOT `update_modules_many`). PREFER over `list_modules` (metadata only).\n- `entityKind:\"layout\"` = chrome shell its templates render in (`list_templates` shows each template's layoutId).\n- Omit `field` -> every body; name one to window a large body via `offset` (1-based line) + `limit`.\n- Each block prints `sha=`; pass it to `edit_content` as `expectedSha` to guard against concurrent changes.",
+      "description": "Read a module's, template's or layout's body with line numbers — the Read step before a surgical `edit_content` (NOT `update_modules_many`). PREFER over `list_modules` (metadata only).\n- `entityKind:\"layout\"` = chrome shell its templates render in (`list_templates` shows each template's layoutId).\n- Omit `field` -> every body (modules: plus `fields`, the full field schema with labels, defaults, list types, allowedModuleTypes, min/max — read it before changing `fields`); name one to window a large body via `offset` (1-based line) + `limit`.\n- Each block prints `sha=`; pass it to `edit_content` as `expectedSha` to guard against concurrent changes.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -20,7 +20,7 @@
             "format": "uuid"
           },
           "field": {
-            "description": "`html` | `css` | `js` (templates/layouts: `html` | `css`).",
+            "description": "`html` | `css` | `js` (templates/layouts: `html` | `css`); modules also `fields` (full field schema).",
             "type": "string",
             "minLength": 1,
             "maxLength": 32
@@ -229,7 +229,7 @@
     },
     {
       "name": "build_page",
-      "description": "Build a WHOLE page in ONE transaction: create (`page:{slug, title}`) or target existing (`page:{pageId}`) + the full ordered module list (each entry places one module into a template block, top to bottom; on an existing page entries append). Any invalid entry aborts everything (error names `modules[i]` + failing field); nothing is written.\nUSE FOR: every page creation (THE page-creation tool); any page needing >1 module — never `add_module` / `create_content_instances` chains. `modules: []` = intentionally empty page shell.\nDO NOT USE FOR: one incremental module on an existing page -> `add_module` (target `page`); site chrome header/footer -> `add_module` (target `layout`; chrome never rides in a page body).\nCORE RULES:\n- Creating: typed page -> `page.pageType` (+ `properties`/`terms`; an ordinary page omits pageType); always `page.metaDescription`, and `status:\"published\"` for a page that belongs on the site — a Stage refuses published pages without a description and builds only published ones; the result says what still blocks a Stage.\n- Per module, two modes: `moduleId` places an EXISTING module (`list_modules`; reuse first — shared modules keep pages consistent), or mint with `displayName` + `html` + `description` + `kind` + explicit `fields[]` (all required).\n- Pair `{{field_name}}` placeholders in `html` with `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`); never heuristic names (`cta2label2`) or numbered scalars (`label1`..`label10` -> ONE `list` field or a `module-list`).\n- Nested modules in the SAME call: inner entry gets `ref` and NO `blockName` (detached: minted + content-bound, not placed); the outer module's `module`/`module-list` field value references it as `{\"$ref\":\"<ref>\"}`, any array order. Never an `add_module` -> `remove_module_from` -> `create_content_instances` chain. E.g. `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]`\n- Zero templates on the site -> bootstrap first (`create_layout` -> `create_template`).\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.\nTypical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`",
+      "description": "Build a WHOLE page in ONE transaction: create (`page:{slug, title}`) or target existing (`page:{pageId}`) + the full ordered module list (each entry places one module into a template block, top to bottom; on an existing page entries append). Any invalid entry aborts everything (error names `modules[i]` + failing field); nothing is written.\nUSE FOR: every page creation (THE page-creation tool); any page needing >1 module — never `add_module` / `create_content_instances` chains. `modules: []` = intentionally empty page shell.\nDO NOT USE FOR: one incremental module on an existing page -> `add_module` (target `page`); site chrome header/footer -> `add_module` (target `layout`; chrome never rides in a page body).\nCORE RULES:\n- Creating: typed page -> `page.pageType` (+ `properties`/`terms`; an ordinary page omits pageType); always `page.metaDescription`, and `status:\"published\"` for a page that belongs on the site — a Stage refuses published pages without a description and builds only published ones; the result says what still blocks a Stage.\n- Per module, two modes: `moduleId` places an EXISTING module (`list_modules`; reuse first — shared modules keep pages consistent), or mint with `displayName` + `html` + `description` + `kind` + explicit `fields[]` (all required).\n- Pair `{{field_name}}` placeholders in `html` with `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`); never heuristic names (`cta2label2`) or numbered scalars (`label1`..`label10` -> ONE `list` field or a `module-list`).\n- An overview of pages (guides hub, category page) is ONE `list` field bound to a page query (`bind:\"source\"`, `source:{kind:\"query\", defaults:{page_type:…}}`; `term_pages` / `children`), never a hand-kept card per page.\n- Nested modules in the SAME call: inner entry gets `ref` and NO `blockName` (detached: minted + content-bound, not placed); the outer module's `module`/`module-list` field value references it as `{\"$ref\":\"<ref>\"}`, any array order. Never an `add_module` -> `remove_module_from` -> `create_content_instances` chain. E.g. `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]`\n- Zero templates on the site -> bootstrap first (`create_layout` -> `create_template`).\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.\nTypical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -294,7 +294,7 @@
                   "draft",
                   "published"
                 ],
-                "description": "Only `published` pages build on staging. Omitted: published on a site with no published page yet, else draft."
+                "description": "New pages only (with `pageId`: publish via `set_pages_status_many`). Only `published` pages build on staging. Omitted: published on a site with no published page yet, else draft."
               },
               "metaDescription": {
                 "type": "string",
@@ -410,7 +410,7 @@
                 "js": {
                   "type": "string",
                   "maxLength": 50000,
-                  "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field.\nWrite module JS only for behaviour the kit does not cover."
+                  "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. Touch ONLY this module's markup — another module's script goes into that module, never into a header/footer because it loads everywhere. Text, links, menu entries live in `html` (crawlers read no js output); js only shows/hides/toggles. Deliberate site-wide behaviour on hooks many modules share: comment `/* caelo:site-wide: <reason> */`. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field.\nWrite module JS only for behaviour the kit does not cover."
                 },
                 "fields": {
                   "type": "array",
@@ -510,7 +510,7 @@
                       "listType": {
                         "type": "string",
                         "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-                        "description": "For `kind:\"list\"`: \"texts\", \"links\", \"menu\", \"categories\", \"tags\", or custom slug (`upsert_list_types_many`)."
+                        "description": "REQUIRED for `kind:\"list\"`: \"texts\", \"links\", \"menu\", \"categories\", \"tags\", \"site-texts\", or a custom slug (`list_list_types`)."
                       },
                       "bind": {
                         "type": "string",
@@ -528,7 +528,28 @@
                       },
                       "source": {
                         "type": "object",
-                        "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
+                        "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
+                      },
+                      "paginate": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "Overview of ALL matching pages (query without `limit`, or term_pages): page 1 here, then <path>/page/2/…; one per module. Needs a pager field (source system \"pagination\": {{number}}, {{link}}, is_current/is_prev/is_next). A placement may override with value `paginate`.",
+                        "properties": {
+                          "per_page": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "description": "Default 50."
+                          },
+                          "follow_ups": {
+                            "type": "string",
+                            "enum": [
+                              "index",
+                              "noindex"
+                            ],
+                            "description": "Default \"index\" (self-canonical, in sitemap)."
+                          }
+                        }
                       },
                       "allowedModuleTypes": {
                         "type": "array",
@@ -715,7 +736,7 @@
     },
     {
       "name": "list_content_instances",
-      "description": "List content_instances — values filling module placeholders (TOON rows: id, module, kind, slug, displayName, purpose, placements, parents), most-placed first; counts as this chat's draft sees them.\n- `purpose` = why a shared row exists: read it BEFORE minting (`create_content_instances`); reuse a row whose purpose + module fit.\n- `placements` = blast radius: >1 = SHARED, edits propagate to every bound page -> check BEFORE `set_content_instance_values_many`.\n- `parents` = instances showing this one in a `module`/`module-list` field. ORPHAN (safe to delete) = placements 0 AND parents 0.\nNarrow by `moduleId` / `slug` / `pageId` (instances used on that page).",
+      "description": "List content_instances — values filling module placeholders (TOON rows: id, module, kind, slug, displayName, purpose, placements, parents, pages), widest reach first; counts as this chat's draft sees them.\n- `purpose` = why a shared row exists: read it BEFORE minting (`create_content_instances`); reuse a row whose purpose + module fit.\n- `placements` = its own placements; `parents` = instances, module defaults (layout chrome) and shared lists that show it inside them.\n- `pages` = blast radius: every page it renders on, its own placements plus everything its parents render on (`+site` = also layout chrome or a shared list) -> check BEFORE `set_content_instance_values_many`; `get_content_instance` names them.\n- ORPHAN (safe to delete) = placements 0 AND parents 0.\nNarrow by `moduleId` / `slug` / `pageId` (instances used on that page).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -757,7 +778,7 @@
     },
     {
       "name": "get_content_instance",
-      "description": "Fetch one content_instance, as this chat's draft sees it: values, placements (page path, block, position, sync_mode) and parent instances showing it in a `module`/`module-list` field. Check blast radius before `set_content_instance_values_many` and before deleting (orphan = no placements AND no parents).",
+      "description": "Fetch one content_instance, as this chat's draft sees it: values, placements (page path, block, position, sync_mode), parents showing it (instances' `module`/`module-list` fields, module defaults, shared lists) and every page it renders on. Check that blast radius before `set_content_instance_values_many` and before deleting (orphan = no placements AND no parents).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -774,7 +795,7 @@
     },
     {
       "name": "set_content_instance_values_many",
-      "description": "Edit values of 1..N shared content_instances in one transaction. Each item propagates to EVERY placement bound to that instance with sync_mode `synced` (blast radius = its placement count).\nUSE FOR: deliberate shared-content changes — check `purpose`, sample pages, placement count first (`list_content_instances` / `get_content_instance`).\nDO NOT USE FOR: an edit meant for ONE page -> `set_page_module_content_many` (unsynced placement) or `fork_placement_content` first (synced); module structure -> `update_modules_many`.\nCORE RULES:\n- All-or-nothing: an invalid item aborts the batch (error names `items[i]`); nothing is written.\n- Optional metadata in the same write: `slug`, `displayName` (`null` clears), `purpose`.\n- The result names per item where the edit now shows — relay it when the reach is wider than the operator asked for.\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.",
+      "description": "Edit values of 1..N shared content_instances in one transaction. Each item propagates to EVERY page it renders on: its `synced` placements and every page of the parents that show it (blast radius = `pages` in `list_content_instances`).\nUSE FOR: deliberate shared-content changes — check `purpose`, pages and parents first (`list_content_instances` / `get_content_instance`).\nDO NOT USE FOR: an edit meant for ONE page -> `set_page_module_content_many` (unsynced placement) or `fork_placement_content` first (synced); module structure -> `update_modules_many`.\nCORE RULES:\n- All-or-nothing: an invalid item aborts the batch (error names `items[i]`); nothing is written.\n- Optional metadata in the same write: `slug`, `displayName` (`null` clears), `purpose`.\n- The result names per item where the edit now shows — relay it when the reach is wider than the operator asked for.\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -836,7 +857,7 @@
     },
     {
       "name": "delete_content_instances",
-      "description": "Soft-delete 1..N ORPHAN content_instances in one transaction. Orphan = no placements AND no parent instance shows it in a `module`/`module-list` field (`list_content_instances`: placements=0, parents=0).\nCORE RULES:\n- ANY refused item rolls back the WHOLE batch; the refusal names the blockers:\n  - placements (page path, pageId, blockName, position) -> detach each via `fork_placement_content` with those values (page keeps a private copy), then retry.\n  - parents -> first remove the ref from each parent's field via `set_content_instance_values_many`.\n- In a chat this lands on the draft; live changes when staged.",
+      "description": "Soft-delete 1..N ORPHAN content_instances in one transaction. Orphan = no placements AND no parent shows it — no instance's `module`/`module-list` field, module default or shared list (`list_content_instances`: placements=0, parents=0).\nCORE RULES:\n- ANY refused item rolls back the WHOLE batch; the refusal names the blockers:\n  - placements (page path, pageId, blockName, position) -> detach each via `fork_placement_content` with those values (page keeps a private copy), then retry.\n  - parents -> detach first: an instance parent via `set_content_instance_values_many` (or delete the parent EARLIER in the same call), a module default via `update_modules_many`, a shared list entry via `patch_list_items_many`.\n- In a chat this lands on the draft; live changes when staged.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1116,7 +1137,7 @@
     },
     {
       "name": "list_modules",
-      "description": "List the module catalog (metadata, no HTML/CSS/JS): id, slug, type, kind, description, fields, placement usage.\nUSE FOR: a reuse candidate before placing/creating (prefer `add_module` with `moduleId` over a near-duplicate); the accepted child types before filling a `module`/`module-list` field.\nFields column: `blocks:module-list allowed=faq/cta` -> child `type` must be one of them (`allowed=any` = unrestricted). `nav:list(menu) shared=main-nav` = shared list (edit entries via `patch_list_items_many`) | `items:list(texts) local` = entries per placement | `latest:list(links) source=query(…)`.",
+      "description": "List the module catalog (metadata, no HTML/CSS/JS): id, slug, type, kind, description, fields, placement usage.\nUSE FOR: a reuse candidate before placing/creating (prefer `add_module` with `moduleId` over a near-duplicate); the accepted child types before filling a `module`/`module-list` field.\nFields column: `blocks:module-list allowed=faq/cta` -> child `type` must be one of them (`allowed=any` = unrestricted). `nav:list(menu) shared=main-nav` = shared list (edit entries via `patch_list_items_many`) | `items:list(texts) local` = entries per placement | `latest:list(links) source=query(…)` | `… paginate(per_page=50 follow_ups=index)` = overview of every match over follow-up pages.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1862,33 +1883,42 @@
     },
     {
       "name": "bug_report",
-      "description": "File a bug against Caelo ITSELF when a tool/surface contradicts its documented contract (result contradicts persisted state, render ignores a parameter, error on input the description calls valid).\nDO NOT USE FOR: your own mistakes (wrong args, misread state); the site's content/design; a stand-in for a tool missing from your list — search for it instead.\nCORE RULES:\n- Only after a concrete observed failure. ONCE per distinct defect per session, then CONTINUE via a workaround if one exists.\n- Truly blocked: `blockedTask=true`, tell the operator in one sentence what is blocked, stop that line of work (no retrying into the same wall).\n- The result says where it went (this site only, or sent to the Caelo team) — tell the operator exactly that; never claim the team was notified unless it says sent.",
+      "description": "Report something about Caelo ITSELF to the Caelo team. Choose `kind` by one question: did something MISBEHAVE?\n- kind=\"defect\" — yes: a tool/surface contradicted its documented contract (result contradicts persisted state, render ignores a parameter, error on input the description calls valid). E.g. \"screenshot_page ignores selector\" (returned the full page, not the crop it promises). Set `severity`.\n- kind=\"suggestion\" — no: everything did what its description says, but Caelo LACKS what the task needed — a missing capability or option, a feature idea, a docs gap. E.g. \"add_tracking_tag has no page/locale filter\" (the tag loads site-wide; you needed it on German product pages only), \"no consent-rate overview\" (export_consent_log gives only raw rows), \"consent log fields undocumented\" (no description says what record_consent stores or for how long). A tool that works as described but should do more is a suggestion, not a defect. No `severity` for a suggestion.\nDO NOT USE FOR: your own mistakes (wrong args, misread state); the site's content/design; a tool missing from YOUR list — search for it first; only when the search shows Caelo has no such capability is it a suggestion.\nCORE RULES:\n- Only after a concrete observation (a failure, or a need you could not meet). ONCE per distinct defect or suggestion per session, then CONTINUE via a workaround if one exists.\n- Truly blocked: `blockedTask=true`, tell the operator in one sentence what is blocked, stop that line of work (no retrying into the same wall).\n- The result says where it went (this site only, or sent to the Caelo team) — tell the operator exactly that; never claim the team was notified unless it says sent.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "kind",
           "title",
           "whatHappened",
           "expected"
         ],
         "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "defect",
+              "suggestion"
+            ],
+            "description": "defect = something misbehaved (contradicts its description) | suggestion = nothing misbehaved, Caelo lacks a capability, option or docs the task needed."
+          },
           "title": {
             "type": "string",
             "minLength": 10,
             "maxLength": 200,
-            "description": "The defect in a few words, e.g. \"screenshot_page ignores selector\"."
+            "description": "A few words. Defect: \"screenshot_page ignores selector\". Suggestion: \"add_tracking_tag has no page/locale filter\"."
           },
           "whatHappened": {
             "type": "string",
             "minLength": 10,
             "maxLength": 4000,
-            "description": "Observed behaviour incl. the exact tool + arguments."
+            "description": "Defect: observed behaviour incl. the exact tool + arguments. Suggestion: what the task needed and what Caelo lacks for it (and your workaround, if any)."
           },
           "expected": {
             "type": "string",
             "minLength": 10,
             "maxLength": 4000,
-            "description": "What the tool description / system contract promised."
+            "description": "Defect: what the tool description / system contract promised. Suggestion: the capability, option or docs that would have helped."
           },
           "suspectedTool": {
             "type": "string",
@@ -1897,7 +1927,7 @@
           "evidence": {
             "type": "string",
             "maxLength": 8000,
-            "description": "Result/render excerpt proving the mismatch."
+            "description": "Result/render excerpt proving the mismatch (defect) or the gap (suggestion)."
           },
           "severity": {
             "type": "string",
@@ -1906,11 +1936,11 @@
               "degraded",
               "cosmetic"
             ],
-            "description": "blocking = no workaround | degraded = worked around | cosmetic = noise only."
+            "description": "Defects only — leave out for a suggestion. blocking = no workaround | degraded = worked around | cosmetic = noise only."
           },
           "blockedTask": {
             "type": "boolean",
-            "description": "true ONLY if you abandoned the current task because of this bug."
+            "description": "true ONLY if you abandoned the current task because of this."
           }
         }
       }
@@ -2165,7 +2195,7 @@
     },
     {
       "name": "add_module",
-      "description": "Add ONE module to a page, a layout (site-wide chrome on every page) or a template (fans out to every page of that page type).\nUSE FOR: one incremental module on an existing page; chrome (`target:\"layout\"`); a module on every page of a template.\nDO NOT USE FOR: a new page or a page needing >1 module -> `build_page` (whole ordered list WITH content, one transaction).\nCORE RULES:\n- Two modes, all targets. Reuse (check `list_modules` first): `moduleId` places a SHARED module without a duplicate; a later `update_modules_many` changes it everywhere. Placement-only: authoring fields passed alongside are NOT applied (result says so) — to change the module, place by `moduleId`, then `update_modules_many`. Mint: `html` + `displayName` + `kind` + `fields[]`.\n- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).\n- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:\"texts\"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.\n- Initial content comes IN THIS CALL via `values`. A mint with `fields` but neither `values` nor field defaults is REJECTED (would render empty placeholders).\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.\n\nOver this connection the install's AI is not used: the AI part comes back to you — a work item to answer with your own model and send back through the tool it names, or an `AiDelegated:` answer that says what to do instead (see caelo_get_context).",
+      "description": "Add ONE module to a page, a layout (site-wide chrome on every page) or a template (fans out to every page of that page type).\nUSE FOR: one incremental module on an existing page; chrome (`target:\"layout\"`); a module on every page of a template.\nDO NOT USE FOR: a new page or a page needing >1 module -> `build_page` (whole ordered list WITH content, one transaction).\nCORE RULES:\n- Two modes, all targets. Reuse (check `list_modules` first): `moduleId` places a SHARED module without a duplicate; a later `update_modules_many` changes it everywhere. Placement-only: authoring fields passed alongside are NOT applied (result says so) — to change the module, place by `moduleId`, then `update_modules_many`. Mint: `html` + `displayName` + `kind` + `fields[]` (`[]` = no fields of its own, used verbatim).\n- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).\n- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:\"texts\"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.\n- Initial content comes IN THIS CALL via `values`. A mint with `fields` but neither `values` nor field defaults is REJECTED (would render empty placeholders).\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.\n\nOver this connection the install's AI is not used: the AI part comes back to you — a work item to answer with your own model and send back through the tool it names, or an `AiDelegated:` answer that says what to do instead (see caelo_get_context).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -2256,7 +2286,7 @@
           "js": {
             "type": "string",
             "maxLength": 50000,
-            "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field.\nWrite module JS only for behaviour the kit does not cover."
+            "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. Touch ONLY this module's markup — another module's script goes into that module, never into a header/footer because it loads everywhere. Text, links, menu entries live in `html` (crawlers read no js output); js only shows/hides/toggles. Deliberate site-wide behaviour on hooks many modules share: comment `/* caelo:site-wide: <reason> */`. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field.\nWrite module JS only for behaviour the kit does not cover."
           },
           "bindThemeLiterals": {
             "type": "boolean",
@@ -2360,7 +2390,7 @@
                 "listType": {
                   "type": "string",
                   "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-                  "description": "For `kind:\"list\"`: \"texts\", \"links\", \"menu\", \"categories\", \"tags\", or custom slug (`upsert_list_types_many`)."
+                  "description": "REQUIRED for `kind:\"list\"`: \"texts\", \"links\", \"menu\", \"categories\", \"tags\", \"site-texts\", or a custom slug (`list_list_types`)."
                 },
                 "bind": {
                   "type": "string",
@@ -2378,7 +2408,28 @@
                 },
                 "source": {
                   "type": "object",
-                  "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
+                  "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
+                },
+                "paginate": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "Overview of ALL matching pages (query without `limit`, or term_pages): page 1 here, then <path>/page/2/…; one per module. Needs a pager field (source system \"pagination\": {{number}}, {{link}}, is_current/is_prev/is_next). A placement may override with value `paginate`.",
+                  "properties": {
+                    "per_page": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 50,
+                      "description": "Default 50."
+                    },
+                    "follow_ups": {
+                      "type": "string",
+                      "enum": [
+                        "index",
+                        "noindex"
+                      ],
+                      "description": "Default \"index\" (self-canonical, in sitemap)."
+                    }
+                  }
                 },
                 "allowedModuleTypes": {
                   "type": "array",
@@ -3027,7 +3078,7 @@
     },
     {
       "name": "move_module",
-      "description": "Reposition a module on its page: into another block ('move the hero into the header', 'put this banner above the footer') or within its block ('move the testimonials above the gallery', 'put the hero last' — omit `toBlockName`). Already in place -> no-op.",
+      "description": "Reposition a module on its page: into another block ('move the hero into the header', 'put this banner above the footer') or within its block ('move the testimonials above the gallery', 'put the hero last' — omit `toBlockName`). Moves one placement with its content; a module placed twice+ needs `fromBlockName` + `fromPosition`. Already in place -> no-op.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -3044,6 +3095,17 @@
           "moduleId": {
             "type": "string",
             "format": "uuid"
+          },
+          "fromBlockName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "With `fromPosition`: which placement, when the module is on the page twice+."
+          },
+          "fromPosition": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
           },
           "toBlockName": {
             "type": "string",
@@ -4041,6 +4103,10 @@
             "minLength": 1,
             "maxLength": 300,
             "description": "CSS selector: capture only the first match (e.g. '[data-caelo-module-id=\"<uuid>\"]', 'footer.caelo-layout-footer') — cheaper when checking one module. Error if nothing matches."
+          },
+          "fullPage": {
+            "type": "boolean",
+            "description": "Server render only: true = the whole page; default = the visible viewport. Prefer `selector` for one section below the fold."
           }
         }
       }
@@ -4381,7 +4447,7 @@
     },
     {
       "name": "update_modules_many",
-      "description": "Edit module structure (`html`, `fields`, `css`, `js`, `displayName`, `description`, `kind`, `type`) of 1..N modules. Every page using a module follows; chat-branched until publish.\nUSE FOR: wholesale rewrites, new module bodies, changes to `fields`/`displayName`/`kind`/`type`/`description`, the same fix across modules.\nDO NOT USE FOR: a TARGETED change to existing `html`/`css`/`js` -> PREFER `edit_content` (surgical string-replace: cheaper, reviewable diff); page/instance content -> `set_page_module_content_many` (per page) | `set_content_instance_values_many` (shared); page metadata -> `update_pages_many`; templates -> `propose_update_template`.\nCORE RULES:\n- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).\n- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:\"texts\"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.\n- KEEP METADATA FRESH: update `description` + `kind` when a module's purpose drifts (`list_modules` relies on them).\n- Items apply independently: a failed item (not found, draft conflict, invalid field) is reported with its reason, the rest commits; nothing updated -> error. One snapshot per module.\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.",
+      "description": "Edit module structure (`html`, `fields`, `css`, `js`, `displayName`, `description`, `kind`, `type`) of 1..N modules. Every page using a module follows; chat-branched until publish.\nUSE FOR: wholesale rewrites, new module bodies, changes to `fields`/`displayName`/`kind`/`type`/`description`, the same fix across modules.\nDO NOT USE FOR: a TARGETED change to existing `html`/`css`/`js` -> PREFER `edit_content` (surgical string-replace: cheaper, reviewable diff); page/instance content -> `set_page_module_content_many` (per page) | `set_content_instance_values_many` (shared); page metadata -> `update_pages_many`; templates -> `propose_update_template`.\nCORE RULES:\n- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).\n- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:\"texts\"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.\n- KEEP METADATA FRESH: update `description` + `kind` when a module's purpose drifts (`list_modules` relies on them).\n- `fields` is the WHOLE list (omitted fields are dropped): read it first with `read_content` `field:\"fields\"` and resend every field. A field resent without `default` keeps its stored one.\n- Items apply independently: a failed item (not found, draft conflict, invalid field) is reported with its reason, the rest commits; nothing updated -> error. One snapshot per module.\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4439,7 +4505,7 @@
                 },
                 "js": {
                   "type": "string",
-                  "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field.\nWrite module JS only for behaviour the kit does not cover."
+                  "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. Touch ONLY this module's markup — another module's script goes into that module, never into a header/footer because it loads everywhere. Text, links, menu entries live in `html` (crawlers read no js output); js only shows/hides/toggles. Deliberate site-wide behaviour on hooks many modules share: comment `/* caelo:site-wide: <reason> */`. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field.\nWrite module JS only for behaviour the kit does not cover."
                 },
                 "fields": {
                   "type": "array",
@@ -4539,7 +4605,7 @@
                       "listType": {
                         "type": "string",
                         "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-                        "description": "For `kind:\"list\"`: \"texts\", \"links\", \"menu\", \"categories\", \"tags\", or custom slug (`upsert_list_types_many`)."
+                        "description": "REQUIRED for `kind:\"list\"`: \"texts\", \"links\", \"menu\", \"categories\", \"tags\", \"site-texts\", or a custom slug (`list_list_types`)."
                       },
                       "bind": {
                         "type": "string",
@@ -4557,7 +4623,28 @@
                       },
                       "source": {
                         "type": "object",
-                        "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
+                        "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
+                      },
+                      "paginate": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "Overview of ALL matching pages (query without `limit`, or term_pages): page 1 here, then <path>/page/2/…; one per module. Needs a pager field (source system \"pagination\": {{number}}, {{link}}, is_current/is_prev/is_next). A placement may override with value `paginate`.",
+                        "properties": {
+                          "per_page": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "description": "Default 50."
+                          },
+                          "follow_ups": {
+                            "type": "string",
+                            "enum": [
+                              "index",
+                              "noindex"
+                            ],
+                            "description": "Default \"index\" (self-canonical, in sitemap)."
+                          }
+                        }
                       },
                       "allowedModuleTypes": {
                         "type": "array",
@@ -4665,7 +4752,7 @@
               "type": "string",
               "maxLength": 120
             },
-            "description": "AI tool names (e.g. `update_modules_many`, `list_pages`) the workflow calls -> list every one. PRELOAD HINTS (loaded up front, no tool-search round-trip), NOT a restriction. Query-API op names (`pages.list`) are rejected."
+            "description": "AI tool names (e.g. `update_modules_many`, `list_pages`) the workflow calls -> list every one. load_skill names them for loading; NOT a restriction. Query-API op names (`pages.list`) are rejected."
           },
           "hints": {
             "type": "object",
@@ -7076,7 +7163,7 @@
     },
     {
       "name": "list_bug_reports",
-      "description": "List defect reports filed against Caelo (via `bug_report` or auto-captured by the chat), newest first. Call BEFORE `bug_report` to see whether it is already reported. Forwarding column: local_only = this site only, the Caelo team has NOT seen it | queued = will be sent | sent = the team received it | failed = sending failed, stored here only. local_only/failed reach the team only when the Owner clicks \"Send unsent reports\" on Settings → Detected bugs (sending turned on); you cannot send them. Never tell the operator the team knows unless forwarding is sent.",
+      "description": "List reports filed against Caelo — defects (via `bug_report` or auto-captured by the chat) and suggestions (via `bug_report` kind=suggestion) — newest first. Call BEFORE `bug_report` to see whether it is already reported; `kind` narrows to one kind. Forwarding column: local_only = this site only, the Caelo team has NOT seen it | queued = will be sent | sent = the team received it | failed = sending failed, stored here only. local_only/failed reach the team only when the Owner clicks \"Send unsent reports\" on Settings → Detected bugs (sending turned on); you cannot send them. Never tell the operator the team knows unless forwarding is sent.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -7087,6 +7174,13 @@
               "triaged",
               "fixed",
               "invalid"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "defect",
+              "suggestion"
             ]
           },
           "filter": {
@@ -7220,7 +7314,7 @@
     },
     {
       "name": "stage_changes",
-      "description": "Stage: merge this chat's unstaged changes into the site, rebuild the STAGING site (noindex, never visitor-facing), then run the quality check (Lighthouse). Use when the requested change is done and should be reviewed: 'stage it', 'put it on staging', last step of finished work.\nCORE RULES:\n- Other chats' changes to the SAME module/page ride along (result names them -> tell the operator).\n- Only status 'published' pages are built; result lists left-out drafts -> `set_pages_status_many` first if they belong on staging.\n- REFUSED unless: (1) >=1 published page; (2) a published page serves '/' (`set_home_page`, slug kept); (3) every published page has a meta description (`page.metaDescription` in `build_page`, else ONE `autofill_page_seo_many` call). Covers untouched pages too; the turn-start status note and results of `build_page` / `set_pages_status_many` / `set_home_page` / `autofill_page_seo_many` say 'A Stage would be refused right now' + exact fixes -> do them first, then stage once.\n- Does NOT publish: Publish live = operator's click after the check (`get_publish_gate` open?, `get_quality_audit` findings). Never say the change is live.\n- Failed build returns the generator's error -> fix, retry; changes stay unstaged until a build succeeds.",
+      "description": "Stage: merge this chat's unstaged changes into the site, rebuild the STAGING site (noindex, never visitor-facing), then run the quality check (Lighthouse). Use only when the user asks ('stage it', 'put it on staging', 'publish it') and to re-check your own quality fixes; after other edits, offer the Stage instead.\nCORE RULES:\n- Other chats' changes to the SAME module/page ride along (result names them -> tell the operator).\n- Only status 'published' pages are built; result lists left-out drafts -> `set_pages_status_many` first if they belong on staging.\n- REFUSED unless: (1) >=1 published page; (2) a published page serves '/' (`set_home_page`, slug kept); (3) every published page has a meta description (`page.metaDescription` in `build_page`, else ONE `autofill_page_seo_many` call). Covers untouched pages too; the turn-start status note and results of `build_page` / `set_pages_status_many` / `set_home_page` / `autofill_page_seo_many` say 'A Stage would be refused right now' + exact fixes -> do them first, then stage once.\n- Does NOT publish: Publish live = operator's click after the check (`get_publish_gate` open?, `get_quality_audit` findings). Never say the change is live.\n- Failed build returns the generator's error -> fix, retry; changes stay unstaged until a build succeeds.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -7527,7 +7621,7 @@
     },
     {
       "name": "upsert_list_types_many",
-      "description": "Create or replace list types (the SHAPE of a list) in one transaction.\nDO NOT USE FOR: a near-duplicate of a shipped type (reuse `links`/`menu`); changing a plugin-shipped type (create your own slug).\nCORE RULES:\n- `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `max_depth` required when a node allows itself. `current_from` names the node's link field that marks the current page.\n- Field types: text, richtext, link (value {href}), media, select (`options`), boolean, number, date, icon, module (embedded; `accepts` = module types, absent = any), term (entries of vocabulary list `list: <slug>`).\n- Vocabulary types: exactly one node kind, with text fields `name` + `slug`.\n- `source` -> generated entries instead of stored children: {kind:'query', editable:[knobs an entry may change], defaults:{page_type, order, limit, …}} | {kind:'system', name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:'plugin', name}.\n- Mega menu: root.allow [\"column\"]; `column` {fields:[heading text], children:{name:\"links\", allow:[\"link\",\"news\"]}}; `link` {fields:[label text*, link link*], current_from:\"link\"}; `news` {fields:[heading text], source:{kind:\"query\", editable:[\"limit\"], defaults:{page_type:\"news\", order:\"published_desc\", limit:3}}} (`*` = required:true).\n- Changes are checked against every list of the type (incl. local lists in modules): a new required field needs a `default`; removing a node kind/field that has values is refused naming the lists -> `dropValues:true` only when the operator agreed to lose them.\n- `expectedVersion` from `list_list_types` prevents overwriting a concurrent change.",
+      "description": "Create or replace list types (the SHAPE of a list).\nDO NOT USE FOR: a near-duplicate of a shipped type (reuse `links`/`menu`); changing a plugin-shipped type (create your own slug).\nCORE RULES:\n- `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `max_depth` required when a node allows itself. `current_from` names the node's link field that marks the current page.\n- Field types: text, richtext, link (value {href}), media, select (`options`), boolean, number, date, icon, module (embedded; `accepts` = module types, absent = any), term (entries of vocabulary list `list: <slug>`).\n- Vocabulary types: one node kind with text fields `name` + `slug`.\n- `source` -> generated entries instead of stored children: {kind:'query', editable:[knobs an entry may change], defaults:{page_type, order, limit, …}} | {kind:'system', name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:'plugin', name}.\n- Mega menu: root.allow [\"column\"]; `column` {fields:[heading text], children:{name:\"links\", allow:[\"link\",\"news\"]}}; `link` {fields:[label text*, link link*], current_from:\"link\"}; `news` {fields:[heading text], source:{kind:\"query\", editable:[\"limit\"], defaults:{page_type:\"news\", order:\"published_desc\", limit:3}}} (`*` = required:true).\n- Reserved names: id, node, index, depth, first, last, items, page, site_text, recurse, is_*, has_*, count_*.\n- Changes are checked against every list of the type: a new required field needs a `default`; removing a kind/field with values is refused -> `dropValues:true` only if the operator agreed.\n- `expectedVersion` (from `list_list_types`) guards concurrent changes.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -7935,7 +8029,7 @@
     },
     {
       "name": "upsert_page_types_many",
-      "description": "Create or replace page types in one transaction, when the operator starts a new kind of content ('a news section with categories', 'a job board').\nCORE RULES:\n- `templates`: ids from `list_templates`; none fits -> `create_template` with `pageType` first. `defaultTemplate` is one of them.\n- `properties`: fields every page of the type carries (e.g. `author` text, `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` (pageType `news`) or reuse one -> this -> `build_page`/`update_pages_many` with pageType, properties, terms.\n- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.",
+      "description": "Create or replace page types in one transaction, when the operator starts a new kind of content ('a news section with categories', 'a job board').\nCORE RULES:\n- `templates`: ids from `list_templates`; none fits -> `create_template` WITHOUT `pageType` first, then list its id here. `defaultTemplate` is one of them.\n- `properties`: fields every page of the type carries (e.g. `author` text, `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` (no pageType) or reuse one -> this, with the template id -> `build_page`/`update_pages_many` with pageType, properties, terms.\n- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
