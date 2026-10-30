@@ -21,6 +21,7 @@ import { SQL } from "bun";
 import { ToolRegistry } from "../ai/tools/dispatch.js";
 import { inspectPageRenderTool } from "../ai/tools/inspect-page-render.js";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -346,6 +347,7 @@ describe("pages.render_preview — internal references", () => {
           height: null,
           sizeBytes: 4,
           storageKey: `${sha}/orig.pdf`,
+          digest: TEST_MEDIA_DIGEST,
         },
       ],
     });

@@ -6,10 +6,8 @@
  * Walks every composed page's HTML for `/_caelo/media/<ref>[/<variant>]`
  * URLs (where `<ref>` is the asset SLUG for current embeds, or a legacy
  * UUID id for pre-slug content), resolves them through `media_assets` +
- * `media_variants` to storage keys, copies the bytes from
- * `MEDIA_ROOT_DIR/<storage_key>` into the build's `_assets/` tree, and
- * rewrites the URLs in the HTML so the deployed pages reference
- * `/_assets/...` (served by Caddy as plain static files).
+ * `media_variants`, and rewrites the URLs so the deployed pages reference
+ * `/_assets/...`.
  *
  * Output-path scheme (issue: meaningful media URLs, id internal; #667:
  * content-hashed so every provider can cache them forever — see
@@ -20,10 +18,20 @@
  * so a plain image reads as a name (`/_assets/searchviu-logo.3f9a….png`)
  * while the UUID stays internal.
  *
+ * #1271 — the pass reads no media byte. The hash in the name is the stored
+ * `media_variants.content_sha256` (migration 0443), and each published file
+ * becomes an asset reference (asset-references.ts) the publisher delivers
+ * from the media store: Firebase and GCS upload only what the provider
+ * lacks, self-hosted hard-links it into the build ({@link MediaDelivery}).
+ * The pass runs page batch by page batch (generate.ts) and resolves each
+ * media ref once, the first time a batch references it, so its memory is
+ * the resolved refs, never the pages or the files.
+ *
  * Per CLAUDE.md §2 no-fallbacks: a page referencing a slug/id that isn't
- * in `media_assets` (or whose variant isn't emitted) raises a structured
- * error tagged with the missing ref/variant. The deploy fails loudly
- * rather than emitting broken `<img src>` URLs.
+ * in `media_assets` (or whose variant isn't emitted), a variant whose
+ * stored file is gone and a variant without stored digests each raise a
+ * structured, AI-actionable error. The deploy fails loudly rather than
+ * emitting broken `<img src>` URLs.
  *
  * CDN copy: if `site_defaults.media_cdn_copy_enabled` is on, the pass
  * also writes `cdn_manifest.json` listing every (asset, variant) used
@@ -32,8 +40,8 @@
  * cloud adapter's job.
  */
 
-import { writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { copyFile, link, mkdir, stat, writeFile } from "node:fs/promises";
+import { dirname, join, resolve, sep } from "node:path";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -41,13 +49,26 @@ import {
   extractMediaRefs,
   type ImageVariantInfo,
   parseVariantWidth,
+  runBatched,
   variantFamily,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { readStoredMedia, writePublishedMedia } from "./media-asset-path.js";
+import type { AssetReference } from "./asset-references.js";
+import { mediaAssetRelPath, mediaContentHash } from "./media-asset-path.js";
 
 /** Full-uuid shape — tells a legacy id ref from a slug ref (mirrors shared). */
 const MEDIA_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Stored files checked (stat / link) at once: metadata I/O, gcsfuse on GCP. */
+const FS_PARALLELISM = 32;
+
+/**
+ * How the build gets the media files it references. `reference`: it lists
+ * them and the publisher uploads what the provider lacks (Firebase, GCS).
+ * `link`: they are hard-linked into the build directory, which the serving
+ * layer reads (self-hosted `current/`).
+ */
+export type MediaDelivery = "reference" | "link";
 
 interface VariantRow {
   asset_id: string;
@@ -60,15 +81,18 @@ interface VariantRow {
   format: string;
   width: number | null;
   storage_key: string;
+  size_bytes: number | string;
   usage_count: number;
   visibility: "library" | "reference";
+  content_sha256: string | null;
+  gzip_sha256: string | null;
+  gzip_size: number | string | null;
+  digest_profile: string | null;
+  /** The ref as written in the HTML (slug or legacy id) this row was loaded for. */
+  ref: string;
 }
 
-/**
- * A resolved media reference: the `ref` string as it appears in the HTML
- * (slug when `isSlug`, legacy uuid otherwise), its internal asset id, and
- * every emitted variant of that asset keyed by variant tag.
- */
+/** A resolved media reference: every emitted variant of its asset, keyed by tag. */
 interface ResolvedRef {
   ref: string;
   isSlug: boolean;
@@ -89,222 +113,391 @@ interface ManifestEntry {
   usageCount: number;
 }
 
+/** A JSON value bound as one jsonb parameter. */
+function jsonb(value: unknown): ReturnType<typeof sql> {
+  return sql`(${JSON.stringify(value)}::text)::jsonb`;
+}
+
+const VARIANT_COLUMNS = sql`
+  mv.asset_id::text AS asset_id,
+  ma.slug, ma.original_name, ma.source_kind, ma.source_detail,
+  mv.variant, mv.format, mv.width, mv.storage_key, mv.size_bytes,
+  ma.usage_count, ma.visibility,
+  mv.content_sha256, mv.gzip_sha256, mv.gzip_size, mv.digest_profile`;
+
 /**
- * Run the media pass over a set of composed pages, mutating each
- * page's HTML in-place to swap /_caelo/media/... URLs for /_assets/...
- * and copying the referenced variants into the build directory.
- *
- * Returns the manifest entry list (used for `cdn_manifest.json`) and
- * the number of bytes written to `_assets/`. Caller writes the page
- * HTML and the manifest.
+ * The media of one build: resolves refs batch by batch, rewrites the
+ * pages' media URLs, and collects the files the build references.
  */
-export async function runMediaPass(args: {
-  tx: TransactionRunner;
-  buildDir: string;
-  pages: { html: string; pageSlug: string }[];
-  /** Absolute filesystem path to the storage root (`MEDIA_ROOT_DIR`). */
-  mediaRoot: string;
-  settings: MediaSettings;
-}): Promise<{ assetsBytes: number; manifest: ManifestEntry[] }> {
-  // 1. Collect every (ref, variant) referenced across all pages. `ref` is
-  //    a slug (current embeds) or a legacy uuid id; the two never collide
-  //    since the ref string IS the map key.
-  const refs = new Map<string, { isSlug: boolean; variants: Set<string> }>();
-  for (const p of args.pages) {
-    for (const r of extractMediaRefs(p.html)) {
-      const entry = refs.get(r.ref) ?? { isSlug: r.isSlug, variants: new Set<string>() };
-      entry.variants.add(r.variant);
-      refs.set(r.ref, entry);
-    }
-  }
-  if (refs.size === 0) {
-    return { assetsBytes: 0, manifest: [] };
+export class MediaPass {
+  readonly #tx: TransactionRunner;
+  readonly #buildDir: string;
+  readonly #mediaRoot: string;
+  readonly #settings: MediaSettings;
+  readonly #delivery: MediaDelivery;
+  readonly #resolved = new Map<string, ResolvedRef>();
+  /** `${ref}|${variant}` → published build-relative path. */
+  readonly #published = new Map<string, string>();
+  /** Published path → the file it references. */
+  readonly #assets = new Map<string, AssetReference>();
+  readonly #variantsByRef = new Map<string, ImageVariantInfo[]>();
+  readonly #cdnManifest = new Map<string, ManifestEntry>();
+
+  constructor(args: {
+    tx: TransactionRunner;
+    buildDir: string;
+    /** Absolute filesystem path to the storage root (`MEDIA_ROOT_DIR`). */
+    mediaRoot: string;
+    settings: MediaSettings;
+    delivery: MediaDelivery;
+  }) {
+    this.#tx = args.tx;
+    this.#buildDir = args.buildDir;
+    this.#mediaRoot = resolve(args.mediaRoot);
+    this.#settings = args.settings;
+    this.#delivery = args.delivery;
   }
 
-  // 2. Resolve each ref to its asset's variant rows. Slug refs resolve via
-  //    `media_assets.slug` (unique among live rows); legacy id refs resolve
-  //    by asset id as before.
-  //    Per-ref query for the same reason as media.list — Bun SQL doesn't
-  //    reliably splat a JS array into a Postgres array param across all
-  //    driver versions. The ref count per build is bounded by what the
-  //    pages actually reference, so the cost is proportional to the
-  //    working set.
-  const resolved = new Map<string, ResolvedRef>();
-  for (const [ref, info] of refs) {
-    const rows = (info.isSlug
-      ? await args.tx.execute(sql`
-            SELECT mv.asset_id::text AS asset_id,
-                   ma.slug, ma.original_name, ma.source_kind, ma.source_detail,
-                   mv.variant,
-                   mv.format,
-                   mv.width,
-                   mv.storage_key,
-                   ma.usage_count,
-                   ma.visibility
-            FROM media_assets ma
-            JOIN media_variants mv ON mv.asset_id = ma.id
-            WHERE ma.slug = ${ref}
-              AND ma.deleted_at IS NULL
-          `)
-      : await args.tx.execute(sql`
-            SELECT mv.asset_id::text AS asset_id,
-                   ma.slug, ma.original_name, ma.source_kind, ma.source_detail,
-                   mv.variant,
-                   mv.format,
-                   mv.width,
-                   mv.storage_key,
-                   ma.usage_count,
-                   ma.visibility
-            FROM media_variants mv
-            JOIN media_assets ma ON ma.id = mv.asset_id
-            WHERE mv.asset_id = ${ref}::uuid
-              AND ma.deleted_at IS NULL
-          `)) as unknown as VariantRow[];
-    const variants = new Map<string, VariantRow>();
-    for (const r of rows) variants.set(r.variant, r);
-    resolved.set(ref, { ref, isSlug: info.isSlug, variants });
+  /** The files the build references so far, by published path. */
+  assets(): AssetReference[] {
+    return [...this.#assets.values()];
   }
 
-  // #531 — a reference image guides generation/editing and never ships
-  // on a page. Refuse loudly with the fix, rather than publishing it.
-  const references = [...resolved.values()]
-    .filter((r) => [...r.variants.values()].some((v) => v.visibility === "reference"))
-    .map((r) => r.ref);
-  if (references.length > 0) {
-    throw new Error(
-      `static-generator: pages reference media marked as reference images: ${references.join(", ")}. ` +
-        "Reference images guide image generation/editing and are never published. Next step: either " +
-        "replace them in the page/module HTML with a library image (find_media), or, if the operator " +
-        "wants them on the page, mark them as library images (AI tool: set_media_visibility_many with " +
-        'visibility: "library").',
-    );
-  }
-
-  // 3. Verify every referenced (ref, variant) is resolvable. Per the
-  //    no-fallbacks rule this fails the deploy loudly when a module
-  //    references a deleted asset or an unemitted variant.
-  const missing: string[] = [];
-  for (const [ref, info] of refs) {
-    const res = resolved.get(ref);
-    for (const v of info.variants) {
-      if (!res?.variants.has(v)) missing.push(`${ref}/${v}`);
-    }
-  }
-  if (missing.length > 0) {
-    // run #10 D4 — AI-actionable failure surface (CLAUDE.md §11): name
-    // the recovery op, and the by-design case where recovery means
-    // re-pointing the HTML instead (source narrower than the
-    // breakpoint / animated GIF — the pipeline never upscales).
-    throw new Error(
-      `static-generator: media references unresolved (asset/variant pairs missing): ${missing.join(", ")}. ` +
-        "Next step: run media.regenerate_variants (AI tool: regenerate_media_variants) with these asset ids " +
-        "to re-run the image pipeline. If a variant still cannot be produced (source image narrower than " +
-        "the breakpoint, animated GIF, or non-raster kind), edit the referencing module HTML to use the " +
-        "result's bestUrl (e.g. /orig) — find the modules via media.list_usages.",
-    );
-  }
-
-  // 4. Copy bytes into the slug-based (or legacy id-based) `_assets/`
-  //    layout under content-hashed names (#667); track total. Every
-  //    emitted variant of each referenced asset is copied — the srcset
-  //    enrichment below needs the full breakpoint ladder even when the
-  //    HTML only names orig.
-  let assetsBytes = 0;
-  const manifest: ManifestEntry[] = [];
-  const mediaRoot = resolve(args.mediaRoot);
-  // Every asset whose stored file is gone, collected so one failed Stage
-  // names all of them instead of one per attempt.
-  const missingFiles = new Map<string, { row: VariantRow; variants: string[] }>();
-  // `${ref}|${variant}` → published build-relative path. The hash in the
-  // name comes from the bytes, so URLs can only be built after the copy.
-  const publishedPaths = new Map<string, string>();
-
-  for (const res of resolved.values()) {
-    for (const r of res.variants.values()) {
-      const body = await readStoredMedia(mediaRoot, r.storage_key);
-      if (body === null) {
-        const entry = missingFiles.get(r.asset_id) ?? { row: r, variants: [] };
-        entry.variants.push(r.variant);
-        missingFiles.set(r.asset_id, entry);
-        continue;
-      }
-      if (missingFiles.size > 0) continue;
-      const outRel = await writePublishedMedia({
-        buildDir: args.buildDir,
-        ref: res.ref,
-        isSlug: res.isSlug,
-        variant: r.variant,
-        format: r.format,
-        bytes: body,
-      });
-      publishedPaths.set(publishedKey(res.ref, r.variant), outRel);
-      const bytes = body.byteLength;
-      assetsBytes += bytes;
-      if (args.settings.cdnEnabled && r.usage_count >= args.settings.threshold) {
-        manifest.push({
-          assetId: r.asset_id,
-          variant: r.variant,
-          format: r.format,
-          outputPath: outRel,
-          bytes,
-          usageCount: r.usage_count,
-        });
+  /**
+   * Rewrite one batch of pages in place: resolve the refs no earlier batch
+   * had, publish their variants, then swap every `/_caelo/media/...` URL
+   * for its `/_assets/...` path (with srcset, dimensions and the LCP
+   * preload, exactly as the editor preview enriches it).
+   */
+  async rewritePages(pages: { html: string; pageSlug: string }[]): Promise<void> {
+    // 1. Every (ref, variant) the batch references. `ref` is a slug (current
+    //    embeds) or a legacy uuid id; the two never collide since the ref
+    //    string IS the map key.
+    const refs = new Map<string, { isSlug: boolean; variants: Set<string> }>();
+    for (const p of pages) {
+      for (const r of extractMediaRefs(p.html)) {
+        const entry = refs.get(r.ref) ?? { isSlug: r.isSlug, variants: new Set<string>() };
+        entry.variants.add(r.variant);
+        refs.set(r.ref, entry);
       }
     }
-  }
-  if (missingFiles.size > 0) {
-    throw new Error(missingMediaFilesError([...missingFiles.values()], mediaRoot));
-  }
+    if (refs.size === 0) return;
+    await this.#resolve([...refs].filter(([ref]) => !this.#resolved.has(ref)));
 
-  // 5. Rewrite the HTML. Two passes:
-  //    a. <img> tag rewriter — adds srcset / sizes / dims / loading,
-  //       and rewrites the src URL to /_assets. Preserves any other
-  //       attributes already on the tag (alt, class, style…).
-  //    b. Catch-all string rewrite for any remaining /_caelo/media
-  //       URLs (CSS background-image, raw mentions in text).
-  //    Then if a page references at least one image, emit a
-  //    `<link rel="preload" as="image">` for the LCP candidate (first
-  //    image in the page) into <head>.
-  const variantsByRef = groupVariantsByRef(resolved);
-  // Build the public `/_assets/…` URL for a ref+variant, honouring the
-  // slug-flat / variant-nested / legacy-id split. `ref` here is the same
-  // string enrichResponsiveImages parsed out of the src (slug or uuid).
-  const urlForRef = (ref: string, variant: string, _format: string): string => {
-    const path = publishedPaths.get(publishedKey(ref, variant));
-    if (path === undefined) {
-      // No-fallbacks: every img media ref was extracted, resolved and
-      // copied above.
+    // 2. Verify every referenced (ref, variant) is resolvable. Per the
+    //    no-fallbacks rule this fails the deploy loudly when a module
+    //    references a deleted asset or an unemitted variant.
+    const missing: string[] = [];
+    for (const [ref, info] of refs) {
+      const res = this.#resolved.get(ref);
+      for (const v of info.variants) {
+        if (!res?.variants.has(v)) missing.push(`${ref}/${v}`);
+      }
+    }
+    if (missing.length > 0) {
+      // run #10 D4 — AI-actionable failure surface (CLAUDE.md §11): name
+      // the recovery op, and the by-design case where recovery means
+      // re-pointing the HTML instead (source narrower than the
+      // breakpoint / animated GIF — the pipeline never upscales).
       throw new Error(
-        `static-generator: media ref ${ref}/${variant} unpublished during URL rewrite`,
+        `static-generator: media references unresolved (asset/variant pairs missing): ${missing.join(", ")}. ` +
+          "Next step: run media.regenerate_variants (AI tool: regenerate_media_variants) with these asset ids " +
+          "to re-run the image pipeline. If a variant still cannot be produced (source image narrower than " +
+          "the breakpoint, animated GIF, or non-raster kind), edit the referencing module HTML to use the " +
+          "result's bestUrl (e.g. /orig) — find the modules via media.list_usages.",
       );
     }
-    return `/${path}`;
-  };
-  for (const p of args.pages) {
-    // issue #162 — shared enrichment (identical markup shape in the
-    // editor preview; only the URL form differs).
-    p.html = enrichResponsiveImages(p.html, variantsByRef, {
-      rewriteSrc: true,
-      urlFor: urlForRef,
-      formatFor: (ref, variant) =>
-        (variantsByRef.get(ref) ?? []).find((v) => v.variant === variant)?.format ?? "webp",
-    });
-    p.html = rewriteCatchAllMediaUrls(p.html, publishedPaths);
-    p.html = injectLcpPreload(p.html, variantsByRef, publishedPaths);
+
+    // 3. Rewrite the HTML. Two passes:
+    //    a. <img> tag rewriter — adds srcset / sizes / dims / loading,
+    //       and rewrites the src URL to /_assets. Preserves any other
+    //       attributes already on the tag (alt, class, style…).
+    //    b. Catch-all string rewrite for any remaining /_caelo/media
+    //       URLs (CSS background-image, raw mentions in text).
+    //    Then if a page references at least one image, emit a
+    //    `<link rel="preload" as="image">` for the LCP candidate (first
+    //    image in the page) into <head>.
+    const urlForRef = (ref: string, variant: string, _format: string): string => {
+      const path = this.#published.get(publishedKey(ref, variant));
+      if (path === undefined) {
+        // No-fallbacks: every img media ref was extracted, resolved and
+        // published above.
+        throw new Error(
+          `static-generator: media ref ${ref}/${variant} unpublished during URL rewrite`,
+        );
+      }
+      return `/${path}`;
+    };
+    for (const p of pages) {
+      // issue #162 — shared enrichment (identical markup shape in the
+      // editor preview; only the URL form differs).
+      p.html = enrichResponsiveImages(p.html, this.#variantsByRef, {
+        rewriteSrc: true,
+        urlFor: urlForRef,
+        formatFor: (ref, variant) =>
+          (this.#variantsByRef.get(ref) ?? []).find((v) => v.variant === variant)?.format ?? "webp",
+      });
+      p.html = rewriteCatchAllMediaUrls(p.html, this.#published);
+      p.html = injectLcpPreload(p.html, this.#variantsByRef, this.#published);
+    }
   }
 
-  // 6. Emit cdn_manifest.json (always — empty array when CDN copy is off).
-  await writeFile(
-    join(args.buildDir, "cdn_manifest.json"),
-    JSON.stringify(
-      { enabled: args.settings.cdnEnabled, threshold: args.settings.threshold, entries: manifest },
-      null,
-      2,
-    ),
-    "utf8",
-  );
+  /**
+   * Publish the og:image of a page (it need not appear on any page, so the
+   * HTML rewrite may not have published it): the best social-size variant
+   * of the asset. Returns its build-relative path.
+   */
+  async publishOgImage(assetId: string): Promise<string> {
+    const rows = (await this.#tx.execute(sql`
+      SELECT ${VARIANT_COLUMNS}, ma.slug AS ref
+      FROM media_variants mv
+      JOIN media_assets ma ON ma.id = mv.asset_id
+      WHERE mv.asset_id = ${assetId}::uuid
+        AND ma.deleted_at IS NULL
+      ORDER BY
+        CASE mv.variant
+          WHEN 'webp-1200' THEN 0
+          WHEN 'webp-1600' THEN 1
+          WHEN 'webp-800'  THEN 2
+          WHEN 'orig'      THEN 3
+          ELSE 4
+        END
+      LIMIT 1
+    `)) as unknown as VariantRow[];
+    const v = rows[0];
+    if (!v) {
+      throw new Error(
+        `static-generator: og:image asset ${assetId} has no variants — deploy aborted (no-fallbacks)`,
+      );
+    }
+    if (v.visibility === "reference") {
+      // #531 — same rule as page images: references are never published.
+      throw new Error(
+        `static-generator: og:image asset ${v.slug} is a reference image and is never published. ` +
+          "Next step: pick a library image for the page's og:image, or mark this one as a library " +
+          'image (AI tool: set_media_visibility_many with visibility: "library").',
+      );
+    }
+    const key = publishedKey(v.slug, v.variant);
+    const known = this.#published.get(key);
+    if (known !== undefined) return known;
+    const { missingFiles } = await this.#publishVariants([{ ref: v.slug, isSlug: true, row: v }]);
+    if (missingFiles.length > 0) {
+      throw new Error(
+        `static-generator: the stored file of og:image asset ${v.slug} (${v.variant}) is missing from ${this.#mediaRoot}. ` +
+          "Next step: find it with list_missing_media and restore it (import_media_from_urls when it came from a URL, " +
+          "or ask the operator to re-upload it), or pick another og:image for the page (set_page_seo_many).",
+      );
+    }
+    const path = this.#published.get(key);
+    if (path === undefined) throw new Error(`static-generator: og:image ${v.slug} not published`);
+    return path;
+  }
 
-  return { assetsBytes, manifest };
+  /** Write `cdn_manifest.json` (always — an empty list when CDN copy is off). */
+  async finish(): Promise<void> {
+    await writeFile(
+      join(this.#buildDir, "cdn_manifest.json"),
+      JSON.stringify(
+        {
+          enabled: this.#settings.cdnEnabled,
+          threshold: this.#settings.threshold,
+          entries: [...this.#cdnManifest.values()],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  }
+
+  /** Resolve new refs in two batched reads (slugs, legacy ids) and publish their variants. */
+  async #resolve(entries: [string, { isSlug: boolean }][]): Promise<void> {
+    if (entries.length === 0) return;
+    const slugs = entries.filter(([, e]) => e.isSlug).map(([r]) => r);
+    const ids = entries.filter(([, e]) => !e.isSlug).map(([r]) => r);
+    const rows: VariantRow[] = [];
+    // Slug refs resolve via `media_assets.slug` (unique among live rows);
+    // legacy id refs by asset id. One statement each, the refs bound as one
+    // jsonb array (Bun SQL does not splat a JS array into a Postgres array).
+    if (slugs.length > 0) {
+      rows.push(
+        ...((await this.#tx.execute(sql`
+          SELECT ${VARIANT_COLUMNS}, ma.slug AS ref
+          FROM media_assets ma
+          JOIN media_variants mv ON mv.asset_id = ma.id
+          WHERE ma.slug IN (SELECT jsonb_array_elements_text(${jsonb(slugs)}))
+            AND ma.deleted_at IS NULL
+        `)) as unknown as VariantRow[]),
+      );
+    }
+    if (ids.length > 0) {
+      rows.push(
+        ...((await this.#tx.execute(sql`
+          SELECT ${VARIANT_COLUMNS}, mv.asset_id::text AS ref
+          FROM media_variants mv
+          JOIN media_assets ma ON ma.id = mv.asset_id
+          WHERE mv.asset_id IN (
+              SELECT jsonb_array_elements_text(${jsonb(ids.filter((id) => MEDIA_UUID_RE.test(id)))})::uuid)
+            AND ma.deleted_at IS NULL
+        `)) as unknown as VariantRow[]),
+      );
+    }
+    const fresh: ResolvedRef[] = entries.map(([ref, e]) => ({
+      ref,
+      isSlug: e.isSlug,
+      variants: new Map(),
+    }));
+    const byRef = new Map(fresh.map((r) => [r.ref, r]));
+    for (const row of rows) byRef.get(row.ref)?.variants.set(row.variant, row);
+    for (const r of fresh) this.#resolved.set(r.ref, r);
+
+    // #531 — a reference image guides generation/editing and never ships
+    // on a page. Refuse loudly with the fix, rather than publishing it.
+    const references = fresh
+      .filter((r) => [...r.variants.values()].some((v) => v.visibility === "reference"))
+      .map((r) => r.ref);
+    if (references.length > 0) {
+      throw new Error(
+        `static-generator: pages reference media marked as reference images: ${references.join(", ")}. ` +
+          "Reference images guide image generation/editing and are never published. Next step: either " +
+          "replace them in the page/module HTML with a library image (find_media), or, if the operator " +
+          "wants them on the page, mark them as library images (AI tool: set_media_visibility_many with " +
+          'visibility: "library").',
+      );
+    }
+
+    // Every emitted variant of each referenced asset is published — the
+    // srcset enrichment needs the full breakpoint ladder even when the
+    // HTML only names orig.
+    const { missingFiles } = await this.#publishVariants(
+      fresh.flatMap((r) =>
+        [...r.variants.values()].map((row) => ({ ref: r.ref, isSlug: r.isSlug, row })),
+      ),
+    );
+    if (missingFiles.length > 0) {
+      throw new Error(missingMediaFilesError(missingFiles, this.#mediaRoot));
+    }
+    for (const r of fresh) {
+      this.#variantsByRef.set(
+        r.ref,
+        [...r.variants.values()].map((row) => ({
+          variant: row.variant,
+          format: row.format,
+          width: row.width,
+        })),
+      );
+    }
+  }
+
+  /**
+   * Name each variant by its stored digest and make it part of the build —
+   * a reference, or a hard link for {@link MediaDelivery} `link`. Returns
+   * the assets whose stored file is gone, grouped per asset, so one failed
+   * Stage names all of them.
+   */
+  async #publishVariants(
+    items: readonly { ref: string; isSlug: boolean; row: VariantRow }[],
+  ): Promise<{ missingFiles: { row: VariantRow; variants: string[] }[] }> {
+    const undigested = items.filter((i) => i.row.content_sha256 === null);
+    if (undigested.length > 0) {
+      const named = [...new Set(undigested.map((i) => `${i.row.slug}/${i.row.variant}`))];
+      throw new Error(
+        `static-generator: ${named.length} media file(s) have no stored digests: ${named.slice(0, 20).join(", ")}${named.length > 20 ? ", …" : ""}. ` +
+          "Stage digests them before every build (media.rebuild_digests); this build was started without that step. " +
+          'Next step: Stage again, or run media.rebuild_digests (AI tool: rebuild_media_digests, scope "missing") and build again.',
+      );
+    }
+    const missing = new Map<string, { row: VariantRow; variants: string[] }>();
+    await runBatched([...items], FS_PARALLELISM, async ({ ref, isSlug, row }) => {
+      const contentSha256 = row.content_sha256 as string;
+      const relPath = mediaAssetRelPath({
+        ref,
+        isSlug,
+        variant: row.variant,
+        format: row.format,
+        contentHash: mediaContentHash(contentSha256),
+      });
+      const source = this.#sourcePath(row.storage_key);
+      const present = await this.#deliver(source, relPath);
+      if (!present) {
+        const entry = missing.get(row.asset_id) ?? { row, variants: [] };
+        entry.variants.push(row.variant);
+        missing.set(row.asset_id, entry);
+        return;
+      }
+      this.#published.set(publishedKey(ref, row.variant), relPath);
+      if (!this.#assets.has(relPath)) {
+        this.#assets.set(relPath, {
+          path: relPath,
+          contentSha256,
+          size: Number(row.size_bytes),
+          gzipSha256: row.gzip_sha256 as string,
+          gzipSize: Number(row.gzip_size),
+          digestProfile: row.digest_profile as string,
+          source: { kind: "media", storageKey: row.storage_key },
+        });
+      }
+      if (this.#settings.cdnEnabled && row.usage_count >= this.#settings.threshold) {
+        this.#cdnManifest.set(relPath, {
+          assetId: row.asset_id,
+          variant: row.variant,
+          format: row.format,
+          outputPath: relPath,
+          bytes: Number(row.size_bytes),
+          usageCount: row.usage_count,
+        });
+      }
+    });
+    return { missingFiles: [...missing.values()] };
+  }
+
+  /** The stored file of a storage key, refusing a key that escapes the store. */
+  #sourcePath(storageKey: string): string {
+    const source = resolve(this.#mediaRoot, storageKey);
+    if (!source.startsWith(`${this.#mediaRoot}${sep}`)) {
+      throw new Error(`static-generator: storage key escapes mediaRoot: ${storageKey}`);
+    }
+    return source;
+  }
+
+  /**
+   * Make the stored file part of the build without reading it: a `stat`
+   * (reference), or a hard link into the build (link; across filesystems
+   * the kernel copies it). False when the stored file is gone.
+   */
+  async #deliver(source: string, relPath: string): Promise<boolean> {
+    if (this.#delivery === "reference") {
+      try {
+        return (await stat(source)).isFile();
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw e;
+      }
+    }
+    const target = join(this.#buildDir, relPath);
+    await mkdir(dirname(target), { recursive: true });
+    try {
+      await link(source, target);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return false;
+      if (code === "EEXIST") return true;
+      // The media store on another filesystem (a separate volume): the
+      // kernel copies the file; the process still never holds its bytes.
+      if (code === "EXDEV" || code === "EPERM") {
+        try {
+          await copyFile(source, target);
+        } catch (copyError) {
+          if ((copyError as NodeJS.ErrnoException).code === "ENOENT") return false;
+          throw copyError;
+        }
+        return true;
+      }
+      throw e;
+    }
+    return true;
+  }
 }
 
 /**
@@ -336,29 +529,9 @@ function missingMediaFilesError(
   );
 }
 
-/** Key of `publishedPaths`: the ref as written in the HTML + the variant. */
+/** Key of the published-path map: the ref as written in the HTML + the variant. */
 function publishedKey(ref: string, variant: string): string {
   return `${ref}|${variant}`;
-}
-
-/**
- * Group variants per ref (slug or legacy id) so we can build srcset
- * entries from the full WebP breakpoint set during the rewrite. Returns
- * a map keyed by the ref string as it appears in the HTML.
- */
-function groupVariantsByRef(resolved: Map<string, ResolvedRef>): Map<string, ImageVariantInfo[]> {
-  const out = new Map<string, ImageVariantInfo[]>();
-  for (const [ref, res] of resolved) {
-    out.set(
-      ref,
-      [...res.variants.values()].map((row) => ({
-        variant: row.variant,
-        format: row.format,
-        width: row.width,
-      })),
-    );
-  }
-  return out;
 }
 
 /**

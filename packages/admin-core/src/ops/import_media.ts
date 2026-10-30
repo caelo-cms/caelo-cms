@@ -204,6 +204,7 @@ function mediaRowInput(
       height: v.height,
       sizeBytes: v.sizeBytes,
       storageKey: v.storageKey,
+      digest: v.digest,
     })),
   };
 }

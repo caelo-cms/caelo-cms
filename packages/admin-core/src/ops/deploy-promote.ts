@@ -79,7 +79,12 @@ import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator"
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
-import { buildDirOf, removeUploadedBuild, retainedBuildsFor } from "../deploy/build-cleanup.js";
+import {
+  buildDirOf,
+  mediaDeliveryFor,
+  removeUploadedBuild,
+  retainedBuildsFor,
+} from "../deploy/build-cleanup.js";
 import { buildManifestOf, compareBuildManifests, parityRefusal } from "../deploy/build-parity.js";
 import {
   DEPLOY_RUN_HEARTBEAT_MS,
@@ -123,6 +128,7 @@ import {
 } from "./deploy-common.js";
 import { acquireLeaseStep, fenceRunLeases } from "./deploy-lease-steps.js";
 import { beginRunInTx } from "./deploy-run-lifecycle.js";
+import { digestUndigestedMedia } from "./media_digests.js";
 import { actorHasPermission } from "./quality/_permissions.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
 import { recordProductionOverride } from "./quality/production-gate.js";
@@ -494,6 +500,9 @@ async function rebuildForLive(
       `staged build ${plan.fromRunId} has no parity manifest, so Publish live cannot prove the live build matches it. Stage again, then Publish live.`,
     );
   }
+  // #1271 — the build names media by their stored digests (see deploy.trigger).
+  const digested = await digestUndigestedMedia(steps.registry, steps.adapter, systemContextOf(ctx));
+  if (digested !== null) throw new Error(`the media digests could not be stored: ${digested}`);
   const built = await runGenerator(steps.registry, steps.adapter, ctx, {
     cliPath: resolveGeneratorCli(),
     runId: plan.toRunId,
@@ -504,6 +513,7 @@ async function rebuildForLive(
     syncCurrent: false,
     // #1211 — an uploading publisher keeps no builds in the container.
     retainBuilds: retainedBuildsFor(args.publisher),
+    mediaDelivery: mediaDeliveryFor(args.publisher),
     signal: args.stop,
   });
   if (built.ok) args.timer.include("generator", built.result.phases);
@@ -514,7 +524,7 @@ async function rebuildForLive(
   }
   const diff = compareBuildManifests(
     plan.parityManifest,
-    await buildManifestOf(built.result.buildDir),
+    await buildManifestOf(built.result.buildDir, "plain"),
   );
   const refusal = parityRefusal(diff, {
     stagingRunId: plan.fromRunId,
@@ -553,7 +563,8 @@ async function runPromote(
   if (!started.ok) return err(started.error);
   // Started after the run's started_at was read (in deploy.start_promote),
   // so `finished_at - started_at` always covers the timed steps (#1003).
-  const timer = new PhaseTimer();
+  // #1271 — each step also records the admin's peak RSS while it ran.
+  const timer = PhaseTimer.withMemory();
   const plan = started.value as PromotePlan;
   const sys = systemContextOf(ctx);
   const provider = process.env.CAELO_PROVIDER;
@@ -796,6 +807,7 @@ async function runPromote(
     );
   } finally {
     await heartbeat.stop();
+    timer.close();
     // Uploaded, refused or failed: the provider holds what goes live, not
     // /tmp (memory on Cloud Run).
     if (publisher && buildDir) await removeUploadedBuild(publisher, buildDir);

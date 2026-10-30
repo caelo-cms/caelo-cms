@@ -11,19 +11,42 @@
  *   - missing asset/variant references throw a structured error
  *   - library rows whose stored files are gone fail with the asset names
  *     and the recovery steps (media lost from a cloud container's disk)
+ *   - #1271: names come from the stored digests; `reference` delivery
+ *     lists the files instead of linking them, and no byte is read
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerAdminOps } from "@caelo-cms/admin-core";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  DatabaseAdapter,
+  execute,
+  OperationRegistry,
+  type TransactionRunner,
+} from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { runMediaPass } from "./media-pass.js";
+import { type MediaDelivery, MediaPass } from "./media-pass.js";
+import { digestBytes } from "./published-digest.js";
+
+/** One build's media pass over `pages`, the way generate.ts runs it per batch. */
+async function runMediaPass(args: {
+  tx: TransactionRunner;
+  buildDir: string;
+  pages: { html: string; pageSlug: string }[];
+  mediaRoot: string;
+  settings: { cdnEnabled: boolean; threshold: number };
+  delivery?: MediaDelivery;
+}): Promise<MediaPass> {
+  const pass = new MediaPass({ ...args, delivery: args.delivery ?? "link" });
+  await pass.rewritePages(args.pages);
+  await pass.finish();
+  return pass;
+}
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -66,6 +89,7 @@ async function wipe(): Promise<void> {
 
 beforeAll(async () => {
   await wipe();
+  const digest = await digestBytes(FILE_BYTES);
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL!, publicDatabaseUrl: PUBLIC_URL! });
   registry = new OperationRegistry();
   registerAdminOps(registry);
@@ -96,6 +120,7 @@ beforeAll(async () => {
         height: null,
         sizeBytes: 4,
         storageKey: `${SHA}/orig.png`,
+        digest,
       },
     ],
   });
@@ -131,6 +156,7 @@ beforeAll(async () => {
       height: null,
       sizeBytes: 4,
       storageKey: v.storageKey,
+      digest,
     })),
   });
   if (!heroUpload.ok) throw new Error("hero seed upload failed");
@@ -452,5 +478,79 @@ describe("media-pass", () => {
     // run #10 D4 — the failure surface must carry the recovery step
     // (CLAUDE.md §11), not just the diagnosis.
     expect((thrown as Error).message).toContain("regenerate_media_variants");
+  });
+
+  it("#1271 — reference delivery names files by stored digest and reads none of them", async () => {
+    const refBuild = mkdtempSync(join(tmpdir(), "caelo-media-pass-ref-"));
+    const file = join(mediaRoot, SHA, "orig.png");
+    // Unreadable: a pass that read the bytes would fail here.
+    await chmod(file, 0o000);
+    let pass: MediaPass;
+    const pages = [{ html: `<img src="/_caelo/media/${assetSlug}" alt="x" />`, pageSlug: "ref" }];
+    try {
+      pass = await adapter.withAdminTransaction(systemCtx, (tx) =>
+        runMediaPass({
+          tx,
+          buildDir: refBuild,
+          pages,
+          mediaRoot,
+          settings: { cdnEnabled: false, threshold: 5 },
+          delivery: "reference",
+        }),
+      );
+    } finally {
+      await chmod(file, 0o644);
+    }
+    expect(pages[0]?.html).toContain(`/_assets/${assetSlug}.${H}.png`);
+    // Nothing of the media is in the build; the publisher delivers it.
+    expect(await stat(join(refBuild, "_assets")).catch(() => null)).toBeNull();
+    const digest = await digestBytes(FILE_BYTES);
+    expect(pass.assets()).toContainEqual({
+      path: `_assets/${assetSlug}.${H}.png`,
+      contentSha256: digest.contentSha256,
+      size: 4,
+      gzipSha256: digest.gzipSha256,
+      gzipSize: digest.gzipSize,
+      digestProfile: digest.profile,
+      source: { kind: "media", storageKey: `${SHA}/orig.png` },
+    });
+  });
+
+  it("#1271 — a variant without stored digests fails the build and names the backfill", async () => {
+    const sql = new SQL(ADMIN_URL!);
+    const clear = async (to: "null" | "restore") => {
+      const d = await digestBytes(FILE_BYTES);
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        if (to === "null") {
+          await tx`UPDATE media_variants SET content_sha256 = NULL, gzip_sha256 = NULL, gzip_size = NULL, digest_profile = NULL WHERE asset_id = ${assetId}::uuid`;
+        } else {
+          await tx`UPDATE media_variants SET content_sha256 = ${d.contentSha256}, gzip_sha256 = ${d.gzipSha256}, gzip_size = ${d.gzipSize}, digest_profile = ${d.profile} WHERE asset_id = ${assetId}::uuid`;
+        }
+      });
+    };
+    await clear("null");
+    let thrown: unknown = null;
+    try {
+      await adapter.withAdminTransaction(systemCtx, (tx) =>
+        runMediaPass({
+          tx,
+          buildDir,
+          pages: [
+            { html: `<img src="/_caelo/media/${assetSlug}" alt="x" />`, pageSlug: "nodigest" },
+          ],
+          mediaRoot,
+          settings: { cdnEnabled: false, threshold: 5 },
+        }),
+      );
+    } catch (e) {
+      thrown = e;
+    } finally {
+      await clear("restore");
+      await sql.end();
+    }
+    expect((thrown as Error).message).toContain("have no stored digests");
+    expect((thrown as Error).message).toContain(`${assetSlug}/orig`);
+    expect((thrown as Error).message).toContain("rebuild_media_digests");
   });
 });

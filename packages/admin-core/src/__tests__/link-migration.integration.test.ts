@@ -37,6 +37,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 
 /** The chrome nav's one list entry (epic #1107), linking `href`. */
 const navEntry = (href: string) => ({
@@ -280,6 +281,7 @@ beforeAll(async () => {
         height: 4,
         sizeBytes: 4,
         storageKey: `${SHA}/orig.png`,
+        digest: TEST_MEDIA_DIGEST,
       },
     ],
   });

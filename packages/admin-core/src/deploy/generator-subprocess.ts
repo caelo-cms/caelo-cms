@@ -83,6 +83,8 @@ const subprocessDoneSchema = z.object({
   durationMs: z.number(),
   phases: z.array(phaseTimingSchema),
   buildDir: z.string(),
+  /** #1271 — the generator's peak resident memory over the build, in MiB. */
+  peakRssMb: z.number().int().nonnegative(),
   unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
   /** #1257 — page lists cut at the query cap (a Stage warning). */
   truncatedLists: z.array(truncatedListSchema),
@@ -145,6 +147,13 @@ export interface GeneratorRunArgs {
    * (memory on Cloud Run). Omitted: the generator's default retention.
    */
   readonly retainBuilds?: number;
+  /**
+   * #1271 — how the build carries its media and fonts: `link` into the
+   * build directory (a publisher that serves it, self-hosted), or
+   * `reference` (an uploading publisher delivers them from their stores).
+   * See {@link mediaDeliveryFor}.
+   */
+  readonly mediaDelivery: "link" | "reference";
   /**
    * #1211 — kills the generator (SIGTERM) when it aborts, until the
    * generator reports that it mirrors the build into `current/`: from then
@@ -236,6 +245,7 @@ export async function runGenerator(
         ...(args.siteBaseUrlOverride ? { siteBaseUrlOverride: args.siteBaseUrlOverride } : {}),
         ...(args.syncCurrent === false ? { syncCurrent: false } : {}),
         ...(args.retainBuilds !== undefined ? { retainBuilds: args.retainBuilds } : {}),
+        mediaDelivery: args.mediaDelivery,
       })}\n`,
     );
     // Answer one plugin call with THIS process's plugin host — the same

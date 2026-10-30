@@ -788,6 +788,18 @@ export const regenerateMediaVariantsToolInput = z
 export type RegenerateMediaVariantsToolInput = z.infer<typeof regenerateMediaVariantsToolInput>;
 
 /**
+ * #1271 — `rebuild_media_digests`: recompute the stored digests a build
+ * names and uploads media by (`media.rebuild_digests`).
+ */
+export const rebuildMediaDigestsToolInput = z
+  .object({
+    scope: z.enum(["missing", "all"]).default("missing"),
+    assetIds: z.array(z.string().uuid()).min(1).max(500).optional(),
+  })
+  .strict();
+export type RebuildMediaDigestsToolInput = z.infer<typeof rebuildMediaDigestsToolInput>;
+
+/**
  * P7 — one item of `set_media_alt_many`. AI may improve a11y on an existing asset
  * without a human round-trip (e.g. when the editor uploaded an image
  * with the default alt and the AI reads its content). Updates only

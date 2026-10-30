@@ -15,9 +15,10 @@
  * The staging side is recorded at Stage time as a manifest of
  * host-normalised content hashes (`deploy_runs.parity_manifest`), because
  * the staging build directory is ephemeral on Cloud Run and lives on
- * whichever instance built it. The live side is hashed from the fresh
- * build directory, unnormalised. Equal manifests ⇔ the live build is the
- * staging build with only the host replaced.
+ * whichever instance built it. The live side is the fresh build's,
+ * unnormalised. Equal manifests ⇔ the live build is the staging build
+ * with only the host replaced. #1271 — both are taken by the generator as
+ * it writes each file, so no file is read again to fingerprint a build.
  *
  * Files that are per-build by design (robots.txt and the deploy manifest,
  * which carry the target and run id) are excluded; every publisher already
@@ -27,109 +28,35 @@
  * special-cased here.
  */
 
-import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { PARITY_REFUSAL_PREFIX, RESTAGE_NEXT_STEP } from "@caelo-cms/shared";
+import { type BuildManifest, readBuildParity } from "@caelo-cms/static-generator";
+
+// #1271 — the digests are taken by the generator while it writes each file
+// (static-generator parity-digest.ts); these are re-exported for the ops.
+export { type BuildManifest, hostNormaliser } from "@caelo-cms/static-generator";
 
 /**
- * Build artefacts that legitimately differ between two builds of the same
- * content: robots.txt follows the target's robots policy, and the deploy
- * manifest carries the target, environment, run id and build time.
- */
-export const PER_BUILD_FILES: ReadonlySet<string> = new Set([
-  "robots.txt",
-  "routing-manifest.json",
-]);
-
-/** `relative path → content hash`. Paths use `/` and no leading slash. */
-export type BuildManifest = Record<string, string>;
-
-/** A pure text transform applied to a staging file before hashing. */
-export type ContentNormaliser = (content: string) => string;
-
-function hostOf(origin: string): string {
-  return new URL(origin).host;
-}
-
-function originOf(url: string): string {
-  return new URL(url).origin;
-}
-
-/**
- * The normaliser that turns staging-host content into live-host content:
- * every occurrence of the staging origin becomes the live origin, and
- * every other bare staging host (inside JSON-escaped or URL-encoded
- * URLs, `og:url` without a scheme, …) becomes the live host.
- *
- * Content is handled as latin1 so every byte maps to one char and back —
- * binary files pass through unchanged unless they literally contain the
- * host bytes.
- *
- * @example
- *   hostNormaliser("https://staging.example.com", "https://www.example.com")(
- *     '<link rel="canonical" href="https://staging.example.com/a/">')
- *   // → '<link rel="canonical" href="https://www.example.com/a/">'
- */
-export function hostNormaliser(stagingUrl: string, liveUrl: string): ContentNormaliser {
-  const stagingOrigin = originOf(stagingUrl);
-  const liveOrigin = originOf(liveUrl);
-  const stagingHost = hostOf(stagingUrl);
-  const liveHost = hostOf(liveUrl);
-  if (stagingHost === liveHost) {
-    throw new Error(
-      `the staging host and the live host are both ${liveHost} — staging must have its own host (staging.<domain>) for a host-swapped build to differ from live`,
-    );
-  }
-  // ONE pass over the content, origin before bare host at each position,
-  // so a replacement is never reprocessed: chained replaces turned staging
-  // `example.com` → live `www.example.com` into `www.www.example.com`.
-  // A bare host directly after `.` or `-` is part of a longer name (e.g.
-  // `mail.example.com` when staging is `example.com`) and stays as it is.
-  const pattern = new RegExp(
-    `${escapeRegExp(stagingOrigin)}|(?<![.\\-])${escapeRegExp(stagingHost)}`,
-    "g",
-  );
-  return (content) =>
-    content.replace(pattern, (match) => (match === stagingOrigin ? liveOrigin : liveHost));
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function contentHash(bytes: Buffer | string): string {
-  return createHash("sha256").update(bytes).digest("base64url").slice(0, 32);
-}
-
-async function walk(dir: string, rel = ""): Promise<string[]> {
-  const out: string[] = [];
-  const entries = await readdir(join(dir, rel), { withFileTypes: true });
-  for (const entry of entries) {
-    const childRel = rel ? `${rel}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) out.push(...(await walk(dir, childRel)));
-    else if (entry.isFile()) out.push(childRel);
-  }
-  return out;
-}
-
-/**
- * Hash every file of a build directory, optionally after `normalise`.
- * {@link PER_BUILD_FILES} at the root are left out.
+ * The parity manifest of a finished build, as its generator recorded it:
+ * `plain` (the bytes as written — a live rebuild), or `normalised` (staging
+ * host swapped back to the live one — what a Stage with its own staging
+ * host records for Publish live). The per-build files (robots.txt, the
+ * routing manifest) are left out;
+ * referenced media and fonts are in it by their stored content hash.
+ * Throws when the build has no normalised manifest but one is asked for
+ * (it was not rendered with a staging host).
  */
 export async function buildManifestOf(
   buildDir: string,
-  normalise?: ContentNormaliser,
+  which: "plain" | "normalised",
 ): Promise<BuildManifest> {
-  const manifest: BuildManifest = {};
-  for (const rel of (await walk(buildDir)).sort()) {
-    if (PER_BUILD_FILES.has(rel)) continue;
-    const bytes = await readFile(join(buildDir, rel));
-    manifest[rel] = normalise
-      ? contentHash(Buffer.from(normalise(bytes.toString("latin1")), "latin1"))
-      : contentHash(bytes);
+  const parity = await readBuildParity(buildDir);
+  if (which === "plain") return parity.plain;
+  if (parity.normalised === null) {
+    throw new Error(
+      `build ${buildDir} was not rendered with a staging host, so it has no host-normalised parity manifest`,
+    );
   }
-  return manifest;
+  return parity.normalised;
 }
 
 /** How two build manifests differ. Every list is sorted. */

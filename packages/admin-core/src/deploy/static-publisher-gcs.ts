@@ -24,6 +24,12 @@
  * stale bytes. Stage records the build's full file list for this,
  * because the staging prefix holds only the changed files.
  *
+ * #1271 — the media and fonts a build references stay in their stores
+ * (asset-references.ts): a referenced path the live bucket already has is
+ * skipped (its name carries its content hash, so equal names are equal
+ * bytes), the rest is streamed from the store into the staging prefix. No
+ * media byte is read to decide, and none is held in memory to upload.
+ *
  * Two env vars drive this adapter — set by the GCP Pulumi stack on
  * the admin Cloud Run service:
  *   - CAELO_STATIC_BUCKET — public-read live origin
@@ -32,7 +38,7 @@
  * CLAUDE.md §2 "no fallbacks pre-1.0").
  */
 
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   assertGcpRedirectBudget,
@@ -45,7 +51,9 @@ import {
   type RedirectPlan,
   runBatched,
 } from "@caelo-cms/shared";
+import { assetSourcePath } from "@caelo-cms/static-generator";
 import type { Bucket, Storage as StorageType } from "@google-cloud/storage";
+import { type BuildFiles, readBuildFiles, uniqueAssets } from "./build-files.js";
 import {
   adcComputeApi,
   applyGcpRedirectPlan,
@@ -146,7 +154,8 @@ export function createGcsStaticPublisher(
     servesCurrentDir: false,
     async publishStaging({ buildDir, runId, target }) {
       const h = await bucketHandles();
-      const files = await walkBuildDir(buildDir);
+      const build = await readBuildFiles(buildDir);
+      const files = build.built;
       const manifest = await readLiveManifest(h.staticBucket);
       // v0.2.85 — read the per-key Content-Type sidecar emitted by
       // the static-generator. Keys whose Content-Type can't be
@@ -177,22 +186,28 @@ export function createGcsStaticPublisher(
         });
         uploaded += 1;
       });
+      // #1271 — referenced media and fonts: a path the live bucket already
+      // holds is the same file (content-hashed name); the rest is streamed
+      // from its store.
+      const assets = await uploadMissingAssets(h.stagingBucket, prefix, build, (path) =>
+        manifest ? path in manifest.files : false,
+      );
+      uploaded += assets.uploaded;
+      skipped += assets.skipped;
       // #587 — the redirects go live with Confirm-publish, as URL-map rules.
       // The plan needs this build's file list (the live page wins), which
       // promote no longer has, so it is computed and checked against the
       // URL-map quota here: an over-quota set fails Stage, not Publish live.
-      const plan = await redirectPlanForBuild(
-        buildDir,
-        target.pageUrlStyle ?? "directory",
-        files.map((f) => f.relativePath),
-      );
+      const plan = await redirectPlanForBuild(buildDir, target.pageUrlStyle ?? "directory", [
+        ...build.paths,
+      ]);
       await uploadBytes(
         h.stagingBucket,
         redirectPlanKey(runId),
         Buffer.from(JSON.stringify(plan), "utf8"),
         "application/json",
       );
-      const buildFiles: StagedBuildFiles = { files: files.map((f) => f.relativePath) };
+      const buildFiles: StagedBuildFiles = { files: [...build.paths].sort() };
       await uploadBytes(
         h.stagingBucket,
         buildFilesKey(runId),
@@ -453,7 +468,8 @@ export function createGcsStaticPublisher(
         );
       }
       const h = await bucketHandles();
-      const files = await walkBuildDir(sourceBuildDir);
+      const build = await readBuildFiles(sourceBuildDir);
+      const files = build.built;
       // v0.2.85 — same content-type-override pattern as publishStaging
       // so a rollback restores bare-slug pages with the right
       // Content-Type.
@@ -470,17 +486,16 @@ export function createGcsStaticPublisher(
         });
         uploaded += 1;
       });
-      await pruneStaleObjects(
-        h.staticBucket,
-        files.map((f) => f.relativePath),
-      );
+      // #1271 — the build's media and fonts: whatever the live bucket lacks.
+      const live = new Set((await h.staticBucket.getFiles())[0].map((f) => f.name));
+      uploaded += (await uploadMissingAssets(h.staticBucket, "", build, (path) => live.has(path)))
+        .uploaded;
+      await pruneStaleObjects(h.staticBucket, build.paths);
       // #587 — the rolled-back build's redirects, as on Confirm-publish.
       await applyRedirectPlan(
-        await redirectPlanForBuild(
-          sourceBuildDir,
-          target.pageUrlStyle ?? "directory",
-          files.map((f) => f.relativePath),
-        ),
+        await redirectPlanForBuild(sourceBuildDir, target.pageUrlStyle ?? "directory", [
+          ...build.paths,
+        ]),
         await deps.computeApi(),
       );
       return {
@@ -608,29 +623,43 @@ async function buildLiveManifest(staticBucket: Bucket, buildId: string): Promise
   return { buildId, files: entries, cachePolicyVersion: CACHE_POLICY_VERSION };
 }
 
-interface WalkedFile {
-  absolutePath: string;
-  relativePath: string;
-}
-
-async function walkBuildDir(buildDir: string): Promise<WalkedFile[]> {
-  const out: WalkedFile[] = [];
-  const walk = async (rel: string): Promise<void> => {
-    const entries = await readdir(join(buildDir, rel), { withFileTypes: true });
-    for (const entry of entries) {
-      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-        await walk(childRel);
-      } else {
-        out.push({
-          absolutePath: join(buildDir, childRel),
-          relativePath: childRel,
-        });
-      }
+/**
+ * #1271 — put the build's referenced media and fonts under `prefix` in
+ * `bucket`, skipping every path `present` says the destination already
+ * serves. Each upload streams the file from its store.
+ */
+async function uploadMissingAssets(
+  bucket: Bucket,
+  prefix: string,
+  build: BuildFiles,
+  present: (path: string) => boolean,
+): Promise<{ uploaded: number; skipped: number }> {
+  let uploaded = 0;
+  let skipped = 0;
+  await runBatched(uniqueAssets(build.references), PARALLEL_UPLOADS, async (asset) => {
+    if (present(asset.path)) {
+      skipped += 1;
+      return;
     }
-  };
-  await walk("");
-  return out;
+    const absolutePath = assetSourcePath(build.references, asset);
+    try {
+      await uploadFile(bucket, {
+        key: prefix + asset.path,
+        sitePath: asset.path,
+        absolutePath,
+        contentType: contentTypeFor(asset.path),
+      });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(
+          `static-publisher-gcs: the stored file of ${asset.path} is missing (${absolutePath}). Find it with list_missing_media and restore it, or remove it from the pages that use it, then Stage again.`,
+        );
+      }
+      throw e;
+    }
+    uploaded += 1;
+  });
+  return { uploaded, skipped };
 }
 
 async function crc32cOfFile(absolutePath: string): Promise<string> {

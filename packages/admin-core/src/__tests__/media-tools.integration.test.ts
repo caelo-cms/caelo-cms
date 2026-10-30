@@ -16,6 +16,7 @@ import { findMediaTool } from "../ai/tools/find-media.js";
 import { generateImageTool } from "../ai/tools/generate-image.js";
 import { setMediaAltManyTool } from "../ai/tools/set-media-alt-many.js";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -71,6 +72,7 @@ beforeAll(async () => {
         height: 1080,
         sizeBytes: 12345,
         storageKey: `${SHA}/orig.jpg`,
+        digest: TEST_MEDIA_DIGEST,
       },
       {
         variant: "webp-800",
@@ -79,6 +81,7 @@ beforeAll(async () => {
         height: 450,
         sizeBytes: 4567,
         storageKey: `${SHA}/webp-800.webp`,
+        digest: TEST_MEDIA_DIGEST,
       },
     ],
   });

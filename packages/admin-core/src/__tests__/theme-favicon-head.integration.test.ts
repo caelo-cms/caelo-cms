@@ -39,6 +39,7 @@ import { LocalVolumeAdapter, setMediaStorage } from "../media/storage.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { minimalIco } from "./fixtures/ico.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -153,6 +154,7 @@ beforeAll(async () => {
         height: side,
         sizeBytes: png.byteLength,
         storageKey: `${SHA}/orig.png`,
+        digest: TEST_MEDIA_DIGEST,
       },
     ],
   })) as { assetId: string; slug: string };
@@ -452,6 +454,7 @@ describe("theme favicon is emitted into <head>", () => {
           height: null,
           sizeBytes: 4,
           storageKey: `${PDF_SHA}/orig.pdf`,
+          digest: TEST_MEDIA_DIGEST,
         },
       ],
     })) as { assetId: string };
@@ -490,6 +493,7 @@ describe("theme favicon is emitted into <head>", () => {
         height: v.height,
         sizeBytes: v.sizeBytes,
         storageKey: v.storageKey,
+        digest: v.digest,
       })),
     })) as { assetId: string; slug: string };
     // image/* → the favicon slot accepts it.

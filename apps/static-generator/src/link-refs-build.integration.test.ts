@@ -24,6 +24,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { type DeployTarget, generateSite, pageOutputPath } from "./generate.js";
+import { digestBytes } from "./published-digest.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -300,6 +301,7 @@ describe("static build — internal references", () => {
           height: null,
           sizeBytes: bytes.length,
           storageKey: `${MEDIA_SHA}/orig.png`,
+          digest: await digestBytes(bytes),
         },
       ],
     });
@@ -313,7 +315,7 @@ describe("static build — internal references", () => {
       [],
     );
     const root = mkdtempSync(join(tmpdir(), "caelo-link-refs-build-"));
-    // The generator reads media bytes from <repoRoot>/data/media/<storageKey>.
+    // The generator links the media file from <repoRoot>/data/media/<storageKey>.
     await mkdir(join(root, "data", "media", MEDIA_SHA), { recursive: true });
     await writeFile(join(root, "data", "media", MEDIA_SHA, "orig.png"), bytes);
     const runId = `${PFX}-run4`;

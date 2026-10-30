@@ -17,6 +17,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -107,6 +108,7 @@ beforeAll(async () => {
           height: null,
           sizeBytes: 4,
           storageKey: `${sha}/orig.pdf`,
+          digest: TEST_MEDIA_DIGEST,
         },
       ],
     })

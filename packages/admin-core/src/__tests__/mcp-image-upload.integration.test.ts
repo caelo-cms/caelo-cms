@@ -9,6 +9,7 @@ import { FixtureProvider } from "../ai/providers/anthropic.js";
 import { LocalVolumeAdapter, setMediaStorage } from "../media/storage.js";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 
 const adminUrl = process.env.ADMIN_DATABASE_URL!;
 const adapter = new DatabaseAdapter({
@@ -116,6 +117,7 @@ test("MCP image reaches the model as image content and survives session replay",
         height: 1,
         sizeBytes: png.length,
         storageKey: "mcp-test/orig.png",
+        digest: TEST_MEDIA_DIGEST,
       },
     ],
   });

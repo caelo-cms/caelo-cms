@@ -33,7 +33,11 @@ import {
   type ResolvedContentVariants,
   resolveContentVariants,
 } from "./content-variants.js";
-import { type ResolvedDeferrals, resolveModuleDeferrals } from "./deferrals.js";
+import {
+  hasDeferralContributors,
+  type ResolvedDeferrals,
+  resolveModuleDeferrals,
+} from "./deferrals.js";
 import {
   isPluginDisabled,
   loadedPlugins,
@@ -89,6 +93,8 @@ export interface BuildPluginServices {
     resolved: ResolvedListOverlays,
     issues: ListOverlayIssue[],
   ): Promise<void>;
+  /** #1271 — whether any running plugin withholds modules (else no candidates are sent). */
+  hasDeferralContributors(): Promise<boolean>;
   resolveModuleDeferrals(modules: DeferralCandidates): Promise<ResolvedDeferrals>;
   hasContentVariantContributors(): Promise<boolean>;
   resolveContentVariants(pages: ContentVariantPages): Promise<ResolvedContentVariants>;
@@ -119,6 +125,7 @@ export const localBuildPluginServices: BuildPluginServices = {
   hasListResolveContributors: async () => hasListResolveContributors(),
   resolveListOverlays: (variants) => resolveListOverlays(variants, MAIN_RENDER),
   reportListOverlayIssues: (resolved, issues) => reportListOverlayIssues(resolved, issues),
+  hasDeferralContributors: async () => hasDeferralContributors(),
   resolveModuleDeferrals: (modules) => resolveModuleDeferrals(modules, MAIN_RENDER),
   hasContentVariantContributors: async () => hasContentVariantContributors(),
   resolveContentVariants: (pages) => resolveContentVariants(pages, MAIN_RENDER),
@@ -158,6 +165,7 @@ export const BUILD_PLUGIN_METHODS = [
   "hasListResolveContributors",
   "resolveListOverlays",
   "reportListOverlayIssues",
+  "hasDeferralContributors",
   "resolveModuleDeferrals",
   "hasContentVariantContributors",
   "resolveContentVariants",

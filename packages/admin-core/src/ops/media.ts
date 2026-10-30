@@ -243,7 +243,8 @@ export const mediaUploadOp = defineOperation({
     // the variant set is small (<= 5) so the cost is negligible.
     for (const v of input.variants) {
       await tx.execute(sql`
-        INSERT INTO media_variants (asset_id, variant, format, width, height, size_bytes, storage_key)
+        INSERT INTO media_variants (asset_id, variant, format, width, height, size_bytes, storage_key,
+                                    content_sha256, gzip_sha256, gzip_size, digest_profile)
         VALUES (
           ${assetId}::uuid,
           ${v.variant},
@@ -251,7 +252,11 @@ export const mediaUploadOp = defineOperation({
           ${v.width},
           ${v.height},
           ${v.sizeBytes},
-          ${v.storageKey}
+          ${v.storageKey},
+          ${v.digest.contentSha256},
+          ${v.digest.gzipSha256},
+          ${v.digest.gzipSize},
+          ${v.digest.profile}
         )
       `);
     }

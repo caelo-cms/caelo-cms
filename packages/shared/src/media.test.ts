@@ -103,10 +103,41 @@ describe("media schemas", () => {
           height: 1080,
           sizeBytes: 1024,
           storageKey: `${"a".repeat(64)}/orig.jpg`,
+          digest: {
+            contentSha256: "b".repeat(64),
+            size: 1024,
+            gzipSha256: "c".repeat(64),
+            gzipSize: 1000,
+            profile: "gzip9-0123456789abcdef",
+          },
         },
       ],
     });
     expect(r.success).toBe(true);
+  });
+
+  it("mediaUploadInputSchema requires each variant's published digests (#1271)", () => {
+    const r = mediaUploadInputSchema.safeParse({
+      sha256: "a".repeat(64),
+      originalName: "hero.jpg",
+      mime: "image/jpeg",
+      sizeBytes: 1024,
+      width: 1920,
+      height: 1080,
+      alt: "",
+      storageKey: `${"a".repeat(64)}/orig.jpg`,
+      variants: [
+        {
+          variant: "orig",
+          format: "jpeg",
+          width: 1920,
+          height: 1080,
+          sizeBytes: 1024,
+          storageKey: `${"a".repeat(64)}/orig.jpg`,
+        },
+      ],
+    });
+    expect(r.success).toBe(false);
   });
 
   it("mediaUploadInputSchema rejects non-hex sha256", () => {

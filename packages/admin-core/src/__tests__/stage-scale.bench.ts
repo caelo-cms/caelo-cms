@@ -13,6 +13,12 @@
  * in-memory Firebase (no network: upload time is CPU + memory only).
  * Pages are seeded cumulatively; per size it runs a cold Stage, a warm
  * Stage (nothing changed) and a Publish live, and prints each run's steps.
+ *
+ * #1271 — every page shows media: a hero image and two inline images out of
+ * a pool of `BENCH_MEDIA` real JPEGs (default 200) run through the media
+ * pipeline, so the build publishes their variants. Each run also prints the
+ * peak RSS of this process (the admin: trigger, publisher, fake Firebase)
+ * and of the generator subprocess, sampled while it runs.
  */
 
 import { afterAll, beforeAll, describe, it, mock } from "bun:test";
@@ -22,9 +28,12 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext, PhaseTiming } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import sharp from "sharp";
+import { runMediaPipeline } from "../media/pipeline.js";
+import { LocalVolumeAdapter, setMediaStorage } from "../media/storage.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
-import { FakeChannelLifetimes } from "./fixtures/firebase-channel-lifetime.js";
+import { FakeFirebaseHosting } from "./fixtures/fake-firebase-hosting.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -50,9 +59,8 @@ const SIZES = (process.env.BENCH_PAGES ?? "100,1000")
   .filter((n) => n > 0)
   .sort((a, b) => a - b);
 
+const MEDIA_POOL = Number.parseInt(process.env.BENCH_MEDIA ?? "200", 10);
 const SITE = "bench-site";
-const API = "https://firebasehosting.googleapis.com/v1beta1/";
-const UPLOAD = "https://upload.bench/";
 const SYSTEM: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
   actorKind: "system",
@@ -61,77 +69,8 @@ const SYSTEM: ExecutionContext = {
 /** #1154 — production is built and published only for a human. */
 const PUBLISHER: ExecutionContext = { ...SYSTEM, actorKind: "human" };
 
-/** Firebase Hosting as far as Stage + Publish live use it; keeps blobs by hash only. */
-class FakeFirebase {
-  versions = new Map<string, Record<string, string>>();
-  channels = new Map<string, string>();
-  lifetimes = new FakeChannelLifetimes();
-  blobs = new Set<string>();
-  private seq = 0;
-
-  fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (!url.startsWith(API) && !url.startsWith(UPLOAD)) return realFetch(input, init);
-    const method = init?.method ?? "GET";
-    const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200 });
-    if (url.startsWith(UPLOAD)) {
-      this.blobs.add(url.split("/").pop() ?? "");
-      return json({});
-    }
-    const parsed = typeof init?.body === "string" ? JSON.parse(init.body) : {};
-    const [route = "", query = ""] = url.slice(API.length).split("?");
-    const params = new URLSearchParams(query);
-    if (method === "POST" && route === `sites/${SITE}/versions`) {
-      const id = `v${++this.seq}`;
-      this.versions.set(id, {});
-      return json({ name: `sites/${SITE}/versions/${id}` });
-    }
-    const populate = route.match(/versions\/([^/:]+):populateFiles$/);
-    if (populate) {
-      const files = parsed.files as Record<string, string>;
-      this.versions.set(populate[1] ?? "", files);
-      return json({
-        uploadRequiredHashes: Object.values(files).filter((h) => !this.blobs.has(h)),
-        uploadUrl: `${UPLOAD}${populate[1]}`,
-      });
-    }
-    if (method === "PATCH" && /versions\/[^/]+$/.test(route)) return json({});
-    if (method === "POST" && route === `sites/${SITE}/channels`) {
-      const id = params.get("channelId") ?? "";
-      const channelUrl = `https://${SITE}--${id}.web.app`;
-      this.channels.set(id, channelUrl);
-      this.lifetimes.create(id, parsed.ttl);
-      return json({ name: `sites/${SITE}/channels/${id}`, url: channelUrl });
-    }
-    if (method === "GET" && route === `sites/${SITE}/channels`) {
-      return json({
-        channels: [...this.channels.keys(), "live"].map((id) => ({
-          name: `sites/${SITE}/channels/${id}`,
-          expireTime: this.lifetimes.expireTime(id),
-        })),
-      });
-    }
-    const channel = route.match(/^sites\/[^/]+\/channels\/([^/]+)$/);
-    if (method === "DELETE" && channel) {
-      this.channels.delete(channel[1] ?? "");
-      this.lifetimes.forget(channel[1] ?? "");
-      return new Response("", { status: 200 });
-    }
-    if (method === "GET" && channel) {
-      if (!this.channels.has(channel[1] ?? "")) return new Response("{}", { status: 404 });
-      return json({ name: url, expireTime: this.lifetimes.expireTime(channel[1] ?? "") });
-    }
-    if (method === "PATCH" && channel) {
-      return this.lifetimes.patch(SITE, channel[1] ?? "", params.get("updateMask"), parsed);
-    }
-    if (method === "POST" && /channels\/[^/]+\/releases$/.test(route)) return json({});
-    if (method === "POST" && route === `sites/${SITE}/releases`) return json({});
-    throw new Error(`unhandled ${method} ${url}`);
-  };
-}
-
 const realFetch = globalThis.fetch;
-const fake = new FakeFirebase();
+const fake = new FakeFirebaseHosting(SITE, realFetch);
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let root: string;
@@ -144,6 +83,8 @@ const moduleIds: Record<"header" | "hero" | "body" | "cta" | "footer", string> =
   footer: "",
 };
 let headerContentId = "";
+/** Slugs of the seeded media pool; page `i` shows images `i`, `i+1`, `i+2` (mod pool). */
+const mediaSlugs: string[] = [];
 let footerContentId = "";
 let seeded = 0;
 /** site_defaults survives the test preload's reset: put back what the bench pinned. */
@@ -228,6 +169,102 @@ function bodyCopy(i: number): string {
   return Array.from({ length: 4 }, (_, k) => `${para.repeat(4)} (section ${k + 1})`).join("\n\n");
 }
 
+function mediaUrl(i: number): string {
+  return `/_caelo/media/${mediaSlugs[i % mediaSlugs.length]}`;
+}
+
+/** A photo-like JPEG (smoothed noise, ~1600×1000): its variants weigh what real photos do. */
+async function photo(seed: number): Promise<Uint8Array> {
+  const w = 200;
+  const h = 125;
+  const raw = Buffer.alloc(w * h * 3);
+  let x = seed * 2654435761;
+  for (let k = 0; k < raw.length; k += 1) {
+    x = (x * 1103515245 + 12345) >>> 0;
+    raw[k] = x >>> 24;
+  }
+  const out = await sharp(raw, { raw: { width: w, height: h, channels: 3 } })
+    .resize(1600, 1000, { kernel: "cubic" })
+    .jpeg({ quality: 82 })
+    .toBuffer();
+  return new Uint8Array(out);
+}
+
+/** The media pool, through the same pipeline + op as an operator upload. */
+async function seedMedia(count: number, mediaRoot: string): Promise<void> {
+  const storage = new LocalVolumeAdapter(mediaRoot);
+  setMediaStorage(storage);
+  for (let i = 0; i < count; i += 1) {
+    const body = await photo(i + 1);
+    const sha = new Bun.CryptoHasher("sha256").update(body).digest("hex");
+    const result = await runMediaPipeline(sha, "image/jpeg", body);
+    for (const v of result.variants) await storage.put(v.storageKey, v.body, v.contentType);
+    const up = await ok<{ slug: string }>("media.upload", {
+      sha256: sha,
+      originalName: `bench-photo-${i}.jpg`,
+      name: `bench-photo-${i}`,
+      mime: "image/jpeg",
+      sizeBytes: body.byteLength,
+      width: result.width,
+      height: result.height,
+      alt: `Bench photo ${i}`,
+      storageKey: result.variants[0]?.storageKey ?? `${sha}/orig`,
+      sourceKind: "upload",
+      variants: result.variants.map((v) => ({
+        variant: v.variant,
+        format: v.format,
+        width: v.width,
+        height: v.height,
+        sizeBytes: v.sizeBytes,
+        storageKey: v.storageKey,
+        digest: v.digest,
+      })),
+    });
+    mediaSlugs.push(up.slug);
+  }
+}
+
+/**
+ * Peak RSS while a run is in flight: this process (the admin side) and
+ * every static-generator subprocess (sampled with `ps`, so it measures the
+ * generator of any Caelo version without its cooperation).
+ */
+function samplePeakRss(): {
+  stop: () => Promise<{ adminStartMb: number; adminMb: number; generatorMb: number }>;
+} {
+  const adminStart = process.memoryUsage().rss;
+  let admin = adminStart;
+  let generator = 0;
+  let running = true;
+  const loop = (async () => {
+    while (running) {
+      admin = Math.max(admin, process.memoryUsage().rss);
+      // A spawn can fail while the run has every file descriptor in use: skip that sample.
+      let out = "";
+      try {
+        const ps = Bun.spawn(["ps", "-axo", "rss=,command="], { stdout: "pipe" });
+        out = await new Response(ps.stdout).text();
+      } catch {
+        out = "";
+      }
+      for (const line of out.split("\n")) {
+        if (!line.includes("static-generator/src/cli.ts")) continue;
+        const kb = Number.parseInt(line.trim().split(/\s+/)[0] ?? "0", 10);
+        if (Number.isFinite(kb)) generator = Math.max(generator, kb * 1024);
+      }
+      await Bun.sleep(50);
+    }
+  })();
+  return {
+    stop: async () => {
+      running = false;
+      await loop;
+      const mb = (b: number) => Math.round(b / (1024 * 1024));
+      return { adminStartMb: mb(adminStart), adminMb: mb(admin), generatorMb: mb(generator) };
+    },
+  };
+}
+
 async function seedTo(n: number): Promise<void> {
   const todo = Array.from({ length: n - seeded }, (_, k) => seeded + k);
   const CONCURRENCY = 8;
@@ -247,7 +284,13 @@ async function seedTo(n: number): Promise<void> {
               moduleId: moduleIds.hero,
               content: {
                 source: "inline",
-                values: { hero_title: `Bench page ${i}`, hero_text: `Why page ${i} matters.` },
+                values: {
+                  hero_title: `Bench page ${i}`,
+                  hero_text: `Why page ${i} matters.`,
+                  hero_image: mediaUrl(i),
+                  inline_a: mediaUrl(i + 1),
+                  inline_b: mediaUrl(i + 2),
+                },
               },
             },
             {
@@ -291,103 +334,115 @@ async function runPhases(runId: string): Promise<PhaseTiming[]> {
   return rows[0]?.phase_timings ?? [];
 }
 
-beforeAll(async () => {
-  Object.assign(process.env, {
-    CAELO_PROVIDER: "gcp-firebase",
-    CAELO_STAGING_GATE_SECRET: "bench-gate-secret",
-    CAELO_FIREBASE_SITE: SITE,
-    CAELO_GATEWAY_SERVICE: "gateway",
-    CAELO_GATEWAY_REGION: "europe-west1",
-    CAELO_SKIP_STAGING_SERVE_CHECK: "1",
-  });
-  globalThis.fetch = fake.fetch as typeof fetch;
-  restore.push(await pinSiteBaseUrl(ADMIN_URL!, "https://example.com"));
-  restore.push(await pinSiteLanguage(ADMIN_URL!, "en"));
-  adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
-  registry = new OperationRegistry();
-  registerAdminOps(registry);
-  setDeployBridge({ registry, adapter });
-  root = await mkdtemp(join(tmpdir(), "caelo-stage-bench-"));
-  // A previous run's rows: templates are seed data the test preload keeps.
-  await system(async (tx) => {
-    await tx`DELETE FROM quality_audit_runs`;
-    await tx`DELETE FROM deploy_runs`;
-    await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE template_id IN (SELECT id FROM templates WHERE slug = 'bench-tpl'))`;
-    await tx`DELETE FROM pages WHERE template_id IN (SELECT id FROM templates WHERE slug = 'bench-tpl')`;
-    await tx`DELETE FROM content_instances WHERE slug LIKE 'bench-%'`;
-    await tx`DELETE FROM modules WHERE slug LIKE 'bench-%'`;
-    await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = 'bench-tpl')`;
-    await tx`DELETE FROM templates WHERE slug = 'bench-tpl'`;
-  });
-  await ok("staging_access.seed_host", { host: "staging.example.com" });
+beforeAll(
+  async () => {
+    Object.assign(process.env, {
+      CAELO_PROVIDER: "gcp-firebase",
+      CAELO_STAGING_GATE_SECRET: "bench-gate-secret",
+      CAELO_FIREBASE_SITE: SITE,
+      CAELO_GATEWAY_SERVICE: "gateway",
+      CAELO_GATEWAY_REGION: "europe-west1",
+      CAELO_SKIP_STAGING_SERVE_CHECK: "1",
+    });
+    globalThis.fetch = fake.fetch as typeof fetch;
+    restore.push(await pinSiteBaseUrl(ADMIN_URL!, "https://example.com"));
+    restore.push(await pinSiteLanguage(ADMIN_URL!, "en"));
+    adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+    registry = new OperationRegistry();
+    registerAdminOps(registry);
+    setDeployBridge({ registry, adapter });
+    root = await mkdtemp(join(tmpdir(), "caelo-stage-bench-"));
+    // The generator resolves MEDIA_ROOT_DIR against the repo root it builds for.
+    process.env.MEDIA_ROOT_DIR = join(root, "media");
+    // A previous run's rows: templates are seed data the test preload keeps.
+    await system(async (tx) => {
+      await tx`DELETE FROM quality_audit_runs`;
+      await tx`DELETE FROM deploy_runs`;
+      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE template_id IN (SELECT id FROM templates WHERE slug = 'bench-tpl'))`;
+      await tx`DELETE FROM pages WHERE template_id IN (SELECT id FROM templates WHERE slug = 'bench-tpl')`;
+      await tx`DELETE FROM content_instances WHERE slug LIKE 'bench-%'`;
+      await tx`DELETE FROM modules WHERE slug LIKE 'bench-%'`;
+      await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = 'bench-tpl')`;
+      await tx`DELETE FROM templates WHERE slug = 'bench-tpl'`;
+      await tx`DELETE FROM media_variants WHERE asset_id IN (SELECT id FROM media_assets WHERE slug LIKE 'bench-photo-%')`;
+      await tx`DELETE FROM media_assets WHERE slug LIKE 'bench-photo-%'`;
+    });
+    const mediaStart = performance.now();
+    await seedMedia(MEDIA_POOL, join(root, "media"));
+    console.info(
+      `[bench] seeded ${MEDIA_POOL} media in ${Math.round(performance.now() - mediaStart)} ms`,
+    );
+    await ok("staging_access.seed_host", { host: "staging.example.com" });
 
-  templateId = (
-    await ok<{ templateId: string }>("templates.create", {
-      slug: "bench-tpl",
-      displayName: "Bench",
-      html: `<html><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
-      css: "body{font-family:sans-serif;margin:0}",
-    })
-  ).templateId;
-  await ok("template_blocks.set", {
-    templateId,
-    blocks: [{ name: "content", displayName: "Content", position: 0 }],
-  });
-  const mod = async (slug: string, html: string, css: string, fields: string[]) =>
-    (
-      await ok<{ moduleId: string }>("modules.create", {
-        slug,
-        displayName: slug,
-        html,
-        css,
-        fields: fields.map((name) => ({ name, kind: "text", label: name })),
+    templateId = (
+      await ok<{ templateId: string }>("templates.create", {
+        slug: "bench-tpl",
+        displayName: "Bench",
+        html: `<html><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
+        css: "body{font-family:sans-serif;margin:0}",
       })
-    ).moduleId;
-  moduleIds.header = await mod(
-    "bench-header",
-    `<header class="bh"><strong>{{brand}}</strong></header>`,
-    ".bh{display:flex;padding:1rem;background:#111;color:#fff}",
-    ["brand"],
-  );
-  moduleIds.hero = await mod(
-    "bench-hero",
-    `<section class="bhe"><h1>{{hero_title}}</h1><p>{{hero_text}}</p></section>`,
-    ".bhe{padding:4rem 1rem}.bhe h1{font-size:3rem}",
-    ["hero_title", "hero_text"],
-  );
-  moduleIds.body = await mod(
-    "bench-body",
-    `<article class="bb">{{body}}</article>`,
-    ".bb{max-width:70ch;margin:auto;line-height:1.6}",
-    ["body"],
-  );
-  moduleIds.cta = await mod(
-    "bench-cta",
-    `<a class="bc" href="{{cta_href}}">{{cta_label}}</a>`,
-    ".bc{display:inline-block;padding:.75rem 1.5rem;background:#06c;color:#fff}",
-    ["cta_label", "cta_href"],
-  );
-  moduleIds.footer = await mod(
-    "bench-footer",
-    `<footer class="bf">{{copyright}}</footer>`,
-    ".bf{padding:2rem;border-top:1px solid #ddd}",
-    ["copyright"],
-  );
-  const shared = async (moduleId: string, slug: string, values: Record<string, string>) =>
-    (
-      await ok<{ contentInstanceId: string }>("content_instances.create", {
-        moduleId,
-        slug,
-        displayName: slug,
-        purpose: "Site-wide chrome shared by every bench page.",
-        values,
-      })
-    ).contentInstanceId;
-  headerContentId = await shared(moduleIds.header, "bench-header-content", { brand: "Bench" });
-  footerContentId = await shared(moduleIds.footer, "bench-footer-content", {
-    copyright: "(c) Bench",
-  });
-});
+    ).templateId;
+    await ok("template_blocks.set", {
+      templateId,
+      blocks: [{ name: "content", displayName: "Content", position: 0 }],
+    });
+    const mod = async (slug: string, html: string, css: string, fields: string[]) =>
+      (
+        await ok<{ moduleId: string }>("modules.create", {
+          slug,
+          displayName: slug,
+          html,
+          css,
+          fields: fields.map((name) => ({ name, kind: "text", label: name })),
+        })
+      ).moduleId;
+    moduleIds.header = await mod(
+      "bench-header",
+      `<header class="bh"><strong>{{brand}}</strong></header>`,
+      ".bh{display:flex;padding:1rem;background:#111;color:#fff}",
+      ["brand"],
+    );
+    moduleIds.hero = await mod(
+      "bench-hero",
+      `<section class="bhe"><img src="{{hero_image}}" alt="{{hero_title}}"><h1>{{hero_title}}</h1><p>{{hero_text}}</p><img src="{{inline_a}}" alt="a"><img src="{{inline_b}}" alt="b"></section>`,
+      ".bhe{padding:4rem 1rem}.bhe h1{font-size:3rem}",
+      ["hero_title", "hero_text", "hero_image", "inline_a", "inline_b"],
+    );
+    moduleIds.body = await mod(
+      "bench-body",
+      `<article class="bb">{{body}}</article>`,
+      ".bb{max-width:70ch;margin:auto;line-height:1.6}",
+      ["body"],
+    );
+    moduleIds.cta = await mod(
+      "bench-cta",
+      `<a class="bc" href="{{cta_href}}">{{cta_label}}</a>`,
+      ".bc{display:inline-block;padding:.75rem 1.5rem;background:#06c;color:#fff}",
+      ["cta_label", "cta_href"],
+    );
+    moduleIds.footer = await mod(
+      "bench-footer",
+      `<footer class="bf">{{copyright}}</footer>`,
+      ".bf{padding:2rem;border-top:1px solid #ddd}",
+      ["copyright"],
+    );
+    const shared = async (moduleId: string, slug: string, values: Record<string, string>) =>
+      (
+        await ok<{ contentInstanceId: string }>("content_instances.create", {
+          moduleId,
+          slug,
+          displayName: slug,
+          purpose: "Site-wide chrome shared by every bench page.",
+          values,
+        })
+      ).contentInstanceId;
+    headerContentId = await shared(moduleIds.header, "bench-header-content", { brand: "Bench" });
+    footerContentId = await shared(moduleIds.footer, "bench-footer-content", {
+      copyright: "(c) Bench",
+    });
+  },
+  30 * 60 * 1000,
+);
 
 afterAll(async () => {
   globalThis.fetch = realFetch;
@@ -410,11 +465,16 @@ describe("#1003 Stage / Publish live scaling", () => {
         for (const label of ["Stage (cold)", "Stage (nothing changed)"]) {
           const t = performance.now();
           const idle = sampleIdleTransactions();
+          const rss = samplePeakRss();
           const staged = await ok<{ runId: string; phases: PhaseTiming[] }>("deploy.trigger", {
             targetName: "staging",
             repoRoot: root,
           });
-          console.info(`[bench] ${label} wall ${Math.round(performance.now() - t)} ms`);
+          const wall = Math.round(performance.now() - t);
+          const peak = await rss.stop();
+          console.info(
+            `[bench] ${label} wall ${wall} ms, peak RSS admin ${peak.adminMb} MB (at start ${peak.adminStartMb} MB), generator ${peak.generatorMb} MB`,
+          );
           reportIdle(label, await idle.stop());
           report(label, n, staged.phases);
           if (label.endsWith("changed)")) {
@@ -428,12 +488,17 @@ describe("#1003 Stage / Publish live scaling", () => {
         }
         const t = performance.now();
         const idle = sampleIdleTransactions();
+        const rss = samplePeakRss();
         const promoted = await publish<{ toRunId: string }>({
           fromTarget: "staging",
           toTarget: "production",
           repoRoot: root,
         });
-        console.info(`[bench] Publish live wall ${Math.round(performance.now() - t)} ms`);
+        const wall = Math.round(performance.now() - t);
+        const peak = await rss.stop();
+        console.info(
+          `[bench] Publish live wall ${wall} ms, peak RSS admin ${peak.adminMb} MB (at start ${peak.adminStartMb} MB), generator ${peak.generatorMb} MB`,
+        );
         reportIdle("Publish live", await idle.stop());
         report("Publish live", n, await runPhases(promoted.toRunId));
       },

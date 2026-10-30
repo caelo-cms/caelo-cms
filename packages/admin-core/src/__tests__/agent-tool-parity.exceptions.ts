@@ -58,6 +58,18 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     by: ["deploy_staging", "stage_changes"],
     note: "pre-build step of deploy.trigger: creates the active theme favicon's 64 px rendition when missing",
   },
+  // #1271 — the steps of media.rebuild_digests (no transaction while the
+  // files are read), and its pre-build backfill run by every Stage.
+  "media.list_digest_targets": {
+    kind: "covered",
+    by: ["rebuild_media_digests", "deploy_staging", "stage_changes"],
+    note: "first step of media.rebuild_digests: the media rows to digest",
+  },
+  "media.store_digests": {
+    kind: "covered",
+    by: ["rebuild_media_digests", "deploy_staging", "stage_changes"],
+    note: "last step of media.rebuild_digests: stores the digests read from the files",
+  },
   // #1211 — deploy.trigger holds no transaction while it builds: its first
   // and last steps are ops of their own, run under the trigger's context.
   "deploy.start_trigger": {

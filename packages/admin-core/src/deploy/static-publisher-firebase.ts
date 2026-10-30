@@ -38,11 +38,9 @@
  */
 
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Readable } from "node:stream";
-import { createGzip } from "node:zlib";
+import { Readable, Transform } from "node:stream";
 import {
   CONTENT_HASHED_PATH_PATTERN,
   HTML_CACHE_CONTROL,
@@ -53,7 +51,15 @@ import {
   SVG_DOCUMENT_CSP,
   SVG_PATH_PATTERN,
 } from "@caelo-cms/shared";
-import type { DeployTarget } from "@caelo-cms/static-generator";
+import {
+  type AssetReference,
+  assetSourcePath,
+  chunkedFileStream,
+  type DeployTarget,
+  digestProfile,
+  hostingGzip,
+} from "@caelo-cms/static-generator";
+import { CPU_PARALLELISM, readBuildFiles, uniqueAssets } from "./build-files.js";
 import { readFirebaseBuiltFile } from "./firebase-channel-file.js";
 import { syncFirebaseRedirects } from "./firebase-redirect-sync.js";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
@@ -104,31 +110,6 @@ export async function googleAuthToken(
     throw new Error("static-publisher-firebase: failed to obtain ADC access token");
   }
   return token.token;
-}
-
-interface WalkedFile {
-  absolutePath: string;
-  relativePath: string;
-}
-
-async function walkBuildDir(buildDir: string): Promise<WalkedFile[]> {
-  const out: WalkedFile[] = [];
-  const walk = async (rel: string): Promise<void> => {
-    const entries = await readdir(join(buildDir, rel), { withFileTypes: true });
-    for (const entry of entries) {
-      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-        await walk(childRel);
-      } else {
-        out.push({
-          absolutePath: join(buildDir, childRel),
-          relativePath: childRel,
-        });
-      }
-    }
-  };
-  await walk("");
-  return out;
 }
 
 /**
@@ -305,8 +286,9 @@ function hasRobotsHeader(config: FirebaseVersionConfig): boolean {
  * Firebase Hosting's populateFiles API keys on this hash.
  */
 async function gzipAndHash(absolutePath: string): Promise<{ body: Buffer; sha256: string }> {
-  const gz = createGzip({ level: 9 });
-  const stream = createReadStream(absolutePath);
+  const gz = hostingGzip();
+  const stream = chunkedFileStream(absolutePath);
+  stream.on("error", (e) => gz.destroy(e));
   stream.pipe(gz);
   const chunks: Buffer[] = [];
   for await (const chunk of gz as unknown as AsyncIterable<Buffer>) {
@@ -324,7 +306,7 @@ async function gzipAndHash(absolutePath: string): Promise<{ body: Buffer; sha256
  */
 async function gzipAndHashBytes(input: Buffer): Promise<{ body: Buffer; sha256: string }> {
   return await new Promise((resolve, reject) => {
-    const gz = createGzip({ level: 9 });
+    const gz = hostingGzip();
     const chunks: Buffer[] = [];
     gz.on("data", (c: Buffer) => chunks.push(c));
     gz.on("end", () => {
@@ -654,12 +636,33 @@ async function releaseAsTarget(args: {
   };
 }
 
+/** Files per `populateFiles` call (the batch size firebase-tools uses). */
+const POPULATE_BATCH = 1000;
+
+/** One file of a version being created: its served path, hash, and where its bytes are. */
+interface VersionFile {
+  readonly path: string;
+  readonly sha256: string;
+  readonly source:
+    | { readonly kind: "built"; readonly absolutePath: string }
+    | { readonly kind: "asset"; readonly asset: AssetReference; readonly absolutePath: string };
+}
+
 /**
  * Create, upload and finalize a Hosting version holding exactly the files
  * of `buildDir`, with the site config for `target`: the redirects table,
  * the `/api/**` rewrite to the gateway, the cache headers and the target's
  * env-level robots header. Shared by Stage (released on a preview channel)
  * and #650's Publish live rebuild (released on the live channel).
+ *
+ * #1271 — memory stays flat whatever the site's size:
+ *   - the built files (pages, bundles, manifests) are gzipped + hashed
+ *     {@link CPU_PARALLELISM} at a time on the runtime's worker threads,
+ *     keeping only `(path, hash)`; a file Hosting asks for is gzipped again
+ *     from disk when it is uploaded;
+ *   - the media and fonts the build references are named by their stored
+ *     gzip hash, never read; Hosting's `populateFiles` answers which it
+ *     lacks, and only those are streamed from the store, gzipped on the way.
  */
 async function createVersionFromBuild(args: {
   site: string;
@@ -670,18 +673,30 @@ async function createVersionFromBuild(args: {
   timer: PhaseTimer;
 }): Promise<{ versionName: string; uploadedCount: number; skippedUnchangedCount: number }> {
   const { site, token, buildDir, target, timer } = args;
-  // 1. Walk + gzip + hash every file in the build dir.
-  const walked = await walkBuildDir(buildDir);
-  const fileEntries = await Promise.all(
-    walked.map(async (f) => {
-      const { body, sha256 } = await gzipAndHash(f.absolutePath);
-      return {
-        relativePath: f.relativePath,
-        gzipped: body,
-        sha256,
-      };
-    }),
-  );
+  const build = await readBuildFiles(buildDir);
+  const profile = await digestProfile();
+  const files: VersionFile[] = [];
+  for (const asset of uniqueAssets(build.references)) {
+    if (asset.digestProfile !== profile) {
+      throw new Error(
+        `static-publisher-firebase: ${asset.path} carries gzip digests of another gzip (${asset.digestProfile}; this Caelo gzips as ${profile}), so Hosting could not match the upload. Stage again: every Stage first digests such media anew (media.rebuild_digests).`,
+      );
+    }
+    files.push({
+      path: asset.path,
+      sha256: asset.gzipSha256,
+      source: { kind: "asset", asset, absolutePath: assetSourcePath(build.references, asset) },
+    });
+  }
+  // 1. Gzip + hash every file the generator wrote, a bounded number at once.
+  await runBatched([...build.built], CPU_PARALLELISM, async (f) => {
+    const { sha256 } = await gzipAndHash(f.absolutePath);
+    files.push({
+      path: f.relativePath,
+      sha256,
+      source: { kind: "built", absolutePath: f.absolutePath },
+    });
+  });
   timer.lap("hash");
 
   // 2. Create a new version with site config — rewrites for the
@@ -717,7 +732,7 @@ async function createVersionFromBuild(args: {
   const redirects = firebaseRedirectsFromFile(
     redirectsFile,
     target.pageUrlStyle ?? "directory",
-    new Set(walked.map((f) => f.relativePath)),
+    build.paths,
   );
   const config = withTargetRobotsHeader(
     {
@@ -741,28 +756,49 @@ async function createVersionFromBuild(args: {
   const versionId = versionName.split("/").pop() ?? "";
   timer.lap("create-version");
 
-  // 3. populateFiles — tell Firebase which files this version has.
-  //    Firebase returns which hashes still need upload.
-  const filesMap: Record<string, string> = {};
-  for (const f of fileEntries) {
+  // 3. populateFiles — tell Firebase which files this version has, in
+  //    batches. Each answer says which of its hashes still need upload.
+  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const required = new Set<string>();
+  let uploadUrl: string | null = null;
+  for (let at = 0; at < files.length; at += POPULATE_BATCH) {
+    const filesMap: Record<string, string> = {};
     // Firebase expects paths to start with `/` (e.g. "/about").
-    filesMap[`/${f.relativePath}`] = f.sha256;
+    for (const f of files.slice(at, at + POPULATE_BATCH)) filesMap[`/${f.path}`] = f.sha256;
+    const populate = await firebaseFetch<PopulateFilesResponse>(
+      `sites/${site}/versions/${versionId}:populateFiles`,
+      { method: "POST", body: JSON.stringify({ files: filesMap }), token },
+    );
+    for (const h of populate.uploadRequiredHashes ?? []) required.add(h);
+    uploadUrl = populate.uploadUrl;
   }
-  const populate = await firebaseFetch<PopulateFilesResponse>(
-    `sites/${site}/versions/${versionId}:populateFiles`,
-    {
-      method: "POST",
-      body: JSON.stringify({ files: filesMap }),
-      token,
-    },
-  );
-  const required = new Set(populate.uploadRequiredHashes ?? []);
   timer.lap("populate");
 
-  // 4. Upload only the required hashes (Firebase already has the rest).
-  const toUpload = fileEntries.filter((f) => required.has(f.sha256));
-  await runBatched(toUpload, PARALLEL_UPLOADS, async (f) => {
-    await uploadGzippedFile(populate.uploadUrl, f.sha256, f.gzipped, token);
+  // 4. Upload only the required hashes (Firebase already has the rest),
+  //    once per hash: identical files share one upload.
+  const toUpload = new Map<string, VersionFile>();
+  for (const f of files) {
+    if (required.has(f.sha256) && !toUpload.has(f.sha256)) toUpload.set(f.sha256, f);
+  }
+  const target_ = uploadUrl;
+  if (toUpload.size > 0 && target_ === null) {
+    throw new Error(
+      "static-publisher-firebase: populateFiles named files to upload but returned no upload URL",
+    );
+  }
+  await runBatched([...toUpload.values()], PARALLEL_UPLOADS, async (f) => {
+    const url = target_ as string;
+    if (f.source.kind === "built") {
+      const { body, sha256 } = await gzipAndHash(f.source.absolutePath);
+      if (sha256 !== f.sha256) {
+        throw new Error(
+          `static-publisher-firebase: ${f.path} changed on disk while it was published (hash ${f.sha256} → ${sha256}). Stage again.`,
+        );
+      }
+      await uploadGzippedFile(url, f.sha256, body, token);
+    } else {
+      await uploadAsset(url, f.source.asset, f.source.absolutePath, token);
+    }
   });
   timer.lap("upload");
 
@@ -775,9 +811,88 @@ async function createVersionFromBuild(args: {
   timer.lap("finalize");
   return {
     versionName,
-    uploadedCount: toUpload.length,
-    skippedUnchangedCount: fileEntries.length - toUpload.length,
+    uploadedCount: toUpload.size,
+    skippedUnchangedCount: files.length - toUpload.size,
   };
+}
+
+/**
+ * Stream one referenced media / font file to Hosting, gzipped on the way,
+ * with the stored gzip length as Content-Length — never buffered whole.
+ * The bytes are hashed as they pass: a file that no longer matches its
+ * stored digest (replaced outside Caelo) fails with the repair, not with
+ * Hosting's bare hash mismatch.
+ */
+async function uploadAsset(
+  uploadUrlBase: string,
+  asset: AssetReference,
+  absolutePath: string,
+  token: string,
+): Promise<void> {
+  const hash = createHash("sha256");
+  let sentBytes = 0;
+  const tap = new Transform({
+    transform(chunk: Buffer, _enc, done) {
+      hash.update(chunk);
+      sentBytes += chunk.byteLength;
+      done(null, chunk);
+    },
+  });
+  const source = chunkedFileStream(absolutePath);
+  const gzipped = source.pipe(hostingGzip()).pipe(tap);
+  let readError: NodeJS.ErrnoException | null = null;
+  source.on("error", (e: NodeJS.ErrnoException) => {
+    readError = e;
+    gzipped.destroy(e);
+  });
+  let res: Response;
+  try {
+    res = await fetch(`${uploadUrlBase}/${asset.gzipSha256}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(asset.gzipSize),
+      },
+      // node:stream/web and the DOM lib name the same stream type differently.
+      body: Readable.toWeb(gzipped) as unknown as BodyInit,
+      duplex: "half",
+    } as RequestInit);
+  } catch (e) {
+    const code = (readError as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT") {
+      throw new Error(
+        `static-publisher-firebase: the stored file of ${asset.path} is missing (${absolutePath}). Find it with list_missing_media and restore it, or remove it from the pages that use it, then Stage again.`,
+      );
+    }
+    // More bytes than the stored length declared: the file changed.
+    if (sentBytes > asset.gzipSize) throw changedOutsideCaelo(asset);
+    throw e;
+  }
+  // Every byte passed the tap once the stream ended (or, with the length
+  // declared up front, once that many bytes went out).
+  const sent = tap.readableEnded || sentBytes === asset.gzipSize;
+  // Hosting refuses a body whose hash is not the one named in the URL; say
+  // why, with the repair, instead of passing on its bare refusal.
+  if (sent && hash.digest("hex") !== asset.gzipSha256) throw changedOutsideCaelo(asset);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(
+      `firebase-hosting upload ${asset.path} (${asset.gzipSha256}) → ${res.status}: ${detail}`,
+    );
+  }
+  if (!sent) {
+    throw new Error(
+      `firebase-hosting upload ${asset.path} (${asset.gzipSha256}): Hosting answered before the whole file was sent. Stage again.`,
+    );
+  }
+}
+
+/** The refusal for a stored file that no longer matches its stored digest. */
+function changedOutsideCaelo(asset: AssetReference): Error {
+  return new Error(
+    `static-publisher-firebase: the stored file of ${asset.path} no longer matches its stored digest (it was changed outside Caelo). Next step: run media.rebuild_digests with scope "all" (AI tool: rebuild_media_digests), then Stage again.`,
+  );
 }
 
 /** A `runid-*` preview channel Stage created, with when Firebase deletes it (null: never). */
@@ -899,82 +1014,93 @@ async function retirePreviewChannel(
 export const firebaseHostingPublisher: StaticPublisher = {
   servesCurrentDir: false,
   async publishStaging({ buildDir, runId, target }) {
-    const timer = new PhaseTimer();
-    const site = siteName();
-    const token = await googleAuthToken();
-    timer.lap("auth");
-    const version = await createVersionFromBuild({ site, token, buildDir, target, timer });
-    const versionName = version.versionName;
+    const timer = PhaseTimer.withMemory();
+    try {
+      const site = siteName();
+      const token = await googleAuthToken();
+      timer.lap("auth");
+      const version = await createVersionFromBuild({ site, token, buildDir, target, timer });
+      const versionName = version.versionName;
 
-    // 6. Create a per-runId preview channel with a 7-day TTL.
-    //    Firebase channel IDs must be lowercase alphanumeric +
-    //    dashes; sanitise the runId UUID (already alphanumeric+dashes).
-    //    #650 — the channel URL is an internal origin: the gateway proxies
-    //    staging.<domain> to it behind the access gate, and it is never
-    //    shown to operators or the AI. Firebase cannot lock a channel
-    //    (preview channels are public by URL), so older channels are
-    //    deleted as soon as a newer Stage succeeds. The 7-day TTL stays
-    //    until the Stage selects the channel as the one staging serves
-    //    (selectStagingPreview refreshes it to 30 days), so a Stage that
-    //    fails after this point leaves nothing public beyond a week.
-    const channelId = channelIdFor(runId);
-    const channel = await firebaseFetch<CreateChannelResponse>(
-      `sites/${site}/channels?channelId=${channelId}`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          ttl: PREVIEW_CHANNEL_TTL,
-          retainedReleaseCount: 1,
-        }),
-        token,
-      },
-    );
-    timer.lap("channel");
+      // 6. Create a per-runId preview channel with a 7-day TTL.
+      //    Firebase channel IDs must be lowercase alphanumeric +
+      //    dashes; sanitise the runId UUID (already alphanumeric+dashes).
+      //    #650 — the channel URL is an internal origin: the gateway proxies
+      //    staging.<domain> to it behind the access gate, and it is never
+      //    shown to operators or the AI. Firebase cannot lock a channel
+      //    (preview channels are public by URL), so older channels are
+      //    deleted as soon as a newer Stage succeeds. The 7-day TTL stays
+      //    until the Stage selects the channel as the one staging serves
+      //    (selectStagingPreview refreshes it to 30 days), so a Stage that
+      //    fails after this point leaves nothing public beyond a week.
+      const channelId = channelIdFor(runId);
+      const channel = await firebaseFetch<CreateChannelResponse>(
+        `sites/${site}/channels?channelId=${channelId}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ttl: PREVIEW_CHANNEL_TTL,
+            retainedReleaseCount: 1,
+          }),
+          token,
+        },
+      );
+      timer.lap("channel");
 
-    // 7. Release the version to the preview channel.
-    await firebaseFetch(`sites/${site}/channels/${channelId}/releases?versionName=${versionName}`, {
-      method: "POST",
-      body: JSON.stringify({}),
-      token,
-    });
-    timer.lap("release");
+      // 7. Release the version to the preview channel.
+      await firebaseFetch(
+        `sites/${site}/channels/${channelId}/releases?versionName=${versionName}`,
+        {
+          method: "POST",
+          body: JSON.stringify({}),
+          token,
+        },
+      );
+      timer.lap("release");
 
-    const summary: PublishSummary = {
-      provider: "gcp-firebase",
-      uploadedCount: version.uploadedCount,
-      skippedUnchangedCount: version.skippedUnchangedCount,
-      location: versionName,
-      previewUrl: channel.url,
-      phases: timer.phases(),
-    };
-    return summary;
+      const summary: PublishSummary = {
+        provider: "gcp-firebase",
+        uploadedCount: version.uploadedCount,
+        skippedUnchangedCount: version.skippedUnchangedCount,
+        location: versionName,
+        previewUrl: channel.url,
+        phases: timer.phases(),
+      };
+      return summary;
+    } finally {
+      timer.close();
+    }
   },
 
   async publishLiveBuild({ buildDir, target, sourceRunId, beforeRelease }) {
-    const timer = new PhaseTimer();
-    const site = siteName();
-    const token = await googleAuthToken();
-    timer.lap("auth");
-    const version = await createVersionFromBuild({ site, token, buildDir, target, timer });
-    // The upload above changes nothing that is served; the release does.
-    await beforeRelease?.();
-    await firebaseFetch(`sites/${site}/releases?versionName=${version.versionName}`, {
-      method: "POST",
-      body: JSON.stringify({}),
-      token,
-    });
-    timer.lap("release");
-    const summary: PromoteSummary = {
-      provider: "gcp-firebase",
-      uploadedCount: version.uploadedCount,
-      skippedUnchangedCount: version.skippedUnchangedCount,
-      location: version.versionName,
-      // The staged run this live build was checked against — the same id a
-      // copy-promote records, so "live matches staging" keeps working.
-      destinationBuildId: sourceRunId,
-      phases: timer.phases(),
-    };
-    return summary;
+    const timer = PhaseTimer.withMemory();
+    try {
+      const site = siteName();
+      const token = await googleAuthToken();
+      timer.lap("auth");
+      const version = await createVersionFromBuild({ site, token, buildDir, target, timer });
+      // The upload above changes nothing that is served; the release does.
+      await beforeRelease?.();
+      await firebaseFetch(`sites/${site}/releases?versionName=${version.versionName}`, {
+        method: "POST",
+        body: JSON.stringify({}),
+        token,
+      });
+      timer.lap("release");
+      const summary: PromoteSummary = {
+        provider: "gcp-firebase",
+        uploadedCount: version.uploadedCount,
+        skippedUnchangedCount: version.skippedUnchangedCount,
+        location: version.versionName,
+        // The staged run this live build was checked against — the same id a
+        // copy-promote records, so "live matches staging" keeps working.
+        destinationBuildId: sourceRunId,
+        phases: timer.phases(),
+      };
+      return summary;
+    } finally {
+      timer.close();
+    }
   },
 
   async selectStagingPreview({ servedRunId, retireUntil }): Promise<StagingPreviewSelection> {
@@ -1175,7 +1301,3 @@ async function assertLiveIs(site: string, token: string, recorded: string | null
   }
   return recorded;
 }
-
-// Suppress unused import warning — Readable is referenced from the type
-// signature of `createReadStream` consumers but not used directly.
-void Readable;

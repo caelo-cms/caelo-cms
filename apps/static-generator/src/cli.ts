@@ -16,12 +16,13 @@
  *
  *   stdin, first line — the config:
  *     { adminDatabaseUrl, publicDatabaseUrl, target, runId, repoRoot, publishAt,
- *       changedPageIds?, siteBaseUrlOverride?, syncCurrent?, retainBuilds? }
+ *       changedPageIds?, siteBaseUrlOverride?, syncCurrent?, retainBuilds?,
+ *       mediaDelivery? }
  *   stdout — progress and the outcome:
  *     {kind:"progress", pagesDone, pagesTotal}
  *     {kind:"serving"}  the build is being mirrored into current/: a
  *                       SIGTERM from now on is ignored (serving-guard.ts)
- *     {kind:"done", pageCount, fileCount, durationMs, buildDir}
+ *     {kind:"done", pageCount, fileCount, durationMs, buildDir, peakRssMb, …}
  *     {kind:"error", message}
  *   stdout → stdin — #605 plugin calls answered by the admin:
  *     {kind:"plugin-call", id, method, args}
@@ -45,6 +46,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { type DeployTarget, generateSite } from "./generate.js";
+import type { MediaDelivery } from "./media-pass.js";
 import { installServingGuard } from "./serving-guard.js";
 
 interface CliInput {
@@ -67,6 +69,8 @@ interface CliInput {
   syncCurrent?: boolean;
   /** #1211 — see generateSite's `retainBuilds`. */
   retainBuilds?: number;
+  /** #1271 — see generateSite's `mediaDelivery`. */
+  mediaDelivery?: MediaDelivery;
 }
 
 interface PluginResult {
@@ -155,6 +159,7 @@ async function main(): Promise<void> {
           siteBaseUrlOverride: input.siteBaseUrlOverride,
           syncCurrent: input.syncCurrent,
           retainBuilds: input.retainBuilds,
+          mediaDelivery: input.mediaDelivery,
           onProgress: (p) => emit({ kind: "progress", ...p }),
           onServing: () => {
             servingGuard.markServing();

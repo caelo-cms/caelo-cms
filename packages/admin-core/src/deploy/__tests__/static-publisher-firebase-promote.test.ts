@@ -15,7 +15,7 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -23,6 +23,10 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
 // Snapshot the real module so afterAll can undo the process-global
 // mock.module below (issue #305 — same pattern as the GCS test).
 import * as realGoogleAuth from "google-auth-library";
+import {
+  storedMediaReference,
+  writeAssetReferences,
+} from "../../__tests__/fixtures/asset-references.js";
 import {
   FakeChannelLifetimes,
   FIREBASE_EXPIRE_TIME_CLEAR_REFUSED,
@@ -125,7 +129,8 @@ class FakeFirebase {
     }
     if (url.startsWith(UPLOAD)) {
       const sha = url.split("/").pop() ?? "";
-      this.blobs.set(sha, Buffer.from(init?.body as Uint8Array));
+      // A media upload is streamed (#1271): read it as Hosting does.
+      this.blobs.set(sha, Buffer.from(await new Response(init?.body ?? null).arrayBuffer()));
       return json({});
     }
     if (!url.startsWith(API)) throw new Error(`unexpected fetch ${url}`);
@@ -146,8 +151,10 @@ class FakeFirebase {
       const m = populate;
       const v = this.versions.get(m[1]!);
       if (!v) throw new Error("populate on unknown version");
-      v.files = parsed.files;
-      const required = [...new Set(Object.values(v.files))].filter((h) => !this.blobs.has(h));
+      // Calls add up (the publisher populates in batches, as firebase-tools does).
+      v.files = { ...v.files, ...parsed.files };
+      const batch = Object.values(parsed.files as Record<string, string>);
+      const required = [...new Set(batch)].filter((h) => !this.blobs.has(h));
       return json({ uploadRequiredHashes: required, uploadUrl: `${UPLOAD}${m[1]}` });
     }
     if (files) {
@@ -289,6 +296,7 @@ beforeEach(async () => {
   await writeFile(join(buildDir, "sitemap.xml"), "<urlset></urlset>", "utf8");
   await writeFile(join(buildDir, "robots.txt"), "User-agent: *\nDisallow: /\n", "utf8");
   await writeFile(join(buildDir, "_redirects"), "# generated\n/de / 301\n", "utf8");
+  await writeAssetReferences(buildDir);
   await writeFile(
     join(buildDir, "routing-manifest.json"),
     JSON.stringify({ env: "staging", envNoindexInHtml: false }),
@@ -831,5 +839,84 @@ describe("firebaseHostingPublisher — plugin-data release (#1155)", () => {
     await expect(
       publisher.readLiveFiles({ target: PRODUCTION, live, paths: ["about/index.html"] }),
     ).rejects.toThrow(/HTTP 503/);
+  });
+});
+
+describe("firebaseHostingPublisher — referenced media (#1271)", () => {
+  const LOGO = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
+  const PATH = "_assets/logo.0123456789abcdef.png";
+
+  async function withLogo(): Promise<{ file: string; gzipSha256: string }> {
+    const mediaRoot = await mkdtemp(join(tmpdir(), "caelo-fb-media-"));
+    const ref = await storedMediaReference({
+      mediaRoot,
+      storageKey: "abc/orig.png",
+      path: PATH,
+      bytes: LOGO,
+    });
+    await writeAssetReferences(buildDir, { mediaRoot, assets: [ref] });
+    return { file: join(mediaRoot, "abc", "orig.png"), gzipSha256: ref.gzipSha256 };
+  }
+
+  it("names a referenced file by its stored gzip hash and streams it only when Hosting lacks it", async () => {
+    const { gzipSha256 } = await withLogo();
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    const summary = await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "run-media",
+      target: STAGING,
+    });
+    const version = fake.versions.get("v1");
+    expect(version?.files[`/${PATH}`]).toBe(gzipSha256);
+    // The build's own description is never part of the site.
+    expect(Object.keys(version?.files ?? {})).not.toContain("/_caelo-asset-references.json");
+    expect(new Uint8Array(gunzipSync(fake.blobs.get(gzipSha256) as Buffer))).toEqual(LOGO);
+    expect(summary.uploadedCount).toBeGreaterThan(0);
+  });
+
+  it("reads no byte of a referenced file Hosting already has", async () => {
+    const { file, gzipSha256 } = await withLogo();
+    fake.blobs.set(gzipSha256, Buffer.from("already there"));
+    // Unreadable: a publisher that opened it would fail.
+    await chmod(file, 0o000);
+    try {
+      const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+      await firebaseHostingPublisher.publishStaging({
+        buildDir,
+        runId: "run-have",
+        target: STAGING,
+      });
+    } finally {
+      await chmod(file, 0o644);
+    }
+    expect(fake.versions.get("v1")?.files[`/${PATH}`]).toBe(gzipSha256);
+    expect(fake.blobs.get(gzipSha256)?.toString()).toBe("already there");
+  });
+
+  it("refuses a file whose bytes no longer match its stored digest, naming the repair", async () => {
+    const { file } = await withLogo();
+    await writeFile(file, new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]));
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await expect(
+      firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-changed", target: STAGING }),
+    ).rejects.toThrow("rebuild_media_digests");
+  });
+
+  it("refuses digests of another gzip instead of uploading what Hosting would reject", async () => {
+    const mediaRoot = await mkdtemp(join(tmpdir(), "caelo-fb-media-"));
+    const ref = await storedMediaReference({
+      mediaRoot,
+      storageKey: "abc/orig.png",
+      path: PATH,
+      bytes: LOGO,
+    });
+    await writeAssetReferences(buildDir, {
+      mediaRoot,
+      assets: [{ ...ref, digestProfile: "gzip9-from-another-zlib" }],
+    });
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await expect(
+      firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-profile", target: STAGING }),
+    ).rejects.toThrow("digests of another gzip");
   });
 });

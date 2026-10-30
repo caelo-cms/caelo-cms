@@ -38,6 +38,17 @@ export function retainedBuildsFor(publisher: StaticPublisher): number | undefine
 }
 
 /**
+ * #1271 — how a build for `publisher` carries its media and fonts: linked
+ * into the build directory when the serving layer reads that directory
+ * (self-hosted), referenced by stored digest otherwise — the uploading
+ * publisher then delivers them from their stores, and not one media byte
+ * lands in the container's `/tmp`.
+ */
+export function mediaDeliveryFor(publisher: StaticPublisher): "link" | "reference" {
+  return publisher.servesCurrentDir ? "link" : "reference";
+}
+
+/**
  * Delete `buildDir` when `publisher` uploads builds; leave it otherwise.
  * A failure is logged, never thrown: the run's outcome does not depend on
  * a temp directory, and the container's `/tmp` dies with the instance.
