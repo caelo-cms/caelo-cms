@@ -168,6 +168,27 @@ describe("pages.build_page — every pre-write problem in one result", () => {
     expect(pages.length).toBe(0);
   });
 
+  it("an existing instance bound through a {$ref} to a placed module passes the pre-write check", async () => {
+    const slug = `i1277-ref-${TS}`;
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { slug, title: "I1277 ref", templateId },
+      modules: [
+        {
+          blockName: "content",
+          moduleId,
+          ref: "stat",
+          content: { source: "inline", values: { title: "t", count: 1 } },
+        },
+        {
+          blockName: "content",
+          moduleId: { $ref: "stat" },
+          content: { source: "existing", contentInstanceId: instanceIds[0], syncMode: "synced" },
+        },
+      ],
+    });
+    expect(r.ok ? null : messageOf(r.error)).toBeNull();
+  });
+
   it("collects every bad content field across entries after the writes started", async () => {
     const slug = `i1277-fields-${TS}`;
     const r = await execute(registry, adapter, systemCtx, "pages.build_page", {

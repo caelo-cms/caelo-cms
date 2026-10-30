@@ -99,7 +99,8 @@ export function defineBulkOp<I, O>(
  *
  * @returns every item's value, or one HandlerError naming all failures
  *   (`refusal` when an item's guard refused, `internal` when an item hit
- *   a defect) plus how many items succeeded (and so wrote).
+ *   a defect) plus how many items may have written (succeeded, or aborted
+ *   after a write) — the caller throws when that is not 0.
  */
 export async function runEveryItem<T, R>(
   operation: string,
@@ -112,6 +113,7 @@ export async function runEveryItem<T, R>(
   const failedIndices = new Set<number>();
   let refusal = false;
   let internal = false;
+  let aborted = 0;
   for (let i = 0; i < items.length; i += 1) {
     let r: Result<R, QueryError>;
     try {
@@ -122,8 +124,12 @@ export async function runEveryItem<T, R>(
         if (failureKindOf(error) === "internal") internal = true;
         failures.push(...itemFailures(arrayKey, i, error));
         failedIndices.add(i);
+        aborted += 1;
         break;
       }
+      // An abort is thrown once something was written (the op contract,
+      // errors.ts): this item may have written, so the batch must roll back.
+      aborted += 1;
       r = { ok: false, error: thrown.queryError };
     }
     if (r.ok) {
@@ -138,9 +144,10 @@ export async function runEveryItem<T, R>(
   if (failures.length === 0) return { ok: true, results };
   return {
     ok: false,
-    // Items that succeeded wrote; a failed item is assumed to have failed
-    // before its first write (the singular op contract, errors.ts).
-    writtenItems: results.length,
+    // Items that succeeded wrote, and so may an item that aborted after its
+    // first write (it threw instead of returning); an item that RETURNED
+    // its error failed before its first write (the op contract, errors.ts).
+    writtenItems: results.length + aborted,
     error: handlerErrorFromDetails(operation, failures, {
       lead: `${failedIndices.size} of ${items.length} ${arrayKey} failed; nothing was written.`,
       refusal,

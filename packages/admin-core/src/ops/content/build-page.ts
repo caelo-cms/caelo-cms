@@ -489,12 +489,32 @@ export const buildPageOp = defineOperation({
               next: "Pick one from list_content_instances, or pass content.source='inline' with values instead.",
             },
           );
-        } else if (entry.moduleId === undefined || typeof entry.moduleId !== "string") {
+        } else if (entry.moduleId === undefined) {
           problem(
             [...at, "content", "contentInstanceId"],
-            `content_instance ${content.contentInstanceId} belongs to module "${ci.module_slug}", not to the module this entry places`,
+            `content_instance ${content.contentInstanceId} belongs to module "${ci.module_slug}", not to the module this entry mints`,
             { next: "Bind it with that module's id as moduleId, or pass content.source='inline'." },
           );
+        } else if (typeof entry.moduleId !== "string") {
+          // {"$ref"}: the module of the entry that carries that handle. An
+          // existing module placed there owns instances; one minted in this
+          // call has none yet.
+          const handle = entry.moduleId.$ref;
+          const target = input.modules.find((m) => m.ref === handle);
+          const targetId = typeof target?.moduleId === "string" ? target.moduleId : undefined;
+          if (target && targetId === undefined) {
+            problem(
+              [...at, "content", "contentInstanceId"],
+              `the module "${handle}" is minted in this call, so it has no content instances yet — content_instance ${content.contentInstanceId} belongs to module "${ci.module_slug}"`,
+              { next: "Pass content.source='inline' with values for this placement." },
+            );
+          } else if (targetId !== undefined && ci.module_id !== targetId) {
+            problem(
+              [...at, "content", "contentInstanceId"],
+              `content_instance ${content.contentInstanceId} belongs to module "${ci.module_slug}", not to the module "${handle}" places`,
+              { next: "Bind a content_instance of the same module (list_content_instances)." },
+            );
+          }
         } else if (placed && ci.module_id !== placed.id) {
           problem(
             [...at, "content", "contentInstanceId"],

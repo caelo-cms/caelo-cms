@@ -25,6 +25,10 @@ import {
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { toolNamesIn } from "../_list-tool-kit.js";
+import {
+  UPSERT_LIST_TYPES_JSON_SCHEMA,
+  UPSERT_PAGE_TYPES_JSON_SCHEMA,
+} from "../_list-tool-schemas.js";
 import { MODULE_FIELDS_JSON_SCHEMA } from "../_module-fields-schema.js";
 import { buildPageTool } from "../build-page.js";
 import { updatePagesManyTool } from "../bulk-pages-modules.js";
@@ -131,6 +135,13 @@ describe("list tools (epic #1107)", () => {
   // #1237: the AI named a children loop `items` and was refused. #1277:
   // a rare, server-detected mistake — the refusal lists every reserved
   // name, so the description does not carry them.
+  it("distinctFrom is advertised on page types, where the duplicate guard runs, not on list types", () => {
+    const pageItem = UPSERT_PAGE_TYPES_JSON_SCHEMA.properties.pageTypes.items.properties;
+    const listItem = UPSERT_LIST_TYPES_JSON_SCHEMA.properties.listTypes.items.properties;
+    expect("distinctFrom" in pageItem).toBe(true);
+    expect("distinctFrom" in listItem).toBe(false);
+  });
+
   it("a reserved loop or field name is refused with every reserved name", () => {
     const issues = checkListTypeDef({
       slug: "t1237",

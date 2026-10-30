@@ -140,7 +140,7 @@ test.beforeAll(() => {
       await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${out.templateId}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL)\`;
     });
     await op("page_types.upsert_many", { pageTypes: [{
-      slug: E.PAGE_TYPE, name: "E2E article", purpose: "Articles of the lists spec.",
+      slug: E.PAGE_TYPE, name: "E2E article", purpose: "Articles of the lists spec.", collection: true,
       templates: [out.templateId], defaultTemplate: out.templateId,
       properties: [{ name: "author", label: "Author", type: "text" }],
       vocabularies: [{ list: out.topicsId, cardinality: "many" }],

@@ -38,6 +38,7 @@ test("compose a page from a module and preview it", async ({ page, request }) =>
   await page.getByLabel("Type slug").fill(TYPE_SLUG);
   await page.getByLabel("Type name").fill("E2E Type");
   await page.getByLabel("Purpose").fill("Pages of the compose e2e spec");
+  await page.getByLabel("Kind of pages").selectOption("false");
   await page
     .getByLabel(/HTML/)
     .fill(

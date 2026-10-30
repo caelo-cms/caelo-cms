@@ -135,12 +135,6 @@ export const UPSERT_LIST_TYPES_JSON_SCHEMA = {
           },
           max_depth: { type: "integer" },
           expectedVersion: { type: "integer" },
-          distinctFrom: {
-            type: "array",
-            items: { type: "string" },
-            description:
-              "New type only: existing slugs it is deliberately NOT (refused as a duplicate otherwise, e.g. `blogs` next to `blog`).",
-          },
         },
       },
     },
@@ -187,6 +181,12 @@ export const UPSERT_PAGE_TYPES_JSON_SCHEMA = {
             },
           },
           expectedVersion: { type: "integer" },
+          distinctFrom: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "New type only: existing slugs it is deliberately NOT (refused as a duplicate otherwise, e.g. `blogs` next to `blog`).",
+          },
         },
       },
     },
