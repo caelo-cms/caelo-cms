@@ -1074,7 +1074,9 @@ describe("gcsStaticPublisher — a build streamed into the staging prefix (#1271
     expect(summary.uploadedCount).toBe(2);
     const page = stagingBucket.files.get("run-stream/en/about");
     expect(page?.body?.toString()).toBe("<html>about</html>");
-    expect((page?.metadata as { contentType?: string }).contentType).toContain("text/html");
+    expect((page?.metadata as { contentType?: string } | undefined)?.contentType).toContain(
+      "text/html",
+    );
     const list = JSON.parse(
       stagingBucket.files.get("_build-files/run-stream.json")?.body?.toString() ?? "{}",
     ) as { files?: string[] };

@@ -14,12 +14,12 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { unlink } from "node:fs/promises";
+import { link, readFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { type ExecutionContext, FAVICON_VARIANT } from "@caelo-cms/shared";
-import { digestFile } from "@caelo-cms/static-generator";
+import { digestBytes, digestFile } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import sharp from "sharp";
 import { runMediaPipeline } from "../media/pipeline.js";
@@ -236,5 +236,57 @@ describe("media.rebuild_digests (backfill and rebuild)", () => {
     ]);
     const after = (await rows([origOnlyId])).find((x) => x.variant === first?.variant);
     expect(after?.content_sha256).toBeNull();
+  });
+});
+
+describe("stored files and their digests stay one (#1271)", () => {
+  it("a write replaces the stored file with a new one: a build's hard link keeps its bytes", async () => {
+    const storage = new LocalVolumeAdapter(storageRoot);
+    await storage.put("inode/test.bin", new Uint8Array([1, 2, 3]), "application/octet-stream");
+    const linked = join(storageRoot, "linked.bin");
+    await link(join(storageRoot, "inode/test.bin"), linked);
+    await storage.put("inode/test.bin", new Uint8Array([9, 9]), "application/octet-stream");
+    expect(new Uint8Array(await readFile(linked))).toEqual(new Uint8Array([1, 2, 3]));
+    expect(new Uint8Array(await storage.get("inode/test.bin"))).toEqual(new Uint8Array([9, 9]));
+  });
+
+  it("a re-upload that rewrote the stored variants refreshes their digests", async () => {
+    const [first] = await rows([assetId]);
+    await asSystem(
+      (tx) => tx`
+        UPDATE media_variants SET content_sha256 = ${"e".repeat(64)}
+        WHERE asset_id = ${assetId}::uuid AND variant = ${first?.variant as string}`,
+    );
+    const sha = (
+      (await asSystem((tx) => tx`SELECT sha256 FROM media_assets WHERE id = ${assetId}::uuid`)) as {
+        sha256: string;
+      }[]
+    )[0]?.sha256 as string;
+    const file = join(storageRoot, first?.storage_key as string);
+    const bytes = new Uint8Array(await readFile(file));
+    const digest = await digestBytes(bytes);
+    const r = await execute(registry, adapter, SYSTEM, "media.upload", {
+      sha256: sha,
+      originalName: "again.png",
+      mime: "image/png",
+      sizeBytes: bytes.byteLength,
+      width: null,
+      height: null,
+      alt: "",
+      storageKey: first?.storage_key as string,
+      variants: [
+        {
+          variant: first?.variant as string,
+          format: "png",
+          width: null,
+          height: null,
+          sizeBytes: bytes.byteLength,
+          storageKey: first?.storage_key as string,
+          digest,
+        },
+      ],
+    });
+    expect(r.ok && (r.value as { deduped: boolean }).deduped).toBe(true);
+    await expectConsistent([assetId]);
   });
 });
