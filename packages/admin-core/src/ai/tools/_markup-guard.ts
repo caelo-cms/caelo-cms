@@ -20,6 +20,9 @@
  * - Either write (epic #1107): does it leave two modules keeping the same
  *   links as their own lists (a header and a footer with one menu)? Then
  *   keep them in ONE shared list (_shared-list-guard.ts).
+ * - A field-value write (#1256): do the written links cover most pages of
+ *   one page type (a guides hub as cards)? Then it is a page query, not
+ *   cards (_page-listing-guard.ts).
  *
  * Exact structural matches only for field values: near matches are the
  * quality check's job (it sees the whole staged build); here a hint has
@@ -41,6 +44,7 @@ import {
   stripMustache,
   templateShape,
 } from "@caelo-cms/shared";
+import { type ListingGroup, pageListingSuffix } from "./_page-listing-guard.js";
 import { pluginWriteHintsSuffix } from "./_plugin-write-hints.js";
 import {
   hasRepeatCandidates,
@@ -366,15 +370,18 @@ export async function repeatedValueSuffix(
 
 /**
  * Wrap a field-value-writing tool so a successful write carries the field
- * markup hints, (with `scope`) the repeated-value hint, and the active
- * plugins' write hints (./_plugin-write-hints.ts). `pick` names
- * the value objects the input writes; `scope` names the modules /
- * instances / placements it writes to.
+ * markup hints, (with `scope`) the repeated-value hint, the page-listing
+ * hint, and the active plugins' write hints (./_plugin-write-hints.ts).
+ * `pick` names the value objects the input writes; `scope` names the
+ * modules / instances / placements it writes to; `listing` groups the
+ * values that belong to one page (default: each value object on its own —
+ * one placement), so cards written in one call are judged together.
  */
 export function withFieldMarkupGuard<T>(
   tool: ToolDefinitionWithHandler<T>,
   pick: (input: T) => readonly Readonly<Record<string, unknown>>[],
   scope?: (input: T) => RepeatScope,
+  listing?: (input: T) => readonly ListingGroup[],
 ): ToolDefinitionWithHandler<T> {
   return {
     ...tool,
@@ -385,6 +392,11 @@ export function withFieldMarkupGuard<T>(
       const suffix =
         (await fieldMarkupSuffix(ctx, toolCtx, written)) +
         (scope ? await repeatedValueSuffix(ctx, toolCtx, written, scope(input)) : "") +
+        (await pageListingSuffix(
+          ctx,
+          toolCtx,
+          listing ? listing(input) : written.map((v) => [v]),
+        )) +
         (await pluginWriteHintsSuffix(
           ctx,
           written.map((values) => ({ kind: "values" as const, moduleId: null, values })),

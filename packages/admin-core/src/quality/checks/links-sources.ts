@@ -17,7 +17,7 @@ import { describeError } from "../../ai/tools/_describe-error.js";
 import type { LinkSources, ReportedDraftLink, ReportedDraftLinkOrigin } from "./links.js";
 import type { RedirectRow } from "./links-analysis.js";
 import type { ReferenceCheckIssue, ReferenceSources } from "./references.js";
-import { structureSourcesFromOps } from "./structure-sources.js";
+import { readSiteUrls, structureSourcesFromOps } from "./structure-sources.js";
 
 /** Rows per `redirects.list` page (the op's maximum). */
 const REDIRECT_PAGE = 1000;
@@ -104,17 +104,7 @@ export function linkSourcesFromOps(
           : [];
       });
     },
-    async siteUrls() {
-      const seo = (await run("site_defaults.get_seo", {})) as { siteBaseUrl: string | null };
-      const domains = (await run("domains.list", {})) as {
-        domains: { hostname: string; kind: "admin" | "public" }[];
-      };
-      return [
-        ...(seo.siteBaseUrl ? [seo.siteBaseUrl] : []),
-        // The admin domain is not the site: a link there is not a page of it.
-        ...domains.domains.filter((d) => d.kind === "public").map((d) => d.hostname),
-      ];
-    },
+    siteUrls: () => readSiteUrls((op, input) => run(op, input)),
   };
 }
 

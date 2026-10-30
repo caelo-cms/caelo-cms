@@ -681,7 +681,10 @@ link to a page the import run will still build literal and records it
 against the list (`import_run_links`, entity kind `list`);
 `imports.resolve_links` rewrites the list once the page exists. The
 structure check reports two modules keeping the same links as their own
-copies (`structure/duplicate-navigation`, see `docs/quality-checks.md`). All writes are routine (no §11.A gate).
+copies (`structure/duplicate-navigation`, see `docs/quality-checks.md`), and
+an overview of pages kept as hand-written cards or links instead of a source
+binding (`structure/manual-page-listing`, #1256): links to at least half of a
+page type's published pages are a page query, never cards. All writes are routine (no §11.A gate).
 Writing list or page types needs `content.structure`, granted by default
 to every role that holds `content.write`.
 

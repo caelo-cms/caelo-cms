@@ -113,6 +113,33 @@ describe("templates and free regions", () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 
+  it("stripMustache markSections keeps sections between elements as markers (#1256)", () => {
+    const t =
+      '<ul class="x {{#on}}on{{/on}}">{{#links}}<li><a href="{{link}}">{{label}}</a></li>{{/links}}{{^links}}<p>none</p>{{/links}}</ul>';
+    expect(stripMustache(t, { markSections: true })).toBe(
+      '<ul class="x "><caelo-section class="s:links"><li><a href="\u001f"><caelo-partial class="v:label"></caelo-partial></a></li></caelo-section><caelo-section class="i:links"><p>none</p></caelo-section></ul>',
+    );
+    // Default output is unchanged.
+    expect(stripMustache(t)).toBe('<ul class="x "><li><a href=""></a></li><p>none</p></ul>');
+    expect(
+      stripMustache("<ul>{{ #links }}<li></li>{{ /links }}</ul>", { markSections: true }),
+    ).toBe('<ul><caelo-section class="s:links"><li></li></caelo-section></ul>');
+    expect(
+      stripMustache('<a class="card card--{{type}}" href="{{link}}">{{title}}</a>', {
+        markSections: true,
+      }),
+    ).toBe(
+      '<a class="card card--\u001f" href="\u001f"><caelo-partial class="v:title"></caelo-partial></a>',
+    );
+    expect(
+      stripMustache("<div>{{#g}}{{> props.teaser }}{{/g}}</div>", { markSections: true }),
+    ).toBe(
+      '<div><caelo-section class="s:g"><caelo-partial class="p:props.teaser"></caelo-partial></caelo-section></div>',
+    );
+    stripMustache(`{{#${" ".repeat(50_000)}`, { markSections: true });
+    stripMustache(`<a ${"{{".repeat(50_000)}`, { markSections: true });
+  });
+
   it("stripMustache keeps the markup a template renders", () => {
     expect(stripMustache("<p>{{a}}{{{b}}}</p>{{#s}}<i></i>{{/s}}{{>n}}")).toBe("<p></p><i></i>");
   });

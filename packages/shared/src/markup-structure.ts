@@ -128,7 +128,35 @@ export interface StripMustacheOptions {
    * such a section is dropped, leaving the classes it ALWAYS renders.
    */
   readonly keepOptionalAttributeText?: boolean;
+  /**
+   * Issue #1256 — keep every section between elements as a marker element
+   * instead of dropping its tags: `{{#f}}…{{/f}}` becomes
+   * `<caelo-section class="s:f">…</caelo-section>`, an inverted
+   * `{{^f}}` the class `i:f`. The structure check reads from them which
+   * links a template renders per list entry. Ignored with
+   * `keepOptionalAttributeText` (in-tag sections must be dropped first).
+   */
+  readonly markSections?: boolean;
 }
+
+/** The marker element {@link stripMustache} `markSections` emits. */
+export const SECTION_MARKER_TAG = "caelo-section";
+
+/**
+ * The empty element `markSections` leaves where a placeholder between
+ * elements renders: a partial's nested module (`{{>teaser}}` →
+ * `<caelo-partial class="p:teaser">`) or a value that may hold markup
+ * (`{{body}}` → `class="v:body"`), so a reader knows which section the
+ * rendered content sits in.
+ */
+export const PARTIAL_MARKER_TAG = "caelo-partial";
+
+/**
+ * What a placeholder inside a tag becomes with `markSections`
+ * (`class="card card--{{type}}"` → `card--\u001f`): a class token holding
+ * it matches any rendered token with the same text around it.
+ */
+export const PLACEHOLDER_MARK = "\u001f";
 
 /**
  * Remove Mustache tags (`{{x}}`, `{{{x}}}`, `{{#s}}`, `{{/s}}`, `{{>p}}`)
@@ -146,7 +174,74 @@ export interface StripMustacheOptions {
  */
 export function stripMustache(template: string, opts: StripMustacheOptions = {}): string {
   const base = opts.keepOptionalAttributeText ? template : dropInTagSections(template);
-  return stripDelimited(stripDelimited(base, 3), 2);
+  const marked =
+    opts.markSections && !opts.keepOptionalAttributeText
+      ? markSections(markTagPlaceholders(base))
+      : base;
+  return stripDelimited(stripDelimited(marked, 3), 2);
+}
+
+/**
+ * Replace every placeholder inside a tag (`{{x}}`, `{{{x}}}`) with
+ * {@link PLACEHOLDER_MARK}. One linear scan, tags tracked as in
+ * {@link dropInTagSections}; placeholders between elements are left for
+ * the strip.
+ */
+function markTagPlaceholders(text: string): string {
+  let out = "";
+  let i = 0;
+  let inTag = false;
+  let quote: string | null = null;
+  while (i < text.length) {
+    if (text.startsWith("{{", i)) {
+      const end = text.indexOf("}}", i + 2);
+      if (end < 0) break;
+      const close = text.startsWith("}}}", end) ? end + 3 : end + 2;
+      out += inTag ? PLACEHOLDER_MARK : text.slice(i, close);
+      i = close;
+      continue;
+    }
+    const ch = text[i] as string;
+    if (inTag) {
+      if (quote !== null) {
+        if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === ">") {
+        inTag = false;
+      }
+    } else if (ch === "<" && /[a-zA-Z]/.test(text[i + 1] ?? "")) {
+      inTag = true;
+      quote = null;
+    }
+    out += ch;
+    i++;
+  }
+  return out + text.slice(i);
+}
+
+/**
+ * Turn the section tags left after {@link dropInTagSections} (all between
+ * elements) into marker elements, and every partial and value placeholder
+ * into an empty {@link PARTIAL_MARKER_TAG}. Whitespace around the sigil and the name
+ * is allowed, as the template engine allows it (`{{ #guides }}`). `[^{}]*`
+ * before the closer keeps the match linear.
+ */
+function markSections(text: string): string {
+  return text.replace(/\{\{([^{}]*)\}\}/g, (tag: string, raw: string) => {
+    const body = raw.trim();
+    const sigil = body[0];
+    const name = body.slice(1).replace(/[\s"<>]/g, "");
+    if (sigil === ">") return `<${PARTIAL_MARKER_TAG} class="p:${name}"></${PARTIAL_MARKER_TAG}>`;
+    if (sigil !== "#" && sigil !== "^" && sigil !== "/") {
+      const value = body.replace(/[\s"<>{}]/g, "");
+      return value === ""
+        ? tag
+        : `<${PARTIAL_MARKER_TAG} class="v:${value}"></${PARTIAL_MARKER_TAG}>`;
+    }
+    if (sigil === "/") return `</${SECTION_MARKER_TAG}>`;
+    return `<${SECTION_MARKER_TAG} class="${sigil === "#" ? "s" : "i"}:${name}">`;
+  });
 }
 
 /**

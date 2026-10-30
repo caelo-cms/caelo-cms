@@ -18,6 +18,12 @@
  * output, not free markup: the same FAQ entry module on several pages
  * keeps the gate open, because the static build stamps each nested root
  * with its own module id.
+ *
+ * #1256 — a guides hub kept as a `module-list` of card modules (each card
+ * a `url` field) is `structure/manual-page-listing`: an error naming the
+ * guide it misses, read through the real sources (pages, page types, the
+ * default page type); the same hub as a list field bound to a page query
+ * is clean.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -99,6 +105,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM modules WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM templates WHERE slug LIKE ${`${PFX}%`}`;
+    await tx`DELETE FROM page_types WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM user_roles WHERE user_id = ${OWNER_ID}::uuid`;
     await tx`DELETE FROM users WHERE id = ${OWNER_ID}::uuid`;
   });
@@ -423,5 +430,124 @@ describe("the core structure check (#820)", () => {
     // the static build (4 entries x 3 pages).
     const tagged = `<details class="faq-item" data-caelo-module-id="${nested.entryModuleId}">`;
     expect((await builtHtml(runId)).split(tagged).length - 1).toBe(12);
+  });
+
+  it("a hub of hand-kept guide cards is a manual page listing; a page query is clean (#1256)", async () => {
+    const guideType = `${PFX}guide`;
+    // The hubs are ordinary pages: the site's default page type (exempt).
+    const plain = (
+      await op<{ defaults: { defaultPageTypeSlug: string } }>(HUMAN, "site_defaults.get", {})
+    ).defaults.defaultPageTypeSlug;
+    await op(HUMAN, "page_types.upsert_many", {
+      pageTypes: [
+        {
+          slug: guideType,
+          name: "Guide",
+          purpose: "How-to guides, listed on the guides hub.",
+          templates: [templateId],
+          defaultTemplate: templateId,
+        },
+      ],
+    });
+    const guides: string[] = [];
+    for (const i of [0, 1, 2, 3]) {
+      const built = await op<{ pageId: string }>(HUMAN, "pages.build_page", {
+        page: { slug: `${PFX}guide-${i}`, title: `Guide ${i}`, templateId, pageType: guideType },
+        modules: [],
+      });
+      await op(HUMAN, "pages.update", { pageId: built.pageId, status: "published" });
+      await op(HUMAN, "pages_seo.set", { pageId: built.pageId, metaDescription: `Guide ${i}.` });
+      guides.push(built.pageId);
+    }
+    const cards = [0, 1, 2].map((i) => ({
+      ref: `card${i}`,
+      ...(i === 0
+        ? {
+            displayName: `${PFX}guide-card`,
+            description: "One guide as a card: title and a link to the guide.",
+            kind: "content",
+            html: '<article class="guide-card"><h3 class="gc-title">{{title}}</h3><a class="gc-more" href="{{href}}">Read</a></article>',
+            fields: [
+              { name: "title", kind: "text", label: "Title" },
+              { name: "href", kind: "url", label: "Link" },
+            ],
+          }
+        : { moduleId: { $ref: "card0" } }),
+      content: { source: "inline", values: { title: `Guide ${i}`, href: `/${PFX}guide-${i}` } },
+    }));
+    const hub = await op<{ pageId: string; placements: { moduleId: string }[] }>(
+      HUMAN,
+      "pages.build_page",
+      {
+        page: { slug: `${PFX}guides`, title: "Guides", templateId, pageType: plain },
+        modules: [
+          ...cards,
+          {
+            blockName: "content",
+            displayName: `${PFX}card-grid`,
+            description: "A grid of cards.",
+            kind: "content",
+            html: '<section class="card-grid"><div class="cg-cards">{{#cards}}{{/cards}}</div></section>',
+            fields: [{ name: "cards", kind: "module-list", label: "Cards" }],
+            content: {
+              source: "inline",
+              values: { cards: [{ $ref: "card0" }, { $ref: "card1" }, { $ref: "card2" }] },
+            },
+          },
+        ],
+      },
+    );
+    await op(HUMAN, "pages.update", { pageId: hub.pageId, status: "published" });
+    await op(HUMAN, "pages_seo.set", { pageId: hub.pageId, metaDescription: "All guides." });
+
+    const runId = await stageAndAudit("listing");
+    const got = await op<AuditRead>(AI, "quality_audits.get", { deployRunId: runId });
+    const listing = got.pages
+      .flatMap((p) => p.checkFindings.map((f) => ({ ...f, pageId: p.pageId })))
+      .filter((f) => f.ruleId === "structure/manual-page-listing");
+    expect(listing.map((f) => [f.pageId, f.severity])).toEqual([[hub.pageId, "error"]]);
+    expect(listing[0]?.message).toContain('3 of 4 published pages of type "Guide"');
+    expect(listing[0]?.message).toContain(`"Guide 3" (/${PFX}guide-3)`);
+    expect((await gate()).open).toBe(false);
+
+    // The right way: one list field bound to a page query of the type.
+    await op(HUMAN, "pages.update", { pageId: hub.pageId, status: "draft" });
+    const queryHub = await op<{ pageId: string }>(HUMAN, "pages.build_page", {
+      page: { slug: `${PFX}guides-index`, title: "Guide index", templateId, pageType: plain },
+      modules: [
+        {
+          blockName: "content",
+          displayName: `${PFX}guide-index`,
+          description: "Every published guide, newest title order.",
+          kind: "content",
+          html: '<section class="guide-index">{{#guides}}<a class="gi-item" href="{{link}}">{{title}}</a>{{/guides}}</section>',
+          fields: [
+            {
+              name: "guides",
+              kind: "list",
+              label: "Guides",
+              listType: "links",
+              bind: "source",
+              source: {
+                kind: "query",
+                editable: [],
+                defaults: { page_type: guideType, order: "title_asc", limit: 50 },
+              },
+            },
+          ],
+          content: { source: "inline", values: {} },
+        },
+      ],
+    });
+    await op(HUMAN, "pages.update", { pageId: queryHub.pageId, status: "published" });
+    await op(HUMAN, "pages_seo.set", { pageId: queryHub.pageId, metaDescription: "Guides." });
+    const cleanRun = await stageAndAudit("listing-query");
+    const clean = await op<AuditRead>(AI, "quality_audits.get", { deployRunId: cleanRun });
+    expect(await builtHtml(cleanRun)).toContain(`class="gi-item" href="/${PFX}guide-3/"`);
+    expect(
+      clean.pages
+        .flatMap((p) => p.checkFindings)
+        .filter((f) => f.ruleId === "structure/manual-page-listing"),
+    ).toEqual([]);
   });
 });
