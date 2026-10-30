@@ -448,19 +448,6 @@ export class DatabaseAdapter {
   }
 
   /**
-   * #1254 — called inside an admin transaction: a runner that makes later
-   * work, from any async context, join THIS transaction (savepoints, see
-   * `joinHeldTransaction`) instead of taking connections of its own. For a
-   * holder that serves requests arriving as messages — the static build's
-   * plugin calls — on one connection however many there are.
-   *
-   * @throws Error outside an admin transaction.
-   */
-  bindHeldAdminTransaction(): <T>(fn: () => Promise<T>) => Promise<T> {
-    return this.#guard.bindHeld("admin");
-  }
-
-  /**
    * Whether this call chain holds an open transaction of `pool`. A Tier-2
    * plugin call must not run while one does (#1254): its sandbox round trip
    * would keep the holder idle in transaction.

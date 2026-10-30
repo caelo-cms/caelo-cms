@@ -398,31 +398,6 @@ describe("#1254 — render-time work joins the held transaction", () => {
     expect(ran).toEqual(["after", "now"]);
   });
 
-  it("a bound runner joins work arriving from another async context (a build's plugin calls)", async () => {
-    let bound: (<T>(fn: () => Promise<T>) => Promise<T>) | null = null;
-    let release: () => void = () => undefined;
-    const released = new Promise<void>((r) => {
-      release = r;
-    });
-    const holder = holderWithProbeTable(async () => {
-      bound = adapter.bindHeldAdminTransaction();
-      await released;
-    });
-    while (bound === null) await Bun.sleep(5);
-    const run = bound as <T>(fn: () => Promise<T>) => Promise<T>;
-    // Called from outside the holder's chain, many at once: one connection.
-    const answers = await Promise.all(
-      Array.from({ length: POOL_MAX * 3 }, () =>
-        run(() => execute(registry, adapter, pluginCtx, "pool_guard.join_probe", {})),
-      ),
-    );
-    for (const a of answers) expect(a.ok).toBe(true);
-    release();
-    await holder;
-    await expect(run(async () => 1)).rejects.toThrow("already ended");
-    expect(() => adapter.bindHeldAdminTransaction()).toThrow("holds no admin transaction");
-  });
-
   it("a nested checkout that does not join still throws, and raw handles never join", async () => {
     await expect(
       holderWithProbeTable(async () =>

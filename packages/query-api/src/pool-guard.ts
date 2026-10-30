@@ -90,16 +90,6 @@ const LONG_TRANSACTIONS: readonly LongTransactionEntry[] = [
     reason:
       "a static site build runs in one transaction for as long as the build takes, idle while plugins render and files are written.",
   },
-  {
-    // Not temporary (#1254): the admin answers every plugin call of a
-    // build (link and list resolution, head contributions, URLs, static
-    // renders) on ONE connection — each call joins this transaction as a
-    // savepoint — instead of a checkout per plugin read. It lasts as long
-    // as the build and idles between the generator's calls.
-    holder: "static-generator.plugin-calls",
-    reason:
-      "the admin side of a static build answers every plugin call on one transaction that stays open, idle between calls, until the build ends.",
-  },
 ];
 
 /** {@link LONG_TRANSACTIONS} by holder. */
@@ -280,30 +270,6 @@ export class PoolGuard {
    *
    * @returns true when `work` was deferred, false when it ran now.
    */
-  /**
-   * A runner that puts `fn` on THIS chain's held transaction of `pool` and
-   * lets it join, from any async context — for work that arrives later on
-   * another chain (a callback, a message) but must run on this transaction.
-   *
-   * @throws Error when the chain holds no transaction of `pool`.
-   */
-  bindHeld(pool: PoolName): <T>(fn: () => Promise<T>) => Promise<T> {
-    const marker = this.held(pool);
-    if (marker === null) {
-      throw new Error(`bindHeld: this call chain holds no ${pool} transaction to bind to`);
-    }
-    return (fn) => {
-      if (!marker.active) {
-        return Promise.reject(
-          new Error(
-            `the ${pool} transaction of ${marker.holder} already ended; nothing can join it`,
-          ),
-        );
-      }
-      return joining.run(true, () => this.#stores[pool].run(marker, fn));
-    };
-  }
-
   async deferUntilEnd(pool: PoolName, work: () => Promise<void>): Promise<boolean> {
     const outer = this.held(pool);
     if (outer === null) {
