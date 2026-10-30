@@ -8,7 +8,7 @@ This page describes what replaced it and how to add a live surface.
 
 A live surface (the running-agents bar, the pending strip, the quality status, the notification bell, …) re-reads itself through its usual read endpoint when one of these happens:
 
-1. **A topic it shows arrives.** Topics are `agents`, `pending`, `credentials`, `quality`, `crawl`, `deploys` (`packages/shared/src/live-events.ts`). A topic is a hint, never data: no ids, no rows, no actor. The read that follows goes through the endpoint's own permission checks.
+1. **A topic it shows arrives.** Topics are `agents`, `pending`, `credentials`, `quality`, `crawl`, `deploys` and `draft` (`packages/shared/src/live-events.ts`). A topic is a hint, never data: no ids, no rows, no actor. The read that follows goes through the endpoint's own permission checks.
 2. **The tab becomes visible or the window gets focus.**
 3. **The tab did something itself** (an Approve, a Stop, a quality action): the code calls `liveHub.publish([...])` or re-reads directly.
 
@@ -18,12 +18,16 @@ An idle tab (no turn running, nothing in progress) makes **no request at all**. 
 
 Every operation that commits is classified **by name** (`liveTopicsOfOperation`, shared) through the Query API's `observeCommittedOperations` hook, so no handler has to remember to announce its change. Only write ops are listed; reads and clock-driven writes (heartbeats, lease renewals, the audit worker's idle `claim_next`) announce nothing, because a hint on a clock is polling again. `packages/admin-core/src/__tests__/live-events.test.ts` checks the classification against the real op catalogue.
 
+The `draft` topic is not classified by name: it comes from the change journal ([state-and-changes.md](./state-and-changes.md), #1267). Whenever a committed write changed a journaled row — a chat's or an MCP agent's write, a Stage, an undo, a settings change — every instance publishes `draft`, and never for a write that changed nothing. Server code that needs the changed rows themselves (the preview's invalidation, #1270) subscribes with `subscribeEntityChanges`; tabs hear only the topic. The changes pill (#1268) and the preview (#1270) are its first client surfaces.
+
+**Across instances** (#1267). A committing operation with topics NOTIFYs them inside its own transaction (`caelo_live_topics`, payload `<instance>|<topics>`: delivered on commit, never on rollback), and the change journal NOTIFYs `caelo_entity_changes`. Every admin instance LISTENs on one dedicated connection (`startLiveFanOut`) and publishes another instance's topics, and its own journal reads, into its hub. After a reconnect it publishes every topic once, because notifications sent while it was down are lost. On a request-billed instance the notifications are handled while it serves requests, which is when a stream or a wait is open there.
+
 The admin's in-process hub (`packages/admin-core/src/live-events.ts`) hands topics to two listeners:
 
 - **The chat stream.** While a turn runs, `/content/chat/<id>/stream` forwards every topic of the process to that tab as `{kind: "live", topics}` events (coalesced over 100 ms, flushed before `done`).
 - **`GET /api/live-events?topics=…`.** A tab with no open stream that waits on work in progress (an audit queued or running, an agent working, a crawl, a deploy) holds one request here. The server answers with the first matching topics, or `[]` after 10 s (below the ~14 s idle close of the load balancer / IAP, so no keep-alive is written). The request holds no database connection and the server runs no loop for it.
 
-Topics committed on **another** admin instance do not arrive (there is no cross-instance channel). That is why a waiting surface re-reads itself once when a wait comes back empty.
+A waiting surface still re-reads itself once when a wait comes back empty: the wait is bounded at 10 s, and the work it waits on may have finished in between.
 
 ## The client hub
 

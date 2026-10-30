@@ -65,6 +65,7 @@ export function defineBulkOp<I, O>(
   const { name, singular, maxItems = DEFAULT_MAX_ITEMS } = config;
   return defineOperation({
     name,
+    readScope: "request",
     actorScope: singular.actorScope,
     database: singular.database,
     input: z.object({ items: z.array(singular.input).min(1).max(maxItems) }).strict(),

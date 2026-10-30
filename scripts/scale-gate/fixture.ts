@@ -400,6 +400,12 @@ async function main(): Promise<void> {
     const staged = 4 * n;
     const pending = Math.round(0.4 * n);
     await asSystem(async (tx) => {
+      // #1267 — the history is loaded without change-journal rows, inside
+      // this transaction only: in production snapshots this old are past
+      // the journal's retention, so their rows would be gone already.
+      for (const t of ["site_snapshots", "page_snapshots"]) {
+        await tx.unsafe(`ALTER TABLE ${t} DISABLE TRIGGER caelo_journal_insert`);
+      }
       const pageState = (title: string) => `jsonb_build_object(
           'schemaVersion', 1, 'slug', p.slug, 'title', ${title}, 'shortTitle', p.short_title,
           'templateId', p.template_id, 'status', p.status, 'version', p.version, 'deletedAt', null,
@@ -434,6 +440,9 @@ async function main(): Promise<void> {
         INSERT INTO page_snapshots (site_snapshot_id, page_id, state)
         SELECT h.id, p.id, ${pageState("p.title || ' (edited)'")}
         FROM h JOIN pg ON pg.rn = h.i JOIN pages p ON p.id = pg.id`);
+      for (const t of ["site_snapshots", "page_snapshots"]) {
+        await tx.unsafe(`ALTER TABLE ${t} ENABLE TRIGGER caelo_journal_insert`);
+      }
     });
     step(`history: ${staged} staged + ${pending} pending snapshots`);
 

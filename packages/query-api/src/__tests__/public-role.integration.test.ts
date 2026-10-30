@@ -35,6 +35,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "public_role.sentinel.insert",
+      readScope: "request",
       actorScope: ["plugin", "system"],
       database: "cms_public",
       input: z.object({ payload: z.string() }),
@@ -50,6 +51,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "public_role.sentinel.count_mine",
+      readScope: "request",
       actorScope: ["plugin", "system"],
       database: "cms_public",
       input: z.object({}),

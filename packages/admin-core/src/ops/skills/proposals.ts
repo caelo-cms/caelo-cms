@@ -98,6 +98,7 @@ function rowToOut(r: ProposalDb): z.infer<typeof proposalRow> {
 
 export const proposeSkillOp = defineOperation({
   name: "skills.propose",
+  readScope: "request",
   // CLAUDE.md §11.A pattern (similar to ai_memory.propose): AI proposes
   // a body; Owner clicks Accept/Reject in /settings/skills/proposals.
   actorScope: ["human", "ai", "system"],
@@ -167,6 +168,7 @@ export const proposeSkillOp = defineOperation({
 
 export const listSkillProposalsOp = defineOperation({
   name: "skills.list_proposals",
+  readScope: "request",
   // CLAUDE.md §11.A: AI checks its own pending proposals when planning
   // — avoids re-proposing the same skill the Owner is reviewing.
   actorScope: ["human", "ai", "system"],
@@ -212,6 +214,7 @@ export const listSkillProposalsOp = defineOperation({
 
 export const reviewSkillProposalOp = defineOperation({
   name: "skills.review_proposal",
+  readScope: "request",
   // Why human-only: accepting an AI-drafted skill body changes the
   // AI's instruction surface site-wide; Owner-only per CLAUDE.md §2.
   actorScope: ["human", "system"],

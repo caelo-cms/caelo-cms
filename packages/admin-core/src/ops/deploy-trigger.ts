@@ -222,6 +222,8 @@ async function recordBlockedRun(
 
 export const startTriggerOp = defineOperation({
   name: "deploy.start_trigger",
+  // Why site-wide: the build it starts reads the whole site.
+  readScope: "site",
   // The first step of deploy.trigger, run under the trigger's own context:
   // its gates decide on the caller (an AI may not build production, a
   // production build passes the quality gate as the human who asked).
@@ -375,6 +377,8 @@ export const startTriggerOp = defineOperation({
 
 export const finishTriggerOp = defineOperation({
   name: "deploy.finish_trigger",
+  // Why site-wide: recording a build records the whole site's build output.
+  readScope: "site",
   // The last step of deploy.trigger, run under the trigger's own context
   // (the publish-anyway decision is recorded as the human who made it).
   // Every actor deploy.trigger admits reaches it; no AI tool wraps it.
@@ -774,6 +778,8 @@ async function runTrigger(
 
 export const triggerDeployOp = defineStepwiseOperation({
   name: "deploy.trigger",
+  // Why site-wide: a build reads every page, module, list and asset of the site.
+  readScope: "site",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: triggerInput,

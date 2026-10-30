@@ -8,6 +8,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 
 ## Architecture and patterns
 
+- [dev/state-and-changes.md](./dev/state-and-changes.md) — the state and change contract: one entity change journal written by table triggers, cursors and wake-ups, rebuildable derived state, request-scoped ops, and how plugins consume changes (#1267).
 - [propose-execute-pattern.md](./propose-execute-pattern.md) — the apply + audit engine behind human-approved (gated) AI tools, and how to gate a new domain (CLAUDE.md §11.A).
 - [dev/redirects-and-settings-sync.md](./dev/redirects-and-settings-sync.md) — redirects sync to the hosting provider on save (no build), per provider; which global settings live at the provider and which go live with Publish live (#1157).
 - [internal-links.md](./internal-links.md) — internal links as page references: write-time canonicalisation, render-time resolution, and why a move rewrites no link (epic #724).

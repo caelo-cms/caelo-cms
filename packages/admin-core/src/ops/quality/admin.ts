@@ -12,16 +12,16 @@
  * and keeps no per-page baselines.)
  */
 
-import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError, uuidArray } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { actorHasPermission } from "./_permissions.js";
-import { uuidList } from "./_shared.js";
 
 export const revokeAcceptancesOp = defineOperation({
   name: "quality_acceptances.revoke_many",
+  readScope: "request",
   // Why human-only: #553 §5 — the Owner reviews and takes back what editors
   // accepted; an acceptance is a human decision and so is undoing it.
   actorScope: ["human", "system"],
@@ -48,7 +48,7 @@ export const revokeAcceptancesOp = defineOperation({
     const rows = (await tx.execute(sql`
       UPDATE quality_acceptances
          SET revoked_at = now(), revoked_by = ${ctx.actorId}::uuid
-       WHERE id = ANY(${uuidList(ids)}) AND revoked_at IS NULL
+       WHERE id = ANY(${uuidArray(ids)}) AND revoked_at IS NULL
       RETURNING id::text AS id, kind, coalesce(audit_id, category) AS what
     `)) as unknown as { id: string; kind: string; what: string | null }[];
     if (rows.length !== ids.length) {

@@ -37,6 +37,7 @@ const outcomeSchema = z.object({
 
 export const syncRedirectsProviderOp = defineOperation({
   name: "redirects.sync_provider",
+  readScope: "request",
   // Why human-only: it decides nothing — it pushes the table the redirect
   // writes already saved. Every AI redirect write runs it after its commit
   // (and reports the outcome in the tool result), the worker retries a
@@ -95,6 +96,7 @@ export type RedirectSyncTargetStatus = z.infer<typeof targetStatusSchema>;
 
 export const redirectSyncStatusOp = defineOperation({
   name: "redirects.sync_status",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),

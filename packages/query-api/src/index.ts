@@ -5,10 +5,33 @@ export {
   AdminDatabaseUnavailableError,
   DatabaseAdapter,
   DatabaseUnresponsiveError,
+  LISTEN_CONNECTIONS_PER_INSTANCE,
+  type ListenHandle,
   POOL_IDLE_TIMEOUT_SECONDS,
   type TransactionOptions,
 } from "./adapter.js";
 export { recordAudit, recordAuditFromCtx, SYSTEM_ACTOR_ID } from "./audit.js";
+export {
+  type ChangeBatch,
+  checkJournalMark,
+  claimConsumer,
+  collectJournalGarbage,
+  commitChanges,
+  currentJournalCursor,
+  dropConsumers,
+  JOURNAL_RETENTION_MS,
+  type JournalChange,
+  type JournalCheck,
+  type JournalFilter,
+  type JournalMark,
+  pollChanges,
+  readChanges,
+  registerConsumer,
+  releaseConsumer,
+  resetConsumer,
+  textArray,
+  uuidArray,
+} from "./change-journal.js";
 export { assertChatOpenForWrite } from "./chat-write-guard.js";
 export {
   isRlsDenial,
@@ -25,6 +48,7 @@ export {
   isReadOperation,
   type OperationDefinition,
   type OperationHandler,
+  type OperationReadScope,
   type OperationSteps,
   type ReadOperationDefinition,
   type ReadOperationHandler,
@@ -42,8 +66,11 @@ export {
 } from "./pool-guard.js";
 export {
   afterCommit,
+  type CommitNotice,
+  type CommitNoticeSource,
   type CommittedOperationListener,
   observeCommittedOperations,
   type PostCommitEffect,
+  setCommitNotice,
 } from "./post-commit.js";
 export { OperationRegistry } from "./registry.js";

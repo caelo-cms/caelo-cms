@@ -65,18 +65,7 @@ import {
   VISITOR_ID_PURPOSE,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
-// Read SQL via globalThis.Bun rather than a value-import of "bun".
-// The type-only import is erased at compile; the runtime constructor
-// comes from Bun's globals. Keeps this file bundler-safe for any
-// downstream packager that doesn't resolve the bun built-in.
-import type { SQL as SQLType } from "bun";
 import { sql } from "drizzle-orm";
-
-const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
-  ?.SQL as unknown as new (
-  url: string,
-) => SQLType;
-
 import {
   ClientAddressError,
   clientAddress,
@@ -101,6 +90,11 @@ import {
   resolveRateLimitSpec,
 } from "./middleware/rate-limit.js";
 import { signCookieValue } from "./middleware/signed-cookie.js";
+import {
+  listenForPublishedChanges,
+  onPublishedChange,
+  publishedCacheUsable,
+} from "./published-changes.js";
 import {
   handleStagingRequest,
   isStagingRequest,
@@ -170,19 +164,14 @@ interface GatewaySettings {
   captcha: CaptchaConfig;
 }
 
-// P13 audit fix #2 — short TTL so cookie-secret rotations propagate
-// quickly. The admin's publisher posts `pg_notify('caelo_gateway_settings',
-// <section>)` on cms_public after every publish (#635); the gateway's LISTEN
-// connection invalidates immediately. The 5s ceiling is the safety
-// net for cross-process / multi-replica deployments where NOTIFY
-// reaches one replica only.
-const SETTINGS_TTL_MS = 5_000;
-let cachedSettings: { settings: GatewaySettings; loadedAt: number } | null = null;
+// Cached while the LISTEN on the admin's publish notifications is
+// acknowledged, dropped on every notification (#1267, published-changes.ts):
+// a cookie-secret rotation takes effect on the next request, on every
+// replica, with no TTL to wait out.
+let cachedSettings: GatewaySettings | null = null;
 
 async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> {
-  if (cachedSettings && Date.now() - cachedSettings.loadedAt < SETTINGS_TTL_MS) {
-    return cachedSettings.settings;
-  }
+  if (cachedSettings && publishedCacheUsable()) return cachedSettings;
   const { published, rows } = await adapter.withPublicTransaction(SYSTEM_CTX, async (tx) => ({
     published: await sectionPublished(tx, "settings"),
     rows: (await tx.execute(sql`
@@ -214,7 +203,7 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
       powTargetPrefix: row?.captcha_pow_target_prefix ?? "000fff",
     },
   };
-  cachedSettings = { settings, loadedAt: Date.now() };
+  cachedSettings = settings;
   return settings;
 }
 
@@ -276,16 +265,14 @@ export function invalidateGatewaySettings(): void {
 
 // ---------------------------------------------------------------------------
 // Staging gate state (#650) — the staging_access row: access modes and the
-// current staged build's origin. Same short TTL + NOTIFY invalidation as
-// the settings above (the admin notifies on every change and every Stage).
+// current staged build's origin. Cached and invalidated like the settings
+// above (the admin notifies on every change and every Stage).
 // ---------------------------------------------------------------------------
 
-let cachedStagingState: { state: StagingState; loadedAt: number } | null = null;
+let cachedStagingState: StagingState | null = null;
 
 async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState> {
-  if (cachedStagingState && Date.now() - cachedStagingState.loadedAt < SETTINGS_TTL_MS) {
-    return cachedStagingState.state;
-  }
+  if (cachedStagingState && publishedCacheUsable()) return cachedStagingState;
   const rows = (await adapter.withPublicTransaction(
     SYSTEM_CTX,
     async (tx) =>
@@ -329,7 +316,7 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
     },
     originUrl: row.origin_url,
   };
-  cachedStagingState = { state, loadedAt: Date.now() };
+  cachedStagingState = state;
   return state;
 }
 
@@ -925,35 +912,13 @@ if (import.meta.main) {
   const registry = new OperationRegistry();
   registerGatewayOperations(registry);
   setGatewayAdapter(adapter);
-  // P13 audit re-pass — dedicated long-lived LISTEN connection.
-  // Pooled handles return to the pool after each query, dropping any
-  // pg_notify subscriptions; so we open a SEPARATE Bun.SQL client that
-  // stays open for the gateway's lifetime, runs LISTEN, and yields a
-  // streaming iterable of notifications. The 5s TTL is the safety net
-  // when this fails (e.g. during DB restart) so we don't block boot.
-  void (async () => {
-    try {
-      // cms_public: the admin's publisher notifies here (#635).
-      const listenSql = new SQL(urls.public);
-      // Bun's `unsafe` runs LISTEN on the bound connection; subsequent
-      // notifications stream via `for await` on the connection's
-      // notifications iterator.
-      const conn = listenSql as unknown as {
-        unsafe: (q: string) => Promise<unknown>;
-        notifications?: AsyncIterable<{ channel: string; payload?: string }>;
-      };
-      await conn.unsafe("LISTEN caelo_gateway_settings");
-      if (!conn.notifications) return;
-      for await (const n of conn.notifications) {
-        if (n.channel === "caelo_gateway_settings") {
-          invalidateGatewaySettings();
-          invalidateRateLimitSpecCache();
-        }
-      }
-    } catch {
-      // best-effort; 5s TTL on cachedSettings covers the gap.
-    }
-  })();
+  // #1267 — the admin's publisher notifies cms_public after every publish
+  // (#635). The caches of published state are served only while this LISTEN
+  // is acknowledged (published-changes.ts); boot waits for it, so a gateway
+  // that cannot listen fails here instead of serving stale state.
+  onPublishedChange(invalidateGatewaySettings);
+  onPublishedChange(invalidateRateLimitSpecCache);
+  await listenForPublishedChanges(adapter);
   // #387 one-trust-path: same dev auto-signing + verified disk load as
   // the admin host. Non-production boots regenerate stale manifests
   // with the repo dev key; the loader verifies via the trust-root drop

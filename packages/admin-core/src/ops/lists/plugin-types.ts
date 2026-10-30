@@ -24,6 +24,7 @@ import { upsertListTypesManyOp } from "./list-types.js";
 
 export const syncPluginListTypesOp = defineOperation({
   name: "list_types.sync_plugin_types",
+  readScope: "request",
   // Why system-only: the host writes these from a plugin's verified
   // manifest when the plugin loads. A plugin cannot write list types
   // (structure writes refuse the plugin actor), and the AI shapes types

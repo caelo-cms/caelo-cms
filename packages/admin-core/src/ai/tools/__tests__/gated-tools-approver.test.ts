@@ -46,6 +46,7 @@ function harness(declarePermission: boolean) {
   registry.register(
     defineOperation({
       name: "widgets.propose_update",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.object({ widgetId: z.string() }).strict(),
@@ -58,6 +59,7 @@ function harness(declarePermission: boolean) {
   );
   const executor = defineOperation({
     name: "widgets.execute_proposal",
+    readScope: "request",
     actorScope: ["human", "system"],
     database: "cms_admin",
     input: z.object({ proposalId: z.string().uuid() }).strict(),

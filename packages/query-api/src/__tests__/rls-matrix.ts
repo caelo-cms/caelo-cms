@@ -52,6 +52,7 @@ export function rlsAdversarialMatrix(cfg: RlsMatrixConfig): void {
       Record<string, never>
     > = defineOperation({
       name: `rls_matrix.${cfg.table}.insert`,
+      readScope: "request",
       actorScope: ["plugin", "system"],
       database: "cms_public",
       input: z.object({ claimedPluginId: z.string(), payload: z.string() }),
@@ -65,6 +66,7 @@ export function rlsAdversarialMatrix(cfg: RlsMatrixConfig): void {
 
     const countOp = defineOperation({
       name: `rls_matrix.${cfg.table}.count`,
+      readScope: "request",
       actorScope: ["plugin", "system"],
       database: "cms_public",
       input: z.object({}),

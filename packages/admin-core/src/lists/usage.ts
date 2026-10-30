@@ -9,7 +9,7 @@
  * the "refused while bound" rule of `lists.delete_many`.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { countPlacementsInView } from "../ops/content/content-instance-reach.js";
 import { findContentInstancesContaining } from "../ops/content/content-instance-refs.js";
@@ -92,26 +92,14 @@ export async function loadListUsage(
     const moduleIds = modules.map((m) => m.moduleId);
     const ciCounts = await countPlacementsInView(tx, instanceIds, branchId);
     let placementCount = [...ciCounts.values()].reduce((a, b) => a + b, 0);
-    const moduleIdList =
-      moduleIds.length === 0
-        ? sql`NULL::uuid`
-        : sql.join(
-            moduleIds.map((id) => sql`${id}::uuid`),
-            sql`, `,
-          );
-    const instanceIdList =
-      instanceIds.length === 0
-        ? sql`NULL::uuid`
-        : sql.join(
-            instanceIds.map((id) => sql`${id}::uuid`),
-            sql`, `,
-          );
+    const moduleIdList = uuidArray(moduleIds);
+    const instanceIdList = uuidArray(instanceIds);
     if (moduleIds.length > 0) {
       const rows = (await tx.execute(sql`
         SELECT
           (SELECT count(*)::int FROM page_modules pm JOIN pages p ON p.id = pm.page_id
-            WHERE pm.module_id IN (${moduleIdList}) AND p.deleted_at IS NULL) +
-          (SELECT count(*)::int FROM layout_modules lm WHERE lm.module_id IN (${moduleIdList})) AS n
+            WHERE pm.module_id = ANY(${moduleIdList}) AND p.deleted_at IS NULL) +
+          (SELECT count(*)::int FROM layout_modules lm WHERE lm.module_id = ANY(${moduleIdList})) AS n
       `)) as unknown as { n: number }[];
       placementCount += rows[0]?.n ?? 0;
     }
@@ -123,7 +111,7 @@ export async function loadListUsage(
             FROM page_modules pm JOIN pages p ON p.id = pm.page_id
             WHERE p.deleted_at IS NULL
               AND (${branchId === null ? sql`p.chat_branch_id IS NULL` : sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`})
-              AND (pm.module_id IN (${moduleIdList}) OR pm.content_instance_id IN (${instanceIdList}))
+              AND (pm.module_id = ANY(${moduleIdList}) OR pm.content_instance_id = ANY(${instanceIdList}))
             ORDER BY p.current_path
             LIMIT ${SAMPLE_PAGES}
           `)) as unknown as { page_id: string; path: string; title: string }[]);

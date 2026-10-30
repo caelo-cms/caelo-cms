@@ -26,7 +26,7 @@
  * proceeds.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { DEPLOY_RUN_LOCK_PREFIX } from "./deploy-run-lock.js";
 
@@ -248,10 +248,7 @@ export async function previousReleaseRunInFlight(
     FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
     WHERE r.status = 'running' AND r.lease_expires_at IS NULL
       ${args.siteOnly ? sql`AND r.build_kind = 'site'` : sql``}
-      AND t.env IN (${sql.join(
-        args.envs.map((e) => sql`${e}`),
-        sql`, `,
-      )})
+      AND t.env = ANY(${textArray(args.envs)})
       AND r.id <> ${args.exceptRunId}::uuid
       AND NOT pg_try_advisory_xact_lock(hashtext(${DEPLOY_RUN_LOCK_PREFIX} || r.id::text))
     LIMIT 1

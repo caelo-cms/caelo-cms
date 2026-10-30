@@ -162,6 +162,24 @@ export interface InMemoryPlugin {
   readonly sourcePath?: string;
 }
 
+/**
+ * #1267 — the load outcome of an active release-signed plugin whose
+ * manifest asks for capabilities the Owner has not approved for it.
+ */
+export const AWAITING_CAPABILITY_APPROVAL = "awaiting_capability_approval";
+
+/**
+ * The capabilities `requested` asks for beyond what the Owner `approved`
+ * (null = nothing approved yet), sorted.
+ */
+export function unapprovedCapabilities(
+  requested: readonly string[],
+  approved: readonly string[] | null,
+): string[] {
+  const ok = new Set(approved ?? []);
+  return [...new Set(requested)].filter((c) => !ok.has(c)).sort();
+}
+
 /** A plugin whose manifest, signature and source passed verification. */
 export interface VerifiedPlugin {
   readonly definition: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
@@ -961,6 +979,35 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       `plugin "${def.slug}" declares workers without the background_workers capability — registration refused`,
     );
   }
+  // #1267 — the change journal is gated per kind: the consumer needs the
+  // journal capability, and every core kind the read grant of core data.
+  const consumer = def.changeConsumer;
+  if (consumer) {
+    if (!grantedCaps.has("change_journal")) {
+      throw new Error(
+        `plugin "${def.slug}" declares a changeConsumer without the change_journal capability — registration refused`,
+      );
+    }
+    if (consumer.kinds.length > 0 && !grantedCaps.has("cms_admin")) {
+      throw new Error(
+        `plugin "${def.slug}" consumes core changes (${consumer.kinds.join(", ")}) without the cms_admin read grant — registration refused`,
+      );
+    }
+    for (const name of [consumer.operationName, consumer.rebuildOperationName]) {
+      if (!def.operations[name]) {
+        throw new Error(
+          `plugin "${def.slug}" names "${name}" in changeConsumer, which is not one of its operations`,
+        );
+      }
+    }
+    for (const t of consumer.ownTables ?? []) {
+      if (!def.adminSchema || !(t in def.adminSchema)) {
+        throw new Error(
+          `plugin "${def.slug}" consumes changes of "${t}", which is not a table of its adminSchema`,
+        );
+      }
+    }
+  }
   // A `publicOperations` entry naming an operation that does not exist
   // reads as "this is exposed" while exposing nothing — and the reverse
   // typo (an intended-public op misspelled) silently 404s the visitor
@@ -1047,7 +1094,11 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // version, and leaves the Owner's choice — active, disabled, or still
   // awaiting — exactly where they left it.
   const initialStatus = opts.activation === "explicit" ? "active" : "awaiting_activation";
-  const { pluginId, pluginActorId, persistedStatus } =
+  // #1267 — an explicit hand-off is the Owner's decision for exactly this
+  // capability set; a discovered plugin has approved nothing yet.
+  const requestedCaps = [...(def.requestedCapabilities ?? [])];
+  const initialApproved = opts.activation === "explicit" ? requestedCaps : null;
+  const { pluginId, pluginActorId, persistedStatus, approvedCapabilities } =
     await opts.infra.adapter.withAdminTransaction(
       {
         actorId: opts.systemActorId,
@@ -1058,13 +1109,16 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
         const rows = (await tx.execute(sql`
         INSERT INTO plugins (
           slug, version, tier, status,
-          manifest_json, source_path, manifest_signature, submitted_by
+          manifest_json, source_path, manifest_signature, submitted_by, approved_capabilities
         ) VALUES (
           ${def.slug}, ${def.version}, ${def.tier}, ${initialStatus},
           (${JSON.stringify(opts.manifest)}::text)::jsonb,
           ${opts.sourcePath},
           ${opts.manifestSignatureHex},
-          ${opts.systemActorId}::uuid
+          ${opts.systemActorId}::uuid,
+          CASE WHEN ${initialApproved === null} THEN NULL
+               ELSE ARRAY(SELECT jsonb_array_elements_text((${JSON.stringify(initialApproved ?? [])}::text)::jsonb))
+          END
         )
         ON CONFLICT (slug) DO UPDATE SET
           version = EXCLUDED.version,
@@ -1080,18 +1134,22 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
         WHERE (plugins.version, plugins.manifest_json, plugins.source_path, plugins.manifest_signature)
           IS DISTINCT FROM
           (EXCLUDED.version, EXCLUDED.manifest_json, EXCLUDED.source_path, EXCLUDED.manifest_signature)
-        RETURNING id::text AS id, status
-      `)) as unknown as { id: string; status: string }[];
+        RETURNING id::text AS id, status, approved_capabilities
+      `)) as unknown as { id: string; status: string; approved_capabilities: string[] | null }[];
         // An unchanged row is not returned by the upsert; read it instead.
         const row =
           rows[0] ??
           (
             (await tx.execute(sql`
-              SELECT id::text AS id, status FROM plugins WHERE slug = ${def.slug}
-            `)) as unknown as { id: string; status: string }[]
+              SELECT id::text AS id, status, approved_capabilities FROM plugins WHERE slug = ${def.slug}
+            `)) as unknown as {
+              id: string;
+              status: string;
+              approved_capabilities: string[] | null;
+            }[]
           )[0];
         if (!row) throw new Error("plugins upsert returned no id");
-        const { id, status: persistedStatus } = row;
+        const { id, status: persistedStatus, approved_capabilities: approvedCapabilities } = row;
 
         const actorRows = (await tx.execute(sql`
         INSERT INTO actors (kind, display_name, plugin_id)
@@ -1102,7 +1160,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       `)) as unknown as { id: string }[];
         const actorId = actorRows[0]?.id;
         if (!actorId) throw new Error("actor upsert returned no id");
-        return { pluginId: id, pluginActorId: actorId, persistedStatus };
+        return { pluginId: id, pluginActorId: actorId, persistedStatus, approvedCapabilities };
       },
     );
 
@@ -1119,6 +1177,20 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // `list_plugins` let the AI notice one and offer to activate it.
   if (persistedStatus !== "active") {
     return { plugin: null, status: persistedStatus };
+  }
+  // #1267 — one plugin model: a release-signed plugin that asks for a
+  // capability the Owner has not approved for it does not run until they
+  // do (Settings → Plugins). Its status stays the Owner's (#1008): it is
+  // recorded and verified, not switched off. Runtime-installed plugins
+  // carry per-artifact grants instead (external-authorization.ts).
+  if (def.tier === 1) {
+    const unapproved = unapprovedCapabilities(requestedCaps, approvedCapabilities);
+    if (unapproved.length > 0) {
+      console.warn(
+        `[plugin-host] ${def.slug} waits for the Owner to approve new capabilities (${unapproved.join(", ")}) at /settings/plugins`,
+      );
+      return { plugin: null, status: AWAITING_CAPABILITY_APPROVAL };
+    }
   }
   await assertRequiredPluginsActive(opts.infra, opts.systemActorId, def);
 

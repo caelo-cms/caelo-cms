@@ -22,7 +22,7 @@
  */
 
 import { discardBranchPluginRows } from "@caelo-cms/plugin-host";
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -97,12 +97,7 @@ async function txNow(tx: Tx): Promise<string> {
 }
 
 function headerFilter(ids: readonly string[]) {
-  return ids.length === 0
-    ? sql` AND false`
-    : sql` AND ss.id IN (${sql.join(
-        ids.map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )})`;
+  return ids.length === 0 ? sql` AND false` : sql` AND ss.id = ANY(${uuidArray(ids)})`;
 }
 
 /**
@@ -123,10 +118,7 @@ async function finalizeDraftSelection(
       UPDATE site_snapshots SET staged_at = ${stagedAt}::timestamptz
       WHERE ${pendingSnapshotSql("site_snapshots")}
         AND chat_branch_id = ${branchId}::uuid
-        AND id IN (${sql.join(
-          headerIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})
+        AND id = ANY(${uuidArray(headerIds)})
       RETURNING 1
     `)) as unknown as unknown[];
     staged = rows.length;
@@ -134,10 +126,7 @@ async function finalizeDraftSelection(
   await tx.execute(sql`
     UPDATE chat_sessions
     SET last_staged_at = GREATEST(COALESCE(last_staged_at, '-infinity'::timestamptz), ${stagedAt}::timestamptz)
-    WHERE id IN (${sql.join(
-      chatSessionIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )})
+    WHERE id = ANY(${uuidArray(chatSessionIds)})
   `);
   await releaseIdleDraftLocks(tx, branchId);
   return staged;
@@ -145,6 +134,8 @@ async function finalizeDraftSelection(
 
 export const mergeDraftToMainOp = defineOperation({
   name: "chat.merge_draft_to_main",
+  // Why site-wide: a merge replays every pending change of the draft onto main.
+  readScope: "site",
   // Issue #620 Part B — the AI may Stage (stage_changes). Staging is not
   // public and the merge emits a main snapshot (revertable). Production is
   // built only by a human Publish live (#1154: deploy.trigger / promote
@@ -254,6 +245,8 @@ export const mergeDraftToMainOp = defineOperation({
 
 export const finalizeDraftStageOp = defineOperation({
   name: "chat.finalize_draft_stage",
+  // Why site-wide: finalising a Stage records every merged change of the draft.
+  readScope: "site",
   // Issue #620 Part B — the second half of chat.merge_draft_to_main (which
   // the AI may run); called only after the staging build succeeded.
   actorScope: ["human", "ai", "system"],
@@ -325,10 +318,7 @@ export async function undoDraftChat(
   if (selection.headerIds.length > 0) {
     await tx.execute(sql`
       UPDATE site_snapshots SET undone_at = now()
-      WHERE id IN (${sql.join(
-        selection.headerIds.map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )})
+      WHERE id = ANY(${uuidArray(selection.headerIds)})
     `);
   }
   for (const row of selection.createdRows) {
@@ -358,6 +348,7 @@ export async function undoDraftChat(
 
 export const undoChatChangesOp = defineOperation({
   name: "chat.undo_changes",
+  readScope: "request",
   // Issue #620 — routine for the chat's OWN unstaged work (§11.A: the
   // change is unstaged and the undone snapshots stay in history). When it
   // would also drop another chat's later changes it refuses until
@@ -443,6 +434,7 @@ export async function isolateDraftChat(
 
 export const isolateSessionOp = defineOperation({
   name: "chat.isolate_session",
+  readScope: "request",
   // Issue #620 — an explicit experiment ("try a redesign") or a site
   // migration gets an isolated branch. Routine: nothing changes on the site
   // and the chat had no changes to move.
@@ -504,6 +496,7 @@ export const isolateSessionOp = defineOperation({
  */
 export const checkBranchAccessOp = defineOperation({
   name: "chat.check_branch_access",
+  readScope: "request",
   // Read-only and answers only for the caller itself: every actor kind.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",

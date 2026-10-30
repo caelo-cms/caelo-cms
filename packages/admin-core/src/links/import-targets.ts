@@ -32,7 +32,7 @@
  * translated slug: the source path names it.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { normaliseLinkPath, type PendingLinkTarget } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
@@ -118,10 +118,7 @@ export async function loadActiveImportTargets(
            ip.proposed_modules, p.id::text AS rebuilt_page_id
       FROM import_pages ip
       LEFT JOIN pages p ON p.id = ip.accepted_page_id AND p.deleted_at IS NULL
-     WHERE ip.run_id IN (${sql.join(
-       runs.map((r) => sql`${r.id}::uuid`),
-       sql`, `,
-     )})
+     WHERE ip.run_id = ANY(${uuidArray(runs.map((r) => r.id))})
        AND ip.rejected_at IS NULL
   `)) as unknown as {
     run_id: string;

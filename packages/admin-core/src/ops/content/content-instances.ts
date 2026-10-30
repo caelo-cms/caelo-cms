@@ -25,7 +25,7 @@
  * branched-create rows immediately.
  */
 
-import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError, uuidArray } from "@caelo-cms/query-api";
 import {
   COPY_ID_EXACTLY_HINT,
   contentInstanceCreateSchema,
@@ -45,7 +45,6 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
-import { emitDomainEvent } from "../../domain-events.js";
 import { canonicaliseInstanceValues } from "../../links/canonicalise-writes.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { recordPendingImportLinks } from "../../links/import-targets.js";
@@ -329,10 +328,7 @@ async function validateNestedRefs(
   const ciRows = (await tx.execute(sql`
     SELECT id::text AS id, module_id::text AS module_id, deleted_at
     FROM content_instances
-    WHERE id IN (${sql.join(
-      allInstanceIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )})
+    WHERE id = ANY(${uuidArray(allInstanceIds)})
   `)) as unknown as { id: string; module_id: string; deleted_at: Date | null }[];
   const ciMap = new Map<string, { module_id: string; deleted_at: Date | string | null }>(
     ciRows.map((r) => [r.id, r]),
@@ -342,10 +338,7 @@ async function validateNestedRefs(
   const modRows2 = (await tx.execute(sql`
     SELECT id::text AS id, slug, type, deleted_at
     FROM modules
-    WHERE id IN (${sql.join(
-      allModuleIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )})
+    WHERE id = ANY(${uuidArray(allModuleIds)})
   `)) as unknown as { id: string; slug: string; type: string; deleted_at: Date | null }[];
   const moduleMap = new Map<string, { slug: string; type: string; deleted_at: unknown }>(
     modRows2.map((r) => [r.id, r]),
@@ -482,6 +475,7 @@ function reachOf(
 export const listContentInstancesOp = withHumanisedLinks(
   defineOperation({
     name: "content_instances.list",
+    readScope: "request",
     // #453 — plugin actors read too. The vendor URL an embed points at
     // usually lives in a content value rather than in module HTML (the
     // extractor lifts it out at authoring time), so a plugin reasoning
@@ -516,17 +510,9 @@ export const listContentInstancesOp = withHumanisedLinks(
         : sql` AND ci.chat_branch_id IS NULL`;
       const moduleFilter = input.moduleId ? sql`AND ci.module_id = ${input.moduleId}::uuid` : sql``;
       const moduleIdsFilter = input.moduleIds
-        ? sql`AND ci.module_id IN (${sql.join(
-            input.moduleIds.map((id) => sql`${id}::uuid`),
-            sql`, `,
-          )})`
+        ? sql`AND ci.module_id = ANY(${uuidArray(input.moduleIds)})`
         : sql``;
-      const idsFilter = input.ids
-        ? sql`AND ci.id IN (${sql.join(
-            input.ids.map((id) => sql`${id}::uuid`),
-            sql`, `,
-          )})`
-        : sql``;
+      const idsFilter = input.ids ? sql`AND ci.id = ANY(${uuidArray(input.ids)})` : sql``;
       const slugFilter = input.slug ? sql`AND ci.slug = ${input.slug}` : sql``;
       const searchFilter = input.search
         ? sql`AND (ci.display_name ILIKE ${`%${input.search}%`} OR ci.slug ILIKE ${`%${input.search}%`})`
@@ -546,10 +532,7 @@ export const listContentInstancesOp = withHumanisedLinks(
           ),
         ];
         if (onPage.length === 0) return ok({ instances: [] });
-        pageFilter = sql`AND ci.id IN (${sql.join(
-          onPage.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})`;
+        pageFilter = sql`AND ci.id = ANY(${uuidArray(onPage)})`;
       }
       const deletedFilter = input.includeDeleted ? sql`` : sql`AND ci.deleted_at IS NULL`;
 
@@ -618,6 +601,7 @@ export const listContentInstancesOp = withHumanisedLinks(
 export const getContentInstanceOp = withHumanisedLinks(
   defineOperation({
     name: "content_instances.get",
+    readScope: "request",
     actorScope: ["human", "ai", "system"],
     database: "cms_admin",
     input: z.object({ id: z.string().uuid() }).strict(),
@@ -735,6 +719,7 @@ export const getContentInstanceOp = withHumanisedLinks(
 
 export const createContentInstanceOp = defineOperation({
   name: "content_instances.create",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: contentInstanceCreateSchema,
@@ -929,6 +914,7 @@ export const createContentInstanceOp = defineOperation({
  */
 export const createContentInstancesManyOp = defineOperation({
   name: "content_instances.create_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: contentInstancesCreateManySchema,
@@ -972,6 +958,7 @@ export const createContentInstancesManyOp = defineOperation({
 
 export const setContentInstanceValuesOp = defineOperation({
   name: "content_instances.set_values",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: contentInstanceUpdateSchema,
@@ -1163,24 +1150,6 @@ export const setContentInstanceValuesOp = defineOperation({
       });
     }
 
-    // #392 — a value edit on a (possibly shared) instance is a content
-    // change on EVERY page it renders on. One page.updated per page, in
-    // this same tx, so staleness workers see the real blast radius. #627 —
-    // that includes the pages of its parents: a child with no placement
-    // of its own changes every page its parent renders on. Layout chrome
-    // reach is a layout change, not a per-page one: no event per page of
-    // the site.
-    for (const page of reach.pages) {
-      await emitDomainEvent(tx, {
-        kind: "page.updated",
-        entityId: page.pageId,
-        payload: {
-          contentInstanceId: input.id,
-          ...(branchId ? { chatBranchId: branchId } : {}),
-        },
-      });
-    }
-
     // Epic #724 — links to pages the chat's import run will still build.
     await recordPendingImportLinks(tx, linkCanon.pending, {
       kind: "content_instance",
@@ -1201,6 +1170,7 @@ export const setContentInstanceValuesOp = defineOperation({
 
 export const deleteContentInstanceOp = defineOperation({
   name: "content_instances.delete",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: contentInstanceDeleteSchema,
@@ -1434,6 +1404,7 @@ function describeParentRefusal(reach: ContentInstanceReach): string {
  */
 export const setPlacementContentOp = defineOperation({
   name: "placement.set_content",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: setPlacementContentSchema,
@@ -1587,12 +1558,6 @@ export const setPlacementContentOp = defineOperation({
       chatBranchId: null,
       entities: [{ kind: "pageLayout", entityId: input.pageId, state: layoutState }],
     });
-    await emitDomainEvent(tx, {
-      kind: "page.updated",
-      entityId: input.pageId,
-      payload: { blockName: input.blockName },
-    });
-
     return ok({ contentInstanceId: input.contentInstanceId });
   },
 });
@@ -1607,6 +1572,7 @@ export const setPlacementContentOp = defineOperation({
  */
 export const forkPlacementContentOp = defineOperation({
   name: "placement.fork_content",
+  readScope: "request",
   // #397 — plugin actors fork too: translating a SYNCED placement must
   // detach it first (a translation is by definition page-private).
   actorScope: ["human", "ai", "plugin", "system"],

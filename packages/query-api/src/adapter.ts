@@ -14,7 +14,8 @@ type SQL = SQLType;
 /** Subset of `Bun.SQL.Options` we set explicitly. `max` caps the pool size. */
 interface PoolOptions {
   readonly max?: number;
-  readonly idleTimeout: number;
+  /** Omitted only for the LISTEN connection, which must never idle out. */
+  readonly idleTimeout?: number;
 }
 const SQL = (globalThis as { Bun?: { SQL: new (url: string, options?: PoolOptions) => SQLType } })
   .Bun?.SQL as unknown as new (
@@ -48,6 +49,7 @@ import {
 } from "./pool-guard.js";
 import {
   collectPostCommitEffects,
+  commitNoticeOf,
   notifyOperationCommitted,
   type PostCommitEffect,
   type PostCommitFailure,
@@ -270,11 +272,27 @@ function postCommitFailureMessage(failures: ReadonlyArray<PostCommitFailure>): s
   return `The change is saved, but its follow-up in the running server failed: ${list}. Do not repeat the change. Restart the admin server so the running state is rebuilt from the saved data; the failure is in the audit log.`;
 }
 
+/**
+ * Issue #1267 — the connections one adapter holds OUTSIDE its pools: the
+ * dedicated LISTEN connection ({@link DatabaseAdapter.listen}), opened on the
+ * first subscription. A pool budget (#1254) counts it per instance.
+ */
+export const LISTEN_CONNECTIONS_PER_INSTANCE = 1;
+
+/** A LISTEN subscription of {@link DatabaseAdapter.listen}. */
+export interface ListenHandle {
+  unlisten(): Promise<void>;
+}
+
 export class DatabaseAdapter {
   readonly #admin: BunSQLDatabase | null;
   readonly #public: BunSQLDatabase;
   readonly #adminRaw: SQL | null;
   readonly #publicRaw: SQL;
+  readonly #adminUrl: string | null;
+  readonly #publicUrl: string;
+  /** Issue #1267 — the dedicated LISTEN connection per pool, opened lazily. */
+  readonly #listeners = new Map<PoolName, SQL>();
   readonly #skipVerify: boolean;
   readonly #roles: { readonly admin: string | null; readonly public: readonly string[] };
   readonly #acquireTimeoutMs: number;
@@ -301,6 +319,8 @@ export class DatabaseAdapter {
       new SQL(url, poolMax === undefined ? { idleTimeout } : { max: poolMax, idleTimeout });
     this.#adminRaw = config.adminDatabaseUrl === null ? null : open(config.adminDatabaseUrl);
     this.#publicRaw = open(config.publicDatabaseUrl);
+    this.#adminUrl = config.adminDatabaseUrl;
+    this.#publicUrl = config.publicDatabaseUrl;
     this.#onStatement = config.onStatement ?? null;
     const observe = this.#onStatement;
     this.#drizzleOptions = observe
@@ -542,7 +562,7 @@ export class DatabaseAdapter {
     try {
       result = await this.#transaction(pool, op.name, async (tx) => {
         postCommit = collectPostCommitEffects(tx);
-        await this.#setIdentity(tx, ctx);
+        await this.#setIdentity(tx, ctx, op.name);
 
         // Issue #569 — a branch the caller may not see is answered as
         // "not found" before the handler runs, so no op can read or write
@@ -557,6 +577,12 @@ export class DatabaseAdapter {
         if (!out.ok) handlerError = out;
         if (out.ok && op.database === "cms_admin") {
           publishAfterCommit = await this.#projectionDirty(tx);
+          // #1267 — other instances hear the op's live topics when (and
+          // only if) this transaction commits.
+          const notice = commitNoticeOf(op.name);
+          if (notice !== null) {
+            await tx.execute(sql`SELECT pg_notify(${notice.channel}, ${notice.payload})`);
+          }
         }
         return out;
       });
@@ -672,17 +698,63 @@ export class DatabaseAdapter {
    * reads it). One statement, not one per setting: every transaction pays
    * it, and a round-trip per setting made it five (#1212).
    */
-  async #setIdentity(tx: TransactionRunner, ctx: ExecutionContext): Promise<void> {
+  async #setIdentity(
+    tx: TransactionRunner,
+    ctx: ExecutionContext,
+    opName: string | null = null,
+  ): Promise<void> {
     // P5: the chat-branch / chat-task identity is optional. Snapshot
     // writes read these via ctx.chatBranchId / ctx.chatTaskId; the
     // session vars exist for read-side queries that scope by branch
-    // without an extra parameter.
+    // without an extra parameter. #1267: the change journal's triggers
+    // attribute every row they write to the chat and the operation from
+    // the same settings (the owner chat is resolved from the task there).
     await tx.execute(sql`SELECT
       set_config('caelo.actor_id', ${ctx.actorId}, true),
       set_config('caelo.actor_kind', ${ctx.actorKind}, true),
       set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true),
       set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true),
-      set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`);
+      set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true),
+      set_config('caelo.op_name', ${opName ?? ""}, true)`);
+  }
+
+  /**
+   * Issue #1267 — subscribe to a Postgres NOTIFY channel of `pool`'s
+   * database. All subscriptions of one pool share ONE dedicated connection
+   * outside the pool ({@link LISTEN_CONNECTIONS_PER_INSTANCE}); Bun
+   * reconnects it with backoff and re-subscribes, calling `onListen` again
+   * each time. A notification is only a wake-up: `onListen` must re-read
+   * whatever it guards, because notifications sent while the connection
+   * was down are lost.
+   *
+   * A pooled provider in transaction mode (PgBouncer) breaks LISTEN; the
+   * URL must reach Postgres directly (docs/dev/state-and-changes.md).
+   *
+   * @example
+   *   const sub = await adapter.listen("admin", "caelo_entity_changes", () => wake(), () => wake());
+   *   await sub.unlisten();
+   */
+  async listen(
+    pool: PoolName,
+    channel: string,
+    onNotify: (payload: string) => void,
+    onListen: () => void,
+  ): Promise<ListenHandle> {
+    const url = pool === "admin" ? this.#adminUrl : this.#publicUrl;
+    if (url === null) throw new AdminDatabaseUnavailableError(`listen(${channel})`);
+    let conn = this.#listeners.get(pool);
+    if (!conn) {
+      conn = new SQL(url, { max: LISTEN_CONNECTIONS_PER_INSTANCE });
+      this.#listeners.set(pool, conn);
+    }
+    return conn.listen(channel, onNotify, onListen);
+  }
+
+  /** Issue #1267 — send one NOTIFY outside any transaction (a step-wise op's topics). */
+  async notify(channel: string, payload: string): Promise<void> {
+    await this.#transaction("admin", "notify", async (tx) => {
+      await tx.execute(sql`SELECT pg_notify(${channel}, ${payload})`);
+    });
   }
 
   /**
@@ -803,7 +875,13 @@ export class DatabaseAdapter {
   }
 
   async close(): Promise<void> {
-    await Promise.all([this.#adminRaw?.end(), this.#publicRaw.end()]);
+    const listeners = [...this.#listeners.values()];
+    this.#listeners.clear();
+    await Promise.all([
+      this.#adminRaw?.end(),
+      this.#publicRaw.end(),
+      ...listeners.map((l) => l.close()),
+    ]);
   }
 
   /**
@@ -830,7 +908,7 @@ export class DatabaseAdapter {
     let postCommit: PostCommitEffect[] = [];
     const out = await this.#transaction("admin", holder, async (tx) => {
       postCommit = collectPostCommitEffects(tx);
-      await this.#setIdentity(tx, ctx);
+      await this.#setIdentity(tx, ctx, options.holder ?? null);
       // Issue #569 — same branch-visibility gate as runOperation.
       const denied = await firstInvisibleBranch(tx, namedBranches(ctx, undefined));
       if (denied !== null) {
@@ -955,7 +1033,10 @@ export class DatabaseAdapter {
     this.#adminDb("provisionPluginAdminSchema");
     if (!this.#skipVerify) await this.verifyRoles();
     await this.#transaction("admin", "provisionPluginAdminSchema", async (tx) => {
-      const outcome = await provisionPluginSchemaInTx(tx, "provisionPluginAdminSchema", opts);
+      const outcome = await provisionPluginSchemaInTx(tx, "provisionPluginAdminSchema", {
+        ...opts,
+        journal: true,
+      });
       if (outcome.droppedColumns.length > 0) {
         await auditDroppedColumns(tx, "cms_admin", opts.pluginId, outcome);
       }

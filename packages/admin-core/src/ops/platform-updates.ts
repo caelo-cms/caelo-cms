@@ -68,6 +68,7 @@ export type PlatformUpdateStatus = z.infer<typeof platformUpdateStatus>;
 
 export const platformUpdateStatusOp = defineOperation({
   name: "platform_updates.status",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -130,6 +131,7 @@ export const platformUpdateStatusOp = defineOperation({
 
 export const platformUpdatesCheckNowOp = defineOperation({
   name: "platform_updates.check_now",
+  readScope: "request",
   // Why human-only: the "Check now" button on Settings → Updates. The AI
   // already reads the cached answer through get_caelo_version, and the
   // hourly release-check worker keeps that cache fresh; an AI-triggered

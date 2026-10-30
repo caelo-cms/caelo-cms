@@ -138,6 +138,7 @@ export async function beginRunInTx(
 
 export const renewDeployRunLeaseOp = defineOperation({
   name: "deploy.renew_run_lease",
+  readScope: "request",
   // Why human-only: the heartbeat of a running build (deploy.trigger,
   // deploy.promote and the plugin-data build run it under the system
   // actor); it decides nothing.
@@ -168,6 +169,7 @@ export const renewDeployRunLeaseOp = defineOperation({
 
 export const acquireStagingPublicationOp = defineOperation({
   name: "deploy.acquire_staging_publication",
+  readScope: "request",
   // Why human-only: internal step of deploy.trigger / deploy.promote
   // (system actor); a Stage takes the lease before it publishes its
   // preview, a Publish live before it changes which preview staging serves.
@@ -196,6 +198,7 @@ export const acquireStagingPublicationOp = defineOperation({
 
 export const acquireLiveReleaseOp = defineOperation({
   name: "deploy.acquire_live_release",
+  readScope: "request",
   // Why human-only: internal step of deploy.promote and the plugin-data
   // build (system actor); they take the lease before they release a new
   // version on the live channel.
@@ -215,6 +218,7 @@ export const acquireLiveReleaseOp = defineOperation({
 
 export const failDeployRunOp = defineOperation({
   name: "deploy.fail_run",
+  readScope: "request",
   // Why human-only: internal step of every deploy run (system actor) — the
   // run's own failure record.
   actorScope: ["human", "system"],

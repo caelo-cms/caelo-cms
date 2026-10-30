@@ -52,6 +52,7 @@ export const PENDING_TABLES = [
 
 export const cancelProposalOp = defineOperation({
   name: "pending_proposals.cancel",
+  readScope: "request",
   // AI can cancel its own proposals; humans can cancel theirs.
   // The WHERE clause's proposed_by check enforces this — no ambient
   // permission grant lets one actor cancel another's queued row.

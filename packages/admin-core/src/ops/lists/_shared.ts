@@ -7,11 +7,15 @@
  * (embedded modules, terms) that `validateListItems` cannot do.
  */
 
-import { OperationAbortError, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
+import {
+  OperationAbortError,
+  type QueryError,
+  type TransactionRunner,
+  uuidArray,
+} from "@caelo-cms/query-api";
 import {
   canonicaliseHtmlLinks,
   canonicaliseUrl,
-  diffListItems,
   type ExecutionContext,
   type FieldDef,
   type LinkCanonicaliseRun,
@@ -21,7 +25,6 @@ import {
   TERM_REF_RE,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { emitDomainEvent } from "../../domain-events.js";
 import { canonicaliseLinksForWrite } from "../../links/canonicalise.js";
 import type { PendingLinkRecord } from "../../links/import-targets.js";
 import { listFieldsOf, loadInstancesOfModules, loadModulesInView } from "../../lists/local.js";
@@ -291,10 +294,7 @@ export function collectItemIds(items: readonly ListItem[]): Set<string> {
 async function moduleTypesById(tx: Tx, ids: readonly string[]): Promise<Map<string, string>> {
   if (ids.length === 0) return new Map();
   const rows = (await tx.execute(sql`
-    SELECT id::text AS id, type FROM modules WHERE id IN (${sql.join(
-      ids.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )})
+    SELECT id::text AS id, type FROM modules WHERE id = ANY(${uuidArray(ids)})
   `)) as unknown as { id: string; type: string }[];
   return new Map(rows.map((r) => [r.id, r.type]));
 }
@@ -327,27 +327,4 @@ export async function listTypesBySlug(
 ): Promise<Map<string, { id: string; def: ListTypeDef }>> {
   const types = await loadListEntities(tx, "listType", branchId);
   return new Map(types.map((t) => [t.state.slug, { id: t.id, def: t.state.definition }]));
-}
-
-/**
- * `list.items_changed` with the per-entry diff (docs/lists.md §9) — only
- * when something changed. Payload stays small: ids, changed field names
- * and the values an update replaced (what a translation needs to flag
- * `needs_update`).
- */
-export async function emitListItemsChanged(
-  tx: Tx,
-  listId: string,
-  slug: string,
-  before: readonly ListItem[],
-  after: readonly ListItem[],
-  branchId: string | null,
-): Promise<void> {
-  const changes = diffListItems(before, after);
-  if (changes.length === 0) return;
-  await emitDomainEvent(tx, {
-    kind: "list.items_changed",
-    entityId: listId,
-    payload: { slug, changes, ...(branchId ? { chatBranchId: branchId } : {}) },
-  });
 }

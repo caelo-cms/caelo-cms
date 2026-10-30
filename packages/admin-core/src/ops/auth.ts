@@ -17,6 +17,7 @@ import {
 
 export const loginOp = defineOperation({
   name: "auth.login",
+  readScope: "request",
   // Why system-only: authentication itself: runs before any actor is resolved (the credential in
   // the input is the identity); the AI never authenticates as a user.
   actorScope: ["system"],
@@ -88,6 +89,7 @@ export const loginOp = defineOperation({
 
 export const logoutOp = defineOperation({
   name: "auth.logout",
+  readScope: "request",
   // Why human-only: session boundary; AI never logs anyone out.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -110,6 +112,7 @@ export const logoutOp = defineOperation({
 
 export const resolveSessionOp = defineOperation({
   name: "auth.resolve_session",
+  readScope: "request",
   // Why system-only: maps a session cookie to an actor on every request, before any actor exists.
   actorScope: ["system"],
   database: "cms_admin",
@@ -200,6 +203,7 @@ export const resolveSessionOp = defineOperation({
  */
 export const requestPasswordResetOp = defineOperation({
   name: "auth.request_password_reset",
+  readScope: "request",
   // Why system-only: unauthenticated self-service reset (see the doc comment above); the AI
   // never handles credentials or reset tokens.
   actorScope: ["system"],
@@ -274,6 +278,7 @@ export async function issueResetToken(
  */
 export const issueOwnerResetOp = defineOperation({
   name: "auth.issue_owner_reset",
+  readScope: "request",
   // Why system-only: it hands a raw credential to infrastructure tooling that
   // authenticated at the HTTP boundary (internal token + identity proxy); no
   // user or AI session ever reaches it.
@@ -337,6 +342,7 @@ export const issueOwnerResetOp = defineOperation({
  */
 export const resetPasswordOp = defineOperation({
   name: "auth.reset_password",
+  readScope: "request",
   // Why system-only: unauthenticated token redemption (see the doc comment above); the AI never
   // handles credentials or reset tokens.
   actorScope: ["system"],

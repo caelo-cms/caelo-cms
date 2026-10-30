@@ -22,7 +22,7 @@
  * lists, whose `get` read live).
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
 import type { ListItem, ListTypeDef, PageTypeDef } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
@@ -161,19 +161,9 @@ export async function loadListEntities<K extends ListEntityKind>(
   const visible = branchId
     ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${branchId}::uuid)`
     : sql`chat_branch_id IS NULL`;
-  const idFilter = opts.ids
-    ? sql` AND id IN (${sql.join(
-        opts.ids.map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )})`
-    : sql``;
+  const idFilter = opts.ids ? sql` AND id = ANY(${uuidArray(opts.ids)})` : sql``;
   // Slugs never change after create, so the live column filters correctly.
-  const slugFilter = opts.slugs
-    ? sql` AND slug IN (${sql.join(
-        opts.slugs.map((s) => sql`${s}`),
-        sql`, `,
-      )})`
-    : sql``;
+  const slugFilter = opts.slugs ? sql` AND slug = ANY(${textArray(opts.slugs)})` : sql``;
   const columns: SQL =
     kind === "list"
       ? sql`name, purpose, list_type_id::text AS list_type_id, items`
@@ -205,10 +195,7 @@ export async function loadListEntities<K extends ListEntityKind>(
         FROM ${sql.raw(spec.snapshotTable)} es
         JOIN site_snapshots ss ON ss.id = es.site_snapshot_id
        WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-         AND es.${sql.raw(spec.idColumn)} IN (${sql.join(
-           rows.map((r) => sql`${r.id}::uuid`),
-           sql`, `,
-         )})
+         AND es.${sql.raw(spec.idColumn)} = ANY(${uuidArray(rows.map((r) => r.id))})
        ORDER BY es.${sql.raw(spec.idColumn)}, ss.created_at DESC
     `)) as unknown as { id: string; state: unknown; at: string }[];
     for (const s of snap) {

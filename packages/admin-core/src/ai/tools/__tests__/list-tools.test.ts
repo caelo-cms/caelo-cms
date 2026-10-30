@@ -59,6 +59,7 @@ function harness(values: Record<string, unknown>, errors: Record<string, string>
     registry.register(
       defineOperation({
         name,
+        readScope: "request",
         actorScope: ["human", "ai", "system"],
         database: "cms_admin",
         input: z.any(),

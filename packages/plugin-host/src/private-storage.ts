@@ -20,7 +20,7 @@
  */
 
 import { privateReadColumns } from "@caelo-cms/plugin-sandbox";
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import {
@@ -441,12 +441,7 @@ export async function privateList(
   const wheres = [sql`t."caelo_deleted_at" IS NULL`, sql`t."caelo_chat_branch_id" IS NULL`];
   // Rows the branch touched come from the overlay instead.
   if (overlay.size > 0) {
-    wheres.push(
-      sql`t.id NOT IN (${sql.join(
-        [...overlay.keys()].map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )})`,
-    );
+    wheres.push(sql`t.id <> ALL(${uuidArray([...overlay.keys()])})`);
   }
   if (plan.since !== null) wheres.push(sql`t."created_at" > ${plan.since}`);
   if (plan.before !== null) wheres.push(sql`t."created_at" < ${plan.before}`);
@@ -458,7 +453,8 @@ export async function privateList(
     wheres.push(
       values.length === 0
         ? sql`FALSE`
-        : sql`t.${col(k)} IN (${sql.join(
+        : // caelo:bounded-list parseAnyOf caps one column at ANY_OF_MAX (1000) values, and they bind typed (string | number | boolean)
+          sql`t.${col(k)} IN (${sql.join(
             values.map((v) => sql`${v}`),
             sql`, `,
           )})`,

@@ -9,6 +9,7 @@ export * from "./base-css.js";
 export * from "./bug-intake.js";
 export * from "./build-page.js";
 export * from "./cap-failures.js";
+export * from "./change-journal.js";
 export * from "./cloud-shell-install.js";
 export * from "./content.js";
 export * from "./context.js";

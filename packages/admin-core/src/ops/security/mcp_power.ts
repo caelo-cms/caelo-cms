@@ -259,6 +259,7 @@ function bridgeOrError():
 
 export const mcpListToolsOp = defineOperation({
   name: "mcp.list_tools",
+  readScope: "request",
   // Why system-only: the bearer is in the input (same reason as
   // mcp.send_chat) — the HTTP shell dispatches as system, the handler
   // resolves the real actor itself.
@@ -311,6 +312,7 @@ async function rememberRemoteSession(
 
 export const mcpOpenSessionOp = defineOperation({
   name: "mcp.open_session",
+  readScope: "request",
   // Why system-only: the bearer token is in the input (same reason as mcp.list_tools) — the HTTP
   // shell dispatches as system and the handler resolves the real actor.
   actorScope: ["system"],
@@ -460,6 +462,7 @@ export const mcpOpenSessionOp = defineOperation({
 
 export const mcpExecuteToolOp = defineOperation({
   name: "mcp.execute_tool",
+  readScope: "request",
   // Why system-only: the bearer token is in the input — the handler resolves the token's actor and
   // dispatches the tool AS the AI actor bound to it.
   actorScope: ["system"],
@@ -934,6 +937,7 @@ async function handOffQueuedProposal(
 
 export const mcpGetApprovalOutcomeOp = defineOperation({
   name: "mcp.get_approval_outcome",
+  readScope: "request",
   // Why system-only: the bearer token is in the input — the handler resolves the real actor from
   // it. Read-only for the agent: it learns the operator's decision, never makes it (§11.A).
   actorScope: ["system"],
@@ -1037,6 +1041,7 @@ const contextSkillRow = z.object({
 
 export const mcpGetContextOp = defineOperation({
   name: "mcp.get_context",
+  readScope: "request",
   // Why system-only: the bearer token is in the input — the handler resolves the real actor from
   // it.
   actorScope: ["system"],

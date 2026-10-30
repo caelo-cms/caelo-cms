@@ -286,7 +286,7 @@ describe("more than 1,000 guards (#1214, CLAUDE.md §2)", () => {
   });
 });
 
-describe("module_changes keeps verdicts current on writes (#1214)", () => {
+describe("module_changes keeps verdicts current on writes (#1214, change journal #1267)", () => {
   it("records a new embed and drops the verdict of one that stopped reaching out", async () => {
     modules = [
       {
@@ -312,7 +312,13 @@ describe("module_changes keeps verdicts current on writes (#1214)", () => {
     // Module 3 was deleted: modules.list no longer returns it.
     guard(3, "gated", "analytics", ["www.google-analytics.com"]);
     const out = await ops.module_changes?.(makeCtx(), {
-      moduleIds: [moduleId(1), moduleId(2), moduleId(3)],
+      chatBranchId: null,
+      changes: [1, 2, 3].map((n) => ({
+        kind: "module",
+        op: n === 3 ? "delete" : "update",
+        rowId: moduleId(n),
+        parentId: null,
+      })),
     });
     expect(out).toEqual({ flagged: 1, cleared: 2 });
     const guards = await allGuards(store.query as never);
@@ -334,7 +340,12 @@ describe("module_changes keeps verdicts current on writes (#1214)", () => {
       status: "gated",
       decided_by: "operator",
     });
-    expect(await ops.module_changes?.(makeCtx(), { moduleIds: [moduleId(4)] })).toEqual({
+    expect(
+      await ops.module_changes?.(makeCtx(), {
+        chatBranchId: null,
+        changes: [{ kind: "module", op: "update", rowId: moduleId(4), parentId: null }],
+      }),
+    ).toEqual({
       flagged: 0,
       cleared: 0,
     });

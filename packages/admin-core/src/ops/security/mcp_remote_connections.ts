@@ -26,7 +26,7 @@
  * to enumerate or widen who reaches the site from outside.
  */
 
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { describeMcpClient, type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -122,10 +122,7 @@ async function emailsOf(
   const users = (await withSystemRls(tx, ctx, () =>
     tx.execute(sql`
       SELECT id::text AS id, email FROM users
-      WHERE id IN (${sql.join(
-        ids.map((a) => sql`${a}::uuid`),
-        sql`, `,
-      )})
+      WHERE id = ANY(${uuidArray(ids)})
     `),
   )) as unknown as { id: string; email: string }[];
   for (const u of users) emails.set(u.id, u.email);
@@ -225,6 +222,7 @@ function notFound(operation: string, id: string) {
 
 export const listMcpRemoteConnectionsOp = defineOperation({
   name: "mcp_remote_connections.list",
+  readScope: "request",
   // Why human-only: the registry of who reaches the site from outside is
   // Owner-controlled, like mcp_tokens.list — the AI must not enumerate it.
   actorScope: ["human", "system"],
@@ -237,6 +235,7 @@ export const listMcpRemoteConnectionsOp = defineOperation({
 
 export const revokeMcpRemoteConnectionOp = defineOperation({
   name: "mcp_remote_connections.revoke",
+  readScope: "request",
   // Why human-only: credential lifecycle (same as mcp_tokens.revoke).
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -269,6 +268,7 @@ export const revokeMcpRemoteConnectionOp = defineOperation({
 
 export const restoreMcpRemoteConnectionOp = defineOperation({
   name: "mcp_remote_connections.restore",
+  readScope: "request",
   // Why human-only: re-opens remote access — the Owner's decision only.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -299,6 +299,7 @@ export const restoreMcpRemoteConnectionOp = defineOperation({
 
 export const setMcpRemoteConnectionCapOp = defineOperation({
   name: "mcp_remote_connections.set_cap",
+  readScope: "request",
   // Why human-only: spending limits on the install's AI are the Owner's
   // (mcp_tokens carry theirs from mint time, set by the Owner too).
   actorScope: ["human", "system"],
@@ -354,6 +355,7 @@ const blockInput = z.object({ actorId: z.string().uuid() }).strict();
 
 export const blockMcpRemoteUserOp = defineOperation({
   name: "mcp_remote_connections.block_user",
+  readScope: "request",
   // Why human-only: cuts a person off from outside access — the Owner's
   // decision, like revoke.
   actorScope: ["human", "system"],
@@ -397,6 +399,7 @@ export const blockMcpRemoteUserOp = defineOperation({
 
 export const unblockMcpRemoteUserOp = defineOperation({
   name: "mcp_remote_connections.unblock_user",
+  readScope: "request",
   // Why human-only: re-opens outside access — the Owner's decision only.
   actorScope: ["human", "system"],
   database: "cms_admin",

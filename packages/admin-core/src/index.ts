@@ -68,6 +68,12 @@ export {
   DEFAULT_BUG_INTAKE_URL,
 } from "./bug-forwarding/client.js";
 export { startBugForwardingWorker, stopBugForwardingWorker } from "./bug-forwarding/worker.js";
+// P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
+// #1267 — the change journal's retention GC (replaced the #392 outbox GC).
+export {
+  startChangeJournalGcWorker,
+  stopChangeJournalGcWorker,
+} from "./change-journal-gc-worker.js";
 // v0.2.37 — proposal GC sidecar (sweeps stale pending rows daily).
 export {
   startChatImageGcWorker,
@@ -98,13 +104,6 @@ export {
   describeUnpublishedLinks,
   type UnpublishedLinkTarget,
 } from "./deploy/unpublished-links.js";
-// P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
-export {
-  _domainEventGcOnceForTests,
-  startDomainEventGcWorker,
-  stopDomainEventGcWorker,
-} from "./domain-event-gc-worker.js";
-export { type DomainEventInput, type DomainEventKind, emitDomainEvent } from "./domain-events.js";
 export {
   type DeliverResetEmailArgs,
   deliverPasswordResetEmail,
@@ -119,8 +118,15 @@ export {
 } from "./email/transport.js";
 // #1215 — live-refresh topics instead of editor timer polling.
 export {
+  type EntityChangeListener,
+  type LiveFanOut,
+  type LiveFanOutOptions,
   type LiveTopicListener,
+  liveTopicsPayload,
+  parseLiveTopicsPayload,
   publishLiveTopics,
+  startLiveFanOut,
+  subscribeEntityChanges,
   subscribeLiveTopics,
   type WaitForLiveTopicsOptions,
   waitForLiveTopics,

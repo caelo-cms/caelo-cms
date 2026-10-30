@@ -28,6 +28,7 @@ const agentStatusSchema = z.object({
 
 export const platformUpdatesAgentStatusOp = defineOperation({
   name: "platform_updates.agent_status",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),

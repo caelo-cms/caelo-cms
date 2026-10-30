@@ -14,7 +14,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { bootstrap, resetPluginHost, runPluginOperation } from "@caelo-cms/plugin-host";
+import {
+  bootstrap,
+  drainChangeConsumers,
+  resetPluginHost,
+  runPluginOperation,
+} from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -330,23 +335,21 @@ describe("#397 — context-aware translation", () => {
     );
     expect(statusRow[0]?.translation_status).toBe("up_to_date");
 
-    // --- Staleness: drain the outbox backlog, then a live SOURCE edit
-    // marks the sibling needs_update (the variant's own translate
-    // writes were skipped — its row is not 'source').
-    let drained = 0;
-    for (;;) {
-      const tick = await op<{ scanned: number }>("translation_staleness_tick", {});
-      drained += tick.scanned;
-      if (tick.scanned === 0) break;
-      if (drained > 100_000) throw new Error("outbox never drained");
-    }
+    // --- Staleness (#1267: from the change journal): drain what the
+    // translation wrote, then a live SOURCE edit marks the sibling
+    // needs_update (the variant's own translate writes were skipped — its
+    // row is not 'source').
+    const drain = async () => {
+      const reports = await drainChangeConsumers({ adapter, registry });
+      for (const r of reports) if (r.error) throw new Error(`${r.slug}: ${r.error}`);
+    };
+    await drain();
     const upd = await execute(registry, adapter, SYS_CTX, "pages.update", {
       pageId: sourceId,
       title: "Pricing v2",
     });
     if (!upd.ok) throw new Error(JSON.stringify(upd.error));
-    const tick = await op<{ marked: number; scanned: number }>("translation_staleness_tick", {});
-    expect(tick.marked).toBe(1);
+    await drain();
     const stale = await sqlAsPlugin(
       async (tx) =>
         (await tx.unsafe(

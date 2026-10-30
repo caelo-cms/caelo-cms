@@ -45,7 +45,6 @@ import {
   type PluginAdminQuery,
   type PluginAi,
   type PluginContextTier1,
-  type PluginEvents,
   type PluginWrite,
   z,
 } from "@caelo-cms/plugin-sdk";
@@ -208,14 +207,48 @@ function aiOf(ctx: unknown): PluginAi {
   return ai;
 }
 
-function eventsOf(ctx: unknown): PluginEvents {
-  const events = (ctx as { events?: PluginEvents }).events;
-  if (!events) {
-    throw new Error(
-      "international-site: ctx.events missing — domain_events capability not granted",
-    );
+/** What the host hands the change consumer (`PluginChangesArgs`, #1267). */
+const stalenessChangesArgs = z.object({
+  chatBranchId: z.string().uuid().nullable(),
+  changes: z
+    .array(
+      z.object({
+        kind: z.string(),
+        op: z.enum(["insert", "update", "delete", "truncate"]),
+        rowId: z.string(),
+        parentId: z.string().nullable(),
+      }),
+    )
+    .max(500),
+});
+
+/**
+ * Mark every sibling variant of these SOURCE pages `needs_update`
+ * (idempotent: an already stale sibling is left alone).
+ */
+async function markSiblingsStale(
+  q: PluginAdminQuery,
+  sourcePageIds: Iterable<string>,
+): Promise<number> {
+  let marked = 0;
+  for (const pageId of sourcePageIds) {
+    const rows = (await q.list("page_variants", {
+      page_id: pageId,
+      limit: 1,
+    })) as unknown as PageVariantRow[];
+    const row = rows[0];
+    if (row?.translation_status !== "source") continue;
+    const siblings = (await q.list("page_variants", {
+      group_id: row.group_id,
+      limit: 100,
+    })) as unknown as PageVariantRow[];
+    for (const sib of siblings) {
+      if (sib.id === row.id || sib.translation_status === "needs_update") continue;
+      await q.update("page_variants", sib.id, { translation_status: "needs_update" });
+      marked += 1;
+    }
   }
-  return events;
+  return marked;
 }
 
 function adminQueryOf(ctx: unknown): PluginAdminQuery {
@@ -889,6 +922,9 @@ export default definePlugin<PluginContextTier1>({
       page_id: "ref:pages:cascade",
       locale_code: "string",
       translation_status: "enum:source,up_to_date,needs_update",
+      // Retired by #1267 (it held a domain-event id): no longer written.
+      // Still declared so the previous release's writes succeed during the
+      // roll; removed with the domain-event tables (0442's release).
       source_event_cursor: "int",
       created_at: "timestamp",
     },
@@ -973,7 +1009,7 @@ export default definePlugin<PluginContextTier1>({
     "ai_provider",
     "chat_runner_tools",
     "background_workers",
-    "domain_events",
+    "change_journal",
     "head_contributions",
     "content_variants",
     "link_resolve",
@@ -1857,108 +1893,129 @@ export default definePlugin<PluginContextTier1>({
     },
 
     /**
-     * #397 worker tick — consume the domain-event outbox and mark
-     * sibling variants of edited SOURCE pages needs_update. Branch
-     * writes (payload.chatBranchId) are skipped: staleness starts when
-     * the change lands on main (page.updated on publish/merge carries
-     * no branch id). At-least-once delivery is safe — the mark is
-     * idempotent.
+     * The change consumer (#397, on the change journal since #1267): the
+     * host hands it committed changes of the MAIN line — a chat's change
+     * arrives when its Stage lands it there, which is when staleness
+     * starts. Marks the sibling variants of changed SOURCE pages
+     * needs_update, re-derives chrome staleness when a module or a shared
+     * content instance changed, and the list translations' statuses from
+     * the main line on any change. At-least-once delivery is safe: every
+     * mark is idempotent.
      */
-    translation_staleness_tick: async (ctx) => {
+    translation_staleness_tick: async (ctx, args) => {
+      const { changes } = stalenessChangesArgs.parse(args);
+      if (changes.length === 0) return { marked: 0, scanned: 0 };
       const q = adminQueryOf(ctx);
-      const events = eventsOf(ctx);
-      const batch = await events.poll({
-        kinds: [
-          "page.updated",
-          "page.published",
-          "module.updated",
-          "list.items_changed",
-          "list_type.changed",
-          "list.deleted",
-          "page.properties_changed",
-          "page.terms_changed",
-        ],
-        limit: 200,
-      });
-      if (batch.events.length === 0) return { marked: 0, scanned: 0 };
-      // Epic #1107 — any live change a list translation depends on
-      // (entries, list types, deleted lists, page properties, content
-      // instances, modules, publishing) re-derives the stored statuses
-      // from the main line: added → missing, changed → needs_update,
-      // gone → orphaned (kept), back → restored. Idempotent, so
-      // at-least-once delivery is safe. Branch changes wait for their
-      // Stage, like page staleness below; a chat's preview computes the
-      // same from hashes meanwhile.
-      const listsTouched = batch.events.some(
-        (ev) => !(ev.payload as { chatBranchId?: string | null } | null)?.chatBranchId,
-      );
+      const cms = cmsOf(ctx);
       const sourcePageIds = new Set<string>();
+      const instanceIds = new Set<string>();
       // #592 — a live edit of a module (layout chrome renders its field
       // defaults) or of a shared content instance may change chrome a
       // translated locale variant was derived from.
       let chromeTouched = false;
-      for (const ev of batch.events) {
-        const payload = ev.payload as { chatBranchId?: string | null; contentInstanceId?: string };
-        if (payload?.chatBranchId) continue;
-        if (ev.kind === "module.updated") {
-          chromeTouched = true;
-          continue;
+      for (const c of changes) {
+        if (c.op === "truncate") continue;
+        switch (c.kind) {
+          case "module":
+            chromeTouched = true;
+            break;
+          case "content_instance":
+            chromeTouched = true;
+            instanceIds.add(c.rowId);
+            break;
+          case "page":
+          case "page_layout":
+          case "page_seo":
+            if (c.op !== "delete") sourcePageIds.add(c.rowId);
+            break;
+          case "page_module_content":
+            if (c.parentId) sourcePageIds.add(c.parentId);
+            break;
+          // Lists, list types, page types and terms are the list
+          // reconciliation's (below); a page's own staleness is its content.
+          default:
+            break;
         }
-        // List events are handled by the list reconciliation below; a
-        // page's own staleness is about its content, not its terms.
-        if (
-          ev.kind === "list.items_changed" ||
-          ev.kind === "list_type.changed" ||
-          ev.kind === "list.deleted" ||
-          ev.kind === "page.terms_changed" ||
-          ev.kind === "page.properties_changed"
-        ) {
-          continue;
-        }
-        if (payload?.contentInstanceId) chromeTouched = true;
-        sourcePageIds.add(ev.entityId);
       }
-      let marked = 0;
-      for (const pageId of sourcePageIds) {
-        const rows = (await q.list("page_variants", {
-          page_id: pageId,
-          limit: 1,
-        })) as unknown as PageVariantRow[];
-        const row = rows[0];
-        if (row?.translation_status !== "source") continue;
-        const siblings = (await q.list("page_variants", {
-          group_id: row.group_id,
-          limit: 100,
-        })) as unknown as PageVariantRow[];
-        for (const sib of siblings) {
-          if (sib.id === row.id || sib.translation_status === "needs_update") continue;
-          await q.update("page_variants", sib.id, {
-            translation_status: "needs_update",
-            source_event_cursor: batch.nextCursor,
+      // A value edit on a (possibly shared) instance is a content change on
+      // EVERY page it renders on (#627: its parents' pages included).
+      for (const id of instanceIds) {
+        const got = await cms
+          .call<{ renderedOn: { pageId: string }[] }>("content_instances.get", { id })
+          .catch((e: unknown) => {
+            // A deleted instance has no pages left to render on; its
+            // placements changed with it and arrive as page changes.
+            if (e instanceof Error && /not found|NotFound/i.test(e.message)) return null;
+            throw e;
           });
+        for (const p of got?.renderedOn ?? []) sourcePageIds.add(p.pageId);
+      }
+      let marked = await markSiblingsStale(q, sourcePageIds);
+      if (chromeTouched) marked += await refreshChromeStaleness(await chromeDepsOf(ctx));
+      const deps = await chromeDepsOf(ctx);
+      const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
+      return { marked, scanned: changes.length, lists };
+    },
+
+    /**
+     * The change consumer's rebuild (#1267): runs on first activation and
+     * when the plugin's journal cursor fell behind the journal's
+     * retention. Chrome and list statuses are recomputed from their stored
+     * source hashes, exactly. Page staleness has no stored source
+     * fingerprint, so changes the plugin did not see cannot be told apart
+     * from changes it did: every translated sibling is flagged
+     * needs_update, so the operator reviews them instead of trusting a
+     * status nobody checked.
+     */
+    rebuild_translation_staleness: async (ctx) => {
+      const q = adminQueryOf(ctx);
+      let marked = 0;
+      for (let afterId: string | undefined; ; ) {
+        const rows = (await q.list("page_variants", {
+          translation_status: "up_to_date",
+          orderBy: "id",
+          limit: 1000,
+          ...(afterId ? { afterId } : {}),
+        })) as unknown as PageVariantRow[];
+        for (const row of rows) {
+          await q.update("page_variants", row.id, { translation_status: "needs_update" });
           marked += 1;
         }
+        if (rows.length < 1000) break;
+        afterId = rows.at(-1)?.id;
       }
-      if (chromeTouched) marked += await refreshChromeStaleness(await chromeDepsOf(ctx));
-      let lists = { updated: 0, inserted: 0, collected: 0 };
-      if (listsTouched) {
-        const deps = await chromeDepsOf(ctx);
-        lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
-      }
-      await events.commit(batch.nextCursor);
-      return { marked, scanned: batch.events.length, lists };
+      marked += await refreshChromeStaleness(await chromeDepsOf(ctx));
+      const deps = await chromeDepsOf(ctx);
+      const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
+      return { marked, lists };
     },
+  },
+  /**
+   * Translation staleness from the change journal (#397, #1267): live
+   * changes only — a chat's change counts once its Stage lands it.
+   */
+  changeConsumer: {
+    operationName: "translation_staleness_tick",
+    rebuildOperationName: "rebuild_translation_staleness",
+    kinds: [
+      "page",
+      "page_layout",
+      "page_seo",
+      "page_module_content",
+      "page_terms",
+      "page_type",
+      "module",
+      "content_instance",
+      "list",
+      "list_type",
+    ],
+    lines: "main",
   },
   workers: [
     {
       name: "locale-cache-refresh",
       cron: "0 * * * * *",
       operationName: "refresh_locales",
-    },
-    {
-      name: "translation-staleness",
-      cron: "*/30 * * * * *",
-      operationName: "translation_staleness_tick",
     },
   ],
   tools: [

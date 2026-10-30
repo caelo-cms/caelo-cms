@@ -9,7 +9,7 @@
  * it without an import cycle.
  */
 
-import type { defineOperation } from "@caelo-cms/query-api";
+import { type defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
 import type { CheckRuleProblem } from "../../quality/checks/evaluate.js";
 import {
@@ -21,7 +21,6 @@ import {
   scoreKey,
 } from "../../quality/gate.js";
 import type { QualityCategory, QualityProblem } from "../../quality/ratchet.js";
-import { uuidList } from "./_shared.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -102,7 +101,7 @@ export async function loadAcceptances(
     SELECT page_id::text AS page_id, kind, audit_id, category, accepted_score, accepted_count
     FROM quality_acceptances
     WHERE revoked_at IS NULL
-      AND (page_id = ANY(${uuidList(pageIds)}) OR (page_id IS NULL AND kind = 'check'))
+      AND (page_id = ANY(${uuidArray(pageIds)}) OR (page_id IS NULL AND kind = 'check'))
   `)) as unknown as {
     page_id: string | null;
     kind: "finding" | "score" | "check";

@@ -110,6 +110,7 @@ const proposePromoteInput = z
 
 export const proposeDeployPromoteOp = defineOperation({
   name: "deploy.propose_promote",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposePromoteInput,
@@ -215,6 +216,7 @@ const proposeRollbackInput = z
 
 export const proposeDeployRollbackOp = defineOperation({
   name: "deploy.propose_rollback",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeRollbackInput,
@@ -320,6 +322,7 @@ export const beginExecuteDeployProposalOp = requiresApproverPermission(
   ["deploy.trigger"],
   defineOperation({
     name: "deploy.begin_execute_proposal",
+    readScope: "request",
     // Why human-only: the first step of deploy.execute_proposal (the Owner's
     // Approve click, §11.A), run as the approver; no AI tool wraps it.
     actorScope: ["human", "system"],
@@ -426,6 +429,7 @@ export const endExecuteDeployProposalOp = requiresApproverPermission(
   ["deploy.trigger"],
   defineOperation({
     name: "deploy.end_execute_proposal",
+    readScope: "request",
     // Why human-only: the last step of deploy.execute_proposal (the Owner's
     // Approve click, §11.A), run as the approver; no AI tool wraps it.
     actorScope: ["human", "system"],
@@ -547,6 +551,7 @@ async function runExecuteDeployProposal(
 
 const executeDeployProposalOpDefinition = defineStepwiseOperation({
   name: "deploy.execute_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -576,6 +581,7 @@ async function claimedPending(
 
 export const rejectDeployProposalOp = defineOperation({
   name: "deploy.reject_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -614,6 +620,7 @@ export const rejectDeployProposalOp = defineOperation({
 
 export const listPendingDeployProposalsOp = defineOperation({
   name: "deploy.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

@@ -44,6 +44,7 @@ import {
   visitorConsentGranted,
 } from "@caelo-cms/plugin-host";
 import { verifySignedCookie } from "./middleware/signed-cookie.js";
+import { publishedCacheUsable } from "./published-changes.js";
 
 export const VISITOR_COOKIE = "caelo_visitor_id";
 export const VISITOR_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
@@ -99,15 +100,14 @@ export function clearVisitorCookieHeader(): string {
 }
 
 // The provider's rule changes when the Owner bumps the policy version or
-// the set of declared purposes changes. The same 5 s ceiling as the
-// gateway's settings keeps a bump from taking effect late while sparing
-// every request a provider round-trip; a change in the declarations (a
-// plugin activated or switched off) drops the cache at once, so a rule
-// built before a newly declared purpose existed is never applied to it.
-const CONSENT_RULE_TTL_MS = 5_000;
+// the set of declared purposes changes. Cached like the gateway's settings
+// (#1267, published-changes.ts): served while the gateway listens for the
+// admin's publish notifications and dropped on each, so a bump takes effect
+// on the next request; a change in the declarations (a plugin activated or
+// switched off) drops the cache at once, so a rule built before a newly
+// declared purpose existed is never applied to it.
 let cachedRule: {
   rule: VisitorConsentRule | null;
-  loadedAt: number;
   declarations: string;
 } | null = null;
 
@@ -125,15 +125,11 @@ function declarationsSignature(): string {
  */
 export async function loadVisitorConsentRule(): Promise<VisitorConsentRule | null> {
   const declarations = declarationsSignature();
-  if (
-    cachedRule &&
-    cachedRule.declarations === declarations &&
-    Date.now() - cachedRule.loadedAt < CONSENT_RULE_TTL_MS
-  ) {
+  if (cachedRule && cachedRule.declarations === declarations && publishedCacheUsable()) {
     return cachedRule.rule;
   }
   const rule = await resolveVisitorConsentRule();
-  cachedRule = { rule, loadedAt: Date.now(), declarations };
+  cachedRule = { rule, declarations };
   return rule;
 }
 

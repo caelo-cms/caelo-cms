@@ -22,6 +22,7 @@
 import type { LoadedPlugin } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { publishedCacheUsable } from "../published-changes.js";
 
 export interface RateLimitSpec {
   readonly perVisitorMax: number;
@@ -32,12 +33,12 @@ const DEFAULT_SPEC: RateLimitSpec = { perVisitorMax: 30, windowSeconds: 60 };
 const BURST_TOKENS = 10;
 const BURST_REFILL_PER_SEC = 1;
 
-// P13 audit re-pass — cache spec lookups for 5s. Most public POSTs hit
-// plugins with no override row; without this cache we burn one DB
-// roundtrip per request just to find out. Cleared on `pg_notify(
-// 'caelo_gateway_settings', …)` via invalidateRateLimitSpecCache().
-const SPEC_TTL_MS = 5_000;
-const specCache = new Map<string, { spec: RateLimitSpec; loadedAt: number }>();
+// P13 audit re-pass — cache spec lookups. Most public POSTs hit plugins
+// with no override row; without this cache we burn one DB roundtrip per
+// request just to find out. Served only while the gateway listens for the
+// admin's publish notifications, and cleared on each (#1267,
+// published-changes.ts) via invalidateRateLimitSpecCache().
+const specCache = new Map<string, RateLimitSpec>();
 
 export function invalidateRateLimitSpecCache(): void {
   specCache.clear();
@@ -69,9 +70,7 @@ export async function resolveRateLimitSpec(
   // P13 audit re-pass — cache hit fast path.
   const cacheKey = `${pluginSlug}:${operation}`;
   const cached = specCache.get(cacheKey);
-  if (cached && Date.now() - cached.loadedAt < SPEC_TTL_MS) {
-    return cached.spec;
-  }
+  if (cached && publishedCacheUsable()) return cached;
   // 1. Check overrides table.
   // The override as the admin published it (#635), its profile already
   // dereferenced at publish time.
@@ -103,7 +102,7 @@ export async function resolveRateLimitSpec(
         ? { perVisitorMax: opSpec.max, windowSeconds: opSpec.windowSec }
         : DEFAULT_SPEC;
   }
-  specCache.set(cacheKey, { spec: resolved, loadedAt: Date.now() });
+  specCache.set(cacheKey, resolved);
   return resolved;
 }
 

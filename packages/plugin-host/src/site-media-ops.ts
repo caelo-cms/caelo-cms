@@ -79,6 +79,7 @@ const denied = (operation: string, message: string) =>
 
 const findOp = defineOperation({
   name: SITE_MEDIA_OPS.find,
+  readScope: "request",
   // Why plugin-only: the grant is the plugin's; humans and the AI use media.list.
   actorScope: ["plugin"],
   database: "cms_admin",
@@ -110,6 +111,7 @@ const findOp = defineOperation({
 
 const inspectOp = defineOperation({
   name: SITE_MEDIA_OPS.inspect,
+  readScope: "request",
   // Why plugin-only: see find.
   actorScope: ["plugin"],
   database: "cms_admin",
@@ -134,6 +136,7 @@ const inspectOp = defineOperation({
 
 const readOp = defineOperation({
   name: SITE_MEDIA_OPS.read,
+  readScope: "request",
   // Why plugin-only: see find.
   actorScope: ["plugin"],
   database: "cms_admin",

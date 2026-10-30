@@ -19,6 +19,7 @@ import {
  */
 export const revertModuleOp = defineOperation({
   name: "snapshots.revert_module",
+  readScope: "request",
   // Why human-only: Owner-only — content revert; AI proposes via chat-keyed Undo path.
   actorScope: ["human", "system"],
   database: "cms_admin",

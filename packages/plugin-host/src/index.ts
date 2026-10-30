@@ -33,6 +33,15 @@ export {
   serveBuildPluginCall,
 } from "./build-services.js";
 export { makePluginContext } from "./capabilities.js";
+// #1267 — plugins react to the change journal (replaces #1214's module push).
+export {
+  type ChangeConsumersHandle,
+  changeConsumerName,
+  type DrainReport,
+  drainChangeConsumers,
+  pluginChangeFilter,
+  startChangeConsumers,
+} from "./change-consumers.js";
 export {
   collectBuildAssets,
   injectPluginAssets,
@@ -152,12 +161,14 @@ export {
 } from "./list-source-resolution.js";
 export { pluginListSourcesRegistry } from "./list-sources.js";
 export {
+  AWAITING_CAPABILITY_APPROVAL,
   activateApprovedExternalPlugin,
   type BootstrapOpts,
   bootstrap,
   type LoadReport,
   loadActivatedPlugin,
   resetPluginHost,
+  unapprovedCapabilities,
 } from "./loader.js";
 // #1008 — whether a plugin runs in this process: where its skills are
 // available, and what the Publish-live gate checks every active plugin against.
@@ -165,13 +176,6 @@ export {
   pluginFailedHereReason,
   pluginRunsHere,
 } from "./local-availability.js";
-// #1214 — module changes reach the plugins that keep a per-module verdict.
-export {
-  type ModuleChangeScope,
-  moduleChangeContributors,
-  moduleChangeInvocation,
-  notifyModuleChanges,
-} from "./module-changes.js";
 export {
   activeDependentsOf,
   dependentsMessage,
@@ -216,7 +220,7 @@ export {
   type PluginRowState,
   withPluginScope,
 } from "./row-snapshots.js";
-export { stopRuntimeHeartbeat } from "./runtime-health.js";
+export { hostInstanceId, stopRuntimeHeartbeat } from "./runtime-health.js";
 export {
   pluginWorkerScheduler,
   type ScheduledWorker,

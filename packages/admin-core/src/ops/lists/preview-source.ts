@@ -307,6 +307,7 @@ function sourceNodeEntries(
 export const previewListSourceOp = withHumanisedLinks(
   defineOperation({
     name: OP,
+    readScope: "request",
     actorScope: ["human", "ai", "system"],
     database: "cms_admin",
     input: inputSchema,

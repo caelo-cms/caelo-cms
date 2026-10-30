@@ -9,6 +9,7 @@ describe("defineOperation", () => {
   it("preserves the input/output Zod schemas on the returned definition", () => {
     const op = defineOperation({
       name: "test.echo",
+      readScope: "request",
       actorScope: ["human", "system"],
       database: "cms_admin",
       input: z.object({ message: z.string() }),

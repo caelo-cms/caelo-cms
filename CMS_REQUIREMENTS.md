@@ -79,7 +79,7 @@ An open-source, AI-first Content Management System that enables users to design,
 - **Sources**: a query over pages (page type, terms, parent, order, limit ≤ 50) resolved at build time, system sources (breadcrumbs, children, siblings, page terms, pages of a term) and plugin sources. A page whose render reads a list or a query is rebuilt when that list or the query's result changes.
 - Every page has a **page type** (purpose, allowed templates, properties, vocabularies). Pages carry properties and terms from vocabulary lists (categories, tags). Page types replace the former template `kind`.
 - List types, lists and page types are draft state with snapshots, locks and undo like every other content; writes are routine (no §11.A gate). Writing types needs `content.structure`, granted by default to every role with `content.write`.
-- Core has no locale concept for lists: it exposes value addresses, plugin-declared definition attributes, the `list-resolve` composition point, domain events and audit contributions; a translation plugin does the translating (§7).
+- Core has no locale concept for lists: it exposes value addresses, plugin-declared definition attributes, the `list-resolve` composition point, the change journal and audit contributions; a translation plugin does the translating (§7).
 
 ### 3.3 Module Versioning
 
@@ -532,7 +532,7 @@ A plugin requests grants in its manifest; the Owner approves them at activation,
 | Private files | Immutable author-side files | Own files only; size quotas |
 | Client assets | A site-wide browser runtime on every page (§14.10) | Widest blast radius of any grant; shown as such at approval |
 | Consent provider | Reading the consent purposes every active plugin declares (`ctx.consentPurposes`), to ask visitors about them | Read-only, host-tagged with the declaring plugin; the provider decides what consent means for the whole site, so it is a conscious grant |
-| Contributions (head, sitemap, URL slots, data lists, domain events, deferrals) | Structured contributions core validates and renders | Never raw HTML into `<head>`; URL-shape changes are §11.A-gated (CLAUDE.md) |
+| Contributions (head, sitemap, URL slots, data lists, change consumers, deferrals) | Structured contributions core validates and renders | Never raw HTML into `<head>`; URL-shape changes are §11.A-gated (CLAUDE.md) |
 
 Hard-to-revert actions a plugin performs (e.g. a URL-strategy change) additionally go through the in-chat approval gate of CLAUDE.md §11.A, per call.
 
@@ -594,12 +594,13 @@ A plugin with the deferrals contribution declares `deferralsOperation`, receives
 - **Omitted when the visitor cannot release it.** A verdict of the form `{reason, omit: true, editorNotice}` (a consent vendor nobody has classified yet) makes a build emit nothing in the module's place — no placeholder, no parked copy. Only the editor preview shows `editorNotice` there (attributed to the module, with a `data-caelo-ask-ai` button that adds the module to the current chat), and the plugin's Stage-audit finding blocks Publish live until the question is resolved, so a missing header never ships unnoticed.
 - **Generic by design** — core learns "withheld by plugin X for reason Y", nothing about consent.
 
-#### Module changes — keeping a stored per-module verdict current (#1214)
+#### Change consumers — reacting to committed changes (#1214, #1267)
 
-A plugin that derives something from module content (consent-manager's embed scan) declares `moduleChangesOperation`. After every committed write that changes what a module renders — its source, a content instance's values, a delete, a revert, a merge — core calls it with the touched `moduleIds`, in the writer's scope: on the chat's branch for a chat write (so the plugin's rows branch and publish with it), on main otherwise. The plugin re-judges just those modules and stores the verdict, so its render hooks read stored verdicts instead of rescanning the site on every preview: a render's cost stays independent of the site's size.
+A plugin that derives something from site content (consent-manager's embed verdicts, international-site's translation staleness) declares a `changeConsumer`: the kinds of the entity change journal it reacts to, its own storage tables, the main line or every branch, an operation per batch and a rebuild operation (docs/dev/state-and-changes.md). The host runs it once per site at a time, woken by the journal, and dispatches each batch in its branch's scope: on a chat's branch for a chat write (so the plugin's rows branch and publish with it), on main otherwise. The plugin re-judges just what changed and stores the result, so its render hooks read stored results instead of rescanning the site on every preview: a render's cost stays independent of the site's size.
 
-- **Hooked into the snapshot emitter**, which every write passes, and run after the commit, with no pooled connection held; one call per transaction and scope.
-- **A failure never fails the write.** It is recorded against the plugin (#1008); the plugin's scheduled full scan repairs the verdict.
+- **Complete by construction**: the journal is written by table triggers, so an op, a Stage, an undo, a takeover and a migration all count; the cursor is persisted, so a change made while an instance was down is still delivered.
+- **Gated per kind**: every core kind needs the plugin's read grant of core data (`cms_admin`); another plugin's storage is never delivered.
+- **A failure never fails the write.** It is recorded against the plugin (#1008); the batch stays uncommitted and is delivered again. A cursor behind the journal's retention runs the rebuild.
 
 ### 14.11 Shipped plugins
 
@@ -625,9 +626,9 @@ The model above is normative. Where the code does not meet it yet, this list is 
 
 - **Shipped plugins' chat tools still write their public tables live** (e.g. comment moderation from a chat). Installed plugins are refused that from a chat branch; public tables have no branch.
 - **Runtime-installed plugins can be granted only private storage, private files, image generation, read access to the font library (`font_assets`), read access to site media (`site_media_read`, #530), the consent provider's purpose list (`consent_provider`), chat tools and companion skills so far.** Their grants are Owner receipts per artifact digest (`plugin_capability_grants`), checked inside every private-storage and private-file operation and every skill lookup; the other grants of §14.5 have no broker for them yet, and a plugin requesting one does not activate.
-- **Shipped plugins run in-process and receive their capabilities at load** rather than through Owner-approved, per-artifact grants; `cms_admin` is a broad capability rather than per-domain read/write grants.
+- **Shipped plugins run in-process and receive their capabilities at load** rather than through Owner-approved, per-artifact grants; `cms_admin` is a broad capability rather than per-domain read/write grants. Since #1267 a shipped plugin whose release asks for a capability the Owner has not approved for it (`plugins.approved_capabilities`) does not run until the Owner approves it at Settings → Plugins.
 - **A render call's `ctx.cms.call` is not refused for core writes.** Private storage refuses render and visitor writes; core operations carry no read/write marker the host could check.
-- **Host code still issues SQL directly** for plugin domain-event polling, AI cost accounting, the per-operation audit row and plugin registration in the loader. Plugin table storage itself goes through the `plugin_storage.*` / `plugin_public_storage.*` operations, which follow the branch model: chat writes land on the chat's branch with a `pluginRow` lock, Stage/publish applies them live, `chat.discard_branch` drops them, and main-line writes are snapshotted.
+- **Host code still issues SQL directly** for AI cost accounting, the per-operation audit row and plugin registration in the loader. Plugin table storage itself goes through the `plugin_storage.*` / `plugin_public_storage.*` operations, which follow the branch model: chat writes land on the chat's branch with a `pluginRow` lock, Stage/publish applies them live, `chat.discard_branch` drops them, and main-line writes are snapshotted.
 
 ## 15. Provisioning Strategy
 

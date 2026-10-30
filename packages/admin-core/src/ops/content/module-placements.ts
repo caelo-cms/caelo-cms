@@ -33,7 +33,7 @@
  * pages stays a handful of round-trips.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../../draft.js";
@@ -49,13 +49,6 @@ export interface ModulePlacements {
   readonly layouts: readonly string[];
   /** Slugs of modules whose content instances nest this module. */
   readonly nestedIn: readonly string[];
-}
-
-function idList(ids: readonly string[]) {
-  return sql.join(
-    ids.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
 }
 
 /** One page that places a module, as the caller's branch sees it. */
@@ -118,7 +111,7 @@ export async function findModulePagePlacements(
            p.current_path AS path, p.title
       FROM page_modules pm
       JOIN pages p ON p.id = pm.page_id
-     WHERE pm.module_id IN (${idList(moduleIds)})
+     WHERE pm.module_id = ANY(${uuidArray(moduleIds)})
        AND p.deleted_at IS NULL AND ${visible}
   `)) as unknown as { module_id: string; page_id: string; path: string; title: string }[];
   for (const r of liveRows) {
@@ -144,7 +137,7 @@ export async function findModulePagePlacements(
     const pageIds = [...new Set(branchedHits.map((h) => h.pageId))];
     const pageRows = (await tx.execute(sql`
       SELECT id::text AS id, current_path AS path, title FROM pages
-       WHERE id IN (${idList(pageIds)}) AND deleted_at IS NULL
+       WHERE id = ANY(${uuidArray(pageIds)}) AND deleted_at IS NULL
     `)) as unknown as { id: string; path: string; title: string }[];
     const pageById = new Map(pageRows.map((r) => [r.id, r]));
     for (const h of branchedHits) {
@@ -185,7 +178,7 @@ export async function findModulePlacements(
     SELECT DISTINCT lm.module_id::text AS module_id, l.slug
       FROM (${effectiveLayoutModulesSql(branchId)}) lm
       JOIN layouts l ON l.id = lm.layout_id
-     WHERE lm.module_id IN (${idList(moduleIds)}) AND l.deleted_at IS NULL
+     WHERE lm.module_id = ANY(${uuidArray(moduleIds)}) AND l.deleted_at IS NULL
   `)) as unknown as { module_id: string; slug: string }[];
   for (const r of layoutRows) layoutsByModule.get(r.module_id)?.add(r.slug);
 
@@ -206,7 +199,7 @@ export async function findModulePlacements(
   if (parentIds.size > 0) {
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug FROM modules
-       WHERE id IN (${idList([...parentIds])}) AND deleted_at IS NULL
+       WHERE id = ANY(${uuidArray([...parentIds])}) AND deleted_at IS NULL
     `)) as unknown as { id: string; slug: string }[];
     for (const r of rows) parentSlugs.set(r.id, r.slug);
     // …and one this chat deleted (branched) no longer renders it either.

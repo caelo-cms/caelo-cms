@@ -19,14 +19,14 @@
  * counts only when it names a main-line page that exists.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { uuidList } from "./quality/_shared.js";
 
 export const markPluginDataPagesOp = defineOperation({
   name: "plugin_data.mark_pages",
+  readScope: "request",
   // Why human-only: the plugin host's own bookkeeping after a declared
   // trigger succeeded (or a validated visitor hint). Nobody decides it, and
   // a mark only schedules a re-render of what is already published.
@@ -58,7 +58,7 @@ export const markPluginDataPagesOp = defineOperation({
                                            last_source)
       SELECT ${input.pluginId}::uuid, p.id, clock_timestamp(), clock_timestamp(), ${input.source}
       FROM pages p
-      WHERE p.id = ANY(${uuidList(ids)})
+      WHERE p.id = ANY(${uuidArray(ids)})
         AND p.deleted_at IS NULL
         AND p.chat_branch_id IS NULL
       ON CONFLICT (plugin_id, page_id) DO UPDATE

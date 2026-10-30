@@ -278,6 +278,7 @@ function buildSnapshotState(theme: Theme): ThemeState {
 
 export const listThemesOp = defineOperation({
   name: "themes.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -292,6 +293,7 @@ export const listThemesOp = defineOperation({
 
 export const getThemeOp = defineOperation({
   name: "themes.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ slug: slugSchema }).strict(),
@@ -304,6 +306,7 @@ export const getThemeOp = defineOperation({
 
 export const getActiveThemeOp = defineOperation({
   name: "themes.get_active",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -360,6 +363,7 @@ const updateTokensInput = z
 
 export const updateThemeTokensOp = defineOperation({
   name: "themes.update_tokens",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: updateTokensInput,
@@ -613,6 +617,7 @@ const updateMetaInput = z
 
 export const updateThemeMetaOp = defineOperation({
   name: "themes.update_meta",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: updateMetaInput,
@@ -716,6 +721,7 @@ const setAssetInput = z
 
 export const setThemeAssetOp = defineOperation({
   name: "themes.set_asset",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: setAssetInput,
@@ -844,6 +850,7 @@ const duplicateInput = z
 
 export const duplicateThemeOp = defineOperation({
   name: "themes.duplicate",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: duplicateInput,
@@ -963,6 +970,7 @@ export const importThemeOp = defineOperation({
   // had no external consumers; the op now accepts pre-parsed tokens
   // (caller runs autoDetectAndImport in TS-land).
   name: "themes.import",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: importInput,
@@ -1031,6 +1039,7 @@ export const importThemeOp = defineOperation({
 
 export const exportThemeDtcgOp = defineOperation({
   name: "themes.export_dtcg",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ themeSlug: slugSchema }).strict(),
@@ -1080,6 +1089,7 @@ const historyEntrySchema = z.object({
 
 export const listThemeHistoryOp = defineOperation({
   name: "themes.list_history",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
