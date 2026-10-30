@@ -800,4 +800,22 @@ describe("structure/manual-page-listing (#1256)", () => {
     );
     expect(f).toEqual([]);
   });
+  it("bare and dotted site_text conditions keep hand-kept cards counted", () => {
+    for (const cond of ["site_text", "site_text.guides_heading"]) {
+      const ST: StructureModule = {
+        ...LINK_LIST,
+        id: id(39),
+        slug: "site-text-cond",
+        html: `<section class="ll">{{#${cond}}}<ul>{{#links}}<li><a href="{{link}}">{{label}}</a></li>{{/links}}</ul>{{/${cond}}}</section>`,
+      };
+      const html = linkList(GUIDES.slice(0, 7), (n) => local("links", n)).replace(
+        LINK_LIST.id,
+        ST.id,
+      );
+      const f = structureFindings(build(html), [...MODULES, ST], [], INDEX).filter(
+        (x) => x.ruleId === "structure/manual-page-listing",
+      );
+      expect(f.map((x) => x.severity)).toEqual(["error"]);
+    }
+  });
 });

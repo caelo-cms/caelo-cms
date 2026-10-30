@@ -376,14 +376,15 @@ function sectionScope(
   return isCondition(name) ? same : generated;
 }
 
+/**
+ * The rendering context's heads (`CONTEXT_HEADS` in shared
+ * template-sections.ts): `page` and `site_text`, bare or dotted.
+ */
+const CONTEXT_HEADS = new Set(["page", "site_text"]);
+
 /** Engine-provided values that only test truthiness (never iterate entries). */
 function isCondition(name: string): boolean {
-  return (
-    name === "page" ||
-    name.startsWith("page.") ||
-    name.startsWith("site_text.") ||
-    /^(is|has|count)_/.test(name)
-  );
+  return CONTEXT_HEADS.has(name.split(".")[0] ?? name) || /^(is|has|count)_/.test(name);
 }
 
 /**
