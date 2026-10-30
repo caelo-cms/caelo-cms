@@ -40,9 +40,10 @@ import { type ExecutionContext, err, ok, type Result } from "@caelo-cms/shared";
 import { readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { describeError } from "../ai/tools/_describe-error.js";
 import { LIVE_RELEASE_WAIT_MS, tryLockLiveRelease } from "../deploy/live-release-lock.js";
 import { resolveOutputRoot } from "../deploy/output-root.js";
-import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
+import { markRedirectsBehind } from "../deploy/redirect-sync.js";
 import { tryLockStagingPublication } from "../deploy/staging-publication-lock.js";
 import { loadStaticPublisher, type PublishSummary } from "../deploy/static-publisher.js";
 import { forgetAllBakes } from "../plugin-data/stale-pages.js";
@@ -339,7 +340,7 @@ export const releaseRollbackOp = defineOperation({
   database: "cms_admin",
   input: rollbackInput,
   output: z.discriminatedUnion("kind", [
-    rollbackOutput.extend({ kind: z.literal("done") }),
+    rollbackOutput.extend({ kind: z.literal("done"), targetId: z.string() }),
     z.object({ kind: z.literal("busy"), heldBy: z.string().nullable() }),
   ]),
   handler: async (ctx, input, tx) => {
@@ -383,16 +384,36 @@ export const rollbackDeployOp = defineStepwiseOperation({
       const r = await execute(steps.registry, steps.adapter, ctx, "deploy.release_rollback", input);
       if (!r.ok) return err(r.error);
       const attempt = r.value as
-        | ({ kind: "done" } & z.infer<typeof rollbackOutput>)
+        | ({ kind: "done"; targetId: string } & z.infer<typeof rollbackOutput>)
         | { kind: "busy"; heldBy: string | null };
       if (attempt.kind === "done") {
+        // The build is back; now the redirects as saved now, in a sync of
+        // their own. A failure is recorded and retried by the redirect-sync
+        // worker (the target stays behind); the rollback itself succeeded.
+        const synced = await execute(
+          steps.registry,
+          steps.adapter,
+          ctx,
+          "redirects.sync_provider",
+          {
+            trigger: "rollback",
+            targetIds: [attempt.targetId],
+            ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
+          },
+        );
+        if (!synced.ok) {
+          console.error("[deploy] redirects not synced after the rollback; retried automatically", {
+            runId: attempt.newRunId,
+            error: describeError(synced.error),
+          });
+        }
         return ok({ buildId: attempt.buildId, newRunId: attempt.newRunId });
       }
       if (Date.now() >= deadline) {
         return err({
           kind: "HandlerError",
           operation: "deploy.rollback",
-          message: `${attempt.heldBy ? `a Publish live or plugin-data build (run ${attempt.heldBy})` : "a release of the previous Caelo version (during the update)"} kept releasing the live site for ${Math.round(LIVE_RELEASE_WAIT_MS / 60_000)} minutes, so nothing was rolled back. Roll back again once it finished (Settings → Deployments shows it).`,
+          message: `${attempt.heldBy ? `a Publish live or plugin-data build (run ${attempt.heldBy})` : "a redirect push or a release of the previous Caelo version (during the update)"} kept releasing the live site for ${Math.round(LIVE_RELEASE_WAIT_MS / 60_000)} minutes, so nothing was rolled back. Roll back again once it finished (Settings → Deployments shows it).`,
         });
       }
       await abortableSleep(pause, stop);
@@ -414,12 +435,13 @@ async function rollbackOnce(
 ): Promise<
   | {
       readonly kind: "done";
-      readonly result: Result<{ buildId: string; newRunId: string }, QueryError>;
+      readonly result: Result<{ buildId: string; newRunId: string; targetId: string }, QueryError>;
     }
   | { readonly kind: "busy"; readonly heldBy: string | null }
 > {
-  const done = (result: Result<{ buildId: string; newRunId: string }, QueryError>) =>
-    ({ kind: "done", result }) as const;
+  const done = (
+    result: Result<{ buildId: string; newRunId: string; targetId: string }, QueryError>,
+  ) => ({ kind: "done", result }) as const;
   const startedAt = await runStartedAt(tx);
   const targetRows = (await tx.execute(sql`
     SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default, page_url_style
@@ -501,15 +523,13 @@ async function rollbackOnce(
   `)) as unknown as { id: string }[];
   const newRunId = newRunRows[0]?.id ?? "";
   // #1157 — the rolled-back build carries the redirects of its own time;
-  // the provider must serve the table as it is now.
-  await syncRedirectsInTx(tx, ctx, {
-    trigger: "rollback",
-    targetIds: [target.id],
-    outputRoot: root,
-  });
+  // the provider must serve the table as it is now. #1254 — marked here,
+  // pushed by deploy.rollback after this transaction commits, so no
+  // redirect push runs inside it.
+  await markRedirectsBehind(tx, [target.id]);
   // #1155 — the build put back may lack any bake made since it ran.
   if (target.env === "production") await forgetAllBakes(tx);
-  return done(ok({ buildId, newRunId }));
+  return done(ok({ buildId, newRunId, targetId: target.id }));
 }
 
 // ─── Deploy bridge ────────────────────────────────────────────────────

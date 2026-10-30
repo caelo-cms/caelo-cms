@@ -608,7 +608,7 @@ async function runPromote(
       waitMs: LIVE_RELEASE_WAIT_MS,
       what: "live release slot",
       busyMessage: (heldBy) =>
-        `${heldBy ? `another Publish live, rollback or plugin-data build (run ${heldBy})` : "a release of the previous Caelo version (during the update)"} kept releasing the live site for ${Math.round(LIVE_RELEASE_WAIT_MS / 60_000)} minutes, so nothing was published. Publish live again once it finished (Settings → Deployments shows it).`,
+        `${heldBy ? `another Publish live, rollback or plugin-data build (run ${heldBy})` : "a redirect push or a release of the previous Caelo version (during the update)"} kept releasing the live site for ${Math.round(LIVE_RELEASE_WAIT_MS / 60_000)} minutes, so nothing was published. Publish live again once it finished (Settings → Deployments shows it).`,
     });
     if (!live.ok) return await fail(live.message);
     heartbeat.expectLiveRelease(true);

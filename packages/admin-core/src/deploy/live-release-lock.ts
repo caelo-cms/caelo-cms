@@ -25,13 +25,16 @@
  *     as their run: Publish live polls outside any transaction while it is
  *     held, the plugin-data tick skips (its marks stay pending for the next
  *     tick).
- *   - Rollback, the redirect sync and the CDN purge run inside one short
- *     transaction. They LOCK the row ({@link tryLockLiveRelease}) only while
- *     no run holds the lease and keep it until their transaction ends.
- *     Rollback waits for a free lease OUTSIDE its transaction and then tries
- *     again; the redirect sync leaves production behind (that run's finish
- *     step syncs it, the worker retries); the purge skips (the publish's own
- *     release purges the CDN, and the purge retries on the next status read).
+ *   - Rollback and the CDN purge run inside one short transaction. They
+ *     LOCK the row ({@link tryLockLiveRelease}) only while no run holds the
+ *     lease and keep it until their transaction ends. Rollback waits for a
+ *     free lease OUTSIDE its transaction and then tries again; the purge
+ *     skips (the publish's own release purges the CDN, and the purge
+ *     retries on the next status read).
+ *   - #1254 — the redirect sync CLAIMS the lease for the seconds of its
+ *     push ({@link claimLiveReleaseForSync}) and holds no transaction while
+ *     the provider answers. Busy: it leaves production behind (the holder's
+ *     finish step syncs it, the worker retries).
  *
  * Lock order: live release first, then the staging publication
  * (staging-publication-lock.ts). A Stage never takes this lease, so the two
@@ -55,12 +58,15 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   claimLease,
+  claimSyncLease,
   type DeployLeaseHolder,
   type LeaseRowLock,
   lockLeaseRow,
   previousReleaseRunInFlight,
   releaseLease,
+  releaseSyncLease,
   renewLease,
+  renewSyncLease,
   tryPreviousReleaseLock,
 } from "./deploy-lease.js";
 
@@ -144,4 +150,33 @@ export function renewLiveRelease(
 /** Release the lease if `runId` holds it (see releaseLease). */
 export function releaseLiveRelease(tx: TransactionRunner, runId: string): Promise<boolean | null> {
   return releaseLease(tx, LIVE_RELEASE_LEASE, runId);
+}
+
+/**
+ * #1254 — the redirect sync's claim, in its own short transaction: take
+ * the lease for `syncId` while nobody holds it, so the provider push that
+ * follows (with no transaction open) never interleaves with a release of
+ * the same channel. Never waits; false = someone holds it (that holder
+ * syncs after its own release, the sync worker retries).
+ */
+export async function claimLiveReleaseForSync(
+  tx: TransactionRunner,
+  args: { readonly syncId: string; readonly ttlMs: number },
+): Promise<boolean> {
+  // The previous release's protocol (file header): its holder is in flight.
+  if (!(await tryPreviousReleaseLock(tx, LEGACY_LIVE_RELEASE_LOCK_KEY))) return false;
+  return claimSyncLease(tx, LIVE_RELEASE_LEASE, args);
+}
+
+/** Push a redirect sync's claim forward (see {@link claimLiveReleaseForSync}). */
+export function renewLiveReleaseForSync(
+  tx: TransactionRunner,
+  args: { readonly syncId: string; readonly ttlMs: number },
+): Promise<boolean> {
+  return renewSyncLease(tx, LIVE_RELEASE_LEASE, args);
+}
+
+/** Release a redirect sync's claim (see {@link claimLiveReleaseForSync}). */
+export function releaseLiveReleaseForSync(tx: TransactionRunner, syncId: string): Promise<void> {
+  return releaseSyncLease(tx, LIVE_RELEASE_LEASE, syncId);
 }

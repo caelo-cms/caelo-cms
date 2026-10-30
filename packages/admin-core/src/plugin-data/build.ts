@@ -676,7 +676,7 @@ export const beginPluginDataRunOp = defineOperation({
         });
         if (!lease.acquired) {
           throw new LiveReleaseBusy(
-            `${lease.heldBy ? `run ${lease.heldBy.runId}` : "a rollback, CDN purge or a release of the previous Caelo version"} is releasing the live site right now; the marks stay pending for the next tick`,
+            `${lease.heldBy ? `run ${lease.heldBy.runId}` : "a rollback, CDN purge, redirect push or a release of the previous Caelo version"} is releasing the live site right now; the marks stay pending for the next tick`,
           );
         }
         // What is live cannot have changed since the bake read it: Publish
