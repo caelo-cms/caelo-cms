@@ -32,7 +32,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
-import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
+import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -118,7 +118,7 @@ beforeAll(async () => {
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       seeded.templateId = tpl[0]?.id ?? "";
-      await adoptTemplateIntoDefaultPageType(tx, seeded.templateId);
+      await adoptTemplateIntoHomePageType(tx, seeded.templateId);
       await tx`
         INSERT INTO template_blocks (template_id, name, display_name, position)
         VALUES (${seeded.templateId}::uuid, 'content', 'Content', 0)
@@ -165,8 +165,8 @@ beforeAll(async () => {
       `) as unknown as { id: string }[];
 
       const page = (await tx`
-        INSERT INTO pages (slug, short_title, title, template_id)
-        VALUES (${PAGE_SLUG}, 'Branch fields', 'Branch fields', ${seeded.templateId}::uuid)
+        INSERT INTO pages (slug, short_title, title, template_id, page_type_confirmed)
+        VALUES (${PAGE_SLUG}, 'Branch fields', 'Branch fields', ${seeded.templateId}::uuid, true)
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       seeded.pageId = page[0]?.id ?? "";

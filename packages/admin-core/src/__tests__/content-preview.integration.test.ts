@@ -90,6 +90,7 @@ afterAll(async () => {
 describe("pages.render_preview", () => {
   it("composes the template HTML with two modules in slot order, plus stamped CSS/JS", async () => {
     const tpl = await execute(registry, adapter, systemCtx, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "Preview T",
       html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

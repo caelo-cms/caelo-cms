@@ -85,6 +85,7 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
   const tpl = await execute(registry, adapter, SYSTEM, "templates.create", {
+    pageType: "home",
     slug: `${PFX}-tpl`,
     displayName: "T",
     html: `<body><caelo-slot name="content"></caelo-slot></body>`,

@@ -25,7 +25,7 @@ const noInput = z.object({}).strict();
 export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
   name: "get_site_defaults",
   description:
-    "Fetch CURRENT site defaults + identity: default layout/template (slug + UUID), siteName, sitePurpose, siteLanguage (`<html lang>`), design brief. Read before set_site_defaults / set_site_identity, and after them for fresh state instead of repeating the write.",
+    "Fetch CURRENT site defaults + identity: default layout (slug + UUID), siteName, sitePurpose, siteLanguage (`<html lang>`), design brief. Read before set_site_defaults / set_site_identity, and after them for fresh state instead of repeating the write.",
   opName: "site_defaults.get",
   input: noInput,
   format: (value) => {
@@ -34,8 +34,6 @@ export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
         defaults: {
           defaultLayoutSlug: string;
           defaultLayoutId: string;
-          defaultTemplateSlug: string;
-          defaultTemplateId: string;
           siteName: string | null;
           sitePurpose: string | null;
           siteLanguage: string | null;
@@ -45,7 +43,6 @@ export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
     if (!d) return "No site defaults configured yet — set_site_defaults creates the singleton.";
     return [
       `default layout: ${d.defaultLayoutSlug} (id=${d.defaultLayoutId})`,
-      `default template: ${d.defaultTemplateSlug} (id=${d.defaultTemplateId})`,
       `siteName: ${d.siteName ?? "(not set)"}`,
       `sitePurpose: ${d.sitePurpose ?? "(not set)"}`,
       `siteLanguage: ${d.siteLanguage ?? "(not set — publishing fails until set_site_identity sets it)"}`,

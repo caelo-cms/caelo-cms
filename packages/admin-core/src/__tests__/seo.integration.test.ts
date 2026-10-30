@@ -51,10 +51,11 @@ beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL!, publicDatabaseUrl: PUBLIC_URL! });
   registry = new OperationRegistry();
   registerAdminOps(registry);
-  // Seed a draft page (uses site_defaults resolver for layout/template).
+  // Seed a draft page (the home page type's default template).
   const r = await execute(registry, adapter, systemCtx, "pages.create", {
     slug: PAGE_SLUG,
     title: "P8 SEO test page",
+    pageType: "home",
   });
   if (!r.ok) throw new Error("seed page failed");
   pageId = (r.value as { pageId: string }).pageId;

@@ -144,28 +144,21 @@ async function seedNews(suffix: string): Promise<{
     })
   ).list.items;
   const typeSlug = `${PFX}news-${suffix}`;
-  // A new page type needs a template; create one in the default type, then
-  // define the news type around it.
+  // #1276 — the type and its first template in one call.
   const { templateId } = await op<{ templateId: string }>(SYS, "templates.create", {
     slug: `${PFX}news-tpl-${suffix}`,
     displayName: "News",
     html: '<main><caelo-slot name="content"></caelo-slot></main>',
-  });
-  await op(SYS, "page_types.upsert_many", {
-    pageTypes: [
-      {
-        slug: typeSlug,
-        name: "News",
-        purpose: "Dated news articles",
-        templates: [templateId],
-        defaultTemplate: templateId,
-        properties: [
-          { name: "teaser", label: "Teaser", type: "text" },
-          { name: "featured", label: "Featured", type: "boolean", default: false },
-        ],
-        vocabularies: [{ list: vocabId, cardinality: "one", required: true }],
-      },
-    ],
+    newPageType: {
+      slug: typeSlug,
+      name: "News",
+      purpose: "Dated news articles",
+      properties: [
+        { name: "teaser", label: "Teaser", type: "text" },
+        { name: "featured", label: "Featured", type: "boolean", default: false },
+      ],
+      vocabularies: [{ list: vocabId, cardinality: "one", required: true }],
+    },
   });
   return {
     templateId,
@@ -177,23 +170,25 @@ async function seedNews(suffix: string): Promise<{
 }
 
 describe("#1107 page types", () => {
-  it("seeds one page type per template kind and makes it the site default", async () => {
+  it("seeds one page type per template kind; site defaults hold no page type (#1276)", async () => {
     const v = await op<{ pageTypes: { slug: string; templates: string[] }[] }>(
       SYS,
       "page_types.list",
       {},
     );
-    const defaults = await op<{
-      defaults: { defaultPageTypeSlug: string; defaultTemplateId: string };
-    }>(SYS, "site_defaults.get", {});
-    const def = v.pageTypes.find((t) => t.slug === defaults.defaults.defaultPageTypeSlug);
-    expect(def?.templates).toContain(defaults.defaults.defaultTemplateId);
+    const tpl = await op<{ templates: { id: string; slug: string }[] }>(SYS, "templates.list", {});
+    const home = tpl.templates.find((t) => t.slug === "home-template");
+    expect(v.pageTypes.find((t) => t.slug === "home")?.templates).toContain(home?.id ?? "-");
+    const defaults = await op<{ defaults: Record<string, unknown> }>(SYS, "site_defaults.get", {});
+    expect(defaults.defaults).not.toHaveProperty("defaultPageTypeId");
+    expect(defaults.defaults).not.toHaveProperty("defaultTemplateId");
   });
 
   it("creates a page with its type from the template, properties with defaults, validated terms", async () => {
     const news = await seedNews("a");
-    // The seed template also sits in the default type (templates.create
-    // without pageType): a template alone cannot say which type is meant.
+    // Put the news template in a second type too: a template alone then
+    // cannot say which type is meant.
+    await op(SYS, "templates.update", { templateId: news.templateId, pageType: "home" });
     const ambiguous = await fail(SYS, "pages.create", {
       slug: `${PFX}n1`,
       title: "N1",
@@ -375,9 +370,9 @@ describe("#1107 page types", () => {
     });
     expect(bad).toContain("no page type");
 
-    // #1177 — the error names the order that works, and following it works:
-    // a page type needs a template, so the template comes first.
-    expect(bad).toContain("leave pageType out");
+    // #1177 / #1276 — the error names the call that works (the type and
+    // its first template together), and following it works.
+    expect(bad).toContain("newPageType");
     const viaTool = await createTemplateTool.handler(
       SYS,
       {
@@ -388,25 +383,23 @@ describe("#1107 page types", () => {
       },
       { registry, adapter } as unknown as ToolContext,
     );
+    expect(viaTool.content).toContain("newPageType");
     expect(viaTool.content).toContain("upsert_page_types_many");
     expect(viaTool.content).not.toContain("page_types.upsert_many");
     const first = await op<{ templateId: string }>(SYS, "templates.create", {
       slug: `${PFX}article-tpl`,
       displayName: "Article",
       html: '<main><caelo-slot name="content"></caelo-slot></main>',
+      newPageType: { slug: `${PFX}article`, name: "Article", purpose: "Long-form articles." },
     });
-    const created = await op<{ pageTypes: { slug: string }[] }>(SYS, "page_types.upsert_many", {
-      pageTypes: [
-        {
-          slug: `${PFX}article`,
-          name: "Article",
-          purpose: "Long-form articles.",
-          templates: [first.templateId],
-          defaultTemplate: first.templateId,
-        },
-      ],
-    });
-    expect(created.pageTypes[0]?.slug).toBe(`${PFX}article`);
+    const listed = await op<{ pageTypes: { slug: string; defaultTemplate: string }[] }>(
+      SYS,
+      "page_types.list",
+      {},
+    );
+    expect(listed.pageTypes.find((t) => t.slug === `${PFX}article`)?.defaultTemplate).toBe(
+      first.templateId,
+    );
   });
 
   it("stamps first_published_at once, on the first production publish only", async () => {

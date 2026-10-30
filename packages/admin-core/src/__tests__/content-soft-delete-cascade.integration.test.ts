@@ -66,6 +66,7 @@ describe("soft-delete cascade", () => {
   it("composer surfaces deleted module with isDeleted=true; preview drops it", async () => {
     // Seed template + slot.
     const tpl = await execute(registry, adapter, systemCtx, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "T",
       html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

@@ -38,9 +38,9 @@ test.beforeAll(() => {
         VALUES (\${"qv-" + stamp + "-tpl"}, 'T', '<main><caelo-slot name="content">_</caelo-slot></main>',
                 '', \${lay[0].id}) RETURNING id\`;
       for (const slug of JSON.parse(process.env.SLUGS)) {
-        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
-        const page = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, current_path)
-          VALUES (\${slug}, \${slug}, 'Quality view', \${tpl[0].id}, 'published', \${"/" + slug})
+        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
+        const page = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, current_path, page_type_confirmed)
+          VALUES (\${slug}, \${slug}, 'Quality view', \${tpl[0].id}, 'published', \${"/" + slug}, true)
           RETURNING id\`;
         await tx\`
           INSERT INTO quality_acceptances (page_id, kind, audit_id, accepted_count, reason, accepted_by)

@@ -6,7 +6,8 @@
    * page type, the type's properties and its categories / tags. Switching
    * the type offers only the templates the new type allows. One save sends
    * type, template, properties and terms to `pages.update`, which checks
-   * them against the type.
+   * them against the type. #1276: a save always names the type, so it
+   * also confirms a type nobody chose (the old stored default type).
    */
 
   import type { PageTypeDef } from "@caelo-cms/shared";
@@ -30,6 +31,8 @@
   interface Props {
     page: {
       pageType: string;
+      /** #1276 — false while nobody chose this page's type. */
+      pageTypeConfirmed?: boolean;
       templateId: string;
       properties: Record<string, unknown>;
       terms: string[];
@@ -105,6 +108,11 @@
             {#each pageTypes as t (t.id)}<option value={t.slug}>{t.name}</option>{/each}
           </Select>
           {#if type}<p class="text-xs text-muted-foreground">{type.purpose}</p>{/if}
+          {#if page.pageTypeConfirmed === false}
+            <p class="text-xs text-amber-700 dark:text-amber-300" data-testid="page-type-unconfirmed">
+              Nobody has chosen this page's type yet — pick the one that fits and save.
+            </p>
+          {/if}
         </div>
         <div class="space-y-1">
           <Label for="page-type-template">Template</Label>

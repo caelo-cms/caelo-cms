@@ -78,6 +78,7 @@ afterAll(async () => {
 describe("v0.10.0 chained branched edits", () => {
   it("chained pages.update on same branch preserves both edits at merge", async () => {
     const tpl = await execute(registry, adapter, HUMAN, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "T",
       html: "<main>{{content}}</main>",

@@ -19,8 +19,8 @@
  *
  * Same thresholds as the check: at least {@link MIN_LISTING_LINKS} links
  * to pages of one page type that cover at least
- * {@link MIN_LISTING_COVERAGE} of its published pages; the default page
- * type is exempt.
+ * {@link MIN_LISTING_COVERAGE} of its published pages; pages whose page
+ * type nobody chose (#1276) are exempt.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -38,12 +38,13 @@ export interface ListingPage {
   readonly currentPath: string;
   readonly title: string;
   readonly pageTypeId: string;
+  /** #1276 — false while nobody chose the page type: exempt. */
+  readonly pageTypeConfirmed: boolean;
   readonly status: "draft" | "published";
 }
 
 /** The site facts the hint compares against. */
 export interface ListingSite {
-  readonly defaultPageTypeId: string;
   readonly pageTypes: ReadonlyMap<string, { readonly slug: string; readonly name: string }>;
   readonly pages: readonly ListingPage[];
 }
@@ -114,7 +115,7 @@ export function pageListingHints(groups: readonly ListingGroup[], site: ListingS
       const p = resolve(link);
       // Only published targets count, as in the quality check: a draft
       // is no member of the published set the coverage is measured against.
-      if (!p || p.status !== "published" || p.pageTypeId === site.defaultPageTypeId) continue;
+      if (p?.status !== "published" || !p.pageTypeConfirmed) continue;
       const set = linkedByType.get(p.pageTypeId) ?? new Set<string>();
       set.add(p.id);
       linkedByType.set(p.pageTypeId, set);
@@ -152,21 +153,18 @@ export function pageListingHints(groups: readonly ListingGroup[], site: ListingS
 async function loadSite(ctx: ExecutionContext, toolCtx: ToolContext): Promise<ListingSite | null> {
   const run = (op: string, input: unknown) =>
     execute(toolCtx.registry, toolCtx.adapter, ctx, op, input);
-  const [defaults, types, pages] = await Promise.all([
-    run("site_defaults.get", {}),
+  const [types, pages] = await Promise.all([
     run("page_types.list", {}),
     run("pages.list", { includeDeleted: false }),
   ]);
-  if (!defaults.ok || !types.ok || !pages.ok) return null;
-  const d = (defaults.value as { defaults?: { defaultPageTypeId: string } | null }).defaults;
+  if (!types.ok || !pages.ok) return null;
   const typeRows = (types.value as { pageTypes?: { id: string; slug: string; name: string }[] })
     .pageTypes;
   const pageRows = (pages.value as { pages?: ListingPage[] }).pages;
-  // Without the stored default or the rows there is nothing to compare
-  // against: the hint is skipped, never guessed.
-  if (!d || !typeRows || !pageRows) return null;
+  // Without the rows there is nothing to compare against: the hint is
+  // skipped, never guessed.
+  if (!typeRows || !pageRows) return null;
   return {
-    defaultPageTypeId: d.defaultPageTypeId,
     pageTypes: new Map(typeRows.map((t) => [t.id, { slug: t.slug, name: t.name }])),
     pages: pageRows,
   };

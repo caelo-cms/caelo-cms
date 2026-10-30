@@ -100,6 +100,7 @@ beforeAll(async () => {
   catGuides = `caelo:term/${vocabId}/${items[0]?.id}`;
   catEngineering = `caelo:term/${vocabId}/${items[1]?.id}`;
   const { templateId } = await op<{ templateId: string }>(SYS, "templates.create", {
+    pageType: "home",
     slug: `${PFX}news-tpl`,
     displayName: "News",
     html: '<main><caelo-slot name="content"></caelo-slot></main>',

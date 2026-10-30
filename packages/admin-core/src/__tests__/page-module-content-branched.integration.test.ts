@@ -102,6 +102,7 @@ function systemCtx(branchId?: string): ExecutionContext {
 async function seedTemplateAndModule(): Promise<{ templateId: string; moduleId: string }> {
   const ctx = systemCtx();
   const tpl = await execute(registry, adapter, ctx, "templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "branched placement tpl",
     html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content"></caelo-slot></body></html>`,

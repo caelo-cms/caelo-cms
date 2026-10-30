@@ -21,6 +21,7 @@ import {
   pageCreateSchema,
   pageSetModulesSchema,
   pageShortTitleSchema,
+  pageTypeSlugSchema,
   pageUpdateSchema,
   type Result,
   redirectTargetPathSchema,
@@ -82,6 +83,12 @@ const pageRowSchema = z.object({
    */
   pageType: z.string(),
   pageTypeId: z.string(),
+  /**
+   * #1276 — false while nobody chose the page type (pages that sat on the
+   * old stored default type). The `structure/unconfirmed-page-type` check
+   * reports them; an update naming `pageType` confirms.
+   */
+  pageTypeConfirmed: z.boolean(),
   /** Property values, validated against the page type. */
   properties: z.record(z.string(), z.unknown()),
   /** Terms (`caelo:term/<listId>/<itemId>`). */
@@ -142,6 +149,7 @@ type RawPageRow = {
   short_title: string;
   template_id: string;
   page_type_id: string;
+  page_type_confirmed: boolean;
   properties: unknown;
   first_published_at: string | Date | null;
   status: "draft" | "published";
@@ -159,6 +167,7 @@ function iso(v: string | Date): string {
 interface TypeBound {
   readonly pageTypeId: string;
   readonly pageType: string;
+  readonly pageTypeConfirmed: boolean;
   readonly properties: Record<string, unknown>;
   readonly terms: string[];
 }
@@ -213,6 +222,7 @@ async function loadTypeBound(
     out.set(r.id, {
       pageTypeId,
       pageType: slugs.get(pageTypeId) ?? pageTypeId,
+      pageTypeConfirmed: o?.pageTypeConfirmed ?? r.page_type_confirmed,
       properties: { ...(o?.properties ?? ((liveProps ?? {}) as Record<string, unknown>)) },
       terms: [...(o?.terms ?? terms.get(r.id) ?? [])],
     });
@@ -236,6 +246,7 @@ function rowToPage(r: RawPageRow, bound: TypeBound | undefined): z.infer<typeof 
     templateId: r.template_id,
     pageType: bound?.pageType ?? r.page_type_id,
     pageTypeId: bound?.pageTypeId ?? r.page_type_id,
+    pageTypeConfirmed: bound?.pageTypeConfirmed ?? r.page_type_confirmed,
     properties: bound?.properties ?? ((liveProps ?? {}) as Record<string, unknown>),
     terms: bound?.terms ?? [],
     firstPublishedAt:
@@ -314,7 +325,8 @@ export const listPagesOp = defineOperation({
       SELECT pages.id::text AS id, pages.slug, pages.current_path,
              pages.parent_page_id::text AS parent_page_id, pages.title, pages.short_title,
              pages.template_id::text AS template_id,
-             pages.page_type_id::text AS page_type_id, pages.properties, pages.first_published_at,
+             pages.page_type_id::text AS page_type_id, pages.page_type_confirmed,
+             pages.properties, pages.first_published_at,
              pages.status, pages.version,
              pages.created_at, pages.updated_at, pages.deleted_at
       FROM pages
@@ -478,7 +490,7 @@ export const getPageOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, current_path, parent_page_id::text AS parent_page_id,
              title, short_title, template_id::text AS template_id,
-             page_type_id::text AS page_type_id, properties, first_published_at,
+             page_type_id::text AS page_type_id, page_type_confirmed, properties, first_published_at,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -512,7 +524,7 @@ export const getPageWithModulesOp = withHumanisedLinks(
       const pageRows = (await tx.execute(sql`
       SELECT id::text AS id, slug, current_path, parent_page_id::text AS parent_page_id,
              title, short_title, template_id::text AS template_id,
-             page_type_id::text AS page_type_id, properties, first_published_at,
+             page_type_id::text AS page_type_id, page_type_confirmed, properties, first_published_at,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -943,7 +955,7 @@ export const createPageOp = defineOperation({
         return err({
           kind: "HandlerError",
           operation: "pages.create",
-          message: `template ${templateId} (the default of page type "${resolved.def.slug}" or the site default) is deleted — pass templateId, and repair the default with page_types.upsert_many / set_site_defaults.`,
+          message: `template ${templateId} (the default template of page type "${resolved.def.slug}") is deleted — pass templateId, and repair the type's defaultTemplate with page_types.upsert_many.`,
         });
       }
     }
@@ -1086,7 +1098,7 @@ export const createPageOp = defineOperation({
     }
     const rows = (await tx.execute(sql`
       INSERT INTO pages (slug, title, short_title, template_id, status, chat_branch_id, parent_page_id, current_path,
-                         page_type_id, properties)
+                         page_type_id, page_type_confirmed, properties)
       VALUES (
         ${input.slug},
         ${input.title},
@@ -1097,6 +1109,7 @@ export const createPageOp = defineOperation({
         ${parentPageId}::uuid,
         ${plannedPath},
         ${resolved.typeId}::uuid,
+        true,
         ${jsonbParam(fit.properties)}
       )
       RETURNING id::text AS id
@@ -1299,6 +1312,7 @@ export const updatePageOp = defineOperation({
         version: currentVersion + 1,
         deletedAt: null,
         pageTypeId: typeBound.pageTypeId,
+        pageTypeConfirmed: typeBound.pageTypeConfirmed,
         properties: typeBound.properties,
         terms: typeBound.terms,
       };
@@ -1310,6 +1324,7 @@ export const updatePageOp = defineOperation({
         template_id: input.templateId !== undefined ? sql`${input.templateId}::uuid` : undefined,
         status: input.status,
         page_type_id: sql`${typeBound.pageTypeId}::uuid`,
+        page_type_confirmed: typeBound.pageTypeConfirmed,
         properties: sql`${jsonbParam(typeBound.properties)}`,
         version: sql`version + 1`,
       });
@@ -1368,7 +1383,10 @@ export const updatePageOp = defineOperation({
 /**
  * Epic #1107 — the page type, properties and terms a pages.update leaves
  * the page with, checked against the (possibly new) page type. Properties
- * merge (`null` removes one); `terms` replaces.
+ * merge (`null` removes one); `terms` replaces. #1276: the type counts as
+ * chosen once a write names `pageType` (also the current one — that is
+ * how a page on the old default type gets confirmed) or moves the page to
+ * another type through its template; otherwise the flag is kept.
  */
 async function nextTypeBound(
   tx: TransactionRunner,
@@ -1376,7 +1394,13 @@ async function nextTypeBound(
   input: z.infer<typeof pageUpdateSchema>,
   base: PageState,
 ): Promise<
-  | { ok: true; pageTypeId: string; properties: Record<string, unknown>; terms: string[] }
+  | {
+      ok: true;
+      pageTypeId: string;
+      pageTypeConfirmed: boolean;
+      properties: Record<string, unknown>;
+      terms: string[];
+    }
   | { ok: false; message: string }
 > {
   const resolved = await resolvePageTypeForWrite(tx, ctx.chatBranchId ?? null, {
@@ -1405,7 +1429,14 @@ async function nextTypeBound(
       message: `the page does not fit page type "${resolved.def.slug}": ${fit.issues.join(" ")}`,
     };
   }
-  return { ok: true, pageTypeId: resolved.typeId, properties: fit.properties, terms: fit.terms };
+  return {
+    ok: true,
+    pageTypeId: resolved.typeId,
+    pageTypeConfirmed:
+      input.pageType !== undefined || resolved.typeId !== base.pageTypeId || base.pageTypeConfirmed,
+    properties: fit.properties,
+    terms: fit.terms,
+  };
 }
 
 /**
@@ -2271,6 +2302,12 @@ export const duplicatePageOp = defineOperation({
       newShortTitle: pageShortTitleSchema.optional(),
       targetTemplateId: z.string().uuid().optional(),
       /**
+       * #1276 — the copy's page type (slug). Omitted = the source's type
+       * (or the one type listing `targetTemplateId` when the source's type
+       * does not allow it), with the source's confirmed flag.
+       */
+      pageType: pageTypeSlugSchema.optional(),
+      /**
        * 0264 — where the copy sits: a parent page id, or null for the
        * top level. Omitted = a sibling of the source (same parent).
        */
@@ -2345,7 +2382,11 @@ export const duplicatePageOp = defineOperation({
     const dupType = await nextTypeBound(
       tx,
       ctx,
-      { pageId: input.sourcePageId, templateId: targetTemplateId },
+      {
+        pageId: input.sourcePageId,
+        templateId: targetTemplateId,
+        ...(input.pageType !== undefined ? { pageType: input.pageType } : {}),
+      },
       sourceState,
     );
     if (!dupType.ok) {
@@ -2355,7 +2396,7 @@ export const duplicatePageOp = defineOperation({
     // page until publish, not a live draft other chats and the site see.
     const inserted = (await tx.execute(sql`
       INSERT INTO pages (slug, title, short_title, template_id, status, chat_branch_id, parent_page_id, current_path,
-                         page_type_id, properties)
+                         page_type_id, page_type_confirmed, properties)
       VALUES (
         ${input.newSlug}, ${title}, ${shortTitle},
         ${targetTemplateId}::uuid, 'draft',
@@ -2363,6 +2404,7 @@ export const duplicatePageOp = defineOperation({
         ${dupParent}::uuid,
         ${dupPath},
         ${dupType.pageTypeId}::uuid,
+        ${dupType.pageTypeConfirmed},
         ${jsonbParam(dupType.properties)}
       )
       RETURNING id::text AS id
@@ -2679,6 +2721,7 @@ export const changeTemplateOp = defineOperation({
       UPDATE pages
       SET template_id = ${input.newTemplateId}::uuid,
           page_type_id = ${typeBound.pageTypeId}::uuid,
+          page_type_confirmed = ${typeBound.pageTypeConfirmed},
           properties = ${jsonbParam(typeBound.properties)},
           updated_at = now(),
           version = version + 1

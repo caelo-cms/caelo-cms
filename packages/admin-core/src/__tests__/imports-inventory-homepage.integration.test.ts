@@ -69,6 +69,7 @@ async function wipe(): Promise<void> {
 /** A template with the one `content` block the crawled page fills. */
 async function seedContentTemplate(): Promise<string> {
   const tpl = await execute(registry, adapter, SYSTEM, "templates.create", {
+    pageType: "home",
     slug: TPL,
     displayName: "Import test template",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

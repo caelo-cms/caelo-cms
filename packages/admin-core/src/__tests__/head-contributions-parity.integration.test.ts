@@ -99,6 +99,7 @@ beforeAll(async () => {
   // from the seeded site_defaults).
   restoreSiteBaseUrl = await pinSiteBaseUrl(ADMIN_URL, "https://example.com");
   const tpl = await execute(registry, adapter, SYS_CTX, "templates.create", {
+    pageType: "home",
     slug: "t391p-tpl",
     displayName: "T391P",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

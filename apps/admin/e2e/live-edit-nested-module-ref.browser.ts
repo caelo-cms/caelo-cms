@@ -75,7 +75,7 @@ test("a right-click inside a sub-module references the sub-module, outside it th
         INSERT INTO templates (slug, display_name, html, css, layout_id)
         VALUES (\${process.env.TPL_SLUG}, 'le', '<body><caelo-slot name="content">_</caelo-slot></body>', '', (SELECT id FROM layouts WHERE slug = 'site-default'))
         RETURNING id::text AS id\`;
-      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${tpl[0].id}::uuid, 'content', 'Content', 0)\`;
       const entryFields = JSON.stringify([
         { name: "question", kind: "text", label: "Question" },
@@ -100,8 +100,8 @@ test("a right-click inside a sub-module references the sub-module, outside it th
         items.push({ moduleId: entry[0].id, contentInstanceId: ci[0].id });
       }
       const pg = await tx\`
-        INSERT INTO pages (slug, title, template_id, status)
-        VALUES (\${process.env.PAGE_SLUG}, 'LE Nested Page', \${tpl[0].id}::uuid, 'draft')
+        INSERT INTO pages (slug, title, template_id, status, page_type_confirmed)
+        VALUES (\${process.env.PAGE_SLUG}, 'LE Nested Page', \${tpl[0].id}::uuid, 'draft', true)
         RETURNING id::text AS id\`;
       const values = JSON.stringify({ title: "FAQ_TITLE", items });
       const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${faq[0].id}::uuid, \${values}::text::jsonb) RETURNING id::text AS id\`;

@@ -144,10 +144,10 @@ describe("#392 — domain-event outbox", () => {
           const tpl = (await tx.unsafe(
             `INSERT INTO templates (slug, display_name, html, css, layout_id) VALUES ('t392-tpl', 'T', '<main><caelo-slot name="content">_</caelo-slot></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
           )) as { id: string }[];
-          // Epic #1107 — a raw-inserted template joins the default page type so
+          // Epic #1107 — a raw-inserted template joins the `home` page type so
           // pages can use it (templates.create does this itself).
           await tx.unsafe(
-            `UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb('${tpl[0]?.id}'::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)`,
+            `UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb('${tpl[0]?.id}'::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL)`,
           );
           await tx.unsafe(
             `INSERT INTO template_blocks (template_id, name, display_name, position) VALUES ('${tpl[0]?.id}', 'content', 'Content', 0)`,

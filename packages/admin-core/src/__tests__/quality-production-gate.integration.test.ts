@@ -219,6 +219,7 @@ beforeAll(async () => {
   process.env.CAELO_OUTPUT_ROOT = testRoot;
 
   const { templateId } = await op<{ templateId: string }>(SYS, "templates.create", {
+    pageType: "home",
     slug: `${PFX}tpl`,
     displayName: "T",
     html: `<!doctype html><html lang="en"><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
@@ -379,6 +380,7 @@ describe("an Owner's direct production build ships only checked rendering", () =
 
   it("a live page moved to another template is audited", async () => {
     const { templateId } = await op<{ templateId: string }>(SYS, "templates.create", {
+      pageType: "home",
       slug: `${PFX}tpl2`,
       displayName: "T2",
       html: `<!doctype html><html lang="en"><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

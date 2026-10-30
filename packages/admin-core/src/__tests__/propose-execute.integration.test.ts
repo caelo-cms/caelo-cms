@@ -235,6 +235,7 @@ describe("propose/execute pair — templates (no-secret shape, blast-radius prev
     layoutId = (lr as { ok: true; value: { layoutId: string } }).value.layoutId;
 
     const r = await execute(registry, adapter, HUMAN, "templates.create", {
+      pageType: "home",
       slug: `${TEST_TAG}-tpl`,
       displayName: "PE Test Template",
       html: "<div>{{block:body}}</div>",
@@ -346,6 +347,7 @@ async function freshTemplate(): Promise<string> {
   const layoutId = (lr as { ok: true; value: { layoutId: string } }).value.layoutId;
   const slug = `${TEST_TAG}-tpl-${tag}`;
   const r = await execute(registry, adapter, HUMAN, "templates.create", {
+    pageType: "home",
     slug,
     displayName: "PE Test Template (fresh)",
     html: "<div>{{block:body}}</div>",

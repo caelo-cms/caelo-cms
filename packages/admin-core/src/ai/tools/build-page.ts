@@ -68,14 +68,13 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
         templateId: {
           type: "string",
           format: "uuid",
-          description:
-            "Omit -> the page type's default template (without `pageType`: site default).",
+          description: "Omit -> the page type's default template.",
         },
         pageType: {
           type: "string",
           pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
           description:
-            "What the page IS: a slug `list_page_types` shows for this site (e.g. `news` for an article); page queries ('latest news') find pages by it. Omit it for an ordinary page (gets the type listing `templateId`, else the site default). Never guess a slug.",
+            "REQUIRED for a new page (unless `templateId` belongs to exactly one type): what the page IS, a slug `list_page_types` shows (e.g. `news` for an article); page queries ('latest news') find pages by it. Never guess a slug.",
         },
         properties: {
           type: "object",
@@ -239,7 +238,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     "USE FOR: every page creation (THE page-creation tool); any page needing >1 module — never `add_module` / `create_content_instances` chains. `modules: []` = intentionally empty page shell.",
     "DO NOT USE FOR: one incremental module on an existing page -> `add_module` (target `page`); site chrome header/footer -> `add_module` (target `layout`; chrome never rides in a page body).",
     "CORE RULES:",
-    '- Creating: typed page -> `page.pageType` (+ `properties`/`terms`; an ordinary page omits pageType); always `page.metaDescription`, and `status:"published"` for a page that belongs on the site — a Stage refuses published pages without a description and builds only published ones; the result says what still blocks a Stage.',
+    '- Creating: `page.pageType` (+ `properties`/`terms`); always `page.metaDescription`, and `status:"published"` for a page that belongs on the site — a Stage refuses published pages without a description and builds only published ones; the result says what still blocks a Stage.',
     "- Per module, two modes: `moduleId` places an EXISTING module (`list_modules`; reuse first — shared modules keep pages consistent), or mint with `displayName` + `html` + `description` + `kind` + explicit `fields[]` (all required).",
     "- Pair `{{field_name}}` placeholders in `html` with `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`); never heuristic names (`cta2label2`) or numbered scalars (`label1`..`label10` -> ONE `list` field or a `module-list`).",
     '- An overview of pages (guides hub, category page) is ONE `list` field bound to a page query (`bind:"source"`, `source:{kind:"query", defaults:{page_type:…}}`; `term_pages` / `children`), never a hand-kept card per page.',

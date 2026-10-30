@@ -112,8 +112,7 @@ flowchart LR
 
   Pass2 --> Output["composed HTML<br/>used by /edit preview AND apps/static-generator"]
 
-  SiteDefaults[("site_defaults<br/>singleton row<br/>default_layout_id · default_template_id")]
-  SiteDefaults -. consulted at create-time only .-> Page
+  SiteDefaults[("site_defaults<br/>singleton row<br/>default_layout_id")]
   SiteDefaults -. consulted at create-time only .-> Template
 ```
 
@@ -204,7 +203,6 @@ erDiagram
   page_modules }o--|| modules : "module_id"
   layout_modules }o--|| modules : "module_id"
   site_defaults }o--|| layouts : "default_layout_id"
-  site_defaults }o--|| templates : "default_template_id"
 
   %% Snapshots
   site_snapshots ||--o{ page_snapshots : "groups"

@@ -144,6 +144,7 @@ beforeAll(async () => {
   await wipe();
   templateId = (
     await op<{ templateId: string }>(SYS, "templates.create", {
+      pageType: "home",
       slug: `${PFX}tpl`,
       displayName: "SEO through Stage",
       html: `<html><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

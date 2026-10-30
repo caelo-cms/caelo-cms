@@ -137,7 +137,7 @@ test.beforeAll(() => {
     out.templateId = tpl[0].id;
     await asSystem(async (tx) => {
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${out.templateId}::uuid, 'content', 'Content', 0)\`;
-      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${out.templateId}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)\`;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${out.templateId}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL)\`;
     });
     await op("page_types.upsert_many", { pageTypes: [{
       slug: E.PAGE_TYPE, name: "E2E article", purpose: "Articles of the lists spec.",
@@ -153,8 +153,8 @@ test.beforeAll(() => {
         (\${JSON.stringify([{ name: "menu", label: "Menu", kind: "list", listType: E.NAV_TYPE, bind: "shared", list: "caelo:list/" + menu.id }])}::text)::jsonb)
       RETURNING id::text AS id\`);
     const pg = await asSystem((tx) => tx\`
-      INSERT INTO pages (slug, title, template_id, status, page_type_id)
-      VALUES (\${E.PAGE}, 'Lists spec page', \${out.templateId}::uuid, 'draft', (SELECT default_page_type_id FROM site_defaults WHERE id = 1))
+      INSERT INTO pages (slug, title, template_id, status, page_type_id, page_type_confirmed)
+      VALUES (\${E.PAGE}, 'Lists spec page', \${out.templateId}::uuid, 'draft', (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL), true)
       RETURNING id::text AS id\`);
     out.pageId = pg[0].id;
     await asSystem(async (tx) => {

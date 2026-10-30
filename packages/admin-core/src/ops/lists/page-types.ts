@@ -16,13 +16,25 @@
 
 import { activeListExt } from "@caelo-cms/plugin-host";
 import { defineOperation, type ErrorDetail, handlerErrorFromDetails } from "@caelo-cms/query-api";
-import { checkPageTypeDef, ok, type PageTypeDef, pageTypeDefSchema } from "@caelo-cms/shared";
+import {
+  checkPageTypeDef,
+  ok,
+  type PageTypeDef,
+  pageTypeDefSchema,
+  pageTypeDistinctFromSchema,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { checkDefinitionExt } from "../../lists/ext.js";
 import { fitPageToType, loadVocabularyIndex } from "../../lists/page-fit.js";
 import { parseTermRef } from "../../lists/page-terms.js";
+import {
+  duplicatePageTypeMessage,
+  guardPageTypeSlug,
+  nearPageTypeHint,
+  type PageTypeForGuard,
+} from "../../lists/page-type-similar.js";
 import { loadPagesInView } from "../../lists/pages-view.js";
 import {
   loadListEntities,
@@ -138,11 +150,20 @@ export const getPageTypeOp = defineOperation({
 
 const upsertItemSchema = pageTypeDefSchema.extend({
   expectedVersion: z.number().int().positive().optional(),
+  /**
+   * #1276 — existing slugs this NEW type is deliberately distinct from.
+   * Not stored: it only lets the duplicate guard pass.
+   */
+  distinctFrom: pageTypeDistinctFromSchema.optional(),
 });
 
 /**
  * Create or replace page types, one transaction. A replaced definition is
- * checked against every page of the type (see the file header).
+ * checked against every page of the type (see the file header). A NEW type
+ * whose slug is the same kind of content as one the caller sees (or as
+ * another new type of the batch) is refused unless named in
+ * `distinctFrom`; a merely close slug returns a hint (#1276,
+ * lists/page-type-similar.ts).
  */
 export const upsertPageTypesManyOp = defineOperation({
   name: "page_types.upsert_many",
@@ -165,6 +186,8 @@ export const upsertPageTypesManyOp = defineOperation({
         pagesRewritten: z.number().int().nonnegative(),
       }),
     ),
+    /** #1276 — near-duplicate notes on new types (never a refusal). */
+    hints: z.array(z.string()).optional(),
   }),
   handler: async (ctx, input, tx) => {
     const op = "page_types.upsert_many";
@@ -179,16 +202,42 @@ export const upsertPageTypesManyOp = defineOperation({
       pagesRewritten: number;
     }[] = [];
     let wrote = false;
-    const seen = new Set<string>();
-    // #1277 — every definition problem of every page type, before the first write.
+    const hints: string[] = [];
+    // The duplicate guard compares against the types the caller sees and
+    // the batch's own entries (`blog` + `blogs` in one call is a duplicate).
+    const pageCounts = new Map<string, number>();
+    for (const p of await loadPagesInView(tx, branchId)) {
+      pageCounts.set(p.pageTypeId, (pageCounts.get(p.pageTypeId) ?? 0) + 1);
+    }
+    const inView = await loadListEntities(tx, "pageType", branchId);
+    const existingSlugs = new Set(inView.map((t) => t.state.slug));
+    const guardPool: PageTypeForGuard[] = [
+      ...inView.map((t) => ({
+        slug: t.state.slug,
+        purpose: t.state.definition.purpose,
+        pageCount: pageCounts.get(t.id) ?? 0,
+      })),
+      ...input.pageTypes.map((t) => ({ slug: t.slug, purpose: t.purpose, pageCount: 0 })),
+    ];
+    // #1277 — every definition problem of every page type, the #1276
+    // duplicate guard included, before the first write.
     const definitionProblems: ErrorDetail[] = [];
     for (const [i, item] of input.pageTypes.entries()) {
-      const { expectedVersion: _v, ...def } = item;
+      const { expectedVersion: _v, distinctFrom, ...def } = item;
       if (input.pageTypes.findIndex((t) => t.slug === def.slug) !== i) {
         definitionProblems.push({
           path: ["pageTypes", i, "slug"],
           message: "slug appears twice in this call — send each page type once",
         });
+      }
+      if (!existingSlugs.has(def.slug)) {
+        const dup = guardPageTypeSlug(def.slug, guardPool, distinctFrom).duplicates[0];
+        if (dup) {
+          definitionProblems.push({
+            path: ["pageTypes", i, "slug"],
+            message: duplicatePageTypeMessage(def.slug, dup),
+          });
+        }
       }
       definitionProblems.push(
         ...listIssuesToDetails(["pageTypes", i], checkPageTypeDef(def)),
@@ -207,11 +256,14 @@ export const upsertPageTypesManyOp = defineOperation({
       };
     }
     for (const [i, item] of input.pageTypes.entries()) {
-      const { expectedVersion, ...def } = item;
+      const { expectedVersion, distinctFrom, ...def } = item;
       const at = `pageTypes[${i}] ("${def.slug}")`;
-      seen.add(def.slug);
       const found = await loadListEntityForUpsert(tx, "pageType", branchId, def.slug);
       const existing = found && found.state.deletedAt === null ? found : null;
+      if (existing === null) {
+        const near = guardPageTypeSlug(def.slug, guardPool, distinctFrom).near;
+        if (near.length > 0) hints.push(nearPageTypeHint(def.slug, near));
+      }
       const extIssues = checkDefinitionExt(def, existing?.state.definition ?? null, activeListExt);
       if (extIssues.length > 0) {
         return failBatch(
@@ -355,7 +407,7 @@ export const upsertPageTypesManyOp = defineOperation({
         pagesRewritten: rewrites.length,
       });
     }
-    return ok({ pageTypes: out });
+    return ok({ pageTypes: out, ...(hints.length > 0 ? { hints } : {}) });
   },
 });
 
@@ -419,9 +471,6 @@ export const deletePageTypesManyOp = defineOperation({
     const refusal = await structureWriteRefusal(tx, ctx, op);
     if (refusal) return { ok: false, error: handlerError(op, refusal, true) };
     const branchId = branchOf(ctx);
-    const defaults = (await tx.execute(sql`
-      SELECT default_page_type_id::text AS id FROM site_defaults WHERE id = 1
-    `)) as unknown as { id: string }[];
     const deleted: string[] = [];
     let wrote = false;
     for (const slug of [...new Set(input.slugs)]) {
@@ -430,16 +479,6 @@ export const deletePageTypesManyOp = defineOperation({
         return failBatch(
           wrote,
           handlerError(op, `no page type "${slug}" — page_types.list shows the ones that exist.`),
-        );
-      }
-      if (defaults[0]?.id === t.id) {
-        return failBatch(
-          wrote,
-          handlerError(
-            op,
-            `page type "${slug}" is the site's default for new pages — make another page type the default first (set_site_defaults), then retry.`,
-            true,
-          ),
         );
       }
       const pages = await loadPagesInView(tx, branchId, { pageTypeIds: [t.id] });

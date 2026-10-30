@@ -142,6 +142,7 @@ beforeAll(async () => {
     })
   ).layoutId;
   const { templateId } = await sysOp<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: `${PFX}-tpl`,
     displayName: "T724E",
     html: '<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',

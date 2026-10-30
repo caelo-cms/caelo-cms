@@ -104,6 +104,7 @@ beforeAll(async () => {
   await seedCi(parentId, { cta: { moduleId: buttonId, contentInstanceId: buttonCi } });
 
   const tpl = await execute(registry, adapter, systemCtx, "templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "T1091",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

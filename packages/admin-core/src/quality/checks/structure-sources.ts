@@ -120,34 +120,46 @@ export function structureSourcesFromOps(
         })),
       ),
     pageIndex: async (): Promise<StructurePageIndex> => {
-      const [defaults, types, pages, siteUrls] = await Promise.all([
-        read(
-          "site_defaults.get",
-          (v) => (v as { defaults: { defaultPageTypeId: string } | null }).defaults,
-          {},
-        ),
+      const [types, pages, siteUrls] = await Promise.all([
         read(
           "page_types.list",
-          (v) => (v as { pageTypes: { id: string; slug: string; name: string }[] }).pageTypes,
+          (v) =>
+            (v as { pageTypes: { id: string; slug: string; name: string; purpose: string }[] })
+              .pageTypes,
           {},
         ),
         read(
           "pages.list",
-          (v) => (v as { pages: { id: string; pageTypeId: string; title: string }[] }).pages,
+          (v) =>
+            (
+              v as {
+                pages: {
+                  id: string;
+                  pageTypeId: string;
+                  pageTypeConfirmed: boolean;
+                  title: string;
+                  currentPath: string;
+                }[];
+              }
+            ).pages,
         ),
         readSiteUrls((op, input) => read(op, (v) => v, input)),
       ]);
-      // No fallback (CLAUDE.md §2): without the stored default the rule
-      // cannot tell ordinary pages from typed ones.
-      if (defaults === null) {
-        throw new Error(
-          "site_defaults.get returned no site defaults — the structure check needs default_page_type_id",
-        );
-      }
       return {
-        defaultPageTypeId: defaults.defaultPageTypeId,
-        pageTypes: new Map(types.map((t) => [t.id, { slug: t.slug, name: t.name }])),
-        pages: new Map(pages.map((p) => [p.id, { pageTypeId: p.pageTypeId, title: p.title }])),
+        pageTypes: new Map(
+          types.map((t) => [t.id, { slug: t.slug, name: t.name, purpose: t.purpose }]),
+        ),
+        pages: new Map(
+          pages.map((p) => [
+            p.id,
+            {
+              pageTypeId: p.pageTypeId,
+              pageTypeConfirmed: p.pageTypeConfirmed,
+              title: p.title,
+              path: p.currentPath,
+            },
+          ]),
+        ),
         siteHosts: siteHostsOf(siteUrls),
       };
     },

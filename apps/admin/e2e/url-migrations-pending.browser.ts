@@ -31,9 +31,9 @@ test.beforeAll(() => {
       const tpl = (await tx\`INSERT INTO templates (slug, display_name, html, css, layout_id)
         VALUES (\${slug + "-tpl"}, 'T', '<main></main>', '', \${lay})
         RETURNING id\`)[0].id;
-      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl}::text)\`;
-      const page = (await tx\`INSERT INTO pages (slug, short_title, title, template_id, status)
-        VALUES (\${slug}, 'P', 'P', \${tpl}, 'published') RETURNING id::text AS id\`)[0].id;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl}::text)\`;
+      const page = (await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed)
+        VALUES (\${slug}, 'P', 'P', \${tpl}, 'published', true) RETURNING id::text AS id\`)[0].id;
       const from = "/old/" + slug;
       const to = "/" + slug;
       await tx\`UPDATE pages SET current_path = \${from} WHERE id = \${page}::uuid\`;

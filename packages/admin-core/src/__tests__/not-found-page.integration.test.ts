@@ -85,6 +85,7 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
   const tpl = await execute(registry, adapter, sysCtx, "templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "NF TPL",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

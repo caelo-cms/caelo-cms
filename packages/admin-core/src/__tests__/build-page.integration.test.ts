@@ -65,6 +65,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
 
   const tpl = await execute(registry, adapter, systemCtx, "templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "I299 TPL",
     html: `<body><caelo-slot name="content">_</caelo-slot><caelo-slot name="sidebar">_</caelo-slot></body>`,

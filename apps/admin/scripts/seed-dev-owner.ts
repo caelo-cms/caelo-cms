@@ -118,11 +118,11 @@ try {
         tplId = id;
       }
 
-      // Idempotent: ensure site_defaults points at the seeded home-template
-      // + site-default layout. The migration only INSERTs when home-template
-      // exists at migrate time; on a fresh DB it doesn't, so we backfill.
-      // `id` is a GENERATED ALWAYS identity (the singleton pkey) we never
-      // write, so guard on row existence rather than ON CONFLICT.
+      // Idempotent: ensure site_defaults points at the site-default layout
+      // (#1276: the layout is the only stored default; pages name their
+      // page type). `id` is a GENERATED ALWAYS identity (the singleton
+      // pkey) we never write, so guard on row existence rather than
+      // ON CONFLICT.
       const sdExisting = (await tx`
         SELECT 1 AS x FROM site_defaults LIMIT 1
       `) as unknown as { x: number }[];
@@ -130,23 +130,12 @@ try {
         await tx`
           UPDATE site_defaults SET
             default_layout_id   = (SELECT id FROM layouts WHERE slug = 'site-default'),
-            default_template_id = ${tplId}::uuid,
             updated_at          = now()
         `;
       } else {
-        // Epic #1107 — the default page type is the one listing the
-        // template (migration 0351 typed the seeded home-template). None
-        // listing it fails the NOT NULL loudly instead of guessing a type.
         await tx`
-          INSERT INTO site_defaults (default_layout_id, default_template_id, default_page_type_id)
-          VALUES (
-            (SELECT id FROM layouts WHERE slug = 'site-default'),
-            ${tplId}::uuid,
-            (SELECT id FROM page_types
-              WHERE chat_branch_id IS NULL AND deleted_at IS NULL
-                AND definition->'templates' ? ${tplId}
-              ORDER BY created_at LIMIT 1)
-          )
+          INSERT INTO site_defaults (default_layout_id)
+          VALUES ((SELECT id FROM layouts WHERE slug = 'site-default'))
         `;
       }
 

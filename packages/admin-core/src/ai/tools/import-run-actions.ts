@@ -16,6 +16,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { pageTypeSlugSchema } from "@caelo-cms/shared";
 import { z } from "zod";
 import { getMediaStorage } from "../../media/storage.js";
 import { UNRESOLVED_IMPORT_LINK_NEXT_STEP } from "../../ops/links-import.js";
@@ -75,11 +76,16 @@ export const resolveImportLinksTool: ToolDefinitionWithHandler<
 const acceptImportPagesInput = z
   .object({
     importPageIds: z.array(z.string().uuid()).min(1).max(50).describe("From `list_import_pages`."),
+    pageType: pageTypeSlugSchema
+      .optional()
+      .describe(
+        "What the pages ARE (`list_page_types` slug). Required unless `templateId` belongs to one type.",
+      ),
     templateId: z
       .string()
       .uuid()
       .optional()
-      .describe("From `list_templates`; omit for the site default."),
+      .describe("From `list_templates`; omit for the type's default template."),
   })
   .strict();
 
@@ -96,6 +102,7 @@ export const acceptImportPagesTool: ToolDefinitionWithHandler<AcceptImportPagesI
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.accept_pages", {
       importPageIds: input.importPageIds,
+      ...(input.pageType ? { pageType: input.pageType } : {}),
       ...(input.templateId ? { templateId: input.templateId } : {}),
     });
     if (!r.ok) {
