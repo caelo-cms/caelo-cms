@@ -153,8 +153,8 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   "template_blocks",
   "templates",
   // Seed-bearing since 0351 (epic #1107): the page types derived from the
-  // seeded templates; `site_defaults.default_page_type_id` and every page
-  // reference them, so a TRUNCATE ... CASCADE would wipe site_defaults.
+  // seeded templates (the `home` type of home-template, which test seeds
+  // add their templates to); every page references one.
   "page_types",
   // Seed-bearing since 0097/0099 (the `site-default` row + its tokens).
   // Truncating it left dev installs with NO active theme: the themes UI

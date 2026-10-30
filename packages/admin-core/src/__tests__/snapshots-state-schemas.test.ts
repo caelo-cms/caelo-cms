@@ -143,6 +143,7 @@ describe("parseAndUpgradePageState", () => {
         version: 0,
         deletedAt: null,
         pageTypeId: "22222222-2222-4222-8222-222222222222",
+        pageTypeConfirmed: true,
         properties: {},
         terms: [],
       }),
@@ -160,11 +161,31 @@ describe("parseAndUpgradePageState", () => {
       version: 0,
       deletedAt: null,
       pageTypeId: "22222222-2222-4222-8222-222222222222",
+      pageTypeConfirmed: true,
       properties: { teaser: "x" },
       terms: [],
     });
     expect(r.status).toBe("draft");
     expect(r.properties).toEqual({ teaser: "x" });
+    expect(r.pageTypeConfirmed).toBe(true);
+  });
+
+  it("refuses a snapshot without pageTypeConfirmed (#1276: 0443 backfilled every one)", () => {
+    expect(() =>
+      parseAndUpgradePageState({
+        schemaVersion: 1,
+        slug: "home",
+        title: "Home",
+        shortTitle: "Home",
+        templateId: "11111111-1111-4111-8111-111111111111",
+        status: "draft",
+        version: 0,
+        deletedAt: null,
+        pageTypeId: "22222222-2222-4222-8222-222222222222",
+        properties: {},
+        terms: [],
+      }),
+    ).toThrow(SnapshotSchemaError);
   });
 
   it("refuses a snapshot without a page type (0351 backfilled every one it could)", () => {
@@ -193,6 +214,7 @@ describe("parseAndUpgradePageState", () => {
         version: 0,
         deletedAt: null,
         pageTypeId: "22222222-2222-4222-8222-222222222222",
+        pageTypeConfirmed: true,
         properties: {},
         terms: [],
       }),

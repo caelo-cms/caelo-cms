@@ -73,7 +73,8 @@ export interface ListModelSnapshot {
   readonly chrome: readonly { blockName: string; moduleId: string }[];
   /** Content-instance values per module (a shared field's placement value lives here). */
   readonly instanceValues: readonly { moduleId: string; values: Record<string, unknown> }[];
-  readonly defaultPageTypeId: string | null;
+  /** The migration-seeded `home` page type: its pages are no articles. */
+  readonly homePageTypeId: string | null;
   /** Tool calls of the assistant messages (tool_calls + SDK response messages), see `toolsSince`. */
   readonly toolText: string;
   readonly lastAssistant: string;
@@ -143,7 +144,7 @@ await sql.begin(async (tx) => {
   const ciO = await overlay(tx, "content_instance_snapshots", "content_instance_id");
   const instanceValues = (await tx.unsafe('SELECT id::text AS id, module_id::text AS m, "values"::text AS v FROM content_instances'))
     .map((r) => ({ moduleId: r.m, values: (ciO.get(r.id)?.values) ?? parse(r.v) ?? {} }));
-  const sd = await tx.unsafe("SELECT default_page_type_id::text AS id FROM site_defaults WHERE id = 1");
+  const sd = await tx.unsafe("SELECT id::text AS id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL");
   const tools = await tx.unsafe(\`
     SELECT string_agg(COALESCE(tool_calls::text, '') || ' ' || COALESCE(response_messages::text, ''), ' ') AS t
       FROM chat_messages WHERE role = 'assistant' AND created_at > $1::timestamptz\`, [process.env.TOOLS_SINCE]);
@@ -152,7 +153,7 @@ await sql.begin(async (tx) => {
      WHERE role = 'assistant' AND content IS NOT NULL AND content <> ''
      ORDER BY created_at DESC LIMIT 1\`);
   out = { listTypes, lists, pageTypes, pages, modules, chrome, instanceValues,
-    defaultPageTypeId: sd[0]?.id ?? null, toolText: tools[0]?.t ?? "", lastAssistant: last[0]?.content ?? "" };
+    homePageTypeId: sd[0]?.id ?? null, toolText: tools[0]?.t ?? "", lastAssistant: last[0]?.content ?? "" };
 });
 await sql.end();
 console.log(JSON.stringify(out));
@@ -353,8 +354,7 @@ export function blogCategoryFacts(
   const articleTypeIds = snap.pageTypes
     .filter(
       (t) =>
-        t.id !== snap.defaultPageTypeId &&
-        (t.def.vocabularies ?? []).some((v) => v.list === listId),
+        t.id !== snap.homePageTypeId && (t.def.vocabularies ?? []).some((v) => v.list === listId),
     )
     .map((t) => t.id);
   const prefix = `caelo:term/${listId}/`;

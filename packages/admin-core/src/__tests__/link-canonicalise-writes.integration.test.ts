@@ -165,6 +165,7 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
   const tpl = await run<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: `${PFX}-tpl`,
     displayName: `${PFX} TPL`,
     html: `<html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
@@ -500,6 +501,7 @@ describe("review fixes (#873)", () => {
     // ...and the page frame renders the reference as the page's URL — a
     // stored layout reference must never reach the browser as `caelo:`.
     const { templateId: framedTpl } = await run<{ templateId: string }>("templates.create", {
+      pageType: "home",
       slug: `${PFX}-framed-tpl`,
       displayName: `${PFX} framed`,
       html: '<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',

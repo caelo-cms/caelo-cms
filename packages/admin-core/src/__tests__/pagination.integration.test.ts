@@ -150,6 +150,7 @@ beforeAll(async () => {
   restoreBaseUrl = await pinSiteBaseUrl(ADMIN_URL, BASE);
   restoreLanguage = await pinSiteLanguage(ADMIN_URL, "en");
   const tpl = await run<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: "t1257-tpl",
     displayName: "T1257",
     html: `<html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

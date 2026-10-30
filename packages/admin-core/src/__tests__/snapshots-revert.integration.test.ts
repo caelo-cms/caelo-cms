@@ -143,6 +143,7 @@ describe("revert_page (metadata + layout)", () => {
   it("restores page slug/title and layout from a single snapshot", async () => {
     // Need a template + slot + module to set up a page.
     const tpl = await execute(registry, adapter, systemCtx, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "T",
       html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
@@ -264,6 +265,7 @@ describe("snapshots.module_impact", () => {
     // Seed a fresh template with a 'header' slot, a module placed in it, a
     // page using it. Then call module_impact and assert severity high.
     const tpl = await execute(registry, adapter, systemCtx, "templates.create", {
+      pageType: "home",
       slug: `${TPL_SLUG}-impact`,
       displayName: "Impact T",
       html: `<body><caelo-slot name="header">_</caelo-slot></body>`,

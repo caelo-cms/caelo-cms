@@ -16,7 +16,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
-import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
+import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -269,13 +269,13 @@ beforeAll(async () => {
               (SELECT id FROM layouts WHERE slug = 'site-default'))
       RETURNING id::text AS id`) as unknown as { id: string }[];
     const templateId = tpl[0]?.id ?? "";
-    await adoptTemplateIntoDefaultPageType(tx, templateId);
+    await adoptTemplateIntoHomePageType(tx, templateId);
     await tx`INSERT INTO template_blocks (template_id, name, display_name, position)
              VALUES (${templateId}::uuid, 'content', 'Content', 0)`;
     for (const slug of ["pricing", "about"]) {
       const p = (await tx`
-        INSERT INTO pages (slug, short_title, title, template_id, status)
-        VALUES (${`${PFX}-${slug}`}, ${slug}, ${slug}, ${templateId}::uuid, 'published')
+        INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed)
+        VALUES (${`${PFX}-${slug}`}, ${slug}, ${slug}, ${templateId}::uuid, 'published', true)
         RETURNING id::text AS id`) as unknown as { id: string }[];
       if (slug === "pricing") ids.en = p[0]?.id ?? "";
       else ids.about = p[0]?.id ?? "";

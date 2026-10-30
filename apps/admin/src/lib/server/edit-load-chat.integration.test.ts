@@ -92,6 +92,7 @@ async function openLiveEdit(ctx: ExecutionContext, pageId: string) {
 
 beforeAll(async () => {
   ({ templateId } = await op<{ templateId: string }>(SYSTEM, "templates.create", {
+    pageType: "home",
     slug: `${PFX}tpl`,
     displayName: "T",
     html: '<body><caelo-slot name="content">_</caelo-slot></body>',

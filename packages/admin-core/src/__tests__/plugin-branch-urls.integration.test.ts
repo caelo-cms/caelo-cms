@@ -180,6 +180,7 @@ afterAll(async () => {
 describe("plugin URL annotations on a chat branch", () => {
   it("composes branch pages from branch rows and moves main paths only on merge", async () => {
     const t = await execute(registry, adapter, humanCtx, "templates.create", {
+      pageType: "home",
       slug: `${PFX}t`,
       displayName: "T",
       html: '<caelo-slot name="content"></caelo-slot>',
@@ -298,6 +299,7 @@ describe("plugin URL annotations on a chat branch", () => {
   // effect of an unrelated merge or a per-page refresh.
   it("live paths wait for the approved URL migration after a setting change", async () => {
     const t = await execute(registry, adapter, humanCtx, "templates.create", {
+      pageType: "home",
       slug: `${PFX}t586`,
       displayName: "T",
       html: '<caelo-slot name="content"></caelo-slot>',

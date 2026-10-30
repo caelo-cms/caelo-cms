@@ -36,7 +36,6 @@ const LISTS = createListRenderContext({
 }).forPage(null);
 /** No typed pages: the listing rule (#1256) stays silent in these fixtures. */
 const NO_TYPES: StructurePageIndex = {
-  defaultPageTypeId: "page",
   pageTypes: new Map(),
   pages: new Map(),
   siteHosts: new Set(),
@@ -429,6 +428,7 @@ describe("structure/layout-css-module-specific", () => {
       ],
       [TEXT, DIFF],
       [layout],
+      NO_TYPES,
     );
     const css = findings.filter((f) => f.ruleId === "structure/layout-css-module-specific");
     expect(css).toHaveLength(1);

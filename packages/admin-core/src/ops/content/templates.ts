@@ -483,21 +483,21 @@ export const updateTemplateOp = defineOperation({
         });
       }
     }
-    const sets = buildPatchSet({
-      display_name: input.displayName,
-      html: input.html,
-      css: input.css,
-      layout_id: input.layoutId !== undefined ? sql`${input.layoutId}::uuid` : undefined,
-    });
-    // buildPatchSet returns an empty fragment when nothing changed —
-    // running an UPDATE with no SETs is invalid SQL. Skip the UPDATE
-    // when only `blocks` was provided.
+    // buildPatchSet refuses an empty patch — an UPDATE with no SETs is
+    // invalid SQL. Skip the UPDATE when only `blocks` / `pageType` was
+    // provided (#1276: a pageType-only update failed here).
     const hasScalarPatch =
       input.displayName !== undefined ||
       input.html !== undefined ||
       input.css !== undefined ||
       input.layoutId !== undefined;
     if (hasScalarPatch) {
+      const sets = buildPatchSet({
+        display_name: input.displayName,
+        html: input.html,
+        css: input.css,
+        layout_id: input.layoutId !== undefined ? sql`${input.layoutId}::uuid` : undefined,
+      });
       await tx.execute(sql`
         UPDATE templates SET ${sets} WHERE id = ${input.templateId}::uuid
       `);

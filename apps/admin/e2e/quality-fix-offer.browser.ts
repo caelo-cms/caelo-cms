@@ -107,14 +107,14 @@ test.beforeAll(() => {
       const tpl = await tx\`INSERT INTO templates (slug, display_name, html, css, layout_id)
         VALUES (\${s + "-tpl"}, 'T', '<main><caelo-slot name="content">_</caelo-slot></main>',
                 '', \${lay[0].id}) RETURNING id\`;
-      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
-      await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, current_path)
-        VALUES (\${s}, \${s}, 'Quality offer', \${tpl[0].id}, 'published', \${process.env.PAGE_PATH})\`;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
+      await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, current_path, page_type_confirmed)
+        VALUES (\${s}, \${s}, 'Quality offer', \${tpl[0].id}, 'published', \${process.env.PAGE_PATH}, true)\`;
       // #727 — two more pages, so one rule can fail across pages.
       for (const x of ["b", "c"]) {
-        await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, current_path)
+        await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, current_path, page_type_confirmed)
           VALUES (\${s + "-" + x}, \${s + "-" + x}, 'Quality offer ' || \${x}, \${tpl[0].id}, 'published',
-                  \${process.env.PAGE_PATH + "-" + x})\`;
+                  \${process.env.PAGE_PATH + "-" + x}, true)\`;
       }
     });
     await sql.end();

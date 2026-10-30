@@ -112,6 +112,7 @@ describe("preview site-view cache (#1212)", () => {
         deletedAt: null,
         parentPageId: null,
         pageTypeId: live.page_type_id,
+        pageTypeConfirmed: true,
         properties: {},
         terms: [],
       };

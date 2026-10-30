@@ -67,6 +67,7 @@ afterAll(async () => {
 describe("nested-module branch overlay (run-A2 regression)", () => {
   it("a branched edit to a detached nested module SHOWS in render_preview", async () => {
     const tpl = await execute(registry, adapter, HUMAN, "templates.create", {
+      pageType: "home",
       slug: `nmo-tpl-${TS}`,
       displayName: "NMO T",
       html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

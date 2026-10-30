@@ -169,6 +169,7 @@ beforeAll(async () => {
   ).layoutId;
   templateId = (
     await op<{ templateId: string }>(SYS, "templates.create", {
+      pageType: "home",
       slug: `cireach-tpl-${TS}`,
       displayName: "CIREACH tpl",
       html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content"></caelo-slot></body></html>`,

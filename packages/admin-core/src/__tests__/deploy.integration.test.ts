@@ -106,6 +106,7 @@ afterAll(async () => {
 
 async function seedPage(): Promise<string> {
   const t = await execute(registry, adapter, HUMAN, "templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "T",
     html: `<html><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

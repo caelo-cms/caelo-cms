@@ -3,7 +3,7 @@
 /**
  * Issue #1256 — the write-time page-listing hint: cards that link most
  * published pages of one page type get a hint pointing at a page query;
- * a curated pick, the default page type and shared-list bindings stay
+ * a curated pick, pages whose type nobody chose and shared-list bindings stay
  * silent.
  */
 
@@ -31,6 +31,7 @@ const guide = (i: number, status: ListingPage["status"] = "published"): ListingP
   currentPath: `/guides/g${i}`,
   title: `Guide ${i}`,
   pageTypeId: TYPE_GUIDE,
+  pageTypeConfirmed: true,
   status,
 });
 const GUIDES = Array.from({ length: 6 }, (_, i) => guide(i));
@@ -39,10 +40,11 @@ const ORDINARY: ListingPage[] = ["/about", "/team", "/jobs", "/contact"].map((p,
   currentPath: p,
   title: p.slice(1),
   pageTypeId: TYPE_PAGE,
+  // #1276 — they sat on the old stored default type: never chosen, exempt.
+  pageTypeConfirmed: false,
   status: "published",
 }));
 const SITE: ListingSite = {
-  defaultPageTypeId: TYPE_PAGE,
   pageTypes: new Map([
     [TYPE_PAGE, { slug: "page", name: "Page" }],
     [TYPE_GUIDE, { slug: "guide", name: "Guide" }],
@@ -105,7 +107,7 @@ describe("pageListingHints (#1256)", () => {
     expect(pageListingHints([cards(GUIDES.slice(0, 4), (p) => p.currentPath)], many)).toEqual([]);
   });
 
-  it("links to pages of the default page type stay silent", () => {
+  it("links to pages whose page type nobody chose stay silent", () => {
     expect(pageListingHints([cards(ORDINARY, (p) => p.currentPath)], SITE)).toEqual([]);
   });
 
@@ -150,9 +152,6 @@ describe("withFieldMarkupGuard — page-listing hint", () => {
     adapter: {
       runOperation: async (op: { name: string }) => {
         reads.push(op.name);
-        if (op.name === "site_defaults.get") {
-          return ok({ defaults: { defaultPageTypeId: TYPE_PAGE } });
-        }
         if (op.name === "page_types.list") {
           return ok({
             pageTypes: [...SITE.pageTypes].map(([tid, t]) => ({ id: tid, ...t })),

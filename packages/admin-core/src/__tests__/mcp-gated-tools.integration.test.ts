@@ -30,7 +30,7 @@ import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { POWER_MCP_EXCLUDED_TOOLS, powerToolCatalogue } from "../ops/security/mcp_power.js";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
 import { registerAdminOps } from "../register.js";
-import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
+import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -347,7 +347,7 @@ describe("#687 — a core needsApproval tool over the Power-MCP", () => {
       const tpl = (await tx.unsafe(
         `INSERT INTO templates (slug, display_name, html, css, layout_id) VALUES ('t687-tpl', 'T', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
       )) as { id: string }[];
-      await adoptTemplateIntoDefaultPageType(tx, tpl[0]?.id ?? "");
+      await adoptTemplateIntoHomePageType(tx, tpl[0]?.id ?? "");
       return tpl[0]?.id ?? "";
     });
     const pageIds: string[] = [];

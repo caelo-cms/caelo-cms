@@ -10,7 +10,7 @@
 
 import { expect, test } from "bun:test";
 import { SQL } from "bun";
-import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
+import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 if (!ADMIN_URL) throw new Error("ADMIN_DATABASE_URL required");
@@ -33,11 +33,11 @@ test("raw-inserted home slugs default to the root unless another page is designa
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       const templateId = tpl[0]?.id ?? "";
-      await adoptTemplateIntoDefaultPageType(tx, templateId);
+      await adoptTemplateIntoHomePageType(tx, templateId);
       const insert = async (slug: string) => {
         const rows = (await tx`
-          INSERT INTO pages (slug, short_title, title, template_id)
-          VALUES (${slug}, ${slug}, ${slug}, ${templateId}::uuid)
+          INSERT INTO pages (slug, short_title, title, template_id, page_type_confirmed)
+          VALUES (${slug}, ${slug}, ${slug}, ${templateId}::uuid, true)
           RETURNING id::text AS id, current_path
         `) as unknown as { id: string; current_path: string }[];
         paths[slug] = rows[0]?.current_path ?? "";

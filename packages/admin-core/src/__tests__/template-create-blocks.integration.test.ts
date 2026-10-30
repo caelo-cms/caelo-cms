@@ -76,6 +76,7 @@ const HTML = `<body><caelo-slot name="header">h</caelo-slot><caelo-slot name="co
 describe("templates.create blocks metadata", () => {
   it("omitted → derives one block per slot (displayName = name, position = order)", async () => {
     const r = await execute(registry, adapter, SYS, "templates.create", {
+      pageType: "home",
       slug: "tcb-derive",
       displayName: "Derive",
       html: HTML,
@@ -91,6 +92,7 @@ describe("templates.create blocks metadata", () => {
 
   it("provided → enriches displayName + position for the matching slots", async () => {
     const r = await execute(registry, adapter, SYS, "templates.create", {
+      pageType: "home",
       slug: "tcb-explicit",
       displayName: "Explicit",
       html: HTML,
@@ -113,6 +115,7 @@ describe("templates.create blocks metadata", () => {
 
   it("a block with no matching <caelo-slot> fails loudly (no silent drop)", async () => {
     const r = await execute(registry, adapter, SYS, "templates.create", {
+      pageType: "home",
       slug: "tcb-orphan",
       displayName: "Orphan",
       html: HTML,

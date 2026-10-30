@@ -281,6 +281,7 @@ beforeAll(async () => {
   ).toEqual({ seeded: true });
 
   const { templateId } = await ok<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "T",
     html: `<html><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

@@ -236,6 +236,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
   templateId = (
     await op<{ templateId: string }>(SYS, "templates.create", {
+      pageType: "home",
       slug: `pdup-tpl-${TS}`,
       displayName: "PDUP tpl",
       html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content"></caelo-slot></body></html>`,

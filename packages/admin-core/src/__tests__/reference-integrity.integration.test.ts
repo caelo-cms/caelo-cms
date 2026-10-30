@@ -116,6 +116,7 @@ beforeAll(async () => {
   });
   templateId = (
     await run<{ templateId: string }>(SYS, "templates.create", {
+      pageType: "home",
       slug: `${PFX}-tpl`,
       displayName: "RIF Template",
       layoutId,

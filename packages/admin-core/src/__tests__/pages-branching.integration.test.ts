@@ -68,6 +68,7 @@ describe("pages branched writes (v0.5.3)", () => {
   it("branched pages.update skips live UPDATE + lands a branched snapshot; publish merges", async () => {
     // Seed: template + page.
     const tpl = await execute(registry, adapter, HUMAN, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "T",
       html: "<main>{{content}}</main>",

@@ -107,6 +107,7 @@ beforeAll(async () => {
   }
 
   const tpl = await execute(registry, adapter, SYSTEM, "templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "I417 TPL",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
