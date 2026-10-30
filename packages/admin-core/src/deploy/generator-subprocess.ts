@@ -175,6 +175,64 @@ export interface GeneratorRunArgs {
   readonly signal?: AbortSignal;
 }
 
+/** Runs work on the build's plugin-call transaction (see {@link openPluginCallChannel}). */
+type PluginCallChannel = {
+  readonly run: <T>(fn: () => Promise<T>) => Promise<T>;
+  /** End the transaction; throws when it could not commit. */
+  readonly close: () => Promise<void>;
+};
+
+/**
+ * #1254 — ONE admin transaction for every plugin call of a build. The
+ * generator asks this process's plugin host hundreds of questions (link and
+ * list resolution, head contributions, URLs); each answer read plugin
+ * storage and core through ops of their own, so a build alone took a
+ * connection per read, and with agents writing at the same time the reads
+ * waited out the pool's acquire timeout (searchVIU, 2026-10-30: "no free
+ * connection for plugin_storage.list"). Every answer now joins this one
+ * transaction as a savepoint — the same broker the page writes use — so a
+ * build costs one admin connection however many questions it asks. It is
+ * on the long-transaction list: it stays open, idle between calls, for as
+ * long as the build runs.
+ */
+async function openPluginCallChannel(
+  adapter: DatabaseAdapter,
+  ctx: ExecutionContext,
+): Promise<PluginCallChannel> {
+  let bound: (run: PluginCallChannel["run"]) => void = () => undefined;
+  let refused: (e: unknown) => void = () => undefined;
+  const ready = new Promise<PluginCallChannel["run"]>((resolve, reject) => {
+    bound = resolve;
+    refused = reject;
+  });
+  let release: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ended = adapter.withAdminTransaction(
+    systemContextOf(ctx),
+    async () => {
+      bound(adapter.bindHeldAdminTransaction());
+      await released;
+    },
+    { holder: PLUGIN_CALL_HOLDER },
+  );
+  // Observed here so a failure before close() is not an unhandled rejection;
+  // close() awaits `ended` itself and throws it.
+  ended.catch(refused);
+  const run = await ready;
+  return {
+    run,
+    close: async () => {
+      release();
+      await ended;
+    },
+  };
+}
+
+/** The holder name of the build's plugin-call transaction (query-api pool-guard.ts). */
+const PLUGIN_CALL_HOLDER = "static-generator.plugin-calls";
+
 /** The outcome of {@link runGenerator}. */
 export type GeneratorOutcome =
   | { readonly ok: true; readonly result: GeneratorDone }
@@ -201,6 +259,36 @@ export async function runGenerator(
   if (args.signal?.aborted) {
     return { ok: false, message: abortMessage(args.signal), stderr: "" };
   }
+  const channel = await openPluginCallChannel(adapter, ctx);
+  let outcome: GeneratorOutcome;
+  try {
+    outcome = await runGeneratorProcess(registry, adapter, ctx, args, channel, adminUrl, publicUrl);
+  } catch (e) {
+    await channel.close().catch(() => undefined);
+    throw e;
+  }
+  try {
+    await channel.close();
+  } catch (e) {
+    return {
+      ok: false,
+      message: `the build's plugin answers could not be closed: ${e instanceof Error ? e.message : String(e)}`,
+      stderr: outcome.ok ? "" : outcome.stderr,
+    };
+  }
+  return outcome;
+}
+
+/** The subprocess half of {@link runGenerator}. */
+async function runGeneratorProcess(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ctx: ExecutionContext,
+  args: GeneratorRunArgs,
+  channel: PluginCallChannel,
+  adminUrl: string,
+  publicUrl: string,
+): Promise<GeneratorOutcome> {
   // #1003 — progress lands on the run row the run's start step committed, at
   // most once per interval (it was one transaction per page), as the system
   // actor: update_progress is an internal callback whoever started the run.
@@ -266,7 +354,7 @@ export async function runGenerator(
     const answerPluginCall = async (call: SubprocessPluginCall): Promise<void> => {
       let reply: Record<string, unknown>;
       try {
-        const value = await serveBuildPluginCall(call.method, call.args);
+        const value = await channel.run(() => serveBuildPluginCall(call.method, call.args));
         reply = { kind: "plugin-result", id: call.id, ok: true, value };
       } catch (e) {
         reply = {
