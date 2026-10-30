@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type { ExecutionContext, Result } from "@caelo-cms/shared";
-import { err } from "@caelo-cms/shared";
+import { DB_POOL_MAX_ENV, DB_PUBLIC_POOL_MAX_ENV, err, MIN_POOL_MAX } from "@caelo-cms/shared";
 // `import type` is erased at compile time — never hits the bundler, so
 // no stub package needed in node_modules/bun. The runtime constructor
 // comes from globalThis.Bun (defined under Bun's runtime). SvelteKit's
@@ -81,12 +81,21 @@ export interface AdapterConfig {
   /** Disable the startup self-check. Only for tests that deliberately assert it triggers. */
   readonly skipRoleVerification?: boolean;
   /**
-   * Max connections per pool (the admin + public pools are sized separately,
-   * each gets this `max`). Precedence: this option > `CAELO_DB_POOL_MAX` env >
-   * Bun's default (10). Left unset in production — the env is only ever set by
-   * the test preload to bound the suite's footprint under `max_connections`.
+   * Max connections per pool — the cms_admin pool, and the cms_public pool
+   * unless {@link publicPoolMax} / `CAELO_DB_PUBLIC_POOL_MAX` sizes it on its
+   * own. Precedence: this option > `CAELO_DB_POOL_MAX` env > Bun's default
+   * (10). Production sets the env on every service from the install's
+   * connection budget (#1254, shared `pool-budget.ts`); the test preload sets
+   * it to bound the suite's footprint under `max_connections`.
    */
   readonly poolMax?: number;
+  /**
+   * #1254 — max connections of the cms_public pool alone. Precedence: this
+   * option > `CAELO_DB_PUBLIC_POOL_MAX` env > the {@link poolMax} resolution
+   * above. The admin runs a small cms_public pool next to the cms_admin pool
+   * that gets the budget; the gateway's only pool is its cms_public one.
+   */
+  readonly publicPoolMax?: number;
   /**
    * Overrides {@link POOL_IDLE_TIMEOUT_SECONDS}. Only for the tests that
    * prove a pool recovers from silently dropped connections in seconds.
@@ -208,8 +217,8 @@ export class AdminDatabaseUnavailableError extends Error {
 /**
  * Resolve the per-pool `max` connection cap. Returns `undefined` when neither
  * the explicit option nor `CAELO_DB_POOL_MAX` is set, so the caller passes no
- * `max` and inherits Bun's default of 10 — making this a no-op in production
- * where neither knob is present.
+ * `max` and inherits Bun's default of 10 (a local dev server; every
+ * provisioned service sets the env from its connection budget, #1254).
  *
  * Per CLAUDE.md §2 (no silent fallbacks pre-1.0): a value that is *present* but
  * malformed or below the safe floor throws loudly rather than quietly picking a
@@ -219,13 +228,29 @@ export class AdminDatabaseUnavailableError extends Error {
  */
 export function resolvePoolMax(explicit?: number): number | undefined {
   if (explicit !== undefined) return validatePoolMax(explicit, "poolMax option");
-  const raw = process.env.CAELO_DB_POOL_MAX;
+  const raw = process.env[DB_POOL_MAX_ENV];
   if (raw === undefined || raw === "") return undefined;
-  return validatePoolMax(Number(raw), "CAELO_DB_POOL_MAX");
+  return validatePoolMax(Number(raw), DB_POOL_MAX_ENV);
+}
+
+/**
+ * #1254 — the cms_public pool's cap: `explicitPublic` > the
+ * `CAELO_DB_PUBLIC_POOL_MAX` env > whatever {@link resolvePoolMax} gives
+ * every pool (`explicitAll`, then `CAELO_DB_POOL_MAX`). A present but
+ * malformed value throws, as there.
+ */
+export function resolvePublicPoolMax(
+  explicitPublic?: number,
+  explicitAll?: number,
+): number | undefined {
+  if (explicitPublic !== undefined) return validatePoolMax(explicitPublic, "publicPoolMax option");
+  const raw = process.env[DB_PUBLIC_POOL_MAX_ENV];
+  if (raw !== undefined && raw !== "") return validatePoolMax(Number(raw), DB_PUBLIC_POOL_MAX_ENV);
+  return resolvePoolMax(explicitAll);
 }
 
 function validatePoolMax(value: number, source: string): number {
-  if (!Number.isInteger(value) || value < 2) {
+  if (!Number.isInteger(value) || value < MIN_POOL_MAX) {
     throw new Error(
       `${source} must be an integer >= 2 (got ${value}); ` +
         `1 self-deadlocks the pool. Leave it unset for the Bun default of 10.`,
@@ -298,11 +323,13 @@ export class DatabaseAdapter {
     assertPoolSafeBun(globalThis.Bun?.version ?? "0");
     // No pool cap configured (the production case) keeps Bun's default of 10.
     const poolMax = resolvePoolMax(config.poolMax);
+    const publicPoolMax = resolvePublicPoolMax(config.publicPoolMax, config.poolMax);
     const idleTimeout = config.poolIdleTimeoutSeconds ?? POOL_IDLE_TIMEOUT_SECONDS;
-    const open = (url: string): SQL =>
-      new SQL(url, poolMax === undefined ? { idleTimeout } : { max: poolMax, idleTimeout });
-    this.#adminRaw = config.adminDatabaseUrl === null ? null : open(config.adminDatabaseUrl);
-    this.#publicRaw = open(config.publicDatabaseUrl);
+    const open = (url: string, max: number | undefined): SQL =>
+      new SQL(url, max === undefined ? { idleTimeout } : { max, idleTimeout });
+    this.#adminRaw =
+      config.adminDatabaseUrl === null ? null : open(config.adminDatabaseUrl, poolMax);
+    this.#publicRaw = open(config.publicDatabaseUrl, publicPoolMax);
     this.#onStatement = config.onStatement ?? null;
     const observe = this.#onStatement;
     this.#drizzleOptions = observe

@@ -55,6 +55,7 @@ export * from "./page-log.js";
 export * from "./phase-timer.js";
 export * from "./platform-updates.js";
 export * from "./plugin-preview.js";
+export * from "./pool-budget.js";
 export * from "./preview-compose.js";
 export * from "./preview-scanner.js";
 export * from "./proposal-status.js";

@@ -20,7 +20,14 @@ import {
   serveBuildPluginCall,
 } from "@caelo-cms/plugin-host";
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
-import { databaseUrlFromEnv, type ExecutionContext, phaseTimingSchema } from "@caelo-cms/shared";
+import {
+  DB_POOL_MAX_ENV,
+  DB_PUBLIC_POOL_MAX_ENV,
+  databaseUrlFromEnv,
+  type ExecutionContext,
+  GENERATOR_POOL_MAX,
+  phaseTimingSchema,
+} from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { z } from "zod";
 import { SYSTEM_ACTOR_ID } from "../audit.js";
@@ -30,6 +37,21 @@ import { unpublishedLinkTargetSchema } from "./unpublished-links.js";
 
 /** Minimum gap between two progress writes of one build (#1003). */
 const PROGRESS_INTERVAL_MS = 1000;
+
+/**
+ * #1254 — the generator child's env: the admin's, with both pools cut to
+ * the generator's own budget entry. Inherited unchanged, the child would
+ * size its pools like the admin's cms_admin pool, and every concurrent
+ * build would draw a whole admin instance's share of `max_connections`;
+ * a build runs in one transaction and needs the minimum (pool-budget.ts).
+ */
+export function generatorEnv(parent: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...parent,
+    [DB_POOL_MAX_ENV]: String(GENERATOR_POOL_MAX),
+    [DB_PUBLIC_POOL_MAX_ENV]: String(GENERATOR_POOL_MAX),
+  };
+}
 
 /**
  * The system actor for a run's internal steps (deploy.renew_run_lease,
@@ -199,7 +221,7 @@ export async function runGenerator(
     };
     const child = spawn("bun", ["run", args.cliPath], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env },
+      env: generatorEnv(process.env),
     });
     let aborted: string | null = null;
     function onAbort(): void {
