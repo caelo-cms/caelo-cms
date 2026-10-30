@@ -29,7 +29,7 @@
   },
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.ts", "scripts/*.test.ts"]
+      "entry": ["scripts/*.ts", "scripts/*.test.ts", "scripts/scale-gate/*.ts"]
     },
     "apps/admin": {
       "entry": ["scripts/scan-media-alt.ts", "scripts/sign-tier1-manifest.ts"]

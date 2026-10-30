@@ -45,6 +45,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [internal/e2e-livedit.md](./internal/e2e-livedit.md) — the real-AI Playwright suite: setup, assertion classes, adding a scenario.
 - [quality-checks.md](./quality-checks.md) — the quality audit's checks on the staged build (check framework, `structure`, `links`, `references`) and the Stage-time reference-integrity gate (#724).
 - [dev/coverage.md](./dev/coverage.md) — the coverage gate.
+- [dev/scale-gate.md](./dev/scale-gate.md) — the scale gate: 50,000 pages, 20 MCP agents and 5 editors on a db-f1-micro and a 1-vCPU admin; fixture, load, SLOs, running it locally (#1267).
 - [dev/knip.md](./dev/knip.md) — the dead-code gate.
 - [dev/madge.md](./dev/madge.md) — the circular-dependency gate.
 - [dev/codeql.md](./dev/codeql.md) — CodeQL, dependency review and secret scanning.
