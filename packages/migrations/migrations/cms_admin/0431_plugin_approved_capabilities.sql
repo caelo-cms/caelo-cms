@@ -2,12 +2,19 @@
 --
 -- 0431 — the capabilities an Owner approved for a shipped plugin (#1267).
 --
--- One plugin model (CLAUDE.md §2): who wrote a plugin grants nothing, and a
--- new artifact that asks for more is approved again. Runtime-installed
--- plugins already bind every grant to their artifact digest
+-- One plugin model (CLAUDE.md §2): who wrote a plugin grants nothing.
+-- Runtime-installed plugins bind every grant to their artifact digest
 -- (plugin_capability_grants, 0216). A release-signed plugin's grants were
 -- implied by its manifest: a release that added a capability ran it on the
 -- next boot without anyone deciding.
+--
+-- This column is a gate ADDED for release-signed plugins only. It does not
+-- touch plugin_capability_grants or how runtime-installed plugins are
+-- authorised, and it is not a per-digest grant: a release that keeps the
+-- capability set runs without a new approval, as before (the gap
+-- CMS_REQUIREMENTS §14 lists for shipped plugins). What changes is that a
+-- release asking for a capability the Owner never approved no longer runs
+-- it unasked.
 --
 -- approved_capabilities records what the Owner approved when they last
 -- activated (or re-approved) the plugin. A release-signed plugin whose

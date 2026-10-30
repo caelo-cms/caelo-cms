@@ -4,13 +4,20 @@
  * Issue #1267 — operations on the change journal itself
  * (docs/dev/state-and-changes.md, migration 0430).
  *
- * Garbage collection runs by a horizon rule, not "after every consumer":
- * rows older than the retention window go, and a consumer whose cursor is
- * below the recorded horizon runs its rebuild-from-source instead of
- * reading. So a dead or deactivated consumer never holds the journal back.
+ * Garbage collection runs by a horizon rule: rows older than the
+ * retention window go, but never past the cursor of a live persisted
+ * consumer, so an idle one reads on where it stopped. A stalled consumer
+ * (nothing delivered for a week) or a deactivated plugin's holds nothing
+ * back; a cursor below the recorded horizon runs its rebuild-from-source
+ * instead of reading.
  */
 
-import { collectJournalGarbage, defineOperation, JOURNAL_RETENTION_MS } from "@caelo-cms/query-api";
+import {
+  collectJournalGarbage,
+  defineOperation,
+  JOURNAL_RETENTION_MS,
+  JOURNAL_STALLED_CONSUMER_MS,
+} from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
@@ -33,6 +40,8 @@ export const collectJournalGarbageOp = defineOperation({
     .object({
       /** Overrides the retention window (tests). */
       retentionMs: z.number().int().min(0).max(JOURNAL_RETENTION_MS).optional(),
+      /** Overrides when a consumer counts as stalled (tests). */
+      stalledConsumerMs: z.number().int().min(0).max(JOURNAL_STALLED_CONSUMER_MS).optional(),
     })
     .strict(),
   output: z.object({
@@ -43,6 +52,9 @@ export const collectJournalGarbageOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const deleted = await collectJournalGarbage(tx, {
       ...(input.retentionMs !== undefined ? { retentionMs: input.retentionMs } : {}),
+      ...(input.stalledConsumerMs !== undefined
+        ? { stalledConsumerMs: input.stalledConsumerMs }
+        : {}),
       batch: JOURNAL_GC_BATCH,
     });
     return ok({ deleted, more: deleted >= JOURNAL_GC_BATCH });

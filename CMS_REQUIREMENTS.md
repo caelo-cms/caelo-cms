@@ -600,7 +600,7 @@ A plugin that derives something from site content (consent-manager's embed verdi
 
 - **Complete by construction**: the journal is written by table triggers, so an op, a Stage, an undo, a takeover and a migration all count; the cursor is persisted, so a change made while an instance was down is still delivered.
 - **Gated per kind**: every core kind needs the plugin's read grant of core data (`cms_admin`); another plugin's storage is never delivered.
-- **A failure never fails the write.** It is recorded against the plugin (#1008); the batch stays uncommitted and is delivered again. A cursor behind the journal's retention runs the rebuild.
+- **A failure never fails the write.** It is recorded against the plugin (#1008); the batch stays uncommitted and is delivered again. The journal's garbage collection never passes a live consumer's cursor; a consumer stalled for a week, or a plugin activated again, runs its rebuild, which recomputes the plugin's state from source exactly.
 
 ### 14.11 Shipped plugins
 
@@ -626,7 +626,7 @@ The model above is normative. Where the code does not meet it yet, this list is 
 
 - **Shipped plugins' chat tools still write their public tables live** (e.g. comment moderation from a chat). Installed plugins are refused that from a chat branch; public tables have no branch.
 - **Runtime-installed plugins can be granted only private storage, private files, image generation, read access to the font library (`font_assets`), read access to site media (`site_media_read`, #530), the consent provider's purpose list (`consent_provider`), chat tools and companion skills so far.** Their grants are Owner receipts per artifact digest (`plugin_capability_grants`), checked inside every private-storage and private-file operation and every skill lookup; the other grants of §14.5 have no broker for them yet, and a plugin requesting one does not activate.
-- **Shipped plugins run in-process and receive their capabilities at load** rather than through Owner-approved, per-artifact grants; `cms_admin` is a broad capability rather than per-domain read/write grants. Since #1267 a shipped plugin whose release asks for a capability the Owner has not approved for it (`plugins.approved_capabilities`) does not run until the Owner approves it at Settings → Plugins.
+- **Shipped plugins run in-process and receive their capabilities at load** rather than through Owner-approved, per-artifact grants; `cms_admin` is a broad capability rather than per-domain read/write grants. Since #1267 a shipped plugin whose release asks for a capability the Owner has not approved for it (`plugins.approved_capabilities`) does not run until the Owner approves it at Settings → Plugins. That is a gate on the capability set, not a grant per artifact digest: a new release with the same capabilities still runs without a new approval.
 - **A render call's `ctx.cms.call` is not refused for core writes.** Private storage refuses render and visitor writes; core operations carry no read/write marker the host could check.
 - **Host code still issues SQL directly** for AI cost accounting, the per-operation audit row and plugin registration in the loader. Plugin table storage itself goes through the `plugin_storage.*` / `plugin_public_storage.*` operations, which follow the branch model: chat writes land on the chat's branch with a `pluginRow` lock, Stage/publish applies them live, `chat.discard_branch` drops them, and main-line writes are snapshotted.
 

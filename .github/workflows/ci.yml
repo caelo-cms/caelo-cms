@@ -56,7 +56,12 @@ jobs:
     # "[coverage] gate PASSED" before the kill. The gate was being decided by
     # runner noise rather than by the code. Raised to give real headroom; the
     # test step itself is ~7 min, the rest is install + bootstrap + migrate.
-    timeout-minutes: 20
+    # 2026-10-30 (#1267): main had grown to 18m33s (integration suite 665 s);
+    # the change journal adds one journal row per write statement (~0.25 ms
+    # measured locally) and its own tests, and the run cancelled at 20m12s
+    # after "0 fail" and "[coverage] gate PASSED" — the same noise-decided
+    # gate as above. Raised again for headroom.
+    timeout-minutes: 30
 
     env:
       POSTGRES_USER: caelo

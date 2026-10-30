@@ -82,8 +82,11 @@ import {
   setListItemVisibility,
 } from "./list-translation-ops.js";
 import {
+  currentSourceFingerprint,
   type GlossaryRow,
+  loadPageSource,
   outcomeNextStep,
+  pageSourceFingerprint,
   pageTranslationBasis,
   preparePageTranslation,
   SEO_STALE_NEXT_STEP,
@@ -155,6 +158,12 @@ export interface PageVariantRow {
   locale_code: string;
   translation_status: "source" | "up_to_date" | "needs_update";
   source_event_cursor: number | null;
+  /**
+   * #1267 — fingerprint of the source page's translatable content when
+   * this variant became up to date (`pageSourceFingerprint`); null for a
+   * source row and for a variant made before #1267.
+   */
+  source_hash: string | null;
   created_at: string;
 }
 
@@ -223,13 +232,18 @@ const stalenessChangesArgs = z.object({
 });
 
 /**
- * Mark every sibling variant of these SOURCE pages `needs_update`
- * (idempotent: an already stale sibling is left alone).
+ * Of these possibly changed pages, the SOURCE pages: mark each up-to-date
+ * sibling variant `needs_update` whose `source_hash` no longer matches the
+ * source's content (#1267). The comparison is with the content, not with
+ * the delivery, so a change delivered after the translation it preceded
+ * flags nothing, and the rebuild decides exactly the same way. A sibling
+ * without a hash (made before #1267) has no basis: a change flags it.
  */
 async function markSiblingsStale(
-  q: PluginAdminQuery,
+  deps: Pick<ChromeDeps, "q" | "cms" | "listTypes">,
   sourcePageIds: Iterable<string>,
 ): Promise<number> {
+  const { q } = deps;
   let marked = 0;
   for (const pageId of sourcePageIds) {
     const rows = (await q.list("page_variants", {
@@ -238,12 +252,16 @@ async function markSiblingsStale(
     })) as unknown as PageVariantRow[];
     const row = rows[0];
     if (row?.translation_status !== "source") continue;
-    const siblings = (await q.list("page_variants", {
-      group_id: row.group_id,
-      limit: 100,
-    })) as unknown as PageVariantRow[];
+    const siblings = (
+      (await q.list("page_variants", {
+        group_id: row.group_id,
+        limit: 100,
+      })) as unknown as PageVariantRow[]
+    ).filter((sib) => sib.id !== row.id && sib.translation_status === "up_to_date");
+    if (siblings.length === 0) continue;
+    const current = await pageSourceFingerprint(await loadPageSource(deps, pageId, deps.listTypes));
     for (const sib of siblings) {
-      if (sib.id === row.id || sib.translation_status === "needs_update") continue;
+      if (sib.source_hash === current) continue;
       await q.update("page_variants", sib.id, { translation_status: "needs_update" });
       marked += 1;
     }
@@ -636,11 +654,25 @@ async function linkPageIntoGroup(
       `page ${pageId} is already in variant group ${dupe[0].group_id} — unlink_page_variants first`,
     );
   }
+  // A linked page is taken as translated as it stands: its basis is the
+  // group source's content now (#1267).
+  const sourceRows = (await q.list("page_variants", {
+    group_id: groupId,
+    translation_status: "source",
+    limit: 1,
+  })) as unknown as PageVariantRow[];
+  const sourcePageId = sourceRows[0]?.page_id;
+  if (!sourcePageId) {
+    throw new Error(
+      `variant group ${groupId} has no source variant — link the original page first`,
+    );
+  }
   await q.insert("page_variants", {
     group_id: groupId,
     page_id: pageId,
     locale_code: localeCode,
     translation_status: "up_to_date",
+    source_hash: await currentSourceFingerprint({ cms }, sourcePageId),
   });
   // The locale annotation changed → the composed path may move.
   const refreshed = await cms.call<{ path: string; moved: boolean }>("pages.refresh_current_path", {
@@ -922,6 +954,9 @@ export default definePlugin<PluginContextTier1>({
       page_id: "ref:pages:cascade",
       locale_code: "string",
       translation_status: "enum:source,up_to_date,needs_update",
+      // #1267 — the source content's fingerprint when the variant became
+      // up to date, so a rebuild flags exactly the changed sources.
+      source_hash: "text",
       // Retired by #1267 (it held a domain-event id): no longer written.
       // Still declared so the previous release's writes succeed during the
       // roll; removed with the domain-event tables (0442's release).
@@ -1905,7 +1940,6 @@ export default definePlugin<PluginContextTier1>({
     translation_staleness_tick: async (ctx, args) => {
       const { changes } = stalenessChangesArgs.parse(args);
       if (changes.length === 0) return { marked: 0, scanned: 0 };
-      const q = adminQueryOf(ctx);
       const cms = cmsOf(ctx);
       const sourcePageIds = new Set<string>();
       const instanceIds = new Set<string>();
@@ -1950,26 +1984,45 @@ export default definePlugin<PluginContextTier1>({
           });
         for (const p of got?.renderedOn ?? []) sourcePageIds.add(p.pageId);
       }
-      let marked = await markSiblingsStale(q, sourcePageIds);
-      if (chromeTouched) marked += await refreshChromeStaleness(await chromeDepsOf(ctx));
       const deps = await chromeDepsOf(ctx);
+      let marked = await markSiblingsStale(deps, sourcePageIds);
+      if (chromeTouched) marked += await refreshChromeStaleness(deps);
       const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
       return { marked, scanned: changes.length, lists };
     },
 
     /**
      * The change consumer's rebuild (#1267): runs on first activation and
-     * when the plugin's journal cursor fell behind the journal's
-     * retention. Chrome and list statuses are recomputed from their stored
-     * source hashes, exactly. Page staleness has no stored source
-     * fingerprint, so changes the plugin did not see cannot be told apart
-     * from changes it did: every translated sibling is flagged
-     * needs_update, so the operator reviews them instead of trusting a
-     * status nobody checked.
+     * when the plugin's journal cursor fell behind the journal's horizon
+     * (its consumer stalled for a week, or the plugin was deactivated in
+     * between). Every status is recomputed from stored source
+     * fingerprints, exactly: an up-to-date page variant is flagged
+     * needs_update only when its group source's content differs from the
+     * `source_hash` it was translated from. A variant with no hash (made
+     * before #1267) has no basis to compare and is flagged for review.
      */
     rebuild_translation_staleness: async (ctx) => {
-      const q = adminQueryOf(ctx);
+      const deps = await chromeDepsOf(ctx);
+      const { q } = deps;
       let marked = 0;
+      // Group → its source's fingerprint now (null: the group has no source).
+      const sourceHashes = new Map<string, string | null>();
+      const sourceHashOf = async (groupId: string): Promise<string | null> => {
+        const known = sourceHashes.get(groupId);
+        if (known !== undefined) return known;
+        const source = (
+          (await q.list("page_variants", {
+            group_id: groupId,
+            translation_status: "source",
+            limit: 1,
+          })) as unknown as PageVariantRow[]
+        )[0];
+        const hash = source
+          ? await pageSourceFingerprint(await loadPageSource(deps, source.page_id, deps.listTypes))
+          : null;
+        sourceHashes.set(groupId, hash);
+        return hash;
+      };
       for (let afterId: string | undefined; ; ) {
         const rows = (await q.list("page_variants", {
           translation_status: "up_to_date",
@@ -1978,14 +2031,15 @@ export default definePlugin<PluginContextTier1>({
           ...(afterId ? { afterId } : {}),
         })) as unknown as PageVariantRow[];
         for (const row of rows) {
+          const current = await sourceHashOf(row.group_id);
+          if (current !== null && row.source_hash === current) continue;
           await q.update("page_variants", row.id, { translation_status: "needs_update" });
           marked += 1;
         }
         if (rows.length < 1000) break;
         afterId = rows.at(-1)?.id;
       }
-      marked += await refreshChromeStaleness(await chromeDepsOf(ctx));
-      const deps = await chromeDepsOf(ctx);
+      marked += await refreshChromeStaleness(deps);
       const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
       return { marked, lists };
     },

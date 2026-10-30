@@ -325,11 +325,14 @@ test("usage cache: journal garbage collection past the cached mark forces a resc
   await adapter.withAdminTransaction(ctx, async (tx) => {
     await loadSiteFontUsage(tx, tokens);
   });
-  // A content write after the scan, then GC with no retention: its journal
+  // A content write after the scan, then GC with no retention (and no
+  // stall window, so no other test's consumer holds it back): its journal
   // row goes too, so the horizon passes the cached scan's mark.
   await adapter.withAdminTransaction(ctx, (tx) => setCaptionCss(tx, ".cap{font-weight:330}"));
   await adapter.withAdminTransaction(ctx, async (tx) => {
-    expect(await collectJournalGarbage(tx, { retentionMs: 0 })).toBeGreaterThan(0);
+    expect(
+      await collectJournalGarbage(tx, { retentionMs: 0, stalledConsumerMs: 0 }),
+    ).toBeGreaterThan(0);
   });
   await adapter.withAdminTransaction(ctx, async (tx) => {
     const scans = siteFontUsageScanCount();

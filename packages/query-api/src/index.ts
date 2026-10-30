@@ -23,6 +23,7 @@ export {
   dropConsumers,
   finishConsumerRebuild,
   JOURNAL_RETENTION_MS,
+  JOURNAL_STALLED_CONSUMER_MS,
   type JournalChange,
   type JournalCheck,
   type JournalFilter,

@@ -29,10 +29,13 @@
  * marked seen without delivery.
  *
  * Retention: rows older than the retention window are deleted by
- * {@link collectJournalGarbage}, which records a horizon. A cursor whose
- * xmin is at or below a horizon may have lost rows: the read reports
- * `needsRebuild` and the consumer runs its rebuild-from-source op instead.
- * GC never waits for a consumer, so a dead one holds nothing back.
+ * {@link collectJournalGarbage}, which records a horizon. The horizon never
+ * passes a persisted consumer's cursor while that consumer is alive: a
+ * consumer that has delivered nothing for {@link JOURNAL_STALLED_CONSUMER_MS}
+ * is stalled and holds nothing back, and a deactivated plugin's consumers
+ * are dropped. A cursor whose xmin is at or below a horizon may have lost
+ * rows: the read reports `needsRebuild` and the consumer runs its
+ * rebuild-from-source op instead.
  */
 
 import { sql } from "drizzle-orm";
@@ -625,27 +628,64 @@ export async function currentJournalCursor(tx: TransactionRunner): Promise<strin
   return s;
 }
 
-/** Default retention of journal rows (rule 4): GC never waits for a consumer. */
+/** Default retention of journal rows (rule 4). */
 export const JOURNAL_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long a persisted consumer may leave a journal row undelivered before
+ * it counts as stalled and stops holding garbage collection back. A live
+ * consumer delivers within seconds; one that has not for a week is broken
+ * (a plugin failing every batch, recorded loudly by #1008) and gets its
+ * rebuild instead of an ever-growing journal.
+ */
+export const JOURNAL_STALLED_CONSUMER_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Delete journal rows older than `retentionMs` that belong to finished
  * transactions, at most `batch` per call, never waiting on a lock, and
  * record the newest deleted xid as a horizon. Must run as `system`.
  *
+ * The horizon never passes a persisted consumer that is not stalled: rows
+ * at or above the lowest such cursor's xmin stay, so a consumer that was
+ * idle past the retention window (a quiet weekend on request-billed CPU)
+ * reads on where it stopped instead of running its rebuild. A consumer is
+ * stalled when its oldest undelivered row is older than
+ * `stalledConsumerMs`.
+ *
  * @returns how many rows were deleted
  */
 export async function collectJournalGarbage(
   tx: TransactionRunner,
-  opts: { readonly retentionMs?: number; readonly batch?: number } = {},
+  opts: {
+    readonly retentionMs?: number;
+    readonly stalledConsumerMs?: number;
+    readonly batch?: number;
+  } = {},
 ): Promise<number> {
   const retentionSecs = Math.floor((opts.retentionMs ?? JOURNAL_RETENTION_MS) / 1000);
+  const stalledSecs = Math.floor((opts.stalledConsumerMs ?? JOURNAL_STALLED_CONSUMER_MS) / 1000);
   const batch = opts.batch ?? 10_000;
   const rows = (await tx.execute(sql`
-    WITH victims AS (
+    WITH held AS (
+      -- The lowest cursor xmin of every consumer that is not stalled. Its
+      -- first undelivered row (lowest xid above the xmin, not visible in
+      -- the cursor) is younger than the stall window, or it has none.
+      SELECT pg_snapshot_xmin(c.cursor_snapshot) AS xmin FROM change_consumers c
+       WHERE NOT EXISTS (
+         SELECT 1 FROM (
+           SELECT p.created_at FROM entity_changes p
+            WHERE p.xid >= pg_snapshot_xmin(c.cursor_snapshot)
+              AND NOT pg_visible_in_snapshot(p.xid, c.cursor_snapshot)
+            ORDER BY p.xid LIMIT 1
+         ) oldest
+          WHERE oldest.created_at < now() - make_interval(secs => ${stalledSecs}))
+       ORDER BY 1 LIMIT 1
+    ),
+    victims AS (
       SELECT ec.xid, ec.table_name, ec.row_id FROM entity_changes ec
        WHERE ec.created_at < now() - make_interval(secs => ${retentionSecs})
          AND ec.xid < pg_snapshot_xmin(pg_current_snapshot())
+         AND NOT EXISTS (SELECT 1 FROM held h WHERE ec.xid >= h.xmin)
        ORDER BY ec.xid
        LIMIT ${batch}
        FOR UPDATE SKIP LOCKED

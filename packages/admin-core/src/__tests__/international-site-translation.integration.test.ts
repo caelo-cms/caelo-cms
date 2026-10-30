@@ -436,6 +436,88 @@ describe("#397 — context-aware translation", () => {
     expect(paused.nextStep).toContain("propose_set_plugin_ai_cost_cap");
   }, 60_000);
 
+  it("#1267 — an idle consumer reads on past the retention window, and a rebuild flags exactly the changed sources", async () => {
+    const sourceId = await seedSourcePage("-idle");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const variant = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-idle-preise",
+    });
+    aiScript.push(() => ({
+      title: "Preise",
+      shortTitle: "Preise",
+      slots: [
+        { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo</p>" }) },
+      ],
+    }));
+    await op("translate_variant", { variantPageId: variant.pageId });
+    const statusOf = async () =>
+      (
+        await sqlAsPlugin(
+          async (tx) =>
+            (await tx.unsafe(
+              `SELECT translation_status FROM plugin_international_site.page_variants WHERE page_id = '${variant.pageId}'`,
+            )) as { translation_status: string }[],
+        )
+      )[0]?.translation_status;
+    const drain = async () => {
+      const reports = await drainChangeConsumers({ adapter, registry });
+      for (const r of reports) if (r.error) throw new Error(`${r.slug}: ${r.error}`);
+      return reports.find((r) => r.slug === "international-site");
+    };
+    const gc = async (input: { retentionMs: number; stalledConsumerMs?: number }) => {
+      const r = await execute(registry, adapter, SYS_CTX, "change_journal.collect_garbage", input);
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+    };
+    // A change to a page that is no source (the variant's own title).
+    const editVariant = async (title: string) => {
+      const r = await execute(registry, adapter, SYS_CTX, "pages.update", {
+        pageId: variant.pageId,
+        title,
+      });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+    };
+    await drain();
+    // The first run's rebuild compares fingerprints: the fresh translation stays.
+    expect(await statusOf()).toBe("up_to_date");
+
+    // A quiet weekend: a change the consumer has not read yet, then GC with
+    // the whole journal past the retention window. The live consumer's
+    // cursor holds it back, so it reads on instead of rebuilding.
+    await editVariant("Preise!");
+    await gc({ retentionMs: 0 });
+    const idle = await drain();
+    expect(idle?.rebuilt).toBe(false);
+    expect(idle?.changes).toBeGreaterThan(0);
+    expect(await statusOf()).toBe("up_to_date");
+
+    // Stalled past the window: GC passes the cursor and the rebuild runs. The
+    // source did not change, so nothing is flagged.
+    await editVariant("Preise!!");
+    await gc({ retentionMs: 0, stalledConsumerMs: 0 });
+    const rebuilt = await drain();
+    expect(rebuilt?.rebuilt).toBe(true);
+    expect(await statusOf()).toBe("up_to_date");
+
+    // A source edit the consumer never saw (GC took its journal row): the
+    // rebuild finds the source's fingerprint changed and flags the variant.
+    const upd = await execute(registry, adapter, SYS_CTX, "pages.update", {
+      pageId: sourceId,
+      title: "Pricing (new)",
+    });
+    if (!upd.ok) throw new Error(JSON.stringify(upd.error));
+    await gc({ retentionMs: 0, stalledConsumerMs: 0 });
+    const lost = await drain();
+    expect(lost?.rebuilt).toBe(true);
+    expect(await statusOf()).toBe("needs_update");
+  }, 60_000);
+
   it("#591 — fills a new variant's meta description; a live variant's SEO is never overwritten, only flagged stale", async () => {
     const sourceId = await seedSourcePage("-seo");
     await op("set_locales", {

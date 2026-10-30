@@ -24,6 +24,7 @@ import {
   commitChanges,
   DatabaseAdapter,
   execute,
+  finishConsumerRebuild,
   OperationRegistry,
   pollChanges,
   registerConsumer,
@@ -405,7 +406,31 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
     expect(second.changes.map((c) => c.rowId)).toEqual([early]);
   });
 
-  it("drops a deactivated plugin's cursor, and GC never waits for any cursor", async () => {
+  it("GC never passes a live consumer idle past the retention window; a stalled one holds nothing back", async () => {
+    const name = `${PFX}idle-consumer`;
+    await adapter.withAdminTransaction(SYS, (tx) => registerConsumer(tx, name));
+    await adapter.withAdminTransaction(SYS, (tx) => finishConsumerRebuild(tx, name));
+    // A change the consumer has not read yet, then a "weekend": GC runs
+    // with the retention window behind every row.
+    const moduleId = await createModule("gc-idle-consumer");
+    await adapter.withAdminTransaction(SYS, (tx) => collectJournalGarbage(tx, { retentionMs: 0 }));
+    const idle = await adapter.withAdminTransaction(SYS, (tx) =>
+      pollChanges(tx, name, { filter: { kinds: ["module"] }, limit: 100 }),
+    );
+    expect(idle.needsRebuild).toBe(false);
+    expect(idle.changes.map((c) => c.rowId)).toContain(moduleId);
+    // Undelivered for longer than the stall window: it no longer holds GC.
+    await adapter.withAdminTransaction(SYS, (tx) =>
+      collectJournalGarbage(tx, { retentionMs: 0, stalledConsumerMs: 0 }),
+    );
+    const stalled = await adapter.withAdminTransaction(SYS, (tx) =>
+      pollChanges(tx, name, { filter: { kinds: ["module"] }, limit: 100 }),
+    );
+    expect(stalled.needsRebuild).toBe(true);
+    await asSystem((tx) => tx`DELETE FROM change_consumers WHERE name = ${name}`);
+  });
+
+  it("drops a deactivated plugin's cursor, and GC passes a stalled cursor", async () => {
     const pluginId = crypto.randomUUID();
     await asSystem(
       (tx) => tx`
@@ -416,8 +441,11 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
     const name = `plugin:${pluginId}`;
     await adapter.withAdminTransaction(SYS, (tx) => registerConsumer(tx, name, pluginId));
     await createModule("gc-after-cursor");
-    // GC with no retention deletes the rows the cursor has not read yet.
-    await adapter.withAdminTransaction(SYS, (tx) => collectJournalGarbage(tx, { retentionMs: 0 }));
+    // GC with no retention and no stall window deletes the rows the cursor
+    // has not read yet.
+    await adapter.withAdminTransaction(SYS, (tx) =>
+      collectJournalGarbage(tx, { retentionMs: 0, stalledConsumerMs: 0 }),
+    );
     const behind = await adapter.withAdminTransaction(SYS, (tx) =>
       pollChanges(tx, name, { filter: { kinds: ["module"] }, limit: 10 }),
     );

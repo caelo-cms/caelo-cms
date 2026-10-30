@@ -41,7 +41,8 @@
 -- transaction (same xid, kind and row_id) is where a consumer finds it.
 --
 --   entity_change_horizons — garbage collection deletes rows older than
---     the retention window and records the newest xid it deleted. A cursor
+--     the retention window, never past the cursor of a persisted consumer
+--     that is not stalled, and records the newest xid it deleted. A cursor
 --     whose snapshot xmin is at or below a horizon may have lost rows and
 --     must run its rebuild instead (rule 4 of the contract).
 --
@@ -218,6 +219,15 @@ BEGIN
             NULLIF(current_setting('caelo.op_name', true), ''))
     ON CONFLICT (xid, table_name, row_id) DO UPDATE SET op = 'truncate', changed_columns = NULL;
     PERFORM pg_notify('caelo_entity_changes', '');
+    RETURN NULL;
+  END IF;
+
+  -- A statement that touched no row (an UPDATE or DELETE whose WHERE
+  -- matched nothing) changed nothing: skip planning the dynamic insert,
+  -- the most expensive part of the trigger, and the wake-up.
+  IF TG_OP = 'DELETE' THEN
+    IF NOT EXISTS (SELECT 1 FROM old_rows) THEN RETURN NULL; END IF;
+  ELSIF NOT EXISTS (SELECT 1 FROM new_rows) THEN
     RETURN NULL;
   END IF;
 

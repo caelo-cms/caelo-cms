@@ -255,7 +255,7 @@ export function pageSlotsOf(
 }
 
 async function loadPageSlots(
-  deps: TranslationDeps,
+  deps: Pick<TranslationDeps, "cms">,
   pageId: string,
   listTypes: ReadonlyMap<string, ListTypeDef>,
 ): Promise<PageSlots> {
@@ -266,7 +266,9 @@ async function loadPageSlots(
   return pageSlotsOf(r.placements, listTypes);
 }
 
-async function loadListTypes(deps: TranslationDeps): Promise<Map<string, ListTypeDef>> {
+async function loadListTypes(
+  deps: Pick<TranslationDeps, "cms">,
+): Promise<Map<string, ListTypeDef>> {
   const r = await deps.cms.call<{ listTypes: { slug: string; definition: ListTypeDef }[] }>(
     "list_types.list",
     {},
@@ -338,11 +340,72 @@ function keepEntryTexts(source: unknown, variant: unknown): unknown {
 }
 
 /** A page's stored meta description; "" when it has none. */
-async function loadMetaDescription(deps: TranslationDeps, pageId: string): Promise<string> {
+async function loadMetaDescription(
+  deps: Pick<TranslationDeps, "cms">,
+  pageId: string,
+): Promise<string> {
   const r = await deps.cms.call<{ seo: { metaDescription: string } | null }>("pages_seo.get", {
     pageId,
   });
   return r.seo?.metaDescription ?? "";
+}
+
+/**
+ * #1267 — the source content a page translation is made from. A variant's
+ * `source_hash` is its fingerprint at the moment the variant became up to
+ * date, so whether the source changed since is decided from the content
+ * alone: a rebuild of translation staleness (a fresh activation, a cursor
+ * behind the journal's horizon) flags exactly the variants whose source
+ * differs, not every one.
+ */
+export interface PageSource {
+  readonly title: string;
+  readonly shortTitle: string;
+  readonly metaDescription: string;
+  readonly slots: readonly ContentSlot[];
+}
+
+/** Fingerprint of a page's translatable source content ({@link PageSource}). */
+export function pageSourceFingerprint(src: PageSource): Promise<string> {
+  return basisOf({
+    kind: "page-source",
+    title: src.title,
+    shortTitle: src.shortTitle,
+    metaDescription: src.metaDescription,
+    slots: src.slots,
+  });
+}
+
+/** Read a page's {@link PageSource} as a translation pass reads it. */
+export async function loadPageSource(
+  deps: Pick<TranslationDeps, "cms">,
+  pageId: string,
+  listTypes: ReadonlyMap<string, ListTypeDef>,
+): Promise<PageSource> {
+  const listed = await deps.cms.call<{
+    pages: { id: string; title: string; shortTitle: string }[];
+  }>("pages.list", { pageIds: [pageId] });
+  const page = listed.pages.find((p) => p.id === pageId);
+  if (!page) {
+    throw new Error(
+      `source page ${pageId} does not exist — unlink_page_variants removes a deleted page from its group`,
+    );
+  }
+  const metaDescription = await loadMetaDescription(deps, pageId);
+  const { slots } = await loadPageSlots(deps, pageId, listTypes);
+  return { title: page.title, shortTitle: page.shortTitle, metaDescription, slots };
+}
+
+/**
+ * The current fingerprint of a source page, for a variant that becomes up
+ * to date without a translation pass (linking an existing page).
+ */
+export async function currentSourceFingerprint(
+  deps: Pick<TranslationDeps, "cms">,
+  sourcePageId: string,
+): Promise<string> {
+  const listTypes = await loadListTypes(deps);
+  return pageSourceFingerprint(await loadPageSource(deps, sourcePageId, listTypes));
 }
 
 /**
@@ -657,7 +720,18 @@ export async function writePageTranslation(
   // A page with shared nested content is not up to date: part of it is
   // still in the source language.
   if (sharedNested.length === 0) {
-    await q.update("page_variants", p.variantRowId, { translation_status: "up_to_date" });
+    // The source this translation was made from: a source edit after the
+    // prepare step leaves the hash behind, so the variant reads as stale.
+    const sourceHash = await pageSourceFingerprint({
+      title: p.sourceTitle,
+      shortTitle: p.sourceShortTitle,
+      metaDescription: p.sourceMetaDescription,
+      slots: p.sourceSlots,
+    });
+    await q.update("page_variants", p.variantRowId, {
+      translation_status: "up_to_date",
+      source_hash: sourceHash,
+    });
     return { mode: p.mode, slotsApplied, titleApplied, seo };
   }
   return { mode: p.mode, slotsApplied, titleApplied, seo, sharedNested };
