@@ -25,9 +25,14 @@ import {
 } from "@caelo-cms/plugin-sdk";
 import {
   beginConsumerRebuild,
+  claimConsumer,
+  commitChanges,
   DatabaseAdapter,
   execute,
+  finishConsumerRebuild,
   OperationRegistry,
+  pollChanges,
+  releaseConsumer,
 } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
@@ -69,6 +74,8 @@ let failNext = false;
 /** Runs inside the rebuild while it reads its source (a concurrent write). */
 let duringRebuild: (() => Promise<void>) | null = null;
 let failRebuild = false;
+/** Runs inside a dispatch (a slow plugin operation). */
+let duringDispatch: (() => Promise<void>) | null = null;
 
 type AdminCtx = {
   adminQuery?: PluginAdminQuery;
@@ -94,6 +101,11 @@ const consumer = definePlugin({
       if (failNext) {
         failNext = false;
         throw new Error("the consumer failed this once");
+      }
+      if (duringDispatch) {
+        const hook = duringDispatch;
+        duringDispatch = null;
+        await hook();
       }
       const a = args as PluginChangesArgs;
       received.push({
@@ -316,6 +328,90 @@ describe("#1267 — a plugin's change consumer", () => {
     const retried = await drainChangeConsumers(infra);
     expect(retried.find((r) => r.slug === "t1267c-listener")?.rebuilt).toBe(true);
   });
+
+  it("drains a burst larger than its batch budget without waiting for another write", async () => {
+    await drain();
+    received.length = 0;
+    const ids: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      ids.push(
+        (
+          await op<{ moduleId: string }>(SYS, "modules.create", {
+            slug: `${PFX}burst-${i}`,
+            displayName: `Burst ${i}`,
+            html: `<p>burst ${i}</p>`,
+          })
+        ).moduleId,
+      );
+    }
+    // A budget of one 2-row batch per drain: one wake-up must still deliver
+    // all of it, because a consumer with changes left is drained again.
+    const loop = await startChangeConsumers(infra, { batchSize: 2, maxBatches: 1 });
+    try {
+      await loop.drain();
+    } finally {
+      await loop.stop();
+    }
+    const seen = new Set(received.flatMap((r) => r.changes).map((c) => c.rowId));
+    for (const id of ids) expect(seen.has(id)).toBe(true);
+    const budgeted = await drainChangeConsumers(infra, "t1267c-listener", {
+      batchSize: 2,
+      maxBatches: 1,
+    });
+    expect(budgeted[0]?.more).toBe(false);
+  });
+
+  it("keeps its claim through a dispatch longer than the claim, and a lapsed claim commits nothing", async () => {
+    await drain();
+    const name = changeConsumerName(listenerId());
+    await op(SYS, "modules.create", {
+      slug: `${PFX}slow`,
+      displayName: "Slow",
+      html: "<p>slow</p>",
+    });
+    let stolen: boolean | null = null;
+    duringDispatch = async () => {
+      // Longer than the 1 s claim: the drain renews it meanwhile.
+      await Bun.sleep(2_200);
+      stolen = await adapter.withAdminTransaction(SYS, (tx) =>
+        claimConsumer(tx, name, "another-instance", 1_000),
+      );
+    };
+    const reports = await drainChangeConsumers(infra, "t1267c-listener", { claimMs: 1_000 });
+    expect(stolen).toBe(false);
+    expect(reports[0]?.error).toBeUndefined();
+
+    // The fence: a holder whose claim lapsed and was taken over commits
+    // nothing and cannot finish a rebuild.
+    await op(SYS, "modules.create", {
+      slug: `${PFX}fenced`,
+      displayName: "Fenced",
+      html: "<p>fenced</p>",
+    });
+    const batch = await adapter.withAdminTransaction(SYS, async (tx) => {
+      expect(await claimConsumer(tx, name, "instance-a", 1_000)).toBe(true);
+      return pollChanges(tx, name, { filter: { kinds: ["module"] }, limit: 100 });
+    });
+    await Bun.sleep(1_100);
+    await adapter.withAdminTransaction(SYS, async (tx) => {
+      expect(await claimConsumer(tx, name, "instance-b", 1_000)).toBe(true);
+    });
+    await expect(
+      adapter.withAdminTransaction(SYS, (tx) =>
+        commitChanges(tx, name, batch.token, { holder: "instance-a" }),
+      ),
+    ).rejects.toThrow(/claim lapsed/);
+    await expect(
+      adapter.withAdminTransaction(SYS, (tx) =>
+        finishConsumerRebuild(tx, name, { holder: "instance-a" }),
+      ),
+    ).rejects.toThrow(/claim lapsed or was taken over/);
+    await adapter.withAdminTransaction(SYS, (tx) => releaseConsumer(tx, name, "instance-b"));
+    // Nothing was lost: the batch arrives on the next drain.
+    received.length = 0;
+    await drain();
+    expect(received.flatMap((r) => r.changes).length).toBeGreaterThan(0);
+  }, 30_000);
 
   it("is woken by the journal's NOTIFY", async () => {
     const loop = await startChangeConsumers(infra);

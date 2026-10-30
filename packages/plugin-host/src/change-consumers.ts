@@ -65,10 +65,25 @@ export function changeConsumerName(pluginId: string): string {
 
 /** Changes one dispatch carries at most. */
 const BATCH = 500;
-/** Batches one drain of one consumer runs at most before yielding to the next wake-up. */
+/**
+ * Batches one drain of one consumer runs at most before the next consumer's
+ * turn (fairness); a consumer with more left is drained again right after
+ * the round (`DrainReport.more`), not at the next wake-up.
+ */
 const MAX_BATCHES = 40;
-/** The single-instance claim; renewed with every batch, released after the drain. */
+/**
+ * The single-instance claim. Renewed every third of it while a dispatch or a
+ * rebuild runs, so a long one keeps it; every state update (batch commit,
+ * finished rebuild) is fenced on it, so one that outlived it changes nothing.
+ */
 const CLAIM_MS = 60_000;
+
+/** Overrides of the drain's limits (tests); production uses the defaults. */
+export interface DrainLimits {
+  readonly batchSize?: number;
+  readonly maxBatches?: number;
+  readonly claimMs?: number;
+}
 /** How long a wake-up waits for the rest of its burst before it drains. */
 const WAKE_COALESCE_MS = 50;
 
@@ -123,12 +138,13 @@ const claimOp = defineOperation({
       name: consumerName,
       pluginId: z.string().uuid(),
       holder: z.string().min(1).max(200),
+      leaseMs: z.number().int().min(1000).max(CLAIM_MS).optional(),
     })
     .strict(),
   output: z.object({ claimed: z.boolean(), rebuildPending: z.boolean() }),
   handler: async (_ctx, input, tx) => {
     await registerConsumer(tx, input.name, input.pluginId);
-    const claimed = await claimConsumer(tx, input.name, input.holder, CLAIM_MS);
+    const claimed = await claimConsumer(tx, input.name, input.holder, input.leaseMs ?? CLAIM_MS);
     return ok({ claimed, rebuildPending: await consumerRebuildPending(tx, input.name) });
   },
 });
@@ -182,13 +198,15 @@ const commitOp = defineOperation({
     .object({
       name: consumerName,
       token: z.string().min(2).max(100_000),
+      /** The claim's holder: the commit is refused once its claim lapsed. */
+      holder: z.string().min(1).max(200),
       release: z.string().min(1).max(200).optional(),
     })
     .strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
     try {
-      await commitChanges(tx, input.name, input.token);
+      await commitChanges(tx, input.name, input.token, { holder: input.holder });
       if (input.release) await releaseConsumer(tx, input.name, input.release);
     } catch (thrown) {
       return err({
@@ -227,10 +245,18 @@ const finishRebuildOp = defineOperation({
   actorScope: SYSTEM_ONLY,
   readScope: "request",
   database: "cms_admin",
-  input: z.object({ name: consumerName }).strict(),
+  input: z.object({ name: consumerName, holder: z.string().min(1).max(200) }).strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
-    await finishConsumerRebuild(tx, input.name);
+    try {
+      await finishConsumerRebuild(tx, input.name, { holder: input.holder });
+    } catch (thrown) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugin_changes.finish_rebuild",
+        message: thrown instanceof Error ? thrown.message : String(thrown),
+      });
+    }
     return ok({});
   },
 });
@@ -324,6 +350,8 @@ export interface DrainReport {
   readonly skipped: boolean;
   /** Set when a dispatch failed; the batch stays uncommitted and is re-delivered. */
   readonly error?: string;
+  /** The batch budget ran out with changes left: drain this consumer again. */
+  readonly more: boolean;
 }
 
 async function dispatch(
@@ -340,27 +368,60 @@ async function drainOne(
   adapter: DatabaseAdapter,
   registry: OperationRegistry,
   plugin: LoadedPlugin,
+  limits: DrainLimits,
 ): Promise<DrainReport> {
   const spec = plugin.definition.changeConsumer;
   if (!spec) throw new Error(`plugin "${plugin.slug}" declares no changeConsumer`);
+  const batchSize = limits.batchSize ?? BATCH;
+  const maxBatches = limits.maxBatches ?? MAX_BATCHES;
+  const claimMs = limits.claimMs ?? CLAIM_MS;
   const name = changeConsumerName(plugin.pluginId);
   const holder = hostInstanceId();
   let changes = 0;
   let rebuilt = false;
   let released = false;
-  const claim = { name, pluginId: plugin.pluginId, holder };
+  let more = false;
+  const claim = { name, pluginId: plugin.pluginId, holder, leaseMs: claimMs };
   const { claimed, rebuildPending } = await run<{ claimed: boolean; rebuildPending: boolean }>(
     adapter,
     registry,
     "plugin_changes.claim",
     claim,
   );
-  if (!claimed) return { slug: plugin.slug, changes, rebuilt, skipped: true };
+  if (!claimed) return { slug: plugin.slug, changes, rebuilt, skipped: true, more };
+  // A dispatch or a rebuild may run longer than the claim: renew it while it
+  // runs. A renewal that fails (another instance took the consumer over)
+  // stops this drain after the operation; the fenced commit or finish
+  // refuses its state update either way.
+  const keepingClaim = async <T>(work: () => Promise<T>): Promise<T> => {
+    let lost: string | null = null;
+    const timer = setInterval(
+      () => {
+        run<{ claimed: boolean }>(adapter, registry, "plugin_changes.claim", claim)
+          .then((r) => {
+            if (!r.claimed) lost ??= "another instance took the consumer over";
+          })
+          .catch((e: unknown) => {
+            lost ??= `the claim could not be renewed: ${e instanceof Error ? e.message : String(e)}`;
+          });
+      },
+      Math.max(250, Math.floor(claimMs / 3)),
+    );
+    try {
+      const out = await work();
+      if (lost) throw new Error(`the change consumer's claim was lost while it ran: ${lost}`);
+      return out;
+    } finally {
+      clearInterval(timer);
+    }
+  };
   // The rebuild-from-source: derive everything, then read the journal from
   // where the rebuild began (its cursor was taken before it ran).
   const rebuild = async () => {
-    await dispatch(plugin, spec.rebuildOperationName, {}, batchInvocation(null));
-    await run(adapter, registry, "plugin_changes.finish_rebuild", { name });
+    await keepingClaim(() =>
+      dispatch(plugin, spec.rebuildOperationName, {}, batchInvocation(null)),
+    );
+    await run(adapter, registry, "plugin_changes.finish_rebuild", { name, holder });
     rebuilt = true;
   };
   try {
@@ -368,11 +429,11 @@ async function drainOne(
     // after its cursor was dropped), or a rebuild that did not finish.
     if (rebuildPending) await rebuild();
     const filter = pluginChangeFilter(plugin);
-    for (let i = 0; i < MAX_BATCHES; i++) {
+    for (let i = 0; i < maxBatches; i++) {
       const batch = await run<ChangeBatch>(adapter, registry, "plugin_changes.poll", {
         name,
         filter,
-        limit: BATCH,
+        limit: batchSize,
       });
       if (batch.needsRebuild) {
         await run(adapter, registry, "plugin_changes.begin_rebuild", { name });
@@ -386,34 +447,38 @@ async function drainOne(
         byBranch.set(c.chatBranchId, list);
       }
       for (const [chatBranchId, list] of byBranch) {
-        await dispatch(
-          plugin,
-          spec.operationName,
-          { chatBranchId, changes: list },
-          batchInvocation(chatBranchId),
+        await keepingClaim(() =>
+          dispatch(
+            plugin,
+            spec.operationName,
+            { chatBranchId, changes: list },
+            batchInvocation(chatBranchId),
+          ),
         );
         changes += list.length;
       }
       // The last batch commits and releases in one transaction.
-      const last = !batch.more || i === MAX_BATCHES - 1;
+      const last = !batch.more || i === maxBatches - 1;
       await run(adapter, registry, "plugin_changes.commit", {
         name,
         token: batch.token,
+        holder,
         ...(last ? { release: holder } : {}),
       });
       if (last) {
         released = true;
+        more = batch.more;
         break;
       }
       await run(adapter, registry, "plugin_changes.claim", claim);
     }
-    return { slug: plugin.slug, changes, rebuilt, skipped: false };
+    return { slug: plugin.slug, changes, rebuilt, skipped: false, more };
   } catch (thrown) {
     const message = thrown instanceof Error ? thrown.message : String(thrown);
     // The dispatcher already recorded a plugin's own failure under the
     // plugin (#1008); the batch is re-delivered on the next wake-up.
     console.error(`[plugin-host] change consumer of "${plugin.slug}" stopped: ${message}`);
-    return { slug: plugin.slug, changes, rebuilt, skipped: false, error: message };
+    return { slug: plugin.slug, changes, rebuilt, skipped: false, error: message, more: false };
   } finally {
     if (!released) {
       await run(adapter, registry, "plugin_changes.release", { name, holder }).catch((e: unknown) =>
@@ -433,12 +498,13 @@ async function drainOne(
 export async function drainChangeConsumers(
   infra: { readonly adapter: DatabaseAdapter; readonly registry: OperationRegistry },
   only?: string,
+  limits: DrainLimits = {},
 ): Promise<DrainReport[]> {
   const reports: DrainReport[] = [];
   for (const plugin of loadedPlugins.all()) {
     if (!plugin.definition.changeConsumer || isPluginDisabled(plugin.slug)) continue;
     if (only !== undefined && plugin.slug !== only) continue;
-    reports.push(await drainOne(infra.adapter, infra.registry, plugin));
+    reports.push(await drainOne(infra.adapter, infra.registry, plugin, limits));
   }
   return reports;
 }
@@ -453,12 +519,18 @@ export interface ChangeConsumersHandle {
 /**
  * Start the wake-up loop: every journal NOTIFY (and every reconnect of the
  * LISTEN connection) drains the consumers. Wake-ups during a drain run one
- * more drain after it, so none is lost and none runs twice at once here.
+ * more drain after it, so none is lost and none runs twice at once here; a
+ * consumer that ran out of its batch budget with changes left is drained
+ * again right after the round, so a burst larger than the budget is
+ * delivered without waiting for another write.
  */
-export async function startChangeConsumers(infra: {
-  readonly adapter: DatabaseAdapter;
-  readonly registry: OperationRegistry;
-}): Promise<ChangeConsumersHandle> {
+export async function startChangeConsumers(
+  infra: {
+    readonly adapter: DatabaseAdapter;
+    readonly registry: OperationRegistry;
+  },
+  limits: DrainLimits = {},
+): Promise<ChangeConsumersHandle> {
   let running: Promise<void> | null = null;
   let again = false;
   function wake(): Promise<void> {
@@ -473,7 +545,8 @@ export async function startChangeConsumers(infra: {
         await new Promise((resolve) => setTimeout(resolve, WAKE_COALESCE_MS));
         do {
           again = false;
-          await drainChangeConsumers(infra);
+          const reports = await drainChangeConsumers(infra, undefined, limits);
+          if (reports.some((r) => r.more)) again = true;
         } while (again);
       } catch (thrown) {
         console.error("[plugin-host] draining the change consumers failed", thrown);

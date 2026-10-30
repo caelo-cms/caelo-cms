@@ -251,8 +251,11 @@ function storedFingerprint(hash: string | null): string | null {
 }
 
 /**
- * Group id → its source page's fingerprint now (null: the group has no
- * source), memoised for one pass.
+ * Group id → its source page's fingerprint now, memoised for one pass; null
+ * when the group has no source, or its source page is deleted. Either way
+ * there is nothing to compare a translation with, so callers leave the
+ * group's variants as they are: a deleted source's translations are not
+ * "out of date", and an undo of the delete makes them comparable again.
  */
 function sourceHashesOf(
   deps: Pick<ChromeDeps, "q" | "cms" | "listTypes">,
@@ -268,9 +271,8 @@ function sourceHashesOf(
         limit: 1,
       })) as unknown as PageVariantRow[]
     )[0];
-    const hash = source
-      ? await pageSourceFingerprint(await loadPageSource(deps, source.page_id, deps.listTypes))
-      : null;
+    const content = source ? await loadPageSource(deps, source.page_id, deps.listTypes) : null;
+    const hash = content ? await pageSourceFingerprint(content) : null;
     known.set(groupId, hash);
     return hash;
   };
@@ -314,7 +316,7 @@ async function backfillSourceHashes(ctx: unknown): Promise<number | null> {
     for (const row of rows) {
       if (row.source_hash !== null) continue;
       const current = await sourceHashOf(row.group_id);
-      // A group without a source has nothing to compare: the rebuild flags it.
+      // No source to compare with (none, or deleted): left as it is.
       if (current === null) continue;
       await q.update("page_variants", row.id, { source_hash: `${BACKFILLED_HASH}${current}` });
       filled += 1;
@@ -322,6 +324,11 @@ async function backfillSourceHashes(ctx: unknown): Promise<number | null> {
     if (rows.length < 1000) break;
     afterId = rows.at(-1)?.id;
   }
+  // Retired-outbox work outstanding at the upgrade (0430 marks its page
+  // part): chrome and list statuses are re-derived from their stored
+  // hashes, which covers module and list events the outbox still held.
+  await refreshChromeStaleness(deps);
+  await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
   await q.insert("settings", { key: SOURCE_HASH_BACKFILL_KEY, value: { filled } });
   return filled;
 }
@@ -354,7 +361,11 @@ async function markSiblingsStale(
       })) as unknown as PageVariantRow[]
     ).filter((sib) => sib.id !== row.id && sib.translation_status === "up_to_date");
     if (siblings.length === 0) continue;
-    const current = await pageSourceFingerprint(await loadPageSource(deps, pageId, deps.listTypes));
+    // A deleted source (a soft delete keeps the linkage) is no basis: its
+    // variants stay as they are, and the rest of the batch goes on.
+    const content = await loadPageSource(deps, pageId, deps.listTypes);
+    if (!content) continue;
+    const current = await pageSourceFingerprint(content);
     for (const sib of siblings) {
       // A backfilled hash (BACKFILLED_HASH) is no basis for a delivered
       // change: the change may predate the backfill's read.
@@ -2096,7 +2107,8 @@ export default definePlugin<PluginContextTier1>({
      * fingerprints, exactly: an up-to-date page variant is flagged
      * needs_update only when its group source's content differs from the
      * `source_hash` it was translated from (or that the backfill adopted).
-     * A variant with no hash has no basis to compare and is flagged.
+     * A variant with no hash has no basis to compare and is flagged; one
+     * whose source is gone (none, or deleted) is left as it is.
      */
     rebuild_translation_staleness: async (ctx) => {
       const deps = await chromeDepsOf(ctx);
@@ -2112,7 +2124,8 @@ export default definePlugin<PluginContextTier1>({
         })) as unknown as PageVariantRow[];
         for (const row of rows) {
           const current = await sourceHashOf(row.group_id);
-          if (current !== null && storedFingerprint(row.source_hash) === current) continue;
+          // No source to compare with (none, or deleted): left as it is.
+          if (current === null || storedFingerprint(row.source_hash) === current) continue;
           await q.update("page_variants", row.id, { translation_status: "needs_update" });
           marked += 1;
         }

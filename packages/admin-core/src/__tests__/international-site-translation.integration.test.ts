@@ -609,6 +609,161 @@ describe("#397 — context-aware translation", () => {
     expect((await rowOf(de.pageId))?.translation_status).toBe("needs_update");
   }, 60_000);
 
+  it("#1267 — a deleted source page leaves its translations as they are and never stops the consumer", async () => {
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const goneId = await seedSourcePage("-gone");
+    const liveId = await seedSourcePage("-live");
+    const gone = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: goneId,
+      localeCode: "de",
+      slug: "t397-gone-preise",
+    });
+    const live = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: liveId,
+      localeCode: "de",
+      slug: "t397-live-preise",
+    });
+    for (const v of [gone, live]) {
+      aiScript.push(() => ({
+        title: "Preise",
+        shortTitle: "Preise",
+        slots: [{ slot: "s0", values: fields({ headline: "Hallo", body_html: "<p>Hallo</p>" }) }],
+      }));
+      await op("translate_variant", { variantPageId: v.pageId });
+    }
+    const statusOf = async (pageId: string) =>
+      (
+        await sqlAsPlugin(
+          async (tx) =>
+            (await tx.unsafe(
+              `SELECT translation_status FROM plugin_international_site.page_variants WHERE page_id = '${pageId}'`,
+            )) as { translation_status: string }[],
+        )
+      )[0]?.translation_status;
+    const drain = async () => {
+      const reports = await drainChangeConsumers({ adapter, registry });
+      return reports.find((r) => r.slug === "international-site");
+    };
+    expect((await drain())?.error).toBeUndefined();
+
+    // One batch: a source page deleted (a soft delete keeps the linkage) and
+    // another source edited.
+    const del = await execute(registry, adapter, SYS_CTX, "pages.delete", { pageId: goneId });
+    if (!del.ok) throw new Error(JSON.stringify(del.error));
+    const upd = await execute(registry, adapter, SYS_CTX, "pages.update", {
+      pageId: liveId,
+      title: "Pricing (live)",
+    });
+    if (!upd.ok) throw new Error(JSON.stringify(upd.error));
+    const tick = await drain();
+    expect(tick?.error).toBeUndefined();
+    expect(await statusOf(gone.pageId)).toBe("up_to_date");
+    expect(await statusOf(live.pageId)).toBe("needs_update");
+
+    // The rebuild passes over it too.
+    const edit = await execute(registry, adapter, SYS_CTX, "pages.update", {
+      pageId: gone.pageId,
+      title: "Preise (gone)",
+    });
+    if (!edit.ok) throw new Error(JSON.stringify(edit.error));
+    const gc = await execute(registry, adapter, SYS_CTX, "change_journal.collect_garbage", {
+      retentionMs: 0,
+      stalledConsumerMs: 0,
+    });
+    if (!gc.ok) throw new Error(JSON.stringify(gc.error));
+    const rebuilt = await drain();
+    expect(rebuilt?.error).toBeUndefined();
+    expect(rebuilt?.rebuilt).toBe(true);
+    expect(await statusOf(gone.pageId)).toBe("up_to_date");
+  }, 60_000);
+
+  it("#1267 — outbox work outstanding at the upgrade is reconciled before the cursor and the backfill baseline", async () => {
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const editedId = await seedSourcePage("-ob1");
+    const seenId = await seedSourcePage("-ob2");
+    const edited = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: editedId,
+      localeCode: "de",
+      slug: "t397-ob1-preise",
+    });
+    const seen = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: seenId,
+      localeCode: "de",
+      slug: "t397-ob2-preise",
+    });
+    const rowOf = async (pageId: string) =>
+      (
+        await sqlAsPlugin(
+          async (tx) =>
+            (await tx.unsafe(
+              `SELECT translation_status, source_hash FROM plugin_international_site.page_variants WHERE page_id = '${pageId}'`,
+            )) as { translation_status: string; source_hash: string | null }[],
+        )
+      )[0];
+    await drainChangeConsumers({ adapter, registry });
+    // What a release before #1267 leaves: both translations up to date, no
+    // hashes, the backfill not run — and in the old outbox, an edit of one
+    // source the plugin already consumed and an edit of the other it had
+    // not yet polled.
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `UPDATE plugin_international_site.page_variants
+            SET source_hash = NULL, translation_status = 'up_to_date'
+          WHERE page_id IN ('${edited.pageId}', '${seen.pageId}')`,
+      );
+      await tx.unsafe(
+        "DELETE FROM plugin_international_site.settings WHERE key = 'source_hash_backfill'",
+      );
+    });
+    await sqlSystem(async (tx) => {
+      const [p] = (await tx.unsafe(
+        "SELECT id::text AS id FROM plugins WHERE slug = 'international-site'",
+      )) as { id: string }[];
+      const [consumed] = (await tx.unsafe(
+        `INSERT INTO domain_events (kind, entity_id, payload) VALUES ('page.updated', '${seenId}', '{}') RETURNING id`,
+      )) as { id: string }[];
+      await tx.unsafe(
+        `INSERT INTO plugin_event_cursors (plugin_id, cursor_id) VALUES ('${p?.id}', ${consumed?.id})
+         ON CONFLICT (plugin_id) DO UPDATE SET cursor_id = EXCLUDED.cursor_id`,
+      );
+      await tx.unsafe(
+        `INSERT INTO domain_events (kind, entity_id, payload) VALUES ('page.updated', '${editedId}', '{}')`,
+      );
+      // 0430's reconciliation step, as the upgrade runs it.
+      const [r] = (await tx.unsafe("SELECT caelo_intl_reconcile_retired_outbox() AS n")) as {
+        n: number;
+      }[];
+      expect(r?.n).toBe(1);
+    });
+    expect((await rowOf(edited.pageId))?.translation_status).toBe("needs_update");
+    expect((await rowOf(seen.pageId))?.translation_status).toBe("up_to_date");
+
+    // The backfill then adopts only what is still up to date.
+    resetPluginHost();
+    const report = await bootstrap({
+      infra: { adapter, registry, aiProvider: scriptedProvider },
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: intlPlugin }],
+    });
+    if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
+    expect(await rowOf(edited.pageId)).toEqual({
+      translation_status: "needs_update",
+      source_hash: null,
+    });
+    expect((await rowOf(seen.pageId))?.source_hash).toMatch(/^backfill:sha256:/);
+  }, 60_000);
+
   it("#591 — fills a new variant's meta description; a live variant's SEO is never overwritten, only flagged stale", async () => {
     const sourceId = await seedSourcePage("-seo");
     await op("set_locales", {

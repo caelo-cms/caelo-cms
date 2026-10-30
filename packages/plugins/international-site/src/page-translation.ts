@@ -376,21 +376,23 @@ export function pageSourceFingerprint(src: PageSource): Promise<string> {
   });
 }
 
-/** Read a page's {@link PageSource} as a translation pass reads it. */
+/**
+ * Read a page's {@link PageSource} as a translation pass reads it.
+ *
+ * @returns null when the page is deleted (a soft delete keeps its variant
+ *   linkage, and an undo brings it back): a deleted source is no basis to
+ *   compare a translation with, so callers leave its variants as they are.
+ */
 export async function loadPageSource(
   deps: Pick<TranslationDeps, "cms">,
   pageId: string,
   listTypes: ReadonlyMap<string, ListTypeDef>,
-): Promise<PageSource> {
+): Promise<PageSource | null> {
   const listed = await deps.cms.call<{
     pages: { id: string; title: string; shortTitle: string }[];
   }>("pages.list", { pageIds: [pageId] });
   const page = listed.pages.find((p) => p.id === pageId);
-  if (!page) {
-    throw new Error(
-      `source page ${pageId} does not exist — unlink_page_variants removes a deleted page from its group`,
-    );
-  }
+  if (!page) return null;
   const metaDescription = await loadMetaDescription(deps, pageId);
   const { slots } = await loadPageSlots(deps, pageId, listTypes);
   return { title: page.title, shortTitle: page.shortTitle, metaDescription, slots };
@@ -405,7 +407,13 @@ export async function currentSourceFingerprint(
   sourcePageId: string,
 ): Promise<string> {
   const listTypes = await loadListTypes(deps);
-  return pageSourceFingerprint(await loadPageSource(deps, sourcePageId, listTypes));
+  const source = await loadPageSource(deps, sourcePageId, listTypes);
+  if (!source) {
+    throw new Error(
+      `the source page ${sourcePageId} of this variant group is deleted — restore it (undo) or link the page into another group`,
+    );
+  }
+  return pageSourceFingerprint(source);
 }
 
 /**

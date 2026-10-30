@@ -322,14 +322,28 @@ export async function beginConsumerRebuild(tx: TransactionRunner, name: string):
   if (rows.length === 0) throw unknownConsumer(name);
 }
 
-/** The rebuild succeeded: the consumer reads the journal again. The cursor stays where the rebuild began. */
-export async function finishConsumerRebuild(tx: TransactionRunner, name: string): Promise<void> {
+/**
+ * The rebuild succeeded: the consumer reads the journal again. The cursor
+ * stays where the rebuild began. With a `holder`, only while that holder's
+ * claim is still current: a rebuild that outlived its claim does not get
+ * to mark the consumer rebuilt.
+ */
+export async function finishConsumerRebuild(
+  tx: TransactionRunner,
+  name: string,
+  opts: { readonly holder?: string } = {},
+): Promise<void> {
   const rows = (await tx.execute(sql`
     UPDATE change_consumers SET rebuild_pending = false, updated_at = now()
-     WHERE name = ${name}
+     WHERE name = ${name} AND ${claimHeld(opts.holder)}
     RETURNING 1
   `)) as unknown as unknown[];
-  if (rows.length === 0) throw unknownConsumer(name);
+  if (rows.length === 0) {
+    if (opts.holder === undefined) throw unknownConsumer(name);
+    throw new Error(
+      `finishConsumerRebuild(${name}): this instance's claim lapsed or was taken over during the rebuild; the rebuild stays pending and runs again`,
+    );
+  }
 }
 
 /** Whether the consumer's derived state still has to be rebuilt ({@link beginConsumerRebuild}). */
@@ -563,6 +577,7 @@ export async function commitChanges(
   tx: TransactionRunner,
   name: string,
   token: string,
+  opts: { readonly holder?: string } = {},
 ): Promise<void> {
   let parsed: Token;
   try {
@@ -582,13 +597,26 @@ export async function commitChanges(
            page_after_row = ${parsed.after?.[2] ?? null},
            updated_at = now()
      WHERE name = ${name} AND cursor_snapshot::text = ${parsed.from}
+       AND ${claimHeld(opts.holder)}
     RETURNING 1
   `)) as unknown as unknown[];
   if (rows.length === 0) {
     throw new Error(
-      `commitChanges(${name}): the cursor moved since this batch was polled — another instance consumed it; this instance no longer holds the claim`,
+      `commitChanges(${name}): the cursor moved since this batch was polled, or this instance's claim lapsed — another instance may be consuming it; the batch stays uncommitted and is delivered again`,
     );
   }
+}
+
+/**
+ * The owner fence of a claimed consumer's state update: with a `holder`,
+ * the row must still be claimed by it and the claim not lapsed (another
+ * instance may have taken it over); without one, no fence (single-process
+ * callers that never claim).
+ */
+function claimHeld(holder: string | undefined) {
+  return holder === undefined
+    ? sql`true`
+    : sql`claimed_by = ${holder} AND claim_expires_at >= now()`;
 }
 
 /**

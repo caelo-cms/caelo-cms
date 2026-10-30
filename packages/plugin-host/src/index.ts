@@ -37,6 +37,7 @@ export { makePluginContext } from "./capabilities.js";
 export {
   type ChangeConsumersHandle,
   changeConsumerName,
+  type DrainLimits,
   type DrainReport,
   drainChangeConsumers,
   pluginChangeFilter,

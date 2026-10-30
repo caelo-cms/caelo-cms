@@ -510,6 +510,54 @@ CREATE TRIGGER caelo_drop_inactive_plugin_consumers
   WHEN (OLD.status = 'active' AND NEW.status <> 'active')
   EXECUTE FUNCTION caelo_drop_inactive_plugin_consumers();
 
+-- Outbox work still outstanding at the upgrade (events past the plugin's
+-- plugin_event_cursors position, e.g. inside its polling interval) predates
+-- the journal, so the journal cursor seeded below cannot replay it. Of the
+-- retired outbox's only consumer, international-site, the work that is not
+-- recomputed from stored state is page staleness: a live `page.updated` or
+-- `page.published` of a SOURCE page marks its up-to-date siblings
+-- needs_update, exactly as its last outbox tick did. Done before the cursor
+-- is accepted, so the source-hash backfill (the plugin's onActivate, which
+-- also re-derives chrome and list statuses from their stored hashes) never
+-- adopts an edited source as a translation's baseline.
+-- A function (dropped with the outbox tables by 0442) so the step is
+-- tested on its own.
+CREATE FUNCTION caelo_intl_reconcile_retired_outbox() RETURNS int
+LANGUAGE plpgsql
+AS $fn$
+DECLARE
+  intl uuid;
+  marked int;
+BEGIN
+  SELECT p.id INTO intl FROM plugins p
+   WHERE p.slug = 'international-site' AND p.status = 'active';
+  IF intl IS NULL OR to_regclass('plugin_international_site.page_variants') IS NULL THEN
+    RETURN 0;
+  END IF;
+  -- The plugin's rows are RLS-scoped to its id (FORCE'd for owners too).
+  PERFORM set_config('caelo.plugin_id', intl::text, true);
+  UPDATE plugin_international_site.page_variants sib
+     SET translation_status = 'needs_update', caelo_updated_at = now()
+    FROM plugin_international_site.page_variants src
+   WHERE src.translation_status = 'source'
+     AND src.caelo_chat_branch_id IS NULL AND src.caelo_deleted_at IS NULL
+     AND sib.group_id = src.group_id AND sib.id <> src.id
+     AND sib.translation_status = 'up_to_date'
+     AND sib.caelo_chat_branch_id IS NULL AND sib.caelo_deleted_at IS NULL
+     AND EXISTS (
+       SELECT 1 FROM domain_events ev
+        WHERE ev.entity_id = src.page_id
+          AND ev.kind IN ('page.updated', 'page.published')
+          AND COALESCE(ev.payload ->> 'chatBranchId', '') = ''
+          AND ev.id > COALESCE(
+                (SELECT c.cursor_id FROM plugin_event_cursors c WHERE c.plugin_id = intl), 0));
+  GET DIAGNOSTICS marked = ROW_COUNT;
+  PERFORM set_config('caelo.plugin_id', '', true);
+  RETURN marked;
+END
+$fn$;
+SELECT caelo_intl_reconcile_retired_outbox();
+
 -- The plugins that consumed the retired outbox keep reading from here on:
 -- their journal cursor starts now, so no rebuild runs after the upgrade.
 -- (A cursor created later, on a first activation, runs the plugin's rebuild.)
