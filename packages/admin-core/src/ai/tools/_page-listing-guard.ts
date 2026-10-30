@@ -112,7 +112,9 @@ export function pageListingHints(groups: readonly ListingGroup[], site: ListingS
     const linkedByType = new Map<string, Set<string>>();
     for (const link of new Set(group.flatMap(writtenLinks))) {
       const p = resolve(link);
-      if (!p || p.pageTypeId === site.defaultPageTypeId) continue;
+      // Only published targets count, as in the quality check: a draft
+      // is no member of the published set the coverage is measured against.
+      if (!p || p.status !== "published" || p.pageTypeId === site.defaultPageTypeId) continue;
       const set = linkedByType.get(p.pageTypeId) ?? new Set<string>();
       set.add(p.id);
       linkedByType.set(p.pageTypeId, set);

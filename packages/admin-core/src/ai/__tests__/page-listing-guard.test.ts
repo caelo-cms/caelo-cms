@@ -109,6 +109,12 @@ describe("pageListingHints (#1256)", () => {
     expect(pageListingHints([cards(ORDINARY, (p) => p.currentPath)], SITE)).toEqual([]);
   });
 
+  it("links to draft pages do not count toward the listing", () => {
+    const drafts = [7, 8, 9].map((i) => guide(i, "draft"));
+    const site = { ...SITE, pages: [...SITE.pages, ...drafts] };
+    expect(pageListingHints([cards(drafts, (p) => p.currentPath)], site)).toEqual([]);
+  });
+
   it("a shared-list binding is no link", () => {
     const shared = [{ menu: "caelo:list/00000000-0000-4000-8000-000000000999" }];
     expect(mayBeListing([shared])).toBe(false);

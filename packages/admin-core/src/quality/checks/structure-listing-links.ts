@@ -333,7 +333,8 @@ function flatten(
  * is inverted), and whether it starts a new iteration inside an entry.
  *
  * Names resolve the way the template engine resolves them (a dotted name
- * by its head): inside an entry of list field F first the keys of F's
+ * by its head), cautiously where they cannot be resolved statically: inside
+ * an entry a module list field's name is always a new iteration; then the keys of F's
  * entries (node fields and children loop, from F's list type — conditions
  * or stamped children, the scope stays) and the engine's per-entry values
  * (`index`, `depth` …: conditions), then the reserved `items` (a source
@@ -360,9 +361,14 @@ function sectionScope(
   const head = name.split(".")[0] ?? name;
   const inEntry = outer.kind === "list";
   if (inEntry) {
+    if (name === "items") return generated;
+    // A name that is both an entry key of SOME node kind and a module list
+    // field cannot be resolved statically (a leaf entry falls through to
+    // the module field). Taken as a new iteration: stored children carry
+    // their own stamp and still count, generated entries never borrow one.
+    if (fields.list.has(name)) return { scope: { kind: "list", field: name }, boundary: true };
     const keys = outer.field === null ? undefined : fields.entry.get(outer.field);
     if (keys?.has(head) || SYSTEM_ENTRY_KEYS.has(head)) return same;
-    if (name === "items") return generated;
   }
   if (fields.list.has(name)) return { scope: { kind: "list", field: name }, boundary: inEntry };
   if (fields.all.has(head)) return same;
@@ -372,7 +378,12 @@ function sectionScope(
 
 /** Engine-provided values that only test truthiness (never iterate entries). */
 function isCondition(name: string): boolean {
-  return name.startsWith("page.") || name.startsWith("site_text.") || /^(is|has|count)_/.test(name);
+  return (
+    name === "page" ||
+    name.startsWith("page.") ||
+    name.startsWith("site_text.") ||
+    /^(is|has|count)_/.test(name)
+  );
 }
 
 /**

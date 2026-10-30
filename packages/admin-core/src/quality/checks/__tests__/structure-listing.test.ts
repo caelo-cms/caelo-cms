@@ -745,4 +745,42 @@ describe("structure/manual-page-listing (#1256)", () => {
     );
     expect(f.map((x) => x.severity)).toEqual(["error"]);
   });
+  it("a module-level source named like another node's children loop starts its own iteration", () => {
+    const LEAF: StructureModule = {
+      id: id(36),
+      slug: "leaf",
+      displayName: "Leaf",
+      html: '<nav class="lf">{{#menu}}<div class="col">{{#children}}<a class="c" href="{{link}}">{{title}}</a>{{/children}}</div>{{/menu}}</nav>',
+      js: "",
+      listFields: ["menu", "children"],
+      moduleListFields: [],
+      fieldNames: ["menu", "children"],
+      entryKeys: { menu: ["label", "link", "children"] },
+    };
+    const generated = GUIDES.slice(0, 7)
+      .map((p) => `<a class="c" href="${p.path}">${p.title}</a>`)
+      .join("");
+    const html = `<nav class="lf" data-caelo-module-id="${LEAF.id}"><div class="col" data-caelo-list-item="${local("menu", 0)}">${generated}</div></nav>`;
+    const f = structureFindings(build(html), [...MODULES, LEAF], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f).toEqual([]);
+  });
+
+  it("a bare {{#page}} condition around hand-kept cards keeps them counted", () => {
+    const PAGE: StructureModule = {
+      ...LINK_LIST,
+      id: id(37),
+      slug: "page-cond",
+      html: '<section class="ll">{{#page}}<ul>{{#links}}<li><a href="{{link}}">{{label}}</a></li>{{/links}}</ul>{{/page}}</section>',
+    };
+    const html = linkList(GUIDES.slice(0, 7), (n) => local("links", n)).replace(
+      LINK_LIST.id,
+      PAGE.id,
+    );
+    const f = structureFindings(build(html), [...MODULES, PAGE], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f.map((x) => x.severity)).toEqual(["error"]);
+  });
 });
