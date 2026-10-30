@@ -33,9 +33,8 @@ export {
   type TransactionRunner,
 } from "./operation.js";
 export {
-  allowNestedCheckouts,
+  joinHeldTransaction,
   LONG_TRANSACTION_ALLOWLIST,
-  NESTED_CHECKOUT_ALLOWLIST,
   NestedPoolCheckoutError,
   POOL_ACQUIRE_TIMEOUT_MS,
   PoolAcquireTimeoutError,

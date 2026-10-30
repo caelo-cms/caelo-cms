@@ -151,13 +151,13 @@ export type StageReferenceGate =
 /**
  * The scope plugins answer the Stage gate in: the post-merge state.
  *
- * Plugin calls run in their own transactions and cannot see the merge's
- * uncommitted writes. When the merge took no plugin rows, the plugins'
- * storage is exactly committed main — ask on main; asking as the branch
- * would show a selected-header Stage's unselected changes. When it took
- * plugin rows, it took every pending plugin row of the branch (the
- * merge's completeness check refuses anything less), so the branch view
- * is the post-merge plugin storage — ask as the branch. Mirrors
+ * Plugin calls join the merge's transaction (#1254), so main already
+ * shows the merge's own writes. When the merge took no plugin rows, the
+ * plugins' storage is main — ask on main; asking as the branch would show
+ * a selected-header Stage's unselected changes. When it took plugin rows,
+ * it took every pending plugin row of the branch (the merge's
+ * completeness check refuses anything less), so the branch view is the
+ * post-merge plugin storage too — ask as the branch. Mirrors
  * `refreshLivePathsAfterMerge`, which composes post-merge paths the same way.
  */
 export function stagePluginScope(

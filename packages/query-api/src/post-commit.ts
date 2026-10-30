@@ -80,6 +80,22 @@ export function collectPostCommitEffects(tx: TransactionRunner): PostCommitEffec
 }
 
 /**
+ * Adapter-internal (#1254): a savepoint that joined `rootTx` defers its
+ * effects to `rootTx`'s commit — a joined call has no commit of its own,
+ * and running its effects when the savepoint is released would run them
+ * before the holder commits (or although it later rolls back).
+ *
+ * @throws Error when `rootTx` collects no effects (not adapter-opened).
+ */
+export function shareCommitEffects(savepoint: TransactionRunner, rootTx: TransactionRunner): void {
+  const pending = pendingByTx.get(rootTx);
+  if (pending === undefined) {
+    throw new Error("shareCommitEffects: the joined transaction was not opened by the adapter");
+  }
+  pendingByTx.set(savepoint, pending);
+}
+
+/**
  * Adapter-internal: run committed effects in order. Every effect runs even
  * when an earlier one failed — each is an independent consequence of the
  * same commit.

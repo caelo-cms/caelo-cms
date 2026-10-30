@@ -222,21 +222,42 @@ function systemCtx(systemActorId: string, requestId: string) {
   return { actorId: systemActorId, actorKind: "system" as const, requestId };
 }
 
-/**
- * Write one problem to `plugin_errors` (folding repeats into one row) and,
- * while a core problem has no linked report, file it with the bug intake —
- * exactly one occurrence at a time, however many instances hit it at once.
- * Always logs to the process log. Returns null when the database could not
- * take the record.
- */
-export async function recordPluginError(opts: {
+/** What {@link recordPluginError} records. */
+interface PluginErrorRecord {
   infra: PluginHostInfra;
   systemActorId: string;
   slug: string;
   pluginId: string | null;
   phase: PluginPhase;
   error: unknown;
-}): Promise<RecordedPluginError | null> {
+}
+
+/**
+ * Write one problem to `plugin_errors` (folding repeats into one row) and,
+ * while a core problem has no linked report, file it with the bug intake —
+ * exactly one occurrence at a time, however many instances hit it at once.
+ * Always logs to the process log. Returns null when the database could not
+ * take the record.
+ *
+ * #1254 — a failure noticed inside a transaction the call chain holds (a
+ * render hook that joined a page write) is recorded once that transaction
+ * ended: written into it, the record would roll back with the very failure
+ * it describes, and its own checkout would be the nested one #1210
+ * forbids. The call then returns null; the record follows.
+ */
+export async function recordPluginError(
+  opts: PluginErrorRecord,
+): Promise<RecordedPluginError | null> {
+  if (opts.infra.adapter.holdsTransaction("admin")) {
+    await opts.infra.adapter.deferUntilHeldTransactionEnds(async () => {
+      await recordPluginErrorNow(opts);
+    });
+    return null;
+  }
+  return recordPluginErrorNow(opts);
+}
+
+async function recordPluginErrorNow(opts: PluginErrorRecord): Promise<RecordedPluginError | null> {
   const message = describeLoadError(opts.error).slice(0, 4000) || "unknown error";
   const errorClass = classifyPluginError(opts.phase, opts.error);
   console.error(

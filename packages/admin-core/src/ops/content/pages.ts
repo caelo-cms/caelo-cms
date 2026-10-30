@@ -422,7 +422,7 @@ async function withTreeView(
     // pending change.
     const drifted = await pendingDriftIds(tx, tree, ctx.chatBranchId);
     if (drifted.length > 0) {
-      branchPaths = await composePaths(tx, tree, drifted, renderScopeOf(ctx));
+      branchPaths = await composePaths(tx, tree, drifted, renderScopeOf(ctx, tx));
     }
   }
   const out = visible.map((p) => ({
@@ -1058,7 +1058,7 @@ export const createPageOp = defineOperation({
     let plannedPath: string | null = null;
     if (!newIsRoot) {
       const tempId = crypto.randomUUID();
-      const plan = await planPageMoves(tx, renderScopeOf(ctx), [
+      const plan = await planPageMoves(tx, renderScopeOf(ctx, tx), [
         { pageId: tempId, isNew: true, parentPageId, newSlug: input.slug },
       ]);
       if (!plan.ok) {
@@ -1141,7 +1141,7 @@ export const createPageOp = defineOperation({
     // #390 — compose + materialize the public path (the INSERT trigger
     // wrote the plugin-free default; this accounts for designation +
     // active URL contributions).
-    await recomputeCurrentPaths(tx, [pageId], renderScopeOf(ctx));
+    await recomputeCurrentPaths(tx, [pageId], renderScopeOf(ctx, tx));
     return ok({ pageId });
   },
 });
@@ -1232,7 +1232,7 @@ export const updatePageOp = defineOperation({
       // 0264 — a rename moves the page's URL and its whole subtree's:
       // refuse any new URL another page already has, in the caller's
       // branch view (a page this chat deleted no longer holds its URL).
-      const plan = await planPageMoves(tx, renderScopeOf(ctx), [
+      const plan = await planPageMoves(tx, renderScopeOf(ctx, tx), [
         { pageId: input.pageId, newSlug: input.slug },
       ]);
       if (!plan.ok) {
@@ -1327,7 +1327,7 @@ export const updatePageOp = defineOperation({
         const recomputed = await recomputeCurrentPathsWithMoves(
           tx,
           [input.pageId],
-          renderScopeOf(ctx),
+          renderScopeOf(ctx, tx),
         );
         await applyPathMoveEffects(ctx, tx, recomputed.moves, input.redirectFromOld ?? "auto");
       }
@@ -2023,7 +2023,7 @@ async function deletePageHandler(
   if (kids.length > 0) {
     const mode = input.children ?? "refuse";
     if (mode === "refuse") {
-      const paths = await composePaths(tx, tree, kids.slice(0, 5), renderScopeOf(ctx));
+      const paths = await composePaths(tx, tree, kids.slice(0, 5), renderScopeOf(ctx, tx));
       return err({
         kind: "HandlerError",
         operation: "pages.delete",
@@ -2326,7 +2326,7 @@ export const duplicatePageOp = defineOperation({
         ? input.newParentPageId
         : (dupTree.byId.get(input.sourcePageId)?.parentPageId ?? null);
     const dupTempId = crypto.randomUUID();
-    const dupPlan = await planPageMoves(tx, renderScopeOf(ctx), [
+    const dupPlan = await planPageMoves(tx, renderScopeOf(ctx, tx), [
       { pageId: dupTempId, isNew: true, parentPageId: dupParent, newSlug: input.newSlug },
     ]);
     if (!dupPlan.ok) {
@@ -2486,7 +2486,7 @@ export const duplicatePageOp = defineOperation({
         payload: { slug: input.newSlug, duplicatedFrom: input.sourcePageId },
       });
     }
-    await recomputeCurrentPaths(tx, [newPageId], renderScopeOf(ctx));
+    await recomputeCurrentPaths(tx, [newPageId], renderScopeOf(ctx, tx));
     const layoutState = await loadPageLayoutState(tx, newPageId);
     await emitSnapshot(tx, {
       actorId: ctx.actorId,

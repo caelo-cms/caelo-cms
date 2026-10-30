@@ -50,7 +50,10 @@ import {
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
-import { refreshLivePathsAfterMerge } from "../content/current-path.js";
+import {
+  composeLivePathsBeforePluginMerge,
+  refreshLivePathsAfterMerge,
+} from "../content/current-path.js";
 import { stageReferenceGate } from "../content/link-integrity.js";
 import { applyMediaUsageDelta } from "../content/media-usage.js";
 
@@ -962,6 +965,11 @@ export async function mergeWindowToMain(
     }
   }
 
+  // #1254 — plugin calls see this transaction's writes, so the paths the
+  // plugin rows are about to change are composed while they are not yet
+  // applied (refreshLivePathsAfterMerge compares against them).
+  const preMergePaths =
+    pluginRowRows.length > 0 ? await composeLivePathsBeforePluginMerge(tx) : null;
   for (const r of pluginRowRows) {
     const ref = {
       pluginId: r.plugin_id,
@@ -1018,7 +1026,7 @@ export async function mergeWindowToMain(
   if (pageRows.length > 0) await assertLiveParents(tx);
   if (pageRows.length > 0 || pluginRowRows.length > 0) {
     await refreshLivePathsAfterMerge(ctx, tx, window.branchId, {
-      pluginRowsMerged: pluginRowRows.length > 0,
+      preMergePaths,
       replayedPageIds: pageRows.map((r) => r.entity_id),
       skipRedirectPageIds: new Set(
         entities

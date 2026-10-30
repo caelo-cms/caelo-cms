@@ -34,7 +34,6 @@ import {
   DatabaseAdapter,
   execute,
   LONG_TRANSACTION_ALLOWLIST,
-  NESTED_CHECKOUT_ALLOWLIST,
   OperationRegistry,
 } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -319,7 +318,7 @@ async function proposalStatus(proposalId: string): Promise<string | undefined> {
 }
 
 describe("#1225 — the Owner approves the AI's Publish live / rollback card", () => {
-  it("is on neither pool-guard allowlist, nor is anything it runs", () => {
+  it("is not on the long-transaction allowlist, nor is anything it runs", () => {
     // #1225 — the approve, Publish live and publish anyway hold no
     // transaction across the live build + upload, so none of them needs to
     // take a second connection from inside one or outlast the 0392 timeouts.
@@ -330,7 +329,6 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
       "quality_audits.execute_proposal",
       "deploy.build_plugin_data",
     ]) {
-      expect(NESTED_CHECKOUT_ALLOWLIST.has(holder)).toBe(false);
       expect(LONG_TRANSACTION_ALLOWLIST.has(holder)).toBe(false);
     }
   });

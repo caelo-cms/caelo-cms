@@ -39,6 +39,7 @@ import { type ProvisionOutcome, provisionPluginSchemaInTx } from "./plugin-schem
 import {
   detachedRunner,
   exemptFromSessionTimeouts,
+  type HeldTransaction,
   liftSessionTimeouts,
   NestedPoolCheckoutError,
   POOL_ACQUIRE_TIMEOUT_MS,
@@ -52,6 +53,7 @@ import {
   type PostCommitEffect,
   type PostCommitFailure,
   runPostCommitEffects,
+  shareCommitEffects,
 } from "./post-commit.js";
 
 /**
@@ -324,11 +326,13 @@ export class DatabaseAdapter {
   async #transaction<T>(
     pool: PoolName,
     holder: string,
-    fn: (tx: TransactionRunner) => Promise<T>,
+    fn: (tx: TransactionRunner, joined: boolean) => Promise<T>,
   ): Promise<T> {
     const raw = pool === "admin" ? this.#adminRaw : this.#publicRaw;
     if (raw === null) throw new AdminDatabaseUnavailableError(holder);
-    const marker = this.#guard.enter(pool, holder);
+    const plan = this.#guard.plan(pool, holder);
+    if (plan.kind === "join") return this.#joinHeld(pool, plan.outer, plan.marker, fn);
+    const marker = plan.marker;
     const reserved = await this.#reserve(pool, raw, holder);
     try {
       // drizzle's transaction() is `client.begin()`, which on a reserved
@@ -337,15 +341,89 @@ export class DatabaseAdapter {
       this.#onStatement?.("BEGIN");
       const out = await db.transaction((tx) =>
         this.#guard.run(pool, marker, async () => {
+          marker.tx = tx;
           if (exemptFromSessionTimeouts(holder)) await liftSessionTimeouts(tx);
-          return fn(tx);
+          return fn(tx, false);
         }),
       );
       this.#onStatement?.("COMMIT");
       return out;
     } finally {
       reserved.release();
+      await this.#runAfterEnd(marker);
     }
+  }
+
+  /**
+   * #1254 — run `fn` as a SAVEPOINT of the transaction `outer` this call
+   * chain holds (see `joinHeldTransaction`), instead of on a second
+   * connection. Joined calls directly under one transaction run one at a
+   * time (one connection, one savepoint stack). `fn` sets its own identity
+   * like any transaction of the adapter; the holder's is restored when the
+   * savepoint is released (a rolled-back savepoint reverts it by itself).
+   * Its post-commit effects wait for the holder's commit.
+   */
+  #joinHeld<T>(
+    pool: PoolName,
+    outer: HeldTransaction,
+    marker: HeldTransaction,
+    fn: (tx: TransactionRunner, joined: boolean) => Promise<T>,
+  ): Promise<T> {
+    return outer.joined.run(async () => {
+      const outerTx = outer.tx;
+      const rootTx = (outer.root ?? outer).tx;
+      if (outerTx === null || rootTx === null || !outer.active) {
+        throw new NestedPoolCheckoutError(pool, outer.holder, marker.holder);
+      }
+      const out = await outerTx.transaction((savepoint) =>
+        this.#guard.run(pool, marker, async () => {
+          marker.tx = savepoint;
+          shareCommitEffects(savepoint, rootTx);
+          return fn(savepoint, true);
+        }),
+      );
+      // The full identity: a superset of what either pool's transactions
+      // set, and an extra custom setting is harmless.
+      if (outer.identity !== null) await this.#setIdentity(outerTx, outer.identity);
+      return out;
+    });
+  }
+
+  /** The work a transaction deferred until it ended ({@link deferUntilHeldTransactionEnds}). */
+  async #runAfterEnd(marker: HeldTransaction): Promise<void> {
+    for (const work of marker.afterEnd.splice(0)) {
+      try {
+        await work();
+      } catch (thrown) {
+        console.error("[query-api] work deferred until a transaction ended failed", {
+          holder: marker.holder,
+          error: thrown instanceof Error ? thrown.message : String(thrown),
+        });
+      }
+    }
+  }
+
+  /**
+   * #1254 — run `work` once the transaction this call chain holds on the
+   * admin pool has ended and released its connection (committed or rolled
+   * back), or right away when it holds none. For a record that must not
+   * ride on — and roll back with — the holder's transaction, such as a
+   * plugin failure noticed inside a joined render call. A failure of
+   * deferred work is logged; there is no caller left to hand it to.
+   *
+   * @returns true when `work` was deferred.
+   */
+  deferUntilHeldTransactionEnds(work: () => Promise<void>): Promise<boolean> {
+    return this.#guard.deferUntilEnd("admin", work);
+  }
+
+  /**
+   * Whether this call chain holds an open transaction of `pool`. A Tier-2
+   * plugin call must not run while one does (#1254): its sandbox round trip
+   * would keep the holder idle in transaction.
+   */
+  holdsTransaction(pool: PoolName): boolean {
+    return this.#guard.held(pool) !== null;
   }
 
   /** Reserve one connection of `raw`, waiting at most the acquire deadline. */
@@ -539,9 +617,13 @@ export class DatabaseAdapter {
     let result: Result<O, QueryError>;
     // The handler's own error Result, kept for the COMMIT_ROLLED_BACK case below.
     let handlerError: Result<O, QueryError> | null = null;
+    // #1254 — joined to the transaction the call chain holds: it commits
+    // with that one, so the projection and change hints are the holder's.
+    let joinedHolder = false;
     try {
-      result = await this.#transaction(pool, op.name, async (tx) => {
-        postCommit = collectPostCommitEffects(tx);
+      result = await this.#transaction(pool, op.name, async (tx, joined) => {
+        joinedHolder = joined;
+        if (!joined) postCommit = collectPostCommitEffects(tx);
         await this.#setIdentity(tx, ctx);
 
         // Issue #569 — a branch the caller may not see is answered as
@@ -555,7 +637,7 @@ export class DatabaseAdapter {
 
         const out = await op.handler(ctx, validatedInput, tx);
         if (!out.ok) handlerError = out;
-        if (out.ok && op.database === "cms_admin") {
+        if (out.ok && !joined && op.database === "cms_admin") {
           publishAfterCommit = await this.#projectionDirty(tx);
         }
         return out;
@@ -613,7 +695,7 @@ export class DatabaseAdapter {
     // #1215 — change hints (the editor's live refresh) hear a handler that
     // answered ok: its change is committed even when a follow-up below
     // failed. A handler's own error left nothing a reader should re-read.
-    if (result.ok) notifyOperationCommitted(op.name);
+    if (result.ok && !joinedHolder) notifyOperationCommitted(op.name);
     if (effectFailures.length > 0) {
       const effects = postCommitFailureMessage(effectFailures);
       return err({
@@ -683,6 +765,24 @@ export class DatabaseAdapter {
       set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true),
       set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true),
       set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`);
+    this.#recordIdentity(tx, ctx);
+  }
+
+  /** The cms_public twin of {@link #setIdentity} (no branches there). */
+  async #setPublicIdentity(tx: TransactionRunner, ctx: ExecutionContext): Promise<void> {
+    await tx.execute(sql`SELECT
+      set_config('caelo.actor_id', ${ctx.actorId}, true),
+      set_config('caelo.actor_kind', ${ctx.actorKind}, true),
+      set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
+    this.#recordIdentity(tx, ctx);
+  }
+
+  /** Remember `tx`'s identity on its marker, so a joined call can restore it (#1254). */
+  #recordIdentity(tx: TransactionRunner, ctx: ExecutionContext): void {
+    for (const pool of ["admin", "public"] as const) {
+      const marker = this.#guard.held(pool);
+      if (marker !== null && marker.tx === tx) marker.identity = ctx;
+    }
   }
 
   /**
@@ -828,8 +928,8 @@ export class DatabaseAdapter {
     if (!this.#skipVerify) await this.verifyRoles();
     let publishAfterCommit = false;
     let postCommit: PostCommitEffect[] = [];
-    const out = await this.#transaction("admin", holder, async (tx) => {
-      postCommit = collectPostCommitEffects(tx);
+    const out = await this.#transaction("admin", holder, async (tx, joined) => {
+      if (!joined) postCommit = collectPostCommitEffects(tx);
       await this.#setIdentity(tx, ctx);
       // Issue #569 — same branch-visibility gate as runOperation.
       const denied = await firstInvisibleBranch(tx, namedBranches(ctx, undefined));
@@ -837,7 +937,7 @@ export class DatabaseAdapter {
         throw new OperationAbortError(branchNotFound("withAdminTransaction", denied));
       }
       const result = await fn(tx);
-      publishAfterCommit = await this.#projectionDirty(tx);
+      if (!joined) publishAfterCommit = await this.#projectionDirty(tx);
       return result;
     });
     // #585 — deferred in-process effects, after the commit only.
@@ -864,11 +964,9 @@ export class DatabaseAdapter {
     this.#guard.assertMayCheckout("public", holder);
     if (!this.#skipVerify) await this.verifyRoles();
     let postCommit: PostCommitEffect[] = [];
-    const out = await this.#transaction("public", holder, async (tx) => {
-      postCommit = collectPostCommitEffects(tx);
-      await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
-      await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
-      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
+    const out = await this.#transaction("public", holder, async (tx, joined) => {
+      if (!joined) postCommit = collectPostCommitEffects(tx);
+      await this.#setPublicIdentity(tx, ctx);
       return await fn(tx);
     });
     const effectFailures = await this.#settlePostCommit(holder, ctx, postCommit);
@@ -884,11 +982,11 @@ export class DatabaseAdapter {
    */
   rawAdmin(): SQL {
     if (this.#adminRaw === null) throw new AdminDatabaseUnavailableError("rawAdmin");
-    this.#guard.assertMayCheckout("admin", "rawAdmin()");
+    this.#guard.assertNoHeldTransaction("admin", "rawAdmin()");
     return this.#adminRaw;
   }
   rawPublic(): SQL {
-    this.#guard.assertMayCheckout("public", "rawPublic()");
+    this.#guard.assertNoHeldTransaction("public", "rawPublic()");
     return this.#publicRaw;
   }
 
@@ -1002,11 +1100,11 @@ export class DatabaseAdapter {
   /** The drizzle pool handles; refused inside a transaction of the same pool (see {@link rawAdmin}). */
   get admin(): BunSQLDatabase {
     const db = this.#adminDb("admin pool");
-    this.#guard.assertMayCheckout("admin", "adapter.admin");
+    this.#guard.assertNoHeldTransaction("admin", "adapter.admin");
     return db;
   }
   get public(): BunSQLDatabase {
-    this.#guard.assertMayCheckout("public", "adapter.public");
+    this.#guard.assertNoHeldTransaction("public", "adapter.public");
     return this.#public;
   }
 }

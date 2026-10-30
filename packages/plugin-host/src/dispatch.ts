@@ -24,9 +24,9 @@ import type {
   PluginProvenance,
 } from "@caelo-cms/plugin-sdk";
 import {
-  allowNestedCheckouts,
   type DatabaseAdapter,
   execute,
+  joinHeldTransaction,
   type OperationRegistry,
 } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
@@ -446,16 +446,18 @@ export function renderInvocation(scope: RenderScope): PluginInvocation {
 
 /**
  * Run one plugin operation. A render-origin call (URL annotations, list
- * sources, public URLs, preview hooks) runs inside whatever transaction its
- * caller holds, and the plugin's storage reads are ops of their own, so it
- * is an allowlisted nested-checkout call site until #1220 hands it the
- * caller's transaction (query-api pool-guard.ts).
+ * sources, public URLs, link partitions) runs inside whatever transaction
+ * its caller holds — a page write composes paths mid-transaction — so its
+ * broker calls (`ctx.cms.call`, plugin storage reads) JOIN that transaction
+ * as savepoints, under the plugin's identity and branch gate, instead of
+ * taking a second connection (#1254, query-api pool-guard.ts). They see the
+ * holder's uncommitted writes, which is what a composition mid-write needs.
  */
 export async function runPluginOperation(
   opts: RunPluginOperationOpts,
 ): Promise<RunPluginOperationResult> {
   if (opts.invocation.origin !== "render") return runPluginOperationNow(opts);
-  return allowNestedCheckouts("plugins.render_hook", () => runPluginOperationNow(opts));
+  return joinHeldTransaction(() => runPluginOperationNow(opts));
 }
 
 async function runPluginOperationNow(
@@ -490,6 +492,23 @@ async function runPluginOperationNow(
       error: {
         kind: "PluginDisabled",
         message: `plugin "${opts.pluginSlug}" is disabled — re-enable via /settings/plugins`,
+      },
+    };
+  }
+  // #1254 — a sandboxed (Tier-2) plugin answers over a subprocess round
+  // trip; run at render time inside a held transaction, it would keep the
+  // holder idle in transaction for as long as the sandbox takes. Its render
+  // work belongs before the transaction or after the commit.
+  if (
+    opts.invocation.origin === "render" &&
+    plugin.tier === 2 &&
+    cachedInfra?.adapter.holdsTransaction("admin") === true
+  ) {
+    return {
+      ok: false,
+      error: {
+        kind: "OperationFailed",
+        message: `plugin "${opts.pluginSlug}" runs sandboxed and cannot answer "${opts.operationName}" inside a database transaction. The core caller must ask it before opening its transaction (or after the commit).`,
       },
     };
   }

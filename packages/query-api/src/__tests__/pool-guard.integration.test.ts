@@ -13,7 +13,8 @@
  *  3. an exhausted pool answers within the acquire deadline;
  *  4. a detached op (`transaction: "none"`) holds nothing, so the ops it
  *     calls are not nested;
- *  5. the allowlist and the migration-0392 timeouts.
+ *  5. the allowlist and the migration-0392 timeouts;
+ *  6. #1254 — render-time work JOINS the held transaction as a savepoint.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -22,12 +23,12 @@ import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {
-  allowNestedCheckouts,
+  afterCommit,
   DatabaseAdapter,
   defineOperation,
   execute,
+  joinHeldTransaction,
   LONG_TRANSACTION_ALLOWLIST,
-  NESTED_CHECKOUT_ALLOWLIST,
   NestedPoolCheckoutError,
   OperationRegistry,
 } from "../index.js";
@@ -212,29 +213,6 @@ describe("nested checkout guard", () => {
     await later;
   });
 
-  it("lets an allowlisted call site nest; its transaction stays under the 0392 timeouts", async () => {
-    // #1225 — no holder is on both lists any more: Publish live and the
-    // approvals hold no transaction across their build and upload.
-    const label = "plugins.render_hook";
-    expect(NESTED_CHECKOUT_ALLOWLIST.has(label)).toBe(true);
-    expect(LONG_TRANSACTION_ALLOWLIST.has(label)).toBe(false);
-    const inside = await adapter.withAdminTransaction(ctx, async (tx) => {
-      const own = (await tx.execute(
-        sql`SELECT current_setting('idle_in_transaction_session_timeout') AS v`,
-      )) as unknown as { v: string }[];
-      const nested = await allowNestedCheckouts(label, () =>
-        adapter.withAdminTransaction(ctx, async (inner) => {
-          const rows = (await inner.execute(
-            sql`SELECT current_setting('idle_in_transaction_session_timeout') AS v`,
-          )) as unknown as { v: string }[];
-          return rows[0]?.v;
-        }),
-      );
-      return { own: own[0]?.v, nested };
-    });
-    expect(inside).toEqual({ own: "1min", nested: "1min" });
-  });
-
   it("#1225 — Publish live, the approvals and the plugin-data build are on neither list", () => {
     for (const holder of [
       "deploy.promote",
@@ -243,9 +221,182 @@ describe("nested checkout guard", () => {
       "quality_audits.execute_proposal",
       "deploy.build_plugin_data",
     ]) {
-      expect(NESTED_CHECKOUT_ALLOWLIST.has(holder)).toBe(false);
       expect(LONG_TRANSACTION_ALLOWLIST.has(holder)).toBe(false);
     }
+  });
+});
+
+describe("#1254 — render-time work joins the held transaction", () => {
+  const pluginCtx: ExecutionContext = {
+    actorId: "00000000-0000-0000-0000-000000001254",
+    actorKind: "system",
+    requestId: "pool-guard-join",
+    pluginId: "00000000-0000-0000-0000-00000000aaaa",
+  };
+
+  beforeAll(() => {
+    // Reads the holder's uncommitted row (a temp table exists only on the
+    // holder's own connection) and reports the identity it ran under.
+    registry.register(
+      defineOperation({
+        name: "pool_guard.join_probe",
+        actorScope: ["system"],
+        database: "cms_admin",
+        input: z.object({ fail: z.boolean().optional() }),
+        output: z.object({ seen: z.number(), actor: z.string(), plugin: z.string() }),
+        handler: async (_c, input, tx) => {
+          await tx.execute(sql`INSERT INTO pg_temp.join_probe (v) VALUES (100)`);
+          if (input.fail) throw new Error("probe failed on purpose");
+          const rows = (await tx.execute(sql`
+            SELECT (SELECT count(*)::int FROM pg_temp.join_probe) AS seen,
+                   current_setting('caelo.actor_id') AS actor,
+                   current_setting('caelo.plugin_id') AS plugin
+          `)) as unknown as { seen: number; actor: string; plugin: string }[];
+          return ok(rows[0] as { seen: number; actor: string; plugin: string });
+        },
+      }),
+    );
+    registry.register(
+      defineOperation({
+        name: "pool_guard.join_effect",
+        actorScope: ["system"],
+        database: "cms_admin",
+        input: z.object({ label: z.string() }),
+        output: z.object({}),
+        handler: async (_c, input, tx) => {
+          afterCommit(tx, { label: input.label, run: () => void effects.push(input.label) });
+          return ok({});
+        },
+      }),
+    );
+  });
+
+  const effects: string[] = [];
+
+  async function holderWithProbeTable<T>(
+    fn: (tx: Parameters<Parameters<DatabaseAdapter["withAdminTransaction"]>[1]>[0]) => Promise<T>,
+  ): Promise<T> {
+    return adapter.withAdminTransaction(ctx, async (tx) => {
+      await tx.execute(sql`CREATE TEMP TABLE join_probe (v int) ON COMMIT DROP`);
+      await tx.execute(sql`INSERT INTO join_probe (v) VALUES (1)`);
+      return fn(tx);
+    });
+  }
+
+  it("runs on the holder's connection, under its own identity, and restores the holder's", async () => {
+    const out = await holderWithProbeTable(async (tx) => {
+      const joined = await joinHeldTransaction(() =>
+        execute(registry, adapter, pluginCtx, "pool_guard.join_probe", {}),
+      );
+      const after = (await tx.execute(sql`
+        SELECT current_setting('caelo.actor_id') AS actor,
+               current_setting('caelo.plugin_id') AS plugin,
+               (SELECT count(*)::int FROM join_probe) AS rows
+      `)) as unknown as { actor: string; plugin: string; rows: number }[];
+      return { joined, after: after[0] };
+    });
+    expect(out.joined).toEqual({
+      ok: true,
+      value: { seen: 2, actor: pluginCtx.actorId, plugin: pluginCtx.pluginId as string },
+    });
+    // The holder is itself again, and the joined write is part of its transaction.
+    expect(out.after).toEqual({ actor: ctx.actorId, plugin: "", rows: 2 });
+  });
+
+  it("a failing joined call rolls back only its savepoint", async () => {
+    const out = await holderWithProbeTable(async (tx) => {
+      const joined = await joinHeldTransaction(() =>
+        execute(registry, adapter, pluginCtx, "pool_guard.join_probe", { fail: true }),
+      );
+      const rows = (await tx.execute(sql`
+        SELECT (SELECT count(*)::int FROM join_probe) AS n, current_setting('caelo.actor_id') AS actor
+      `)) as unknown as { n: number; actor: string }[];
+      return { joined: joined.ok, after: rows[0] };
+    });
+    expect(out).toEqual({ joined: false, after: { n: 1, actor: ctx.actorId } });
+  });
+
+  it("parallel joined calls run one at a time on the one connection", async () => {
+    const out = await holderWithProbeTable(async () =>
+      joinHeldTransaction(() =>
+        Promise.all(
+          Array.from({ length: 7 }, () =>
+            execute(registry, adapter, pluginCtx, "pool_guard.join_probe", {}),
+          ),
+        ),
+      ),
+    );
+    const seen = out.map((r) => (r.ok ? r.value.seen : -1)).sort((a, b) => a - b);
+    // Each call saw the rows of the calls before it, never a half-done one.
+    expect(seen).toEqual([2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  it("POOL_MAX holders that all join never wait for a second connection", async () => {
+    const holders = Array.from({ length: POOL_MAX * 2 }, () =>
+      holderWithProbeTable(async () => {
+        await Bun.sleep(30);
+        return joinHeldTransaction(() =>
+          execute(registry, adapter, pluginCtx, "pool_guard.join_probe", {}),
+        );
+      }),
+    );
+    expect(await settledWithin(Promise.all(holders), 5_000)).toBe("settled");
+    for (const r of await Promise.all(holders)) expect(r.ok).toBe(true);
+  });
+
+  it("a joined call's post-commit effects wait for the holder's commit, and drop with its rollback", async () => {
+    effects.length = 0;
+    await holderWithProbeTable(async () => {
+      await joinHeldTransaction(() =>
+        execute(registry, adapter, pluginCtx, "pool_guard.join_effect", { label: "kept" }),
+      );
+      expect(effects).toEqual([]);
+    });
+    expect(effects).toEqual(["kept"]);
+    await expect(
+      holderWithProbeTable(async () => {
+        await joinHeldTransaction(() =>
+          execute(registry, adapter, pluginCtx, "pool_guard.join_effect", { label: "dropped" }),
+        );
+        throw new Error("holder rolls back");
+      }),
+    ).rejects.toThrow("holder rolls back");
+    expect(effects).toEqual(["kept"]);
+  });
+
+  it("deferred work runs after the holder released its connection, even after a rollback", async () => {
+    const ran: string[] = [];
+    await expect(
+      holderWithProbeTable(async () => {
+        const deferred = await adapter.deferUntilHeldTransactionEnds(async () => {
+          // A checkout of its own: the holder's connection is back in the pool.
+          await adapter.withAdminTransaction(ctx, (t) => t.execute(sql`SELECT 1`));
+          ran.push("after");
+        });
+        expect(deferred).toBe(true);
+        expect(ran).toEqual([]);
+        throw new Error("holder rolls back");
+      }),
+    ).rejects.toThrow("holder rolls back");
+    expect(ran).toEqual(["after"]);
+    const now = await adapter.deferUntilHeldTransactionEnds(async () => void ran.push("now"));
+    expect(now).toBe(false);
+    expect(ran).toEqual(["after", "now"]);
+  });
+
+  it("a nested checkout that does not join still throws, and raw handles never join", async () => {
+    await expect(
+      holderWithProbeTable(async () =>
+        execute(registry, adapter, pluginCtx, "pool_guard.join_probe", {}),
+      ),
+    ).rejects.toBeInstanceOf(NestedPoolCheckoutError);
+    await expect(
+      holderWithProbeTable(async () =>
+        joinHeldTransaction(async () => {
+          adapter.rawAdmin();
+        }),
+      ),
+    ).rejects.toBeInstanceOf(NestedPoolCheckoutError);
   });
 });
 
@@ -253,7 +404,6 @@ describe("#1220 — the long-transaction allowlist lifts the timeouts, never the
   it("static-generator.build runs without the 0392 timeouts and still may not nest", async () => {
     const holder = "static-generator.build";
     expect(LONG_TRANSACTION_ALLOWLIST.get(holder)?.reason).toBeTruthy();
-    expect(NESTED_CHECKOUT_ALLOWLIST.has(holder)).toBe(false);
     let own: string | undefined;
     await expect(
       adapter.withAdminTransaction(

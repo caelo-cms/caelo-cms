@@ -85,9 +85,33 @@ async function loadDesignatedHomePageId(tx: TransactionRunner): Promise<string |
   return rows[0]?.home_page_id ?? null;
 }
 
-/** The render scope a write runs in: its chat branch, or main. */
-export function renderScopeOf(ctx: ExecutionContext): RenderScope {
-  return { chatBranchId: ctx.chatBranchId ?? null };
+/** One render id per (operation transaction, branch) — see {@link renderScopeOf}. */
+const writeRenderIds = new WeakMap<TransactionRunner, Map<string, string>>();
+
+/**
+ * The render scope a write runs in: its chat branch, or main — with a
+ * render id that lives exactly as long as the operation's transaction
+ * (#1254). An op composes paths several times (pages.duplicate plans the
+ * move, then recomputes the copy's path); with one id the URL plugins
+ * read their locale registry and variant groups once per op instead of
+ * once per composition. Plugin data does not change inside such an op, so
+ * the memo cannot go stale; a merge, which replays plugin rows between
+ * compositions, builds its scopes without an id on purpose.
+ */
+export function renderScopeOf(ctx: ExecutionContext, tx: TransactionRunner): RenderScope {
+  const chatBranchId = ctx.chatBranchId ?? null;
+  let ids = writeRenderIds.get(tx);
+  if (ids === undefined) {
+    ids = new Map();
+    writeRenderIds.set(tx, ids);
+  }
+  const key = chatBranchId ?? "main";
+  let renderId = ids.get(key);
+  if (renderId === undefined) {
+    renderId = crypto.randomUUID();
+    ids.set(key, renderId);
+  }
+  return { chatBranchId, renderId };
 }
 
 /** One composed page: its path, and whether it is a URL-space root. */
