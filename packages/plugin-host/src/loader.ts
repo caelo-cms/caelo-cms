@@ -55,6 +55,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { runActivationSerialized } from "./activation-lock.js";
 import { makePluginContext } from "./capabilities.js";
+import { registerPluginChangeOps } from "./change-consumers.js";
 import {
   hostSystemActorId,
   type LoadedPlugin,
@@ -1278,6 +1279,8 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // Create-time defaults, on main, before anything can read them.
   const onActivate = def.onActivate;
   if (onActivate) {
+    // A plugin's onActivate may read its own change consumer's state.
+    registerPluginChangeOps(opts.infra.registry);
     const ctx = await makePluginContext({
       plugin: lp,
       infra: opts.infra,

@@ -32,6 +32,7 @@ import {
   type ChangeBatch,
   claimConsumer,
   commitChanges,
+  consumerCursorContinuous,
   consumerRebuildPending,
   type DatabaseAdapter,
   defineOperation,
@@ -234,7 +235,37 @@ const finishRebuildOp = defineOperation({
   },
 });
 
-const OPS = [claimOp, releaseOp, pollOp, commitOp, beginRebuildOp, finishRebuildOp];
+/**
+ * `plugin_changes.cursor_state` — the calling plugin's own consumer: whether
+ * its cursor is continuous (exists, no rebuild pending, not passed by GC).
+ * A plugin that adopts current content as a baseline (international-site's
+ * `source_hash` backfill) may do so only then; otherwise its rebuild runs.
+ */
+const cursorStateOp = defineOperation({
+  name: "plugin_changes.cursor_state",
+  // Why system-only: no person or AI has a change consumer; it answers
+  // the calling plugin about its own (actorScope plugin).
+  actorScope: ["plugin"],
+  readScope: "request",
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({ continuous: z.boolean() }),
+  handler: async (ctx, _input, tx) => {
+    if (!ctx.pluginId) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugin_changes.cursor_state",
+        message:
+          "plugin_changes.cursor_state answers for a plugin's own consumer; call it from the plugin",
+      });
+    }
+    return ok({
+      continuous: await consumerCursorContinuous(tx, changeConsumerName(ctx.pluginId)),
+    });
+  },
+});
+
+const OPS = [claimOp, releaseOp, pollOp, commitOp, beginRebuildOp, finishRebuildOp, cursorStateOp];
 
 /** Register the `plugin_changes.*` operations (idempotent). */
 export function registerPluginChangeOps(registry: OperationRegistry): void {

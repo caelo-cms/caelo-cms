@@ -345,6 +345,26 @@ export async function consumerRebuildPending(
   return row.rebuild_pending;
 }
 
+/**
+ * Whether a consumer's cursor is continuous: it exists, no rebuild is
+ * pending, and garbage collection has not passed it. Only then has every
+ * change since the consumer's derived state was last correct been (or is
+ * about to be) delivered to it — the condition for a consumer to adopt the
+ * current source as its baseline (a backfill) instead of rebuilding.
+ */
+export async function consumerCursorContinuous(
+  tx: TransactionRunner,
+  name: string,
+): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT NOT c.rebuild_pending
+           AND NOT EXISTS (SELECT 1 FROM entity_change_horizons h
+                            WHERE h.horizon >= pg_snapshot_xmin(c.cursor_snapshot)) AS continuous
+      FROM change_consumers c WHERE c.name = ${name}
+  `)) as unknown as { continuous: boolean }[];
+  return rows[0]?.continuous === true;
+}
+
 /** Remove consumers by name (a deactivated plugin's). */
 export async function dropConsumers(tx: TransactionRunner, pluginId: string): Promise<number> {
   const rows = (await tx.execute(sql`

@@ -18,6 +18,7 @@ export {
   claimConsumer,
   collectJournalGarbage,
   commitChanges,
+  consumerCursorContinuous,
   consumerRebuildPending,
   currentJournalCursor,
   dropConsumers,

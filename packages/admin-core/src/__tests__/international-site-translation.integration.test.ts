@@ -518,6 +518,97 @@ describe("#397 — context-aware translation", () => {
     expect(await statusOf()).toBe("needs_update");
   }, 60_000);
 
+  it("#1267 — the backfill gives pre-release translations their source's fingerprint, so a rebuild after the upgrade flags nothing", async () => {
+    const sourceId = await seedSourcePage("-bf");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const otherSourceId = await seedSourcePage("-bf2");
+    const de = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-bf-preise",
+    });
+    // A second group's variant, the one a release before #1267 left stale.
+    const fr = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: otherSourceId,
+      localeCode: "de",
+      slug: "t397-bf2-preise",
+    });
+    const variantRows = () =>
+      sqlAsPlugin(
+        async (tx) =>
+          (await tx.unsafe(
+            `SELECT page_id::text AS page_id, translation_status, source_hash
+               FROM plugin_international_site.page_variants
+              WHERE page_id IN ('${de.pageId}', '${fr.pageId}')`,
+          )) as { page_id: string; translation_status: string; source_hash: string | null }[],
+      );
+    const rowOf = async (pageId: string) => (await variantRows()).find((r) => r.page_id === pageId);
+    const drain = async () => {
+      const reports = await drainChangeConsumers({ adapter, registry });
+      for (const r of reports) if (r.error) throw new Error(`${r.slug}: ${r.error}`);
+      return reports.find((r) => r.slug === "international-site");
+    };
+    await drain();
+    // The state a release before #1267 leaves: one up-to-date variant and
+    // one stale, neither with a fingerprint, and the backfill not run yet.
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `UPDATE plugin_international_site.page_variants SET source_hash = NULL,
+                translation_status = CASE WHEN page_id = '${fr.pageId}' THEN 'needs_update' ELSE 'up_to_date' END
+          WHERE page_id IN ('${de.pageId}', '${fr.pageId}')`,
+      );
+      await tx.unsafe(
+        "DELETE FROM plugin_international_site.settings WHERE key = 'source_hash_backfill'",
+      );
+    });
+    await drain();
+
+    // The first boot of the new release: onActivate runs the backfill.
+    resetPluginHost();
+    const report = await bootstrap({
+      infra: { adapter, registry, aiProvider: scriptedProvider },
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: intlPlugin }],
+    });
+    if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
+    expect((await rowOf(de.pageId))?.source_hash).toMatch(/^backfill:sha256:/);
+    // Already flagged: it stays as it is.
+    expect(await rowOf(fr.pageId)).toMatchObject({
+      translation_status: "needs_update",
+      source_hash: null,
+    });
+
+    // A rebuild on the unchanged site flags nothing.
+    const edit = await execute(registry, adapter, SYS_CTX, "pages.update", {
+      pageId: de.pageId,
+      title: "Preise (Titel)",
+    });
+    if (!edit.ok) throw new Error(JSON.stringify(edit.error));
+    const gc = await execute(registry, adapter, SYS_CTX, "change_journal.collect_garbage", {
+      retentionMs: 0,
+      stalledConsumerMs: 0,
+    });
+    if (!gc.ok) throw new Error(JSON.stringify(gc.error));
+    const rebuilt = await drain();
+    expect(rebuilt?.rebuilt).toBe(true);
+    expect((await rowOf(de.pageId))?.translation_status).toBe("up_to_date");
+
+    // A source change after the backfill flags it, as before #1267.
+    const upd = await execute(registry, adapter, SYS_CTX, "pages.update", {
+      pageId: sourceId,
+      title: "Pricing (bf)",
+    });
+    if (!upd.ok) throw new Error(JSON.stringify(upd.error));
+    await drain();
+    expect((await rowOf(de.pageId))?.translation_status).toBe("needs_update");
+  }, 60_000);
+
   it("#591 — fills a new variant's meta description; a live variant's SEO is never overwritten, only flagged stale", async () => {
     const sourceId = await seedSourcePage("-seo");
     await op("set_locales", {

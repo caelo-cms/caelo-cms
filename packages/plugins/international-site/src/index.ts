@@ -232,12 +232,107 @@ const stalenessChangesArgs = z.object({
 });
 
 /**
+ * #1267 — prefix of a `source_hash` the backfill adopted (the source's
+ * content when the backfill ran) rather than one a translation recorded.
+ * The backfill cannot know whether a change committed just before it read
+ * the source was already delivered, so a variant carrying one is flagged by
+ * any change to its source, as before #1267; a rebuild compares the
+ * fingerprint, so an unchanged source stays up to date.
+ */
+const BACKFILLED_HASH = "backfill:";
+
+/** `settings` key recording that the source-hash backfill ran. */
+const SOURCE_HASH_BACKFILL_KEY = "source_hash_backfill";
+
+/** The fingerprint a stored `source_hash` holds, without the backfill prefix. */
+function storedFingerprint(hash: string | null): string | null {
+  if (hash === null) return null;
+  return hash.startsWith(BACKFILLED_HASH) ? hash.slice(BACKFILLED_HASH.length) : hash;
+}
+
+/**
+ * Group id → its source page's fingerprint now (null: the group has no
+ * source), memoised for one pass.
+ */
+function sourceHashesOf(
+  deps: Pick<ChromeDeps, "q" | "cms" | "listTypes">,
+): (groupId: string) => Promise<string | null> {
+  const known = new Map<string, string | null>();
+  return async (groupId) => {
+    const hit = known.get(groupId);
+    if (hit !== undefined) return hit;
+    const source = (
+      (await deps.q.list("page_variants", {
+        group_id: groupId,
+        translation_status: "source",
+        limit: 1,
+      })) as unknown as PageVariantRow[]
+    )[0];
+    const hash = source
+      ? await pageSourceFingerprint(await loadPageSource(deps, source.page_id, deps.listTypes))
+      : null;
+    known.set(groupId, hash);
+    return hash;
+  };
+}
+
+/**
+ * #1267 — the backfill of `page_variants.source_hash` (rule 3: every
+ * derived structure has one). Every variant that is up to date and has no
+ * hash (translated before #1267) adopts its source's current fingerprint,
+ * so neither the first rebuild nor the first source change after the
+ * upgrade flags a translation nobody touched. Variants already
+ * `needs_update` stay as they are.
+ *
+ * Runs once, from onActivate, and only while the plugin's change cursor is
+ * continuous: then every change since the variants were last checked is
+ * delivered after this, and flags them (see {@link BACKFILLED_HASH}). With
+ * the cursor gone (a fresh or repeated activation) the rebuild decides
+ * instead, and a later activation finishes the backfill.
+ *
+ * @returns how many variants got a hash, or null when it did not run.
+ */
+async function backfillSourceHashes(ctx: unknown): Promise<number | null> {
+  const q = adminQueryOf(ctx);
+  const done = (await q.list("settings", {
+    key: SOURCE_HASH_BACKFILL_KEY,
+    limit: 1,
+  })) as unknown as SettingRow[];
+  if (done[0]) return null;
+  const state = await cmsOf(ctx).call<{ continuous: boolean }>("plugin_changes.cursor_state", {});
+  if (!state.continuous) return null;
+  const deps = await chromeDepsOf(ctx);
+  const sourceHashOf = sourceHashesOf(deps);
+  let filled = 0;
+  for (let afterId: string | undefined; ; ) {
+    const rows = (await q.list("page_variants", {
+      translation_status: "up_to_date",
+      orderBy: "id",
+      limit: 1000,
+      ...(afterId ? { afterId } : {}),
+    })) as unknown as PageVariantRow[];
+    for (const row of rows) {
+      if (row.source_hash !== null) continue;
+      const current = await sourceHashOf(row.group_id);
+      // A group without a source has nothing to compare: the rebuild flags it.
+      if (current === null) continue;
+      await q.update("page_variants", row.id, { source_hash: `${BACKFILLED_HASH}${current}` });
+      filled += 1;
+    }
+    if (rows.length < 1000) break;
+    afterId = rows.at(-1)?.id;
+  }
+  await q.insert("settings", { key: SOURCE_HASH_BACKFILL_KEY, value: { filled } });
+  return filled;
+}
+
+/**
  * Of these possibly changed pages, the SOURCE pages: mark each up-to-date
  * sibling variant `needs_update` whose `source_hash` no longer matches the
  * source's content (#1267). The comparison is with the content, not with
  * the delivery, so a change delivered after the translation it preceded
  * flags nothing, and the rebuild decides exactly the same way. A sibling
- * without a hash (made before #1267) has no basis: a change flags it.
+ * without a hash, or with a backfilled one, is flagged by any change.
  */
 async function markSiblingsStale(
   deps: Pick<ChromeDeps, "q" | "cms" | "listTypes">,
@@ -261,6 +356,8 @@ async function markSiblingsStale(
     if (siblings.length === 0) continue;
     const current = await pageSourceFingerprint(await loadPageSource(deps, pageId, deps.listTypes));
     for (const sib of siblings) {
+      // A backfilled hash (BACKFILLED_HASH) is no basis for a delivered
+      // change: the change may predate the backfill's read.
       if (sib.source_hash === current) continue;
       await q.update("page_variants", sib.id, { translation_status: "needs_update" });
       marked += 1;
@@ -1998,31 +2095,14 @@ export default definePlugin<PluginContextTier1>({
      * between). Every status is recomputed from stored source
      * fingerprints, exactly: an up-to-date page variant is flagged
      * needs_update only when its group source's content differs from the
-     * `source_hash` it was translated from. A variant with no hash (made
-     * before #1267) has no basis to compare and is flagged for review.
+     * `source_hash` it was translated from (or that the backfill adopted).
+     * A variant with no hash has no basis to compare and is flagged.
      */
     rebuild_translation_staleness: async (ctx) => {
       const deps = await chromeDepsOf(ctx);
       const { q } = deps;
       let marked = 0;
-      // Group → its source's fingerprint now (null: the group has no source).
-      const sourceHashes = new Map<string, string | null>();
-      const sourceHashOf = async (groupId: string): Promise<string | null> => {
-        const known = sourceHashes.get(groupId);
-        if (known !== undefined) return known;
-        const source = (
-          (await q.list("page_variants", {
-            group_id: groupId,
-            translation_status: "source",
-            limit: 1,
-          })) as unknown as PageVariantRow[]
-        )[0];
-        const hash = source
-          ? await pageSourceFingerprint(await loadPageSource(deps, source.page_id, deps.listTypes))
-          : null;
-        sourceHashes.set(groupId, hash);
-        return hash;
-      };
+      const sourceHashOf = sourceHashesOf(deps);
       for (let afterId: string | undefined; ; ) {
         const rows = (await q.list("page_variants", {
           translation_status: "up_to_date",
@@ -2032,7 +2112,7 @@ export default definePlugin<PluginContextTier1>({
         })) as unknown as PageVariantRow[];
         for (const row of rows) {
           const current = await sourceHashOf(row.group_id);
-          if (current !== null && row.source_hash === current) continue;
+          if (current !== null && storedFingerprint(row.source_hash) === current) continue;
           await q.update("page_variants", row.id, { translation_status: "needs_update" });
           marked += 1;
         }
@@ -2043,6 +2123,13 @@ export default definePlugin<PluginContextTier1>({
       const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
       return { marked, lists };
     },
+  },
+  /**
+   * #1267 — backfill the source fingerprints of variants translated before
+   * the change journal ({@link backfillSourceHashes}); a no-op once done.
+   */
+  onActivate: async (ctx) => {
+    await backfillSourceHashes(ctx);
   },
   /**
    * Translation staleness from the change journal (#397, #1267): live
