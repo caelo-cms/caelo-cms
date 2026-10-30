@@ -119,6 +119,11 @@
               </div>
             </div>
             <div class="space-y-1"><Label for="pt-purpose">What it is for</Label><Textarea id="pt-purpose" name="purpose" required /></div>
+            <!-- #1276 — a type that reads like an existing one (blogs / blog) is refused unless named here. -->
+            <div class="space-y-1">
+              <Label for="pt-distinct">Different from (optional)</Label>
+              <Input id="pt-distinct" name="distinctFrom" placeholder="address names of similar types, comma-separated" />
+            </div>
             <Button type="submit">Create page type</Button>
           </form>
         </CardContent>

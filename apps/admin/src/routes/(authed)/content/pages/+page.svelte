@@ -48,6 +48,14 @@
     parentCandidates(data.pages, null).sort((a, b) => a.currentPath.localeCompare(b.currentPath)),
   );
   let bulkPublishing = $state(false);
+  // #1276 — the page type is a required choice; the template list then
+  // shows only that type's templates.
+  let chosenPageType = $state("");
+  const chosenType = $derived(data.pageTypes.find((t) => t.slug === chosenPageType));
+  const templateName = (id: string) => {
+    const t = data.templates.find((x) => x.id === id);
+    return t ? `${t.slug} — ${t.displayName}` : id;
+  };
 </script>
 
 <div class="space-y-6">
@@ -197,9 +205,9 @@
       <CardDescription>Pages reference modules — they never carry raw HTML.</CardDescription>
     </CardHeader>
     <CardContent>
-      {#if data.templates.length === 0}
+      {#if data.templates.length === 0 || data.pageTypes.length === 0}
         <p class="text-sm text-muted-foreground">
-          <em>Create a <a class="underline" href="/content/templates">template</a> first.</em>
+          <em>Create a <a class="underline" href="/content/templates">template</a> and its page type first.</em>
         </p>
       {:else}
         <form method="post" action="?/create" class="grid gap-4 md:grid-cols-2">
@@ -246,20 +254,48 @@
             </Select>
           </div>
           <div class="space-y-2">
+            <Label for="pageType">Page type</Label>
+            <Select
+              id="pageType"
+              name="pageType"
+              required
+              bind:value={chosenPageType}
+              onchange={(e) =>
+                createForm.update(
+                  "pageType",
+                  (e.currentTarget as HTMLSelectElement).value || undefined,
+                )}
+            >
+              <option value="" disabled>Choose what this page is…</option>
+              {#each data.pageTypes as t (t.slug)}
+                <option value={t.slug}>{t.name} ({t.slug}, {t.pageCount} page(s))</option>
+              {/each}
+            </Select>
+            {#if chosenType}
+              <p class="text-xs text-muted-foreground">{chosenType.purpose}</p>
+            {/if}
+          </div>
+          <div class="space-y-2">
             <Label for="templateId">Template</Label>
             <Select
               id="templateId"
               name="templateId"
-              required
+              disabled={!chosenType}
               onchange={(e) =>
                 createForm.update(
                   "templateId",
                   (e.currentTarget as HTMLSelectElement).value || undefined,
                 )}
             >
-              {#each data.templates as t (t.id)}
-                <option value={t.id}>{t.slug} — {t.displayName}</option>
-              {/each}
+              {#if chosenType}
+                {#each chosenType.templates as id (id)}
+                  <option value={id} selected={id === chosenType.defaultTemplate}
+                    >{templateName(id)}</option
+                  >
+                {/each}
+              {:else}
+                <option value="">Choose a page type first</option>
+              {/if}
             </Select>
           </div>
           <div class="md:col-span-2">

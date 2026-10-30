@@ -19,6 +19,7 @@ import {
   forkPlacementContentSchema,
   type ModuleField,
   moduleFieldSchema,
+  newPageTypeSchema,
   pageShortTitleSchema,
   pageTypeSlugSchema,
   setPlacementContentSchema,
@@ -584,8 +585,10 @@ export const createTemplateToolInput = z
     html: sourceTextArg(z.string().min(1).max(2_000_000), "html"),
     css: sourceTextArg(z.string().max(2_000_000), "css").default(""),
     layoutId: z.string().uuid().optional(),
-    /** Epic #1107 — the page type (slug) this template serves; omit for the site default. */
+    /** #1276 — exactly one of: the existing page type this template serves… */
     pageType: pageTypeSlugSchema.optional(),
+    /** …or a new page type created with this template as its default. */
+    newPageType: newPageTypeSchema.optional(),
     // Optional block-set metadata, symmetric with create_layout. Omit to
     // auto-derive blocks from <caelo-slot> tags; pass to set displayName /
     // position (each name must match a slot). Enforced op-side in
@@ -650,15 +653,12 @@ export const createLayoutToolInput = z
   })
   .strict();
 
+/** #1276 — the default layout only: there is no default template or page type. */
 export const setSiteDefaultsToolInput = z
   .object({
-    defaultLayoutSlug: slugInputSchema.optional(),
-    defaultTemplateSlug: slugInputSchema.optional(),
+    defaultLayoutSlug: slugInputSchema,
   })
-  .strict()
-  .refine((v) => v.defaultLayoutSlug !== undefined || v.defaultTemplateSlug !== undefined, {
-    message: "must provide at least one of defaultLayoutSlug, defaultTemplateSlug",
-  });
+  .strict();
 
 /**
  * P6.7.7 — content-ops follow-ups: clone a page, swap a page's
@@ -674,6 +674,8 @@ export const duplicatePageToolInput = z
     /** #1142 — the copy's breadcrumb label; omitted = newTitle when given, else the source's. */
     newShortTitle: pageShortTitleSchema.optional(),
     targetTemplateId: z.string().uuid().optional(),
+    /** #1276 — the copy's page type (slug); omitted = the source's. */
+    pageType: pageTypeSlugSchema.optional(),
     /** Where the copy sits: a parent page id, or null for the top level.
      *  Omitted = next to the source (same parent). */
     newParentPageId: z.string().uuid().nullable().optional(),
@@ -1073,7 +1075,13 @@ export const bootstrapSiteScaffoldToolInput = z
     templateSlug: z.string().min(1).max(120).optional(),
     /** Display name for the new template. Defaults to `Home template`. */
     templateDisplayName: z.string().min(1).max(256).optional(),
-    /** Whether to pin the new layout+template as site_defaults. Defaults to true. */
+    /**
+     * #1276 — the page type the new template serves (every template has
+     * one). An existing slug joins that type; else the type is created
+     * with the template. Defaults to the `home` page type.
+     */
+    templatePageType: newPageTypeSchema.optional(),
+    /** Whether to pin the new layout as the site's default layout. Defaults to true. */
     setAsDefaults: z.boolean().optional(),
   })
   .strict();

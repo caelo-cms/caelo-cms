@@ -19,7 +19,7 @@
  */
 
 import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
-import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
+import { type ExecutionContext, err, ok, pageTypeSlugSchema } from "@caelo-cms/shared";
 import {
   type BoilerplatePageInput,
   checkInventoryCoverage,
@@ -1468,7 +1468,12 @@ export const writeExtractedPagesOp = defineOperation({
 const acceptImportedPageInput = z
   .object({
     importPageId: z.string().uuid(),
-    /** Template for the new page; omitted = the site's default template. */
+    /**
+     * #1276 — the new page's page type (slug). Required unless
+     * `templateId` belongs to exactly one page type: there is no default.
+     */
+    pageType: pageTypeSlugSchema.optional(),
+    /** Template for the new page; omitted = the page type's default template. */
     templateId: z.string().uuid().optional(),
   })
   .strict();
@@ -1533,6 +1538,7 @@ async function acceptImportedPage(
         title,
         status: "draft",
         importPageId: input.importPageId,
+        ...(input.pageType ? { pageType: input.pageType } : {}),
         ...(input.templateId ? { templateId: input.templateId } : {}),
       },
       modules: [...proposedModules]
@@ -1590,6 +1596,8 @@ export const acceptImportedPagesOp = defineOperation({
   input: z
     .object({
       importPageIds: z.array(z.string().uuid()).min(1).max(50),
+      /** #1276 — the page type of every accepted page (see accept_page). */
+      pageType: pageTypeSlugSchema.optional(),
       templateId: z.string().uuid().optional(),
     })
     .strict(),
@@ -1601,7 +1609,11 @@ export const acceptImportedPagesOp = defineOperation({
     for (const importPageId of new Set(input.importPageIds)) {
       const r = await acceptImportedPage(
         ctx,
-        { importPageId, ...(input.templateId ? { templateId: input.templateId } : {}) },
+        {
+          importPageId,
+          ...(input.pageType ? { pageType: input.pageType } : {}),
+          ...(input.templateId ? { templateId: input.templateId } : {}),
+        },
         tx,
         "imports.accept_pages",
       );

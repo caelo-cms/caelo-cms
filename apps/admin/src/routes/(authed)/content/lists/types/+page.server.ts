@@ -98,7 +98,15 @@ export const actions: Actions = {
       properties: [],
       vocabularies: [],
     };
-    const r = await runWrite(locals.ctx, "page_types.upsert_many", { pageTypes: [definition] });
+    // #1276 — the duplicate guard refuses a type that reads like an
+    // existing one unless the person names it as deliberately different.
+    const distinctFrom = String(form.get("distinctFrom") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const r = await runWrite(locals.ctx, "page_types.upsert_many", {
+      pageTypes: [{ ...definition, ...(distinctFrom.length > 0 ? { distinctFrom } : {}) }],
+    });
     if (!r.ok) return writeFailure(r.message);
     throw redirect(303, `/content/lists/types/page/${b.slug}`);
   },

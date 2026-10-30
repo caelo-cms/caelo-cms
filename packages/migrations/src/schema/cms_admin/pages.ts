@@ -3,6 +3,7 @@
 import {
   type AnyPgColumn,
   bigint,
+  boolean,
   jsonb,
   pgTable,
   text,
@@ -47,6 +48,12 @@ export const pages = pgTable(
      * mirror; the FK lives in SQL.
      */
     pageTypeId: uuid("page_type_id").notNull(),
+    /**
+     * #1276 (0443) — whether someone chose `pageTypeId` for this page. False
+     * only for pages that sat on the old stored default type; no column
+     * default, so every INSERT states it.
+     */
+    pageTypeConfirmed: boolean("page_type_confirmed").notNull(),
     /** Property values, validated against the page type by the ops. */
     properties: jsonb("properties").notNull().default({}),
     /** Set by the first Publish live, never by the AI. */

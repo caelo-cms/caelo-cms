@@ -9,8 +9,8 @@
  *
  * Why a delete tool although docs §12 listed none: CLAUDE.md §11 parity —
  * the AI creates page types, so it must be able to remove one it created
- * by mistake (the op refuses while pages use the type, and the site's
- * default type), and the operator should not need the panel for it.
+ * by mistake (the op refuses while pages use the type), and the operator
+ * should not need the panel for it.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -103,9 +103,9 @@ export const upsertPageTypesManyTool = makeOpTool({
   description:
     "Create or replace page types in one transaction, when the operator starts a new kind of content ('a news section with categories', 'a job board').\n" +
     "CORE RULES:\n" +
-    "- `templates`: ids from `list_templates`; none fits -> `create_template` WITHOUT `pageType` first, then list its id here. `defaultTemplate` is one of them.\n" +
+    "- `templates`: ids from `list_templates`; none fits -> `create_template` with `newPageType` instead (template + type in one call). `defaultTemplate` is one of them.\n" +
     "- `properties`: fields every page of the type carries (e.g. `author` text, `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n" +
-    "- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` (no pageType) or reuse one -> this, with the template id -> `build_page`/`update_pages_many` with pageType, properties, terms.\n" +
+    "- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` with `newPageType` (or this, reusing a template) -> `build_page`/`update_pages_many` with pageType, properties, terms.\n" +
     "- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.",
   inputSchema: UPSERT_PAGE_TYPES_JSON_SCHEMA,
   opName: "page_types.upsert_many",
@@ -126,13 +126,14 @@ export const upsertPageTypesManyTool = makeOpTool({
         (t) =>
           `page type ${t.slug} ${t.created ? "created" : "updated"}: id=${t.id} version ${t.version}${t.pagesRewritten ? `, ${t.pagesRewritten} page(s) adapted` : ""}`,
       )
+      .concat((value as { hints?: string[] }).hints ?? [])
       .join("\n"),
 });
 
 export const deletePageTypesManyTool = makeOpTool({
   name: "delete_page_types_many",
   description:
-    "Delete page types by slug. Refused for the site's default type and while pages use it (move them first: `update_pages_many` `pageType`). Undoable.",
+    "Delete page types by slug. Refused while pages use it (move them first: `update_pages_many` `pageType`). Undoable.",
   opName: "page_types.delete_many",
   input: deletePageTypesManyOp.input,
   format: (value) =>

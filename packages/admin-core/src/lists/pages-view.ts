@@ -29,6 +29,8 @@ export interface PageInView {
   readonly parentPageId: string | null;
   readonly templateId: string;
   readonly pageTypeId: string;
+  /** #1276 — false while nobody chose the page type (see 0443). */
+  readonly pageTypeConfirmed: boolean;
   readonly status: "draft" | "published";
   readonly properties: Readonly<Record<string, unknown>>;
   readonly terms: readonly string[];
@@ -47,6 +49,7 @@ export interface PageRow {
   readonly parent_page_id: string | null;
   readonly template_id: string;
   readonly page_type_id: string;
+  readonly page_type_confirmed: boolean;
   readonly status: "draft" | "published";
   readonly properties: unknown;
   readonly version: number | string;
@@ -86,7 +89,8 @@ export async function loadPageRows(
   const rows = (await tx.execute(sql`
     SELECT p.id::text AS id, p.slug, p.title, p.short_title, p.current_path,
            p.parent_page_id::text AS parent_page_id, p.template_id::text AS template_id,
-           p.page_type_id::text AS page_type_id, p.status, p.properties, p.version,
+           p.page_type_id::text AS page_type_id, p.page_type_confirmed, p.status,
+           p.properties, p.version,
            p.first_published_at, p.updated_at, p.deleted_at,
            p.chat_branch_id::text AS chat_branch_id,
            COALESCE((
@@ -137,6 +141,7 @@ export function pagesInViewOf(
       parentPageId: o?.parentPageId === undefined ? r.parent_page_id : o.parentPageId,
       templateId: o?.templateId ?? r.template_id,
       pageTypeId: o?.pageTypeId ?? r.page_type_id,
+      pageTypeConfirmed: o?.pageTypeConfirmed ?? r.page_type_confirmed,
       status: o?.status ?? r.status,
       properties: o?.properties ?? ((liveProps ?? {}) as Record<string, unknown>),
       terms: o?.terms ?? r.terms,

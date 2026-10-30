@@ -39,6 +39,11 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
           "The copy's breadcrumb / navigation label. Omitted: newTitle when given, else the source's short title.",
       },
       targetTemplateId: { type: "string", format: "uuid" },
+      pageType: {
+        type: "string",
+        pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+        description: "The copy's page type (`list_page_types`); omit = the source's.",
+      },
       newParentPageId: {
         type: ["string", "null"],
         format: "uuid",

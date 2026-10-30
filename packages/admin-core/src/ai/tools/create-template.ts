@@ -28,8 +28,7 @@ export const createTemplateTool: ToolDefinitionWithHandler<
   description:
     "Create a template (reusable HTML+CSS shell pages bind to) for a page type, e.g. 'a blog-post template'. NOT for a one-off page (`build_page`).\n" +
     "CORE RULES:\n" +
-    "- An ordinary template omits `pageType` (it joins the site's default page type). Pass `pageType` only with a slug `list_page_types` shows; never guess one (`page`, `article` …).\n" +
-    "- A new KIND of content (news, products) is a page type first: `upsert_page_types_many` needs a template id -> create the template, then the type listing it (or pass an existing type's slug).\n" +
+    "- Exactly one of `pageType` (a slug `list_page_types` shows; never guess one) or, for a new KIND of content (news, products), `newPageType` — it creates the type with this template as its default in the same call.\n" +
     "- `layoutId`: optional when a default layout exists (`get_site_defaults`; omitted -> that default); else REQUIRED, pick from `list_layouts` (omitting fails with 'no defaults'). Zero layouts -> `create_layout` first.\n" +
     '- Slots in `html` MUST be `<caelo-slot name="X"></caelo-slot>`, NOT comments like `<!-- block:X -->` (ignored -> page renders empty). Every block name needs a matching slot.',
   // Static on purpose (prompt cache): every layoutId state is covered in
@@ -39,6 +38,8 @@ export const createTemplateTool: ToolDefinitionWithHandler<
     type: "object",
     additionalProperties: false,
     required: ["slug", "displayName", "html"],
+    // Exactly one of pageType / newPageType: enforced by templates.create,
+    // whose refusal lists the site's page types.
     properties: {
       slug: { type: "string", minLength: 1, maxLength: 120 },
       displayName: { type: "string", minLength: 1, maxLength: 256 },
@@ -50,6 +51,38 @@ export const createTemplateTool: ToolDefinitionWithHandler<
         pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
         description:
           "Existing page type slug from `list_page_types`; the template joins its templates.",
+      },
+      newPageType: {
+        type: "object",
+        additionalProperties: false,
+        required: ["slug", "name", "purpose"],
+        description:
+          "New page type for this template, e.g. `{slug:'news', name:'News article', purpose:'Dated company news, listed newest first'}`.",
+        properties: {
+          slug: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
+          name: { type: "string", minLength: 1, maxLength: 200 },
+          purpose: { type: "string", minLength: 1, maxLength: 1000 },
+          properties: {
+            type: "array",
+            items: {
+              type: "object",
+              description: "a field: {name, label, type, required?, default?, options?, …}",
+            },
+          },
+          vocabularies: {
+            type: "array",
+            items: {
+              type: "object",
+              description: "{list: <vocabulary list id>, cardinality: one|many, required?}",
+            },
+          },
+          distinctFrom: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Existing slugs it is deliberately NOT (refused as a duplicate otherwise, e.g. `blogs` next to `blog`).",
+          },
+        },
       },
       blocks: {
         type: "array",
@@ -78,10 +111,14 @@ export const createTemplateTool: ToolDefinitionWithHandler<
         ...(next ? { nextAction: next } : {}),
       };
     }
-    const templateId = (r.value as { templateId: string }).templateId;
+    const { templateId, hints } = r.value as { templateId: string; hints?: string[] };
+    const typeNote =
+      input.newPageType !== undefined
+        ? `; page type ${input.newPageType.slug} created with it as its default template`
+        : "";
     return {
       ok: true,
-      content: `template created: id=${templateId} slug=${input.slug} displayName="${input.displayName}"${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
+      content: `template created: id=${templateId} slug=${input.slug} displayName="${input.displayName}"${typeNote}${(hints ?? []).map((h) => `\n${h}`).join("")}${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
     };
   },
 };

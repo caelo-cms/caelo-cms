@@ -13,6 +13,7 @@
   } from "#lib/components/ui/card/index.js";
   import { Input } from "#lib/components/ui/input/index.js";
   import { Label } from "#lib/components/ui/label/index.js";
+  import { Select } from "#lib/components/ui/select/index.js";
   import {
     Table,
     TableBody,
@@ -24,6 +25,9 @@
   import { Textarea } from "#lib/components/ui/textarea/index.js";
 
   let { data, form } = $props();
+  // #1276 — the page type the new template serves; "__new__" asks for a
+  // new type created together with it.
+  let pageType = $state("");
 </script>
 
 <div class="space-y-6">
@@ -94,6 +98,34 @@
             <Input id="displayName" name="displayName" type="text" required />
           </div>
         </div>
+        <div class="grid gap-4 md:grid-cols-2">
+          <div class="space-y-2">
+            <Label for="pageType">Page type</Label>
+            <Select id="pageType" name="pageType" required bind:value={pageType}>
+              <option value="" disabled>Which kind of page uses this template…</option>
+              {#each data.pageTypes as t (t.slug)}
+                <option value={t.slug}>{t.name} ({t.slug})</option>
+              {/each}
+              <option value="__new__">New page type…</option>
+            </Select>
+          </div>
+        </div>
+        {#if pageType === "__new__"}
+          <div class="grid gap-4 md:grid-cols-3">
+            <div class="space-y-2">
+              <Label for="newPageTypeSlug">Type slug</Label>
+              <Input id="newPageTypeSlug" name="newPageTypeSlug" type="text" pattern={"[a-z0-9](?:[a-z0-9\\-]{0,62}[a-z0-9])?"} required />
+            </div>
+            <div class="space-y-2">
+              <Label for="newPageTypeName">Type name</Label>
+              <Input id="newPageTypeName" name="newPageTypeName" type="text" required />
+            </div>
+            <div class="space-y-2">
+              <Label for="newPageTypePurpose">Purpose</Label>
+              <Input id="newPageTypePurpose" name="newPageTypePurpose" type="text" required />
+            </div>
+          </div>
+        {/if}
         <div class="space-y-2">
           <Label for="html">HTML</Label>
           <Textarea id="html" name="html" rows={10} class="font-mono text-xs" required />

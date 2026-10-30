@@ -2,16 +2,21 @@
 
 /**
  * P6.7.6 — site_defaults singleton (one row, id = 1). Stores the
- * default layout + template that pages.create / templates.create
- * resolve when the caller doesn't specify. Per CLAUDE.md §2 the
- * renderer never substitutes — site_defaults is a *create-time*
- * resolver, not a render-time fallback.
+ * default layout that templates.create resolves when the caller doesn't
+ * specify one. Per CLAUDE.md §2 the renderer never substitutes —
+ * site_defaults is a *create-time* resolver, not a render-time fallback.
+ *
+ * #1276 — there is no default page type or template any more: a page's
+ * type is always chosen (pageType, or a template of exactly one type),
+ * so nothing reads `default_template_id` / `default_page_type_id`; 0444
+ * left the columns for the previous image and the next release drops
+ * them.
  *
  * Writes are open to AI per CLAUDE.md §11.A: the only side-effect of
- * a defaults change is "future creates that omit the explicit ids
- * resolve to the new defaults" — existing pages and templates retain
- * their pinned `template_id`/`layout_id` columns, so changing
- * site_defaults can't break already-published content. The write is
+ * a defaults change is "future templates that omit the layout resolve
+ * to the new default" — existing templates retain their pinned
+ * `layout_id`, so changing site_defaults can't break already-published
+ * content. The write is
  * also fully snapshot-revertable (audit row + the prior values are
  * recoverable from `audit_events`). The propose/execute gate (§11.A)
  * is overkill for first-run config where there's no published surface
@@ -24,7 +29,6 @@ import { type DesignBrief, designBriefSchema, err, languageTagSchema, ok } from 
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { loadListEntity } from "../lists/store.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { compositionRootPageId } from "./content/compose-paths.js";
@@ -33,11 +37,6 @@ import { loadPageTree } from "./content/page-tree.js";
 const siteDefaultsRow = z.object({
   defaultLayoutId: z.string(),
   defaultLayoutSlug: z.string(),
-  defaultTemplateId: z.string(),
-  defaultTemplateSlug: z.string(),
-  /** Epic #1107 — the page type new pages get when the caller names none. */
-  defaultPageTypeId: z.string(),
-  defaultPageTypeSlug: z.string(),
   /** The page core serves at "/". Null before a home is designated,
    *  where the magic-slug rule ("", home, index) stands in. Read by URL
    *  plugins that need to know which page is already the root before
@@ -91,10 +90,6 @@ export const getSiteDefaultsOp = defineOperation({
       SELECT
         sd.default_layout_id::text   AS default_layout_id,
         l.slug                        AS default_layout_slug,
-        sd.default_template_id::text AS default_template_id,
-        t.slug                        AS default_template_slug,
-        sd.default_page_type_id::text AS default_page_type_id,
-        pt.slug                       AS default_page_type_slug,
         sd.home_page_id::text         AS home_page_id,
         sd.not_found_page_id::text    AS not_found_page_id,
         sd.site_name                  AS site_name,
@@ -104,17 +99,11 @@ export const getSiteDefaultsOp = defineOperation({
         sd.updated_at                 AS updated_at
       FROM site_defaults sd
       JOIN layouts l   ON l.id   = sd.default_layout_id
-      JOIN templates t ON t.id   = sd.default_template_id
-      JOIN page_types pt ON pt.id = sd.default_page_type_id
       WHERE sd.id = 1
       LIMIT 1
     `)) as unknown as {
       default_layout_id: string;
       default_layout_slug: string;
-      default_template_id: string;
-      default_template_slug: string;
-      default_page_type_id: string;
-      default_page_type_slug: string;
       home_page_id: string | null;
       not_found_page_id: string | null;
       site_name: string | null;
@@ -132,10 +121,6 @@ export const getSiteDefaultsOp = defineOperation({
       defaults: {
         defaultLayoutId: r.default_layout_id,
         defaultLayoutSlug: r.default_layout_slug,
-        defaultTemplateId: r.default_template_id,
-        defaultTemplateSlug: r.default_template_slug,
-        defaultPageTypeId: r.default_page_type_id,
-        defaultPageTypeSlug: r.default_page_type_slug,
         homePageId: r.home_page_id,
         rootPageId,
         notFoundPageId: r.not_found_page_id,
@@ -158,12 +143,6 @@ export const setSiteDefaultsOp = defineOperation({
   input: z
     .object({
       defaultLayoutId: z.string().uuid(),
-      defaultTemplateId: z.string().uuid(),
-      /**
-       * Epic #1107 — the page type new pages get. Omit to keep the current
-       * one. The default template must be one of its templates.
-       */
-      defaultPageTypeId: z.string().uuid().optional(),
     })
     .strict(),
   output: z.object({}),
@@ -201,51 +180,6 @@ export const setSiteDefaultsOp = defineOperation({
         message: "default layout not found or deleted",
       });
     }
-    const tplOk = (await tx.execute(sql`
-      SELECT 1 FROM templates
-      WHERE id = ${input.defaultTemplateId}::uuid AND deleted_at IS NULL LIMIT 1
-    `)) as unknown as { exists: number }[];
-    if (tplOk.length === 0) {
-      return err({
-        kind: "HandlerError",
-        operation: "site_defaults.set",
-        message: "default template not found or deleted",
-      });
-    }
-    // Epic #1107 — the default page type (stored data, CLAUDE.md §2): a
-    // type that lists the default template, so a page created with
-    // neither template nor type is consistent.
-    const current = (await tx.execute(sql`
-      SELECT default_page_type_id::text AS id FROM site_defaults WHERE id = 1
-    `)) as unknown as { id: string }[];
-    const pageTypeId = input.defaultPageTypeId ?? current[0]?.id;
-    if (!pageTypeId) {
-      return err({
-        kind: "HandlerError",
-        operation: "site_defaults.set",
-        message:
-          "site defaults need a default page type — pass defaultPageTypeId (page_types.list shows the page types)",
-      });
-    }
-    // In the caller's view: a chat that just created the template (and so
-    // added it to the page type on its branch) sets it as the default in
-    // the same breath; both reach main at its Stage.
-    const type = await loadListEntity(tx, "pageType", ctx.chatBranchId ?? null, pageTypeId);
-    if (!type || type.state.deletedAt !== null) {
-      return err({
-        kind: "HandlerError",
-        operation: "site_defaults.set",
-        message: "default page type not found or deleted — page_types.list shows the page types",
-      });
-    }
-    const typeTemplates = type.state.definition.templates;
-    if (!typeTemplates.includes(input.defaultTemplateId)) {
-      return err({
-        kind: "HandlerError",
-        operation: "site_defaults.set",
-        message: `the default template is not one of page type "${type.state.slug}"'s templates — pick one of ${typeTemplates.join(", ")} as defaultTemplateId, or add the template to the page type first (page_types.upsert_many)`,
-      });
-    }
     // v0.5.16 — site_defaults.id is `int GENERATED ALWAYS AS IDENTITY`
     // with a singleton CHECK (id = 1). Postgres rejects explicit values
     // on GENERATED ALWAYS columns unless OVERRIDING SYSTEM VALUE is
@@ -254,14 +188,11 @@ export const setSiteDefaultsOp = defineOperation({
     // install that hadn't received the seed row (any layout slug !=
     // 'site-default'). Matching the seed shape closes the gap.
     await tx.execute(sql`
-      INSERT INTO site_defaults (id, default_layout_id, default_template_id, default_page_type_id, updated_by)
+      INSERT INTO site_defaults (id, default_layout_id, updated_by)
       OVERRIDING SYSTEM VALUE
-      VALUES (1, ${input.defaultLayoutId}::uuid, ${input.defaultTemplateId}::uuid, ${pageTypeId}::uuid,
-              ${ctx.actorId}::uuid)
+      VALUES (1, ${input.defaultLayoutId}::uuid, ${ctx.actorId}::uuid)
       ON CONFLICT (id) DO UPDATE SET
         default_layout_id   = EXCLUDED.default_layout_id,
-        default_template_id = EXCLUDED.default_template_id,
-        default_page_type_id = EXCLUDED.default_page_type_id,
         updated_at          = now(),
         updated_by          = EXCLUDED.updated_by
     `);
@@ -271,7 +202,7 @@ export const setSiteDefaultsOp = defineOperation({
       operation: "site_defaults.set",
       input,
       succeeded: true,
-      resultSummary: `layout=${input.defaultLayoutId},template=${input.defaultTemplateId},pageType=${pageTypeId}`,
+      resultSummary: `layout=${input.defaultLayoutId}`,
     });
     return ok({});
   },
@@ -291,7 +222,7 @@ export const setSiteDefaultsOp = defineOperation({
  * AI captures structured state. There's no forms-based onboarding
  * step; the AI drives identity capture conversationally.
  *
- * Independent of `site_defaults.set` (layout/template ids) so the
+ * Independent of `site_defaults.set` (the layout id) so the
  * identity write doesn't depend on the operator picking layouts
  * first, and vice versa. Both write into the same singleton row;
  * UPSERT path mirrors `set` but only touches the identity columns.
@@ -337,7 +268,7 @@ export const setSiteIdentityOp = defineOperation({
         kind: "HandlerError",
         operation: "site_defaults.set_identity",
         message:
-          "site_defaults singleton row is missing — call site_defaults.set with a default layout + template first (onboarding bootstrap creates it).",
+          "site_defaults singleton row is missing — call site_defaults.set with a default layout first (onboarding bootstrap creates it).",
       });
     }
     // Build a partial UPDATE so undefined fields are NOT touched
@@ -380,33 +311,19 @@ export const setSiteIdentityOp = defineOperation({
 });
 
 /**
- * Internal helper for create-time fallback (pages.create / templates.create).
+ * Internal helper for the create-time default layout (templates.create).
  * Returns null if the singleton row hasn't been seeded yet — callers must
  * surface a structured error per the no-fallbacks invariant; never silently
  * substitute at read time.
  */
 export async function readSiteDefaults(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-): Promise<{
-  defaultLayoutId: string;
-  defaultTemplateId: string;
-  defaultPageTypeId: string;
-} | null> {
+): Promise<{ defaultLayoutId: string } | null> {
   const rows = (await tx.execute(sql`
-    SELECT default_layout_id::text AS default_layout_id,
-           default_template_id::text AS default_template_id,
-           default_page_type_id::text AS default_page_type_id
+    SELECT default_layout_id::text AS default_layout_id
     FROM site_defaults WHERE id = 1 LIMIT 1
-  `)) as unknown as {
-    default_layout_id: string;
-    default_template_id: string;
-    default_page_type_id: string;
-  }[];
+  `)) as unknown as { default_layout_id: string }[];
   const r = rows[0];
   if (!r) return null;
-  return {
-    defaultLayoutId: r.default_layout_id,
-    defaultTemplateId: r.default_template_id,
-    defaultPageTypeId: r.default_page_type_id,
-  };
+  return { defaultLayoutId: r.default_layout_id };
 }
