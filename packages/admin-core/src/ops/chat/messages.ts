@@ -281,14 +281,117 @@ export const cacheToolResultOp = defineOperation({
       toolName: z.string(),
       ok: z.boolean(),
       content: z.string(),
+      /**
+       * #1275 — the normalized arguments of a failed call kept for
+       * `retry_tool_call` (`_retry-keep.ts` decides). Kept for the
+       * calling actor only (`args_actor_id`, RLS).
+       */
+      args: z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const kept = input.args !== undefined;
+    await tx.execute(sql`
+      INSERT INTO chat_tool_results
+        (chat_session_id, tool_call_id, tool_name, result_ok, result_content, args, args_actor_id)
+      VALUES (${input.chatSessionId}::uuid, ${input.toolCallId}, ${input.toolName}, ${input.ok},
+              ${input.content}, ${jsonbParam(input.args)},
+              ${kept ? ctx.actorId : null}::uuid)
+      ON CONFLICT (chat_session_id, tool_call_id) DO NOTHING
+    `);
+    return ok({});
+  },
+});
+
+/**
+ * #1275 — claim a kept call for one retry. Atomic: of two parallel
+ * retries of the same id exactly one gets the arguments; the other is
+ * told the call is already being retried. Only the actor the call was
+ * kept for sees it (RLS, migration 0449), and only in its own session.
+ */
+export const claimToolCallRetryOp = defineOperation({
+  name: "chat.claim_tool_call_retry",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ chatSessionId: z.string().uuid(), toolCallId: z.string().min(1) }).strict(),
+  output: z.object({
+    claimed: z.object({ toolName: z.string(), args: z.record(z.string(), z.unknown()) }).nullable(),
+    /** Why nothing was claimed (null when `claimed` is set). */
+    reason: z.enum(["unknown", "succeeded", "not-kept", "in-progress"]).nullable(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE chat_tool_results SET retry_claimed_at = clock_timestamp()
+      WHERE chat_session_id = ${input.chatSessionId}::uuid AND tool_call_id = ${input.toolCallId}
+        AND args IS NOT NULL AND retry_claimed_at IS NULL
+      RETURNING tool_name, args
+    `)) as unknown as { tool_name: string; args: unknown }[];
+    const row = rows[0];
+    if (row) {
+      return ok({
+        claimed: { toolName: row.tool_name, args: row.args as Record<string, unknown> },
+        reason: null,
+      });
+    }
+    const seen = (await tx.execute(sql`
+      SELECT result_ok, args IS NOT NULL AS kept FROM chat_tool_results
+      WHERE chat_session_id = ${input.chatSessionId}::uuid AND tool_call_id = ${input.toolCallId}
+    `)) as unknown as { result_ok: boolean; kept: boolean }[];
+    const s = seen[0];
+    const reason: "unknown" | "succeeded" | "not-kept" | "in-progress" = !s
+      ? "unknown"
+      : s.kept
+        ? "in-progress"
+        : s.result_ok
+          ? "succeeded"
+          : "not-kept";
+    return ok({ claimed: null, reason });
+  },
+});
+
+/**
+ * #1275 — end a claimed retry. Without `outcome` the claim is released
+ * and the kept call is unchanged (the patch did not apply). With one, the
+ * row follows the retry: `args` = the patched call when it failed again
+ * and is still kept (the same id stays retryable), NULL on success or a
+ * failure that is no longer kept.
+ */
+export const finishToolCallRetryOp = defineOperation({
+  name: "chat.finish_tool_call_retry",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      chatSessionId: z.string().uuid(),
+      toolCallId: z.string().min(1),
+      outcome: z
+        .object({
+          toolName: z.string(),
+          ok: z.boolean(),
+          content: z.string(),
+          args: z.record(z.string(), z.unknown()).nullable(),
+        })
+        .strict()
+        .optional(),
     })
     .strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
+    const o = input.outcome;
+    if (!o) {
+      await tx.execute(sql`
+        UPDATE chat_tool_results SET retry_claimed_at = NULL
+        WHERE chat_session_id = ${input.chatSessionId}::uuid AND tool_call_id = ${input.toolCallId}
+      `);
+      return ok({});
+    }
     await tx.execute(sql`
-      INSERT INTO chat_tool_results (chat_session_id, tool_call_id, tool_name, result_ok, result_content)
-      VALUES (${input.chatSessionId}::uuid, ${input.toolCallId}, ${input.toolName}, ${input.ok}, ${input.content})
-      ON CONFLICT (chat_session_id, tool_call_id) DO NOTHING
+      UPDATE chat_tool_results
+         SET retry_claimed_at = NULL, tool_name = ${o.toolName}, result_ok = ${o.ok},
+             result_content = ${o.content}, args = ${jsonbParam(o.args)}
+      WHERE chat_session_id = ${input.chatSessionId}::uuid AND tool_call_id = ${input.toolCallId}
+        AND retry_claimed_at IS NOT NULL
     `);
     return ok({});
   },

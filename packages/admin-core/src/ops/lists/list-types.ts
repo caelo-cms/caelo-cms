@@ -52,6 +52,7 @@ import { updateModuleOp } from "../content/modules.js";
 import { structureWriteRefusal } from "./_permission.js";
 import {
   branchOf,
+  conflictError,
   describeIssues,
   emitListItemsChanged,
   failBatch,
@@ -301,7 +302,7 @@ export const upsertListTypesManyOp = defineOperation({
       if (expectedVersion !== undefined && (existing?.state.version ?? 0) !== expectedVersion) {
         return failBatch(
           wrote,
-          handlerError(
+          conflictError(
             op,
             `Conflict: ${at} is at version ${existing?.state.version ?? "none (it does not exist)"}, not ${expectedVersion} — someone changed it since you read it. Read it again (list_types.get) and redo your change on top of it.`,
           ),

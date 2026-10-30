@@ -48,6 +48,15 @@ export function handlerError(operation: string, message: string, refusal = false
 }
 
 /**
+ * #1275 — a stale-version refusal (`expectedVersion` no longer matches):
+ * a `HandlerError` marked `conflict`, so a kept call stays retryable after
+ * the caller re-reads and patches its `expectedVersion`.
+ */
+export function conflictError(operation: string, message: string): QueryError {
+  return { kind: "HandlerError", operation, message, conflict: true };
+}
+
+/**
  * Bulk failure rule (CLAUDE.md §11, same as content_instances.create_many):
  * the whole batch is one transaction. Once something was written, a
  * failure must throw so the writes roll back — a returned error would

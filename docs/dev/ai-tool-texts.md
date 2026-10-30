@@ -76,3 +76,35 @@ An AI-facing error is complete and patchable:
   or an `insert … returning` without a row (`internalError`), is
   `failureKind: "internal"`: never offered for a patch, reported to the
   bug intake.
+
+## Kept calls and `retry_tool_call` (#1275)
+
+A failed write call whose error meets the bar above is **kept**: its
+normalized arguments ride its `chat_tool_results` row (`args`, migration
+0449), and its result ends with "Fix with `retry_tool_call({toolCallId:…,
+set:[…]})` … or resend." The AI then sends a patch — `set`, `remove`, or
+`replace` (exact text inside one string, must match once) at the same
+segment paths the `errors[]` name — instead of the whole call again.
+
+- **Which failures** (`ai/tools/_retry-keep.ts`, from the structure, never
+  the text): `InvalidArguments`, `ValidationFailed`, `Conflict` (a
+  `HandlerError` marked `conflict`: stale `expectedVersion`, another chat's
+  unstaged change), `Locked`, `SiblingLeaseConflict`, and a `HandlerError`
+  with a non-empty `errors[]`. Never: a refusal that names no input
+  (permissions, budget), `internal`, gated tools, read/meta tools, empty
+  arguments, plugin tools (they bypass `ToolRegistry.dispatch`).
+- **A version conflict** is marked `conflict: true` on the `HandlerError`
+  (`conflictError` in `ops/lists/_shared.ts`); the notice asks for a fresh
+  read before the patch.
+- **The retry** claims the row atomically, patches, and re-dispatches
+  through `ToolRegistry.dispatch` in the current context — permissions,
+  validation, locks, snapshots, audit and `needsApproval` all run again.
+  Success clears `args`; a failure that is still kept stores the patched
+  call (the same id stays retryable). Only the actor the call was kept for
+  reads it (restrictive RLS on `args_actor_id`), in its own session.
+- **Power-MCP** keeps calls the same way (also under a generated
+  `toolCallId`, which the result returns); its cost cap follows the kept
+  call's tool, not `retry_tool_call`.
+
+So an error that names a path is cheap to fix: write it so the path and
+the message say exactly which value to change.

@@ -216,6 +216,7 @@ import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./re
 import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromTool } from "./remove-module-from.js";
 import { repointPageTemplateTool } from "./repoint-page-template.js";
+import { retryToolCallTool } from "./retry-tool-call.js";
 import { revertChatChangesTool } from "./revert-chat-changes.js";
 import { screenshotExternalPageTool } from "./screenshot-external-page.js";
 import { screenshotPageTool } from "./screenshot-page.js";
@@ -394,6 +395,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // 2026-07 — the AI's defect channel: report a Caelo bug once, keep
   // working via a workaround, abort only when truly blocked.
   registry.register(bugReportTool);
+  // #1275 — a kept failed write call is fixed with a patch, not a resend.
+  registry.register(retryToolCallTool);
   // 2026-07 chunk audit — on-demand state endpoints for every context
   // chunk that had no read tool. The chunks are turn-start snapshots;
   // these fetch CURRENT state so the AI never repeats a confirmed write

@@ -1102,7 +1102,8 @@ export const setContentInstanceValuesOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "content_instances.set_values",
-        message: `Conflict: expected version ${input.expectedVersion}, found ${prev.version}`,
+        message: `Conflict: expected version ${input.expectedVersion}, found ${prev.version} — the instance changed since you read it; read it again (get_content_instance) and redo your change on top of it`,
+        conflict: true,
       });
     }
 

@@ -44,12 +44,19 @@ export interface ErrorDetail {
  * What kind of failure a tool result reports. The `QueryError` kinds pass
  * through unchanged; three kinds exist only above the Query API:
  * `InvalidArguments` (the tool's own schema refused the call),
- * `UnknownTool`, and `internal` — a defect in Caelo's code that no change
+ * `UnknownTool`, `internal` — a defect in Caelo's code that no change
  * to the call can fix (a thrown driver error, an INSERT that returned no
- * row). #1275 keeps a failed call for a patch only for fixable kinds;
- * `internal` is never kept and goes to the bug intake.
+ * row) — and `Conflict`, a `HandlerError` marked `conflict` (the call
+ * builds on a version that changed since it was read). #1275 keeps a
+ * failed call for a patch only for fixable kinds; `internal` is never
+ * kept and goes to the bug intake.
  */
-export type FailureKind = QueryError["kind"] | "InvalidArguments" | "UnknownTool" | "internal";
+export type FailureKind =
+  | QueryError["kind"]
+  | "InvalidArguments"
+  | "UnknownTool"
+  | "internal"
+  | "Conflict";
 
 /** At most this many problems are rendered as text; `errors[]` keeps all. */
 export const MAX_RENDERED_ERRORS = 20;
@@ -164,13 +171,15 @@ export function errorDetailsOf(error: unknown): ErrorDetail[] {
 
 /**
  * The {@link FailureKind} of a `QueryError`: its `kind`, except a
- * `HandlerError` marked `internal` (a defect, see `QueryError`).
+ * `HandlerError` marked `internal` (a defect) or `conflict` (a stale
+ * read, see `QueryError`).
  */
 export function failureKindOf(error: unknown): FailureKind {
   if (!error || typeof error !== "object") return "internal";
-  const e = error as { kind?: unknown; internal?: unknown };
+  const e = error as { kind?: unknown; internal?: unknown; conflict?: unknown };
   if (typeof e.kind !== "string") return "internal";
   if (e.kind === "HandlerError" && e.internal === true) return "internal";
+  if (e.kind === "HandlerError" && e.conflict === true) return "Conflict";
   return e.kind as FailureKind;
 }
 

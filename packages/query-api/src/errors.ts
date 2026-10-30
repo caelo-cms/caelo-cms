@@ -43,6 +43,13 @@ export type QueryError =
        */
       readonly internal?: true;
       /**
+       * #1275 — the write was refused because what it builds on changed
+       * since the caller read it (a stale `expectedVersion`, another chat's
+       * unstaged change in the shared draft). Fixable by re-reading and
+       * patching the call, so a kept call stays retryable.
+       */
+      readonly conflict?: true;
+      /**
        * v0.5.17 — when the throw originated from a SQL driver (Bun.SQL,
        * drizzle, pg-postgres), the adapter walks `.cause` and lifts the
        * Postgres-specific fields here so downstream consumers (AI tool

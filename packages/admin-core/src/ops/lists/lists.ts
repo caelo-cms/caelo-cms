@@ -45,6 +45,7 @@ import {
   branchOf,
   canonicaliseItemsForWrite,
   checkEntryRefs,
+  conflictError,
   describeIssues,
   emitListItemsChanged,
   failBatch,
@@ -603,7 +604,7 @@ export const patchListItemsManyOp = defineOperation({
       if (entry.expectedVersion !== undefined && existing.state.version !== entry.expectedVersion) {
         return failBatch(
           wrote,
-          handlerError(op, conflictMessage(at, existing.state.version, entry.expectedVersion)),
+          conflictError(op, conflictMessage(at, existing.state.version, entry.expectedVersion)),
         );
       }
       const lock = await lockList(ctx, tx, op, existing.id);

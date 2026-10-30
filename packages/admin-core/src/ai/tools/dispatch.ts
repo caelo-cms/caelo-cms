@@ -280,6 +280,14 @@ export interface ToolResult {
    * `content` renders the same entries with `formatErrorPath`.
    */
   readonly errors?: readonly ErrorDetail[];
+  /**
+   * #1275 — the call as dispatch ran it: the live tool name (a retired
+   * name resolved) and the NORMALIZED arguments (encoding damage repaired,
+   * before defaults). Set by {@link ToolRegistry.dispatch} on every failure
+   * that reached a tool; the chat-runner and the Power-MCP keep it for
+   * `retry_tool_call` when the failure is fixable (`_retry-keep.ts`).
+   */
+  readonly call?: { readonly name: string; readonly args: unknown };
 }
 
 /**
@@ -884,6 +892,7 @@ export class ToolRegistry {
         content: formatToolArgError(name, parsed.error.issues, tool.inputSchema, normalized.args),
         failureKind: "InvalidArguments",
         errors: zodIssuesToErrorDetails(parsed.error.issues),
+        call: { name, args: normalized.args },
       };
     }
     // v0.6.0 W5 — approval gate. When the tool declares
@@ -997,6 +1006,7 @@ export class ToolRegistry {
         }
       }
     }
-    return await tool.handler(ctx, parsed.data, toolCtx);
+    const result = await tool.handler(ctx, parsed.data, toolCtx);
+    return result.ok ? result : { ...result, call: { name, args: normalized.args } };
   }
 }

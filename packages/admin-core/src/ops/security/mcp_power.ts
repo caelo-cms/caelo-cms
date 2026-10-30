@@ -38,7 +38,7 @@
  */
 
 import { pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";
-import type { DatabaseAdapter } from "@caelo-cms/query-api";
+import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { defineOperation, execute } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, ok, untrustedToolResult } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -52,6 +52,7 @@ import { delegatedProvider } from "../../ai/delegated-provider.js";
 import { chatPluginInvocation } from "../../ai/plugin-invocation.js";
 import { queuePluginToolApproval } from "../../ai/queued-tool-approval.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
+import { keptCallArgs, RETRY_TOOL_NAME, withKeptCallNotice } from "../../ai/tools/_retry-keep.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import { installUnavailableToolNames } from "../../ai/tools/install-availability.js";
@@ -458,6 +459,28 @@ export const mcpOpenSessionOp = defineOperation({
 
 // ─── mcp.execute_tool ────────────────────────────────────────────────
 
+/**
+ * #1275 — the tool a `retry_tool_call` would run: the kept call's tool
+ * name, or `retry_tool_call` itself when the id names nothing (the retry
+ * then refuses on its own).
+ */
+async function keptToolNameOf(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ctx: ExecutionContext,
+  chatSessionId: string,
+  args: Record<string, unknown> | undefined,
+): Promise<string> {
+  const toolCallId = typeof args?.toolCallId === "string" ? args.toolCallId : null;
+  if (!toolCallId) return RETRY_TOOL_NAME;
+  const r = await execute(registry, adapter, ctx, "chat.lookup_tool_result", {
+    chatSessionId,
+    toolCallId,
+  });
+  const cached = r.ok ? (r.value as { cached: { toolName: string } | null }).cached : null;
+  return cached?.toolName ?? RETRY_TOOL_NAME;
+}
+
 export const mcpExecuteToolOp = defineOperation({
   name: "mcp.execute_tool",
   // Why system-only: the bearer token is in the input — the handler resolves the token's actor and
@@ -587,10 +610,22 @@ export const mcpExecuteToolOp = defineOperation({
     // Which tools it gates comes from each tool's own `usesInstallAi`
     // declaration, not a list of names kept here: that list went stale
     // (#741) and let translation spend uncapped.
+    // #1275 — a retry runs the KEPT call's tool, so the cap follows that
+    // tool, not retry_tool_call (no new path around the cap).
+    const capToolName =
+      input.toolName === RETRY_TOOL_NAME
+        ? await keptToolNameOf(
+            registry,
+            adapter,
+            humanCtxWithBranch,
+            input.chatSessionId,
+            input.args,
+          )
+        : input.toolName;
     if (
       !aiDelegated &&
       auth.aiCostCapMicrocents !== null &&
-      toolUsesInstallAi(createDefaultToolRegistry(), input.toolName)
+      toolUsesInstallAi(createDefaultToolRegistry(), capToolName)
     ) {
       const credentialCreatedAt =
         auth.via.kind === "token"
@@ -768,14 +803,18 @@ export const mcpExecuteToolOp = defineOperation({
       // result is site data and must round-trip unchanged (bug 2c323d9a).
       // issue #620 — a write that took over another chat's lock (or lost one)
       // says so in this result, same as in the browser chat.
+      // #1275 — a fixable failed write call is kept for retry_tool_call,
+      // exactly like in the browser chat (plugin results never carry `call`).
+      const keptArgs = keptCallArgs(rawResult, tools);
+      const keptResult = keptArgs ? withKeptCallNotice(toolCallId, rawResult) : rawResult;
       const result: ToolResult = await withTakeoverNotices(
         registry,
         adapter,
         humanCtxWithBranch,
         input.chatSessionId,
         {
-          ...rawResult,
-          content: surfaceToolResultContent(input.toolName, rawResult.content),
+          ...keptResult,
+          content: surfaceToolResultContent(input.toolName, keptResult.content),
         },
       );
 
@@ -790,13 +829,16 @@ export const mcpExecuteToolOp = defineOperation({
         );
       }
 
-      if (input.toolCallId) {
+      // A kept call is recorded under a generated id too: the result hands
+      // that id back, and retry_tool_call addresses the call by it.
+      if (input.toolCallId || keptArgs) {
         await execute(registry, adapter, humanCtxWithBranch, "chat.cache_tool_result", {
           chatSessionId: input.chatSessionId,
           toolCallId,
           toolName: input.toolName,
           ok: result.ok,
           content: result.content,
+          ...(keptArgs ? { args: keptArgs } : {}),
         });
       }
 

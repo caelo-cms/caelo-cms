@@ -49,6 +49,7 @@ import { updatePageOp } from "../content/pages.js";
 import { structureWriteRefusal } from "./_permission.js";
 import {
   branchOf,
+  conflictError,
   failBatch,
   handlerError,
   listIssuesToDetails,
@@ -274,7 +275,7 @@ export const upsertPageTypesManyOp = defineOperation({
       if (expectedVersion !== undefined && (existing?.state.version ?? 0) !== expectedVersion) {
         return failBatch(
           wrote,
-          handlerError(
+          conflictError(
             op,
             `Conflict: ${at} is at version ${existing?.state.version ?? "none (it does not exist)"}, not ${expectedVersion} — it changed since you read it. Read it again (page_types.get) and redo your change on top of it.`,
           ),
