@@ -343,6 +343,34 @@ describe("runConvergeJob — what stops the job before any change", () => {
     nothingChanged(h);
   });
 
+  it("stage 2 accepts the signed linux/amd64 form Cloud Run reports for its own image (#1025)", async () => {
+    const h = harness({
+      manifest: {
+        ok: true,
+        manifest: { ...MANIFEST, platformDigests: { admin: D("1"), gateway: D("2"), ops: D("3") } },
+      },
+      ownDigest: D("3"),
+    });
+    const r = await runConvergeJob(h.deps);
+    expect(h.q.ends[0]?.codes ?? []).not.toContain("ops-image");
+    expect(h.calls).toContain("upgrade");
+    expect(r.exitCode).toBe(0);
+  });
+
+  it("stage 2 refuses a platform digest the manifest does not sign", async () => {
+    const h = harness({
+      manifest: {
+        ok: true,
+        manifest: { ...MANIFEST, platformDigests: { admin: D("1"), gateway: D("2"), ops: D("3") } },
+      },
+      ownDigest: D("1"),
+    });
+    const r = await runConvergeJob(h.deps);
+    expect(r.status).toBe("refused");
+    expect(h.q.ends[0]?.codes).toEqual(["ops-image"]);
+    nothingChanged(h);
+  });
+
   it("another live install operation holding the state lock", async () => {
     const h = harness({
       lock: () => {
