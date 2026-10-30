@@ -638,12 +638,14 @@ export async function startChangeConsumers(
     })();
     return running;
   }
-  const handle: ListenHandle = await infra.adapter.listen(
-    "admin",
-    JOURNAL_CHANNEL,
-    () => void wake(),
-    () => void wake(),
-  );
+  // The consumers' cursors are the truth: a reconnect drains from them, so
+  // the gap's changes are caught up, never lost.
+  const handle: ListenHandle = await infra.adapter.listen("admin", JOURNAL_CHANNEL, {
+    onNotify: () => void wake(),
+    onListen: () => void wake(),
+    onLost: (cause) =>
+      console.warn("[plugin-host] the change-journal LISTEN connection dropped", cause),
+  });
   return {
     async stop() {
       stopped = true;

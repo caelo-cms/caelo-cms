@@ -70,4 +70,61 @@ describe("#1267 — gateway caches follow publish notifications", () => {
     expect(mayCacheRead(readStartedAt)).toBe(false);
     expect(mayCacheRead(publishedCacheGeneration())).toBe(true);
   });
+
+  it("reads through while the LISTEN connection is down: a publish in the gap is served at once", async () => {
+    expect(publishedCacheUsable()).toBe(true);
+    const admin = new SQL(PUBLIC_URL);
+    const asPublisher = <T>(fn: (tx: SQL) => Promise<T>) =>
+      admin.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return fn(tx as unknown as SQL);
+      }) as Promise<T>;
+    // A cache built like the gateway's (server.ts loadSettings).
+    let cached: number | null = null;
+    onPublishedChange(() => {
+      cached = null;
+    });
+    const read = async (): Promise<number> => {
+      if (cached !== null && publishedCacheUsable()) return cached;
+      const startedAt = publishedCacheGeneration();
+      const [row] = (await asPublisher(
+        (tx) =>
+          tx`SELECT count(*)::int AS n FROM published_rate_limits WHERE plugin_slug = 't1267-gap'`,
+      )) as { n: number }[];
+      const value = row?.n ?? -1;
+      if (mayCacheRead(startedAt)) cached = value;
+      return value;
+    };
+    const original = await read();
+    try {
+      expect(await read()).toBe(original);
+      // The LISTEN connection drops (a network blip, a failover).
+      await asPublisher(
+        (tx) => tx`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+                    WHERE datname = current_database() AND query LIKE 'LISTEN%'`,
+      );
+      const deadline = Date.now() + 5000;
+      while (publishedCacheUsable() && Date.now() < deadline) await Bun.sleep(5);
+      expect(publishedCacheUsable()).toBe(false);
+      // A publish in the gap: its notification reaches nobody.
+      await asPublisher(
+        (
+          tx,
+        ) => tx`INSERT INTO published_rate_limits (plugin_slug, operation, per_visitor_max, window_seconds)
+                   VALUES ('t1267-gap', 'ping', 1, 60)`,
+      );
+      // Served at once, before the subscription is back.
+      expect(await read()).toBe(original + 1);
+      // Re-acknowledged: caching resumes, from a fresh read.
+      const back = Date.now() + 10_000;
+      while (!publishedCacheUsable() && Date.now() < back) await Bun.sleep(20);
+      expect(publishedCacheUsable()).toBe(true);
+      expect(await read()).toBe(original + 1);
+    } finally {
+      await asPublisher(
+        (tx) => tx`DELETE FROM published_rate_limits WHERE plugin_slug = 't1267-gap'`,
+      );
+      await admin.end();
+    }
+  });
 });

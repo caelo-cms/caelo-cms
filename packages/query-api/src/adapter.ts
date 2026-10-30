@@ -15,7 +15,8 @@ type SQL = SQLType;
 interface PoolOptions {
   readonly max?: number;
   /** Omitted only for the LISTEN connection, which must never idle out. */
-  readonly idleTimeout?: number;
+  readonly idleTimeout?: number /** The LISTEN connection only: tells its subscribers the stream had a gap (#1267). */;
+  readonly onclose?: (cause: Error | null) => void;
 }
 const SQL = (globalThis as { Bun?: { SQL: new (url: string, options?: PoolOptions) => SQLType } })
   .Bun?.SQL as unknown as new (
@@ -284,6 +285,20 @@ export interface ListenHandle {
   unlisten(): Promise<void>;
 }
 
+/** The callbacks of one LISTEN subscription ({@link DatabaseAdapter.listen}). */
+export interface ListenCallbacks {
+  /** A notification arrived (a wake-up, never the truth). */
+  readonly onNotify: (payload: string) => void;
+  /** The subscription was acknowledged: at first, and after every reconnect. */
+  readonly onListen: () => void;
+  /**
+   * The connection carrying the subscription was lost. Until the next
+   * `onListen`, no notification arrives: whatever the subscription keeps
+   * current (a cache) is unknown, and must be read through or dropped.
+   */
+  readonly onLost: (cause: unknown) => void;
+}
+
 export class DatabaseAdapter {
   readonly #admin: BunSQLDatabase | null;
   readonly #public: BunSQLDatabase;
@@ -293,6 +308,9 @@ export class DatabaseAdapter {
   readonly #publicUrl: string;
   /** Issue #1267 — the dedicated LISTEN connection per pool, opened lazily. */
   readonly #listeners = new Map<PoolName, SQL>();
+  /** The `onLost` callbacks of each pool's LISTEN subscriptions. */
+  readonly #listenLost = new Map<PoolName, Set<(cause: unknown) => void>>();
+  #listenersClosing = false;
   readonly #skipVerify: boolean;
   readonly #roles: { readonly admin: string | null; readonly public: readonly string[] };
   readonly #acquireTimeoutMs: number;
@@ -725,29 +743,57 @@ export class DatabaseAdapter {
    * reconnects it with backoff and re-subscribes, calling `onListen` again
    * each time. A notification is only a wake-up: `onListen` must re-read
    * whatever it guards, because notifications sent while the connection
-   * was down are lost.
+   * was down are lost. `onLost` fires when that connection drops, so a
+   * subscriber that serves cached state stops trusting it during the gap.
    *
    * A pooled provider in transaction mode (PgBouncer) breaks LISTEN; the
    * URL must reach Postgres directly (docs/dev/state-and-changes.md).
    *
    * @example
-   *   const sub = await adapter.listen("admin", "caelo_entity_changes", () => wake(), () => wake());
+   *   const sub = await adapter.listen("admin", "caelo_entity_changes", {
+   *     onNotify: () => wake(),
+   *     onListen: () => wake(),
+   *     onLost: () => dropCache(),
+   *   });
    *   await sub.unlisten();
    */
-  async listen(
-    pool: PoolName,
-    channel: string,
-    onNotify: (payload: string) => void,
-    onListen: () => void,
-  ): Promise<ListenHandle> {
+  async listen(pool: PoolName, channel: string, callbacks: ListenCallbacks): Promise<ListenHandle> {
     const url = pool === "admin" ? this.#adminUrl : this.#publicUrl;
     if (url === null) throw new AdminDatabaseUnavailableError(`listen(${channel})`);
+    let lost = this.#listenLost.get(pool);
+    if (!lost) {
+      lost = new Set();
+      this.#listenLost.set(pool, lost);
+    }
+    const lostSet = lost;
     let conn = this.#listeners.get(pool);
     if (!conn) {
-      conn = new SQL(url, { max: LISTEN_CONNECTIONS_PER_INSTANCE });
+      conn = new SQL(url, {
+        max: LISTEN_CONNECTIONS_PER_INSTANCE,
+        // Bun reconnects and re-subscribes on its own; the subscribers
+        // only learn that the stream had a gap.
+        onclose: (cause: Error | null) => {
+          if (this.#listenersClosing) return;
+          for (const onLost of lostSet) {
+            try {
+              onLost(cause);
+            } catch (thrown) {
+              console.error(`[query-api] a LISTEN onLost callback failed`, thrown);
+            }
+          }
+        },
+      });
       this.#listeners.set(pool, conn);
     }
-    return conn.listen(channel, onNotify, onListen);
+    const onLost = callbacks.onLost;
+    lostSet.add(onLost);
+    const handle = await conn.listen(channel, callbacks.onNotify, callbacks.onListen);
+    return {
+      unlisten: async () => {
+        lostSet.delete(onLost);
+        await handle.unlisten();
+      },
+    };
   }
 
   /** Issue #1267 — send one NOTIFY outside any transaction (a step-wise op's topics). */
@@ -875,6 +921,7 @@ export class DatabaseAdapter {
   }
 
   async close(): Promise<void> {
+    this.#listenersClosing = true;
     const listeners = [...this.#listeners.values()];
     this.#listeners.clear();
     await Promise.all([

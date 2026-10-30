@@ -15,9 +15,13 @@
  * - before the first acknowledgement nothing is cached (every request
  *   reads the projection);
  * - each notification drops every cache;
- * - each (re)acknowledgement drops every cache too, because notifications
- *   sent while the connection was down are lost — Bun reconnects with
- *   backoff and re-subscribes.
+ * - when the LISTEN connection drops, every cache is dropped and nothing
+ *   is cached again (every request reads the projection) until the
+ *   subscription is acknowledged again — a publish during the gap sends a
+ *   notification nobody receives;
+ * - each (re)acknowledgement drops every cache once more, because
+ *   notifications sent while the connection was down are lost — Bun
+ *   reconnects with backoff and re-subscribes.
  *
  * The LISTEN connection is the one outside the pool
  * (`LISTEN_CONNECTIONS_PER_INSTANCE`); a pooled provider in transaction
@@ -69,13 +73,18 @@ function invalidateAll(): void {
  * cannot listen fails to start instead of serving stale state.
  */
 export async function listenForPublishedChanges(adapter: DatabaseAdapter): Promise<ListenHandle> {
-  return adapter.listen(
-    "public",
-    GATEWAY_PROJECTION_CHANNEL,
-    () => invalidateAll(),
-    () => {
+  return adapter.listen("public", GATEWAY_PROJECTION_CHANNEL, {
+    onNotify: () => invalidateAll(),
+    onListen: () => {
       invalidateAll();
       subscribed = true;
     },
-  );
+    onLost: (cause) => {
+      subscribed = false;
+      invalidateAll();
+      console.warn(
+        `[gateway] the published-state LISTEN connection dropped; reading through until it is back: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    },
+  });
 }

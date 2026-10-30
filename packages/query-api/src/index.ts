@@ -6,6 +6,7 @@ export {
   DatabaseAdapter,
   DatabaseUnresponsiveError,
   LISTEN_CONNECTIONS_PER_INSTANCE,
+  type ListenCallbacks,
   type ListenHandle,
   POOL_IDLE_TIMEOUT_SECONDS,
   type TransactionOptions,

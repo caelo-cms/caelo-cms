@@ -326,10 +326,8 @@ export async function startLiveFanOut(opts: LiveFanOutOptions): Promise<LiveFanO
   let topicsListened = false;
   const handles: ListenHandle[] = [];
   handles.push(
-    await adapter.listen(
-      "admin",
-      LIVE_TOPICS_CHANNEL,
-      (payload) => {
+    await adapter.listen("admin", LIVE_TOPICS_CHANNEL, {
+      onNotify: (payload) => {
         const parsed = parseLiveTopicsPayload(payload);
         if (parsed === null) {
           console.error(
@@ -339,20 +337,26 @@ export async function startLiveFanOut(opts: LiveFanOutOptions): Promise<LiveFanO
         }
         if (parsed.instanceId !== instanceId) publishLiveTopics(parsed.topics);
       },
-      () => {
+      onListen: () => {
         // A reconnect may have missed notices: every surface re-reads once.
         if (topicsListened) publishLiveTopics([...LIVE_TOPICS]);
         topicsListened = true;
       },
-    ),
+      // Other instances' topics of the gap arrive nowhere; the re-read on
+      // the reconnect above covers them. Nothing here is cached.
+      onLost: (cause) =>
+        console.warn("[live-events] the live-topics LISTEN connection dropped", cause),
+    }),
   );
   handles.push(
-    await adapter.listen(
-      "admin",
-      JOURNAL_CHANNEL,
-      () => void wake(),
-      () => void wake(),
-    ),
+    // The journal cursor is the truth: a reconnect reads on from it, so the
+    // gap's changes are caught up, never lost.
+    await adapter.listen("admin", JOURNAL_CHANNEL, {
+      onNotify: () => void wake(),
+      onListen: () => void wake(),
+      onLost: (cause) =>
+        console.warn("[live-events] the change-journal LISTEN connection dropped", cause),
+    }),
   );
   await wake();
 
