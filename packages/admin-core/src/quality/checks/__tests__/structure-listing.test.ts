@@ -783,4 +783,21 @@ describe("structure/manual-page-listing (#1256)", () => {
     );
     expect(f.map((x) => x.severity)).toEqual(["error"]);
   });
+  it("a classless scalar sibling does not claim a source entry's links", () => {
+    const CTA: StructureModule = {
+      ...QUERY_LIST,
+      id: id(38),
+      slug: "cta-and-guides",
+      html: '<section class="gi"><a href="{{cta}}">All</a>{{#guides}}<a class="card{{#summary}}--summary{{/summary}}" href="{{link}}">{{title}}</a>{{/guides}}</section>',
+      fieldNames: ["cta", "guides"],
+    };
+    const items = GUIDES.slice(0, 7)
+      .map((p) => `<a class="card--summary" href="${p.path}">${p.title}</a>`)
+      .join("");
+    const html = `<section class="gi" data-caelo-module-id="${CTA.id}"><a href="/guides">All</a>${items}</section>`;
+    const f = structureFindings(build(html), [...MODULES, CTA], [], INDEX).filter(
+      (x) => x.ruleId === "structure/manual-page-listing",
+    );
+    expect(f).toEqual([]);
+  });
 });

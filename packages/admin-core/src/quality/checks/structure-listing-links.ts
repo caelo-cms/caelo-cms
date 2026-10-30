@@ -397,8 +397,9 @@ function isCondition(name: string): boolean {
  * cautious such scope): a class the template only renders sometimes
  * (`card{{#summary}}--summary{{/summary}}`) or markup a source entry's
  * value carries must not turn a page query's entries into free, hand-kept
- * markup. Only an element no section could have rendered falls back to the
- * parent's scope.
+ * markup — also when a scalar element accounts for `c` only partly (a
+ * classless `<a>` accounts for any classes). Only an element no section
+ * could have rendered stays scalar or falls back to the parent's scope.
  */
 function pickTemplateChild(c: MarkupNode, candidates: readonly Candidate[]): Candidate | null {
   const weight = { generated: 2, list: 1, scalar: 0 } as const;
@@ -412,14 +413,17 @@ function pickTemplateChild(c: MarkupNode, candidates: readonly Candidate[]): Can
     ];
     if (!best || outranks(rank, best.rank)) best = { cand, rank };
   }
-  if (best) return best.cand;
+  // An exact class match, or one in an entry or generated section, stands.
+  if (best && (best.rank[0] === 1 || best.cand.scope.kind !== "scalar")) return best.cand;
   let loose: Candidate | null = null;
   for (const cand of candidates) {
     const slot = cand.node.tag === PARTIAL_MARKER_TAG;
     if ((cand.node.tag !== c.tag && !slot) || cand.scope.kind === "scalar") continue;
     if (!loose || weight[cand.scope.kind] > weight[loose.scope.kind]) loose = cand;
   }
-  return loose;
+  // A partial scalar match (a classless template element accounts for any
+  // classes) loses to a section that could have rendered `c`.
+  return loose ?? best?.cand ?? null;
 }
 
 function outranks(a: readonly number[], b: readonly number[]): boolean {
