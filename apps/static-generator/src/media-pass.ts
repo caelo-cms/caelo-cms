@@ -160,7 +160,11 @@ export class MediaPass {
 
   /** The files the build references so far, by published path. */
   assets(): AssetReference[] {
-    return [...this.#assets.values()];
+    // Sorted: the files are found concurrently, and the build's output must
+    // not depend on which stat answered first.
+    return [...this.#assets.values()].sort((a, b) =>
+      a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
+    );
   }
 
   /**
@@ -302,7 +306,11 @@ export class MediaPass {
         {
           enabled: this.#settings.cdnEnabled,
           threshold: this.#settings.threshold,
-          entries: [...this.#cdnManifest.values()],
+          // Sorted for the same reason as assets(): the file is part of the
+          // parity manifest, so its bytes must not depend on I/O order.
+          entries: [...this.#cdnManifest.values()].sort((a, b) =>
+            a.outputPath < b.outputPath ? -1 : a.outputPath > b.outputPath ? 1 : 0,
+          ),
         },
         null,
         2,
@@ -399,7 +407,25 @@ export class MediaPass {
   async #publishVariants(
     items: readonly { ref: string; isSlug: boolean; row: VariantRow }[],
   ): Promise<{ missingFiles: { row: VariantRow; variants: string[] }[] }> {
-    const undigested = items.filter((i) => i.row.content_sha256 === null);
+    const missing = new Map<string, { row: VariantRow; variants: string[] }>();
+    const noteMissing = (row: VariantRow): void => {
+      const entry = missing.get(row.asset_id) ?? { row, variants: [] };
+      entry.variants.push(row.variant);
+      missing.set(row.asset_id, entry);
+    };
+    // A row without digests whose file is gone (the backfill could not
+    // digest it) is a missing file: say that, with the way to restore it,
+    // not "run the backfill", which cannot help.
+    const undigested: (typeof items)[number][] = [];
+    await runBatched(
+      items.filter((i) => i.row.content_sha256 === null),
+      FS_PARALLELISM,
+      async (item) => {
+        if (await isFile(this.#sourcePath(item.row.storage_key))) undigested.push(item);
+        else noteMissing(item.row);
+      },
+    );
+    if (missing.size > 0) return { missingFiles: [...missing.values()] };
     if (undigested.length > 0) {
       const named = [...new Set(undigested.map((i) => `${i.row.slug}/${i.row.variant}`))];
       throw new Error(
@@ -408,7 +434,6 @@ export class MediaPass {
           'Next step: Stage again, or run media.rebuild_digests (AI tool: rebuild_media_digests, scope "missing") and build again.',
       );
     }
-    const missing = new Map<string, { row: VariantRow; variants: string[] }>();
     await runBatched([...items], FS_PARALLELISM, async ({ ref, isSlug, row }) => {
       const contentSha256 = row.content_sha256 as string;
       const relPath = mediaAssetRelPath({
@@ -421,9 +446,7 @@ export class MediaPass {
       const source = this.#sourcePath(row.storage_key);
       const present = await this.#deliver(source, relPath);
       if (!present) {
-        const entry = missing.get(row.asset_id) ?? { row, variants: [] };
-        entry.variants.push(row.variant);
-        missing.set(row.asset_id, entry);
+        noteMissing(row);
         return;
       }
       this.#published.set(publishedKey(ref, row.variant), relPath);
@@ -467,14 +490,7 @@ export class MediaPass {
    * the kernel copies it). False when the stored file is gone.
    */
   async #deliver(source: string, relPath: string): Promise<boolean> {
-    if (this.#delivery === "reference") {
-      try {
-        return (await stat(source)).isFile();
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
-        throw e;
-      }
-    }
+    if (this.#delivery === "reference") return isFile(source);
     const target = join(this.#buildDir, relPath);
     await mkdir(dirname(target), { recursive: true });
     try {
@@ -497,6 +513,16 @@ export class MediaPass {
       throw e;
     }
     return true;
+  }
+}
+
+/** Whether `path` is a file, without reading it; false when it does not exist. */
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw e;
   }
 }
 

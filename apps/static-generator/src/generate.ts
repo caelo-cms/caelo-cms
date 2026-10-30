@@ -107,7 +107,7 @@ import {
   type TruncatedListReport,
 } from "./pagination-pass.js";
 import { hostNormaliser, ParityRecorder } from "./parity-digest.js";
-import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
+import { BakeStore, type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { rewritePreviewFontUrls } from "./preview-font-urls.js";
 import { writeRedirectFiles } from "./redirects-pass.js";
 import {
@@ -939,6 +939,7 @@ async function buildSite(
   }
   const pluginListNames = await args.plugins.declaredListSourceNames();
   const minifyCache = new MinifyCache();
+  const bakes = new BakeStore();
   timer.lap("load-content");
 
   // issue #302 / #1257 — a page file that other pages need as a folder:
@@ -1130,6 +1131,7 @@ async function buildSite(
         pages,
         bakeTargets,
         pageUrlStyle,
+        bakes,
       }),
     );
     await timer.measure(parts, "plugin-assets", () => {
@@ -1160,6 +1162,8 @@ async function buildSite(
     args.onProgress?.({ pagesDone, pagesTotal: pageRows.length });
   }
   timer.lapParts(parts, "batches");
+  // P13 — every fresh plugin bake of the build, upserted in one order.
+  await bakes.flush(tx);
 
   assertNoRenderFailures(renderFailures);
   // A `list-resolve` overlay entry the resolver refused (unknown address,

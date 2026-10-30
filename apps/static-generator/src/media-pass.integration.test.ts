@@ -553,4 +553,41 @@ describe("media-pass", () => {
     expect((thrown as Error).message).toContain(`${assetSlug}/orig`);
     expect((thrown as Error).message).toContain("rebuild_media_digests");
   });
+
+  it("#1271 — a row without digests whose file is gone is reported as a missing file, with the way back", async () => {
+    // The backfill cannot digest a file that is gone; "run the backfill"
+    // would not help, restoring the file does.
+    const sql = new SQL(ADMIN_URL!);
+    const d = await digestBytes(FILE_BYTES);
+    const set = async (clear: boolean) =>
+      sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        if (clear) {
+          await tx`UPDATE media_variants SET content_sha256 = NULL, gzip_sha256 = NULL, gzip_size = NULL, digest_profile = NULL WHERE asset_id = ${assetId}::uuid`;
+        } else {
+          await tx`UPDATE media_variants SET content_sha256 = ${d.contentSha256}, gzip_sha256 = ${d.gzipSha256}, gzip_size = ${d.gzipSize}, digest_profile = ${d.profile} WHERE asset_id = ${assetId}::uuid`;
+        }
+      });
+    await set(true);
+    let thrown: unknown = null;
+    try {
+      await adapter.withAdminTransaction(systemCtx, (tx) =>
+        runMediaPass({
+          tx,
+          buildDir,
+          pages: [{ html: `<img src="/_caelo/media/${assetSlug}" alt="x" />`, pageSlug: "gone" }],
+          mediaRoot: mkdtempSync(join(tmpdir(), "caelo-media-pass-gone-")),
+          settings: { cdnEnabled: false, threshold: 5 },
+        }),
+      );
+    } catch (e) {
+      thrown = e;
+    } finally {
+      await set(false);
+      await sql.end();
+    }
+    expect((thrown as Error).message).toContain("are missing");
+    expect((thrown as Error).message).toContain("list_missing_media");
+    expect((thrown as Error).message).not.toContain("have no stored digests");
+  });
 });
