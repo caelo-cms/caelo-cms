@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
+  "version": "0.11.6",
   "tools": [
     {
       "name": "read_content",
@@ -44,7 +44,7 @@
     },
     {
       "name": "edit_content",
-      "description": "Surgical string-replace in a module's, template's or layout's `html`/`css`/`js` — cheap, minimal-diff edits of existing code.\nPREFER over `update_modules_many` for targeted changes; use `update_modules_many` for wholesale rewrites, new modules, or `fields`/`displayName`/`kind` changes.\nCORE RULES:\n- Read the body first with `read_content`. Edits apply in order, all-or-nothing.\n- Success returns the NEW `sha=` + line-numbered snippets of changed regions: chain further `edit_content` calls with that sha and the fresh line numbers, WITHOUT re-reading.\n- Templates/layouts are APPROVAL-GATED: you propose, the Owner clicks Approve on the card. Do not claim such an edit was applied.\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.",
+      "description": "Surgical string-replace in a module's, template's or layout's `html`/`css`/`js` — cheap, minimal-diff edits of existing code.\nPREFER over `update_modules_many` for targeted changes; use `update_modules_many` for wholesale rewrites, new modules, or `fields`/`displayName`/`kind` changes.\nCORE RULES:\n- Read the body first with `read_content`. Edits apply in order, all-or-nothing.\n- Success returns the NEW `sha=` + line-numbered snippets of changed regions: chain further `edit_content` calls with that sha and the fresh line numbers, WITHOUT re-reading.\n- Templates/layouts are APPROVAL-GATED: you propose, the Owner clicks Approve on the card. Do not claim such an edit was applied.\n- INTERNAL LINKS: path of an EXISTING page (`/about`, `/#section`; `list_pages`) — a link to a page not built yet is refused (pages of this chat's site import excepted). External: full `https://` URL.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -229,7 +229,7 @@
     },
     {
       "name": "build_page",
-      "description": "Build a WHOLE page in ONE transaction: create (`page:{slug, title}`) or target existing (`page:{pageId}`) + the full ordered module list (each entry places one module into a template block, top to bottom; on an existing page entries append). Any invalid entry aborts everything (error names `modules[i]` + failing field); nothing is written.\nUSE FOR: every page creation (THE page-creation tool); any page needing >1 module — never `add_module` / `create_content_instances` chains. `modules: []` = intentionally empty page shell.\nDO NOT USE FOR: one incremental module on an existing page -> `add_module` (target `page`); site chrome header/footer -> `add_module` (target `layout`; chrome never rides in a page body).\nCORE RULES:\n- Creating: typed page -> `page.pageType` (+ `properties`/`terms`; an ordinary page omits pageType); always `page.metaDescription`, and `status:\"published\"` for a page that belongs on the site — a Stage refuses published pages without a description and builds only published ones; the result says what still blocks a Stage.\n- Per module, two modes: `moduleId` places an EXISTING module (`list_modules`; reuse first — shared modules keep pages consistent), or mint with `displayName` + `html` + `description` + `kind` + explicit `fields[]` (all required).\n- Pair `{{field_name}}` placeholders in `html` with `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`); never heuristic names (`cta2label2`) or numbered scalars (`label1`..`label10` -> ONE `list` field or a `module-list`).\n- An overview of pages (guides hub, category page) is ONE `list` field bound to a page query (`bind:\"source\"`, `source:{kind:\"query\", defaults:{page_type:…}}`; `term_pages` / `children`), never a hand-kept card per page.\n- Nested modules in the SAME call: inner entry gets `ref` and NO `blockName` (detached: minted + content-bound, not placed); the outer module's `module`/`module-list` field value references it as `{\"$ref\":\"<ref>\"}`, any array order. Never an `add_module` -> `remove_module_from` -> `create_content_instances` chain. E.g. `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]`\n- Zero templates on the site -> bootstrap first (`create_layout` -> `create_template`).\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.\nTypical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`",
+      "description": "Build a WHOLE page in ONE transaction: create (`page:{slug, title}`) or target existing (`page:{pageId}`) + the full ordered module list (each entry places one module into a template block, top to bottom; on an existing page entries append). Any invalid entry aborts everything (error names `modules[i]` + failing field); nothing is written.\nUSE FOR: every page creation (THE page-creation tool); any page needing >1 module — never `add_module` / `create_content_instances` chains. `modules: []` = intentionally empty page shell.\nDO NOT USE FOR: one incremental module on an existing page -> `add_module` (target `page`); site chrome header/footer -> `add_module` (target `layout`; chrome never rides in a page body).\nCORE RULES:\n- Creating: `page.pageType` (+ `properties`/`terms`); always `page.metaDescription`, and `status:\"published\"` for a page that belongs on the site — a Stage refuses published pages without a description and builds only published ones; the result says what still blocks a Stage.\n- Per module, two modes: `moduleId` places an EXISTING module (`list_modules`; reuse first — shared modules keep pages consistent), or mint with `displayName` + `html` + `description` + `kind` + explicit `fields[]` (all required).\n- `fields[]` names in semantic snake_case (`hero_title`, `primary_cta_href`); never heuristic names (`cta2label2`) or numbered scalars (`label1`..`label10` -> ONE `list` field or a `module-list`).\n- An overview of pages (guides hub, category page) is ONE `list` field bound to a page query (`bind:\"source\"`, `source:{kind:\"query\", defaults:{page_type:…}}`; `term_pages` / `children`), never a hand-kept card per page.\n- Nested modules in the SAME call: inner entry gets `ref` and NO `blockName` (detached: minted + content-bound, not placed); the outer module's `module`/`module-list` field value references it as `{\"$ref\":\"<ref>\"}`, any array order. Never an `add_module` -> `remove_module_from` -> `create_content_instances` chain. E.g. `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]`\n- INTERNAL LINKS: path of an EXISTING page (`/about`, `/#section`; `list_pages`) — a link to a page not built yet is refused (pages of this chat's site import excepted). External: full `https://` URL.\nTypical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -267,12 +267,12 @@
               "templateId": {
                 "type": "string",
                 "format": "uuid",
-                "description": "Omit -> the page type's default template (without `pageType`: site default)."
+                "description": "Omit -> the page type's default template."
               },
               "pageType": {
                 "type": "string",
                 "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-                "description": "What the page IS: a slug `list_page_types` shows for this site (e.g. `news` for an article); page queries ('latest news') find pages by it. Omit it for an ordinary page (gets the type listing `templateId`, else the site default). Never guess a slug."
+                "description": "REQUIRED for a new page (unless `templateId` belongs to exactly one type): what the page IS, a slug `list_page_types` shows (e.g. `news` for an article); page queries ('latest news') find pages by it. Never guess a slug."
               },
               "properties": {
                 "type": "object",
@@ -468,7 +468,7 @@
                                 "node",
                                 "values"
                               ],
-                              "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep `id` on resend.",
+                              "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep the `id` of existing entries.",
                               "properties": {
                                 "id": {
                                   "type": "string"
@@ -637,7 +637,7 @@
     },
     {
       "name": "set_page_module_content_many",
-      "description": "Set content values of 1..N placements (may span pages) in one transaction. Content lives in a content_instance bound to the placement.\nUSE FOR: page-local copy ('change the hero heading on /home to X'), a whole page's text, the same fix across pages.\nDO NOT USE FOR: pages/modules not existing yet -> one `build_page` call (never `add_module` + this tool); one entry's text -> `patch_page_module_fields`; every page using the module (structure/styling/fields) -> `update_modules_many`.\nCORE RULES:\n- UNSYNCED placements (default) stay local. A SYNCED placement aborts the batch -> `fork_placement_content` it or deliberately `set_content_instance_values_many` (propagates everywhere), then resend.\n- All-or-nothing: an invalid item aborts the batch (error names `items[i]`, the placement, the failing field); nothing is written.\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.",
+      "description": "Set content values of 1..N placements (may span pages) in one transaction. Content lives in a content_instance bound to the placement.\nUSE FOR: page-local copy ('change the hero heading on /home to X'), a whole page's text, the same fix across pages.\nDO NOT USE FOR: pages/modules not existing yet -> one `build_page` call (never `add_module` + this tool); one entry's text -> `patch_page_module_fields`; every page using the module (structure/styling/fields) -> `update_modules_many`.\nCORE RULES:\n- UNSYNCED placements (default) stay local. A SYNCED placement aborts the batch -> `fork_placement_content` it or deliberately `set_content_instance_values_many` (propagates everywhere).\n- All-or-nothing: an invalid item aborts the batch (error names `items[i]`, the placement, the failing field); nothing is written.\n- INTERNAL LINKS: path of an EXISTING page (`/about`, `/#section`; `list_pages`) — a link to a page not built yet is refused (pages of this chat's site import excepted). External: full `https://` URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -685,7 +685,7 @@
     },
     {
       "name": "create_content_instances",
-      "description": "Mint 1..N shared, reusable content_instances in one transaction — for content shown identically on several pages (site footer copyright, brand banner on product pages, repeated blog CTA). Bind each via `set_placement_content({syncMode:'synced'})`; edits then propagate everywhere bound.\nDO NOT USE FOR: one-off per-page content -> `set_page_module_content_many` (auto-mints a private instance); creating the page/modules too -> `build_page` (its `content` mints + binds in the same call).\nCORE RULES:\n- BEFORE CALLING: check `list_content_instances` — a row with matching purpose + module + placement pattern -> BIND it via `set_placement_content`; duplicate shared rows defeat the point.\n- All-or-nothing: an invalid item aborts the batch (error names `items[i]` + failing field); nothing is written.\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.",
+      "description": "Mint 1..N shared, reusable content_instances in one transaction — for content shown identically on several pages (site footer copyright, brand banner on product pages, repeated blog CTA). Bind each via `set_placement_content({syncMode:'synced'})`; edits then propagate everywhere bound.\nDO NOT USE FOR: one-off per-page content -> `set_page_module_content_many` (auto-mints a private instance); creating the page/modules too -> `build_page` (its `content` mints + binds in the same call).\nCORE RULES:\n- BEFORE CALLING: check `list_content_instances` — a row with matching purpose + module + placement pattern -> BIND it via `set_placement_content`; duplicate shared rows defeat the point.\n- All-or-nothing: an invalid item aborts the batch (error names `items[i]` + failing field); nothing is written.\n- INTERNAL LINKS: path of an EXISTING page (`/about`, `/#section`; `list_pages`) — a link to a page not built yet is refused (pages of this chat's site import excepted). External: full `https://` URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -795,7 +795,7 @@
     },
     {
       "name": "set_content_instance_values_many",
-      "description": "Edit values of 1..N shared content_instances in one transaction. Each item propagates to EVERY page it renders on: its `synced` placements and every page of the parents that show it (blast radius = `pages` in `list_content_instances`).\nUSE FOR: deliberate shared-content changes — check `purpose`, pages and parents first (`list_content_instances` / `get_content_instance`).\nDO NOT USE FOR: an edit meant for ONE page -> `set_page_module_content_many` (unsynced placement) or `fork_placement_content` first (synced); module structure -> `update_modules_many`.\nCORE RULES:\n- All-or-nothing: an invalid item aborts the batch (error names `items[i]`); nothing is written.\n- Optional metadata in the same write: `slug`, `displayName` (`null` clears), `purpose`.\n- The result names per item where the edit now shows — relay it when the reach is wider than the operator asked for.\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.",
+      "description": "Edit values of 1..N shared content_instances in one transaction. Each item propagates to EVERY page it renders on: its `synced` placements and every page of the parents that show it (blast radius = `pages` in `list_content_instances`).\nUSE FOR: deliberate shared-content changes — check `purpose`, pages and parents first (`list_content_instances` / `get_content_instance`).\nDO NOT USE FOR: an edit meant for ONE page -> `set_page_module_content_many` (unsynced placement) or `fork_placement_content` first (synced); module structure -> `update_modules_many`.\nCORE RULES:\n- All-or-nothing: an invalid item aborts the batch (error names `items[i]`); nothing is written.\n- Optional metadata in the same write: `slug`, `displayName` (`null` clears), `purpose`.\n- The result names per item where the edit now shows — relay it when the reach is wider than the operator asked for.\n- INTERNAL LINKS: path of an EXISTING page (`/about`, `/#section`; `list_pages`) — a link to a page not built yet is refused (pages of this chat's site import excepted). External: full `https://` URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1946,8 +1946,95 @@
       }
     },
     {
+      "name": "retry_tool_call",
+      "description": "Fix a failed write call with a small patch instead of resending it — only for a call whose result names `retry_tool_call`. Paths are segment arrays exactly as the error names them (`[\"page\",\"pageType\"]`, `[\"modules\",3,\"html\"]`). `set` writes a value, `remove` drops a key or array entry, `replace` swaps one exact text inside one string (must match once). The patched call runs as a new call (permissions, validation, approval re-checked); if it fails again, patch the same toolCallId again.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "toolCallId"
+        ],
+        "properties": {
+          "toolCallId": {
+            "type": "string",
+            "description": "The failed call's id, from its result."
+          },
+          "set": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "value"
+              ],
+              "properties": {
+                "path": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": [
+                      "string",
+                      "integer"
+                    ]
+                  },
+                  "description": "Segment array as the error names it, e.g. [\"modules\",3,\"html\"]."
+                },
+                "value": {}
+              }
+            }
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": [
+                  "string",
+                  "integer"
+                ]
+              },
+              "description": "Segment array as the error names it, e.g. [\"modules\",3,\"html\"]."
+            }
+          },
+          "replace": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "old",
+                "new"
+              ],
+              "properties": {
+                "path": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": [
+                      "string",
+                      "integer"
+                    ]
+                  },
+                  "description": "Segment array as the error names it, e.g. [\"modules\",3,\"html\"]."
+                },
+                "old": {
+                  "type": "string"
+                },
+                "new": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "name": "get_site_defaults",
-      "description": "Fetch CURRENT site defaults + identity: default layout/template (slug + UUID), siteName, sitePurpose, siteLanguage (`<html lang>`), design brief. Read before set_site_defaults / set_site_identity, and after them for fresh state instead of repeating the write.",
+      "description": "Fetch CURRENT site defaults + identity: default layout (slug + UUID), siteName, sitePurpose, siteLanguage (`<html lang>`), design brief. Read before set_site_defaults / set_site_identity, and after them for fresh state instead of repeating the write.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -2014,7 +2101,7 @@
     },
     {
       "name": "list_users",
-      "description": "List site users (email, display name, roles); read-only. Changes: propose_create_user / propose_set_user_roles / propose_delete_user (Owner-approved). Re-call after an Owner approved one.",
+      "description": "List site users (email, display name, roles); read-only. Changes: propose_create_user / propose_set_user_roles / propose_delete_user (Owner-approved).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2195,7 +2282,7 @@
     },
     {
       "name": "add_module",
-      "description": "Add ONE module to a page, a layout (site-wide chrome on every page) or a template (fans out to every page of that page type).\nUSE FOR: one incremental module on an existing page; chrome (`target:\"layout\"`); a module on every page of a template.\nDO NOT USE FOR: a new page or a page needing >1 module -> `build_page` (whole ordered list WITH content, one transaction).\nCORE RULES:\n- Two modes, all targets. Reuse (check `list_modules` first): `moduleId` places a SHARED module without a duplicate; a later `update_modules_many` changes it everywhere. Placement-only: authoring fields passed alongside are NOT applied (result says so) — to change the module, place by `moduleId`, then `update_modules_many`. Mint: `html` + `displayName` + `kind` + `fields[]` (`[]` = no fields of its own, used verbatim).\n- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).\n- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:\"texts\"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.\n- Initial content comes IN THIS CALL via `values`. A mint with `fields` but neither `values` nor field defaults is REJECTED (would render empty placeholders).\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.\n\nOver this connection the install's AI is not used: the AI part comes back to you — a work item to answer with your own model and send back through the tool it names, or an `AiDelegated:` answer that says what to do instead (see caelo_get_context).",
+      "description": "Add ONE module to a page, a layout (site-wide chrome on every page) or a template (fans out to every page of that page type).\nUSE FOR: one incremental module on an existing page; chrome (`target:\"layout\"`); a module on every page of a template.\nDO NOT USE FOR: a new page or a page needing >1 module -> `build_page` (whole ordered list WITH content, one transaction).\nCORE RULES:\n- Two modes, all targets. Reuse (check `list_modules` first): `moduleId` places a SHARED module without a duplicate; a later `update_modules_many` changes it everywhere. Placement-only: authoring fields passed alongside are NOT applied (result says so) — to change the module, place by `moduleId`, then `update_modules_many`. Mint: `html` + `displayName` + `kind` + `fields[]` (`[]` = no fields of its own, used verbatim).\n- AUTHOR EXPLICITLY: `fields[]` names in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).\n- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:\"texts\"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.\n- Initial content: `values` in this call (or field `default`s).\n- INTERNAL LINKS: path of an EXISTING page (`/about`, `/#section`; `list_pages`) — a link to a page not built yet is refused (pages of this chat's site import excepted). External: full `https://` URL.\n\nOver this connection the install's AI is not used: the AI part comes back to you — a work item to answer with your own model and send back through the tool it names, or an `AiDelegated:` answer that says what to do instead (see caelo_get_context).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -2276,7 +2363,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 50000,
-            "description": "Module HTML. Plain source (no CDATA or extra escaping). Placeholders: `{{field}}` primitives, `{{>field}}` single nested `module`, `{{#field}}…{{/field}}` `list` and `module-list`. Accordion, tabs, carousel, mobile-nav -> `data-caelo-ui` markup (see `js`) instead of custom JS."
+            "description": "Module HTML. Plain source (no CDATA or extra escaping). Placeholders: `{{field}}` primitives, `{{>field}}` single nested `module`, `{{#field}}…{{/field}}` `list` and `module-list`. Accordion, tabs, carousel, mobile-nav -> `data-caelo-ui` markup (snippets on `build_page` `modules[].js`) instead of custom JS."
           },
           "css": {
             "type": "string",
@@ -2286,7 +2373,7 @@
           "js": {
             "type": "string",
             "maxLength": 50000,
-            "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. Touch ONLY this module's markup — another module's script goes into that module, never into a header/footer because it loads everywhere. Text, links, menu entries live in `html` (crawlers read no js output); js only shows/hides/toggles. Deliberate site-wide behaviour on hooks many modules share: comment `/* caelo:site-wide: <reason> */`. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field.\nWrite module JS only for behaviour the kit does not cover."
+            "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. Touch ONLY this module's markup — another module's script goes into that module, never into a header/footer because it loads everywhere. Text, links, menu entries live in `html` (crawlers read no js output); js only shows/hides/toggles. Deliberate site-wide behaviour on hooks many modules share: comment `/* caelo:site-wide: <reason> */`. Accordion, tabs, carousel, mobile-nav: use the `data-caelo-ui` kit (markup on `build_page` `modules[].js`), not custom JS."
           },
           "bindThemeLiterals": {
             "type": "boolean",
@@ -2348,7 +2435,7 @@
                           "node",
                           "values"
                         ],
-                        "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep `id` on resend.",
+                        "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep the `id` of existing entries.",
                         "properties": {
                           "id": {
                             "type": "string"
@@ -2508,7 +2595,7 @@
     },
     {
       "name": "create_template",
-      "description": "Create a template (reusable HTML+CSS shell pages bind to) for a page type, e.g. 'a blog-post template'. NOT for a one-off page (`build_page`).\nCORE RULES:\n- An ordinary template omits `pageType` (it joins the site's default page type). Pass `pageType` only with a slug `list_page_types` shows; never guess one (`page`, `article` …).\n- A new KIND of content (news, products) is a page type first: `upsert_page_types_many` needs a template id -> create the template, then the type listing it (or pass an existing type's slug).\n- `layoutId`: optional when a default layout exists (`get_site_defaults`; omitted -> that default); else REQUIRED, pick from `list_layouts` (omitting fails with 'no defaults'). Zero layouts -> `create_layout` first.\n- Slots in `html` MUST be `<caelo-slot name=\"X\"></caelo-slot>`, NOT comments like `<!-- block:X -->` (ignored -> page renders empty). Every block name needs a matching slot.",
+      "description": "Create a template (reusable HTML+CSS shell pages bind to) for a page type, e.g. 'a blog-post template'. NOT for a one-off page (`build_page`).\nCORE RULES:\n- Exactly one of `pageType` (a slug `list_page_types` shows; never guess one) or, for a new KIND of content (news, products), `newPageType` — it creates the type with this template as its default in the same call.\n- `layoutId`: optional when a default layout exists (`get_site_defaults`; omitted -> that default); else REQUIRED, pick from `list_layouts` (omitting fails with 'no defaults'). Zero layouts -> `create_layout` first.\n- Slots in `html` MUST be `<caelo-slot name=\"X\"></caelo-slot>`, NOT comments like `<!-- block:X -->` (ignored -> page renders empty). Every block name needs a matching slot.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -2543,6 +2630,58 @@
             "type": "string",
             "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
             "description": "Existing page type slug from `list_page_types`; the template joins its templates."
+          },
+          "newPageType": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "slug",
+              "name",
+              "purpose",
+              "collection"
+            ],
+            "description": "New page type for this template, e.g. `{slug:'news', name:'News article', purpose:'Dated company news, listed newest first', collection:true}`.",
+            "properties": {
+              "slug": {
+                "type": "string",
+                "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "collection": {
+                "type": "boolean",
+                "description": "true: many similar pages meant to be listed or queried (blog, news, products, jobs, docs); false: standalone pages (home, about, contact, legal, landing)."
+              },
+              "properties": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "description": "a field: {name, label, type, required?, default?, options?, …}"
+                }
+              },
+              "vocabularies": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "description": "{list: <vocabulary list id>, cardinality: one|many, required?}"
+                }
+              },
+              "distinctFrom": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Existing slugs it is deliberately NOT (refused as a duplicate otherwise, e.g. `blogs` next to `blog`)."
+              }
+            }
           },
           "blocks": {
             "type": "array",
@@ -2769,17 +2908,15 @@
     },
     {
       "name": "set_site_defaults",
-      "description": "Set the site-wide default layout and/or template for new pages created without one. Safe to call directly: existing pages keep theirs.\nCORE RULES: pass slugs (e.g. `site-default`), not UUIDs; current values via `get_site_defaults`, slugs via `list_layouts`/`list_templates`. FIRST set needs both fields, afterwards only the changed one. No layouts/templates yet -> `create_layout` -> `create_template` first.",
+      "description": "Set the site-wide default layout for new templates created without one. Safe to call directly: existing templates keep theirs. Pass the slug (e.g. `site-default`, from `list_layouts`), not a UUID. No layouts yet -> `create_layout` first.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
+        "required": [
+          "defaultLayoutSlug"
+        ],
         "properties": {
           "defaultLayoutSlug": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 120
-          },
-          "defaultTemplateSlug": {
             "type": "string",
             "minLength": 1,
             "maxLength": 120
@@ -2870,7 +3007,7 @@
     },
     {
       "name": "bootstrap_site_scaffold",
-      "description": "Bootstrap a fresh install (layout + template + site defaults) — when the status note says 'needs setup' for them. Idempotent: each call detects and runs the next missing stage; the RESULT says which ran and what next.\n- No layout: queues a layout PROPOSAL the operator approves on the chat's card. Don't claim it exists; after approval call this tool AGAIN.\n- Layout exists: creates the template + pins site defaults directly. All exist: no-op.\nAll inputs optional; defaults = header/content/footer layout, single-block `home` template, pinned defaults.",
+      "description": "Bootstrap a fresh install (layout + template + site defaults) — when the status note says 'needs setup' for them. Idempotent: each call detects and runs the next missing stage; the RESULT says which ran and what next.\n- No layout: queues a layout PROPOSAL the operator approves on the chat's card. Don't claim it exists; after approval call this tool AGAIN.\n- Layout exists: creates the template + pins the default layout directly. All exist: no-op.\nAll inputs optional; defaults = header/content/footer layout, single-block `home` template of page type `home`, pinned layout.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -2919,6 +3056,37 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 256
+          },
+          "templatePageType": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "slug",
+              "name",
+              "purpose",
+              "collection"
+            ],
+            "description": "Page type the template serves (joins it when the slug exists, else creates it). Default `home`.",
+            "properties": {
+              "slug": {
+                "type": "string",
+                "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "collection": {
+                "type": "boolean",
+                "description": "true: many similar pages to list or query; false: standalone pages."
+              }
+            }
           },
           "setAsDefaults": {
             "type": "boolean"
@@ -2982,6 +3150,11 @@
           "targetTemplateId": {
             "type": "string",
             "format": "uuid"
+          },
+          "pageType": {
+            "type": "string",
+            "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+            "description": "The copy's page type (`list_page_types`); omit = the source's."
           },
           "newParentPageId": {
             "type": [
@@ -4447,7 +4620,7 @@
     },
     {
       "name": "update_modules_many",
-      "description": "Edit module structure (`html`, `fields`, `css`, `js`, `displayName`, `description`, `kind`, `type`) of 1..N modules. Every page using a module follows; chat-branched until publish.\nUSE FOR: wholesale rewrites, new module bodies, changes to `fields`/`displayName`/`kind`/`type`/`description`, the same fix across modules.\nDO NOT USE FOR: a TARGETED change to existing `html`/`css`/`js` -> PREFER `edit_content` (surgical string-replace: cheaper, reviewable diff); page/instance content -> `set_page_module_content_many` (per page) | `set_content_instance_values_many` (shared); page metadata -> `update_pages_many`; templates -> `propose_update_template`.\nCORE RULES:\n- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).\n- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:\"texts\"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.\n- KEEP METADATA FRESH: update `description` + `kind` when a module's purpose drifts (`list_modules` relies on them).\n- `fields` is the WHOLE list (omitted fields are dropped): read it first with `read_content` `field:\"fields\"` and resend every field. A field resent without `default` keeps its stored one.\n- Items apply independently: a failed item (not found, draft conflict, invalid field) is reported with its reason, the rest commits; nothing updated -> error. One snapshot per module.\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.",
+      "description": "Edit module structure (`html`, `fields`, `css`, `js`, `displayName`, `description`, `kind`, `type`) of 1..N modules. Every page using a module follows; chat-branched until publish.\nUSE FOR: wholesale rewrites, new module bodies, changes to `fields`/`displayName`/`kind`/`type`/`description`, the same fix across modules.\nDO NOT USE FOR: a TARGETED change to existing `html`/`css`/`js` -> PREFER `edit_content` (surgical string-replace: cheaper, reviewable diff); page/instance content -> `set_page_module_content_many` (per page) | `set_content_instance_values_many` (shared); page metadata -> `update_pages_many`; templates -> `propose_update_template`.\nCORE RULES:\n- AUTHOR EXPLICITLY: `fields[]` names in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).\n- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:\"texts\"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.\n- KEEP METADATA FRESH: update `description` + `kind` when a module's purpose drifts (`list_modules` relies on them).\n- `fields` is the WHOLE list (omitted fields are dropped): read it first with `read_content` `field:\"fields\"` and pass every field. A field passed without `default` keeps its stored one.\n- Items apply independently: a failed item (not found, draft conflict, invalid field) is reported with its reason, the rest commits; nothing updated -> error. One snapshot per module.\n- INTERNAL LINKS: path of an EXISTING page (`/about`, `/#section`; `list_pages`) — a link to a page not built yet is refused (pages of this chat's site import excepted). External: full `https://` URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4497,7 +4670,7 @@
                 },
                 "html": {
                   "type": "string",
-                  "description": "Module HTML. Plain source (no CDATA or extra escaping). Placeholders: `{{field}}` primitives, `{{>field}}` single nested `module`, `{{#field}}…{{/field}}` `list` and `module-list`. Accordion, tabs, carousel, mobile-nav -> `data-caelo-ui` markup (see `js`) instead of custom JS."
+                  "description": "Module HTML. Plain source (no CDATA or extra escaping). Placeholders: `{{field}}` primitives, `{{>field}}` single nested `module`, `{{#field}}…{{/field}}` `list` and `module-list`. Accordion, tabs, carousel, mobile-nav -> `data-caelo-ui` markup (snippets on `build_page` `modules[].js`) instead of custom JS."
                 },
                 "css": {
                   "type": "string",
@@ -4505,7 +4678,7 @@
                 },
                 "js": {
                   "type": "string",
-                  "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. Touch ONLY this module's markup — another module's script goes into that module, never into a header/footer because it loads everywhere. Text, links, menu entries live in `html` (crawlers read no js output); js only shows/hides/toggles. Deliberate site-wide behaviour on hooks many modules share: comment `/* caelo:site-wide: <reason> */`. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field.\nWrite module JS only for behaviour the kit does not cover."
+                  "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. Touch ONLY this module's markup — another module's script goes into that module, never into a header/footer because it loads everywhere. Text, links, menu entries live in `html` (crawlers read no js output); js only shows/hides/toggles. Deliberate site-wide behaviour on hooks many modules share: comment `/* caelo:site-wide: <reason> */`. Accordion, tabs, carousel, mobile-nav: use the `data-caelo-ui` kit (markup on `build_page` `modules[].js`), not custom JS."
                 },
                 "fields": {
                   "type": "array",
@@ -4563,7 +4736,7 @@
                                 "node",
                                 "values"
                               ],
-                              "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep `id` on resend.",
+                              "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep the `id` of existing entries.",
                               "properties": {
                                 "id": {
                                   "type": "string"
@@ -5135,7 +5308,7 @@
               "snapshots",
               "chat_runner_tools",
               "background_workers",
-              "domain_events",
+              "change_journal",
               "email",
               "head_contributions",
               "url_slots",
@@ -6963,8 +7136,13 @@
             },
             "description": "From `list_import_pages`."
           },
+          "pageType": {
+            "description": "What the pages ARE (`list_page_types` slug). Required unless `templateId` belongs to one type.",
+            "type": "string",
+            "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+          },
           "templateId": {
-            "description": "From `list_templates`; omit for the site default.",
+            "description": "From `list_templates`; omit for the type's default template.",
             "type": "string",
             "format": "uuid"
           }
@@ -7621,7 +7799,7 @@
     },
     {
       "name": "upsert_list_types_many",
-      "description": "Create or replace list types (the SHAPE of a list).\nDO NOT USE FOR: a near-duplicate of a shipped type (reuse `links`/`menu`); changing a plugin-shipped type (create your own slug).\nCORE RULES:\n- `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `max_depth` required when a node allows itself. `current_from` names the node's link field that marks the current page.\n- Field types: text, richtext, link (value {href}), media, select (`options`), boolean, number, date, icon, module (embedded; `accepts` = module types, absent = any), term (entries of vocabulary list `list: <slug>`).\n- Vocabulary types: one node kind with text fields `name` + `slug`.\n- `source` -> generated entries instead of stored children: {kind:'query', editable:[knobs an entry may change], defaults:{page_type, order, limit, …}} | {kind:'system', name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:'plugin', name}.\n- Mega menu: root.allow [\"column\"]; `column` {fields:[heading text], children:{name:\"links\", allow:[\"link\",\"news\"]}}; `link` {fields:[label text*, link link*], current_from:\"link\"}; `news` {fields:[heading text], source:{kind:\"query\", editable:[\"limit\"], defaults:{page_type:\"news\", order:\"published_desc\", limit:3}}} (`*` = required:true).\n- Reserved names: id, node, index, depth, first, last, items, page, site_text, recurse, is_*, has_*, count_*.\n- Changes are checked against every list of the type: a new required field needs a `default`; removing a kind/field with values is refused -> `dropValues:true` only if the operator agreed.\n- `expectedVersion` (from `list_list_types`) guards concurrent changes.",
+      "description": "Create or replace list types (the SHAPE of a list).\nDO NOT USE FOR: a near-duplicate of a shipped type (reuse `links`/`menu`); changing a plugin-shipped type (create your own slug).\nCORE RULES:\n- `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `current_from` names the node's link field that marks the current page.\n- Field types: text, richtext, link (value {href}), media, select (`options`), boolean, number, date, icon, module (embedded; `accepts` = module types, absent = any), term (entries of vocabulary list `list: <slug>`).\n- Vocabulary types: one node kind with text fields `name` + `slug`.\n- `source` -> generated entries instead of stored children: {kind:'query', editable:[knobs an entry may change], defaults:{page_type, order, limit, …}} | {kind:'system', name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:'plugin', name}.\n- Mega menu: root.allow [\"column\"]; `column` {fields:[heading text], children:{name:\"links\", allow:[\"link\",\"news\"]}}; `link` {fields:[label text*, link link*], current_from:\"link\"}; `news` {fields:[heading text], source:{kind:\"query\", editable:[\"limit\"], defaults:{page_type:\"news\", order:\"published_desc\", limit:3}}} (`*` = required:true).\n- `dropValues:true` deletes values of removed kinds/fields: only with the operator's consent.\n- `expectedVersion` (from `list_list_types`) guards concurrent changes.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -8029,7 +8207,7 @@
     },
     {
       "name": "upsert_page_types_many",
-      "description": "Create or replace page types in one transaction, when the operator starts a new kind of content ('a news section with categories', 'a job board').\nCORE RULES:\n- `templates`: ids from `list_templates`; none fits -> `create_template` WITHOUT `pageType` first, then list its id here. `defaultTemplate` is one of them.\n- `properties`: fields every page of the type carries (e.g. `author` text, `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` (no pageType) or reuse one -> this, with the template id -> `build_page`/`update_pages_many` with pageType, properties, terms.\n- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.",
+      "description": "Create or replace page types in one transaction, when the operator starts a new kind of content ('a news section with categories', 'a job board').\nCORE RULES:\n- `templates`: ids from `list_templates`; none fits -> `create_template` with `newPageType` instead (template + type in one call). `defaultTemplate` is one of them.\n- `properties`: fields every page of the type carries (e.g. `author` text, `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` with `newPageType` (or this, reusing a template) -> `build_page`/`update_pages_many` with pageType, properties, terms.\n- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -8047,6 +8225,7 @@
                 "slug",
                 "name",
                 "purpose",
+                "collection",
                 "templates",
                 "defaultTemplate"
               ],
@@ -8059,6 +8238,10 @@
                 },
                 "purpose": {
                   "type": "string"
+                },
+                "collection": {
+                  "type": "boolean",
+                  "description": "true: many similar pages meant to be listed or queried (blog, news, products, jobs, docs); false: standalone pages (home, about, contact, legal, landing)."
                 },
                 "templates": {
                   "type": "array",
@@ -8085,6 +8268,13 @@
                 },
                 "expectedVersion": {
                   "type": "integer"
+                },
+                "distinctFrom": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "New type only: existing slugs it is deliberately NOT (refused as a duplicate otherwise, e.g. `blogs` next to `blog`)."
                 }
               }
             }
@@ -8097,7 +8287,7 @@
     },
     {
       "name": "delete_page_types_many",
-      "description": "Delete page types by slug. Refused for the site's default type and while pages use it (move them first: `update_pages_many` `pageType`). Undoable.",
+      "description": "Delete page types by slug. Refused while pages use it (move them first: `update_pages_many` `pageType`). Undoable.",
       "inputSchema": {
         "type": "object",
         "properties": {
