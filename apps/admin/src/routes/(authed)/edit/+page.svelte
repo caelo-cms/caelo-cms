@@ -21,6 +21,7 @@
 
   import { type ActionResult, applyAction, deserialize, enhance } from "$app/forms";
   import { goto, refreshAll } from "$app/navigation";
+  import { page } from "$app/state";
   import { ArrowLeft, Ellipsis, GitCompareArrows } from "lucide-svelte";
   import CaeloMascot from "#lib/components/CaeloMascot.svelte";
   import { onMount } from "svelte";
@@ -49,6 +50,7 @@
   } from "#lib/components/edit/iframe-protocol.js";
   import { persistPreviewCookies } from "#lib/components/edit/preview-cookie-jar.js";
   import { StreamedValue } from "#lib/components/edit/streamed-value.svelte.js";
+  import { pageToFollow } from "#lib/components/edit/streamed-read.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import {
     DropdownMenu,
@@ -88,29 +90,47 @@
   const deployState = new StreamedValue<Settled<"deployState">>();
   const live = new StreamedValue<Settled<"live">>();
   const pageSeo = new StreamedValue<Settled<"pageSeo">>();
+  // Parts of one chat carry its id, parts of one page the page's: after a
+  // switch, the previous chat's or page's value is not shown as the new one's.
+  const chatKey = $derived(data.activeChat.id);
   $effect(() => {
-    pages.follow(data.pages);
-    recentPageIds.follow(data.recentPageIds);
-    modules.follow(data.modules);
-    branchEditedModuleIds.follow(data.branchEditedModuleIds);
-    branchChangeCount.follow(data.branchChangeCount);
-    pendingChangesView.follow(data.pendingChanges);
-    otherOpenChats.follow(data.otherOpenChats);
+    const chat = data.activeChat.id;
+    pages.follow(data.pages, chat);
+    recentPageIds.follow(data.recentPageIds, chat);
+    modules.follow(data.modules, chat);
+    branchEditedModuleIds.follow(data.branchEditedModuleIds, chat);
+    branchChangeCount.follow(data.branchChangeCount, chat);
+    pendingChangesView.follow(data.pendingChanges, chat);
+    otherOpenChats.follow(data.otherOpenChats, chat);
     deployState.follow(data.deployState);
-    live.follow(data.live);
+    live.follow(data.live, data.activePageId);
     pageSeo.follow(data.pageSeo, data.activePageId);
   });
   /** The page list once loaded; empty before (searches find nothing yet). */
   const pageList = $derived(pages.current ?? []);
   /** What the Staging and Publish live controls need, as far as it failed. */
   const publishErrors = $derived(
-    [branchChangeCount.error, pendingChangesView.error, deployState.error, live.error].filter(
-      (e): e is string => e !== null,
-    ),
+    [
+      branchChangeCount.errorFor(chatKey),
+      pendingChangesView.errorFor(chatKey),
+      deployState.error,
+      live.error,
+    ].filter((e): e is string => e !== null),
   );
+  /**
+   * What the Staging and Publish live controls show, once every part is in
+   * for this chat and page; null until then (they show placeholders).
+   */
+  const publishState = $derived.by(() => {
+    const changes = pendingChangesView.currentFor(chatKey);
+    const deploy = deployState.current;
+    const liveLinks = live.currentFor(data.activePageId);
+    if (branchChangeCount.pendingFor(chatKey) || !changes || !deploy || !liveLinks) return null;
+    return { changes, deploy, liveLinks };
+  });
   /** Streamed parts without a spot of their own: their failures show in one strip. */
   const streamErrors = $derived(
-    [pages.error, modules.error, branchEditedModuleIds.error].filter(
+    [pages.error, modules.error, branchEditedModuleIds.errorFor(chatKey)].filter(
       (e): e is string => e !== null,
     ),
   );
@@ -171,6 +191,14 @@
   // While neither knows a page the preview just navigated to, the previous
   // page stays, so the preview frame is not torn down and rebuilt.
   let activePage = $state<typeof data.activePage>(data.activePage);
+  // The load asked for `?page=<activePageId>` and opened another page: that
+  // page no longer exists in this chat's view (deleted, e.g. by the AI), so
+  // the editor follows the page the load opened instead of keeping the gone
+  // one on screen.
+  $effect.pre(() => {
+    const follow = pageToFollow(page.url.searchParams.get("page"), activePageId, data.activePageId);
+    if (follow !== null) activePageId = follow;
+  });
   $effect.pre(() => {
     const found =
       pageList.find((p) => p.id === activePageId) ??
@@ -231,7 +259,7 @@
   // branch_change_count to cover layout-module snapshots; refreshAll
   // in onAiToolResult re-runs the server load after each tool, so the
   // derived value stays fresh without manual increments.
-  const pendingChanges = $derived(branchChangeCount.current ?? 0);
+  const pendingChanges = $derived(branchChangeCount.currentFor(chatKey) ?? 0);
   let pendingSwitchTo = $state<string | null>(null);
   let dialogOpen = $state(false);
   // Height of the page chrome above the preview (cross-chat banner +
@@ -249,7 +277,7 @@
   // module on the page if the server load returned an empty list
   // (e.g. brand-new chat with zero edits → nothing to filter).
   const editedModules = $derived.by(() => {
-    const ids = branchEditedModuleIds.current ?? [];
+    const ids = branchEditedModuleIds.currentFor(chatKey) ?? [];
     const all = (modules.current ?? []).map((m) => ({
       moduleId: m.id,
       label: m.displayName ?? m.slug,
@@ -564,7 +592,10 @@
   <!-- Measured with the toolbar below: the pinned-right chat column starts
        under both, so the banner never pushes toolbar controls beneath it. -->
   <div class="shrink-0" bind:clientHeight={bannerHeight}>
-    <CrossChatBanner chats={otherOpenChats.current ?? []} error={otherOpenChats.error} />
+    <CrossChatBanner
+      chats={otherOpenChats.currentFor(chatKey) ?? []}
+      error={otherOpenChats.errorFor(chatKey)}
+    />
     {#if streamErrors.length > 0}
       <!-- #1268 — streamed parts without a spot of their own; never a silent gap. -->
       <div
@@ -635,7 +666,7 @@
             <PageSeoInfo
               info={pageSeo.current}
               path={urlText}
-              siteUrl={live.current?.siteUrl ?? null}
+              siteUrl={live.currentFor(activePageId)?.siteUrl ?? null}
             />
           {/if}
         {/if}
@@ -740,9 +771,9 @@
       )}
       title={!data.activeChat
         ? "Start a chat first to see pending edits"
-        : branchChangeCount.error
-          ? branchChangeCount.error
-          : branchChangeCount.loading
+        : branchChangeCount.errorFor(chatKey)
+          ? branchChangeCount.errorFor(chatKey)
+          : branchChangeCount.pendingFor(chatKey)
             ? "Counting this chat's changes…"
             : pendingChanges > 0
               ? `${pendingChanges} ${pendingChanges === 1 ? "change" : "changes"} in this chat, side by side with the live version`
@@ -751,9 +782,9 @@
     >
       <GitCompareArrows class="size-3.5" />
       Diff
-      {#if branchChangeCount.error}
+      {#if branchChangeCount.errorFor(chatKey)}
         <span class="font-semibold text-red-700 dark:text-red-300" data-testid="diff-count-error">(!)</span>
-      {:else if branchChangeCount.loading}
+      {:else if branchChangeCount.pendingFor(chatKey)}
         <span class="text-muted-foreground" data-testid="diff-count-loading">(…)</span>
       {:else}
         <span class="tabular-nums text-muted-foreground">({pendingChanges})</span>
@@ -772,20 +803,21 @@
           >
             {publishErrors[0]}
           </span>
-        {:else if branchChangeCount.current !== null && pendingChangesView.current && deployState.current && live.current}
+        {:else if publishState}
+          <!-- Only with this chat's Stage list: the form submits this chat's id. -->
           <StageDeployButton
-            pendingChanges={pendingChangesView.current}
+            pendingChanges={publishState.changes}
             branchChangeCount={pendingChanges}
             csrfToken={data.csrfToken}
             chatSessionId={data.activeChat.id}
             sessionPublished={!!data.activeChat.publishedAt}
             sessionLastStagedAt={data.activeChat.lastStagedAt ?? null}
             {activePageId}
-            lastStaged={deployState.current.lastStaged}
-            lastPublishedLive={deployState.current.lastPublishedLive}
-            productionMatchesStaging={deployState.current.productionMatchesStaging}
-            lastStageFailure={deployState.current.lastStageFailure}
-            live={live.current}
+            lastStaged={publishState.deploy.lastStaged}
+            lastPublishedLive={publishState.deploy.lastPublishedLive}
+            productionMatchesStaging={publishState.deploy.productionMatchesStaging}
+            lastStageFailure={publishState.deploy.lastStageFailure}
+            live={publishState.liveLinks}
           />
         {:else}
           <!-- Placeholders in the controls' size while their state streams in. -->

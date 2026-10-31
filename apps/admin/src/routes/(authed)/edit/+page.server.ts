@@ -15,8 +15,10 @@ import { loadTranscriptPage } from "#lib/server/chat-transcript.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import {
   activePageScope,
+  branchPageScope,
   type EditPage,
   pickActivePage,
+  pickScopedPage,
   toEditPage,
 } from "#lib/server/edit-active-page.js";
 import { streamEditorParts } from "#lib/server/edit-streamed.js";
@@ -126,21 +128,20 @@ async function readOrFail<T>(ctx: ExecutionContext, op: string, input: unknown):
 }
 
 /**
- * The page to open as `ctx` sees it, from the `?page=`/home lookup; only a
- * site without either reads its whole page list (to open the first page).
- * `all` is that list when it was read.
+ * The page to open as `ctx` sees it, from a bounded lookup of the `?page=`
+ * and home candidates (`scope`); only when neither is found (or there is no
+ * scope) is the whole page list read, to open the first page. `all` is that
+ * list when it was read, so the streamed page list reuses it.
  */
 async function resolveActivePage(
   ctx: ExecutionContext,
   queryPage: string | null,
+  scope: { pageIds?: string[]; paths?: string[] } | null,
 ): Promise<{ page: EditPage | null; candidates: EditPage[]; all: EditPage[] | null }> {
-  const scoped = await readOrFail<{ pages: EditPage[] }>(
-    ctx,
-    "pages.list",
-    activePageScope(queryPage),
-  );
-  const candidates = scoped.pages.map(toEditPage);
-  const page = pickActivePage(candidates, queryPage);
+  const candidates = scope
+    ? (await readOrFail<{ pages: EditPage[] }>(ctx, "pages.list", scope)).pages.map(toEditPage)
+    : [];
+  const page = pickScopedPage(candidates, queryPage);
   if (page) return { page, candidates, all: null };
   const all = (await readOrFail<{ pages: EditPage[] }>(ctx, "pages.list", {})).pages.map(
     toEditPage,
@@ -168,7 +169,7 @@ export const load: PageServerLoad = async ({ locals, url, setHeaders }) => {
   // The overlay layout preference is read alongside.
   const [main, prefsR] = await timing.time("page-main", () =>
     Promise.all([
-      resolveActivePage(locals.ctx, queryPage),
+      resolveActivePage(locals.ctx, queryPage, activePageScope(queryPage)),
       execute(registry, adapter, locals.ctx, "user_preferences.get", {
         key: "edit_overlay_layout",
       }),
@@ -346,7 +347,7 @@ export const load: PageServerLoad = async ({ locals, url, setHeaders }) => {
   // showing another chat's branch (CLAUDE.md §2).
   const [branch, transcript, chatNotice] = await timing.time("page-branch+transcript", () =>
     Promise.all([
-      resolveActivePage(ctxWithBranch, queryPage),
+      resolveActivePage(ctxWithBranch, queryPage, branchPageScope(queryPage, main.candidates)),
       loadTranscriptPage(locals.ctx, chat.id),
       queryChat && queryChat !== chat.id
         ? describeUnopenedChat(queryChat, chat.title, locals.ctx)
