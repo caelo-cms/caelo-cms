@@ -2,7 +2,8 @@
 
 import { copyFile, mkdir, readdir, rm, rmdir, stat } from "node:fs/promises";
 import { join, sep } from "node:path";
-import { runBatched } from "@caelo-cms/shared";
+import { isContentHashedPath, runBatched } from "@caelo-cms/shared";
+import { BUILD_INTERNAL_FILES } from "./asset-references.js";
 
 /**
  * Files in flight at once. One at a time cost a full syscall round trip
@@ -26,6 +27,13 @@ const FS_PARALLELISM = 32;
  * way. Tolerates EFAULT on removal (Docker Desktop quirk on
  * rm-inside-bind-mount on macOS) so a build never fails the whole deploy
  * because a stale child couldn't be unlinked.
+ *
+ * #1271 — the build's internal files (asset references, parity digests)
+ * are not part of the site and never reach `dst`. A content-hashed file
+ * (`_assets/<slug>.<hash>.<ext>`, fonts, plugin bundles) that `dst`
+ * already has at the same size is the same file — its name is its hash —
+ * so it is not copied again: an unchanged site's media cost one `stat`
+ * each per Stage, not a copy.
  */
 export async function syncContents(src: string, dst: string): Promise<void> {
   const tolerate = async (op: () => Promise<unknown>) => {
@@ -42,6 +50,7 @@ export async function syncContents(src: string, dst: string): Promise<void> {
   };
 
   const source = await listTree(src);
+  for (const name of BUILD_INTERNAL_FILES) source.files.delete(name);
 
   // A file in dst where src now has a directory blocks the mkdir below.
   await runBatched([...source.dirs], FS_PARALLELISM, async (rel) => {
@@ -57,9 +66,16 @@ export async function syncContents(src: string, dst: string): Promise<void> {
   }
   await runBatched([...source.files], FS_PARALLELISM, async (rel) => {
     const target = join(dst, rel);
+    const existing = await stat(target).catch(() => null);
     // A directory in dst where src now has a file blocks the copy.
-    if ((await kindOf(target)) === "dir") {
+    if (existing?.isDirectory()) {
       await tolerate(() => rm(target, { recursive: true, force: true }));
+    } else if (
+      existing?.isFile() &&
+      isContentHashedPath(rel) &&
+      existing.size === (await stat(join(src, rel))).size
+    ) {
+      return;
     }
     await copyFile(join(src, rel), target);
   });

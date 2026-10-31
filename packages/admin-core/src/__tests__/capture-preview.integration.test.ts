@@ -25,6 +25,7 @@ import {
 } from "../capture/capture-protocol.js";
 import type { CaptureStore } from "../capture/capture-store.js";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -103,6 +104,7 @@ beforeAll(async () => {
         height: 400,
         sizeBytes: 4,
         storageKey: `${SHA}/orig.png`,
+        digest: TEST_MEDIA_DIGEST,
       },
       {
         variant: "webp-400",
@@ -111,6 +113,7 @@ beforeAll(async () => {
         height: 200,
         sizeBytes: 2,
         storageKey: `${SHA}/webp-400.webp`,
+        digest: TEST_MEDIA_DIGEST,
       },
     ],
   });

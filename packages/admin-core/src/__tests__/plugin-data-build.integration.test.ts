@@ -37,7 +37,11 @@ import {
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { CADDY_REDIRECTS_FILE, type ExecutionContext } from "@caelo-cms/shared";
-import { findBakeRegions, replaceBakeRegions } from "@caelo-cms/static-generator";
+import {
+  BUILD_INTERNAL_FILES,
+  findBakeRegions,
+  replaceBakeRegions,
+} from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { PLUGIN_DATA_ARCHIVES_KEPT } from "../plugin-data/build.js";
@@ -438,9 +442,12 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     // the release re-syncs the redirect files over the build's own copy.
     const redirectFiles = new Set(["_redirects", "_redirects.cloudflare", CADDY_REDIRECTS_FILE]);
     expect(live.get(CADDY_REDIRECTS_FILE)?.toString("utf8")).toContain("/t1155-old");
-    // Same files as the published build: no new page …
-    expect([...live.keys()].sort()).toEqual([...base.keys()].sort());
+    // Same files as the published build serves (#1271: its internal files
+    // — asset references, parity digests — never reach current/): no new page …
+    const served = [...base.keys()].filter((p) => !BUILD_INTERNAL_FILES.has(p));
+    expect([...live.keys()].sort()).toEqual(served.sort());
     for (const [path, body] of base) {
+      if (BUILD_INTERNAL_FILES.has(path)) continue;
       if (path === homePath || redirectFiles.has(path)) continue;
       expect({ path, same: live.get(path)?.equals(body) }).toEqual({ path, same: true });
     }

@@ -24,9 +24,10 @@ import {
 import { definePlugin, type HeadEntry } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { buildRobotsTxtWithSitemap, runSeoPass } from "@caelo-cms/static-generator";
+import { buildRobotsTxtWithSitemap } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { runSeoPass } from "./fixtures/seo-pass.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 

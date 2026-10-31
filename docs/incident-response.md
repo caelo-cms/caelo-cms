@@ -69,7 +69,7 @@ FROM deploy_runs WHERE phase_timings IS NOT NULL
 ORDER BY started_at DESC LIMIT 5;
 ```
 
-Top-level steps (`prepare`, `generator`, `lock-wait`, `publish`, `parity`, `select-preview`, `finish`) add up to the run. A dotted name breaks down the step it starts with: `generator.compose` / `generator.media` / `generator.write` are the build's passes, `publish.hash` / `publish.upload` the provider upload. A long `lock-wait` means another Stage or Publish live held the staging lease, or (Publish live) a rollback or plugin-data build held the live release.
+Top-level steps (`prepare`, `generator`, `lock-wait`, `publish`, `parity`, `select-preview`, `finish`) add up to the run. A dotted name breaks down the step it starts with: `generator.compose` / `generator.media` / `generator.write` are the build's passes, `publish.populate` / `publish.upload-assets` / `publish.finalize` the provider upload (on Firebase and GCS the pages are uploaded while the generator writes them, so most upload time sits inside `generator`). Each step also carries `peakRssMb` and `cpuMs` (user + system): `cpuMs / ms` is the cores it kept busy (#1271). A long `lock-wait` means another Stage or Publish live held the staging lease, or (Publish live) a rollback or plugin-data build held the live release.
 
 ### Stage / Publish live slow
 
@@ -83,7 +83,7 @@ FROM deploy_runs WHERE phase_timings IS NOT NULL
 ORDER BY started_at DESC LIMIT 5;
 ```
 
-Top-level steps (`prepare`, `generator`, `lock-wait`, `publish`, `parity`, `select-preview`, `finish`) add up to the run. A dotted name breaks down the step it starts with: `generator.compose` / `generator.media` / `generator.write` are the build's passes, `publish.hash` / `publish.upload` the provider upload. A long `lock-wait` means another Stage or Publish live held the staging lease, or (Publish live) a rollback or plugin-data build held the live release.
+Top-level steps (`prepare`, `generator`, `lock-wait`, `publish`, `parity`, `select-preview`, `finish`) add up to the run. A dotted name breaks down the step it starts with: `generator.compose` / `generator.media` / `generator.write` are the build's passes, `publish.populate` / `publish.upload-assets` / `publish.finalize` the provider upload (on Firebase and GCS the pages are uploaded while the generator writes them, so most upload time sits inside `generator`). Each step also carries `peakRssMb` and `cpuMs` (user + system): `cpuMs / ms` is the cores it kept busy (#1271). A long `lock-wait` means another Stage or Publish live held the staging lease, or (Publish live) a rollback or plugin-data build held the live release.
 
 ## §C — AI calls failing or budget hit
 

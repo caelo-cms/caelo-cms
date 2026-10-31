@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { type ExecutionContext, FAVICON_VARIANT } from "@caelo-cms/shared";
+import { digestBytes } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import sharp from "sharp";
@@ -127,6 +128,7 @@ async function origOnlyPng(n: number, width: number): Promise<string> {
         height: width,
         sizeBytes: bytes.byteLength,
         storageKey,
+        digest: await digestBytes(bytes),
       },
     ],
   });

@@ -389,6 +389,7 @@ export async function runImageRequest(args: {
         height: v.height,
         sizeBytes: v.sizeBytes,
         storageKey: v.storageKey,
+        digest: v.digest,
       })),
     });
     if (!upload.ok) throw new Error(`media.upload failed: ${describeError(upload.error)}`);

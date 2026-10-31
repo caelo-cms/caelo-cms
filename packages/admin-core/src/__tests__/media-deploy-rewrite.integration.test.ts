@@ -20,13 +20,11 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-// We import runMediaPass via dynamic require so this test stays in
-// admin-core without a circular workspace dep on static-generator.
-// runMediaPass exists in apps/static-generator/src/media-pass.ts and
-// is independently covered by that package's own test; here we just
-// verify the SAME behaviour against a fresh tmp dir + real tx.
-import { runMediaPass } from "../../../../apps/static-generator/src/media-pass.js";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
+// The media pass is covered by the static generator's own test; here we
+// verify the SAME behaviour against a fresh tmp dir + real tx.
+import { runMediaPass } from "./fixtures/media-pass.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -87,6 +85,7 @@ beforeAll(async () => {
         height: null,
         sizeBytes: 4,
         storageKey: `${SHA}/orig.png`,
+        digest: TEST_MEDIA_DIGEST,
       },
     ],
   });

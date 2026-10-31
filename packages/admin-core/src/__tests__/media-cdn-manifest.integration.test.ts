@@ -20,8 +20,9 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { runMediaPass } from "../../../../apps/static-generator/src/media-pass.js";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
+import { runMediaPass } from "./fixtures/media-pass.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -81,6 +82,7 @@ beforeAll(async () => {
         height: null,
         sizeBytes: 4,
         storageKey: `${SHA}/orig.png`,
+        digest: TEST_MEDIA_DIGEST,
       },
     ],
   });

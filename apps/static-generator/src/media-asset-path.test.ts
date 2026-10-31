@@ -1,23 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { afterAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { isContentHashedPath } from "@caelo-cms/shared";
-import {
-  mediaAssetRelPath,
-  mediaContentHash,
-  readStoredMedia,
-  writePublishedMedia,
-} from "./media-asset-path.js";
+import { mediaAssetRelPath, mediaContentHash } from "./media-asset-path.js";
 
-const root = mkdtempSync(join(tmpdir(), "caelo-media-asset-path-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 describe("published media names (#667)", () => {
-  const hash = mediaContentHash(new Uint8Array([1, 2, 3]));
+  const hash = mediaContentHash(sha256(new Uint8Array([1, 2, 3])));
 
   it("keep the readable slug and add the content hash", () => {
     expect(hash).toMatch(/^[0-9a-f]{16}$/);
@@ -79,34 +70,20 @@ describe("published media names (#667)", () => {
     }
   });
 
-  it("change with the bytes, so replaced media never hides behind a cached URL", async () => {
-    const build = join(root, "build");
-    const a = await writePublishedMedia({
-      buildDir: build,
-      ref: "logo",
-      isSlug: true,
-      variant: "orig",
-      format: "png",
-      bytes: new Uint8Array([1, 2, 3]),
-    });
-    const b = await writePublishedMedia({
-      buildDir: build,
-      ref: "logo",
-      isSlug: true,
-      variant: "orig",
-      format: "png",
-      bytes: new Uint8Array([1, 2, 4]),
-    });
-    expect(a).not.toBe(b);
-    expect(new Uint8Array(await readFile(join(build, a)))).toEqual(new Uint8Array([1, 2, 3]));
+  it("change with the bytes, so replaced media never hides behind a cached URL", () => {
+    const name = (bytes: number[]) =>
+      mediaAssetRelPath({
+        ref: "logo",
+        isSlug: true,
+        variant: "orig",
+        format: "png",
+        contentHash: mediaContentHash(sha256(new Uint8Array(bytes))),
+      });
+    expect(name([1, 2, 3])).not.toBe(name([1, 2, 4]));
+    expect(name([1, 2, 3])).toBe(name([1, 2, 3]));
   });
 
-  it("reads stored files, null when missing, and refuses keys escaping the media root", async () => {
-    const media = join(root, "media");
-    await mkdir(join(media, "abc"), { recursive: true });
-    await writeFile(join(media, "abc", "orig.png"), new Uint8Array([9]));
-    expect(await readStoredMedia(media, "abc/orig.png")).toEqual(new Uint8Array([9]));
-    expect(await readStoredMedia(media, "abc/missing.png")).toBeNull();
-    await expect(readStoredMedia(media, "../outside.png")).rejects.toThrow("escapes mediaRoot");
+  it("take the stored sha256 only (#1271: no read of the file)", () => {
+    expect(() => mediaContentHash("not-a-digest")).toThrow("not a sha256 digest");
   });
 });

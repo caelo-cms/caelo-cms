@@ -28,7 +28,7 @@
  */
 
 import { escapeStyleText, scriptNeedsEncoding } from "@caelo-cms/shared";
-import { transformSync } from "esbuild";
+import { transform } from "esbuild";
 
 /** The composer-owned style elements (see preview-compose.ts). */
 const STYLE_RE =
@@ -43,48 +43,92 @@ export interface MinifiablePage {
 }
 
 /**
+ * Minified bodies already produced, shared by the batches of one build:
+ * the theme and base CSS repeat on every page. Bounded — a site whose
+ * pages each carry distinct module CSS must not grow it with the site.
+ */
+export class MinifyCache {
+  static readonly MAX_ENTRIES = 512;
+  readonly css = new Map<string, Promise<string>>();
+  readonly js = new Map<string, Promise<string>>();
+
+  /** The minified `body`, made once per distinct body while it stays cached. */
+  get(kind: "css" | "js", body: string, make: () => Promise<string>): Promise<string> {
+    const map = kind === "css" ? this.css : this.js;
+    const hit = map.get(body);
+    if (hit !== undefined) return hit;
+    if (map.size >= MinifyCache.MAX_ENTRIES) map.clear();
+    const out = make();
+    map.set(body, out);
+    return out;
+  }
+}
+
+/**
  * Minify every page's composer-owned CSS and JS in place. Identical
  * bodies (the theme and base CSS on every page) are minified once.
+ * #1271 — through esbuild's service, every distinct body of the batch at
+ * once, so the minification runs on all cores while this process waits.
  *
  * Throws when a page's module JS does not parse: the browser would
  * refuse the whole page script too, silently breaking every module's
  * behaviour on that page.
  */
-export function minifyPageAssets(pages: readonly MinifiablePage[]): void {
-  const cssCache = new Map<string, string>();
-  const jsCache = new Map<string, string>();
+export async function minifyPageAssets(
+  pages: readonly MinifiablePage[],
+  cache: MinifyCache = new MinifyCache(),
+): Promise<void> {
+  const css = new Map<string, Promise<string>>();
+  const js = new Map<string, Promise<string>>();
+  for (const page of pages) {
+    for (const m of page.html.matchAll(STYLE_RE)) {
+      const body = m[2] ?? "";
+      if (!css.has(body))
+        css.set(
+          body,
+          cache.get("css", body, () => minifyCss(body)),
+        );
+    }
+    for (const m of page.html.matchAll(SCRIPT_RE)) {
+      const body = m[2] ?? "";
+      if (!js.has(body)) {
+        js.set(
+          body,
+          cache.get("js", body, () => minifyJs(body, page.pageSlug)),
+        );
+      }
+    }
+  }
+  const cssOut = new Map<string, string>();
+  const jsOut = new Map<string, string>();
+  await Promise.all([
+    ...[...css].map(async ([body, out]) => cssOut.set(body, await out)),
+    ...[...js].map(async ([body, out]) => jsOut.set(body, await out)),
+  ]);
   for (const page of pages) {
     page.html = page.html
-      .replace(STYLE_RE, (_m, open: string, body: string, close: string) => {
-        let out = cssCache.get(body);
-        if (out === undefined) {
-          out = minifyCss(body);
-          cssCache.set(body, out);
-        }
-        return `${open}${out}${close}`;
-      })
-      .replace(SCRIPT_RE, (_m, open: string, body: string, close: string) => {
-        let out = jsCache.get(body);
-        if (out === undefined) {
-          out = minifyJs(body, page.pageSlug);
-          jsCache.set(body, out);
-        }
-        return `${open}${out}${close}`;
-      });
+      .replace(
+        STYLE_RE,
+        (_m, open: string, body: string, close: string) => `${open}${cssOut.get(body)}${close}`,
+      )
+      .replace(
+        SCRIPT_RE,
+        (_m, open: string, body: string, close: string) => `${open}${jsOut.get(body)}${close}`,
+      );
   }
 }
 
 /** Minified CSS, still safe inside `<style>`. */
-export function minifyCss(css: string): string {
-  const { code } = transformSync(css, { loader: "css", minify: true, logLevel: "silent" });
+export async function minifyCss(css: string): Promise<string> {
+  const { code } = await transform(css, { loader: "css", minify: true, logLevel: "silent" });
   return escapeStyleText(code.trimEnd());
 }
 
 /** Minified classic-script JS, still safe inside `<script>`. */
-export function minifyJs(js: string, pageSlug: string): string {
+export async function minifyJs(js: string, pageSlug: string): Promise<string> {
   let code: string;
   try {
-    code = transformSync(js, { loader: "js", minify: true, logLevel: "silent" }).code.trimEnd();
+    code = (await transform(js, { loader: "js", minify: true, logLevel: "silent" })).code.trimEnd();
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     throw new Error(

@@ -107,6 +107,17 @@ export interface StaticPublisher {
   readonly servesCurrentDir: boolean;
 
   /**
+   * #1271 — start putting a build into the provider while the generator
+   * writes it: each served file goes to the provider's staging version as it
+   * is written, so no build ever lands on the admin's disk (`/tmp` is memory
+   * on Cloud Run). Present on the uploading publishers (Firebase, GCS);
+   * absent where the serving layer reads the build directory (self-hosted).
+   * The upload is finished by {@link publishStaging} or
+   * {@link publishLiveBuild}, or given up with {@link BuildUpload.abort}.
+   */
+  openBuildUpload?(args: { runId: string; target: DeployTarget }): Promise<BuildUpload>;
+
+  /**
    * Publish the build at `buildDir` so the staged version becomes
    * reachable. For self-hosted this is the generator's own
    * `current/` sync; for cloud this uploads to the staging bucket
@@ -117,6 +128,12 @@ export interface StaticPublisher {
     buildDir: string;
     runId: string;
     target: DeployTarget;
+    /**
+     * #1271 — the upload the generator streamed the build into
+     * ({@link openBuildUpload}); `buildDir` then holds only the build's
+     * description. Omitted: the publisher reads the files from `buildDir`.
+     */
+    upload?: BuildUpload;
   }): Promise<PublishSummary>;
 
   /**
@@ -185,6 +202,8 @@ export interface StaticPublisher {
     buildDir: string;
     runId: string;
     target: DeployTarget;
+    /** #1271 — see {@link StaticPublisher.publishStaging}'s `upload`. */
+    upload?: BuildUpload;
     /** The staged run the build was checked against. */
     sourceRunId: string;
     /**
@@ -315,6 +334,27 @@ export async function loadStaticPublisher(provider?: string): Promise<StaticPubl
         `loadStaticPublisher: unknown CAELO_PROVIDER='${provider}'. Expected one of: self-hosted | gcp | gcp-firebase | aws | azure.`,
       );
   }
+}
+
+/** One served file the generator hands to an upload. */
+export interface BuildUploadFile {
+  /** Build-relative, `/`-separated — the served path. */
+  readonly relPath: string;
+  readonly body: Uint8Array;
+  /** Set when the extension does not say (a bare-slug page). */
+  readonly contentType?: string;
+}
+
+/** A build being put into the provider as it is written (#1271). */
+export interface BuildUpload {
+  /**
+   * Take one served file. Resolves once the provider has it or knows it,
+   * or once it is queued within the upload's bounded batch — never after
+   * holding more than that batch.
+   */
+  put(file: BuildUploadFile): Promise<void>;
+  /** Give the upload up (the build failed); nothing it took is served. */
+  abort(): Promise<void>;
 }
 
 /** Input of {@link StaticPublisher.syncRedirects}. */

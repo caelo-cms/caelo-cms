@@ -1,5 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
+// #1271 — what a build references instead of containing (media, fonts),
+// and the stored digests every provider knows those files by.
+export {
+  ASSET_REFERENCES_FILE,
+  type AssetReference,
+  type AssetReferences,
+  assetSourcePath,
+  BUILD_INTERNAL_FILES,
+  readAssetReferences,
+} from "./asset-references.js";
+
 // #1155 — the marked plugin bake regions a plugin-data build rewrites.
 export {
   type BakeRegion,
@@ -45,9 +56,20 @@ export {
   renderVariants,
   withListOverlays,
 } from "./list-data.js";
+// #1271 — the build's media pass (references by stored digest).
+export { type MediaDelivery, MediaPass } from "./media-pass.js";
 // #802 — the file the designated 404 page ships as (the quality audit
 // loads it there, not at the page's own path).
 export { NOT_FOUND_PAGE_FILE } from "./not-found-page.js";
+export {
+  type BuildManifest,
+  type BuildParity,
+  type ContentNormaliser,
+  hostNormaliser,
+  ParityRecorder,
+  PER_BUILD_FILES,
+  readBuildParity,
+} from "./parity-digest.js";
 export {
   axisSpecHash,
   cachedPinnedFaceSlices,
@@ -55,8 +77,17 @@ export {
   type SliceManifest,
 } from "./pinned-font-delivery.js";
 export {
+  chunkedFileStream,
+  digestBytes,
+  digestFile,
+  digestProfile,
+  digestStream,
+  hostingGzip,
+  type PublishedDigest,
+} from "./published-digest.js";
+export {
   buildRobotsTxtWithSitemap,
   followUpHeadEntries,
+  prepareSeoPass,
   readSeoSettings,
-  runSeoPass,
 } from "./seo-pass.js";

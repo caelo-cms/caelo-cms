@@ -179,6 +179,20 @@ export const mediaUploadOp = defineOperation({
       LIMIT 1
     `)) as unknown as { id: string; slug: string }[];
     if (existing[0]) {
+      // #1271 — the endpoint stored this upload's variants before the
+      // dedupe (same storage keys); the stored digests must describe the
+      // bytes now in the store, which a newer encoder may have changed.
+      for (const v of input.variants) {
+        await tx.execute(sql`
+          UPDATE media_variants
+          SET content_sha256 = ${v.digest.contentSha256},
+              gzip_sha256 = ${v.digest.gzipSha256},
+              gzip_size = ${v.digest.gzipSize},
+              digest_profile = ${v.digest.profile},
+              size_bytes = ${v.sizeBytes}
+          WHERE asset_id = ${existing[0].id}::uuid AND storage_key = ${v.storageKey}
+        `);
+      }
       // Re-uploads of the same content still need an audit trail entry
       // so /settings/audit shows who attempted the upload, even though
       // no new row landed in media_assets.
@@ -245,7 +259,8 @@ export const mediaUploadOp = defineOperation({
     // the variant set is small (<= 5) so the cost is negligible.
     for (const v of input.variants) {
       await tx.execute(sql`
-        INSERT INTO media_variants (asset_id, variant, format, width, height, size_bytes, storage_key)
+        INSERT INTO media_variants (asset_id, variant, format, width, height, size_bytes, storage_key,
+                                    content_sha256, gzip_sha256, gzip_size, digest_profile)
         VALUES (
           ${assetId}::uuid,
           ${v.variant},
@@ -253,7 +268,11 @@ export const mediaUploadOp = defineOperation({
           ${v.width},
           ${v.height},
           ${v.sizeBytes},
-          ${v.storageKey}
+          ${v.storageKey},
+          ${v.digest.contentSha256},
+          ${v.digest.gzipSha256},
+          ${v.digest.gzipSize},
+          ${v.digest.profile}
         )
       `);
     }

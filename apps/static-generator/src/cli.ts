@@ -16,16 +16,22 @@
  *
  *   stdin, first line — the config:
  *     { adminDatabaseUrl, publicDatabaseUrl, target, runId, repoRoot, publishAt,
- *       changedPageIds?, siteBaseUrlOverride?, syncCurrent?, retainBuilds? }
+ *       changedPageIds?, siteBaseUrlOverride?, syncCurrent?, retainBuilds?,
+ *       mediaDelivery? }
  *   stdout — progress and the outcome:
  *     {kind:"progress", pagesDone, pagesTotal}
  *     {kind:"serving"}  the build is being mirrored into current/: a
  *                       SIGTERM from now on is ignored (serving-guard.ts)
- *     {kind:"done", pageCount, fileCount, durationMs, buildDir}
+ *     {kind:"done", pageCount, fileCount, durationMs, buildDir, peakRssMb, …}
  *     {kind:"error", message}
  *   stdout → stdin — #605 plugin calls answered by the admin:
  *     {kind:"plugin-call", id, method, args}
  *     ← {kind:"plugin-result", id, ok:true, value} | {…, ok:false, message}
+ *   stdout → stdin — #1271 with `outputMode: "stream"`, every served file
+ *   goes to the admin's publisher instead of the build directory:
+ *     {kind:"file", id, relPath, body (base64), contentType?}
+ *     ← {kind:"file-ack", id, ok:true} | {…, ok:false, message}
+ *   At most StreamOutput.WINDOW files are unacknowledged at once.
  *
  * The plugin host runs in the admin, not here: every plugin answer the
  * build needs (data lists, head contributions, public URLs, content
@@ -44,7 +50,9 @@ import {
   remoteBuildPluginServices,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
+import { StreamOutput } from "./build-output.js";
 import { type DeployTarget, generateSite } from "./generate.js";
+import type { MediaDelivery } from "./media-pass.js";
 import { installServingGuard } from "./serving-guard.js";
 
 interface CliInput {
@@ -67,6 +75,17 @@ interface CliInput {
   syncCurrent?: boolean;
   /** #1211 — see generateSite's `retainBuilds`. */
   retainBuilds?: number;
+  /** #1271 — see generateSite's `mediaDelivery`. */
+  mediaDelivery?: MediaDelivery;
+  /** #1271 — "stream": hand every served file to the admin (see generateSite's `output`). */
+  outputMode?: "stream";
+}
+
+interface FileAck {
+  kind: "file-ack";
+  id: number;
+  ok: boolean;
+  message?: string;
 }
 
 interface PluginResult {
@@ -90,6 +109,7 @@ async function main(): Promise<void> {
   const lines = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   let config: CliInput | null = null;
+  const stream = new StreamOutput((event) => emit({ ...event }));
   let resolveConfig: (c: CliInput) => void = () => undefined;
   const configReady = new Promise<CliInput>((r) => {
     resolveConfig = r;
@@ -101,7 +121,11 @@ async function main(): Promise<void> {
       resolveConfig(config);
       return;
     }
-    const msg = decodeBuildPayload(line) as PluginResult;
+    const msg = decodeBuildPayload(line) as PluginResult | FileAck;
+    if (msg.kind === "file-ack") {
+      stream.acknowledge(msg.id, msg.ok ? null : (msg.message ?? "the admin refused the file"));
+      return;
+    }
     const waiter = pending.get(msg.id);
     if (!waiter) return;
     pending.delete(msg.id);
@@ -117,6 +141,7 @@ async function main(): Promise<void> {
       w.reject(new Error("the admin closed the plugin channel before answering"));
     }
     pending.clear();
+    stream.close("the admin closed the channel before the build's files were taken");
   });
 
   const input = await configReady;
@@ -155,6 +180,8 @@ async function main(): Promise<void> {
           siteBaseUrlOverride: input.siteBaseUrlOverride,
           syncCurrent: input.syncCurrent,
           retainBuilds: input.retainBuilds,
+          mediaDelivery: input.mediaDelivery,
+          ...(input.outputMode === "stream" ? { output: stream } : {}),
           onProgress: (p) => emit({ kind: "progress", ...p }),
           onServing: () => {
             servingGuard.markServing();

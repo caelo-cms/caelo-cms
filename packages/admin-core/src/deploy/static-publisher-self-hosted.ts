@@ -20,6 +20,12 @@
  * rewrites the redirect files in the target's `current/` directory against
  * the files that directory serves, and the same reload loop picks the
  * snippet up within a few seconds.
+ *
+ * #1271 — a self-hosted build carries its media and fonts as hard links
+ * from the media store and the fonts cache (the generator's `link`
+ * delivery), so promote, rollback and plugin-data builds work on complete
+ * trees as before. The build's internal files (asset references, parity
+ * digests) never reach `current/`.
  */
 
 import { existsSync } from "node:fs";
@@ -37,6 +43,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { CADDY_REDIRECTS_FILE, emitCaddyRedirects, formatRedirectsFile } from "@caelo-cms/shared";
+import { BUILD_INTERNAL_FILES } from "@caelo-cms/static-generator";
 import { planRedirectSync } from "./redirect-sync-plan.js";
 import type {
   PromoteSummary,
@@ -384,6 +391,8 @@ async function syncContentsInto(src: string, dst: string): Promise<void> {
     }
   };
   await collect("");
+  // Not part of the site (see the module comment).
+  for (const name of BUILD_INTERNAL_FILES) srcFiles.delete(name);
   for (const rel of srcFiles) {
     await mkdir(join(dst, rel, ".."), { recursive: true });
     await copyFile(join(src, rel), join(dst, rel));

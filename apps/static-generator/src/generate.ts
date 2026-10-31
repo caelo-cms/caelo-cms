@@ -22,16 +22,23 @@ import { fontReader } from "@caelo-cms/font-service";
  * Composition reuses `composePageWithLayout` from shared, with nested
  * modules rendered by the same recursive renderer as the editor preview,
  * so preview and production produce the same HTML.
+ *
+ * #1271 — memory does not grow with the site. Pages are composed,
+ * rewritten and written {@link PAGE_BATCH} at a time (their placements,
+ * variants and nested modules loaded per batch, page-batch.ts); what a
+ * later step needs from every page is a small record per page. Media and
+ * fonts are never read: the build references them by their stored digests
+ * (asset-references.ts) and the publisher delivers them — self-hosted
+ * hard-links them into the build (`mediaDelivery: "link"`).
  */
 
-import { copyFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { type BuildPluginServices, injectPluginAssets } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   ComposeError,
-  type ComposeField,
   type ComposeFonts,
   type ComposeTheme,
   type ComposeThemeAsset,
@@ -46,6 +53,7 @@ import {
   linkMarkersOf,
   mergeListRenderDeps,
   type PaginationRequest,
+  type PartTiming,
   PhaseTimer,
   type PhaseTiming,
   pagedPath,
@@ -53,16 +61,14 @@ import {
   renderEveryPage,
   runBatched,
   type ThemeDocument,
-  templateFieldsFromJson,
   themeFaviconRendition,
   trimSlashes,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import {
-  applyContentVariants,
-  resolveBuildContentVariants,
-  type VariantComposeModule,
-} from "./content-variants-pass.js";
+import { ASSET_REFERENCES_FILE, serializeAssetReferences } from "./asset-references.js";
+import { type BuildOutput, DiskOutput } from "./build-output.js";
+import type { VariantComposeModule } from "./content-variants-pass.js";
+import { publishFontFiles } from "./font-assets.js";
 import { loadSiteFontUsage } from "./font-usage-sources.js";
 import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { loadBuildLinkIndex } from "./link-index.js";
@@ -74,12 +80,12 @@ import {
   readTargetRenderDeps,
   writeRenderDeps,
 } from "./list-data.js";
-import { readMediaSettings, runMediaPass } from "./media-pass.js";
-import { minifyPageAssets } from "./minify-pass.js";
+import { type MediaDelivery, MediaPass, readMediaSettings } from "./media-pass.js";
+import { MinifyCache, minifyPageAssets } from "./minify-pass.js";
 import {
   assertNoRenderFailures,
-  loadNestedModules,
-  type RenderedPageForGate,
+  type RenderFailure,
+  renderFailuresOf,
 } from "./nested-modules-pass.js";
 import {
   NOT_FOUND_PAGE_FILE,
@@ -87,23 +93,39 @@ import {
   readNotFoundPageId,
 } from "./not-found-page.js";
 import {
+  type LayoutModule,
+  loadBatch,
+  type PageRow,
+  parseModuleFields,
+  resolveDeferredModules,
+} from "./page-batch.js";
+import {
   assertPaginationRenderable,
   followUpCollisionError,
   type TruncatedListReport,
 } from "./pagination-pass.js";
-import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
+import { hostNormaliser, ParityRecorder } from "./parity-digest.js";
+import { BakeStore, type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { rewritePreviewFontUrls } from "./preview-font-urls.js";
-import { writeRedirectFiles } from "./redirects-pass.js";
+import { redirectFiles } from "./redirects-pass.js";
 import {
   buildRobotsTxtWithSitemap,
+  prepareSeoPass,
   readSeoSettings,
   requireSiteLanguage,
-  runSeoPass,
 } from "./seo-pass.js";
 import { syncContents } from "./sync-contents.js";
 
 /** Page files written at once: bounded so a large site cannot exhaust file descriptors. */
 const WRITE_PARALLELISM = 32;
+
+/**
+ * #1271 — pages composed, rewritten and written together. Bounds the HTML
+ * the build holds (a batch's pages) while keeping the per-batch reads and
+ * plugin calls few: 200 pages are a few MB of HTML and one round of
+ * statements and plugin calls each.
+ */
+export const PAGE_BATCH = 200;
 
 export interface DeployTarget {
   readonly id: string;
@@ -145,6 +167,8 @@ export interface GenerateResult {
   readonly phases: readonly PhaseTiming[];
   /** Absolute path to the build dir under builds/<runId>. */
   readonly buildDir: string;
+  /** #1271 — the generator process's peak resident memory over the build, in MiB. */
+  readonly peakRssMb: number;
   /**
    * Epic #724 — internal links whose target page exists but is not
    * published, so this build does not contain it. Per the #724 decision
@@ -176,77 +200,6 @@ function uuidArrayLiteral(ids: ReadonlyArray<string>): string {
     if (!UUID_RE.test(id)) throw new Error(`uuidArrayLiteral: not a UUID: ${id}`);
   }
   return `ARRAY[${ids.map((id) => `'${id}'`).join(",")}]`;
-}
-
-interface PageRow {
-  page_id: string;
-  slug: string;
-  /** The composed public path (pages.current_path, #390). */
-  current_path: string;
-  title: string;
-  status: "draft" | "published";
-  template_html: string;
-  template_css: string;
-  layout_id: string;
-  layout_slug: string;
-  layout_html: string;
-  layout_css: string;
-}
-
-interface ModuleRow {
-  page_id: string;
-  block_name: string;
-  position: number;
-  module_id: string;
-  slug: string;
-  display_name: string;
-  html: string;
-  css: string;
-  js: string;
-  fields: string | null;
-  content_values: string | null;
-  content_instance_id: string;
-  sync_mode: "synced" | "unsynced";
-  /** Set once content variants replaced the instance's values: no stored instance renders. */
-  variant?: true;
-}
-
-/**
- * Parse the jsonb `modules.fields` column as it comes back from
- * `m.fields::text` into the fields the shared template engine renders
- * with (name, kind, default, a `list` field's binding — see
- * `templateFieldsFromJson`). Returns undefined when the column is null /
- * empty / malformed — the caller treats that as "no field-default
- * substitution to do" rather than throwing, so a legacy module with a
- * NULL fields column still ships.
- */
-function parseModuleFields(raw: string | null): ComposeField[] | undefined {
-  if (!raw) return undefined;
-  try {
-    const out = templateFieldsFromJson(JSON.parse(raw));
-    return out.length > 0 ? out : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Parse the jsonb `content_instances.values` column. Per-placement
- * override map keyed by module field name — see
- * `renderModuleFields` in `@caelo-cms/shared/preview-compose` for
- * substitution semantics. Returns undefined on null / malformed /
- * non-object so compose falls back to field defaults.
- */
-function parseContentValues(raw: string | null): Record<string, unknown> | undefined {
-  if (!raw) return undefined;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-    const obj = parsed as Record<string, unknown>;
-    return Object.keys(obj).length > 0 ? obj : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** Optional progress callback so the parent process can show pagesDone/total. */
@@ -365,22 +318,53 @@ export function missingRootPageError(args: {
  * @returns the error message to throw, or null. Pure for tests.
  */
 export function outputPathCollisionError(relPaths: readonly string[]): string | null {
-  const files = new Set(relPaths);
-  const hits = new Set<string>();
-  for (const p of relPaths) {
-    const segs = p.split("/");
+  const registry = new OutputPathRegistry();
+  for (const p of relPaths) registry.add(p);
+  return registry.collisionError();
+}
+
+/**
+ * #1271 — the output paths of a build, checked as they are added (page 1
+ * paths up front, a paginated overview's follow-up paths per batch), so a
+ * file that other pages need as a folder is named before anything is
+ * written below it — without holding every path twice.
+ */
+export class OutputPathRegistry {
+  readonly #files = new Set<string>();
+  readonly #dirs = new Set<string>();
+  readonly #hits = new Set<string>();
+
+  /** Add one build-relative output path. */
+  add(relPath: string): void {
+    const segs = relPath.split("/");
     for (let i = 1; i < segs.length; i += 1) {
       const dir = segs.slice(0, i).join("/");
-      if (files.has(dir)) hits.add(`${dir} (needed as a folder by ${p})`);
+      if (this.#files.has(dir)) this.#hits.add(`${dir} (needed as a folder by ${relPath})`);
+      this.#dirs.add(dir);
     }
+    if (this.#dirs.has(relPath)) {
+      // An earlier path sits below this one: name each such path once.
+      this.#hits.add(`${relPath} (needed as a folder by another page)`);
+    }
+    this.#files.add(relPath);
   }
-  if (hits.size === 0) return null;
-  const listed = [...hits].slice(0, 10).join(", ");
-  return (
-    `static-generator: ${hits.size} page(s) are served as files but other pages sit below their URL: ${listed}. ` +
-    "In the no-extension URL style a page cannot have nested pages or follow-up pages of a paginated list (<path>/page/<n>). " +
-    "Next step: switch the deploy target to the directory URL style (Ops → Deploy), or move the nested pages / remove paginate from that page's list."
-  );
+
+  /** The refusal for the collisions found so far, or null. */
+  collisionError(): string | null {
+    if (this.#hits.size === 0) return null;
+    const listed = [...this.#hits].slice(0, 10).join(", ");
+    return (
+      `static-generator: ${this.#hits.size} page(s) are served as files but other pages sit below their URL: ${listed}. ` +
+      "In the no-extension URL style a page cannot have nested pages or follow-up pages of a paginated list (<path>/page/<n>). " +
+      "Next step: switch the deploy target to the directory URL style (Ops → Deploy), or move the nested pages / remove paginate from that page's list."
+    );
+  }
+
+  /** Throw {@link collisionError} when there is one. */
+  assertNone(): void {
+    const e = this.collisionError();
+    if (e !== null) throw new Error(e);
+  }
 }
 
 /**
@@ -512,9 +496,39 @@ export async function generateSite(args: {
    * `/tmp` (memory on Cloud Run), and pruning would race a parallel build.
    */
   retainBuilds?: number;
+  /**
+   * #1271 — how the build carries the media and fonts it references:
+   * `link` (default) hard-links them into the build directory, which is
+   * then the whole site (self-hosted serves it; tests read it); `reference`
+   * leaves them in their stores and lists them in
+   * `_caelo-asset-references.json` for an uploading publisher (Firebase,
+   * GCS), so not one media byte passes through the build.
+   */
+  mediaDelivery?: MediaDelivery;
+  /**
+   * #1271 — where the served files go. Default: the build directory
+   * ({@link DiskOutput}). An uploading publisher passes the stream to the
+   * admin (`StreamOutput`, cli.ts): every file goes to the provider as it is
+   * written and only the build's description (`BUILD_INTERNAL_FILES`) stays
+   * in the build directory — on Cloud Run that directory is memory.
+   */
+  output?: BuildOutput;
 }): Promise<GenerateResult> {
   const start = Date.now();
-  const timer = new PhaseTimer();
+  const timer = PhaseTimer.withMemory();
+  try {
+    return await buildSite(args, start, timer);
+  } finally {
+    timer.close();
+  }
+}
+
+/** The body of {@link generateSite}. */
+async function buildSite(
+  args: Parameters<typeof generateSite>[0],
+  start: number,
+  timer: PhaseTimer,
+): Promise<GenerateResult> {
   const { tx, target, runId } = args;
   if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
     throw new Error(`static-generator: invalid runId "${runId}"`);
@@ -584,15 +598,13 @@ export async function generateSite(args: {
   // `dev` keeps the no-filter shape because dev is a debugging
   // surface; it's never reachable from the editor's promote flow.
   const statusFilter = target.env === "dev" ? sql.raw("") : sql.raw(" AND p.status = 'published'");
+  // #1271 — one lean row per page; each template's and layout's HTML is
+  // loaded once (below), not repeated in every page's row.
   const pageRows = (await tx.execute(sql`
     SELECT p.id::text AS page_id,
            p.slug, p.current_path, p.title, p.status,
-           t.html AS template_html,
-           t.css  AS template_css,
-           l.id::text AS layout_id,
-           l.slug AS layout_slug,
-           l.html AS layout_html,
-           l.css  AS layout_css
+           t.id::text AS template_id,
+           l.id::text AS layout_id
     FROM pages p
     JOIN templates t ON t.id = p.template_id
     JOIN layouts l   ON l.id = t.layout_id
@@ -653,6 +665,25 @@ export async function generateSite(args: {
     incremental: pagesToBuild !== null,
   });
   if (rootError !== null) throw new Error(rootError);
+  const templates = new Map<string, { html: string; css: string }>();
+  const layouts = new Map<string, { slug: string; html: string; css: string }>();
+  {
+    const templateIds = [...new Set(pageRows.map((p) => p.template_id))];
+    const layoutIds = [...new Set(pageRows.map((p) => p.layout_id))];
+    const ids = (list: string[]) => sql.raw(uuidArrayLiteral(list));
+    if (templateIds.length > 0) {
+      const rows = (await tx.execute(sql`
+        SELECT id::text AS id, html, css FROM templates WHERE id = ANY(${ids(templateIds)}::uuid[])
+      `)) as unknown as { id: string; html: string; css: string }[];
+      for (const r of rows) templates.set(r.id, { html: r.html, css: r.css });
+    }
+    if (layoutIds.length > 0) {
+      const rows = (await tx.execute(sql`
+        SELECT id::text AS id, slug, html, css FROM layouts WHERE id = ANY(${ids(layoutIds)}::uuid[])
+      `)) as unknown as { id: string; slug: string; html: string; css: string }[];
+      for (const r of rows) layouts.set(r.id, { slug: r.slug, html: r.html, css: r.css });
+    }
+  }
   timer.lap("load-pages");
 
   // P6.7.6 — load layout modules once for the whole build, keyed by
@@ -687,21 +718,7 @@ export async function generateSite(args: {
     js: string;
     fields: string | null;
   }[];
-  const layoutModulesByLayout = new Map<
-    string,
-    Map<
-      string,
-      {
-        moduleId: string;
-        slug: string;
-        displayName: string;
-        html: string;
-        css: string;
-        js: string;
-        fields?: ComposeField[];
-      }[]
-    >
-  >();
+  const layoutModulesByLayout = new Map<string, Map<string, LayoutModule[]>>();
   for (const r of layoutModRows) {
     let perLayout = layoutModulesByLayout.get(r.layout_id);
     if (!perLayout) {
@@ -807,13 +824,14 @@ export async function generateSite(args: {
   // deploy reaching this state is stale theme data, not a surprise.
   let themeFonts: ComposeFonts | undefined;
   let themeFontFiles: readonly { cachePath: string; relPath: string }[] = [];
+  const fontsCacheDir = resolve(defaultFontsCacheDir(root));
   if (activeTheme !== undefined) {
     const themeTokens = activeTheme.tokens;
     const resolved = await resolveThemeFonts({
       readFont: fontReader(tx),
       tokens: activeTheme.tokens,
       loadFontUsage: () => loadSiteFontUsage(tx, themeTokens),
-      cacheDir: defaultFontsCacheDir(root),
+      cacheDir: fontsCacheDir,
       publicBasePath: "/_assets/fonts",
       // Pages a plugin assigns another locale still get every slice via
       // unicode-range; only the preload hint follows the site language.
@@ -838,35 +856,57 @@ export async function generateSite(args: {
   let fileCount = 0;
   args.onProgress?.({ pagesDone: 0, pagesTotal: pageRows.length });
 
-  // Compose pages first (in memory), then run the media pass to
-  // rewrite /_caelo/media/... URLs and copy variant bytes into
-  // _assets/, then write the per-page HTML files. Two-pass keeps the
-  // media-pass deduped across pages — every (asset, variant) pair is
-  // copied once even when 50 pages reference it.
-  const composedPages: {
-    html: string;
-    /** Identity for every per-page pass (slugs repeat across parents). */
-    pageId: string;
-    pageSlug: string;
-    pageTitle: string;
-    relPath: string;
-    /** #1142 — the trail the page's breadcrumbs showed, for the BreadcrumbList JSON-LD. */
-    breadcrumbTrail: readonly string[] | null;
-    /** #1257 — page `n` ≥ 2 of a paginated overview, and whether it may be indexed. */
-    followUp?: { page: number; indexable: boolean };
-  }[] = [];
-  // P13 — per-page bake target for the plugin render pass, keyed by page
-  // id: slugs are not unique once pages nest (epic #690).
-  const bakeTargets = new Map<string, BakeTarget>();
-  // Plugin list sources for the whole deploy, resolved in ONE call per
-  // contributing plugin rather than per page. Names declared by
-  // installed-but-inactive plugins come along so a module still
-  // iterating a switched-off plugin's source emits the loud marker here
-  // exactly as it does in the editor preview.
-  const allSources = await args.plugins.resolveListSources(
-    pageRows.map((p) => p.page_id),
-    pageUrlStyle,
+  // #1271 — the build holds no page beyond the batch it is on, and no
+  // media or font byte at all. Pages are composed, rewritten and written
+  // PAGE_BATCH at a time; what a later pass needs from every page (the
+  // sitemap's entries, output paths, render deps, link warnings) is kept
+  // as a small record per page. Media and fonts are referenced by their
+  // stored digests (asset-references.ts): the publisher delivers them.
+  const delivery: MediaDelivery = args.mediaDelivery ?? "link";
+  const output = args.output ?? new DiskOutput(buildDir);
+  if (!output.local && (delivery === "link" || args.syncCurrent !== false)) {
+    throw new Error(
+      'static-generator: a streamed build has no build directory to link media into or to mirror into current/ — pass mediaDelivery "reference" and syncCurrent false',
+    );
+  }
+  const mediaSettings = await readMediaSettings(tx);
+  const mediaRoot = resolve(root, process.env.MEDIA_ROOT_DIR ?? "data/media");
+  const media = new MediaPass({ tx, buildDir, mediaRoot, settings: mediaSettings, delivery });
+  // issue #150 — the resolved woff2 files, as references (or links into the
+  // build) under _assets/fonts/, so the @font-face URLs injected by the
+  // composer resolve on the deployed site.
+  const fontAssets = await publishFontFiles({
+    files: themeFontFiles,
+    fontsCacheDir,
+    buildDir,
+    delivery,
+  });
+  fileCount += fontAssets.length;
+  const shippedFonts = new Set(themeFontFiles.map((f) => f.relPath));
+  // #650 — the parity digests, taken from each file's bytes as it is
+  // written; a Stage with its own staging host also records them with that
+  // host swapped back to the live one (parity-digest.ts).
+  const parity = new ParityRecorder(
+    args.siteBaseUrlOverride
+      ? hostNormaliser(args.siteBaseUrlOverride, storedSeo.siteBaseUrl)
+      : null,
   );
+  // Every served path the build wrote (the redirect plan checks against them).
+  const servedPaths = new Set<string>();
+  const writeBuildFile = async (
+    relPath: string,
+    content: string,
+    contentType?: string,
+  ): Promise<void> => {
+    await output.write({ relPath, content, ...(contentType ? { contentType } : {}) });
+    parity.record(relPath, content);
+    servedPaths.add(relPath);
+  };
+
+  // Plugin list sources are resolved per batch (one call per contributing
+  // plugin and batch). Names declared by installed-but-inactive plugins
+  // come along so a module still iterating a switched-off plugin's source
+  // emits the loud marker here exactly as it does in the editor preview.
   const dormantSources = await args.plugins.dormantListSourceNames();
   // #450 — withheld modules, resolved ONCE for the build. Asking per
   // page would be one plugin round-trip per page for a verdict that is
@@ -874,284 +914,282 @@ export async function generateSite(args: {
   // The gate judges the content this build ships — module code plus
   // every main-line content instance — not a verdict a background scan
   // recorded before the latest edit.
-  const candidateRows = (await tx.execute(sql`
-    SELECT m.id::text AS id, m.html, m.css, m.js, m.fields::text AS fields,
-           COALESCE(
-             json_agg(ci.values) FILTER (WHERE ci.id IS NOT NULL),
-             '[]'::json
-           )::text AS content_values
-    FROM modules m
-      LEFT JOIN content_instances ci
-        ON ci.module_id = m.id AND ci.chat_branch_id IS NULL
-    WHERE m.deleted_at IS NULL
-    GROUP BY m.id
-  `)) as unknown as {
-    id: string;
-    html: string;
-    css: string;
-    js: string;
-    fields: string | null;
-    content_values: string;
-  }[];
-  const deferredModules = Object.fromEntries(
-    await args.plugins.resolveModuleDeferrals(
-      candidateRows.map((r) => ({
-        moduleId: r.id,
-        html: r.html,
-        css: r.css,
-        js: r.js,
-        fields: r.fields ? JSON.parse(r.fields) : [],
-        contentValues: JSON.parse(r.content_values) as unknown[],
-      })),
-    ),
-  );
-  // Page placements for every page up front: the content-variants
-  // composition point (#592) resolves the whole build in one call.
-  const modRowsByPage = new Map<string, ModuleRow[]>();
-  for (const page of pageRows) {
-    const modRows = (await tx.execute(sql`
-      SELECT pm.block_name, pm.position,
-             m.id::text AS module_id,
-             m.slug, m.display_name, m.html, m.css, m.js, m.fields::text AS fields,
-             ci.values::text AS content_values,
-             pm.content_instance_id::text AS content_instance_id,
-             pm.sync_mode
-      FROM page_modules pm
-        JOIN modules m            ON m.id  = pm.module_id
-        -- PR #61 follow-up — every placement carries a
-        -- content_instance_id (page_modules schema, v0.12.0); join
-        -- is INNER because the column is NOT NULL. ci.values fills
-        -- the module's curly-brace placeholders. Without this join
-        -- the static-generator shipped raw placeholder text for
-        -- AI-authored modules whose fields had no default.
-        JOIN content_instances ci ON ci.id = pm.content_instance_id
-      WHERE pm.page_id = ${page.page_id}::uuid
-        AND m.deleted_at IS NULL
-        -- v0.9.0 — main-only.
-        AND m.chat_branch_id IS NULL
-      ORDER BY pm.block_name ASC, pm.position ASC
-    `)) as unknown as ModuleRow[];
-    modRowsByPage.set(page.page_id, modRows);
-  }
+  const deferredModules = await resolveDeferredModules(tx, args.plugins);
   const noLayoutModules = new Map<string, VariantComposeModule[]>();
-  const variants = await resolveBuildContentVariants(
-    tx,
-    args.plugins,
-    pageRows.map((page) => ({
-      pageId: page.page_id,
-      slug: page.slug,
-      layoutId: page.layout_id,
-      layoutBlocks: layoutModulesByLayout.get(page.layout_id) ?? noLayoutModules,
-      pageBlocks: (modRowsByPage.get(page.page_id) ?? []).map((r) => ({
-        blockName: r.block_name,
-        position: r.position,
-        module: {
-          moduleId: r.module_id,
-          slug: r.slug,
-          displayName: r.display_name,
-          html: r.html,
-          css: r.css,
-          js: r.js,
-          fields: parseModuleFields(r.fields),
-          contentValues: parseContentValues(r.content_values),
-        },
-        contentInstanceId: r.content_instance_id,
-        synced: r.sync_mode === "synced",
-      })),
-    })),
-  );
-
-  // Every page's blocks as the composer will receive them (content
-  // variants applied), so the nested-module load below sees exactly the
-  // values that render.
-  const composeInputsByPage = new Map<
-    string,
-    {
-      blocks: ReturnType<typeof groupModulesByBlock>;
-      layoutBlocks: ReturnType<typeof applyContentVariants>["layoutBlocks"];
-    }
-  >();
-  for (const page of pageRows) {
-    const modRows = modRowsByPage.get(page.page_id) ?? [];
-    const applied = applyContentVariants(
-      page.page_id,
-      layoutModulesByLayout.get(page.layout_id) ?? noLayoutModules,
-      modRows,
-      variants.resolutions,
-      variants.overrideModules,
-    );
-    const blocks = groupModulesByBlock(
-      modRows.map((r) => {
-        const values = applied.pageValues.get(r);
-        // Variant content is no stored instance: its local list entries
-        // carry no instance address (`docs/lists.md` §13).
-        return values === undefined
-          ? r
-          : { ...r, content_values: JSON.stringify(values), variant: true as const };
-      }),
-    );
-    composeInputsByPage.set(page.page_id, { blocks, layoutBlocks: applied.layoutBlocks });
-  }
-  // Modules reached only through a module / module-list field (cards in
-  // a grid, plans in a pricing table) have no placement row of their
-  // own; load them so the composer renders them recursively, exactly as
-  // the editor preview does.
-  const nestedModules = await loadNestedModules(
-    tx,
-    [...composeInputsByPage.values()].flatMap((c) =>
-      [...c.blocks, ...c.layoutBlocks].flatMap((b) => b.modules),
-    ),
-    // Modules embedded in shared list entries (a mega menu's teaser).
-    collectListModuleRefs(listData),
-  );
-  const renderedForGate: RenderedPageForGate[] = [];
+  // Modules embedded in shared list entries (a mega menu's teaser): every
+  // batch's nested-module load includes them.
+  const listModuleRefs = collectListModuleRefs(listData);
   const linkIndex = await loadBuildLinkIndex(tx, target.env, pageUrlStyle, args.plugins);
   const listContext = createListRenderContext(listData, { dormantPluginSources: dormantSources });
   const renderDeps = new Map<string, ListRenderDeps>();
   const overlayIssues = [...listContext.overlayIssues];
   const unpublishedLinkTargets: UnpublishedLinkTarget[] = [];
   // #1257 — paginated overviews: their follow-up files, and lists cut at the cap.
-  const paginatedOverviews: { path: string; slug: string }[] = [];
   const followUpOutputPaths = new Map<string, string[]>();
   const truncatedLists: TruncatedListReport[] = [];
+  // Every page path of the build's env, for the follow-up collision check —
+  // read once, when the first paginated overview is met.
+  let allPagePaths: string[] | null = null;
+  const outputPaths = new OutputPathRegistry();
+  const renderFailures: RenderFailure[] = [];
+  const contentTypeOverrides: Record<string, string> = {};
+
+  const seo = await prepareSeoPass({
+    tx,
+    plugins: args.plugins,
+    media,
+    pageIds: pageRows.map((p) => p.page_id),
+    settings: seoSettings,
+    pageUrlStyle,
+    notFoundPageId,
+  });
+  // #449 — plugin client assets: one call per contributing plugin for
+  // the whole build, written under `_caelo/plugin/<slug>/` with the
+  // content hash in the name, then referenced from every page.
+  const clientAssets = await args.plugins.collectBuildAssets(pageRows.map((p) => p.page_id));
+  for (const asset of clientAssets) {
+    await writeBuildFile(asset.relPath, asset.content);
+    fileCount += 1;
+  }
+  const pluginListNames = await args.plugins.declaredListSourceNames();
+  const minifyCache = new MinifyCache();
+  const bakes = new BakeStore();
   timer.lap("load-content");
 
-  for (let i = 0; i < pageRows.length; i++) {
-    const page = pageRows[i];
-    if (!page) continue;
-    const composeInput = composeInputsByPage.get(page.page_id);
-    if (!composeInput) continue;
-    const { blocks, layoutBlocks } = composeInput;
-    // P6.7.6 — composer throws ComposeError on layout misconfiguration
-    // (e.g. layout HTML missing the required `content` slot). Surface
-    // it with the page slug so the deploy operator can locate the
-    // offending row, rather than silently emitting a body-less page.
-    const renderAt = (pagination?: PaginationRequest) => {
-      const linkResolver = linkIndex.forPage(page.page_id);
-      const lists = listContext.forPage(page.page_id, {
-        linkResolver,
-        pluginSources: allSources.get(page.page_id) ?? {},
+  // issue #302 / #1257 — a page file that other pages need as a folder:
+  // named before any page is written (follow-up pages are added per batch).
+  for (const p of pageRows) outputPaths.add(outputPathOf(p));
+  outputPaths.assertNone();
+
+  const parts = new Map<string, PartTiming>();
+  let pagesDone = 0;
+  for (let at = 0; at < pageRows.length; at += PAGE_BATCH) {
+    const batch = pageRows.slice(at, at + PAGE_BATCH);
+    const loaded = await timer.measure(parts, "load-batch", () =>
+      loadBatch({
+        tx,
+        plugins: args.plugins,
+        batch,
+        layoutModulesByLayout,
+        noLayoutModules,
+        listModuleRefs,
         pageUrlStyle,
-        ...(pagination ? { pagination } : {}),
-      });
-      try {
-        const composed = composePageWithLayout({
-          templateHtml: page.template_html,
-          templateCss: page.template_css,
-          blocks,
-          theme: activeTheme,
-          fonts: themeFonts,
-          layoutHtml: page.layout_html,
-          layoutCss: page.layout_css,
-          layoutBlocks,
-          layoutSlug: page.layout_slug,
-          lists,
-          deferredModules,
-          nestedModules,
-          linkResolver,
-        });
-        return { composed, lists, linkResolver };
-      } catch (e) {
-        if (e instanceof ComposeError) {
-          throw new Error(`static-generator: page slug=${page.slug}: ${e.message}`);
-        }
-        throw e;
-      }
-    };
-    // #1257 — a paginated overview renders every page of its sequence:
-    // page 1 at its own path, page n at `<path>/page/<n>/`.
-    const renders = renderEveryPage(renderAt);
-    const pagination = renders[0]?.lists.pagination() ?? null;
-    assertPaginationRenderable(page, pagination, notFoundPageId);
-    if (renders.length > 1) paginatedOverviews.push({ path: page.current_path, slug: page.slug });
-
-    renderDeps.set(page.page_id, mergeListRenderDeps(renders.map((r) => r.lists.deps())));
-    const seenTargets = new Set<string>();
-    renders.forEach(({ composed, lists, linkResolver }, index) => {
-      const n = index + 1;
-      for (const issue of lists.overlayIssues()) {
-        if (
-          !overlayIssues.some((i) => i.address === issue.address && i.variant === issue.variant)
-        ) {
-          overlayIssues.push(issue);
-        }
-      }
-      composedPages.push({
-        html: composed.html,
-        pageId: page.page_id,
-        pageSlug: page.slug,
-        pageTitle: page.title,
-        relPath:
-          n === 1
-            ? outputPathOf(page)
-            : pageOutputPath(pagedPath(page.current_path, n), target.pageUrlStyle),
-        breadcrumbTrail: lists.breadcrumbTrail(),
-        ...(n > 1 && pagination
-          ? { followUp: { page: n, indexable: pagination.followUps === "index" } }
-          : {}),
-      });
-      renderedForGate.push({
-        pageSlug: n === 1 ? page.slug : `${page.slug} (page ${n})`,
-        html: composed.html,
-        moduleFailures: composed.moduleFailures,
-        // #724 — a reference in the layout's own HTML that did not resolve.
-        layoutLinkMarkers: linkMarkersOf(composed.missingSlots),
-      });
-      for (const o of linkResolver.observed) {
-        if (o.resolution.status !== "unpublished") continue;
-        // The page the link renders to — the referenced page, or its
-        // sibling in this page's variant (link-resolve point).
-        const targetPageId = o.resolution.pageId;
-        if (seenTargets.has(targetPageId)) continue;
-        seenTargets.add(targetPageId);
-        unpublishedLinkTargets.push({
-          pageSlug: page.slug,
-          pagePath: page.current_path,
-          targetPageId,
-          targetUrl: o.resolution.url,
-        });
-      }
-    });
-    for (const cut of renders[0]?.lists.truncatedLists() ?? []) {
-      // #1257 — a list cut by the query cap (not a chosen teaser limit).
-      if (cut.limit < LIST_QUERY_MAX_LIMIT) continue;
-      truncatedLists.push({ pageSlug: page.slug, pagePath: page.current_path, ...cut });
-    }
-    if (renders.length > 1) {
-      followUpOutputPaths.set(
-        page.page_id,
-        renders
-          .slice(1)
-          .map((_, i) => pageOutputPath(pagedPath(page.current_path, i + 2), target.pageUrlStyle)),
-      );
-    }
-    // P13 — record per-page bake target for the plugin render pass.
-    bakeTargets.set(page.page_id, {
-      pageId: page.page_id,
-      slug: page.slug,
-    });
-
-    args.onProgress?.({ pagesDone: i + 1, pagesTotal: pageRows.length });
-  }
-
-  // A module whose content could not render (a broken nested ref, a
-  // malformed list item, …) would ship as a silently empty section.
-  // Refuse the build and name every page / module / field instead.
-  assertNoRenderFailures(renderedForGate);
-  // #1257 — a page where an overview puts its follow-up pages.
-  if (paginatedOverviews.length > 0) {
-    const pathRows = (await tx.execute(sql`
-      SELECT p.current_path FROM pages p
-      WHERE p.deleted_at IS NULL AND p.chat_branch_id IS NULL ${statusFilter}
-    `)) as unknown as { current_path: string }[];
-    const collision = followUpCollisionError(
-      paginatedOverviews,
-      pathRows.map((r) => r.current_path),
+      }),
     );
-    if (collision !== null) throw new Error(collision);
+    const pages: BuiltPage[] = [];
+    const bakeTargets = new Map<string, BakeTarget>();
+    const paginatedOverviews: { path: string; slug: string }[] = [];
+    await timer.measure(parts, "compose", () => {
+      for (const page of batch) {
+        const composeInput = loaded.composeInputs.get(page.page_id);
+        if (!composeInput) continue;
+        const { blocks, layoutBlocks } = composeInput;
+        const template = templates.get(page.template_id);
+        const layout = layouts.get(page.layout_id);
+        if (!template || !layout) {
+          throw new Error(
+            `static-generator: page slug=${page.slug}: its template or layout was not loaded`,
+          );
+        }
+        // P6.7.6 — composer throws ComposeError on layout misconfiguration
+        // (e.g. layout HTML missing the required `content` slot). Surface
+        // it with the page slug so the deploy operator can locate the
+        // offending row, rather than silently emitting a body-less page.
+        const renderAt = (pagination?: PaginationRequest) => {
+          const linkResolver = linkIndex.forPage(page.page_id);
+          const lists = listContext.forPage(page.page_id, {
+            linkResolver,
+            pluginSources: loaded.sources.get(page.page_id) ?? {},
+            pageUrlStyle,
+            ...(pagination ? { pagination } : {}),
+          });
+          try {
+            const composed = composePageWithLayout({
+              templateHtml: template.html,
+              templateCss: template.css,
+              blocks,
+              theme: activeTheme,
+              fonts: themeFonts,
+              layoutHtml: layout.html,
+              layoutCss: layout.css,
+              layoutBlocks,
+              layoutSlug: layout.slug,
+              lists,
+              deferredModules,
+              nestedModules: loaded.nestedModules,
+              linkResolver,
+            });
+            return { composed, lists, linkResolver };
+          } catch (e) {
+            if (e instanceof ComposeError) {
+              throw new Error(`static-generator: page slug=${page.slug}: ${e.message}`);
+            }
+            throw e;
+          }
+        };
+        // #1257 — a paginated overview renders every page of its sequence:
+        // page 1 at its own path, page n at `<path>/page/<n>/`.
+        const renders = renderEveryPage(renderAt);
+        const pagination = renders[0]?.lists.pagination() ?? null;
+        assertPaginationRenderable(page, pagination, notFoundPageId);
+        if (renders.length > 1)
+          paginatedOverviews.push({ path: page.current_path, slug: page.slug });
+
+        renderDeps.set(page.page_id, mergeListRenderDeps(renders.map((r) => r.lists.deps())));
+        const seenTargets = new Set<string>();
+        renders.forEach(({ composed, lists, linkResolver }, index) => {
+          const n = index + 1;
+          for (const issue of lists.overlayIssues()) {
+            if (
+              !overlayIssues.some((i) => i.address === issue.address && i.variant === issue.variant)
+            ) {
+              overlayIssues.push(issue);
+            }
+          }
+          pages.push({
+            html: composed.html,
+            pageId: page.page_id,
+            pageSlug: page.slug,
+            pageTitle: page.title,
+            relPath:
+              n === 1
+                ? outputPathOf(page)
+                : pageOutputPath(pagedPath(page.current_path, n), target.pageUrlStyle),
+            breadcrumbTrail: lists.breadcrumbTrail(),
+            ...(n > 1 && pagination
+              ? { followUp: { page: n, indexable: pagination.followUps === "index" } }
+              : {}),
+          });
+          // A module whose content could not render (a broken nested ref, a
+          // malformed list item, …) would ship as a silently empty section.
+          // Collected for every page of the build, then refused with all of
+          // them named (assertNoRenderFailures).
+          renderFailures.push(
+            ...renderFailuresOf({
+              pageSlug: n === 1 ? page.slug : `${page.slug} (page ${n})`,
+              html: composed.html,
+              moduleFailures: composed.moduleFailures,
+              // #724 — a reference in the layout's own HTML that did not resolve.
+              layoutLinkMarkers: linkMarkersOf(composed.missingSlots),
+            }),
+          );
+          for (const o of linkResolver.observed) {
+            if (o.resolution.status !== "unpublished") continue;
+            // The page the link renders to — the referenced page, or its
+            // sibling in this page's variant (link-resolve point).
+            const targetPageId = o.resolution.pageId;
+            if (seenTargets.has(targetPageId)) continue;
+            seenTargets.add(targetPageId);
+            unpublishedLinkTargets.push({
+              pageSlug: page.slug,
+              pagePath: page.current_path,
+              targetPageId,
+              targetUrl: o.resolution.url,
+            });
+          }
+        });
+        for (const cut of renders[0]?.lists.truncatedLists() ?? []) {
+          // #1257 — a list cut by the query cap (not a chosen teaser limit).
+          if (cut.limit < LIST_QUERY_MAX_LIMIT) continue;
+          truncatedLists.push({ pageSlug: page.slug, pagePath: page.current_path, ...cut });
+        }
+        if (renders.length > 1) {
+          followUpOutputPaths.set(
+            page.page_id,
+            renders
+              .slice(1)
+              .map((_, i) =>
+                pageOutputPath(pagedPath(page.current_path, i + 2), target.pageUrlStyle),
+              ),
+          );
+        }
+        // P13 — record per-page bake target for the plugin render pass.
+        bakeTargets.set(page.page_id, { pageId: page.page_id, slug: page.slug });
+      }
+    });
+    pagesDone += batch.length;
+    // A render failure anywhere fails the build: the remaining batches are
+    // still composed, so the error names every failure, but nothing more
+    // is written.
+    if (renderFailures.length > 0) {
+      args.onProgress?.({ pagesDone, pagesTotal: pageRows.length });
+      continue;
+    }
+    // #1257 — a page where an overview puts its follow-up pages.
+    if (paginatedOverviews.length > 0) {
+      allPagePaths ??= await loadAllPagePaths(tx, statusFilter);
+      const collision = followUpCollisionError(paginatedOverviews, allPagePaths);
+      if (collision !== null) throw new Error(collision);
+      for (const p of pages) if (p.followUp) outputPaths.add(p.relPath);
+      outputPaths.assertNone();
+    }
+
+    await timer.measure(parts, "media", async () => {
+      // A module may carry the editor preview's font URL (/_caelo/fonts/...),
+      // which only the admin serves: point it at the shipped file, or fail.
+      rewritePreviewFontUrls(pages, shippedFonts);
+      // P7 — swap /_caelo/media/... URLs for the content-hashed /_assets/...
+      // paths of the stored files (#667, #1271: by stored digest, no read).
+      await media.rewritePages(pages);
+    });
+    // P8 — SEO: per-page <head> meta + canonical + JSON-LD (env-independent
+    // so promote can ship a staging build verbatim; staging's noindex lives
+    // in robots.txt + the X-Robots-Tag header — see seo-pass.ts).
+    await timer.measure(parts, "seo", () => seo.apply(pages));
+    // P13 — plugin render pass: each active Tier-1 plugin's `staticRender`
+    // spliced in at its placeholder; cache hits via static_bakes skip it.
+    await timer.measure(parts, "plugin-render", () =>
+      runPluginRenderPass({
+        tx,
+        plugins: args.plugins,
+        pages,
+        bakeTargets,
+        pageUrlStyle,
+        bakes,
+      }),
+    );
+    await timer.measure(parts, "plugin-assets", () => {
+      // Runs AFTER the plugin render pass so a runtime that hydrates baked
+      // markup is guaranteed to find it already in the document.
+      for (const p of pages) p.html = injectPluginAssets(p.html, clientAssets, "linked");
+      // #605 — a plugin list-source section that survived composition means
+      // the page would ship raw `{{#source}}` markers to visitors.
+      assertNoPluginMarkers(pages, pluginListNames);
+    });
+    // issue #158 — minify the composer's inline CSS/JS last, after every
+    // pass that still rewrites inside them (media URLs, plugin assets).
+    // esbuild's service minifies in parallel across the cores.
+    await timer.measure(parts, "minify", () => minifyPageAssets(pages, minifyCache));
+    await timer.measure(parts, "write", async () => {
+      // v0.2.85 — per-key Content-Type sidecar: bare-slug pages
+      // ('no-extension') cannot be typed from the extension.
+      for (const p of pages) {
+        if (target.pageUrlStyle === "no-extension" && !p.relPath.endsWith(".html")) {
+          contentTypeOverrides[p.relPath] = "text/html; charset=utf-8";
+        }
+      }
+      // #1003 — the files in parallel batches: written one at a time this
+      // was seconds on a few thousand pages.
+      // #1271 — on an uploading publisher each file goes to the provider
+      // as it is written (the stream output); WRITE_PARALLELISM files at once.
+      await runBatched(pages, WRITE_PARALLELISM, (p) =>
+        writeBuildFile(p.relPath, p.html, contentTypeOverrides[p.relPath]),
+      );
+    });
+    fileCount += pages.length;
+    args.onProgress?.({ pagesDone, pagesTotal: pageRows.length });
+    // #1271 — a full collection after each batch. What the batch held is
+    // garbage now, but the engine grows its heap with the allocation rate,
+    // so without this the resident peak grew with the site although the
+    // live heap did not (1k → 10k pages: 189 → 381 MB; with it 129 → 170 MB).
+    // It costs ~10 ms a batch, run on every core by the collector.
+    await timer.measure(parts, "gc", () => Bun.gc(true));
   }
-  const fileCollision = outputPathCollisionError(composedPages.map((p) => p.relPath));
-  if (fileCollision !== null) throw new Error(fileCollision);
+  timer.lapParts(parts, "batches");
+  // P13 — every fresh plugin bake of the build, upserted in one order.
+  await bakes.flush(tx);
+
+  assertNoRenderFailures(renderFailures);
   // A `list-resolve` overlay entry the resolver refused (unknown address,
   // structural change) is the plugin's fault, not the site's: the stored
   // value rendered instead, and the plugin's error channel says so
@@ -1164,145 +1202,17 @@ export async function generateSite(args: {
   if (overlayIssues.length > 0 && listData.overlaySources) {
     await args.plugins.reportListOverlayIssues(listData.overlaySources, overlayIssues);
   }
-  timer.lap("compose");
 
-  // P7 — media pass. Mutates each composedPages[i].html in place to
-  // swap /_caelo/media/... URLs for /_assets/...; copies variant bytes
-  // into the slug-based `_assets/` layout under content-hashed names
-  // (`_assets/<slug>.<hash>.<ext>` for orig, `_assets/<slug>/<variant>.<hash>.<ext>`
-  // for named variants, legacy id refs `_assets/<id>/<variant>.<hash>.<ext>`,
-  // #667 — see media-asset-path.ts); emits the CDN manifest (always, even
-  // when CDN copy is off — manifest is empty then). No-op when the build
-  // references no media at all.
-  // issue #150 — copy the resolved woff2 files into the build so the
-  // @font-face URLs injected by the composer resolve on the deployed
-  // site. Resolution happened before the compose loop (the CSS is part
-  // of every page); the byte copy belongs here with the other output
-  // passes.
-  for (const f of themeFontFiles) {
-    const target = join(buildDir, "_assets", "fonts", f.relPath);
-    await mkdir(dirname(target), { recursive: true });
-    await copyFile(f.cachePath, target);
-    fileCount += 1;
-  }
-  // A module may carry the editor preview's font URL (/_caelo/fonts/...),
-  // which only the admin serves: point it at the copy above, or fail.
-  rewritePreviewFontUrls(composedPages, new Set(themeFontFiles.map((f) => f.relPath)));
-
-  const mediaSettings = await readMediaSettings(tx);
-  const mediaRoot = resolve(root, process.env.MEDIA_ROOT_DIR ?? "data/media");
-  await runMediaPass({
-    tx,
-    buildDir,
-    pages: composedPages,
-    mediaRoot,
-    settings: mediaSettings,
-  });
-  // cdn_manifest.json is always written by runMediaPass.
+  const sitemapEmitted = await seo.writeSitemap(writeBuildFile);
+  if (sitemapEmitted) fileCount += 1;
+  // cdn_manifest.json is always written.
+  await media.finish(writeBuildFile);
   fileCount += 1;
+  timer.lap("finish-pages");
 
-  // P8 — SEO pass. Injects per-page <head> meta + canonical + JSON-LD
-  // and emits sitemap.xml. Env-independent so promote can ship a staging
-  // build verbatim; staging's noindex lives in robots.txt + the
-  // X-Robots-Tag header (see seo-pass.ts header).
-  // Mutates each composedPages[i].html in place, same pattern as
-  // runMediaPass.
-  timer.lap("media");
-  const seoResult = await runSeoPass({
-    tx,
-    plugins: args.plugins,
-    buildDir,
-    mediaRoot,
-    pages: composedPages,
-    settings: seoSettings,
-    pageUrlStyle,
-    notFoundPageId,
-  });
-  if (seoResult.sitemapEmitted) fileCount += 1;
-  timer.lap("seo");
-
-  // P13 — plugin render pass: per page call each active
-  // Tier-1 plugin's `staticRender(...)`, splice into the page body at
-  // the matching `<div data-caelo-plugin="<slug>" ...>` placeholder.
-  // Cache hits via static_bakes.cache_key skip the render entirely.
-  await runPluginRenderPass({
-    tx,
-    plugins: args.plugins,
-    pages: composedPages,
-    bakeTargets,
-    pageUrlStyle,
-  });
-
-  timer.lap("plugin-render");
-  // #449 — plugin client assets: one call per contributing plugin for
-  // the whole build, written under `_caelo/plugin/<slug>/` with the
-  // content hash in the name, then referenced from every page. Runs
-  // AFTER the plugin render pass so a runtime that hydrates baked
-  // markup is guaranteed to find it already in the document.
-  const clientAssets = await args.plugins.collectBuildAssets(pageRows.map((p) => p.page_id));
-  for (const asset of clientAssets) {
-    const assetPath = resolve(buildDir, asset.relPath);
-    if (!assetPath.startsWith(`${buildDir}/`)) {
-      throw new Error(`static-generator: asset path "${asset.relPath}" escapes build directory`);
-    }
-    await mkdir(dirname(assetPath), { recursive: true });
-    await writeFile(assetPath, asset.content, "utf8");
-    fileCount += 1;
-  }
-  for (const p of composedPages) {
-    p.html = injectPluginAssets(p.html, clientAssets, "linked");
-  }
-
-  // #605 — a plugin list-source section that survived composition means
-  // the page would ship raw `{{#source}}` markers to visitors (the plugin
-  // is off, or its answer never reached the build). Refuse the build and
-  // name them.
-  assertNoPluginMarkers(composedPages, await args.plugins.declaredListSourceNames());
-
-  // issue #158 — minify the composer's inline CSS/JS last, after every
-  // pass that still rewrites inside them (media URLs, plugin assets).
-  timer.lap("plugin-assets");
-  minifyPageAssets(composedPages);
-  timer.lap("minify");
-
-  // v0.2.85 — per-key Content-Type sidecar. When pageUrlStyle is
-  // 'no-extension' the page files are bare slugs (no `.html`), so
-  // the GCS publisher's extension-based contentTypeFor() lookup
-  // would default to application/octet-stream. The sidecar declares
-  // `<rel-path>` → `text/html; charset=utf-8` so the publisher
-  // gets the right Content-Type without smuggling rules. Only
-  // populated for files whose Content-Type can't be inferred from
-  // the extension (no extension AND it's a page).
-  const contentTypeOverrides: Record<string, string> = {};
-  const pageDirs = new Set<string>();
-  for (const p of composedPages) {
-    const filePath = resolve(buildDir, p.relPath);
-    if (!filePath.startsWith(`${buildDir}/`)) {
-      throw new Error(`static-generator: output path "${p.relPath}" escapes build directory`);
-    }
-    pageDirs.add(dirname(filePath));
-    if (target.pageUrlStyle === "no-extension" && !p.relPath.endsWith(".html")) {
-      contentTypeOverrides[p.relPath] = "text/html; charset=utf-8";
-    }
-  }
-  // #1003 — one mkdir per directory, then the files in parallel batches:
-  // written one at a time this was seconds on a few thousand pages.
-  await runBatched([...pageDirs], WRITE_PARALLELISM, async (dir) => {
-    await mkdir(dir, { recursive: true });
-  });
-  await runBatched(composedPages, WRITE_PARALLELISM, async (p) => {
-    await writeFile(resolve(buildDir, p.relPath), p.html, "utf8");
-  });
-  fileCount += composedPages.length;
-
-  await writeFile(
-    join(buildDir, "robots.txt"),
-    buildRobotsTxtWithSitemap(
-      target.robotsDefault,
-      seoSettings.siteBaseUrl,
-      seoResult.sitemapEmitted,
-    ),
-    "utf8",
+  await writeBuildFile(
+    "robots.txt",
+    buildRobotsTxtWithSitemap(target.robotsDefault, seoSettings.siteBaseUrl, sitemapEmitted),
   );
   fileCount += 1;
 
@@ -1335,16 +1245,12 @@ export async function generateSite(args: {
     // Promote guard — see manifestBakesEnvNoindex.
     envNoindexInHtml: false,
   };
-  await writeFile(
-    join(buildDir, "routing-manifest.json"),
-    JSON.stringify(manifest, null, 2),
-    "utf8",
-  );
+  await writeBuildFile("routing-manifest.json", JSON.stringify(manifest, null, 2));
   fileCount += 1;
   // Epic #1107 — what every page's render read, for the next incremental build.
   await writeRenderDeps({
     outDir,
-    buildDir,
+    write: writeBuildFile,
     previous: previousDeps,
     rebuilt: renderDeps,
     data: listData,
@@ -1376,24 +1282,34 @@ export async function generateSite(args: {
   // pageUrlStyle indirectly. Skipped from `_redirects` collisions
   // because the sidecar key is `_content-types.json` (extension
   // makes the inference unambiguous + the file itself is JSON).
-  await writeFile(
-    join(buildDir, "_content-types.json"),
-    JSON.stringify(contentTypeOverrides, null, 2),
-    "utf8",
-  );
+  await writeBuildFile("_content-types.json", JSON.stringify(contentTypeOverrides, null, 2));
   fileCount += 1;
 
-  fileCount += await writeRedirectFiles({
-    buildDir,
+  const assets = [...media.assets(), ...fontAssets];
+  for (const file of redirectFiles({
     rows: redirectRows.map((r) => ({
       fromPath: r.from_path,
       toPath: r.to_path,
       statusCode: r.status_code,
     })),
     pageUrlStyle,
-  });
+    // Every file the build serves: what it wrote and what it references.
+    servedFiles: new Set([...servedPaths, ...assets.map((a) => a.path)]),
+  })) {
+    await writeBuildFile(file.name, file.content);
+    fileCount += 1;
+  }
 
-  timer.lap("write");
+  // #1271 — the build's description, kept in the build directory on every
+  // provider: what the publisher delivers from the stores, and the parity
+  // digests of every served file (each digested as it was written).
+  await writeFile(
+    join(buildDir, ASSET_REFERENCES_FILE),
+    serializeAssetReferences({ version: 1, mediaRoot, fontsCacheDir, assets }),
+    "utf8",
+  );
+  await parity.finish({ buildDir, assets });
+  timer.lap("manifests");
   // Atomic-ish swap. `current/` is a regular directory (not a symlink)
   // because Docker Desktop / VirtioFS bind mounts on macOS don't follow
   // symlinks reliably across the host/container boundary. We sync the
@@ -1425,9 +1341,37 @@ export async function generateSite(args: {
     durationMs: Date.now() - start,
     phases: timer.phases(),
     buildDir,
+    // maxRSS is in KiB on Linux and macOS alike under Bun.
+    peakRssMb: Math.round(process.resourceUsage().maxRSS / 1024),
     unpublishedLinkTargets,
     truncatedLists,
   };
+}
+
+/** #1257 — every page path of the build's env (the follow-up collision check). */
+async function loadAllPagePaths(
+  tx: TransactionRunner,
+  statusFilter: ReturnType<typeof sql.raw>,
+): Promise<string[]> {
+  const rows = (await tx.execute(sql`
+    SELECT p.current_path FROM pages p
+    WHERE p.deleted_at IS NULL AND p.chat_branch_id IS NULL ${statusFilter}
+  `)) as unknown as { current_path: string }[];
+  return rows.map((r) => r.current_path);
+}
+
+/** One rendered page file of a batch, as every per-page pass rewrites it. */
+interface BuiltPage {
+  html: string;
+  /** Identity for every per-page pass (slugs repeat across parents). */
+  pageId: string;
+  pageSlug: string;
+  pageTitle: string;
+  relPath: string;
+  /** #1142 — the trail the page's breadcrumbs showed, for the BreadcrumbList JSON-LD. */
+  breadcrumbTrail: readonly string[] | null;
+  /** #1257 — page `n` ≥ 2 of a paginated overview, and whether it may be indexed. */
+  followUp?: { page: number; indexable: boolean };
 }
 
 /** Builds a self-hosted target keeps under `builds/` for rollback. */
@@ -1450,52 +1394,6 @@ async function pruneOldBuilds(buildsDir: string, keepRunId: string, retain: numb
   } catch {
     // Builds dir doesn't exist yet, nothing to prune.
   }
-}
-
-function groupModulesByBlock(rows: readonly ModuleRow[]): {
-  blockName: string;
-  modules: {
-    moduleId: string;
-    slug: string;
-    displayName: string;
-    html: string;
-    css: string;
-    js: string;
-    fields?: ComposeField[];
-    contentValues?: Record<string, unknown>;
-    contentInstanceId?: string;
-  }[];
-}[] {
-  const grouped = new Map<
-    string,
-    {
-      moduleId: string;
-      slug: string;
-      displayName: string;
-      html: string;
-      css: string;
-      js: string;
-      fields?: ComposeField[];
-      contentValues?: Record<string, unknown>;
-      contentInstanceId?: string;
-    }[]
-  >();
-  for (const r of rows) {
-    const arr = grouped.get(r.block_name) ?? [];
-    arr.push({
-      moduleId: r.module_id,
-      slug: r.slug,
-      displayName: r.display_name,
-      html: r.html,
-      css: r.css,
-      js: r.js,
-      fields: parseModuleFields(r.fields),
-      contentValues: parseContentValues(r.content_values),
-      ...(r.variant ? {} : { contentInstanceId: r.content_instance_id }),
-    });
-    grouped.set(r.block_name, arr);
-  }
-  return [...grouped.entries()].map(([blockName, modules]) => ({ blockName, modules }));
 }
 
 /**

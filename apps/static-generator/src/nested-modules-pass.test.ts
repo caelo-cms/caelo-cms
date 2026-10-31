@@ -2,7 +2,16 @@
 
 import { describe, expect, it } from "bun:test";
 import type { ComposeModuleFailure } from "@caelo-cms/shared";
-import { assertNoRenderFailures } from "./nested-modules-pass.js";
+import {
+  assertNoRenderFailures,
+  type RenderedPageForGate,
+  renderFailuresOf,
+} from "./nested-modules-pass.js";
+
+/** The gate as the build runs it: failures taken per page, refused together (#1271). */
+function gate(pages: RenderedPageForGate[]): void {
+  assertNoRenderFailures(pages.flatMap(renderFailuresOf));
+}
 
 function failure(reason: string, field = ""): ComposeModuleFailure {
   return {
@@ -14,16 +23,14 @@ function failure(reason: string, field = ""): ComposeModuleFailure {
   };
 }
 
-describe("assertNoRenderFailures", () => {
+describe("assertNoRenderFailures / renderFailuresOf", () => {
   it("passes clean pages", () => {
-    expect(() =>
-      assertNoRenderFailures([{ pageSlug: "home", html: "<p>ok</p>", moduleFailures: [] }]),
-    ).not.toThrow();
+    expect(() => gate([{ pageSlug: "home", html: "<p>ok</p>", moduleFailures: [] }])).not.toThrow();
   });
 
   it("refuses a failure marker and names page, module and field", () => {
     expect(() =>
-      assertNoRenderFailures([
+      gate([
         {
           pageSlug: "pricing",
           html: "<!-- caelo:missing reason=content-instance-missing x -->",
@@ -37,7 +44,7 @@ describe("assertNoRenderFailures", () => {
 
   it("refuses a broken reference in the layout's own HTML", () => {
     expect(() =>
-      assertNoRenderFailures([
+      gate([
         {
           pageSlug: "home",
           html: "<p>ok</p>",
@@ -52,7 +59,7 @@ describe("assertNoRenderFailures", () => {
 
   it("refuses the recursive-renderer escape hatch", () => {
     expect(() =>
-      assertNoRenderFailures([
+      gate([
         {
           pageSlug: "home",
           html: "<!-- caelo:module-list cards needs recursive renderer (compose path) -->",
@@ -64,7 +71,7 @@ describe("assertNoRenderFailures", () => {
 
   it("leaves loud-raw placeholders to the editor surface (visible, and can be real copy)", () => {
     expect(() =>
-      assertNoRenderFailures([
+      gate([
         {
           pageSlug: "docs",
           html: "<code>{{theme_logo_url}}</code>",
@@ -79,7 +86,7 @@ describe("assertNoRenderFailures", () => {
 
   it("catches a marker comment that bypassed the structured channel", () => {
     expect(() =>
-      assertNoRenderFailures([
+      gate([
         {
           pageSlug: "faq",
           html: "<section><!-- caelo:missing reason=module-list-malformed items[0] --></section>",
