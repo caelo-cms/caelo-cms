@@ -1,41 +1,34 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describeError, providerHasStagingDomain, stageChatSessions } from "@caelo-cms/admin-core";
+import { describeError, stageChatSessions } from "@caelo-cms/admin-core";
 import { loadedPlugins } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error, fail, redirect } from "@sveltejs/kit";
 import { groupAgentChats } from "#lib/agent-chat-groups.js";
-import type { ChatMessage, ChatModule, ChatSession } from "#lib/components/chat/types.js";
+import type { ChatMessage, ChatSession } from "#lib/components/chat/types.js";
 import {
   DEFAULT_LAYOUT,
   type OverlayLayout,
 } from "#lib/components/edit/use-overlay-layout.svelte.js";
 import { loadTranscriptPage } from "#lib/server/chat-transcript.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
+import {
+  activePageScope,
+  type EditPage,
+  pickActivePage,
+  toEditPage,
+} from "#lib/server/edit-active-page.js";
+import { streamEditorParts } from "#lib/server/edit-streamed.js";
 import { requirePermission, requireUser } from "#lib/server/guards.js";
-import { loadLiveLinks } from "#lib/server/live-links.js";
 import { opErrorMessage } from "#lib/server/op-error.js";
-import { loadPageSeoInfo } from "#lib/server/page-seo-info.js";
 import { loadEditorToolbar } from "#lib/server/plugin-toolbar.js";
 import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
 import { publishChangedPages } from "#lib/server/publish-changed-pages.js";
 import { getQueryContext } from "#lib/server/query.js";
+import { ServerTiming } from "#lib/server/server-timing.js";
 import { describeStagedBuild } from "#lib/server/stage-result.js";
-import { openStagingHref } from "#lib/server/staging-link.js";
 import type { Actions, PageServerLoad } from "./$types";
-
-interface PageRow {
-  id: string;
-  slug: string;
-  title: string;
-  status: "draft" | "published";
-  // #390 — the materialized URL-composition result. `/edit` addresses
-  // pages by composed path (a URL plugin can prefix it, e.g.
-  // `international-site` puts a variant at `/de/<slug>`), so the slug
-  // alone no longer identifies where a page lives.
-  currentPath: string;
-}
 
 /**
  * issue #187 — the server-authored first assistant turn on untouched
@@ -121,42 +114,67 @@ async function resumeOpenPageChat(
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export const load: PageServerLoad = async ({ locals, url }) => {
+/** Runs one first-paint op; a refusal fails the load with the op's reason (CLAUDE.md §2). */
+async function readOrFail<T>(ctx: ExecutionContext, op: string, input: unknown): Promise<T> {
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, ctx, op, input);
+  if (!r.ok) {
+    console.error(`[edit] ${op} failed`, { error: r.error });
+    throw error(500, `Live Edit could not open: ${opErrorMessage(r.error, `${op} failed`)}.`);
+  }
+  return r.value as T;
+}
+
+/**
+ * The page to open as `ctx` sees it, from the `?page=`/home lookup; only a
+ * site without either reads its whole page list (to open the first page).
+ * `all` is that list when it was read.
+ */
+async function resolveActivePage(
+  ctx: ExecutionContext,
+  queryPage: string | null,
+): Promise<{ page: EditPage | null; candidates: EditPage[]; all: EditPage[] | null }> {
+  const scoped = await readOrFail<{ pages: EditPage[] }>(
+    ctx,
+    "pages.list",
+    activePageScope(queryPage),
+  );
+  const candidates = scoped.pages.map(toEditPage);
+  const page = pickActivePage(candidates, queryPage);
+  if (page) return { page, candidates, all: null };
+  const all = (await readOrFail<{ pages: EditPage[] }>(ctx, "pages.list", {})).pages.map(
+    toEditPage,
+  );
+  return { page: pickActivePage(all, queryPage), candidates, all };
+}
+
+/**
+ * #1268 — first paint awaits only what it shows: the page, the chat and the
+ * chat's newest transcript page. Everything else streams in
+ * (`streamEditorParts`), so a slow read delays its own spot, not the editor.
+ * The awaited steps' durations go out as `Server-Timing`.
+ */
+export const load: PageServerLoad = async ({ locals, url, setHeaders }) => {
   // Login lands everyone here (the chat IS the product). The rare
   // ops-only role without content.write gets the dashboard instead of
   // a 403 wall — /edit is a front door, not a fence.
   const editUser = requireUser(locals);
   if (!editUser.permissions.has("content.write")) throw redirect(303, "/");
   const { adapter, registry } = getQueryContext();
-
-  // Load pages + the user's overlay layout in parallel. We can't load
-  // chat sessions yet because the filter depends on the active page.
-  const [pagesR, prefsR] = await Promise.all([
-    execute(registry, adapter, locals.ctx, "pages.list", {}),
-    execute(registry, adapter, locals.ctx, "user_preferences.get", {
-      key: "edit_overlay_layout",
-    }),
-  ]);
-
-  // P6.7.2 — drop the `published` filter. The live-edit surface always
-  // renders the latest editable composition; whether a page is `draft`
-  // or `published` is irrelevant for previewing inside /edit.
-  //
-  // v0.9.3 — `pages` / `activePage(Id)` are `let` so we can re-bind them
-  // after the chat-branch context is known. The initial main-only pass
-  // here is needed to scope the chat lookup by activePageId; a second
-  // pass below with `ctxWithBranch` brings in any pages the AI created
-  // on the chat's branch (build_page, ...).
-  let pages = pagesR.ok ? (pagesR.value as { pages: PageRow[] }).pages : [];
-
-  // Pick the page to render in the iframe. URL param wins; otherwise
-  // prefer the site root ("/"); otherwise the first page in the list.
+  const timing = new ServerTiming();
   const queryPage = url.searchParams.get("page");
-  let activePage =
-    pages.find((p) => p.id === queryPage) ??
-    pages.find((p) => p.currentPath === "/") ??
-    pages[0] ??
-    null;
+
+  // The page in main's view first: the chats to resume are scoped by it.
+  // The overlay layout preference is read alongside.
+  const [main, prefsR] = await timing.time("page-main", () =>
+    Promise.all([
+      resolveActivePage(locals.ctx, queryPage),
+      execute(registry, adapter, locals.ctx, "user_preferences.get", {
+        key: "edit_overlay_layout",
+      }),
+    ]),
+  );
+  let activePage = main.page;
   let activePageId = activePage?.id ?? null;
 
   // P6.7.4 / v0.2.14 — chats are scoped two ways:
@@ -171,22 +189,24 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // #1253 — the operator's own chats only: an external agent works in a
   // chat of its own, which Live Edit never picks as the operator's. The
   // agents' chats are listed apart, grouped per client.
-  const [sessionsR, globalSessionsR, agentSessionsR] = await Promise.all([
-    execute(registry, adapter, locals.ctx, "chat.list_sessions", {
-      includeArchived: false,
-      pageId: activePageId,
-      agentChats: "exclude",
-    }),
-    execute(registry, adapter, locals.ctx, "chat.list_sessions", {
-      includeArchived: false,
-      pageId: null,
-      agentChats: "exclude",
-    }),
-    execute(registry, adapter, locals.ctx, "chat.list_sessions", {
-      includeArchived: false,
-      agentChats: "only",
-    }),
-  ]);
+  const [sessionsR, globalSessionsR, agentSessionsR] = await timing.time("chats", () =>
+    Promise.all([
+      execute(registry, adapter, locals.ctx, "chat.list_sessions", {
+        includeArchived: false,
+        pageId: activePageId,
+        agentChats: "exclude",
+      }),
+      execute(registry, adapter, locals.ctx, "chat.list_sessions", {
+        includeArchived: false,
+        pageId: null,
+        agentChats: "exclude",
+      }),
+      execute(registry, adapter, locals.ctx, "chat.list_sessions", {
+        includeArchived: false,
+        agentChats: "only",
+      }),
+    ]),
+  );
   // v0.2.56 — log the actual failure reason when an op returns ok:false.
   // Pre-v0.2.56 these were silently swallowed (`?? []`), the
   // downstream auto-create masked the symptom, and /edit eventually
@@ -242,10 +262,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // into a 409 that says what to do instead of a bare 500.
   let createRefusal: string | null = null;
   if (!activeChat) {
-    const created = await execute(registry, adapter, locals.ctx, "chat.create_session", {
-      title: activePage ? `Live edit · ${activePage.slug}` : "Live edit",
-      ...(activePageId ? { pageId: activePageId } : {}),
-    });
+    const created = await timing.time("chat-create", () =>
+      execute(registry, adapter, locals.ctx, "chat.create_session", {
+        title: activePage ? `Live edit · ${activePage.slug}` : "Live edit",
+        ...(activePageId ? { pageId: activePageId } : {}),
+      }),
+    );
     if (created.ok) {
       const id = (created.value as { chatSessionId: string; chatBranchId: string }).chatSessionId;
       const fresh = await execute(registry, adapter, locals.ctx, "chat.resolve_session", {
@@ -301,96 +323,40 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       sessionsLoaded: sessionsR.ok,
       globalSessionsLoaded: globalSessionsR.ok,
       activePageId,
-      pagesCount: pages.length,
     });
     throw error(
       500,
       "Could not start a live-edit session — the chat ops returned no usable row. Check Cloud Run logs for `[edit]` stderr lines, or visit /settings/audit.",
     );
   }
-
-  // #1102 — an explicit `?chat=` that names no open chat (archived,
-  // discarded, or not this operator's) is not resumed; the chat above was
-  // picked instead. Say so instead of silently showing another chat's
-  // branch (CLAUDE.md §2): a link or a pinned reload after the chat was
-  // closed elsewhere otherwise reads as "my change vanished".
-  const chatNotice =
-    queryChat && queryChat !== activeChat.id
-      ? await describeUnopenedChat(queryChat, activeChat.title, locals.ctx)
-      : null;
+  const chat = activeChat;
 
   // v0.9.3 — branch-aware ctx so every downstream entity read (pages,
   // modules, translation-source lookup) includes rows the AI created on
   // this chat's branch. v0.9.0 added `branchVisibilityFilter(ctx)` to
   // every list/get op; without `chatBranchId` set, the filter hides
-  // branched rows. The chat-runner builds the equivalent `humanCtxWithBranch`
-  // for its catalog reads (chat-runner.ts:259); /edit's load needs the
-  // same overlay or branched-create pages are invisible in the picker.
-  const ctxWithBranch: ExecutionContext = {
-    ...locals.ctx,
-    chatBranchId: activeChat.chatBranchId,
-  };
+  // branched rows.
+  const ctxWithBranch: ExecutionContext = { ...locals.ctx, chatBranchId: chat.chatBranchId };
 
-  // v0.9.3 — re-list pages with the branch-aware ctx. The first pass
-  // (line 32) used locals.ctx because activePageId needed to be known
-  // to scope the chat lookup; this pass picks up branched-create pages
-  // and re-resolves activePage so the iframe lands on the new home on
-  // fresh installs (URL has neither ?page= nor a queryPage match in
-  // main-only pages).
-  const [branchPagesR, recentR] = await Promise.all([
-    execute(registry, adapter, ctxWithBranch, "pages.list", {}),
-    // #1207 — what the page search offers before anything is typed.
-    execute(registry, adapter, ctxWithBranch, "pages.list_recently_edited", { limit: 8 }),
-  ]);
-  const recentPages: { pageIds: string[] } | { error: string } = recentR.ok
-    ? { pageIds: (recentR.value as { pages: { pageId: string }[] }).pages.map((p) => p.pageId) }
-    : { error: opErrorMessage(recentR.error, "Recently edited pages could not be loaded.") };
-  if (branchPagesR.ok) {
-    pages = (branchPagesR.value as { pages: PageRow[] }).pages;
-    activePage =
-      pages.find((p) => p.id === queryPage) ??
-      pages.find((p) => p.currentPath === "/") ??
-      pages[0] ??
-      null;
-    activePageId = activePage?.id ?? null;
-  }
-
-  // #1156 — the active page's SEO in this chat's view, for the editor's SEO
-  // info (head values never show in the preview). Pending = changed in the
-  // draft against main; `pages` from the first, main-only pass gives main's
-  // title (absent = the page was created in the draft).
-  const mainPages = pagesR.ok ? (pagesR.value as { pages: PageRow[] }).pages : [];
-  const pageSeo = activePage
-    ? await loadPageSeoInfo(
-        ctxWithBranch,
-        activePage,
-        mainPages.find((p) => p.id === activePage?.id)?.title ?? null,
-      )
-    : null;
-
-  // The plugin places in the toolbar for the shown page, in this chat's
-  // view. Streamed: plugin operations must not hold up the editor.
-  const pluginToolbar = activePage
-    ? loadEditorToolbar({
-        permissions: editUser.permissions,
-        pageId: activePage.id,
-        chatBranchId: activeChat.chatBranchId,
-      })
-    : Promise.resolve([]);
-
-  // Load the chat's messages + the modules list (powers the chip picker
-  // inside the embedded ChatPanel).
-  // #1216 — the newest transcript page only; ChatPanel loads older pages
-  // on demand.
-  let messages: ChatMessage[] = [];
-  let hasMoreMessages = false;
-  if (activeChat) {
-    const page = await loadTranscriptPage(locals.ctx, activeChat.id);
-    if (page) {
-      messages = page.messages;
-      hasMoreMessages = page.hasMore;
-    }
-  }
+  // The page again in the chat's view — on a fresh install the AI's new
+  // home exists only on the branch — next to the chat's newest transcript
+  // page (#1216: ChatPanel loads older pages on demand). #1102 — an
+  // explicit `?chat=` that names no open chat (archived, discarded, or not
+  // this operator's) is not resumed; the notice says so instead of silently
+  // showing another chat's branch (CLAUDE.md §2).
+  const [branch, transcript, chatNotice] = await timing.time("page-branch+transcript", () =>
+    Promise.all([
+      resolveActivePage(ctxWithBranch, queryPage),
+      loadTranscriptPage(locals.ctx, chat.id),
+      queryChat && queryChat !== chat.id
+        ? describeUnopenedChat(queryChat, chat.title, locals.ctx)
+        : Promise.resolve(null),
+    ]),
+  );
+  activePage = branch.page;
+  activePageId = activePage?.id ?? null;
+  let messages: ChatMessage[] = transcript?.messages ?? [];
+  let hasMoreMessages = transcript?.hasMore ?? false;
 
   // issue #187 — first-run welcome. On an untouched install (no pages,
   // no site identity) an empty chat is a dead end: the operator doesn't
@@ -402,9 +368,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   let firstRunSuggestions: typeof FIRST_RUN_SUGGESTIONS = [];
   let pluginSuggestions: typeof FIRST_RUN_SUGGESTIONS = [];
   if (!messages.some((m) => m.role === "user")) {
-    const visible = await execute(registry, adapter, locals.ctx, "skills.list", {
-      status: "active",
-    });
+    const visible = await timing.time("suggestions", () =>
+      execute(registry, adapter, locals.ctx, "skills.list", { status: "active" }),
+    );
     if (visible.ok) {
       const skills = (
         visible.value as {
@@ -420,7 +386,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       firstRunSuggestions = pluginSuggestions;
     }
   }
-  if (activeChat && pages.length === 0) {
+  // No page in the chat's view at all: `resolveActivePage` read the whole
+  // list and it is empty.
+  if (activePage === null) {
     const defaultsR = await execute(registry, adapter, locals.ctx, "site_defaults.get", {});
     const identity = defaultsR.ok
       ? (
@@ -441,7 +409,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     }
     if (untouched && messages.length === 0) {
       const seeded = await execute(registry, adapter, locals.ctx, "chat.append_message", {
-        chatSessionId: activeChat.id,
+        chatSessionId: chat.id,
         role: "assistant",
         content: pluginSuggestions.length
           ? "**Welcome — what would you like to create?** Describe your goal, or choose one of the available workflows below. I'll guide you through it."
@@ -450,7 +418,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
         source: "first-run welcome seed (/edit)",
       });
       if (seeded.ok) {
-        const reread = await loadTranscriptPage(locals.ctx, activeChat.id);
+        const reread = await loadTranscriptPage(locals.ctx, chat.id);
         if (reread) {
           messages = reread.messages;
           hasMoreMessages = reread.hasMore;
@@ -459,160 +427,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
         console.error("[edit] first-run welcome seed failed", { error: seeded.error });
       }
     }
-  }
-  const modulesR = await execute(registry, adapter, ctxWithBranch, "modules.list", {});
-  const modules = modulesR.ok ? (modulesR.value as { modules: ChatModule[] }).modules : [];
-
-  // P6.6 polish — module ids the AI has touched on this chat's branch.
-  // Drives the DiffPanel checkbox list so the user only sees rows
-  // that actually have a pending edit; the previous fallback rendered
-  // every module on the page.
-  let branchEditedModuleIds: string[] = [];
-  // v0.2.76 — pre-loaded count of distinct entities (modules + pages
-  // + templates + page-layout bindings) edited on this chat branch.
-  // Initializes the toolbar's "N pending changes" badge so the count
-  // survives a page reload. Pre-v0.2.76 the badge was a local
-  // counter that incremented per AI tool result and reset to 0 on
-  // every reload — confusing when real changes were live on the
-  // branch.
-  let branchChangeCount = 0;
-  if (activeChat) {
-    const editedR = await execute(registry, adapter, locals.ctx, "chat.branch_edited_modules", {
-      chatSessionId: activeChat.id,
-    });
-    if (editedR.ok) {
-      branchEditedModuleIds = (editedR.value as { moduleIds: string[] }).moduleIds;
-    }
-    const countR = await execute(registry, adapter, locals.ctx, "chat.branch_change_count", {
-      chatSessionId: activeChat.id,
-    });
-    if (countR.ok) {
-      branchChangeCount = (countR.value as { count: number }).count;
-    }
-  }
-
-  // v0.8.0 — cross-chat awareness: other open chats with pending
-  // edits. Surface in a thin banner above the toolbar so unstaged
-  // work on other pages doesn't get forgotten when navigating.
-  type OtherChat = {
-    chatSessionId: string;
-    title: string;
-    anchorPageId: string | null;
-    anchorPagePath: string | null;
-    anchorPageLocale: string | null;
-    pendingCount: number;
-  };
-  let otherOpenChats: OtherChat[] = [];
-  if (activeChat) {
-    const othersR = await execute(registry, adapter, locals.ctx, "chat.list_open_with_pending", {
-      excludeChatSessionId: activeChat.id,
-    });
-    if (othersR.ok) {
-      otherOpenChats = (othersR.value as { chats: OtherChat[] }).chats;
-    }
-  }
-
-  // v0.8.0 — last successful staging deploy timestamp + preview URL,
-  // shown atop the Promote modal so the operator knows what they're
-  // about to push to production. Best-effort; missing data renders no
-  // header. We fetch a small recent window since deploy.list_runs
-  // doesn't filter by target — pick the newest staging+succeeded.
-  let lastStaged: { runId: string; finishedAt: string; previewUrl: string | null } | null = null;
-  // v0.10.12 — surface the latest succeeded production deploy + a derived
-  // "is live up-to-date with staging?" flag so the toolbar can render
-  // a Live-matches-staging indicator next to the Publish-live button.
-  // `productionMatchesStaging` is true when the latest production run's
-  // build_id matches the latest staging run's id (deploy.promote stamps
-  // the source staging runId into the production run's build_id; see
-  // packages/admin-core/src/ops/deploy.ts).
-  let lastPublishedLive: { runId: string; finishedAt: string; fromRunId: string | null } | null =
-    null;
-  let productionMatchesStaging: boolean | null = null;
-  /** #1207 — the newest staging build when it failed: Publish live then closes. */
-  let lastStageFailure: { runId: string; error: string } | null = null;
-  try {
-    // #1155 — site builds only: plugin-data builds run every tick and
-    // would push the last Stage and Publish live out of the window.
-    const recentR = await execute(registry, adapter, locals.ctx, "deploy.list_runs", {
-      limit: 20,
-      buildKind: "site",
-    });
-    if (recentR.ok) {
-      const v = recentR.value as {
-        runs: {
-          id: string;
-          targetName: string;
-          status: string;
-          finishedAt: string | null;
-          buildId: string | null;
-          errorMessage: string | null;
-          publishSummary?: { previewUrl?: string };
-        }[];
-      };
-      // Runs come newest first: a failed staging build newer than every
-      // succeeded one means staging lacks what that Stage was to carry.
-      const newestStaging = v.runs.find((row) => row.targetName === "staging");
-      if (newestStaging?.status === "failed") {
-        lastStageFailure = {
-          runId: newestStaging.id,
-          error: newestStaging.errorMessage ?? "The staging build failed without a message.",
-        };
-      }
-      const r = v.runs.find(
-        (row) => row.targetName === "staging" && row.status === "succeeded" && row.finishedAt,
-      );
-      if (r?.finishedAt) {
-        lastStaged = {
-          runId: r.id,
-          finishedAt: r.finishedAt,
-          // #650 — staging.<domain> through "Open staging", never the
-          // provider's preview origin.
-          previewUrl: providerHasStagingDomain(process.env.CAELO_PROVIDER)
-            ? openStagingHref("/")
-            : (r.publishSummary?.previewUrl ?? null),
-        };
-      }
-      // v0.10.12 — latest production deploy. build_id points back to
-      // the staging runId when this run was created by deploy.promote;
-      // for direct production triggers (rebake from main) it's a fresh
-      // build_id. We compare against lastStaged.runId to decide whether
-      // live is currently in sync with the latest staged build.
-      const p = v.runs.find(
-        (row) => row.targetName === "production" && row.status === "succeeded" && row.finishedAt,
-      );
-      if (p?.finishedAt) {
-        lastPublishedLive = {
-          runId: p.id,
-          finishedAt: p.finishedAt,
-          fromRunId: p.buildId ?? null,
-        };
-        if (lastStaged && p.buildId) {
-          productionMatchesStaging = p.buildId === lastStaged.runId;
-        }
-      }
-    }
-  } catch {
-    // deploy.list_runs unregistered on some dev installs — fine.
-  }
-
-  // v0.7.0 — categorized pending/staged view feeding the per-kind
-  // dropdown on the overlay's StageDeployButton (Pages / Modules /
-  // Templates / Lists). Empty default when no chat is active (rare —
-  // auto-create above usually provides one).
-  type PendingEntity = { kind: string; entityId: string; label: string; detail?: string };
-  type PendingChangesView = {
-    pending: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
-    staged: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
-  };
-  let pendingChanges: PendingChangesView = {
-    pending: { pages: [], globals: [], lists: [] },
-    staged: { pages: [], globals: [], lists: [] },
-  };
-  if (activeChat) {
-    const pR = await execute(registry, adapter, locals.ctx, "chat.list_pending_changes", {
-      chatSessionId: activeChat.id,
-    });
-    if (pR.ok) pendingChanges = pR.value as PendingChangesView;
   }
 
   // Layout preference — default if unset.
@@ -624,43 +438,36 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     }
   }
 
-  // "View live" in the Publish live menu (see live-links.ts for when the
-  // page link is offered).
-  const live = await loadLiveLinks(
-    locals.ctx,
-    mainPages.find((p) => p.id === activePage?.id) ?? null,
-    productionMatchesStaging,
-  );
+  // The plugin places in the toolbar for the shown page, in this chat's
+  // view. Streamed: plugin operations must not hold up the editor.
+  const pluginToolbar = activePage
+    ? loadEditorToolbar({
+        permissions: editUser.permissions,
+        pageId: activePage.id,
+        chatBranchId: chat.chatBranchId,
+      })
+    : Promise.resolve([]);
 
+  const stream = streamEditorParts({
+    ctx: locals.ctx,
+    branchCtx: ctxWithBranch,
+    chatSessionId: chat.id,
+    activePage,
+    mainCandidates: main.candidates,
+    branchPages: branch.all,
+  });
+
+  setHeaders({ "server-timing": timing.header() });
   return {
-    pages: pages.map((p) => ({
-      id: p.id,
-      slug: p.slug,
-      title: p.title,
-      // v0.9.9 — surfaces on the top-bar status toggle so the editor
-      // can flip draft↔published without leaving the live-edit surface.
-      status: p.status,
-      currentPath: p.currentPath,
-    })),
     activePageId,
-    /** #1207 — the pages changed last, newest first, for the page search. */
-    recentPages,
-    /** #1156 — the active page's SEO for the editor's SEO info, or null without a page. */
-    pageSeo,
-    /** The plugin places in the toolbar for the shown page (streamed). */
-    pluginToolbar,
-    /** Where the shown page and the site are live, for "View live". */
-    live,
-    activeChat,
+    /** #1268 — the shown page, so first paint needs no page list. */
+    activePage,
+    activeChat: chat,
     /** #1102 — why the `?chat=` in the URL was not opened, or null. */
     chatNotice,
     messages,
     hasMoreMessages,
     firstRunSuggestions,
-    modules,
-    branchEditedModuleIds,
-    branchChangeCount,
-    pendingChanges,
     layout,
     /** P6.7.4 — chats bound to the active page (for the picker's "this page" group). */
     pageChats: sessions.map((s) => ({
@@ -686,14 +493,19 @@ export const load: PageServerLoad = async ({ locals, url }) => {
         agentClient: s.agentClient ?? null,
       })),
     ).agents,
-    /** v0.8.0 — other open chats with pending edits, for the cross-chat banner. */
-    otherOpenChats,
-    /** v0.8.0 — last successful staging deploy summary, for the Promote modal header. */
-    lastStaged,
-    /** v0.10.12 — latest succeeded production deploy + sync indicator for the toolbar. */
-    lastPublishedLive,
-    productionMatchesStaging,
-    lastStageFailure,
+    /** The plugin places in the toolbar for the shown page (streamed). */
+    pluginToolbar,
+    // #1268 — streamed: each resolves to its value or why it failed.
+    pages: stream.pages,
+    recentPageIds: stream.recentPageIds,
+    modules: stream.modules,
+    branchEditedModuleIds: stream.branchEditedModuleIds,
+    branchChangeCount: stream.branchChangeCount,
+    pendingChanges: stream.pendingChanges,
+    otherOpenChats: stream.otherOpenChats,
+    deployState: stream.deployState,
+    live: stream.live,
+    pageSeo: stream.pageSeo,
   };
 };
 

@@ -48,6 +48,7 @@
     samePreviewDocument,
   } from "#lib/components/edit/iframe-protocol.js";
   import { persistPreviewCookies } from "#lib/components/edit/preview-cookie-jar.js";
+  import { StreamedValue } from "#lib/components/edit/streamed-value.svelte.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import {
     DropdownMenu,
@@ -68,6 +69,51 @@
 
   let { data } = $props();
   let activePageId = $state(data.activePageId ?? "");
+
+  // #1268 — the parts of the load that stream in after first paint. Each
+  // keeps its last value through a refresh and says why when it failed.
+  type Data = typeof data;
+  type Settled<K extends keyof Data> = Data[K] extends Promise<infer R>
+    ? R extends { ok: true; value: infer V }
+      ? V
+      : never
+    : never;
+  const pages = new StreamedValue<Settled<"pages">>();
+  const recentPageIds = new StreamedValue<Settled<"recentPageIds">>();
+  const modules = new StreamedValue<Settled<"modules">>();
+  const branchEditedModuleIds = new StreamedValue<Settled<"branchEditedModuleIds">>();
+  const branchChangeCount = new StreamedValue<Settled<"branchChangeCount">>();
+  const pendingChangesView = new StreamedValue<Settled<"pendingChanges">>();
+  const otherOpenChats = new StreamedValue<Settled<"otherOpenChats">>();
+  const deployState = new StreamedValue<Settled<"deployState">>();
+  const live = new StreamedValue<Settled<"live">>();
+  const pageSeo = new StreamedValue<Settled<"pageSeo">>();
+  $effect(() => {
+    pages.follow(data.pages);
+    recentPageIds.follow(data.recentPageIds);
+    modules.follow(data.modules);
+    branchEditedModuleIds.follow(data.branchEditedModuleIds);
+    branchChangeCount.follow(data.branchChangeCount);
+    pendingChangesView.follow(data.pendingChanges);
+    otherOpenChats.follow(data.otherOpenChats);
+    deployState.follow(data.deployState);
+    live.follow(data.live);
+    pageSeo.follow(data.pageSeo, data.activePageId);
+  });
+  /** The page list once loaded; empty before (searches find nothing yet). */
+  const pageList = $derived(pages.current ?? []);
+  /** What the Staging and Publish live controls need, as far as it failed. */
+  const publishErrors = $derived(
+    [branchChangeCount.error, pendingChangesView.error, deployState.error, live.error].filter(
+      (e): e is string => e !== null,
+    ),
+  );
+  /** Streamed parts without a spot of their own: their failures show in one strip. */
+  const streamErrors = $derived(
+    [pages.error, modules.error, branchEditedModuleIds.error].filter(
+      (e): e is string => e !== null,
+    ),
+  );
   let pluginPreviewUrl = $state<string | null>(null);
   let previewSelection = $state<PluginPreviewSelection | null>(null);
   let previewContext = $state<PluginPreviewSelection | null>(null);
@@ -120,8 +166,18 @@
   // pointer-up — leaving setPointerCapture stuck and swallowing every
   // subsequent click on the overlay (Resize, Collapse, Send, etc).
   let overlayDragging = $state(false);
-  // Active page metadata derived from activePageId — drives URL display.
-  const activePage = $derived(data.pages.find((p) => p.id === activePageId) ?? null);
+  // Active page metadata for activePageId — drives the URL and the preview.
+  // #1268 — first paint carries only the shown page; the list streams in.
+  // While neither knows a page the preview just navigated to, the previous
+  // page stays, so the preview frame is not torn down and rebuilt.
+  let activePage = $state<typeof data.activePage>(data.activePage);
+  $effect.pre(() => {
+    const found =
+      pageList.find((p) => p.id === activePageId) ??
+      (data.activePage?.id === activePageId ? data.activePage : null);
+    if (found) activePage = found;
+    else if (!activePageId) activePage = null;
+  });
   // The path the iframe is currently showing (covers click-through nav
   // inside the iframe; updated by `caelo:navigated` postMessage). Falls
   // back to the active page's composed path on first load.
@@ -147,6 +203,16 @@
       : "",
   );
   let iframe = $state<HTMLIFrameElement | null>(null);
+  // Counts `caelo:ready` from the preview: each document load asks for the
+  // link-target suggestions again (#918).
+  let previewReady = $state(0);
+  $effect(() => {
+    if (previewReady === 0 || pages.current === null) return;
+    postToPreview(iframe?.contentWindow, {
+      kind: "caelo:page-paths",
+      pages: pageList.map((p) => ({ path: p.currentPath, title: p.title })),
+    });
+  });
   // The iframe's src is set here, not bound in the markup: the editor also
   // navigates the iframe itself (`caelo:navigate`, #946), and once the
   // preview reports the page it landed on, `previewSrc` follows to the same
@@ -165,7 +231,7 @@
   // branch_change_count to cover layout-module snapshots; refreshAll
   // in onAiToolResult re-runs the server load after each tool, so the
   // derived value stays fresh without manual increments.
-  const pendingChanges = $derived(data.branchChangeCount ?? 0);
+  const pendingChanges = $derived(branchChangeCount.current ?? 0);
   let pendingSwitchTo = $state<string | null>(null);
   let dialogOpen = $state(false);
   // Height of the page chrome above the preview (cross-chat banner +
@@ -183,8 +249,8 @@
   // module on the page if the server load returned an empty list
   // (e.g. brand-new chat with zero edits → nothing to filter).
   const editedModules = $derived.by(() => {
-    const ids = (data.branchEditedModuleIds ?? []) as string[];
-    const all = (data.modules ?? []).map((m) => ({
+    const ids = branchEditedModuleIds.current ?? [];
+    const all = (modules.current ?? []).map((m) => ({
       moduleId: m.id,
       label: m.displayName ?? m.slug,
     }));
@@ -260,11 +326,9 @@
           renderedSave = awaitingRender;
           awaitingRender = null;
         }
-        // Link-target suggestions for the preview's link editor (#918).
-        postToPreview(iframe?.contentWindow, {
-          kind: "caelo:page-paths",
-          pages: data.pages.map((p) => ({ path: p.currentPath, title: p.title })),
-        });
+        // Link-target suggestions for the preview's link editor (#918),
+        // posted by the effect below once the page list is in too.
+        previewReady++;
       } else if (msg.kind === "caelo:cookies") {
         // The sandboxed preview cannot store cookies; the editor keeps
         // them so a consent decision survives the next load.
@@ -309,14 +373,15 @@
   let initialized = $state(false);
   let seenPageIds = $state(new Set<string>());
   $effect(() => {
-    const currentIds = new Set(data.pages.map((p) => p.id));
+    if (pages.current === null) return;
+    const currentIds = new Set(pageList.map((p) => p.id));
     if (!initialized) {
       initialized = true;
       // Fresh-install "no active page yet" — pick the home (or first)
       // so the iframe gets a src instead of staying blank.
-      if (activePageId === "" && data.pages.length > 0) {
-        const home = data.pages.find((p) => p.currentPath === "/");
-        const pick = home ?? data.pages[0];
+      if (activePageId === "" && pageList.length > 0) {
+        const home = pageList.find((p) => p.currentPath === "/");
+        const pick = home ?? pageList[0];
         if (pick) activePageId = pick.id;
       }
       seenPageIds = currentIds;
@@ -324,10 +389,10 @@
     }
     const newIds = [...currentIds].filter((id) => !seenPageIds.has(id));
     if (newIds.length === 0) return;
-    const newPages = data.pages.filter((p) => newIds.includes(p.id));
+    const newPages = pageList.filter((p) => newIds.includes(p.id));
     const newHome = newPages.find((p) => p.currentPath === "/");
     if (newHome) {
-      const cur = data.pages.find((p) => p.id === activePageId);
+      const cur = pageList.find((p) => p.id === activePageId);
       if (!cur || cur.currentPath === "/" || activePageId === "") {
         activePageId = newHome.id;
       }
@@ -467,8 +532,9 @@
     // arguments name a different pageId than what's currently
     // shown, switch the iframe to it. Layout / module-only edits
     // omit pageId; we stay on the current page in that case.
-    // Stale `data.pages` here is fine — we run refreshAll() right
-    // after, so the next tool-result picks up the fresh list.
+    // A stale page list here is fine — we run refreshAll() right after,
+    // so the next tool-result picks up the fresh list. #1268 — before the
+    // list streamed in, follow the id; the refreshed load resolves it.
     if (payload.ok && payload.content) {
       const next = previewFromResult(payload.content, location.origin);
       if (next) openPluginPreview(next);
@@ -477,8 +543,9 @@
     const targetPageId =
       args && typeof args["pageId"] === "string" ? (args["pageId"] as string) : null;
     if (targetPageId && targetPageId !== activePageId) {
-      const matched = data.pages.find((p) => p.id === targetPageId);
-      if (matched) activePageId = matched.id;
+      if (pages.current === null || pageList.some((p) => p.id === targetPageId)) {
+        activePageId = targetPageId;
+      }
     }
 
     // v0.3.22 — refresh server-loaded `data.pages` etc. so newly-
@@ -497,7 +564,19 @@
   <!-- Measured with the toolbar below: the pinned-right chat column starts
        under both, so the banner never pushes toolbar controls beneath it. -->
   <div class="shrink-0" bind:clientHeight={bannerHeight}>
-    <CrossChatBanner chats={data.otherOpenChats ?? []} />
+    <CrossChatBanner chats={otherOpenChats.current ?? []} error={otherOpenChats.error} />
+    {#if streamErrors.length > 0}
+      <!-- #1268 — streamed parts without a spot of their own; never a silent gap. -->
+      <div
+        class="z-30 flex min-h-9 shrink-0 flex-col justify-center gap-0.5 border-b bg-red-500/10 px-3 py-1 text-xs text-red-800 dark:text-red-200"
+        role="alert"
+        data-testid="edit-stream-errors"
+      >
+        {#each streamErrors as message (message)}
+          <span>{message} Reload the editor to try again.</span>
+        {/each}
+      </div>
+    {/if}
     {#if data.chatNotice}
       <!-- #1102 — the URL's chat could not be opened; never switch silently. -->
       <div
@@ -540,17 +619,25 @@
     {#if pluginPreviewUrl}
       <code class="rounded bg-muted px-1.5 py-0.5 text-xs" data-testid="edit-url">Preview</code>
       <button type="button" class="underline" onclick={closePluginPreview}>Website preview</button>
-    {:else if data.pages.length > 0}
+    {:else if activePage || pageList.length > 0}
       <!-- The page address: what the browser's address bar is to a site.
            The SEO info sits where a browser shows the site info. -->
       <div
         class="order-last flex h-9 w-full min-w-0 items-center gap-1 rounded-lg border bg-muted/40 pl-1 pr-1.5 focus-within:border-ring sm:order-none sm:w-[30rem]"
         data-testid="edit-address"
       >
-        {#if previewSrc && data.pageSeo && data.activePageId === activePageId}
+        {#if previewSrc && pageSeo.key === activePageId}
           <!-- Only while the loaded SEO is the shown page's: a client-side page
                switch hides it until the refresh (?page= follows) brings that page's. -->
-          <PageSeoInfo info={data.pageSeo} path={urlText} siteUrl={data.live.siteUrl} />
+          {#if pageSeo.error}
+            <PageSeoInfo info={{ error: pageSeo.error }} path={urlText} siteUrl={null} />
+          {:else if pageSeo.current}
+            <PageSeoInfo
+              info={pageSeo.current}
+              path={urlText}
+              siteUrl={live.current?.siteUrl ?? null}
+            />
+          {/if}
         {/if}
         <code
           class="hidden max-w-[12rem] shrink-0 truncate font-mono text-xs text-foreground sm:inline"
@@ -558,8 +645,11 @@
         >{urlText}</code>
         <div class="flex min-w-0 flex-1" data-testid="edit-page-picker">
           <PageSearch
-            pages={data.pages}
-            recent={data.recentPages}
+            pages={pageList}
+            loading={pages.loading}
+            recent={recentPageIds.error
+              ? { error: recentPageIds.error }
+              : { pageIds: recentPageIds.current ?? [] }}
             currentPageId={activePageId}
             onPick={onPageChange}
           />
@@ -569,7 +659,7 @@
              `status='published'`. Click to flip the active page's
              status. Form action rides the chat branch so the flip
              merges to main at Stage like any other edit. -->
-        {#if activePage}
+        {#if activePage && activePage.id === activePageId}
           {@const cur = activePage.status}
           {@const next = cur === "published" ? "draft" : "published"}
           <form
@@ -613,7 +703,7 @@
           <PluginToolbarSlots
             {slots}
             path={urlText}
-            pageIds={new Set(data.pages.map((p) => p.id))}
+            pageIds={new Set(pageList.map((p) => p.id))}
             onOpenPage={onPageChange}
           />
         {/if}
@@ -650,31 +740,60 @@
       )}
       title={!data.activeChat
         ? "Start a chat first to see pending edits"
-        : pendingChanges > 0
-          ? `${pendingChanges} ${pendingChanges === 1 ? "change" : "changes"} in this chat, side by side with the live version`
-          : "No changes in this chat yet"}
+        : branchChangeCount.error
+          ? branchChangeCount.error
+          : branchChangeCount.loading
+            ? "Counting this chat's changes…"
+            : pendingChanges > 0
+              ? `${pendingChanges} ${pendingChanges === 1 ? "change" : "changes"} in this chat, side by side with the live version`
+              : "No changes in this chat yet"}
       data-testid="diff-toggle"
     >
       <GitCompareArrows class="size-3.5" />
-      Diff <span class="tabular-nums text-muted-foreground">({pendingChanges})</span>
+      Diff
+      {#if branchChangeCount.error}
+        <span class="font-semibold text-red-700 dark:text-red-300" data-testid="diff-count-error">(!)</span>
+      {:else if branchChangeCount.loading}
+        <span class="text-muted-foreground" data-testid="diff-count-loading">(…)</span>
+      {:else}
+        <span class="tabular-nums text-muted-foreground">({pendingChanges})</span>
+      {/if}
     </button>
 
     {#if !pluginPreviewUrl && activePageId && data.activeChat}
       <div class="flex items-center gap-2" data-testid="toolbar-publish">
-        <StageDeployButton
-          pendingChanges={data.pendingChanges}
-          branchChangeCount={pendingChanges}
-          csrfToken={data.csrfToken}
-          chatSessionId={data.activeChat.id}
-          sessionPublished={!!data.activeChat.publishedAt}
-          sessionLastStagedAt={data.activeChat.lastStagedAt ?? null}
-          {activePageId}
-          lastStaged={data.lastStaged ?? null}
-          lastPublishedLive={data.lastPublishedLive ?? null}
-          productionMatchesStaging={data.productionMatchesStaging ?? null}
-          lastStageFailure={data.lastStageFailure ?? null}
-          live={data.live}
-        />
+        {#if publishErrors.length > 0}
+          <!-- #1268 — Staging and Publish live need all of these; say which failed. -->
+          <span
+            role="alert"
+            class="max-w-72 truncate text-xs font-medium text-red-700 dark:text-red-300"
+            title={publishErrors.join(" ")}
+            data-testid="toolbar-publish-error"
+          >
+            {publishErrors[0]}
+          </span>
+        {:else if branchChangeCount.current !== null && pendingChangesView.current && deployState.current && live.current}
+          <StageDeployButton
+            pendingChanges={pendingChangesView.current}
+            branchChangeCount={pendingChanges}
+            csrfToken={data.csrfToken}
+            chatSessionId={data.activeChat.id}
+            sessionPublished={!!data.activeChat.publishedAt}
+            sessionLastStagedAt={data.activeChat.lastStagedAt ?? null}
+            {activePageId}
+            lastStaged={deployState.current.lastStaged}
+            lastPublishedLive={deployState.current.lastPublishedLive}
+            productionMatchesStaging={deployState.current.productionMatchesStaging}
+            lastStageFailure={deployState.current.lastStageFailure}
+            live={live.current}
+          />
+        {:else}
+          <!-- Placeholders in the controls' size while their state streams in. -->
+          <div class="flex items-center gap-2" aria-busy="true" data-testid="toolbar-publish-loading">
+            <span class="h-8 w-24 animate-pulse rounded-md bg-muted"></span>
+            <span class="h-8 w-28 animate-pulse rounded-md bg-muted"></span>
+          </div>
+        {/if}
       </div>
     {/if}
 
@@ -742,7 +861,7 @@
         <div class="space-y-2 text-center">
           <p class="text-lg font-semibold">Chat and build your page</p>
           <p class="text-sm text-muted-foreground">
-            {data.pages.length === 0
+            {!activePage && pageList.length === 0
               ? "Describe what you want in the chat — your page appears right here."
               : "Tell the chat which page to open — or pick one in the top bar."}
           </p>
@@ -776,7 +895,7 @@
     initialMessages={data.messages}
     initialHasMore={data.hasMoreMessages}
     firstRunSuggestions={data.firstRunSuggestions}
-    modules={data.modules}
+    modules={modules.current ?? []}
     csrfToken={data.csrfToken}
     initialLayout={data.layout}
     activePageId={pluginPreviewUrl ? null : activePageId || null}
