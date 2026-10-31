@@ -1,6 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { page } from "$app/state";
+  import { navigating, page } from "$app/state";
   import {
     ChevronDown,
     FileText,
@@ -10,6 +10,7 @@
     Layout,
     LayoutDashboard,
     ListTree,
+    LoaderCircle,
     LogOut,
     Menu,
     Moon,
@@ -28,6 +29,7 @@
   const isDark = $derived(mode.current === "dark");
   import CaeloMark from "#lib/components/CaeloMark.svelte";
   import NotificationBell from "#lib/components/NotificationBell.svelte";
+  import { isNavigatingTo } from "#lib/navigation-feedback.js";
   import RunningAgentsIndicator from "#lib/components/agents/RunningAgentsIndicator.svelte";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Separator } from "#lib/components/ui/separator/index.js";
@@ -206,6 +208,8 @@
   {@const idPrefix = instance === "mobile" ? "m-" : ""}
     <nav aria-label="Main navigation" class="flex-1 space-y-1 overflow-y-auto px-2 py-4">
       {#if nav.liveEdit}
+        <!-- #1268 — opening the editor takes a moment: the link shows it. -->
+        {@const opening = isNavigatingTo(navigating.to?.url, nav.liveEdit.href)}
         <!-- Stretched link: the whole button is clickable, but the link's
              accessible name is only "Live edit" (axe
              label-content-name-mismatch); the subtitle describes it. -->
@@ -219,10 +223,16 @@
             href={nav.liveEdit.href}
             aria-current={activeHref === nav.liveEdit.href ? "page" : undefined}
             aria-describedby="{idPrefix}nav-live-edit-description"
+            aria-busy={opening}
+            data-loading={opening ? "" : undefined}
             data-testid="nav-live-edit"
             class="flex items-center gap-3 text-sm font-semibold outline-none after:absolute after:inset-0 after:rounded-md"
           >
-            {@render navIcon(nav.liveEdit.icon)}
+            {#if opening}
+              <LoaderCircle class="size-4 animate-spin motion-reduce:animate-none" />
+            {:else}
+              {@render navIcon(nav.liveEdit.icon)}
+            {/if}
             {nav.liveEdit.label}
           </a>
           <span id="{idPrefix}nav-live-edit-description" class="pl-7 text-xs text-primary-foreground/80"
