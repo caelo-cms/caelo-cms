@@ -20,7 +20,7 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../../draft.js";
+import { headOverlaySql } from "../../draft.js";
 
 /**
  * Deepest allowed nesting: a top-level page is level 1, so a page may
@@ -79,15 +79,13 @@ export async function loadPageTree(
   `)) as unknown as RawNodeRow[];
   const pending = new Map<string, PendingTreeState>();
   if (chatBranchId && opts.overlay !== false) {
-    const overlay = (await tx.execute(sql`
-      SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
-        FROM page_snapshots ps
-        JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-       WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-       ORDER BY ps.page_id, ss.created_at DESC
-    `)) as unknown as { page_id: string; state: unknown }[];
+    // #1268 — the branch's pending pages from the draft head: one row per
+    // pending page, not the pending history.
+    const overlay = (await tx.execute(
+      headOverlaySql({ kind: "page", table: "page_snapshots", branchId: chatBranchId }),
+    )) as unknown as { entity_id: string; state: unknown }[];
     for (const o of overlay) {
-      pending.set(o.page_id, o.state as PendingTreeState);
+      pending.set(o.entity_id, o.state as PendingTreeState);
     }
   }
   return pageTreeOf(rows, pending);

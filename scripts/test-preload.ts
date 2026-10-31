@@ -282,6 +282,40 @@ async function assertNoDoubleEncodedJsonb(url: string): Promise<void> {
   }
 }
 
+/**
+ * #1268 — after each integration file, the maintained draft head
+ * (`draft_pending_entities`) must equal the head rebuilt from the snapshot
+ * history (rule 3 of docs/dev/state-and-changes.md). Every write path the
+ * file exercised — an op, a Stage, an undo, a takeover, seed SQL — is held
+ * to it; a maintainer bug fails the file here instead of a reader showing a
+ * wrong count later.
+ */
+async function assertDraftHeadConsistent(url: string): Promise<void> {
+  const sql = new SQL(url, { max: 1 });
+  try {
+    const rows = (await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx.unsafe(`
+        WITH computed AS (SELECT * FROM caelo_draft_head_computed())
+        SELECT 'stale' AS side, to_jsonb(s) AS row FROM
+          (SELECT * FROM draft_pending_entities EXCEPT SELECT * FROM computed) s
+        UNION ALL
+        SELECT 'missing', to_jsonb(m) FROM
+          (SELECT * FROM computed EXCEPT SELECT * FROM draft_pending_entities) m
+        LIMIT 5`);
+    })) as unknown as { side: string; row: unknown }[];
+    if (rows.length > 0) {
+      throw new Error(
+        `draft head (draft_pending_entities) differs from its rebuild (#1268): ${JSON.stringify(rows)}. ` +
+          "A write path changed snapshots without the 0433 maintainers keeping the head exact — " +
+          "fix the maintainer (caelo_draft_head_rows / caelo_draft_head_headers), never the reader.",
+      );
+    }
+  } finally {
+    await sql.end();
+  }
+}
+
 if (ADMIN_URL && PUBLIC_URL && RESET_OPTED_IN) {
   beforeAll(async () => {
     await Promise.all([
@@ -293,6 +327,7 @@ if (ADMIN_URL && PUBLIC_URL && RESET_OPTED_IN) {
     await Promise.all([
       assertNoDoubleEncodedJsonb(ADMIN_URL),
       assertNoDoubleEncodedJsonb(PUBLIC_URL),
+      assertDraftHeadConsistent(ADMIN_URL),
     ]);
   });
 } else if (ADMIN_URL && PUBLIC_URL) {

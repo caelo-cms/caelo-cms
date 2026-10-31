@@ -48,11 +48,6 @@ const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL ?? "";
  * (`FIXME(#n)`). Shrinks to empty; never grows without a tracked issue.
  */
 const ALLOWLIST: Readonly<Record<string, string>> = {
-  // The draft's pending state is recomputed from every unstaged snapshot.
-  "chat.list_pending_changes": "FIXME(#1268) pending state recomputed from the whole draft history",
-  "chat.branch_change_count": "FIXME(#1268) counts over the whole draft history",
-  "chat.list_open_with_pending": "FIXME(#1268) open chats x pending history",
-  "chat.list_open_changes": "FIXME(#1268) N+1 over open chats, each over the history",
   // Reads the whole site: link humanising, page tree, unbounded lists.
   "pages.list": "FIXME(#1269) unbounded, one bind parameter per page",
   "content_instances.list": "FIXME(#1269) unbounded",

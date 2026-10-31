@@ -55,6 +55,7 @@ The derived structures on the journal today:
 
 | structure | kind | reads | rebuild |
 |---|---|---|---|
+| draft head (`draft_pending_entities`, migration 0433, #1268) | synchronous: statement-level triggers on `site_snapshots` and every snapshot table; one definition, `caelo_draft_head_source()` | `chatHeadSql` / `headOverlaySql` / `pendingCountsByKind` (admin-core `draft.ts`): what a chat changed, and the branch overlays | `chat.rebuild_draft_head` (reports drift); "maintained == rebuilt" after every integration file (`scripts/test-preload.ts`); `draft-head.integration.test.ts` |
 | site view cache (`packages/admin-core/src/site-view.ts`) | in-memory, per branch | `checkJournalMark` per render | re-read on a stale mark; `preview-site-view-cache.integration.test.ts` |
 | font usage cache (`apps/static-generator/src/font-usage-sources.ts`) | in-memory | `checkJournalMark` per scan | re-scan on a stale mark; `font-reads.integration.test.ts` |
 | consent-manager embed verdicts | plugin consumer, every branch | `changeConsumer` | `scan_modules` |

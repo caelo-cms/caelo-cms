@@ -152,18 +152,21 @@ export async function loadBranchRowStates(
       ? sql``
       : input.rowIds.length === 0
         ? sql`AND false`
-        : sql`AND prs.row_id = ANY(${uuidArray(input.rowIds)})`;
+        : sql`AND d.entity_id = ANY(${uuidArray(input.rowIds)})`;
+  // Issue #1268 — the branch's pending rows of this table come from the
+  // draft head (admin-core draft.ts, migration 0433): one head row per
+  // pending row and owner, the newest across owners wins. Only pending
+  // snapshots (not staged, not undone) are in the head (issue #620).
   const rows = (await tx.execute(sql`
-    SELECT DISTINCT ON (prs.row_id) prs.row_id::text AS row_id, prs.state
-    FROM plugin_row_snapshots prs
-    JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
-    WHERE prs.plugin_id = ${input.pluginId}::uuid
-      AND prs.table_name = ${input.table}
-      AND ss.chat_branch_id = ${input.chatBranchId}::uuid
-      -- issue #620: only pending branch snapshots (not staged, not undone).
-      AND ss.staged_at IS NULL AND ss.undone_at IS NULL
+    SELECT DISTINCT ON (d.entity_id) d.entity_id::text AS row_id, prs.state
+    FROM draft_pending_entities d
+    JOIN plugin_row_snapshots prs ON prs.id = d.snapshot_row_id
+    WHERE d.chat_branch_id = ${input.chatBranchId}::uuid
+      AND d.entity_kind = 'pluginRow'
+      AND d.plugin_id = ${input.pluginId}::uuid
+      AND d.table_name = ${input.table}
       ${onlyRows}
-    ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
+    ORDER BY d.entity_id, d.header_created_at DESC, d.row_created_at DESC, d.snapshot_row_id DESC
   `)) as unknown as { row_id: string; state: unknown }[];
   const out = new Map<string, PluginRowState>();
   for (const r of rows) out.set(r.row_id, r.state as PluginRowState);

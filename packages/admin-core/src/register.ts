@@ -52,6 +52,7 @@ import {
   touchExternalAgentOp,
 } from "./ops/chat/agent-runs.js";
 import { discardChatBranchOp } from "./ops/chat/discard.js";
+import { rebuildDraftHeadOp } from "./ops/chat/draft-head.js";
 import {
   checkBranchAccessOp,
   finalizeDraftStageOp,
@@ -1333,6 +1334,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listActivePagesOp);
   // v0.8.0 — cross-chat awareness banner data for the /edit toolbar.
   registry.register(listOpenChatsWithPendingOp);
+  // #1268 — rebuild the draft head from the snapshot history (repair).
+  registry.register(rebuildDraftHeadOp);
   // v0.5.20 — per-chat completion view (powers /content/chat/[id]/summary).
   registry.register(summarizeChatOp);
   // P7 — media library.

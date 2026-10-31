@@ -23,7 +23,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { pendingSnapshotSql } from "../../draft.js";
+import { pendingChangeKindSql, sessionHeadRowsSql } from "../../draft.js";
 
 const foreignLockSchema = z
   .object({
@@ -91,10 +91,8 @@ export const listForeignLocksOp = defineOperation({
     }
 
     // One pass over the lock table. Per-kind LEFT JOINs resolve a human
-    // label; the scalar subquery counts the holder branch's snapshots
-    // since its last Stage (same "pending" definition as
-    // chat.branch_change_count's since-filter, coarser granularity —
-    // good enough for a warning, cheap enough for every chat turn).
+    // label; the scalar subquery counts the holder chat's pending changes
+    // from the draft head (issue #1268) — the count its own pill shows.
     const rows = (await tx.execute(sql`
       SELECT
         l.entity_kind,
@@ -104,8 +102,8 @@ export const listForeignLocksOp = defineOperation({
         cs.title AS holder_title,
         anchor.slug AS holder_page_slug,
         (
-          SELECT COUNT(*)::int FROM site_snapshots ss
-          WHERE ss.chat_branch_id = l.chat_branch_id AND ${pendingSnapshotSql()}
+          SELECT COUNT(DISTINCT (d.entity_kind, d.entity_id, d.entity_sub))::int
+          FROM (${sessionHeadRowsSql("cs", pendingChangeKindSql())}) d
         ) AS pending_change_count,
         COALESCE(
           m.display_name, t.display_name,

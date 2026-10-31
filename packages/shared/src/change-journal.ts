@@ -241,6 +241,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   chat_branch_publish_marks:
     "which branch states reached main; the Stage that writes it also updates the journaled site_snapshots",
   draft_entity_observations: "which draft entity states a chat has read (conflict detection)",
+  draft_pending_entities:
+    "the draft head (#1268): derived state, maintained by triggers from the journaled snapshot tables and rebuildable from them",
   subagent_runs: "subagent bookkeeping of a chat turn",
   mcp_approval_handoffs: "approval hand-offs to an MCP client",
   tool_approval_actions: "approval decisions of chat tool calls",

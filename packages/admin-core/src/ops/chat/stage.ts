@@ -24,12 +24,23 @@
  *   from 'pending' to 'staged'; publish does the merge atomically.
  */
 
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import {
+  defineOperation,
+  type TransactionRunner,
+  textArray,
+  uuidArray,
+} from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
-import { type SQL, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { type ChatBinding, chatPendingSql, loadChatBinding } from "../../draft.js";
+import {
+  chatHeadRowsSql,
+  chatPendingSql,
+  type HeadChat,
+  loadChatBinding,
+  pendingChangeKindSql,
+} from "../../draft.js";
 
 /**
  * Categorized read of every snapshot tagged with the chat's branch
@@ -102,399 +113,199 @@ export const listPendingChangesOp = defineOperation({
 });
 
 /**
- * Categorized change refs of a chat's pending snapshots — the Stage
+ * Categorized change refs of a chat's pending changes — the Stage
  * picker's and the Open changes overview's view of "what this chat
- * changed". Every branched snapshot table is walked once; the publish
- * marks decide pending vs staged. Pending = not staged, not undone (issue
- * #620); on the shared draft only the snapshots this chat wrote.
+ * changed". One per pending entity of the chat's draft head (issue #1268,
+ * PENDING_CHANGE_KINDS — the count the pill and the banner show); the
+ * branch's stage marks only decide the pending vs staged bucket.
  */
 export async function loadPendingChanges(
   tx: TransactionRunner,
-  binding: ChatBinding,
+  binding: HeadChat,
 ): Promise<PendingChanges> {
-  const branchId = binding.branchId;
-  const window = chatPendingSql(binding);
+  const all = await loadPendingChangesFor(tx, [binding]);
+  return all.get(binding.chatSessionId) ?? emptyPendingChanges();
+}
 
-  /**
-   * Walk every branched snapshot table once. For each entity, ask
-   * the publish-marks table what stage_state it's in (pending if no
-   * mark exists yet; 'staged' if marked; 'published' if already
-   * shipped and we should hide it).
-   */
-  type Row = { entity_id: string; label: string; detail: string | null; stage_state: string };
-
-  // page_module_content — branch overlay rows since v0.4.0.
-  const contentRows = (await tx.execute(sql`
-    WITH latest AS (
-      SELECT DISTINCT ON (pmcs.page_module_content_id)
-        pmcs.page_module_content_id::text AS entity_id,
-        pmcs.page_id::text AS page_id,
-        pmcs.block_name,
-        pmcs.position
-      FROM page_module_content_snapshots pmcs
-      JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
-      WHERE ${window}
-      ORDER BY pmcs.page_module_content_id, ss.created_at DESC
-    )
-    SELECT
-      l.entity_id,
-      COALESCE(p.title, p.slug) AS label,
-      (p.current_path || ' · ' || l.block_name || '#' || l.position) AS detail,
-      COALESCE(m.stage_state, 'pending') AS stage_state
-    FROM latest l
-    LEFT JOIN pages p ON p.id::text = l.page_id
-    LEFT JOIN chat_branch_publish_marks m
-      ON m.chat_branch_id = ${branchId}::uuid
-     AND m.entity_kind = 'pageModuleContent'
-     AND m.entity_id::text = l.entity_id
-  `)) as unknown as Row[];
-
-  // page snapshots — page metadata edits, SEO included (#1156: marked so
-  // the operator sees an SEO change waiting for Stage).
-  const pageRows = (await tx.execute(sql`
-    WITH latest AS (
-      SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS entity_id
-      FROM page_snapshots ps
-      JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-      WHERE ${window}
-      ORDER BY ps.page_id, ss.created_at DESC
-    ),
-    seo AS (
-      SELECT DISTINCT ps.page_id::text AS entity_id
-      FROM page_snapshots ps
-      JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-      WHERE ${window} AND ss.op_kind LIKE 'pages_seo.%'
-    )
-    SELECT
-      l.entity_id,
-      COALESCE(p.title, p.slug) AS label,
-      (p.current_path || CASE WHEN l.entity_id IN (SELECT entity_id FROM seo) THEN ' · SEO' ELSE '' END) AS detail,
-      COALESCE(m.stage_state, 'pending') AS stage_state
-    FROM latest l
-    LEFT JOIN pages p ON p.id::text = l.entity_id
-    LEFT JOIN chat_branch_publish_marks m
-      ON m.chat_branch_id = ${branchId}::uuid
-     AND m.entity_kind = 'page'
-     AND m.entity_id::text = l.entity_id
-  `)) as unknown as Row[];
-
-  // pageLayout snapshots (placements).
-  const layoutRows = (await tx.execute(sql`
-    WITH latest AS (
-      SELECT DISTINCT ON (pls.page_id) pls.page_id::text AS entity_id
-      FROM page_layout_snapshots pls
-      JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-      WHERE ${window}
-      ORDER BY pls.page_id, ss.created_at DESC
-    )
-    SELECT
-      l.entity_id,
-      COALESCE(p.title, p.slug) AS label,
-      (p.current_path || ' · placements') AS detail,
-      COALESCE(m.stage_state, 'pending') AS stage_state
-    FROM latest l
-    LEFT JOIN pages p ON p.id::text = l.entity_id
-    LEFT JOIN chat_branch_publish_marks m
-      ON m.chat_branch_id = ${branchId}::uuid
-     AND m.entity_kind = 'pageLayout'
-     AND m.entity_id::text = l.entity_id
-  `)) as unknown as Row[];
-
-  // module + template snapshots — global category.
-  const moduleRows = (await tx.execute(sql`
-    WITH latest AS (
-      SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS entity_id
-      FROM module_snapshots ms
-      JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-      WHERE ${window}
-      ORDER BY ms.module_id, ss.created_at DESC
-    )
-    SELECT
-      l.entity_id,
-      m.display_name AS label,
-      m.slug AS detail,
-      COALESCE(marks.stage_state, 'pending') AS stage_state
-    FROM latest l
-    LEFT JOIN modules m ON m.id::text = l.entity_id
-    LEFT JOIN chat_branch_publish_marks marks
-      ON marks.chat_branch_id = ${branchId}::uuid
-     AND marks.entity_kind = 'module'
-     AND marks.entity_id::text = l.entity_id
-  `)) as unknown as Row[];
-
-  const templateRows = (await tx.execute(sql`
-    WITH latest AS (
-      SELECT DISTINCT ON (ts.template_id) ts.template_id::text AS entity_id
-      FROM template_snapshots ts
-      JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-      WHERE ${window}
-      ORDER BY ts.template_id, ss.created_at DESC
-    )
-    SELECT
-      l.entity_id,
-      t.display_name AS label,
-      t.slug AS detail,
-      COALESCE(marks.stage_state, 'pending') AS stage_state
-    FROM latest l
-    LEFT JOIN templates t ON t.id::text = l.entity_id
-    LEFT JOIN chat_branch_publish_marks marks
-      ON marks.chat_branch_id = ${branchId}::uuid
-     AND marks.entity_kind = 'template'
-     AND marks.entity_id::text = l.entity_id
-  `)) as unknown as Row[];
-
-  // v0.8.0 — layout-chrome snapshots (op_kind='layout_modules.set').
-  // These write site_snapshots rows with `entities: []` so no
-  // entity-snapshot table covers them. Surface one entry per
-  // snapshot row, parsing the block name from the description
-  // (layouts.ts stamps "layout_modules.set block=<name>" / similar).
-  // Always stage_state='pending' for this kind — there's no
-  // per-layout publish-marks attribution to do.
-  const layoutChromeRows = (await tx.execute(sql`
-    SELECT
-      ss.id::text AS entity_id,
-      ss.op_kind,
-      ss.description,
-      'pending' AS stage_state
-    FROM site_snapshots ss
-    WHERE ${window}
-      AND ss.op_kind = 'layout_modules.set'
-    ORDER BY ss.created_at DESC
-  `)) as unknown as {
-    entity_id: string;
-    op_kind: string;
-    description: string;
-    stage_state: string;
-  }[];
-
-  // Epic #1107 — shared lists, list types and page types.
-  const listRows = await latestLabelled(tx, window, branchId, {
-    table: "list_snapshots",
-    column: "list_id",
-    markKind: "list",
-    label: sql`COALESCE(e.name, e.slug, l.entity_id)`,
-    detail: sql`e.slug`,
-    join: sql`LEFT JOIN lists e ON e.id::text = l.entity_id`,
-  });
-  const listTypeRows = await latestLabelled(tx, window, branchId, {
-    table: "list_type_snapshots",
-    column: "list_type_id",
-    markKind: "listType",
-    label: sql`COALESCE(e.definition->>'name', e.slug, l.entity_id)`,
-    detail: sql`'list type ' || e.slug`,
-    join: sql`LEFT JOIN list_types e ON e.id::text = l.entity_id`,
-  });
-  const pageTypeRows = await latestLabelled(tx, window, branchId, {
-    table: "page_type_snapshots",
-    column: "page_type_id",
-    markKind: "pageType",
-    label: sql`COALESCE(e.definition->>'name', e.slug, l.entity_id)`,
-    detail: sql`'page type ' || e.slug`,
-    join: sql`LEFT JOIN page_types e ON e.id::text = l.entity_id`,
-  });
-
-  // v0.12.0 — content_instance edits. Each row carries the module slug
-  // + the content_instance's slug/displayName so the Stage picker can
-  // distinguish reusable instances (e.g. "primary-cta") from one-off
-  // per-placement rows.
-  const contentInstanceRows = (await tx.execute(sql`
-    WITH latest AS (
-      SELECT DISTINCT ON (cis.content_instance_id)
-        cis.content_instance_id::text AS entity_id
-      FROM content_instance_snapshots cis
-      JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-      WHERE ${window}
-      ORDER BY cis.content_instance_id, ss.created_at DESC
-    )
-    SELECT
-      l.entity_id,
-      COALESCE(ci.display_name, ci.slug, ci.id::text) AS label,
-      (
-        m.slug
-        || CASE WHEN ci.slug IS NOT NULL THEN ' · ' || ci.slug ELSE '' END
-      ) AS detail,
-      COALESCE(marks.stage_state, 'pending') AS stage_state
-    FROM latest l
-    LEFT JOIN content_instances ci ON ci.id::text = l.entity_id
-    LEFT JOIN modules m ON m.id = ci.module_id
-    LEFT JOIN chat_branch_publish_marks marks
-      ON marks.chat_branch_id = ${branchId}::uuid
-     AND marks.entity_kind = 'contentInstance'
-     AND marks.entity_id::text = l.entity_id
-  `)) as unknown as Row[];
-
-  // Theme edits (tokens, assets, meta) — globals. Before issue #620's
-  // review a theme-only chat listed nothing here, so the Open changes
-  // overview showed it as idle and could not stage it.
-  const themeRows = (await tx.execute(sql`
-    WITH latest AS (
-      SELECT DISTINCT ON (ts.theme_id) ts.theme_id::text AS entity_id
-      FROM theme_snapshots ts
-      JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-      WHERE ${window}
-      ORDER BY ts.theme_id, ss.created_at DESC
-    )
-    SELECT
-      l.entity_id,
-      COALESCE(t.display_name, t.slug, l.entity_id) AS label,
-      t.slug AS detail,
-      COALESCE(marks.stage_state, 'pending') AS stage_state
-    FROM latest l
-    LEFT JOIN themes t ON t.id::text = l.entity_id
-    LEFT JOIN chat_branch_publish_marks marks
-      ON marks.chat_branch_id = ${branchId}::uuid
-     AND marks.entity_kind = 'theme'
-     AND marks.entity_id::text = l.entity_id
-  `)) as unknown as Row[];
-
-  // Plugin private-storage rows. Labelled "<plugin> · <table>" so the
-  // picker groups them by plugin; the row id is the detail.
-  const pluginRowRows = (await tx.execute(sql`
-    WITH latest AS (
-      SELECT DISTINCT ON (prs.row_id)
-        prs.row_id::text AS entity_id, prs.plugin_id, prs.table_name, prs.state
-      FROM plugin_row_snapshots prs
-      JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
-      WHERE ${window}
-      ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
-    )
-    SELECT
-      l.entity_id,
-      COALESCE(p.slug, l.plugin_id::text) || ' · ' || l.table_name AS label,
-      CASE WHEN l.state->>'deletedAt' IS NOT NULL THEN 'deleted ' ELSE '' END
-        || left(l.entity_id, 8) AS detail,
-      COALESCE(marks.stage_state, 'pending') AS stage_state
-    FROM latest l
-    LEFT JOIN plugins p ON p.id = l.plugin_id
-    LEFT JOIN chat_branch_publish_marks marks
-      ON marks.chat_branch_id = ${branchId}::uuid
-     AND marks.entity_kind = 'pluginRow'
-     AND marks.entity_id::text = l.entity_id
-    ORDER BY label, l.entity_id
-  `)) as unknown as Row[];
-
-  function bucketize(
-    rows: Row[],
-    kind: EntityRef["kind"],
-  ): { pending: EntityRef[]; staged: EntityRef[] } {
-    const pending: EntityRef[] = [];
-    const staged: EntityRef[] = [];
-    for (const r of rows) {
-      const ref: EntityRef = {
-        kind,
-        entityId: r.entity_id,
-        label: r.label ?? r.entity_id,
-        ...(r.detail ? { detail: r.detail } : {}),
-      };
-      if (r.stage_state === "staged") staged.push(ref);
-      else if (r.stage_state === "pending") pending.push(ref);
-      // 'published' → drop (already shipped from this branch).
-    }
-    return { pending, staged };
-  }
-
-  const content = bucketize(contentRows, "pageModuleContent");
-  const pages = bucketize(pageRows, "page");
-  const layouts = bucketize(layoutRows, "pageLayout");
-  const modules = bucketize(moduleRows, "module");
-  const templates = bucketize(templateRows, "template");
-  // v0.12.0 — content_instance edits join the globals bucket since
-  // editing a synced instance has cross-page blast radius.
-  const contentInstances = bucketize(contentInstanceRows, "contentInstance");
-  const pluginRows = bucketize(pluginRowRows, "pluginRow");
-  const themes = bucketize(themeRows, "theme");
-
-  // v0.8.0 — layoutChromeRows always stage_state='pending'; bucket
-  // into globals so the Stage modal shows them alongside module /
-  // template / theme edits. Parse the block name from the
-  // description for the detail subtitle when present.
-  const layoutChromePending: EntityRef[] = layoutChromeRows.map((r) => {
-    const blockMatch = /block=([\w-]+)/.exec(r.description);
-    const blockDetail = blockMatch ? `block=${blockMatch[1]}` : r.op_kind;
-    return {
-      kind: "layout" as const,
-      entityId: r.entity_id,
-      label: "Layout chrome",
-      detail: blockDetail,
-    };
-  });
-
-  const lists = bucketize(listRows, "list");
-  const listTypes = bucketize(listTypeRows, "listType");
-  const pageTypes = bucketize(pageTypeRows, "pageType");
-
+function emptyPendingChanges(): PendingChanges {
   return {
-    pending: {
-      pages: [...content.pending, ...pages.pending, ...layouts.pending],
-      globals: [
-        ...modules.pending,
-        ...templates.pending,
-        ...listTypes.pending,
-        ...pageTypes.pending,
-        ...layoutChromePending,
-        ...contentInstances.pending,
-        ...pluginRows.pending,
-        ...themes.pending,
-      ],
-      lists: lists.pending,
-    },
-    staged: {
-      pages: [...content.staged, ...pages.staged, ...layouts.staged],
-      globals: [
-        ...modules.staged,
-        ...templates.staged,
-        ...listTypes.staged,
-        ...pageTypes.staged,
-        ...contentInstances.staged,
-        ...pluginRows.staged,
-        ...themes.staged,
-      ],
-      lists: lists.staged,
-    },
+    pending: { pages: [], globals: [], lists: [] },
+    staged: { pages: [], globals: [], lists: [] },
   };
 }
 
+/** One labelled head entity of a chat, as {@link loadPendingChangesFor} reads it. */
+interface LabelledRow {
+  chat: string;
+  kind: string;
+  entity_id: string;
+  label: string | null;
+  detail: string | null;
+  stage_state: string;
+  description: string | null;
+  op_kind: string | null;
+}
+
+/** Which group of the picker each kind belongs to, in the order the groups list them. */
+const GROUP_OF: Readonly<Record<string, { group: "pages" | "globals" | "lists"; order: number }>> =
+  {
+    pageModuleContent: { group: "pages", order: 0 },
+    page: { group: "pages", order: 1 },
+    pageLayout: { group: "pages", order: 2 },
+    module: { group: "globals", order: 0 },
+    template: { group: "globals", order: 1 },
+    listType: { group: "globals", order: 2 },
+    pageType: { group: "globals", order: 3 },
+    layoutChrome: { group: "globals", order: 4 },
+    contentInstance: { group: "globals", order: 5 },
+    pluginRow: { group: "globals", order: 6 },
+    theme: { group: "globals", order: 7 },
+    list: { group: "lists", order: 0 },
+  };
+
 /**
- * Latest pending snapshot per entity of one snapshot table, labelled from
- * its live row and joined with the branch's stage marks — the shared
- * shape of the list / list type / page type picker rows.
+ * {@link loadPendingChanges} for several chats in one statement: their
+ * head rows, labelled from the live rows by primary key. The cost is the
+ * chats' own pending entities, not the draft's history.
  */
-async function latestLabelled(
+export async function loadPendingChangesFor(
   tx: TransactionRunner,
-  window: SQL,
-  branchId: string,
-  spec: {
-    readonly table: string;
-    readonly column: string;
-    readonly markKind: string;
-    readonly label: SQL;
-    readonly detail: SQL;
-    readonly join: SQL;
-  },
-): Promise<{ entity_id: string; label: string; detail: string | null; stage_state: string }[]> {
-  return (await tx.execute(sql`
-    WITH latest AS (
-      SELECT DISTINCT ON (es.${sql.raw(spec.column)}) es.${sql.raw(spec.column)}::text AS entity_id
-      FROM ${sql.raw(spec.table)} es
-      JOIN site_snapshots ss ON ss.id = es.site_snapshot_id
-      WHERE ${window}
-      ORDER BY es.${sql.raw(spec.column)}, ss.created_at DESC
+  chats: readonly HeadChat[],
+): Promise<Map<string, PendingChanges>> {
+  const out = new Map<string, PendingChanges>();
+  for (const c of chats) out.set(c.chatSessionId, emptyPendingChanges());
+  if (chats.length === 0) return out;
+  const rows = (await tx.execute(sql`
+    WITH c AS (
+      SELECT * FROM unnest(
+        ${uuidArray(chats.map((c) => c.chatSessionId))},
+        ${uuidArray(chats.map((c) => c.branchId))},
+        ${textArray(chats.map((c) => c.kind))}
+      ) AS c(id, branch, branch_kind)
+    ),
+    h AS (
+      -- One row per entity: on an isolated branch a change written outside
+      -- any chat and the chat's own change of it are one pending entity.
+      SELECT DISTINCT ON (c.id, d.entity_kind, d.entity_id, d.entity_sub)
+             c.id AS chat, c.branch, d.entity_kind AS kind, d.entity_id,
+             d.snapshot_row_id, d.page_id, d.plugin_id, d.table_name,
+             bool_or(d.seo_changed)
+               OVER (PARTITION BY c.id, d.entity_kind, d.entity_id, d.entity_sub) AS seo_changed
+        FROM c
+        CROSS JOIN LATERAL (
+          ${chatHeadRowsSql({ id: "c.id", branch: "c.branch", kind: "c.branch_kind" }, pendingChangeKindSql())}
+        ) d
+       ORDER BY c.id, d.entity_kind, d.entity_id, d.entity_sub,
+                d.header_created_at DESC, d.row_created_at DESC
     )
-    SELECT l.entity_id, ${spec.label} AS label, ${spec.detail} AS detail,
-           COALESCE(marks.stage_state, 'pending') AS stage_state
-    FROM latest l
-    ${spec.join}
-    LEFT JOIN chat_branch_publish_marks marks
-      ON marks.chat_branch_id = ${branchId}::uuid
-     AND marks.entity_kind = ${spec.markKind}
-     AND marks.entity_id::text = l.entity_id
-    ORDER BY label, l.entity_id
-  `)) as unknown as {
-    entity_id: string;
-    label: string;
-    detail: string | null;
-    stage_state: string;
-  }[];
+    -- Labels by primary key, one lookup per listed entity: correlated
+    -- subqueries, because joining every label table lets the planner hash
+    -- (seq-scan) all of them, which costs the size of the site.
+    SELECT h.chat::text AS chat, h.kind, h.entity_id::text AS entity_id,
+           CASE h.kind
+             WHEN 'pageModuleContent'
+               THEN (SELECT COALESCE(x.title, x.slug) FROM pages x WHERE x.id = h.page_id)
+             WHEN 'page'
+               THEN (SELECT COALESCE(x.title, x.slug) FROM pages x WHERE x.id = h.entity_id)
+             WHEN 'pageLayout'
+               THEN (SELECT COALESCE(x.title, x.slug) FROM pages x WHERE x.id = h.entity_id)
+             WHEN 'module' THEN (SELECT x.display_name FROM modules x WHERE x.id = h.entity_id)
+             WHEN 'template' THEN (SELECT x.display_name FROM templates x WHERE x.id = h.entity_id)
+             WHEN 'layoutChrome' THEN 'Layout chrome'
+             WHEN 'list' THEN COALESCE(
+               (SELECT COALESCE(x.name, x.slug) FROM lists x WHERE x.id = h.entity_id),
+               h.entity_id::text)
+             WHEN 'listType' THEN COALESCE(
+               (SELECT COALESCE(x.definition->>'name', x.slug) FROM list_types x WHERE x.id = h.entity_id),
+               h.entity_id::text)
+             WHEN 'pageType' THEN COALESCE(
+               (SELECT COALESCE(x.definition->>'name', x.slug) FROM page_types x WHERE x.id = h.entity_id),
+               h.entity_id::text)
+             WHEN 'contentInstance' THEN COALESCE(
+               (SELECT COALESCE(x.display_name, x.slug) FROM content_instances x WHERE x.id = h.entity_id),
+               h.entity_id::text)
+             WHEN 'theme' THEN COALESCE(
+               (SELECT COALESCE(x.display_name, x.slug) FROM themes x WHERE x.id = h.entity_id),
+               h.entity_id::text)
+             WHEN 'pluginRow' THEN COALESCE(
+               (SELECT x.slug FROM plugins x WHERE x.id = h.plugin_id), h.plugin_id::text)
+               || ' · ' || h.table_name
+           END AS label,
+           CASE h.kind
+             WHEN 'pageModuleContent' THEN
+               (SELECT x.current_path FROM pages x WHERE x.id = h.page_id) || ' · ' ||
+               (SELECT x.block_name || '#' || x.position
+                  FROM page_module_content_snapshots x WHERE x.id = h.snapshot_row_id)
+             -- #1156: an SEO change waiting for Stage is marked on its page.
+             WHEN 'page' THEN (SELECT x.current_path FROM pages x WHERE x.id = h.entity_id)
+               || CASE WHEN h.seo_changed THEN ' · SEO' ELSE '' END
+             WHEN 'pageLayout'
+               THEN (SELECT x.current_path FROM pages x WHERE x.id = h.entity_id) || ' · placements'
+             WHEN 'module' THEN (SELECT x.slug FROM modules x WHERE x.id = h.entity_id)
+             WHEN 'template' THEN (SELECT x.slug FROM templates x WHERE x.id = h.entity_id)
+             WHEN 'list' THEN (SELECT x.slug FROM lists x WHERE x.id = h.entity_id)
+             WHEN 'listType'
+               THEN (SELECT 'list type ' || x.slug FROM list_types x WHERE x.id = h.entity_id)
+             WHEN 'pageType'
+               THEN (SELECT 'page type ' || x.slug FROM page_types x WHERE x.id = h.entity_id)
+             WHEN 'contentInstance' THEN (
+               SELECT m.slug || CASE WHEN x.slug IS NOT NULL THEN ' · ' || x.slug ELSE '' END
+                 FROM content_instances x LEFT JOIN modules m ON m.id = x.module_id
+                WHERE x.id = h.entity_id)
+             WHEN 'theme' THEN (SELECT x.slug FROM themes x WHERE x.id = h.entity_id)
+             WHEN 'pluginRow' THEN
+               (SELECT CASE WHEN x.state->>'deletedAt' IS NOT NULL THEN 'deleted ' ELSE '' END
+                  FROM plugin_row_snapshots x WHERE x.id = h.snapshot_row_id)
+               || left(h.entity_id::text, 8)
+           END AS detail,
+           CASE WHEN h.kind = 'layoutChrome' THEN 'pending' ELSE COALESCE(
+             (SELECT mk.stage_state FROM chat_branch_publish_marks mk
+               WHERE mk.chat_branch_id = h.branch AND mk.entity_kind = h.kind
+                 AND mk.entity_id = h.entity_id),
+             'pending') END AS stage_state,
+           CASE WHEN h.kind = 'layoutChrome'
+             THEN (SELECT x.description FROM site_snapshots x WHERE x.id = h.entity_id) END AS description,
+           CASE WHEN h.kind = 'layoutChrome'
+             THEN (SELECT x.op_kind FROM site_snapshots x WHERE x.id = h.entity_id) END AS op_kind
+      FROM h
+     ORDER BY 1, 4, 3
+  `)) as unknown as LabelledRow[];
+
+  // Kind order inside each group, then label and id (the ORDER BY above).
+  const sorted = [...rows].sort(
+    (a, b) => (GROUP_OF[a.kind]?.order ?? 99) - (GROUP_OF[b.kind]?.order ?? 99),
+  );
+  for (const r of sorted) {
+    const changes = out.get(r.chat);
+    const group = GROUP_OF[r.kind];
+    if (!changes || !group) continue;
+    const ref = toRef(r);
+    // A mark 'published' under a pending head is stale: the entity changed
+    // again after it shipped, so the change is pending (#1268: the list
+    // shows exactly what the count counts).
+    const bucket = r.stage_state === "staged" ? changes.staged : changes.pending;
+    bucket[group.group].push(ref);
+  }
+  return out;
+}
+
+function toRef(r: LabelledRow): EntityRef {
+  if (r.kind === "layoutChrome") {
+    // layouts.ts stamps "layout_modules.set block=<name>" (or similar).
+    const block = /block=([\w-]+)/.exec(r.description ?? "");
+    return {
+      kind: "layout",
+      entityId: r.entity_id,
+      label: "Layout chrome",
+      detail: block ? `block=${block[1]}` : (r.op_kind ?? "layout_modules.set"),
+    };
+  }
+  return {
+    kind: r.kind as EntityRef["kind"],
+    entityId: r.entity_id,
+    label: r.label ?? r.entity_id,
+    ...(r.detail ? { detail: r.detail } : {}),
+  };
 }
 
 const stageInput = z
