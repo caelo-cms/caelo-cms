@@ -133,6 +133,7 @@ describe("v0.9.0 branched-create", () => {
   it("cross-chat write-block: chat-2 cannot reference chat-1's branched module", async () => {
     // Seed a template + page on main for chat-2 to write into.
     const t = await execute(registry, adapter, sysCtx, "templates.create", {
+      pageType: "home",
       slug: `${PFX}block-t1`,
       displayName: "T",
       html: '<caelo-slot name="content"></caelo-slot>',
@@ -264,6 +265,7 @@ describe("v0.9.0 branched-create", () => {
 
     // Seed template on main (so pages.create's templateId is usable).
     const t = await execute(registry, adapter, sysCtx, "templates.create", {
+      pageType: "home",
       slug: `${PFX}chain-t1`,
       displayName: "T",
       html: '<caelo-slot name="content"></caelo-slot>',

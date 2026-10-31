@@ -139,7 +139,7 @@ export async function loadPageState(
   const rows = (await tx.execute(sql`
     SELECT slug, title, short_title, template_id, status, version, deleted_at,
            parent_page_id::text AS parent_page_id, page_type_id::text AS page_type_id,
-           properties
+           page_type_confirmed, properties
     FROM pages WHERE id = ${pageId}::uuid LIMIT 1
   `)) as unknown as {
     parent_page_id: string | null;
@@ -151,6 +151,7 @@ export async function loadPageState(
     version: number | string;
     deleted_at: string | Date | null;
     page_type_id: string;
+    page_type_confirmed: boolean;
     properties: unknown;
   }[];
   const r = rows[0];
@@ -172,6 +173,7 @@ export async function loadPageState(
     deletedAt: iso(r.deleted_at),
     parentPageId: r.parent_page_id,
     pageTypeId: r.page_type_id,
+    pageTypeConfirmed: r.page_type_confirmed,
     properties: (properties ?? {}) as Record<string, unknown>,
     terms: terms.map((t) => t.ref),
   };

@@ -123,6 +123,7 @@ beforeAll(async () => {
   if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
 
   const tpl = await sysOp<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: "t590-tpl",
     displayName: "T590",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

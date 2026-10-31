@@ -9,7 +9,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { setTemplateLayoutToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface LayoutDetail {
@@ -38,7 +38,7 @@ export const setTemplateLayoutTool: ToolDefinitionWithHandler<
       slug: input.layoutSlug,
     });
     if (!got.ok) {
-      return { ok: false, content: `layouts.get failed: ${describeError(got.error)}` };
+      return toolError(got.error, `layouts.get failed: ${describeError(got.error)}`);
     }
     const layout = (got.value as { layout: LayoutDetail | null }).layout;
     if (!layout) {
@@ -49,10 +49,7 @@ export const setTemplateLayoutTool: ToolDefinitionWithHandler<
       layoutId: layout.id,
     });
     if (!upd.ok) {
-      return {
-        ok: false,
-        content: `templates.set_layout failed: ${describeError(upd.error)}`,
-      };
+      return toolError(upd.error, `templates.set_layout failed: ${describeError(upd.error)}`);
     }
     return {
       ok: true,

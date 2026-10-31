@@ -72,10 +72,12 @@ afterAll(async () => {
 describe("build list data: first publication", () => {
   it("a published, never-live page carries the build's publishAt; a draft carries none", async () => {
     const tpl = await asSystem(
-      (tx) => tx`SELECT default_template_id::text AS id FROM site_defaults WHERE id = 1`,
+      (tx) =>
+        tx`SELECT definition->>'defaultTemplate' AS id FROM page_types
+           WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL`,
     );
     const templateId = (tpl as { id: string }[])[0]?.id;
-    if (!templateId) throw new Error("no default template seeded");
+    if (!templateId) throw new Error("no home page type seeded");
     const published = await op<{ pageId: string }>("pages.create", {
       slug: `${PFX}-pub`,
       title: "Pub",

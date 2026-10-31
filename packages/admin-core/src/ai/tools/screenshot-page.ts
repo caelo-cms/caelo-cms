@@ -29,7 +29,7 @@ import { z } from "zod";
 import { previewSourceFromQueryApi } from "../../capture/preview-source.js";
 import { capturePreviewScreenshot } from "../preview-screenshot.js";
 import { awaitScreenshot, type ScreenshotViewportSource } from "../screenshot-orchestrator.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { takePreviewScreenshotBudget } from "./_preview-screenshot-budget.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
@@ -260,10 +260,10 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
         { chatBranchId: input.chatBranchId },
       );
       if (!access.ok) {
-        return {
-          ok: false,
-          content: `screenshot_page: ${describeError(access.error)} Omit chatBranchId to capture this chat's own preview.`,
-        };
+        return toolError(
+          access.error,
+          `screenshot_page: ${describeError(access.error)} Omit chatBranchId to capture this chat's own preview.`,
+        );
       }
     }
     // issue #412 — backend selection. Only an interactive chat whose SSE

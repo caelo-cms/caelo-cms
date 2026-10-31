@@ -16,7 +16,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const inputSchema = z
@@ -52,7 +52,7 @@ export const cancelProposalTool: ToolDefinitionWithHandler<Input> = {
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `cancel_proposal failed: ${describeError(r.error)}` };
+      return toolError(r.error, `cancel_proposal failed: ${describeError(r.error)}`);
     }
     const v = r.value as { cancelled: boolean; domain: string | null };
     return {

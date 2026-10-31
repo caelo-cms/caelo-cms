@@ -73,7 +73,8 @@ beforeAll(async () => {
   const mod = await execute(registry, adapter, systemCtx, "modules.create", {
     slug: MODULE_SLUG,
     displayName: "Bulk Factory Test Module",
-    html: "<p>bulk factory test module</p>",
+    html: "<p>{{title}}</p>",
+    fields: [{ name: "title", kind: "text", label: "Title" }],
   });
   if (!mod.ok) throw new Error(`module seed failed: ${JSON.stringify(mod.error)}`);
   moduleId = (mod.value as { moduleId: string }).moduleId;

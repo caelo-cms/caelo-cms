@@ -10,7 +10,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { bulkOptimizeSeoToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
@@ -58,7 +58,7 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
       ...(input.context !== undefined ? { context: input.context } : {}),
     });
     if (!r.ok) {
-      return { ok: false, content: `pages_seo.optimize_many failed: ${describeError(r.error)}` };
+      return toolError(r.error, `pages_seo.optimize_many failed: ${describeError(r.error)}`);
     }
     return {
       ok: true,

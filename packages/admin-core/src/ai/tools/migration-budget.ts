@@ -31,7 +31,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { formatMicrocentsAsMoney, roundsToZeroMicrocents } from "../../ops/imports-cost.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const setBudgetInput = z
@@ -107,7 +107,7 @@ export const setMigrationBudgetTool: ToolDefinitionWithHandler<SetBudgetInput> =
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `set_migration_budget failed: ${describeError(r.error)}` };
+      return toolError(r.error, `set_migration_budget failed: ${describeError(r.error)}`);
     }
     const v = r.value as { ceilingMicrocents: number; currency: string };
     return {
@@ -156,7 +156,7 @@ export const checkRunBudgetTool: ToolDefinitionWithHandler<CheckBudgetInput> = {
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.get_run_cost", input);
     if (!r.ok) {
-      return { ok: false, content: `check_run_budget failed: ${describeError(r.error)}` };
+      return toolError(r.error, `check_run_budget failed: ${describeError(r.error)}`);
     }
     const v = r.value as RunCostResult;
     const currency = v.ceilingCurrency ?? "USD";

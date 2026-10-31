@@ -74,6 +74,7 @@ beforeAll(async () => {
   layoutAId = (layout.value as { layoutId: string }).layoutId;
 
   const tplA = await execute(registry, adapter, SYS, "templates.create", {
+    pageType: "home",
     slug: `${SUFFIX}-tpl-a`,
     displayName: "Template A",
     html: `<div><caelo-slot name="content">_</caelo-slot></div>`,
@@ -87,6 +88,7 @@ beforeAll(async () => {
   });
 
   const tplB = await execute(registry, adapter, SYS, "templates.create", {
+    pageType: "home",
     slug: `${SUFFIX}-tpl-b`,
     displayName: "Template B",
     html: `<section><caelo-slot name="content">_</caelo-slot></section>`,

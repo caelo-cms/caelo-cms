@@ -19,7 +19,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { listParamsSchema, renderToonList } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -110,7 +110,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
       includeDeleted: false,
     });
     if (!listed.ok) {
-      return { ok: false, content: `modules.list failed: ${describeError(listed.error)}` };
+      return toolError(listed.error, `modules.list failed: ${describeError(listed.error)}`);
     }
     const usageRes = await execute(
       toolCtx.registry,
@@ -120,7 +120,10 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
       {},
     );
     if (!usageRes.ok) {
-      return { ok: false, content: `modules.list_usage failed: ${describeError(usageRes.error)}` };
+      return toolError(
+        usageRes.error,
+        `modules.list_usage failed: ${describeError(usageRes.error)}`,
+      );
     }
     const usage = new Map(
       (

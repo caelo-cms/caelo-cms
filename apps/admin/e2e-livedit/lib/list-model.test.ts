@@ -12,7 +12,7 @@ const MENU_TYPE = "11111111-1111-1111-1111-111111111111";
 const MENU = "22222222-2222-2222-2222-222222222222";
 const VOCAB_TYPE = "33333333-3333-3333-3333-333333333333";
 const VOCAB = "44444444-4444-4444-4444-444444444444";
-const DEFAULT_PT = "55555555-5555-5555-5555-555555555555";
+const HOME_PT = "55555555-5555-5555-5555-555555555555";
 const ARTICLE_PT = "66666666-6666-6666-6666-666666666666";
 
 function base(over: Partial<ListModelSnapshot> = {}): ListModelSnapshot {
@@ -24,7 +24,7 @@ function base(over: Partial<ListModelSnapshot> = {}): ListModelSnapshot {
     modules: [],
     chrome: [],
     instanceValues: [],
-    defaultPageTypeId: DEFAULT_PT,
+    homePageTypeId: HOME_PT,
     toolText: "",
     lastAssistant: "",
     ...over,
@@ -151,15 +151,15 @@ describe("blogCategoryFacts", () => {
       },
     ],
     pageTypes: [
-      { id: DEFAULT_PT, slug: "page", def: { vocabularies: [{ list: VOCAB }] } },
+      { id: HOME_PT, slug: "page", def: { vocabularies: [{ list: VOCAB }] } },
       { id: ARTICLE_PT, slug: "article", def: { vocabularies: [{ list: VOCAB }] } },
     ],
     pages: [
       { id: "1", slug: "a", title: "A", pageTypeId: ARTICLE_PT, terms: [`caelo:term/${VOCAB}/a`] },
       { id: "2", slug: "b", title: "B", pageTypeId: ARTICLE_PT, terms: [`caelo:term/${VOCAB}/b`] },
       { id: "3", slug: "c", title: "C", pageTypeId: ARTICLE_PT, terms: [`caelo:term/${VOCAB}/c`] },
-      // A default-typed page with a term is no article.
-      { id: "4", slug: "d", title: "D", pageTypeId: DEFAULT_PT, terms: [`caelo:term/${VOCAB}/a`] },
+      // A home-typed page with a term is no article.
+      { id: "4", slug: "d", title: "D", pageTypeId: HOME_PT, terms: [`caelo:term/${VOCAB}/a`] },
     ],
     modules: [
       {

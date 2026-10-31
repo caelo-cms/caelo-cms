@@ -63,8 +63,8 @@ beforeAll(async () => {
   pageId = await admin(async (tx) => {
     const [tpl] = (await tx`SELECT id::text AS id FROM templates LIMIT 1`) as { id: string }[];
     const [page] = (await tx`
-      INSERT INTO pages (slug, title, template_id, current_path)
-      VALUES (${`${P}-page`}, 'P', ${tpl?.id}::uuid, ${`/${P}-page`}) RETURNING id::text AS id`) as {
+      INSERT INTO pages (slug, title, template_id, current_path, page_type_confirmed)
+      VALUES (${`${P}-page`}, 'P', ${tpl?.id}::uuid, ${`/${P}-page`}, true) RETURNING id::text AS id`) as {
       id: string;
     }[];
     return page?.id ?? "";

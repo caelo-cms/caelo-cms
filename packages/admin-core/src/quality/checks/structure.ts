@@ -38,8 +38,11 @@
  *   module keeps links to most published pages of one page type by hand
  *   (local list entries, cards in a module-list, scalar href fields)
  *   instead of a list field bound to a page query. Error while pages of
- *   the type are missing, warning when the set is complete; the default
- *   page type is exempt.
+ *   the type are missing, warning when the set is complete; pages whose
+ *   type nobody chose are exempt.
+ * - `structure/unconfirmed-page-type` (warning, #1276,
+ *   structure-page-type.ts): pages that sit on a page type nobody chose
+ *   (the old stored default type) — one site-wide finding with the paths.
  * - Module JS (#1198, structure-js.ts): `structure/foreign-module-js` and
  *   `structure/js-rendered-content` (errors), `structure/site-wide-module-js`
  *   and `structure/js-written-text` (warnings) — a script in the wrong
@@ -71,6 +74,7 @@ import {
 } from "./structure-analysis.js";
 import { moduleJsFindings } from "./structure-js.js";
 import { manualListingFindings, type StructurePageIndex } from "./structure-listing.js";
+import { unconfirmedPageTypeFindings } from "./structure-page-type.js";
 
 export const STRUCTURE_CHECK_ID = "structure";
 
@@ -142,6 +146,7 @@ export function structureFindings(
     ...repeatedItems(analysis, [...groups.exact, ...groups.near], byId),
     ...navigationFindings(analysis.linkGroups, byId),
     ...manualListingFindings(analysis.listingGroups, pages, pageIndex, byId),
+    ...unconfirmedPageTypeFindings(pageIndex),
     ...moduleJsFindings(analysis, pages, modules, layouts),
   ];
   // Errors first (stable within a severity), so a cut keeps what blocks.

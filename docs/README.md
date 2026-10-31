@@ -30,6 +30,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [dev/password-management.md](./dev/password-management.md) — password policy, change, reset and Owner reset in code.
 - [dev/capture-job.md](./dev/capture-job.md) — server-side screenshots and page renders outside the admin: the GCP capture job, the signed hand-over of a branch preview, the one-at-a-time in-process browser on self-hosted installs (#1217).
 - [dev/live-refresh.md](./dev/live-refresh.md) — how the editor stays current without timer polling: live topics over the chat stream and `/api/live-events`, the client hub, adding a live surface (#1215).
+- [dev/ai-tool-texts.md](./dev/ai-tool-texts.md) — what stays in an AI tool description and what lives only in the error; the AI-facing error shape (`errors[]` with absolute paths, `failureKind`, no resend wording, no Postgres internals) (#1277); kept failed calls fixed with `retry_tool_call` (#1275).
 - [internal/bug-intake.md](./internal/bug-intake.md) — how to operate a bug intake (setup, signed image, configuration) that files one GitHub issue per defect.
 
 ## AI internals

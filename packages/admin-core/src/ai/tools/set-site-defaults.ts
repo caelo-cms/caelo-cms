@@ -2,26 +2,22 @@
 
 /**
  * P6.7.6 / v0.2.14 — `set_site_defaults`. AI-callable per the §11.A
- * exception in `ops/site_defaults.ts` (existing pages keep their
- * pinned ids; the change only affects future creates that omit the
- * explicit ids; snapshot-revertable). The AI can resolve a request
- * like "make site-default the default layout" into a single tool
- * call without operator round-trips.
+ * exception in `ops/site_defaults.ts` (existing templates keep their
+ * pinned layout; the change only affects future templates created
+ * without one; snapshot-revertable). The AI can resolve a request like
+ * "make site-default the default layout" into a single tool call
+ * without operator round-trips. #1276: the default layout is the only
+ * default left — pages name their page type, templates theirs.
  *
  * Slugs are accepted (not ids) so the AI can pass natural names.
  */
 
 import { execute } from "@caelo-cms/query-api";
 import { setSiteDefaultsToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface LayoutDetail {
-  id: string;
-  slug: string;
-}
-
-interface TemplateDetail {
   id: string;
   slug: string;
 }
@@ -33,93 +29,38 @@ export const setSiteDefaultsTool: ToolDefinitionWithHandler<
   // 2026-07 — STATIC on purpose: tool definitions are part of Anthropic's
   // prompt-cache prefix, so state-dependent text here busted the cache on
   // every site change. Current values + valid slugs are read with
-  // get_site_defaults / list_layouts / list_templates.
+  // get_site_defaults / list_layouts.
   description:
-    "Set the site-wide default layout and/or template for new pages created without one. Safe to call directly: existing pages keep theirs.\n" +
-    "CORE RULES: pass slugs (e.g. `site-default`), not UUIDs; current values via `get_site_defaults`, slugs via `list_layouts`/`list_templates`. " +
-    "FIRST set needs both fields, afterwards only the changed one. No layouts/templates yet -> `create_layout` -> `create_template` first.",
+    "Set the site-wide default layout for new templates created without one. Safe to call directly: existing templates keep theirs. " +
+    "Pass the slug (e.g. `site-default`, from `list_layouts`), not a UUID. No layouts yet -> `create_layout` first.",
   schema: setSiteDefaultsToolInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
+    required: ["defaultLayoutSlug"],
     properties: {
       defaultLayoutSlug: { type: "string", minLength: 1, maxLength: 120 },
-      defaultTemplateSlug: { type: "string", minLength: 1, maxLength: 120 },
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    // Resolve slugs to ids via existing read ops first; that way slug
-    // typos surface a clear "not found" rather than the op-level
-    // ActorScopeRejected (which would mask the real issue).
-    const currentRes = await execute(
-      toolCtx.registry,
-      toolCtx.adapter,
-      ctx,
-      "site_defaults.get",
-      {},
-    );
-    if (!currentRes.ok) {
-      return {
-        ok: false,
-        content: `site_defaults.get failed: ${describeError(currentRes.error)}`,
-      };
+    // Resolve the slug via the read op first; that way a typo surfaces a
+    // clear "not found" rather than the op-level ActorScopeRejected.
+    const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.get", {
+      slug: input.defaultLayoutSlug,
+    });
+    if (!got.ok) {
+      return toolError(got.error, `layouts.get failed: ${describeError(got.error)}`);
     }
-    const current = (
-      currentRes.value as {
-        defaults: { defaultLayoutId: string; defaultTemplateId: string } | null;
-      }
-    ).defaults;
-
-    let layoutId = current?.defaultLayoutId;
-    if (input.defaultLayoutSlug !== undefined) {
-      const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.get", {
-        slug: input.defaultLayoutSlug,
-      });
-      if (!got.ok) {
-        return { ok: false, content: `layouts.get failed: ${describeError(got.error)}` };
-      }
-      const layout = (got.value as { layout: LayoutDetail | null }).layout;
-      if (!layout) {
-        return { ok: false, content: `layout "${input.defaultLayoutSlug}" not found` };
-      }
-      layoutId = layout.id;
+    const layout = (got.value as { layout: LayoutDetail | null }).layout;
+    if (!layout) {
+      return { ok: false, content: `layout "${input.defaultLayoutSlug}" not found` };
     }
-
-    let templateId = current?.defaultTemplateId;
-    if (input.defaultTemplateSlug !== undefined) {
-      const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "templates.list", {});
-      if (!listed.ok) {
-        return { ok: false, content: `templates.list failed: ${describeError(listed.error)}` };
-      }
-      const tpl = (listed.value as { templates: TemplateDetail[] }).templates.find(
-        (t) => t.slug === input.defaultTemplateSlug,
-      );
-      if (!tpl) {
-        return { ok: false, content: `template "${input.defaultTemplateSlug}" not found` };
-      }
-      templateId = tpl.id;
-    }
-
-    if (!layoutId || !templateId) {
-      return {
-        ok: false,
-        content:
-          "site_defaults is empty and only one of layout/template was supplied — provide both on first set",
-      };
-    }
-
     const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "site_defaults.set", {
-      defaultLayoutId: layoutId,
-      defaultTemplateId: templateId,
+      defaultLayoutId: layout.id,
     });
     if (!res.ok) {
-      return { ok: false, content: `site_defaults.set failed: ${describeError(res.error)}` };
+      return toolError(res.error, `site_defaults.set failed: ${describeError(res.error)}`);
     }
-    return {
-      ok: true,
-      content: `site defaults updated (layout=${input.defaultLayoutSlug ?? "unchanged"}, template=${
-        input.defaultTemplateSlug ?? "unchanged"
-      })`,
-    };
+    return { ok: true, content: `default layout set to ${input.defaultLayoutSlug}` };
   },
 };

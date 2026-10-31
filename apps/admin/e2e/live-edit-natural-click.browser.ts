@@ -58,7 +58,7 @@ test("link click without modifier navigates the iframe; URL display updates", as
           VALUES (\${process.env.TPL_SLUG}, 'le', '<body><caelo-slot name="content">_</caelo-slot></body>', '', (SELECT id FROM layouts WHERE slug = 'site-default'))
           RETURNING id::text AS id\`;
         out.tpl = tpl[0].id;
-        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
+        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${out.tpl}::uuid, 'content', 'Content', 0)\`;
         const modA = await tx\`
           INSERT INTO modules (slug, display_name, type, html)
@@ -69,13 +69,13 @@ test("link click without modifier navigates the iframe; URL display updates", as
           VALUES (\${process.env.MOD_B_SLUG}, 'B', \${process.env.MOD_B_SLUG}, '<h1>PAGE_B_LANDED</h1>')
           RETURNING id::text AS id\`;
         const pgA = await tx\`
-          INSERT INTO pages (slug, title, template_id, status)
-          VALUES (\${process.env.PAGE_A_SLUG}, 'A', \${out.tpl}::uuid, 'draft')
+          INSERT INTO pages (slug, title, template_id, status, page_type_confirmed)
+          VALUES (\${process.env.PAGE_A_SLUG}, 'A', \${out.tpl}::uuid, 'draft', true)
           RETURNING id::text AS id\`;
         out.pgA = pgA[0].id;
         const pgB = await tx\`
-          INSERT INTO pages (slug, title, template_id, status)
-          VALUES (\${process.env.PAGE_B_SLUG}, 'B', \${out.tpl}::uuid, 'draft')
+          INSERT INTO pages (slug, title, template_id, status, page_type_confirmed)
+          VALUES (\${process.env.PAGE_B_SLUG}, 'B', \${out.tpl}::uuid, 'draft', true)
           RETURNING id::text AS id\`;
         out.pgB = pgB[0].id;
         const ciA = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${modA[0].id}::uuid, '{}'::jsonb) RETURNING id::text AS id\`;

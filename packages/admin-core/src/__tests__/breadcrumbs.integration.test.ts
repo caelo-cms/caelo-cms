@@ -97,6 +97,7 @@ beforeAll(async () => {
   });
 
   const tpl = await run<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: "t1142-tpl",
     displayName: "T1142",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
@@ -262,6 +263,7 @@ describe("#1142 breadcrumbs", () => {
     const created = await run<{ pageId: string }>("pages.create", {
       slug: "t1142-long",
       title: longTitle,
+      pageType: "home",
     });
     const page = await run<{ page: { shortTitle: string } }>("pages.get", {
       pageId: created.pageId,

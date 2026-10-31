@@ -17,7 +17,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const deleteMediaManyInput = z
@@ -42,7 +42,7 @@ export const deleteMediaManyTool: ToolDefinitionWithHandler<DeleteMediaManyInput
       force: false,
     });
     if (!r.ok) {
-      return { ok: false, content: `media.delete_many failed: ${describeError(r.error)}` };
+      return toolError(r.error, `media.delete_many failed: ${describeError(r.error)}`);
     }
     const v = r.value as {
       deleted: number;

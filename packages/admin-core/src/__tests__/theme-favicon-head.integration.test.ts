@@ -189,6 +189,7 @@ beforeAll(async () => {
   await run("themes.set_asset", { slot: "favicon", mediaId: faviconId });
 
   const tpl = (await run("templates.create", {
+    pageType: "home",
     slug: `${PREFIX}-tpl`,
     displayName: "Favicon head",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

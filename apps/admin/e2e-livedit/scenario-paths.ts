@@ -292,6 +292,20 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
     ],
   },
   {
+    // #1275 — a kept failed write call is patched with retry_tool_call.
+    id: "retry-tool-call",
+    file: "scenario-retry-tool-call.browser.ts",
+    paths: [
+      `${A}/ai/tools/retry-tool-call.ts`,
+      `${A}/ai/tools/_retry-*.ts`,
+      `${A}/ai/tools/dispatch.ts`,
+      `${A}/ai/auto-recovery.ts`,
+      `${A}/ai/chat-runner/tool-dispatch.ts`,
+      `${A}/ops/chat/messages.ts`,
+      `${A}/lists/page-type-resolve.ts`,
+    ],
+  },
+  {
     id: "consent",
     file: "scenario-consent.browser.ts",
     paths: [...PLUGIN_RUNTIME, "packages/plugins/consent-manager/**"],

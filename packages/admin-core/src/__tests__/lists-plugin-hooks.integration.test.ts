@@ -32,7 +32,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
-import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
+import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -185,7 +185,7 @@ beforeAll(async () => {
               (SELECT id FROM layouts WHERE slug = 'site-default'))
       RETURNING id::text AS id`) as unknown as { id: string }[];
     const templateId = tpl[0]?.id ?? "";
-    await adoptTemplateIntoDefaultPageType(tx, templateId);
+    await adoptTemplateIntoHomePageType(tx, templateId);
     await tx`INSERT INTO template_blocks (template_id, name, display_name, position)
              VALUES (${templateId}::uuid, 'content', 'Content', 0)`;
     const fields = JSON.stringify([
@@ -207,8 +207,8 @@ beforeAll(async () => {
       INSERT INTO content_instances (module_id, "values") VALUES (${mod[0]?.id}::uuid, '{}'::jsonb)
       RETURNING id::text AS id`) as unknown as { id: string }[];
     const page = (await tx`
-      INSERT INTO pages (slug, short_title, title, template_id, status)
-      VALUES (${PAGE_SLUG}, 'P', 'P', ${templateId}::uuid, 'published')
+      INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed)
+      VALUES (${PAGE_SLUG}, 'P', 'P', ${templateId}::uuid, 'published', true)
       RETURNING id::text AS id`) as unknown as { id: string }[];
     pageId = page[0]?.id ?? "";
     await tx`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)

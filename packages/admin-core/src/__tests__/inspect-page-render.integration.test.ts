@@ -96,6 +96,7 @@ describe("inspect_page_render tool (v0.2.69)", () => {
 
     // 2. Seed a template bound to the layout, with a content slot.
     const tplR = await execute(registry, adapter, systemCtx, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "Inspect Template",
       html: '<article class="page"><caelo-slot name="content">_</caelo-slot></article>',

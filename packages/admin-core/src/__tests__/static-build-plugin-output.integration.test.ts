@@ -205,6 +205,7 @@ beforeAll(async () => {
   if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
 
   const { templateId } = await op<{ templateId: string }>(SYS, "templates.create", {
+    pageType: "home",
     slug: `${PFX}tpl`,
     displayName: "T605",
     html: `<!doctype html><html lang="en"><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

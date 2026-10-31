@@ -45,6 +45,7 @@ async function createStatus(slug: string, status?: "draft" | "published"): Promi
   const r = await execute(registry, adapter, SYS, "pages.create", {
     slug,
     title: slug,
+    pageType: "home",
     ...(status ? { status } : {}),
   });
   if (!r.ok) throw new Error(`create ${slug}: ${JSON.stringify(r.error)}`);

@@ -267,6 +267,7 @@ describe("#620 lock takeover", () => {
 
   it("adopts the rows the holder created that an adopted page layout points at", async () => {
     const tpl = await execute(registry, adapter, SYS, "templates.create", {
+      pageType: "home",
       slug: `${PFX}tpl`,
       displayName: "T",
       html: "<main>{{content}}</main>",

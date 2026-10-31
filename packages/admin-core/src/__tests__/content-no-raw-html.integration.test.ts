@@ -54,6 +54,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
 
   const tpl = await execute(registry, adapter, systemCtx, "templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "T",
     html: "<body></body>",

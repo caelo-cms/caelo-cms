@@ -21,8 +21,8 @@
  *
  * #1256 — a guides hub kept as a `module-list` of card modules (each card
  * a `url` field) is `structure/manual-page-listing`: an error naming the
- * guide it misses, read through the real sources (pages, page types, the
- * default page type); the same hub as a list field bound to a page query
+ * guide it misses, read through the real sources (pages, page types); the
+ * same hub as a list field bound to a page query
  * is clean.
  */
 
@@ -320,6 +320,7 @@ beforeAll(async () => {
 
   templateId = (
     await op<{ templateId: string }>(HUMAN, "templates.create", {
+      pageType: "home",
       slug: `${PFX}tpl`,
       displayName: "T",
       html: `<!doctype html><html lang="en"><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
@@ -434,16 +435,15 @@ describe("the core structure check (#820)", () => {
 
   it("a hub of hand-kept guide cards is a manual page listing; a page query is clean (#1256)", async () => {
     const guideType = `${PFX}guide`;
-    // The hubs are ordinary pages: the site's default page type (exempt).
-    const plain = (
-      await op<{ defaults: { defaultPageTypeSlug: string } }>(HUMAN, "site_defaults.get", {})
-    ).defaults.defaultPageTypeSlug;
+    // The hubs are pages of another type (the migration-seeded `home`).
+    const plain = "home";
     await op(HUMAN, "page_types.upsert_many", {
       pageTypes: [
         {
           slug: guideType,
           name: "Guide",
           purpose: "How-to guides, listed on the guides hub.",
+          collection: true,
           templates: [templateId],
           defaultTemplate: templateId,
         },

@@ -33,12 +33,12 @@ test.beforeAll(() => {
         INSERT INTO templates (slug, display_name, html, css, layout_id)
         VALUES (\${process.env.TPL_SLUG}, 'mv', '<body><caelo-slot name="content">_</caelo-slot><caelo-slot name="sidebar">_</caelo-slot></body>', '', \${layout}::uuid)
         RETURNING id::text AS id\`)[0])?.id;
-      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl}::text)\`;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl}::text)\`;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES
         (\${tpl}::uuid, 'content', 'Content', 0),
         (\${tpl}::uuid, 'sidebar', 'Sidebar', 1)\`;
       const m = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.MOD_SLUG}, 'mv', \${process.env.MOD_SLUG}, '<p>MV</p>') RETURNING id::text AS id\`)[0])?.id;
-      const pg = ((await tx\`INSERT INTO pages (slug, short_title, title, template_id, status) VALUES (\${process.env.PAGE_SLUG}, 'MV', 'MV', \${tpl}::uuid, 'draft') RETURNING id::text AS id\`)[0])?.id;
+      const pg = ((await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed) VALUES (\${process.env.PAGE_SLUG}, 'MV', 'MV', \${tpl}::uuid, 'draft', true) RETURNING id::text AS id\`)[0])?.id;
       const ci = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${m}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;
       await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id) VALUES (\${pg}::uuid, 'content', 0, \${m}::uuid, \${ci}::uuid)\`;
     });

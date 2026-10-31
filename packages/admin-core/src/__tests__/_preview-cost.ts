@@ -122,15 +122,15 @@ export async function setupCostSite(opts: {
   const seedFillerPages = async (from: number, to: number): Promise<void> => {
     await asSystem(adminUrl, async (tx) => {
       const [d] = (await tx`
-        SELECT default_template_id::text AS t, default_page_type_id::text AS pt
-        FROM site_defaults WHERE id = 1
+        SELECT definition->>'defaultTemplate' AS t, id::text AS pt
+        FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL
       `) as { t: string; pt: string }[];
-      if (!d) throw new Error("site_defaults seed missing");
+      if (!d) throw new Error("the migration-seeded home page type is missing");
       for (let start = from; start < to; start += 500) {
         const end = Math.min(start + 500, to);
         await tx.unsafe(
-          `INSERT INTO pages (slug, title, short_title, template_id, page_type_id, status, current_path)
-           SELECT 'cost-filler-' || g, 'Filler ' || g, 'Filler ' || g, $1::uuid, $2::uuid,
+          `INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, status, current_path)
+           SELECT 'cost-filler-' || g, 'Filler ' || g, 'Filler ' || g, $1::uuid, $2::uuid, true,
                   CASE WHEN g % 2 = 0 THEN 'published' ELSE 'draft' END, '/cost-filler-' || g
            FROM generate_series(${start}, ${end - 1}) g`,
           [d.t, d.pt],
@@ -194,6 +194,7 @@ export async function setupCostSite(opts: {
   const page = await sysOp<{ pageId: string }>("pages.create", {
     slug: "cost-page",
     title: "Cost page",
+    pageType: "home",
   });
   await sysOp("pages.set_modules", {
     pageId: page.pageId,

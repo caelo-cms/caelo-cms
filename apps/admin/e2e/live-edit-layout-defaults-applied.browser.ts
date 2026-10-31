@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.7.6 review pass — verifies that `pages.create` resolves a missing
- * `templateId` from `site_defaults`. Asserts the no-fallback contract:
- * defaults live in stored data, consulted at create time, not silently
- * substituted at render time.
+ * #1276 — every page has a chosen page type. `pages.create` without
+ * `pageType` (and without a template of exactly one type) is refused with
+ * the type list; with `pageType` it resolves the type's default template
+ * at create time (stored data — the type's `defaultTemplate` — never a
+ * render-time substitute, CLAUDE.md §2). Supersedes the P6.7.6 check that
+ * a missing templateId resolved from `site_defaults.default_template_id`,
+ * which no longer exists.
  */
 
 import { spawnSync } from "node:child_process";
@@ -36,7 +39,7 @@ test.afterAll(() => {
   );
 });
 
-test("pages.create with no templateId resolves from site_defaults", () => {
+test("pages.create needs a page type; with one it takes the type's default template", () => {
   const r = spawnSync(
     "bun",
     [
@@ -60,39 +63,48 @@ test("pages.create with no templateId resolves from site_defaults", () => {
         requestId: "e2e-defaults-applied",
       };
 
+      const refused = await execute(registry, adapter, ctx, "pages.create", {
+        slug: process.env.PAGE_SLUG,
+        title: "Defaults Applied",
+      });
       const created = await execute(registry, adapter, ctx, "pages.create", {
         slug: process.env.PAGE_SLUG,
         title: "Defaults Applied",
-        // templateId intentionally omitted — resolver must fall back
-        // to site_defaults.default_template_id at create time.
+        pageType: "home",
       });
       if (!created.ok) throw new Error("pages.create failed: " + JSON.stringify(created.error));
 
-      // Read site_defaults and the new page's template_id; they must match.
       const c = new SQL(process.env.ADMIN_DATABASE_URL);
-      let pageRow, defaultsRow;
+      let pageRow, typeRow;
       await c.begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
         pageRow = (await tx\`
-          SELECT template_id::text AS template_id FROM pages
+          SELECT template_id::text AS template_id, page_type_confirmed FROM pages
           WHERE slug = \${process.env.PAGE_SLUG} LIMIT 1
         \`)[0];
-        defaultsRow = (await tx\`
-          SELECT default_template_id::text AS default_template_id FROM site_defaults WHERE id = 1
+        typeRow = (await tx\`
+          SELECT definition->>'defaultTemplate' AS default_template FROM page_types
+          WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL
         \`)[0];
       });
       await c.end();
-      process.stdout.write(JSON.stringify({ pageRow, defaultsRow }));
+      process.stdout.write(JSON.stringify({
+        refused: refused.ok ? null : refused.error.message,
+        pageRow,
+        typeRow,
+      }));
       `,
     ],
     { env: { ...process.env, PAGE_SLUG }, encoding: "utf8" },
   );
   if (r.status !== 0) throw new Error(r.stderr);
   const parsed = JSON.parse(r.stdout) as {
-    pageRow: { template_id: string } | undefined;
-    defaultsRow: { default_template_id: string } | undefined;
+    refused: string | null;
+    pageRow: { template_id: string; page_type_confirmed: boolean } | undefined;
+    typeRow: { default_template: string } | undefined;
   };
-  expect(parsed.pageRow?.template_id).toBeTruthy();
-  expect(parsed.defaultsRow?.default_template_id).toBeTruthy();
-  expect(parsed.pageRow?.template_id).toBe(parsed.defaultsRow?.default_template_id ?? "");
+  expect(parsed.refused).toContain("pageType is required");
+  expect(parsed.refused).toContain('"home"');
+  expect(parsed.pageRow?.template_id).toBe(parsed.typeRow?.default_template ?? "missing");
+  expect(parsed.pageRow?.page_type_confirmed).toBe(true);
 });

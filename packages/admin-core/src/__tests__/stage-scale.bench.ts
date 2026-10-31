@@ -380,6 +380,7 @@ beforeAll(
 
     templateId = (
       await ok<{ templateId: string }>("templates.create", {
+        pageType: "home",
         slug: "bench-tpl",
         displayName: "Bench",
         html: `<html><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

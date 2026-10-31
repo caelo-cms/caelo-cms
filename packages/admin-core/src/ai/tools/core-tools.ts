@@ -108,6 +108,12 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // AI that must tool-search for the reporting channel while confused
   // defeats the purpose (2026-07, run B4 selector-crop diagnosis).
   "bug_report",
+  // #1275 — every kept failure (a wrong page type in a build_page, a bad
+  // field value) names retry_tool_call as its fix. Deferred, the fix would
+  // pay a tool search first (50–130k uncached input tokens, see the reads
+  // above) to save a resend; loaded, it costs a short definition of cached
+  // prefix.
+  "retry_tool_call",
   // Progressive-disclosure skills entry point. The `## Skills` index lists
   // every active skill; the model calls load_skill the moment a task matches
   // one. Deferring it behind tool search would add a discovery round-trip in

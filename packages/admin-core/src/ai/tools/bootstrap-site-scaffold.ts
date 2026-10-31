@@ -3,7 +3,10 @@
 /**
  * v0.6.0 W4 — composite workflow tool. Bootstraps a fresh install with
  * a sane default layout + template + site_defaults pinning in as few
- * tool calls as the propose/execute boundary allows.
+ * tool calls as the propose/execute boundary allows. #1276: the template
+ * it creates serves a page type (`templatePageType`, default `home`,
+ * created with the template when it does not exist), and site defaults
+ * hold only the layout — pages name their page type.
  *
  * The AI repeatedly calls this tool; each invocation makes forward
  * progress on whatever stage is incomplete:
@@ -30,7 +33,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { bootstrapSiteScaffoldToolInput } from "@caelo-cms/shared";
 import { blockPlacementGuide } from "./_block-roles.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const DEFAULT_LAYOUT_HTML = `<!doctype html>
@@ -47,6 +50,14 @@ const DEFAULT_LAYOUT_HTML = `<!doctype html>
 </html>`;
 
 const DEFAULT_TEMPLATE_HTML = `<caelo-slot name="content"></caelo-slot>`;
+
+/** The page type of the scaffold's template when the caller names none. */
+const DEFAULT_TEMPLATE_PAGE_TYPE = {
+  slug: "home",
+  name: "Home page",
+  purpose: "The front page of the site: the first impression and the way into every section.",
+  collection: false,
+};
 
 /** The slice of a layouts.list / templates.list row this tool reads. */
 interface ScaffoldEntity {
@@ -68,8 +79,8 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
   description:
     "Bootstrap a fresh install (layout + template + site defaults) — when the status note says 'needs setup' for them. Idempotent: each call detects and runs the next missing stage; the RESULT says which ran and what next.\n" +
     "- No layout: queues a layout PROPOSAL the operator approves on the chat's card. Don't claim it exists; after approval call this tool AGAIN.\n" +
-    "- Layout exists: creates the template + pins site defaults directly. All exist: no-op.\n" +
-    "All inputs optional; defaults = header/content/footer layout, single-block `home` template, pinned defaults.",
+    "- Layout exists: creates the template + pins the default layout directly. All exist: no-op.\n" +
+    "All inputs optional; defaults = header/content/footer layout, single-block `home` template of page type `home`, pinned layout.",
   // Static on purpose (prompt cache): the stage is detected server-side and
   // the result names the stage that ran plus the next step.
   schema: bootstrapSiteScaffoldToolInput,
@@ -94,6 +105,22 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       },
       templateSlug: { type: "string", minLength: 1, maxLength: 120 },
       templateDisplayName: { type: "string", minLength: 1, maxLength: 256 },
+      templatePageType: {
+        type: "object",
+        additionalProperties: false,
+        required: ["slug", "name", "purpose", "collection"],
+        description:
+          "Page type the template serves (joins it when the slug exists, else creates it). Default `home`.",
+        properties: {
+          slug: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
+          name: { type: "string", minLength: 1, maxLength: 200 },
+          purpose: { type: "string", minLength: 1, maxLength: 1000 },
+          collection: {
+            type: "boolean",
+            description: "true: many similar pages to list or query; false: standalone pages.",
+          },
+        },
+      },
       setAsDefaults: { type: "boolean" },
     },
   },
@@ -102,6 +129,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     const layoutDisplayName = input.layoutDisplayName ?? "Site default";
     const templateSlug = input.templateSlug ?? "home";
     const templateDisplayName = input.templateDisplayName ?? "Home template";
+    const templatePageType = input.templatePageType ?? DEFAULT_TEMPLATE_PAGE_TYPE;
     const setAsDefaults = input.setAsDefaults ?? true;
     const userBlocks =
       input.layoutBlocks && input.layoutBlocks.length > 0
@@ -128,7 +156,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       includeDeleted: false,
     });
     if (!layoutsR.ok) {
-      return { ok: false, content: `layouts.list failed: ${describeError(layoutsR.error)}` };
+      return toolError(layoutsR.error, `layouts.list failed: ${describeError(layoutsR.error)}`);
     }
     const layouts = (layoutsR.value as { layouts: ScaffoldEntity[] }).layouts;
     if (layouts.length === 0) {
@@ -141,10 +169,10 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
         blocks,
       });
       if (!res.ok) {
-        return {
-          ok: false,
-          content: `bootstrap stage-0 (layouts.propose_create) failed: ${describeError(res.error)}`,
-        };
+        return toolError(
+          res.error,
+          `bootstrap stage-0 (layouts.propose_create) failed: ${describeError(res.error)}`,
+        );
       }
       const v = res.value as { proposalId: string; preview: { blockCount: number } };
       // Canonical "Queued proposal …" prefix so ChatPanel renders the
@@ -161,33 +189,50 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       includeDeleted: false,
     });
     if (!templatesR.ok) {
-      return { ok: false, content: `templates.list failed: ${describeError(templatesR.error)}` };
+      return toolError(
+        templatesR.error,
+        `templates.list failed: ${describeError(templatesR.error)}`,
+      );
     }
     const templates = (templatesR.value as { templates: ScaffoldEntity[] }).templates;
     // layouts.length > 0 was checked above (STAGE 0 returned early when
     // empty); first-element access here is safe.
     const targetLayout = layouts.find((l) => l.slug === layoutSlug) ?? layouts[0];
     if (!targetLayout) {
-      return { ok: false, content: "bootstrap_site_scaffold: no layout available (unexpected)" };
+      return {
+        ok: false,
+        content:
+          "bootstrap_site_scaffold: no layout available — a defect in Caelo, reported automatically",
+        failureKind: "internal",
+      };
     }
 
     let createdTemplateId: string | null = null;
     if (templates.length === 0) {
       // STAGE 1 — create the template directly (templates.create is
       // AI-callable; pass layoutId explicitly so the op doesn't hit
-      // the site_defaults nextAction recovery path).
+      // the site_defaults nextAction recovery path). It serves its page
+      // type: an existing one of that slug, else one created with it.
+      const typesR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "page_types.list", {});
+      if (!typesR.ok) {
+        return toolError(typesR.error, `page_types.list failed: ${describeError(typesR.error)}`);
+      }
+      const typeExists = (typesR.value as { pageTypes: { slug: string }[] }).pageTypes.some(
+        (t) => t.slug === templatePageType.slug,
+      );
       const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "templates.create", {
         slug: templateSlug,
         displayName: templateDisplayName,
         html: DEFAULT_TEMPLATE_HTML,
         css: "",
         layoutId: targetLayout.id,
+        ...(typeExists ? { pageType: templatePageType.slug } : { newPageType: templatePageType }),
       });
       if (!res.ok) {
-        return {
-          ok: false,
-          content: `bootstrap stage-1 (templates.create) failed: ${describeError(res.error)}`,
-        };
+        return toolError(
+          res.error,
+          `bootstrap stage-1 (templates.create) failed: ${describeError(res.error)}`,
+        );
       }
       createdTemplateId = (res.value as { templateId: string }).templateId;
     }
@@ -196,7 +241,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       return {
         ok: true,
         content: createdTemplateId
-          ? `bootstrap stage-1: template ${templateSlug} (id=${createdTemplateId}) created bound to layout ${targetLayout.slug}; setAsDefaults=false so site_defaults left unchanged.`
+          ? `bootstrap stage-1: template ${templateSlug} (id=${createdTemplateId}, page type ${templatePageType.slug}) created bound to layout ${targetLayout.slug}; setAsDefaults=false so site_defaults left unchanged.`
           : `bootstrap: layout ${targetLayout.slug} + template(s) ${templates.map((t) => t.slug).join(", ")} exist; setAsDefaults=false so no further action.`,
       };
     }
@@ -211,14 +256,14 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       {},
     );
     if (!defaultsR.ok) {
-      return {
-        ok: false,
-        content: `bootstrap stage-2 (site_defaults.get) failed: ${describeError(defaultsR.error)}`,
-      };
+      return toolError(
+        defaultsR.error,
+        `bootstrap stage-2 (site_defaults.get) failed: ${describeError(defaultsR.error)}`,
+      );
     }
     const existingDefaults = (
       defaultsR.value as {
-        defaults: { defaultLayoutId: string; defaultTemplateId: string } | null;
+        defaults: { defaultLayoutId: string } | null;
       }
     ).defaults;
 
@@ -230,40 +275,43 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       : templates;
     const targetTemplate = finalTemplates.find((t) => t.slug === templateSlug) ?? finalTemplates[0];
     if (!targetTemplate) {
-      return { ok: false, content: "bootstrap_site_scaffold: no template available (unexpected)" };
+      return {
+        ok: false,
+        content:
+          "bootstrap_site_scaffold: no template available — a defect in Caelo, reported automatically",
+        failureKind: "internal",
+      };
     }
 
     if (existingDefaults) {
-      // Name what the defaults really point at (not the slug-matched
+      // Name what the default layout really is (not the slug-matched
       // target above), plus which blocks a page may use — #1076: this is
       // the first scaffold read of a page-building chat.
       const defLayout = layouts.find((l) => l.id === existingDefaults.defaultLayoutId);
-      const defTemplate = templates.find((t) => t.id === existingDefaults.defaultTemplateId);
-      if (!defLayout || !defTemplate) {
+      if (!defLayout) {
         return {
           ok: false,
           content:
-            `site_defaults points at layout=${existingDefaults.defaultLayoutId}, template=${existingDefaults.defaultTemplateId}, ` +
-            "but that layout or template is not visible (deleted?). Call list_layouts + list_templates and repoint the defaults with set_site_defaults.",
+            `site_defaults points at layout=${existingDefaults.defaultLayoutId}, ` +
+            "but that layout is not visible (deleted?). Call list_layouts and repoint the default with set_site_defaults.",
         };
       }
       return {
         ok: true,
         content:
-          `Bootstrap already complete — site_defaults points at layout=${defLayout.slug}, template=${defTemplate.slug}. No action taken. ` +
-          blockPlacementGuide(defTemplate, defLayout),
+          `Bootstrap already complete — default layout=${defLayout.slug}, templates ${finalTemplates.map((t) => t.slug).join(", ")}. No action taken. ` +
+          `Every new page names its page type (build_page page.pageType; list_page_types). ${blockPlacementGuide(targetTemplate, defLayout)}`,
       };
     }
 
     const setRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "site_defaults.set", {
       defaultLayoutId: targetLayout.id,
-      defaultTemplateId: targetTemplate.id,
     });
     if (!setRes.ok) {
-      return {
-        ok: false,
-        content: `bootstrap stage-2 (site_defaults.set) failed: ${describeError(setRes.error)}`,
-      };
+      return toolError(
+        setRes.error,
+        `bootstrap stage-2 (site_defaults.set) failed: ${describeError(setRes.error)}`,
+      );
     }
     // v0.7.4 — stronger continuation directive. Pre-v0.7.4 the message
     // was "Bootstrap complete + you can omit templateId now", which the
@@ -275,8 +323,8 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     return {
       ok: true,
       content:
-        `Site scaffold ready — layout ${targetLayout.slug} (id=${targetLayout.id}), template ${targetTemplate.slug} (id=${targetTemplate.id}), site_defaults pinned. ` +
-        `This was the SETUP step, not the deliverable. Continue with the user's original ask now: call build_page for each page they described (omit templateId — it's pinned; one call creates the page with its modules and content). ` +
+        `Site scaffold ready — layout ${targetLayout.slug} (id=${targetLayout.id}), template ${targetTemplate.slug} (id=${targetTemplate.id}), default layout pinned. ` +
+        `This was the SETUP step, not the deliverable. Continue with the user's original ask now: call build_page for each page they described with page.pageType (list_page_types; a new kind of page -> create_template with newPageType first; one call creates the page with its modules and content). ` +
         `${blockPlacementGuide(targetTemplate, targetLayout)} ` +
         `Do not stop here unless the user only asked for the scaffold.`,
       nextAction: {

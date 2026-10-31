@@ -12,7 +12,7 @@ import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 import type { McpAgentRef } from "../../ops/chat/mcp-agent.js";
 
 import type { AIProvider } from "../provider.js";
-import type { SubagentResultCapture } from "../tools/dispatch.js";
+import type { SubagentResultCapture, ToolResult } from "../tools/dispatch.js";
 import type { ToolRegistry } from "../tools/index.js";
 import type { JudgeTurnCompleteness } from "./turn-completeness-judge.js";
 import type { ChatTurnSerializer } from "./turn-serializer.js";
@@ -371,6 +371,12 @@ export interface ToolDispatchResult {
   // #1091 — propagated from ToolResult.refusal: a guard refusal the
   // automatic bug capture skips.
   refusal?: true;
+  // #1277 / #1275 — propagated from ToolResult: the failure's kind, its
+  // error paths and the call as dispatched decide whether the call is
+  // kept for `retry_tool_call` (`_retry-keep.ts`).
+  failureKind?: ToolResult["failureKind"];
+  errors?: ToolResult["errors"];
+  call?: ToolResult["call"];
 }
 
 /**

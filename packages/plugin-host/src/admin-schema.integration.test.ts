@@ -149,13 +149,13 @@ describe("#389 — plugin-owned cms_admin schema", () => {
       const tpl = (await tx.unsafe(
         `INSERT INTO templates (slug, display_name, html, css, layout_id) VALUES ('t389-tpl', 'T', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
       )) as { id: string }[];
-      // Epic #1107 — a raw-inserted template joins the default page type so
+      // Epic #1107 — a raw-inserted template joins the `home` page type so
       // pages can use it (templates.create does this itself).
       await tx.unsafe(
-        `UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb('${tpl[0]?.id}'::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)`,
+        `UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb('${tpl[0]?.id}'::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL)`,
       );
       const pg = (await tx.unsafe(
-        `INSERT INTO pages (slug, short_title, title, template_id, status) VALUES ('t389-page', 'P', 'P', '${tpl[0]?.id}', 'draft') RETURNING id::text AS id`,
+        `INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed) VALUES ('t389-page', 'P', 'P', '${tpl[0]?.id}', 'draft', true) RETURNING id::text AS id`,
       )) as { id: string }[];
       const id = pg[0]?.id;
       if (!id) throw new Error("page insert failed");
@@ -215,13 +215,13 @@ describe("#389 — plugin-owned cms_admin schema", () => {
       const tpl = (await tx.unsafe(
         `INSERT INTO templates (slug, display_name, html, css, layout_id) VALUES ('t389-tpl2', 'T', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
       )) as { id: string }[];
-      // Epic #1107 — a raw-inserted template joins the default page type so
+      // Epic #1107 — a raw-inserted template joins the `home` page type so
       // pages can use it (templates.create does this itself).
       await tx.unsafe(
-        `UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb('${tpl[0]?.id}'::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)`,
+        `UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb('${tpl[0]?.id}'::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL)`,
       );
       const pg = (await tx.unsafe(
-        `INSERT INTO pages (slug, short_title, title, template_id, status) VALUES ('t389-page2', 'P', 'P', '${tpl[0]?.id}', 'draft') RETURNING id::text AS id`,
+        `INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed) VALUES ('t389-page2', 'P', 'P', '${tpl[0]?.id}', 'draft', true) RETURNING id::text AS id`,
       )) as { id: string }[];
       const id = pg[0]?.id;
       if (!id) throw new Error("page insert failed");

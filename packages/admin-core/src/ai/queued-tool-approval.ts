@@ -49,7 +49,7 @@ import {
   approvedPluginInvocation,
   chatPluginInvocation,
 } from "./plugin-invocation.js";
-import { describeError } from "./tools/_describe-error.js";
+import { describeError, toolError } from "./tools/_describe-error.js";
 import type { ToolResult } from "./tools/dispatch.js";
 import { createDefaultToolRegistry } from "./tools/index.js";
 
@@ -131,10 +131,10 @@ export async function queuePluginToolApproval(input: {
   });
   if (!queued.ok) {
     // An already-recorded binding without its card simply expires (7 days).
-    return {
-      ok: false,
-      content: `${spec.name} needs the operator's approval, but the approval card could not be queued (${describeError(queued.error)}). Nothing was applied; retry the call.`,
-    };
+    return toolError(
+      queued.error,
+      `${spec.name} needs the operator's approval, but the approval card could not be queued (${describeError(queued.error)}). Nothing was applied; retry the call.`,
+    );
   }
 
   return {

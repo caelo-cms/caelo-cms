@@ -18,8 +18,18 @@
  *                                    crawler's per-URL extraction batch.
  */
 
-import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
-import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
+import {
+  defineOperation,
+  type ErrorDetail,
+  errorDetailsOf,
+  failureKindOf,
+  formatErrorPath,
+  handlerErrorFromDetails,
+  OperationAbortError,
+  type QueryError,
+  type TransactionRunner,
+} from "@caelo-cms/query-api";
+import { type ExecutionContext, err, ok, pageTypeSlugSchema } from "@caelo-cms/shared";
 import {
   type BoilerplatePageInput,
   checkInventoryCoverage,
@@ -42,6 +52,7 @@ import {
 } from "../snapshots/index.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { requiresApproverPermission } from "./_approver-permission.js";
+import { runEveryItem } from "./_bulk.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
 import { isolateDraftChat } from "./chat/draft-ops.js";
@@ -517,6 +528,7 @@ export const createImportRunOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.create_run",
         message: "no row returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {
@@ -647,6 +659,7 @@ export const proposeImportRunOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.propose_run",
         message: "no row returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {
@@ -933,6 +946,7 @@ export const logImportRunEventOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.log_event",
         message: "no row returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {
@@ -1485,7 +1499,12 @@ export const writeExtractedPagesOp = defineOperation({
 const acceptImportedPageInput = z
   .object({
     importPageId: z.string().uuid(),
-    /** Template for the new page; omitted = the site's default template. */
+    /**
+     * #1276 — the new page's page type (slug). Required unless
+     * `templateId` belongs to exactly one page type: there is no default.
+     */
+    pageType: pageTypeSlugSchema.optional(),
+    /** Template for the new page; omitted = the page type's default template. */
     templateId: z.string().uuid().optional(),
   })
   .strict();
@@ -1510,7 +1529,7 @@ async function acceptImportedPage(
   input: AcceptImportedPageInput,
   tx: TransactionRunner,
   operation: "imports.accept_page" | "imports.accept_pages",
-): Promise<{ ok: true; pageId: string; slug: string } | { ok: false; message: string }> {
+): Promise<{ ok: true; pageId: string; slug: string } | { ok: false; error: QueryError }> {
   // "Already accepted" means the pointer resolves to a page that still
   // exists — the same rule `pages.build_page` uses for its rebuild target.
   // A discarded chat soft-deletes its branch-created page but leaves the
@@ -1528,11 +1547,31 @@ async function acceptImportedPage(
     accepted_page_id: string | null;
   }>;
   const r = rows[0];
-  if (!r) return { ok: false, message: `import page ${input.importPageId} not found` };
+  if (!r) {
+    return {
+      ok: false,
+      error: handlerErrorFromDetails(operation, [
+        {
+          path: ["importPageId"],
+          message: "import page not found",
+          next: "`list_import_pages` shows the run's pages.",
+        },
+      ]),
+    };
+  }
   if (r.accepted_page_id) {
     return {
       ok: false,
-      message: `import page ${input.importPageId} was already accepted (page ${r.accepted_page_id}) — edit that page instead, or rebuild it with build_page({page:{importPageId}})`,
+      error: handlerErrorFromDetails(
+        operation,
+        [
+          {
+            path: ["importPageId"],
+            message: `import page "${r.proposed_slug}" was already accepted (page ${r.accepted_page_id}) — edit that page instead, or rebuild it with build_page({page:{importPageId}})`,
+          },
+        ],
+        { refusal: true },
+      ),
     };
   }
   const proposedModules = r.proposed_modules as Array<{
@@ -1542,28 +1581,68 @@ async function acceptImportedPage(
     displayName: string;
   }>;
   const title = r.proposed_title || r.proposed_slug;
-  const built = await buildPageOp.handler(
-    ctx,
-    {
-      page: {
-        slug: r.proposed_slug,
-        title,
-        status: "draft",
-        importPageId: input.importPageId,
-        ...(input.templateId ? { templateId: input.templateId } : {}),
+  const built = await asAcceptFailure(operation, () =>
+    buildPageOp.handler(
+      ctx,
+      {
+        page: {
+          slug: r.proposed_slug,
+          title,
+          status: "draft",
+          importPageId: input.importPageId,
+          ...(input.pageType ? { pageType: input.pageType } : {}),
+          ...(input.templateId ? { templateId: input.templateId } : {}),
+        },
+        modules: [...proposedModules]
+          .filter((m) => m.blockName !== "header" && m.blockName !== "footer")
+          .sort((a, b) => a.position - b.position)
+          .map((m) => ({ blockName: m.blockName, displayName: m.displayName, html: m.html })),
       },
-      modules: [...proposedModules]
-        .filter((m) => m.blockName !== "header" && m.blockName !== "footer")
-        .sort((a, b) => a.position - b.position)
-        .map((m) => ({ blockName: m.blockName, displayName: m.displayName, html: m.html })),
-    },
-    tx,
+      tx,
+    ),
   );
-  if (!built.ok) {
-    const message = "message" in built.error ? built.error.message : built.error.kind;
-    return { ok: false, message: `${operation}: ${message}` };
-  }
+  if (!built.ok) return { ok: false, error: acceptError(operation, built.error) };
   return { ok: true, pageId: (built.value as { pageId: string }).pageId, slug: r.proposed_slug };
+}
+
+/**
+ * #1277 — a `pages.build_page` error of an accept, addressed at the
+ * accept's own input: `page.pageType` / `page.templateId` are the
+ * caller's `pageType` / `templateId`; everything else comes from the
+ * crawled page itself and sits at `importPageId`.
+ */
+function acceptError(operation: string, error: QueryError): QueryError {
+  const details = errorDetailsOf(error);
+  const fallback =
+    "message" in error && typeof error.message === "string" ? error.message : error.kind;
+  const mapped: ErrorDetail[] =
+    details.length === 0
+      ? [{ path: ["importPageId"], message: `the page cannot be built: ${fallback}` }]
+      : details.map((d) =>
+          d.path[0] === "page" && (d.path[1] === "pageType" || d.path[1] === "templateId")
+            ? { ...d, path: d.path.slice(1) }
+            : {
+                ...d,
+                path: ["importPageId"],
+                message: `the crawled page cannot be built (${formatErrorPath(d.path)}): ${d.message}`,
+              },
+        );
+  return handlerErrorFromDetails(operation, mapped, {
+    ...(error.kind === "HandlerError" && error.refusal ? { refusal: true } : {}),
+    ...(failureKindOf(error) === "internal" ? { internal: true } : {}),
+  });
+}
+
+/** Run the build; an abort after its first write carries the mapped error. */
+async function asAcceptFailure<T>(operation: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (thrown) {
+    if (thrown instanceof OperationAbortError) {
+      throw new OperationAbortError(acceptError(operation, thrown.queryError));
+    }
+    throw thrown;
+  }
 }
 
 /**
@@ -1580,9 +1659,7 @@ export const acceptImportedPageOp = defineOperation({
   output: z.object({ pageId: z.string() }),
   handler: async (ctx, input, tx) => {
     const r = await acceptImportedPage(ctx, input, tx, "imports.accept_page");
-    if (!r.ok) {
-      return err({ kind: "HandlerError", operation: "imports.accept_page", message: r.message });
-    }
+    if (!r.ok) return err(r.error);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -1597,9 +1674,9 @@ export const acceptImportedPageOp = defineOperation({
 
 /**
  * Bulk accept (CLAUDE.md §11) — promote up to 50 crawled pages verbatim in
- * ONE transaction. All-or-nothing: the first page that cannot be accepted
- * aborts the batch and the error names it, so the AI fixes that id and
- * re-sends instead of reconciling a half-applied batch.
+ * ONE transaction. All-or-nothing: every page is tried, and when any one
+ * cannot be accepted the batch rolls back and the error names every
+ * failing id (#1277), so nothing half-applied is left to reconcile.
  */
 export const acceptImportedPagesOp = defineOperation({
   name: "imports.accept_pages",
@@ -1609,6 +1686,8 @@ export const acceptImportedPagesOp = defineOperation({
   input: z
     .object({
       importPageIds: z.array(z.string().uuid()).min(1).max(50),
+      /** #1276 — the page type of every accepted page (see accept_page). */
+      pageType: pageTypeSlugSchema.optional(),
       templateId: z.string().uuid().optional(),
     })
     .strict(),
@@ -1616,25 +1695,53 @@ export const acceptImportedPagesOp = defineOperation({
     accepted: z.array(z.object({ importPageId: z.string(), pageId: z.string(), slug: z.string() })),
   }),
   handler: async (ctx, input, tx) => {
-    const accepted: { importPageId: string; pageId: string; slug: string }[] = [];
-    for (const importPageId of new Set(input.importPageIds)) {
+    const op = "imports.accept_pages";
+    // Each id once, at the index the caller gave it first.
+    const unique = [...new Set(input.importPageIds)].map((id) => ({
+      id,
+      index: input.importPageIds.indexOf(id),
+    }));
+    const run = await runEveryItem(op, "importPageIds", unique, async ({ id }) => {
       const r = await acceptImportedPage(
         ctx,
-        { importPageId, ...(input.templateId ? { templateId: input.templateId } : {}) },
+        {
+          importPageId: id,
+          ...(input.pageType ? { pageType: input.pageType } : {}),
+          ...(input.templateId ? { templateId: input.templateId } : {}),
+        },
         tx,
-        "imports.accept_pages",
+        op,
       );
-      if (!r.ok) {
-        const error = {
-          kind: "HandlerError" as const,
-          operation: "imports.accept_pages",
-          message: `${r.message} (no page of this batch was accepted — drop or fix this id and call again)`,
-        };
-        if (accepted.length === 0) return err(error);
-        throw new OperationAbortError(error);
+      return r.ok
+        ? { ok: true as const, value: { importPageId: id, pageId: r.pageId, slug: r.slug } }
+        : { ok: false as const, error: r.error };
+    });
+    if (!run.ok) {
+      // `importPageIds[k].pageType` is the batch's one `pageType` (same for
+      // `templateId`); `importPageIds[k].importPageId` is that id itself.
+      const seen = new Set<string>();
+      const details: ErrorDetail[] = [];
+      for (const d of errorDetailsOf(run.error)) {
+        const k = typeof d.path[1] === "number" ? d.path[1] : -1;
+        const field = d.path[2];
+        const path =
+          field === "pageType" || field === "templateId"
+            ? d.path.slice(2)
+            : ["importPageIds", unique[k]?.index ?? k];
+        const key = `${JSON.stringify(path)}\u0000${d.message}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        details.push({ ...d, path });
       }
-      accepted.push({ importPageId, pageId: r.pageId, slug: r.slug });
+      const error = handlerErrorFromDetails(op, details, {
+        lead: "No page of this batch was accepted.",
+        ...(run.error.kind === "HandlerError" && run.error.refusal ? { refusal: true } : {}),
+        ...(failureKindOf(run.error) === "internal" ? { internal: true } : {}),
+      });
+      if (run.writtenItems === 0) return err(error);
+      throw new OperationAbortError(error);
     }
+    const accepted = run.results;
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

@@ -116,6 +116,8 @@ const pageStateV1 = z.preprocess(
       // Epic #1107 — migration 0351 backfilled every snapshot whose
       // template still exists; one without is refused here, loudly.
       pageTypeId: z.string().uuid(),
+      // #1276 — migration 0443 backfilled every snapshot carrying pageTypeId.
+      pageTypeConfirmed: z.boolean(),
       properties: z.record(z.string(), z.unknown()),
       terms: z.array(z.string()),
       // #1156 — absent when the snapshot did not write SEO; see

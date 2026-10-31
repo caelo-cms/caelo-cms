@@ -177,8 +177,8 @@ beforeAll(async () => {
     const [tpl] = (await tx`SELECT id::text AS id FROM templates LIMIT 1`) as { id: string }[];
     if (!tpl) throw new Error("no seeded template");
     const [page] = (await tx`
-      INSERT INTO pages (slug, title, template_id, current_path)
-      VALUES (${`${P}-page`}, 'Comments page', ${tpl.id}::uuid, ${`/${P}-page`})
+      INSERT INTO pages (slug, title, template_id, current_path, page_type_confirmed)
+      VALUES (${`${P}-page`}, 'Comments page', ${tpl.id}::uuid, ${`/${P}-page`}, true)
       RETURNING id::text AS id`) as { id: string }[];
     pageId = page?.id ?? "";
     await tx`

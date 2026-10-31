@@ -19,7 +19,7 @@ import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import type { z } from "zod";
 import { z as zod } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 import { generateInputSchema } from "./generate-input-schema.js";
 
@@ -69,7 +69,7 @@ export function makeReadTool<I>(args: MakeReadToolArgs<I>): ToolDefinitionWithHa
       const execCtx = args.runAsOperator && toolCtx.humanCtx ? toolCtx.humanCtx : ctx;
       const r = await execute(toolCtx.registry, toolCtx.adapter, execCtx, args.opName, opInput);
       if (!r.ok) {
-        return { ok: false, content: `${args.opName} failed: ${describeError(r.error)}` };
+        return toolError(r.error, `${args.opName} failed: ${describeError(r.error)}`);
       }
       return {
         ok: true,
@@ -289,7 +289,7 @@ export function makeListReadTool<I extends Record<string, unknown>, R>(
         : built;
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, args.opName, opInput);
       if (!r.ok) {
-        return { ok: false, content: `${args.opName} failed: ${describeError(r.error)}` };
+        return toolError(r.error, `${args.opName} failed: ${describeError(r.error)}`);
       }
       const all = args.rows(r.value);
       const more = paging

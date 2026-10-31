@@ -9,7 +9,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const tuneRateLimitInput = z
@@ -49,7 +49,7 @@ export const tuneRateLimitTool: ToolDefinitionWithHandler<TuneRateLimitInput> = 
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `propose_rate_limit failed: ${describeError(r.error)}` };
+      return toolError(r.error, `propose_rate_limit failed: ${describeError(r.error)}`);
     }
     const v = r.value as { proposalId: string };
     return {

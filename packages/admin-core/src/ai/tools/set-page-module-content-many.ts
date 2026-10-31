@@ -11,7 +11,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { pageModuleContentSetManySchema } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -24,7 +24,7 @@ export const setPageModuleContentManyTool: ToolDefinitionWithHandler<
     "USE FOR: page-local copy ('change the hero heading on /home to X'), a whole page's text, the same fix across pages.",
     "DO NOT USE FOR: pages/modules not existing yet -> one `build_page` call (never `add_module` + this tool); one entry's text -> `patch_page_module_fields`; every page using the module (structure/styling/fields) -> `update_modules_many`.",
     "CORE RULES:",
-    "- UNSYNCED placements (default) stay local. A SYNCED placement aborts the batch -> `fork_placement_content` it or deliberately `set_content_instance_values_many` (propagates everywhere), then resend.",
+    "- UNSYNCED placements (default) stay local. A SYNCED placement aborts the batch -> `fork_placement_content` it or deliberately `set_content_instance_values_many` (propagates everywhere).",
     "- All-or-nothing: an invalid item aborts the batch (error names `items[i]`, the placement, the failing field); nothing is written.",
     INTERNAL_LINK_CONTRACT,
   ].join("\n"),
@@ -68,10 +68,10 @@ export const setPageModuleContentManyTool: ToolDefinitionWithHandler<
       input,
     );
     if (!r.ok) {
-      return {
-        ok: false,
-        content: `page_module_content.set_many failed (whole batch rolled back): ${describeError(r.error)}`,
-      };
+      return toolError(
+        r.error,
+        `page_module_content.set_many failed (whole batch rolled back): ${describeError(r.error)}`,
+      );
     }
     const { updated } = r.value as { updated: number };
     return {

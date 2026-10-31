@@ -17,9 +17,9 @@
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">Site defaults</h1>
     <p class="text-sm text-muted-foreground">
-      Defaults used when a new page or template is created without an explicit layout / template id.
-      Stored data, not a render-time fallback — the renderer always errors loudly when expected
-      data is missing (CLAUDE.md §2 no-fallbacks).
+      The layout a new template uses when none is chosen. Pages always name their page type and
+      templates theirs, so there is no default page type or template. Stored data, not a
+      render-time fallback — the renderer always errors loudly when expected data is missing.
     </p>
   </div>
 
@@ -69,28 +69,8 @@
             </select>
           {/if}
         </div>
-        <div class="space-y-2">
-          <Label for="defaultTemplateId">Default template</Label>
-          {#if data.templates.length === 0}
-            <p class="text-sm text-muted-foreground italic">
-              No templates available. Create one at <a href="/content/templates" class="underline">/content/templates</a>.
-            </p>
-          {:else}
-            <select
-              id="defaultTemplateId"
-              name="defaultTemplateId"
-              required
-              class="block w-full rounded-md border bg-background p-2 text-sm">
-              {#each data.templates as tpl (tpl.id)}
-                <option value={tpl.id} selected={data.defaults?.defaultTemplateId === tpl.id}>
-                  {tpl.slug} — {tpl.displayName}
-                </option>
-              {/each}
-            </select>
-          {/if}
-        </div>
         <div class="flex justify-end">
-          <Button type="submit">Save defaults</Button>
+          <Button type="submit">Save default layout</Button>
         </div>
       </form>
     </CardContent>

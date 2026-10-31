@@ -17,7 +17,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const inventoryInput = z
@@ -75,10 +75,7 @@ export const checkPageContentInventoryTool: ToolDefinitionWithHandler<InventoryI
       input,
     );
     if (!r.ok) {
-      return {
-        ok: false,
-        content: `check_page_content_inventory failed: ${describeError(r.error)}`,
-      };
+      return toolError(r.error, `check_page_content_inventory failed: ${describeError(r.error)}`);
     }
     const v = r.value as InventoryResult;
     if (v.missing === 0) {
@@ -163,7 +160,7 @@ export const detectImportBoilerplateTool: ToolDefinitionWithHandler<BoilerplateI
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `detect_import_boilerplate failed: ${describeError(r.error)}` };
+      return toolError(r.error, `detect_import_boilerplate failed: ${describeError(r.error)}`);
     }
     const v = r.value as BoilerplateResult;
     if (v.candidates.length === 0) {

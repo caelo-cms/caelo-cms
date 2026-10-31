@@ -137,6 +137,7 @@ beforeAll(async () => {
     css: ".cap{font-weight:400}",
   });
   const template = (await run("templates.create", {
+    pageType: "home",
     slug: `${TAG}-tpl`,
     displayName: `${TAG} template`,
     html: `<html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

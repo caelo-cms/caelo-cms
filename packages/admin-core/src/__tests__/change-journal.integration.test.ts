@@ -280,20 +280,14 @@ describe("#1267 — every committed change, on every path, is journaled", () => 
 
     const defaults = await asSystem(
       (tx) =>
-        tx`SELECT default_layout_id::text AS l, default_template_id::text AS t FROM site_defaults WHERE id = 1` as Promise<
-          { l: string; t: string }[]
+        tx`SELECT default_layout_id::text AS l FROM site_defaults WHERE id = 1` as Promise<
+          { l: string }[]
         >,
     );
-    await op(SYS, "site_defaults.set", {
-      defaultLayoutId: layoutId,
-      defaultTemplateId: defaults[0]?.t ?? "",
-    });
+    await op(SYS, "site_defaults.set", { defaultLayoutId: layoutId });
     const settings = (await journalOf("1")).filter((r) => r.table_name === "site_defaults").at(-1);
     expect(settings?.changed_columns).toContain("default_layout_id");
-    await op(SYS, "site_defaults.set", {
-      defaultLayoutId: defaults[0]?.l ?? "",
-      defaultTemplateId: defaults[0]?.t ?? "",
-    });
+    await op(SYS, "site_defaults.set", { defaultLayoutId: defaults[0]?.l ?? "" });
 
     // A migration: plain SQL as the migrations run it (system, no op).
     const raw = new SQL(ADMIN_URL as string);

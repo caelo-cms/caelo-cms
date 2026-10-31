@@ -119,6 +119,7 @@ async function taggedPage(slug: string, vocabId: string, terms: string[]): Promi
   // type alone for the build_page calls of the other tests.
   const own = (
     await op<{ templateId: string }>(SYS, "templates.create", {
+      pageType: "home",
       slug: `${PFX}-${slug}-tpl`,
       displayName: `${PFX} ${slug}`,
       html: `<html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
@@ -130,6 +131,7 @@ async function taggedPage(slug: string, vocabId: string, terms: string[]): Promi
         slug: typeSlug,
         name: `Tagged ${slug}`,
         purpose: "Pages carrying topics",
+        collection: false,
         templates: [own],
         defaultTemplate: own,
         properties: [],
@@ -153,6 +155,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
   templateId = (
     await op<{ templateId: string }>(SYS, "templates.create", {
+      pageType: "home",
       slug: `${PFX}-tpl`,
       displayName: `${PFX} TPL`,
       html: `<html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

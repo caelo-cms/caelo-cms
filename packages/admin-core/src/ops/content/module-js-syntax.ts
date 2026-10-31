@@ -49,6 +49,6 @@ export function moduleJsSyntaxError(js: string): string | null {
       : "";
   return (
     `js is not valid JavaScript (${first.message}${where}).${escapedLineBreaks} ` +
-    "All module js on a page runs as one shared <script>, so this error would stop every module's script on the page. Fix the syntax and resend the js."
+    "All module js on a page runs as one shared <script>, so this error would stop every module's script on the page. Fix the syntax in `js`."
   );
 }

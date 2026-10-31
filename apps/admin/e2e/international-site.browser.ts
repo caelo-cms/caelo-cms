@@ -61,13 +61,13 @@ function seedSourcePage(): SeedResult {
           VALUES (\${process.env.SRC_SLUG + "-tpl"}, 'T',
                   '<main><caelo-slot name="content">_</caelo-slot></main>',
                   '', \${lay[0].id}) RETURNING id\`;
-        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
+        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
         await tx\`INSERT INTO layout_blocks (layout_id, name, display_name, position)
           VALUES (\${lay[0].id}, 'content', 'Content', 0)\`;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position)
           VALUES (\${tpl[0].id}, 'content', 'Content', 0)\`;
-        const pg = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status)
-          VALUES (\${process.env.SRC_SLUG}, \${process.env.SRC_SLUG}, 'Pricing', \${tpl[0].id}, 'published')
+        const pg = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed)
+          VALUES (\${process.env.SRC_SLUG}, \${process.env.SRC_SLUG}, 'Pricing', \${tpl[0].id}, 'published', true)
           RETURNING id\`;
         out = { pageId: pg[0].id };
       });
@@ -371,13 +371,13 @@ function seed(): Seed {
       const tpl = await tx\`INSERT INTO templates (slug, display_name, html, css, layout_id)
         VALUES (\${P + "-tpl"}, 'T', '<main><caelo-slot name="content">_</caelo-slot></main>', '', \${lay[0].id})
         RETURNING id\`;
-      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position)
         VALUES (\${tpl[0].id}, 'content', 'Content', 0)\`;
       // Internal links are stored as page references (#724), so the
       // pages exist before the footer that links to them.
-      const mk = async (slug, path) => (await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, current_path)
-        VALUES (\${slug}, \${slug}, \${slug}, \${tpl[0].id}, 'published', \${path}) RETURNING id\`)[0].id;
+      const mk = async (slug, path) => (await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, current_path, page_type_confirmed)
+        VALUES (\${slug}, \${slug}, \${slug}, \${tpl[0].id}, 'published', \${path}, true) RETURNING id\`)[0].id;
       const enPricing = await mk(P + "-pricing", "/" + P + "-pricing");
       const enAbout = await mk(P + "-about", "/" + P + "-about");
       const dePreise = await mk(P + "-preise", "/de/" + P + "-preise");
@@ -583,15 +583,15 @@ test("#690 — a nested page's German variant nests under the German parent, reu
         const tpl = await tx\`INSERT INTO templates (slug, display_name, html, css, layout_id)
           VALUES (\${process.env.SRC + "-ntpl"}, 'T',
                   '<main><caelo-slot name="content">_</caelo-slot></main>', '', \${lay[0].id}) RETURNING id\`;
-        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
+        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
         await tx\`INSERT INTO layout_blocks (layout_id, name, display_name, position)
           VALUES (\${lay[0].id}, 'content', 'Content', 0)\`;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position)
           VALUES (\${tpl[0].id}, 'content', 'Content', 0)\`;
-        const sec = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status)
-          VALUES (\${process.env.SECTION}, 'Section', 'Section', \${tpl[0].id}, 'published') RETURNING id::text AS id\`;
-        const child = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, parent_page_id)
-          VALUES (\${process.env.CHILD}, 'Teams', 'Teams', \${tpl[0].id}, 'published', \${sec[0].id}::uuid)
+        const sec = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed)
+          VALUES (\${process.env.SECTION}, 'Section', 'Section', \${tpl[0].id}, 'published', true) RETURNING id::text AS id\`;
+        const child = await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, parent_page_id, page_type_confirmed)
+          VALUES (\${process.env.CHILD}, 'Teams', 'Teams', \${tpl[0].id}, 'published', \${sec[0].id}::uuid, true)
           RETURNING id::text AS id\`;
         return { sectionId: sec[0].id, childId: child[0].id };
       });

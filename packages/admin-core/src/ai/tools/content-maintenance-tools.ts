@@ -25,7 +25,7 @@ import {
   SEO_GET_MANY_MAX,
 } from "../../ops/seo.js";
 import type { listPinDefaultsOp } from "../../ops/skills/engagement.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -160,7 +160,7 @@ export const refreshPagePathTool: ToolDefinitionWithHandler<RefreshPagePathInput
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `pages.refresh_current_path failed: ${describeError(r.error)}` };
+      return toolError(r.error, `pages.refresh_current_path failed: ${describeError(r.error)}`);
     }
     const v = r.value as { path: string; moved: boolean; awaitingUrlMigration: boolean };
     return {
@@ -219,7 +219,7 @@ export const logImportEventsTool: ToolDefinitionWithHandler<LogImportEventsInput
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.log_events", input);
     if (!r.ok) {
-      return { ok: false, content: `imports.log_events failed: ${describeError(r.error)}` };
+      return toolError(r.error, `imports.log_events failed: ${describeError(r.error)}`);
     }
     const n = (r.value as { inserted: number }).inserted;
     return { ok: true, content: `Logged ${n} event(s) to the import ledger.`, value: r.value };
@@ -264,7 +264,7 @@ export const setSkillPinDefaultsTool: ToolDefinitionWithHandler<SetSkillPinDefau
     const list = await execute(toolCtx.registry, toolCtx.adapter, ctx, "skills.list", {
       status: "active",
     });
-    if (!list.ok) return { ok: false, content: `skills.list failed: ${describeError(list.error)}` };
+    if (!list.ok) return toolError(list.error, `skills.list failed: ${describeError(list.error)}`);
     const active = (list.value as { skills: { id: string; slug: string }[] }).skills;
     const bySlug = new Map(active.map((s) => [s.slug, s.id]));
     const unknown = input.slugs.filter((s) => !bySlug.has(s));
@@ -279,7 +279,7 @@ export const setSkillPinDefaultsTool: ToolDefinitionWithHandler<SetSkillPinDefau
       skillIds,
     });
     if (!r.ok) {
-      return { ok: false, content: `skills.set_pin_defaults failed: ${describeError(r.error)}` };
+      return toolError(r.error, `skills.set_pin_defaults failed: ${describeError(r.error)}`);
     }
     return {
       ok: true,

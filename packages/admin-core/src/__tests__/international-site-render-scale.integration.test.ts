@@ -37,7 +37,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
-import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
+import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -115,13 +115,13 @@ async function seedGroups(tag: string, groups: number): Promise<{ en: string; de
     const pairs = (await tx.unsafe(
       `WITH n AS (SELECT generate_series(1, ${groups}) AS i),
             en AS (
-              INSERT INTO pages (slug, title, short_title, template_id, page_type_id, current_path, status)
-              SELECT '${PFX}${tag}-' || i, 'P' || i, 'P' || i, '${templateId}', '${pageTypeId}',
+              INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
+              SELECT '${PFX}${tag}-' || i, 'P' || i, 'P' || i, '${templateId}', '${pageTypeId}', true,
                      '/${PFX}${tag}-' || i, 'published' FROM n
               RETURNING id::text AS id, slug),
             de AS (
-              INSERT INTO pages (slug, title, short_title, template_id, page_type_id, current_path, status)
-              SELECT '${PFX}${tag}-' || i || '-de', 'P' || i, 'P' || i, '${templateId}', '${pageTypeId}',
+              INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
+              SELECT '${PFX}${tag}-' || i || '-de', 'P' || i, 'P' || i, '${templateId}', '${pageTypeId}', true,
                      '/de/${PFX}${tag}-' || i || '-de', 'published' FROM n
               RETURNING id::text AS id, slug)
        SELECT en.id AS en, de.id AS de FROM en JOIN de ON de.slug = en.slug || '-de'`,
@@ -216,9 +216,9 @@ beforeAll(async () => {
     const tpl = (await tx.unsafe(
       `INSERT INTO templates (slug, display_name, html, css, layout_id) VALUES ('${PFX}tpl', 'T', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
     )) as { id: string }[];
-    await adoptTemplateIntoDefaultPageType(tx, tpl[0]?.id ?? "");
+    await adoptTemplateIntoHomePageType(tx, tpl[0]?.id ?? "");
     const type = (await tx.unsafe(
-      `SELECT default_page_type_id::text AS id FROM site_defaults WHERE id = 1`,
+      `SELECT id::text AS id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL`,
     )) as { id: string }[];
     const plugin = (await tx.unsafe(
       `SELECT id::text AS id FROM plugins WHERE slug = 'international-site'`,

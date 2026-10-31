@@ -35,7 +35,7 @@ import {
 } from "./image-provider.js";
 import { classifyProviderAccountError, providerAccountNotice } from "./provider-account-error.js";
 import { getImageProviderApiKey } from "./provider-resolver.js";
-import { describeError } from "./tools/_describe-error.js";
+import { describeError, toolError } from "./tools/_describe-error.js";
 import type { ToolContext } from "./tools/dispatch.js";
 
 /** The configured image model, ready to call. */
@@ -311,7 +311,7 @@ export async function runImageRequest(args: {
       maxCostMicrocents: configured.reserveMicrocents,
     },
   );
-  if (!reserved.ok) return { ok: false, content: `${tool}: ${describeError(reserved.error)}` };
+  if (!reserved.ok) return toolError(reserved.error, `${tool}: ${describeError(reserved.error)}`);
   const value = reserved.value as {
     existing: { status: string; outputMediaId: string | null; result: unknown } | null;
     callId: string | null;

@@ -50,14 +50,16 @@ export const load: PageServerLoad = async ({ params, locals }) => {
   const v = r.value as { run: ImportRun | null; pages: ImportPage[] };
   if (!v.run) throw error(404, "Run not found");
 
-  // Pull the default template for the Accept action — Owner can swap
-  // later via change_template.
-  const sd = await execute(registry, adapter, locals.ctx, "site_defaults.get", {});
-  const defaultTemplateId = sd.ok
-    ? ((sd.value as { defaults: { defaultTemplateId: string | null } | null }).defaults
-        ?.defaultTemplateId ?? null)
-    : null;
-  return { run: v.run, pages: v.pages, defaultTemplateId };
+  // #1276 — the Accept action names the new page's type (its default
+  // template is used; the Owner can swap later via change_template).
+  const types = await execute(registry, adapter, locals.ctx, "page_types.list", {});
+  const pageTypes = types.ok
+    ? (types.value as { pageTypes: { slug: string; name: string }[] }).pageTypes.map((t) => ({
+        slug: t.slug,
+        name: t.name,
+      }))
+    : [];
+  return { run: v.run, pages: v.pages, pageTypes };
 };
 
 export const actions: Actions = {
@@ -65,16 +67,19 @@ export const actions: Actions = {
     requirePermission(locals, "settings.write");
     const form = await request.formData();
     const importPageId = form.get("importPageId");
-    const templateId = form.get("templateId");
-    if (typeof importPageId !== "string" || typeof templateId !== "string") {
-      return fail(400, { error: "importPageId + templateId required" });
+    const pageType = form.get("pageType");
+    if (typeof importPageId !== "string" || typeof pageType !== "string" || pageType === "") {
+      return fail(400, { error: "Choose the page type of the imported page." });
     }
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "imports.accept_page", {
       importPageId,
-      templateId,
+      pageType,
     });
-    if (!r.ok) return fail(400, { error: r.error.kind });
+    if (!r.ok) {
+      const message = (r.error as { message?: string }).message;
+      return fail(400, { error: message ?? r.error.kind });
+    }
     const v = r.value as { pageId: string };
     return { ok: true, message: `Promoted to draft page ${v.pageId.slice(0, 8)}.` };
   },

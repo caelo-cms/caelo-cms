@@ -14,7 +14,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { describeError } from "../tools/_describe-error.js";
+import { describeError, toolError } from "../tools/_describe-error.js";
 import type { ToolContext } from "../tools/dispatch.js";
 import { CONTENT_ENTITY_KINDS, CONTENT_TARGETS, type ContentTarget } from "./registry.js";
 
@@ -55,7 +55,7 @@ export async function readContentRow(
 ): Promise<ContentRowRead> {
   const got = await fetchBodies(ctx, toolCtx, target, entityId);
   if ("error" in got) {
-    return { ok: false, content: `${target.getOp} failed: ${describeError(got.error)}` };
+    return toolError(got.error, `${target.getOp} failed: ${describeError(got.error)}`);
   }
   if (got.bodies !== null) return { ok: true, bodies: got.bodies };
 

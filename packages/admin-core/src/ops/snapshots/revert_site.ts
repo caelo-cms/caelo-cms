@@ -204,7 +204,8 @@ export const revertSiteOp = defineOperation({
           slug = ${t.slug}, title = ${t.title}, short_title = ${t.shortTitle},
           template_id = ${t.templateId}::uuid, status = ${t.status},
           ${t.parentPageId === undefined ? sql`` : sql`parent_page_id = ${t.parentPageId}::uuid,`}
-          page_type_id = ${t.pageTypeId}::uuid, properties = ${jsonbParam(t.properties)},
+          page_type_id = ${t.pageTypeId}::uuid, page_type_confirmed = ${t.pageTypeConfirmed},
+          properties = ${jsonbParam(t.properties)},
           deleted_at = ${t.deletedAt}, updated_at = now(), version = version + 1
         WHERE id = ${r.entity_id}::uuid
       `);

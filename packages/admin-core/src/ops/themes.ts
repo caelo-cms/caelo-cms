@@ -808,6 +808,7 @@ export const setThemeAssetOp = defineOperation({
         kind: "HandlerError",
         operation: "themes.set_asset",
         message: "refresh-after-write returned no row",
+        internal: true,
       });
     }
     await emitThemeWrite(tx, {
@@ -914,6 +915,7 @@ export const duplicateThemeOp = defineOperation({
         kind: "HandlerError",
         operation: "themes.duplicate",
         message: "fetch-after-insert returned no row",
+        internal: true,
       });
     }
     await emitThemeWrite(tx, {

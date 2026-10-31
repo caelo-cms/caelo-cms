@@ -168,6 +168,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
   ).toEqual(tokens);
   // One published page so the build emits HTML carrying the @font-face CSS.
   const template = (await run("templates.create", {
+    pageType: "home",
     slug: `${THEME_SLUG}-tpl`,
     displayName: `${THEME_SLUG} template`,
     html: `<html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

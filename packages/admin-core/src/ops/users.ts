@@ -105,6 +105,7 @@ export const createFirstOwnerOp = defineOperation({
         kind: "HandlerError",
         operation: "users.create_first_owner",
         message: "actor insert returned no row",
+        internal: true,
       });
     }
     await tx.execute(sql`
@@ -353,7 +354,12 @@ export const createUserOp = defineOperation({
     `)) as unknown as { id: string }[];
     const userId = actorRows[0]?.id;
     if (!userId) {
-      return err({ kind: "HandlerError", operation: "users.create", message: "no id returned" });
+      return err({
+        kind: "HandlerError",
+        operation: "users.create",
+        message: "no id returned",
+        internal: true,
+      });
     }
     await tx.execute(sql`
       INSERT INTO users (id, email, password_hash, is_first_owner)

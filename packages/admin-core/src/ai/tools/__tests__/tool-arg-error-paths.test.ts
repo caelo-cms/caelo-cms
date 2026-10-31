@@ -44,7 +44,7 @@ describe("tool argument error paths", () => {
       page: { pageId: PAGE },
       modules: [{ moduleId: PAGE, blockName: "content", editable: true }],
     });
-    expect(content).toContain("`modules.0`: unrecognized key(s) `editable`");
+    expect(content).toContain("`modules[0]`: unrecognized key(s) `editable`");
     expect(content).not.toContain("this tool does not accept");
   });
 
@@ -59,7 +59,7 @@ describe("tool argument error paths", () => {
       modules: [{ moduleId: null, blockName: "content" }],
     });
     expect(content).toContain(
-      '`modules.0.moduleId`: invalid value — expected a uuid string, or an object {"$ref": …}.',
+      '`modules[0].moduleId`: invalid value — expected a uuid string, or an object {"$ref": …}.',
     );
     expect(content).toContain("omit `moduleId`");
   });
@@ -74,7 +74,7 @@ describe("tool argument error paths", () => {
       html: "<nav>{{#links}}<a>{{label}}</a>{{/links}}</nav>",
       fields: [{ name: "links", kind: "list", label: "Links" }],
     });
-    expect(content).toContain("`fields.0.listType`");
+    expect(content).toContain("`fields[0].listType`");
     expect(content).toContain('"texts", "links", "menu"');
   });
 

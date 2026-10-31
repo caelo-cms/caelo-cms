@@ -295,6 +295,7 @@ describe("page types and addresses", () => {
       slug: "news",
       name: "News",
       purpose: "Dated announcements",
+      collection: true,
       templates: [PAGE],
       defaultTemplate: LIST,
       properties: [{ name: "teaser", label: "T", type: "module" }],
