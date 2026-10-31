@@ -7,6 +7,7 @@ Pulumi stack provisioning Caelo on Azure managed services. Implements the shared
 | Concern | Azure resource |
 |---|---|
 | Managed Postgres | Azure DB for PostgreSQL flexible server (zone-redundant in production) + automated backups (geo-redundant in production) |
+| Connection budget | `max_connections` pinned as a server parameter (`maxConnections`, default 429, the Standard_B2s limit); the admin, orchestrator and runner apps (10 replicas each) get a cms_admin pool of 7 and a cms_public pool of 4, the gateway a pool of 2 (docs/dev/connection-budget.md) |
 | Blob storage | Storage Account with a private `media` container and static-website hosting (`$web`) |
 | CDN / Edge | Azure Front Door Standard: the primary domain serves the static website as files, with a Front Door managed certificate; no edge compute on the request path |
 | Container runtime | Four Container Apps (admin / gateway / orchestrator / runner) in one managed environment |

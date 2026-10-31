@@ -144,7 +144,6 @@ beforeAll(async () => {
   otherToken = await mintAdminToken(otherCtx);
   const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
     plaintextToken: adminToken,
-    newSession: true,
     title: "mcp-handoff-test session",
   });
   if (!opened.ok) throw new Error(`open_session failed: ${JSON.stringify(opened.error)}`);

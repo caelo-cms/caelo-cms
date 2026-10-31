@@ -31,6 +31,11 @@ import {
   staticPublisherServiceAccountId,
 } from "../../dist/gcp-names.js";
 import { createSiteUrlMap } from "../../dist/gcp-url-map.js";
+import {
+  DEFAULT_GATEWAY_MAX_INSTANCES,
+  DEFAULT_MAX_CONNECTIONS,
+  stackPoolBudget,
+} from "../../dist/pool-budget-stack.js";
 import { mcpArmorRuleArgs } from "../../dist/remote-mcp-edge.js";
 import {
   ADMIN_MEMORY_DEFAULT,
@@ -96,13 +101,14 @@ const adminMinInstances = Number.parseInt(cfg.get("adminMinInstances") ?? "0", 1
 // #553 — the admin also runs the Lighthouse quality audit; same knob and
 // default on every adapter (stack-contract.ts ADMIN_MEMORY_DEFAULT).
 const adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
-// adminMaxInstances default is intentionally low. Each admin process holds
-// TWO Bun SQL pools (admin_role on cms_admin + admin_role on cms_public),
-// each with default pool-max=10 → up to ~20 connections per instance under
-// sustained load. With db-f1-micro's tunable max_connections, even 5 admin
-// instances saturate the pool (5 × 20 = 100 = our default ceiling below).
-// Operators on larger SQL tiers should bump maxConnections AND
-// adminMaxInstances together.
+// adminMaxInstances default is intentionally low. Every admin instance
+// holds two pools (cms_admin + cms_public) plus a LISTEN connection, and
+// all of them share the server's max_connections with the gateway, the
+// generator and the jobs. #1254 sizes the pools from that budget
+// (src/pool-budget-stack.ts) instead of Bun's default 10 per pool; a
+// scale-out the server cannot afford fails at preview, naming the
+// connections it needs. Operators on larger SQL tiers bump maxConnections
+// AND adminMaxInstances together.
 //
 // Why 5, not 10 (Cloud Run's default)? An incident on production showed
 // admin scaling to 10 under bursty editor traffic, demanding 200 slots
@@ -111,11 +117,23 @@ const adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
 // installs don't trip the same wall.
 const adminMaxInstances = Number.parseInt(cfg.get("adminMaxInstances") ?? "5", 10);
 const gatewayMinInstances = Number.parseInt(cfg.get("gatewayMinInstances") ?? "0", 10);
-// Postgres connection slot ceiling. Cloud SQL's db-f1-micro defaults to 25,
-// which 1 admin pool exhausts under load (Bun SQL pool-max=10, two pools per
-// admin instance, plus gateway + migrations + backup-agent overhead). 100 is
-// the safe floor for a small editorial install — tune up alongside SQL tier.
-const maxConnections = Number.parseInt(cfg.get("maxConnections") ?? "100", 10);
+// #1254 — the gateway's scale-out is part of the connection budget: each
+// instance holds a cms_public pool.
+const gatewayMaxInstances = Number.parseInt(
+  cfg.get("gatewayMaxInstances") ?? String(DEFAULT_GATEWAY_MAX_INSTANCES),
+  10,
+);
+// Postgres connection slot ceiling, set as a database flag below (Cloud
+// SQL's db-f1-micro defaults to 25). The pool budget is computed from it.
+const maxConnections = Number.parseInt(
+  cfg.get("maxConnections") ?? String(DEFAULT_MAX_CONNECTIONS.gcp),
+  10,
+);
+const poolBudget = stackPoolBudget("gcp", {
+  maxConnections,
+  adminMaxInstances,
+  gatewayMaxInstances,
+});
 const wafAdaptiveProtection = cfg.getBoolean("wafAdaptiveProtection") ?? false;
 const backupRetentionDays = Number.parseInt(cfg.get("backupRetentionDays") ?? "7", 10);
 // IAP allowlist: comma-list of "user:<email>" or "group:<group@domain>".
@@ -292,11 +310,9 @@ const sqlInstance = new gcp.sql.DatabaseInstance(
       diskSize: 20,
       diskType: "PD_SSD",
       diskAutoresize: true,
-      // db-f1-micro defaults max_connections=25, which a single
-      // admin Cloud Run instance can exhaust under load (Bun SQL
-      // pool-max=10, two pools per admin process). Override at
-      // instance level so the cap matches the Cloud Run scale-out
-      // headroom defined by adminMaxInstances + gatewayMaxInstances.
+      // db-f1-micro defaults max_connections=25. Set explicitly: the
+      // services' pool sizes are computed from this exact number
+      // (poolBudget above), so the server must have it.
       databaseFlags: [
         { name: "max_connections", value: maxConnections.toString() },
         // The operator-access sync job logs in as its service account (Cloud
@@ -787,13 +803,18 @@ const adminSvc = cloudRunService({
   // in Cloud Run logs. 3600s is the platform max; no cost penalty for
   // unused timeout (Cloud Run bills running time, not allocated time).
   timeout: "3600s",
-  contractEnv: [...adminEnvContract(envContractInputs), ...remoteMcpEnv.admin],
+  contractEnv: [
+    ...adminEnvContract(envContractInputs),
+    ...remoteMcpEnv.admin,
+    // #1254 — pool sizes from the connection budget.
+    ...poolBudget.env.admin,
+  ],
   mediaVolume: adminMediaVolumeTemplate(adminMediaVolume(project, env)),
 });
 const gatewaySvc = cloudRunService({
   serviceName: "gateway",
   minInstances: gatewayMinInstances,
-  maxInstances: 100,
+  maxInstances: gatewayMaxInstances,
   memory: "512Mi",
   // #806 — remote MCP: chat turns stream through the gateway for minutes,
   // so it gets the admin's 3600 s instead of Cloud Run's 300 s default
@@ -802,7 +823,11 @@ const gatewaySvc = cloudRunService({
   timeout: `${GATEWAY_TIMEOUT_SECONDS}s`,
   // public_role on cms_public only: no cms_admin login of any role
   // (#613, #635, CLAUDE.md §2).
-  contractEnv: [...gatewayEnvContract(envContractInputs), ...remoteMcpEnv.gateway],
+  contractEnv: [
+    ...gatewayEnvContract(envContractInputs),
+    ...remoteMcpEnv.gateway,
+    ...poolBudget.env.gateway,
+  ],
 });
 
 // =========================================================================

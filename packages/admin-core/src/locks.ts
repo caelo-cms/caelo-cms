@@ -42,6 +42,7 @@ import {
   type TakeoverOutcome,
   takeOverEntity,
 } from "./lock-takeover.js";
+import { currentToolCallVersion } from "./tool-call-version.js";
 
 export type LockedEntityKind =
   | "module"
@@ -103,6 +104,70 @@ export interface LockCheckResult {
    * another chat's lock is taken over, never a refusal.
    */
   siblingLease?: LeaseHolder;
+  /**
+   * Issue #1253 — set when permitted=false because another tool call wrote
+   * the entity after the caller's call started (tool-call-version.ts):
+   * two calls edited it at once, and this one worked on what it read
+   * before the other's change.
+   */
+  concurrentCall?: true;
+}
+
+interface WritingChat {
+  owner: string;
+  branch_kind: string;
+  is_caller: boolean;
+  is_subagent: boolean;
+}
+
+/**
+ * Issue #1254 — the chat a write on `chatBranchId` belongs to: the caller's
+ * own chat when it is identified and on the branch (primary key), else the
+ * branch's first chat (`chat_sessions_branch_created_idx`, 0456). The shared
+ * draft is one branch for every chat ever opened, so ordering all of them
+ * on every write grew with every agent session.
+ */
+async function writingChat(
+  tx: TransactionRunner,
+  chatBranchId: string,
+  holderKey: string | null | undefined,
+): Promise<WritingChat | undefined> {
+  if (holderKey) {
+    const own = (await tx.execute(sql`
+      SELECT caelo_chat_owner(cs.id)::text AS owner, cs.branch_kind, true AS is_caller,
+             (cs.parent_chat_session_id IS NOT NULL) AS is_subagent
+      FROM chat_sessions cs
+      WHERE cs.id = ${holderKey}::uuid AND cs.chat_branch_id = ${chatBranchId}::uuid
+    `)) as unknown as WritingChat[];
+    if (own[0]) return own[0];
+  }
+  const first = (await tx.execute(sql`
+    SELECT caelo_chat_owner(cs.id)::text AS owner, cs.branch_kind, false AS is_caller,
+           (cs.parent_chat_session_id IS NOT NULL) AS is_subagent
+    FROM chat_sessions cs
+    WHERE cs.chat_branch_id = ${chatBranchId}::uuid
+    ORDER BY cs.created_at
+    LIMIT 1
+  `)) as unknown as WritingChat[];
+  return first[0];
+}
+
+/**
+ * #1253 — stamp the entity's lock row with the writing transaction and
+ * tool call, so a concurrent call that started earlier sees the change as
+ * newer than its read. The row is already locked by this transaction.
+ */
+async function recordLockWrite(
+  tx: TransactionRunner,
+  kind: LockedEntityKind,
+  entityId: string,
+  callId: string | null,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE chat_entity_locks
+    SET last_write_xid = pg_current_xact_id(), last_write_call = ${callId}::text
+    WHERE entity_kind = ${kind} AND entity_id = ${entityId}::uuid
+  `);
 }
 
 /**
@@ -153,21 +218,7 @@ export async function checkAndAcquireEntityLock(
   // draft many chats share one branch, so the branch alone no longer names
   // the writer. No chat on the branch (deleted, never created) = system
   // write.
-  const sessionRows = (await tx.execute(sql`
-    SELECT caelo_chat_owner(cs.id)::text AS owner, cs.branch_kind,
-           (cs.id = ${args.holderKey ?? null}::uuid) AS is_caller,
-           (cs.parent_chat_session_id IS NOT NULL) AS is_subagent
-    FROM chat_sessions cs
-    WHERE cs.chat_branch_id = ${args.chatBranchId}::uuid
-    ORDER BY (cs.id = ${args.holderKey ?? null}::uuid) DESC NULLS LAST, cs.created_at
-    LIMIT 1
-  `)) as unknown as {
-    owner: string;
-    branch_kind: string;
-    is_caller: boolean | null;
-    is_subagent: boolean;
-  }[];
-  const writer = sessionRows[0];
+  const writer = await writingChat(tx, args.chatBranchId, args.holderKey);
   if (!writer) {
     return { permitted: true };
   }
@@ -180,15 +231,27 @@ export async function checkAndAcquireEntityLock(
     VALUES (${args.kind}, ${args.entityId}::uuid, ${sessionId}::uuid, ${args.chatBranchId}::uuid)
     ON CONFLICT (entity_kind, entity_id) DO NOTHING
   `);
+  // #1253 — with the caller's tool-call version: whether the entity's last
+  // write was not yet visible when the call started.
+  const call = currentToolCallVersion();
   const rows = (await tx.execute(sql`
     SELECT chat_session_id::text AS chat_session_id,
            chat_branch_id::text AS chat_branch_id,
-           locked_at
+           locked_at,
+           (last_write_xid IS NOT NULL
+             AND last_write_call IS DISTINCT FROM ${call?.callId ?? null}::text
+             AND NOT pg_visible_in_snapshot(last_write_xid, ${call?.snapshot ?? null}::pg_snapshot)
+           ) AS written_since_call
     FROM chat_entity_locks
     WHERE entity_kind = ${args.kind} AND entity_id = ${args.entityId}::uuid
     LIMIT 1
     FOR UPDATE
-  `)) as unknown as { chat_session_id: string; chat_branch_id: string; locked_at: string | Date }[];
+  `)) as unknown as {
+    chat_session_id: string;
+    chat_branch_id: string;
+    locked_at: string | Date;
+    written_since_call: boolean | null;
+  }[];
   const row = rows[0];
   if (!row) {
     return { permitted: true };
@@ -216,10 +279,16 @@ export async function checkAndAcquireEntityLock(
     }
   }
   if (row.chat_branch_id === args.chatBranchId) {
+    // #1253 — another call wrote it after this call started (the lock row
+    // serialises writers, so that write is committed): this call's change
+    // was made against what it read before. Checked before the owner-based
+    // draft check, which cannot see a race inside one chat.
+    if (call && row.written_since_call === true) return { permitted: false, concurrentCall: true };
     if (onDraft && writer.is_caller === true) {
       const stale = await draftConflict(tx, args.kind, args.entityId, args.chatBranchId, sessionId);
       if (stale) return { permitted: false, staleDraft: stale };
     }
+    await recordLockWrite(tx, args.kind, args.entityId, call?.callId ?? null);
     return { permitted: true };
   }
   // issue #620 — another branch holds it: adopt that branch's unstaged
@@ -233,6 +302,7 @@ export async function checkAndAcquireEntityLock(
   if (onDraft && writer.is_caller === true) {
     await observeDraftEntity(tx, sessionId, args.kind, args.entityId);
   }
+  await recordLockWrite(tx, args.kind, args.entityId, call?.callId ?? null);
   return { permitted: true, takeover };
 }
 
@@ -393,6 +463,17 @@ export async function entityWriteBlockedError(
 > {
   if (result.siblingLease) {
     return siblingLeaseError(operation, kind, entityId, result.siblingLease);
+  }
+  if (result.concurrentCall) {
+    const label = await lockedEntityLabel(tx, kind, entityId);
+    return {
+      kind: "HandlerError",
+      operation,
+      message:
+        `Conflict: ${kind} '${label}' was changed by another tool call that finished while this call was running (two calls edited it at the same time), so this write was NOT applied. ` +
+        "Read it again to get the current version, then redo your edit on top of it (do not resend the old content). Run edits of the same page or entity one after another, not in parallel.",
+      conflict: true,
+    };
   }
   if (result.staleDraft) {
     const label = await lockedEntityLabel(tx, kind, entityId);

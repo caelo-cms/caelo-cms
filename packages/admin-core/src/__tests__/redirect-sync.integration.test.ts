@@ -15,13 +15,21 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  DatabaseAdapter,
+  execute,
+  NestedPoolCheckoutError,
+  OperationRegistry,
+  type TransactionRunner,
+} from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { sql as drizzleSql } from "drizzle-orm";
 import { bulkCreateRedirectsTool } from "../ai/tools/bulk-create-redirects.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
-import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
+import { type SyncRedirectsArgs, syncRedirects } from "../deploy/redirect-sync.js";
 import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publisher.js";
+import { applyPathMoveEffects } from "../ops/content/path-moves.js";
 import type { RedirectSyncTargetStatus } from "../ops/redirect_sync.js";
 import {
   _redirectSyncPollOnceForTests,
@@ -87,6 +95,18 @@ async function status(): Promise<Record<string, RedirectSyncTargetStatus>> {
   return Object.fromEntries(list.map((t) => [t.env, t]));
 }
 
+/**
+ * Run the sync the way `redirects.sync_provider` does: on a runner that
+ * holds no transaction, each step its own short one.
+ */
+function syncDetached(args: SyncRedirectsArgs) {
+  const runner = {
+    transaction: <T>(fn: (tx: TransactionRunner) => Promise<T>) =>
+      adapter.withAdminTransaction(SYSTEM, fn),
+  } as unknown as TransactionRunner;
+  return syncRedirects(runner, SYSTEM, args);
+}
+
 async function createRedirects(rows: { fromPath: string; toPath: string }[]) {
   return execute(registry, adapter, SYSTEM, "redirects.create_many", {
     redirects: rows,
@@ -142,6 +162,7 @@ beforeEach(async () => {
     await tx`DELETE FROM redirects`;
     await tx`DELETE FROM redirect_syncs`;
     await tx`DELETE FROM redirect_sync_state`;
+    await tx`DELETE FROM redirect_changes`;
     await tx`DELETE FROM deploy_runs`;
   });
   await serve("production", { "index.html": "home", "about/index.html": "about" });
@@ -224,8 +245,18 @@ describe("redirect sync on save (#1157)", () => {
   it("an unchanged table writes nothing", async () => {
     await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
     await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
-    const s = await status();
-    expect(s.production?.last?.status).toBe("unchanged");
+    // #1254 — the second save changed no row: nothing is due, no push ran.
+    const pushes = await sys(
+      (tx) =>
+        tx`SELECT count(*)::int AS n FROM redirect_syncs WHERE target_id = ${targets.production.id}::uuid` as unknown as Promise<
+          { n: number }[]
+        >,
+    );
+    expect(pushes[0]?.n).toBe(1);
+    expect((await status()).production?.inSync).toBe(true);
+    // An explicit push of the same table changes nothing at the provider.
+    await syncDetached({ trigger: "manual", targetIds: [targets.production.id] });
+    expect((await status()).production?.last?.status).toBe("unchanged");
   });
 
   it("a failed push is loud, keeps the redirect, is shown and retried until live", async () => {
@@ -288,14 +319,19 @@ describe("redirect sync on save (#1157)", () => {
     stopRedirectSyncWorker();
     try {
       await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
-      // Production backs off for an hour; staging (nothing published) is due.
-      await sys(
-        (tx) => tx`
-          UPDATE redirect_sync_state SET next_attempt_at = CASE
-            WHEN target_id = ${targets.production.id}::uuid THEN now() + interval '1 hour'
-            ELSE now() - interval '1 second' END
-        `,
-      );
+      // Both targets failed earlier (the change is folded); production backs
+      // off for an hour, staging (nothing published) is due.
+      await sys(async (tx) => {
+        await tx`DELETE FROM redirect_changes`;
+        await tx`
+          INSERT INTO redirect_sync_state (target_id, wanted_revision, synced_revision, failed_attempts, next_attempt_at)
+          SELECT id, 2, 1, 1, CASE WHEN id = ${targets.production.id}::uuid
+                                   THEN now() + interval '1 hour' ELSE now() - interval '1 second' END
+          FROM deploy_targets WHERE env IN ('staging', 'production')
+          ON CONFLICT (target_id) DO UPDATE SET wanted_revision = 2, synced_revision = 1,
+            failed_attempts = 1, next_attempt_at = EXCLUDED.next_attempt_at
+        `;
+      });
       await _redirectSyncPollOnceForTests({ adapter, registry });
       const s = await status();
       expect(s.staging?.inSync).toBe(true);
@@ -366,10 +402,13 @@ describe("redirect sync on save (#1157)", () => {
         VALUES ('/saved-during-build', '/about', 301, ${SYSTEM.actorId}::uuid)
       `,
     );
+    // Folded by an earlier sync that pushed onto the previous build.
+    await sys((tx) => tx`DELETE FROM redirect_changes`);
     expect((await status()).production?.inSync).toBe(true);
-    const outcomes = await adapter.withAdminTransaction(SYSTEM, (tx) =>
-      syncRedirectsInTx(tx, SYSTEM, { trigger: "build", targetIds: [targets.production.id] }),
-    );
+    const outcomes = await syncDetached({
+      trigger: "build",
+      targetIds: [targets.production.id],
+    });
     expect(outcomes.map((o) => o.status)).toEqual(["applied"]);
     expect(await snippet("production")).toContain("/saved-during-build");
     expect((await status()).production?.last).toMatchObject({
@@ -418,9 +457,7 @@ describe("redirect sync on save (#1157)", () => {
       },
     };
     try {
-      const outcomes = await adapter.withAdminTransaction(SYSTEM, (tx) =>
-        syncRedirectsInTx(tx, SYSTEM, { trigger: "retry", publisher }),
-      );
+      const outcomes = await syncDetached({ trigger: "manual", publisher });
       expect(outcomes.map((o) => o.env)).toEqual(["production"]);
       expect(stagingRowFree).toBe(true);
     } finally {
@@ -463,13 +500,11 @@ describe("redirect sync on save (#1157)", () => {
         movedServedBuild: { from: "sites/s/versions/live-1", to: "sites/s/versions/live-2" },
       }),
     };
-    await adapter.withAdminTransaction(SYSTEM, (tx) =>
-      syncRedirectsInTx(tx, SYSTEM, {
-        trigger: "manual",
-        targetIds: [targets.production.id],
-        publisher: fake,
-      }),
-    );
+    await syncDetached({
+      trigger: "manual",
+      targetIds: [targets.production.id],
+      publisher: fake,
+    });
     const locations = await sys(
       (tx) =>
         tx`SELECT build_id, publish_summary->>'location' AS location FROM deploy_runs
@@ -517,5 +552,259 @@ describe("redirect sync on save (#1157)", () => {
     expect(s.production?.inSync).toBe(false);
     expect(s.production?.lastError).toContain("form a loop");
     expect(s.production?.nextAttemptAt).not.toBeNull();
+  });
+});
+
+describe("redirect sync off the write path (#1254)", () => {
+  /** The state rows' row versions: any write (even of equal values) changes xmin. */
+  async function stateVersions(): Promise<string[]> {
+    const rows = await sys(
+      (tx) =>
+        tx`SELECT target_id::text || ':' || xmin::text AS v FROM redirect_sync_state ORDER BY target_id` as unknown as Promise<
+          { v: string }[]
+        >,
+    );
+    return rows.map((r) => r.v);
+  }
+
+  async function changeRows(): Promise<number> {
+    const rows = await sys(
+      (tx) =>
+        tx`SELECT count(*)::int AS n FROM redirect_changes` as unknown as Promise<{ n: number }[]>,
+    );
+    return rows[0]?.n ?? 0;
+  }
+
+  async function syncRows(): Promise<number> {
+    const rows = await sys(
+      (tx) =>
+        tx`SELECT count(*)::int AS n FROM redirect_syncs` as unknown as Promise<{ n: number }[]>,
+    );
+    return rows[0]?.n ?? 0;
+  }
+
+  it("a path move that creates no redirect does not touch redirect_sync_state", async () => {
+    // A synced baseline: every target has its state row.
+    await createRedirects([{ fromPath: "/legacy", toPath: "/about" }]);
+    const before = await stateVersions();
+    expect(before.length).toBe(2);
+    const syncsBefore = await syncRows();
+
+    const effects = await adapter.withAdminTransaction(SYSTEM, (tx) =>
+      applyPathMoveEffects(
+        SYSTEM,
+        tx,
+        [{ pageId: crypto.randomUUID(), from: "/team", to: "/people" }],
+        "skip",
+      ),
+    );
+    expect(effects.redirectsCreated).toBe(0);
+
+    expect(await stateVersions()).toEqual(before);
+    expect(await changeRows()).toBe(0);
+    // No sync was asked for, so none ran.
+    expect(await syncRows()).toBe(syncsBefore);
+  });
+
+  it("a page move that creates a redirect commits while the sync state rows are locked", async () => {
+    stopRedirectSyncWorker();
+    const holder = new SQL(ADMIN_URL!);
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((r) => {
+      release = r;
+    });
+    try {
+      await sys(
+        (tx) => tx`
+          INSERT INTO redirect_sync_state (target_id)
+          SELECT id FROM deploy_targets WHERE env IN ('staging', 'production')
+          ON CONFLICT (target_id) DO NOTHING
+        `,
+      );
+      let locked: () => void = () => undefined;
+      const isLocked = new Promise<void>((r) => {
+        locked = r;
+      });
+      // Another transaction holds every state row (a sync recording, say).
+      const held = holder.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`SELECT 1 FROM redirect_sync_state FOR UPDATE`;
+        locked();
+        await released;
+      });
+      await isLocked;
+      // The page write must not wait for them: bounded by lock_timeout.
+      const effects = await adapter.withAdminTransaction(SYSTEM, async (tx) => {
+        await tx.execute(drizzleSql`SET LOCAL lock_timeout = '2s'`);
+        return applyPathMoveEffects(
+          SYSTEM,
+          tx,
+          [{ pageId: crypto.randomUUID(), from: "/team", to: "/people" }],
+          "auto",
+        );
+      });
+      expect(effects.redirectsCreated).toBe(1);
+      release();
+      await held;
+      // The change waits in the log; the worker pushes it.
+      expect(await changeRows()).toBe(1);
+      expect((await status()).production?.inSync).toBe(false);
+      await _redirectSyncPollOnceForTests({ adapter, registry });
+      expect((await status()).production?.inSync).toBe(true);
+      expect(await snippet("production")).toContain("/team");
+    } finally {
+      release();
+      await holder.end();
+      startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+    }
+  });
+
+  it("several pending changes are pushed by one coalesced run", async () => {
+    stopRedirectSyncWorker();
+    try {
+      for (const n of [1, 2, 3]) {
+        const r = await createRedirects([{ fromPath: `/old-${n}`, toPath: "/about" }]);
+        expect(r.ok).toBe(true);
+      }
+      expect(await changeRows()).toBe(3);
+      const real = await loadStaticPublisher(undefined);
+      let pushes = 0;
+      const counting: StaticPublisher = {
+        ...real,
+        syncRedirects: (args) => {
+          pushes += 1;
+          return real.syncRedirects!(args);
+        },
+      };
+      const outcomes = await syncDetached({ trigger: "save", publisher: counting });
+      // Staging serves no build: only production reaches the provider.
+      expect(pushes).toBe(1);
+      expect(outcomes.find((o) => o.env === "production")?.status).toBe("applied");
+      expect(await changeRows()).toBe(0);
+      const caddy = await snippet("production");
+      for (const n of [1, 2, 3]) expect(caddy).toContain(`/old-${n}`);
+      expect((await status()).production?.inSync).toBe(true);
+      // Nothing left: the next save-triggered run pushes nothing.
+      await syncDetached({ trigger: "save", publisher: counting });
+      expect(pushes).toBe(1);
+    } finally {
+      startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+    }
+  });
+
+  it("concurrent saves coalesce and every one of them goes live", async () => {
+    const before = await syncRows();
+    const saves = [1, 2, 3, 4, 5, 6];
+    const results = await Promise.all(
+      saves.map((n) => createRedirects([{ fromPath: `/c-${n}`, toPath: "/about" }])),
+    );
+    expect(results.every((r) => r.ok)).toBe(true);
+    const caddy = await snippet("production");
+    for (const n of saves) expect(caddy).toContain(`/c-${n}`);
+    expect((await status()).production?.inSync).toBe(true);
+    // Two history rows (production + staging) per push: fewer pushes than saves.
+    expect((await syncRows()) - before).toBeLessThan(saves.length * 2);
+  });
+
+  it("the provider push runs with no transaction open and no sync or lease row locked", async () => {
+    await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
+    await sys(
+      (tx) => tx`INSERT INTO redirects (from_path, to_path, status_code, created_by)
+                 VALUES ('/later', '/about', 301, ${SYSTEM.actorId}::uuid)`,
+    );
+    const real = await loadStaticPublisher(undefined);
+    const seen: {
+      nested: boolean;
+      stateFree: boolean;
+      leaseFree: boolean;
+      holder: string | null;
+    }[] = [];
+    const probing: StaticPublisher = {
+      ...real,
+      syncRedirects: async (args) => {
+        // Inside a transaction of this adapter's call chain this throws.
+        let nested = false;
+        try {
+          await adapter.rawAdmin()`SELECT 1`;
+        } catch (e) {
+          nested = e instanceof NestedPoolCheckoutError;
+        }
+        const probe = new SQL(ADMIN_URL!);
+        try {
+          const r = await probe.begin(async (tx) => {
+            await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+            const free = async (query: string) => {
+              await tx.unsafe("SAVEPOINT p");
+              try {
+                await tx.unsafe(query);
+                await tx.unsafe("RELEASE SAVEPOINT p");
+                return true;
+              } catch {
+                await tx.unsafe("ROLLBACK TO SAVEPOINT p");
+                return false;
+              }
+            };
+            const stateFree = await free("SELECT 1 FROM redirect_sync_state FOR UPDATE NOWAIT");
+            const leaseFree = await free(
+              "SELECT 1 FROM deploy_leases WHERE name = 'live-release' FOR UPDATE NOWAIT",
+            );
+            const lease = (await tx`SELECT holder_sync_id::text AS h FROM deploy_leases
+                                    WHERE name = 'live-release'`) as { h: string | null }[];
+            return { stateFree, leaseFree, holder: lease[0]?.h ?? null };
+          });
+          seen.push({ nested, ...r });
+        } finally {
+          await probe.end();
+        }
+        return real.syncRedirects!(args);
+      },
+    };
+    const outcomes = await syncDetached({ trigger: "save", publisher: probing });
+    expect(outcomes.find((o) => o.env === "production")?.status).toBe("applied");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ nested: false, stateFree: true, leaseFree: true });
+    // The lease is CLAIMED by the sync (ordering it with every publish), not locked…
+    expect(seen[0]?.holder).not.toBeNull();
+    // …and released once the push is recorded.
+    const after = await sys(
+      (tx) =>
+        tx`SELECT holder_sync_id::text AS h FROM deploy_leases WHERE name = 'live-release'` as unknown as Promise<
+          { h: string | null }[]
+        >,
+    );
+    expect(after[0]?.h ?? null).toBeNull();
+    expect(await snippet("production")).toContain("/later");
+  });
+
+  it("a sync skips production while a Publish live holds the live-release lease", async () => {
+    await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
+    const run = crypto.randomUUID();
+    await sys(async (tx) => {
+      await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+               VALUES (${run}::uuid, ${targets.production.id}::uuid, ${SYSTEM.actorId}::uuid,
+                       'running', now() + interval '10 minutes')`;
+      await tx`INSERT INTO deploy_leases (name, holder_run_id, acquired_at, expires_at)
+               VALUES ('live-release', ${run}::uuid, now(), now() + interval '10 minutes')
+               ON CONFLICT (name) DO UPDATE SET holder_run_id = EXCLUDED.holder_run_id,
+                 holder_sync_id = NULL, acquired_at = EXCLUDED.acquired_at,
+                 expires_at = EXCLUDED.expires_at`;
+      await tx`INSERT INTO redirects (from_path, to_path, status_code, created_by)
+               VALUES ('/during-publish', '/about', 301, ${SYSTEM.actorId}::uuid)`;
+    });
+    try {
+      const outcomes = await syncDetached({ trigger: "save" });
+      expect(outcomes.map((o) => o.env)).not.toContain("production");
+      // Left behind, not lost: the publish's finish step (or the worker) pushes it.
+      expect((await status()).production?.inSync).toBe(false);
+    } finally {
+      await sys(async (tx) => {
+        await tx`UPDATE deploy_leases SET holder_run_id = NULL, acquired_at = NULL, expires_at = NULL
+                 WHERE name = 'live-release'`;
+        await tx`DELETE FROM deploy_runs WHERE id = ${run}::uuid`;
+      });
+    }
+    await _redirectSyncPollOnceForTests({ adapter, registry });
+    expect((await status()).production?.inSync).toBe(true);
+    expect(await snippet("production")).toContain("/during-publish");
   });
 });

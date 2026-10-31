@@ -102,7 +102,7 @@ export const resolvePublicUrlsOp = defineOperation({
         canonicalOverride: r.canonical_url || null,
       })),
       { siteBaseUrl, pageUrlStyle: input.pageUrlStyle },
-      renderScopeOf(ctx),
+      renderScopeOf(ctx, tx),
     );
     return ok({ urls: Object.fromEntries(urls) });
   },

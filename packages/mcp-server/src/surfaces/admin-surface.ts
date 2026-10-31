@@ -9,9 +9,16 @@
  * The stdio shim (../admin-server.ts) backs it with HTTP calls to
  * `/api/mcp/*`, caching the catalogue and holding the work session in
  * process memory. The admin's remote endpoint `/api/mcp/remote/admin`
- * (issue #806) backs it with the `mcp.*` ops in-process; its transport is
- * stateless, so the work session lives on the connection's row instead.
- * Both show an agent the same tools and the same results.
+ * (issue #806) backs it with the Power-MCP steps in-process; its transport
+ * is stateless, so the work session is bound to the MCP transport session
+ * (`Mcp-Session-Id`) in the database instead. Both show an agent the same
+ * tools and the same results.
+ *
+ * Issue #1253 — one work session per agent. Several agents may share one
+ * connection (a client's sub-agents), and a connection has one current
+ * session at most, so every catalogue tool takes an optional
+ * `workSessionId`: the session that call runs in. It is added to the
+ * schemas here and taken off the arguments before the call reaches Caelo.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -35,6 +42,8 @@ import {
   type OpenSessionInput,
   openSessionInput,
   UPLOAD_IMAGES_TOOL,
+  WORK_SESSION_ARG,
+  WORK_SESSION_PROPERTY,
 } from "../tool-definitions.js";
 
 /** One catalogue entry, as `mcp.list_tools` returns it. */
@@ -84,14 +93,21 @@ export interface AdminSurfaceBackend {
   listCatalogue(): Promise<readonly RemoteTool[]>;
   /** One catalogue tool by name; the shim refreshes its cache on a miss (#678). */
   findTool(name: string): Promise<RemoteTool | undefined>;
-  /** Open / resume the work session and remember it as current. */
+  /** Open a new work session (or resume a named one) and remember it as current. */
   openSession(input: OpenSessionInput): Promise<OpenSessionResponse>;
-  /** The current work session, or null before caelo_open_session. */
-  currentSessionId(): Promise<string | null>;
+  /**
+   * Run one catalogue tool. `chatSessionId` is the call's own
+   * `workSessionId`; without it the backend uses its current session and
+   * throws {@link NoWorkSessionError} when it has none. `rpcRequestId` is
+   * the JSON-RPC id of the `tools/call`, from which the backend derives an
+   * idempotency key unique to its transport (a retried request with the
+   * same id gets the first result).
+   */
   executeTool(call: {
     toolName: string;
     args: Record<string, unknown>;
-    chatSessionId: string;
+    chatSessionId?: string;
+    rpcRequestId: string | number;
   }): Promise<ExecuteToolResponse>;
   getContext(): Promise<GetContextResponse>;
   /** Reads the operator's decision; the agent can never make it. */
@@ -166,6 +182,54 @@ function errorResult(text: string): CallToolResult {
   return { isError: true, content: [{ type: "text", text }] };
 }
 
+/** Thrown by a backend asked to run a call with no work session to run it in. */
+export class NoWorkSessionError extends Error {
+  override readonly name = "NoWorkSessionError";
+  constructor() {
+    super(
+      "no open work session — call caelo_open_session first. Every caelo write lands in a session's chat; " +
+        "when several agents share this connection, each opens its own session and passes it as workSessionId on every call.",
+    );
+  }
+}
+
+/** A catalogue tool's schema with the optional per-call work session (see the header). */
+function withWorkSessionArg(schema: Record<string, unknown>): {
+  type: "object";
+  [k: string]: unknown;
+} {
+  const properties = (schema.properties ?? {}) as Record<string, unknown>;
+  if (WORK_SESSION_ARG in properties) {
+    // A tool's own argument of this name would be swallowed; the catalogue
+    // test keeps every tool clear of it.
+    throw new Error(`catalogue tool schema already declares "${WORK_SESSION_ARG}"`);
+  }
+  return {
+    ...schema,
+    type: "object",
+    properties: { ...properties, [WORK_SESSION_ARG]: WORK_SESSION_PROPERTY },
+  };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Split the per-call work session off a call's arguments. */
+function takeWorkSession(
+  raw: Record<string, unknown>,
+):
+  | { ok: true; workSessionId?: string; args: Record<string, unknown> }
+  | { ok: false; message: string } {
+  const { [WORK_SESSION_ARG]: value, ...args } = raw;
+  if (value === undefined) return { ok: true, args };
+  if (typeof value !== "string" || !UUID_RE.test(value)) {
+    return {
+      ok: false,
+      message: `${WORK_SESSION_ARG} must be the chatSessionId caelo_open_session returned (a UUID)`,
+    };
+  }
+  return { ok: true, workSessionId: value, args };
+}
+
 /** Build the Power-MCP server over `backend`. The caller connects a transport. */
 export function createAdminMcpServer(
   backend: AdminSurfaceBackend,
@@ -186,7 +250,7 @@ export function createAdminMcpServer(
       ...(await backend.listCatalogue()).map((t) => ({
         name: t.name,
         description: t.description,
-        inputSchema: t.inputSchema as { type: "object"; [k: string]: unknown },
+        inputSchema: withWorkSessionArg(t.inputSchema),
       })),
     ],
   }));
@@ -245,9 +309,10 @@ export function createAdminMcpServer(
               text:
                 JSON.stringify(session, null, 2) +
                 (session.resumed
-                  ? `\nResumed the operator's session '${session.title}' — its earlier unstaged work continues here. `
-                  : `\nOpened a new session '${session.title}'. `) +
+                  ? `\nContinuing session '${session.title}' — its earlier unstaged work continues here. `
+                  : `\nOpened a new session '${session.title}' (a chat of your own in the Caelo admin). `) +
                 "Subsequent caelo tool calls write to the site's shared draft (or this session's experiment branch). " +
+                `If other agents share this connection, pass ${WORK_SESSION_ARG}: "${session.chatSessionId}" on every call. ` +
                 "Stage with stage_changes when the operator asks for it (otherwise offer it when a change is done); the operator clicks Publish live in the Caelo admin.",
             },
           ],
@@ -275,18 +340,20 @@ export function createAdminMcpServer(
       if (!remote) {
         return errorResult(`unknown tool: ${name}`);
       }
-      const chatSessionId = await backend.currentSessionId();
-      if (!chatSessionId) {
-        return errorResult(
-          "no open work session — call caelo_open_session first. Every caelo write lands on a " +
-            "session's preview branch; without one there is nothing to write to.",
-        );
+      const split = takeWorkSession(req.params.arguments ?? {});
+      if (!split.ok) return errorResult(split.message);
+      let result: ExecuteToolResponse;
+      try {
+        result = await backend.executeTool({
+          toolName: name,
+          args: split.args,
+          ...(split.workSessionId ? { chatSessionId: split.workSessionId } : {}),
+          rpcRequestId: extra.requestId,
+        });
+      } catch (e) {
+        if (e instanceof NoWorkSessionError) return errorResult(e.message);
+        throw e;
       }
-      const result = await backend.executeTool({
-        toolName: name,
-        args: req.params.arguments ?? {},
-        chatSessionId,
-      });
       if (result.approval) {
         // Issue #658 — the call queued a proposal: wait for the operator's
         // decision (bounded) and return it in THIS result, so the agent

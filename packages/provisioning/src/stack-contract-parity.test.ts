@@ -132,11 +132,15 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
   });
 
   it("builds the admin + gateway env from the shared contracts", () => {
+    // #1254 — plus the pool env of the stack's connection budget: derived
+    // from stack config (max_connections, instance counts) an upgrade roll
+    // cannot see, so it is stack-owned like the remote-MCP env; a roll
+    // never removes a var the contract does not own (planEnvUpdate).
     expect(src).toMatch(
-      /serviceName: "admin",[\s\S]*?contractEnv: \[\s*\.\.\.adminEnvContract\([\s\S]*?\.\.\.remoteMcpEnv\.admin,?\s*\]/,
+      /serviceName: "admin",[\s\S]*?contractEnv: \[\s*\.\.\.adminEnvContract\([\s\S]*?\.\.\.remoteMcpEnv\.admin,\s*(\/\/[^\n]*\n\s*)?\.\.\.poolBudget\.env\.admin,?\s*\]/,
     );
     expect(src).toMatch(
-      /serviceName: "gateway",[\s\S]*?contractEnv: \[\s*\.\.\.gatewayEnvContract\([\s\S]*?\.\.\.remoteMcpEnv\.gateway,?\s*\]/,
+      /serviceName: "gateway",[\s\S]*?contractEnv: \[\s*\.\.\.gatewayEnvContract\([\s\S]*?\.\.\.remoteMcpEnv\.gateway,\s*\.\.\.poolBudget\.env\.gateway,?\s*\]/,
     );
     expect(src).toContain("envs: [...args.contractEnv],");
   });

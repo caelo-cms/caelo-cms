@@ -330,7 +330,6 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
     const adminToken = await mintToken("admin");
     const session = await execute(registry, adapter, SYSTEM, "mcp.open_session", {
       plaintextToken: adminToken,
-      newSession: true,
       title: "t971 power",
     });
     if (!session.ok) throw new Error(JSON.stringify(session.error));

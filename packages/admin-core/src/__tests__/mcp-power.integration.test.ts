@@ -230,64 +230,53 @@ describe("Power-MCP surface (admin token)", () => {
     expect((resumed.value as { chatBranchId: string }).chatBranchId).toBe(chatBranchId);
   });
 
-  it("resumes the owner's most recent open session when no id is given (issue #620)", async () => {
-    const again = await execute(registry, adapter, systemCtx, "mcp.open_session", {
-      plaintextToken: adminToken,
+  it("opens a NEW session of its own when no id is given — never the operator's chat (#1253)", async () => {
+    // The operator's own Live Edit chat is the most recently active one.
+    const browser = await execute(registry, adapter, ownerCtx, "chat.create_session", {
+      title: "mcp-power-test browser chat",
     });
-    expect(again.ok).toBe(true);
-    if (!again.ok) return;
-    const v = again.value as { chatSessionId: string; resumed: boolean; title: string };
-    expect(v.resumed).toBe(true);
-    expect(v.chatSessionId).toBe(chatSessionId);
-    expect(v.title).toBe("mcp-power-test session");
-  });
-
-  it("opens a fresh session only on an explicit newSession: true (issue #620)", async () => {
+    if (!browser.ok) throw new Error("browser chat");
+    const browserId = (browser.value as { chatSessionId: string }).chatSessionId;
     const fresh = await execute(registry, adapter, systemCtx, "mcp.open_session", {
       plaintextToken: adminToken,
-      newSession: true,
       title: "mcp-power-test second session",
     });
     expect(fresh.ok).toBe(true);
     if (!fresh.ok) return;
     const f = fresh.value as { chatSessionId: string; resumed: boolean };
     expect(f.resumed).toBe(false);
-    expect(f.chatSessionId).not.toBe(chatSessionId);
-    // Now the fresh one is the most recent — a plain open resumes it.
-    const plain = await execute(registry, adapter, systemCtx, "mcp.open_session", {
+    expect([chatSessionId, browserId]).not.toContain(f.chatSessionId);
+    // Every open without an id is another agent: another session.
+    const again = await execute(registry, adapter, systemCtx, "mcp.open_session", {
       plaintextToken: adminToken,
     });
-    expect(plain.ok && (plain.value as { chatSessionId: string }).chatSessionId).toBe(
-      f.chatSessionId,
-    );
-    const both = await execute(registry, adapter, systemCtx, "mcp.open_session", {
-      plaintextToken: adminToken,
-      newSession: true,
-      chatSessionId,
+    if (!again.ok) throw new Error("second open");
+    const g = again.value as { chatSessionId: string; resumed: boolean };
+    expect(g.resumed).toBe(false);
+    expect([chatSessionId, browserId, f.chatSessionId]).not.toContain(g.chatSessionId);
+    // Agent chats carry their client (the token's label) for the chat list.
+    const listed = await execute(registry, adapter, ownerCtx, "chat.list_sessions", {
+      agentChats: "only",
     });
-    expect(both.ok).toBe(false);
+    if (!listed.ok) throw new Error("list");
+    const agentIds = (
+      listed.value as { sessions: { id: string; agentClient: string | null }[] }
+    ).sessions.map((x) => x.id);
+    expect(agentIds).toContain(g.chatSessionId);
+    expect(agentIds).not.toContain(browserId);
   });
 
-  it("counts MCP tool calls as session activity, so a reconnect resumes the MCP session (PR #622 review)", async () => {
-    // The owner opens a browser chat AFTER the MCP session — it is now the
-    // most recently active one.
-    const browser = await execute(registry, adapter, ownerCtx, "chat.create_session", {
-      title: "mcp-power-test browser chat",
-    });
-    if (!browser.ok) throw new Error("browser chat");
-    // MCP work in the earlier session makes that session the active one.
-    const call = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
-      plaintextToken: adminToken,
-      chatSessionId,
-      toolName: "list_pages",
-    });
-    expect(call.ok && (call.value as { ok: boolean }).ok).toBe(true);
+  it("resumes a named session of the same user", async () => {
     const resumed = await execute(registry, adapter, systemCtx, "mcp.open_session", {
       plaintextToken: adminToken,
-    });
-    expect(resumed.ok && (resumed.value as { chatSessionId: string }).chatSessionId).toBe(
       chatSessionId,
-    );
+    });
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) return;
+    const v = resumed.value as { chatSessionId: string; resumed: boolean; title: string };
+    expect(v.resumed).toBe(true);
+    expect(v.chatSessionId).toBe(chatSessionId);
+    expect(v.title).toBe("mcp-power-test session");
   });
 
   it("never resumes another user's session (issue #620)", async () => {
@@ -590,7 +579,6 @@ describe("Power-MCP surface (admin token)", () => {
     const cappedToken = await mintToken("admin", 1_000, true);
     const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
       plaintextToken: cappedToken,
-      newSession: true,
       title: "mcp-power-test capped session",
     });
     expect(opened.ok).toBe(true);
@@ -631,7 +619,6 @@ describe("Power-MCP surface (admin token)", () => {
     const token = await mintToken("admin");
     const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
       plaintextToken: token,
-      newSession: true,
       title: "mcp-power-test delegated session",
     });
     expect(opened.ok).toBe(true);

@@ -193,7 +193,7 @@ test("an external agent working in the chat is listed, keeps the Live Edit AI ou
   const token = mintAdminMcpToken(ensureIsolatedOwner(OWNER_EMAIL), "stop-e2e agent");
   const sessionRes = await request.post("/api/mcp/session", {
     headers: { "x-caelo-mcp-token": token },
-    data: { newSession: true, title: `stop-e2e-${Date.now()}` },
+    data: { title: `stop-e2e-${Date.now()}` },
   });
   expect(sessionRes.ok()).toBe(true);
   const { chatSessionId } = (await sessionRes.json()) as { chatSessionId: string };

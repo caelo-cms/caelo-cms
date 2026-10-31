@@ -5,6 +5,7 @@ import { loadedPlugins } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error, fail, redirect } from "@sveltejs/kit";
+import { groupAgentChats } from "#lib/agent-chat-groups.js";
 import type { ChatMessage, ChatModule, ChatSession } from "#lib/components/chat/types.js";
 import {
   DEFAULT_LAYOUT,
@@ -167,14 +168,23 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // Both buckets are loaded in parallel and surfaced in the overlay's
   // chat picker. Form action `?/newChat` accepts an empty `pageId` to
   // create a global chat.
-  const [sessionsR, globalSessionsR] = await Promise.all([
+  // #1253 — the operator's own chats only: an external agent works in a
+  // chat of its own, which Live Edit never picks as the operator's. The
+  // agents' chats are listed apart, grouped per client.
+  const [sessionsR, globalSessionsR, agentSessionsR] = await Promise.all([
     execute(registry, adapter, locals.ctx, "chat.list_sessions", {
       includeArchived: false,
       pageId: activePageId,
+      agentChats: "exclude",
     }),
     execute(registry, adapter, locals.ctx, "chat.list_sessions", {
       includeArchived: false,
       pageId: null,
+      agentChats: "exclude",
+    }),
+    execute(registry, adapter, locals.ctx, "chat.list_sessions", {
+      includeArchived: false,
+      agentChats: "only",
     }),
   ]);
   // v0.2.56 — log the actual failure reason when an op returns ok:false.
@@ -198,6 +208,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const globalSessions = globalSessionsR.ok
     ? (globalSessionsR.value as { sessions: ChatSession[] }).sessions
     : [];
+  if (!agentSessionsR.ok) {
+    console.error("[edit] chat.list_sessions (agents) failed", { error: agentSessionsR.error });
+  }
+  const agentSessions = agentSessionsR.ok
+    ? (agentSessionsR.value as { sessions: ChatSession[] }).sessions
+    : [];
 
   const queryChat = url.searchParams.get("chat");
   // Active chat: explicit ?chat= wins (can be page-bound OR global) →
@@ -216,6 +232,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   let activeChat: ChatSession | null =
     sessions.find((s) => s.id === queryChat) ??
     globalSessions.find((s) => s.id === queryChat) ??
+    // #1253 — an agent's chat opens only when named explicitly.
+    agentSessions.find((s) => s.id === queryChat) ??
     sessions.find((s) => !s.publishedAt) ??
     globalSessions.find((s) => !s.publishedAt) ??
     null;
@@ -658,6 +676,16 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       lastActiveAt: s.lastActiveAt,
       publishedAt: s.publishedAt,
     })),
+    /** #1253 — external agents' chats, one group per client app. */
+    agentChatGroups: groupAgentChats(
+      agentSessions.map((s) => ({
+        id: s.id,
+        title: s.title,
+        lastActiveAt: s.lastActiveAt,
+        publishedAt: s.publishedAt,
+        agentClient: s.agentClient ?? null,
+      })),
+    ).agents,
     /** v0.8.0 — other open chats with pending edits, for the cross-chat banner. */
     otherOpenChats,
     /** v0.8.0 — last successful staging deploy summary, for the Promote modal header. */

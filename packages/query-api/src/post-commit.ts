@@ -80,6 +80,30 @@ export function collectPostCommitEffects(tx: TransactionRunner): PostCommitEffec
 }
 
 /**
+ * Adapter-internal (#1254): a joined savepoint's effects, once it was
+ * released, move to the transaction it joined — and from there, savepoint
+ * by savepoint, to the holder's commit. A savepoint that rolled back never
+ * gets here, so its effects are dropped with its writes, exactly as on a
+ * transaction of its own.
+ *
+ * @throws Error when effects would move to a transaction that collects none
+ *   (one the adapter opened without post-commit effects).
+ */
+export function mergeSavepointEffects(
+  effects: readonly PostCommitEffect[],
+  parentTx: TransactionRunner,
+): void {
+  if (effects.length === 0) return;
+  const pending = pendingByTx.get(parentTx);
+  if (pending === undefined) {
+    throw new Error(
+      `afterCommit(${effects[0]?.label}): the transaction this call joined collects no post-commit effects`,
+    );
+  }
+  pending.push(...effects);
+}
+
+/**
  * Adapter-internal: run committed effects in order. Every effect runs even
  * when an earlier one failed — each is an independent consequence of the
  * same commit.

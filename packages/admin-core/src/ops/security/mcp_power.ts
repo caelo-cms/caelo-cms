@@ -37,36 +37,40 @@
  *   in the admin UI, and an AI Stage never publishes automatically.
  */
 
-import { pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";
-import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  pluginToolSurfaceGeneration,
+  pluginToolsRegistry,
+  runPluginOperation,
+} from "@caelo-cms/plugin-host";
+import type { DatabaseAdapter, OperationRegistry, QueryError } from "@caelo-cms/query-api";
 import { defineOperation, execute } from "@caelo-cms/query-api";
-import { type ExecutionContext, err, ok, untrustedToolResult } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import {
+  type ExecutionContext,
+  err,
+  ok,
+  type Result,
+  untrustedToolResult,
+} from "@caelo-cms/shared";
 import { z } from "zod";
 import { buildSkillsContext } from "../../ai/chat-runner/context/skills.js";
 import { buildStatusLine } from "../../ai/chat-runner/context-blocks.js";
 import { loadMemory } from "../../ai/chat-runner/persistence.js";
-import { withTakeoverNotices } from "../../ai/chat-runner/tool-dispatch.js";
-import { isReadOrMetaTool } from "../../ai/chat-runner/write-tools.js";
 import { delegatedProvider } from "../../ai/delegated-provider.js";
 import { chatPluginInvocation } from "../../ai/plugin-invocation.js";
 import { queuePluginToolApproval } from "../../ai/queued-tool-approval.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import { keptCallArgs, RETRY_TOOL_NAME, withKeptCallNotice } from "../../ai/tools/_retry-keep.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
-import { createDefaultToolRegistry } from "../../ai/tools/index.js";
+import { defaultToolRegistry } from "../../ai/tools/index.js";
 import { installUnavailableToolNames } from "../../ai/tools/install-availability.js";
+import { withToolCallVersion } from "../../tool-call-version.js";
 import { mcpAgentOpFields } from "../chat/mcp-agent.js";
-import {
-  approvalOutcome,
-  findMcpHandoffByToolCall,
-  readHandoffForAgent,
-  recordMcpHandoff,
-} from "../mcp_approval_handoffs.js";
+import { approvalOutcome, readHandoffForAgent } from "../mcp_approval_handoffs.js";
 import { exactlyOneMcpCredential, mcpCredentialShape } from "./mcp_credential.js";
 import { withUnavailableToolsNote } from "./mcp_power_prose.js";
 import { type McpPrincipal, mcpAgentRefOf } from "./mcp_principal.js";
 import { getMcpBridge, resolveMcpPrincipal, type SendChatBridgeOpts } from "./mcp_tokens.js";
+import { bindTransportSession, type mcpBeginToolCallOp } from "./mcp_tool_call.js";
 
 /**
  * Tools that only work inside the chat-runner loop or the browser SSE
@@ -256,6 +260,77 @@ function bridgeOrError():
   return { ok: true, bridge };
 }
 
+/**
+ * The outcome of a Power-MCP step for a principal that is already resolved
+ * (#1253): the value, or the message the op turns into a HandlerError.
+ */
+export type PowerResult<T> = { readonly ok: true; readonly value: T } | PowerFailure;
+/** A refused Power-MCP step; `message` names the next step. */
+export interface PowerFailure {
+  readonly ok: false;
+  readonly message: string;
+}
+
+const refused = (message: string): PowerFailure => ({ ok: false, message });
+
+/**
+ * Wrap a principal-taking Power-MCP step as an op body: resolve the
+ * credential, run the step, map a refusal to a HandlerError. The remote
+ * route calls the steps directly with the principal it resolved once for
+ * the request (#1253); the stdio shim's REST calls come through the ops.
+ */
+async function asOp<T>(
+  operation: string,
+  credential: Parameters<typeof resolveMcpPrincipal>[1],
+  step: (bridge: SendChatBridgeOpts, principal: McpPrincipal) => Promise<PowerResult<T>>,
+): Promise<Result<T, QueryError>> {
+  const bridged = bridgeOrError();
+  if (!bridged.ok) return err({ kind: "HandlerError", operation, message: bridged.message });
+  const auth = await resolveAdminPrincipal(bridged.bridge.adapter, credential, operation);
+  if (!auth.ok) return err({ kind: "HandlerError", operation, message: auth.message });
+  const r = await step(bridged.bridge, auth);
+  return r.ok ? ok(r.value) : err({ kind: "HandlerError", operation, message: r.message });
+}
+
+/** The bridge, for a step the remote route runs in-process. */
+export function powerBridge(): SendChatBridgeOpts {
+  const bridged = bridgeOrError();
+  if (!bridged.ok) throw new Error(bridged.message);
+  return bridged.bridge;
+}
+
+// ─── catalogue (memoised, #1253) ─────────────────────────────────────
+
+type CatalogueEntry = z.infer<typeof toolCatalogueEntry>;
+
+let catalogueCache: {
+  readonly key: string;
+  readonly byDelegation: Map<boolean, readonly CatalogueEntry[]>;
+} | null = null;
+
+/**
+ * The Power-MCP catalogue, built once per process and plugin tool surface
+ * (`pluginToolSurfaceGeneration`) instead of once or twice per request:
+ * 224 tools' descriptions and schemas, synchronous work that blocked the
+ * event loop for every concurrent request. Exported for the unit test.
+ */
+export function cachedPowerToolCatalogue(aiDelegated: boolean): readonly CatalogueEntry[] {
+  const unavailable = installUnavailableToolNames(process.env);
+  const key = `${pluginToolSurfaceGeneration()}|${[...unavailable].sort().join(",")}`;
+  if (catalogueCache?.key !== key) catalogueCache = { key, byDelegation: new Map() };
+  let entries = catalogueCache.byDelegation.get(aiDelegated);
+  if (entries === undefined) {
+    entries = powerToolCatalogue(defaultToolRegistry(), { aiDelegated, unavailable });
+    catalogueCache.byDelegation.set(aiDelegated, entries);
+  }
+  return entries;
+}
+
+/** The catalogue a principal sees (no database work). */
+export function powerListTools(principal: McpPrincipal): readonly CatalogueEntry[] {
+  return cachedPowerToolCatalogue(!principal.allowCaeloAi);
+}
+
 // ─── mcp.list_tools ──────────────────────────────────────────────────
 
 export const mcpListToolsOp = defineOperation({
@@ -270,22 +345,11 @@ export const mcpListToolsOp = defineOperation({
   transaction: "none",
   input: withCredential({}),
   output: z.object({ tools: z.array(toolCatalogueEntry) }),
-  handler: async (_ctx, input, _tx) => {
-    const bridged = bridgeOrError();
-    if (!bridged.ok) {
-      return err({ kind: "HandlerError", operation: "mcp.list_tools", message: bridged.message });
-    }
-    const auth = await resolveAdminPrincipal(bridged.bridge.adapter, input, "mcp.list_tools");
-    if (!auth.ok) {
-      return err({ kind: "HandlerError", operation: "mcp.list_tools", message: auth.message });
-    }
-    return ok({
-      tools: powerToolCatalogue(createDefaultToolRegistry(), {
-        aiDelegated: !auth.allowCaeloAi,
-        unavailable: installUnavailableToolNames(process.env),
-      }),
-    });
-  },
+  handler: async (_ctx, input, _tx) =>
+    asOp("mcp.list_tools", input, async (_bridge, principal) => ({
+      ok: true,
+      value: { tools: [...powerListTools(principal)] },
+    })),
 });
 
 // ─── mcp.open_session ────────────────────────────────────────────────
@@ -293,22 +357,118 @@ export const mcpListToolsOp = defineOperation({
 /** Title of a session the Power-MCP opens without one. */
 const MCP_SESSION_TITLE = "MCP · admin session";
 
+/** The client a principal's chats are grouped under in the chat list (0453). */
+function agentClientOf(principal: McpPrincipal): string {
+  return principal.via.kind === "remote"
+    ? principal.via.clientName.slice(0, 200)
+    : principal.displayName.slice(0, 200);
+}
+
+const openSessionFields = {
+  /** Resume this session (it must belong to the credential's user and be open). */
+  chatSessionId: z.string().uuid().optional(),
+  title: z.string().min(1).max(200).optional(),
+  /** Bind the new session to this page. */
+  pageId: z.string().uuid().optional(),
+};
+
+const openSessionOutput = z.object({
+  chatSessionId: z.string(),
+  chatBranchId: z.string(),
+  title: z.string(),
+  resumed: z.boolean(),
+});
+
+/** What {@link powerOpenSession} takes. */
+export interface PowerOpenSessionInput {
+  readonly chatSessionId?: string;
+  readonly title?: string;
+  readonly pageId?: string;
+  /**
+   * The remote transport session (`Mcp-Session-Id`) to bind the work
+   * session to, so the agent's later calls without `workSessionId` use it.
+   */
+  readonly transportSessionId?: string;
+}
+
 /**
- * #806 — the remote transport is stateless (any instance may serve the next
- * request), so a remote connection's current work session lives on its row
- * instead of in the shim's process memory. Token sessions stay with the
- * stdio shim, which holds them itself.
+ * Issue #1253 — open the agent's work session. Without `chatSessionId`
+ * every call opens a NEW session in the site's shared draft: one chat per
+ * agent, so Undo, Stop and presence are each agent's own, and an agent
+ * never lands in the operator's own chat unless it names that chat. With
+ * `chatSessionId` it resumes that open session of the same user.
  */
-async function rememberRemoteSession(
-  tx: Parameters<typeof recordMcpHandoff>[0],
+export async function powerOpenSession(
+  bridge: SendChatBridgeOpts,
   principal: McpPrincipal,
-  chatSessionId: string,
-): Promise<void> {
-  if (principal.via.kind !== "remote") return;
-  await tx.execute(sql`
-    UPDATE mcp_remote_connections SET current_chat_session_id = ${chatSessionId}::uuid
-    WHERE id = ${principal.via.connectionId}::uuid
-  `);
+  input: PowerOpenSessionInput,
+): Promise<PowerResult<z.infer<typeof openSessionOutput>>> {
+  const { adapter, registry } = bridge;
+  const humanCtx: ExecutionContext = {
+    actorId: principal.actorId,
+    actorKind: "human",
+    requestId: crypto.randomUUID(),
+  };
+  let opened: z.infer<typeof openSessionOutput>;
+  if (input.chatSessionId) {
+    // chat.resolve_session filters by created_by: another user's session
+    // reads as not found, so a credential can never resume someone else's.
+    const existing = await execute(registry, adapter, humanCtx, "chat.resolve_session", {
+      chatSessionId: input.chatSessionId,
+    });
+    if (!existing.ok) {
+      return refused(
+        `session_not_found: ${input.chatSessionId} — omit chatSessionId to open a new session of your own`,
+      );
+    }
+    const v = existing.value as {
+      session: {
+        chatBranchId: string;
+        title: string;
+        publishedAt: string | null;
+        archivedAt: string | null;
+      };
+    };
+    if (v.session.publishedAt !== null || v.session.archivedAt !== null) {
+      return refused(
+        `session_closed: ${input.chatSessionId} was already published, archived or discarded — omit chatSessionId to open a new session`,
+      );
+    }
+    opened = {
+      chatSessionId: input.chatSessionId,
+      chatBranchId: v.session.chatBranchId,
+      title: v.session.title,
+      resumed: true,
+    };
+  } else {
+    const title = input.title ?? MCP_SESSION_TITLE;
+    const created = await execute(registry, adapter, humanCtx, "chat.create_session", {
+      title,
+      agentClient: agentClientOf(principal),
+      ...(input.pageId ? { pageId: input.pageId } : {}),
+    });
+    if (!created.ok) {
+      const detail = "message" in created.error ? created.error.message : created.error.kind;
+      return refused(`session_create_failed: ${detail}`);
+    }
+    const c = created.value as { chatSessionId: string; chatBranchId: string };
+    opened = {
+      chatSessionId: c.chatSessionId,
+      chatBranchId: c.chatBranchId,
+      title,
+      resumed: false,
+    };
+  }
+  if (principal.via.kind === "remote" && input.transportSessionId !== undefined) {
+    const connectionId = principal.via.connectionId;
+    const transportSessionId = input.transportSessionId;
+    await adapter.withAdminTransaction(
+      humanCtx,
+      (tx) => bindTransportSession(tx, connectionId, transportSessionId, opened.chatSessionId),
+      { holder: "mcp.open_session.bind" },
+    );
+  }
+  return { ok: true, value: opened };
 }
 
 export const mcpOpenSessionOp = defineOperation({
@@ -321,145 +481,57 @@ export const mcpOpenSessionOp = defineOperation({
   // Issue #1210 — an orchestration of chat ops: holding a transaction around
   // them would make every one a second checkout of the pool.
   transaction: "none",
-  input: z
-    .object({
-      ...mcpCredentialShape,
-      /** Resume this session (it must belong to the token's owner). */
-      chatSessionId: z.string().uuid().optional(),
-      /**
-       * Issue #620 — open a FRESH session even though the owner has an
-       * open one. Without it (and without chatSessionId) the owner's most
-       * recently active open session is resumed.
-       */
-      newSession: z.boolean().optional(),
-      title: z.string().min(1).max(200).optional(),
-      /** Resume / bind to this page's session (subject to the one-open-chat-per-page gate). */
-      pageId: z.string().uuid().optional(),
-    })
-    .strict()
-    .refine(exactlyOneMcpCredential.check, { message: exactlyOneMcpCredential.message })
-    .refine((v) => !(v.newSession && v.chatSessionId), {
-      message:
-        "pass chatSessionId to resume a session OR newSession: true for a fresh one, not both",
-    }),
-  output: z.object({
-    chatSessionId: z.string(),
-    chatBranchId: z.string(),
-    title: z.string(),
-    resumed: z.boolean(),
-  }),
-  handler: async (_ctx, input, tx) => {
-    const bridged = bridgeOrError();
-    if (!bridged.ok) {
-      return err({ kind: "HandlerError", operation: "mcp.open_session", message: bridged.message });
-    }
-    const { adapter, registry } = bridged.bridge;
-    const auth = await resolveAdminPrincipal(adapter, input, "mcp.open_session");
-    if (!auth.ok) {
-      return err({ kind: "HandlerError", operation: "mcp.open_session", message: auth.message });
-    }
-    const humanCtx: ExecutionContext = {
-      actorId: auth.actorId,
-      actorKind: "human",
-      requestId: crypto.randomUUID(),
-    };
-    if (input.chatSessionId) {
-      // chat.resolve_session filters by created_by: another user's session
-      // reads as not found, so a token can never resume someone else's.
-      const existing = await execute(registry, adapter, humanCtx, "chat.resolve_session", {
-        chatSessionId: input.chatSessionId,
-      });
-      if (!existing.ok) {
-        return err({
-          kind: "HandlerError",
-          operation: "mcp.open_session",
-          message: `session_not_found: ${input.chatSessionId} — omit chatSessionId to resume your most recent open session, or pass newSession: true for a fresh one`,
-        });
-      }
-      const v = existing.value as {
-        session: {
-          chatBranchId: string;
-          title: string;
-          publishedAt: string | null;
-          archivedAt: string | null;
-        };
-      };
-      if (v.session.publishedAt !== null || v.session.archivedAt !== null) {
-        return err({
-          kind: "HandlerError",
-          operation: "mcp.open_session",
-          message: `session_closed: ${input.chatSessionId} was already published, archived or discarded — omit chatSessionId to resume your most recent open session, or pass newSession: true`,
-        });
-      }
-      await tx.transaction((t) => rememberRemoteSession(t, auth, input.chatSessionId as string));
-      return ok({
-        chatSessionId: input.chatSessionId,
-        chatBranchId: v.session.chatBranchId,
-        title: v.session.title,
-        resumed: true,
-      });
-    }
-    if (!input.newSession) {
-      // Issue #620 — resume the owner's own most recent open session
-      // instead of minting a new chat per MCP connection. chat.list_sessions
-      // returns only the caller's sessions (created_by), excludes archived
-      // (and therefore discarded) ones and subagent sessions, newest first.
-      const listed = await execute(registry, adapter, humanCtx, "chat.list_sessions", {
-        includeArchived: false,
+  input: withCredential(openSessionFields),
+  output: openSessionOutput,
+  handler: async (_ctx, input, _tx) =>
+    asOp("mcp.open_session", input, (bridge, principal) =>
+      powerOpenSession(bridge, principal, {
+        ...(input.chatSessionId ? { chatSessionId: input.chatSessionId } : {}),
+        ...(input.title ? { title: input.title } : {}),
         ...(input.pageId ? { pageId: input.pageId } : {}),
-      });
-      if (!listed.ok) {
-        const detail = "message" in listed.error ? listed.error.message : listed.error.kind;
-        return err({
-          kind: "HandlerError",
-          operation: "mcp.open_session",
-          message: `session_lookup_failed: ${detail}`,
-        });
-      }
-      const open = (
-        listed.value as {
-          sessions: {
-            id: string;
-            title: string;
-            chatBranchId: string;
-            publishedAt: string | null;
-          }[];
-        }
-      ).sessions.find((s) => s.publishedAt === null);
-      if (open) {
-        await tx.transaction((t) => rememberRemoteSession(t, auth, open.id));
-        return ok({
-          chatSessionId: open.id,
-          chatBranchId: open.chatBranchId,
-          title: open.title,
-          resumed: true,
-        });
-      }
-    }
-    const created = await execute(registry, adapter, humanCtx, "chat.create_session", {
-      title: input.title ?? MCP_SESSION_TITLE,
-      ...(input.pageId ? { pageId: input.pageId } : {}),
-    });
-    if (!created.ok) {
-      const detail = "message" in created.error ? created.error.message : created.error.kind;
-      return err({
-        kind: "HandlerError",
-        operation: "mcp.open_session",
-        message: `session_create_failed: ${detail}`,
-      });
-    }
-    const c = created.value as { chatSessionId: string; chatBranchId: string };
-    await tx.transaction((t) => rememberRemoteSession(t, auth, c.chatSessionId));
-    return ok({
-      chatSessionId: c.chatSessionId,
-      chatBranchId: c.chatBranchId,
-      title: input.title ?? MCP_SESSION_TITLE,
-      resumed: false,
-    });
-  },
+      }),
+    ),
 });
 
 // ─── mcp.execute_tool ────────────────────────────────────────────────
+
+const executeOutput = z.object({
+  ok: z.boolean(),
+  content: z.string(),
+  requestId: z.string(),
+  toolCallId: z.string(),
+  /** True when the result came from the idempotency cache. */
+  cached: z.boolean(),
+  image: z.object({ base64: z.string(), mediaType: z.string() }).nullable().optional(),
+  /** Structured recovery hint from the tool, passed through verbatim. */
+  nextAction: z.unknown().optional(),
+  /**
+   * Issue #658 — set when the call queued an approval-gated proposal.
+   * The operator decides in the Caelo admin; the decision is handed back
+   * through mcp.get_approval_outcome (the MCP server waits on it).
+   */
+  approval: z.object({ proposalId: z.string(), domain: z.string() }).nullable().optional(),
+});
+type ExecuteOutput = z.infer<typeof executeOutput>;
+
+/** What {@link powerExecuteTool} takes. */
+export interface PowerExecuteInput {
+  readonly toolName: string;
+  readonly args?: Record<string, unknown>;
+  /**
+   * Caller-supplied idempotency key. Re-sending the same (session,
+   * toolCallId) returns the cached first result instead of re-executing.
+   */
+  readonly toolCallId?: string;
+  /** The work session; else the one bound to `transportSessionId`. */
+  readonly chatSessionId?: string;
+  /** Remote only: the transport session whose bound work session to use. */
+  readonly transportSessionId?: string;
+}
+
+/** Why a call found no session to run in — the agent's next step. */
+const NO_WORK_SESSION =
+  "no_work_session: no work session for this call — call caelo_open_session first and run your calls in the session it returns; when several agents share this connection, pass its id as workSessionId on every call. Every caelo write lands in a session's chat.";
 
 /**
  * #1275 — the tool a `retry_tool_call` would run: the kept call's tool
@@ -483,6 +555,284 @@ async function keptToolNameOf(
   return cached?.toolName ?? RETRY_TOOL_NAME;
 }
 
+/**
+ * Issue #376 / #1253 — run one catalogue tool for an external agent, with
+ * the same ExecutionContext the chat-runner would use (snapshots, audit,
+ * branch scoping, chat-task grouping). Outside the tool's own ops it costs
+ * two transactions (`mcp.begin_tool_call`, `mcp.finish_tool_call`); no
+ * per-chat write slot is taken — writes conflict per entity, against the
+ * snapshot the call started with (tool-call-version.ts).
+ */
+export async function powerExecuteTool(
+  bridge: SendChatBridgeOpts,
+  principal: McpPrincipal,
+  input: PowerExecuteInput,
+): Promise<PowerResult<ExecuteOutput>> {
+  const excludedReason = POWER_MCP_EXCLUDED_TOOLS.get(input.toolName);
+  if (excludedReason) {
+    return refused(`tool '${input.toolName}' is not available over MCP: ${excludedReason}`);
+  }
+  const { adapter, registry, resolveProvider } = bridge;
+  const tools = defaultToolRegistry();
+  const requestId = crypto.randomUUID();
+  const humanCtx: ExecutionContext = {
+    actorId: principal.actorId,
+    actorKind: "human",
+    requestId,
+  };
+  // #741 — without the Owner's opt-in the call is AI-delegated and cannot
+  // spend the install's AI at all, so there is nothing to cap. Which tools
+  // the cap gates comes from each tool's own `usesInstallAi` declaration.
+  const aiDelegated = !principal.allowCaeloAi;
+  // #1275 — a retry runs the KEPT call's tool, so the cap follows that
+  // tool, not retry_tool_call (no new path around the cap). Without the
+  // session id up front the kept call cannot be looked up yet, so such a
+  // retry counts as capped: a cap that is reached refuses it rather than
+  // letting an AI-spending call through.
+  const mayCap = !aiDelegated && principal.aiCostCapMicrocents !== null;
+  const capToolName =
+    mayCap && input.toolName === RETRY_TOOL_NAME && input.chatSessionId
+      ? await keptToolNameOf(registry, adapter, humanCtx, input.chatSessionId, input.args)
+      : input.toolName;
+  const capped =
+    mayCap &&
+    (capToolName === RETRY_TOOL_NAME
+      ? input.chatSessionId === undefined
+      : toolUsesInstallAi(tools, capToolName));
+  const agent = mcpAgentOpFields(mcpAgentRefOf(principal));
+  const label =
+    `External agent "${principal.displayName}" (${principal.via.kind === "remote" ? "remote MCP" : "MCP"})`.slice(
+      0,
+      200,
+    );
+  let session:
+    | { chatSessionId: string }
+    | { remoteConnectionId: string; transportSessionId: string };
+  if (input.chatSessionId) {
+    session = { chatSessionId: input.chatSessionId };
+  } else if (principal.via.kind === "remote" && input.transportSessionId !== undefined) {
+    session = {
+      remoteConnectionId: principal.via.connectionId,
+      transportSessionId: input.transportSessionId,
+    };
+  } else {
+    return refused(NO_WORK_SESSION);
+  }
+  const begun = await execute(registry, adapter, humanCtx, "mcp.begin_tool_call", {
+    session,
+    agent,
+    label,
+    toolName: input.toolName,
+    ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
+    ...(capped ? { costCapMicrocents: principal.aiCostCapMicrocents as number } : {}),
+  });
+  if (!begun.ok) {
+    const detail = "message" in begun.error ? begun.error.message : begun.error.kind;
+    return refused(`call_setup_failed: ${detail} — nothing was executed; retry the call`);
+  }
+  const start = begun.value as z.infer<(typeof mcpBeginToolCallOp)["output"]>;
+  const toolCallId = input.toolCallId ?? `mcp-${requestId}`;
+  switch (start.status) {
+    case "no_session":
+      return refused(NO_WORK_SESSION);
+    case "not_found":
+      return refused(
+        "session_not_found — open a work session first (the caelo_open_session tool) and run your calls in it; every Power-MCP write lands on that session's branch.",
+      );
+    case "closed":
+      return refused(
+        `session_closed: ${start.chatSessionId} was published, archived or discarded — call caelo_open_session for a new session`,
+      );
+    case "stopped":
+      return {
+        ok: true,
+        value: {
+          ok: false,
+          content: EXTERNAL_AGENT_STOPPED_TEXT,
+          requestId,
+          toolCallId,
+          cached: false,
+          image: null,
+        },
+      };
+    case "cached":
+      return {
+        ok: true,
+        value: {
+          ok: start.cached.ok,
+          content: start.cached.content,
+          requestId,
+          toolCallId,
+          cached: true,
+          approval: start.approval,
+        },
+      };
+    case "in_progress":
+      return refused(
+        `in_progress: the same call (toolCallId ${toolCallId}) is still running, so it was not started again. Wait for it, then repeat the call to get its result.`,
+      );
+    case "cost_capped":
+      return refused(
+        `cost cap reached: spent ~${start.spent} µ¢ / cap ${principal.aiCostCapMicrocents} µ¢ of the install's AI on this session — ` +
+          `'${input.toolName}' uses the install's AI and was not run. Tools without AI work still run. Ask the Owner for a higher-cap token at /settings/mcp, ` +
+          `or for a token without "may use Caelo's AI", which hands the AI work back to you instead of spending the install's AI.`,
+      );
+    case "ready":
+      break;
+  }
+  const { chatSessionId, chatBranchId, snapshot } = start;
+  const humanCtxWithBranch: ExecutionContext = { ...humanCtx, chatBranchId };
+  // chatTaskId = chatSessionId is the chat-runner's own convention — it
+  // groups this call's snapshots under the session for chat-keyed undo.
+  const aiCtx: ExecutionContext = {
+    actorId: principal.actorId,
+    actorKind: "ai",
+    requestId,
+    chatBranchId,
+    chatTaskId: chatSessionId,
+  };
+
+  const dispatch = async (): Promise<ToolResult> => {
+    const resolvedProvider = await resolveProvider();
+    const provider =
+      resolvedProvider && aiDelegated ? delegatedProvider(resolvedProvider) : resolvedProvider;
+    // Tier-1 plugin tools route through the plugin host, exactly like the
+    // chat-runner's dispatcher does (tool-dispatch.ts).
+    //
+    // #687 — an approval-declared plugin tool (set_locales, …) cannot pause
+    // an SDK turn here (the external agent drives its own loop), so it is
+    // queued for the operator instead: the card shows in their Live Edit
+    // chat and the pending queue, Approve runs it through the plugin host,
+    // and the decision is handed back like any other gated call. Running it
+    // unqueued would reopen the bypass #388 closed.
+    const pluginTool = pluginToolsRegistry.resolve(input.toolName);
+    if (pluginTool?.spec.approvalMode) {
+      return queuePluginToolApproval({
+        registry,
+        adapter,
+        aiCtx,
+        operatorActorId: principal.actorId,
+        chatSessionId,
+        pluginTool,
+        args: input.args ?? {},
+        aiDelegated,
+      });
+    }
+    if (pluginTool) {
+      const r = await runPluginOperation({
+        pluginSlug: pluginTool.pluginSlug,
+        operationName: pluginTool.spec.operationName,
+        args: input.args ?? {},
+        invocation: chatPluginInvocation(aiCtx, principal.actorId, { aiDelegated }),
+      });
+      return r.ok
+        ? // #635 — plugin data may be visitor-written: data, never instructions.
+          { ok: true, content: untrustedToolResult(r.value) }
+        : { ok: false, content: `${r.error.kind}: ${r.error.message}` };
+    }
+    return tools.dispatch(input.toolName, input.args ?? {}, aiCtx, {
+      adapter,
+      registry,
+      chatSessionId,
+      chatBranchId,
+      toolCallId,
+      tools,
+      humanCtx: humanCtxWithBranch,
+      ...(provider ? { provider } : {}),
+      ...(aiDelegated ? { aiDelegated: true } : {}),
+      // No spawnChildChatTurn / requestScreenshot / pushClientEvent: the
+      // tools that need them are in POWER_MCP_EXCLUDED_TOOLS. screenshot_page
+      // works WITHOUT them since issue #412 — with no pushClientEvent it
+      // renders the branch preview server-side and returns the image, which
+      // flows to the MCP client as an image content block.
+    });
+  };
+
+  // A long call (image generation may take minutes) keeps the agent listed
+  // as working — and stoppable — until it returns.
+  const keepPresent = setInterval(() => {
+    execute(registry, adapter, humanCtxWithBranch, "chat.touch_external_agent", {
+      chatSessionId,
+      ...agent,
+      label,
+    }).catch(() => undefined);
+  }, POWER_MCP_PRESENCE_RENEW_MS);
+  let raw: ToolResult;
+  try {
+    raw = await withToolCallVersion({ callId: requestId, snapshot }, dispatch);
+  } catch (e) {
+    // Recorded like any failed result, so the reserved key holds the
+    // outcome and a repeat does not run the tool again.
+    raw = {
+      ok: false,
+      content: `tool_failed: '${input.toolName}' threw: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  } finally {
+    clearInterval(keepPresent);
+  }
+
+  // issue #413 — results that ARE instruction prose (load_skill's skill
+  // bodies) get the same excluded-tool note as the catalogue, BEFORE
+  // caching so replays serve the same honest copy. Every other result is
+  // site data and must round-trip unchanged (bug 2c323d9a).
+  //
+  // #1275 — a fixable failed write call is kept for retry_tool_call, exactly
+  // like in the browser chat (plugin results never carry `call`). A kept
+  // call is recorded under the generated id too: the result hands that id
+  // back, and retry_tool_call addresses the call by it.
+  const keptArgs = keptCallArgs(raw, tools);
+  const kept = keptArgs ? withKeptCallNotice(toolCallId, raw) : raw;
+  const content = surfaceToolResultContent(input.toolName, kept.content);
+  const finished = await execute(registry, adapter, humanCtxWithBranch, "mcp.finish_tool_call", {
+    chatSessionId,
+    agent,
+    label,
+    toolName: input.toolName,
+    toolCallId,
+    cache: input.toolCallId !== undefined || keptArgs !== null,
+    ...(keptArgs ? { args: keptArgs } : {}),
+    result: {
+      ok: raw.ok,
+      content,
+      ...(raw.queuedProposalId ? { queuedProposalId: raw.queuedProposalId } : {}),
+    },
+  });
+  if (!finished.ok) {
+    const detail = "message" in finished.error ? finished.error.message : finished.error.kind;
+    // The tool ran; only its bookkeeping failed. Say so instead of
+    // inviting a retry that would run it twice.
+    return refused(
+      `call_record_failed: '${input.toolName}' ran (ok=${raw.ok}), but recording its result failed: ${detail}. Do not repeat the call; read the state you changed to see its effect.`,
+    );
+  }
+  const after = finished.value as { notes: string[]; approval: ExecuteOutput["approval"] };
+  // NB: no chat.append_message here. MCP-originated tool calls are
+  // deliberately NOT written into the session transcript — the browser chat
+  // replays persisted history through the SDK's response-messages
+  // passthrough (CLAUDE.md §12), and orphan tool rows without their
+  // assistant tool_use turn would corrupt that replay. The review surface
+  // for MCP work is chat.list_pending_changes + snapshots.
+  //
+  // Issue #620 — a write that took over another chat's lock (or lost one)
+  // says so in this result, same as in the browser chat.
+  return {
+    ok: true,
+    value: {
+      ok: raw.ok,
+      content:
+        after.notes.length === 0
+          ? content
+          : `${content}\n\n${after.notes.map((n) => `Note: ${n}`).join("\n")}`,
+      requestId,
+      toolCallId,
+      cached: false,
+      image: raw.image ?? null,
+      ...(raw.nextAction !== undefined ? { nextAction: raw.nextAction } : {}),
+      approval: after.approval,
+    },
+  };
+}
+
 export const mcpExecuteToolOp = defineOperation({
   name: "mcp.execute_tool",
   readScope: "request",
@@ -497,416 +847,29 @@ export const mcpExecuteToolOp = defineOperation({
   input: z
     .object({
       ...mcpCredentialShape,
-      /** The work session whose preview branch this call writes to. */
+      /** The work session whose branch this call writes to. */
       chatSessionId: z.string().uuid(),
       toolName: z.string().min(1).max(120),
       args: z.record(z.string(), z.unknown()).optional(),
-      /**
-       * Caller-supplied idempotency key. Re-sending the same
-       * (chatSessionId, toolCallId) returns the cached first result
-       * instead of re-executing — same dedup the chat-runner uses.
-       */
+      /** Caller-supplied idempotency key (see {@link PowerExecuteInput}). */
       toolCallId: z.string().min(1).max(128).optional(),
     })
     .strict()
     .refine(exactlyOneMcpCredential.check, { message: exactlyOneMcpCredential.message }),
-  output: z.object({
-    ok: z.boolean(),
-    content: z.string(),
-    requestId: z.string(),
-    toolCallId: z.string(),
-    /** True when the result came from the idempotency cache. */
-    cached: z.boolean(),
-    image: z.object({ base64: z.string(), mediaType: z.string() }).nullable().optional(),
-    /** Structured recovery hint from the tool, passed through verbatim. */
-    nextAction: z.unknown().optional(),
-    /**
-     * Issue #658 — set when the call queued an approval-gated proposal.
-     * The operator decides in the Caelo admin; the decision is handed back
-     * through mcp.get_approval_outcome (the MCP server waits on it).
-     */
-    approval: z.object({ proposalId: z.string(), domain: z.string() }).nullable().optional(),
-  }),
-  handler: async (_ctx, input, tx) => {
-    const bridged = bridgeOrError();
-    if (!bridged.ok) {
-      return err({ kind: "HandlerError", operation: "mcp.execute_tool", message: bridged.message });
-    }
-    const { adapter, registry, resolveProvider } = bridged.bridge;
-    const auth = await resolveAdminPrincipal(adapter, input, "mcp.execute_tool");
-    if (!auth.ok) {
-      return err({ kind: "HandlerError", operation: "mcp.execute_tool", message: auth.message });
-    }
-
-    const excludedReason = POWER_MCP_EXCLUDED_TOOLS.get(input.toolName);
-    if (excludedReason) {
-      return err({
-        kind: "HandlerError",
-        operation: "mcp.execute_tool",
-        message: `tool '${input.toolName}' is not available over MCP: ${excludedReason}`,
-      });
-    }
-
-    const requestId = crypto.randomUUID();
-    const humanCtx: ExecutionContext = {
-      actorId: auth.actorId,
-      actorKind: "human",
-      requestId,
-    };
-    // #1216 — the session row only: an MCP tool call needs the branch, not
-    // the transcript.
-    const session = await execute(registry, adapter, humanCtx, "chat.resolve_session", {
-      chatSessionId: input.chatSessionId,
-    });
-    if (!session.ok) {
-      return err({
-        kind: "HandlerError",
-        operation: "mcp.execute_tool",
-        message:
-          "session_not_found — open a work session first (mcp.open_session / the caelo_open_session tool) and pass its chatSessionId; every Power-MCP write lands on that session's preview branch.",
-      });
-    }
-    const chatBranchId = (session.value as { session: { chatBranchId: string } }).session
-      .chatBranchId;
-
-    const toolCallId = input.toolCallId ?? `mcp-${crypto.randomUUID()}`;
-    const humanCtxWithBranch: ExecutionContext = { ...humanCtx, chatBranchId };
-
-    // Idempotency: only a CALLER-supplied key can legitimately repeat.
-    if (input.toolCallId) {
-      const cachedLookup = await execute(
-        registry,
-        adapter,
-        humanCtxWithBranch,
-        "chat.lookup_tool_result",
-        { chatSessionId: input.chatSessionId, toolCallId },
-      );
-      const cached =
-        cachedLookup.ok &&
-        (cachedLookup.value as { cached: { ok: boolean; content: string } | null }).cached;
-      if (cached) {
-        // The first call recorded the hand-off (the cache keeps only
-        // ok+content); serve the same handle.
-        const approval = await tx.transaction((t) =>
-          findMcpHandoffByToolCall(t, input.chatSessionId, toolCallId),
-        );
-        return ok({
-          ok: cached.ok,
-          content: cached.content,
-          requestId,
-          toolCallId,
-          cached: true,
-          approval,
-        });
-      }
-    }
-
-    // #741 — without the Owner's opt-in the call is AI-delegated and cannot
-    // spend the install's AI at all, so there is nothing to cap.
-    const aiDelegated = !auth.allowCaeloAi;
-
-    // Per-token cost cap, enforced at this boundary because the
-    // chat-runner's streaming cap does not run on the Power-MCP path.
-    // Scope: the work session's accumulated ai_calls spend (core tools,
-    // plugin ctx.ai calls and image generation all record against it) —
-    // the closest analogue to the chat-runner's per-turn accumulation.
-    // Which tools it gates comes from each tool's own `usesInstallAi`
-    // declaration, not a list of names kept here: that list went stale
-    // (#741) and let translation spend uncapped.
-    // #1275 — a retry runs the KEPT call's tool, so the cap follows that
-    // tool, not retry_tool_call (no new path around the cap).
-    const capToolName =
-      input.toolName === RETRY_TOOL_NAME
-        ? await keptToolNameOf(
-            registry,
-            adapter,
-            humanCtxWithBranch,
-            input.chatSessionId,
-            input.args,
-          )
-        : input.toolName;
-    if (
-      !aiDelegated &&
-      auth.aiCostCapMicrocents !== null &&
-      toolUsesInstallAi(createDefaultToolRegistry(), capToolName)
-    ) {
-      const credentialCreatedAt =
-        auth.via.kind === "token"
-          ? sql`(SELECT created_at FROM mcp_tokens WHERE id = ${auth.via.tokenId}::uuid)`
-          : sql`(SELECT created_at FROM mcp_remote_connections WHERE id = ${auth.via.connectionId}::uuid)`;
-      const spendRows = (await tx.transaction((t) =>
-        t.execute(sql`
-        SELECT COALESCE(SUM(cost_estimate_microcents), 0)::bigint AS spent
-        FROM ai_calls
-        WHERE chat_session_id = ${input.chatSessionId}::uuid
-           OR (
-             actor_id = ${auth.actorId}::uuid
-             AND created_at >= ${credentialCreatedAt}
-           )
-      `),
-      )) as unknown as Array<{ spent: bigint | string | number }>;
-      const raw = spendRows[0]?.spent ?? 0;
-      // Compare as bigint — a Number round-trip could lose precision past
-      // 2^53 µ¢ and let a capped token slip through (review finding, PR #379).
-      const spent =
-        typeof raw === "bigint" ? raw : BigInt(typeof raw === "string" ? raw : Math.trunc(raw));
-      if (spent >= BigInt(auth.aiCostCapMicrocents)) {
-        return err({
-          kind: "HandlerError",
-          operation: "mcp.execute_tool",
-          message:
-            `cost cap reached: spent ~${spent} µ¢ / cap ${auth.aiCostCapMicrocents} µ¢ of the install's AI on this session — ` +
-            `'${input.toolName}' uses the install's AI and was not run. Tools without AI work still run. Ask the Owner for a higher-cap token at /settings/mcp, ` +
-            `or for a token without "may use Caelo's AI", which hands the AI work back to you instead of spending the install's AI.`,
-        });
-      }
-    }
-
-    // Dispatch as the AI actor on the session's branch. chatTaskId =
-    // chatSessionId is the chat-runner's own convention — it is what
-    // groups this call's snapshots under the session for chat-keyed undo.
-    const aiCtx: ExecutionContext = {
-      actorId: auth.actorId,
-      actorKind: "ai",
-      requestId,
-      chatBranchId,
-      chatTaskId: input.chatSessionId,
-    };
-    // Issues #664 / #665 — one agent works in a chat at a time, and the
-    // operator can stop this one. Every call marks the external agent as
-    // working in the session (the Live Edit chat then does not start a turn
-    // of its own AI, and lists this agent with a Stop button); a call after
-    // the operator stopped it is refused until they allow it again.
-    const touchPresence = () =>
-      execute(registry, adapter, humanCtxWithBranch, "chat.touch_external_agent", {
+  output: executeOutput,
+  handler: async (_ctx, input, _tx) =>
+    asOp("mcp.execute_tool", input, (bridge, principal) =>
+      powerExecuteTool(bridge, principal, {
+        toolName: input.toolName,
         chatSessionId: input.chatSessionId,
-        ...mcpAgentOpFields(mcpAgentRefOf(auth)),
-        label:
-          `External agent "${auth.displayName}" (${auth.via.kind === "remote" ? "remote MCP" : "MCP"})`.slice(
-            0,
-            200,
-          ),
-      });
-    const presence = await touchPresence();
-    if (!presence.ok) {
-      const detail = "message" in presence.error ? presence.error.message : presence.error.kind;
-      return err({
-        kind: "HandlerError",
-        operation: "mcp.execute_tool",
-        message: `presence_failed: ${detail} — nothing was executed; retry the call`,
-      });
-    }
-    if ((presence.value as { stopped: boolean }).stopped) {
-      return ok({
-        ok: false,
-        content: EXTERNAL_AGENT_STOPPED_TEXT,
-        requestId,
-        toolCallId,
-        cached: false,
-        image: null,
-      });
-    }
-    // A write holds the chat's turn lease (0247) for the duration of the
-    // call: it never runs while a Live Edit turn writes, and a Live Edit
-    // turn waits the seconds this call takes. Reads need no exclusivity.
-    const leaseHolderId = isReadOrMetaTool(input.toolName) ? null : `power-mcp:${requestId}`;
-    if (leaseHolderId) {
-      const lease = await execute(
-        registry,
-        adapter,
-        humanCtxWithBranch,
-        "chat.acquire_turn_lease",
-        {
-          chatSessionId: input.chatSessionId,
-          holderId: leaseHolderId,
-          ttlMs: POWER_MCP_CALL_LEASE_TTL_MS,
-        },
-      );
-      if (!lease.ok) {
-        const detail = "message" in lease.error ? lease.error.message : lease.error.kind;
-        return err({
-          kind: "HandlerError",
-          operation: "mcp.execute_tool",
-          message: `lease_failed: ${detail} — nothing was executed; retry the call`,
-        });
-      }
-      const claim = lease.value as { acquired: boolean; heldBy: { acquiredAt: string } | null };
-      if (!claim.acquired) {
-        return ok({
-          ok: false,
-          content: chatBusyText(input.toolName, claim.heldBy?.acquiredAt ?? null),
-          requestId,
-          toolCallId,
-          cached: false,
-          image: null,
-        });
-      }
-    }
-    const dispatchAndRecord = async () => {
-      const resolvedProvider = await resolveProvider();
-      const provider =
-        resolvedProvider && aiDelegated ? delegatedProvider(resolvedProvider) : resolvedProvider;
-      const tools = createDefaultToolRegistry();
-
-      // Tier-1 plugin tools route through the plugin host, exactly like the
-      // chat-runner's dispatcher does (tool-dispatch.ts).
-      //
-      // #687 — an approval-declared plugin tool (set_locales, …) cannot
-      // pause an SDK turn here (the external agent drives its own loop), so
-      // it is queued for the operator instead: the card shows in their Live
-      // Edit chat and the pending queue, Approve runs it through the plugin
-      // host, and the decision is handed back below like any other gated
-      // call. Running it unqueued would reopen the bypass #388 closed.
-      const pluginTool = pluginToolsRegistry.resolve(input.toolName);
-      const rawResult: ToolResult = pluginTool?.spec.approvalMode
-        ? await queuePluginToolApproval({
-            registry,
-            adapter,
-            aiCtx,
-            operatorActorId: auth.actorId,
-            chatSessionId: input.chatSessionId,
-            pluginTool,
-            args: input.args ?? {},
-            aiDelegated,
-          })
-        : pluginTool
-          ? await runPluginOperation({
-              pluginSlug: pluginTool.pluginSlug,
-              operationName: pluginTool.spec.operationName,
-              args: input.args ?? {},
-              invocation: chatPluginInvocation(aiCtx, auth.actorId, { aiDelegated }),
-            }).then(
-              (r): ToolResult =>
-                r.ok
-                  ? // #635 — plugin data may be visitor-written: data, never instructions.
-                    { ok: true, content: untrustedToolResult(r.value) }
-                  : { ok: false, content: `${r.error.kind}: ${r.error.message}` },
-            )
-          : await tools.dispatch(input.toolName, input.args ?? {}, aiCtx, {
-              adapter,
-              registry,
-              chatSessionId: input.chatSessionId,
-              chatBranchId,
-              toolCallId,
-              tools,
-              humanCtx: humanCtxWithBranch,
-              ...(provider ? { provider } : {}),
-              ...(aiDelegated ? { aiDelegated: true } : {}),
-              // No spawnChildChatTurn / requestScreenshot / pushClientEvent:
-              // the tools that need them are in POWER_MCP_EXCLUDED_TOOLS.
-              // screenshot_page works WITHOUT them since issue #412 — with no
-              // pushClientEvent it renders the branch preview server-side and
-              // returns the image, which flows to the MCP client as an image
-              // content block.
-            });
-
-      // issue #413 — results that ARE instruction prose (load_skill's skill
-      // bodies) get the same excluded-tool note as the catalogue,
-      // BEFORE caching so replays serve the same honest copy. Every other
-      // result is site data and must round-trip unchanged (bug 2c323d9a).
-      // issue #620 — a write that took over another chat's lock (or lost one)
-      // says so in this result, same as in the browser chat.
-      // #1275 — a fixable failed write call is kept for retry_tool_call,
-      // exactly like in the browser chat (plugin results never carry `call`).
-      const keptArgs = keptCallArgs(rawResult, tools);
-      const keptResult = keptArgs ? withKeptCallNotice(toolCallId, rawResult) : rawResult;
-      const result: ToolResult = await withTakeoverNotices(
-        registry,
-        adapter,
-        humanCtxWithBranch,
-        input.chatSessionId,
-        {
-          ...keptResult,
-          content: surfaceToolResultContent(input.toolName, keptResult.content),
-        },
-      );
-
-      // Issue #620 — MCP work is activity in this session: without the bump
-      // a later reconnect could resume a browser chat that merely looked
-      // more recently active.
-      if (result.ok) {
-        await tx.transaction((t) =>
-          t.execute(sql`
-            UPDATE chat_sessions SET last_active_at = now() WHERE id = ${input.chatSessionId}::uuid
-          `),
-        );
-      }
-
-      // A kept call is recorded under a generated id too: the result hands
-      // that id back, and retry_tool_call addresses the call by it.
-      if (input.toolCallId || keptArgs) {
-        await execute(registry, adapter, humanCtxWithBranch, "chat.cache_tool_result", {
-          chatSessionId: input.chatSessionId,
-          toolCallId,
-          toolName: input.toolName,
-          ok: result.ok,
-          content: result.content,
-          ...(keptArgs ? { args: keptArgs } : {}),
-        });
-      }
-
-      // NB: no chat.append_message here. MCP-originated tool calls are
-      // deliberately NOT written into the session transcript — the browser
-      // chat replays persisted history through the SDK's response-messages
-      // passthrough (CLAUDE.md §12), and orphan tool rows without their
-      // assistant tool_use turn would corrupt that replay. The review
-      // surface for MCP work is chat.list_pending_changes + snapshots,
-      // which capture every write regardless.
-
-      const approval = await tx.transaction((t) =>
-        handOffQueuedProposal(t, {
-          ok: result.ok,
-          content: result.content,
-          ...(result.queuedProposalId ? { queuedProposalId: result.queuedProposalId } : {}),
-          chatSessionId: input.chatSessionId,
-          requestedBy: auth.actorId,
-          toolName: input.toolName,
-          toolCallId,
-        }),
-      );
-
-      return ok({
-        ok: result.ok,
-        content: result.content,
-        requestId,
-        toolCallId,
-        cached: false,
-        image: result.image ?? null,
-        ...(result.nextAction !== undefined ? { nextAction: result.nextAction } : {}),
-        approval,
-      });
-    };
-    // A long call (image generation may take minutes) keeps the agent
-    // listed as working — and stoppable — until it returns; the window then
-    // counts from the call's end, not its start.
-    const keepPresent = setInterval(() => {
-      touchPresence().catch(() => undefined);
-    }, POWER_MCP_PRESENCE_RENEW_MS);
-    try {
-      return await dispatchAndRecord();
-    } finally {
-      clearInterval(keepPresent);
-      await touchPresence().catch(() => undefined);
-      if (leaseHolderId) {
-        const released = await execute(
-          registry,
-          adapter,
-          humanCtxWithBranch,
-          "chat.release_turn_lease",
-          { chatSessionId: input.chatSessionId, holderId: leaseHolderId },
-        );
-        // The lease lapses after its TTL; the next turn then takes it over.
-        if (!released.ok) console.error("[mcp.execute_tool] turn lease release failed");
-      }
-    }
-  },
+        ...(input.args ? { args: input.args } : {}),
+        ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
+      }),
+    ),
 });
 
 /** How often a running Power-MCP call renews the agent's presence (well inside the 2-min window). */
 const POWER_MCP_PRESENCE_RENEW_MS = 30_000;
-
-/** How long a Power-MCP write may hold the chat's turn lease (its call duration). */
-const POWER_MCP_CALL_LEASE_TTL_MS = 10 * 60_000;
 
 /** Issue #664 — what a stopped external agent is told on every call in that chat. */
 const EXTERNAL_AGENT_STOPPED_TEXT =
@@ -915,67 +878,54 @@ const EXTERNAL_AGENT_STOPPED_TEXT =
   "Do not retry and do not open a new session to continue — the operator lifts the stop " +
   'with "Allow again" in the chat\'s running-agents bar when they want you back.';
 
-/** Issue #665 — what an external agent is told while the Live Edit AI works in the chat. */
-function chatBusyText(toolName: string, since: string | null): string {
-  return (
-    `chat_busy: the operator's Live Edit AI is working in this chat right now${since ? ` (since ${since})` : ""}, ` +
-    `so '${toolName}' was NOT executed — two agents editing the same pages at once would undo each other's work. ` +
-    "Read tools (list_*, get_*, inspect_* …) still work. Wait until the Live Edit turn ends " +
-    "(retry in about a minute), or ask your user whether you should take over."
-  );
-}
-
-/**
- * The canonical shape gated tools' queued results start with (enforced by
- * propose-content-shape.test.ts); the bespoke skill / site-memory flows
- * carry `queuedProposalId` instead.
- */
-const QUEUED_PROPOSAL_RE =
-  /^Queued proposal ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):\s*([^\n]*)/;
-
-/**
- * Issue #658 — when a gated tool queued a proposal, record that the
- * EXTERNAL agent asked for it (so the Live Edit card that renders it hands
- * the decision back here instead of continuing its own AI) and return the
- * handle the MCP server waits on. Idempotent across cached replays.
- */
-async function handOffQueuedProposal(
-  tx: Parameters<typeof recordMcpHandoff>[0],
-  r: {
-    ok: boolean;
-    content: string;
-    queuedProposalId?: string;
-    chatSessionId: string;
-    requestedBy: string;
-    toolName: string;
-    toolCallId: string;
-  },
-): Promise<{ proposalId: string; domain: string } | null> {
-  if (!r.ok) return null;
-  const m = QUEUED_PROPOSAL_RE.exec(r.content);
-  const proposalId = r.queuedProposalId ?? m?.[1];
-  if (!proposalId) return null;
-  const recorded = await recordMcpHandoff(tx, {
-    proposalId,
-    chatSessionId: r.chatSessionId,
-    requestedBy: r.requestedBy,
-    toolName: r.toolName,
-    toolCallId: r.toolCallId,
-    summary: m?.[2] ?? r.content.split("\n")[0] ?? "",
-  });
-  if (!recorded) {
-    // Every gated tool queues into a source pending_proposals.list knows;
-    // a miss is drift between the two (CLAUDE.md §2 — say so loudly).
-    console.error("[mcp.execute_tool] queued proposal in no known pending source", {
-      proposalId,
-      toolName: r.toolName,
-    });
-    return null;
-  }
-  return { proposalId, domain: recorded.domain };
-}
-
 // ─── mcp.get_approval_outcome ────────────────────────────────────────
+
+const approvalOutcomeOutput = z.object({
+  proposalId: z.string(),
+  domain: z.string(),
+  toolName: z.string(),
+  summary: z.string(),
+  outcome: approvalOutcome,
+  /** Operator's reject reason, or the applied tool's result summary. */
+  detail: z.string().nullable(),
+  decidedAt: z.string().nullable(),
+});
+
+/**
+ * Issue #658 — the operator's decision on a proposal this agent queued.
+ * Read-only for the agent: it learns the decision, never makes it (§11.A).
+ * The approval wait polls this with the principal its request resolved
+ * once (#1253), not by re-resolving the credential every poll.
+ */
+export async function powerApprovalOutcome(
+  bridge: SendChatBridgeOpts,
+  principal: McpPrincipal,
+  proposalId: string,
+): Promise<PowerResult<z.infer<typeof approvalOutcomeOutput>>> {
+  const view = await bridge.adapter.withAdminTransaction(
+    { actorId: principal.actorId, actorKind: "human", requestId: crypto.randomUUID() },
+    (t) => readHandoffForAgent(t, proposalId, principal.actorId),
+    { holder: "mcp.get_approval_outcome" },
+  );
+  if (!view) {
+    return refused(
+      `approval_not_found: ${proposalId} is not a proposal you queued over MCP — ` +
+        `pass the proposalId from the gated tool's result (list_pending_proposals shows what is waiting).`,
+    );
+  }
+  return {
+    ok: true,
+    value: {
+      proposalId: view.proposalId,
+      domain: view.domain,
+      toolName: view.toolName,
+      summary: view.summary,
+      outcome: view.outcome,
+      detail: view.detail,
+      decidedAt: view.decidedAt,
+    },
+  };
+}
 
 export const mcpGetApprovalOutcomeOp = defineOperation({
   name: "mcp.get_approval_outcome",
@@ -987,59 +937,11 @@ export const mcpGetApprovalOutcomeOp = defineOperation({
   // Issue #1210 — resolving the credential runs its own ops.
   transaction: "none",
   input: withCredential({ proposalId: z.string().uuid() }),
-  output: z.object({
-    proposalId: z.string(),
-    domain: z.string(),
-    toolName: z.string(),
-    summary: z.string(),
-    outcome: approvalOutcome,
-    /** Operator's reject reason, or the applied tool's result summary. */
-    detail: z.string().nullable(),
-    decidedAt: z.string().nullable(),
-  }),
-  handler: async (_ctx, input, tx) => {
-    const bridged = bridgeOrError();
-    if (!bridged.ok) {
-      return err({
-        kind: "HandlerError",
-        operation: "mcp.get_approval_outcome",
-        message: bridged.message,
-      });
-    }
-    const auth = await resolveAdminPrincipal(
-      bridged.bridge.adapter,
-      input,
-      "mcp.get_approval_outcome",
-    );
-    if (!auth.ok) {
-      return err({
-        kind: "HandlerError",
-        operation: "mcp.get_approval_outcome",
-        message: auth.message,
-      });
-    }
-    const view = await tx.transaction((t) =>
-      readHandoffForAgent(t, input.proposalId, auth.actorId),
-    );
-    if (!view) {
-      return err({
-        kind: "HandlerError",
-        operation: "mcp.get_approval_outcome",
-        message:
-          `approval_not_found: ${input.proposalId} is not a proposal you queued over MCP — ` +
-          `pass the proposalId from the gated tool's result (list_pending_proposals shows what is waiting).`,
-      });
-    }
-    return ok({
-      proposalId: view.proposalId,
-      domain: view.domain,
-      toolName: view.toolName,
-      summary: view.summary,
-      outcome: view.outcome,
-      detail: view.detail,
-      decidedAt: view.decidedAt,
-    });
-  },
+  output: approvalOutcomeOutput,
+  handler: async (_ctx, input, _tx) =>
+    asOp("mcp.get_approval_outcome", input, (bridge, principal) =>
+      powerApprovalOutcome(bridge, principal, input.proposalId),
+    ),
 });
 
 // ─── mcp.get_context ─────────────────────────────────────────────────
@@ -1081,6 +983,14 @@ const contextSkillRow = z.object({
   body: z.string().optional(),
 });
 
+const contextOutput = z.object({
+  /** The composed system context an external agent should load once. */
+  systemContext: z.string(),
+  /** Cold-start status line; null once the site foundation is complete. */
+  statusLine: z.string().nullable(),
+  skills: z.array(contextSkillRow),
+});
+
 export const mcpGetContextOp = defineOperation({
   name: "mcp.get_context",
   readScope: "request",
@@ -1094,97 +1004,97 @@ export const mcpGetContextOp = defineOperation({
     /** True = include full skill bodies (the CLAUDE.md export path). */
     includeSkillBodies: z.boolean().optional(),
   }),
-  output: z.object({
-    /** The composed system context an external agent should load once. */
-    systemContext: z.string(),
-    /** Cold-start status line; null once the site foundation is complete. */
-    statusLine: z.string().nullable(),
-    skills: z.array(contextSkillRow),
-  }),
-  handler: async (_ctx, input, _tx) => {
-    const bridged = bridgeOrError();
-    if (!bridged.ok) {
-      return err({ kind: "HandlerError", operation: "mcp.get_context", message: bridged.message });
-    }
-    const { adapter, registry } = bridged.bridge;
-    const auth = await resolveAdminPrincipal(adapter, input, "mcp.get_context");
-    if (!auth.ok) {
-      return err({ kind: "HandlerError", operation: "mcp.get_context", message: auth.message });
-    }
-    const humanCtx: ExecutionContext = {
-      actorId: auth.actorId,
-      actorKind: "human",
-      requestId: crypto.randomUUID(),
-    };
-
-    const memory = await loadMemory(registry, adapter, humanCtx);
-    const skillsCtx = await buildSkillsContext(registry, adapter, humanCtx, {});
-    // issue #413 — compose the "power-mcp" surface variant: the composer
-    // itself drops the chat-runner-only chunks ("subagents",
-    // "finishing-a-turn") and swaps the playbook's inspect/parallel entry
-    // for the tools this surface actually serves. Dynamic parts (site
-    // memory, skills index) can still name excluded tools, so the composed
-    // string gets the same note as the catalogue descriptions.
-    const chunks = composeSystemPromptChunks(
-      memory,
-      {
-        ...(skillsCtx.skillsIndexBlock ? { skillsIndexBlock: skillsCtx.skillsIndexBlock } : {}),
-      },
-      "power-mcp",
-    );
-    const systemContext = withUnavailableToolsNote(
-      [...chunks.map((c) => c.body), aiWorkContract(auth.allowCaeloAi)].join("\n\n"),
-      POWER_MCP_EXCLUDED_TOOLS,
-    );
-
-    const [layoutsR, templatesR, defaultsR, themeR] = await Promise.all([
-      execute(registry, adapter, humanCtx, "layouts.list", { includeDeleted: false }),
-      execute(registry, adapter, humanCtx, "templates.list", { includeDeleted: false }),
-      execute(registry, adapter, humanCtx, "site_defaults.get", {}),
-      execute(registry, adapter, humanCtx, "themes.get_active", {}),
-    ]);
-    const statusLine = buildStatusLine({
-      layoutsValue: layoutsR.ok ? layoutsR.value : null,
-      templatesValue: templatesR.ok ? templatesR.value : null,
-      siteDefaultsValue: defaultsR.ok ? defaultsR.value : null,
-      activeTheme: themeR.ok
-        ? (themeR.value as { theme: { origin?: string | null } | null }).theme
-        : null,
-    });
-
-    const skillsList = await execute(registry, adapter, humanCtx, "skills.list", {
-      status: "active",
-    });
-    const skillRows = skillsList.ok
-      ? (
-          skillsList.value as {
-            skills: Array<{
-              slug: string;
-              displayName: string;
-              description: string;
-              body: string;
-              allowlistedTools: string[];
-            }>;
-          }
-        ).skills
-      : [];
-
-    // issue #413 — skill bodies are seeded/operator data written for the
-    // chat surface (several MANDATE excluded tools: "call screenshot_page
-    // for BOTH viewports"). They cannot be rewritten per surface, so every
-    // excluded tool they mention is named in a note with the working alternative —
-    // the content stays honest without touching the stored skill.
-    const surfaced = (text: string) => withUnavailableToolsNote(text, POWER_MCP_EXCLUDED_TOOLS);
-    return ok({
-      systemContext,
-      statusLine: statusLine ? surfaced(statusLine) : null,
-      skills: skillRows.map((s) => ({
-        slug: s.slug,
-        displayName: s.displayName,
-        description: surfaced(s.description),
-        allowlistedTools: s.allowlistedTools,
-        ...(input.includeSkillBodies ? { body: surfaced(s.body) } : {}),
-      })),
-    });
-  },
+  output: contextOutput,
+  handler: async (_ctx, input, _tx) =>
+    asOp("mcp.get_context", input, async (bridge, principal) => ({
+      ok: true,
+      value: await powerGetContext(bridge, principal, input.includeSkillBodies === true),
+    })),
 });
+
+/**
+ * The composed context an external agent loads once (system prompt
+ * chunks, status line, skills), for a resolved principal.
+ */
+export async function powerGetContext(
+  bridge: SendChatBridgeOpts,
+  principal: McpPrincipal,
+  includeSkillBodies: boolean,
+): Promise<z.infer<typeof contextOutput>> {
+  const { adapter, registry } = bridge;
+  const humanCtx: ExecutionContext = {
+    actorId: principal.actorId,
+    actorKind: "human",
+    requestId: crypto.randomUUID(),
+  };
+
+  const memory = await loadMemory(registry, adapter, humanCtx);
+  const skillsCtx = await buildSkillsContext(registry, adapter, humanCtx, {});
+  // issue #413 — compose the "power-mcp" surface variant: the composer
+  // itself drops the chat-runner-only chunks ("subagents",
+  // "finishing-a-turn") and swaps the playbook's inspect/parallel entry
+  // for the tools this surface actually serves. Dynamic parts (site
+  // memory, skills index) can still name excluded tools, so the composed
+  // string gets the same note as the catalogue descriptions.
+  const chunks = composeSystemPromptChunks(
+    memory,
+    {
+      ...(skillsCtx.skillsIndexBlock ? { skillsIndexBlock: skillsCtx.skillsIndexBlock } : {}),
+    },
+    "power-mcp",
+  );
+  const systemContext = withUnavailableToolsNote(
+    [...chunks.map((c) => c.body), aiWorkContract(principal.allowCaeloAi)].join("\n\n"),
+    POWER_MCP_EXCLUDED_TOOLS,
+  );
+
+  const [layoutsR, templatesR, defaultsR, themeR] = await Promise.all([
+    execute(registry, adapter, humanCtx, "layouts.list", { includeDeleted: false }),
+    execute(registry, adapter, humanCtx, "templates.list", { includeDeleted: false }),
+    execute(registry, adapter, humanCtx, "site_defaults.get", {}),
+    execute(registry, adapter, humanCtx, "themes.get_active", {}),
+  ]);
+  const statusLine = buildStatusLine({
+    layoutsValue: layoutsR.ok ? layoutsR.value : null,
+    templatesValue: templatesR.ok ? templatesR.value : null,
+    siteDefaultsValue: defaultsR.ok ? defaultsR.value : null,
+    activeTheme: themeR.ok
+      ? (themeR.value as { theme: { origin?: string | null } | null }).theme
+      : null,
+  });
+
+  const skillsList = await execute(registry, adapter, humanCtx, "skills.list", {
+    status: "active",
+  });
+  const skillRows = skillsList.ok
+    ? (
+        skillsList.value as {
+          skills: Array<{
+            slug: string;
+            displayName: string;
+            description: string;
+            body: string;
+            allowlistedTools: string[];
+          }>;
+        }
+      ).skills
+    : [];
+
+  // issue #413 — skill bodies are seeded/operator data written for the
+  // chat surface (several MANDATE excluded tools: "call screenshot_page
+  // for BOTH viewports"). They cannot be rewritten per surface, so every
+  // excluded tool they mention is named in a note with the working alternative —
+  // the content stays honest without touching the stored skill.
+  const surfaced = (text: string) => withUnavailableToolsNote(text, POWER_MCP_EXCLUDED_TOOLS);
+  return {
+    systemContext,
+    statusLine: statusLine ? surfaced(statusLine) : null,
+    skills: skillRows.map((s) => ({
+      slug: s.slug,
+      displayName: s.displayName,
+      description: surfaced(s.description),
+      allowlistedTools: s.allowlistedTools,
+      ...(includeSkillBodies ? { body: surfaced(s.body) } : {}),
+    })),
+  };
+}

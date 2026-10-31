@@ -22,10 +22,13 @@
  *   unknown tool name refreshes too. Never on a timer: every request wakes
  *   the admin's Cloud Run instance, and an idle session left open overnight
  *   kept it running around the clock;
- * - the work session `caelo_open_session` opened is held in process state
- *   so the agent doesn't thread it through every call; it also rides the
- *   response so a restarted server can resume a specific session via
- *   `chatSessionId`.
+ * - the work session `caelo_open_session` opened last is held in process
+ *   state so a single agent doesn't thread it through every call; it also
+ *   rides the response so a restarted server can resume a specific session
+ *   via `chatSessionId`. Agents sharing this process (sub-agents) each pass
+ *   their own as `workSessionId` (#1253);
+ * - every call carries an idempotency key made of this process's id and the
+ *   call's JSON-RPC id, so a repeated request returns the first result.
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -37,9 +40,11 @@ import {
   createAdminMcpServer,
   type ExecuteToolResponse,
   type GetContextResponse,
+  NoWorkSessionError,
   type OpenSessionResponse,
   type RemoteTool,
 } from "./surfaces/admin-surface.js";
+import { rpcToolCallId } from "./surfaces/rpc-tool-call-id.js";
 import { ownVersion } from "./version-handshake.js";
 
 export interface StartAdminOpts {
@@ -101,6 +106,8 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
   const maxAgeMs = resolveCatalogueMaxAgeMs(opts.catalogueMaxAgeMs);
 
   let currentSession: OpenSessionResponse | null = null;
+  /** Unique per process: JSON-RPC ids repeat across processes, never within one. */
+  const processKey = crypto.randomUUID();
   let connected = false;
   let refreshing: Promise<boolean> | null = null;
 
@@ -133,14 +140,20 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
         });
         return currentSession;
       },
-      currentSessionId: async () => currentSession?.chatSessionId ?? null,
-      executeTool: (call) =>
-        postAdmin<ExecuteToolResponse>({
+      executeTool: async ({ rpcRequestId, chatSessionId, ...call }) => {
+        const session = chatSessionId ?? currentSession?.chatSessionId;
+        if (!session) throw new NoWorkSessionError();
+        return postAdmin<ExecuteToolResponse>({
           ...target,
           path: "/api/mcp/tool",
-          body: call,
+          body: {
+            ...call,
+            chatSessionId: session,
+            toolCallId: rpcToolCallId(`stdio:${processKey}`, rpcRequestId),
+          },
           timeoutMs: resolveTimeoutMs(120_000),
-        }),
+        });
+      },
       getContext: () =>
         postAdmin<GetContextResponse>({
           ...target,

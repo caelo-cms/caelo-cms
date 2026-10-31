@@ -83,6 +83,7 @@ export {
   loadedPlugins,
   MAIN_RENDER,
   type PluginHostInfra,
+  pluginToolSurfaceGeneration,
   type RenderScope,
   type RunPluginOperationOpts,
   type RunPluginOperationResult,

@@ -223,11 +223,17 @@ export const sendTestEmailOp = defineOperation({
   database: "cms_admin",
   input: z.object({ to: z.string().email().max(254) }).strict(),
   output: z.object({ messageId: z.string(), transport: transportEnum }),
+  // Issue #1254 — the provider call (SMTP / HTTP) runs with no transaction
+  // held: the config is read in one short transaction, the audit row is
+  // written in another after the send.
+  transaction: "none",
   handler: async (ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
-      SELECT transport, from_address, config_json
-      FROM email_config WHERE id = 1 LIMIT 1
-    `)) as unknown as {
+    const rows = (await tx.transaction((t) =>
+      t.execute(sql`
+        SELECT transport, from_address, config_json
+        FROM email_config WHERE id = 1 LIMIT 1
+      `),
+    )) as unknown as {
       transport: "none" | "smtp" | "resend" | "ses";
       from_address: string;
       config_json: Record<string, unknown>;
@@ -262,24 +268,28 @@ export const sendTestEmailOp = defineOperation({
         html: EMAIL_TEST_HTML,
       }));
     } catch (e) {
-      await recordAudit(tx, {
+      await tx.transaction((t) =>
+        recordAudit(t, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "email_config.send_test",
+          input: { toDomain: emailDomain(input.to) },
+          succeeded: false,
+          resultSummary: `transport=${row.transport} failed`,
+        }),
+      );
+      return fail(`send failed: ${(e as Error).message}`);
+    }
+    await tx.transaction((t) =>
+      recordAudit(t, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
         operation: "email_config.send_test",
         input: { toDomain: emailDomain(input.to) },
-        succeeded: false,
-        resultSummary: `transport=${row.transport} failed`,
-      });
-      return fail(`send failed: ${(e as Error).message}`);
-    }
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "email_config.send_test",
-      input: { toDomain: emailDomain(input.to) },
-      succeeded: true,
-      resultSummary: `transport=${row.transport} messageId=${messageId}`,
-    });
+        succeeded: true,
+        resultSummary: `transport=${row.transport} messageId=${messageId}`,
+      }),
+    );
     return ok({ messageId, transport: row.transport });
   },
 });

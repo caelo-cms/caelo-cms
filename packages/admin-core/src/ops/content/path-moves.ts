@@ -65,21 +65,28 @@ export async function applyPathMoveEffects(
   // BEFORE collapsing chains, or "new → old" would collapse into a
   // self-loop.
   const newPaths = new Set(real.map((m) => m.to));
+  // #1254 — counted: only a move that changed redirect rows asks for a sync.
+  let redirectRowsChanged = 0;
   for (const m of real) {
-    await tx.execute(sql`DELETE FROM redirects WHERE from_path = ${m.to}`);
+    const gone = (await tx.execute(
+      sql`DELETE FROM redirects WHERE from_path = ${m.to} RETURNING 1 AS gone`,
+    )) as unknown as { gone: number }[];
+    redirectRowsChanged += gone.length;
   }
   // Collapse chains: X → old becomes X → new, so a visitor hops once.
   // ONE statement against the original targets: with chained or swapped
   // moves (/a → /b, /b → /c) sequential updates would carry "/legacy →
   // /a" on to /c, i.e. to the wrong page.
-  await tx.execute(sql`
+  const collapsed = (await tx.execute(sql`
     UPDATE redirects r SET to_path = m.new_path
     FROM (VALUES ${sql.join(
       real.map((m) => sql`(${m.from}, ${m.to})`),
       sql`, `,
     )}) AS m(old_path, new_path)
     WHERE r.to_path = m.old_path
-  `);
+    RETURNING 1 AS collapsed
+  `)) as unknown as { collapsed: number }[];
+  redirectRowsChanged += collapsed.length;
   let redirectsCreated = 0;
   for (const m of real) {
     if (skipsRedirect(m.pageId)) continue;
@@ -97,8 +104,9 @@ export async function applyPathMoveEffects(
   }
 
   // #1157 — the deletes and chain updates above changed the redirects table
-  // too. Requested after them, like every redirects write (row locks first,
-  // then the sync state), so a concurrent redirect save cannot deadlock.
-  await requestRedirectSync(tx, ctx);
+  // too (each created 301 already asked for the sync itself). #1254 — a move
+  // that changed no redirect row asks for nothing: the sync runs off the
+  // write path and only when the table changed (deploy/redirect-sync.ts).
+  if (redirectRowsChanged > 0) await requestRedirectSync(tx, ctx);
   return { redirectsCreated };
 }

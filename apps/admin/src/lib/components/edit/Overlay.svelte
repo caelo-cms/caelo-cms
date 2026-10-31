@@ -81,6 +81,8 @@
     pageChats?: ChatRef[];
     /** v0.2.14 — global chats (`page_id IS NULL`) for cross-cutting work. */
     globalChats?: ChatRef[];
+    /** #1253 — external agents' chats, one group per client app. */
+    agentChatGroups?: readonly { client: string; chats: readonly ChatRef[] }[];
     onToolResult?: (payload: ToolResultPayload) => void;
     /** Passed straight through to ChatPanel — see its `onSpendUpdate`. */
     onSpendUpdate?: (spend7dMicrocents: number) => void;
@@ -110,6 +112,7 @@
     activePageId = null,
     pageChats = [],
     globalChats = [],
+    agentChatGroups = [],
     onToolResult,
     onSpendUpdate,
     onDragStateChange,
@@ -546,6 +549,36 @@
               </form>
             {/snippet}
           </DropdownMenuItem>
+          <!-- Issue #1253 — each external agent works in a chat of its own;
+               they are listed per client app, apart from your own chats. -->
+          {#each agentChatGroups as group (group.client)}
+            <DropdownMenuSeparator />
+            <div
+              class="px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              data-testid="agent-chat-group"
+            >
+              Agents · {group.client}
+            </div>
+            {#each group.chats as c (c.id)}
+              <DropdownMenuItem>
+                {#snippet child({ props })}
+                  <a
+                    {...props}
+                    href={activePageId
+                      ? `/edit?page=${activePageId}&chat=${c.id}`
+                      : `/edit?chat=${c.id}`}
+                    class={cn(
+                      "flex flex-col gap-0.5 px-2 py-1.5 text-xs",
+                      c.id === session.id && "bg-accent",
+                    )}
+                  >
+                    <span class="truncate">{c.title}</span>
+                    <span class="text-muted-foreground">{fmtRelative(c.lastActiveAt)}</span>
+                  </a>
+                {/snippet}
+              </DropdownMenuItem>
+            {/each}
+          {/each}
         </DropdownMenuContent>
       </DropdownMenu>
 

@@ -258,6 +258,21 @@ import { submitResultTool } from "./submit-result.js";
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
 import { updateThemeTokensTool } from "./update-theme-tokens.js";
 
+let processRegistry: ToolRegistry | null = null;
+
+/**
+ * #1253 — the process's one registry of shipped tools. The core tools do
+ * not change while a process runs (plugin tools live in the plugin host's
+ * own registry), so request paths share this instance instead of
+ * registering ~220 tools again on every call; a registry holds no
+ * per-call state. A caller that needs a registry it may change builds its
+ * own with {@link createDefaultToolRegistry}.
+ */
+export function defaultToolRegistry(): ToolRegistry {
+  processRegistry ??= createDefaultToolRegistry();
+  return processRegistry;
+}
+
 /**
  * Registers every shipped tool against a fresh ToolRegistry. Tests can
  * spin up their own registry with a subset; production uses this one.

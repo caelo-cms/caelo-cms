@@ -207,6 +207,7 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   mcp_tokens: SECURITY,
   mcp_remote_connections: SECURITY,
   mcp_remote_access_blocks: SECURITY,
+  mcp_transport_sessions: SECURITY,
   operator_oauth_client: SECURITY,
   credential_handoffs:
     "one-time credentials an approval left; delivered as the `credentials` topic",
@@ -270,6 +271,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   deploy_targets: "deploy target configuration; read by the deploy ops",
   deploy_runs: "deploy runs; reach editors as the op-classified `deploys` topic",
   redirect_sync_state: RUNTIME,
+  redirect_changes:
+    "which transactions changed redirects, folded by the redirect sync; the journaled redirects table is the source",
   static_bakes: "derived build output of plugin-baked regions",
   plugin_data_build_state: RUNTIME,
   plugin_data_stale_pages: "derived: which pages' baked plugin regions are stale",

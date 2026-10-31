@@ -39,6 +39,11 @@ export interface ChatSession {
   extendedThinkingEnabled?: boolean;
   /** v0.2.54 — optional per-chat thinking budget; null = chat-runner default. */
   extendedThinkingBudgetTokens?: number | null;
+  /**
+   * Issue #1253 — set on an external agent's chat: the client app it works
+   * for. Grouped per client in the chat list; never the operator's own chat.
+   */
+  agentClient?: string | null;
 }
 
 export interface ChatModule {

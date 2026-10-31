@@ -35,62 +35,88 @@
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
   {/if}
 
-  <Card>
-    <CardHeader>
-      <CardTitle class="text-base">Your chats</CardTitle>
-    </CardHeader>
-    <CardContent>
-      <!-- P6.6 polish — server-load streams `sessions` as an unawaited
-           Promise; SvelteKit suspends here and renders the Skeleton
-           rows until the DB query lands. Cold-cache visits show
-           something useful immediately instead of a blank Card. -->
-      {#await data.sessions}
+  {#snippet chatTable(chats: readonly { id: string; title: string; lastActiveAt: string; publishedAt: string | null }[])}
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Title</TableHead>
+          <TableHead>Last active</TableHead>
+          <TableHead>Status</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {#each chats as s (s.id)}
+          <TableRow>
+            <TableCell>
+              <a
+                class="font-medium underline-offset-4 hover:underline"
+                href={`/content/chat/${s.id}`}
+              >
+                {s.title}
+              </a>
+            </TableCell>
+            <TableCell class="text-muted-foreground">{s.lastActiveAt.slice(0, 16)}</TableCell>
+            <TableCell>
+              {#if s.publishedAt}
+                <Badge variant="success">published</Badge>
+              {:else}
+                <Badge variant="secondary">open</Badge>
+              {/if}
+            </TableCell>
+          </TableRow>
+        {/each}
+      </TableBody>
+    </Table>
+  {/snippet}
+
+  <!-- P6.6 polish — server-load streams `sessions` as an unawaited Promise;
+       SvelteKit suspends here and renders the Skeleton rows until the DB
+       query lands. -->
+  {#await data.sessions}
+    <Card>
+      <CardHeader>
+        <CardTitle class="text-base">Your chats</CardTitle>
+      </CardHeader>
+      <CardContent>
         <div class="space-y-2 py-2">
           <Skeleton class="h-8 w-full" />
           <Skeleton class="h-8 w-full" />
           <Skeleton class="h-8 w-2/3" />
         </div>
-      {:then sessions}
-        {#if sessions.length === 0}
+      </CardContent>
+    </Card>
+  {:then groups}
+    <Card>
+      <CardHeader>
+        <CardTitle class="text-base">Your chats</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {#if groups.own.length === 0}
           <EmptyStatePlaceholder
             icon={MessageSquare}
             title="No chats yet"
             description="Chats are how you ask the AI to make changes. Click 'Live edit' on the sidebar or 'New chat' below to start one."
           />
         {:else}
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Title</TableHead>
-                <TableHead>Last active</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {#each sessions as s (s.id)}
-                <TableRow>
-                  <TableCell>
-                    <a
-                      class="font-medium underline-offset-4 hover:underline"
-                      href={`/content/chat/${s.id}`}
-                    >
-                      {s.title}
-                    </a>
-                  </TableCell>
-                  <TableCell class="text-muted-foreground">{s.lastActiveAt.slice(0, 16)}</TableCell>
-                  <TableCell>
-                    {#if s.publishedAt}
-                      <Badge variant="success">published</Badge>
-                    {:else}
-                      <Badge variant="secondary">open</Badge>
-                    {/if}
-                  </TableCell>
-                </TableRow>
-              {/each}
-            </TableBody>
-          </Table>
+          {@render chatTable(groups.own)}
         {/if}
-      {/await}
-    </CardContent>
-  </Card>
+      </CardContent>
+    </Card>
+    <!-- Issue #1253 — every external agent works in a chat of its own;
+         they are grouped per client app. -->
+    {#each groups.agents as group (group.client)}
+      <Card data-testid="agent-chat-group">
+        <CardHeader>
+          <CardTitle class="text-base">Agents · {group.client}</CardTitle>
+          <p class="text-sm text-muted-foreground">
+            {group.chats.length === 1 ? "1 agent chat" : `${group.chats.length} agent chats`} —
+            each agent's work can be undone and stopped on its own.
+          </p>
+        </CardHeader>
+        <CardContent>
+          {@render chatTable(group.chats)}
+        </CardContent>
+      </Card>
+    {/each}
+  {/await}
 </div>

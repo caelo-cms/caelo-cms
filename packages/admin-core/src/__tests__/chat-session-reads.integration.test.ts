@@ -270,7 +270,6 @@ describe("Power-MCP session lookups (#1216)", () => {
     token = (r.value as { plaintextToken: string }).plaintextToken;
     const opened = await execute(registry, adapter, system, "mcp.open_session", {
       plaintextToken: token,
-      newSession: true,
       title: "issue1216 mcp",
     });
     if (!opened.ok) throw new Error(`open_session: ${JSON.stringify(opened.error)}`);
@@ -287,7 +286,8 @@ describe("Power-MCP session lookups (#1216)", () => {
       args: {},
     });
     expect(r.ok).toBe(true);
-    expect(lookedUp).toContain("chat.resolve_session");
+    // #1253 — the session row is read inside mcp.begin_tool_call.
+    expect(lookedUp).toContain("mcp.begin_tool_call");
     expect(lookedUp).not.toContain("chat.get_session");
   });
 

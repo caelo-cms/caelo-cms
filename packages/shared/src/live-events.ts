@@ -80,6 +80,11 @@ const EXACT: Readonly<Record<string, readonly LiveTopic[]>> = {
   // An external agent's tool call: first sight of it lists it as running,
   // and it may have queued a card.
   "chat.touch_external_agent": ["agents", "pending"],
+  // The same presence row, written by Power-MCP's bookkeeping around each
+  // tool call (#1253): both mark the agent present (as the touch did), and
+  // the finish follows a card the tool may have queued.
+  "mcp.begin_tool_call": ["agents"],
+  "mcp.finish_tool_call": ["agents", "pending"],
   "chat.record_turn_approvals": ["pending"],
   "chat.decide_turn_approval": ["pending"],
   "chat.supersede_turn_approvals": ["pending"],

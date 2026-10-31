@@ -28,6 +28,7 @@ export {
   createAdminMcpServer,
   type ExecuteToolResponse,
   type GetContextResponse,
+  NoWorkSessionError,
   type OpenSessionResponse,
   type RemoteTool,
 } from "./admin-surface.js";
@@ -36,4 +37,5 @@ export {
   type ChatSurfaceOptions,
   createChatMcpServer,
 } from "./chat-surface.js";
+export { rpcToolCallId } from "./rpc-tool-call-id.js";
 export { type StoreImageMeta, type UploadImagesResult, uploadImagesWith } from "./upload.js";

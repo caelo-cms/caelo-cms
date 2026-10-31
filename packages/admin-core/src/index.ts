@@ -181,6 +181,18 @@ export {
   mcpClientKey,
   mcpRemoteSurface,
 } from "./ops/security/mcp_credential.js";
+// #1253 — the Power-MCP steps for a principal resolved once per request.
+export {
+  type PowerExecuteInput,
+  type PowerOpenSessionInput,
+  type PowerResult,
+  powerApprovalOutcome,
+  powerBridge,
+  powerExecuteTool,
+  powerGetContext,
+  powerListTools,
+  powerOpenSession,
+} from "./ops/security/mcp_power.js";
 export {
   type McpPrincipal,
   type RemoteMcpRefusal,

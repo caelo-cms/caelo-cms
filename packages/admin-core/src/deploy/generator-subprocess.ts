@@ -24,8 +24,20 @@ import {
   encodeBuildPayload,
   serveBuildPluginCall,
 } from "@caelo-cms/plugin-host";
-import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
-import { databaseUrlFromEnv, type ExecutionContext, phaseTimingSchema } from "@caelo-cms/shared";
+import {
+  type DatabaseAdapter,
+  execute,
+  joinHeldTransaction,
+  type OperationRegistry,
+} from "@caelo-cms/query-api";
+import {
+  DB_POOL_MAX_ENV,
+  DB_PUBLIC_POOL_MAX_ENV,
+  databaseUrlFromEnv,
+  type ExecutionContext,
+  GENERATOR_POOL_MAX,
+  phaseTimingSchema,
+} from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { z } from "zod";
 import { SYSTEM_ACTOR_ID } from "../audit.js";
@@ -36,6 +48,21 @@ import { unpublishedLinkTargetSchema } from "./unpublished-links.js";
 
 /** Minimum gap between two progress writes of one build (#1003). */
 const PROGRESS_INTERVAL_MS = 1000;
+
+/**
+ * #1254 — the generator child's env: the admin's, with both pools cut to
+ * the generator's own budget entry. Inherited unchanged, the child would
+ * size its pools like the admin's cms_admin pool, and every concurrent
+ * build would draw a whole admin instance's share of `max_connections`;
+ * a build runs in one transaction and needs the minimum (pool-budget.ts).
+ */
+export function generatorEnv(parent: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...parent,
+    [DB_POOL_MAX_ENV]: String(GENERATOR_POOL_MAX),
+    [DB_PUBLIC_POOL_MAX_ENV]: String(GENERATOR_POOL_MAX),
+  };
+}
 
 /**
  * The system actor for a run's internal steps (deploy.renew_run_lease,
@@ -184,6 +211,35 @@ export interface GeneratorRunArgs {
   readonly signal?: AbortSignal;
 }
 
+/** Answers a build's plugin calls (see {@link pluginCallChannel}). */
+type PluginCallChannel = <T>(fn: () => Promise<T>) => Promise<T>;
+
+/**
+ * #1254 — the build's plugin calls, one at a time, each on ONE admin
+ * transaction. The generator asks this process's plugin host hundreds of
+ * questions (link and list resolution, head contributions, URLs); each
+ * answer read plugin storage and core through ops of their own — a
+ * connection per read, several at once — so with agents writing at the same
+ * time the reads waited out the pool's acquire timeout (searchVIU,
+ * 2026-10-30: "no free connection for plugin_storage.list"). Now every read
+ * of an answer joins that answer's transaction as a savepoint (the broker
+ * the page writes use), and the build's answers run one after another: a
+ * build holds at most one admin connection, and none between answers (no
+ * transaction idles across the build, #1211).
+ */
+function pluginCallChannel(adapter: DatabaseAdapter, ctx: ExecutionContext): PluginCallChannel {
+  let tail: Promise<unknown> = Promise.resolve();
+  return <T>(fn: () => Promise<T>): Promise<T> => {
+    const answer = () =>
+      adapter.withAdminTransaction(systemContextOf(ctx), () => joinHeldTransaction(fn), {
+        holder: "static-generator.plugin-call",
+      });
+    const next = tail.then(answer, answer);
+    tail = next.catch(() => undefined);
+    return next;
+  };
+}
+
 /** The outcome of {@link runGenerator}. */
 export type GeneratorOutcome =
   | { readonly ok: true; readonly result: GeneratorDone }
@@ -210,6 +266,27 @@ export async function runGenerator(
   if (args.signal?.aborted) {
     return { ok: false, message: abortMessage(args.signal), stderr: "" };
   }
+  return runGeneratorProcess(
+    registry,
+    adapter,
+    ctx,
+    args,
+    pluginCallChannel(adapter, ctx),
+    adminUrl,
+    publicUrl,
+  );
+}
+
+/** The subprocess half of {@link runGenerator}. */
+async function runGeneratorProcess(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ctx: ExecutionContext,
+  args: GeneratorRunArgs,
+  channel: PluginCallChannel,
+  adminUrl: string,
+  publicUrl: string,
+): Promise<GeneratorOutcome> {
   // #1003 — progress lands on the run row the run's start step committed, at
   // most once per interval (it was one transaction per page), as the system
   // actor: update_progress is an internal callback whoever started the run.
@@ -230,7 +307,7 @@ export async function runGenerator(
     };
     const child = spawn("bun", ["run", args.cliPath], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env },
+      env: generatorEnv(process.env),
     });
     let aborted: string | null = null;
     function onAbort(): void {
@@ -277,7 +354,7 @@ export async function runGenerator(
     const answerPluginCall = async (call: SubprocessPluginCall): Promise<void> => {
       let reply: Record<string, unknown>;
       try {
-        const value = await serveBuildPluginCall(call.method, call.args);
+        const value = await channel(() => serveBuildPluginCall(call.method, call.args));
         reply = { kind: "plugin-result", id: call.id, ok: true, value };
       } catch (e) {
         reply = {

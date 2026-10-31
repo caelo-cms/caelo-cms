@@ -334,6 +334,13 @@ export const chatCreateSessionInput = z
      * draft: an explicit experiment ("try a redesign") or a site migration.
      */
     isolation: z.enum(["experiment", "migration"]).optional(),
+    /**
+     * Issue #1253 — the session is an external agent's (one chat per
+     * agent): the client app it works for ("Claude Code", a token's label).
+     * The chat list groups such chats per client, and Live Edit never picks
+     * one as the operator's own chat.
+     */
+    agentClient: z.string().min(1).max(200).optional(),
   })
   .strict();
 

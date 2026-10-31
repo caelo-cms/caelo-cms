@@ -33,6 +33,8 @@ describe("liveTopicsOfOperation over the real op catalogue", () => {
       "chat.cancel_agents",
       "chat.allow_external_agent",
       "chat.touch_external_agent",
+      "mcp.begin_tool_call",
+      "mcp.finish_tool_call",
       "chat.record_turn_approvals",
       "chat.decide_turn_approval",
       "chat.supersede_turn_approvals",

@@ -13,9 +13,12 @@
  *     run id is committed into the row, renewed by the run's heartbeat and
  *     released by the step that records the run (or by deploy.fail_run).
  *     A run that finds the lease held polls outside any transaction;
- *   - a short transaction (rollback, the redirect sync, the preview
- *     keep-alive, the CDN purge) LOCKS the row while no run holds the
- *     lease, until it ends. A run's claim skips a row another transaction
+ *   - a short transaction (rollback, the preview keep-alive, the CDN
+ *     purge) LOCKS the row while no run holds the lease, until it ends.
+ *   - #1254 — the redirect sync CLAIMS the lease by its own id
+ *     (`holder_sync_id`) in a short transaction, pushes to the provider
+ *     with no transaction open and releases it: it holds the lease for
+ *     seconds, never a row lock across network I/O. A run's claim skips a row another transaction
  *     has locked (`SKIP LOCKED`), so it never waits with a connection in
  *     hand.
  *
@@ -49,6 +52,24 @@ export type LeaseRowLock =
     };
 
 const toIso = (v: string | Date): string => (v instanceof Date ? v : new Date(v)).toISOString();
+
+/**
+ * A lease row nobody holds: no run and no redirect sync (#1254, migration
+ * 0457) claimed it, or the claim lapsed.
+ */
+const FREE_SQL = sql`(
+  (holder_run_id IS NULL AND holder_sync_id IS NULL)
+  OR expires_at IS NULL OR expires_at <= clock_timestamp()
+)`;
+
+/** Whether a redirect sync holds `name` unexpired. */
+async function syncHoldsLease(tx: TransactionRunner, name: DeployLeaseName): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT 1 AS held FROM deploy_leases
+    WHERE name = ${name} AND holder_sync_id IS NOT NULL AND expires_at > clock_timestamp()
+  `)) as unknown as { held: number }[];
+  return rows.length > 0;
+}
 
 /** The row may not exist yet (a fresh install, the test reset): create it free. */
 export async function ensureLeaseRow(tx: TransactionRunner, name: DeployLeaseName): Promise<void> {
@@ -90,8 +111,7 @@ export async function lockLeaseRow(
   if (opts.skipLocked) {
     const rows = (await tx.execute(sql`
       SELECT holder_run_id::text AS run_id, expires_at,
-             (holder_run_id IS NULL OR expires_at IS NULL OR expires_at <= clock_timestamp())
-               AS free
+             ${FREE_SQL} AS free
       FROM deploy_leases WHERE name = ${name}
       FOR UPDATE SKIP LOCKED
     `)) as unknown as { run_id: string | null; expires_at: string | Date | null; free: boolean }[];
@@ -111,15 +131,16 @@ export async function lockLeaseRow(
   // run that claimed the lease meanwhile leaves this transaction unlocked.
   const locked = (await tx.execute(sql`
     UPDATE deploy_leases SET name = name
-    WHERE name = ${name}
-      AND (holder_run_id IS NULL OR expires_at IS NULL OR expires_at <= clock_timestamp())
+    WHERE name = ${name} AND ${FREE_SQL}
     RETURNING 1 AS locked
   `)) as unknown as { locked: number }[];
   if (locked.length > 0) return { locked: true };
   const heldBy = await leaseHolder(tx, name);
+  if (heldBy !== null) return { locked: false, heldBy };
+  // #1254 — a redirect sync holds it (seconds): reported like a held row.
+  if (await syncHoldsLease(tx, name)) return { locked: false, heldBy: null };
   // Lapsed between the two statements: the next call locks it.
-  if (heldBy === null) return lockLeaseRow(tx, name, opts);
-  return { locked: false, heldBy };
+  return lockLeaseRow(tx, name, opts);
 }
 
 /**
@@ -140,8 +161,7 @@ export async function claimLease(
   await ensureLeaseRow(tx, name);
   const rows = (await tx.execute(sql`
     SELECT holder_run_id::text AS run_id, expires_at,
-           (holder_run_id IS NULL OR expires_at IS NULL OR expires_at <= clock_timestamp()
-            OR holder_run_id = ${args.runId}::uuid) AS claimable
+           (${FREE_SQL} OR holder_run_id = ${args.runId}::uuid) AS claimable
     FROM deploy_leases
     WHERE name = ${name}
     FOR UPDATE SKIP LOCKED
@@ -164,6 +184,7 @@ export async function claimLease(
   await tx.execute(sql`
     UPDATE deploy_leases
     SET holder_run_id = ${args.runId}::uuid,
+        holder_sync_id = NULL,
         acquired_at = clock_timestamp(),
         expires_at = clock_timestamp() + ${args.ttlMs}::int * interval '1 millisecond'
     WHERE name = ${name}
@@ -266,4 +287,63 @@ export async function tryPreviousReleaseLock(tx: TransactionRunner, key: string)
     sql`SELECT pg_try_advisory_xact_lock(hashtext(${key})) AS free`,
   )) as unknown as { free: boolean }[];
   return rows[0]?.free === true;
+}
+
+/**
+ * #1254 — the redirect sync's side, in its own short transaction: take
+ * `name` for the sync `syncId` when it is free or lapsed. Never waits: a row
+ * another transaction locked, or a run holding the lease, counts as held.
+ * The sync then pushes with no transaction open and releases the lease with
+ * {@link releaseSyncLease}; it is not a deploy run, so it holds the lease
+ * by its own id (`holder_sync_id`, migration 0457).
+ */
+export async function claimSyncLease(
+  tx: TransactionRunner,
+  name: DeployLeaseName,
+  args: { readonly syncId: string; readonly ttlMs: number },
+): Promise<boolean> {
+  await ensureLeaseRow(tx, name);
+  const rows = (await tx.execute(sql`
+    SELECT ${FREE_SQL} AS claimable FROM deploy_leases
+    WHERE name = ${name}
+    FOR UPDATE SKIP LOCKED
+  `)) as unknown as { claimable: boolean }[];
+  if (rows[0]?.claimable !== true) return false;
+  await tx.execute(sql`
+    UPDATE deploy_leases
+    SET holder_run_id = NULL,
+        holder_sync_id = ${args.syncId}::uuid,
+        acquired_at = clock_timestamp(),
+        expires_at = clock_timestamp() + ${args.ttlMs}::int * interval '1 millisecond'
+    WHERE name = ${name}
+  `);
+  return true;
+}
+
+/** Push a sync's claim forward while it still holds it unexpired. */
+export async function renewSyncLease(
+  tx: TransactionRunner,
+  name: DeployLeaseName,
+  args: { readonly syncId: string; readonly ttlMs: number },
+): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    UPDATE deploy_leases
+    SET expires_at = clock_timestamp() + ${args.ttlMs}::int * interval '1 millisecond'
+    WHERE name = ${name} AND holder_sync_id = ${args.syncId}::uuid
+      AND expires_at > clock_timestamp()
+    RETURNING 1 AS renewed
+  `)) as unknown as { renewed: number }[];
+  return rows.length > 0;
+}
+
+/** Release `name` if the sync `syncId` still holds it. */
+export async function releaseSyncLease(
+  tx: TransactionRunner,
+  name: DeployLeaseName,
+  syncId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE deploy_leases SET holder_sync_id = NULL, acquired_at = NULL, expires_at = NULL
+    WHERE name = ${name} AND holder_sync_id = ${syncId}::uuid
+  `);
 }

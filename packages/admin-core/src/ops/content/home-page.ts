@@ -127,7 +127,7 @@ export const setHomePageOp = defineOperation({
       ...(previousHomeId && previousHomeId !== input.pageId ? [previousHomeId] : []),
       input.pageId,
     ];
-    await recomputeCurrentPaths(tx, affected, renderScopeOf(ctx));
+    await recomputeCurrentPaths(tx, affected, renderScopeOf(ctx, tx));
     return ok({ pageId: input.pageId });
   },
 });

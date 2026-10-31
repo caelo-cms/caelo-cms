@@ -17,17 +17,29 @@
  *
  * Stateless transport: Cloud Run scales horizontally and a follow-up
  * request may land on any instance, so each request gets its own server +
- * transport and nothing lives in memory between requests (the Power-MCP
- * work session lives on the connection row). A GET (the optional
- * server-to-client SSE stream) is answered 405, which the spec allows;
- * replies to a POST still stream as SSE, progress notifications included.
+ * transport and nothing lives in memory between requests. A GET (the
+ * optional server-to-client SSE stream) is answered 405, which the spec
+ * allows; replies to a POST still stream as SSE, progress notifications
+ * included.
  *
- * Re-verifying the assertion per op call means a request outliving the
- * assertion (IAP signs them for minutes, not hours) fails its LATER op calls
- * with `auth_error:` — e.g. the approval poll after a very long caelo_chat
- * turn. The tool result then names the next step (caelo_await_approval),
- * which arrives as a new request with a fresh assertion. That is the price
- * of never trusting an id across the op boundary, and deliberately so.
+ * Issue #1253 — one work session per agent. The admin mints an MCP
+ * transport session id (`Mcp-Session-Id`) on `initialize`; the client sends
+ * it back on every request, and caelo_open_session binds the agent's work
+ * session to it (`mcp_transport_sessions`, scoped to the connection row, so
+ * a made-up header can only name the caller's own mappings). A call's own
+ * `workSessionId` wins over it, so sub-agents sharing one connection keep
+ * their own sessions. The id also makes the `tools/call` JSON-RPC id an
+ * idempotency key: a repeated request returns the first result.
+ *
+ * Power-MCP (the admin surface) resolves the principal ONCE per request,
+ * here, and hands it to the in-process Power-MCP steps — no op re-resolves
+ * it, and an approval wait polls with it instead of re-verifying every 3 s
+ * (#1253: three resolutions per request, each locking the connection row,
+ * queued every agent of one client on that row). A revocation therefore
+ * takes effect from the client's next request. The chat surface still
+ * runs its `mcp.*` ops with the credential: a request outliving the
+ * assertion (IAP signs them for minutes) fails its later op calls with
+ * `auth_error:`, and the result names the next step (caelo_await_approval).
  */
 
 import {
@@ -37,6 +49,13 @@ import {
   type McpRemoteCredential,
   type McpRemoteSurface,
   mcpClientKey,
+  type PowerResult,
+  powerApprovalOutcome,
+  powerBridge,
+  powerExecuteTool,
+  powerGetContext,
+  powerListTools,
+  powerOpenSession,
   type RemoteMcpRefusal,
   resolveRemoteMcpPrincipal,
 } from "@caelo-cms/admin-core";
@@ -50,9 +69,11 @@ import {
   DEFAULT_APPROVAL_WAIT_MS,
   type ExecuteToolResponse,
   type GetContextResponse,
+  NoWorkSessionError,
   type OpenSessionResponse,
   REMOTE_UPLOAD_IMAGES_TOOL,
   type RemoteTool,
+  rpcToolCallId,
   type SendChatResult,
   uploadImagesWith,
 } from "@caelo-cms/mcp-server/surfaces";
@@ -186,37 +207,52 @@ function chatBackend(credential: McpRemoteCredential): ChatSurfaceBackend {
   };
 }
 
+/** A Power-MCP step's value, or its refusal as the thrown message the surface shows. */
+function stepValue<T>(r: PowerResult<T>): T {
+  if (!r.ok) throw new Error(r.message);
+  return r.value;
+}
+
+/**
+ * The admin surface for one request, on the principal the route resolved
+ * (#1253). `transportSessionId` is the request's `Mcp-Session-Id` (null for
+ * a client that keeps none).
+ */
 function adminBackend(
   credential: McpRemoteCredential,
   principal: McpPrincipal,
+  transportSessionId: string | null,
 ): AdminSurfaceBackend {
-  // The connection's current session as of this request; an open_session
-  // within the same request (a JSON-RPC batch) takes over from there.
-  let currentSessionId =
-    principal.via.kind === "remote" ? principal.via.currentChatSessionId : null;
-  const catalogue = async () =>
-    (await runOp<{ tools: RemoteTool[] }>("mcp.list_tools", credential, {})).tools;
+  const bridge = powerBridge();
+  const catalogue = async (): Promise<readonly RemoteTool[]> => powerListTools(principal);
   return {
     listCatalogue: catalogue,
     findTool: async (name) => (await catalogue()).find((t) => t.name === name),
-    openSession: async (input) => {
-      const session = await runOp<OpenSessionResponse>("mcp.open_session", credential, {
-        ...input,
-      });
-      currentSessionId = session.chatSessionId;
-      return session;
+    openSession: async (input) =>
+      stepValue<OpenSessionResponse>(
+        await powerOpenSession(bridge, principal, {
+          ...input,
+          ...(transportSessionId ? { transportSessionId } : {}),
+        }),
+      ),
+    executeTool: async ({ rpcRequestId, chatSessionId, ...call }) => {
+      if (!chatSessionId && !transportSessionId) throw new NoWorkSessionError();
+      return stepValue<ExecuteToolResponse>(
+        await powerExecuteTool(bridge, principal, {
+          ...call,
+          ...(chatSessionId ? { chatSessionId } : {}),
+          ...(transportSessionId
+            ? {
+                transportSessionId,
+                toolCallId: rpcToolCallId(transportSessionId, rpcRequestId),
+              }
+            : {}),
+        }),
+      );
     },
-    currentSessionId: async () => currentSessionId,
-    executeTool: (call) =>
-      runOp<ExecuteToolResponse>("mcp.execute_tool", credential, {
-        toolName: call.toolName,
-        args: call.args,
-        chatSessionId: call.chatSessionId,
-      }),
-    getContext: () =>
-      runOp<GetContextResponse>("mcp.get_context", credential, { includeSkillBodies: false }),
-    fetchApprovalOutcome: (proposalId) =>
-      runOp<ApprovalOutcome>("mcp.get_approval_outcome", credential, { proposalId }),
+    getContext: async (): Promise<GetContextResponse> => powerGetContext(bridge, principal, false),
+    fetchApprovalOutcome: async (proposalId) =>
+      stepValue<ApprovalOutcome>(await powerApprovalOutcome(bridge, principal, proposalId)),
     uploadImages: uploadImagesFor(credential),
     // #1122 — every list is live; the surface announces the change.
     catalogueMayHaveChanged: async () => true,
@@ -287,6 +323,7 @@ export async function handleRemoteMcpRequest(
     );
   }
 
+  const session = transportSessionOf(request, parsedBody);
   const server =
     surface === "chat"
       ? createChatMcpServer(chatBackend(credential), {
@@ -295,7 +332,7 @@ export async function handleRemoteMcpRequest(
           approvalWaitMs: () => DEFAULT_APPROVAL_WAIT_MS,
           resumeTimeoutMs: () => RESUME_RESERVE_MS,
         })
-      : createAdminMcpServer(adminBackend(credential, resolved.value), {
+      : createAdminMcpServer(adminBackend(credential, resolved.value, session.id), {
           serverVersion: CAELO_VERSION,
           uploadImagesTool: REMOTE_UPLOAD_IMAGES_TOOL,
           approvalWaitMs: () => DEFAULT_APPROVAL_WAIT_MS,
@@ -306,5 +343,49 @@ export async function handleRemoteMcpRequest(
     sessionIdGenerator: undefined,
   });
   await server.connect(transport);
-  return transport.handleRequest(request, parsedBody === undefined ? {} : { parsedBody });
+  const response = await transport.handleRequest(
+    request,
+    parsedBody === undefined ? {} : { parsedBody },
+  );
+  if (!session.minted) return response;
+  // A stateless transport sends no session id; the admin's own goes out
+  // with the initialize answer, and the client echoes it from then on.
+  const headers = new Headers(response.headers);
+  headers.set(MCP_SESSION_HEADER, session.id);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+/** The MCP transport session header (Streamable HTTP). */
+const MCP_SESSION_HEADER = "mcp-session-id";
+/** The shape of the ids this admin mints; anything else is not one of ours. */
+const TRANSPORT_SESSION_ID = /^[A-Za-z0-9_-]{16,128}$/;
+
+/** Whether the request body is (or a batch holds) an MCP initialize request. */
+function isInitialize(body: unknown): boolean {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.some(
+    (m) =>
+      typeof m === "object" && m !== null && (m as { method?: unknown }).method === "initialize",
+  );
+}
+
+/**
+ * The request's transport session: a fresh id on `initialize` (the client
+ * starts a session), else the one the client sent back — or null when it
+ * keeps none (it then names its work session on every call).
+ */
+function transportSessionOf(
+  request: Request,
+  body: unknown,
+): { id: string; minted: true } | { id: string | null; minted: false } {
+  if (isInitialize(body)) {
+    const bytes = crypto.getRandomValues(new Uint8Array(32));
+    return { id: Buffer.from(bytes).toString("base64url"), minted: true };
+  }
+  const sent = request.headers.get(MCP_SESSION_HEADER);
+  return { id: sent !== null && TRANSPORT_SESSION_ID.test(sent) ? sent : null, minted: false };
 }

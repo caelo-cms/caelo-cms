@@ -76,7 +76,7 @@ export async function executePageMoves(
     if (!lock.permitted) return err(await entityWriteBlockedError(tx, OP, "page", c.pageId, lock));
   }
 
-  const scope = renderScopeOf(ctx);
+  const scope = renderScopeOf(ctx, tx);
   const planned = await planPageMoves(tx, scope, changes);
   if (!planned.ok) {
     return err({ kind: "HandlerError", operation: OP, message: planned.message });
@@ -214,7 +214,7 @@ export const planPageMovesOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const planned = await planPageMoves(
       tx,
-      renderScopeOf(ctx),
+      renderScopeOf(ctx, tx),
       input.moves.map((m) => ({
         pageId: m.pageId,
         ...(m.parentPageId !== undefined ? { parentPageId: m.parentPageId } : {}),

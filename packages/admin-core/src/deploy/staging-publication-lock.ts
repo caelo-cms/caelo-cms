@@ -21,10 +21,13 @@
  *     no transaction while they upload (#1211, #1225). They ACQUIRE the
  *     lease (`deploy.acquire_staging_publication`) and poll outside any
  *     transaction while it is held.
- *   - The preview keep-alive and the redirect sync run inside one short
- *     transaction. They LOCK the row ({@link tryLockStagingPublication})
- *     only while no run holds the lease, and skip their staging work while
- *     one does.
+ *   - The preview keep-alive runs inside one short transaction. It LOCKS
+ *     the row ({@link tryLockStagingPublication}) only while no run holds
+ *     the lease, and skips its staging work while one does.
+ *   - #1254 — the redirect sync CLAIMS the lease for the seconds of its
+ *     push ({@link claimStagingPublicationForSync}) and holds no
+ *     transaction while the provider answers; busy, it leaves staging
+ *     behind.
  *
  * A later Stage waits for the earlier one and then supersedes it, which is
  * the order operators expect. Lock order against live-release-lock.ts is
@@ -51,12 +54,15 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   claimLease,
+  claimSyncLease,
   type DeployLeaseHolder,
   type LeaseRowLock,
   lockLeaseRow,
   previousReleaseRunInFlight,
   releaseLease,
+  releaseSyncLease,
   renewLease,
+  renewSyncLease,
   tryPreviousReleaseLock,
 } from "./deploy-lease.js";
 
@@ -134,4 +140,36 @@ export function releaseStagingPublication(
   runId: string,
 ): Promise<boolean | null> {
   return releaseLease(tx, STAGING_PUBLICATION_LEASE, runId);
+}
+
+/**
+ * #1254 — the redirect sync's claim, in its own short transaction: take
+ * the lease for `syncId` while nobody holds it, so the provider push that
+ * follows (with no transaction open) never interleaves with a release of
+ * the same channel. Never waits; false = someone holds it (that holder
+ * syncs after its own release, the sync worker retries).
+ */
+export async function claimStagingPublicationForSync(
+  tx: TransactionRunner,
+  args: { readonly syncId: string; readonly ttlMs: number },
+): Promise<boolean> {
+  // The previous release's protocol (file header): its holder is in flight.
+  if (!(await tryPreviousReleaseLock(tx, LEGACY_STAGING_PUBLICATION_LOCK_KEY))) return false;
+  return claimSyncLease(tx, STAGING_PUBLICATION_LEASE, args);
+}
+
+/** Push a redirect sync's claim forward (see {@link claimStagingPublicationForSync}). */
+export function renewStagingPublicationForSync(
+  tx: TransactionRunner,
+  args: { readonly syncId: string; readonly ttlMs: number },
+): Promise<boolean> {
+  return renewSyncLease(tx, STAGING_PUBLICATION_LEASE, args);
+}
+
+/** Release a redirect sync's claim (see {@link claimStagingPublicationForSync}). */
+export function releaseStagingPublicationForSync(
+  tx: TransactionRunner,
+  syncId: string,
+): Promise<void> {
+  return releaseSyncLease(tx, STAGING_PUBLICATION_LEASE, syncId);
 }

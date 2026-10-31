@@ -38,3 +38,7 @@ config:
     type: string
     default: Standard_B2s
     description: Postgres flexible-server SKU. B2s = burstable; bump to GP_Standard_D2s_v3 for production.
+  caelo-azure:maxConnections:
+    type: string
+    default: "429"
+    description: Postgres max_connections (server parameter; must not exceed the SKU's limit, 429 on B2s). Every app's pool size is computed from it (docs/dev/connection-budget.md).

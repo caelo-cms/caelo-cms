@@ -17,7 +17,7 @@ import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { resolveOutputRoot } from "../deploy/output-root.js";
-import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
+import { syncRedirects } from "../deploy/redirect-sync.js";
 
 const unservedTarget = z.object({ fromPath: z.string(), location: z.string() });
 
@@ -45,13 +45,19 @@ export const syncRedirectsProviderOp = defineOperation({
   // would only duplicate the automatic retry.
   actorScope: ["human", "system"],
   database: "cms_admin",
+  // #1254 — the provider push is network I/O: no transaction may stay open
+  // across it. The sync runs its own short steps (deploy/redirect-sync.ts).
+  transaction: "none",
   input: z
     .object({
       /**
        * `build`: a Stage changed the build its target serves (deploy.trigger,
-       * #1211); `publish`: a Publish live or plugin-data build did (#1225).
+       * #1211); `publish`: a Publish live or plugin-data build did (#1225);
+       * `rollback`: deploy.rollback put an older build back.
        */
-      trigger: z.enum(["save", "build", "publish", "retry", "manual"]).default("manual"),
+      trigger: z
+        .enum(["save", "build", "publish", "rollback", "retry", "manual"])
+        .default("manual"),
       /** Only these deploy targets (the retry worker passes the ones that are due). */
       targetIds: z.array(z.string().uuid()).max(100).optional(),
       /** Where relative out_dirs resolve: the build's own root (deploy.trigger's `repoRoot`). */
@@ -60,7 +66,7 @@ export const syncRedirectsProviderOp = defineOperation({
     .strict(),
   output: z.object({ targets: z.array(outcomeSchema) }),
   handler: async (ctx, input, tx) => {
-    const targets = await syncRedirectsInTx(tx, ctx, {
+    const targets = await syncRedirects(tx, ctx, {
       trigger: input.trigger,
       ...(input.targetIds ? { targetIds: input.targetIds } : {}),
       ...(input.repoRoot ? { outputRoot: resolveOutputRoot(input.repoRoot) } : {}),
@@ -104,6 +110,7 @@ export const redirectSyncStatusOp = defineOperation({
   handler: async (_ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT t.id::text AS id, t.name, t.env,
+             EXISTS (SELECT 1 FROM redirect_changes) AS changes_pending,
              COALESCE(s.wanted_revision, 0) AS wanted, COALESCE(s.synced_revision, 0) AS synced,
              COALESCE(s.failed_attempts, 0) AS failed_attempts,
              s.next_attempt_at, s.last_error,
@@ -122,6 +129,7 @@ export const redirectSyncStatusOp = defineOperation({
       id: string;
       name: string;
       env: "staging" | "production";
+      changes_pending: boolean;
       wanted: number | string;
       synced: number | string;
       failed_attempts: number;
@@ -142,7 +150,8 @@ export const redirectSyncStatusOp = defineOperation({
         targetId: r.id,
         targetName: r.name,
         env: r.env,
-        inSync: Number(r.wanted) <= Number(r.synced),
+        // #1254 — a change not folded yet is as behind as a failed push.
+        inSync: !r.changes_pending && Number(r.wanted) <= Number(r.synced),
         failedAttempts: r.failed_attempts,
         nextAttemptAt: iso(r.next_attempt_at),
         lastError: r.last_error,

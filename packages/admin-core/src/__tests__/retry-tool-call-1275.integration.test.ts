@@ -511,7 +511,6 @@ describe("retry_tool_call — Power-MCP", () => {
     const plaintextToken = (minted.value as { plaintextToken: string }).plaintextToken;
     const opened = await execute(registry, adapter, SYSTEM, "mcp.open_session", {
       plaintextToken,
-      newSession: true,
       title: `t1275-mcp-${TS}`,
     });
     if (!opened.ok) throw new Error(`open: ${JSON.stringify(opened.error)}`);

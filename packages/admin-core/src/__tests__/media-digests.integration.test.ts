@@ -24,7 +24,11 @@ import { SQL } from "bun";
 import sharp from "sharp";
 import { runMediaPipeline } from "../media/pipeline.js";
 import { LocalVolumeAdapter, setMediaStorage } from "../media/storage.js";
-import { ensureFaviconRendition } from "../ops/media_favicon.js";
+import {
+  planFaviconRendition,
+  recordFaviconRendition,
+  renderFaviconFile,
+} from "../ops/media_favicon.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -171,9 +175,13 @@ describe("media digests are stored by every write path (consistency)", () => {
         sha256: string;
       }[]
     )[0]?.sha256 as string;
-    await adapter.withAdminTransaction(SYSTEM, (tx) =>
-      ensureFaviconRendition(tx, { id: assetId, sha256: sha, mime: "image/png" }),
+    const asset = { id: assetId, sha256: sha, mime: "image/png" };
+    const plan = await adapter.withAdminTransaction(SYSTEM, (tx) =>
+      planFaviconRendition(tx, asset),
     );
+    if (!plan) throw new Error("the asset already has a favicon rendition");
+    const file = await renderFaviconFile(plan);
+    await adapter.withAdminTransaction(SYSTEM, (tx) => recordFaviconRendition(tx, asset, file));
     expect((await rows([assetId])).some((r) => r.variant === FAVICON_VARIANT)).toBe(true);
     await expectConsistent([assetId]);
   });

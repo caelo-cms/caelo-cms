@@ -14,7 +14,7 @@
  */
 
 import type { PluginToolSpec } from "@caelo-cms/plugin-sdk";
-import { isPluginDisabled } from "./dispatch.js";
+import { bumpPluginToolSurfaceGeneration, isPluginDisabled } from "./dispatch.js";
 
 export interface RegisteredPluginTool {
   readonly pluginSlug: string;
@@ -31,10 +31,12 @@ class ToolsRegistry {
       this.#byPlugin.set(pluginSlug, bucket);
     }
     bucket.set(spec.name, spec);
+    bumpPluginToolSurfaceGeneration();
   }
 
   unregisterPlugin(pluginSlug: string): void {
     this.#byPlugin.delete(pluginSlug);
+    bumpPluginToolSurfaceGeneration();
   }
 
   list(): ReadonlyArray<RegisteredPluginTool> {
@@ -67,6 +69,7 @@ class ToolsRegistry {
   /** Test-only — clears the registry between fixtures. */
   reset(): void {
     this.#byPlugin.clear();
+    bumpPluginToolSurfaceGeneration();
   }
 }
 

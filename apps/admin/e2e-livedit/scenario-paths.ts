@@ -173,6 +173,7 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${A}/draft.ts`,
       `${A}/branch.ts`,
       `${A}/locks.ts`,
+      `${A}/tool-call-version.ts`,
       `${A}/lock-takeover.ts`,
       `${A}/entity-*.ts`,
       `${A}/links/**`,
@@ -458,6 +459,8 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/password.ts`,
   `${A}/csrf.ts`,
   `${A}/healthcheck.ts`,
+  // Install-time connection budget, read by provisioning (#1254).
+  `${SHARED}/pool-budget.ts`,
   `${A}/security/**`,
   `${A}/ops/security/**`,
   `${A}/ops/step-up.ts`,

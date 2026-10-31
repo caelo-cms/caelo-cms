@@ -38,6 +38,11 @@ import {
   runServiceAccountId,
 } from "../../dist/gcp-names.js";
 import {
+  DEFAULT_GATEWAY_MAX_INSTANCES,
+  DEFAULT_MAX_CONNECTIONS,
+  stackPoolBudget,
+} from "../../dist/pool-budget-stack.js";
+import {
   ADMIN_MEMORY_DEFAULT,
   adminEnvContract,
   adminMediaVolume,
@@ -93,7 +98,21 @@ const adminMinInstances = Number.parseInt(cfg.get("adminMinInstances") ?? "0", 1
 const adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
 const adminMaxInstances = Number.parseInt(cfg.get("adminMaxInstances") ?? "5", 10);
 const gatewayMinInstances = Number.parseInt(cfg.get("gatewayMinInstances") ?? "0", 10);
-const maxConnections = Number.parseInt(cfg.get("maxConnections") ?? "100", 10);
+// #1254 — part of the connection budget (stacks/gcp has the long comment).
+const gatewayMaxInstances = Number.parseInt(
+  cfg.get("gatewayMaxInstances") ?? String(DEFAULT_GATEWAY_MAX_INSTANCES),
+  10,
+);
+const maxConnections = Number.parseInt(
+  cfg.get("maxConnections") ?? String(DEFAULT_MAX_CONNECTIONS["gcp-firebase"]),
+  10,
+);
+// #1254 — every service's pool sizes, from the server's max_connections.
+const poolBudget = stackPoolBudget("gcp-firebase", {
+  maxConnections,
+  adminMaxInstances,
+  gatewayMaxInstances,
+});
 const backupRetentionDays = Number.parseInt(cfg.get("backupRetentionDays") ?? "7", 10);
 const iapAllowlistRaw = cfg.get("iapAllowlist");
 const iapAllowlist =
@@ -655,7 +674,7 @@ const envContractInputs = {
 const gatewaySvc = cloudRunService({
   serviceName: "gateway",
   minInstances: gatewayMinInstances,
-  maxInstances: 100,
+  maxInstances: gatewayMaxInstances,
   memory: "512Mi",
   // #806 — remote MCP: chat turns stream through the gateway for minutes
   // (stack-contract.ts GATEWAY_TIMEOUT_SECONDS). The Firebase Hosting
@@ -670,7 +689,11 @@ const gatewaySvc = cloudRunService({
   // request passes its rate limits, captcha and honeypot; staging requests
   // pass the staging access gate.
   ingress: "INGRESS_TRAFFIC_ALL",
-  contractEnv: [...gatewayEnvContract(envContractInputs), ...remoteMcpEnv.gateway],
+  contractEnv: [
+    ...gatewayEnvContract(envContractInputs),
+    ...remoteMcpEnv.gateway,
+    ...poolBudget.env.gateway,
+  ],
 });
 
 const adminSvc = cloudRunService({
@@ -693,6 +716,7 @@ const adminSvc = cloudRunService({
       gatewayService: gatewaySvc.name,
     }),
     ...remoteMcpEnv.admin,
+    ...poolBudget.env.admin,
   ],
   mediaVolume: adminMediaVolumeTemplate(adminMediaVolume(project, env)),
 });

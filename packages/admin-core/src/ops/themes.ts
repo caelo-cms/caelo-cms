@@ -31,11 +31,12 @@
  */
 
 import { fontRef, resolveFontOp } from "@caelo-cms/font-service";
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
 import {
   applyDtcgWrites,
   buildMediaUrl,
   collectPinnedFaces,
+  type ExecutionContext,
   err,
   exportDtcg,
   FONT_AXES_EXTENSION,
@@ -43,6 +44,7 @@ import {
   InvalidColorValue,
   normalizeTokens,
   ok,
+  type Result,
   removeDtcgPath,
   type Theme,
   type ThemeDocument,
@@ -55,9 +57,14 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
+import type { PipelineOutputVariant } from "../media/pipeline.js";
 import { emitSnapshot, type SnapshotOpKind } from "../snapshots/index.js";
 import type { ThemeState } from "../snapshots/state.js";
-import { ensureFaviconRendition } from "./media_favicon.js";
+import {
+  planFaviconRendition,
+  recordFaviconRendition,
+  renderFaviconFile,
+} from "./media_favicon.js";
 import {
   applyFontAxisOverrides,
   fontAxesInput,
@@ -726,74 +733,119 @@ export const setThemeAssetOp = defineOperation({
   database: "cms_admin",
   input: setAssetInput,
   output: z.object({ themeId: z.string(), asset: themeAssetRefSchema }),
+  // Issue #1254 — a raster favicon's rendition is made (sharp + storage)
+  // between two short transactions, never inside one.
+  transaction: "none",
   handler: async (ctx, input, tx) => {
-    const target = input.themeSlug
-      ? await fetchThemeOrNull(tx, { slug: input.themeSlug })
-      : await fetchThemeOrNull(tx, { active: true });
-    if (!target) {
-      return err({
-        kind: "HandlerError",
+    const faviconFailure = (mediaId: string, e: unknown) =>
+      err({
+        kind: "HandlerError" as const,
         operation: "themes.set_asset",
-        message: "target theme not found",
+        message: `media asset ${mediaId} could not be turned into a favicon (${(e as Error).message.slice(0, 300)}) — pick another image from find_media, or upload an .ico / .svg favicon`,
       });
-    }
-    if (ctx.chatBranchId) {
-      const lock = await checkAndAcquireEntityLock(tx, {
-        kind: "theme",
-        entityId: target.id,
-        chatBranchId: ctx.chatBranchId,
-        holderKey: ctx.chatTaskId,
-      });
-      if (!lock.permitted) {
-        return err(await entityWriteBlockedError(tx, "themes.set_asset", "theme", target.id, lock));
-      }
-    }
-
-    // Verify the media row exists before binding (no-fallbacks: a
-    // dangling FK would silently render a broken image).
-    if (input.mediaId) {
-      const found = (await tx.execute(sql`
-        SELECT mime, sha256 FROM media_assets WHERE id = ${input.mediaId}::uuid AND deleted_at IS NULL LIMIT 1
-      `)) as unknown as Array<{ mime: string; sha256: string }>;
-      const media = found[0];
-      if (!media) {
-        return err({
-          kind: "HandlerError",
-          operation: "themes.set_asset",
-          message: `media asset ${input.mediaId} not found — upload one via /api/media/upload first`,
-        });
-      }
-      // The favicon is emitted as `<link rel="icon" type="<mime>">` in every
-      // page's <head>; a PDF or video bound here would ship an unusable icon.
-      if (input.slot === "favicon" && !media.mime.startsWith("image/")) {
-        return err({
-          kind: "HandlerError",
-          operation: "themes.set_asset",
-          message: `media asset ${input.mediaId} is ${media.mime}, not an image — the favicon slot needs an image (ICO, PNG or SVG); pick an image row from find_media`,
-        });
-      }
-      // A raster favicon ships as its small PNG rendition, never the
-      // original (see ops/media_favicon.ts) — create it now, so every
-      // render after this bind can link it.
-      if (input.slot === "favicon") {
+    // A raster favicon ships as its small PNG rendition, never the
+    // original (see ops/media_favicon.ts) — make it now, so every render
+    // after this bind can link it. Its file is made with no transaction
+    // held; the bind below records the row.
+    let favicon: PipelineOutputVariant | null = null;
+    const faviconId = input.slot === "favicon" ? input.mediaId : null;
+    if (faviconId) {
+      const planned = await tx.transaction(async (t) => {
+        // An unknown theme is refused by the bind; make no file for it.
+        const target = input.themeSlug
+          ? await fetchThemeOrNull(t, { slug: input.themeSlug })
+          : await fetchThemeOrNull(t, { active: true });
+        if (!target) return { plan: null, error: null };
+        const found = (await t.execute(sql`
+          SELECT mime, sha256 FROM media_assets WHERE id = ${faviconId}::uuid AND deleted_at IS NULL LIMIT 1
+        `)) as unknown as Array<{ mime: string; sha256: string }>;
+        const media = found[0];
+        // A missing or non-image asset is refused by the bind's own checks.
+        if (!media?.mime.startsWith("image/")) return { plan: null, error: null };
         try {
-          await ensureFaviconRendition(tx, { id: input.mediaId, ...media });
+          return { plan: await planFaviconRendition(t, { id: faviconId, ...media }), error: null };
         } catch (e) {
-          return err({
-            kind: "HandlerError",
-            operation: "themes.set_asset",
-            message: `media asset ${input.mediaId} could not be turned into a favicon (${(e as Error).message.slice(0, 300)}) — pick another image from find_media, or upload an .ico / .svg favicon`,
-          });
+          return { plan: null, error: e };
+        }
+      });
+      if (planned.error !== null) return faviconFailure(faviconId, planned.error);
+      if (planned.plan) {
+        try {
+          favicon = await renderFaviconFile(planned.plan);
+        } catch (e) {
+          return faviconFailure(faviconId, e);
         }
       }
     }
+    return tx.transaction((t) => bindThemeAsset(ctx, input, t, favicon));
+  },
+});
 
-    const column = SLOT_COLUMN[input.slot];
-    // v0.11.4 (issue #76 follow-up) — asset binding is a deliberate
-    // edit; flip origin same as token edits.
-    const nextOrigin: "seed" | "ai" | "operator" =
-      ctx.actorKind === "ai" ? "ai" : ctx.actorKind === "human" ? "operator" : target.origin;
-    await tx.execute(sql`
+/**
+ * The write of `themes.set_asset`, in one short transaction: lock, the
+ * media checks, the favicon rendition's row (its file already stored),
+ * the theme update, snapshot and audit.
+ */
+async function bindThemeAsset(
+  ctx: ExecutionContext,
+  input: z.infer<typeof setAssetInput>,
+  tx: TransactionRunner,
+  favicon: PipelineOutputVariant | null,
+): Promise<Result<{ themeId: string; asset: z.infer<typeof themeAssetRefSchema> }, QueryError>> {
+  const target = input.themeSlug
+    ? await fetchThemeOrNull(tx, { slug: input.themeSlug })
+    : await fetchThemeOrNull(tx, { active: true });
+  if (!target) {
+    return err({
+      kind: "HandlerError",
+      operation: "themes.set_asset",
+      message: "target theme not found",
+    });
+  }
+  if (ctx.chatBranchId) {
+    const lock = await checkAndAcquireEntityLock(tx, {
+      kind: "theme",
+      entityId: target.id,
+      chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
+    });
+    if (!lock.permitted) {
+      return err(await entityWriteBlockedError(tx, "themes.set_asset", "theme", target.id, lock));
+    }
+  }
+
+  // Verify the media row exists before binding (no-fallbacks: a
+  // dangling FK would silently render a broken image).
+  if (input.mediaId) {
+    const found = (await tx.execute(sql`
+        SELECT mime, sha256 FROM media_assets WHERE id = ${input.mediaId}::uuid AND deleted_at IS NULL LIMIT 1
+      `)) as unknown as Array<{ mime: string; sha256: string }>;
+    const media = found[0];
+    if (!media) {
+      return err({
+        kind: "HandlerError",
+        operation: "themes.set_asset",
+        message: `media asset ${input.mediaId} not found — upload one via /api/media/upload first`,
+      });
+    }
+    // The favicon is emitted as `<link rel="icon" type="<mime>">` in every
+    // page's <head>; a PDF or video bound here would ship an unusable icon.
+    if (input.slot === "favicon" && !media.mime.startsWith("image/")) {
+      return err({
+        kind: "HandlerError",
+        operation: "themes.set_asset",
+        message: `media asset ${input.mediaId} is ${media.mime}, not an image — the favicon slot needs an image (ICO, PNG or SVG); pick an image row from find_media`,
+      });
+    }
+    if (favicon) await recordFaviconRendition(tx, { id: input.mediaId, ...media }, favicon);
+  }
+
+  const column = SLOT_COLUMN[input.slot];
+  // v0.11.4 (issue #76 follow-up) — asset binding is a deliberate
+  // edit; flip origin same as token edits.
+  const nextOrigin: "seed" | "ai" | "operator" =
+    ctx.actorKind === "ai" ? "ai" : ctx.actorKind === "human" ? "operator" : target.origin;
+  await tx.execute(sql`
       UPDATE themes
       SET ${sql.raw(column)} = ${input.mediaId === null ? null : sql`${input.mediaId}::uuid`},
           origin = ${nextOrigin},
@@ -802,35 +854,34 @@ export const setThemeAssetOp = defineOperation({
       WHERE id = ${target.id}::uuid
     `);
 
-    const refreshed = await fetchThemeOrNull(tx, { id: target.id });
-    if (!refreshed) {
-      return err({
-        kind: "HandlerError",
-        operation: "themes.set_asset",
-        message: "refresh-after-write returned no row",
-        internal: true,
-      });
-    }
-    await emitThemeWrite(tx, {
-      actorId: ctx.actorId,
-      chatBranchId: ctx.chatBranchId,
-      chatTaskId: ctx.chatTaskId ?? null,
-      opKind: "themes.set_asset",
-      description: `themes.set_asset ${refreshed.slug} slot=${input.slot}`,
-      theme: refreshed,
-    });
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
+  const refreshed = await fetchThemeOrNull(tx, { id: target.id });
+  if (!refreshed) {
+    return err({
+      kind: "HandlerError",
       operation: "themes.set_asset",
-      input,
-      succeeded: true,
-      entityId: refreshed.id,
-      resultSummary: `slot=${input.slot} mediaId=${input.mediaId ?? "(cleared)"}`,
+      message: "refresh-after-write returned no row",
+      internal: true,
     });
-    return ok({ themeId: refreshed.id, asset: refreshed.assets[input.slot] });
-  },
-});
+  }
+  await emitThemeWrite(tx, {
+    actorId: ctx.actorId,
+    chatBranchId: ctx.chatBranchId,
+    chatTaskId: ctx.chatTaskId ?? null,
+    opKind: "themes.set_asset",
+    description: `themes.set_asset ${refreshed.slug} slot=${input.slot}`,
+    theme: refreshed,
+  });
+  await recordAudit(tx, {
+    actorId: ctx.actorId,
+    requestId: ctx.requestId,
+    operation: "themes.set_asset",
+    input,
+    succeeded: true,
+    entityId: refreshed.id,
+    resultSummary: `slot=${input.slot} mediaId=${input.mediaId ?? "(cleared)"}`,
+  });
+  return ok({ themeId: refreshed.id, asset: refreshed.assets[input.slot] });
+}
 
 // ────────────────────────────────────────────────────────────────────
 // duplicate

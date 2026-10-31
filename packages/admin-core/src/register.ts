@@ -535,6 +535,7 @@ import {
   mcpSendChatOp,
   revokeMcpTokenOp,
 } from "./ops/security/mcp_tokens.js";
+import { mcpBeginToolCallOp, mcpFinishToolCallOp } from "./ops/security/mcp_tool_call.js";
 import {
   clearOperatorOAuthClientOp,
   getOperatorOAuthClientOp,
@@ -1005,6 +1006,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mcpListToolsOp);
   registry.register(mcpOpenSessionOp);
   registry.register(mcpExecuteToolOp);
+  registry.register(mcpBeginToolCallOp);
+  registry.register(mcpFinishToolCallOp);
   registry.register(mcpGetContextOp);
   // Issue #658 — hand an operator's decision on an MCP-queued proposal
   // back to the external agent (read-only for the agent).

@@ -36,7 +36,12 @@ import {
   type McpCredentialInput,
   mcpCredentialShape,
 } from "./mcp_credential.js";
-import { type McpPrincipal, mcpAgentRefOf, resolveRemoteMcpPrincipal } from "./mcp_principal.js";
+import {
+  LAST_USED_STALE_SECONDS,
+  type McpPrincipal,
+  mcpAgentRefOf,
+  resolveRemoteMcpPrincipal,
+} from "./mcp_principal.js";
 import { hashMcpTokenSecret, mintMcpTokenSecret } from "./mcp_token_secret.js";
 
 /**
@@ -334,7 +339,10 @@ export async function resolveMcpToken(
                  JOIN role_permissions rp ON rp.role_id = ur.role_id
                  JOIN permissions p ON p.id = rp.permission_id
                  WHERE ur.user_id = t.actor_id AND p.name = 'content.write'
-               ) AS user_can_write
+               ) AS user_can_write,
+               (t.last_used_at IS NULL
+                 OR t.last_used_at < now() - ${LAST_USED_STALE_SECONDS}::int * interval '1 second')
+                 AS last_used_stale
         FROM mcp_tokens t
         LEFT JOIN users u ON u.id = t.actor_id
         WHERE t.token_hash = ${tokenHash}
@@ -350,6 +358,7 @@ export async function resolveMcpToken(
         user_active: boolean;
         user_has_role: boolean;
         user_can_write: boolean;
+        last_used_stale: boolean;
       }>;
       const r = rows[0];
       if (!r) return err("not_found" as const);
@@ -359,9 +368,17 @@ export async function resolveMcpToken(
       if (!r.user_active) return err("user_deleted" as const);
       if (!r.user_has_role) return err("user_has_no_role" as const);
       if (!r.user_can_write) return err("user_lacks_write_permission" as const);
-      await tx.execute(sql`
-        UPDATE mcp_tokens SET last_used_at = now() WHERE id = ${r.id}::uuid
-      `);
+      // #1253 — written at most once a minute, and the condition is in the
+      // statement too: every call of every agent on one token used to
+      // update this one row, and the updates queued behind each other.
+      if (r.last_used_stale) {
+        await tx.execute(sql`
+          UPDATE mcp_tokens SET last_used_at = now()
+          WHERE id = ${r.id}::uuid
+            AND (last_used_at IS NULL
+                 OR last_used_at < now() - ${LAST_USED_STALE_SECONDS}::int * interval '1 second')
+        `);
+      }
       const cap =
         r.ai_cost_cap_microcents === null
           ? null

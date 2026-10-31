@@ -27,18 +27,24 @@
  * do the inner work outside the holder's transaction (a detached op,
  * `transaction: "none"`).
  *
- * Two allowlists, two different things (#1220):
+ * Render-time plugin work (#1254, completing #1220) is the one place that
+ * reaches the pool from inside many different holders: a page write
+ * composes paths, and the URL plugins' annotation ops read their storage
+ * through ops of their own. Such a call does not take a second connection;
+ * it JOINS the holder's transaction ({@link joinHeldTransaction}): each of
+ * its transactions becomes a SAVEPOINT of the holder's, runs under its own
+ * identity and is serialised with its siblings, and the holder's identity
+ * is restored when it releases. Only a call site that opts in joins, so an
+ * unexpected nested checkout still throws.
  *
- *  - {@link NESTED_CHECKOUT_ALLOWLIST} — holders that still take a second
- *    checkout of their own pool. Each is a deadlock risk being removed; every
- *    entry is a FIXME pointing at its issue, and the list only shrinks.
- *  - {@link LONG_TRANSACTION_ALLOWLIST} — holders whose one transaction
- *    legitimately outlasts the role timeouts of migration 0392 and runs
- *    without them. Being on it allows no nested checkout. Each entry says
- *    why its transaction is long; a temporary one also names its issue.
+ * {@link LONG_TRANSACTION_ALLOWLIST} names holders whose one transaction
+ * legitimately outlasts the role timeouts of migration 0392 and runs
+ * without them. Being on it allows no nested checkout. Each entry says why
+ * its transaction is long; a temporary one also names its issue.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import type { TransactionRunner } from "./operation.js";
 
@@ -55,16 +61,6 @@ export type PoolName = "admin" | "public";
 export const POOL_ACQUIRE_TIMEOUT_MS = 10_000;
 
 /**
- * A holder that may still take further checkouts of the same pool from
- * inside its transaction while issue `issue` is open.
- */
-export interface NestedCheckoutEntry {
-  /** The op name, or the `holder` label a `withAdminTransaction` caller passes. */
-  readonly holder: string;
-  readonly issue: number;
-}
-
-/**
  * A holder whose transaction runs without the role timeouts of migration
  * 0392 (statement, lock and idle-in-transaction), because it stays open
  * across a build or an upload that takes longer than they allow.
@@ -77,21 +73,6 @@ export interface LongTransactionEntry {
   /** Set when the long transaction itself is being removed (a FIXME). */
   readonly issue?: number;
 }
-
-/**
- * Transaction holders that still take a second checkout of their own pool.
- * Each one is a known deadlock risk being removed by its issue; nothing may
- * be added without one (CLAUDE.md §4). A nested checkout from an entry's
- * chain is let through, every other one throws.
- */
-const NESTED_CHECKOUTS: readonly NestedCheckoutEntry[] = [
-  // FIXME(issue #1220): a call site, not a holder (see
-  // allowNestedCheckouts): render-origin plugin operations — URL
-  // annotations while a page write composes paths, list sources, public
-  // URLs — run inside the calling op's transaction, and the plugin's
-  // storage reads and failure audit rows are ops of their own.
-  { holder: "plugins.render_hook", issue: 1220 },
-];
 
 /**
  * Transaction holders that run without the 0392 timeouts. Nothing may be
@@ -111,15 +92,26 @@ const LONG_TRANSACTIONS: readonly LongTransactionEntry[] = [
   },
 ];
 
-/** {@link NESTED_CHECKOUTS} by holder. */
-export const NESTED_CHECKOUT_ALLOWLIST: ReadonlyMap<string, NestedCheckoutEntry> = new Map(
-  NESTED_CHECKOUTS.map((entry) => [entry.holder, entry]),
-);
-
 /** {@link LONG_TRANSACTIONS} by holder. */
 export const LONG_TRANSACTION_ALLOWLIST: ReadonlyMap<string, LongTransactionEntry> = new Map(
   LONG_TRANSACTIONS.map((entry) => [entry.holder, entry]),
 );
+
+/**
+ * Runs queued callbacks one at a time. A joined transaction is a savepoint
+ * on ONE connection, so two of them interleaving (two plugin reads started
+ * together) would release each other's savepoints and run under each
+ * other's identity.
+ */
+class SerialQueue {
+  #tail: Promise<unknown> = Promise.resolve();
+
+  run<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.#tail.then(fn, fn);
+    this.#tail = next.catch(() => undefined);
+    return next;
+  }
+}
 
 /** The marker a transaction leaves on its async call chain. */
 export interface HeldTransaction {
@@ -131,8 +123,18 @@ export interface HeldTransaction {
    * async context; it holds no connection any more and must pass.
    */
   active: boolean;
-  /** The allowlisted holder further up this chain, if any. */
-  readonly allowedBy: string | null;
+  /** The open transaction (a savepoint for a joined one); set once BEGIN ran. */
+  tx: TransactionRunner | null;
+  /** The identity the transaction runs under, restored after a joined call. */
+  identity: ExecutionContext | null;
+  /** The operation name (`caelo.op_name`, #1267) restored with {@link identity}. */
+  identityOpName: string | null;
+  /** The real transaction a joined marker's savepoint belongs to; null on a root. */
+  readonly root: HeldTransaction | null;
+  /** Serialises the joined calls made directly under this transaction. */
+  readonly joined: SerialQueue;
+  /** Root only: work deferred until the transaction ended ({@link PoolGuard.deferUntilEnd}). */
+  readonly afterEnd: Array<() => Promise<void>>;
 }
 
 /**
@@ -175,25 +177,40 @@ export class PoolAcquireTimeoutError extends Error {
 }
 
 /**
- * Call sites on the allowlist (see {@link allowNestedCheckouts}). Shared by
- * every adapter of the process: the call site does not know which adapter
- * its plugin work reaches.
+ * Call chains that join the transaction their caller holds (see
+ * {@link joinHeldTransaction}). Shared by every adapter of the process: the
+ * call site does not know which adapter its plugin work reaches.
  */
-const allowances = new AsyncLocalStorage<string>();
+const joining = new AsyncLocalStorage<true>();
 
 /**
- * Run `fn` with nested checkouts allowed for whatever transaction its
- * caller holds — for a call site that runs inside many different holders
- * (a plugin render hook called from every page write). `label` must be an
- * allowlist entry, so each such call site is tied to its issue.
- *
- * @throws Error when `label` is not on the allowlist.
+ * Run `fn` so that every transaction it opens on a pool its call chain
+ * already holds JOINS that transaction as a savepoint instead of asking the
+ * pool for a second connection (#1254). For render-time plugin work: it
+ * runs inside whatever op composes a page, only reads, and must see the
+ * holder's uncommitted writes. Outside a held transaction `fn` checks out
+ * connections as usual.
  */
-export function allowNestedCheckouts<T>(label: string, fn: () => Promise<T>): Promise<T> {
-  if (!NESTED_CHECKOUT_ALLOWLIST.has(label)) {
-    throw new Error(`allowNestedCheckouts: "${label}" is not on the nested-checkout allowlist`);
-  }
-  return allowances.run(label, fn);
+export function joinHeldTransaction<T>(fn: () => Promise<T>): Promise<T> {
+  return joining.run(true, fn);
+}
+
+/** What a new transaction of a pool does: open its own, or join the held one. */
+export type TransactionPlan =
+  | { readonly kind: "own"; readonly marker: HeldTransaction }
+  | { readonly kind: "join"; readonly outer: HeldTransaction; readonly marker: HeldTransaction };
+
+function newMarker(holder: string, root: HeldTransaction | null): HeldTransaction {
+  return {
+    holder,
+    active: true,
+    tx: null,
+    identity: null,
+    identityOpName: null,
+    root,
+    joined: new SerialQueue(),
+    afterEnd: [],
+  };
 }
 
 /** Per-pool chain markers of one adapter. */
@@ -204,33 +221,66 @@ export class PoolGuard {
   };
 
   /**
-   * The marker a new transaction of `pool` opened by `holder` runs under.
+   * How a new transaction of `pool` opened by `holder` runs: on its own
+   * connection, or joined to the transaction the chain holds.
    *
    * @throws NestedPoolCheckoutError when this chain already holds a
-   *   transaction of `pool` and no allowlisted holder sits above it.
+   *   transaction of `pool` and does not join it.
    */
-  enter(pool: PoolName, holder: string): HeldTransaction {
-    const allowedBy = this.assertMayCheckout(pool, holder);
-    return { holder, active: true, allowedBy };
+  plan(pool: PoolName, holder: string): TransactionPlan {
+    const outer = this.held(pool);
+    if (outer === null) return { kind: "own", marker: newMarker(holder, null) };
+    this.assertMayCheckout(pool, holder);
+    return { kind: "join", outer, marker: newMarker(holder, outer.root ?? outer) };
+  }
+
+  /** The active transaction this chain holds on `pool`, or null. */
+  held(pool: PoolName): HeldTransaction | null {
+    const outer = this.#stores[pool].getStore();
+    return outer?.active ? outer : null;
   }
 
   /**
    * Refuse a checkout of `pool` by `requester` while this chain holds a
-   * transaction of it. Returns the allowlisted holder that lets it through,
-   * or null when the chain holds no transaction of `pool`.
+   * transaction of it, unless the chain joins it ({@link joinHeldTransaction}).
    *
-   * @throws NestedPoolCheckoutError as {@link enter}.
+   * @throws NestedPoolCheckoutError as {@link plan}.
    */
-  assertMayCheckout(pool: PoolName, requester: string): string | null {
-    const outer = this.#stores[pool].getStore();
-    if (outer === undefined || !outer.active) return null;
-    const allowedBy =
-      outer.allowedBy ??
-      (NESTED_CHECKOUT_ALLOWLIST.has(outer.holder) ? outer.holder : null) ??
-      allowances.getStore() ??
-      null;
-    if (allowedBy === null) throw new NestedPoolCheckoutError(pool, outer.holder, requester);
-    return allowedBy;
+  assertMayCheckout(pool: PoolName, requester: string): void {
+    const outer = this.held(pool);
+    if (outer === null || joining.getStore() === true) return;
+    throw new NestedPoolCheckoutError(pool, outer.holder, requester);
+  }
+
+  /**
+   * Refuse a RAW handle of `pool` while the chain holds a transaction of
+   * it: a raw query has no transaction to join, so it always is a second
+   * checkout.
+   *
+   * @throws NestedPoolCheckoutError naming both sides.
+   */
+  assertNoHeldTransaction(pool: PoolName, requester: string): void {
+    const outer = this.held(pool);
+    if (outer !== null) throw new NestedPoolCheckoutError(pool, outer.holder, requester);
+  }
+
+  /**
+   * Run `work` once the transaction this chain holds on `pool` ended
+   * (committed or rolled back) and released its connection, or right away
+   * when the chain holds none. For writes that must not ride on the
+   * holder's transaction: a plugin failure record that has to survive the
+   * holder's rollback, written from inside a joined render call.
+   *
+   * @returns true when `work` was deferred, false when it ran now.
+   */
+  async deferUntilEnd(pool: PoolName, work: () => Promise<void>): Promise<boolean> {
+    const outer = this.held(pool);
+    if (outer === null) {
+      await work();
+      return false;
+    }
+    (outer.root ?? outer).afterEnd.push(work);
+    return true;
   }
 
   /** Run `fn` with `marker` on its call chain; the marker ends with `fn`. */

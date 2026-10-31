@@ -6,6 +6,7 @@ import {
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_APP_SERVICES,
   COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_POOL_BUDGET,
   type ComposeSpec,
   composeProjectName,
   generateDockerCompose,
@@ -56,6 +57,28 @@ describe("self-hosted Compose — internal secret (#770)", () => {
         images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
       }),
     ).toThrow("internalSecret");
+  });
+});
+
+describe("self-hosted Compose — connection budget (#1254)", () => {
+  const yaml = generateDockerCompose({
+    ...base,
+    images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+  });
+
+  it("starts Postgres with the max_connections the budget is computed from", () => {
+    expect(service(yaml, "postgres")).toContain(
+      'command: ["postgres", "-c", "max_connections=100"]',
+    );
+  });
+
+  it("sizes the admin's two pools and the gateway's one", () => {
+    expect(service(yaml, "caelo-admin")).toContain(
+      `      CAELO_DB_POOL_MAX: "${COMPOSE_POOL_BUDGET.budget.adminPoolMax}"`,
+    );
+    expect(service(yaml, "caelo-admin")).toContain('      CAELO_DB_PUBLIC_POOL_MAX: "4"');
+    expect(service(yaml, "caelo-gateway")).toContain('      CAELO_DB_PUBLIC_POOL_MAX: "2"');
+    expect(service(yaml, "caelo-gateway")).not.toContain("CAELO_DB_POOL_MAX:");
   });
 });
 

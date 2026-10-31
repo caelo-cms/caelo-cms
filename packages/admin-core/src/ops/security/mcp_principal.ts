@@ -61,8 +61,8 @@ export interface McpPrincipal {
     | {
         readonly kind: "remote";
         readonly connectionId: string;
-        /** The Power-MCP work session of this connection (stateless transport). */
-        readonly currentChatSessionId: string | null;
+        /** The client app, as people read it ("Claude Code"); agent chats group by it. */
+        readonly clientName: string;
       };
 }
 
@@ -160,8 +160,9 @@ interface ConnectionRow {
   id: string;
   ai_cost_cap_microcents: bigint | string | number | null;
   allow_caelo_ai: boolean;
-  current_chat_session_id: string | null;
   client_label: string | null;
+  /** True when last_used_at is older than {@link LAST_USED_STALE_SECONDS} (or unset). */
+  last_used_stale: boolean;
   revoked_at: string | Date | null;
   revoked_by_email: string | null;
 }
@@ -173,6 +174,22 @@ function toCap(v: bigint | string | number | null): number | null {
   return v;
 }
 
+/**
+ * How stale `last_used_at` may get before a request writes it again
+ * (#1253): it is shown in Settings with minute precision, and writing it
+ * on every request queued every call of every agent of one client on one
+ * row.
+ */
+export const LAST_USED_STALE_SECONDS = 60;
+
+/**
+ * The connection row, read without a lock (#1253). Every request of every
+ * agent of one client reads this one row; `FOR UPDATE` here serialised them
+ * and conflicted with the key-share locks of inserts that reference the row
+ * (running agents, approval cards) — production saw 15 s lock timeouts on
+ * exactly this query. Only the create path below writes, and it settles
+ * races with `ON CONFLICT`.
+ */
 async function selectConnection(
   tx: TransactionRunner,
   actorId: string,
@@ -180,13 +197,14 @@ async function selectConnection(
   clientKey: string,
 ): Promise<ConnectionRow | undefined> {
   const rows = (await tx.execute(sql`
-    SELECT c.id::text AS id, c.ai_cost_cap_microcents, c.allow_caelo_ai,
-           c.current_chat_session_id::text AS current_chat_session_id, c.client_label,
-           c.revoked_at, u.email AS revoked_by_email
+    SELECT c.id::text AS id, c.ai_cost_cap_microcents, c.allow_caelo_ai, c.client_label,
+           c.revoked_at, u.email AS revoked_by_email,
+           (c.last_used_at IS NULL
+             OR c.last_used_at < now() - ${LAST_USED_STALE_SECONDS}::int * interval '1 second')
+             AS last_used_stale
     FROM mcp_remote_connections c
     LEFT JOIN users u ON u.id = c.revoked_by
     WHERE c.actor_id = ${actorId}::uuid AND c.surface = ${surface} AND c.client_key = ${clientKey}
-    FOR UPDATE OF c
   `)) as unknown as ConnectionRow[];
   return rows[0];
 }
@@ -380,11 +398,20 @@ export async function resolveRemoteMcpPrincipal(
           message: revokedMessage(clientKey, row.revoked_by_email, row.revoked_at),
         });
       }
-      await tx.execute(sql`
-        UPDATE mcp_remote_connections
-        SET last_used_at = now(), client_label = COALESCE(${label ?? null}, client_label)
-        WHERE id = ${row.id}::uuid
-      `);
+      // Only when there is something to record: a stale `last_used_at`, or a
+      // client name the row does not have yet. The condition is in the
+      // statement, so a concurrent request that already wrote it makes
+      // this one a no-op instead of a second write (#1253).
+      if (row.last_used_stale || (label !== undefined && label !== row.client_label)) {
+        await tx.execute(sql`
+          UPDATE mcp_remote_connections
+          SET last_used_at = now(), client_label = COALESCE(${label ?? null}, client_label)
+          WHERE id = ${row.id}::uuid
+            AND (last_used_at IS NULL
+                 OR last_used_at < now() - ${LAST_USED_STALE_SECONDS}::int * interval '1 second'
+                 OR client_label IS DISTINCT FROM COALESCE(${label ?? null}, client_label))
+        `);
+      }
       return ok({
         actorId: user.id,
         scope: surface,
@@ -394,7 +421,7 @@ export async function resolveRemoteMcpPrincipal(
         via: {
           kind: "remote",
           connectionId: row.id,
-          currentChatSessionId: row.current_chat_session_id,
+          clientName: describeMcpClient(clientKey),
         },
       });
     },

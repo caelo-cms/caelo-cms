@@ -436,7 +436,7 @@ test("'Fix with AI' is refused while an external agent works in the chat", async
   const token = mintAdminMcpToken(ownerId, "quality-offer agent");
   const sessionRes = await request.post("/api/mcp/session", {
     headers: { "x-caelo-mcp-token": token },
-    data: { newSession: true, title: `quality-offer-${Date.now()}` },
+    data: { title: `quality-offer-${Date.now()}` },
   });
   expect(sessionRes.ok()).toBe(true);
   const { chatSessionId } = (await sessionRes.json()) as { chatSessionId: string };
