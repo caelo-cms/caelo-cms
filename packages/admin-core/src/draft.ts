@@ -208,14 +208,15 @@ export function chatHeadRowsSql(
 
 /**
  * SQL predicate: the `chat_sessions` row under `csAlias` has a pending
- * change. A scalar subquery, not `EXISTS`: Postgres may turn an `EXISTS`
- * into a semi-join over the whole head and sort the open chats afterwards
- * (Postgres 17 did, in the rows-read gate), while a scalar subquery stays a
- * per-row probe, so a walk of the open-chat index in activity order stops
- * after one page.
+ * change. A count, not `EXISTS` / `LIMIT 1`: with an early exit Postgres 17
+ * costs a sequential scan of the head as cheap ("the first match comes
+ * soon"), but head rows sit clustered by the chat that wrote them, so each
+ * probe read the shared draft's head up to its chat's rows (rows-read gate:
+ * 453 -> 6680 buffers). Counting all of the chat's rows makes the
+ * (branch, owner, kind) index the plan, and costs what the chat changed.
  */
 export function sessionHasPendingSql(csAlias = "cs"): SQL {
-  return sql`(SELECT 1 FROM (${sessionHeadRowsSql(csAlias, pendingChangeKindSql())}) p LIMIT 1) IS NOT NULL`;
+  return sql`(SELECT count(*) FROM (${sessionHeadRowsSql(csAlias, pendingChangeKindSql())}) p) > 0`;
 }
 
 /** {@link chatHeadRowsSql} for a `chat_sessions` row under `csAlias`. */
