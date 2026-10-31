@@ -518,6 +518,74 @@ describe("#397 — context-aware translation", () => {
     expect(await statusOf()).toBe("needs_update");
   }, 60_000);
 
+  it("#1267 — a source's first meta description, filled after the translation, flags nothing while the variant has its own; a later edit does", async () => {
+    const sourceId = await seedSourcePage("-seofill");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const variant = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-seofill-preise",
+    });
+    // The source has no meta description yet: the translation carries none.
+    aiScript.push(() => ({
+      title: "Preise",
+      shortTitle: "Preise",
+      slots: [
+        { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo</p>" }) },
+      ],
+    }));
+    await op("translate_variant", { variantPageId: variant.pageId });
+    const statusOf = async () =>
+      (
+        await sqlAsPlugin(
+          async (tx) =>
+            (await tx.unsafe(
+              `SELECT translation_status FROM plugin_international_site.page_variants WHERE page_id = '${variant.pageId}'`,
+            )) as { translation_status: string }[],
+        )
+      )[0]?.translation_status;
+    const drain = async () => {
+      const reports = await drainChangeConsumers({ adapter, registry });
+      for (const r of reports) if (r.error) throw new Error(`${r.slug}: ${r.error}`);
+      return reports.find((r) => r.slug === "international-site");
+    };
+    const setMeta = async (pageId: string, metaDescription: string) => {
+      const r = await execute(registry, adapter, SYS_CTX, "pages_seo.set", {
+        pageId,
+        metaDescription,
+      });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+    };
+    await drain();
+    expect(await statusOf()).toBe("up_to_date");
+
+    // What the first Stage's SEO autofill does (the real-AI scenario): both
+    // pages get a meta description, each in its own language.
+    await setMeta(sourceId, "Fair prices for every team.");
+    await setMeta(variant.pageId, "Faire Preise für jedes Team.");
+    await drain();
+    expect(await statusOf()).toBe("up_to_date");
+    // The rebuild decides the same way (it compares the adopted fingerprint).
+    const gc = await execute(registry, adapter, SYS_CTX, "change_journal.collect_garbage", {
+      retentionMs: 0,
+      stalledConsumerMs: 0,
+    });
+    if (!gc.ok) throw new Error(JSON.stringify(gc.error));
+    await setMeta(variant.pageId, "Faire Preise für jedes Team!");
+    expect((await drain())?.rebuilt).toBe(true);
+    expect(await statusOf()).toBe("up_to_date");
+
+    // Editing the source's meta description now is a change to translate.
+    await setMeta(sourceId, "Fair prices for every team, billed monthly.");
+    await drain();
+    expect(await statusOf()).toBe("needs_update");
+  }, 60_000);
+
   it("#1267 — the backfill gives pre-release translations their source's fingerprint, so a rebuild after the upgrade flags nothing", async () => {
     const sourceId = await seedSourcePage("-bf");
     await op("set_locales", {

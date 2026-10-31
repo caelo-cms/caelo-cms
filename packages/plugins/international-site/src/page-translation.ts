@@ -377,6 +377,34 @@ export function pageSourceFingerprint(src: PageSource): Promise<string> {
 }
 
 /**
+ * The fingerprint a variant adopts when its source only GAINED a meta
+ * description after the translation, or null when the variant is out of
+ * date.
+ *
+ * A variant translated while its source had no meta description carries
+ * none from the translation; its own is filled independently (the SEO
+ * autofill fills every page of a first Stage, the variant in its own
+ * language). The source's first meta description is then nothing the
+ * variant lacks, so flagging it would send the operator to re-translate a
+ * page that is complete. Adopting the current fingerprint keeps every later
+ * change — a meta description edit included — comparable.
+ *
+ * @param args.storedHash the variant's `source_hash` (an exact one; a
+ *   backfilled hash is no basis, see BACKFILLED_HASH in index.ts).
+ * @returns the source's current fingerprint to store, or null.
+ */
+export async function adoptedAfterSourceMetaFill(
+  deps: Pick<TranslationDeps, "cms">,
+  args: { storedHash: string | null; source: PageSource; variantPageId: string },
+): Promise<string | null> {
+  if (args.storedHash === null || args.source.metaDescription === "") return null;
+  const beforeFill = await pageSourceFingerprint({ ...args.source, metaDescription: "" });
+  if (args.storedHash !== beforeFill) return null;
+  if ((await loadMetaDescription(deps, args.variantPageId)) === "") return null;
+  return pageSourceFingerprint(args.source);
+}
+
+/**
  * Read a page's {@link PageSource} as a translation pass reads it.
  *
  * @returns null when the page is deleted (a soft delete keeps its variant

@@ -82,10 +82,12 @@ import {
   setListItemVisibility,
 } from "./list-translation-ops.js";
 import {
+  adoptedAfterSourceMetaFill,
   currentSourceFingerprint,
   type GlossaryRow,
   loadPageSource,
   outcomeNextStep,
+  type PageSource,
   pageSourceFingerprint,
   pageTranslationBasis,
   preparePageTranslation,
@@ -259,8 +261,8 @@ function storedFingerprint(hash: string | null): string | null {
  */
 function sourceHashesOf(
   deps: Pick<ChromeDeps, "q" | "cms" | "listTypes">,
-): (groupId: string) => Promise<string | null> {
-  const known = new Map<string, string | null>();
+): (groupId: string) => Promise<SourceNow | null> {
+  const known = new Map<string, SourceNow | null>();
   return async (groupId) => {
     const hit = known.get(groupId);
     if (hit !== undefined) return hit;
@@ -272,10 +274,39 @@ function sourceHashesOf(
       })) as unknown as PageVariantRow[]
     )[0];
     const content = source ? await loadPageSource(deps, source.page_id, deps.listTypes) : null;
-    const hash = content ? await pageSourceFingerprint(content) : null;
-    known.set(groupId, hash);
-    return hash;
+    const now = content ? { hash: await pageSourceFingerprint(content), content } : null;
+    known.set(groupId, now);
+    return now;
   };
+}
+
+/** A group source's content now and its fingerprint. */
+interface SourceNow {
+  readonly hash: string;
+  readonly content: PageSource;
+}
+
+/**
+ * Whether the up-to-date variant `sib` stays up to date against its source
+ * now: an unchanged source, or one that only gained a meta description the
+ * variant already has its own of ({@link adoptedAfterSourceMetaFill}, the
+ * new fingerprint is stored).
+ */
+async function staysUpToDate(
+  deps: Pick<ChromeDeps, "q" | "cms">,
+  sib: PageVariantRow,
+  now: SourceNow,
+  matches: (stored: string | null) => boolean,
+): Promise<boolean> {
+  if (matches(sib.source_hash)) return true;
+  const adopted = await adoptedAfterSourceMetaFill(deps, {
+    storedHash: sib.source_hash,
+    source: now.content,
+    variantPageId: sib.page_id,
+  });
+  if (adopted === null) return false;
+  await deps.q.update("page_variants", sib.id, { source_hash: adopted });
+  return true;
 }
 
 /**
@@ -318,7 +349,9 @@ async function backfillSourceHashes(ctx: unknown): Promise<number | null> {
       const current = await sourceHashOf(row.group_id);
       // No source to compare with (none, or deleted): left as it is.
       if (current === null) continue;
-      await q.update("page_variants", row.id, { source_hash: `${BACKFILLED_HASH}${current}` });
+      await q.update("page_variants", row.id, {
+        source_hash: `${BACKFILLED_HASH}${current.hash}`,
+      });
       filled += 1;
     }
     if (rows.length < 1000) break;
@@ -365,11 +398,11 @@ async function markSiblingsStale(
     // variants stay as they are, and the rest of the batch goes on.
     const content = await loadPageSource(deps, pageId, deps.listTypes);
     if (!content) continue;
-    const current = await pageSourceFingerprint(content);
+    const now = { hash: await pageSourceFingerprint(content), content };
     for (const sib of siblings) {
       // A backfilled hash (BACKFILLED_HASH) is no basis for a delivered
       // change: the change may predate the backfill's read.
-      if (sib.source_hash === current) continue;
+      if (await staysUpToDate(deps, sib, now, (stored) => stored === now.hash)) continue;
       await q.update("page_variants", sib.id, { translation_status: "needs_update" });
       marked += 1;
     }
@@ -2125,7 +2158,9 @@ export default definePlugin<PluginContextTier1>({
         for (const row of rows) {
           const current = await sourceHashOf(row.group_id);
           // No source to compare with (none, or deleted): left as it is.
-          if (current === null || storedFingerprint(row.source_hash) === current) continue;
+          if (current === null) continue;
+          const same = (stored: string | null) => storedFingerprint(stored) === current.hash;
+          if (await staysUpToDate(deps, row, current, same)) continue;
           await q.update("page_variants", row.id, { translation_status: "needs_update" });
           marked += 1;
         }
