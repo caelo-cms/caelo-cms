@@ -18,7 +18,8 @@
  * files are read outside any transaction (a stream each, a bounded number
  * at once — gcsfuse latency, not memory), and the digests are written in
  * another short transaction, each only if the row still names the same
- * storage key (a concurrent rewrite wins).
+ * storage key and still holds the digests the listing saw (a concurrent
+ * rewrite, which stores its own digests, wins).
  */
 
 import { Readable } from "node:stream";
@@ -56,6 +57,8 @@ const targetRow = z.object({
       profile: z.string(),
     })
     .nullable(),
+  /** The raw columns the store step conditions on (any may be null). */
+  observed: z.object({ contentSha256: z.string().nullable(), profile: z.string().nullable() }),
 });
 type TargetRow = z.infer<typeof targetRow>;
 
@@ -122,6 +125,7 @@ export const listDigestTargetsOp = defineOperation({
                 profile: r.digest_profile,
               }
             : null,
+        observed: { contentSha256: r.content_sha256, profile: r.digest_profile },
       })),
     });
   },
@@ -135,6 +139,9 @@ const digestRow = z.object({
   gzipSha256: z.string().regex(/^[0-9a-f]{64}$/),
   gzipSize: z.number().int().nonnegative(),
   profile: z.string().min(1).max(64),
+  /** The row's digests when the file was read (null: it had none). */
+  observedContentSha256: z.string().nullable(),
+  observedProfile: z.string().nullable(),
 });
 
 /** Step 3 of media.rebuild_digests: store what was computed. */
@@ -157,9 +164,13 @@ export const storeDigestsOp = defineOperation({
         gzip_sha256: d.gzipSha256,
         gzip_size: d.gzipSize,
         digest_profile: d.profile,
+        observed_content_sha256: d.observedContentSha256,
+        observed_profile: d.observedProfile,
       }));
-      // Only where the row still names the file that was read: a variant
-      // rewritten meanwhile stored its own digests with its write.
+      // Only where the row is still the one that was read: a write rewrites
+      // the file under the same storage key and stores its own digests with
+      // it, so a matching key alone does not mean the bytes are unchanged —
+      // the digests the listing saw must be unchanged too.
       const rows = (await tx.execute(sql`
         UPDATE media_variants mv
         SET content_sha256 = d.content_sha256,
@@ -168,9 +179,12 @@ export const storeDigestsOp = defineOperation({
             digest_profile = d.digest_profile
         FROM jsonb_to_recordset(${jsonbParam(batch)}) AS d(
           asset_id uuid, variant text, storage_key text, content_sha256 text,
-          gzip_sha256 text, gzip_size bigint, digest_profile text)
+          gzip_sha256 text, gzip_size bigint, digest_profile text,
+          observed_content_sha256 text, observed_profile text)
         WHERE mv.asset_id = d.asset_id AND mv.variant = d.variant
           AND mv.storage_key = d.storage_key
+          AND mv.content_sha256 IS NOT DISTINCT FROM d.observed_content_sha256
+          AND mv.digest_profile IS NOT DISTINCT FROM d.observed_profile
         RETURNING 1 AS updated
       `)) as unknown as { updated: number }[];
       updated += rows.length;
@@ -289,6 +303,8 @@ export const rebuildMediaDigestsOp = defineStepwiseOperation({
         gzipSha256: digest.gzipSha256,
         gzipSize: digest.gzipSize,
         profile: digest.profile,
+        observedContentSha256: t.observed.contentSha256,
+        observedProfile: t.observed.profile,
       });
     });
     let updated = 0;

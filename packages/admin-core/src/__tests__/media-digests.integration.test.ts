@@ -250,6 +250,31 @@ describe("stored files and their digests stay one (#1271)", () => {
     expect(new Uint8Array(await storage.get("inode/test.bin"))).toEqual(new Uint8Array([9, 9]));
   });
 
+  it("a backfill that read the file before a re-upload does not overwrite the upload's digests", async () => {
+    const [first] = await rows([assetId]);
+    // The backfill listed the row while it had no digests and read the old
+    // bytes; meanwhile a re-upload rewrote the file under the same key and
+    // stored the new file's digests.
+    const r = await execute(registry, adapter, SYSTEM, "media.store_digests", {
+      digests: [
+        {
+          assetId,
+          variant: first?.variant as string,
+          storageKey: first?.storage_key as string,
+          contentSha256: "a".repeat(64),
+          gzipSha256: "b".repeat(64),
+          gzipSize: 1,
+          profile: first?.digest_profile as string,
+          observedContentSha256: null,
+          observedProfile: null,
+        },
+      ],
+    });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    expect((r.value as { updated: number }).updated).toBe(0);
+    await expectConsistent([assetId]);
+  });
+
   it("a re-upload that rewrote the stored variants refreshes their digests", async () => {
     const [first] = await rows([assetId]);
     await asSystem(
