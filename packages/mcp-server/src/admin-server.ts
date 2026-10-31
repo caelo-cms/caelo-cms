@@ -44,6 +44,7 @@ import {
   type OpenSessionResponse,
   type RemoteTool,
 } from "./surfaces/admin-surface.js";
+import { rpcToolCallId } from "./surfaces/rpc-tool-call-id.js";
 import { ownVersion } from "./version-handshake.js";
 
 export interface StartAdminOpts {
@@ -148,7 +149,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
           body: {
             ...call,
             chatSessionId: session,
-            toolCallId: `stdio:${processKey}:${String(rpcRequestId)}`.slice(0, 128),
+            toolCallId: rpcToolCallId(`stdio:${processKey}`, rpcRequestId),
           },
           timeoutMs: resolveTimeoutMs(120_000),
         });

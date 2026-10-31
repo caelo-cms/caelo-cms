@@ -37,4 +37,5 @@ export {
   type ChatSurfaceOptions,
   createChatMcpServer,
 } from "./chat-surface.js";
+export { rpcToolCallId } from "./rpc-tool-call-id.js";
 export { type StoreImageMeta, type UploadImagesResult, uploadImagesWith } from "./upload.js";

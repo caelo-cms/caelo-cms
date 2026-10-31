@@ -73,6 +73,7 @@ import {
   type OpenSessionResponse,
   REMOTE_UPLOAD_IMAGES_TOOL,
   type RemoteTool,
+  rpcToolCallId,
   type SendChatResult,
   uploadImagesWith,
 } from "@caelo-cms/mcp-server/surfaces";
@@ -243,7 +244,7 @@ function adminBackend(
           ...(transportSessionId
             ? {
                 transportSessionId,
-                toolCallId: `${transportSessionId}:${String(rpcRequestId)}`.slice(0, 128),
+                toolCallId: rpcToolCallId(transportSessionId, rpcRequestId),
               }
             : {}),
         }),
