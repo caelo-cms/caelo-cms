@@ -191,6 +191,7 @@ export const mcpBeginToolCallOp = defineOperation({
   // (the external agent's calls are that user's); no AI tool wraps it, and
   // the agent must not be able to mark itself present or un-stopped.
   actorScope: ["human"],
+  readScope: "request",
   database: "cms_admin",
   input: z
     .object({
@@ -342,6 +343,7 @@ export const mcpFinishToolCallOp = defineOperation({
   name: "mcp.finish_tool_call",
   // Why human-only: the after-half of mcp.begin_tool_call (same reason).
   actorScope: ["human"],
+  readScope: "request",
   database: "cms_admin",
   input: z
     .object({

@@ -4,7 +4,7 @@
  * Embed verdicts: which modules reach a third party, and what was decided
  * about each (`module_guards`).
  *
- * ## Where the scan runs, and where it does not (#1214)
+ * ## Where the scan runs, and where it does not (#1214, #1267)
  *
  * Judging a module means reading its source and every content value it
  * renders with — the vendor URL usually sits in a value, not in markup.
@@ -13,13 +13,15 @@
  *
  * So the judgement is STORED and kept current where content changes:
  *
- * - `module_changes` — core tells the plugin, after every committed write,
- *   which modules changed, in the writer's scope (a chat's branch or
- *   main). Only those modules are re-read and their guards rewritten, so
- *   a draft's verdicts live on the draft and publish with it.
- * - `scan_modules` (the scheduled worker) and the first activation rescan
- *   the whole site on main — the backstop for anything written while the
- *   plugin was not running.
+ * - `module_changes` — the plugin's change consumer (#1267): the host
+ *   hands it the committed module and content-instance changes from the
+ *   change journal, per branch, in that branch's scope (a chat's branch or
+ *   main), on any instance and after a restart alike (the cursor is
+ *   persisted). Only those modules are re-read and their guards
+ *   rewritten, so a draft's verdicts live on the draft and publish with it.
+ * - `scan_modules` — the consumer's rebuild (first activation, or a cursor
+ *   behind the journal's retention) and the scheduled worker rescan the
+ *   whole site on main.
  *
  * Render hooks then read verdicts only (`gatedCategoryKeys`,
  * `guardsByModule`): no module or content-instance list on the render

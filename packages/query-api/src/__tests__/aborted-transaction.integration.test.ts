@@ -45,6 +45,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "aborted_tx.catch_then_err",
+      readScope: "request",
       actorScope: ["system"],
       database: "cms_admin",
       input: z.object({}),
@@ -62,6 +63,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "aborted_tx.catch_then_ok",
+      readScope: "request",
       actorScope: ["system"],
       database: "cms_admin",
       input: z.object({}),

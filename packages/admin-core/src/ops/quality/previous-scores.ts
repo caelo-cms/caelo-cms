@@ -19,10 +19,9 @@
  *   not depend on CPU speed and compare regardless.
  */
 
-import type { defineOperation } from "@caelo-cms/query-api";
+import { type defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import type { QualityCategory } from "../../quality/ratchet.js";
-import { uuidList } from "./_shared.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -75,7 +74,7 @@ export async function loadPreviousScores(
     JOIN quality_audit_pages prev ON prev.page_id = now_page.page_id
     JOIN quality_audit_runs q ON q.id = prev.audit_run_id
     LEFT JOIN chat_sessions cs ON cs.id = q.chat_session_id
-    WHERE now_page.page_id = ANY(${uuidList(pageIds)})
+    WHERE now_page.page_id = ANY(${uuidArray(pageIds)})
       AND q.created_at < cur.created_at
       AND cs.chat_branch_id IS NOT DISTINCT FROM cur.chat_branch_id
       AND prev.scores IS NOT NULL

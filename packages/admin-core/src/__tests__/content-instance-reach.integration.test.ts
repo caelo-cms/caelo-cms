@@ -135,20 +135,33 @@ async function setFieldDefault(moduleId: string, field: string, value: unknown):
   }
 }
 
-async function pageUpdatedEventsFor(contentInstanceId: string): Promise<string[]> {
+/**
+ * #1267 — what a staleness consumer derives from a value edit: the change
+ * journal holds the instance's change (on the writer's branch), and the
+ * consumer resolves the pages it renders on in that branch's scope — the
+ * blast radius #392 used to fan out as one event per page.
+ */
+async function stalenessPagesFor(
+  ctx: ExecutionContext,
+  contentInstanceId: string,
+): Promise<string[]> {
   const sql = new SQL(ADMIN_URL as string);
   try {
     const rows = (await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       return await tx`
-        SELECT entity_id::text AS page_id FROM domain_events
-         WHERE kind = 'page.updated' AND payload->>'contentInstanceId' = ${contentInstanceId}
+        SELECT chat_branch_id::text AS branch FROM entity_changes
+         WHERE kind = 'content_instance' AND row_id = ${contentInstanceId}
+         ORDER BY xid DESC LIMIT 1
       `;
-    })) as unknown as { page_id: string }[];
-    return rows.map((r) => r.page_id).sort();
+    })) as unknown as { branch: string | null }[];
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.branch ?? null).toBe(ctx.chatBranchId ?? null);
   } finally {
     await sql.end();
   }
+  const got = await op<Got>(ctx, "content_instances.get", { id: contentInstanceId });
+  return got.renderedOn.map((p) => p.pageId).sort();
 }
 
 beforeAll(async () => {
@@ -231,7 +244,7 @@ describe("#627 — nested-only instances reach the pages their parents render on
     expect(written.placementCount).toBe(0);
     expect(written.renderedPageCount).toBe(2);
     // Staleness workers see the edit on both pages, not on none.
-    expect(await pageUpdatedEventsFor(grandchild)).toEqual([pageA, pageB].sort());
+    expect(await stalenessPagesFor(SYS, grandchild)).toEqual([pageA, pageB].sort());
 
     // A Publish live re-bakes the ancestor pages of a nested-only edit.
     const impact = await op<{ pageIds: string[]; fullSite: boolean }>(
@@ -401,7 +414,7 @@ describe("#627 — nested-only instances reach the pages their parents render on
       values: { title: "Edited in chat" },
     });
     expect(written.renderedPageCount).toBe(2);
-    expect(await pageUpdatedEventsFor(child)).toEqual([kept, added].sort());
+    expect(await stalenessPagesFor(chat, child)).toEqual([kept, added].sort());
   });
 
   it("an embedded instance that leaves a field unset shows its module's default there", async () => {
@@ -424,7 +437,7 @@ describe("#627 — nested-only instances reach the pages their parents render on
       id: viaDefault,
       values: { title: "Shown, edited" },
     });
-    expect(await pageUpdatedEventsFor(viaDefault)).toEqual([pageId]);
+    expect(await stalenessPagesFor(SYS, viaDefault)).toEqual([pageId]);
 
     // The same chain where B sets the field: the default does not render.
     const overrider = await createModule("overrider", "<div>{{#items}}{{>.}}{{/items}}</div>", [

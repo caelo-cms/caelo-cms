@@ -54,6 +54,7 @@ function harness(
     registry.register(
       defineOperation({
         name,
+        readScope: "request",
         actorScope: scopes[name] ?? ["human", "ai", "system"],
         database: "cms_admin",
         input: z.any(),

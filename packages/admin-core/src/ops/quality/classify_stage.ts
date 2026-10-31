@@ -12,7 +12,7 @@
  * state and "did the module's code change" is no longer answerable.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -23,7 +23,7 @@ import {
   pendingSnapshotSql,
 } from "../../draft.js";
 import { classifyStageChanges, type StageChange } from "../../quality/classify.js";
-import { stageClassificationSchema, uuidList } from "./_shared.js";
+import { stageClassificationSchema } from "./_shared.js";
 import { lastPageMetrics, lastPageMetricsSchema } from "./page-metrics.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
@@ -232,9 +232,9 @@ export async function touchedPageIds(tx: Tx, changes: readonly StageChange[]): P
   if (moduleIds.length > 0 || templateIds.length > 0) {
     const rows = (await tx.execute(sql`
       SELECT DISTINCT pm.page_id::text AS id FROM page_modules pm
-      WHERE pm.module_id = ANY(${uuidList(moduleIds)})
+      WHERE pm.module_id = ANY(${uuidArray(moduleIds)})
       UNION
-      SELECT p.id::text FROM pages p WHERE p.template_id = ANY(${uuidList(templateIds)})
+      SELECT p.id::text FROM pages p WHERE p.template_id = ANY(${uuidArray(templateIds)})
     `)) as unknown as { id: string }[];
     for (const r of rows) direct.add(r.id);
   }
@@ -243,6 +243,8 @@ export async function touchedPageIds(tx: Tx, changes: readonly StageChange[]): P
 
 export const classifyStageOp = defineOperation({
   name: "quality_audits.classify_stage",
+  // Why site-wide: classifying a Stage reads every page the Stage changed.
+  readScope: "site",
   // CLAUDE.md §11: read-only; the AI may ask whether its next Stage will be
   // audited (and why) before telling the operator what to expect.
   actorScope: ["human", "ai", "system"],
@@ -328,12 +330,7 @@ export const classifyStageOp = defineOperation({
     const w: Window = {
       branchId: first.branchId,
       filter:
-        headerIds.length === 0
-          ? sql` AND false`
-          : sql` AND ss.id IN (${sql.join(
-              headerIds.map((id) => sql`${id}::uuid`),
-              sql`, `,
-            )})`,
+        headerIds.length === 0 ? sql` AND false` : sql` AND ss.id = ANY(${uuidArray(headerIds)})`,
     };
     const changes = [
       ...(await moduleChanges(tx, w)),

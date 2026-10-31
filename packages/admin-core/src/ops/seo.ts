@@ -97,6 +97,7 @@ async function loadSeoRows(
 
 export const pagesSeoGetOp = defineOperation({
   name: "pages_seo.get",
+  readScope: "request",
   // #591 — plugin actors read too: a translation flow carries the source
   // page's description into the variant (§11: reads are open).
   actorScope: ["human", "ai", "plugin", "system"],
@@ -120,6 +121,7 @@ export const SEO_GET_MANY_MAX = 50;
 
 export const pagesSeoGetManyOp = defineOperation({
   name: "pages_seo.get_many",
+  readScope: "request",
   // CLAUDE.md §11: reads are open — the AI reads a page's stored SEO and
   // its core text before it writes or re-optimizes a description.
   actorScope: ["human", "ai", "system"],
@@ -177,6 +179,7 @@ export const pagesSeoGetManyOp = defineOperation({
 
 export const pagesSeoSetOp = defineOperation({
   name: "pages_seo.set",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: seoSetInputSchema,
@@ -256,6 +259,7 @@ function alreadyAutofilled(target: PageSeoState, metaDescription: string): Query
 
 export const pagesSeoAutofillOp = defineOperation({
   name: "pages_seo.autofill",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: seoAutofillInputSchema,
@@ -338,6 +342,7 @@ export const pagesSeoAutofillOp = defineOperation({
 
 export const pagesSeoOptimizeOp = defineOperation({
   name: "pages_seo.optimize",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: seoOptimizeInputSchema,
@@ -404,6 +409,7 @@ function optimizedSeo(
  */
 export const pagesSeoApplyTranslationOp = defineOperation({
   name: "pages_seo.apply_translation",
+  readScope: "request",
   // Why system-only: the write half of a translation flow (plugins run
   // it from translate_variant). The AI fills SEO through
   // pages_seo.autofill and re-optimizes through pages_seo.optimize, which
@@ -476,6 +482,7 @@ export const pagesSeoApplyTranslationOp = defineOperation({
 
 export const pagesSeoListStaleOp = defineOperation({
   name: "pages_seo.list_stale",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ limit: z.number().int().positive().max(200).default(50) }).strict(),
@@ -537,6 +544,7 @@ export const pagesSeoListStaleOp = defineOperation({
 
 export const siteDefaultsSetSeoOp = defineOperation({
   name: "site_defaults.set_seo",
+  readScope: "request",
   // Why human-only: Owner-only — site-level config (base URL, sitemap toggle,
   // organization JSON) published on every page. The AI reaches it through the
   // §11.A gate: site_defaults.propose_set_seo → execute_proposal (Owner).
@@ -572,6 +580,7 @@ export const siteDefaultsSetSeoOp = defineOperation({
 
 export const siteDefaultsGetSeoOp = defineOperation({
   name: "site_defaults.get_seo",
+  readScope: "request",
   // #398 — plugin actors read the base URL to build absolute hreflang
   // targets for host-strategy locales (§11: read surfaces are open).
   actorScope: ["human", "ai", "plugin", "system"],
@@ -616,6 +625,7 @@ export const siteDefaultsGetSeoOp = defineOperation({
 
 export const siteDefaultsSeedSiteBaseUrlOp = defineOperation({
   name: "site_defaults.seed_site_base_url",
+  readScope: "request",
   // Why human-only: system-only. The admin calls it at boot with the URL
   // provisioning derived from the install domain; it fills an unset value
   // and never overwrites one, so it cannot replace an Owner's choice.
@@ -663,6 +673,7 @@ export const siteDefaultsSeedSiteBaseUrlOp = defineOperation({
 
 export const pagesSeoOptimizeManyOp = defineOperation({
   name: "pages_seo.optimize_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

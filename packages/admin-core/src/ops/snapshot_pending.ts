@@ -38,6 +38,7 @@ const proposeRevertSiteInput = z.object({ snapshotId: z.string().uuid() }).stric
 
 export const proposeRevertSiteOp = defineOperation({
   name: "snapshots.propose_revert_site",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeRevertSiteInput,
@@ -85,6 +86,7 @@ const proposeRevertPageInput = z
 
 export const proposeRevertPageOp = defineOperation({
   name: "snapshots.propose_revert_page",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeRevertPageInput,
@@ -132,6 +134,7 @@ const proposeRevertTemplateInput = z
 
 export const proposeRevertTemplateOp = defineOperation({
   name: "snapshots.propose_revert_template",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeRevertTemplateInput,
@@ -186,6 +189,7 @@ const proposeRevertModuleInput = z
 
 export const proposeRevertModuleOp = defineOperation({
   name: "snapshots.propose_revert_module",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeRevertModuleInput,
@@ -231,6 +235,7 @@ export const proposeRevertModuleOp = defineOperation({
 
 const executeSnapshotRevertProposalOpDefinition = defineOperation({
   name: "snapshots.execute_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -330,6 +335,7 @@ export const executeSnapshotRevertProposalOp = requiresApproverPermission(
 
 export const rejectSnapshotRevertProposalOp = defineOperation({
   name: "snapshots.reject_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -380,6 +386,7 @@ const proposalRowSchema = z.object({
 
 export const listPendingSnapshotRevertProposalsOp = defineOperation({
   name: "snapshots.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

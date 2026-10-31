@@ -141,6 +141,7 @@ export function toRunSummary(r: RunDbRow): RunSummary {
 
 export const listAuditsOp = defineOperation({
   name: "quality_audits.list",
+  readScope: "request",
   // CLAUDE.md §11: read-only, open to every actor — the AI checks whether
   // its last Stage's audit finished and how it ended.
   actorScope: ["human", "ai", "system"],
@@ -206,6 +207,7 @@ const auditPageSchema = z.object({
 
 export const getAuditOp = defineOperation({
   name: "quality_audits.get",
+  readScope: "request",
   // CLAUDE.md §11: read-only — the AI reads the full findings to fix them.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -349,6 +351,7 @@ const acceptanceSchema = z.object({
 
 export const listAcceptancesOp = defineOperation({
   name: "quality_acceptances.list",
+  readScope: "request",
   // CLAUDE.md §11: read-only — the AI checks what an editor already
   // accepted before asking again.
   actorScope: ["human", "ai", "system"],

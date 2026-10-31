@@ -29,7 +29,7 @@
  * content-instance snapshots).
  */
 
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -111,6 +111,7 @@ async function withBranchedModules<
 
 export const listSharedContentOp = defineOperation({
   name: "pages.list_shared_content",
+  readScope: "request",
   // Why system-only: the planning read behind plugin chrome variants
   // (international-site's translate_chrome / intl_status). The AI sees the
   // same content through the plugin's intl_status tool, phrased for the
@@ -288,13 +289,7 @@ async function listInstancePages(
   visible: (alias: string) => SQL,
   ids: readonly string[] | null,
 ): Promise<{ contentInstanceId: string; pageIds: string[] }[]> {
-  const only =
-    ids === null
-      ? sql``
-      : sql`AND pm.content_instance_id IN (${sql.join(
-          ids.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})`;
+  const only = ids === null ? sql`` : sql`AND pm.content_instance_id = ANY(${uuidArray(ids)})`;
   const listRows = (await tx.execute(sql`
     SELECT pm.content_instance_id::text AS id,
            array_agg(DISTINCT pm.page_id::text) AS page_ids

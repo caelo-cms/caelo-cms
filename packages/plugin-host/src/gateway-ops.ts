@@ -56,6 +56,7 @@ const archiveRowSchema = z.object({
  */
 export const commentArchiveListForPageOp = defineOperation({
   name: "comment_archive.list_for_page",
+  readScope: "request",
   actorScope: ["human", "ai", "system", "plugin"],
   database: "cms_admin",
   input: listForPageInput,
@@ -117,6 +118,7 @@ export const commentArchiveListForPageOp = defineOperation({
  */
 export const publishedCommentsListForPageOp = defineOperation({
   name: "comment_archive.list_for_page",
+  readScope: "request",
   actorScope: ["system", "plugin"],
   database: "cms_public",
   input: listForPageInput,

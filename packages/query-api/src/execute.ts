@@ -6,7 +6,7 @@ import type { DatabaseAdapter } from "./adapter.js";
 import { branchNotFound, firstMalformedBranch, namedBranches } from "./branch-access.js";
 import type { QueryError } from "./errors.js";
 import { isReadOperation } from "./operation.js";
-import { notifyOperationCommitted } from "./post-commit.js";
+import { commitNoticeOf, notifyOperationCommitted } from "./post-commit.js";
 import type { OperationRegistry } from "./registry.js";
 
 /**
@@ -99,7 +99,20 @@ export async function execute(
     });
     // #1215 — like a transactional op that answered ok (adapter.ts): the
     // change hints hear it, after every step committed.
-    if (result.ok) notifyOperationCommitted(op.name);
+    if (result.ok) {
+      notifyOperationCommitted(op.name);
+      // #1267 — and so do other instances. Each step already sent its own
+      // notice in its transaction; this is the step-wise op's own name.
+      // A failed notice never fails the op: its change is committed, and a
+      // retry would apply it twice. Other instances miss one hint; their
+      // surfaces re-read on focus or their next topic.
+      const notice = commitNoticeOf(op.name);
+      if (notice !== null) {
+        await adapter.notify(notice.channel, notice.payload).catch((thrown: unknown) => {
+          console.error(`[query-api] could not notify other instances of ${op.name}`, thrown);
+        });
+      }
+    }
     return result;
   }
   return adapter.runOperation(op, ctx, parsed.data);

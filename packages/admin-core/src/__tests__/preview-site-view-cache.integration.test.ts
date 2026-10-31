@@ -4,9 +4,9 @@
  * Issue #1212 — the preview's cached site view never serves a stale page.
  *
  * The site view (every page, SEO summary, media asset, list, setting) is
- * kept in memory per branch and re-read only when the site-view
- * generation (migration 0394) moved. These writes must each show in the
- * very next preview:
+ * kept in memory per branch and re-read only when the change journal
+ * (#1267, migration 0430) holds a change it has not seen. These writes must
+ * each show in the very next preview:
  *
  *   - a raw write with no actor at all (a fixture, psql, a migration):
  *     a linked page's path, the site base URL in the canonical;
@@ -15,7 +15,7 @@
  *   - an op write (the main-line rename through `pages.update`).
  *
  * And an unchanged draft is served from the cache: the second render
- * reads only the generation, not the site.
+ * runs one journal check, not the site read.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -53,7 +53,8 @@ describe("preview site-view cache (#1212)", () => {
     expect(
       site.lastStatements().some((s) => /FROM media_assets WHERE deleted_at IS NULL/.test(s)),
     ).toBe(false);
-    expect(site.lastStatements().some((s) => /site_view_generation/.test(s))).toBe(true);
+    expect(site.lastStatements().some((s) => /FROM entity_changes ec/.test(s))).toBe(true);
+    expect(site.lastStatements().some((s) => /site_view_generation/.test(s))).toBe(false);
   });
 
   it("shows a raw write with no actor in the next preview", async () => {

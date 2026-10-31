@@ -48,6 +48,7 @@ const insertInput = z
 
 export const commentArchiveInsertOp = defineOperation({
   name: "comment_archive.insert",
+  readScope: "request",
   // human + ai + system: human moderation through the admin UI; ai
   // moderation through the comments.ai_moderate handler; system from
   // any future cron / orchestrator. The op only writes the archive;

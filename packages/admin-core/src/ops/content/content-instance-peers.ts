@@ -13,7 +13,7 @@
  * caller's branch sees them.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -55,6 +55,7 @@ const peerSchema = z.object({
 
 export const listModulePeersOp = defineOperation({
   name: "content_instances.list_module_peers",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: listModulePeersInput,
@@ -68,10 +69,7 @@ export const listModulePeersOp = defineOperation({
     if (input.contentInstanceIds.length > 0) {
       const rows = (await tx.execute(sql`
         SELECT DISTINCT ci.module_id::text AS module_id FROM content_instances ci
-        WHERE ci.id IN (${sql.join(
-          input.contentInstanceIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )}) AND ${visible}
+        WHERE ci.id = ANY(${uuidArray(input.contentInstanceIds)}) AND ${visible}
       `)) as unknown as { module_id: string }[];
       for (const r of rows) moduleIds.add(r.module_id);
     }
@@ -91,10 +89,7 @@ export const listModulePeersOp = defineOperation({
              m.display_name AS module_display_name, ci."values" AS values
       FROM content_instances ci
       JOIN modules m ON m.id = ci.module_id
-      WHERE ci.module_id IN (${sql.join(
-        [...moduleIds].map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )}) AND ci.deleted_at IS NULL AND ${visible}
+      WHERE ci.module_id = ANY(${uuidArray([...moduleIds])}) AND ci.deleted_at IS NULL AND ${visible}
     `)) as unknown as {
       id: string;
       module_id: string;

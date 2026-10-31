@@ -84,6 +84,7 @@ function iso(v: string | Date | null): string | null {
 
 export const listOpenChangesOp = defineOperation({
   name: "chat.list_open_changes",
+  readScope: "request",
   // CLAUDE.md §11: read surface open to the AI — it answers "what is still
   // unstaged across my chats?" without a round-trip to the operator.
   actorScope: ["human", "ai", "system"],
@@ -228,6 +229,7 @@ export const listOpenChangesOp = defineOperation({
 
 export const drainTakeoverNoticesOp = defineOperation({
   name: "chat.drain_takeover_notices",
+  readScope: "request",
   // Why human-only: dispatch-internal — the chat-runner and Power-MCP tool
   // dispatch call it after every tool call (as the operator) to append
   // takeover notes to that tool result; the AI reads the notes there and

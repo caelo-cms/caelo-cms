@@ -19,6 +19,7 @@ const messageRow = z.object({ messageId: z.string() });
 
 export const appendChatMessageOp = defineOperation({
   name: "chat.append_message",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -200,6 +201,7 @@ export const appendChatMessageOp = defineOperation({
  */
 export const setResponseMessagesOp = defineOperation({
   name: "chat.set_response_messages",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -243,6 +245,7 @@ export const setResponseMessagesOp = defineOperation({
  */
 export const markChatMessageInterruptedOp = defineOperation({
   name: "chat.mark_message_interrupted",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ messageId: z.string().uuid() }).strict(),
@@ -272,6 +275,7 @@ export const markChatMessageInterruptedOp = defineOperation({
  */
 export const cacheToolResultOp = defineOperation({
   name: "chat.cache_tool_result",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -296,6 +300,7 @@ export const cacheToolResultOp = defineOperation({
 
 export const lookupToolResultOp = defineOperation({
   name: "chat.lookup_tool_result",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -324,6 +329,7 @@ export const lookupToolResultOp = defineOperation({
 
 export const recordAiCallOp = defineOperation({
   name: "chat.record_ai_call",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

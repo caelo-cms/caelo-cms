@@ -60,6 +60,7 @@ import { jsonbParam } from "../sql-helpers.js";
  */
 export const operatorAccessMembersOp = defineOperation({
   name: "users.operator_access_members",
+  readScope: "request",
   // Why system-only: the input of the operator-access sync job, which runs
   // as a system actor with a read-only database role. Humans and the AI see
   // users through users.list.
@@ -115,6 +116,7 @@ export type OperatorAccessSync = z.infer<typeof operatorAccessSyncSchema>;
 /** `users.record_operator_access_sync` — audit row for one triggered sync. */
 export const recordOperatorAccessSyncOp = defineOperation({
   name: "users.record_operator_access_sync",
+  readScope: "request",
   // Why human-only: records the outcome of starting the operator-access
   // sync job, which happens only after an Owner-approved user/role change or
   // the Owner's Re-sync click (both run the recording themselves).
@@ -151,6 +153,7 @@ const RUN_REPORT_RETENTION_DAYS = 30;
  */
 export const recordOperatorAccessRunOp = defineOperation({
   name: "users.record_operator_access_run",
+  readScope: "request",
   // Why system-only: written by the operator-access sync job (its own
   // service account and database role) about its own run; nobody else
   // knows what Google answered it.
@@ -190,6 +193,7 @@ export const recordOperatorAccessRunOp = defineOperation({
  */
 export const operatorAccessRunOp = defineOperation({
   name: "users.operator_access_run",
+  readScope: "request",
   // CLAUDE.md §11: read surface open to the AI ("why can't X sign in?").
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",

@@ -20,6 +20,7 @@ import { z } from "zod";
 
 export const getDeployRunOriginOp = defineOperation({
   name: "deploy.get_run_origin",
+  readScope: "request",
   // CLAUDE.md §11 — a read; the AI reaches it only through
   // inspect_built_page, which never prints the internal preview origin.
   actorScope: ["human", "ai", "system"],

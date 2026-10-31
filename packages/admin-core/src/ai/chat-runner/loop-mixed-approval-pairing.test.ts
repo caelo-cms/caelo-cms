@@ -83,6 +83,7 @@ function buildFixtureQueryApi(): {
   registry.register(
     defineOperation({
       name: "chat.append_message",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({ role: z.string(), content: z.string() }),
@@ -100,6 +101,7 @@ function buildFixtureQueryApi(): {
   registry.register(
     defineOperation({
       name: "chat.set_response_messages",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({}),
@@ -111,6 +113,7 @@ function buildFixtureQueryApi(): {
   registry.register(
     defineOperation({
       name: "chat.record_turn_approvals",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({}),
@@ -121,6 +124,7 @@ function buildFixtureQueryApi(): {
   registry.register(
     defineOperation({
       name: "chat.lookup_tool_result",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({}),
@@ -131,6 +135,7 @@ function buildFixtureQueryApi(): {
   registry.register(
     defineOperation({
       name: "chat.cache_tool_result",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({}),

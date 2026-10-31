@@ -29,6 +29,7 @@ const telemetrySettings = z.object({
 
 export const getTelemetryOp = defineOperation({
   name: "telemetry.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -63,6 +64,7 @@ export const getTelemetryOp = defineOperation({
 
 export const setTelemetryOp = defineOperation({
   name: "telemetry.set",
+  readScope: "request",
   // Why human-only (deliberately NO propose_* path): opting in is the
   // operator's CONSENT to send data from this install to the Caelo
   // project. Consent has to be the human's own act, made on the page that
@@ -125,6 +127,7 @@ export const setTelemetryOp = defineOperation({
  */
 export const testSendTelemetryOp = defineOperation({
   name: "telemetry.test_send",
+  readScope: "request",
   // v0.2.19 — pure preview op (no outbound HTTP, returns the payload
   // that WOULD be sent so the Owner can audit). Safe for AI to call
   // when the operator asks "what does telemetry actually send".

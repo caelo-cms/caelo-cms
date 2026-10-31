@@ -36,6 +36,7 @@ const rowSchema = z.object({
 
 export const aggregateAuditByOpPrefixOp = defineOperation({
   name: "audit_events.aggregate_by_op_prefix",
+  readScope: "request",
   // Open to operator + AI; AI can self-introspect "where am I spending
   // time?" via this op when planning bulk vs singular work.
   actorScope: ["human", "ai", "system"],

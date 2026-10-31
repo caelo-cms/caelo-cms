@@ -14,7 +14,7 @@
  */
 
 import { resolvePublicPageUrls } from "@caelo-cms/plugin-host";
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { err, ok, PAGE_URL_STYLES, type PageUrlStyle } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -36,6 +36,7 @@ export async function loadPublishPageUrlStyle(tx: TransactionRunner): Promise<Pa
 
 export const resolvePublicUrlsOp = defineOperation({
   name: "pages.resolve_public_urls",
+  readScope: "request",
   // Why system-only: a render-time building block, not an editing action.
   // Plugins call it from their head/sitemap/data-list operations, where
   // core hands them the serving target's `pageUrlStyle`; the AI reads a
@@ -68,10 +69,7 @@ export const resolvePublicUrlsOp = defineOperation({
           "under Settings → SEO in the admin.",
       });
     }
-    const idList = sql.join(
-      input.pageIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    );
+    const idList = uuidArray(input.pageIds);
     // Branch-aware like pages.list: a chat sees main plus its own creates.
     const branchFilter = ctx.chatBranchId
       ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${ctx.chatBranchId}::uuid)`
@@ -80,7 +78,7 @@ export const resolvePublicUrlsOp = defineOperation({
       SELECT p.id::text AS id, p.slug, p.current_path, s.canonical_url
       FROM pages p
       LEFT JOIN ${pageSeoViewSql(ctx.chatBranchId, input.pageIds)} s ON s.page_id = p.id
-      WHERE p.id IN (${idList}) AND p.deleted_at IS NULL AND ${branchFilter}
+      WHERE p.id = ANY(${idList}) AND p.deleted_at IS NULL AND ${branchFilter}
     `)) as unknown as {
       id: string;
       slug: string;

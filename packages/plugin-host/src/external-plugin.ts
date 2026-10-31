@@ -87,9 +87,7 @@ export function externalPluginDefinition(opts: {
     // #1155 — reviewed manifest data, carried like the panels.
     ...(manifest.bakedData ? { bakedData: manifest.bakedData } : {}),
     ...(manifest.writeHintsOperation ? { writeHintsOperation: manifest.writeHintsOperation } : {}),
-    ...(manifest.moduleChangesOperation
-      ? { moduleChangesOperation: manifest.moduleChangesOperation }
-      : {}),
+    ...(manifest.changeConsumer ? { changeConsumer: manifest.changeConsumer } : {}),
     ...(manifest.hasStaticRender
       ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
       : {}),

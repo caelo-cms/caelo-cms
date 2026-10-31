@@ -29,6 +29,7 @@ import {
   loadedPlugins,
   requiredPluginsOf,
   requirementsMessage,
+  unapprovedCapabilities,
 } from "@caelo-cms/plugin-host";
 import {
   type EmittedSchema,
@@ -95,6 +96,14 @@ const pluginRow = z.object({
   /** Active plugins that require this one: it cannot be disabled or
    *  uninstalled while any is listed. */
   requiredBy: z.array(z.string()),
+  /**
+   * #1267 — capabilities this release-signed plugin's manifest asks for
+   * that the Owner has not approved: while non-empty an active plugin
+   * does not run; `plugins.approve_capabilities` (Settings → Plugins)
+   * approves them. Always empty for runtime-installed plugins (their
+   * grants are per artifact).
+   */
+  unapprovedCapabilities: z.array(z.string()),
 });
 
 interface PluginDb {
@@ -118,6 +127,7 @@ interface PluginDb {
   rejection_reason: string | null;
   created_at: string | Date;
   updated_at: string | Date;
+  approved_capabilities: string[] | null;
 }
 
 /** Active plugin slug → the active plugins whose manifest requires it. */
@@ -169,6 +179,13 @@ function rowToOut(
     health: h,
     requiresPlugins: requiredPluginsOf(row.manifest_json),
     requiredBy: requiredBy.get(row.slug) ?? [],
+    unapprovedCapabilities:
+      row.tier === 1 && (row.status === "active" || row.status === "disabled")
+        ? unapprovedCapabilities(
+            requestedCapabilitiesOf(row.manifest_json),
+            row.approved_capabilities,
+          )
+        : [],
   }));
 }
 
@@ -187,6 +204,7 @@ function parseValidationErrors(v: unknown): z.infer<typeof validationFailureRow>
 
 export const listPluginsOp = defineOperation({
   name: "plugins.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -221,7 +239,7 @@ export const listPluginsOp = defineOperation({
              activated_by::text AS activated_by, activated_at,
              disabled_by::text AS disabled_by, disabled_at,
              rejected_by::text AS rejected_by, rejected_at, rejection_reason,
-             created_at, updated_at
+             created_at, updated_at, approved_capabilities
       FROM plugins
       ${where}
       ORDER BY tier ASC, slug ASC
@@ -237,6 +255,7 @@ export const listPluginsOp = defineOperation({
 
 export const getPluginOp = defineOperation({
   name: "plugins.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ slug: z.string().min(1).max(120) }).strict(),
@@ -250,7 +269,7 @@ export const getPluginOp = defineOperation({
              activated_by::text AS activated_by, activated_at,
              disabled_by::text AS disabled_by, disabled_at,
              rejected_by::text AS rejected_by, rejected_at, rejection_reason,
-             created_at, updated_at
+             created_at, updated_at, approved_capabilities
       FROM plugins WHERE slug = ${input.slug} LIMIT 1
     `)) as unknown as PluginDb[];
     const r = rows[0];
@@ -279,6 +298,7 @@ export const getPluginOp = defineOperation({
 
 export const submitPluginOp = defineOperation({
   name: "plugins.submit",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -396,6 +416,7 @@ export const submitPluginOp = defineOperation({
 
 export const listPendingPluginsOp = defineOperation({
   name: "plugins.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -491,6 +512,7 @@ export const listPendingPluginsOp = defineOperation({
 
 export const preparePluginActivationOp = defineOperation({
   name: "plugins.prepare_activation",
+  readScope: "request",
   // Why human-only: returns the DDL that the route will run on
   // cms_public. Owner gate; CLAUDE.md §2.
   actorScope: ["human", "system"],
@@ -623,6 +645,7 @@ export const preparePluginActivationOp = defineOperation({
 
 export const activatePluginOp = defineOperation({
   name: "plugins.activate",
+  readScope: "request",
   // Why human-only: writes the migration row, flips status, creates
   // the per-plugin actor row. Owner click; CLAUDE.md §2.
   // The caller must have already run prepare_activation + provisioned
@@ -736,6 +759,7 @@ export const activatePluginOp = defineOperation({
             activated_at = now(),
             disabled_by = NULL,
             disabled_at = NULL,
+            approved_capabilities = ${APPROVE_REQUESTED},
             updated_at = now()
         WHERE id = ${r.id}::uuid
       `);
@@ -782,6 +806,7 @@ export const activatePluginOp = defineOperation({
         SET status = 'active',
             activated_by = ${ctx.actorId}::uuid,
             activated_at = now(),
+            approved_capabilities = ${APPROVE_REQUESTED},
             updated_at = now()
         WHERE id = ${r.id}::uuid
       `);
@@ -877,11 +902,63 @@ async function upsertPluginActor(
 }
 
 // ---------------------------------------------------------------------------
+// Approve capabilities (#1267) — a release-signed plugin's new release asks
+// for more than the Owner approved; it does not run until this click.
+// ---------------------------------------------------------------------------
+
+/** The plugin row's manifest capabilities, as the SQL value approved_capabilities takes. */
+const APPROVE_REQUESTED = sql`ARRAY(SELECT jsonb_array_elements_text(
+  CASE WHEN jsonb_typeof(manifest_json -> 'requestedCapabilities') = 'array'
+       THEN manifest_json -> 'requestedCapabilities' ELSE '[]'::jsonb END))`;
+
+function requestedCapabilitiesOf(manifest: unknown): string[] {
+  const caps = (manifest as { requestedCapabilities?: unknown } | null)?.requestedCapabilities;
+  return Array.isArray(caps) ? caps.filter((c): c is string => typeof c === "string") : [];
+}
+
+export const approvePluginCapabilitiesOp = defineOperation({
+  name: "plugins.approve_capabilities",
+  readScope: "request",
+  // Why human-only: approving a capability is an Owner grant (CLAUDE.md §2,
+  // one plugin model) — the same decision as activating the plugin.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ slug: z.string().min(1).max(120) }).strict(),
+  output: z.object({ approved: z.array(z.string()) }),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE plugins SET approved_capabilities = ${APPROVE_REQUESTED}, updated_at = now()
+       WHERE slug = ${input.slug} AND tier = 1 AND status IN ('active', 'disabled')
+      RETURNING id::text AS id, approved_capabilities
+    `)) as unknown as { id: string; approved_capabilities: string[] }[];
+    const row = rows[0];
+    if (!row) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.approve_capabilities",
+        message: `no active or disabled release-signed plugin "${input.slug}" — activate a new plugin with plugins.activate; an installed one approves its grants in the installation review`,
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "plugins.approve_capabilities",
+      input,
+      succeeded: true,
+      entityId: row.id,
+      resultSummary: `approved=${row.approved_capabilities.join(",")}`,
+    });
+    return ok({ approved: row.approved_capabilities });
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Disable — both tiers, human/system only.
 // ---------------------------------------------------------------------------
 
 export const disablePluginOp = defineOperation({
   name: "plugins.disable",
+  readScope: "request",
   // Why human-only: stops dispatching plugin operations across the
   // site. Owner gate.
   actorScope: ["human", "system"],
@@ -941,6 +1018,7 @@ export const disablePluginOp = defineOperation({
 
 export const rejectPluginOp = defineOperation({
   name: "plugins.reject",
+  readScope: "request",
   // AI-callable without a gate (§11 routine): rejecting only moves a Tier 2
   // submission that is NOT running (draft / awaiting_activation) to
   // `rejected`, keeping source + validator errors, and `plugins.revalidate`
@@ -1006,6 +1084,7 @@ const AI_REVALIDATABLE_STATUSES: ReadonlySet<string> = new Set([
 
 export const revalidatePluginOp = defineOperation({
   name: "plugins.revalidate",
+  readScope: "request",
   // AI-callable only for submissions that never ran (draft /
   // awaiting_activation / rejected): re-running the validator over stored
   // source is deterministic and only re-files the submission. Every other

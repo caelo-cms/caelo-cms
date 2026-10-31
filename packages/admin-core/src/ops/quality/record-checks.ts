@@ -7,7 +7,7 @@
  * the run-level summary stored in `quality_audit_runs.checks`.
  */
 
-import type { defineOperation } from "@caelo-cms/query-api";
+import { type defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { type CheckRuleProblem, tightenedAcceptances } from "../../quality/checks/evaluate.js";
 import type { Finding } from "../../quality/checks/findings.js";
@@ -16,7 +16,6 @@ import type {
   ChecksOutcome,
   RunChecksSummary,
 } from "../../quality/checks/outcome.js";
-import { uuidList } from "./_shared.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -37,7 +36,7 @@ export async function loadCheckAcceptances(
     SELECT id::text AS id, page_id::text AS page_id, audit_id, accepted_count
     FROM quality_acceptances
     WHERE kind = 'check' AND revoked_at IS NULL
-      AND (page_id IS NULL OR page_id = ANY(${uuidList(pageIds)}))
+      AND (page_id IS NULL OR page_id = ANY(${uuidArray(pageIds)}))
   `)) as unknown as {
     id: string;
     page_id: string | null;

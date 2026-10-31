@@ -185,7 +185,9 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${A}/permissions.ts`,
       `${A}/sql-helpers.ts`,
       `${A}/tokens.ts`,
-      `${A}/domain-events.ts`,
+      // #1267 — the change journal every write passes through.
+      `${A}/ops/change-journal.ts`,
+      `${SHARED}/change-journal.ts`,
       `${A}/public-projection.ts`,
       `${A}/theme-document-input.ts`,
       `${A}/rate-limit.ts`,

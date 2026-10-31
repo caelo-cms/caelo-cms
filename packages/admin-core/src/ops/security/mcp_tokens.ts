@@ -98,6 +98,7 @@ async function managesAllMcpTokens(tx: TransactionRunner): Promise<boolean> {
 
 export const listMcpTokensOp = defineOperation({
   name: "mcp_tokens.list",
+  readScope: "request",
   // Why human-only: AI shouldn't be able to enumerate bearers. Rows are
   // scoped by RLS (migration 0315): an Owner (settings.write) sees every
   // user's tokens, everyone else only their own.
@@ -155,6 +156,7 @@ export const listMcpTokensOp = defineOperation({
 
 export const createMcpTokenOp = defineOperation({
   name: "mcp_tokens.create",
+  readScope: "request",
   // Why human-only: mints a bearer credential; the AI reaches it only through
   // propose_create_mcp_token (Owner-approved) and never sees a plaintext token.
   actorScope: ["human", "system"],
@@ -222,6 +224,7 @@ export const createMcpTokenOp = defineOperation({
 
 export const revokeMcpTokenOp = defineOperation({
   name: "mcp_tokens.revoke",
+  readScope: "request",
   // Why human-only: credential lifecycle; the AI reaches it only through propose_revoke_mcp_token
   // (Owner-approved). RLS (migration 0315) limits a non-Owner to their own tokens.
   actorScope: ["human", "system"],
@@ -467,6 +470,7 @@ const pendingChatApproval = z.object({
 
 export const mcpSendChatOp = defineOperation({
   name: "mcp.send_chat",
+  readScope: "request",
   // Why system-only: bearer is in the input. We resolve it INSIDE the
   // handler then dispatch as the resolved actor; system privilege is
   // just to read mcp_tokens.
@@ -712,6 +716,7 @@ export const mcpSendChatOp = defineOperation({
 /** Resolve the bearer and current write permission before accepting any image bytes. */
 export const mcpAuthorizeUploadOp = defineOperation({
   name: "mcp.authorize_upload",
+  readScope: "request",
   // Why system-only: credentials are resolved here; bytes are stored as the human actor.
   actorScope: ["system"],
   database: "cms_admin",
@@ -772,6 +777,7 @@ export const mcpAuthorizeUploadOp = defineOperation({
  */
 export const mcpGetVersionOp = defineOperation({
   name: "mcp.get_version",
+  readScope: "request",
   // Why system-only: the bearer is in the input (same reason as
   // mcp.send_chat) — the HTTP shell dispatches as system.
   actorScope: ["system"],

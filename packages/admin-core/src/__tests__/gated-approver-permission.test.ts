@@ -99,6 +99,7 @@ describe("#589 guard: every gated tool declares its approver permission", () => 
     reg.register(
       defineOperation({
         name: "widgets.execute_proposal",
+        readScope: "request",
         actorScope: ["human", "system"],
         database: "cms_admin",
         input: z.object({ proposalId: z.string() }),
@@ -147,6 +148,7 @@ function wrapped(): { op: OperationDefinition<unknown, unknown>; ran: () => numb
     ["roles.manage"],
     defineOperation({
       name: "widgets.execute_proposal",
+      readScope: "request",
       actorScope: ["human", "system"],
       database: "cms_admin",
       input: z.object({}),

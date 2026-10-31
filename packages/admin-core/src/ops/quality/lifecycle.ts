@@ -24,7 +24,7 @@
  * run — never as a silent pass, never as an unexplained block.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -33,7 +33,7 @@ import { stagedBySchema } from "../../quality/chat-feedback.js";
 import { withInstallRules } from "../../quality/classify.js";
 import { decideGate } from "../../quality/gate.js";
 import { jsonbParam } from "../../sql-helpers.js";
-import { iso, stageClassificationSchema, uuidList } from "./_shared.js";
+import { iso, stageClassificationSchema } from "./_shared.js";
 import { loadAcceptances, loadGateAuditById } from "./gate-loader.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
@@ -145,6 +145,7 @@ async function nextFixRound(tx: Tx, chatSessionId: string | null): Promise<numbe
 
 export const enqueueAuditOp = defineOperation({
   name: "quality_audits.enqueue",
+  readScope: "request",
   // Issue #620 Part B — the AI may Stage, and the Stage flow (admin-core
   // stageChatSessions) enqueues the audit of the build it made, so the
   // flow runs this op as the AI. The classification it passes is computed
@@ -250,7 +251,7 @@ export const enqueueAuditOp = defineOperation({
     ]);
     const targetRows = (await tx.execute(sql`
       WITH cand AS (
-        SELECT c.id, c.ord FROM unnest(${uuidList([...candidates])}) WITH ORDINALITY AS c(id, ord)
+        SELECT c.id, c.ord FROM unnest(${uuidArray([...candidates])}) WITH ORDINALITY AS c(id, ord)
       )
       SELECT p.id::text AS id
       FROM pages p
@@ -298,7 +299,7 @@ export const enqueueAuditOp = defineOperation({
         ${ctx.actorId}::uuid,
         ${status},
         ${jsonbParam(finalClassification)},
-        ${uuidList(targetPageIds)},
+        ${uuidArray(targetPageIds)},
         ${PERFORMANCE_RUNS},
         ${status === "skipped" ? sql`now()` : sql`NULL`},
         ${fixRound},
@@ -373,6 +374,7 @@ const claimedRunSchema = z.object({
 
 export const claimNextAuditOp = defineOperation({
   name: "quality_audits.claim_next",
+  readScope: "request",
   // Why human-only: worker-internal — only the in-admin audit worker
   // (system) takes queued runs; humans and the AI retry by re-staging.
   actorScope: ["system"],
@@ -444,7 +446,7 @@ export const claimNextAuditOp = defineOperation({
     const pages = (await tx.execute(sql`
       SELECT t.id::text AS page_id, p.current_path,
              (sd.not_found_page_id IS NOT NULL AND sd.not_found_page_id = p.id) AS is_not_found
-      FROM unnest(${uuidList(row.target_page_ids)}) WITH ORDINALITY AS t(id, ord)
+      FROM unnest(${uuidArray(row.target_page_ids)}) WITH ORDINALITY AS t(id, ord)
       JOIN pages p ON p.id = t.id
       LEFT JOIN site_defaults sd ON sd.id = 1
       WHERE p.status = 'published' AND p.deleted_at IS NULL

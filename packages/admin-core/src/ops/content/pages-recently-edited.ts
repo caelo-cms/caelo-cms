@@ -27,6 +27,7 @@ const SNAPSHOT_WINDOW = 500;
 
 export const listRecentlyEditedPagesOp = defineOperation({
   name: "pages.list_recently_edited",
+  readScope: "request",
   // Why human-only (system for tests): a navigation aid of the editor's
   // page search. The AI reads what changed through the chat's own change
   // list and a page's log (`get_page_log`), which say what changed, not only when.

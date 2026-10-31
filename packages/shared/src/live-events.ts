@@ -11,9 +11,13 @@
  * it is safe to hand to every signed-in tab. The read that follows goes
  * through the endpoint's own permission checks.
  *
- * Topics come from the names of operations that committed (the Query API's
- * `observeCommittedOperations`). Only WRITE operations are listed: a read
- * classified as a change would make every refresh announce another change.
+ * Operational topics come from the names of operations that committed (the
+ * Query API's `observeCommittedOperations`). Only WRITE operations are
+ * listed: a read classified as a change would make every refresh announce
+ * another change. Entity-derived topics (`draft`) come from the change
+ * journal instead (issue #1267): they fire exactly when a committed write
+ * changed a journaled row, on whichever instance it committed, and never
+ * for a write that changed nothing.
  */
 
 /** One surface an editor tab may need to re-read. */
@@ -30,6 +34,12 @@ export const LIVE_TOPICS = [
   "crawl",
   /** Deploy runs (Stage, Publish live, rollback). */
   "deploys",
+  /**
+   * Site content changed: a journaled row committed (a chat's or an MCP
+   * agent's write, a Stage, an undo, a settings change). From the change
+   * journal, never from an op name (#1267).
+   */
+  "draft",
 ] as const;
 
 export type LiveTopic = (typeof LIVE_TOPICS)[number];

@@ -254,6 +254,8 @@ export const checkReferencesInput = z
 
 export const checkReferencesOp = defineOperation({
   name: "links.check_references",
+  // Why site-wide: a link check reads every link of the site by purpose.
+  readScope: "site",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: checkReferencesInput,

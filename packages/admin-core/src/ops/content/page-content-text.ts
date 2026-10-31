@@ -26,7 +26,7 @@
  * or plugin-fed lists, not the page's own words.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import {
   collectNestedRefs,
   listSlotNames,
@@ -66,12 +66,6 @@ export interface PageContentTexts {
   readonly pages: readonly PageContentText[];
   readonly missing: readonly string[];
 }
-
-const idList = (ids: readonly string[]) =>
-  sql.join(
-    ids.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
 
 function parseFields(raw: unknown): NestedModuleResource["fields"] {
   if (!Array.isArray(raw)) return [];
@@ -126,7 +120,7 @@ async function loadPageRows(
     SELECT p.id::text AS id, p.title, p.current_path, t.html AS template_html,
            t.layout_id::text AS layout_id
       FROM pages p JOIN templates t ON t.id = p.template_id
-     WHERE p.id IN (${idList(pageIds)}) AND p.deleted_at IS NULL ${visibility}
+     WHERE p.id = ANY(${uuidArray(pageIds)}) AND p.deleted_at IS NULL ${visibility}
   `)) as unknown as PageRow[];
   const byId = new Map(rows.map((r) => [r.id, r]));
   if (chatBranchId && rows.length > 0) {
@@ -135,7 +129,7 @@ async function loadPageRows(
         FROM page_snapshots ps
         JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
        WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-         AND ps.page_id IN (${idList([...byId.keys()])})
+         AND ps.page_id = ANY(${uuidArray([...byId.keys()])})
        ORDER BY ps.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const s of snaps) {
@@ -165,7 +159,7 @@ async function loadModules(
     : sql`AND chat_branch_id IS NULL`;
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, slug, display_name, html, css, js, fields
-      FROM modules WHERE id IN (${idList(ids)}) AND deleted_at IS NULL ${visibility}
+      FROM modules WHERE id = ANY(${uuidArray(ids)}) AND deleted_at IS NULL ${visibility}
   `)) as unknown as {
     id: string;
     slug: string;
@@ -205,7 +199,7 @@ async function loadInstances(
   if (ids.length === 0) return;
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, module_id::text AS module_id, "values" AS values
-      FROM content_instances WHERE id IN (${idList(ids)}) AND deleted_at IS NULL
+      FROM content_instances WHERE id = ANY(${uuidArray(ids)}) AND deleted_at IS NULL
   `)) as unknown as { id: string; module_id: string; values: unknown }[];
   const branched = chatBranchId
     ? await loadContentInstanceBranchStates(tx, ids, chatBranchId)

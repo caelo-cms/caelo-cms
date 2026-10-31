@@ -295,6 +295,7 @@ export async function supersedeRequestsAudited(
 
 export const platformUpdatesRequestOp = defineOperation({
   name: "platform_updates.request",
+  readScope: "request",
   // Why human-only: installing a Caelo release is a deployment (CLAUDE.md
   // §2, deployment locked from the AI; #696 decision 3: the AI only informs).
   // Owner permission + a password confirmation, checked in the handler.
@@ -394,6 +395,7 @@ export const platformUpdatesRequestOp = defineOperation({
 
 export const platformUpdatesCancelOp = defineOperation({
   name: "platform_updates.cancel",
+  readScope: "request",
   // Why human-only: withdraws the Owner's own deployment request (same gate
   // as platform_updates.request: Owner permission + password confirmation).
   actorScope: ["human"],
@@ -436,6 +438,7 @@ export const platformUpdatesCancelOp = defineOperation({
 
 export const platformUpdatesContinueOp = defineOperation({
   name: "platform_updates.continue",
+  readScope: "request",
   // Why human-only: re-starts a deployment the Owner asked for (CLAUDE.md
   // §2; same gate as platform_updates.request: Owner permission + a
   // password confirmation, checked in the handler).
@@ -487,6 +490,7 @@ export const platformUpdatesContinueOp = defineOperation({
 
 export const platformUpdatesRecordTriggerOp = defineOperation({
   name: "platform_updates.record_trigger",
+  readScope: "request",
   // Why human-only: the admin's bookkeeping right after a request — whether
   // the upgrader job could be started for it. The Owner's session records
   // its own requests; the auto-update scheduler (system) its automatic ones.
@@ -557,6 +561,7 @@ export const platformUpdatesRecordTriggerOp = defineOperation({
 
 export const platformUpdatesSupersedeStaleOp = defineOperation({
   name: "platform_updates.supersede_stale",
+  readScope: "request",
   // Why system-only: the admin's own bookkeeping at boot (#817) — after an
   // upgrade from Cloud Shell the new admin closes the request that asked
   // for it. Nothing for the Owner or the AI to decide.
@@ -572,6 +577,7 @@ export const platformUpdatesSupersedeStaleOp = defineOperation({
 
 export const platformUpdatesListOp = defineOperation({
   name: "platform_updates.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -589,6 +595,7 @@ export const platformUpdatesListOp = defineOperation({
 
 export const platformUpdatesGetOp = defineOperation({
   name: "platform_updates.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

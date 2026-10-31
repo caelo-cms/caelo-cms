@@ -11,11 +11,14 @@
  * Before, each of those consumers read the whole site itself — the pages
  * table five times per render, media twice — so one preview's cost grew
  * with the site. Now one read builds this view, and the admin keeps it
- * in memory per branch, keyed by the site-view generation (migration
- * 0394): a counter that moves with every committed change to a table read
- * here, whoever made it. A render checks the counter (one statement) and
- * re-reads the view only when it moved, so an unchanged draft costs one
- * statement for the whole site and no edit can leave a preview stale.
+ * in memory per branch, with the change-journal mark it was read at
+ * (issue #1267, docs/dev/state-and-changes.md). A render proves in one
+ * statement that no journaled change to a table read here became visible
+ * since — on main or on this branch, whoever made it (an op, a Stage, an
+ * undo, a migration, a psql session, another admin instance) — and
+ * re-reads the view only when one did. An unchanged draft costs one
+ * statement for the whole site, a change on another chat's isolated branch
+ * costs nothing, and no edit can leave a preview stale.
  *
  * Only core rows are cached. Plugin answers about the site (the
  * `link-resolve` partition, list overlays, URL annotations of a pending
@@ -26,7 +29,12 @@
  * policy for every authenticated session.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import {
+  checkJournalMark,
+  type JournalFilter,
+  type JournalMark,
+  type TransactionRunner,
+} from "@caelo-cms/query-api";
 import type { LinkIndexMedia } from "@caelo-cms/shared";
 import type { ListRenderBase } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
@@ -46,8 +54,8 @@ export interface SiteViewSettings {
 /** One branch's view of the whole site (see the file header). */
 export interface SiteView {
   readonly branchId: string | null;
-  /** The site-view generation this view was read at. */
-  readonly generation: bigint;
+  /** Where in the change journal this view was read (#1267). */
+  readonly mark: JournalMark;
   readonly pageRows: PageRows;
   /** {@link pagesInViewOf} of `pageRows`. */
   readonly pages: readonly PageInView[];
@@ -67,25 +75,41 @@ export interface SiteView {
   readonly settings: SiteViewSettings;
 }
 
-/** The current site-view generation (migration 0394). Throws when the seed row is missing. */
-export async function readSiteViewGeneration(tx: TransactionRunner): Promise<bigint> {
-  const rows = (await tx.execute(sql`
-    SELECT generation::text AS generation FROM site_view_generation WHERE id = 1
-  `)) as unknown as { generation: string }[];
-  const g = rows[0]?.generation;
-  if (g === undefined) {
-    throw new Error(
-      "site_view_generation row (id=1) is missing — run the cms_admin migrations (0394 seeds it)",
-    );
-  }
-  return BigInt(g);
+/**
+ * The journal rows that change a branch's site view: the kinds of every
+ * table {@link readSiteView} reads, on main or on that branch. An update or
+ * delete counts on any branch, because a journal row names the branch AFTER
+ * the change: a lock takeover re-points a pending snapshot away from a
+ * branch the row no longer names, and Stage / undo mark headers. A header
+ * insert carries no state of its own (its entity snapshots do).
+ */
+export function siteViewJournalFilter(branchId: string | null): JournalFilter {
+  return {
+    kinds: [
+      "page",
+      "page_terms",
+      "page_seo",
+      "media",
+      "site_defaults",
+      "list_type",
+      "list",
+      "page_type",
+      "plugin",
+      "plugin_installation",
+      "plugin_grant",
+      "snapshot",
+    ],
+    branchId,
+    unscopedOps: ["update", "delete", "truncate"],
+    kindOps: { snapshot: ["update", "delete", "truncate"] },
+  };
 }
 
 /** Read the whole view (no cache): about ten statements. */
 export async function readSiteView(
   tx: TransactionRunner,
   branchId: string | null,
-  generation: bigint,
+  mark: JournalMark,
 ): Promise<SiteView> {
   const pageRows = await loadPageRows(tx, branchId);
   const live = pageRows.rows.filter((r) => r.deleted_at === null);
@@ -136,7 +160,7 @@ export async function readSiteView(
 
   return {
     branchId,
-    generation,
+    mark,
     pageRows,
     pages: pagesInViewOf(pageRows),
     tree,
@@ -175,26 +199,29 @@ const cache = new Map<string, SiteView>();
 const MAX_CACHED_VIEWS = 8;
 
 /**
- * The branch's site view at the current generation: from the cache when
- * nothing changed since it was read, else read now and cached.
+ * The branch's site view as `tx` sees it: from the cache when no journaled
+ * change reached it since it was read, else read now and cached.
  */
 export async function loadSiteView(
   tx: TransactionRunner,
   branchId: string | null,
 ): Promise<SiteView> {
-  const generation = await readSiteViewGeneration(tx);
   const key = branchId ?? "";
+  const filter = siteViewJournalFilter(branchId);
   const hit = cache.get(key);
-  if (hit && hit.generation === generation) {
+  // One statement, hit or miss: the check, and the mark of the read below
+  // (taken before its statements, so a change committing during the read
+  // is unseen by the mark and invalidates once).
+  const { fresh, mark } = await checkJournalMark(tx, hit?.mark ?? null, filter);
+  if (hit && fresh) {
     cache.delete(key);
     cache.set(key, hit);
     return hit;
   }
-  const view = await readSiteView(tx, branchId, generation);
-  // A render that read an older generation than one cached meanwhile
-  // must not replace the newer view.
-  const current = cache.get(key);
-  if (!current || current.generation < generation) {
+  const view = await readSiteView(tx, branchId, mark);
+  // A read that saw its own transaction's uncommitted writes is not
+  // cached: a rollback would undo them without a journal row.
+  if (!mark.dirty) {
     cache.delete(key);
     cache.set(key, view);
     while (cache.size > MAX_CACHED_VIEWS) {
@@ -204,4 +231,9 @@ export async function loadSiteView(
     }
   }
   return view;
+}
+
+/** Test seam: forget every cached view (the rows-read test measures cold reads). */
+export function clearSiteViewCache(): void {
+  cache.clear();
 }

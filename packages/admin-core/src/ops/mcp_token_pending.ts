@@ -51,6 +51,7 @@ const proposeCreateInput = z
 
 export const proposeMcpTokenCreateOp = defineOperation({
   name: "mcp_tokens.propose_create",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeCreateInput,
@@ -78,6 +79,7 @@ const proposeRevokeInput = z.object({ tokenId: z.string().uuid() }).strict();
 
 export const proposeMcpTokenRevokeOp = defineOperation({
   name: "mcp_tokens.propose_revoke",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeRevokeInput,
@@ -140,6 +142,7 @@ export const proposeMcpTokenRevokeOp = defineOperation({
 
 const executeMcpTokenProposalOpDefinition = defineOperation({
   name: "mcp_tokens.execute_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -233,6 +236,7 @@ export const executeMcpTokenProposalOp = requiresApproverPermission(
 
 export const rejectMcpTokenProposalOp = defineOperation({
   name: "mcp_tokens.reject_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -282,6 +286,7 @@ const proposalRowSchema = z.object({
 
 export const listPendingMcpTokenProposalsOp = defineOperation({
   name: "mcp_tokens.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

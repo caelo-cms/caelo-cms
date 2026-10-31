@@ -17,7 +17,7 @@
  * snapshot per page).
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -28,6 +28,7 @@ const MAX_PAGE_IDS = 1000;
 
 export const listPageStatusesOp = defineOperation({
   name: "pages.list_statuses",
+  readScope: "request",
   // Why system-only (plugins included): a render-time building block like
   // `pages.resolve_public_urls`, called by plugin render hooks with the ids
   // they already hold. The AI and the panel read statuses from pages.list.
@@ -44,17 +45,14 @@ export const listPageStatusesOp = defineOperation({
     statuses: z.record(z.string(), z.enum(["draft", "published"])),
   }),
   handler: async (ctx, input, tx) => {
-    const ids = sql.join(
-      [...new Set(input.pageIds)].map((id) => sql`${id}::uuid`),
-      sql`, `,
-    );
+    const ids = uuidArray([...new Set(input.pageIds)]);
     const branchFilter = ctx.chatBranchId
       ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${ctx.chatBranchId}::uuid)`
       : sql`p.chat_branch_id IS NULL`;
     const rows = (await tx.execute(sql`
       SELECT p.id::text AS id, p.status
         FROM pages p
-       WHERE p.id IN (${ids}) AND p.deleted_at IS NULL AND ${branchFilter}
+       WHERE p.id = ANY(${ids}) AND p.deleted_at IS NULL AND ${branchFilter}
     `)) as unknown as { id: string; status: "draft" | "published" }[];
     const statuses: Record<string, "draft" | "published"> = {};
     for (const r of rows) statuses[r.id] = r.status;
@@ -66,7 +64,7 @@ export const listPageStatusesOp = defineOperation({
           FROM page_snapshots ps
           JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
          WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
-           AND ps.page_id IN (${ids})
+           AND ps.page_id = ANY(${ids})
          ORDER BY ps.page_id, ss.created_at DESC
       `)) as unknown as { page_id: string; state: unknown }[];
       for (const o of overlay) {

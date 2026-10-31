@@ -113,6 +113,7 @@ function buildFixtureQueryApi(gate: BudgetGateState | null): {
   registry.register(
     defineOperation({
       name: "chat.append_message",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({ role: z.string(), content: z.string() }),
@@ -130,6 +131,7 @@ function buildFixtureQueryApi(gate: BudgetGateState | null): {
   registry.register(
     defineOperation({
       name: "imports.get_session_budget_state",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({}),
@@ -142,6 +144,7 @@ function buildFixtureQueryApi(gate: BudgetGateState | null): {
   registry.register(
     defineOperation({
       name: "chat.lookup_tool_result",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({}),
@@ -152,6 +155,7 @@ function buildFixtureQueryApi(gate: BudgetGateState | null): {
   registry.register(
     defineOperation({
       name: "chat.cache_tool_result",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({}),
@@ -162,6 +166,7 @@ function buildFixtureQueryApi(gate: BudgetGateState | null): {
   registry.register(
     defineOperation({
       name: "chat.set_response_messages",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({}),
@@ -172,6 +177,7 @@ function buildFixtureQueryApi(gate: BudgetGateState | null): {
   registry.register(
     defineOperation({
       name: "imports.record_budget_gate_event",
+      readScope: "request",
       actorScope: ["human", "system"],
       database: "cms_admin",
       input: z.looseObject({ kind: z.string() }),

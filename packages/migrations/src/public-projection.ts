@@ -111,6 +111,21 @@ export interface PublishReport {
 /** NOTIFY channel the gateway listens on (cms_public); the payload names the section. */
 export const GATEWAY_PROJECTION_CHANNEL = "caelo_gateway_settings";
 
+/**
+ * A list bound as ONE parameter (a JSON array expanded server-side), never
+ * one parameter per element: Postgres refuses a statement past 65,535
+ * parameters (#1267, rule 7). The same as `textArray` / `uuidArray` in
+ * @caelo-cms/query-api, which this package does not depend on.
+ */
+function textArray(values: readonly string[]): SQL {
+  return sql`ARRAY(SELECT jsonb_array_elements_text((${JSON.stringify(values)}::text)::jsonb))`;
+}
+
+/** {@link textArray} for uuids. */
+function uuidArray(values: readonly string[]): SQL {
+  return sql`ARRAY(SELECT jsonb_array_elements_text((${JSON.stringify(values)}::text)::jsonb)::uuid)`;
+}
+
 const PROJECTION_LOCK = sql`SELECT pg_advisory_xact_lock(hashtext('caelo_public_projection'))`;
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/;
 const SLUG_RE = /^[a-z][a-z0-9-]*$/;
@@ -324,9 +339,14 @@ async function readSnapshot(
       active,
       rows: await rows(
         tx,
+        // #1267 — a release-signed plugin's approved capability set goes
+        // with it: the gateway refuses to attach one that asks for more
+        // (gateway-attach.ts), as the admin host does (loader.ts).
         sql`SELECT p.id::text AS id, p.slug, p.tier, p.version, a.id::text AS actor_id,
                    CASE WHEN p.tier = 2 THEN p.manifest_json END AS manifest_json,
-                   CASE WHEN p.tier = 2 THEN p.source_code END AS source_code
+                   CASE WHEN p.tier = 2 THEN p.source_code END AS source_code,
+                   CASE WHEN p.tier = 1 THEN to_jsonb(p.approved_capabilities) END
+                     AS approved_capabilities
             FROM plugins p LEFT JOIN actors a ON a.plugin_id = p.id
             WHERE p.status = 'active'`,
       ),
@@ -363,15 +383,7 @@ async function readSnapshot(
     snap.allComments = await rows(tx, commentQuery(sql`true`));
   } else if (commentIds.size > 0) {
     const ids = [...commentIds];
-    const found = await rows(
-      tx,
-      commentQuery(
-        sql`id IN (${sql.join(
-          ids.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})`,
-      ),
-    );
+    const found = await rows(tx, commentQuery(sql`id = ANY(${uuidArray(ids)})`));
     const byId = new Map(found.map((r) => [String(r.id), r]));
     for (const id of ids) snap.commentChanges.set(id, byId.get(id) ?? null);
   }
@@ -421,8 +433,8 @@ async function writeSnapshot(
     await replaceAll(
       tx,
       "published_plugins",
-      "id, slug, tier, version, actor_id, manifest_json, source_code",
-      "id uuid, slug text, tier smallint, version text, actor_id uuid, manifest_json jsonb, source_code text",
+      "id, slug, tier, version, actor_id, manifest_json, source_code, approved_capabilities",
+      "id uuid, slug text, tier smallint, version text, actor_id uuid, manifest_json jsonb, source_code text, approved_capabilities text[]",
       snap.plugins.rows,
     );
     await replaceAll(
@@ -439,19 +451,13 @@ async function writeSnapshot(
     await tx.execute(
       activeIds.length === 0
         ? sql`DELETE FROM published_plugin_rows`
-        : sql`DELETE FROM published_plugin_rows WHERE plugin_id NOT IN (${sql.join(
-            activeIds.map((id) => sql`${id}::uuid`),
-            sql`, `,
-          )})`,
+        : sql`DELETE FROM published_plugin_rows WHERE plugin_id <> ALL(${uuidArray(activeIds)})`,
     );
     await tx.execute(
       activeIds.length === 0
         ? sql`DELETE FROM published_projection_sections WHERE section LIKE 'plugin:%'`
         : sql`DELETE FROM published_projection_sections WHERE section LIKE 'plugin:%'
-                AND section NOT IN (${sql.join(
-                  activeIds.map((id) => sql`${`plugin:${id}`}`),
-                  sql`, `,
-                )})`,
+                AND section <> ALL(${textArray(activeIds.map((id) => `plugin:${id}`))})`,
     );
   }
   for (const pluginId of snap.withdrawnPlugins) {
@@ -483,12 +489,7 @@ async function writeSnapshot(
     sections.push("comments");
   } else if (snap.commentChanges.size > 0) {
     const ids = [...snap.commentChanges.keys()];
-    await tx.execute(
-      sql`DELETE FROM published_comments WHERE id IN (${sql.join(
-        ids.map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )})`,
-    );
+    await tx.execute(sql`DELETE FROM published_comments WHERE id = ANY(${uuidArray(ids)})`);
     const approved = [...snap.commentChanges.values()].filter((r): r is Row => r !== null);
     await insertRows(
       tx,
@@ -578,13 +579,7 @@ async function readOutbox(
 ): Promise<OutboxBatch> {
   // Filtered in SQL, not after the LIMIT: rows left for another publisher
   // must never crowd this publisher's own rows out of the batch.
-  const ours =
-    foreign.length === 0
-      ? sql`true`
-      : sql`section NOT IN (${sql.join(
-          foreign.map((s) => sql`${s}`),
-          sql`, `,
-        )})`;
+  const ours = foreign.length === 0 ? sql`true` : sql`section <> ALL(${textArray(foreign)})`;
   const found = (await rows(
     tx,
     sql`SELECT id::text AS id, section, entity_id::text AS entity_id

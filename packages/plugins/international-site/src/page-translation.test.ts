@@ -16,6 +16,7 @@ import {
   outcomeNextStep,
   type PreparedPageTranslation,
   pageSlotsOf,
+  pageSourceFingerprint,
   translatedValues,
   writePageTranslation,
 } from "./page-translation.js";
@@ -299,7 +300,18 @@ describe("writePageTranslation", () => {
         },
       ],
     ]);
-    expect(d.statuses).toEqual([{ translation_status: "up_to_date" }]);
+    // #1267 — with the fingerprint of the source the translation was made from.
+    expect(d.statuses).toEqual([
+      {
+        translation_status: "up_to_date",
+        source_hash: await pageSourceFingerprint({
+          title: p.sourceTitle,
+          shortTitle: p.sourceShortTitle,
+          metaDescription: p.sourceMetaDescription,
+          slots: p.sourceSlots,
+        }),
+      },
+    ]);
   });
 
   it("leaves nested content another page shares untouched, and says what to do", async () => {

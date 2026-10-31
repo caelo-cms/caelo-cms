@@ -96,6 +96,7 @@ const proposeCreateInput = z
 
 export const proposeCreateThemeOp = defineOperation({
   name: "themes.propose_create",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeCreateInput,
@@ -218,6 +219,7 @@ const proposeActivateInput = z.object({ themeId: z.string().uuid() }).strict();
 
 export const proposeActivateThemeOp = defineOperation({
   name: "themes.propose_activate",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeActivateInput,
@@ -268,6 +270,7 @@ const proposeDeleteInput = z.object({ themeId: z.string().uuid() }).strict();
 
 export const proposeDeleteThemeOp = defineOperation({
   name: "themes.propose_delete",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeDeleteInput,
@@ -309,6 +312,7 @@ export const proposeDeleteThemeOp = defineOperation({
 
 const executeThemeProposalOpDefinition = defineOperation({
   name: "themes.execute_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -544,6 +548,7 @@ export const executeThemeProposalOp = requiresApproverPermission(
 
 export const rejectThemeProposalOp = defineOperation({
   name: "themes.reject_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -593,6 +598,7 @@ const proposalRowSchema = z.object({
 
 export const listPendingThemeProposalsOp = defineOperation({
   name: "themes.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ limit: z.number().int().min(1).max(200).optional() }).strict(),

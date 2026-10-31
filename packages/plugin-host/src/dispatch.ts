@@ -586,9 +586,27 @@ async function runPluginOperationNow(
       opts.invocation.origin === "approved"
         ? opts.invocation.actorId
         : opts.invocation.operatorActorId;
-    const allowed =
-      operator !== undefined &&
-      (await operatorHasPermission(cachedInfra, hostSystemActorId(), operator, requiredPermission));
+    let allowed = false;
+    try {
+      allowed =
+        operator !== undefined &&
+        (await operatorHasPermission(
+          cachedInfra,
+          hostSystemActorId(),
+          operator,
+          requiredPermission,
+        ));
+    } catch (e) {
+      // The check did not run (a busy pool, a database error): say so,
+      // never "permission denied" for a permission the operator may hold.
+      return {
+        ok: false,
+        error: {
+          kind: "OperationFailed",
+          message: `"${opts.operationName}" of plugin "${opts.pluginSlug}" did not run: ${e instanceof Error ? e.message : String(e)}. Nothing was changed; retry the call.`,
+        },
+      };
+    }
     if (!allowed) {
       return {
         ok: false,

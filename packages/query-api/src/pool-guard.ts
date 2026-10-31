@@ -127,6 +127,8 @@ export interface HeldTransaction {
   tx: TransactionRunner | null;
   /** The identity the transaction runs under, restored after a joined call. */
   identity: ExecutionContext | null;
+  /** The operation name (`caelo.op_name`, #1267) restored with {@link identity}. */
+  identityOpName: string | null;
   /** The real transaction a joined marker's savepoint belongs to; null on a root. */
   readonly root: HeldTransaction | null;
   /** Serialises the joined calls made directly under this transaction. */
@@ -204,6 +206,7 @@ function newMarker(holder: string, root: HeldTransaction | null): HeldTransactio
     active: true,
     tx: null,
     identity: null,
+    identityOpName: null,
     root,
     joined: new SerialQueue(),
     afterEnd: [],

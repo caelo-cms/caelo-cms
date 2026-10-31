@@ -59,6 +59,7 @@ function redactTransportSecrets(config: Record<string, unknown>): Record<string,
 
 export const getEmailConfigOp = defineOperation({
   name: "email_config.get",
+  readScope: "request",
   // Open to the AI so it can see whether email is set up; transport
   // secrets are redacted for every actor that is not a human or the
   // system (#588) — only the Owner's panel and the transport builder
@@ -106,6 +107,7 @@ export const getEmailConfigOp = defineOperation({
 
 export const setEmailConfigOp = defineOperation({
   name: "email_config.set",
+  readScope: "request",
   // Why human-only: transport credentials (API key / SMTP password); the AI reaches it through
   // propose_set_email_config, whose secrets the Owner supplies at approval.
   actorScope: ["human", "system"],
@@ -216,6 +218,7 @@ function emailDomain(address: string): string {
  */
 export const sendTestEmailOp = defineOperation({
   name: "email_config.send_test",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ to: z.string().email().max(254) }).strict(),

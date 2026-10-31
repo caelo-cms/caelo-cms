@@ -16,7 +16,7 @@
  * working per chat).
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
 import type { ContentInstanceState, ModuleState } from "../snapshots/state.js";
@@ -209,13 +209,7 @@ export async function loadBranchStates<K extends SnapshotKind>(
   if (ids !== undefined && ids.length === 0) return [];
   const table = sql.raw(t.table);
   const col = sql.raw(`x.${t.id}`);
-  const idFilter: SQL =
-    ids === undefined
-      ? sql``
-      : sql`AND ${col} IN (${sql.join(
-          ids.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})`;
+  const idFilter: SQL = ids === undefined ? sql`` : sql`AND ${col} = ANY(${uuidArray(ids)})`;
   const rows = (await tx.execute(sql`
     SELECT DISTINCT ON (${col}) ${col}::text AS id, x.state, ss.chat_task_id::text AS task
       FROM ${table} x

@@ -17,6 +17,7 @@ const entityRowSchema = z.object({
  */
 export const getSnapshotWithEntitiesOp = defineOperation({
   name: "snapshots.get_with_entities",
+  readScope: "request",
   // CLAUDE.md §11: AI inspects snapshot detail when planning a revert
   // suggestion or summarising history.
   actorScope: ["human", "ai", "system"],

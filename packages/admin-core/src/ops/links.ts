@@ -134,6 +134,8 @@ const migrateOutput = z.object({
 
 export const migrateLinksToReferencesOp = defineOperation({
   name: "links.migrate_to_references",
+  // Why site-wide: the link migration converts every literal link of the site.
+  readScope: "site",
   // Why human-only: it rewrites stored content on MAIN across the whole
   // site (and appends to every chat's pending work) outside any chat
   // branch. The admin runs it once at boot after the upgrade (system);
@@ -195,6 +197,8 @@ export const migrateLinksToReferencesOp = defineOperation({
 
 export const getLinkMigrationReportOp = defineOperation({
   name: "links.get_migration_report",
+  // Why site-wide: the report covers every link the migration converted.
+  readScope: "site",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -272,6 +276,8 @@ export const getLinkMigrationReportOp = defineOperation({
 
 export const revertLinkMigrationOp = defineOperation({
   name: "links.revert_migration",
+  // Why site-wide: reverting the link migration restores every converted link.
+  readScope: "site",
   // Why human-only: undoes a site-wide content rewrite on main; the
   // Owner decides (Settings → Internal links), the AI can only describe it.
   actorScope: ["human", "system"],

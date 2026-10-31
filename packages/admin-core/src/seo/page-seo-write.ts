@@ -12,7 +12,12 @@
  * can restore it (CLAUDE.md §2: every write emits a snapshot).
  */
 
-import { OperationAbortError, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
+import {
+  OperationAbortError,
+  type QueryError,
+  type TransactionRunner,
+  uuidArray,
+} from "@caelo-cms/query-api";
 import { type ExecutionContext, err, ok, type Result } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
@@ -193,10 +198,7 @@ async function assertOgImagesUsable(
   const unique = [...new Set(assetIds.map(uuidKey))];
   const rows = (await tx.execute(sql`
     SELECT id::text AS id FROM media_assets
-    WHERE id IN (${sql.join(
-      unique.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )}) AND deleted_at IS NULL AND visibility = 'library'
+    WHERE id = ANY(${uuidArray(unique)}) AND deleted_at IS NULL AND visibility = 'library'
   `)) as unknown as { id: string }[];
   const found = new Set(rows.map((r) => r.id));
   const bad = unique.filter((id) => !found.has(id));

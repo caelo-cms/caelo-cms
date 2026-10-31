@@ -68,6 +68,7 @@ beforeAll(() => {
   registry.register(
     defineOperation({
       name: "pool_guard.inner",
+      readScope: "request",
       actorScope: ["system"],
       database: "cms_admin",
       input: z.object({}),
@@ -83,6 +84,7 @@ beforeAll(() => {
   registry.register(
     defineOperation({
       name: "pool_guard.nests",
+      readScope: "request",
       actorScope: ["system"],
       database: "cms_admin",
       input: z.object({}),
@@ -97,6 +99,7 @@ beforeAll(() => {
   registry.register(
     defineOperation({
       name: "pool_guard.detached",
+      readScope: "request",
       actorScope: ["system"],
       database: "cms_admin",
       transaction: "none",

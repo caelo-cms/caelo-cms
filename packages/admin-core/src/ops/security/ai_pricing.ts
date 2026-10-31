@@ -35,6 +35,7 @@ const toIso = (v: string | Date): string => (v instanceof Date ? v.toISOString()
 
 export const listAiPricingOp = defineOperation({
   name: "ai_pricing.list",
+  readScope: "request",
   // Open read so AI can answer "what does Mode 2 translation cost on Gemini?"
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -170,6 +171,7 @@ function keepUnlessGiven(value: unknown, existing: SQL, incoming: SQL): SQL {
 
 export const setAiPricingOp = defineOperation({
   name: "ai_pricing.set",
+  readScope: "request",
   // Why human-only: the direct write is the Owner's /settings/ai/pricing
   // form. A rate decides what every AI call is billed at and whether the
   // budget gates trip, so the AI reaches it only through the §11.A gate

@@ -18,7 +18,7 @@
  * content instance the branch deleted does not count.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../../draft.js";
 import type { ContentInstanceState } from "../../snapshots/state.js";
@@ -69,10 +69,7 @@ export async function findContentInstancesOfModules(
   return loadInstancesInView(
     tx,
     chatBranchId ?? null,
-    sql`ci.module_id IN (${sql.join(
-      moduleIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )})`,
+    sql`ci.module_id = ANY(${uuidArray(moduleIds)})`,
     (moduleId) => wanted.has(moduleId),
   );
 }

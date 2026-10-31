@@ -166,3 +166,39 @@ export function notifyOperationCommitted(operationName: string): void {
     }
   }
 }
+
+/**
+ * Issue #1267 — what a committing operation tells OTHER instances: a NOTIFY
+ * the adapter sends inside the operation's transaction, so it is delivered
+ * exactly when the transaction commits and never on rollback. The live
+ * fan-out registers one ({@link setCommitNotice}) that maps an op name to
+ * its live topics; the adapter stays ignorant of topics.
+ */
+export interface CommitNotice {
+  readonly channel: string;
+  readonly payload: string;
+}
+
+/** Maps a committing operation's name to its notice, or null for none. */
+export type CommitNoticeSource = (operationName: string) => CommitNotice | null;
+
+let commitNotice: CommitNoticeSource | null = null;
+
+/**
+ * Register the process's commit notice (one per process; the admin's live
+ * fan-out). Pass null to remove it.
+ *
+ * @example
+ *   setCommitNotice((name) => {
+ *     const topics = liveTopicsOfOperation(name);
+ *     return topics.length ? { channel: "caelo_live_topics", payload: `${me}|${topics}` } : null;
+ *   });
+ */
+export function setCommitNotice(source: CommitNoticeSource | null): void {
+  commitNotice = source;
+}
+
+/** Adapter-internal: the notice `operationName` sends on commit, if any. */
+export function commitNoticeOf(operationName: string): CommitNotice | null {
+  return commitNotice === null ? null : commitNotice(operationName);
+}

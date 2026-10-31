@@ -12,6 +12,8 @@ import {
   OperationAbortError,
   type QueryError,
   type TransactionRunner,
+  textArray,
+  uuidArray,
 } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
@@ -30,7 +32,6 @@ import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
-import { emitDomainEvent } from "../../domain-events.js";
 import { pendingSnapshotSql } from "../../draft.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { fitPageToType, loadVocabularyIndex } from "../../lists/page-fit.js";
@@ -175,14 +176,11 @@ async function loadTypeBound(
 ): Promise<Map<string, TypeBound>> {
   const out = new Map<string, TypeBound>();
   if (rows.length === 0) return out;
-  const ids = sql.join(
-    rows.map((r) => sql`${r.id}::uuid`),
-    sql`, `,
-  );
+  const ids = uuidArray(rows.map((r) => r.id));
   const termRows = (await tx.execute(sql`
     SELECT page_id::text AS page_id,
            'caelo:term/' || list_id::text || '/' || item_id::text AS ref
-    FROM page_terms WHERE page_id IN (${ids})
+    FROM page_terms WHERE page_id = ANY(${ids})
     ORDER BY created_at, list_id, item_id
   `)) as unknown as { page_id: string; ref: string }[];
   const terms = new Map<string, string[]>();
@@ -193,7 +191,7 @@ async function loadTypeBound(
       SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
         FROM page_snapshots ps JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
        WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
-         AND ps.page_id IN (${ids})
+         AND ps.page_id = ANY(${ids})
        ORDER BY ps.page_id, ss.created_at DESC
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const s of snaps) {
@@ -258,6 +256,7 @@ const pageListRowSchema = pageRowSchema.extend({
 
 export const listPagesOp = defineOperation({
   name: "pages.list",
+  readScope: "request",
   // P6.7.3 — AI lists pages from add_module_to_template to fan a new
   // module out to every page sharing a template. Read-only.
   // #396 — plugin actors read too: deep plugins (international-site's
@@ -288,15 +287,12 @@ export const listPagesOp = defineOperation({
       // A chat's pending rename moves a page's path without touching the
       // row, so on a branch only the ids narrow the read; the paths are
       // matched on the composed view below.
-      const byId = only.ids.length > 0 ? sql`pages.id IN (${uuidSqlList(only.ids)})` : null;
+      const byId = only.ids.length > 0 ? sql`pages.id = ANY(${uuidArray(only.ids)})` : null;
       const byPath =
         only.paths.size > 0
           ? sql`(CASE WHEN length(pages.current_path) > 1
                       THEN rtrim(pages.current_path, '/') ELSE pages.current_path END)
-                IN (${sql.join(
-                  [...only.paths].map((p) => sql`${p}`),
-                  sql`, `,
-                )})`
+                = ANY(${textArray([...only.paths])})`
           : null;
       if (!ctx.chatBranchId || only.paths.size === 0) {
         filters.push(byId && byPath ? sql`(${byId} OR ${byPath})` : ((byId ?? byPath) as SQL));
@@ -455,15 +451,9 @@ function normalisedPath(path: string): string {
   return bare.length > 1 ? bare.replace(/\/+$/, "") : bare;
 }
 
-function uuidSqlList(ids: readonly string[]): SQL {
-  return sql.join(
-    ids.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
-}
-
 export const getPageOp = defineOperation({
   name: "pages.get",
+  readScope: "request",
   // CLAUDE.md §11: AI reads page metadata for planning + tool args.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -498,6 +488,7 @@ export const getPageOp = defineOperation({
 export const getPageWithModulesOp = withHumanisedLinks(
   defineOperation({
     name: "pages.get_with_modules",
+    readScope: "request",
     // P6.7.3 — AI reads the page's modules to compose Current-page system
     // context and to splice via add_module_to_page. Read-only.
     actorScope: ["human", "ai", "system"],
@@ -803,48 +794,9 @@ async function branchDeletedPageIds(
   return deleted;
 }
 
-/**
- * Epic #1107 — `page.properties_changed` / `page.terms_changed` (docs/lists.md
- * §9) for one page write, each only when something changed.
- */
-async function emitTypeBoundEvents(
-  tx: TransactionRunner,
-  pageId: string,
-  before: {
-    readonly properties: Readonly<Record<string, unknown>>;
-    readonly terms: readonly string[];
-  },
-  after: {
-    readonly properties: Readonly<Record<string, unknown>>;
-    readonly terms: readonly string[];
-  },
-  chatBranchId: string | undefined,
-): Promise<void> {
-  const branch = chatBranchId ? { chatBranchId } : {};
-  const keys = new Set([...Object.keys(before.properties), ...Object.keys(after.properties)]);
-  const changed = [...keys]
-    .filter((k) => JSON.stringify(before.properties[k]) !== JSON.stringify(after.properties[k]))
-    .sort();
-  if (changed.length > 0) {
-    await emitDomainEvent(tx, {
-      kind: "page.properties_changed",
-      entityId: pageId,
-      payload: { changed, ...branch },
-    });
-  }
-  const added = after.terms.filter((t) => !before.terms.includes(t));
-  const removed = before.terms.filter((t) => !after.terms.includes(t));
-  if (added.length > 0 || removed.length > 0) {
-    await emitDomainEvent(tx, {
-      kind: "page.terms_changed",
-      entityId: pageId,
-      payload: { added, removed, ...branch },
-    });
-  }
-}
-
 export const createPageOp = defineOperation({
   name: "pages.create",
+  readScope: "request",
   // P6.7.5 — AI reaches this op via the `build_page` tool. Validator + audit
   // + snapshot all run in the same path as a human create.
   actorScope: ["human", "ai", "system"],
@@ -1126,16 +1078,6 @@ export const createPageOp = defineOperation({
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: pageId, state }],
       });
-      await emitDomainEvent(tx, {
-        kind: "page.created",
-        entityId: pageId,
-        payload: {
-          slug: input.slug,
-          pageType: resolved.def.slug,
-          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
-        },
-      });
-      await emitTypeBoundEvents(tx, pageId, { properties: {}, terms: [] }, fit, ctx.chatBranchId);
     }
     // #390 — compose + materialize the public path (the INSERT trigger
     // wrote the plugin-free default; this accounts for designation +
@@ -1147,6 +1089,7 @@ export const createPageOp = defineOperation({
 
 export const updatePageOp = defineOperation({
   name: "pages.update",
+  readScope: "request",
   // #397 — plugin actors update too (the translator writes the
   // variant's translated title).
   // P6.7.5 / #1142 — the identifiers (title / short title / slug) are
@@ -1350,15 +1293,6 @@ export const updatePageOp = defineOperation({
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: input.pageId, state }],
       });
-      await emitDomainEvent(tx, {
-        kind: "page.updated",
-        entityId: input.pageId,
-        payload: {
-          slug: state.slug,
-          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
-        },
-      });
-      await emitTypeBoundEvents(tx, input.pageId, typeBase, typeBound, ctx.chatBranchId);
     }
     return ok({});
   },
@@ -1449,10 +1383,7 @@ async function recordBranchedStatus(
     SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
       FROM page_snapshots ps
       JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-     WHERE ps.page_id IN (${sql.join(
-       pageIds.map((id) => sql`${id}::uuid`),
-       sql`, `,
-     )})
+     WHERE ps.page_id = ANY(${uuidArray(pageIds)})
        AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
      ORDER BY ps.page_id, ss.created_at DESC
   `)) as unknown as { page_id: string; state: unknown }[];
@@ -1473,6 +1404,7 @@ async function recordBranchedStatus(
 
 export const setPageStatusOp = defineOperation({
   name: "pages.set_status",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({
@@ -1510,15 +1442,6 @@ export const setPageStatusOp = defineOperation({
       entityId: input.pageId,
     });
 
-    await emitDomainEvent(tx, {
-      kind: input.status === "published" ? "page.published" : "page.updated",
-      entityId: input.pageId,
-      payload: {
-        status: input.status,
-        ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
-      },
-    });
-
     return ok({});
   },
 });
@@ -1536,6 +1459,7 @@ export const setPageStatusOp = defineOperation({
  */
 export const setPagesStatusManyOp = defineOperation({
   name: "pages.set_status_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({
@@ -1581,17 +1505,6 @@ export const setPagesStatusManyOp = defineOperation({
       resultSummary: `updated=${updated.length}`,
     });
 
-    for (const row of updated) {
-      await emitDomainEvent(tx, {
-        kind: input.status === "published" ? "page.published" : "page.updated",
-        entityId: (row as { id: string }).id,
-        payload: {
-          status: input.status,
-          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
-        },
-      });
-    }
-
     return ok({ updatedCount: updated.length });
   },
 });
@@ -1606,6 +1519,7 @@ export const setPagesStatusManyOp = defineOperation({
  */
 export const setPageModulesOp = defineOperation({
   name: "pages.set_modules",
+  readScope: "request",
   // P6.7.3 — AI writes via add_module_to_page. Branch-aware snapshot
   // emission keeps changes scoped to the chat branch.
   actorScope: ["human", "ai", "system"],
@@ -1697,10 +1611,7 @@ export const setPageModulesOp = defineOperation({
       }
       const liveRows = (await tx.execute(sql`
         SELECT id::text AS id FROM modules
-        WHERE id IN (${sql.join(
-          allModuleIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )}) AND deleted_at IS NULL
+        WHERE id = ANY(${uuidArray(allModuleIds)}) AND deleted_at IS NULL
       `)) as unknown as { id: string }[];
       const liveSet = new Set(liveRows.map((r) => r.id));
       const missing = allModuleIds.filter((id) => !liveSet.has(id));
@@ -1945,11 +1856,6 @@ export const setPageModulesOp = defineOperation({
       chatBranchId: ctx.chatBranchId ?? null,
       entities: [{ kind: "pageLayout", entityId: input.pageId, state: layoutState }],
     });
-    await emitDomainEvent(tx, {
-      kind: "page.updated",
-      entityId: input.pageId,
-      payload: ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {},
-    });
     return ok({});
   },
 });
@@ -2113,14 +2019,6 @@ async function deletePageHandler(
       chatBranchId: ctx.chatBranchId ?? null,
       entities: [{ kind: "page", entityId: input.pageId, state }],
     });
-    await emitDomainEvent(tx, {
-      kind: "page.deleted",
-      entityId: input.pageId,
-      payload: {
-        slug: state.slug,
-        ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
-      },
-    });
   }
   // Dead-URL redirect, on this tx. `state` carries the page's slug
   // (delete doesn't change it). A failed 301 aborts the delete rather than
@@ -2149,6 +2047,7 @@ async function deletePageHandler(
 
 export const deletePageOp = defineOperation({
   name: "pages.delete",
+  readScope: "request",
   // P6.7.5 — soft-delete. `disposition` decides what the dead URL does:
   // omitted (or '404') = the URL 404s; 'redirect' = a 301 from the old path to
   // `redirectTo`, created on THIS tx. The dead-URL side-effect lives in the op
@@ -2217,10 +2116,7 @@ async function loadDuplicablePlacements(
   if (moduleIds.length > 0) {
     const rows = (await tx.execute(sql`
       SELECT id::text AS id FROM modules
-      WHERE id IN (${sql.join(
-        moduleIds.map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )}) AND deleted_at IS NULL
+      WHERE id = ANY(${uuidArray(moduleIds)}) AND deleted_at IS NULL
     `)) as unknown as { id: string }[];
     for (const r of rows) live.add(r.id);
     if (ctx.chatBranchId) {
@@ -2256,6 +2152,7 @@ async function loadDuplicablePlacements(
  */
 export const duplicatePageOp = defineOperation({
   name: "pages.duplicate",
+  readScope: "request",
   // #396 — plugin actors duplicate too: international-site's
   // create_variant mints the counterpart page through this op (epic
   // #380 decision 3 — release-signed plugins hold cms_admin writes).
@@ -2447,11 +2344,6 @@ export const duplicatePageOp = defineOperation({
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: newPageId, state }],
       });
-      await emitDomainEvent(tx, {
-        kind: "page.created",
-        entityId: newPageId,
-        payload: { slug: input.newSlug, duplicatedFrom: input.sourcePageId },
-      });
     }
     await recomputeCurrentPaths(tx, [newPageId], renderScopeOf(ctx, tx));
     const layoutState = await loadPageLayoutState(tx, newPageId);
@@ -2482,6 +2374,7 @@ export const duplicatePageOp = defineOperation({
  */
 export const changeTemplateOp = defineOperation({
   name: "pages.change_template",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -2668,11 +2561,6 @@ export const changeTemplateOp = defineOperation({
         description: `pages.change_template slug=${pageRow.slug}`,
         entities: [{ kind: "page", entityId: input.pageId, state }],
       });
-      await emitDomainEvent(tx, {
-        kind: "page.updated",
-        entityId: input.pageId,
-        payload: { slug: pageRow.slug, templateChanged: true },
-      });
     }
     const layoutState = await loadPageLayoutState(tx, input.pageId);
     await emitSnapshot(tx, {
@@ -2697,6 +2585,7 @@ export const changeTemplateOp = defineOperation({
  */
 export const deletePagesManyOp = defineOperation({
   name: "pages.delete_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   // audit #4 — per-item `disposition` so a bulk delete carries the SAME
@@ -2800,6 +2689,7 @@ export const deletePagesManyOp = defineOperation({
  */
 export const updatePagesManyOp = defineOperation({
   name: "pages.update_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
