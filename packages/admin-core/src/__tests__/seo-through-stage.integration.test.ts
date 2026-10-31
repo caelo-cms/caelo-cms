@@ -22,6 +22,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -440,6 +441,7 @@ describe("#1156 page SEO goes through Stage", () => {
           height: 630,
           sizeBytes: 10,
           storageKey: `t1156/${sha}.png`,
+          digest: TEST_MEDIA_DIGEST,
         },
       ],
     });

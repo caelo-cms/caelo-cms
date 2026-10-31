@@ -6,10 +6,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isParityRefusal, RESTAGE_NEXT_STEP } from "@caelo-cms/shared";
+import { type AssetReference, ParityRecorder } from "@caelo-cms/static-generator";
 import {
   buildManifestOf,
   compareBuildManifests,
@@ -156,77 +158,128 @@ describe("compareBuildManifests / parityRefusal", () => {
   });
 });
 
-describe("buildManifestOf on real build trees", () => {
+describe("buildManifestOf on real build trees (#1271: digests taken by the generator)", () => {
   let stagingDir: string;
   let liveDir: string;
+  const LOGO = new Uint8Array([0, 1, 2, 255, 254]);
 
   async function put(dir: string, rel: string, body: string | Uint8Array): Promise<void> {
     await mkdir(dirname(join(dir, rel)), { recursive: true });
     await writeFile(join(dir, rel), body);
   }
 
-  /** A build as the generator writes it, rendered for `origin`. */
-  async function build(dir: string, origin: string, env: string): Promise<void> {
-    await put(
-      dir,
-      "index.html",
-      `<html><head><link rel="canonical" href="${origin}/"><meta property="og:url" content="${origin}/"></head><body>Hallo</body></html>`,
-    );
-    await put(dir, "about/index.html", `<a href="${origin}/about/">x</a>`);
-    await put(dir, "sitemap.xml", `<urlset><url><loc>${origin}/</loc></url></urlset>`);
-    await put(dir, "_assets/logo.png", new Uint8Array([0, 1, 2, 255, 254]));
+  /** A referenced media file, as the build lists it (never in the build). */
+  function logo(bytes: Uint8Array): AssetReference {
+    return {
+      path: "_assets/logo.0123456789abcdef.png",
+      contentSha256: createHash("sha256").update(bytes).digest("hex"),
+      size: bytes.byteLength,
+      gzipSha256: "0".repeat(64),
+      gzipSize: 1,
+      digestProfile: "p",
+      source: { kind: "media", storageKey: "abc/orig.png" },
+    };
+  }
+
+  /**
+   * A build as the generator writes it, rendered for `origin`: every file
+   * digested as it is written, the logo referenced by its stored hash.
+   */
+  async function build(
+    dir: string,
+    origin: string,
+    env: string,
+    opts: { about?: string; extra?: string; logo?: Uint8Array } = {},
+  ): Promise<void> {
+    const parity = new ParityRecorder(env === "staging" ? hostNormaliser(STAGING, LIVE) : null);
+    const pages: [string, string][] = [
+      [
+        "index.html",
+        `<html><head><link rel="canonical" href="${origin}/"><meta property="og:url" content="${origin}/"></head><body>Hallo</body></html>`,
+      ],
+      ["about/index.html", opts.about ?? `<a href="${origin}/about/">x</a>`],
+      ...(opts.extra ? ([["new/index.html", opts.extra]] as [string, string][]) : []),
+    ];
+    for (const [rel, html] of pages) {
+      await put(dir, rel, html);
+      parity.record(rel, html);
+    }
+    const sitemap = `<urlset><url><loc>${origin}/</loc></url></urlset>`;
+    await put(dir, "sitemap.xml", sitemap);
+    parity.record("sitemap.xml", sitemap);
     await put(
       dir,
       "robots.txt",
       env === "staging" ? "User-agent: *\nDisallow: /\n" : `Sitemap: ${origin}/sitemap.xml\n`,
     );
     await put(dir, "routing-manifest.json", JSON.stringify({ env, runId: `${env}-run` }));
+    // Per-build files are written through the same output; the recorder skips them.
+    parity.record("robots.txt", "x");
+    parity.record("routing-manifest.json", "{}");
+    await parity.finish({ buildDir: dir, assets: [logo(opts.logo ?? LOGO)] });
   }
 
   beforeEach(async () => {
     stagingDir = await mkdtemp(join(tmpdir(), "caelo-parity-s-"));
     liveDir = await mkdtemp(join(tmpdir(), "caelo-parity-l-"));
     await build(stagingDir, STAGING, "staging");
-    await build(liveDir, LIVE, "production");
   });
   afterEach(async () => {
     await rm(stagingDir, { recursive: true, force: true });
     await rm(liveDir, { recursive: true, force: true });
   });
 
-  it("a host-only difference passes; per-build files are ignored", async () => {
-    const staged = await buildManifestOf(stagingDir, hostNormaliser(STAGING, LIVE));
-    const live = await buildManifestOf(liveDir);
+  it("a host-only difference passes; per-build files are ignored; media count by stored hash", async () => {
+    await build(liveDir, LIVE, "production");
+    const staged = await buildManifestOf(stagingDir, "normalised");
+    const live = await buildManifestOf(liveDir, "plain");
     expect(Object.keys(staged)).not.toContain("robots.txt");
     expect(Object.keys(staged)).not.toContain("routing-manifest.json");
-    expect(Object.keys(staged)).toContain("_assets/logo.png");
+    expect(Object.keys(staged)).toContain("_assets/logo.0123456789abcdef.png");
+    expect(Object.keys(staged)).toContain("sitemap.xml");
     expect(manifestsMatch(compareBuildManifests(staged, live))).toBe(true);
   });
 
   it("without normalising, the same trees differ (the host is everywhere)", async () => {
+    await build(liveDir, LIVE, "production");
     const diff = compareBuildManifests(
-      await buildManifestOf(stagingDir),
-      await buildManifestOf(liveDir),
+      await buildManifestOf(stagingDir, "plain"),
+      await buildManifestOf(liveDir, "plain"),
     );
     expect(diff.changed).toEqual(["about/index.html", "index.html", "sitemap.xml"]);
   });
 
   it("a content change after the Stage blocks the publish and names the file", async () => {
-    await put(liveDir, "about/index.html", `<a href="${LIVE}/about/">changed</a>`);
-    await put(liveDir, "new/index.html", "new page");
+    await build(liveDir, LIVE, "production", {
+      about: `<a href="${LIVE}/about/">changed</a>`,
+      extra: "new page",
+    });
     const diff = compareBuildManifests(
-      await buildManifestOf(stagingDir, hostNormaliser(STAGING, LIVE)),
-      await buildManifestOf(liveDir),
+      await buildManifestOf(stagingDir, "normalised"),
+      await buildManifestOf(liveDir, "plain"),
     );
     expect(diff).toEqual({ added: ["new/index.html"], removed: [], changed: ["about/index.html"] });
   });
 
-  it("a changed binary asset is caught too", async () => {
-    await put(liveDir, "_assets/logo.png", new Uint8Array([0, 1, 2, 255, 253]));
+  it("a changed referenced media file is caught too (by its stored hash)", async () => {
+    await build(liveDir, LIVE, "production", { logo: new Uint8Array([0, 1, 2, 255, 253]) });
     const diff = compareBuildManifests(
-      await buildManifestOf(stagingDir, hostNormaliser(STAGING, LIVE)),
-      await buildManifestOf(liveDir),
+      await buildManifestOf(stagingDir, "normalised"),
+      await buildManifestOf(liveDir, "plain"),
     );
-    expect(diff.changed).toEqual(["_assets/logo.png"]);
+    expect(diff.changed).toEqual(["_assets/logo.0123456789abcdef.png"]);
+  });
+
+  it("the stored hash of a referenced file equals the hash of its bytes", async () => {
+    // What a build that still held the bytes would have recorded.
+    const legacy = createHash("sha256").update(LOGO).digest("base64url").slice(0, 32);
+    expect((await buildManifestOf(stagingDir, "plain"))["_assets/logo.0123456789abcdef.png"]).toBe(
+      legacy,
+    );
+  });
+
+  it("refuses a normalised manifest for a build rendered without a staging host", async () => {
+    await build(liveDir, LIVE, "production");
+    await expect(buildManifestOf(liveDir, "normalised")).rejects.toThrow("no host-normalised");
   });
 });

@@ -17,6 +17,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -84,6 +85,7 @@ function uploadInput(sha: string, alt = ""): Parameters<typeof execute>[4] {
         height: 1080,
         sizeBytes: 12345,
         storageKey: `${sha}/orig.jpg`,
+        digest: TEST_MEDIA_DIGEST,
       },
       {
         variant: "webp-800",
@@ -92,6 +94,7 @@ function uploadInput(sha: string, alt = ""): Parameters<typeof execute>[4] {
         height: 450,
         sizeBytes: 4567,
         storageKey: `${sha}/webp-800.webp`,
+        digest: TEST_MEDIA_DIGEST,
       },
     ],
   };

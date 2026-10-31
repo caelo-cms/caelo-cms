@@ -34,6 +34,10 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
 // (issue #305). Snapshot the exports BEFORE mock.module patches the
 // namespace's live bindings.
 import * as realGcsStorage from "@google-cloud/storage";
+import {
+  storedMediaReference,
+  writeAssetReferences,
+} from "../../__tests__/fixtures/asset-references.js";
 import type { GcpUrlMap } from "../gcp-url-map-redirects.js";
 import { CACHE_POLICY_VERSION } from "../static-publisher-gcs.js";
 
@@ -204,6 +208,7 @@ beforeEach(async () => {
   urlMapUpdates = [];
   buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-"));
   await writeFile(join(buildDir, "_redirects"), "# generated\n/old /en/about 301\n", "utf8");
+  await writeAssetReferences(buildDir);
   await mkdir(join(buildDir, "en", "about"), { recursive: true });
   await writeFile(join(buildDir, "en", "about", "index.html"), "<html>about</html>", "utf8");
   await writeFile(join(buildDir, "robots.txt"), "default robots", "utf8");
@@ -272,6 +277,7 @@ describe("gcsStaticPublisher.publishStaging", () => {
     // Content-Type: text/html and Cache-Control matching HTML.
     await rm(buildDir, { recursive: true, force: true });
     buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-noext-"));
+    await writeAssetReferences(buildDir);
     await writeFile(join(buildDir, "_redirects"), "# generated\n", "utf8");
     await mkdir(join(buildDir, "en"), { recursive: true });
     await writeFile(join(buildDir, "en", "about"), "<html>about</html>", "utf8");
@@ -531,6 +537,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
   it("promote keeps a bare-slug page's staged text/html Content-Type + HTML policy", async () => {
     await rm(buildDir, { recursive: true, force: true });
     buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-noext-promote-"));
+    await writeAssetReferences(buildDir);
     await writeFile(join(buildDir, "_redirects"), "# generated\n", "utf8");
     await mkdir(join(buildDir, "en"), { recursive: true });
     await writeFile(join(buildDir, "en", "about"), "<html>about</html>", "utf8");
@@ -718,7 +725,7 @@ describe("gcsStaticPublisher — redirects on the load balancer (#587)", () => {
     const gcsStaticPublisher = await publisher();
     await expect(
       gcsStaticPublisher.publishStaging({ buildDir, runId: "run-x", target: TARGET }),
-    ).rejects.toThrow(/_redirects is missing/);
+    ).rejects.toThrow(/has no _redirects file/);
   });
 
   it("Publish live refuses a run staged without a plan (older release) before copying anything", async () => {
@@ -993,5 +1000,87 @@ describe("gcsStaticPublisher — plugin-data release (#1155)", () => {
         files: new Map([["new/index.html", Buffer.from("x")]]),
       }),
     ).rejects.toThrow(/not a file of the live build/);
+  });
+});
+
+describe("gcsStaticPublisher — referenced media (#1271)", () => {
+  const PATH = "_assets/logo.0123456789abcdef.png";
+  const LOGO = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 7]);
+
+  async function withLogo(): Promise<void> {
+    const mediaRoot = await mkdtemp(join(tmpdir(), "caelo-gcs-media-"));
+    const ref = await storedMediaReference({
+      mediaRoot,
+      storageKey: "abc/orig.png",
+      path: PATH,
+      bytes: LOGO,
+    });
+    await writeAssetReferences(buildDir, { mediaRoot, assets: [ref] });
+  }
+
+  it("streams a referenced file the live bucket lacks into the staging prefix", async () => {
+    await withLogo();
+    const gcs = await publisher();
+    await gcs.publishStaging({ buildDir, runId: "run-media", target: TARGET });
+    const staged = stagingBucket.files.get(`run-media/${PATH}`);
+    expect(new Uint8Array(staged?.body ?? [])).toEqual(LOGO);
+    expect((staged?.metadata as { cacheControl?: string })?.cacheControl).toBe(
+      IMMUTABLE_CACHE_CONTROL,
+    );
+    // The staged file list (what Confirm-publish keeps live) carries it.
+    const list = JSON.parse(
+      stagingBucket.files.get("_build-files/run-media.json")?.body?.toString() ?? "{}",
+    ) as { files?: string[] };
+    expect(list.files).toContain(PATH);
+    expect(list.files).not.toContain("_caelo-asset-references.json");
+  });
+
+  it("skips a referenced file the live bucket already has (its name is its hash)", async () => {
+    await withLogo();
+    await staticBucket.file("_state/last-build-manifest.json").save(
+      Buffer.from(
+        JSON.stringify({
+          buildId: "prev",
+          files: { [PATH]: "crc-of-the-live-copy" },
+          cachePolicyVersion: CACHE_POLICY_VERSION,
+        }),
+      ),
+    );
+    const gcs = await publisher();
+    const summary = await gcs.publishStaging({ buildDir, runId: "run-have", target: TARGET });
+    expect(stagingBucket.files.has(`run-have/${PATH}`)).toBe(false);
+    expect(summary.skippedUnchangedCount).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("gcsStaticPublisher — a build streamed into the staging prefix (#1271)", () => {
+  it("saves each changed file as it is written and needs no file on disk", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "caelo-gcs-stream-"));
+    await writeAssetReferences(dir);
+    const gcs = await publisher();
+    const upload = await gcs.openBuildUpload!({ runId: "run-stream", target: TARGET });
+    await upload.put({ relPath: "_redirects", body: Buffer.from("# generated\n") });
+    await upload.put({
+      relPath: "en/about",
+      body: Buffer.from("<html>about</html>"),
+      contentType: "text/html; charset=utf-8",
+    });
+    const summary = await gcs.publishStaging({
+      buildDir: dir,
+      runId: "run-stream",
+      target: TARGET,
+      upload,
+    });
+    expect(summary.uploadedCount).toBe(2);
+    const page = stagingBucket.files.get("run-stream/en/about");
+    expect(page?.body?.toString()).toBe("<html>about</html>");
+    expect((page?.metadata as { contentType?: string } | undefined)?.contentType).toContain(
+      "text/html",
+    );
+    const list = JSON.parse(
+      stagingBucket.files.get("_build-files/run-stream.json")?.body?.toString() ?? "{}",
+    ) as { files?: string[] };
+    expect(list.files).toEqual(["_redirects", "en/about"]);
+    await rm(dir, { recursive: true, force: true });
   });
 });

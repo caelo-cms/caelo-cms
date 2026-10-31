@@ -118,6 +118,7 @@ beforeAll(async () => {
       height: v.height,
       sizeBytes: v.sizeBytes,
       storageKey: v.storageKey,
+      digest: v.digest,
     })),
   });
   if (!up.ok) throw new Error(JSON.stringify(up.error));

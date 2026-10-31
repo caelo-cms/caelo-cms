@@ -14,7 +14,7 @@
  * implement the same shape.
  */
 
-import { mkdir, readFile, stat, unlink } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { MediaStorageAdapter } from "@caelo-cms/shared";
 // `import type` is compile-time only — never bundled. Real Glob
@@ -46,10 +46,25 @@ export class LocalVolumeAdapter implements MediaStorageAdapter {
     return target;
   }
 
+  /**
+   * Write `body` under `key` as a new file that replaces the old one in one
+   * step (write a temporary file, then rename it over the key). #1271 — a
+   * self-hosted build hard-links the stored files it publishes, so an
+   * in-place overwrite would change the bytes of every archived build that
+   * links the key; the rename leaves those builds their own file. Readers
+   * never see a half-written file either.
+   */
   async put(key: string, body: Uint8Array, _contentType: string): Promise<void> {
     const path = this.#pathFor(key);
     await mkdir(dirname(path), { recursive: true });
-    await Bun.write(path, body);
+    const tmp = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    try {
+      await Bun.write(tmp, body);
+      await rename(tmp, path);
+    } catch (e) {
+      await unlink(tmp).catch(() => {});
+      throw e;
+    }
   }
 
   async get(key: string): Promise<Uint8Array> {

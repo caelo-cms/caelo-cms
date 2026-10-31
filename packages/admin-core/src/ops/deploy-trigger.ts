@@ -54,12 +54,17 @@ import {
   phaseTimingSchema,
   type Result,
 } from "@caelo-cms/shared";
-import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator";
+import type { DeployTarget } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
-import { buildDirOf, removeUploadedBuild, retainedBuildsFor } from "../deploy/build-cleanup.js";
-import { buildManifestOf, hostNormaliser } from "../deploy/build-parity.js";
+import {
+  buildDirOf,
+  mediaDeliveryFor,
+  removeUploadedBuild,
+  retainedBuildsFor,
+} from "../deploy/build-cleanup.js";
+import { buildManifestOf } from "../deploy/build-parity.js";
 import {
   DEPLOY_RUN_HEARTBEAT_MS,
   DEPLOY_RUN_LEASE_TTL_MS,
@@ -90,7 +95,11 @@ import {
   releaseStagingPublication,
   STAGING_PUBLICATION_WAIT_MS,
 } from "../deploy/staging-publication-lock.js";
-import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publisher.js";
+import {
+  type BuildUpload,
+  loadStaticPublisher,
+  type StaticPublisher,
+} from "../deploy/static-publisher.js";
 import { truncatedListSchema } from "../deploy/truncated-lists.js";
 import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
@@ -109,6 +118,7 @@ import {
 } from "./deploy-common.js";
 import { acquireLeaseStep, fenceRunLeases } from "./deploy-lease-steps.js";
 import { beginRunInTx } from "./deploy-run-lifecycle.js";
+import { digestUndigestedMedia } from "./media_digests.js";
 import {
   checkProductionBuildGate,
   type ProductionOverride,
@@ -197,8 +207,6 @@ const startPlan = z.object({
   publishAt: z.string(),
   /** #650 — the staging host this build renders, or null. */
   stagingOrigin: z.string().nullable(),
-  /** The live host, for the parity fingerprint of a build with its own staging host. */
-  siteBaseUrl: z.string().nullable(),
   pluginProblems: z.array(deployPluginProblem),
   /** #553 — the publish-anyway decision a production build carries. */
   override: z.object({ auditRunId: z.string(), reason: z.string() }).nullable(),
@@ -367,8 +375,6 @@ export const startTriggerOp = defineOperation({
       target: rowToTarget(target),
       publishAt: await deployRunStartedAt(tx, input.runId),
       stagingOrigin,
-      // What Publish live's parity guard swaps the staging host back to.
-      siteBaseUrl: stagingOrigin ? (await readSeoSettings(tx)).siteBaseUrl : null,
       pluginProblems,
       override,
     });
@@ -494,7 +500,8 @@ async function runTrigger(
   if (!started.ok) return err(started.error);
   // Started after the run's started_at was read (in deploy.start_trigger),
   // so `finished_at - started_at` always covers the timed steps (#1003).
-  const timer = new PhaseTimer();
+  // #1271 — each step also records the admin's peak RSS while it ran.
+  const timer = PhaseTimer.withMemory();
   const plan = started.value as StartPlan;
   const sys = systemContextOf(ctx);
   const runKind = plan.target.env === "staging" ? "stage" : "build";
@@ -516,6 +523,8 @@ async function runTrigger(
   }, DEPLOY_RUN_HEARTBEAT_MS);
   const stop = steps.signal ? AbortSignal.any([steps.signal, heartbeat.lost]) : heartbeat.lost;
   let publisher: StaticPublisher | null = null;
+  /** #1271 — the provider upload the generator streams the build into. */
+  let upload: BuildUpload | null = null;
 
   /** Record the failure (releasing every lease) and answer with `reply`. */
   const fail = async (
@@ -529,6 +538,8 @@ async function runTrigger(
     });
     // Unrecorded, the run's lease lapses and the next run marks it failed.
     if (!r.ok) console.error("[deploy] could not record the failed run", { runId, error: r.error });
+    // A given-up upload serves nothing (no-op once publishStaging finished it).
+    await upload?.abort();
     logRunTimings(runKind, runId, timer, { status: "failed" });
     return err({ kind: "HandlerError", operation: "deploy.trigger", message: reply });
   };
@@ -546,11 +557,26 @@ async function runTrigger(
         fav.error.kind === "HandlerError" ? fav.error.message : JSON.stringify(fav.error);
       return await fail(`Blocked, favicon: ${message}`, message);
     }
+    // #1271 — the build names media by their stored digests and never
+    // reads them. Rows still without digests (written before migration
+    // 0452, or by the previous release during an upgrade) get them now,
+    // the same way the favicon rendition is made above.
+    const digested = await digestUndigestedMedia(registry, adapter, sys);
+    if (digested !== null) {
+      timer.lap("prepare");
+      return await fail(`Blocked, media digests: ${digested}`, digested);
+    }
     // Loaded before the build: the publisher decides whether the build is
     // mirrored into `current/` (#1003 — only a serving layer that reads it
     // needs the copy) and whether builds stay on disk (#1211).
     try {
       publisher = await loadStaticPublisher(provider);
+      // #1271 — an uploading publisher takes the build file by file while it
+      // is written, so it never lands on this container's disk (memory on
+      // Cloud Run).
+      upload = publisher.openBuildUpload
+        ? await publisher.openBuildUpload({ runId, target })
+        : null;
     } catch (e) {
       timer.lap("prepare");
       return await fail(`publish failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -569,6 +595,8 @@ async function runTrigger(
       ...(plan.stagingOrigin ? { siteBaseUrlOverride: plan.stagingOrigin } : {}),
       syncCurrent: publisher.servesCurrentDir,
       retainBuilds: retainedBuildsFor(publisher),
+      mediaDelivery: mediaDeliveryFor(publisher),
+      ...(upload ? { upload } : {}),
       signal: stop,
     });
     if (subprocess.ok) timer.include("generator", subprocess.result.phases);
@@ -619,6 +647,7 @@ async function runTrigger(
         buildDir: built.buildDir,
         runId,
         target,
+        ...(upload ? { upload } : {}),
       });
       publishSummary = summary as Record<string, unknown>;
       timer.include("publish", publishPhases ?? []);
@@ -655,14 +684,13 @@ async function runTrigger(
 
     // #650 — what Publish live's parity guard compares against: this
     // build's content with the staging host swapped back to the live one.
-    // Hashed now, while the build directory is on this instance.
+    // Read now, while the build directory is on this instance.
     let parityManifest: Record<string, string> | null = null;
     if (plan.stagingOrigin) {
       try {
-        parityManifest = await buildManifestOf(
-          built.buildDir,
-          hostNormaliser(plan.stagingOrigin, plan.siteBaseUrl ?? ""),
-        );
+        // #1271 — taken by the generator while it wrote the build, with
+        // the staging host swapped back to the live one (parity-digest.ts).
+        parityManifest = await buildManifestOf(built.buildDir, "normalised");
       } catch (e) {
         timer.lap("parity");
         return await fail(
@@ -739,6 +767,7 @@ async function runTrigger(
       status: "succeeded",
       pageCount: built.pageCount,
       fileCount: built.fileCount,
+      generatorPeakRssMb: built.peakRssMb,
     });
 
     // #650 — where staging has its own host, that host is the only staging
@@ -769,6 +798,7 @@ async function runTrigger(
     );
   } finally {
     await heartbeat.stop();
+    timer.close();
     // #1211 — uploaded or failed: an uploading publisher keeps no build in
     // the container's /tmp (memory on Cloud Run). The parity fingerprint
     // above was taken first.

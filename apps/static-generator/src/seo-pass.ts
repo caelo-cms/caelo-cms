@@ -26,10 +26,13 @@
  * /_assets/...) so the og:image href resolves to the deployed asset
  * path. Failures throw — per the no-fallbacks rule, a missing or
  * deleted og_image_asset_id stops the deploy loudly.
+ *
+ * #1271 — prepared once ({@link prepareSeoPass}: every page's SEO row,
+ * plugin contributions and public URL — a small record per page) and
+ * applied page batch by page batch, so the build never holds every page's
+ * HTML for this pass; the sitemap is written from the records at the end.
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { type BuildPluginServices, composeHeadBlock } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
@@ -44,7 +47,7 @@ import {
   type SiteSeoSettings,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { readStoredMedia, writePublishedMedia } from "./media-asset-path.js";
+import type { MediaPass } from "./media-pass.js";
 
 interface PageSeoBundle {
   pageId: string;
@@ -76,15 +79,37 @@ export interface SeoPagesContext {
   followUp?: { readonly page: number; readonly indexable: boolean };
 }
 
-export async function runSeoPass(args: {
+/** The SEO pass of one build, prepared once and applied page batch by page batch. */
+export interface SeoPass {
+  /** Inject head meta + `<html lang>` into one batch of pages, in place. */
+  apply(pages: SeoPagesContext[]): Promise<void>;
+  /**
+   * Write sitemap.xml (when enabled) from what every batch recorded; call
+   * once after the last batch. Returns whether it was written.
+   */
+  writeSitemap(write: (relPath: string, content: string) => Promise<void>): Promise<boolean>;
+}
+
+/** A JSON value bound as one jsonb parameter. */
+function jsonb(value: unknown): ReturnType<typeof sql> {
+  return sql`(${JSON.stringify(value)}::text)::jsonb`;
+}
+
+/**
+ * Prepare the SEO pass of a build (#1271: so pages can be written batch by
+ * batch instead of all held for one pass). Loads every page's SEO row in
+ * one statement, publishes the og:images through the media pass, and asks
+ * the plugins for every page's head/sitemap contributions and public URL —
+ * a small per-page record each, never the HTML.
+ */
+export async function prepareSeoPass(args: {
   tx: TransactionRunner;
   /** #605 — the plugin host answering head contributions and URLs. */
   plugins: BuildPluginServices;
-  buildDir: string;
-  /** Absolute filesystem path to the media storage root (`MEDIA_ROOT_DIR`):
-   *  the og:image file is published from here (#667). */
-  mediaRoot: string;
-  pages: SeoPagesContext[];
+  /** The build's media pass: og:images are published through it (#667, #1271). */
+  media: MediaPass;
+  /** Every page this build renders (page 1 of each paginated overview). */
+  pageIds: readonly string[];
   settings: SiteSeoSettings;
   /** The target's page emission style (v0.2.85). Every URL of the pass
    *  — canonical, sitemap `<loc>`, plugin hreflang — follows it (#590). */
@@ -92,18 +117,17 @@ export async function runSeoPass(args: {
   /** #802 — the designated 404 page (shipped as `/404.html`), or null.
    *  It gets {@link notFoundPageSeo} and never enters the sitemap. */
   notFoundPageId: string | null;
-}): Promise<{ sitemapEmitted: boolean }> {
-  if (args.pages.length === 0) {
-    return { sitemapEmitted: false };
-  }
+}): Promise<SeoPass> {
+  const { tx, plugins, settings, pageUrlStyle, notFoundPageId } = args;
+  const urlArgs = { siteBaseUrl: settings.siteBaseUrl, pageUrlStyle };
 
-  // Resolve every page to its sidecar SEO row — by id: slugs repeat
-  // across parents once pages nest (epic #690).
-  // Per-id query — same Bun-SQL constraint as media.list.
+  // Every page's sidecar SEO row — by id: slugs repeat across parents
+  // once pages nest (epic #690). One statement, the ids bound as jsonb.
   const seoBundles: PageSeoBundle[] = [];
-  // A paginated overview's follow-up pages share its id (#1257): one bundle each.
-  for (const pageId of new Set(args.pages.map((p) => p.pageId))) {
-    const rows = (await args.tx.execute(sql`
+  const BUNDLE_BATCH = 1000;
+  for (let at = 0; at < args.pageIds.length; at += BUNDLE_BATCH) {
+    const ids = args.pageIds.slice(at, at + BUNDLE_BATCH);
+    const rows = (await tx.execute(sql`
       SELECT
         p.id::text AS page_id, p.slug, p.current_path, p.title, p.short_title,
         coalesce(s.meta_description, '') AS meta_description,
@@ -115,8 +139,8 @@ export async function runSeoPass(args: {
         p.updated_at
       FROM pages p
       LEFT JOIN pages_seo s ON s.page_id = p.id
-      WHERE p.id = ${pageId}::uuid AND p.deleted_at IS NULL
-      LIMIT 1
+      WHERE p.id IN (SELECT jsonb_array_elements_text(${jsonb(ids)})::uuid)
+        AND p.deleted_at IS NULL
     `)) as unknown as {
       page_id: string;
       slug: string;
@@ -131,110 +155,61 @@ export async function runSeoPass(args: {
       og_image_asset_id: string | null;
       updated_at: Date | string;
     }[];
-    const r = rows[0];
-    if (!r) continue;
-    seoBundles.push({
-      pageId: r.page_id,
-      slug: r.slug,
-      currentPath: r.current_path,
-      title: r.title,
-      shortTitle: r.short_title,
-      metaDescription: r.meta_description,
-      noindex: r.noindex,
-      changefreq: r.changefreq,
-      priority: Number(r.priority),
-      canonicalOverride: r.canonical_override,
-      ogImageAssetId: r.og_image_asset_id,
-      updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
-    });
+    for (const r of rows) {
+      seoBundles.push({
+        pageId: r.page_id,
+        slug: r.slug,
+        currentPath: r.current_path,
+        title: r.title,
+        shortTitle: r.short_title,
+        metaDescription: r.meta_description,
+        noindex: r.noindex,
+        changefreq: r.changefreq,
+        priority: Number(r.priority),
+        canonicalOverride: r.canonical_override,
+        ogImageAssetId: r.og_image_asset_id,
+        updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+      });
+    }
   }
+  // The sitemap lists pages in the build's page order (deterministic).
+  const order = new Map(args.pageIds.map((id, i) => [id, i]));
+  seoBundles.sort((a, b) => (order.get(a.pageId) ?? 0) - (order.get(b.pageId) ?? 0));
+  const bundleById = new Map<string, PageSeoBundle>(seoBundles.map((b) => [b.pageId, b]));
 
   // Resolve every og_image_asset_id to a public URL and publish that file
-  // into the build: the og:image need not appear on any page, so the media
-  // pass may not have copied it. Same content-hashed name as the media
+  // with the build: the og:image need not appear on any page, so the media
+  // pass may not have published it. Same content-hashed name as the media
   // pass (#667), so a file that is also on a page lands on the same path.
-  const ogImageAssetIds = [
-    ...new Set(seoBundles.map((b) => b.ogImageAssetId).filter((x): x is string => x !== null)),
-  ];
+  const base = settings.siteBaseUrl.replace(/\/$/, "");
   const ogImageUrlByAsset = new Map<string, string>();
-  for (const id of ogImageAssetIds) {
-    const rows = (await args.tx.execute(sql`
-      SELECT ma.slug, ma.visibility, mv.variant, mv.format, mv.storage_key
-      FROM media_variants mv
-      JOIN media_assets ma ON ma.id = mv.asset_id
-      WHERE mv.asset_id = ${id}::uuid
-        AND ma.deleted_at IS NULL
-      ORDER BY
-        CASE mv.variant
-          WHEN 'webp-1200' THEN 0
-          WHEN 'webp-1600' THEN 1
-          WHEN 'webp-800'  THEN 2
-          WHEN 'orig'      THEN 3
-          ELSE 4
-        END
-      LIMIT 1
-    `)) as unknown as {
-      slug: string;
-      visibility: "library" | "reference";
-      variant: string;
-      format: string;
-      storage_key: string;
-    }[];
-    const v = rows[0];
-    if (!v) {
-      throw new Error(
-        `static-generator: og:image asset ${id} has no variants — deploy aborted (no-fallbacks)`,
-      );
-    }
-    if (v.visibility === "reference") {
-      // #531 — same rule as page images: references are never published.
-      throw new Error(
-        `static-generator: og:image asset ${v.slug} is a reference image and is never published. ` +
-          "Next step: pick a library image for the page's og:image, or mark this one as a library " +
-          'image (AI tool: set_media_visibility_many with visibility: "library").',
-      );
-    }
-    const bytes = await readStoredMedia(args.mediaRoot, v.storage_key);
-    if (bytes === null) {
-      throw new Error(
-        `static-generator: the stored file of og:image asset ${v.slug} (${v.variant}) is missing from ${args.mediaRoot}. ` +
-          "Next step: find it with list_missing_media and restore it (import_media_from_urls when it came from a URL, " +
-          "or ask the operator to re-upload it), or pick another og:image for the page (set_page_seo_many).",
-      );
-    }
-    const relPath = await writePublishedMedia({
-      buildDir: args.buildDir,
-      ref: v.slug,
-      isSlug: true,
-      variant: v.variant,
-      format: v.format,
-      bytes,
-    });
-    const base = args.settings.siteBaseUrl.replace(/\/$/, "");
-    ogImageUrlByAsset.set(id, `${base}/${relPath}`);
+  for (const id of new Set(seoBundles.map((b) => b.ogImageAssetId))) {
+    if (id === null) continue;
+    ogImageUrlByAsset.set(id, `${base}/${await args.media.publishOgImage(id)}`);
   }
 
   // #391 — collect every plugin's head/sitemap contributions in ONE
-  // batch call before the loops. Zod-validated + contradiction-checked
-  // by the host; serialization shares the exact code path the preview
-  // uses (composeHeadBlock), so both surfaces stay byte-identical.
-  const contributions = await args.plugins.collectContributions(
+  // batch call. Zod-validated + contradiction-checked by the host;
+  // serialization shares the exact code path the preview uses
+  // (composeHeadBlock), so both surfaces stay byte-identical.
+  const contributions = await plugins.collectContributions(
     seoBundles.map((b) => b.pageId),
-    { siteBaseUrl: args.settings.siteBaseUrl, pageUrlStyle: args.pageUrlStyle },
+    urlArgs,
   );
 
   // #590 — canonical and sitemap `<loc>` come from the ONE public URL
   // builder plugins also use for hreflang, so they agree byte for byte
   // (host-strategy locales included).
-  const crumbPages = await loadCrumbPages(args.tx, args.pages, seoBundles);
-  const publicUrls = await args.plugins.resolvePublicPageUrls(
-    [...seoBundles, ...crumbPages].map((b) => ({
-      id: b.pageId,
-      slug: b.slug,
-      currentPath: b.currentPath,
-      canonicalOverride: b.canonicalOverride,
-    })),
-    { siteBaseUrl: args.settings.siteBaseUrl, pageUrlStyle: args.pageUrlStyle },
+  const publicUrls = new Map(
+    await plugins.resolvePublicPageUrls(
+      seoBundles.map((b) => ({
+        id: b.pageId,
+        slug: b.slug,
+        currentPath: b.currentPath,
+        canonicalOverride: b.canonicalOverride,
+      })),
+      urlArgs,
+    ),
   );
   const publicUrlOf = (b: PageSeoBundle): string => {
     const url = publicUrls.get(b.pageId);
@@ -243,133 +218,167 @@ export async function runSeoPass(args: {
   };
   // #1257 — follow-up pages are self-canonical: built from the overview's
   // own public URL, never from a canonical override pointing elsewhere.
-  const pagedIds = new Set(args.pages.filter((p) => p.followUp).map((p) => p.pageId));
-  const ownUrls =
-    pagedIds.size === 0
-      ? new Map<string, string>()
-      : await args.plugins.resolvePublicPageUrls(
-          seoBundles
-            .filter((b) => pagedIds.has(b.pageId))
-            .map((b) => ({
-              id: b.pageId,
-              slug: b.slug,
-              currentPath: b.currentPath,
-              canonicalOverride: null,
-            })),
-          { siteBaseUrl: args.settings.siteBaseUrl, pageUrlStyle: args.pageUrlStyle },
-        );
+  // Resolved as batches meet paginated overviews.
+  const ownUrls = new Map<string, string>();
   const followUpUrlOf = (b: PageSeoBundle, n: number): string => {
     const url = ownUrls.get(b.pageId);
     if (url === undefined) throw new Error(`seo-pass: no public URL resolved for page ${b.pageId}`);
-    return pagedUrl(url, n, args.pageUrlStyle);
+    return pagedUrl(url, n, pageUrlStyle);
   };
-
-  // #390 — canonical follows the MATERIALIZED composed path; home
-  // designation, prefixes, and slug formats are already baked into
-  // pages.current_path by the write ops.
-  const bundleById = new Map<string, PageSeoBundle>(seoBundles.map((b) => [b.pageId, b]));
-  const crumbById = new Map<string, CrumbPage>(
-    [...seoBundles, ...crumbPages].map((b) => [b.pageId, b]),
-  );
+  // #1142 — breadcrumb pages: every built page, plus trail pages this pass
+  // has no bundle for (an incremental build), loaded as batches name them.
+  const crumbById = new Map<string, CrumbPage>(seoBundles.map((b) => [b.pageId, b]));
+  const crumbTried = new Set<string>();
   const crumbOf = (pageId: string): BreadcrumbJsonLdItem | null => {
     const c = crumbById.get(pageId);
     const url = c ? publicUrls.get(pageId) : undefined;
     return c && url !== undefined ? { name: c.shortTitle, url } : null;
   };
-  for (const p of args.pages) {
-    const bundle = bundleById.get(p.pageId);
-    if (!bundle) continue;
-    const isNotFoundPage = bundle.pageId === args.notFoundPageId;
-    const ogImageUrl = bundle.ogImageAssetId
-      ? (ogImageUrlByAsset.get(bundle.ogImageAssetId) ?? null)
-      : null;
-    const headBlock = renderSeoHead({
-      title: bundle.title,
-      metaDescription: bundle.metaDescription,
-      ogImageUrl,
-      organization: args.settings.organization,
-      ...(isNotFoundPage
-        ? notFoundPageSeo()
-        : {
-            canonical: p.followUp ? followUpUrlOf(bundle, p.followUp.page) : publicUrlOf(bundle),
-            noindex: bundle.noindex || (p.followUp !== undefined && !p.followUp.indexable),
-            breadcrumbs: breadcrumbJsonLdItems(p.breadcrumbTrail ?? null, crumbOf),
-          }),
-    });
-    const head = contributions.head.get(bundle.pageId);
-    p.html = injectSeoIntoHead(
-      p.html,
-      // #802 — no plugin head contributions on the 404 page: it answers
-      // every unknown URL, so hreflang alternates would be false claims.
-      composeHeadBlock(
-        headBlock,
-        isNotFoundPage ? undefined : p.followUp ? followUpHeadEntries(head) : head,
-      ),
-    );
-    // `<html lang>` — same resolution as the admin preview.
-    p.html = applyDocumentLanguage(
-      p.html,
-      resolveDocumentLanguage({
-        contributed: contributions.lang.get(bundle.pageId),
-        siteLanguage: args.settings.siteLanguage,
-      }),
-    );
-  }
+  // #1257 — indexable follow-up pages of each overview, for the sitemap.
+  const followUpsOf = new Map<string, number[]>();
 
-  // sitemap.xml — written for every env (see the file header): staging
-  // never references it (its robots.txt has no `Sitemap:` line and the
-  // host answers `X-Robots-Tag: noindex`), and promote ships it as-is.
-  // #567 — the Owner's toggle gates it; robots.txt follows
-  // `sitemapEmitted`, so turning it off also drops the `Sitemap:` line.
-  const sitemapEnabled = args.settings.sitemapEnabled && args.settings.siteBaseUrl.length > 0;
-  if (sitemapEnabled) {
-    // #1257 — indexable follow-up pages of each overview, after page 1.
-    const followUpsOf = new Map<string, number[]>();
-    for (const p of args.pages) {
-      if (!p.followUp?.indexable) continue;
-      followUpsOf.set(p.pageId, [...(followUpsOf.get(p.pageId) ?? []), p.followUp.page]);
-    }
-    const entries = seoBundles
-      .filter((b) => isSitemapEntry(b, args.notFoundPageId))
-      // #391 — plugin-contributed exclusion (e.g. an unpublished
-      // variant URL must not appear; clean-404 semantics).
-      .filter((b) => contributions.sitemap.get(b.pageId)?.exclude !== true)
-      .flatMap((b) => {
-        const urlEntry = (loc: string, alternates: readonly string[]): string =>
-          [
-            "  <url>",
-            `    <loc>${enc(loc)}</loc>`,
-            ...alternates,
-            `    <lastmod>${b.updatedAt.slice(0, 10)}</lastmod>`,
-            `    <changefreq>${b.changefreq}</changefreq>`,
-            `    <priority>${b.priority.toFixed(1)}</priority>`,
-            "  </url>",
-          ].join("\n");
-        // #391 — contributed xhtml alternates (hreflang) inside the
-        // page's <url> entry, sorted for deterministic output. Follow-up
-        // pages carry none: the alternates are page 1's twins.
-        const alternates = [...(contributions.sitemap.get(b.pageId)?.alternates ?? [])]
-          .sort((x, y) => x.hreflang.localeCompare(y.hreflang))
-          .map(
-            (a) =>
-              `    <xhtml:link rel="alternate" hreflang="${enc(a.hreflang)}" href="${enc(a.href)}" />`,
-          );
-        return [
-          urlEntry(publicUrlOf(b), alternates),
-          ...(followUpsOf.get(b.pageId) ?? []).map((n) => urlEntry(followUpUrlOf(b, n), [])),
-        ];
-      });
-    const xml = [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">',
-      ...entries,
-      "</urlset>",
-      "",
-    ].join("\n");
-    await mkdir(args.buildDir, { recursive: true });
-    await writeFile(join(args.buildDir, "sitemap.xml"), xml, "utf8");
-  }
-  return { sitemapEmitted: sitemapEnabled };
+  return {
+    async apply(pages) {
+      const wantCrumbs = new Set<string>();
+      for (const p of pages) {
+        for (const id of p.breadcrumbTrail ?? []) {
+          if (!crumbById.has(id) && !crumbTried.has(id)) wantCrumbs.add(id);
+        }
+      }
+      if (wantCrumbs.size > 0) {
+        for (const id of wantCrumbs) crumbTried.add(id);
+        const crumbs = await loadCrumbPages(tx, [...wantCrumbs]);
+        for (const c of crumbs) crumbById.set(c.pageId, c);
+        const urls = await plugins.resolvePublicPageUrls(
+          crumbs.map((c) => ({
+            id: c.pageId,
+            slug: c.slug,
+            currentPath: c.currentPath,
+            canonicalOverride: c.canonicalOverride,
+          })),
+          urlArgs,
+        );
+        for (const [id, url] of urls) publicUrls.set(id, url);
+      }
+      const paged = [
+        ...new Set(pages.filter((p) => p.followUp && !ownUrls.has(p.pageId)).map((p) => p.pageId)),
+      ]
+        .map((id) => bundleById.get(id))
+        .filter((b): b is PageSeoBundle => b !== undefined);
+      if (paged.length > 0) {
+        const urls = await plugins.resolvePublicPageUrls(
+          paged.map((b) => ({
+            id: b.pageId,
+            slug: b.slug,
+            currentPath: b.currentPath,
+            canonicalOverride: null,
+          })),
+          urlArgs,
+        );
+        for (const [id, url] of urls) ownUrls.set(id, url);
+      }
+
+      // #390 — canonical follows the MATERIALIZED composed path; home
+      // designation, prefixes, and slug formats are already baked into
+      // pages.current_path by the write ops.
+      for (const p of pages) {
+        const bundle = bundleById.get(p.pageId);
+        if (!bundle) continue;
+        if (p.followUp?.indexable) {
+          followUpsOf.set(p.pageId, [...(followUpsOf.get(p.pageId) ?? []), p.followUp.page]);
+        }
+        const isNotFoundPage = bundle.pageId === notFoundPageId;
+        const ogImageUrl = bundle.ogImageAssetId
+          ? (ogImageUrlByAsset.get(bundle.ogImageAssetId) ?? null)
+          : null;
+        const headBlock = renderSeoHead({
+          title: bundle.title,
+          metaDescription: bundle.metaDescription,
+          ogImageUrl,
+          organization: settings.organization,
+          ...(isNotFoundPage
+            ? notFoundPageSeo()
+            : {
+                canonical: p.followUp
+                  ? followUpUrlOf(bundle, p.followUp.page)
+                  : publicUrlOf(bundle),
+                noindex: bundle.noindex || (p.followUp !== undefined && !p.followUp.indexable),
+                breadcrumbs: breadcrumbJsonLdItems(p.breadcrumbTrail ?? null, crumbOf),
+              }),
+        });
+        const head = contributions.head.get(bundle.pageId);
+        p.html = injectSeoIntoHead(
+          p.html,
+          // #802 — no plugin head contributions on the 404 page: it answers
+          // every unknown URL, so hreflang alternates would be false claims.
+          composeHeadBlock(
+            headBlock,
+            isNotFoundPage ? undefined : p.followUp ? followUpHeadEntries(head) : head,
+          ),
+        );
+        // `<html lang>` — same resolution as the admin preview.
+        p.html = applyDocumentLanguage(
+          p.html,
+          resolveDocumentLanguage({
+            contributed: contributions.lang.get(bundle.pageId),
+            siteLanguage: settings.siteLanguage,
+          }),
+        );
+      }
+    },
+
+    async writeSitemap(write) {
+      // sitemap.xml — written for every env (see the file header): staging
+      // never references it (its robots.txt has no `Sitemap:` line and the
+      // host answers `X-Robots-Tag: noindex`), and promote ships it as-is.
+      // #567 — the Owner's toggle gates it; robots.txt follows
+      // `sitemapEmitted`, so turning it off also drops the `Sitemap:` line.
+      const sitemapEnabled =
+        seoBundles.length > 0 && settings.sitemapEnabled && settings.siteBaseUrl.length > 0;
+      if (!sitemapEnabled) return false;
+      const entries = seoBundles
+        .filter((b) => isSitemapEntry(b, notFoundPageId))
+        // #391 — plugin-contributed exclusion (e.g. an unpublished
+        // variant URL must not appear; clean-404 semantics).
+        .filter((b) => contributions.sitemap.get(b.pageId)?.exclude !== true)
+        .flatMap((b) => {
+          const urlEntry = (loc: string, alternates: readonly string[]): string =>
+            [
+              "  <url>",
+              `    <loc>${enc(loc)}</loc>`,
+              ...alternates,
+              `    <lastmod>${b.updatedAt.slice(0, 10)}</lastmod>`,
+              `    <changefreq>${b.changefreq}</changefreq>`,
+              `    <priority>${b.priority.toFixed(1)}</priority>`,
+              "  </url>",
+            ].join("\n");
+          // #391 — contributed xhtml alternates (hreflang) inside the
+          // page's <url> entry, sorted for deterministic output. Follow-up
+          // pages carry none: the alternates are page 1's twins.
+          const alternates = [...(contributions.sitemap.get(b.pageId)?.alternates ?? [])]
+            .sort((x, y) => x.hreflang.localeCompare(y.hreflang))
+            .map(
+              (a) =>
+                `    <xhtml:link rel="alternate" hreflang="${enc(a.hreflang)}" href="${enc(a.href)}" />`,
+            );
+          return [
+            urlEntry(publicUrlOf(b), alternates),
+            ...(followUpsOf.get(b.pageId) ?? [])
+              .sort((x, y) => x - y)
+              .map((n) => urlEntry(followUpUrlOf(b, n), [])),
+          ];
+        });
+      const xml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">',
+        ...entries,
+        "</urlset>",
+        "",
+      ].join("\n");
+      await write("sitemap.xml", xml);
+      return true;
+    },
+  };
 }
 
 /**
@@ -530,41 +539,28 @@ type CrumbPage = Pick<
  * published on the main line count: a draft ancestor has no public URL,
  * and its crumb is left out of the JSON-LD (see `breadcrumbJsonLdItems`).
  */
-async function loadCrumbPages(
-  tx: TransactionRunner,
-  pages: readonly SeoPagesContext[],
-  bundles: readonly PageSeoBundle[],
-): Promise<CrumbPage[]> {
-  const have = new Set(bundles.map((b) => b.pageId));
-  const want = new Set<string>();
-  for (const p of pages) for (const id of p.breadcrumbTrail ?? []) if (!have.has(id)) want.add(id);
-  const out: CrumbPage[] = [];
-  // Per-id query — same Bun-SQL constraint as the bundle loop above.
-  for (const id of want) {
-    const rows = (await tx.execute(sql`
-      SELECT p.id::text AS page_id, p.slug, p.current_path, p.short_title,
-             s.canonical_url AS canonical_override
-      FROM pages p
-      LEFT JOIN pages_seo s ON s.page_id = p.id
-      WHERE p.id = ${id}::uuid AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
-        AND p.status = 'published'
-      LIMIT 1
-    `)) as unknown as {
-      page_id: string;
-      slug: string;
-      current_path: string;
-      short_title: string;
-      canonical_override: string | null;
-    }[];
-    const r = rows[0];
-    if (!r) continue;
-    out.push({
-      pageId: r.page_id,
-      slug: r.slug,
-      currentPath: r.current_path,
-      shortTitle: r.short_title,
-      canonicalOverride: r.canonical_override,
-    });
-  }
-  return out;
+async function loadCrumbPages(tx: TransactionRunner, ids: readonly string[]): Promise<CrumbPage[]> {
+  if (ids.length === 0) return [];
+  const rows = (await tx.execute(sql`
+    SELECT p.id::text AS page_id, p.slug, p.current_path, p.short_title,
+           s.canonical_url AS canonical_override
+    FROM pages p
+    LEFT JOIN pages_seo s ON s.page_id = p.id
+    WHERE p.id IN (SELECT jsonb_array_elements_text(${jsonb(ids)})::uuid)
+      AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
+      AND p.status = 'published'
+  `)) as unknown as {
+    page_id: string;
+    slug: string;
+    current_path: string;
+    short_title: string;
+    canonical_override: string | null;
+  }[];
+  return rows.map((r) => ({
+    pageId: r.page_id,
+    slug: r.slug,
+    currentPath: r.current_path,
+    shortTitle: r.short_title,
+    canonicalOverride: r.canonical_override,
+  }));
 }

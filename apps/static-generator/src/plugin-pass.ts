@@ -21,7 +21,8 @@
  *
  * The bake cache is read and written over the build's own transaction
  * (#1220): one bulk read of every row the pass can hit before it renders,
- * one bulk upsert of every fresh bake after. It used to open two
+ * and the fresh bakes upserted in one sorted statement at the end of the
+ * build (`BakeStore`, #1271: the pass runs per page batch). It used to open two
  * transactions per page and plugin from inside the build's transaction —
  * tens of thousands of nested checkouts of the same pool on a large site,
  * the deadlock class the pool guard refuses (query-api pool-guard.ts).
@@ -114,28 +115,54 @@ async function loadBakes(
 }
 
 /**
- * Upsert every fresh bake in a few bulk statements. The rows stay locked
- * until the build commits, so they are written in one fixed order: two
+ * The fresh bakes of one build. #1271 — the build renders page batch by
+ * page batch, but the `static_bakes` rows it upserts stay locked until it
+ * commits, so they must still be written in ONE build-wide order: two
  * builds at once (a Stage and an Owner's production build) then wait for
- * each other instead of deadlocking.
+ * each other instead of deadlocking. Each batch's bakes go to a temporary
+ * table of the build's transaction (no lock on `static_bakes`, nothing held
+ * in memory); {@link BakeStore.flush} upserts them all at the end, sorted.
  */
-async function storeBakes(tx: TransactionRunner, bakes: readonly FreshBake[]): Promise<void> {
-  const ordered = [...bakes].sort((x, y) =>
-    x.plugin_id === y.plugin_id
-      ? x.page_id.localeCompare(y.page_id)
-      : x.plugin_id.localeCompare(y.plugin_id),
-  );
-  for (const batch of chunks(ordered, BAKE_BATCH)) {
+export class BakeStore {
+  #created = false;
+
+  /** Park one batch's fresh bakes in the build's temporary table. */
+  async add(tx: TransactionRunner, bakes: readonly FreshBake[]): Promise<void> {
+    if (bakes.length === 0) return;
+    if (!this.#created) {
+      await tx.execute(sql`
+        CREATE TEMPORARY TABLE caelo_fresh_bakes (
+          plugin_id uuid NOT NULL, page_id uuid NOT NULL, baked_at timestamptz NOT NULL,
+          cache_key text NOT NULL, rendered_html text NOT NULL
+        ) ON COMMIT DROP
+      `);
+      this.#created = true;
+    }
+    for (const batch of chunks(bakes, BAKE_BATCH)) {
+      await tx.execute(sql`
+        INSERT INTO caelo_fresh_bakes (plugin_id, page_id, baked_at, cache_key, rendered_html)
+        SELECT b.plugin_id, b.page_id, b.baked_at, b.cache_key, b.rendered_html
+        FROM jsonb_to_recordset(${jsonb(batch)})
+          AS b(plugin_id uuid, page_id uuid, baked_at timestamptz, cache_key text, rendered_html text)
+      `);
+    }
+  }
+
+  /** Upsert every parked bake into `static_bakes`, in one fixed order. */
+  async flush(tx: TransactionRunner): Promise<void> {
+    if (!this.#created) return;
     await tx.execute(sql`
       INSERT INTO static_bakes (plugin_id, page_id, baked_at, cache_key, rendered_html)
-      SELECT b.plugin_id, b.page_id, b.baked_at, b.cache_key, b.rendered_html
-      FROM jsonb_to_recordset(${jsonb(batch)})
-        AS b(plugin_id uuid, page_id uuid, baked_at timestamptz, cache_key text, rendered_html text)
+      SELECT plugin_id, page_id, baked_at, cache_key, rendered_html
+      FROM caelo_fresh_bakes
+      ORDER BY plugin_id, page_id
       ON CONFLICT (plugin_id, page_id) DO UPDATE SET
         baked_at = EXCLUDED.baked_at,
         cache_key = EXCLUDED.cache_key,
         rendered_html = EXCLUDED.rendered_html
     `);
+    await tx.execute(sql`DROP TABLE caelo_fresh_bakes`);
+    this.#created = false;
   }
 }
 
@@ -165,6 +192,8 @@ export async function runPluginRenderPass(args: {
   bakeTargets: ReadonlyMap<string, BakeTarget>;
   /** The target's page URL style, handed to every `staticRender`. */
   pageUrlStyle: PageUrlStyle;
+  /** Where fresh bakes wait for the build-wide sorted upsert (#1271). */
+  bakes: BakeStore;
 }): Promise<PluginPassResult> {
   const { tx, plugins, pages, bakeTargets, pageUrlStyle } = args;
 
@@ -292,6 +321,6 @@ export async function runPluginRenderPass(args: {
     }
   }
 
-  await storeBakes(tx, fresh);
+  await args.bakes.add(tx, fresh);
   return { bakedCount, skippedCount };
 }

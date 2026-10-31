@@ -55,8 +55,10 @@ export async function ensureFaviconRendition(
   const v = await renderFaviconRendition(asset.sha256, bytes);
   await storage.put(v.storageKey, v.body, v.contentType);
   await tx.execute(sql`
-    INSERT INTO media_variants (asset_id, variant, format, width, height, size_bytes, storage_key)
-    VALUES (${asset.id}::uuid, ${v.variant}, ${v.format}, ${v.width}, ${v.height}, ${v.sizeBytes}, ${v.storageKey})
+    INSERT INTO media_variants (asset_id, variant, format, width, height, size_bytes, storage_key,
+                                content_sha256, gzip_sha256, gzip_size, digest_profile)
+    VALUES (${asset.id}::uuid, ${v.variant}, ${v.format}, ${v.width}, ${v.height}, ${v.sizeBytes}, ${v.storageKey},
+            ${v.digest.contentSha256}, ${v.digest.gzipSha256}, ${v.digest.gzipSize}, ${v.digest.profile})
     ON CONFLICT (asset_id, variant) DO NOTHING
   `);
   return true;

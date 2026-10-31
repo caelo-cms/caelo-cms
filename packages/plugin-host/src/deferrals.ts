@@ -67,6 +67,19 @@ interface ModuleRow {
 }
 
 /**
+ * #1271 — whether any running plugin decides deferrals. Without one no
+ * module is withheld, so a build need not load every module's content to
+ * ask.
+ */
+export function hasDeferralContributors(): boolean {
+  return loadedPlugins
+    .all()
+    .some(
+      (lp) => !isPluginDisabled(lp.slug) && typeof lp.definition.deferralsOperation === "string",
+    );
+}
+
+/**
  * Resolve which of these modules are withheld, and render each one's
  * placeholder.
  *

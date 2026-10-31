@@ -194,40 +194,51 @@ export interface RenderedPageForGate {
   readonly layoutLinkMarkers?: readonly string[];
 }
 
+/** One render failure, as the gate's error names it (page, module, field, reason). */
+export type RenderFailure = string;
+
 /**
- * Throw when any page would ship a render failure: a module or nested
- * module whose content could not be rendered (malformed list item,
- * missing or deleted nested module, depth limit, cycle, …) or any
- * `caelo:` marker comment in the HTML. Before this gate those pages
- * deployed with the section silently empty — the HTML comment is
- * invisible to visitors and to the operator (CLAUDE.md §2).
+ * The render failures of one composed page: a module or nested module
+ * whose content could not be rendered (malformed list item, missing or
+ * deleted nested module, depth limit, cycle, …), a layout reference that
+ * did not resolve, or any `caelo:` marker comment in the HTML. #1271 —
+ * taken per page as it is composed, so the gate holds the failures, not
+ * the pages.
+ */
+export function renderFailuresOf(page: RenderedPageForGate): RenderFailure[] {
+  const lines: RenderFailure[] = [];
+  let structured = 0;
+  for (const f of page.moduleFailures) {
+    if (LOUD_RAW_MARKERS.some((p) => f.reason.startsWith(p))) continue;
+    structured += 1;
+    const field = f.field.length > 0 ? ` field "${f.field}"` : "";
+    lines.push(
+      `page "${page.pageSlug}" module "${f.moduleSlug}" (block ${f.blockName})${field}: ${f.reason}`,
+    );
+  }
+  for (const marker of page.layoutLinkMarkers ?? []) {
+    structured += 1;
+    lines.push(`page "${page.pageSlug}" layout HTML: ${marker}`);
+  }
+  // Backstop for markers that did not come through the structured
+  // channel (e.g. a marker comment stored inside module HTML).
+  if (structured === 0) {
+    for (const m of page.html.matchAll(MARKER_COMMENT_RE)) {
+      lines.push(`page "${page.pageSlug}": ${m[0]}`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * Throw when any page would ship a render failure ({@link renderFailuresOf}
+ * of every page). Before this gate those pages deployed with the section
+ * silently empty — the HTML comment is invisible to visitors and to the
+ * operator (CLAUDE.md §2).
  *
  * Exported for tests.
  */
-export function assertNoRenderFailures(pages: readonly RenderedPageForGate[]): void {
-  const lines: string[] = [];
-  for (const page of pages) {
-    let structured = 0;
-    for (const f of page.moduleFailures) {
-      if (LOUD_RAW_MARKERS.some((p) => f.reason.startsWith(p))) continue;
-      structured += 1;
-      const field = f.field.length > 0 ? ` field "${f.field}"` : "";
-      lines.push(
-        `page "${page.pageSlug}" module "${f.moduleSlug}" (block ${f.blockName})${field}: ${f.reason}`,
-      );
-    }
-    for (const marker of page.layoutLinkMarkers ?? []) {
-      structured += 1;
-      lines.push(`page "${page.pageSlug}" layout HTML: ${marker}`);
-    }
-    // Backstop for markers that did not come through the structured
-    // channel (e.g. a marker comment stored inside module HTML).
-    if (structured === 0) {
-      for (const m of page.html.matchAll(MARKER_COMMENT_RE)) {
-        lines.push(`page "${page.pageSlug}": ${m[0]}`);
-      }
-    }
-  }
+export function assertNoRenderFailures(lines: readonly RenderFailure[]): void {
   if (lines.length === 0) return;
   const listed = lines.slice(0, MAX_LISTED).join("; ");
   const more = lines.length > MAX_LISTED ? `; …and ${lines.length - MAX_LISTED} more` : "";

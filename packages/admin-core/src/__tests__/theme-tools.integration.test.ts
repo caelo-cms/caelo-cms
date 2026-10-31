@@ -25,6 +25,7 @@ import { importThemeTool } from "../ai/tools/import-theme.js";
 import { listThemesTool } from "../ai/tools/list-themes.js";
 import { setThemeAssetTool } from "../ai/tools/set-theme-asset.js";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -174,6 +175,7 @@ describe("theme config tools", () => {
           height: 512,
           sizeBytes: 2048,
           storageKey: `${MEDIA_SHA}/orig.png`,
+          digest: TEST_MEDIA_DIGEST,
         },
       ],
     });

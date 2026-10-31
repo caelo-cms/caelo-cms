@@ -355,6 +355,7 @@ import {
   setFocalPointOp,
   setMediaCdnOp,
 } from "./ops/media.js";
+import { listDigestTargetsOp, rebuildMediaDigestsOp, storeDigestsOp } from "./ops/media_digests.js";
 import { ensureActiveFaviconRenditionOp } from "./ops/media_favicon.js";
 import { mediaListMissingFilesOp } from "./ops/media_missing.js";
 import { regenerateMediaVariantsOp } from "./ops/media_regenerate.js";
@@ -1355,6 +1356,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // run #10 D4 — recovery path for missing derived variants.
   registry.register(regenerateMediaVariantsOp);
   registry.register(ensureActiveFaviconRenditionOp);
+  registry.register(listDigestTargetsOp);
+  registry.register(storeDigestsOp);
+  registry.register(rebuildMediaDigestsOp);
   registry.register(mediaListMissingFilesOp);
   // P7 optimizations — focal-point/crops, processing status, alt proposals.
   registry.register(setFocalPointOp);

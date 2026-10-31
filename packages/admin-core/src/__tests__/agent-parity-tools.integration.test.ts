@@ -23,6 +23,7 @@ import { SQL } from "bun";
 import { createDefaultToolRegistry, type ToolContext } from "../ai/tools/index.js";
 import { setMediaStorage } from "../media/storage.js";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -254,6 +255,7 @@ describe("delete_modules_many — branched delete + AI in-use guard", () => {
           height: 1,
           sizeBytes: 10,
           storageKey: `${P}/counted`,
+          digest: TEST_MEDIA_DIGEST,
         },
       ],
     });
@@ -321,6 +323,7 @@ describe("delete_media_many — in-use guard sees this chat's unpublished edits"
             height: 1,
             sizeBytes: 10,
             storageKey: `${P}/${name}`,
+            digest: TEST_MEDIA_DIGEST,
           },
         ],
       });
@@ -369,6 +372,7 @@ describe("delete_media_many — in-use guard sees this chat's unpublished edits"
             height: 1,
             sizeBytes: 10,
             storageKey: `${P}/${name}`,
+            digest: TEST_MEDIA_DIGEST,
           },
         ],
       });

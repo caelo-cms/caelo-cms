@@ -27,6 +27,7 @@ import { SQL } from "bun";
 import sharp from "sharp";
 import { LocalVolumeAdapter, setMediaStorage } from "../media/storage.js";
 import { registerAdminOps } from "../register.js";
+import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -100,6 +101,7 @@ async function seedOrigOnlyAsset(args: {
         height: args.height,
         sizeBytes: bytes.byteLength,
         storageKey,
+        digest: TEST_MEDIA_DIGEST,
       },
     ],
   });

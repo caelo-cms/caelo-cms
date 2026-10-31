@@ -17,11 +17,9 @@
  *
  * Runs after every other file of the build is written: the plan leaves out
  * rows whose from path a build file serves (the live page wins), so it needs
- * the complete file list.
+ * the complete file list — the paths the build wrote and references.
  */
 
-import { readdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import {
   buildRedirectPlan,
   CADDY_REDIRECTS_FILE,
@@ -32,39 +30,25 @@ import {
 } from "@caelo-cms/shared";
 
 /**
- * Write the redirect files into `buildDir`.
+ * The redirect files of a build, for the generator to write with the rest.
  *
- * @returns how many files were written.
  * @throws when a row cannot be served (see `buildRedirectPlan`).
  */
-export async function writeRedirectFiles(args: {
-  readonly buildDir: string;
+export function redirectFiles(args: {
   readonly rows: readonly RedirectTableRow[];
   readonly pageUrlStyle: RedirectPageUrlStyle;
-}): Promise<number> {
+  /** Every path the build serves (#1271: known without reading the build directory). */
+  readonly servedFiles: ReadonlySet<string>;
+}): { name: string; content: string }[] {
   const table = formatRedirectsFile(args.rows);
-  await writeFile(join(args.buildDir, "_redirects"), table, "utf8");
-  await writeFile(join(args.buildDir, "_redirects.cloudflare"), table, "utf8");
   const plan = buildRedirectPlan({
     rows: args.rows,
     pageUrlStyle: args.pageUrlStyle,
-    servedFiles: await listBuildFiles(args.buildDir),
+    servedFiles: args.servedFiles,
   });
-  await writeFile(join(args.buildDir, CADDY_REDIRECTS_FILE), emitCaddyRedirects(plan), "utf8");
-  return 3;
-}
-
-/** Every file below `root`, relative, `/`-separated, no leading slash. */
-export async function listBuildFiles(root: string): Promise<Set<string>> {
-  const files = new Set<string>();
-  const walk = async (rel: string): Promise<void> => {
-    const entries = await readdir(join(root, rel), { withFileTypes: true });
-    for (const entry of entries) {
-      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) await walk(childRel);
-      else files.add(childRel);
-    }
-  };
-  await walk("");
-  return files;
+  return [
+    { name: "_redirects", content: table },
+    { name: "_redirects.cloudflare", content: table },
+    { name: CADDY_REDIRECTS_FILE, content: emitCaddyRedirects(plan) },
+  ];
 }

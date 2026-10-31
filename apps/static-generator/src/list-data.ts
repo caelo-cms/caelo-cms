@@ -424,12 +424,13 @@ export function incrementalPageIds(
 }
 
 /**
- * Merge this build's per-page deps into the target's file and write it to
- * the build directory and the target directory.
+ * Merge this build's per-page deps into the target's file and write it
+ * with the build (`write`, the build's output) and to the target directory
+ * (where the next incremental build reads it).
  */
 export async function writeRenderDeps(args: {
   readonly outDir: string;
-  readonly buildDir: string;
+  readonly write: (relPath: string, content: string) => Promise<void>;
   readonly previous: RenderDepsFile | null;
   readonly rebuilt: ReadonlyMap<string, ListRenderDeps>;
   readonly data: ListRenderData;
@@ -442,6 +443,6 @@ export async function writeRenderDeps(args: {
     args.data.pages.values(),
   );
   const json = JSON.stringify(merged);
-  await writeFile(join(args.buildDir, RENDER_DEPS_FILE), json, "utf8");
+  await args.write(RENDER_DEPS_FILE, json);
   await writeFile(join(args.outDir, RENDER_DEPS_FILE), json, "utf8");
 }

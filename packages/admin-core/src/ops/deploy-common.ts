@@ -86,7 +86,13 @@ export function logRunTimings(
   kind: "stage" | "build" | "publish-live",
   runId: string,
   timer: PhaseTimer,
-  extra: { status: "succeeded" | "failed"; pageCount?: number; fileCount?: number },
+  extra: {
+    status: "succeeded" | "failed";
+    pageCount?: number;
+    fileCount?: number;
+    /** #1271 — the generator subprocess's peak resident memory over the build. */
+    generatorPeakRssMb?: number;
+  },
 ): void {
   console.info(
     `[deploy] ${kind} ${extra.status} in ${timer.totalMs()} ms`,

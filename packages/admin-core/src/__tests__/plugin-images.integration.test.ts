@@ -100,6 +100,7 @@ beforeAll(async () => {
       height: v.height,
       sizeBytes: v.sizeBytes,
       storageKey: v.storageKey,
+      digest: v.digest,
     })),
   });
   siteImage = { id: uploaded.assetId, sha256: siteSha, bytes: png };

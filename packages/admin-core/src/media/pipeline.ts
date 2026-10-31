@@ -12,6 +12,11 @@
  *
  * Non-raster kinds (PDF, MP4, SVG, ICO, fonts) emit only `orig`. SVG is sanitised
  * before persistence to drop `<script>` and event handlers.
+ *
+ * #1271 — every variant comes out with its published digests (sha256 of
+ * the bytes, sha256 + length of the hosting gzip), computed here while the
+ * bytes are in memory anyway. Every writer stores them with the row, so no
+ * build reads the file to name or upload it.
  */
 
 import {
@@ -23,6 +28,7 @@ import {
   type MediaMime,
   type MediaVariantTag,
 } from "@caelo-cms/shared";
+import { digestBytes, type PublishedDigest } from "@caelo-cms/static-generator";
 import sharp from "sharp";
 import { sanitizeSvg } from "./sanitize-svg.js";
 
@@ -43,6 +49,16 @@ export interface PipelineOutputVariant {
   storageKey: string;
   body: Uint8Array;
   contentType: string;
+  /** #1271 — the published digests of `body` (stored on the media_variants row). */
+  digest: PublishedDigest;
+}
+
+/** A variant before its digest is taken (the encoders below build these). */
+type EncodedVariant = Omit<PipelineOutputVariant, "digest">;
+
+/** Attach the published digests to encoded variants. */
+async function withDigests(variants: readonly EncodedVariant[]): Promise<PipelineOutputVariant[]> {
+  return Promise.all(variants.map(async (v) => ({ ...v, digest: await digestBytes(v.body) })));
 }
 
 export interface PipelineResult {
@@ -94,6 +110,17 @@ export async function runMediaPipeline(
   body: Uint8Array,
   crops?: CropOptions,
 ): Promise<PipelineResult> {
+  const encoded = await encodeVariants(sha, mime, body, crops);
+  return { ...encoded, variants: await withDigests(encoded.variants) };
+}
+
+/** {@link runMediaPipeline} without the digests. */
+async function encodeVariants(
+  sha: string,
+  mime: MediaMime,
+  body: Uint8Array,
+  crops?: CropOptions,
+): Promise<Omit<PipelineResult, "variants"> & { variants: EncodedVariant[] }> {
   if (mime === "image/svg+xml") {
     const sanitised = sanitizeSvg(new TextDecoder().decode(body));
     const sanitisedBody = new TextEncoder().encode(sanitised);
@@ -155,7 +182,7 @@ export async function runMediaPipeline(
   const origRotated = await sharp(body).rotate().toBuffer({ resolveWithObject: true });
   const origBody = new Uint8Array(origRotated.data);
 
-  const origVariant: PipelineOutputVariant = {
+  const origVariant: EncodedVariant = {
     variant: "orig",
     format: extensionToFormat(ext),
     width: origRotated.info.width,
@@ -166,7 +193,7 @@ export async function runMediaPipeline(
     contentType: mime,
   };
 
-  const variants: PipelineOutputVariant[] = [origVariant];
+  const variants: EncodedVariant[] = [origVariant];
 
   // Skip WebP variants for animated GIFs (sharp's animated webp encoder
   // is finicky and not what you'd want for a hero image). Originals
@@ -280,16 +307,20 @@ export async function renderFaviconRendition(
     .png({ compressionLevel: 9 })
     .toBuffer({ resolveWithObject: true });
   const out = new Uint8Array(buf.data);
-  return {
-    variant: FAVICON_VARIANT,
-    format: "png",
-    width: buf.info.width,
-    height: buf.info.height,
-    sizeBytes: out.byteLength,
-    storageKey: buildStorageKey(sha, FAVICON_VARIANT, "png"),
-    body: out,
-    contentType: "image/png",
-  };
+  const [rendition] = await withDigests([
+    {
+      variant: FAVICON_VARIANT,
+      format: "png",
+      width: buf.info.width,
+      height: buf.info.height,
+      sizeBytes: out.byteLength,
+      storageKey: buildStorageKey(sha, FAVICON_VARIANT, "png"),
+      body: out,
+      contentType: "image/png",
+    },
+  ]);
+  if (!rendition) throw new Error("renderFaviconRendition: no rendition encoded");
+  return rendition;
 }
 
 // ---------------------------------------------------------------------

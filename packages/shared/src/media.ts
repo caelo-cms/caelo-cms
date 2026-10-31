@@ -296,6 +296,21 @@ const mediaRefPattern =
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/, "must be hex sha256");
 
 /**
+ * #1271 — the published digests of one stored media file (the static
+ * generator's `published-digest.ts`), stored with its variant row so no
+ * build reads the file to name or upload it.
+ */
+export const publishedDigestSchema = z
+  .object({
+    contentSha256: sha256Schema,
+    size: z.number().int().nonnegative(),
+    gzipSha256: sha256Schema,
+    gzipSize: z.number().int().nonnegative(),
+    profile: z.string().min(1).max(64),
+  })
+  .strict();
+
+/**
  * #531 — `library` assets are listed and placeable on pages; `reference`
  * assets exist only to guide image generation/editing: hidden from the
  * default listing and refused by the static generator on a page.
@@ -345,6 +360,8 @@ export const mediaUploadInputSchema = z
           height: z.number().int().positive().nullable(),
           sizeBytes: z.number().int().positive(),
           storageKey: z.string().min(1),
+          /** #1271 — taken from the bytes the writer stored (runMediaPipeline). */
+          digest: publishedDigestSchema,
         }),
       )
       .min(1),
