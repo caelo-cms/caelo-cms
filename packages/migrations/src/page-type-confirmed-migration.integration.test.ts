@@ -88,12 +88,13 @@ describe("migrations 0443–0444 (#1276)", () => {
         WHERE table_schema = 't1276_mig' AND table_name = 'pages' AND column_name = 'page_type_confirmed'
       `) as { is_nullable: string }[];
       expect(notNull[0]?.is_nullable).toBe("NO");
-      // No column default: a raw INSERT must state the flag.
-      await conn`SAVEPOINT no_default`;
-      await expect(
-        conn`INSERT INTO pages (id, page_type_id) VALUES (gen_random_uuid(), ${ID.newsType}::uuid)`,
-      ).rejects.toThrow("page_type_confirmed");
-      await conn`ROLLBACK TO SAVEPOINT no_default`;
+      // Expand-safe: an INSERT that omits the flag (the previous image
+      // during the roll, a raw seed) lands as "not chosen", never chosen.
+      const omitted = (await conn`
+        INSERT INTO pages (id, page_type_id) VALUES (gen_random_uuid(), ${ID.newsType}::uuid)
+        RETURNING page_type_confirmed AS c
+      `) as { c: boolean }[];
+      expect(omitted[0]?.c).toBe(false);
 
       const snaps = (await conn`
         SELECT state FROM page_snapshots ORDER BY state->>'slug'

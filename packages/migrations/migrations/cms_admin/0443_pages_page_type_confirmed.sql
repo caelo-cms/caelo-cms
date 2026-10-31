@@ -1,5 +1,4 @@
 -- SPDX-License-Identifier: MPL-2.0
--- caelo:contract pages.page_type_confirmed is NOT NULL without a column default; the previous image inserts pages without it
 --
 -- 0443 — #1276: every page has a chosen page type.
 --
@@ -9,9 +8,13 @@
 -- that belongs to exactly one type); this migration records which existing
 -- pages never got one:
 --
---   1. `pages.page_type_confirmed` (NOT NULL, deliberately no column
---      default: an INSERT outside the ops — test seeds, import tooling —
---      must state it, so no write path can silently mark a type chosen).
+--   1. `pages.page_type_confirmed` (NOT NULL DEFAULT false). Every op
+--      writes it explicitly; the default only answers an INSERT that
+--      omits it — the previous image during the roll or after a rollback,
+--      a raw test seed — and answers "not chosen", so no write path can
+--      silently mark a type chosen: such a page is reported by the check
+--      below like any other. (No default would make this a contract
+--      migration: the previous image's page inserts would fail.)
 --      Backfill: false only for pages whose `page_type_id` is today's
 --      stored default type, true for every other page (their type came
 --      from an explicit pageType or a template of one type).
@@ -33,15 +36,13 @@ BEGIN;
 
 SET LOCAL caelo.actor_kind = 'system';
 
-ALTER TABLE pages ADD COLUMN page_type_confirmed boolean;
+ALTER TABLE pages ADD COLUMN page_type_confirmed boolean NOT NULL DEFAULT false;
 
 UPDATE pages p
    SET page_type_confirmed = NOT EXISTS (
          SELECT 1 FROM site_defaults sd
           WHERE sd.id = 1 AND sd.default_page_type_id = p.page_type_id
        );
-
-ALTER TABLE pages ALTER COLUMN page_type_confirmed SET NOT NULL;
 
 UPDATE page_snapshots ps
    SET state = ps.state || jsonb_build_object(

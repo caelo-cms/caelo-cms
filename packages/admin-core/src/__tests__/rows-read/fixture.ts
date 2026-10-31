@@ -173,8 +173,8 @@ export async function growFixture(
     if (pagesNow < size.pages) {
       await tx.unsafe(`
         WITH p AS (
-          INSERT INTO pages (slug, title, short_title, template_id, page_type_id, current_path, status)
-          SELECT '${RR_PREFIX}p-' || i, 'Page ' || i, 'Page ' || i, '${templateId}', '${pageTypeId}',
+          INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
+          SELECT '${RR_PREFIX}p-' || i, 'Page ' || i, 'Page ' || i, '${templateId}', '${pageTypeId}', true,
                  '/${RR_PREFIX}p-' || i, 'published'
             FROM generate_series(${pagesNow + 1}, ${size.pages}) i
           RETURNING id, title),
@@ -322,8 +322,8 @@ export async function growFixture(
     (tx) =>
       tx.unsafe(`
         WITH p AS (
-          INSERT INTO pages (slug, title, short_title, template_id, page_type_id, current_path, status)
-          VALUES ('${RR_PREFIX}${tag}', 'Write target', 'Write target', '${templateId}', '${pageTypeId}',
+          INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
+          VALUES ('${RR_PREFIX}${tag}', 'Write target', 'Write target', '${templateId}', '${pageTypeId}', true,
                   '/${RR_PREFIX}${tag}', 'published')
           RETURNING id),
         ci AS (
