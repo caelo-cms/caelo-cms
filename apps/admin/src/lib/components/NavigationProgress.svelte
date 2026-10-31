@@ -23,6 +23,8 @@
         return;
       const anchor = (event.target as Element | null)?.closest?.("a[href]");
       if (!(anchor instanceof HTMLAnchorElement) || anchor.origin !== location.origin) return;
+      // A link into another tab or a download does not repeat this navigation.
+      if ((anchor.target && anchor.target !== "_self") || anchor.hasAttribute("download")) return;
       if (isRepeatNavigation(navigating.to?.url, new URL(anchor.href))) event.preventDefault();
     };
     document.addEventListener("click", dropRepeat, true);
