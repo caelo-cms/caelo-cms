@@ -199,23 +199,20 @@ async function main(): Promise<void> {
     const catItems = (
       await op<{ list: { items: { id: string }[] } }>(SYS, "lists.get", { slug: "sg-categories" })
     ).list.items.map((it) => it.id);
+    // #1276 — a template serves a chosen page type; the News type is
+    // created with it, the template as its default.
     const { templateId } = await op<{ templateId: string }>(SYS, "templates.create", {
       slug: "sg-news",
       displayName: "News article",
       html: '<main><caelo-slot name="content"></caelo-slot></main>',
-    });
-    await op(SYS, "page_types.upsert_many", {
-      pageTypes: [
-        {
-          slug: "news",
-          name: "News",
-          purpose: "Dated news articles",
-          templates: [templateId],
-          defaultTemplate: templateId,
-          properties: [],
-          vocabularies: [{ list: vocabId, cardinality: "many" }],
-        },
-      ],
+      newPageType: {
+        slug: "news",
+        name: "News",
+        purpose: "Dated news articles",
+        collection: true,
+        properties: [],
+        vocabularies: [{ list: vocabId, cardinality: "many" }],
+      },
     });
     const article = await op<{ moduleId: string }>(SYS, "modules.create", {
       slug: "sg-article",
