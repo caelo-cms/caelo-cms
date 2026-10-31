@@ -76,6 +76,8 @@ export const listDigestTargetsOp = defineOperation({
   name: "media.list_digest_targets",
   // Why system-only: a step of media.rebuild_digests (system-only, below).
   actorScope: ["system"],
+  // Why site-wide: the backfill's purpose is every media row without digests.
+  readScope: "site",
   database: "cms_admin",
   input: scopeInput.extend({ profile: z.string().min(1) }),
   output: z.object({ targets: z.array(targetRow) }),
@@ -140,6 +142,7 @@ export const storeDigestsOp = defineOperation({
   name: "media.store_digests",
   // Why system-only: a step of media.rebuild_digests (system-only, below).
   actorScope: ["system"],
+  readScope: "request",
   database: "cms_admin",
   input: z.object({ digests: z.array(digestRow) }).strict(),
   output: z.object({ updated: z.number().int() }),
@@ -222,6 +225,8 @@ export const rebuildMediaDigestsOp = defineStepwiseOperation({
   // `all` scope exists for that maintenance and for tests, not as a tool
   // (the tool catalogue shrinks, CLAUDE.md §11).
   actorScope: ["system"],
+  // Why site-wide: a rebuild op over every media row (its purpose).
+  readScope: "site",
   database: "cms_admin",
   input: scopeInput,
   output: z.object({
