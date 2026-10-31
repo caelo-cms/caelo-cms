@@ -53,6 +53,15 @@
  * nothing but its in-flight requests (and timers until its instances stop),
  * so that window is the seconds between one of them arriving and reaching
  * its first database step.
+ *
+ * The redirect sync's claim (#1254) is the one holder the previous release
+ * cannot see at all: it reads only `holder_run_id`, and a sync holds the
+ * lease by `holder_sync_id`, so its rollback and CDN purge (row lock only)
+ * would read the lease as free. Its own claims fail on the
+ * `deploy_leases_one_holder` CHECK. Rollback (a click) and the purge (a
+ * status read) are both request-driven in that release, so the exposure is
+ * the same window as above: a request already in flight on the previous
+ * revision at cutover, overlapping the seconds of a sync's push.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
