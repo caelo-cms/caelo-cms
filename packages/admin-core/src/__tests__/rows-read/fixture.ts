@@ -161,7 +161,11 @@ export async function growFixture(
       >,
   );
   const first = chats[0];
-  if (!first) throw new Error("no fixture chat");
+  // The chat the per-chat reads measure: it owns its block of pending
+  // changes and nothing else — the writes run as `first`, so the small
+  // run's writes do not grow what the large run reads.
+  const reader = chats[1];
+  if (!first || !reader) throw new Error("no fixture chat");
 
   await asSystem(url, async (tx) => {
     const pagesNow =
@@ -219,7 +223,12 @@ export async function growFixture(
     }
     // History: staged headers (main line) and pending ones on the draft,
     // each with a page snapshot, spread over the pages and the chats.
+    // Pending snapshots go to the chats in blocks of `perChat`, so every
+    // chat owns the same number at both sizes (the draft grows by more
+    // chats, not by more changes per chat) — #1268's per-chat reads cost
+    // what the chat changed. Staged ones are spread round-robin.
     const chatArray = `ARRAY['${chats.map((c) => c.id).join("','")}']::uuid[]`;
+    const perChat = Math.floor(SMALL.pending / SMALL.chats);
     const snapshotsOf = async (what: "staged" | "pending", target: number) => {
       const now =
         (
@@ -236,7 +245,7 @@ export async function growFixture(
                INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id,
                                            created_at, staged_at)
                SELECT '${ACTOR}', 'pages.update', '${RR_PREFIX}${what}',
-                      (${chatArray})[1 + i % ${chats.length}], '${first.branch}',
+                      (${chatArray})[${what === "pending" ? `1 + (i - 1) / ${perChat}` : `1 + i % ${chats.length}`}], '${first.branch}',
                       now() - ((${target} - i) || ' seconds')::interval - interval '2 days',
                       ${what === "staged" ? `now() - ((${target} - i) || ' seconds')::interval - interval '1 day'` : "NULL"}
                  FROM generate_series(${now + 1}, ${target}) i
@@ -304,6 +313,7 @@ export async function growFixture(
       "media_assets",
       "plugin_row_snapshots",
       "chat_sessions",
+      "draft_pending_entities",
     ]) {
       await tx.unsafe(`ANALYZE ${t}`);
     }
@@ -363,7 +373,7 @@ export async function growFixture(
     write: { moduleId: writeModule.moduleId, pageId: w.page_id, instanceId: w.instance_id },
     listId: r.list_id,
     mediaId: r.media_id,
-    chatSessionId: first.id,
+    chatSessionId: reader.id,
     chatBranchId: first.branch,
     chat: {
       actorId: ACTOR,

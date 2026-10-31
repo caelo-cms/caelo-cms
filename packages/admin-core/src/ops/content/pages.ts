@@ -36,7 +36,7 @@ import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
-import { pendingSnapshotSql } from "../../draft.js";
+import { headOverlaySql } from "../../draft.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { fitPageToType, loadVocabularyIndex } from "../../lists/page-fit.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
@@ -199,15 +199,16 @@ async function loadTypeBound(
   for (const t of termRows) terms.set(t.page_id, [...(terms.get(t.page_id) ?? []), t.ref]);
   const overlay = new Map<string, PageState>();
   if (ctx.chatBranchId) {
-    const snaps = (await tx.execute(sql`
-      SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
-        FROM page_snapshots ps JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-       WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
-         AND ps.page_id = ANY(${ids})
-       ORDER BY ps.page_id, ss.created_at DESC
-    `)) as unknown as { page_id: string; state: unknown }[];
+    const snaps = (await tx.execute(
+      headOverlaySql({
+        kind: "page",
+        table: "page_snapshots",
+        branchId: ctx.chatBranchId,
+        ids: rows.map((r) => r.id),
+      }),
+    )) as unknown as { entity_id: string; state: unknown }[];
     for (const s of snaps) {
-      overlay.set(s.page_id, s.state as PageState);
+      overlay.set(s.entity_id, s.state as PageState);
     }
   }
   const slugs = new Map(
@@ -341,15 +342,11 @@ export const listPagesOp = defineOperation({
     // (branch-blind reads): apply the latest branched snapshot per page
     // so deletes (and branched slug/title/status edits) read back.
     if (ctx.chatBranchId && rows.length > 0) {
-      const overlayRows = (await tx.execute(sql`
-        SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
-          FROM page_snapshots ps
-          JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-         WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
-         ORDER BY ps.page_id, ss.created_at DESC
-      `)) as unknown as { page_id: string; state: unknown }[];
+      const overlayRows = (await tx.execute(
+        headOverlaySql({ kind: "page", table: "page_snapshots", branchId: ctx.chatBranchId }),
+      )) as unknown as { entity_id: string; state: unknown }[];
       if (overlayRows.length > 0) {
-        const overlayById = new Map(overlayRows.map((r) => [r.page_id, r.state]));
+        const overlayById = new Map(overlayRows.map((r) => [r.entity_id, r.state]));
         const merged: RawPageRow[] = [];
         for (const row of rows) {
           const rawState = overlayById.get(row.id);
@@ -596,18 +593,16 @@ export const getPageWithModulesOp = withHumanisedLinks(
         // applies for the /edit iframe, so tool reads match what the
         // operator sees.
         if (ctx.chatBranchId && allModuleIds.length > 0) {
-          const overlayRows = (await tx.execute(sql`
-          SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
-          FROM module_snapshots ms
-          JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-          WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
-            AND ms.module_id = ANY(${sql.raw(
-              `ARRAY[${allModuleIds.map((id) => `'${id}'::uuid`).join(",")}]`,
-            )})
-          ORDER BY ms.module_id, ss.created_at DESC
-        `)) as unknown as { module_id: string; state: unknown }[];
+          const overlayRows = (await tx.execute(
+            headOverlaySql({
+              kind: "module",
+              table: "module_snapshots",
+              branchId: ctx.chatBranchId,
+              ids: allModuleIds,
+            }),
+          )) as unknown as { entity_id: string; state: unknown }[];
           for (const row of overlayRows) {
-            const detail = detailById.get(row.module_id);
+            const detail = detailById.get(row.entity_id);
             if (!detail) continue;
             const s = row.state as {
               html?: string;
@@ -790,21 +785,19 @@ async function branchDeletedPageIds(
 ): Promise<Set<string>> {
   const deleted = new Set<string>();
   if (candidateIds.length === 0) return deleted;
-  const overlay = (await tx.execute(sql`
-    SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
-      FROM page_snapshots ps
-      JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-     WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-       AND ps.page_id = ANY(${sql.raw(
-         `ARRAY[${candidateIds.map((id) => `'${id}'::uuid`).join(",")}]`,
-       )})
-     ORDER BY ps.page_id, ss.created_at DESC
-  `)) as unknown as { page_id: string; state: unknown }[];
+  const overlay = (await tx.execute(
+    headOverlaySql({
+      kind: "page",
+      table: "page_snapshots",
+      branchId: chatBranchId,
+      ids: candidateIds,
+    }),
+  )) as unknown as { entity_id: string; state: unknown }[];
   for (const row of overlay) {
     const s = row.state as {
       deletedAt?: string | null;
     };
-    if (s.deletedAt) deleted.add(row.page_id);
+    if (s.deletedAt) deleted.add(row.entity_id);
   }
   return deleted;
 }
@@ -1410,18 +1403,18 @@ async function recordBranchedStatus(
   operation: "pages.set_status" | "pages.set_status_many",
 ): Promise<void> {
   if (!ctx.chatBranchId || pageIds.length === 0) return;
-  const latest = (await tx.execute(sql`
-    SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
-      FROM page_snapshots ps
-      JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-     WHERE ps.page_id = ANY(${uuidArray(pageIds)})
-       AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
-     ORDER BY ps.page_id, ss.created_at DESC
-  `)) as unknown as { page_id: string; state: unknown }[];
+  const latest = (await tx.execute(
+    headOverlaySql({
+      kind: "page",
+      table: "page_snapshots",
+      branchId: ctx.chatBranchId,
+      ids: pageIds,
+    }),
+  )) as unknown as { entity_id: string; state: unknown }[];
   if (latest.length === 0) return;
   const entities = latest.map((row) => {
     const prior = row.state as PageState;
-    return { kind: "page" as const, entityId: row.page_id, state: { ...prior, status } };
+    return { kind: "page" as const, entityId: row.entity_id, state: { ...prior, status } };
   });
   await emitSnapshot(tx, {
     actorId: ctx.actorId,

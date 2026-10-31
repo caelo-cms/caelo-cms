@@ -6,9 +6,9 @@
  * captured state matches what just landed on disk.
  */
 
-import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
+import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../draft.js";
+import { headOverlaySql } from "../draft.js";
 import type {
   ContentInstanceState,
   ModuleState,
@@ -252,20 +252,19 @@ export async function loadBranchedModuleStates(
 ): Promise<Map<string, ModuleState>> {
   const out = new Map<string, ModuleState>();
   if (moduleIds !== undefined && moduleIds.length === 0) return out;
-  const idFilter =
-    moduleIds === undefined ? sql`` : sql`AND ms.module_id = ANY(${uuidArray(moduleIds)})`;
-  const rows = (await tx.execute(sql`
-    SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
-      FROM module_snapshots ms
-      JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-     WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()} ${idFilter}
-     ORDER BY ms.module_id, ss.created_at DESC
-  `)) as unknown as { module_id: string; state: unknown }[];
+  const rows = (await tx.execute(
+    headOverlaySql({
+      kind: "module",
+      table: "module_snapshots",
+      branchId: chatBranchId,
+      ...(moduleIds ? { ids: moduleIds } : {}),
+    }),
+  )) as unknown as { entity_id: string; state: unknown }[];
   for (const row of rows) {
     const raw = row.state as ModuleState;
     // v0.12.3 — a branched snapshot written before 0103 lacks `type`;
     // fall back to slug so downstream consumers always see a value.
-    out.set(row.module_id, raw.type ? raw : { ...raw, type: raw.slug });
+    out.set(row.entity_id, raw.type ? raw : { ...raw, type: raw.slug });
   }
   return out;
 }
@@ -276,15 +275,14 @@ export async function loadPageStateWithBranchOverlay(
   chatBranchId: string | null | undefined,
 ): Promise<PageState | null> {
   if (chatBranchId) {
-    const rows = (await tx.execute(sql`
-      SELECT ps.state
-        FROM page_snapshots ps
-        JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-       WHERE ps.page_id = ${pageId}::uuid
-         AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-       ORDER BY ss.created_at DESC
-       LIMIT 1
-    `)) as unknown as { state: unknown }[];
+    const rows = (await tx.execute(
+      headOverlaySql({
+        kind: "page",
+        table: "page_snapshots",
+        branchId: chatBranchId,
+        ids: [pageId],
+      }),
+    )) as unknown as { state: unknown }[];
     const row = rows[0];
     if (row !== undefined) {
       const raw = row.state;
@@ -312,15 +310,14 @@ export async function loadPageLayoutStateWithBranchOverlay(
   chatBranchId: string | null | undefined,
 ): Promise<PageLayoutState> {
   if (chatBranchId) {
-    const rows = (await tx.execute(sql`
-      SELECT pls.state
-        FROM page_layout_snapshots pls
-        JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-       WHERE pls.page_id = ${pageId}::uuid
-         AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-       ORDER BY ss.created_at DESC
-       LIMIT 1
-    `)) as unknown as { state: unknown }[];
+    const rows = (await tx.execute(
+      headOverlaySql({
+        kind: "pageLayout",
+        table: "page_layout_snapshots",
+        branchId: chatBranchId,
+        ids: [pageId],
+      }),
+    )) as unknown as { state: unknown }[];
     const row = rows[0];
     if (row !== undefined) {
       const raw = row.state;
@@ -378,15 +375,14 @@ export async function loadContentInstanceStateWithBranchOverlay(
   chatBranchId: string | null | undefined,
 ): Promise<ContentInstanceState | null> {
   if (chatBranchId) {
-    const rows = (await tx.execute(sql`
-      SELECT cis.state
-        FROM content_instance_snapshots cis
-        JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-       WHERE cis.content_instance_id = ${contentInstanceId}::uuid
-         AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-       ORDER BY ss.created_at DESC
-       LIMIT 1
-    `)) as unknown as { state: unknown }[];
+    const rows = (await tx.execute(
+      headOverlaySql({
+        kind: "contentInstance",
+        table: "content_instance_snapshots",
+        branchId: chatBranchId,
+        ids: [contentInstanceId],
+      }),
+    )) as unknown as { state: unknown }[];
     const row = rows[0];
     if (row !== undefined) {
       const raw = row.state;
@@ -409,18 +405,17 @@ export async function loadContentInstanceBranchStates(
 ): Promise<Map<string, ContentInstanceState>> {
   const out = new Map<string, ContentInstanceState>();
   if (contentInstanceIds.length === 0) return out;
-  const rows = (await tx.execute(sql`
-    SELECT DISTINCT ON (cis.content_instance_id)
-           cis.content_instance_id::text AS id, cis.state
-      FROM content_instance_snapshots cis
-      JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-     WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-       AND cis.content_instance_id = ANY(${uuidArray(contentInstanceIds)})
-     ORDER BY cis.content_instance_id, ss.created_at DESC
-  `)) as unknown as { id: string; state: unknown }[];
+  const rows = (await tx.execute(
+    headOverlaySql({
+      kind: "contentInstance",
+      table: "content_instance_snapshots",
+      branchId: chatBranchId,
+      ids: contentInstanceIds,
+    }),
+  )) as unknown as { entity_id: string; state: unknown }[];
   for (const r of rows) {
     const raw = r.state;
-    out.set(r.id, raw as ContentInstanceState);
+    out.set(r.entity_id, raw as ContentInstanceState);
   }
   return out;
 }
