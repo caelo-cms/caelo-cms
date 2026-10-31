@@ -236,6 +236,7 @@ export const mediaUploadOp = defineOperation({
         kind: "HandlerError",
         operation: "media.upload",
         message: "no id returned",
+        internal: true,
       });
     }
 
@@ -866,6 +867,7 @@ export const addCropOp = defineOperation({
         kind: "HandlerError",
         operation: "media.add_crop",
         message: "no id returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {
@@ -1025,6 +1027,7 @@ export const proposeAltOp = defineOperation({
         kind: "HandlerError",
         operation: "media.propose_alt",
         message: "no id returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {

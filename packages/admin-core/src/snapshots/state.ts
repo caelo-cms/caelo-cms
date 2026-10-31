@@ -84,6 +84,11 @@ export interface PageState {
   readonly pendingRedirects?: "skip";
   /** Epic #1107 — the page type (0351 backfilled every older snapshot). */
   readonly pageTypeId: string;
+  /**
+   * #1276 — whether someone chose `pageTypeId` (0443 backfilled every older
+   * snapshot: false only on the old stored default type).
+   */
+  readonly pageTypeConfirmed: boolean;
   /** Property values, validated against the page type. */
   readonly properties: Readonly<Record<string, unknown>>;
   /** Terms as `caelo:term/<listId>/<itemId>`, materialised into `page_terms` at merge. */

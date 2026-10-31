@@ -11,7 +11,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { createContentInstanceToolInput } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError, forwardRefusal } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -77,12 +77,14 @@ export const createContentInstancesTool: ToolDefinitionWithHandler<CreateContent
       { instances: input.items },
     );
     if (!r.ok) {
-      return {
-        ok: false,
-        // The op names its own `instances[i]`; the AI sent `items[i]`.
-        content: `content_instances.create_many failed (whole batch rolled back): ${describeError(r.error).replaceAll("instances[", "items[")}`,
-        ...forwardRefusal(r.error),
-      };
+      // The op names its own `instances[i]`; the AI sent `items[i]`.
+      return toolError(
+        r.error,
+        `content_instances.create_many failed (nothing was written): ${describeError(r.error)
+          .replaceAll("instances[", "items[")
+          .replace(/ instances failed;/, " items failed;")}`,
+        { from: "instances", to: "items" },
+      );
     }
     const { contentInstanceIds } = r.value as { contentInstanceIds: string[] };
     return {

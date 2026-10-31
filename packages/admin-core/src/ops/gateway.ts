@@ -474,6 +474,7 @@ export const proposeRateLimitOp = defineOperation({
         kind: "HandlerError",
         operation: "gateway.propose_rate_limit",
         message: "no row returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {

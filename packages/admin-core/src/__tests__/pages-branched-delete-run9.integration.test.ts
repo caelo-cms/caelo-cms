@@ -71,6 +71,7 @@ afterAll(async () => {
 describe("run #9 R9 — branched pages.delete reads back as deleted", () => {
   it("the deleted page disappears from pages.list on the chat branch and from main after merge", async () => {
     const tpl = await execute(registry, adapter, SYSTEM, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "Run9 delete tpl",
       html: "<main>{{content}}</main>",

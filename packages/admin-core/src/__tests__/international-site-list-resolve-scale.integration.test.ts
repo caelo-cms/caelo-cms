@@ -30,7 +30,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
-import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
+import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -309,13 +309,13 @@ beforeAll(async () => {
               (SELECT id FROM layouts WHERE slug = 'site-default'))
       RETURNING id::text AS id`) as unknown as { id: string }[];
     ids.template = tpl[0]?.id ?? "";
-    await adoptTemplateIntoDefaultPageType(tx, ids.template);
+    await adoptTemplateIntoHomePageType(tx, ids.template);
     await tx`INSERT INTO template_blocks (template_id, name, display_name, position)
              VALUES (${ids.template}::uuid, 'content', 'Content', 0)`;
     for (const slug of ["pricing", "about", "plain"]) {
       const p = (await tx`
-        INSERT INTO pages (slug, short_title, title, template_id, status)
-        VALUES (${`${PFX}-${slug}`}, ${slug}, ${slug}, ${ids.template}::uuid, 'published')
+        INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed)
+        VALUES (${`${PFX}-${slug}`}, ${slug}, ${slug}, ${ids.template}::uuid, 'published', true)
         RETURNING id::text AS id`) as unknown as { id: string }[];
       if (slug === "pricing") ids.en = p[0]?.id ?? "";
       else if (slug === "about") ids.about = p[0]?.id ?? "";
@@ -331,6 +331,7 @@ beforeAll(async () => {
         slug: `${PFX}-product`,
         name: "Product",
         purpose: "Test products with a tagline",
+        collection: true,
         templates: [ids.template],
         defaultTemplate: ids.template,
         properties: [{ name: "tagline", label: "Tagline", type: "text" }],
@@ -453,15 +454,16 @@ async function seedGroups(groups: number): Promise<void> {
     )[0]?.id;
     const pairs = (await tx.unsafe(
       `WITH n AS (SELECT generate_series(1, ${groups}) AS i),
-            d AS (SELECT default_page_type_id AS pt FROM site_defaults WHERE id = 1),
+            d AS (SELECT id AS pt FROM page_types
+                   WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL),
             en AS (
-              INSERT INTO pages (slug, title, short_title, template_id, page_type_id, status, current_path)
-              SELECT '${PFX}-b-' || i, 'P' || i, 'P' || i, '${ids.template}', d.pt, 'published',
+              INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, status, current_path)
+              SELECT '${PFX}-b-' || i, 'P' || i, 'P' || i, '${ids.template}', d.pt, true, 'published',
                      '/${PFX}-b-' || i FROM n, d
               RETURNING id::text AS id, slug),
             de AS (
-              INSERT INTO pages (slug, title, short_title, template_id, page_type_id, status, current_path)
-              SELECT '${PFX}-b-' || i || '-de', 'P' || i, 'P' || i, '${ids.template}', d.pt, 'published',
+              INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, status, current_path)
+              SELECT '${PFX}-b-' || i || '-de', 'P' || i, 'P' || i, '${ids.template}', d.pt, true, 'published',
                      '/de/${PFX}-b-' || i || '-de' FROM n, d
               RETURNING id::text AS id, slug)
        SELECT en.id AS en, de.id AS de FROM en JOIN de ON de.slug = en.slug || '-de'`,

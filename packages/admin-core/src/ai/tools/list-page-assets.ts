@@ -12,7 +12,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const listPageAssetsInput = z
@@ -58,7 +58,7 @@ export const listPageAssetsTool: ToolDefinitionWithHandler<z.infer<typeof listPa
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `imports.list_page_assets failed: ${describeError(r.error)}` };
+      return toolError(r.error, `imports.list_page_assets failed: ${describeError(r.error)}`);
     }
     const v = r.value as {
       total: number;

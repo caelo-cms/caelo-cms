@@ -17,7 +17,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { repointPageTemplateToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const repointPageTemplateTool: ToolDefinitionWithHandler<
@@ -66,10 +66,7 @@ export const repointPageTemplateTool: ToolDefinitionWithHandler<
       input,
     );
     if (!res.ok) {
-      return {
-        ok: false,
-        content: `pages.change_template failed: ${describeError(res.error)}`,
-      };
+      return toolError(res.error, `pages.change_template failed: ${describeError(res.error)}`);
     }
     const out = res.value as {
       migratedBlocks: string[];

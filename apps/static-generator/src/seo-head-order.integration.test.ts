@@ -78,6 +78,7 @@ beforeAll(async () => {
       tx`UPDATE site_defaults SET site_base_url = 'https://order.example', site_language = 'en' WHERE id = 1`,
   );
   const tpl = await execute(registry, adapter, SYSTEM, "templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: `${PFX} TPL`,
     html:

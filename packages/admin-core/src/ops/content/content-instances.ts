@@ -25,7 +25,14 @@
  * branched-create rows immediately.
  */
 
-import { defineOperation, OperationAbortError, uuidArray } from "@caelo-cms/query-api";
+import {
+  defineOperation,
+  type ErrorDetail,
+  handlerErrorFromDetails,
+  OperationAbortError,
+  type QueryError,
+  uuidArray,
+} from "@caelo-cms/query-api";
 import {
   COPY_ID_EXACTLY_HINT,
   contentInstanceCreateSchema,
@@ -61,6 +68,7 @@ import {
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { runEveryItem } from "../_bulk.js";
 import { cloneContentInstancesDeep } from "./content-instance-clone.js";
 import {
   type ContentInstanceReach,
@@ -142,10 +150,18 @@ function iso(v: string | Date | null | undefined): string | null {
   return v instanceof Date ? v.toISOString() : String(v);
 }
 
+/** Outcome of {@link validateNestedRefs}: every problem, path-addressed. */
+type ValuesValidation =
+  | { ok: true }
+  | { ok: false; errors: ErrorDetail[]; refusal?: true; internal?: true };
+
 /**
- * v0.12.1 — validate nested-module-ref shapes in `values` against the
- * module's declared `fields[]`. Catches:
+ * v0.12.1 — validate `values` against the module's declared `fields[]`.
+ * Catches:
  *
+ *   - A value key no field declares (#1277; keys already stored on the
+ *     row are grandfathered so an edit of an older row still saves).
+ *   - A `number` / `boolean` / `url` value of the wrong shape.
  *   - A `module` / `module-list` field whose value isn't the expected
  *     `{ moduleId, contentInstanceId }` shape.
  *   - A nested ref pointing at a non-existent or soft-deleted module
@@ -153,34 +169,60 @@ function iso(v: string | Date | null | undefined): string | null {
  *   - A nested ref whose content_instance is for a different module
  *     than the field/list element declares.
  *   - A `module-list` whose array size violates declared min/max.
- *   - A `module` field whose value is missing entirely (required).
  *
- * Returns `{ ok: true }` if every nested ref is valid (or no nested
- * fields exist); otherwise `{ ok: false, message }` naming the
- * offending field so the AI's recovery is one round-trip.
+ * Every problem is collected (#1277), each at `["values", <field>, …]`,
+ * so the AI fixes all of them in one round-trip. A module that cannot be
+ * read, or whose stored `fields` is not a list, is a loud error, never a
+ * silent pass (§2).
  *
  * Side-effect: NORMALIZES `values` in place for `kind=url` fields —
  * an empty/whitespace-only url is stored as "" (no link, #1095; see the
  * url branch below), so one missing link target can't abort an atomic
  * build. Callers persist `values` after this returns, so the
  * normalisation is durable.
+ *
+ * @param grandfathered - the row's stored values (set_values): their keys
+ *   pass the undeclared-key check.
  */
-async function validateNestedRefs(
+export async function validateNestedRefs(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   chatBranchId: string | null,
   moduleId: string,
   values: Record<string, unknown>,
-): Promise<{ ok: true } | { ok: false; message: string; refusal?: true }> {
+  grandfathered?: Record<string, unknown>,
+): Promise<ValuesValidation> {
   // Read the owning module's fields schema AS THE CALLER SEES IT (#1042):
   // a chat's `update_modules_many` lands only in its branch snapshot, so reading
   // live `modules.fields` validated the values against main's schema — a
   // field the chat had just turned from `module` into `module-list`
-  // rejected the list it now declares. Skip if module not found — the
-  // caller already validated that.
+  // rejected the list it now declares.
   const owner = await loadModuleStateWithBranchOverlay(tx, moduleId, chatBranchId);
-  if (owner === null) return { ok: true };
+  if (owner === null) {
+    return {
+      ok: false,
+      errors: [
+        {
+          path: ["moduleId"],
+          message: `module ${moduleId} does not exist or is deleted on this branch`,
+          next: "Use a module id from list_modules.",
+        },
+      ],
+    };
+  }
   const rawFields: unknown = owner.fields;
-  if (!Array.isArray(rawFields)) return { ok: true };
+  if (!Array.isArray(rawFields)) {
+    // Stored data the schema never allows: a defect, not the caller's input.
+    return {
+      ok: false,
+      internal: true,
+      errors: [
+        {
+          path: ["moduleId"],
+          message: `module "${owner.slug}" has no readable field list (stored fields is ${typeof rawFields}) — a defect in Caelo, reported automatically`,
+        },
+      ],
+    };
+  }
 
   type Field = {
     name: string;
@@ -196,6 +238,23 @@ async function validateNestedRefs(
       typeof (f as { name?: unknown }).name === "string" &&
       typeof (f as { kind?: unknown }).kind === "string",
   );
+  const errors: ErrorDetail[] = [];
+  let refusal = false;
+
+  // #1277 — a value neither a field nor the html names renders nowhere:
+  // say so instead of storing it silently. A placeholder the html uses
+  // without a declared field still renders (#852), so it counts.
+  const declared = new Set(fields.map((f) => f.name));
+  const known = new Set([...declared, ...htmlPlaceholderNames(owner.html)]);
+  for (const key of Object.keys(values)) {
+    if (known.has(key) || (grandfathered && key in grandfathered)) continue;
+    errors.push({
+      path: ["values", key],
+      message: `module "${owner.slug}" has no field or placeholder "${key}"`,
+      allowed: [...declared],
+      next: "Rename it to a declared field, or add the field to the module first (update_modules_many).",
+    });
+  }
 
   // v0.12.1 — per-primitive-kind shape checks. Catches AI shape errors
   // at write time (e.g. number field gets a non-numeric string) instead
@@ -207,24 +266,25 @@ async function validateNestedRefs(
     if (f.kind !== "number" && f.kind !== "boolean" && f.kind !== "url") continue;
     const v = values[f.name];
     if (v === undefined || v === null) continue; // optional — falls back to default
+    const path = ["values", f.name];
     if (f.kind === "number") {
       const ok =
         typeof v === "number" ||
         (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)));
       if (!ok) {
-        return {
-          ok: false,
+        errors.push({
+          path,
           message: `field "${f.name}" (kind=number) expects a number or numeric string; got ${JSON.stringify(v)}`,
-        };
+        });
       }
     } else if (f.kind === "boolean") {
       const ok =
         typeof v === "boolean" || (typeof v === "string" && (v === "true" || v === "false"));
       if (!ok) {
-        return {
-          ok: false,
+        errors.push({
+          path,
           message: `field "${f.name}" (kind=boolean) expects true|false or "true"|"false"; got ${JSON.stringify(v)}`,
-        };
+        });
       }
     } else if (f.kind === "url") {
       // An EMPTY or whitespace-only url value is a link the content does
@@ -256,10 +316,10 @@ async function validateNestedRefs(
           // Epic #724 — the stored form of an internal link.
           parseLinkRef(v) !== null);
       if (!ok) {
-        return {
-          ok: false,
+        errors.push({
+          path,
           message: `field "${f.name}" (kind=url) expects a relative path, absolute URL, mailto:, tel:, or #-fragment string; got ${JSON.stringify(v)}`,
-        };
+        });
       }
     }
   }
@@ -277,49 +337,59 @@ async function validateNestedRefs(
       if (v === undefined || v === null) continue; // optional — render emits comment
       const parsed = moduleRefSchema.safeParse(v);
       if (!parsed.success) {
-        return { ok: false, message: moduleRefMessage(`field "${f.name}" (kind=module)`, v) };
+        errors.push({
+          path: ["values", f.name],
+          message: moduleRefMessage(`field "${f.name}" (kind=module)`, v),
+        });
+        continue;
       }
       refsToCheck.push({ fieldName: f.name, index: null, ref: parsed.data });
     } else if (f.kind === "module-list") {
       const v = values[f.name];
+      const path = ["values", f.name];
       if (v === undefined || v === null) {
         if (f.min !== undefined && f.min > 0) {
-          return {
-            ok: false,
+          errors.push({
+            path,
             message: `field "${f.name}" (kind=module-list) is missing; declared min=${f.min}`,
-          };
+          });
         }
         continue;
       }
       if (!Array.isArray(v)) {
-        return {
-          ok: false,
+        errors.push({
+          path,
           message: `field "${f.name}" (kind=module-list) expects an array; got ${typeof v}`,
-        };
+        });
+        continue;
       }
       if (f.min !== undefined && v.length < f.min) {
-        return {
-          ok: false,
+        errors.push({
+          path,
           message: `field "${f.name}" has ${v.length} item(s); declared min=${f.min}`,
-        };
+        });
       }
       if (f.max !== undefined && v.length > f.max) {
-        return {
-          ok: false,
+        errors.push({
+          path,
           message: `field "${f.name}" has ${v.length} item(s); declared max=${f.max}`,
-        };
+        });
       }
       for (let i = 0; i < v.length; i += 1) {
         const el = v[i];
         const parsed = moduleRefSchema.safeParse(el);
         if (!parsed.success) {
-          return { ok: false, message: moduleRefMessage(`field "${f.name}"[${i}]`, el) };
+          errors.push({
+            path: ["values", f.name, i],
+            message: moduleRefMessage(`field "${f.name}"[${i}]`, el),
+          });
+          continue;
         }
         refsToCheck.push({ fieldName: f.name, index: i, ref: parsed.data });
       }
     }
   }
-  if (refsToCheck.length === 0) return { ok: true };
+  if (refsToCheck.length === 0) return finish();
 
   // Verify every referenced module + content_instance exists, isn't
   // soft-deleted, and the content_instance.module_id matches the
@@ -361,24 +431,31 @@ async function validateNestedRefs(
   for (const c of refsToCheck) {
     const m = moduleMap.get(c.ref.moduleId);
     const where = c.index === null ? c.fieldName : `${c.fieldName}[${c.index}]`;
+    const path = c.index === null ? ["values", c.fieldName] : ["values", c.fieldName, c.index];
     if (!m || m.deleted_at !== null) {
-      return {
-        ok: false,
-        message: `field "${where}" references module ${c.ref.moduleId} which does not exist or is deleted`,
-      };
+      errors.push({
+        path: [...path, "moduleId"],
+        message: `field "${where}" references module ${c.ref.moduleId}, which does not exist or is deleted`,
+        next: "Use a module id from list_modules.",
+      });
+      continue;
     }
     const ci = ciMap.get(c.ref.contentInstanceId);
     if (!ci || ci.deleted_at !== null) {
-      return {
-        ok: false,
-        message: `field "${where}" references content_instance ${c.ref.contentInstanceId} which does not exist or is deleted`,
-      };
+      errors.push({
+        path: [...path, "contentInstanceId"],
+        message: `field "${where}" references content_instance ${c.ref.contentInstanceId}, which does not exist or is deleted`,
+        next: "Use an id from list_content_instances.",
+      });
+      continue;
     }
     if (ci.module_id !== c.ref.moduleId) {
-      return {
-        ok: false,
-        message: `field "${where}" content_instance ${c.ref.contentInstanceId} is for module ${ci.module_id}, but the ref declares module ${c.ref.moduleId}`,
-      };
+      errors.push({
+        path: [...path, "contentInstanceId"],
+        message: `field "${where}": content_instance ${c.ref.contentInstanceId} belongs to another module than the ref's module "${m.slug}"`,
+        next: `Use a content instance of module "${m.slug}" (list_content_instances).`,
+      });
+      continue;
     }
     // v0.12.3 (issue #106) — allowedModuleTypes whitelist. This is the
     // ONLY enforcement site (the renderer does NOT enforce it — the
@@ -387,28 +464,32 @@ async function validateNestedRefs(
     // its unique `slug`: an AI-minted module's slug carries a uniqueness
     // suffix (`button-mpqxq3ch`) that could never match an authored
     // allowlist, whereas its `type` is the reusable class (`button`).
-    const declared = fields.find((f) => f.name === c.fieldName);
-    if (declared?.allowedModuleTypes && declared.allowedModuleTypes.length > 0) {
-      if (!declared.allowedModuleTypes.includes(m.type)) {
-        const allowed = declared.allowedModuleTypes.join(", ");
-        return {
-          ok: false,
-          // #1091 — the authored allowlist working as designed: the
-          // caller picks an allowed module or widens the list.
-          refusal: true,
-          // AI-actionable per CLAUDE.md §11.A: name the valid set + the
-          // exact next step so the AI self-corrects instead of punting
-          // the implementation detail to a non-technical operator (§1A).
-          message:
-            `field "${where}" references module "${m.slug}" (type "${m.type}"), which is not in this field's allowedModuleTypes [${allowed}]. ` +
-            `Next step: reference an existing module whose type is one of [${allowed}] (\`list_modules\` shows each module's type and this field's allowedModuleTypes), ` +
-            `or, if this module SHOULD be allowed here, add "${m.type}" to the field's allowedModuleTypes via update_modules_many on the parent module. ` +
-            `Do not ask the operator to fix this — pick a valid module or widen the allowlist and retry.`,
-        };
+    const declaredField = fields.find((f) => f.name === c.fieldName);
+    if (declaredField?.allowedModuleTypes && declaredField.allowedModuleTypes.length > 0) {
+      if (!declaredField.allowedModuleTypes.includes(m.type)) {
+        // #1091 — the authored allowlist working as designed: the
+        // caller picks an allowed module or widens the list.
+        refusal = true;
+        // AI-actionable per CLAUDE.md §11.A: name the valid set + the
+        // exact next step so the AI self-corrects instead of punting
+        // the implementation detail to a non-technical operator (§1A).
+        errors.push({
+          path: [...path, "moduleId"],
+          message: `field "${where}" references module "${m.slug}" (type "${m.type}"), which is not in this field's allowedModuleTypes`,
+          allowed: declaredField.allowedModuleTypes,
+          next:
+            `Reference a module of an allowed type (\`list_modules\` shows each module's type), ` +
+            `or add "${m.type}" to the field's allowedModuleTypes via update_modules_many on the parent module. Do not ask the operator.`,
+        });
       }
     }
   }
-  return { ok: true };
+  return finish();
+
+  function finish(): ValuesValidation {
+    if (errors.length === 0) return { ok: true };
+    return { ok: false, errors, ...(refusal ? { refusal: true as const } : {}) };
+  }
 }
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
@@ -830,20 +911,16 @@ export const createContentInstanceOp = defineOperation({
       input.values,
     );
     if (!refValidation.ok) {
+      const error = valuesValidationError("content_instances.create", refValidation);
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
         operation: "content_instances.create",
         input,
         succeeded: false,
-        resultSummary: `nested-ref-validation: ${refValidation.message}`,
+        resultSummary: `nested-ref-validation: ${error.message}`,
       });
-      return err({
-        kind: "HandlerError",
-        operation: "content_instances.create",
-        message: refValidation.message,
-        ...(refValidation.refusal ? { refusal: true as const } : {}),
-      });
+      return err(error);
     }
 
     const valuesJson = JSON.stringify(input.values);
@@ -867,6 +944,7 @@ export const createContentInstanceOp = defineOperation({
         kind: "HandlerError",
         operation: "content_instances.create",
         message: "no id returned",
+        internal: true,
       });
     }
 
@@ -910,10 +988,11 @@ export const createContentInstanceOp = defineOperation({
  * module check, slug-dup check, nested-ref + field-shape validation,
  * audit, snapshot — inside ONE shared transaction.
  *
- * All-or-nothing: a failure at index i throws `OperationAbortError`
- * so items 0..i-1 roll back too (a `return err` after partial writes
- * would COMMIT them — see errors.ts). The message names `instances[i]`
- * and forwards the singular validator's field-naming message verbatim.
+ * All-or-nothing: every item runs, and any failure throws
+ * `OperationAbortError` so the written items roll back too (a `return
+ * err` after partial writes would COMMIT them — see errors.ts). The
+ * error names every failing `instances[i]` with the singular validator's
+ * field paths under it (#1277).
  */
 export const createContentInstancesManyOp = defineOperation({
   name: "content_instances.create_many",
@@ -923,28 +1002,22 @@ export const createContentInstancesManyOp = defineOperation({
   input: contentInstancesCreateManySchema,
   output: z.object({ contentInstanceIds: z.array(z.string()) }),
   handler: async (ctx, input, tx) => {
-    const contentInstanceIds: string[] = [];
-    for (let i = 0; i < input.instances.length; i += 1) {
-      const item = input.instances[i];
-      if (item === undefined) continue;
-      const r = await createContentInstanceOp.handler(ctx, item, tx);
-      if (!r.ok) {
-        const inner = r.error as { message?: string; refusal?: true };
-        const queryError = {
-          kind: "HandlerError" as const,
-          operation: "content_instances.create_many",
-          message: `instances[${i}] (moduleId=${item.moduleId}${item.slug ? `, slug=${item.slug}` : ""}): ${
-            inner.message ?? r.error.kind
-          }. The whole batch was rolled back — fix this item and resend all ${input.instances.length}.`,
-          // #1091 — an item's guard refusal stays a refusal for the batch
-          // (the guard-refusal capture keys on it), as in `defineBulkOp`.
-          ...(r.error.kind === "HandlerError" && inner.refusal ? { refusal: true as const } : {}),
-        };
-        if (contentInstanceIds.length > 0) throw new OperationAbortError(queryError);
-        return err(queryError);
-      }
-      contentInstanceIds.push((r.value as { contentInstanceId: string }).contentInstanceId);
+    // #1277 — every item runs; every failing index is reported at once.
+    const run = await runEveryItem(
+      "content_instances.create_many",
+      "instances",
+      input.instances,
+      (item) => createContentInstanceOp.handler(ctx, item, tx),
+    );
+    if (!run.ok) {
+      // Anything written must roll back; nothing written keeps the
+      // failed-attempt audit rows (see OperationAbortError).
+      if (run.writtenItems === 0) return err(run.error);
+      throw new OperationAbortError(run.error);
     }
+    const contentInstanceIds = run.results.map(
+      (r) => (r as { contentInstanceId: string }).contentInstanceId,
+    );
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -1020,7 +1093,8 @@ export const setContentInstanceValuesOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "content_instances.set_values",
-        message: `Conflict: expected version ${input.expectedVersion}, found ${prev.version}`,
+        message: `Conflict: expected version ${input.expectedVersion}, found ${prev.version} — the instance changed since you read it; read it again (get_content_instance) and redo your change on top of it`,
+        conflict: true,
       });
     }
 
@@ -1072,8 +1146,15 @@ export const setContentInstanceValuesOp = defineOperation({
 
     // v0.12.1 — validate nested-module-ref shapes against the owning
     // module's fields[] so bad refs fail at write time, not render time.
-    const refValidation = await validateNestedRefs(tx, branchId, prev.moduleId, input.values);
+    const refValidation = await validateNestedRefs(
+      tx,
+      branchId,
+      prev.moduleId,
+      input.values,
+      prev.values as Record<string, unknown>,
+    );
     if (!refValidation.ok) {
+      const error = valuesValidationError("content_instances.set_values", refValidation);
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
@@ -1081,14 +1162,9 @@ export const setContentInstanceValuesOp = defineOperation({
         input,
         succeeded: false,
         entityId: input.id,
-        resultSummary: `nested-ref-validation: ${refValidation.message}`,
+        resultSummary: `nested-ref-validation: ${error.message}`,
       });
-      return err({
-        kind: "HandlerError",
-        operation: "content_instances.set_values",
-        message: refValidation.message,
-        ...(refValidation.refusal ? { refusal: true as const } : {}),
-      });
+      return err(error);
     }
 
     const valuesJson = JSON.stringify(input.values);
@@ -1698,6 +1774,24 @@ export const forkPlacementContentOp = defineOperation({
     return ok({ contentInstanceId: newCiId });
   },
 });
+
+/** Every name a `{{…}}` tag of `html` reads (`{{x}}`, `{{>x}}`, `{{#x}}`, `{{^x}}`, `{{/x}}`). */
+function htmlPlaceholderNames(html: string | null | undefined): string[] {
+  if (!html) return [];
+  return [...html.matchAll(/\{\{\{?\s*[#^/>&]?\s*([A-Za-z_][\w-]*)/g)].map((m) => m[1] as string);
+}
+
+/** The HandlerError for a failed {@link validateNestedRefs}: all problems, one text. */
+function valuesValidationError(
+  operation: string,
+  failed: Extract<ValuesValidation, { ok: false }>,
+): Extract<QueryError, { kind: "HandlerError" }> {
+  const error = handlerErrorFromDetails(operation, failed.errors, {
+    ...(failed.refusal ? { refusal: true } : {}),
+    ...(failed.internal ? { internal: true } : {}),
+  });
+  return error;
+}
 
 /**
  * Why a nested module reference was refused. #1094 — a correctly shaped

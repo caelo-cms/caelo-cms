@@ -280,6 +280,7 @@ export const createChatSessionOp = defineOperation({
         kind: "HandlerError",
         operation: "chat.create_session",
         message: "session insert returned no row",
+        internal: true,
       });
     }
     await recordAudit(tx, {

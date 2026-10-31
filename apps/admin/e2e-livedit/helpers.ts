@@ -159,16 +159,16 @@ export function resetLiveditFixtures(): void {
       // (genesis, homepage) fed compose_from_import the LEFTOVER templates,
       // ballooning the migrate turn's context past the model's 1M window
       // (a failed call → dangling tool calls → 0 pages). Wipe them, but
-      // PRESERVE the migration-seeded default template + layout that
-      // site_defaults references (0023). Order: children before parents;
+      // PRESERVE the migration-seeded home-template + layout (0023; the
+      // layout is site_defaults' default, the template the home page type's). Order: children before parents;
       // pages + chat_sessions (the other template referrers) are already
       // wiped above.
       await tx\`DELETE FROM import_run_events\`;
       await tx\`DELETE FROM import_pages\`;
       await tx\`DELETE FROM import_runs\`;
-      // NOT IN (subquery) inline — preserve the migration-seeded default
-      // template that site_defaults references (0023); wipe the rest.
-      const keep = "SELECT default_template_id FROM site_defaults WHERE default_template_id IS NOT NULL";
+      // NOT IN (subquery) inline — preserve the migration-seeded
+      // home-template (0023); wipe the rest.
+      const keep = "SELECT id FROM templates WHERE slug = 'home-template' AND chat_branch_id IS NULL";
       await tx.unsafe(\`DELETE FROM template_snapshots WHERE template_id NOT IN (\${keep})\`);
       await tx.unsafe(\`DELETE FROM template_pending_actions WHERE template_id NOT IN (\${keep})\`);
       await tx.unsafe(\`DELETE FROM template_blocks WHERE template_id NOT IN (\${keep})\`);
@@ -176,19 +176,19 @@ export function resetLiveditFixtures(): void {
       // Epic #1107 — lists, list types and page types a scenario's AI
       // created would otherwise steer the next scenario ("reuse the
       // existing main-menu"). Keep the shipped list types (0352) and the
-      // site's default page type, whose template list drops the templates
-      // wiped above. Pages (the page_types referrers) are already gone.
+      // migration-seeded \`home\` page type, whose template list drops the
+      // templates wiped above. Pages (the page_types referrers) are already gone.
       await tx\`DELETE FROM lists\`;
       await tx\`DELETE FROM list_types WHERE slug NOT IN ('texts', 'links', 'menu', 'categories', 'tags')\`;
       await tx\`DELETE FROM page_types
-               WHERE id IS DISTINCT FROM (SELECT default_page_type_id FROM site_defaults WHERE id = 1)\`;
+               WHERE id IS DISTINCT FROM (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL)\`;
       await tx\`
         UPDATE page_types
            SET definition = jsonb_set(definition, '{templates}', COALESCE((
                  SELECT jsonb_agg(t) FROM jsonb_array_elements_text(definition->'templates') AS t
                   WHERE EXISTS (SELECT 1 FROM templates WHERE id::text = t AND deleted_at IS NULL)
                ), '[]'::jsonb))
-         WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)
+         WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL)
       \`;
       // Login bucket gets consumed by every loginAsDevOwner() call;
       // global-setup only clears it once at suite start, so after 5+
@@ -264,11 +264,11 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
         \`;
       }
       // Epic #1107 — a page needs a page type that allows its template:
-      // the seeded template joins the site's default page type.
+      // the seeded template joins the \`home\` page type (#1276: no default).
       await tx\`
         UPDATE page_types
            SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${templateId}::text))
-         WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)
+         WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL)
            AND NOT (definition->'templates' ? \${templateId}::text)
       \`;
 
@@ -287,8 +287,8 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
       // retries=1. ON CONFLICT DO UPDATE makes seedMinimalSite
       // idempotent across the race.
       const pg = await tx\`
-        INSERT INTO pages (slug, short_title, title, template_id, status)
-        VALUES ('home', 'Home', 'Home', \${templateId}::uuid, 'draft')
+        INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed)
+        VALUES ('home', 'Home', 'Home', \${templateId}::uuid, 'draft', true)
         ON CONFLICT (current_path, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
           WHERE deleted_at IS NULL
           DO UPDATE SET
@@ -1382,7 +1382,7 @@ export function seedNewsArticles(count: number): void {
         pt = await tx\`
           INSERT INTO page_types (slug, definition)
           VALUES ('news', jsonb_build_object(
-            'slug', 'news', 'name', 'News article', 'purpose', \${purpose}::text,
+            'slug', 'news', 'name', 'News article', 'purpose', \${purpose}::text, 'collection', true,
             'templates', jsonb_build_array(\${tpl[0].id}::text), 'defaultTemplate', \${tpl[0].id}::text,
             'properties', '[]'::jsonb, 'vocabularies', '[]'::jsonb))
           RETURNING id::text AS id
@@ -1394,9 +1394,9 @@ export function seedNewsArticles(count: number): void {
         const exists = await tx\`SELECT 1 FROM pages WHERE slug = \${slug} AND deleted_at IS NULL LIMIT 1\`;
         if (exists[0]) continue;
         const pg = await tx\`
-          INSERT INTO pages (slug, short_title, title, template_id, status, page_type_id, first_published_at)
+          INSERT INTO pages (slug, short_title, title, template_id, status, page_type_id, first_published_at, page_type_confirmed)
           VALUES (\${slug}, \${"News " + i}, \${"Release notes " + i}, \${tpl[0].id}::uuid, 'published',
-                  \${pt[0].id}::uuid, now() - make_interval(days => \${n - i}::int))
+                  \${pt[0].id}::uuid, now() - make_interval(days => \${n - i}::int), true)
           RETURNING id::text AS id
         \`;
         await tx\`

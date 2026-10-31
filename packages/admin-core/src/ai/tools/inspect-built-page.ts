@@ -38,7 +38,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
 import { firebaseLiveChannelUrl, readFirebaseBuiltFile } from "../../deploy/firebase-built-file.js";
 import { readStagedBuildFiles, readStagedObject } from "../../deploy/staged-build-files.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 import { isGcpInstall } from "./install-availability.js";
 
@@ -97,7 +97,7 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
       pageId: input.pageId,
     });
     if (!pageR.ok) {
-      return { ok: false, content: `pages.get failed: ${describeError(pageR.error)}` };
+      return toolError(pageR.error, `pages.get failed: ${describeError(pageR.error)}`);
     }
     const page = (pageR.value as { page: { slug: string; currentPath: string } }).page;
 
@@ -262,7 +262,7 @@ async function readFromFirebase(
     runId,
   });
   if (!runR.ok) {
-    return { ok: false, content: `deploy.get_run_origin failed: ${describeError(runR.error)}` };
+    return toolError(runR.error, `deploy.get_run_origin failed: ${describeError(runR.error)}`);
   }
   const run = runR.value as { env: string; previewUrl: string | null; siteUrl: string | null };
   if (run.env !== "staging") {

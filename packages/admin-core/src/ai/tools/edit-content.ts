@@ -20,7 +20,7 @@ import { readContentRow } from "../content-edit/read-row.js";
 import { CONTENT_ENTITY_KINDS, resolveContentTarget } from "../content-edit/registry.js";
 import { applyStringEdits, contentSha, renderEditSnippet } from "../content-edit/text-ops.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import { moduleJsGuardSuffix } from "./_module-js-guard.js";
@@ -132,7 +132,10 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
       writeInput,
     );
     if (!writeRes.ok) {
-      return { ok: false, content: `${target.write.op} failed: ${describeError(writeRes.error)}` };
+      return toolError(
+        writeRes.error,
+        `${target.write.op} failed: ${describeError(writeRes.error)}`,
+      );
     }
 
     const plural = applied.replacements === 1 ? "" : "s";

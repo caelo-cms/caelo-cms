@@ -79,8 +79,8 @@ function seedSharedContentInstance(): SeedResult {
           const pageIds = [];
           for (const slug of ['shared-1','shared-2','shared-3']) {
             const p = await tx\`
-              INSERT INTO pages (slug, short_title, title, template_id, status)
-              VALUES (\${slug}, \${slug}, \${slug}, \${templateId}::uuid, 'published')
+              INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed)
+              VALUES (\${slug}, \${slug}, \${slug}, \${templateId}::uuid, 'published', true)
               RETURNING id::text AS id
             \`;
             pageIds.push(p[0].id);

@@ -339,6 +339,7 @@ export const registerAgentRunOp = defineOperation({
         kind: "HandlerError",
         operation: "chat.register_agent_run",
         message: "agent run insert returned no row",
+        internal: true,
       });
     }
     await recordAudit(tx, {
@@ -488,6 +489,7 @@ export const touchExternalAgentOp = defineOperation({
         kind: "HandlerError",
         operation: "chat.touch_external_agent",
         message: "external agent upsert returned no row",
+        internal: true,
       });
     }
     return ok({ stopped: row.state === "stopped", runId: row.id });

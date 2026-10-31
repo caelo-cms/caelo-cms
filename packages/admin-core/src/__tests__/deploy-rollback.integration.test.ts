@@ -91,6 +91,7 @@ afterAll(async () => {
 describe("deploy.rollback", () => {
   it("re-targets current/ at a prior succeeded build", async () => {
     const t = await execute(registry, adapter, HUMAN, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "RB",
       html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

@@ -12,7 +12,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const reportInput = z
@@ -94,7 +94,7 @@ export const getLinkMigrationReportTool: ToolDefinitionWithHandler<ReportInput> 
       input,
     );
     if (!r.ok)
-      return { ok: false, content: `get_link_migration_report failed: ${describeError(r.error)}` };
+      return toolError(r.error, `get_link_migration_report failed: ${describeError(r.error)}`);
     const v = r.value as { run: Summary | null; unresolved: Unresolved[]; unresolvedTotal: number };
     if (!v.run) {
       return {

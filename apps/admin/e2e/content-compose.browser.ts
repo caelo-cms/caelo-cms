@@ -18,6 +18,7 @@ const ts = Date.now();
 const TPL_SLUG = `e2e-tpl-${ts}`;
 const MOD_SLUG = `e2e-mod-${ts}`;
 const PAGE_SLUG = `e2e-page-${ts}`;
+const TYPE_SLUG = `e2e-type-${ts}`;
 const MODULE_TEXT = `HELLO_${ts}`;
 
 test("compose a page from a module and preview it", async ({ page, request }) => {
@@ -32,6 +33,12 @@ test("compose a page from a module and preview it", async ({ page, request }) =>
   await page.goto("/content/templates");
   await page.getByLabel("Slug").fill(TPL_SLUG);
   await page.getByLabel("Display name").fill("E2E Template");
+  // #1276 — a template serves a page type: a new one, created with it.
+  await page.getByLabel("Page type").selectOption("__new__");
+  await page.getByLabel("Type slug").fill(TYPE_SLUG);
+  await page.getByLabel("Type name").fill("E2E Type");
+  await page.getByLabel("Purpose").fill("Pages of the compose e2e spec");
+  await page.getByLabel("Kind of pages").selectOption("false");
   await page
     .getByLabel(/HTML/)
     .fill(
@@ -52,18 +59,17 @@ test("compose a page from a module and preview it", async ({ page, request }) =>
   await page.getByRole("button", { name: /create/i }).click();
   await expect(page).toHaveURL(/\/content\/modules\/[0-9a-f-]+$/, { timeout: 15_000 });
 
-  // Create a page bound to the new template.
+  // Create a page of the new type (#1276: the page type is a required
+  // choice; the template list then shows only that type's templates, its
+  // default preselected).
   await page.goto("/content/pages");
   await page.getByLabel("Slug").fill(PAGE_SLUG);
   await page.getByLabel("Title").fill("E2E Page");
-  // Select the option whose label includes our template slug.
-  const tplOption = await page
-    .locator("select[name=templateId] option")
-    .filter({ hasText: TPL_SLUG })
-    .first();
-  const tplValue = (await tplOption.getAttribute("value")) ?? "";
-  expect(tplValue).not.toBe("");
-  await page.getByLabel("Template").selectOption(tplValue);
+  await expect(page.getByLabel("Template")).toBeDisabled();
+  await page.getByLabel("Page type").selectOption(TYPE_SLUG);
+  const tplOptions = page.locator("select[name=templateId] option");
+  await expect(tplOptions).toHaveCount(1);
+  await expect(tplOptions.first()).toContainText(TPL_SLUG);
   await page.getByRole("button", { name: /create/i }).click();
   await expect(page).toHaveURL(/\/content\/pages\/[0-9a-f-]+$/, { timeout: 15_000 });
 

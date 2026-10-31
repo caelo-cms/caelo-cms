@@ -131,13 +131,18 @@ export async function growFixture(
   const defaults = await asSystem(
     url,
     (tx) =>
-      tx`SELECT default_template_id::text AS t, default_page_type_id::text AS pt FROM site_defaults WHERE id = 1` as Promise<
+      // #1276: no stored default type or template; the migration-seeded
+      // home template and the `home` page type 0351 made for it.
+      tx`SELECT t.id::text AS t, pt.id::text AS pt
+           FROM templates t, page_types pt
+          WHERE t.slug = 'home-template' AND t.deleted_at IS NULL
+            AND pt.slug = 'home' AND pt.chat_branch_id IS NULL AND pt.deleted_at IS NULL` as Promise<
         { t: string; pt: string }[]
       >,
   );
   const templateId = defaults[0]?.t ?? "";
   const pageTypeId = defaults[0]?.pt ?? "";
-  if (!templateId || !pageTypeId) throw new Error("site_defaults seed missing");
+  if (!templateId || !pageTypeId) throw new Error("home template / home page type seed missing");
 
   // Chats: open, bound to the shared draft.
   const chatsNow = await count(
@@ -168,8 +173,8 @@ export async function growFixture(
     if (pagesNow < size.pages) {
       await tx.unsafe(`
         WITH p AS (
-          INSERT INTO pages (slug, title, short_title, template_id, page_type_id, current_path, status)
-          SELECT '${RR_PREFIX}p-' || i, 'Page ' || i, 'Page ' || i, '${templateId}', '${pageTypeId}',
+          INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
+          SELECT '${RR_PREFIX}p-' || i, 'Page ' || i, 'Page ' || i, '${templateId}', '${pageTypeId}', true,
                  '/${RR_PREFIX}p-' || i, 'published'
             FROM generate_series(${pagesNow + 1}, ${size.pages}) i
           RETURNING id, title),
@@ -317,8 +322,8 @@ export async function growFixture(
     (tx) =>
       tx.unsafe(`
         WITH p AS (
-          INSERT INTO pages (slug, title, short_title, template_id, page_type_id, current_path, status)
-          VALUES ('${RR_PREFIX}${tag}', 'Write target', 'Write target', '${templateId}', '${pageTypeId}',
+          INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
+          VALUES ('${RR_PREFIX}${tag}', 'Write target', 'Write target', '${templateId}', '${pageTypeId}', true,
                   '/${RR_PREFIX}${tag}', 'published')
           RETURNING id),
         ci AS (

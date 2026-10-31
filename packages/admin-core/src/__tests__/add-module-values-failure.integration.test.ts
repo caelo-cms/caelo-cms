@@ -48,6 +48,7 @@ afterAll(async () => {
 describe("#1149 — add_module values failure after placement", () => {
   it("says the module is placed and how to fill it", async () => {
     const { templateId } = await op<{ templateId: string }>("templates.create", {
+      pageType: "home",
       slug: `i1149-tpl-${TS}`,
       displayName: "T",
       html: '<body><caelo-slot name="content">_</caelo-slot></body>',

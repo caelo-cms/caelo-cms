@@ -107,6 +107,7 @@ export async function tryAutoRecover(input: AutoRecoverInput): Promise<ToolResul
       issues: validation?.success === false ? validation.error.issues : null,
     });
     return {
+      ...failureStructure(failed),
       ok: false,
       content: clip(
         `${failed.content}\n\n[auto-recovery] ${recoveryToolName} (ok): ${recovery.content}\n[retry skipped — rewritten args failed schema; check the tool's retryWithArgs spec]`,
@@ -143,6 +144,7 @@ export async function tryAutoRecover(input: AutoRecoverInput): Promise<ToolResul
   // the corrected attempt's actual error (often more informative than
   // the original failure).
   return {
+    ...failureStructure(retried),
     ok: false,
     content: clip(
       `${failed.content}\n\n[auto-recovery] ${recoveryToolName} (ok): ${recovery.content}\n[retry] ${originalCall.name} with ${retrySpec.argName}=${String(extracted).slice(0, 80)} → ${retried.content}`,
@@ -158,10 +160,26 @@ function foldRecoveryIntoFailure(args: {
 }): ToolResult {
   const { failed, recovery, recoveryToolName, recoveryStatus } = args;
   return {
+    ...failureStructure(failed),
     ok: false,
     content: clip(
       `${failed.content}\n\n[auto-recovery] ${recoveryToolName} (${recoveryStatus}): ${recovery.content}`,
     ),
+  };
+}
+
+/**
+ * #1275 — the structured half of a failure (kind, error paths, the call
+ * as dispatched, the refusal flag), carried onto a folded result so the
+ * chat-runner can still keep the call for `retry_tool_call` after
+ * auto-recovery ran.
+ */
+function failureStructure(r: ToolResult): Partial<ToolResult> {
+  return {
+    ...(r.failureKind ? { failureKind: r.failureKind } : {}),
+    ...(r.errors ? { errors: r.errors } : {}),
+    ...(r.call ? { call: r.call } : {}),
+    ...(r.refusal ? { refusal: r.refusal } : {}),
   };
 }
 

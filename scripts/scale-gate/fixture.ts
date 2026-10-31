@@ -306,16 +306,16 @@ async function main(): Promise<void> {
 
     await asSystem(async (tx) => {
       await tx.unsafe(`
-        INSERT INTO pages (slug, title, short_title, template_id, page_type_id, current_path, status,
+        INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status,
                            first_published_at, created_at, updated_at)
-        SELECT 'news-' || i, 'News article ' || i, 'News ' || i, '${templateId}', '${pageTypeId}',
+        SELECT 'news-' || i, 'News article ' || i, 'News ' || i, '${templateId}', '${pageTypeId}', true,
                '/news-' || i, 'published',
                now() - (i || ' minutes')::interval, now() - (i || ' minutes')::interval, now()
         FROM generate_series(1, ${sources}) i`);
       await tx.unsafe(`
-        INSERT INTO pages (slug, title, short_title, template_id, page_type_id, current_path, status,
+        INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status,
                            first_published_at, created_at, updated_at)
-        SELECT 'nachricht-' || i, 'Nachricht ' || i, 'Nachricht ' || i, '${templateId}', '${pageTypeId}',
+        SELECT 'nachricht-' || i, 'Nachricht ' || i, 'Nachricht ' || i, '${templateId}', '${pageTypeId}', true,
                '/de/nachricht-' || i, 'published',
                now() - (i || ' minutes')::interval, now() - (i || ' minutes')::interval, now()
         FROM generate_series(1, ${variants}) i`);

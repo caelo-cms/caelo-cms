@@ -78,6 +78,7 @@ describe("v0.10.13 branched page-layout overlay", () => {
   it("pages.get_with_modules returns the latest branched layout snapshot, not stale live state", async () => {
     // Seed: template + page (initially empty layout).
     const tpl = await execute(registry, adapter, HUMAN, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "T",
       html: "<main>{{content}}</main>",

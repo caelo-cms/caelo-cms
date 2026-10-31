@@ -154,6 +154,7 @@ export const addGenesisDraftOp = defineOperation({
         kind: "HandlerError",
         operation: "genesis.add_draft",
         message: "insert returned no row",
+        internal: true,
       });
     }
     const count = (await tx.execute(sql`

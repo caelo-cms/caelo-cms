@@ -121,6 +121,7 @@ beforeAll(async () => {
   toolCtx = { adapter, registry };
   await wipe();
   const t = await ok<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: `${P}-tpl`,
     displayName: "Parity template",
     html: `<html><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

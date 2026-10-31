@@ -150,6 +150,7 @@ describe("run #8 R3 — branch-aware read ops", () => {
 
   it("pages.get_with_modules overlays branched module code for the branch caller", async () => {
     const tpl = await execute(registry, adapter, HUMAN, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "T",
       html: "<main>{{content}}</main>",
@@ -251,6 +252,7 @@ describe("run #8 R3 — branch-aware read ops", () => {
     // only, so a page CREATED on the branch was invisible and the
     // iframe (and the AI's screenshot capture riding on it) 404'd.
     const tpl = await execute(registry, adapter, HUMAN, "templates.create", {
+      pageType: "home",
       slug: `${TPL_SLUG}-pv`,
       displayName: "T-preview",
       html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

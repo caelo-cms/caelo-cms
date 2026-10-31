@@ -8,7 +8,10 @@
  */
 
 import {
+  type ErrorDetail,
+  type ErrorPathSegment,
   OperationAbortError,
+  parseErrorPath,
   type QueryError,
   type TransactionRunner,
   uuidArray,
@@ -44,6 +47,15 @@ export function handlerError(operation: string, message: string, refusal = false
 }
 
 /**
+ * #1275 — a stale-version refusal (`expectedVersion` no longer matches):
+ * a `HandlerError` marked `conflict`, so a kept call stays retryable after
+ * the caller re-reads and patches its `expectedVersion`.
+ */
+export function conflictError(operation: string, message: string): QueryError {
+  return { kind: "HandlerError", operation, message, conflict: true };
+}
+
+/**
  * Bulk failure rule (CLAUDE.md §11, same as content_instances.create_many):
  * the whole batch is one transaction. Once something was written, a
  * failure must throw so the writes roll back — a returned error would
@@ -63,6 +75,21 @@ export function describeIssues(issues: readonly ListIssue[], max = 8): string {
   const shown = issues.slice(0, max).map((i) => `${i.path}: ${i.message.replace(/\.$/, "")}`);
   const more = issues.length > max ? `; and ${issues.length - max} more` : "";
   return `${shown.join("; ")}${more}`;
+}
+
+/**
+ * List-validator issues (string paths) as error details under `prefix`
+ * (#1277): `nodes.entry.fields[0]` at `["listTypes", 2]` becomes
+ * `["listTypes", 2, "nodes", "entry", "fields", 0]`.
+ */
+export function listIssuesToDetails(
+  prefix: readonly ErrorPathSegment[],
+  issues: readonly ListIssue[],
+): ErrorDetail[] {
+  return issues.map((i) => ({
+    path: [...prefix, ...parseErrorPath(i.path)],
+    message: i.message.replace(/\.$/, ""),
+  }));
 }
 
 /** The caller's branch (null outside a chat). */

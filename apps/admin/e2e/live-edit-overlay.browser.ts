@@ -79,7 +79,7 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
           VALUES (\${process.env.TPL_SLUG}, 'le', '<body><caelo-slot name="content">_</caelo-slot></body>', '', (SELECT id FROM layouts WHERE slug = 'site-default'))
           RETURNING id::text AS id\`;
         out.tpl = tpl[0].id;
-        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
+        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${out.tpl}::uuid, 'content', 'Content', 0)\`;
         // v0.12.2 — pre-declare a fields row so modules.update's
         // conservative extractor SKIPS extraction on the AI's edit
@@ -95,8 +95,8 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
           RETURNING id::text AS id\`;
         out.mod = mod[0].id;
         const pg = await tx\`
-          INSERT INTO pages (slug, title, template_id, status)
-          VALUES (\${process.env.PAGE_SLUG}, 'LE Page', \${out.tpl}::uuid, 'published')
+          INSERT INTO pages (slug, title, template_id, status, page_type_confirmed)
+          VALUES (\${process.env.PAGE_SLUG}, 'LE Page', \${out.tpl}::uuid, 'published', true)
           RETURNING id::text AS id\`;
         out.pg = pg[0].id;
         const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${out.mod}::uuid, '{}'::jsonb) RETURNING id::text AS id\`;

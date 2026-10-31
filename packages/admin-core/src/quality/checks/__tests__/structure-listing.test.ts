@@ -4,7 +4,7 @@
  * Issue #1256 — `structure/manual-page-listing`: an overview of pages kept
  * as hand-written cards instead of a list field bound to a page query.
  * The fixture is a site with nine published guides (page type `guide`),
- * forty products and ordinary pages of the default type; every way of
+ * forty products and ordinary pages whose type nobody chose (#1276); every way of
  * writing the cards by hand is checked, and every right way stays silent.
  */
 
@@ -58,13 +58,23 @@ const HUB: SitePage = { n: 1, path: "/guides", title: "Guides", type: TYPE_PAGE 
 const SITE = [HUB, ...GUIDES, ...PRODUCTS, ...ORDINARY];
 
 const INDEX: StructurePageIndex = {
-  defaultPageTypeId: TYPE_PAGE,
   pageTypes: new Map([
-    [TYPE_PAGE, { slug: "page", name: "Page" }],
-    [TYPE_GUIDE, { slug: "guide", name: "Guide" }],
-    [TYPE_PRODUCT, { slug: "product", name: "Product" }],
+    [TYPE_PAGE, { slug: "page", name: "Page", purpose: "Ordinary pages", collection: false }],
+    [TYPE_GUIDE, { slug: "guide", name: "Guide", purpose: "How-to guides", collection: true }],
+    [TYPE_PRODUCT, { slug: "product", name: "Product", purpose: "One product", collection: true }],
   ]),
-  pages: new Map(SITE.map((p) => [id(p.n), { pageTypeId: p.type, title: p.title }])),
+  // The ordinary pages sat on the old stored default type: never chosen.
+  pages: new Map(
+    SITE.map((p) => [
+      id(p.n),
+      {
+        pageTypeId: p.type,
+        pageTypeConfirmed: p.type !== TYPE_PAGE,
+        title: p.title,
+        path: p.path,
+      },
+    ]),
+  ),
   siteHosts: new Set(["www.example.test"]),
 };
 
@@ -244,8 +254,61 @@ describe("structure/manual-page-listing (#1256)", () => {
     expect(listing(build(linkList(PRODUCTS.slice(0, 3), (n) => local("links", n))))).toEqual([]);
   });
 
-  it("links to pages of the default page type are ordinary link groups", () => {
+  it("links to pages whose page type nobody chose are ordinary link groups", () => {
     expect(listing(build(linkList(ORDINARY, (n) => local("links", n))))).toEqual([]);
+  });
+
+  it("a footer linking 3 of 4 standalone content pages is navigation, not a listing", () => {
+    // The ordinary pages, confirmed on a `content` type that is no collection.
+    const index: StructurePageIndex = {
+      ...INDEX,
+      pageTypes: new Map([
+        ...INDEX.pageTypes,
+        [
+          TYPE_PAGE,
+          {
+            slug: "content",
+            name: "Content page",
+            purpose: "About, team, contact",
+            collection: false,
+          },
+        ],
+      ]),
+      pages: new Map([...INDEX.pages].map(([k, v]) => [k, { ...v, pageTypeConfirmed: true }])),
+    };
+    expect(listing(build(linkList(ORDINARY.slice(0, 3), (n) => local("links", n))), index)).toEqual(
+      [],
+    );
+  });
+
+  it("hand-listed blog posts are a listing (a collection type)", () => {
+    const index: StructurePageIndex = {
+      ...INDEX,
+      pageTypes: new Map([
+        ...INDEX.pageTypes,
+        [
+          TYPE_GUIDE,
+          { slug: "blog", name: "Blog post", purpose: "Dated articles", collection: true },
+        ],
+      ]),
+    };
+    const findings = listing(build(linkList(GUIDES.slice(0, 7), (n) => local("links", n))), index);
+    expect(findings.map((f) => f.severity)).toEqual(["error"]);
+    expect(findings[0]?.message).toContain('type "Blog post" (blog)');
+    // The same links on a type that is no collection stay silent.
+    const standalone: StructurePageIndex = {
+      ...INDEX,
+      pageTypes: new Map([
+        ...INDEX.pageTypes,
+        [
+          TYPE_GUIDE,
+          { slug: "blog", name: "Blog post", purpose: "Dated articles", collection: false },
+        ],
+      ]),
+    };
+    expect(
+      listing(build(linkList(GUIDES.slice(0, 7), (n) => local("links", n))), standalone),
+    ).toEqual([]);
   });
 
   it("entries of a shared list (a menu) never count", () => {

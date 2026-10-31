@@ -69,6 +69,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
 
   const tpl = await execute(registry, adapter, SYSTEM, "templates.create", {
+    pageType: "home",
     slug: `smbp-tpl-${TS}`,
     displayName: "SMBP",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

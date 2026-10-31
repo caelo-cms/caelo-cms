@@ -21,7 +21,7 @@
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { resolvePageRefs } from "./_page-ref.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -177,7 +177,7 @@ export const movePagesTool: ToolDefinitionWithHandler<MoveInput> = {
       moves: resolved.moves,
       redirectFromOld: input.redirectFromOld,
     });
-    if (!r.ok) return { ok: false, content: `move_pages refused: ${describeError(r.error)}` };
+    if (!r.ok) return toolError(r.error, `move_pages refused: ${describeError(r.error)}`);
     const v = r.value as {
       moved: { from: string; to: string }[];
       pendingPublish: boolean;

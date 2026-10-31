@@ -64,6 +64,7 @@ afterAll(async () => {
 describe("templates CRUD", () => {
   it("creates, lists with blocks, and deletes a template", async () => {
     const create = await execute(registry, adapter, systemCtx, "templates.create", {
+      pageType: "home",
       slug: TEMPLATE_SLUGS[0],
       displayName: "Main",
       html: `<html><body><caelo-slot name="content">x</caelo-slot></body></html>`,
@@ -91,6 +92,7 @@ describe("templates CRUD", () => {
 
   it("template_blocks.set is atomic — replaces all rows in one shot", async () => {
     const create = await execute(registry, adapter, systemCtx, "templates.create", {
+      pageType: "home",
       slug: TEMPLATE_SLUGS[1],
       displayName: "Blog",
       html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
@@ -117,6 +119,7 @@ describe("templates CRUD", () => {
 
   it("rejects duplicate block names within one payload", async () => {
     const create = await execute(registry, adapter, systemCtx, "templates.create", {
+      pageType: "home",
       slug: TEMPLATE_SLUGS[2],
       displayName: "Locked",
       html: `<body><caelo-slot name="x">_</caelo-slot></body>`,

@@ -282,6 +282,7 @@ beforeAll(async () => {
   process.env.CAELO_OUTPUT_ROOT = testRoot;
 
   const { templateId } = await op<{ templateId: string }>(HUMAN, "templates.create", {
+    pageType: "home",
     slug: `${PFX}tpl`,
     displayName: "T",
     html: `<!doctype html><html lang="en"><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

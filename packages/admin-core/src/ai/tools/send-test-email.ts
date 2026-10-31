@@ -14,7 +14,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const sendTestEmailInput = z
@@ -41,7 +41,7 @@ export const sendTestEmailTool: ToolDefinitionWithHandler<SendTestEmailInput> = 
       to: input.to,
     });
     if (!r.ok) {
-      return { ok: false, content: `Test email not sent: ${describeError(r.error)}` };
+      return toolError(r.error, `Test email not sent: ${describeError(r.error)}`);
     }
     const v = r.value as { messageId: string; transport: string };
     return {

@@ -73,8 +73,8 @@ test.beforeAll(() => {
       const actor = (await tx\`SELECT id FROM actors WHERE kind = 'system' LIMIT 1\`)[0].id;
       // Its own page: the spec must not depend on pages other specs made.
       const page = (await tx\`
-        INSERT INTO pages (slug, title, template_id, status, current_path)
-        SELECT \${process.env.SLUG}, 'Page checks e2e', id, 'published', \${"/" + process.env.SLUG}
+        INSERT INTO pages (slug, title, template_id, status, current_path, page_type_confirmed)
+        SELECT \${process.env.SLUG}, 'Page checks e2e', id, 'published', \${"/" + process.env.SLUG}, true
         FROM templates ORDER BY created_at LIMIT 1
         RETURNING id\`)[0];
       const deploy = (await tx\`

@@ -30,7 +30,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { LOAD_SKILL_MAX_SLUGS, loadSkillToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface SkillRow {
@@ -108,7 +108,7 @@ export const loadSkillTool: ToolDefinitionWithHandler<
 
     for (const slug of wanted) {
       const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "skills.get", { slug });
-      if (!got.ok) return { ok: false, content: `skills.get failed: ${describeError(got.error)}` };
+      if (!got.ok) return toolError(got.error, `skills.get failed: ${describeError(got.error)}`);
       const value = got.value as {
         skill: SkillRow | null;
         notRunningHere: { pluginSlug: string; reason: string } | null;

@@ -111,6 +111,7 @@ describe("snapshot emission on every P3 mutation", () => {
 
   it("templates.create + template_blocks.set + pages.create + pages.set_modules each emit a snapshot", async () => {
     const tpl = await execute(registry, adapter, systemCtx, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "T",
       html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

@@ -35,7 +35,7 @@ import {
   stripConsentSubtrees,
 } from "@caelo-cms/site-importer";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { putPageInspection, sliceMarkdown } from "./_page-inspection-cache.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -182,7 +182,7 @@ export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
       importPageId: toolInput.importPageId,
     });
     if (!r.ok) {
-      return { ok: false, content: `get_import_page failed: ${describeError(r.error)}` };
+      return toolError(r.error, `get_import_page failed: ${describeError(r.error)}`);
     }
     const g = r.value as Gist;
 

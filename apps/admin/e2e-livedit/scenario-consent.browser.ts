@@ -59,8 +59,8 @@ function seedSecondPage(templateId: string): string {
         // The id is baked in by THIS template literal — escaping it
         // would hand the subprocess a variable name it has never heard
         // of, which is what the first version did.
-        return tx.unsafe(\`INSERT INTO pages (slug, title, template_id, status, current_path)
-          VALUES ('kontakt', 'Kontakt', '${templateId}'::uuid, 'published', '/kontakt')
+        return tx.unsafe(\`INSERT INTO pages (slug, title, template_id, status, current_path, page_type_confirmed)
+          VALUES ('kontakt', 'Kontakt', '${templateId}'::uuid, 'published', '/kontakt', true)
           RETURNING id::text AS id\`);
       });
       console.log(rows[0].id);

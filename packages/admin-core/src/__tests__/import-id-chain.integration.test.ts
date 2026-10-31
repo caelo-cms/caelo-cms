@@ -142,6 +142,7 @@ beforeAll(async () => {
 
   // Template with a 'content' block for the direct builds.
   const tpl = await execute(registry, adapter, SYSTEM, "templates.create", {
+    pageType: "home",
     slug: TPL,
     displayName: "Idchain",
     html: "<main>{{content}}</main>",

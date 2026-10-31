@@ -392,7 +392,12 @@ async function queueProposal(
   }
   const proposalId = rows[0]?.id;
   if (!proposalId) {
-    return err({ kind: "HandlerError", operation: opName, message: "insert returned no id" });
+    return err({
+      kind: "HandlerError",
+      operation: opName,
+      message: "insert returned no id",
+      internal: true,
+    });
   }
   await recordAudit(tx, {
     actorId: ctx.actorId,

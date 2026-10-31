@@ -15,7 +15,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const setThemeMetaToolInput = z
@@ -66,7 +66,7 @@ export const setThemeMetaTool: ToolDefinitionWithHandler<SetThemeMetaToolInput> 
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.update_meta", input);
     if (!r.ok) {
-      return { ok: false, content: `themes.update_meta failed: ${describeError(r.error)}` };
+      return toolError(r.error, `themes.update_meta failed: ${describeError(r.error)}`);
     }
     const parts: string[] = [];
     if (input.description !== undefined) {

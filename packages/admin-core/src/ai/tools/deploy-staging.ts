@@ -19,7 +19,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const deployStagingInput = z
@@ -59,10 +59,7 @@ export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = 
   handler: async (ctx, input, toolCtx) => {
     const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "deploy.list_targets", {});
     if (!listed.ok) {
-      return {
-        ok: false,
-        content: `deploy.list_targets failed: ${describeError(listed.error)}`,
-      };
+      return toolError(listed.error, `deploy.list_targets failed: ${describeError(listed.error)}`);
     }
     const targets = (listed.value as { targets: TargetRow[] }).targets;
     const staging = targets.filter((t) => t.env === "staging");
@@ -98,10 +95,10 @@ export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = 
       targetName,
     });
     if (!r.ok) {
-      return {
-        ok: false,
-        content: `Staging build for "${targetName}" failed: ${describeError(r.error)}`,
-      };
+      return toolError(
+        r.error,
+        `Staging build for "${targetName}" failed: ${describeError(r.error)}`,
+      );
     }
     const v = r.value as TriggerResult;
     const preview = v.previewUrl ? ` Preview: ${v.previewUrl}.` : "";

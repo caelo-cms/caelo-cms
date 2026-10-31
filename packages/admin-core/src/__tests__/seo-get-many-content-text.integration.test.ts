@@ -80,6 +80,7 @@ beforeAll(async () => {
 
   // The hero slot comes BEFORE the content slot in the template.
   ({ templateId } = await op<{ templateId: string }>(SYS, "templates.create", {
+    pageType: "home",
     slug: `sgm-tpl-${TS}`,
     displayName: "SGM Template",
     layoutId,

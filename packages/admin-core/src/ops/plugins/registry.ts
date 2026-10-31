@@ -613,7 +613,7 @@ export const preparePluginActivationOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "plugins.prepare_activation",
-        message: "manifest missing `schema` — re-submit",
+        message: "manifest missing `schema` — add it to the manifest",
       });
     }
     let emitted: EmittedSchema;

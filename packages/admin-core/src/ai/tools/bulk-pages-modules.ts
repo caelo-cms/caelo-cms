@@ -27,7 +27,7 @@ import {
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import { keepStoredDefaults, storedModuleFields } from "./_module-field-defaults.js";
@@ -38,8 +38,8 @@ import {
 import {
   MODULE_BIND_THEME_LITERALS_DESCRIPTION,
   MODULE_CSS_DESCRIPTION,
-  MODULE_HTML_DESCRIPTION,
-  MODULE_JS_CONTRACT,
+  MODULE_HTML_DESCRIPTION_KIT_REF,
+  MODULE_JS_CONTRACT_KIT_REF,
 } from "./_module-js-contract.js";
 import { moduleJsGuardSuffix } from "./_module-js-guard.js";
 import { bindCssToTheme } from "./_theme-binding.js";
@@ -180,7 +180,7 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
       deletions: input.items,
     });
     if (!r.ok) {
-      return { ok: false, content: `pages.delete_many failed: ${describeError(r.error)}` };
+      return toolError(r.error, `pages.delete_many failed: ${describeError(r.error)}`);
     }
     const v = r.value as {
       deleted: number;
@@ -331,7 +331,10 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
       updates: input.items,
     });
     if (!r.ok) {
-      return { ok: false, content: `pages.update_many failed: ${describeError(r.error)}` };
+      return toolError(r.error, `pages.update_many failed: ${describeError(r.error)}`, {
+        from: "updates",
+        to: "items",
+      });
     }
     const v = r.value as {
       updated: number;
@@ -429,10 +432,10 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
     "USE FOR: wholesale rewrites, new module bodies, changes to `fields`/`displayName`/`kind`/`type`/`description`, the same fix across modules.",
     "DO NOT USE FOR: a TARGETED change to existing `html`/`css`/`js` -> PREFER `edit_content` (surgical string-replace: cheaper, reviewable diff); page/instance content -> `set_page_module_content_many` (per page) | `set_content_instance_values_many` (shared); page metadata -> `update_pages_many`; templates -> `propose_update_template`.",
     "CORE RULES:",
-    "- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).",
+    "- AUTHOR EXPLICITLY: `fields[]` names in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).",
     '- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:"texts"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.',
     "- KEEP METADATA FRESH: update `description` + `kind` when a module's purpose drifts (`list_modules` relies on them).",
-    '- `fields` is the WHOLE list (omitted fields are dropped): read it first with `read_content` `field:"fields"` and resend every field. A field resent without `default` keeps its stored one.',
+    '- `fields` is the WHOLE list (omitted fields are dropped): read it first with `read_content` `field:"fields"` and pass every field. A field passed without `default` keeps its stored one.',
     "- Items apply independently: a failed item (not found, draft conflict, invalid field) is reported with its reason, the rest commits; nothing updated -> error. One snapshot per module.",
     INTERNAL_LINK_CONTRACT,
   ].join("\n"),
@@ -458,13 +461,13 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
             ...MODULE_META_JSON_SCHEMA_PROPS,
             html: {
               type: "string",
-              description: MODULE_HTML_DESCRIPTION,
+              description: MODULE_HTML_DESCRIPTION_KIT_REF,
             },
             css: {
               type: "string",
               description: MODULE_CSS_DESCRIPTION,
             },
-            js: { type: "string", description: MODULE_JS_CONTRACT },
+            js: { type: "string", description: MODULE_JS_CONTRACT_KIT_REF },
             fields: MODULE_FIELDS_JSON_SCHEMA,
             bindThemeLiterals: {
               type: "boolean",
@@ -506,7 +509,10 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
       updates: opItems,
     });
     if (!r.ok) {
-      return { ok: false, content: `modules.update_many failed: ${describeError(r.error)}` };
+      return toolError(r.error, `modules.update_many failed: ${describeError(r.error)}`, {
+        from: "updates",
+        to: "items",
+      });
     }
     const v = r.value as ModuleUpdateManyResult;
     const notFound = new Set(v.notFoundIds);

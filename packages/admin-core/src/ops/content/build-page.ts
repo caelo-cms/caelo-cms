@@ -18,12 +18,33 @@
  *
  * All-or-nothing (§11): any failure after the first write throws
  * `OperationAbortError` so the adapter rolls the WHOLE call back —
- * partial pages are impossible. Error messages name the failing module
- * index (`modules[3] ("Hero") …`) and, for content-value problems, the
- * failing field (via content_instances' nested-ref validator).
+ * partial pages are impossible.
+ *
+ * Errors (#1277): every check that needs no write runs before the first
+ * write and ALL its problems come back in one result (page envelope,
+ * unknown ids, refs, module + content shapes, blocks when the template is
+ * known), each at its absolute input path (`modules[3].content.values.
+ * hero_title`) in `errors[]`. After the writes start, every entry still
+ * runs: each failing entry adds its problems, and entries embedding a
+ * failed entry are skipped. A nested op that THROWS a driver error is
+ * caught per entry and reported under `modules[i]` (no SQLSTATE); since
+ * Postgres aborted the transaction, the call stops there.
  */
 
-import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
+import {
+  defineOperation,
+  type ErrorDetail,
+  type ErrorPathSegment,
+  errorDetailsOf,
+  failureKindOf,
+  handlerErrorFromDetails,
+  internalError,
+  OperationAbortError,
+  prefixErrorDetails,
+  type QueryError,
+  thrownToQueryError,
+  zodIssuesToErrorDetails,
+} from "@caelo-cms/query-api";
 import {
   type BuildPageContent,
   type BuildPageInput,
@@ -34,12 +55,14 @@ import {
   moduleCreateSchema,
   ok,
   pageCreateSchema,
+  type Result,
   slugifyModuleSection,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
+import { resolvePageTypeForWrite } from "../../lists/page-type-resolve.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { pageSeoViewSql } from "../../seo/page-seo.js";
 import {
@@ -80,21 +103,124 @@ export function repeatsMint(entry: BuildPageModuleEntry, earlier: BuildPageModul
   );
 }
 
-function moduleLabel(
-  index: number,
-  entry: { displayName?: string; moduleId?: string | { $ref: string } },
-): string {
-  const idLabel = typeof entry.moduleId === "string" ? entry.moduleId : entry.moduleId?.$ref;
-  const name = entry.displayName ?? idLabel ?? "?";
-  return `modules[${index}] ("${name}")`;
+/**
+ * Skips an entry whose `{"$ref"}` names an entry that failed: the failure
+ * is already reported, and the dependent entry has nothing of its own.
+ */
+class SkipEntry extends Error {}
+
+/** A nested op THREW (not returned) a driver error; carries the original. */
+class NestedThrow extends Error {
+  readonly thrown: unknown;
+  constructor(thrown: unknown) {
+    super("nested operation threw");
+    this.thrown = thrown;
+  }
 }
 
 /**
- * Thrown by the {"$ref"} resolver when a handle doesn't match an earlier
- * entry — caught in the entry loop and converted to a structured fail()
- * so the AI sees WHICH handle failed and the handles that exist.
+ * Run a nested op handler so every failure is a Result: a returned error
+ * as is, an `OperationAbortError` as its error (the transaction is still
+ * usable, so the remaining entries are still checked), any other throw as
+ * {@link NestedThrow} (Postgres aborted the transaction; nothing can run
+ * after it).
  */
-class LocalRefError extends Error {}
+async function runNested<T>(
+  fn: () => Promise<Result<T, QueryError>>,
+): Promise<Result<T, QueryError>> {
+  try {
+    return await fn();
+  } catch (thrown) {
+    if (thrown instanceof OperationAbortError) return { ok: false, error: thrown.queryError };
+    throw new NestedThrow(thrown);
+  }
+}
+
+/** A nested error's text without its kind boilerplate. */
+function describeNested(error: QueryError): string {
+  if ("message" in error && typeof error.message === "string") return error.message;
+  if (error.kind === "RLSDenied") return error.detail;
+  return error.kind;
+}
+
+/** A placed module's stored metadata (compared against an entry's authoring fields). */
+interface PlacedModuleRow {
+  id: string;
+  display_name: string;
+  description: string;
+  kind: string;
+  type: string | null;
+}
+
+/** The `modules.create` input for a mint entry (slug from name + index). */
+function mintInput(
+  entry: BuildPageModuleEntry,
+  displayName: string,
+  html: string,
+  index: number,
+): Record<string, unknown> {
+  // slugifyModuleSection includes the index so two same-named entries in
+  // one batch can't collide on the slug.
+  return {
+    slug: slugifyModuleSection(displayName, index),
+    displayName,
+    html,
+    ...(entry.description !== undefined ? { description: entry.description } : {}),
+    ...(entry.kind !== undefined ? { kind: entry.kind } : {}),
+    ...(entry.type !== undefined ? { type: entry.type } : {}),
+    ...(entry.css !== undefined ? { css: entry.css } : {}),
+    ...(entry.js !== undefined ? { js: entry.js } : {}),
+    ...(entry.fields !== undefined ? { fields: entry.fields } : {}),
+  };
+}
+
+/** Stand-in module id for the shape-only content check before the mint. */
+const PLACEHOLDER_MODULE_ID = "00000000-0000-4000-8000-000000000000";
+
+/** The `content_instances.create` input for an inline / shared content entry. */
+function contentCreateInput(
+  content: Exclude<BuildPageContent, { source: "existing" }>,
+  moduleId: string,
+): Record<string, unknown> {
+  return content.source === "inline"
+    ? { moduleId, values: content.values }
+    : {
+        moduleId,
+        values: content.values,
+        purpose: content.purpose,
+        ...(content.slug !== undefined ? { slug: content.slug } : {}),
+        ...(content.displayName !== undefined ? { displayName: content.displayName } : {}),
+      };
+}
+
+/**
+ * §2 — the authoring fields of a placement-only entry that are NOT
+ * applied: metadata that differs from the stored module, and every
+ * structural field (placement can never re-author a shared module).
+ */
+function ignoredAuthoring(entry: BuildPageModuleEntry, mod: PlacedModuleRow): string[] {
+  const ignored: string[] = [];
+  if (entry.displayName !== undefined && entry.displayName !== mod.display_name) {
+    ignored.push(`displayName='${entry.displayName}' (module keeps '${mod.display_name}')`);
+  }
+  if (entry.description !== undefined && entry.description !== mod.description) {
+    ignored.push("description");
+  }
+  if (entry.kind !== undefined && entry.kind !== mod.kind) {
+    ignored.push(`kind='${entry.kind}' (module keeps '${mod.kind}')`);
+  }
+  if (entry.type !== undefined && entry.type !== (mod.type ?? undefined)) {
+    ignored.push(`type='${entry.type}' (module keeps '${mod.type ?? "(none)"}')`);
+  }
+  for (const k of ["html", "css", "js", "fields"] as const) {
+    if (entry[k] !== undefined) ignored.push(`${k} (structural)`);
+  }
+  if (entry.bindThemeLiterals !== undefined) ignored.push("bindThemeLiterals");
+  return ignored;
+}
+
+/** Layout-level chrome block names a page template never has (see checkBlocks). */
+const CHROME_BLOCKS = new Set(["header", "footer", "nav", "navigation", "sidebar", "banner"]);
 
 /** Structured recovery hint shape (mirrors QueryError.HandlerError.nextAction). */
 interface BuildPageNextAction {
@@ -154,24 +280,49 @@ export const buildPageOp = defineOperation({
     // rolls back (see OperationAbortError — `return err` would commit
     // the partial build).
     let wrote = false;
-    const fail = (message: string, nextAction?: BuildPageNextAction, refusal?: true) => {
-      const queryError = {
-        kind: "HandlerError" as const,
-        operation: "pages.build_page",
-        message,
-        ...(nextAction ? { nextAction } : {}),
-        // #1091 — a guard refusal of a nested op stays one.
-        ...(refusal ? { refusal } : {}),
-      };
-      if (wrote) throw new OperationAbortError(queryError);
-      return err(queryError);
+    // #1277 — every problem found before the next write is collected and
+    // reported in one result, each at its absolute input path.
+    const problems: ErrorDetail[] = [];
+    let problemRefusal = false;
+    let problemInternal = false;
+    let problemNextAction: BuildPageNextAction | undefined;
+    const problem = (
+      path: ErrorPathSegment[],
+      message: string,
+      extra: { next?: string; allowed?: readonly string[] } = {},
+    ) => {
+      problems.push({ path, message, ...extra });
+    };
+    /** A nested op's error under `prefix`: its own paths, or one entry at `prefix`. */
+    const nestedProblem = (prefix: ErrorPathSegment[], error: QueryError, label: string) => {
+      const details = errorDetailsOf(error);
+      if (details.length > 0) problems.push(...prefixErrorDetails(prefix, details));
+      else problem(prefix, `${label}: ${describeNested(error)}`);
+      if (error.kind === "HandlerError" && error.refusal) problemRefusal = true;
+      if (failureKindOf(error) === "internal") problemInternal = true;
+    };
+    /** Fail with every collected problem (throws once something was written). */
+    const failProblems = () => {
+      const queryError = handlerErrorFromDetails("pages.build_page", problems, {
+        refusal: problemRefusal,
+        internal: problemInternal,
+      });
+      const withNext = problemNextAction
+        ? { ...queryError, nextAction: problemNextAction }
+        : queryError;
+      if (wrote) throw new OperationAbortError(withNext);
+      return err(withNext);
     };
 
     // Minting order: an entry after every entry its {"$ref"} names (any
     // array position). Checked before the first write, so an unknown
     // handle or a cycle costs nothing.
     const ordering = orderBuildEntries(input.modules);
-    if (!ordering.ok) return fail(ordering.message);
+    if (!ordering.ok) {
+      for (const issue of ordering.issues) {
+        problem(issue.index >= 0 ? ["modules", issue.index] : ["modules"], issue.message);
+      }
+    }
 
     // ── 0. Import linkage + idempotency ─────────────────────────────
     // issue #278 flow: `importPageId` links the built page to the
@@ -199,21 +350,25 @@ export const buildPageOp = defineOperation({
       `)) as unknown as { import_id: string; live_page_id: string | null }[];
       const link = linkRows[0];
       if (!link) {
-        return fail(
-          `import page ${importPageId} not found — pass an import_pages id from list_import_pages({runId}), or omit importPageId to build a standalone page`,
-        );
+        problem(["page", "importPageId"], `import page ${importPageId} not found`, {
+          next: "Pass an import_pages id from list_import_pages({runId}), or omit importPageId to build a standalone page.",
+        });
+      } else {
+        rebuildTargetPageId = link.live_page_id ?? undefined;
       }
-      rebuildTargetPageId = link.live_page_id ?? undefined;
     }
 
-    // ── 1. Resolve the target page ─────────────────────────────────
-    let pageId: string;
-    let createdPage = false;
-    let templateId: string;
-    let pageSlug: string;
+    // ── 1. Resolve the target page (read-only checks first) ─────────
     // An explicit `pageId` always wins; otherwise a prior import linkage
     // (rebuildTargetPageId) turns this into an in-place rebuild.
+    let pageId = "";
+    let createdPage = false;
+    let templateId: string | undefined;
+    /** Create mode: the template the page type resolves to (#1276). */
+    let typeTemplateId: string | undefined;
+    let pageSlug = "";
     const existingTargetId = input.page.pageId ?? rebuildTargetPageId;
+    let pageCreateInput: z.infer<typeof pageCreateSchema> | undefined;
     if (existingTargetId !== undefined) {
       pageId = existingTargetId;
       const lock = await checkAndAcquireEntityLock(tx, {
@@ -234,17 +389,17 @@ export const buildPageOp = defineOperation({
       `)) as unknown as { slug: string; template_id: string }[];
       const row = rows[0];
       if (!row) {
-        return fail(
-          `page ${pageId} not found — pass a pageId from \`## Pages\`, or omit pageId and pass slug + title to create the page in this call`,
-        );
+        problem(["page", "pageId"], `page ${pageId} not found`, {
+          next: "Pass a pageId from list_pages, or omit pageId and pass slug + title to create the page in this call.",
+        });
+      } else {
+        templateId = row.template_id;
+        pageSlug = row.slug;
       }
-      templateId = row.template_id;
-      pageSlug = row.slug;
     } else {
       // Create mode — parse through the singular schema so defaults
-      // (status) applies exactly as pages.create expects, then
-      // delegate to its handler for template resolution + slug checks
-      // + snapshot emission.
+      // (status) applies exactly as pages.create expects; the create
+      // itself waits until every read-only check has run.
       const parsed = pageCreateSchema.safeParse({
         slug: input.page.slug,
         title: input.page.title,
@@ -257,69 +412,211 @@ export const buildPageOp = defineOperation({
         ...(input.page.terms !== undefined ? { terms: input.page.terms } : {}),
       });
       if (!parsed.success) {
-        return fail(`page: ${parsed.error.issues[0]?.message ?? "invalid page payload"}`);
+        problems.push(...zodIssuesToErrorDetails(parsed.error.issues, ["page"]));
+      } else {
+        pageCreateInput = parsed.data;
+        pageSlug = parsed.data.slug;
+        // #1276 — the page type is a read-only check too: a missing or
+        // unknown type is reported with the other problems, before the
+        // first write (pages.create resolves it again when it runs).
+        const resolved = await resolvePageTypeForWrite(tx, ctx.chatBranchId ?? null, {
+          ...(parsed.data.pageType !== undefined ? { pageType: parsed.data.pageType } : {}),
+          ...(parsed.data.templateId !== undefined ? { templateId: parsed.data.templateId } : {}),
+        });
+        if (resolved.ok) typeTemplateId = resolved.templateId;
+        else problems.push(...prefixErrorDetails(["page"], [resolved.detail]));
       }
-      const created = await createPageOp.handler(ctx, parsed.data, tx);
-      if (!created.ok) {
-        const inner = created.error as { message?: string; nextAction?: BuildPageNextAction };
-        // Forward the recovery hint but DROP retryWithArgs — pages.create's
-        // declarative retry injects a top-level `templateId` arg, which on
-        // build_page lives at `page.templateId` and would be rejected by
-        // the strict schema. The AI still gets the list + retries itself.
-        const forwarded = inner.nextAction
-          ? {
-              tool: inner.nextAction.tool,
-              reason: `${inner.nextAction.reason} (on build_page, pass it as page.templateId)`,
-              ...(inner.nextAction.args ? { args: inner.nextAction.args } : {}),
-              ...(inner.nextAction.autoExecute ? { autoExecute: true } : {}),
-            }
-          : undefined;
-        return fail(`page: pages.create failed: ${inner.message ?? created.error.kind}`, forwarded);
-      }
-      pageId = (created.value as { pageId: string }).pageId;
-      createdPage = true;
-      wrote = true;
-      pageSlug = parsed.data.slug;
-      const tplRows = (await tx.execute(sql`
-        SELECT template_id::text AS template_id FROM pages WHERE id = ${pageId}::uuid LIMIT 1
-      `)) as unknown as { template_id: string }[];
-      const resolvedTpl = tplRows[0]?.template_id;
-      if (!resolvedTpl) {
-        return fail("page: created page row has no template_id (unexpected)");
-      }
-      templateId = resolvedTpl;
     }
 
-    // ── 2. Validate every blockName against the template up front ──
-    // One read, all indices checked, so a typo'd block on modules[7]
-    // fails BEFORE seven modules are minted (still rolled back either
-    // way, but the error arrives without burning the work).
-    const blockRows = (await tx.execute(sql`
-      SELECT name FROM template_blocks WHERE template_id = ${templateId}::uuid ORDER BY position ASC
-    `)) as unknown as { name: string }[];
-    const allowedBlocks = new Set(blockRows.map((r) => r.name));
+    // ── 2. Per entry: every check that needs no write ───────────────
+    // (Unknown or self {"$ref"} handles were reported by the ordering check.)
+    const placedModules = new Map<number, PlacedModuleRow>();
+    for (const [i, entry] of input.modules.entries()) {
+      const at: ErrorPathSegment[] = ["modules", i];
+      if (typeof entry.moduleId === "string") {
+        const branchFilter = branchVisibilityFilter(ctx);
+        const rows = (await tx.execute(sql`
+          SELECT id::text AS id, display_name, description, kind, type FROM modules
+          WHERE id = ${entry.moduleId}::uuid AND deleted_at IS NULL ${branchFilter}
+          LIMIT 1
+        `)) as unknown as PlacedModuleRow[];
+        const mod = rows[0];
+        if (!mod) {
+          problem([...at, "moduleId"], `module ${entry.moduleId} not found or deleted`, {
+            next: "Pass an id from list_modules, or omit moduleId and author displayName + html to mint a new module.",
+          });
+        } else {
+          placedModules.set(i, mod);
+        }
+      } else if (entry.moduleId === undefined) {
+        if (entry.displayName === undefined || entry.html === undefined) {
+          problem(
+            at,
+            "pass either `moduleId` (place an existing module) or `displayName` + `html` (mint a new one)",
+          );
+        } else {
+          const parsed = moduleCreateSchema.safeParse(
+            mintInput(entry, entry.displayName, entry.html, i),
+          );
+          if (!parsed.success) {
+            // `slug` is derived from displayName — report it there.
+            problems.push(
+              ...zodIssuesToErrorDetails(parsed.error.issues).map((d) => ({
+                ...d,
+                path: [...at, ...(d.path[0] === "slug" ? ["displayName"] : d.path)],
+              })),
+            );
+          }
+        }
+      }
+      const content = entry.content;
+      if (content === undefined) continue;
+      if (content.source === "existing") {
+        const branchFilter = branchVisibilityFilter(ctx);
+        const ciRows = (await tx.execute(sql`
+          SELECT module_id::text AS module_id,
+                 (SELECT slug FROM modules m WHERE m.id = content_instances.module_id) AS module_slug
+          FROM content_instances
+          WHERE id = ${content.contentInstanceId}::uuid AND deleted_at IS NULL ${branchFilter}
+          LIMIT 1
+        `)) as unknown as { module_id: string; module_slug: string | null }[];
+        const ci = ciRows[0];
+        const placed = placedModules.get(i);
+        if (!ci) {
+          problem(
+            [...at, "content", "contentInstanceId"],
+            `content_instance ${content.contentInstanceId} not found or deleted`,
+            {
+              next: "Pick one from list_content_instances, or pass content.source='inline' with values instead.",
+            },
+          );
+        } else if (entry.moduleId === undefined) {
+          problem(
+            [...at, "content", "contentInstanceId"],
+            `content_instance ${content.contentInstanceId} belongs to module "${ci.module_slug}", not to the module this entry mints`,
+            { next: "Bind it with that module's id as moduleId, or pass content.source='inline'." },
+          );
+        } else if (typeof entry.moduleId !== "string") {
+          // {"$ref"}: the module of the entry that carries that handle. An
+          // existing module placed there owns instances; one minted in this
+          // call has none yet.
+          const handle = entry.moduleId.$ref;
+          const target = input.modules.find((m) => m.ref === handle);
+          const targetId = typeof target?.moduleId === "string" ? target.moduleId : undefined;
+          if (target && targetId === undefined) {
+            problem(
+              [...at, "content", "contentInstanceId"],
+              `the module "${handle}" is minted in this call, so it has no content instances yet — content_instance ${content.contentInstanceId} belongs to module "${ci.module_slug}"`,
+              { next: "Pass content.source='inline' with values for this placement." },
+            );
+          } else if (targetId !== undefined && ci.module_id !== targetId) {
+            problem(
+              [...at, "content", "contentInstanceId"],
+              `content_instance ${content.contentInstanceId} belongs to module "${ci.module_slug}", not to the module "${handle}" places`,
+              { next: "Bind a content_instance of the same module (list_content_instances)." },
+            );
+          }
+        } else if (placed && ci.module_id !== placed.id) {
+          problem(
+            [...at, "content", "contentInstanceId"],
+            `content_instance ${content.contentInstanceId} belongs to module "${ci.module_slug}", but this entry places "${placed.display_name}"`,
+            { next: "Bind a content_instance of the same module (list_content_instances)." },
+          );
+        }
+      } else {
+        // Shape only (the module id is not known before the mint); the
+        // field-by-field value check runs in content_instances.create.
+        const ciInput = contentInstanceCreateSchema.safeParse(
+          contentCreateInput(content, PLACEHOLDER_MODULE_ID),
+        );
+        if (!ciInput.success) {
+          problems.push(
+            ...zodIssuesToErrorDetails(ciInput.error.issues, [...at, "content"]).filter(
+              (d) => d.path[3] !== "moduleId",
+            ),
+          );
+        }
+      }
+    }
+
+    // ── 3. Blocks — known now unless the page is still to be created ─
     // Well-known layout-level chrome. When the rejected block is one of
     // these, the model conflated a LAYOUT block (header/footer/nav, seen
     // in list_layouts as `header|content|footer`) with a PAGE-template
     // block — build_page places into template blocks only. Route it to
     // the fix instead of a bare "Available blocks" list, or the model
     // re-tries the same call until max_loops (live-edit run B5).
-    const CHROME_BLOCKS = new Set(["header", "footer", "nav", "navigation", "sidebar", "banner"]);
-    for (const [i, entry] of input.modules.entries()) {
-      // Detached entries (no blockName) skip placement — nothing to check.
-      if (entry.blockName !== undefined && !allowedBlocks.has(entry.blockName)) {
-        const chromeHint = CHROME_BLOCKS.has(entry.blockName.toLowerCase())
-          ? ` "${entry.blockName}" is site-wide LAYOUT chrome, not a page block — build_page places into page-template blocks only. ` +
-            `Place it once on the layout instead: add_module({target:'layout', targetRef:'<layout-slug>', blockName:'${entry.blockName.toLowerCase()}', …}) (find the slug via list_layouts), and drop this entry from build_page.`
-          : "";
-        return fail(
-          `${moduleLabel(i, entry)}: block "${entry.blockName}" does not exist on this page's template. ` +
-            `Available blocks: ${[...allowedBlocks].join(", ")}.${chromeHint}`,
+    const checkBlocks = async (forTemplateId: string) => {
+      const blockRows = (await tx.execute(sql`
+        SELECT name FROM template_blocks WHERE template_id = ${forTemplateId}::uuid ORDER BY position ASC
+      `)) as unknown as { name: string }[];
+      const allowedBlocks = blockRows.map((r) => r.name);
+      for (const [i, entry] of input.modules.entries()) {
+        // Detached entries (no blockName) skip placement — nothing to check.
+        if (entry.blockName === undefined || allowedBlocks.includes(entry.blockName)) continue;
+        const chrome = CHROME_BLOCKS.has(entry.blockName.toLowerCase());
+        problem(
+          ["modules", i, "blockName"],
+          `block "${entry.blockName}" does not exist on this page's template`,
+          {
+            allowed: allowedBlocks,
+            ...(chrome
+              ? {
+                  next:
+                    `"${entry.blockName}" is site-wide LAYOUT chrome, not a page block — build_page places into page-template blocks only. ` +
+                    `Place it once on the layout instead: add_module({target:'layout', targetRef:'<layout-slug>', blockName:'${entry.blockName.toLowerCase()}', …}) (find the slug via list_layouts), and drop this entry from build_page.`,
+                }
+              : {}),
+          },
         );
+      }
+    };
+    const knownTemplateId = templateId ?? pageCreateInput?.templateId ?? typeTemplateId;
+    if (knownTemplateId !== undefined) await checkBlocks(knownTemplateId);
+    if (problems.length > 0 || !ordering.ok) return failProblems();
+
+    // ── 4. Create the page (first write) ───────────────────────────
+    if (pageCreateInput !== undefined) {
+      // Delegate to pages.create for template resolution + slug checks
+      // + snapshot emission.
+      const created = await createPageOp.handler(ctx, pageCreateInput, tx);
+      if (!created.ok) {
+        const inner = created.error as { nextAction?: BuildPageNextAction };
+        // Forward the recovery hint but DROP retryWithArgs — pages.create's
+        // declarative retry injects a top-level `templateId` arg, which on
+        // build_page lives at `page.templateId` and would be rejected by
+        // the strict schema. The AI still gets the list + retries itself.
+        if (inner.nextAction) {
+          problemNextAction = {
+            tool: inner.nextAction.tool,
+            reason: `${inner.nextAction.reason} (on build_page, pass it as page.templateId)`,
+            ...(inner.nextAction.args ? { args: inner.nextAction.args } : {}),
+            ...(inner.nextAction.autoExecute ? { autoExecute: true } : {}),
+          };
+        }
+        nestedProblem(["page"], created.error, "pages.create failed");
+        return failProblems();
+      }
+      pageId = (created.value as { pageId: string }).pageId;
+      createdPage = true;
+      wrote = true;
+      const tplRows = (await tx.execute(sql`
+        SELECT template_id::text AS template_id FROM pages WHERE id = ${pageId}::uuid LIMIT 1
+      `)) as unknown as { template_id: string }[];
+      const resolvedTpl = tplRows[0]?.template_id;
+      if (!resolvedTpl) {
+        throw new OperationAbortError(
+          internalError("pages.build_page", "the created page row has no template_id"),
+        );
+      }
+      templateId = resolvedTpl;
+      if (knownTemplateId === undefined) {
+        await checkBlocks(templateId);
+        if (problems.length > 0) return failProblems();
       }
     }
 
-    // ── 3. Per module: resolve module + content_instance ───────────
+    // ── 5. Per module: resolve module + content_instance ───────────
     // Per input index — entries are minted in dependency order but placed
     // (and reported) in array order.
     const additionByIndex = new Map<number, ResolvedBuildPlacement>();
@@ -343,257 +640,171 @@ export const buildPageOp = defineOperation({
     // whatever their array position), which keeps resolution single-pass
     // and deterministic.
     const localRefs = new Map<string, { moduleId: string; contentInstanceId: string }>();
+    // Handles of entries that failed: entries embedding them are skipped
+    // (their only problem is the failure already reported).
+    const failedRefs = new Set<string>();
     const detached: { index: number; ref: string; moduleId: string; contentInstanceId: string }[] =
       [];
-    const resolveLocalRefs = (value: unknown, entryIndex: number): unknown => {
-      if (Array.isArray(value)) return value.map((v) => resolveLocalRefs(v, entryIndex));
+    const resolveLocalRefs = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map((v) => resolveLocalRefs(v));
       if (value !== null && typeof value === "object") {
         const keys = Object.keys(value as Record<string, unknown>);
         if (keys.length === 1 && keys[0] === "$ref") {
           const handle = (value as { $ref: unknown }).$ref;
           const resolved = typeof handle === "string" ? localRefs.get(handle) : undefined;
-          if (!resolved) {
-            throw new LocalRefError(
-              `modules[${entryIndex}]: {"$ref": ${JSON.stringify(handle)}} does not match any entry's ref ` +
-                `in this call. Refs declared: ${[...localRefs.keys()].join(", ") || "(none)"}.`,
-            );
-          }
+          // The ordering check guarantees the handle exists and was minted
+          // first; only a failed entry leaves it unresolved.
+          if (!resolved) throw new SkipEntry();
           return resolved;
         }
         return Object.fromEntries(
           Object.entries(value as Record<string, unknown>).map(([k, v]) => [
             k,
-            resolveLocalRefs(v, entryIndex),
+            resolveLocalRefs(v),
           ]),
         );
       }
       return value;
     };
+    const failEntry = (entry: BuildPageModuleEntry) => {
+      if (entry.ref !== undefined) failedRefs.add(entry.ref);
+    };
     for (const i of ordering.order) {
-      const entry = input.modules[i] as (typeof input.modules)[number];
+      const entry = input.modules[i] as BuildPageModuleEntry;
+      const at: ErrorPathSegment[] = ["modules", i];
       let moduleId: string;
       let minted = false;
-      if (entry.moduleId !== undefined && typeof entry.moduleId !== "string") {
-        // Place mode via local ref: re-place a module minted in this call
-        // (the feature-cards case — one card module, three placements;
-        // ordering.order minted it first). Resolves to the referenced entry's moduleId; the
-        // entry's own `content` mints/binds its own instance as usual.
-        const handle = entry.moduleId.$ref;
-        const resolved = localRefs.get(handle);
-        if (!resolved) {
-          return fail(
-            `${moduleLabel(i, entry)}: moduleId {"$ref": ${JSON.stringify(handle)}} does not match any entry's ref ` +
-              `in this call. Refs declared: ${[...localRefs.keys()].join(", ") || "(none)"}.`,
-          );
-        }
-        moduleId = resolved.moduleId;
-      } else if (entry.moduleId !== undefined) {
-        // Place mode — branch-aware existence check (a module minted
-        // earlier in this same chat must be placeable). We also read the
-        // module's metadata to compare against any authoring fields this
-        // placement-only entry carried (see the ignored-authoring note below).
-        const branchFilter = branchVisibilityFilter(ctx);
-        const rows = (await tx.execute(sql`
-          SELECT id::text AS id, display_name, description, kind, type FROM modules
-          WHERE id = ${entry.moduleId}::uuid AND deleted_at IS NULL ${branchFilter}
-          LIMIT 1
-        `)) as unknown as {
-          id: string;
-          display_name: string;
-          description: string;
-          kind: string;
-          type: string | null;
-        }[];
-        const mod = rows[0];
-        if (!mod) {
-          return fail(
-            `${moduleLabel(i, entry)}: module ${entry.moduleId} not found or deleted — ` +
-              "pass an id from list_modules, or author displayName + html to mint a new module",
-          );
-        }
-        moduleId = entry.moduleId;
-        // §2 — surface any authoring field that DIFFERS from the module's stored
-        // value (or is structural, which placement can never apply). A matching
-        // metadata field is a harmless redundant label → no note.
-        const ignored: string[] = [];
-        if (entry.displayName !== undefined && entry.displayName !== mod.display_name) {
-          ignored.push(`displayName='${entry.displayName}' (module keeps '${mod.display_name}')`);
-        }
-        if (entry.description !== undefined && entry.description !== mod.description) {
-          ignored.push("description");
-        }
-        if (entry.kind !== undefined && entry.kind !== mod.kind) {
-          ignored.push(`kind='${entry.kind}' (module keeps '${mod.kind}')`);
-        }
-        if (entry.type !== undefined && entry.type !== (mod.type ?? undefined)) {
-          ignored.push(`type='${entry.type}' (module keeps '${mod.type ?? "(none)"}')`);
-        }
-        for (const k of ["html", "css", "js", "fields"] as const) {
-          if (entry[k] !== undefined) ignored.push(`${k} (structural)`);
-        }
-        if (entry.bindThemeLiterals !== undefined) ignored.push("bindThemeLiterals");
-        if (ignored.length > 0) ignoredAuthoringByIndex[String(i)] = ignored;
-      } else {
-        // Mint mode. The Zod superRefine enforces displayName+html at
-        // the dispatch boundary; re-narrow for direct handler calls
-        // (tests, future reuse) — same pattern as add_module_to_page.
-        const { displayName, html } = entry;
-        if (displayName === undefined || html === undefined) {
-          return fail(
-            `${moduleLabel(i, entry)}: pass either \`moduleId\` (place an existing module) or \`displayName\` + \`html\` (mint a new one)`,
-          );
-        }
-        const twin = mintedByHtml.get(html);
-        if (twin && repeatsMint(entry, input.modules[twin.index] as BuildPageModuleEntry)) {
-          moduleId = twin.moduleId;
-          reusedMintByIndex[String(i)] = twin.index;
+      try {
+        if (entry.moduleId !== undefined && typeof entry.moduleId !== "string") {
+          // Place mode via local ref: re-place a module minted in this call
+          // (the feature-cards case — one card module, three placements;
+          // ordering.order minted it first). The entry's own `content`
+          // mints/binds its own instance as usual.
+          const resolved = localRefs.get(entry.moduleId.$ref);
+          if (!resolved) throw new SkipEntry();
+          moduleId = resolved.moduleId;
+        } else if (entry.moduleId !== undefined) {
+          const mod = placedModules.get(i) as PlacedModuleRow;
+          moduleId = entry.moduleId;
+          // §2 — surface any authoring field that DIFFERS from the module's stored
+          // value (or is structural, which placement can never apply). A matching
+          // metadata field is a harmless redundant label → no note.
+          const ignored = ignoredAuthoring(entry, mod);
+          if (ignored.length > 0) ignoredAuthoringByIndex[String(i)] = ignored;
         } else {
-          // Run the singular schema so defaults apply, then delegate to
-          // modules.create (extractor fallback, type derivation, slug-dup
-          // check, media usage, snapshot). slugifyModuleSection includes
-          // the index so two same-named entries in one batch can't
-          // collide on the slug.
-          const parsed = moduleCreateSchema.safeParse({
-            slug: slugifyModuleSection(displayName, i),
-            displayName,
-            html,
-            ...(entry.description !== undefined ? { description: entry.description } : {}),
-            ...(entry.kind !== undefined ? { kind: entry.kind } : {}),
-            ...(entry.type !== undefined ? { type: entry.type } : {}),
-            ...(entry.css !== undefined ? { css: entry.css } : {}),
-            ...(entry.js !== undefined ? { js: entry.js } : {}),
-            ...(entry.fields !== undefined ? { fields: entry.fields } : {}),
-          });
-          if (!parsed.success) {
-            const issue = parsed.error.issues[0];
-            const at = issue && issue.path.length > 0 ? ` at ${issue.path.join(".")}` : "";
-            return fail(
-              `${moduleLabel(i, entry)}${at}: ${issue?.message ?? "invalid module payload"}`,
-            );
-          }
-          const created = await createModuleOp.handler(ctx, parsed.data, tx);
-          if (!created.ok) {
-            const inner = created.error as { message?: string };
-            return fail(
-              `${moduleLabel(i, entry)}: modules.create failed: ${inner.message ?? created.error.kind}`,
-            );
-          }
-          wrote = true;
-          minted = true;
-          moduleId = (created.value as { moduleId: string }).moduleId;
-          if (!mintedByHtml.has(html)) mintedByHtml.set(html, { index: i, moduleId });
-          const extracted = (
-            created.value as { extractedFields?: { name: string; kind: string }[] }
-          ).extractedFields;
-          if (extracted && extracted.length > 0) {
-            extractedFieldsByIndex[String(i)] = extracted.map((f) => ({
-              name: f.name,
-              kind: f.kind,
-            }));
+          // Mint mode — displayName + html were checked in step 2.
+          const displayName = entry.displayName as string;
+          const html = entry.html as string;
+          const twin = mintedByHtml.get(html);
+          if (twin && repeatsMint(entry, input.modules[twin.index] as BuildPageModuleEntry)) {
+            moduleId = twin.moduleId;
+            reusedMintByIndex[String(i)] = twin.index;
+          } else {
+            // Delegate to modules.create (extractor fallback, type
+            // derivation, slug-dup check, media usage, snapshot).
+            const parsed = moduleCreateSchema.parse(mintInput(entry, displayName, html, i));
+            const created = await runNested(() => createModuleOp.handler(ctx, parsed, tx));
+            if (!created.ok) {
+              nestedProblem(at, created.error, "modules.create failed");
+              failEntry(entry);
+              continue;
+            }
+            wrote = true;
+            minted = true;
+            moduleId = (created.value as { moduleId: string }).moduleId;
+            if (!mintedByHtml.has(html)) mintedByHtml.set(html, { index: i, moduleId });
+            const extracted = (
+              created.value as { extractedFields?: { name: string; kind: string }[] }
+            ).extractedFields;
+            if (extracted && extracted.length > 0) {
+              extractedFieldsByIndex[String(i)] = extracted.map((f) => ({
+                name: f.name,
+                kind: f.kind,
+              }));
+            }
           }
         }
-      }
 
-      // Content resolution — every placement binds a content_instance
-      // (page_modules.content_instance_id is NOT NULL).
-      let content: BuildPageContent = entry.content ?? { source: "inline", values: {} };
-      // Resolve {"$ref": "<handle>"} markers against the referenced
-      // entries' minted ids BEFORE validation — the module/module-list field
-      // validator expects the real {moduleId, contentInstanceId} shape.
-      if (content.source !== "existing") {
-        try {
+        // Content resolution — every placement binds a content_instance
+        // (page_modules.content_instance_id is NOT NULL).
+        let content: BuildPageContent = entry.content ?? { source: "inline", values: {} };
+        // Resolve {"$ref": "<handle>"} markers against the referenced
+        // entries' minted ids BEFORE validation — the module/module-list field
+        // validator expects the real {moduleId, contentInstanceId} shape.
+        if (content.source !== "existing") {
           content = {
             ...content,
-            values: resolveLocalRefs(content.values, i) as Record<string, unknown>,
+            values: resolveLocalRefs(content.values) as Record<string, unknown>,
           };
-        } catch (e) {
-          if (e instanceof LocalRefError) return fail(e.message);
-          throw e;
         }
-      }
-      let contentInstanceId: string;
-      let syncMode: "synced" | "unsynced";
-      if (content.source === "existing") {
-        const branchFilter = branchVisibilityFilter(ctx);
-        const ciRows = (await tx.execute(sql`
-          SELECT module_id::text AS module_id FROM content_instances
-          WHERE id = ${content.contentInstanceId}::uuid AND deleted_at IS NULL ${branchFilter}
-          LIMIT 1
-        `)) as unknown as { module_id: string }[];
-        const ci = ciRows[0];
-        if (!ci) {
-          return fail(
-            `${moduleLabel(i, entry)}: content_instance ${content.contentInstanceId} not found or deleted — ` +
-              "pick one from list_content_instances, or pass content.source='inline' with values instead",
+        let contentInstanceId: string;
+        let syncMode: "synced" | "unsynced";
+        if (content.source === "existing") {
+          contentInstanceId = content.contentInstanceId;
+          syncMode = content.syncMode;
+        } else {
+          // inline → private unsynced row; shared → reusable row with
+          // purpose + (default) synced binding. Both delegate to
+          // content_instances.create so nested-ref + field-shape
+          // validation runs and names every offending FIELD.
+          const ciInput = contentInstanceCreateSchema.parse(contentCreateInput(content, moduleId));
+          const ciCreated = await runNested(() =>
+            createContentInstanceOp.handler(ctx, ciInput, tx),
           );
+          if (!ciCreated.ok) {
+            nestedProblem([...at, "content"], ciCreated.error, "content_instances.create failed");
+            failEntry(entry);
+            continue;
+          }
+          wrote = true;
+          contentInstanceId = (ciCreated.value as { contentInstanceId: string }).contentInstanceId;
+          syncMode = content.source === "shared" ? content.syncMode : "unsynced";
         }
-        if (ci.module_id !== moduleId) {
-          return fail(
-            `${moduleLabel(i, entry)}: content_instance ${content.contentInstanceId} is for module ${ci.module_id}, ` +
-              `but this placement uses module ${moduleId}. Bind a content_instance minted for the same module.`,
-          );
-        }
-        contentInstanceId = content.contentInstanceId;
-        syncMode = content.syncMode;
-      } else {
-        // inline → private unsynced row; shared → reusable row with
-        // purpose + (default) synced binding. Both delegate to
-        // content_instances.create so nested-ref + field-shape
-        // validation runs and names the offending FIELD in its error.
-        const ciInput = contentInstanceCreateSchema.safeParse(
-          content.source === "inline"
-            ? { moduleId, values: content.values }
-            : {
-                moduleId,
-                values: content.values,
-                purpose: content.purpose,
-                ...(content.slug !== undefined ? { slug: content.slug } : {}),
-                ...(content.displayName !== undefined ? { displayName: content.displayName } : {}),
-              },
-        );
-        if (!ciInput.success) {
-          const issue = ciInput.error.issues[0];
-          const at = issue && issue.path.length > 0 ? ` at ${issue.path.join(".")}` : "";
-          return fail(
-            `${moduleLabel(i, entry)}: content${at}: ${issue?.message ?? "invalid content payload"}`,
-          );
-        }
-        const ciCreated = await createContentInstanceOp.handler(ctx, ciInput.data, tx);
-        if (!ciCreated.ok) {
-          const inner = ciCreated.error as { message?: string; refusal?: true };
-          // content_instances.create's validator names the failing
-          // field ("field \"hero_title\" (kind=number) expects …") —
-          // forward it verbatim under the module index.
-          return fail(
-            `${moduleLabel(i, entry)}: content: ${inner.message ?? ciCreated.error.kind}`,
-            undefined,
-            inner.refusal,
-          );
-        }
-        wrote = true;
-        contentInstanceId = (ciCreated.value as { contentInstanceId: string }).contentInstanceId;
-        syncMode = content.source === "shared" ? content.syncMode : "unsynced";
-      }
 
-      // Register the local handle for later entries' {"$ref"} values.
-      if (entry.ref !== undefined) {
-        localRefs.set(entry.ref, { moduleId, contentInstanceId });
+        // Register the local handle for later entries' {"$ref"} values.
+        if (entry.ref !== undefined) {
+          localRefs.set(entry.ref, { moduleId, contentInstanceId });
+        }
+        if (entry.blockName === undefined) {
+          // Detached (nested-only) entry: minted + content-bound, no
+          // placement. The schema guarantees `ref` is set here.
+          detached.push({ index: i, ref: entry.ref as string, moduleId, contentInstanceId });
+          continue;
+        }
+        additionByIndex.set(i, {
+          blockName: entry.blockName,
+          moduleId,
+          contentInstanceId,
+          syncMode,
+          ...(entry.position !== undefined ? { position: entry.position } : {}),
+        });
+        mintedByIndex.set(i, minted);
+      } catch (e) {
+        if (e instanceof SkipEntry) {
+          failEntry(entry);
+          continue;
+        }
+        if (e instanceof NestedThrow) {
+          // A driver error aborts the Postgres transaction: nothing after
+          // it can run. Report it under this entry with what was found.
+          const mapped = thrownToQueryError("pages.build_page", e.thrown, "write");
+          const isSlug =
+            mapped.kind === "HandlerError" &&
+            mapped.pgDetail?.code === "23505" &&
+            entry.html !== undefined;
+          problem(at, describeNested(mapped), {
+            ...(isSlug
+              ? { next: "Set a different displayName (the module slug derives from it)." }
+              : {}),
+          });
+          if (failureKindOf(mapped) === "internal") problemInternal = true;
+          wrote = true;
+          return failProblems();
+        }
+        throw e;
       }
-      if (entry.blockName === undefined) {
-        // Detached (nested-only) entry: minted + content-bound, no
-        // placement. The schema guarantees `ref` is set here.
-        detached.push({ index: i, ref: entry.ref as string, moduleId, contentInstanceId });
-        continue;
-      }
-      additionByIndex.set(i, {
-        blockName: entry.blockName,
-        moduleId,
-        contentInstanceId,
-        syncMode,
-        ...(entry.position !== undefined ? { position: entry.position } : {}),
-      });
-      mintedByIndex.set(i, minted);
     }
+    if (problems.length > 0) return failProblems();
     const placedIndices = [...additionByIndex.keys()].sort((a, b) => a - b);
     const additions = placedIndices.map((i) => additionByIndex.get(i) as ResolvedBuildPlacement);
     const mintedFlags = placedIndices.map((i) => mintedByIndex.get(i) ?? false);
@@ -676,13 +887,9 @@ export const buildPageOp = defineOperation({
           tx,
         );
         if (!filled.ok) {
-          const inner = filled.error as { message?: string };
           // Throw, never `return err`: the page and its modules are written.
-          throw new OperationAbortError({
-            kind: "HandlerError",
-            operation: "pages.build_page",
-            message: `page.metaDescription: ${inner.message ?? filled.error.kind}`,
-          });
+          nestedProblem(["page", "metaDescription"], filled.error, "metaDescription");
+          return failProblems();
         }
         metaDescription = filled.value.alreadyFilled ? "unchanged" : "written";
       }

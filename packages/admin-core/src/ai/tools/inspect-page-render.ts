@@ -39,7 +39,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const inspectInput = z
@@ -109,10 +109,7 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
       ...(chatBranchId ? { chatBranchId } : {}),
     });
     if (!renderR.ok) {
-      return {
-        ok: false,
-        content: `render_preview failed: ${describeError(renderR.error)}`,
-      };
+      return toolError(renderR.error, `render_preview failed: ${describeError(renderR.error)}`);
     }
     const rendered = renderR.value as {
       html: string;
@@ -130,10 +127,7 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
       pageId: input.pageId,
     });
     if (!pageR.ok) {
-      return {
-        ok: false,
-        content: `pages.get_with_modules failed: ${describeError(pageR.error)}`,
-      };
+      return toolError(pageR.error, `pages.get_with_modules failed: ${describeError(pageR.error)}`);
     }
     const page = (
       pageR.value as {

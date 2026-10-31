@@ -208,10 +208,10 @@ describe("composeSystemPromptChunks", () => {
   });
 
   // e2e-livedit run 40336739359 (PR #1143): the prompt cited `page` as a
-  // page type and asked to type every page, so the AI passed
-  // `pageType:"page"` on a site whose types are content / home — no site
-  // has a `page` type. Ordinary pages omit the type and get the default.
-  it("never names a `page` page type and tells the AI to omit the type for an ordinary page", () => {
+  // page type, so the AI passed `pageType:"page"` on a site whose types are
+  // content / home — no site has a `page` type. #1276: there is no default
+  // type any more; every page names one the site has, never a guessed slug.
+  it("never names a `page` page type and has every new page name its type (#1276)", () => {
     const model = composeSystemPromptChunks([]).find((c) => c.label === "module-model")?.body ?? "";
     const pageTypeInput = JSON.stringify(
       (buildPageTool.inputSchema as { properties: { page: unknown } }).properties.page,
@@ -220,8 +220,13 @@ describe("composeSystemPromptChunks", () => {
       expect(text).not.toContain("`page`, `news`");
       expect(text).not.toContain("'page' for a plain page");
     }
-    expect(model).toContain("an ordinary page omits pageType");
-    expect(buildPageTool.description).toContain("an ordinary page omits pageType");
-    expect(pageTypeInput).toContain("Omit it for an ordinary page");
+    // #1276 — no default type: nothing tells the AI to omit pageType.
+    for (const text of [model, buildPageTool.description, pageTypeInput]) {
+      expect(text).not.toContain("omits pageType");
+      expect(text).not.toContain("site default");
+    }
+    expect(model).toContain("Every page names its type");
+    expect(model).toContain("never guess a slug");
+    expect(pageTypeInput).toContain("REQUIRED for a new page");
   });
 });

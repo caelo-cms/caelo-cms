@@ -8,7 +8,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { bulkDeleteRedirectsToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { redirectSyncNote } from "./_redirect-sync-note.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -41,7 +41,7 @@ export const bulkDeleteRedirectsTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "redirects.delete_many", input);
     if (!r.ok) {
-      return { ok: false, content: `redirects.delete_many failed: ${describeError(r.error)}` };
+      return toolError(r.error, `redirects.delete_many failed: ${describeError(r.error)}`);
     }
     return {
       ok: true,

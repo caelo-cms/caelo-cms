@@ -124,6 +124,7 @@ beforeAll(async () => {
   await ensureRoleUser(ADMIN_URL as string, OWNER.actorId, "owner");
   await wipe();
   const t = await ok<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: `${P}-tpl`,
     displayName: "Parity2 template",
     html: `<html><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

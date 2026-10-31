@@ -121,8 +121,8 @@ beforeAll(async () => {
     await tx`UPDATE import_runs SET chat_session_id = ${orchestratorId}::uuid WHERE id = ${runId}::uuid`;
     // Accept exactly ONE of the two pages → pagesDone=1, pagesTotal=2.
     const anchor = await tx`
-      INSERT INTO pages (slug, title, short_title, status, template_id, version)
-      SELECT 'issue280-anchor', 'Anchor', 'Anchor', 'draft', id, 1
+      INSERT INTO pages (slug, title, short_title, status, template_id, version, page_type_confirmed)
+      SELECT 'issue280-anchor', 'Anchor', 'Anchor', 'draft', id, 1, true
       FROM templates WHERE deleted_at IS NULL LIMIT 1
       RETURNING id
     `;

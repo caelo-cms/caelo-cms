@@ -90,6 +90,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
   await wipe();
   const t = await op<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: `${PFX}-tpl`,
     displayName: "SEO gate",
     html: `<html><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

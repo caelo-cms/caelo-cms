@@ -17,8 +17,12 @@
  * - a group is a listing when it links at least {@link MIN_LISTING_LINKS}
  *   pages of one type AND at least {@link MIN_LISTING_COVERAGE} of that
  *   type's published pages — a curated "top 3 of 40" stays allowed;
- * - the site's default page type is exempt: its pages are ordinary pages,
- *   and links to them are ordinary link groups;
+ * - only COLLECTION page types count (maintainer decision 2026-10-30,
+ *   `PageTypeDef.collection`): a footer linking About, Team and Contact
+ *   (standalone `content` pages) is navigation, not a listing;
+ * - pages whose page type nobody chose are exempt (#1276: they sat on the
+ *   old stored default type, which held the ordinary pages; links to them
+ *   are ordinary link groups until someone gives them a type);
  * - error while pages of the type are missing (the message names them),
  *   warning when the set is complete (correct today, hand-maintained);
  * - deliberate exceptions go through the per-rule acceptance.
@@ -44,12 +48,29 @@ const MAX_NAMED = 6;
 
 /** Page types and pages as the listing rule needs them (main = staged). */
 export interface StructurePageIndex {
-  /** `site_defaults.default_page_type_id` — exempt (see the file header). */
-  readonly defaultPageTypeId: string;
-  /** Page type id → slug and display name. */
-  readonly pageTypes: ReadonlyMap<string, { readonly slug: string; readonly name: string }>;
-  /** Page id → its page type and title. */
-  readonly pages: ReadonlyMap<string, { readonly pageTypeId: string; readonly title: string }>;
+  /** Page type id → slug, display name, purpose and whether it is a collection. */
+  readonly pageTypes: ReadonlyMap<
+    string,
+    {
+      readonly slug: string;
+      readonly name: string;
+      readonly purpose: string;
+      readonly collection: boolean;
+    }
+  >;
+  /**
+   * Page id → its page type, whether that type was chosen (#1276; an
+   * unchosen type is exempt, see the file header), title and path.
+   */
+  readonly pages: ReadonlyMap<
+    string,
+    {
+      readonly pageTypeId: string;
+      readonly pageTypeConfirmed: boolean;
+      readonly title: string;
+      readonly path: string;
+    }
+  >;
   /**
    * Hosts that are the site besides the staged origin (`host[:port]`):
    * the SEO base URL and public domains, plus the staged build's display
@@ -95,10 +116,11 @@ export function manualListingFindings(
   };
   const pagesOfType = new Map<string, string[]>();
   for (const p of live) {
-    const typeId = index.pages.get(p.pageId)?.pageTypeId;
+    const indexed = index.pages.get(p.pageId);
     // A staged page the index does not know was deleted after the build
     // was staged; it is no member of any type now.
-    if (typeId === undefined || typeId === index.defaultPageTypeId) continue;
+    if (indexed === undefined || !indexed.pageTypeConfirmed) continue;
+    const typeId = indexed.pageTypeId;
     pagesOfType.set(typeId, [...(pagesOfType.get(typeId) ?? []), p.pageId]);
   }
 
@@ -108,13 +130,15 @@ export function manualListingFindings(
     for (const t of g.targets) {
       const target = pageOf(t);
       if (target === undefined || target === g.pageId) continue;
-      const typeId = index.pages.get(target)?.pageTypeId;
-      if (typeId === undefined || typeId === index.defaultPageTypeId) continue;
+      const indexed = index.pages.get(target);
+      if (indexed === undefined || !indexed.pageTypeConfirmed) continue;
+      const typeId = indexed.pageTypeId;
       const set = linkedByType.get(typeId) ?? new Set<string>();
       set.add(target);
       linkedByType.set(typeId, set);
     }
     for (const [typeId, linked] of linkedByType) {
+      if (index.pageTypes.get(typeId)?.collection !== true) continue;
       if (linked.size < MIN_LISTING_LINKS) continue;
       const all = (pagesOfType.get(typeId) ?? []).filter((id) => id !== g.pageId);
       if (linked.size < MIN_LISTING_COVERAGE * all.length) continue;

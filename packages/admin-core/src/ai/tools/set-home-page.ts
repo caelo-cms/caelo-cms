@@ -7,7 +7,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { setHomePageToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { stageReadinessSuffix } from "./_stage-readiness.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -29,7 +29,7 @@ export const setHomePageTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.set_home_page", input);
     if (!res.ok) {
-      return { ok: false, content: `pages.set_home_page failed: ${describeError(res.error)}` };
+      return toolError(res.error, `pages.set_home_page failed: ${describeError(res.error)}`);
     }
     const value = res.value as { pageId: string };
     return {

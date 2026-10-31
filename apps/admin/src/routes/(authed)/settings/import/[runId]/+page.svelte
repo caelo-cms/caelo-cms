@@ -5,6 +5,7 @@
   import { enhance } from "$app/forms";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
+  import { Select } from "#lib/components/ui/select/index.js";
   import {
     Card,
     CardContent,
@@ -87,10 +88,16 @@
                 {/each}
               </ul>
             </details>
-            {#if !p.acceptedPageId && data.defaultTemplateId}
-              <form method="post" action="?/accept" use:enhance>
+            {#if !p.acceptedPageId && data.pageTypes.length > 0}
+              <form method="post" action="?/accept" use:enhance class="flex items-center gap-2">
                 <input type="hidden" name="importPageId" value={p.id} />
-                <input type="hidden" name="templateId" value={data.defaultTemplateId} />
+                <!-- #1276 — the imported page's type is a choice, never a default. -->
+                <Select name="pageType" required aria-label="Page type" class="w-56" value="">
+                  <option value="" disabled>Page type…</option>
+                  {#each data.pageTypes as t (t.slug)}
+                    <option value={t.slug}>{t.name} ({t.slug})</option>
+                  {/each}
+                </Select>
                 <Button type="submit" size="sm">Accept (creates draft page)</Button>
               </form>
             {/if}

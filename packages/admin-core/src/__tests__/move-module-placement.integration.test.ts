@@ -112,6 +112,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
   templateId = (
     await op<{ templateId: string }>(SYSTEM, "templates.create", {
+      pageType: "home",
       slug: `i1195-tpl-${TS}`,
       displayName: "T",
       html: '<body><caelo-slot name="header">_</caelo-slot><caelo-slot name="content">_</caelo-slot></body>',

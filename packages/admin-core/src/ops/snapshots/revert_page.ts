@@ -79,6 +79,7 @@ export const revertPageOp = defineOperation({
           status = ${target.status},
           ${target.parentPageId === undefined ? sql`` : sql`parent_page_id = ${target.parentPageId}::uuid,`}
           page_type_id = ${target.pageTypeId}::uuid,
+          page_type_confirmed = ${target.pageTypeConfirmed},
           properties = ${jsonbParam(target.properties)},
           deleted_at = ${target.deletedAt},
           updated_at = now(),

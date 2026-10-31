@@ -91,14 +91,29 @@ export const actions: Actions = {
     if (types.some((t) => t.slug === b.slug)) {
       return fail(400, { error: `A page type named "${b.slug}" already exists.` });
     }
+    const collection = String(form.get("collection") ?? "");
+    if (collection !== "true" && collection !== "false") {
+      return fail(400, {
+        error: "Say whether these are many similar pages listed together, or standalone pages.",
+      });
+    }
     const definition: PageTypeDef = {
       ...b,
+      collection: collection === "true",
       templates: [templateId],
       defaultTemplate: templateId,
       properties: [],
       vocabularies: [],
     };
-    const r = await runWrite(locals.ctx, "page_types.upsert_many", { pageTypes: [definition] });
+    // #1276 — the duplicate guard refuses a type that reads like an
+    // existing one unless the person names it as deliberately different.
+    const distinctFrom = String(form.get("distinctFrom") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const r = await runWrite(locals.ctx, "page_types.upsert_many", {
+      pageTypes: [{ ...definition, ...(distinctFrom.length > 0 ? { distinctFrom } : {}) }],
+    });
     if (!r.ok) return writeFailure(r.message);
     throw redirect(303, `/content/lists/types/page/${b.slug}`);
   },

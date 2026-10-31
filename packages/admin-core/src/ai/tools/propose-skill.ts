@@ -9,7 +9,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { type ProposeSkillToolInput, proposeSkillToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const proposeSkillTool: ToolDefinitionWithHandler<ProposeSkillToolInput> = {
@@ -63,7 +63,7 @@ export const proposeSkillTool: ToolDefinitionWithHandler<ProposeSkillToolInput> 
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "skills.propose", input);
     if (!r.ok) {
-      return { ok: false, content: `propose_skill failed: ${describeError(r.error)}` };
+      return toolError(r.error, `propose_skill failed: ${describeError(r.error)}`);
     }
     const { proposalId } = r.value as { proposalId: string };
     return {

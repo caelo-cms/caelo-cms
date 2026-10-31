@@ -8,7 +8,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { bulkCreateRedirectsToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { redirectSyncNote } from "./_redirect-sync-note.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -55,7 +55,7 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
       upsert: input.upsert,
     });
     if (!r.ok) {
-      return { ok: false, content: `redirects.create_many failed: ${describeError(r.error)}` };
+      return toolError(r.error, `redirects.create_many failed: ${describeError(r.error)}`);
     }
     const v = r.value as { created: number; updated: number; skipped: number };
     return {

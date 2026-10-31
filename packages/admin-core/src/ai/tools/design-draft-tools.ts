@@ -19,7 +19,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { GENESIS_DRAFT_MAX_HTML_BYTES, genesisAddDraftInput } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface ListedDraft {
@@ -97,7 +97,7 @@ export const saveDesignDraftTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "genesis.add_draft", input);
     if (!r.ok) {
-      return { ok: false, content: `genesis.add_draft failed: ${describeError(r.error)}` };
+      return toolError(r.error, `genesis.add_draft failed: ${describeError(r.error)}`);
     }
     const v = r.value as { draftId: string; variantSetId: string; candidateCount: number };
     const where =
@@ -143,7 +143,7 @@ export const listDesignDraftsTool: ToolDefinitionWithHandler<z.infer<typeof list
       ...input,
     });
     if (!r.ok) {
-      return { ok: false, content: `genesis.list_drafts failed: ${describeError(r.error)}` };
+      return toolError(r.error, `genesis.list_drafts failed: ${describeError(r.error)}`);
     }
     const drafts = (r.value as { drafts: ListedDraft[] }).drafts;
     if (drafts.length === 0) {
@@ -213,7 +213,7 @@ export const presentDesignVariantsTool: ToolDefinitionWithHandler<z.infer<typeof
       variantSetId: input.variantSetId,
     });
     if (!r.ok) {
-      return { ok: false, content: `genesis.list_drafts failed: ${describeError(r.error)}` };
+      return toolError(r.error, `genesis.list_drafts failed: ${describeError(r.error)}`);
     }
     const drafts = (r.value as { drafts: ListedDraft[] }).drafts;
     if (drafts.length === 0) {
@@ -253,7 +253,7 @@ export const selectDesignDraftTool: ToolDefinitionWithHandler<z.infer<typeof sel
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "genesis.select_draft", input);
     if (!r.ok) {
-      return { ok: false, content: `genesis.select_draft failed: ${describeError(r.error)}` };
+      return toolError(r.error, `genesis.select_draft failed: ${describeError(r.error)}`);
     }
     const prev = (r.value as { previousSelectedId: string | null }).previousSelectedId;
     return {

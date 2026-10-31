@@ -65,6 +65,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
 
   const tpl = await execute(registry, adapter, systemCtx, "templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "I299 TPL",
     html: `<body><caelo-slot name="content">_</caelo-slot><caelo-slot name="sidebar">_</caelo-slot></body>`,
@@ -800,6 +801,7 @@ describe("pages.build_page — page type, properties, terms (epic #1107)", () =>
           slug: typeSlug,
           name: "Article",
           purpose: "build_page page type test",
+          collection: false,
           templates: [templateId],
           defaultTemplate: templateId,
           properties: [{ name: "teaser", label: "Teaser", type: "text" }],

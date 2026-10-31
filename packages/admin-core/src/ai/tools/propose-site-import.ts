@@ -42,7 +42,7 @@ import {
   refineCrawlScopeAgainstSourceUrl,
 } from "../../ops/imports-crawl-scope.js";
 import { estimateImportAiCost, type ImportModelRates } from "../import-cost-model.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { externalFetchAllowedHosts } from "./_external-fetch-budget.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -272,7 +272,7 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
       estimate,
     });
     if (!r.ok) {
-      return { ok: false, content: `propose_site_import failed: ${describeError(r.error)}` };
+      return toolError(r.error, `propose_site_import failed: ${describeError(r.error)}`);
     }
     const v = r.value as { runId: string; migrationBranch: boolean };
     const mode = listMode

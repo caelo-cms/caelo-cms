@@ -81,7 +81,7 @@ test("right-click → Edit text saves one field in place; Escape restores", asyn
         INSERT INTO templates (slug, display_name, html, css, layout_id)
         VALUES (\${process.env.TPL_SLUG}, 'le', '<body><caelo-slot name="content">_</caelo-slot></body>', '', (SELECT id FROM layouts WHERE slug = 'site-default'))
         RETURNING id::text AS id\`;
-      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${tpl[0].id}::uuid, 'content', 'Content', 0)\`;
       const fields = JSON.stringify([
         { name: "title", kind: "text", label: "Title" },
@@ -92,8 +92,8 @@ test("right-click → Edit text saves one field in place; Escape restores", asyn
         VALUES (\${process.env.MOD_SLUG}, 'inline mod', \${process.env.MOD_SLUG}, '<section class="hero"><h1>{{title}}</h1><p>{{body}}</p></section>', \${fields}::text::jsonb)
         RETURNING id::text AS id\`;
       const pg = await tx\`
-        INSERT INTO pages (slug, title, template_id, status)
-        VALUES (\${process.env.PAGE_SLUG}, 'LE Inline Page', \${tpl[0].id}::uuid, 'draft')
+        INSERT INTO pages (slug, title, template_id, status, page_type_confirmed)
+        VALUES (\${process.env.PAGE_SLUG}, 'LE Inline Page', \${tpl[0].id}::uuid, 'draft', true)
         RETURNING id::text AS id\`;
       out.pg = pg[0].id;
       const values = JSON.stringify({ title: "INLINE_BEFORE", body: "Body stays" });

@@ -13,7 +13,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const importMediaFromUrlsInput = z
@@ -77,7 +77,7 @@ export const importMediaFromUrlsTool: ToolDefinitionWithHandler<
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `imports.import_media_urls failed: ${describeError(r.error)}` };
+      return toolError(r.error, `imports.import_media_urls failed: ${describeError(r.error)}`);
     }
     const v = r.value as {
       imported: Array<{ sourceUrl: string; mediaId: string; slug: string; mediaUrl: string }>;

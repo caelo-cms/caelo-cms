@@ -130,7 +130,7 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
     expect(res.content).toMatch(/- `\w+` \(\w+, required\)/);
     expect(res.content).toMatch(/- `\w+` \(\w+, optional\)/);
     // and tells it to retry rather than punt
-    expect(res.content.toLowerCase()).toContain("retry");
+    expect(res.content.toLowerCase()).toContain("change only the values listed");
     // raw Zod JSON is NOT what we hand back anymore
     expect(res.content).not.toContain('"code":"unrecognized_keys"');
   });
@@ -161,7 +161,7 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
     expect(res.content).toContain('listType:"links"');
     expect(res.content).toContain("{{#links}}");
     // still the generic drop-and-retry guidance
-    expect(res.content.toLowerCase()).toContain("retry");
+    expect(res.content.toLowerCase()).toContain("change only the values listed");
   });
 
   it("a plain unrelated bad key does NOT trigger the nesting hint", async () => {

@@ -18,7 +18,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { proposeAcceptInput, proposePublishAnywayInput } from "../../ops/quality/pending.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 import { makeReadTool } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -56,7 +56,7 @@ export const retryQualityAuditTool: ToolDefinitionWithHandler<Record<string, nev
   handler: async (ctx, _input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "quality_audits.retry", {});
     if (!r.ok) {
-      return { ok: false, content: `quality_audits.retry failed: ${describeError(r.error)}` };
+      return toolError(r.error, `quality_audits.retry failed: ${describeError(r.error)}`);
     }
     const v = r.value as { auditRunId: string; status: string };
     return {
