@@ -55,7 +55,7 @@ Every call has a timeout (`--call-timeout`, default 30 s), so a run against a sl
 
 ## Definitions and SLOs
 
-- **First paint**: the `/edit` HTML document received in full, every awaited load done. Streamed parts are excluded because the document ends without them.
+- **First paint**: the `/edit` HTML document received up to `</html>`, every awaited load done. SvelteKit appends the load's streamed parts (`apps/admin/src/lib/server/edit-streamed.ts`, #1268) to the same response after `</html>`, so the harness stops the clock there and drains the rest untimed.
 - **Preview**: the `preview-by-path` response received in full.
 - **Unchanged-page preview**: the same preview requested again with no change to that page in between.
 - **MCP write / read**: one `/api/mcp/tool` call of a writing / reading tool, until its JSON answer.

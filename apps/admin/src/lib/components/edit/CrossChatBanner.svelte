@@ -11,6 +11,9 @@
    *
    * Each entry links back to the page that the chat is anchored to.
    * Clicking jumps the iframe + auto-resumes that chat.
+   *
+   * #1268 — the list streams in after the editor opened; when it could
+   * not be read, the banner says so instead of quietly showing nothing.
    */
   import { AlertCircle } from "lucide-svelte";
 
@@ -22,7 +25,7 @@
     pendingCount: number;
   }
 
-  let { chats }: { chats: OtherChat[] } = $props();
+  let { chats, error = null }: { chats: OtherChat[]; error?: string | null } = $props();
 
   // so the link matches the operator's mental URL.
   function hrefFor(c: OtherChat): string {
@@ -35,7 +38,23 @@
   }
 </script>
 
-{#if chats.length > 0}
+{#if error}
+  <div
+    class="z-30 flex min-h-9 shrink-0 items-center gap-2 border-b bg-red-500/10 px-3 py-1 text-xs text-red-800 dark:text-red-200"
+    role="alert"
+    data-testid="cross-chat-error"
+  >
+    <AlertCircle class="size-3.5 shrink-0" />
+    <span>{error}</span>
+    <a
+      href="/content/changes"
+      class="ml-auto shrink-0 underline underline-offset-2"
+      data-testid="open-changes-link"
+    >
+      Review all open changes
+    </a>
+  </div>
+{:else if chats.length > 0}
   <div
     class="z-30 flex h-9 shrink-0 items-center gap-2 border-b bg-amber-500/10 px-3 text-xs text-amber-900 dark:text-amber-200"
     data-testid="cross-chat-banner"
