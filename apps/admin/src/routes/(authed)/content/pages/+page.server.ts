@@ -13,9 +13,10 @@ import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
   const { adapter, registry } = getQueryContext();
-  const [pagesResult, templatesResult] = await Promise.all([
+  const [pagesResult, templatesResult, pageTypesResult] = await Promise.all([
     execute(registry, adapter, locals.ctx, "pages.list", {}),
     execute(registry, adapter, locals.ctx, "templates.list", {}),
+    execute(registry, adapter, locals.ctx, "page_types.list", {}),
   ]);
   const pages = pagesResult.ok
     ? (
@@ -39,7 +40,23 @@ export const load: PageServerLoad = async ({ locals }) => {
         }
       ).templates
     : [];
-  return { pages, templates };
+  // #1276 — a new page names its page type: the form offers every type
+  // with its templates (the type's default template preselected).
+  const pageTypes = pageTypesResult.ok
+    ? (
+        pageTypesResult.value as {
+          pageTypes: {
+            slug: string;
+            name: string;
+            purpose: string;
+            templates: string[];
+            defaultTemplate: string;
+            pageCount: number;
+          }[];
+        }
+      ).pageTypes
+    : [];
+  return { pages, templates, pageTypes };
 };
 
 export const actions: Actions = {
@@ -51,14 +68,20 @@ export const actions: Actions = {
 
     const slug = String(form.get("slug") ?? "").trim();
     const title = String(form.get("title") ?? "").trim();
+    const pageType = String(form.get("pageType") ?? "");
+    // Empty = the page type's default template.
     const templateId = String(form.get("templateId") ?? "");
     // Empty = top level; otherwise the page the new one sits under.
     const parentPageId = String(form.get("parentPageId") ?? "");
+    if (!pageType) {
+      return fail(400, { error: "Choose what kind of page this is (page type)." });
+    }
 
     const result = await execute(registry, adapter, locals.ctx, "pages.create", {
       slug,
       title,
-      templateId,
+      pageType,
+      ...(templateId ? { templateId } : {}),
       ...(parentPageId ? { parentPageId } : {}),
     });
     if (!result.ok) {

@@ -11,7 +11,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { createLayoutToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const createLayoutTool: ToolDefinitionWithHandler<
@@ -61,7 +61,7 @@ export const createLayoutTool: ToolDefinitionWithHandler<
       blocks: input.blocks,
     });
     if (!res.ok) {
-      return { ok: false, content: `layouts.propose_create failed: ${describeError(res.error)}` };
+      return toolError(res.error, `layouts.propose_create failed: ${describeError(res.error)}`);
     }
     const v = res.value as { proposalId: string; preview: { blockCount: number } };
     // v0.5.11 — canonical "Queued proposal <uuid>: <summary>." shape so

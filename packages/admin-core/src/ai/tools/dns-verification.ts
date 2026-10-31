@@ -23,7 +23,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 import { hostingStatusSection } from "./domain-hosting-status.js";
 
@@ -60,7 +60,7 @@ export const verifyDomainsTool: ToolDefinitionWithHandler<VerifyDomainsInput> = 
   handler: async (ctx, input, toolCtx) => {
     const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "domains.list", {});
     if (!listed.ok) {
-      return { ok: false, content: `domains.list failed: ${describeError(listed.error)}` };
+      return toolError(listed.error, `domains.list failed: ${describeError(listed.error)}`);
     }
     const all = (listed.value as { domains: DomainRow[] }).domains;
     if (all.length === 0) {
@@ -179,10 +179,10 @@ export const verifyDnsRecordsTool: ToolDefinitionWithHandler<VerifyDnsRecordsInp
         input.environment ? { environment: input.environment } : {},
       );
       if (!outputs.ok) {
-        return {
-          ok: false,
-          content: `provisioning_outputs.get failed: ${describeError(outputs.error)}`,
-        };
+        return toolError(
+          outputs.error,
+          `provisioning_outputs.get failed: ${describeError(outputs.error)}`,
+        );
       }
       const rows = (outputs.value as { rows: { dnsRecordsRequired: RequiredRecord[] }[] }).rows;
       const seen = new Set<string>();

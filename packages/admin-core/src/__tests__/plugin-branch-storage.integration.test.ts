@@ -416,6 +416,7 @@ describe("branch-aware plugin storage", () => {
 
   it("writes core entities from a chat on the chat's branch", async () => {
     const t = await execute(registry, adapter, humanCtx, "templates.create", {
+      pageType: "home",
       slug: `${PFX}t`,
       displayName: "T",
       html: '<caelo-slot name="content"></caelo-slot>',

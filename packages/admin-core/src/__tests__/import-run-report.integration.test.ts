@@ -94,8 +94,8 @@ beforeAll(async () => {
     // accepted_page_id has an FK to pages — mint a real page to point
     // at (the shared dev DB may have zero pages between suites).
     const anchor = await tx`
-      INSERT INTO pages (slug, title, short_title, status, template_id, version)
-      SELECT 'issue197-anchor', 'Anchor', 'Anchor', 'draft', id, 1
+      INSERT INTO pages (slug, title, short_title, status, template_id, version, page_type_confirmed)
+      SELECT 'issue197-anchor', 'Anchor', 'Anchor', 'draft', id, 1, true
       FROM templates WHERE deleted_at IS NULL LIMIT 1
       RETURNING id
     `;
@@ -112,8 +112,8 @@ beforeAll(async () => {
     // page B's shared anchor) so passing that id resolves to exactly
     // one import_pages row.
     const anchorA = await tx`
-      INSERT INTO pages (slug, title, short_title, status, template_id, version)
-      SELECT 'issue197-anchor-a', 'Anchor A', 'Anchor A', 'draft', id, 1
+      INSERT INTO pages (slug, title, short_title, status, template_id, version, page_type_confirmed)
+      SELECT 'issue197-anchor-a', 'Anchor A', 'Anchor A', 'draft', id, 1, true
       FROM templates WHERE deleted_at IS NULL LIMIT 1
       RETURNING id
     `;

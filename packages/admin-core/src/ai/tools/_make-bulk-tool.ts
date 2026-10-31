@@ -15,7 +15,7 @@
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError, forwardRefusal } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolInputSchema } from "./dispatch.js";
 
 /** Configuration for {@link makeBulkTool}. */
@@ -74,11 +74,7 @@ export function makeBulkTool<Item>(
         items: toolInput.items,
       });
       if (!r.ok) {
-        return {
-          ok: false,
-          content: `${opName} failed (whole batch rolled back): ${describeError(r.error)}`,
-          ...forwardRefusal(r.error),
-        };
+        return toolError(r.error, `${opName} failed: ${describeError(r.error)}`);
       }
       const suffix = resultSuffix ? await resultSuffix(ctx, toolCtx) : "";
       const head = formatResult

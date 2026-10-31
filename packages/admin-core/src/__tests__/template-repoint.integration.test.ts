@@ -55,6 +55,7 @@ async function makeLayout(slug: string): Promise<string> {
 async function makeTemplate(slug: string, blocks: string[], layoutId: string): Promise<string> {
   const slots = blocks.map((b) => `<caelo-slot name="${b}">_</caelo-slot>`).join("");
   const r = await execute(registry, adapter, SYSTEM, "templates.create", {
+    pageType: "home",
     slug,
     displayName: slug,
     html: `<!doctype html><html><head><title>T</title></head><body>${slots}</body></html>`,

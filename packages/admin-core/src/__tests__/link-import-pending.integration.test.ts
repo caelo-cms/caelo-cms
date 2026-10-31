@@ -135,6 +135,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
   templateId = (
     await run<{ templateId: string }>("templates.create", {
+      pageType: "home",
       slug: `${PFX}-tpl`,
       displayName: `${PFX} TPL`,
       html: `<html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

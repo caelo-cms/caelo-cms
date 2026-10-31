@@ -99,6 +99,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
 
   const tpl = await execute(registry, adapter, SYSTEM, "templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "Slug T",
     html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

@@ -21,7 +21,7 @@
 import { execute } from "@caelo-cms/query-api";
 import type { z } from "zod";
 import type { CredentialKind } from "../../ops/credential_handoffs.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export interface MakeProposeToolArgs<I> {
@@ -101,7 +101,7 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
     handler: async (ctx, input, toolCtx) => {
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, args.opName, input);
       if (!r.ok) {
-        return { ok: false, content: `${args.opName} failed: ${describeError(r.error)}` };
+        return toolError(r.error, `${args.opName} failed: ${describeError(r.error)}`);
       }
       const v = r.value as { proposalId: string; preview: Record<string, unknown> };
       return {

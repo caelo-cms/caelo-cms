@@ -12,7 +12,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { duplicatePageToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const duplicatePageTool: ToolDefinitionWithHandler<
@@ -39,6 +39,11 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
           "The copy's breadcrumb / navigation label. Omitted: newTitle when given, else the source's short title.",
       },
       targetTemplateId: { type: "string", format: "uuid" },
+      pageType: {
+        type: "string",
+        pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+        description: "The copy's page type (`list_page_types`); omit = the source's.",
+      },
       newParentPageId: {
         type: ["string", "null"],
         format: "uuid",
@@ -49,7 +54,7 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.duplicate", input);
     if (!res.ok) {
-      return { ok: false, content: `pages.duplicate failed: ${describeError(res.error)}` };
+      return toolError(res.error, `pages.duplicate failed: ${describeError(res.error)}`);
     }
     const newPageId = (res.value as { pageId: string }).pageId;
     return {

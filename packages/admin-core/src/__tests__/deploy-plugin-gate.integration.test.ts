@@ -125,6 +125,7 @@ async function refusal(op: string, input: unknown): Promise<string> {
 
 async function seedSite(): Promise<void> {
   const { templateId } = await ok<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "T",
     html: `<html><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

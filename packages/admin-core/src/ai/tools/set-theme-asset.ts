@@ -8,7 +8,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const setThemeAssetToolInput = z
@@ -49,7 +49,7 @@ export const setThemeAssetTool: ToolDefinitionWithHandler<SetThemeAssetToolInput
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.set_asset", input);
     if (!r.ok) {
-      return { ok: false, content: `themes.set_asset failed: ${describeError(r.error)}` };
+      return toolError(r.error, `themes.set_asset failed: ${describeError(r.error)}`);
     }
     const v = r.value as {
       themeId: string;

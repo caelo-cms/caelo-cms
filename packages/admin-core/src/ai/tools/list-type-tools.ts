@@ -10,7 +10,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ListTypeDef } from "@caelo-cms/shared";
-import { LIST_RESERVED_NAMES, LIST_RESERVED_PREFIXES, LIST_TYPE_ROLES } from "@caelo-cms/shared";
+import { LIST_TYPE_ROLES } from "@caelo-cms/shared";
 import { z } from "zod";
 import { deleteListTypesManyOp, upsertListTypesManyOp } from "../../ops/lists/list-types.js";
 import { describeError } from "./_describe-error.js";
@@ -111,13 +111,12 @@ export const upsertListTypesManyTool = makeOpTool({
     "Create or replace list types (the SHAPE of a list).\n" +
     "DO NOT USE FOR: a near-duplicate of a shipped type (reuse `links`/`menu`); changing a plugin-shipped type (create your own slug).\n" +
     "CORE RULES:\n" +
-    "- `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `max_depth` required when a node allows itself. `current_from` names the node's link field that marks the current page.\n" +
+    "- `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `current_from` names the node's link field that marks the current page.\n" +
     "- Field types: text, richtext, link (value {href}), media, select (`options`), boolean, number, date, icon, module (embedded; `accepts` = module types, absent = any), term (entries of vocabulary list `list: <slug>`).\n" +
     "- Vocabulary types: one node kind with text fields `name` + `slug`.\n" +
     "- `source` -> generated entries instead of stored children: {kind:'query', editable:[knobs an entry may change], defaults:{page_type, order, limit, …}} | {kind:'system', name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:'plugin', name}.\n" +
     '- Mega menu: root.allow ["column"]; `column` {fields:[heading text], children:{name:"links", allow:["link","news"]}}; `link` {fields:[label text*, link link*], current_from:"link"}; `news` {fields:[heading text], source:{kind:"query", editable:["limit"], defaults:{page_type:"news", order:"published_desc", limit:3}}} (`*` = required:true).\n' +
-    `- Reserved names: ${[...LIST_RESERVED_NAMES, ...LIST_RESERVED_PREFIXES.map((p) => `${p}*`)].join(", ")}.\n` +
-    "- Changes are checked against every list of the type: a new required field needs a `default`; removing a kind/field with values is refused -> `dropValues:true` only if the operator agreed.\n" +
+    "- `dropValues:true` deletes values of removed kinds/fields: only with the operator's consent.\n" +
     "- `expectedVersion` (from `list_list_types`) guards concurrent changes.",
   inputSchema: UPSERT_LIST_TYPES_JSON_SCHEMA,
   opName: "list_types.upsert_many",

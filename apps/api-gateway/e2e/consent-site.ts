@@ -200,6 +200,7 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
   if (!tag.ok) throw new Error(`analytics tag: ${JSON.stringify(tag.error)}`);
 
   const tpl = await execute(adminRegistry, adminAdapter, SYSTEM, "templates.create", {
+    pageType: "home",
     slug: `${PFX}-tpl`,
     displayName: `${PFX} TPL`,
     html: `<html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

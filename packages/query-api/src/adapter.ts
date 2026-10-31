@@ -37,6 +37,7 @@ import {
   type ReadScope,
   type TransactionRunner,
 } from "./operation.js";
+import { describePgFailure, rlsDenialMessage } from "./pg-failure.js";
 import { type ProvisionOutcome, provisionPluginSchemaInTx } from "./plugin-schema-provision.js";
 import {
   detachedRunner,
@@ -729,18 +730,10 @@ export class DatabaseAdapter {
       if (thrown instanceof OperationAbortError) {
         return err(thrown.queryError);
       }
-      if (isRlsDenial(thrown)) {
-        return err({
-          kind: "RLSDenied",
-          operation: op.name,
-          detail: (thrown as { message?: string }).message ?? "RLS policy denied the write",
-        });
-      }
       // v0.5.17 — extract Postgres structured fields from the throw
       // before the message is the only thing the caller sees. Bun.SQL
       // puts SQL text in `.message` and the actual reason (SQLSTATE,
-      // constraint, detail) on `.cause`. Without this, `describeError`
-      // gets only "Failed query: <sql>" and operators can't diagnose.
+      // constraint, detail) on `.cause`.
       const pgDetail = extractPgFields(thrown);
       // A handler that caught a failed statement (a duplicate pending
       // proposal's unique violation) and answered with its own error leaves
@@ -751,12 +744,7 @@ export class DatabaseAdapter {
       if (pgDetail?.code === COMMIT_ROLLED_BACK && handlerError !== null) {
         return handlerError;
       }
-      return err({
-        kind: "HandlerError",
-        operation: op.name,
-        message: thrown instanceof Error ? thrown.message : String(thrown),
-        ...(pgDetail ? { pgDetail } : {}),
-      });
+      return err(thrownToQueryError(op.name, thrown, "write"));
     }
     // #585 — the commit happened, so both follow-ups run whatever the
     // other's outcome: deferred in-process effects, then the projection.
@@ -816,13 +804,7 @@ export class DatabaseAdapter {
     } catch (thrown) {
       if (thrown instanceof NestedPoolCheckoutError) throw thrown;
       if (thrown instanceof OperationAbortError) return err(thrown.queryError);
-      const pgDetail = extractPgFields(thrown);
-      return err({
-        kind: "HandlerError",
-        operation: op.name,
-        message: thrown instanceof Error ? thrown.message : String(thrown),
-        ...(pgDetail ? { pgDetail } : {}),
-      });
+      return err(thrownToQueryError(op.name, thrown, "write"));
     }
   }
 
@@ -964,20 +946,7 @@ export class DatabaseAdapter {
       // #1210 — a nested checkout is a bug in the code, not an outcome.
       if (thrown instanceof NestedPoolCheckoutError) throw thrown;
       if (thrown instanceof OperationAbortError) return err(thrown.queryError);
-      if (isRlsDenial(thrown)) {
-        return err({
-          kind: "RLSDenied",
-          operation: op.name,
-          detail: (thrown as { message?: string }).message ?? "RLS policy denied the read",
-        });
-      }
-      const pgDetail = extractPgFields(thrown);
-      return err({
-        kind: "HandlerError",
-        operation: op.name,
-        message: thrown instanceof Error ? thrown.message : String(thrown),
-        ...(pgDetail ? { pgDetail } : {}),
-      });
+      return err(thrownToQueryError(op.name, thrown, "read"));
     }
   }
 
@@ -1291,4 +1260,46 @@ async function auditDroppedColumns(
     entityId: pluginId,
     resultSummary: `${database}.${outcome.schemaName}: dropped ${outcome.droppedColumns.join(", ")}`,
   });
+}
+
+/**
+ * Issue #1277 — the Result for an error a handler THREW (as opposed to
+ * returned). Nothing raw reaches the caller: an RLS denial becomes an
+ * actionable sentence, a constraint violation a sentence about the
+ * caller's value (`describePgFailure`), and any other throw is marked
+ * `internal` — a defect no change to the call fixes. The raw driver
+ * message is logged here and kept on `pgDetail` for the audit surface.
+ */
+export function thrownToQueryError(
+  operation: string,
+  thrown: unknown,
+  access: "read" | "write",
+): QueryError {
+  const raw = thrown instanceof Error ? thrown.message : String(thrown);
+  if (isRlsDenial(thrown)) {
+    console.warn(`[query-api] ${operation}: RLS denied the ${access}: ${raw}`);
+    return { kind: "RLSDenied", operation, detail: rlsDenialMessage(operation, access) };
+  }
+  const pgDetail = extractPgFields(thrown);
+  if (pgDetail?.code) {
+    const described = describePgFailure(pgDetail);
+    if (described.internal) console.error(`[query-api] ${operation} failed: ${raw}`, pgDetail);
+    return {
+      kind: "HandlerError",
+      operation,
+      message: described.message,
+      pgDetail,
+      ...(described.internal ? { internal: true as const } : {}),
+    };
+  }
+  // A plain throw (TypeError, a helper's `throw new Error`): its message is
+  // ours, not Postgres', and stays readable — but no input change can be
+  // assumed to fix it, so it is a defect.
+  return {
+    kind: "HandlerError",
+    operation,
+    message: raw,
+    internal: true,
+    ...(pgDetail ? { pgDetail } : {}),
+  };
 }

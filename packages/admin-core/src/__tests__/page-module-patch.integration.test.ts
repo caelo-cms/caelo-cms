@@ -99,6 +99,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
 
   const { templateId } = await must<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "patch_fields tpl",
     html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content"></caelo-slot></body></html>`,

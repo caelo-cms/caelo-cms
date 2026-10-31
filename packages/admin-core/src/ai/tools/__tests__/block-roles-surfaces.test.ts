@@ -135,18 +135,18 @@ describe("block roles — page blocks vs layout chrome (#1076)", () => {
       harness({
         "layouts.list": { layouts: LAYOUTS },
         "templates.list": { templates: TEMPLATES },
-        "site_defaults.get": {
-          defaults: { defaultLayoutId: LAYOUT_ID, defaultTemplateId: TEMPLATE_ID },
-        },
+        "site_defaults.get": { defaults: { defaultLayoutId: LAYOUT_ID } },
       }),
     );
     expect(r.ok).toBe(true);
-    expect(r.content).toContain("layout=site-default, template=home-template");
+    expect(r.content).toContain("default layout=site-default, templates home-template");
+    // #1276 — no default page type: the result tells the AI to name one.
+    expect(r.content).toContain("names its page type");
     expect(r.content).toContain("'content' — the ONLY valid build_page blockName values");
     expect(r.content).toContain("'header', 'footer' are site chrome on layout site-default");
   });
 
-  it("bootstrap_site_scaffold refuses loudly when the defaults point at a missing row", async () => {
+  it("bootstrap_site_scaffold refuses loudly when the default layout is a missing row", async () => {
     const r = await bootstrapSiteScaffoldTool.handler(
       AI,
       {} as never,
@@ -154,10 +154,7 @@ describe("block roles — page blocks vs layout chrome (#1076)", () => {
         "layouts.list": { layouts: LAYOUTS },
         "templates.list": { templates: TEMPLATES },
         "site_defaults.get": {
-          defaults: {
-            defaultLayoutId: LAYOUT_ID,
-            defaultTemplateId: "00000000-0000-0000-0000-000000000000",
-          },
+          defaults: { defaultLayoutId: "00000000-0000-0000-0000-000000000000" },
         },
       }),
     );

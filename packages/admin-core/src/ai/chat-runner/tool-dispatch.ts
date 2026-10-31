@@ -25,6 +25,7 @@ import { getMediaStorage } from "../../media/storage.js";
 import { tryAutoRecover } from "../auto-recovery.js";
 import { chatPluginInvocation } from "../plugin-invocation.js";
 import type { AIProvider, ChatMessageInput } from "../provider.js";
+import { keptCallArgs, withKeptCallNotice } from "../tools/_retry-keep.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { isE2eAutoApproveEnabled } from "./e2e-auto-approve.js";
 import { shrinkToolImage } from "./tool-image.js";
@@ -472,6 +473,12 @@ export async function dispatchToolCall(
       );
       if (applied) result = { ...result, content: `${result.content}\n${applied}` };
     }
+    // #1275 — a fixable failed write call is kept (its normalized
+    // arguments ride the dedup row) and its result says how to patch it.
+    // Decided after auto-recovery, on the FINAL result; plugin tools never
+    // carry `call` (they bypass tools.dispatch), so they are never kept.
+    const keptArgs = keptCallArgs(result, tools);
+    if (keptArgs) result = withKeptCallNotice(call.id, result);
     result = await withTakeoverNotices(registry, adapter, humanCtx, deps.chatSessionId, result);
     await execute(registry, adapter, humanCtx, "chat.cache_tool_result", {
       chatSessionId: deps.chatSessionId,
@@ -479,6 +486,7 @@ export async function dispatchToolCall(
       toolName: call.name,
       ok: result.ok,
       content: result.content,
+      ...(keptArgs ? { args: keptArgs } : {}),
     });
   }
 

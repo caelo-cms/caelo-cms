@@ -33,7 +33,6 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
-import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -102,12 +101,12 @@ async function ok<T>(op: string, input: unknown): Promise<T> {
 /** A buildable template, and a published home page the Stage builds. */
 async function seedSite(): Promise<string> {
   const { templateId } = await ok<{ templateId: string }>("templates.create", {
+    pageType: "home",
     slug: "t1254-tpl",
     displayName: "T",
     html: `<html><head><title>x</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
     css: "",
   });
-  await sqlSystem((tx) => adoptTemplateIntoDefaultPageType(tx, templateId));
   await ok("template_blocks.set", {
     templateId,
     blocks: [{ name: "content", displayName: "Content", position: 0 }],

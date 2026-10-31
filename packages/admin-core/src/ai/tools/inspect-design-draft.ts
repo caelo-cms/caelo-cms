@@ -20,7 +20,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { formatGenesisInventory, inventoryGenesisDraft } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const inspectInput = z
@@ -65,7 +65,7 @@ export const inspectDesignDraftTool: ToolDefinitionWithHandler<InspectInput> = {
       includeHtml: true,
     });
     if (!r.ok) {
-      return { ok: false, content: `genesis.list_drafts failed: ${describeError(r.error)}` };
+      return toolError(r.error, `genesis.list_drafts failed: ${describeError(r.error)}`);
     }
     const drafts = (
       r.value as {

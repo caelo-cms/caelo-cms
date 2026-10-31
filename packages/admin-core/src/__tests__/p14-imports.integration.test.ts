@@ -85,6 +85,7 @@ beforeAll(async () => {
   }
 
   const tpl = await execute(registry, adapter, systemCtx, "templates.create", {
+    pageType: "home",
     slug: TPL_SLUG,
     displayName: "P14 imp tpl",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

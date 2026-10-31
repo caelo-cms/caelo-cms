@@ -775,7 +775,7 @@ export async function mergeWindowToMain(
       // AND clears chat_branch_id to graduate to main.
       await tx.execute(sql`
         INSERT INTO pages (id, slug, title, short_title, template_id, status, deleted_at, version, chat_branch_id, parent_page_id,
-                           page_type_id, properties)
+                           page_type_id, page_type_confirmed, properties)
         VALUES (
           ${e.entityId}::uuid,
           ${e.state.slug},
@@ -788,6 +788,7 @@ export async function mergeWindowToMain(
           NULL,
           ${e.state.parentPageId ?? null}::uuid,
           ${e.state.pageTypeId}::uuid,
+          ${e.state.pageTypeConfirmed},
           ${jsonbParam(e.state.properties)}
         )
         ON CONFLICT (id) DO UPDATE SET
@@ -799,6 +800,7 @@ export async function mergeWindowToMain(
           short_title    = EXCLUDED.short_title,
           template_id    = EXCLUDED.template_id,
           page_type_id   = EXCLUDED.page_type_id,
+          page_type_confirmed = EXCLUDED.page_type_confirmed,
           properties     = EXCLUDED.properties,
           status         = EXCLUDED.status,
           deleted_at     = EXCLUDED.deleted_at,

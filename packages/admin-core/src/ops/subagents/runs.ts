@@ -146,6 +146,7 @@ export const createPendingSubagentRunOp = defineOperation({
         kind: "HandlerError",
         operation: "subagent_runs.create_pending",
         message: "no id returned",
+        internal: true,
       });
     }
     return ok({ id });

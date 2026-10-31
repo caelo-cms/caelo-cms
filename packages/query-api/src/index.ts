@@ -30,6 +30,7 @@ export {
   type ListenHandle,
   POOL_IDLE_TIMEOUT_SECONDS,
   type TransactionOptions,
+  thrownToQueryError,
 } from "./adapter.js";
 export { recordAudit, recordAuditFromCtx, SYSTEM_ACTOR_ID } from "./audit.js";
 export {
@@ -60,6 +61,24 @@ export {
 } from "./change-journal.js";
 export { assertChatOpenForWrite } from "./chat-write-guard.js";
 export {
+  type ErrorDetail,
+  type ErrorPathSegment,
+  errorDetailsOf,
+  type FailureKind,
+  failureKindOf,
+  formatErrorDetail,
+  formatErrorDetails,
+  formatErrorPath,
+  handlerErrorFromDetails,
+  internalError,
+  MAX_RENDERED_ERRORS,
+  parseErrorPath,
+  prefixErrorDetails,
+  trimTrailingPunctuation,
+  zodIssuesToErrorDetails,
+} from "./error-details.js";
+export {
+  extractPgFields,
   isRlsDenial,
   OperationAbortError,
   PG_INSUFFICIENT_PRIVILEGE,
@@ -82,6 +101,12 @@ export {
   type StepwiseOperationHandler,
   type TransactionRunner,
 } from "./operation.js";
+export {
+  describePgFailure,
+  type PgFailureDescription,
+  type PgFailureFields,
+  rlsDenialMessage,
+} from "./pg-failure.js";
 export {
   joinHeldTransaction,
   LONG_TRANSACTION_ALLOWLIST,

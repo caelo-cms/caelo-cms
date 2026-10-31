@@ -81,6 +81,7 @@ beforeAll(async () => {
   await cleanup();
 
   const tpl = await execute(registry, adapter, SYS_CTX, "templates.create", {
+    pageType: "home",
     slug: "t449-tpl",
     displayName: "T449",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

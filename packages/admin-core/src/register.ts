@@ -63,6 +63,8 @@ import { listForeignLocksOp } from "./ops/chat/foreign-locks.js";
 import {
   appendChatMessageOp,
   cacheToolResultOp,
+  claimToolCallRetryOp,
+  finishToolCallRetryOp,
   lookupToolResultOp,
   markChatMessageInterruptedOp,
   recordAiCallOp,
@@ -920,6 +922,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setResponseMessagesOp);
   registry.register(cacheToolResultOp);
   registry.register(lookupToolResultOp);
+  registry.register(claimToolCallRetryOp);
+  registry.register(finishToolCallRetryOp);
   registry.register(recordAiCallOp);
   registry.register(publishChatSessionOp);
   registry.register(mergeChatToMainOp);

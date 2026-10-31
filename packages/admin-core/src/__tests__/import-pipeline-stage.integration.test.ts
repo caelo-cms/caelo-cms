@@ -216,6 +216,7 @@ describe("get_import_page content-only on the recorded crawl (issue #424)", () =
 describe("imports.list_pages (recorded searchviu crawl, all pages accepted)", () => {
   beforeAll(async () => {
     const tpl = await execute(registry, adapter, ctx, "templates.create", {
+      pageType: "home",
       slug: `${PREFIX}tpl`,
       displayName: "Pipeline harness template",
       html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

@@ -129,6 +129,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
   templateId = (
     await op<{ templateId: string }>(SYS, "templates.create", {
+      pageType: "home",
       slug: `pdmu-tpl-${TS}`,
       displayName: "PDMU tpl",
       html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content"></caelo-slot></body></html>`,

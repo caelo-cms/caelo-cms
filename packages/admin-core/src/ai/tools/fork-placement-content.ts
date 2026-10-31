@@ -10,7 +10,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { forkPlacementContentToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const forkPlacementContentTool: ToolDefinitionWithHandler<
@@ -30,7 +30,7 @@ export const forkPlacementContentTool: ToolDefinitionWithHandler<
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `placement.fork_content failed: ${describeError(r.error)}` };
+      return toolError(r.error, `placement.fork_content failed: ${describeError(r.error)}`);
     }
     const { contentInstanceId } = r.value as { contentInstanceId: string };
     return {

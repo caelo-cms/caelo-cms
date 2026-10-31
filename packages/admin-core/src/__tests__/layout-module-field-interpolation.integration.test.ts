@@ -95,6 +95,7 @@ describe("pages.render_preview — layout module field interpolation (issue #106
     // Template bound to OUR layout (the page resolves its layout through
     // the template, so bind it here rather than touching site_defaults).
     const tpl = await execute(registry, adapter, systemCtx, "templates.create", {
+      pageType: "home",
       slug: TPL_SLUG,
       displayName: "Fields T",
       html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,

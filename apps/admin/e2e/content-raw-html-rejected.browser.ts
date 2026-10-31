@@ -42,6 +42,8 @@ test("the page editor exposes no `html` field on create or edit", async ({ page 
   await page.getByLabel("Slug").fill(TPL_SLUG);
   await page.getByLabel("Display name").fill("E2E NoRaw Template");
   await page.getByLabel(/HTML/).fill(`<body><caelo-slot name="content">_</caelo-slot></body>`);
+  // #1276 — every template serves a page type.
+  await page.getByLabel("Page type").selectOption("home");
   await page.getByRole("button", { name: /create/i }).click();
   await expect(page).toHaveURL(/\/content\/templates\/[0-9a-f-]+$/, { timeout: 15_000 });
 
@@ -52,6 +54,7 @@ test("the page editor exposes no `html` field on create or edit", async ({ page 
   // Drive the page-create form through valid fields only.
   await page.getByLabel("Slug").fill(PAGE_SLUG);
   await page.getByLabel("Title").fill("NoRaw Page");
+  await page.getByLabel("Page type").selectOption("home");
   const tplOption = await page
     .locator("select[name=templateId] option")
     .filter({ hasText: TPL_SLUG })

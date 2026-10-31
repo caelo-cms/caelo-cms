@@ -12,7 +12,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { setPagesStatusManyToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { stageReadinessSuffix } from "./_stage-readiness.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -42,7 +42,7 @@ export const setPagesStatusManyTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.set_status_many", input);
     if (!r.ok) {
-      return { ok: false, content: `pages.set_status_many failed: ${describeError(r.error)}` };
+      return toolError(r.error, `pages.set_status_many failed: ${describeError(r.error)}`);
     }
     const v = r.value as { updatedCount: number };
     // #678 — the status only reaches staging with a build: say so, with

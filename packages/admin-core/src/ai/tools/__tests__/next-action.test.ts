@@ -127,8 +127,10 @@ describe("describeError with nextAction", () => {
         reason: "the slug is taken — pick another",
       },
     });
-    expect(s).toContain("SQLSTATE 23505");
-    expect(s).toContain("constraint=modules_slug_key");
+    // #1277 — described by the caller's value; no SQLSTATE / constraint.
+    expect(s).toContain('`slug` "x" already exists');
+    expect(s).not.toContain("SQLSTATE");
+    expect(s).not.toContain("modules_slug_key");
     expect(s).toContain("| next: call `list_modules`");
   });
 

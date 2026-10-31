@@ -42,7 +42,7 @@ import {
   pluginToolsRegistry,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
-import type { DatabaseAdapter, QueryError } from "@caelo-cms/query-api";
+import type { DatabaseAdapter, OperationRegistry, QueryError } from "@caelo-cms/query-api";
 import { defineOperation, execute } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
@@ -59,6 +59,7 @@ import { delegatedProvider } from "../../ai/delegated-provider.js";
 import { chatPluginInvocation } from "../../ai/plugin-invocation.js";
 import { queuePluginToolApproval } from "../../ai/queued-tool-approval.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
+import { keptCallArgs, RETRY_TOOL_NAME, withKeptCallNotice } from "../../ai/tools/_retry-keep.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { defaultToolRegistry } from "../../ai/tools/index.js";
 import { installUnavailableToolNames } from "../../ai/tools/install-availability.js";
@@ -533,6 +534,28 @@ const NO_WORK_SESSION =
   "no_work_session: no work session for this call — call caelo_open_session first and run your calls in the session it returns; when several agents share this connection, pass its id as workSessionId on every call. Every caelo write lands in a session's chat.";
 
 /**
+ * #1275 — the tool a `retry_tool_call` would run: the kept call's tool
+ * name, or `retry_tool_call` itself when the id names nothing (the retry
+ * then refuses on its own).
+ */
+async function keptToolNameOf(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ctx: ExecutionContext,
+  chatSessionId: string,
+  args: Record<string, unknown> | undefined,
+): Promise<string> {
+  const toolCallId = typeof args?.toolCallId === "string" ? args.toolCallId : null;
+  if (!toolCallId) return RETRY_TOOL_NAME;
+  const r = await execute(registry, adapter, ctx, "chat.lookup_tool_result", {
+    chatSessionId,
+    toolCallId,
+  });
+  const cached = r.ok ? (r.value as { cached: { toolName: string } | null }).cached : null;
+  return cached?.toolName ?? RETRY_TOOL_NAME;
+}
+
+/**
  * Issue #376 / #1253 — run one catalogue tool for an external agent, with
  * the same ExecutionContext the chat-runner would use (snapshots, audit,
  * branch scoping, chat-task grouping). Outside the tool's own ops it costs
@@ -561,10 +584,21 @@ export async function powerExecuteTool(
   // spend the install's AI at all, so there is nothing to cap. Which tools
   // the cap gates comes from each tool's own `usesInstallAi` declaration.
   const aiDelegated = !principal.allowCaeloAi;
+  // #1275 — a retry runs the KEPT call's tool, so the cap follows that
+  // tool, not retry_tool_call (no new path around the cap). Without the
+  // session id up front the kept call cannot be looked up yet, so such a
+  // retry counts as capped: a cap that is reached refuses it rather than
+  // letting an AI-spending call through.
+  const mayCap = !aiDelegated && principal.aiCostCapMicrocents !== null;
+  const capToolName =
+    mayCap && input.toolName === RETRY_TOOL_NAME && input.chatSessionId
+      ? await keptToolNameOf(registry, adapter, humanCtx, input.chatSessionId, input.args)
+      : input.toolName;
   const capped =
-    !aiDelegated &&
-    principal.aiCostCapMicrocents !== null &&
-    toolUsesInstallAi(tools, input.toolName);
+    mayCap &&
+    (capToolName === RETRY_TOOL_NAME
+      ? input.chatSessionId === undefined
+      : toolUsesInstallAi(tools, capToolName));
   const agent = mcpAgentOpFields(mcpAgentRefOf(principal));
   const label =
     `External agent "${principal.displayName}" (${principal.via.kind === "remote" ? "remote MCP" : "MCP"})`.slice(
@@ -741,14 +775,22 @@ export async function powerExecuteTool(
   // bodies) get the same excluded-tool note as the catalogue, BEFORE
   // caching so replays serve the same honest copy. Every other result is
   // site data and must round-trip unchanged (bug 2c323d9a).
-  const content = surfaceToolResultContent(input.toolName, raw.content);
+  //
+  // #1275 — a fixable failed write call is kept for retry_tool_call, exactly
+  // like in the browser chat (plugin results never carry `call`). A kept
+  // call is recorded under the generated id too: the result hands that id
+  // back, and retry_tool_call addresses the call by it.
+  const keptArgs = keptCallArgs(raw, tools);
+  const kept = keptArgs ? withKeptCallNotice(toolCallId, raw) : raw;
+  const content = surfaceToolResultContent(input.toolName, kept.content);
   const finished = await execute(registry, adapter, humanCtxWithBranch, "mcp.finish_tool_call", {
     chatSessionId,
     agent,
     label,
     toolName: input.toolName,
     toolCallId,
-    cache: input.toolCallId !== undefined,
+    cache: input.toolCallId !== undefined || keptArgs !== null,
+    ...(keptArgs ? { args: keptArgs } : {}),
     result: {
       ok: raw.ok,
       content,

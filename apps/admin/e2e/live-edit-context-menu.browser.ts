@@ -81,15 +81,15 @@ test("select → Ask AI sends a precise reference; right-click → chip", async 
         INSERT INTO templates (slug, display_name, html, css, layout_id)
         VALUES (\${process.env.TPL_SLUG}, 'le', '<body><caelo-slot name="content">_</caelo-slot></body>', '', (SELECT id FROM layouts WHERE slug = 'site-default'))
         RETURNING id::text AS id\`;
-      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${tpl[0].id}::uuid, 'content', 'Content', 0)\`;
       const mod = await tx\`
         INSERT INTO modules (slug, display_name, type, html)
         VALUES (\${process.env.MOD_SLUG}, 'ctx mod', \${process.env.MOD_SLUG}, '<section class="hero"><h1>HERO_CTX_TARGET</h1><p>Body copy for the context menu.</p></section>')
         RETURNING id::text AS id\`;
       const pg = await tx\`
-        INSERT INTO pages (slug, title, template_id, status)
-        VALUES (\${process.env.PAGE_SLUG}, 'LE Context Page', \${tpl[0].id}::uuid, 'draft')
+        INSERT INTO pages (slug, title, template_id, status, page_type_confirmed)
+        VALUES (\${process.env.PAGE_SLUG}, 'LE Context Page', \${tpl[0].id}::uuid, 'draft', true)
         RETURNING id::text AS id\`;
       out.pg = pg[0].id;
       out.mod = mod[0].id;

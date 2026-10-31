@@ -161,6 +161,7 @@ list (checked by the op with DB access). Errors carry the entry path
 ```ts
 {
   slug: string; name: string; purpose: string;
+  collection: boolean;            // many similar pages to list or query (blog, news, products, jobs, docs) vs standalone pages
   templates: string[];            // template ids allowed for pages of this type (non-empty)
   defaultTemplate: string;        // one of templates
   properties: FieldDef[];         // no `module` fields
@@ -171,8 +172,63 @@ list (checked by the op with DB access). Errors carry the entry path
 `pages.page_type_id` (NOT NULL), `pages.properties` (jsonb, validated
 against the type), `pages.first_published_at` (set by the first Publish
 live, never by the AI), `page_terms(page_id, list_id, item_id)` — draft
-state of the page, part of the page snapshot. `site_defaults.default_page_type_id`
-is the stored default for new pages (no code fallback).
+state of the page, part of the page snapshot.
+
+**Every page has a chosen page type (#1276).** There is no stored default
+type or template (`site_defaults` keeps only the default layout; 0444
+relaxed `default_page_type_id` / `default_template_id` for the previous
+image, the next release drops them). Each create path —
+`pages.create` / `build_page`, `pages.duplicate` / `duplicate_page`,
+`imports.accept_page(s)` / `accept_import_pages`, the admin "New page"
+form and the import panel's Accept — names `pageType`; `templateId` is
+optional (one of the type's templates, omitted = its `defaultTemplate`).
+A create that names only a template gets the ONE type listing it (a
+deterministic choice by the caller); none, several, or neither is refused
+with every type's slug, purpose and page count plus how to create one
+(`lists/page-type-resolve.ts`). A duplicate keeps the source's type unless
+it names another.
+
+**`collection`** (required, no default) says whether the type's pages are
+many similar pages meant to be listed or queried — blog, news, products,
+jobs, docs — or standalone pages — home, about / team / contact, legal,
+landing, utility. The AI sets it with the type (`upsert_page_types_many`,
+`create_template` `newPageType`), the panel asks for it, `list_page_types`
+shows it. Only collection types count for `structure/manual-page-listing`:
+a footer linking About, Team and Contact is navigation, a hand-kept list of
+blog posts is a listing. Migration 0450 backfilled existing types (true for
+the 0351 kinds blog, doc, product and any type with vocabularies or a
+`date` property, false otherwise) and their snapshots (maintainer decision
+2026-10-30).
+
+A type needs at least one template, so a new kind of content is ONE call:
+`templates.create` with `newPageType: {slug, name, purpose, collection,
+properties?, vocabularies?}` creates the template and the type (template as
+`defaultTemplate`) in one transaction; `pageType` instead adds the
+template to an existing type. A template names exactly one of the two.
+
+**Duplicate guard.** `page_types.upsert_many` (and `newPageType`) refuses a
+NEW type whose slug normalises to one the caller sees, or to another new
+type of the same batch — case, `-`/`_`, a trailing plural `s`, the suffix
+words `page` / `post` / `article` (`blogs`, `blog-post` = `blog`) — unless
+`distinctFrom` names it. A small edit distance (`news` / `new`, `faq` /
+`fab`) only returns a hint (`hints` in the result), the #820 split of
+exact = block, near = hint (`lists/page-type-similar.ts`).
+
+**`pages.page_type_confirmed`** (boolean NOT NULL, no column default: an
+INSERT outside the ops states it) says someone chose the type. Migration
+0443 set it false only for pages on the old stored default type, true for
+every other page, and backfilled page snapshots the same way. It is part
+of the page snapshot state, so merge, `revert_page` / `revert_site`,
+`pages.duplicate` (the copy inherits it) carry it. Any write that names
+`pageType` sets it true — also the current type (`update_pages_many`,
+the page settings' type picker), which is how a page on the old default
+type is confirmed. The structure check reports the rest as one Stage
+warning, `structure/unconfirmed-page-type`, with paths and the type list;
+the manual-page-listing rule treats unconfirmed pages as ordinary pages and
+looks only at collection types.
+Migration 0351's write-time trigger (an out-of-op INSERT without
+`page_type_id` gets the one type listing its template) stays: it never
+consulted the default.
 
 Page types replace `templates.kind`: the AI reads "this module sits on
 three News pages" from the page type (CLAUDE.md §1A).
@@ -685,7 +741,7 @@ structure check reports two modules keeping the same links as their own
 copies (`structure/duplicate-navigation`, see `docs/quality-checks.md`), and
 an overview of pages kept as hand-written cards or links instead of a source
 binding (`structure/manual-page-listing`, #1256): links to at least half of a
-page type's published pages are a page query, never cards. All writes are routine (no §11.A gate).
+collection page type's published pages are a page query, never cards. All writes are routine (no §11.A gate).
 Writing list or page types needs `content.structure`, granted by default
 to every role that holds `content.write`.
 
@@ -706,11 +762,13 @@ to every role that holds `content.write`.
 | `lists.preview_source` | `preview_list_source` | what a query / system / plugin source returns for a page (below) |
 | `page_types.list` | `list_page_types` | templates, properties, vocabularies, page count |
 | `page_types.get` | `list_page_types` with `slug` | + sample pages |
-| `page_types.upsert_many` | `upsert_page_types_many` | `dropValues` |
-| `page_types.delete_many` | `delete_page_types_many` | refused while pages use it and for the site default; a tool because the AI creates page types (§11 parity) |
+| `page_types.upsert_many` | `upsert_page_types_many` | `dropValues`, `distinctFrom` (duplicate guard, §5); near slugs return `hints` |
+| `page_types.delete_many` | `delete_page_types_many` | refused while pages use it; a tool because the AI creates page types (§11 parity) |
 | `pages.update_many` (extended) | `update_pages_many` | `pageType`, `properties`, `terms` |
-| `pages.build_page` (extended) | `build_page` | `page.pageType`, `page.properties`, `page.terms` (create mode) |
-| `templates.create` / `templates.propose_update` | `create_template` / `propose_update_template` | `pageType` (replaces `templates.kind`) |
+| `pages.build_page` (extended) | `build_page` | `page.pageType` (required on create unless the template has one type), `page.properties`, `page.terms` |
+| `pages.duplicate` (extended) | `duplicate_page` | `pageType` (omitted = the source's) |
+| `imports.accept_page(s)` (extended) | `accept_import_pages` | `pageType` |
+| `templates.create` / `templates.propose_update` | `create_template` / `propose_update_template` | `pageType` or `newPageType` on create (one required); `pageType` on update |
 
 The tools take the op's own input schema (`ai/tools/_list-tool-kit.ts`),
 so the JSON Schema a provider sees is generated from the shared Zod

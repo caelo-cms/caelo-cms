@@ -207,6 +207,7 @@ export const createMcpTokenOp = defineOperation({
         kind: "HandlerError",
         operation: "mcp_tokens.create",
         message: "no id returned",
+        internal: true,
       });
     }
     await recordAudit(tx, {

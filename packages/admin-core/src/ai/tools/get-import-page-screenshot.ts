@@ -11,7 +11,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { getMediaStorage } from "../../media/storage.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const input = z
@@ -43,10 +43,7 @@ export const getImportPageScreenshotTool: ToolDefinitionWithHandler<Input> = {
       { importPageId: toolInput.importPageId },
     );
     if (!r.ok) {
-      return {
-        ok: false,
-        content: `get_import_page_screenshot failed: ${describeError(r.error)}`,
-      };
+      return toolError(r.error, `get_import_page_screenshot failed: ${describeError(r.error)}`);
     }
     const keys = r.value as {
       sourceUrl: string | null;

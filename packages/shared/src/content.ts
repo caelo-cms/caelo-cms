@@ -15,6 +15,7 @@ import { hasEscapedLineBreaks } from "./escaped-line-breaks.js";
 import { DEFAULT_LIST_TYPES, SITE_TEXTS_LIST_TYPE } from "./lists/default-types.js";
 import { listItemInputSchema } from "./lists/items.js";
 import { LIST_MAX_ITEMS, sourceDefSchema } from "./lists/list-type.js";
+import { pageTypeDefSchema } from "./lists/page-type.js";
 import { listPaginationSchema } from "./lists/pagination.js";
 import { LIST_REF_RE } from "./lists/refs.js";
 
@@ -185,7 +186,7 @@ const noCdata = (value: string): boolean => !value.includes(CDATA_OPEN);
 const cdataMessage = (field: "css" | "js"): string =>
   `${field} contains an XML CDATA marker (${CDATA_OPEN}) — module ${field} is stored and served ` +
   `verbatim, so CDATA wrappers reach the browser unparsed and break rendering. ` +
-  `Remove the wrapper and resend plain ${field === "css" ? "CSS" : "JavaScript"}.`;
+  `Remove the wrapper: pass plain ${field === "css" ? "CSS" : "JavaScript"}.`;
 
 const moduleCss = z
   .string()
@@ -624,17 +625,37 @@ export const pageTypeSlugSchema = z
     "page type slug: lowercase letters, digits, hyphens",
   );
 
+/**
+ * #1276 — slugs a new page type is deliberately distinct from: the
+ * duplicate guard refuses a new type whose slug normalises to an existing
+ * one (`blogs` next to `blog`) unless the caller names it here.
+ */
+export const pageTypeDistinctFromSchema = z.array(pageTypeSlugSchema).max(16);
+
+/**
+ * #1276 — a page type created together with its first template
+ * (`templates.create` `newPageType`): the definition without `templates`
+ * and `defaultTemplate`, which are the new template.
+ */
+export const newPageTypeSchema = pageTypeDefSchema
+  .omit({ templates: true, defaultTemplate: true })
+  .extend({ distinctFrom: pageTypeDistinctFromSchema.optional() })
+  .strict();
+export type NewPageTypeInput = z.infer<typeof newPageTypeSchema>;
+
 export const templateCreateSchema = z
   .object({
     slug: slugSchema,
     displayName: displayNameSchema,
     /**
-     * Epic #1107 — the page type (slug) this template serves; the template
-     * is appended to that type's `templates`. Omit for the site's default
-     * page type (`site_defaults.default_page_type_id`, stored data — not a
-     * render-time fallback).
+     * Epic #1107 / #1276 — the page type this template serves. Exactly one
+     * of `pageType` (an existing type's slug: the template is appended to
+     * its `templates`) and `newPageType` (a new type created in the same
+     * transaction with this template as its `defaultTemplate`) is
+     * required; `templates.create` refuses neither or both.
      */
     pageType: pageTypeSlugSchema.optional(),
+    newPageType: newPageTypeSchema.optional(),
     html: z
       .string()
       .max(TEMPLATE_HTML_MAX, `html exceeds ${TEMPLATE_HTML_MAX} bytes`)
@@ -736,9 +757,9 @@ export const pageCreateSchema = z
      */
     shortTitle: pageShortTitleSchema.optional(),
     /**
-     * P6.7.6 — optional. When omitted, the handler resolves to
-     * `site_defaults.default_template_id` at create time. Stored data,
-     * not a render-time fallback (CLAUDE.md §2 no-fallbacks).
+     * Optional: one of the page type's templates; omitted = the type's
+     * `defaultTemplate`. Without `pageType` it must belong to exactly one
+     * page type, which the page then gets (#1276).
      */
     templateId: z.string().uuid().optional(),
     /**
@@ -756,9 +777,9 @@ export const pageCreateSchema = z
      */
     parentPageId: z.string().uuid().nullable().optional(),
     /**
-     * Epic #1107 — what the page IS (page type slug). Omit to take the type
-     * whose `templates` contain the template; with neither `pageType` nor
-     * `templateId`, the site's default page type and its default template.
+     * Epic #1107 — what the page IS (page type slug). Required unless
+     * `templateId` belongs to exactly one page type; there is no stored
+     * default type (#1276), so a create with neither is refused.
      */
     pageType: pageTypeSlugSchema.optional(),
     /** Property values, validated against the page type. */

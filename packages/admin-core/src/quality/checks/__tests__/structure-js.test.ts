@@ -89,7 +89,6 @@ const noLayouts: StructureLayout[] = [];
 
 function jsFindings(pages: StagedPage[], modules: StructureModule[], layouts = noLayouts) {
   const noTypes = {
-    defaultPageTypeId: "page",
     pageTypes: new Map(),
     pages: new Map(),
     siteHosts: new Set<string>(),

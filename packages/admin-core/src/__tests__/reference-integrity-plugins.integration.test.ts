@@ -146,6 +146,7 @@ beforeAll(async () => {
   expect(report.failed).toEqual([]);
   templateId = (
     await run<{ templateId: string }>("templates.create", {
+      pageType: "home",
       slug: `${PFX}-tpl`,
       displayName: "RIFP Template",
       html: `<main><caelo-slot name="content">_</caelo-slot></main>`,

@@ -51,6 +51,7 @@ afterAll(async () => {
 describe("#1207 — pages.list_recently_edited", () => {
   it("lists the page changed last first and leaves deleted pages out", async () => {
     const { templateId } = await op<{ templateId: string }>("templates.create", {
+      pageType: "home",
       slug: `i1207-tpl-${TS}`,
       displayName: "T",
       html: '<body><caelo-slot name="content">_</caelo-slot></body>',

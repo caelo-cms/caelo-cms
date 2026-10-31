@@ -31,6 +31,8 @@ test("Advanced History drawer reverts a module", async ({ page }) => {
   await page.getByLabel("Slug").fill(TPL_SLUG);
   await page.getByLabel("Display name").fill("E2E History Template");
   await page.getByLabel(/HTML/).fill(`<body><caelo-slot name="content">_</caelo-slot></body>`);
+  // #1276 — every template serves a page type.
+  await page.getByLabel("Page type").selectOption("home");
   await page.getByRole("button", { name: /create/i }).click();
   await expect(page).toHaveURL(/\/content\/templates\/[0-9a-f-]+$/, { timeout: 15_000 });
   await page.getByRole("button", { name: /save blocks/i }).click();

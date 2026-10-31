@@ -459,7 +459,7 @@ export async function entityWriteBlockedError(
   result: LockCheckResult,
 ): Promise<
   | ReturnType<typeof siblingLeaseError>
-  | { kind: "HandlerError"; operation: string; message: string }
+  | { kind: "HandlerError"; operation: string; message: string; conflict: true }
 > {
   if (result.siblingLease) {
     return siblingLeaseError(operation, kind, entityId, result.siblingLease);
@@ -472,6 +472,7 @@ export async function entityWriteBlockedError(
       message:
         `Conflict: ${kind} '${label}' was changed by another tool call that finished while this call was running (two calls edited it at the same time), so this write was NOT applied. ` +
         "Read it again to get the current version, then redo your edit on top of it (do not resend the old content). Run edits of the same page or entity one after another, not in parallel.",
+      conflict: true,
     };
   }
   if (result.staleDraft) {
@@ -482,6 +483,7 @@ export async function entityWriteBlockedError(
       message:
         `Conflict: ${kind} '${label}' was changed in the shared draft by chat '${result.staleDraft.chatTitle}' (${result.staleDraft.changedAt}) after this chat last looked at it, so this write was NOT applied. ` +
         "Read it again to get the current version, then redo your edit on top of it (do not resend the old content).",
+      conflict: true,
     };
   }
   // Defensive: a refused write must carry its conflict. Fail loud

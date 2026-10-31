@@ -17,6 +17,7 @@ import {
   fieldDefSchema,
   fieldExtSchema,
   isReservedListName,
+  LIST_RESERVED_NAMES_CLAUSE,
   type ListIssue,
   listNameSchema,
 } from "./fields.js";
@@ -180,7 +181,10 @@ export function checkListTypeDef(def: ListTypeDef): ListIssue[] {
   for (const [kind, node] of Object.entries(def.nodes)) {
     const at = `nodes.${kind}`;
     if (isReservedListName(kind)) {
-      issues.push({ path: at, message: `node kind "${kind}" is a reserved name — rename it.` });
+      issues.push({
+        path: at,
+        message: `node kind "${kind}" is a reserved name (${LIST_RESERVED_NAMES_CLAUSE}) — rename it.`,
+      });
     }
     const seen = new Set<string>();
     node.fields.forEach((f, i) => {
@@ -193,7 +197,7 @@ export function checkListTypeDef(def: ListTypeDef): ListIssue[] {
       if (isReservedListName(node.children.name)) {
         issues.push({
           path: `${at}.children.name`,
-          message: `children name "${node.children.name}" is reserved — pick another loop name.`,
+          message: `children name "${node.children.name}" is reserved (${LIST_RESERVED_NAMES_CLAUSE}) — pick another loop name.`,
         });
       }
       if (seen.has(node.children.name)) {

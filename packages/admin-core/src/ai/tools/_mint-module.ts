@@ -67,7 +67,7 @@ export interface MintModuleErr {
  */
 export const DELEGATED_MINT_NEEDS_FIELDS =
   "Nothing was created. On this connection you author the module yourself — the install's AI does not moduleize raw HTML for you. " +
-  "Re-call with the HTML parametrised ({{field_name}} placeholders, semantic snake_case names like hero_title / primary_cta_href; repeating items as one list field, never label2/label3) " +
+  "Parametrise the HTML ({{field_name}} placeholders, semantic snake_case names like hero_title / primary_cta_href; repeating items as one list field, never label2/label3) " +
   "plus an explicit `fields[]` declaring each placeholder (name, kind, label) and the ORIGINAL copy as `values` (or each field's `default`). " +
   "Pass `fields: []` only for a module with no editable content. " +
   // #820 — a worked example, so authoring the module is never costlier
@@ -170,7 +170,7 @@ export async function mintModuleFromHtml(
         ok: false,
         // Nothing was written. The next step must carry the operator's
         // copy across, or a retry "succeeds" with empty placeholders.
-        content: `moduleize failed: ${e instanceof Error ? e.message : String(e)}. Nothing was created. Re-call with the HTML already parametrised ({{field}} placeholders), explicit semantic \`fields[]\`, and the ORIGINAL text/hrefs from the raw HTML as \`values\` (or as each field's \`default\`) — that skips inference, and the copy must not be dropped.`,
+        content: `moduleize failed: ${e instanceof Error ? e.message : String(e)}. Nothing was created. Pass the HTML already parametrised ({{field}} placeholders), explicit semantic \`fields[]\`, and the ORIGINAL text/hrefs from the raw HTML as \`values\` (or as each field's \`default\`) — that skips inference, and the copy must not be dropped.`,
       };
     }
   }

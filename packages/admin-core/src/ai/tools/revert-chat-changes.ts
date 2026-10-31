@@ -32,7 +32,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { revertChatChangesToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface SnapshotRow {
@@ -77,10 +77,10 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
       chatSessionId: input.chatSessionId,
     });
     if (!branchRes.ok) {
-      return {
-        ok: false,
-        content: `revert_chat_changes: chat.get_branch_id failed: ${describeError(branchRes.error)}`,
-      };
+      return toolError(
+        branchRes.error,
+        `revert_chat_changes: chat.get_branch_id failed: ${describeError(branchRes.error)}`,
+      );
     }
     const { chatBranchId, branchKind } = branchRes.value as {
       chatBranchId: string | null;
@@ -103,10 +103,10 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
       includeArchived: true,
     });
     if (!chatSnapshotsR.ok) {
-      return {
-        ok: false,
-        content: `revert_chat_changes: snapshots.list failed: ${describeError(chatSnapshotsR.error)}`,
-      };
+      return toolError(
+        chatSnapshotsR.error,
+        `revert_chat_changes: snapshots.list failed: ${describeError(chatSnapshotsR.error)}`,
+      );
     }
     const chatSnapshots = (chatSnapshotsR.value as { snapshots: SnapshotRow[] }).snapshots;
     if (chatSnapshots.length === 0) {
@@ -127,7 +127,7 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
     if (totalEntitySnapshotCount > maxEntities) {
       return {
         ok: false,
-        content: `revert_chat_changes: chat touched ${totalEntitySnapshotCount} entity-snapshot rows across ${chatSnapshots.length} snapshots — exceeds the maxEntities cap (${maxEntities}). The same entity touched in N snapshots counts as N (each is a revert operation). Use propose_revert_page / propose_revert_module per-entity, or re-call with maxEntities=${totalEntitySnapshotCount} to override (NOT recommended without operator confirmation).`,
+        content: `revert_chat_changes: chat touched ${totalEntitySnapshotCount} entity-snapshot rows across ${chatSnapshots.length} snapshots — exceeds the maxEntities cap (${maxEntities}). The same entity touched in N snapshots counts as N (each is a revert operation). Use propose_revert_page / propose_revert_module per-entity, or set maxEntities=${totalEntitySnapshotCount} to override (NOT recommended without operator confirmation).`,
       };
     }
 
@@ -145,10 +145,10 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
       includeArchived: true,
     });
     if (!priorR.ok) {
-      return {
-        ok: false,
-        content: `revert_chat_changes: snapshots.list (prior lookup) failed: ${describeError(priorR.error)}`,
-      };
+      return toolError(
+        priorR.error,
+        `revert_chat_changes: snapshots.list (prior lookup) failed: ${describeError(priorR.error)}`,
+      );
     }
     const priorSnapshots = (priorR.value as { snapshots: SnapshotRow[] }).snapshots;
     // Issue #620 — on the shared draft every chat writes to the same
@@ -178,10 +178,10 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
       { snapshotId: preChat.id },
     );
     if (!proposeR.ok) {
-      return {
-        ok: false,
-        content: `revert_chat_changes: snapshots.propose_revert_site failed: ${describeError(proposeR.error)}`,
-      };
+      return toolError(
+        proposeR.error,
+        `revert_chat_changes: snapshots.propose_revert_site failed: ${describeError(proposeR.error)}`,
+      );
     }
     const v = proposeR.value as { proposalId: string; preview?: { affectedEntityCount?: number } };
     const affected = v.preview?.affectedEntityCount ?? totalEntitySnapshotCount;

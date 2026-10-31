@@ -10,7 +10,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { type PageLogAppendInput, pageLogAppendInputSchema } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const logPageEditTool: ToolDefinitionWithHandler<PageLogAppendInput> = {
@@ -47,7 +47,7 @@ export const logPageEditTool: ToolDefinitionWithHandler<PageLogAppendInput> = {
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "page_log.append", input);
     if (!r.ok) {
-      return { ok: false, content: `log_page_edit failed: ${describeError(r.error)}` };
+      return toolError(r.error, `log_page_edit failed: ${describeError(r.error)}`);
     }
     return { ok: true, content: `Logged (${input.entryKind}) on the page.` };
   },

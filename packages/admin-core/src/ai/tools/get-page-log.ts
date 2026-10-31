@@ -13,7 +13,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { formatPageLogBlock, type PageLogEntry } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const getPageLogInput = z
@@ -33,7 +33,7 @@ export const getPageLogTool: ToolDefinitionWithHandler<GetPageLogInput> = {
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "page_log.list", input);
     if (!r.ok) {
-      return { ok: false, content: `get_page_log failed: ${describeError(r.error)}` };
+      return toolError(r.error, `get_page_log failed: ${describeError(r.error)}`);
     }
     const { entries } = r.value as { entries: PageLogEntry[] };
     const block = formatPageLogBlock(entries);

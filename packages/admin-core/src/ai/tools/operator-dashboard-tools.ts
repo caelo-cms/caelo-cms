@@ -28,7 +28,7 @@ import type { mediaGetSettingsOp } from "../../ops/media.js";
 import type { getPluginOp } from "../../ops/plugins/registry.js";
 import type { aggregateAiCallsOp, aggregatePluginAiSpendOp } from "../../ops/security/ai_calls.js";
 import type { aggregateAuditByOpPrefixOp } from "../../ops/security/ai_calls_by_op.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -72,7 +72,7 @@ export const getAiSpendTool: ToolDefinitionWithHandler<AiSpendInput> = {
       since,
     });
     if (!spend.ok) {
-      return { ok: false, content: `ai_calls.aggregate failed: ${describeError(spend.error)}` };
+      return toolError(spend.error, `ai_calls.aggregate failed: ${describeError(spend.error)}`);
     }
     const v = spend.value as OpValue<typeof aggregateAiCallsOp>;
     const lines = [
@@ -185,7 +185,7 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
   inputSchema: z.toJSONSchema(getPluginInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.get", input);
-    if (!r.ok) return { ok: false, content: `plugins.get failed: ${describeError(r.error)}` };
+    if (!r.ok) return toolError(r.error, `plugins.get failed: ${describeError(r.error)}`);
     const plugin = (r.value as OpValue<typeof getPluginOp>).plugin;
     if (!plugin) {
       return {

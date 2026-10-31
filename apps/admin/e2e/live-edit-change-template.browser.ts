@@ -37,19 +37,19 @@ test.beforeAll(() => {
         INSERT INTO templates (slug, display_name, html, css, layout_id)
         VALUES (\${oldSlug}, 'CT old', '<body><caelo-slot name="content">_</caelo-slot></body>', '', \${layout}::uuid)
         RETURNING id::text AS id\`)[0])?.id;
-      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${oldTpl}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${oldTpl}::text)\`;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${oldTpl}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${oldTpl}::text)\`;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${oldTpl}::uuid, 'content', 'Content', 0), (\${oldTpl}::uuid, 'sidebar', 'Sidebar', 1)\`;
       const newTpl = ((await tx\`
         INSERT INTO templates (slug, display_name, html, css, layout_id)
         VALUES (\${newSlug}, 'CT new', '<body><caelo-slot name="content">_</caelo-slot></body>', '', \${layout}::uuid)
         RETURNING id::text AS id\`)[0])?.id;
-      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${newTpl}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${newTpl}::text)\`;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${newTpl}::text)) WHERE id = (SELECT id FROM page_types WHERE slug = 'home' AND chat_branch_id IS NULL AND deleted_at IS NULL) AND NOT (definition->'templates' ? \${newTpl}::text)\`;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${newTpl}::uuid, 'content', 'Content', 0), (\${newTpl}::uuid, 'footer', 'Footer', 1)\`;
       const kept = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.KEPT_MOD_SLUG}, 'k', \${process.env.KEPT_MOD_SLUG}, '<p>K</p>') RETURNING id::text AS id\`)[0])?.id;
       const orphan = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.ORPHAN_MOD_SLUG}, 'o', \${process.env.ORPHAN_MOD_SLUG}, '<p>O</p>') RETURNING id::text AS id\`)[0])?.id;
       const pg = ((await tx\`
-        INSERT INTO pages (slug, short_title, title, template_id, status)
-        VALUES (\${process.env.TEST_PAGE}, 'CT', 'CT', \${oldTpl}::uuid, 'draft')
+        INSERT INTO pages (slug, short_title, title, template_id, status, page_type_confirmed)
+        VALUES (\${process.env.TEST_PAGE}, 'CT', 'CT', \${oldTpl}::uuid, 'draft', true)
         RETURNING id::text AS id\`)[0])?.id;
       const ciKept = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${kept}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;
       const ciOrphan = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${orphan}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;

@@ -102,6 +102,7 @@ async function seedPublishedPage(): Promise<void> {
     await tx`UPDATE themes SET is_active = true WHERE slug = ${THEME_SLUG}`;
   });
   const tpl = (await run("templates.create", {
+    pageType: "home",
     slug: `${PREFIX}-tpl`,
     displayName: "Site SEO proposal",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,

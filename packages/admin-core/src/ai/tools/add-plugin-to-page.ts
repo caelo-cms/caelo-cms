@@ -25,7 +25,7 @@
 import { loadedPlugins } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { addPluginToPageToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageWithModules {
@@ -80,10 +80,7 @@ export const addPluginToPageTool: ToolDefinitionWithHandler<
       pageId: input.pageId,
     });
     if (!pageR.ok) {
-      return {
-        ok: false,
-        content: `pages.get failed: ${describeError(pageR.error)}`,
-      };
+      return toolError(pageR.error, `pages.get failed: ${describeError(pageR.error)}`);
     }
     const page = (pageR.value as { page: PageRow | null }).page;
     if (!page) {
@@ -96,10 +93,7 @@ export const addPluginToPageTool: ToolDefinitionWithHandler<
       pageId: input.pageId,
     });
     if (!got.ok) {
-      return {
-        ok: false,
-        content: `pages.get_with_modules failed: ${describeError(got.error)}`,
-      };
+      return toolError(got.error, `pages.get_with_modules failed: ${describeError(got.error)}`);
     }
     const pageBlocks = (got.value as { page: PageWithModules }).page;
     const targetBlock = pageBlocks.blocks.find((b) => b.blockName === input.blockName);
@@ -130,10 +124,7 @@ export const addPluginToPageTool: ToolDefinitionWithHandler<
       js: "",
     });
     if (!created.ok) {
-      return {
-        ok: false,
-        content: `modules.create failed: ${describeError(created.error)}`,
-      };
+      return toolError(created.error, `modules.create failed: ${describeError(created.error)}`);
     }
     const newModuleId = (created.value as { moduleId: string }).moduleId;
 
@@ -160,10 +151,7 @@ export const addPluginToPageTool: ToolDefinitionWithHandler<
       blocks,
     });
     if (!setRes.ok) {
-      return {
-        ok: false,
-        content: `pages.set_modules failed: ${describeError(setRes.error)}`,
-      };
+      return toolError(setRes.error, `pages.set_modules failed: ${describeError(setRes.error)}`);
     }
     return {
       ok: true,

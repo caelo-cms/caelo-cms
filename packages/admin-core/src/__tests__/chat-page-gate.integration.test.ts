@@ -15,7 +15,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
-import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
+import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -87,10 +87,10 @@ beforeAll(async () => {
               (SELECT id FROM layouts WHERE slug = 'site-default'))
       ON CONFLICT (id) DO NOTHING
     `;
-    await adoptTemplateIntoDefaultPageType(tx, TEMPLATE_ID);
+    await adoptTemplateIntoHomePageType(tx, TEMPLATE_ID);
     await tx`
-      INSERT INTO pages (id, slug, title, template_id)
-      VALUES (${PAGE_ID}::uuid, 'issue-1201-page', 'issue-1201 page', ${TEMPLATE_ID}::uuid)
+      INSERT INTO pages (id, slug, title, template_id, page_type_confirmed)
+      VALUES (${PAGE_ID}::uuid, 'issue-1201-page', 'issue-1201 page', ${TEMPLATE_ID}::uuid, true)
       ON CONFLICT (id) DO NOTHING
     `;
   });

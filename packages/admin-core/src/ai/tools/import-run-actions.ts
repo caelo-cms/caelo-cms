@@ -16,10 +16,11 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { pageTypeSlugSchema } from "@caelo-cms/shared";
 import { z } from "zod";
 import { getMediaStorage } from "../../media/storage.js";
 import { UNRESOLVED_IMPORT_LINK_NEXT_STEP } from "../../ops/links-import.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const resolveImportLinksInput = z
@@ -49,7 +50,7 @@ export const resolveImportLinksTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.resolve_links", input);
     if (!r.ok) {
-      return { ok: false, content: `resolve_import_links failed: ${describeError(r.error)}` };
+      return toolError(r.error, `resolve_import_links failed: ${describeError(r.error)}`);
     }
     const v = r.value as {
       resolved: number;
@@ -75,11 +76,16 @@ export const resolveImportLinksTool: ToolDefinitionWithHandler<
 const acceptImportPagesInput = z
   .object({
     importPageIds: z.array(z.string().uuid()).min(1).max(50).describe("From `list_import_pages`."),
+    pageType: pageTypeSlugSchema
+      .optional()
+      .describe(
+        "What the pages ARE (`list_page_types` slug). Required unless `templateId` belongs to one type.",
+      ),
     templateId: z
       .string()
       .uuid()
       .optional()
-      .describe("From `list_templates`; omit for the site default."),
+      .describe("From `list_templates`; omit for the type's default template."),
   })
   .strict();
 
@@ -96,10 +102,11 @@ export const acceptImportPagesTool: ToolDefinitionWithHandler<AcceptImportPagesI
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.accept_pages", {
       importPageIds: input.importPageIds,
+      ...(input.pageType ? { pageType: input.pageType } : {}),
       ...(input.templateId ? { templateId: input.templateId } : {}),
     });
     if (!r.ok) {
-      return { ok: false, content: `imports.accept_pages failed: ${describeError(r.error)}` };
+      return toolError(r.error, `imports.accept_pages failed: ${describeError(r.error)}`);
     }
     const v = r.value as { accepted: { importPageId: string; pageId: string; slug: string }[] };
     return {
@@ -143,7 +150,7 @@ export const cleanupImportRunTool: ToolDefinitionWithHandler<CleanupImportRunInp
       runId: input.runId,
     });
     if (!before.ok) {
-      return { ok: false, content: `imports.get failed: ${describeError(before.error)}` };
+      return toolError(before.error, `imports.get failed: ${describeError(before.error)}`);
     }
     const snapshot = before.value as { run: { id: string } | null };
     if (!snapshot.run) {
@@ -153,7 +160,7 @@ export const cleanupImportRunTool: ToolDefinitionWithHandler<CleanupImportRunInp
       runId: input.runId,
     });
     if (!r.ok) {
-      return { ok: false, content: `imports.cleanup_run failed: ${describeError(r.error)}` };
+      return toolError(r.error, `imports.cleanup_run failed: ${describeError(r.error)}`);
     }
     // The op returns the screenshot keys of exactly the rows it deleted, so
     // a page accepted between the approval and this call keeps its

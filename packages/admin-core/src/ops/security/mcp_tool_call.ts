@@ -29,6 +29,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { drainTakeoverNotices } from "../../lock-takeover.js";
+import { jsonbParam } from "../../sql-helpers.js";
 import { externalAgentActiveMs } from "../chat/agent-runs.js";
 import {
   atMostOneMcpAgent,
@@ -352,8 +353,17 @@ export const mcpFinishToolCallOp = defineOperation({
       label: z.string().min(1).max(200),
       toolName: z.string().min(1).max(120),
       toolCallId: z.string().min(1).max(128),
-      /** Cache the result under `toolCallId` (only a caller-supplied key can repeat). */
+      /**
+       * Cache the result under `toolCallId`: a caller-supplied key can
+       * repeat, and a kept call (`args`) is addressed by it.
+       */
       cache: z.boolean(),
+      /**
+       * #1275 — the arguments of a failed call kept for `retry_tool_call`
+       * (`_retry-keep.ts` decides), kept for the calling actor only
+       * (`args_actor_id`, RLS), as `chat.cache_tool_result` keeps them.
+       */
+      args: z.record(z.string(), z.unknown()).optional(),
       result: z
         .object({
           ok: z.boolean(),
@@ -374,11 +384,14 @@ export const mcpFinishToolCallOp = defineOperation({
       // The reservation mcp.begin_tool_call made becomes the result.
       await tx.execute(sql`
         INSERT INTO chat_tool_results
-          (chat_session_id, tool_call_id, tool_name, result_ok, result_content)
+          (chat_session_id, tool_call_id, tool_name, result_ok, result_content, args,
+           args_actor_id)
         VALUES (${input.chatSessionId}::uuid, ${input.toolCallId}, ${input.toolName},
-                ${input.result.ok}, ${input.result.content})
+                ${input.result.ok}, ${input.result.content}, ${jsonbParam(input.args)},
+                ${input.args !== undefined ? ctx.actorId : null}::uuid)
         ON CONFLICT (chat_session_id, tool_call_id) DO UPDATE
           SET result_ok = EXCLUDED.result_ok, result_content = EXCLUDED.result_content,
+              args = EXCLUDED.args, args_actor_id = EXCLUDED.args_actor_id,
               pending = false
           WHERE chat_tool_results.pending
       `);
