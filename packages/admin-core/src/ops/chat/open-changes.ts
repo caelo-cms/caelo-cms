@@ -24,7 +24,7 @@ import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { type BranchKind, pendingChangeKindSql, sessionHeadRowsSql } from "../../draft.js";
+import { type BranchKind, sessionHasPendingSql } from "../../draft.js";
 import { drainTakeoverNotices } from "../../lock-takeover.js";
 import { loadPendingChangesFor, pendingChangesSchema } from "./stage.js";
 
@@ -132,7 +132,7 @@ export const listOpenChangesOp = defineOperation({
         -- Only chats with something open, BEFORE the page cut: an older
         -- chat with unstaged work must not fall off behind newer idle ones.
         AND (
-          EXISTS (${sessionHeadRowsSql("cs", pendingChangeKindSql())})
+          ${sessionHasPendingSql("cs")}
           OR EXISTS (SELECT 1 FROM chat_entity_locks l WHERE l.chat_session_id = cs.id)
         )
       ORDER BY cs.last_active_at DESC, cs.id DESC

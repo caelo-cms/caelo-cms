@@ -206,6 +206,18 @@ export function chatHeadRowsSql(
      WHERE ${kind} <> 'draft' AND d.chat_branch_id = ${branch} AND ${where}`;
 }
 
+/**
+ * SQL predicate: the `chat_sessions` row under `csAlias` has a pending
+ * change. A scalar subquery, not `EXISTS`: Postgres may turn an `EXISTS`
+ * into a semi-join over the whole head and sort the open chats afterwards
+ * (Postgres 17 did, in the rows-read gate), while a scalar subquery stays a
+ * per-row probe, so a walk of the open-chat index in activity order stops
+ * after one page.
+ */
+export function sessionHasPendingSql(csAlias = "cs"): SQL {
+  return sql`(SELECT 1 FROM (${sessionHeadRowsSql(csAlias, pendingChangeKindSql())}) p LIMIT 1) IS NOT NULL`;
+}
+
 /** {@link chatHeadRowsSql} for a `chat_sessions` row under `csAlias`. */
 export function sessionHeadRowsSql(csAlias = "cs", where?: SQL): SQL {
   return chatHeadRowsSql(

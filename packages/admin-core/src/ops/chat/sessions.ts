@@ -31,7 +31,7 @@ import {
   loadChatBinding,
   pendingChangeKindSql,
   pendingCountsByKind,
-  sessionHeadRowsSql,
+  sessionHasPendingSql,
   totalPending,
 } from "../../draft.js";
 import { releaseChatLocks } from "../../locks.js";
@@ -1094,7 +1094,7 @@ export const listOpenChatsWithPendingOp = defineOperation({
       WHERE cs.published_at IS NULL AND cs.archived_at IS NULL AND cs.discarded_at IS NULL
         AND cs.subagent_role IS NULL
         AND (${exclude}::uuid IS NULL OR cs.id <> ${exclude}::uuid)
-        AND EXISTS (${sessionHeadRowsSql("cs", pendingChangeKindSql())})
+        AND ${sessionHasPendingSql("cs")}
       ORDER BY cs.last_active_at DESC, cs.id DESC
       LIMIT ${input.limit + 1}
     `)) as unknown as {
