@@ -12,7 +12,7 @@
  * #1254 — and nothing of the sync sits on the write path:
  *
  *  1. A write that changes a `redirects` row leaves one insert-only row in
- *     `redirect_changes` (row triggers, migration 0408), keyed by its own
+ *     `redirect_changes` (row triggers, migration 0457), keyed by its own
  *     transaction id. A write that changes no row (a page move that creates
  *     no redirect) leaves nothing. No site-wide row is written or locked in
  *     the writer's transaction, so parallel page writes never queue on it.

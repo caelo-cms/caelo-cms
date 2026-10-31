@@ -355,7 +355,7 @@ export const mcpListToolsOp = defineOperation({
 /** Title of a session the Power-MCP opens without one. */
 const MCP_SESSION_TITLE = "MCP · admin session";
 
-/** The client a principal's chats are grouped under in the chat list (0404). */
+/** The client a principal's chats are grouped under in the chat list (0453). */
 function agentClientOf(principal: McpPrincipal): string {
   return principal.via.kind === "remote"
     ? principal.via.clientName.slice(0, 200)

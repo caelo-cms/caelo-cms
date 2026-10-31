@@ -55,7 +55,7 @@ const toIso = (v: string | Date): string => (v instanceof Date ? v : new Date(v)
 
 /**
  * A lease row nobody holds: no run and no redirect sync (#1254, migration
- * 0408) claimed it, or the claim lapsed.
+ * 0457) claimed it, or the claim lapsed.
  */
 const FREE_SQL = sql`(
   (holder_run_id IS NULL AND holder_sync_id IS NULL)
@@ -298,7 +298,7 @@ export async function tryPreviousReleaseLock(tx: TransactionRunner, key: string)
  * another transaction locked, or a run holding the lease, counts as held.
  * The sync then pushes with no transaction open and releases the lease with
  * {@link releaseSyncLease}; it is not a deploy run, so it holds the lease
- * by its own id (`holder_sync_id`, migration 0408).
+ * by its own id (`holder_sync_id`, migration 0457).
  */
 export async function claimSyncLease(
   tx: TransactionRunner,

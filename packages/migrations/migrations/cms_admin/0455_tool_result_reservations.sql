@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0406 — issue #1253 (PR #1273 review): a repeated Power-MCP tool call
+-- 0455 — issue #1253 (PR #1273 review): a repeated Power-MCP tool call
 -- never runs twice.
 --
 -- `chat_tool_results` caches a tool call's result under its idempotency key

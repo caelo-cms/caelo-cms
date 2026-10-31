@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0405 — issue #1253: a write conflicts with the version its caller read,
+-- 0454 — issue #1253: a write conflicts with the version its caller read,
 -- not with who wrote last.
 --
 -- The draft's optimistic versioning (#620, 0246) only compares OWNERS: a

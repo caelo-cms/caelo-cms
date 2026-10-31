@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0407 — issue #1254: the entity-lock holder lookup stays O(1) however
+-- 0456 — issue #1254: the entity-lock holder lookup stays O(1) however
 -- many chats the shared draft has seen.
 --
 -- Every entity write on a chat branch resolves the writing chat

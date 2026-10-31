@@ -43,7 +43,7 @@ import { findMcpHandoffByToolCall, recordMcpHandoff } from "../mcp_approval_hand
 export const STALE_AFTER_MS = 30_000;
 
 /**
- * How long a reserved idempotency key (0406) holds before a repeat may take
+ * How long a reserved idempotency key (0455) holds before a repeat may take
  * it over: longer than any tool call runs (image generation takes minutes),
  * so only a call whose process died leaves one behind that long.
  */
@@ -59,7 +59,7 @@ const approvalHandle = z.object({ proposalId: z.string(), domain: z.string() }).
 
 /**
  * Which work session the call runs in: an explicit one, or the current one
- * of the caller's remote transport session (0404).
+ * of the caller's remote transport session (0453).
  */
 const sessionChoice = z.union([
   z.object({ chatSessionId: z.string().uuid() }).strict(),
@@ -306,7 +306,7 @@ export const mcpBeginToolCallOp = defineOperation({
 });
 
 /**
- * Reserve the call's idempotency key (0406) — a fresh `pending` row, or one
+ * Reserve the call's idempotency key (0455) — a fresh `pending` row, or one
  * whose call was abandoned ({@link RESERVATION_TIMEOUT_MS}).
  *
  * @returns false when another request holds it: the same call is running.
@@ -435,7 +435,7 @@ async function handOffQueuedProposal(
  * session, so its later calls without an explicit `workSessionId` land
  * there. Mappings not rebound for {@link TRANSPORT_SESSION_TTL_DAYS} days
  * are dropped on the way (a client opens a new transport session per
- * connect). Runs as the connection's user; RLS (0404) keeps it to their
+ * connect). Runs as the connection's user; RLS (0453) keeps it to their
  * own connection.
  */
 export async function bindTransportSession(

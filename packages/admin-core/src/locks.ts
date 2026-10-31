@@ -123,7 +123,7 @@ interface WritingChat {
 /**
  * Issue #1254 — the chat a write on `chatBranchId` belongs to: the caller's
  * own chat when it is identified and on the branch (primary key), else the
- * branch's first chat (`chat_sessions_branch_created_idx`, 0407). The shared
+ * branch's first chat (`chat_sessions_branch_created_idx`, 0456). The shared
  * draft is one branch for every chat ever opened, so ordering all of them
  * on every write grew with every agent session.
  */

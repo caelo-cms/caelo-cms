@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0404 — issue #1253: one work session per external agent.
+-- 0453 — issue #1253: one work session per external agent.
 --
 -- Until now a remote MCP connection kept ONE "current work session" on its
 -- row (`mcp_remote_connections.current_chat_session_id`, 0319), and
@@ -31,7 +31,7 @@
 --     written by this release. It stays (expand-only): the previous
 --     release's images still read and write it while the roll runs. Its
 --     DROP is the contract half, shipped in a later release with
---     `caelo:requires-earlier-run 0404_mcp_agent_sessions.sql`.
+--     `caelo:requires-earlier-run 0453_mcp_agent_sessions.sql`.
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';

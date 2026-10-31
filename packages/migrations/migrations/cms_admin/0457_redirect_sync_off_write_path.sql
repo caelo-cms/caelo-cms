@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0408 — the redirect sync leaves the write path (issue #1254).
+-- 0457 — the redirect sync leaves the write path (issue #1254).
 --
 -- Until now every redirects write — and every page URL move, even one that
 -- created no redirect — upserted `redirect_sync_state` (one row per deploy
