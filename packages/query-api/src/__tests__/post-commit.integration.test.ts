@@ -55,6 +55,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "post_commit.write",
+      readScope: "request",
       actorScope: ["system"],
       database: "cms_admin",
       input: writeInput,

@@ -60,6 +60,7 @@ const inputSchema = z
 
 export const publishImpactPagesOp = defineOperation({
   name: "snapshots.publish_impact_pages",
+  readScope: "request",
   // CLAUDE.md §11: AI calls this before deploy.trigger to plan the
   // smallest possible Stage. Read-only.
   actorScope: ["human", "ai", "system"],

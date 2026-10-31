@@ -104,7 +104,15 @@ export interface PublishedPluginRow {
   readonly status: "active";
   readonly version: string;
   readonly actor_id: string | null;
+  /**
+   * #1267 — a release-signed plugin's Owner-approved capability set
+   * (`plugins.approved_capabilities`); null when nothing is approved, and
+   * always null for runtime-authored plugins (their grants are receipts).
+   */
+  readonly approved_capabilities: readonly string[] | null;
 }
+
+const approvedCapabilitiesSchema = z.array(z.string().min(1).max(64)).max(64).nullable();
 
 /** The active-plugin registry the admin published. */
 export async function readPublishedRegistry(
@@ -116,10 +124,19 @@ export async function readPublishedRegistry(
     async (tx) => {
       await assertPublished(tx, "plugins");
       const rows = (await tx.execute(sql`
-        SELECT id::text AS id, slug, tier, version, actor_id::text AS actor_id
+        SELECT id::text AS id, slug, tier, version, actor_id::text AS actor_id,
+               approved_capabilities
         FROM published_plugins
-      `)) as unknown as Omit<PublishedPluginRow, "status">[];
-      return rows.map((r) => ({ ...r, tier: Number(r.tier), status: "active" as const }));
+      `)) as unknown as (Omit<PublishedPluginRow, "status" | "approved_capabilities"> & {
+        approved_capabilities: unknown;
+      })[];
+      // cms_public is attacker-writable (#635): validate what the gate reads.
+      return rows.map((r) => ({
+        ...r,
+        tier: Number(r.tier),
+        status: "active" as const,
+        approved_capabilities: approvedCapabilitiesSchema.parse(r.approved_capabilities ?? null),
+      }));
     },
   );
 }

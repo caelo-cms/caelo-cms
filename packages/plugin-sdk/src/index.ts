@@ -120,7 +120,7 @@ export const pluginCapability = z.enum([
   "snapshots",
   "chat_runner_tools",
   "background_workers",
-  "domain_events",
+  "change_journal",
   "email",
   "head_contributions",
   "url_slots",
@@ -818,10 +818,90 @@ export interface PluginWriteHintsArgs {
   readonly writes: readonly PluginWrite[];
 }
 
-/** What a `moduleChangesOperation` is called with (#1214). */
-export interface PluginModuleChangesArgs {
-  /** Modules whose rendered content may have changed, deduplicated (1–1000). */
-  readonly moduleIds: readonly string[];
+/**
+ * Issue #1267 — the core change-journal kinds a plugin may consume
+ * (`PluginDefinition.changeConsumer`). Each needs the plugin's read grant
+ * of core data (`cms_admin`); the plugin's own storage needs none.
+ * `docs/dev/state-and-changes.md` lists what each kind covers.
+ */
+export const PLUGIN_CHANGE_KINDS = [
+  "page",
+  "page_terms",
+  "page_seo",
+  "page_layout",
+  "page_module_content",
+  "module",
+  "template",
+  "layout",
+  "layout_module",
+  "content_instance",
+  "list",
+  "list_type",
+  "page_type",
+  "theme",
+  "media",
+  "redirect",
+  "site_defaults",
+] as const;
+
+/** One core kind a plugin consumes. */
+export type PluginChangeKind = (typeof PLUGIN_CHANGE_KINDS)[number];
+
+/**
+ * Issue #1267 — what a plugin reacts to, from the change journal. The host
+ * runs `operationName` with {@link PluginChangesArgs} whenever committed
+ * writes changed a declared kind (woken by the journal, on one instance of
+ * the site at a time), and `rebuildOperationName` when the plugin's cursor
+ * fell behind the journal's retention (or on its first activation): the
+ * full recompute from source. Needs the `change_journal` capability.
+ */
+export const pluginChangeConsumerSpec = z
+  .object({
+    /** Operation taking {@link PluginChangesArgs}. */
+    operationName: z.string().min(1).max(120),
+    /** Operation taking `{}` that recomputes everything the plugin derives. */
+    rebuildOperationName: z.string().min(1).max(120),
+    /** Core kinds; each needs the `cms_admin` read grant. */
+    kinds: z.array(z.enum(PLUGIN_CHANGE_KINDS)).max(PLUGIN_CHANGE_KINDS.length),
+    /** The plugin's own storage tables (`adminSchema`) it reacts to. */
+    ownTables: z
+      .array(z.string().regex(/^[a-z_][a-z0-9_]*$/))
+      .max(64)
+      .optional(),
+    /**
+     * `main`: only live changes (a chat's change arrives when its Stage
+     * lands it on main). `all`: changes on every branch too, each batch
+     * dispatched in that branch's scope so the plugin's writes land on it.
+     */
+    lines: z.enum(["main", "all"]),
+  })
+  .strict();
+
+export type PluginChangeConsumerSpec = z.infer<typeof pluginChangeConsumerSpec>;
+
+/** One committed change, as a change consumer receives it. */
+export interface PluginChange {
+  readonly kind: PluginChangeKind | "own";
+  readonly op: "insert" | "update" | "delete" | "truncate";
+  /** The entity id (`*` for a truncate). */
+  readonly rowId: string;
+  /** The entity it belongs to, when the kind has one (a placement's page, an instance's module). */
+  readonly parentId: string | null;
+  /** For `own`: the plugin's table. */
+  readonly table: string | null;
+  /** Columns an update changed; null = every column. */
+  readonly changedColumns: readonly string[] | null;
+  /** The snapshot this state was recorded in, and the one it replaced (diff the two). */
+  readonly siteSnapshotId: string | null;
+  readonly prevSnapshotId: string | null;
+}
+
+/** What a `changeConsumer.operationName` is called with. */
+export interface PluginChangesArgs {
+  /** The branch these changes are on; null = main. The call runs in that scope. */
+  readonly chatBranchId: string | null;
+  /** 1–500 changes, in commit-independent order; at least once. */
+  readonly changes: readonly PluginChange[];
 }
 
 /** What a `writeHintsOperation` returns: sentences for the AI, at most five. */
@@ -1017,11 +1097,10 @@ export const pluginManifest = z
      *  `operations`. Needs no capability: it reads like a render and only
      *  adds sentences to the AI's tool result. */
     writeHintsOperation: z.string().min(1).max(120).optional(),
-    /** See `PluginDefinition.moduleChangesOperation` (#1214). Must name
-     *  one of `operations`. Needs no capability: it only learns which
-     *  modules changed; reading them and writing its own rows take the
-     *  grants those always take. */
-    moduleChangesOperation: z.string().min(1).max(120).optional(),
+    /** See `PluginDefinition.changeConsumer` (#1267). Its operations must
+     *  be in `operations`; it needs `change_journal`, and each core kind
+     *  the `cms_admin` read grant. */
+    changeConsumer: pluginChangeConsumerSpec.optional(),
     /** Grants this plugin asks for. A request grants nothing: the Owner
      *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
@@ -1201,15 +1280,40 @@ export const pluginManifest = z
         }
       }
     }
-    if (
-      m.moduleChangesOperation !== undefined &&
-      !m.operations.includes(m.moduleChangesOperation)
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["moduleChangesOperation"],
-        message: `moduleChangesOperation "${m.moduleChangesOperation}" is not one of the plugin's operations`,
-      });
+    if (m.changeConsumer !== undefined) {
+      const caps = new Set(m.requestedCapabilities ?? []);
+      for (const key of ["operationName", "rebuildOperationName"] as const) {
+        if (!m.operations.includes(m.changeConsumer[key])) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["changeConsumer", key],
+            message: `changeConsumer.${key} "${m.changeConsumer[key]}" is not one of the plugin's operations`,
+          });
+        }
+      }
+      if (!caps.has("change_journal")) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["changeConsumer"],
+          message: "changeConsumer needs the change_journal capability",
+        });
+      }
+      if (m.changeConsumer.kinds.length > 0 && !caps.has("cms_admin")) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["changeConsumer", "kinds"],
+          message: "consuming core kinds needs the cms_admin read grant",
+        });
+      }
+      for (const t of m.changeConsumer.ownTables ?? []) {
+        if (!m.adminSchema || !(t in m.adminSchema)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["changeConsumer", "ownTables"],
+            message: `changeConsumer.ownTables "${t}" is not a table of the plugin's adminSchema`,
+          });
+        }
+      }
     }
     if (m.writeHintsOperation !== undefined && !m.operations.includes(m.writeHintsOperation)) {
       ctx.addIssue({
@@ -1432,63 +1536,6 @@ export type UrlContributionDef =
           })
         | null;
     };
-
-/**
- * #392 — one row from the transactional domain-event outbox. Events are
- * ephemeral SIGNALS ("this page changed"), not state: the consumer
- * re-reads current state through its normal handles; snapshots remain
- * the durable history.
- */
-/**
- * Every domain-event kind a plugin may poll (#392). The list kinds are
- * epic #1107's neutral translation hooks (`docs/lists.md` §9.4):
- * `list.items_changed` carries the per-entry diff, `list_type.changed`
- * what a definition gained or lost, the page kinds which properties /
- * terms changed. One list for the SDK type and the host's check.
- */
-export const PLUGIN_EVENT_KINDS = [
-  "page.created",
-  "page.updated",
-  "page.deleted",
-  "page.published",
-  "module.updated",
-  "list.items_changed",
-  "list_type.changed",
-  "list.deleted",
-  "page.properties_changed",
-  "page.terms_changed",
-] as const;
-
-export type PluginEventKind = (typeof PLUGIN_EVENT_KINDS)[number];
-
-export interface PluginDomainEvent {
-  readonly id: number;
-  readonly kind: PluginEventKind;
-  readonly entityId: string;
-  /** Emitter-supplied context (slug at event time; `chatBranchId` when
-   *  the write was branch-scoped — absent means a live write). */
-  readonly payload: Readonly<Record<string, unknown>>;
-  readonly createdAt: string;
-}
-
-/**
- * #392 — polling access to the domain-event outbox, masked by the
- * release-signed-only `domain_events` capability. Deliberately NOT an
- * in-process event bus: workers poll on their existing cron schedule.
- *
- * Cursor contract: `poll()` without an explicit cursor resumes from the
- * plugin's persisted position; `commit(cursor)` advances it AFTER the
- * worker has fully processed a batch (at-least-once semantics — a crash
- * between poll and commit re-delivers).
- */
-export interface PluginEvents {
-  poll(opts?: {
-    readonly cursor?: number;
-    readonly kinds?: ReadonlyArray<PluginDomainEvent["kind"]>;
-    readonly limit?: number;
-  }): Promise<{ events: PluginDomainEvent[]; nextCursor: number }>;
-  commit(cursor: number): Promise<void>;
-}
 
 /** Public-facing API client (cms_public role; rate-limited at the gateway). */
 export interface PluginApi {
@@ -1941,8 +1988,6 @@ export interface PluginContextTier1 extends PluginContext {
   readonly images?: PluginImages;
   /** #530 — attached when the manifest holds (and the Owner granted) `site_media_read`. */
   readonly siteMedia?: PluginSiteMedia;
-  /** #392 — attached when the manifest holds `domain_events`. */
-  readonly events?: PluginEvents;
   readonly cms?: PluginCms;
   readonly ai?: PluginAi;
   readonly snapshots?: PluginSnapshots;
@@ -2279,25 +2324,27 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly writeHintsOperation?: string;
   /**
-   * #1214 — told which modules a committed write changed: an operation in
-   * `operations` taking {@link PluginModuleChangesArgs}. Core calls it
-   * after every write that changes what a module renders — its source or
-   * field defaults, a content instance's values, a delete, a revert, a
-   * merge — once the write's transaction has committed, in the WRITER's
-   * scope: on the chat's branch (origin `chat`) for a chat write, on main
-   * (origin `system`) otherwise. The call may write the plugin's private
-   * storage, so a verdict derived from module content (an embed scan)
-   * stays current where it is stored and render hooks read it instead of
-   * rescanning the site on every preview. A failing call is recorded
-   * against the plugin and never undoes the write.
+   * Issue #1267 — what this plugin reacts to from the change journal
+   * ({@link PluginChangeConsumerSpec}). Replaces the domain-event outbox
+   * (`ctx.events`) and the module-change push: one mechanism, gated per
+   * kind by the plugin's read grants.
    *
    * @example
-   *   module_changes: async (ctx, { moduleIds }) => {
-   *     const { modules } = await ctx.cms!.call("modules.list", { moduleIds, includeDeleted: true });
-   *     // … recompute and store one verdict per module …
+   *   changeConsumer: {
+   *     operationName: "on_changes",
+   *     rebuildOperationName: "rescan_all",
+   *     kinds: ["module", "content_instance"],
+   *     lines: "all",
+   *   },
+   *   operations: {
+   *     on_changes: async (ctx, { changes }) => {
+   *       const moduleIds = changes.filter((c) => c.kind === "module").map((c) => c.rowId);
+   *       // … re-judge just these, in the batch's branch scope …
+   *     },
+   *     rescan_all: async (ctx) => {  … },
    *   },
    */
-  readonly moduleChangesOperation?: string;
+  readonly changeConsumer?: PluginChangeConsumerSpec;
   /**
    * Epic #1107 — the I/O half of `listSources`: an operation in
    * `operations` taking `{pageIds: string[], pageUrlStyle: PageUrlStyle}`
@@ -2431,7 +2478,7 @@ export function manifestFromDefinition(def: {
   readonly linkResolveOperation?: string;
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
-  readonly moduleChangesOperation?: string;
+  readonly changeConsumer?: PluginChangeConsumerSpec;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
   readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
@@ -2473,7 +2520,7 @@ export function manifestFromDefinition(def: {
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
     ...(def.writeHintsOperation ? { writeHintsOperation: def.writeHintsOperation } : {}),
-    ...(def.moduleChangesOperation ? { moduleChangesOperation: def.moduleChangesOperation } : {}),
+    ...(def.changeConsumer ? { changeConsumer: def.changeConsumer } : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
     ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),

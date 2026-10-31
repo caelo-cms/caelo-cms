@@ -10,7 +10,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { bootstrap, resetPluginHost, runPluginOperation } from "@caelo-cms/plugin-host";
+import {
+  bootstrap,
+  drainChangeConsumers,
+  resetPluginHost,
+  runPluginOperation,
+} from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -178,13 +183,13 @@ async function rows(table: string): Promise<Record<string, unknown>[]> {
   })) as unknown as Record<string, unknown>[];
 }
 
-/** Run the worker until it has drained the event outbox. */
+/**
+ * What an instance woken by the change journal does (#1267): run the
+ * plugin's change consumer to the end of the journal.
+ */
 async function tick(): Promise<void> {
-  for (let i = 0; i < 100; i++) {
-    const r = await op<{ scanned: number }>("translation_staleness_tick");
-    if (r.scanned === 0) return;
-  }
-  throw new Error("event outbox did not drain");
+  const reports = await drainChangeConsumers({ adapter, registry });
+  for (const r of reports) if (r.error) throw new Error(`${r.slug}: ${r.error}`);
 }
 
 async function patch(patches: unknown[]): Promise<void> {

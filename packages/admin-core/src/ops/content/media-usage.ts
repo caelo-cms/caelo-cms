@@ -11,7 +11,7 @@
  * the live row and the merged state (`mergeBranchSnapshotsToMain`).
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import { extractMediaRefs } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
@@ -29,10 +29,9 @@ async function resolveHtmlToAssetIds(tx: TransactionRunner, html: string): Promi
     else ids.add(ref.ref);
   }
   if (slugs.size > 0) {
-    const slugFrags = [...slugs].map((s) => sql`${s}`);
     const rows = (await tx.execute(sql`
       SELECT id::text AS id FROM media_assets
-      WHERE slug IN (${sql.join(slugFrags, sql`, `)}) AND deleted_at IS NULL
+      WHERE slug = ANY(${textArray([...slugs])}) AND deleted_at IS NULL
     `)) as unknown as { id: string }[];
     for (const r of rows) ids.add(r.id);
   }

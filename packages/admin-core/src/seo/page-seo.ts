@@ -28,7 +28,7 @@
  * complete state to start from.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
 import type { PageSeoState } from "../snapshots/state.js";
@@ -120,12 +120,7 @@ function rowToState(r: SeoViewRow): PageSeoState {
 }
 
 const idFilter = (column: string, pageIds: readonly string[] | undefined): SQL =>
-  pageIds === undefined
-    ? sql``
-    : sql` AND ${sql.raw(column)} IN (${sql.join(
-        pageIds.map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )})`;
+  pageIds === undefined ? sql`` : sql` AND ${sql.raw(column)} = ANY(${uuidArray(pageIds)})`;
 
 /**
  * A subquery with one row per page that has SEO in the caller's view —

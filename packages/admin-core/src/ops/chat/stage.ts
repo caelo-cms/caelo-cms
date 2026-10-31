@@ -83,6 +83,7 @@ export type PendingChanges = z.infer<typeof pendingChangesSchema>;
 
 export const listPendingChangesOp = defineOperation({
   name: "chat.list_pending_changes",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
@@ -523,6 +524,8 @@ const stageInput = z
  */
 export const stageChatChangesOp = defineOperation({
   name: "chat.stage",
+  // Why site-wide: Stage merges every pending change of the draft and builds the whole site.
+  readScope: "site",
   // Why human-only: the legacy per-entity stage PICKER (marks an isolated chat's entities for
   // chat.publish). The AI stages through the Stage flow (stage_changes, issue #620), not this
   // picker; it is an operator UI gesture.
@@ -823,6 +826,7 @@ const unstageInput = z
  */
 export const unstageChatChangesOp = defineOperation({
   name: "chat.unstage",
+  readScope: "request",
   // Why human-only: undoes the operator's stage gesture (see chat.stage) — part of the human review
   // step.
   actorScope: ["human", "system"],

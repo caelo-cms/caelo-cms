@@ -64,6 +64,21 @@ export interface ReadScope {
   read<T>(fn: (tx: TransactionRunner) => Promise<T>): Promise<T>;
 }
 
+/**
+ * Issue #1267 (rule 7 of docs/dev/state-and-changes.md) — how much of the
+ * site one call of an operation may read.
+ *
+ * - `"request"`: what the request names (a page, its references, a page of
+ *   a list), never the whole site. The rows-read test in PR CI holds every
+ *   such op to it: its statements and buffers on a 10x larger fixture stay
+ *   within 1.5x of the small one.
+ * - `"site"`: the operation's purpose is the whole site (the Stage build,
+ *   a whole-site link check, an export, a rebuild op). Needs a
+ *   `// Why site-wide:` comment at the op definition; a CI guard fails
+ *   without it.
+ */
+export type OperationReadScope = "request" | "site";
+
 /** Handler of a {@link ReadOperationDefinition}. */
 export type ReadOperationHandler<I, O> = (
   ctx: ExecutionContext,
@@ -87,6 +102,8 @@ export interface ReadOperationDefinition<I = unknown, O = unknown> {
   readonly kind: "reads";
   readonly name: string;
   readonly actorScope: readonly ActorKind[];
+  /** How much of the site one call reads (#1267, {@link OperationReadScope}). */
+  readonly readScope: OperationReadScope;
   /** Read operations read the authoring database. */
   readonly database: "cms_admin";
   readonly input: z.ZodType<I>;
@@ -110,6 +127,8 @@ export interface OperationDefinition<I = unknown, O = unknown> {
   readonly name: string;
   /** Which actor kinds may invoke this op. Validator rejects out-of-scope callers before handler runs. */
   readonly actorScope: readonly ActorKind[];
+  /** How much of the site one call reads (#1267, {@link OperationReadScope}). */
+  readonly readScope: OperationReadScope;
   /** Which database this op touches. */
   readonly database: "cms_admin" | "cms_public";
   readonly input: z.ZodType<I>;

@@ -37,6 +37,7 @@ function harness(stubs: Record<string, () => unknown>): ToolContext {
     registry.register(
       defineOperation({
         name,
+        readScope: "request",
         actorScope: ["human", "ai", "system"],
         database: "cms_admin",
         input: z.any(),

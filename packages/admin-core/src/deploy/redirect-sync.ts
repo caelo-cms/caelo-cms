@@ -39,7 +39,7 @@
  * it has seen (a later write leaves the target behind and is synced again).
  */
 
-import { afterCommit, type TransactionRunner } from "@caelo-cms/query-api";
+import { afterCommit, type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
 import type { ExecutionContext, RedirectTableRow } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
@@ -164,13 +164,10 @@ export async function markRedirectsBehind(
   targetIds: readonly string[],
 ): Promise<void> {
   if (targetIds.length === 0) return;
-  const ids = sql.join(
-    targetIds.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
+  const ids = uuidArray(targetIds);
   await tx.execute(sql`
     INSERT INTO redirect_sync_state (target_id, wanted_revision)
-    SELECT id, 1 FROM deploy_targets WHERE env IN ${SYNC_ENVS} AND id IN (${ids}) ORDER BY id
+    SELECT id, 1 FROM deploy_targets WHERE env IN ${SYNC_ENVS} AND id = ANY(${ids}) ORDER BY id
     ON CONFLICT (target_id) DO UPDATE
       SET wanted_revision = redirect_sync_state.wanted_revision + 1, updated_at = now()
   `);
@@ -220,10 +217,7 @@ export async function syncRedirectsInTx(
       ? sql``
       : args.targetIds.length === 0
         ? sql`AND false`
-        : sql`AND ${sql.raw(column)} IN (${sql.join(
-            args.targetIds.map((id) => sql`${id}::uuid`),
-            sql`, `,
-          )})`;
+        : sql`AND ${sql.raw(column)} = ANY(${uuidArray(args.targetIds)})`;
   const envRows = (await tx.execute(sql`
     SELECT env FROM deploy_targets WHERE env IN ${SYNC_ENVS} ${only("id")}
   `)) as unknown as { env: string }[];
@@ -253,14 +247,11 @@ export async function syncRedirectsInTx(
     (e): e is string => e !== null,
   );
   if (kept.length === 0) return [];
-  const envs = sql`(${sql.join(
-    kept.map((e) => sql`${e}`),
-    sql`, `,
-  )})`;
+  const envs = textArray(kept);
 
   await tx.execute(sql`
     INSERT INTO redirect_sync_state (target_id)
-    SELECT id FROM deploy_targets WHERE env IN ${envs} ${only("id")} ORDER BY id
+    SELECT id FROM deploy_targets WHERE env = ANY(${envs}) ${only("id")} ORDER BY id
     ON CONFLICT (target_id) DO NOTHING
   `);
   // A new served build carries the redirects of its own build time, so the
@@ -269,7 +260,7 @@ export async function syncRedirectsInTx(
   if (SERVED_BUILD_CHANGED.has(args.trigger)) {
     await tx.execute(sql`
       UPDATE redirect_sync_state SET wanted_revision = wanted_revision + 1, updated_at = now()
-      WHERE target_id IN (SELECT id FROM deploy_targets WHERE env IN ${envs} ${only("id")})
+      WHERE target_id IN (SELECT id FROM deploy_targets WHERE env = ANY(${envs}) ${only("id")})
     `);
   }
   // The revision first, then the rows (see the module comment).
@@ -277,7 +268,7 @@ export async function syncRedirectsInTx(
     SELECT t.id::text AS id, t.name, t.env, t.out_dir, t.base_url, t.robots_default,
            t.page_url_style, s.wanted_revision, s.failed_attempts
     FROM deploy_targets t JOIN redirect_sync_state s ON s.target_id = t.id
-    WHERE t.env IN ${envs} ${only("t.id")}
+    WHERE t.env = ANY(${envs}) ${only("t.id")}
     ORDER BY t.id
     FOR UPDATE OF s
   `)) as unknown as TargetRow[];

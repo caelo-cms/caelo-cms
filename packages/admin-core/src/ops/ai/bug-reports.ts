@@ -86,6 +86,7 @@ export type BugForwardingState = z.infer<typeof bugForwardingState>;
 
 export const createBugReportOp = defineOperation({
   name: "ai_bug_reports.create",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: createBugReportInput,
@@ -185,6 +186,7 @@ const bugReportRow = z.object({
 
 export const listBugReportsOp = defineOperation({
   name: "ai_bug_reports.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: listBugReportsInput,

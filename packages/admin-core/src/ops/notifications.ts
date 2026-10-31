@@ -59,6 +59,7 @@ const notificationsRow = z.object({
 
 export const aggregateNotificationsOp = defineOperation({
   name: "notifications.aggregate",
+  readScope: "request",
   // Open to every authenticated actor — the AppShell renders for
   // human + system; AI actors don't render UI but the read is
   // harmless and keeps the schema simple.

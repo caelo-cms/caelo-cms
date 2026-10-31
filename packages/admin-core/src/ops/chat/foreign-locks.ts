@@ -64,6 +64,7 @@ interface ForeignLockRow {
 
 export const listForeignLocksOp = defineOperation({
   name: "chat.list_foreign_locks",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

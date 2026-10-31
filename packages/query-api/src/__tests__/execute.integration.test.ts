@@ -35,6 +35,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "test.audit.record",
+      readScope: "request",
       actorScope: ["human", "system"],
       database: "cms_admin",
       input: z.object({

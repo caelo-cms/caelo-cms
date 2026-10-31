@@ -231,6 +231,7 @@ export const stagingAccessOutput = z.object({
 
 export const getStagingAccessOp = defineOperation({
   name: "staging_access.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -309,6 +310,7 @@ export const getStagingAccessOp = defineOperation({
 
 export const setStagingAccessOp = defineOperation({
   name: "staging_access.set",
+  readScope: "request",
   // Why human-only: the Owner's Settings → Staging access form. Opening the
   // gate (an IP range, a new mode) exposes unpublished work to whoever it
   // admits; the AI reaches this only through the §11.A gate
@@ -371,6 +373,7 @@ export const credentialKind = z.enum(["basic-auth", "header", "both"]);
 
 export const rotateStagingCredentialsOp = defineOperation({
   name: "staging_access.rotate_credentials",
+  readScope: "request",
   // Why human-only: the Owner's Rotate button. Every crawler profile that
   // uses the old credential stops working and the old one cannot be
   // restored; the AI reaches it only through
@@ -403,6 +406,7 @@ export const rotateStagingCredentialsOp = defineOperation({
 
 export const issueStagingOpenLinkOp = defineOperation({
   name: "staging_access.issue_open_link",
+  readScope: "request",
   // Why human-only: it hands THIS browser a staging session (the link sets
   // a cookie on staging.<domain>); there is no browser on the AI side. The
   // AI tells the operator to use "Open staging" or reads the URL with
@@ -498,6 +502,7 @@ export async function checkStagingHost(
 
 export const seedStagingHostOp = defineOperation({
   name: "staging_access.seed_host",
+  readScope: "request",
   // Why human-only: system-only. The admin calls it at boot with the host
   // provisioning recorded (CAELO_STAGING_HOST: the wizard's answer, default
   // staging.<domain>); it fills an unset value and never overwrites one, so
@@ -530,6 +535,7 @@ export const seedStagingHostOp = defineOperation({
 
 export const setStagingHostOp = defineOperation({
   name: "staging_access.set_host",
+  readScope: "request",
   // Why human-only: the Owner's Settings → Domains form. A new staging host
   // needs its own DNS record and domain mapping before anyone can open it,
   // and every Stage renders it; the AI reaches it only through the §11.A
@@ -649,6 +655,7 @@ export const provisionStagingOutput = z.object({
 
 export const provisionStagingOp = defineOperation({
   name: "staging_access.provision",
+  readScope: "request",
   // Why human-only: system-only. It backs the CLI's
   // /api/internal/staging/provision endpoint: the operator running
   // `cms-provision staging-domain enable --staging-domain <host>` with their

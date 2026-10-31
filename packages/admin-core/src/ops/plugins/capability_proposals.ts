@@ -51,6 +51,7 @@ const grantRow = z.object({
 
 export const listPluginCapabilityGrantsOp = defineOperation({
   name: "plugins.list_capability_grants",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ slug: z.string().min(1).max(120).optional() }).strict(),
@@ -105,6 +106,7 @@ export const proposeRevokeCapabilityInput = z
 
 export const proposeRevokePluginCapabilityOp = defineOperation({
   name: "plugins.propose_revoke_capability",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeRevokeCapabilityInput,

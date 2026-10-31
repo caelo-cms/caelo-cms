@@ -30,6 +30,7 @@ const redirectRow = z.object({
 
 export const createRedirectOp = defineOperation({
   name: "redirects.create",
+  readScope: "request",
   // P6.7.5 — the page-update + page-delete ops write here (slug-change 301s and
   // dead-URL redirects); the AI reaches those via update_pages_many /
   // delete_pages_many. `plugin`: a URL-contributing plugin owns URL
@@ -99,6 +100,7 @@ export const createRedirectOp = defineOperation({
 
 export const listRedirectsOp = defineOperation({
   name: "redirects.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   // P8 AI-first review pass: list takes optional filters so the AI
@@ -167,6 +169,7 @@ export const listRedirectsOp = defineOperation({
  */
 export const lookupRedirectOp = defineOperation({
   name: "redirects.lookup",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ fromPath: z.string().min(1).max(500) }).strict(),
@@ -201,6 +204,7 @@ export const lookupRedirectOp = defineOperation({
 
 export const deleteRedirectOp = defineOperation({
   name: "redirects.delete",
+  readScope: "request",
   // P8 AI-first review pass: AI can manage the redirect lifecycle.
   // Routine cleanup ("delete redirects from /old-blog/*") is exactly
   // the kind of bulk task we want the AI to handle, not the editor.
@@ -244,6 +248,7 @@ export const deleteRedirectOp = defineOperation({
 
 export const createRedirectsManyOp = defineOperation({
   name: "redirects.create_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -339,6 +344,7 @@ const AI_MATCHES_DELETE_LIMIT = 10;
 
 export const deleteRedirectsManyOp = defineOperation({
   name: "redirects.delete_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

@@ -40,6 +40,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "rollback.write_then_throw",
+      readScope: "request",
       actorScope: ["system"],
       database: "cms_admin",
       input: z.object({}),
@@ -59,6 +60,7 @@ beforeAll(async () => {
       // throw, but the caller receives the handler's STRUCTURED error
       // instead of a wrapped crash message.
       name: "rollback.write_then_abort",
+      readScope: "request",
       actorScope: ["system"],
       database: "cms_admin",
       input: z.object({}),
@@ -79,6 +81,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "rollback.count_mine",
+      readScope: "request",
       actorScope: ["system"],
       database: "cms_admin",
       input: z.object({ operation: z.string().default("rollback.write_then_throw") }),
@@ -98,6 +101,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "rollback.null_actor_id",
+      readScope: "request",
       actorScope: ["system"],
       database: "cms_admin",
       input: z.object({}),

@@ -33,6 +33,7 @@ function harness(preloaded?: ReadonlySet<string>): ToolContext {
   registry.register(
     defineOperation({
       name: "skills.get",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.any(),

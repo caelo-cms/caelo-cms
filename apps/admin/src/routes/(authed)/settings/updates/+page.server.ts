@@ -91,13 +91,14 @@ async function readAgent(ctx: App.Locals["ctx"]): Promise<PlatformUpdateAgentSta
 export const load: PageServerLoad = async ({ locals, cookies }) => {
   const user = requirePermission(locals, "settings.read");
   const { adapter, registry } = getQueryContext();
-  const [statusResult, latestResult, historyResult, policyResult, schedulerResult] =
+  const [statusResult, latestResult, historyResult, policyResult, schedulerResult, pluginsResult] =
     await Promise.all([
       execute(registry, adapter, locals.ctx, "platform_updates.status", {}),
       execute(registry, adapter, locals.ctx, "platform_updates.get", {}),
       execute(registry, adapter, locals.ctx, "platform_updates.list", { limit: 10 }),
       execute(registry, adapter, locals.ctx, "platform_update_policy.get", {}),
       execute(registry, adapter, locals.ctx, "platform_updates.scheduler_status", {}),
+      execute(registry, adapter, locals.ctx, "plugins.list", { tier: 1 }),
     ]);
   if (!statusResult.ok) {
     throw error(500, opErrorMessage(statusResult.error, "could not read the update status"));
@@ -108,6 +109,16 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
   if (!schedulerResult.ok) {
     throw error(500, opErrorMessage(schedulerResult.error, "could not read the update scheduler"));
   }
+  if (!pluginsResult.ok) {
+    throw error(500, opErrorMessage(pluginsResult.error, "could not read the plugins"));
+  }
+  // #1267 — a release whose shipped plugin asks for a new capability leaves
+  // that plugin waiting for the Owner's approval (one plugin model).
+  const pluginsAwaitingApproval = (
+    pluginsResult.value as { plugins: { slug: string; unapprovedCapabilities: string[] }[] }
+  ).plugins
+    .filter((p) => p.unapprovedCapabilities.length > 0)
+    .map((p) => ({ slug: p.slug, capabilities: p.unapprovedCapabilities }));
   const status = statusResult.value as PlatformUpdateStatus;
   const latest = latestResult.ok
     ? (latestResult.value as {
@@ -211,6 +222,7 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
     deadRun,
     history,
     cloudShell,
+    pluginsAwaitingApproval,
   };
 };
 

@@ -5,18 +5,21 @@
  * writer's branch, so its render hooks can read them instead of
  * rescanning the site.
  *
- * Core tells plugins with a `moduleChangesOperation` which modules a
- * committed write changed (snapshot emitter → plugin-host
- * `notifyModuleChanges`). This suite drives the real engine: a live edit
- * rewrites the main-line verdict at once, a chat-branch edit rewrites it
- * on that branch only (the draft's banner offers the new category, the
- * live one does not), and the merge carries it to main.
+ * The plugin is a change consumer (#1267): the host reads the change
+ * journal past its cursor and hands it the module changes, per branch, in
+ * that branch's scope. This suite drives the real engine — journal
+ * triggers, cursor, dispatch — with an explicit drain where an instance
+ * would be woken by the journal's NOTIFY: a live edit rewrites the
+ * main-line verdict, a chat-branch edit rewrites it on that branch only
+ * (the draft's banner offers the new category, the live one does not), and
+ * the merge carries it to main.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
+  drainChangeConsumers,
   type PluginHostInfra,
   resetPluginHost,
   runPluginOperation,
@@ -108,9 +111,16 @@ async function offered(chatBranchId: string | null): Promise<string[]> {
   return (sources.p?.consent_categories ?? []).map((c) => c.id);
 }
 
+/** What an instance woken by the journal does: run the consumers to the end. */
+async function drain(): Promise<void> {
+  const reports = await drainChangeConsumers({ adapter, registry });
+  for (const r of reports) if (r.error) throw new Error(`${r.slug}: ${r.error}`);
+}
+
 async function setHtml(ctx: ExecutionContext, html: string): Promise<void> {
   const r = await execute(registry, adapter, ctx, "modules.update", { moduleId, html });
   if (!r.ok) throw new Error(JSON.stringify(r.error));
+  await drain();
 }
 
 beforeAll(async () => {
@@ -136,6 +146,8 @@ beforeAll(async () => {
   });
   if (!m.ok) throw new Error(JSON.stringify(m.error));
   moduleId = (m.value as { moduleId: string }).moduleId;
+  // First sight of the consumer: its rebuild judges every module once.
+  await drain();
 });
 
 afterAll(async () => {
@@ -175,7 +187,22 @@ describe("#1214 — verdicts follow the write that changed the module", () => {
 
     const merged = await execute(registry, adapter, SYS, "chat.merge_to_main", { chatSessionId });
     if (!merged.ok) throw new Error(JSON.stringify(merged.error));
+    await drain();
     expect(await mainGuards()).toEqual([{ status: "gated", category_key: "functional" }]);
     expect(await offered(null)).toEqual(["necessary", "functional"]);
+  });
+
+  it("maintained == rebuilt: the consumer's verdicts are what a full rescan derives (#1267)", async () => {
+    const maintained = await mainGuards();
+    // The consumer's rebuild-from-source (scan_modules) changes nothing.
+    const rebuilt = await runPluginOperation({
+      invocation: { origin: "system", actorId: SYSTEM_ACTOR_ID },
+      pluginSlug: "consent-manager",
+      operationName: "scan_modules",
+      args: {},
+    });
+    if (!rebuilt.ok) throw new Error(JSON.stringify(rebuilt.error));
+    expect(rebuilt.value).toEqual({ flagged: 0, cleared: 0 });
+    expect(await mainGuards()).toEqual(maintained);
   });
 });

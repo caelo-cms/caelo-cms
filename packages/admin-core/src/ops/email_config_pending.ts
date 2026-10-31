@@ -86,6 +86,7 @@ function requiredOwnerSecrets(
 
 export const proposeEmailConfigSetOp = defineOperation({
   name: "email_config.propose_set",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeSetInput,
@@ -169,6 +170,7 @@ export const proposeEmailConfigSetOp = defineOperation({
 
 const executeEmailConfigProposalOpDefinition = defineOperation({
   name: "email_config.execute_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -257,6 +259,7 @@ export const executeEmailConfigProposalOp = requiresApproverPermission(
 
 export const rejectEmailConfigProposalOp = defineOperation({
   name: "email_config.reject_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -304,6 +307,7 @@ const proposalRowSchema = z.object({
 
 export const listPendingEmailConfigProposalsOp = defineOperation({
   name: "email_config.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

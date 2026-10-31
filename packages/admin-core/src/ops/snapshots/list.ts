@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, textArray } from "@caelo-cms/query-api";
 import { ok, snapshotsListInput } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -33,6 +33,7 @@ const snapshotRowSchema = z.object({
  */
 export const listSnapshotsOp = defineOperation({
   name: "snapshots.list",
+  readScope: "request",
   // CLAUDE.md §11: AI inspects history when planning ("what changed
   // on this page in the last 5 edits?"). Reads only — revert ops
   // remain human-only since they're a publish-boundary decision.
@@ -60,10 +61,7 @@ export const listSnapshotsOp = defineOperation({
       : sql``;
     const opKindFilter =
       input.opKinds && input.opKinds.length > 0
-        ? sql`AND s.op_kind IN (${sql.join(
-            input.opKinds.map((k) => sql`${k}`),
-            sql`, `,
-          )})`
+        ? sql`AND s.op_kind = ANY(${textArray(input.opKinds)})`
         : sql``;
     const archivedFilter = input.includeArchived ? sql`` : sql`AND s.archived_at IS NULL`;
     // v0.6.0 — filter by chat_branch_id for the revert_chat_changes

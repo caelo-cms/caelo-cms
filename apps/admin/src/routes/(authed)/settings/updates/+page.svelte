@@ -238,6 +238,27 @@
     <input type="hidden" name="_csrf" value={data.csrfToken} />
   </form>
 
+  {#if data.pluginsAwaitingApproval.length > 0}
+    <!-- #1267 — the installed release asks for new plugin permissions. -->
+    <Card data-testid="plugins-awaiting-approval">
+      <CardHeader class="space-y-1">
+        <CardTitle class="text-base">Plugins wait for your approval</CardTitle>
+        <p class="text-sm text-muted-foreground">
+          This version of Caelo gives these plugins new permissions. Each one does not run until you
+          approve them at <a class="underline" href="/settings/plugins">Settings → Plugins</a>.
+        </p>
+        <ul class="text-sm">
+          {#each data.pluginsAwaitingApproval as p (p.slug)}
+            <li>
+              <span class="font-mono">{p.slug}</span>:
+              <span class="font-mono">{p.capabilities.join(", ")}</span>
+            </li>
+          {/each}
+        </ul>
+      </CardHeader>
+    </Card>
+  {/if}
+
   <Card data-testid="update-status-card" data-state={pageState.kind}>
     <CardHeader class="space-y-2">
       <div class="flex flex-wrap items-center gap-x-3 gap-y-1">

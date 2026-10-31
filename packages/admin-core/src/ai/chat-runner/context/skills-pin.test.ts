@@ -39,6 +39,7 @@ function buildFixture(skills: readonly FixtureSkill[]): {
   registry.register(
     defineOperation({
       name: "skills.list",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({}),

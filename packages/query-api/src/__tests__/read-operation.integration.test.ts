@@ -41,6 +41,7 @@ beforeAll(() => {
   registry.register(
     defineReadOperation({
       name: "test.read_twice",
+      readScope: "request",
       actorScope: ["system", "human"],
       input: z.object({ chatBranchId: z.string().uuid().optional() }).strict(),
       output: z.object({ kinds: z.array(z.string()) }),

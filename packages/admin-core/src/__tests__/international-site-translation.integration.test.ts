@@ -14,7 +14,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { bootstrap, resetPluginHost, runPluginOperation } from "@caelo-cms/plugin-host";
+import {
+  bootstrap,
+  drainChangeConsumers,
+  resetPluginHost,
+  runPluginOperation,
+} from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -330,23 +335,21 @@ describe("#397 — context-aware translation", () => {
     );
     expect(statusRow[0]?.translation_status).toBe("up_to_date");
 
-    // --- Staleness: drain the outbox backlog, then a live SOURCE edit
-    // marks the sibling needs_update (the variant's own translate
-    // writes were skipped — its row is not 'source').
-    let drained = 0;
-    for (;;) {
-      const tick = await op<{ scanned: number }>("translation_staleness_tick", {});
-      drained += tick.scanned;
-      if (tick.scanned === 0) break;
-      if (drained > 100_000) throw new Error("outbox never drained");
-    }
+    // --- Staleness (#1267: from the change journal): drain what the
+    // translation wrote, then a live SOURCE edit marks the sibling
+    // needs_update (the variant's own translate writes were skipped — its
+    // row is not 'source').
+    const drain = async () => {
+      const reports = await drainChangeConsumers({ adapter, registry });
+      for (const r of reports) if (r.error) throw new Error(`${r.slug}: ${r.error}`);
+    };
+    await drain();
     const upd = await execute(registry, adapter, SYS_CTX, "pages.update", {
       pageId: sourceId,
       title: "Pricing v2",
     });
     if (!upd.ok) throw new Error(JSON.stringify(upd.error));
-    const tick = await op<{ marked: number; scanned: number }>("translation_staleness_tick", {});
-    expect(tick.marked).toBe(1);
+    await drain();
     const stale = await sqlAsPlugin(
       async (tx) =>
         (await tx.unsafe(
@@ -354,6 +357,35 @@ describe("#397 — context-aware translation", () => {
         )) as { translation_status: string }[],
     );
     expect(stale[0]?.translation_status).toBe("needs_update");
+
+    // #1267 — a live edit of the source's content instance (no page row
+    // changes) reaches the consumer as a content_instance change; it
+    // resolves the pages the instance renders on and flags the sibling.
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `UPDATE plugin_international_site.page_variants SET translation_status = 'up_to_date' WHERE page_id = '${variant.pageId}'`,
+      );
+    });
+    await drain();
+    const [ci] = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT pm.content_instance_id::text AS id FROM page_modules pm WHERE pm.page_id = '${sourceId}' LIMIT 1`,
+        )) as { id: string }[],
+    );
+    const ciEdit = await execute(registry, adapter, SYS_CTX, "content_instances.set_values", {
+      id: ci?.id ?? "",
+      values: { headline: "Welcome back", body_html: "<p>Hello <b>World</b></p>" },
+    });
+    if (!ciEdit.ok) throw new Error(JSON.stringify(ciEdit.error));
+    await drain();
+    const staleAgain = await sqlAsPlugin(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT translation_status FROM plugin_international_site.page_variants WHERE page_id = '${variant.pageId}'`,
+        )) as { translation_status: string }[],
+    );
+    expect(staleAgain[0]?.translation_status).toBe("needs_update");
 
     // --- Bulk pass in UPDATE mode (variant already differs from source).
     aiScript.push(() => ({
@@ -402,6 +434,334 @@ describe("#397 — context-aware translation", () => {
     expect(paused.translated).toBe(0);
     expect(paused.remaining).toBe(1);
     expect(paused.nextStep).toContain("propose_set_plugin_ai_cost_cap");
+  }, 60_000);
+
+  it("#1267 — an idle consumer reads on past the retention window, and a rebuild flags exactly the changed sources", async () => {
+    const sourceId = await seedSourcePage("-idle");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const variant = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-idle-preise",
+    });
+    aiScript.push(() => ({
+      title: "Preise",
+      shortTitle: "Preise",
+      slots: [
+        { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo</p>" }) },
+      ],
+    }));
+    await op("translate_variant", { variantPageId: variant.pageId });
+    const statusOf = async () =>
+      (
+        await sqlAsPlugin(
+          async (tx) =>
+            (await tx.unsafe(
+              `SELECT translation_status FROM plugin_international_site.page_variants WHERE page_id = '${variant.pageId}'`,
+            )) as { translation_status: string }[],
+        )
+      )[0]?.translation_status;
+    const drain = async () => {
+      const reports = await drainChangeConsumers({ adapter, registry });
+      for (const r of reports) if (r.error) throw new Error(`${r.slug}: ${r.error}`);
+      return reports.find((r) => r.slug === "international-site");
+    };
+    const gc = async (input: { retentionMs: number; stalledConsumerMs?: number }) => {
+      const r = await execute(registry, adapter, SYS_CTX, "change_journal.collect_garbage", input);
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+    };
+    // A change to a page that is no source (the variant's own title).
+    const editVariant = async (title: string) => {
+      const r = await execute(registry, adapter, SYS_CTX, "pages.update", {
+        pageId: variant.pageId,
+        title,
+      });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+    };
+    await drain();
+    // The first run's rebuild compares fingerprints: the fresh translation stays.
+    expect(await statusOf()).toBe("up_to_date");
+
+    // A quiet weekend: a change the consumer has not read yet, then GC with
+    // the whole journal past the retention window. The live consumer's
+    // cursor holds it back, so it reads on instead of rebuilding.
+    await editVariant("Preise!");
+    await gc({ retentionMs: 0 });
+    const idle = await drain();
+    expect(idle?.rebuilt).toBe(false);
+    expect(idle?.changes).toBeGreaterThan(0);
+    expect(await statusOf()).toBe("up_to_date");
+
+    // Stalled past the window: GC passes the cursor and the rebuild runs. The
+    // source did not change, so nothing is flagged.
+    await editVariant("Preise!!");
+    await gc({ retentionMs: 0, stalledConsumerMs: 0 });
+    const rebuilt = await drain();
+    expect(rebuilt?.rebuilt).toBe(true);
+    expect(await statusOf()).toBe("up_to_date");
+
+    // A source edit the consumer never saw (GC took its journal row): the
+    // rebuild finds the source's fingerprint changed and flags the variant.
+    const upd = await execute(registry, adapter, SYS_CTX, "pages.update", {
+      pageId: sourceId,
+      title: "Pricing (new)",
+    });
+    if (!upd.ok) throw new Error(JSON.stringify(upd.error));
+    await gc({ retentionMs: 0, stalledConsumerMs: 0 });
+    const lost = await drain();
+    expect(lost?.rebuilt).toBe(true);
+    expect(await statusOf()).toBe("needs_update");
+  }, 60_000);
+
+  it("#1267 — the backfill gives pre-release translations their source's fingerprint, so a rebuild after the upgrade flags nothing", async () => {
+    const sourceId = await seedSourcePage("-bf");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const otherSourceId = await seedSourcePage("-bf2");
+    const de = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-bf-preise",
+    });
+    // A second group's variant, the one a release before #1267 left stale.
+    const fr = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: otherSourceId,
+      localeCode: "de",
+      slug: "t397-bf2-preise",
+    });
+    const variantRows = () =>
+      sqlAsPlugin(
+        async (tx) =>
+          (await tx.unsafe(
+            `SELECT page_id::text AS page_id, translation_status, source_hash
+               FROM plugin_international_site.page_variants
+              WHERE page_id IN ('${de.pageId}', '${fr.pageId}')`,
+          )) as { page_id: string; translation_status: string; source_hash: string | null }[],
+      );
+    const rowOf = async (pageId: string) => (await variantRows()).find((r) => r.page_id === pageId);
+    const drain = async () => {
+      const reports = await drainChangeConsumers({ adapter, registry });
+      for (const r of reports) if (r.error) throw new Error(`${r.slug}: ${r.error}`);
+      return reports.find((r) => r.slug === "international-site");
+    };
+    await drain();
+    // The state a release before #1267 leaves: one up-to-date variant and
+    // one stale, neither with a fingerprint, and the backfill not run yet.
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `UPDATE plugin_international_site.page_variants SET source_hash = NULL,
+                translation_status = CASE WHEN page_id = '${fr.pageId}' THEN 'needs_update' ELSE 'up_to_date' END
+          WHERE page_id IN ('${de.pageId}', '${fr.pageId}')`,
+      );
+      await tx.unsafe(
+        "DELETE FROM plugin_international_site.settings WHERE key = 'source_hash_backfill'",
+      );
+    });
+    await drain();
+
+    // The first boot of the new release: onActivate runs the backfill.
+    resetPluginHost();
+    const report = await bootstrap({
+      infra: { adapter, registry, aiProvider: scriptedProvider },
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: intlPlugin }],
+    });
+    if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
+    expect((await rowOf(de.pageId))?.source_hash).toMatch(/^backfill:sha256:/);
+    // Already flagged: it stays as it is.
+    expect(await rowOf(fr.pageId)).toMatchObject({
+      translation_status: "needs_update",
+      source_hash: null,
+    });
+
+    // A rebuild on the unchanged site flags nothing.
+    const edit = await execute(registry, adapter, SYS_CTX, "pages.update", {
+      pageId: de.pageId,
+      title: "Preise (Titel)",
+    });
+    if (!edit.ok) throw new Error(JSON.stringify(edit.error));
+    const gc = await execute(registry, adapter, SYS_CTX, "change_journal.collect_garbage", {
+      retentionMs: 0,
+      stalledConsumerMs: 0,
+    });
+    if (!gc.ok) throw new Error(JSON.stringify(gc.error));
+    const rebuilt = await drain();
+    expect(rebuilt?.rebuilt).toBe(true);
+    expect((await rowOf(de.pageId))?.translation_status).toBe("up_to_date");
+
+    // A source change after the backfill flags it, as before #1267.
+    const upd = await execute(registry, adapter, SYS_CTX, "pages.update", {
+      pageId: sourceId,
+      title: "Pricing (bf)",
+    });
+    if (!upd.ok) throw new Error(JSON.stringify(upd.error));
+    await drain();
+    expect((await rowOf(de.pageId))?.translation_status).toBe("needs_update");
+  }, 60_000);
+
+  it("#1267 — a deleted source page leaves its translations as they are and never stops the consumer", async () => {
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const goneId = await seedSourcePage("-gone");
+    const liveId = await seedSourcePage("-live");
+    const gone = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: goneId,
+      localeCode: "de",
+      slug: "t397-gone-preise",
+    });
+    const live = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: liveId,
+      localeCode: "de",
+      slug: "t397-live-preise",
+    });
+    for (const v of [gone, live]) {
+      aiScript.push(() => ({
+        title: "Preise",
+        shortTitle: "Preise",
+        slots: [{ slot: "s0", values: fields({ headline: "Hallo", body_html: "<p>Hallo</p>" }) }],
+      }));
+      await op("translate_variant", { variantPageId: v.pageId });
+    }
+    const statusOf = async (pageId: string) =>
+      (
+        await sqlAsPlugin(
+          async (tx) =>
+            (await tx.unsafe(
+              `SELECT translation_status FROM plugin_international_site.page_variants WHERE page_id = '${pageId}'`,
+            )) as { translation_status: string }[],
+        )
+      )[0]?.translation_status;
+    const drain = async () => {
+      const reports = await drainChangeConsumers({ adapter, registry });
+      return reports.find((r) => r.slug === "international-site");
+    };
+    expect((await drain())?.error).toBeUndefined();
+
+    // One batch: a source page deleted (a soft delete keeps the linkage) and
+    // another source edited.
+    const del = await execute(registry, adapter, SYS_CTX, "pages.delete", { pageId: goneId });
+    if (!del.ok) throw new Error(JSON.stringify(del.error));
+    const upd = await execute(registry, adapter, SYS_CTX, "pages.update", {
+      pageId: liveId,
+      title: "Pricing (live)",
+    });
+    if (!upd.ok) throw new Error(JSON.stringify(upd.error));
+    const tick = await drain();
+    expect(tick?.error).toBeUndefined();
+    expect(await statusOf(gone.pageId)).toBe("up_to_date");
+    expect(await statusOf(live.pageId)).toBe("needs_update");
+
+    // The rebuild passes over it too.
+    const edit = await execute(registry, adapter, SYS_CTX, "pages.update", {
+      pageId: gone.pageId,
+      title: "Preise (gone)",
+    });
+    if (!edit.ok) throw new Error(JSON.stringify(edit.error));
+    const gc = await execute(registry, adapter, SYS_CTX, "change_journal.collect_garbage", {
+      retentionMs: 0,
+      stalledConsumerMs: 0,
+    });
+    if (!gc.ok) throw new Error(JSON.stringify(gc.error));
+    const rebuilt = await drain();
+    expect(rebuilt?.error).toBeUndefined();
+    expect(rebuilt?.rebuilt).toBe(true);
+    expect(await statusOf(gone.pageId)).toBe("up_to_date");
+  }, 60_000);
+
+  it("#1267 — outbox work outstanding at the upgrade is reconciled before the cursor and the backfill baseline", async () => {
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const editedId = await seedSourcePage("-ob1");
+    const seenId = await seedSourcePage("-ob2");
+    const edited = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: editedId,
+      localeCode: "de",
+      slug: "t397-ob1-preise",
+    });
+    const seen = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: seenId,
+      localeCode: "de",
+      slug: "t397-ob2-preise",
+    });
+    const rowOf = async (pageId: string) =>
+      (
+        await sqlAsPlugin(
+          async (tx) =>
+            (await tx.unsafe(
+              `SELECT translation_status, source_hash FROM plugin_international_site.page_variants WHERE page_id = '${pageId}'`,
+            )) as { translation_status: string; source_hash: string | null }[],
+        )
+      )[0];
+    await drainChangeConsumers({ adapter, registry });
+    // What a release before #1267 leaves: both translations up to date, no
+    // hashes, the backfill not run — and in the old outbox, an edit of one
+    // source the plugin already consumed and an edit of the other it had
+    // not yet polled.
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `UPDATE plugin_international_site.page_variants
+            SET source_hash = NULL, translation_status = 'up_to_date'
+          WHERE page_id IN ('${edited.pageId}', '${seen.pageId}')`,
+      );
+      await tx.unsafe(
+        "DELETE FROM plugin_international_site.settings WHERE key = 'source_hash_backfill'",
+      );
+    });
+    await sqlSystem(async (tx) => {
+      const [p] = (await tx.unsafe(
+        "SELECT id::text AS id FROM plugins WHERE slug = 'international-site'",
+      )) as { id: string }[];
+      const [consumed] = (await tx.unsafe(
+        `INSERT INTO domain_events (kind, entity_id, payload) VALUES ('page.updated', '${seenId}', '{}') RETURNING id`,
+      )) as { id: string }[];
+      await tx.unsafe(
+        `INSERT INTO plugin_event_cursors (plugin_id, cursor_id) VALUES ('${p?.id}', ${consumed?.id})
+         ON CONFLICT (plugin_id) DO UPDATE SET cursor_id = EXCLUDED.cursor_id`,
+      );
+      await tx.unsafe(
+        `INSERT INTO domain_events (kind, entity_id, payload) VALUES ('page.updated', '${editedId}', '{}')`,
+      );
+      // 0430's reconciliation step, as the upgrade runs it.
+      const [r] = (await tx.unsafe("SELECT caelo_intl_reconcile_retired_outbox() AS n")) as {
+        n: number;
+      }[];
+      expect(r?.n).toBe(1);
+    });
+    expect((await rowOf(edited.pageId))?.translation_status).toBe("needs_update");
+    expect((await rowOf(seen.pageId))?.translation_status).toBe("up_to_date");
+
+    // The backfill then adopts only what is still up to date.
+    resetPluginHost();
+    const report = await bootstrap({
+      infra: { adapter, registry, aiProvider: scriptedProvider },
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: intlPlugin }],
+    });
+    if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
+    expect(await rowOf(edited.pageId)).toEqual({
+      translation_status: "needs_update",
+      source_hash: null,
+    });
+    expect((await rowOf(seen.pageId))?.source_hash).toMatch(/^backfill:sha256:/);
   }, 60_000);
 
   it("#591 — fills a new variant's meta description; a live variant's SEO is never overwritten, only flagged stale", async () => {

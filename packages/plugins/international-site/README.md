@@ -56,7 +56,8 @@ keeps rendering the current entries so an added entry shows up there.
 Statuses (`translated | needs_update | missing | orphaned`) are computed
 from the source and the stored `source_hash` on every render, so a
 chat's preview, the build and the worker agree; the worker
-(`translation_staleness_tick`, on list / page / module domain events of
+(`translation_staleness_tick`, the plugin's change consumer of the entity
+change journal — list / page / module changes of
 the main line) persists them.
 
 | change | what happens |

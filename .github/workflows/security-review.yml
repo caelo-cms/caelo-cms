@@ -88,16 +88,31 @@ jobs:
             echo "passed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Successful runs of this workflow for this PR (same head repo +
-          # branch, created since the PR was opened), newest first.
-          runs=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?event=pull_request&status=success&branch=$HEAD_REF&per_page=50" \
-            --jq "[.workflow_runs[] | select(.head_repository.full_name == \"$HEAD_REPO\" and .created_at >= \"$PR_CREATED\" and .id != $RUN_ID) | .id] | .[]")
+          # This check only saves an AI review that already passed on this
+          # PR. Any API error means "not known to have passed": the full
+          # review runs (the conservative outcome), with a warning naming
+          # the error — a transient 5xx must never fail the workflow.
+          not_known() {
+            echo "::warning::prior AI run check could not read the run history ($1); running the full AI review."
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          # Recent runs of this workflow on this branch, newest first, the
+          # successful ones picked out here: the server-side `status` filter
+          # is an expensive query that returned HTTP 502 on a branch with a
+          # long run history (#1274), while a plain branch page is cheap.
+          if ! runs=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?event=pull_request&branch=$HEAD_REF&per_page=30" \
+            --jq "[.workflow_runs[] | select(.conclusion == \"success\" and .head_repository.full_name == \"$HEAD_REPO\" and .created_at >= \"$PR_CREATED\" and .id != $RUN_ID) | .id] | .[:10] | .[]" 2>"$RUNNER_TEMP/gh-err"); then
+            not_known "$(tr '\n' ' ' < "$RUNNER_TEMP/gh-err")"
+          fi
           passed=false
           for id in $runs; do
             # A green workflow is not enough (the AI job may have been
             # skipped itself); require the AI job's own success.
-            hit=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
-              --jq "[.jobs[] | select(.name == \"$JOB_NAME\" and .conclusion == \"success\")] | length")
+            if ! hit=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
+              --jq "[.jobs[] | select(.name == \"$JOB_NAME\" and .conclusion == \"success\")] | length" 2>"$RUNNER_TEMP/gh-err"); then
+              not_known "$(tr '\n' ' ' < "$RUNNER_TEMP/gh-err")"
+            fi
             if [ "$hit" -gt 0 ]; then
               passed=true
               echo "::notice::the AI security review already passed on this PR (run $id); skipping it for this commit."

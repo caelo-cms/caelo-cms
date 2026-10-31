@@ -78,6 +78,7 @@ async function mergedStagingAccess(tx: Tx, patch: StagingPatch) {
 
 export const proposeSetStagingAccessOp = defineOperation({
   name: "owner_settings.propose_set_staging_access",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeStagingAccessInput,
@@ -130,6 +131,7 @@ export const proposeRotateStagingCredentialsInput = z
 
 export const proposeRotateStagingCredentialsOp = defineOperation({
   name: "owner_settings.propose_rotate_staging_credentials",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeRotateStagingCredentialsInput,
@@ -191,6 +193,7 @@ export const proposeSetStagingHostInput = z
 
 export const proposeSetStagingHostOp = defineOperation({
   name: "owner_settings.propose_set_staging_host",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeSetStagingHostInput,

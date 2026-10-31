@@ -50,7 +50,8 @@ export async function consentPurposesOf(
  *
  * @param embedCategories the categories withheld embeds wait for, from
  *   the stored verdicts. Those are rewritten on the write that adds an
- *   embed (`module_changes`, #1214), not only by the 5-minute scan, so a
+ *   embed (`module_changes`, the change consumer, #1267), not only by the
+ *   5-minute scan, so a
  *   banner built right after an embed was added offers the category its
  *   placeholder asks for.
  */

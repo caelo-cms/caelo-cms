@@ -8,6 +8,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 
 ## Architecture and patterns
 
+- [dev/state-and-changes.md](./dev/state-and-changes.md) — the state and change contract: one entity change journal written by table triggers, cursors and wake-ups, rebuildable derived state, request-scoped ops, and how plugins consume changes (#1267).
 - [propose-execute-pattern.md](./propose-execute-pattern.md) — the apply + audit engine behind human-approved (gated) AI tools, and how to gate a new domain (CLAUDE.md §11.A).
 - [dev/redirects-and-settings-sync.md](./dev/redirects-and-settings-sync.md) — redirects sync to the hosting provider on save (no build), per provider; which global settings live at the provider and which go live with Publish live (#1157).
 - [internal-links.md](./internal-links.md) — internal links as page references: write-time canonicalisation, render-time resolution, and why a move rewrites no link (epic #724).
@@ -45,6 +46,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [internal/e2e-livedit.md](./internal/e2e-livedit.md) — the real-AI Playwright suite: setup, assertion classes, adding a scenario.
 - [quality-checks.md](./quality-checks.md) — the quality audit's checks on the staged build (check framework, `structure`, `links`, `references`) and the Stage-time reference-integrity gate (#724).
 - [dev/coverage.md](./dev/coverage.md) — the coverage gate.
+- [dev/scale-gate.md](./dev/scale-gate.md) — the scale gate: 50,000 pages, 20 MCP agents and 5 editors on a db-f1-micro and a 1-vCPU admin; fixture, load, SLOs, running it locally (#1267).
 - [dev/knip.md](./dev/knip.md) — the dead-code gate.
 - [dev/madge.md](./dev/madge.md) — the circular-dependency gate.
 - [dev/codeql.md](./dev/codeql.md) — CodeQL, dependency review and secret scanning.

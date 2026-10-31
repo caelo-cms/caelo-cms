@@ -24,7 +24,7 @@
  * their own transaction.
  */
 
-import { assertChatOpenForWrite, type TransactionRunner } from "@caelo-cms/query-api";
+import { assertChatOpenForWrite, type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
 /** A plugin row's state as snapshotted. `values` holds every non-host column. */
@@ -152,10 +152,7 @@ export async function loadBranchRowStates(
       ? sql``
       : input.rowIds.length === 0
         ? sql`AND false`
-        : sql`AND prs.row_id IN (${sql.join(
-            input.rowIds.map((id) => sql`${id}::uuid`),
-            sql`, `,
-          )})`;
+        : sql`AND prs.row_id = ANY(${uuidArray(input.rowIds)})`;
   const rows = (await tx.execute(sql`
     SELECT DISTINCT ON (prs.row_id) prs.row_id::text AS row_id, prs.state
     FROM plugin_row_snapshots prs
@@ -256,12 +253,7 @@ export async function discardBranchPluginRows(
 ): Promise<number> {
   if (rowIds !== undefined && rowIds.length === 0) return 0;
   const idList = (column: string) =>
-    rowIds === undefined
-      ? sql``
-      : sql`AND ${sql.raw(column)} IN (${sql.join(
-          rowIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})`;
+    rowIds === undefined ? sql`` : sql`AND ${sql.raw(column)} = ANY(${uuidArray(rowIds)})`;
   const tables = (await tx.execute(sql`
     SELECT DISTINCT prs.plugin_id::text AS plugin_id, prs.schema_name, prs.table_name
     FROM plugin_row_snapshots prs

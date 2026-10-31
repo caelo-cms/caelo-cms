@@ -30,6 +30,7 @@ const logModuleizeAttemptInput = z
 
 export const logModuleizeAttemptOp = defineOperation({
   name: "ai_moduleize.log_attempt",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: logModuleizeAttemptInput,

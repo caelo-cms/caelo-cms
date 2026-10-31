@@ -37,7 +37,7 @@
  * and an Owner changes behaviour through the policy ops, never these.
  */
 
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import {
   AUTO_UPDATE_ACTIONS,
   type AutoUpdateDecision,
@@ -135,6 +135,7 @@ function notificationForDecision(
 
 export const platformUpdatesSchedulerTickOp = defineOperation({
   name: "platform_updates.scheduler_tick",
+  readScope: "request",
   // Why system-only: the admin's own background scheduler (#696 Phase 5).
   // It can only queue "the newest release, as the Owner's policy allows";
   // the AI only informs (#696 decision 3).
@@ -456,6 +457,7 @@ const claimedNotification = z.object({
 
 export const platformUpdatesNotificationClaimOp = defineOperation({
   name: "platform_updates.notification_claim",
+  readScope: "request",
   // Why system-only: the scheduler's email delivery (#696 Phase 5).
   actorScope: ["system"],
   database: "cms_admin",
@@ -496,6 +498,7 @@ export const platformUpdatesNotificationClaimOp = defineOperation({
 
 export const platformUpdatesNotificationFinishOp = defineOperation({
   name: "platform_updates.notification_finish",
+  readScope: "request",
   // Why system-only: the scheduler records how its own delivery went.
   actorScope: ["system"],
   database: "cms_admin",
@@ -509,13 +512,7 @@ export const platformUpdatesNotificationFinishOp = defineOperation({
     .strict(),
   output: z.object({ recorded: z.boolean() }),
   handler: async (ctx, input, tx) => {
-    const recipients =
-      input.recipients.length > 0
-        ? sql`ARRAY[${sql.join(
-            input.recipients.map((r) => sql`${r}`),
-            sql`, `,
-          )}]::text[]`
-        : sql`'{}'::text[]`;
+    const recipients = textArray(input.recipients);
     const rows = (await tx.execute(sql`
       UPDATE platform_update_notifications
          SET delivery_status = ${input.status}, delivery_detail = ${input.detail},
@@ -563,6 +560,7 @@ export type SchedulerStatus = z.infer<typeof schedulerStatusSchema>;
 
 export const platformUpdatesSchedulerStatusOp = defineOperation({
   name: "platform_updates.scheduler_status",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ limit: z.number().int().min(1).max(50).optional() }).strict(),

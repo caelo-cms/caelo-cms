@@ -35,6 +35,7 @@ export const EXTERNAL_OPS = {
  */
 const approvalOp = defineOperation({
   name: EXTERNAL_OPS.approval,
+  readScope: "request",
   // Why system-only: the host reads approval state to load and authorise
   // a plugin; nobody else needs it in this shape.
   actorScope: ["system"],
@@ -82,6 +83,7 @@ const approvalOp = defineOperation({
  */
 const operatorHasPermissionOp = defineOperation({
   name: EXTERNAL_OPS.operatorHasPermission,
+  readScope: "request",
   // Why system-only: the host checks the operator a plugin call acts for.
   actorScope: ["system"],
   database: "cms_admin",
@@ -121,6 +123,7 @@ const bindingInput = z
 /** Record the binding shown on an approval card (idempotent for the same call). */
 const recordToolBindingOp = defineOperation({
   name: EXTERNAL_OPS.recordToolBinding,
+  readScope: "request",
   // Why system-only: the host records the binding before asking the Owner.
   actorScope: ["system"],
   database: "cms_admin",
@@ -164,6 +167,7 @@ const recordToolBindingOp = defineOperation({
  */
 const consumeToolBindingOp = defineOperation({
   name: EXTERNAL_OPS.consumeToolBinding,
+  readScope: "request",
   // Why system-only: the host redeems the approval it recorded.
   actorScope: ["system"],
   database: "cms_admin",

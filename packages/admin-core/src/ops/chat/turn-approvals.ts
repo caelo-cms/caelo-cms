@@ -158,6 +158,7 @@ async function chatAccessRefusal(
 
 export const recordTurnApprovalsOp = defineOperation({
   name: "chat.record_turn_approvals",
+  readScope: "request",
   // Why human-only: chat-runner plumbing run under the turn's own human
   // context as it pauses; the AI only ever asks through a gated tool call.
   actorScope: ["human", "system"],
@@ -228,6 +229,7 @@ export const recordTurnApprovalsOp = defineOperation({
 
 export const supersedeTurnApprovalsOp = defineOperation({
   name: "chat.supersede_turn_approvals",
+  readScope: "request",
   // Why human-only: chat-runner plumbing, run as a new message's turn starts
   // under that turn's human context; nothing for the AI to call.
   actorScope: ["human", "system"],
@@ -300,6 +302,7 @@ const NOT_OPEN =
 
 export const claimTurnApprovalsOp = defineOperation({
   name: "chat.claim_turn_approvals",
+  readScope: "request",
   // Why human-only: the resume turn's own plumbing, run under the human
   // context of whoever resumes (the clicking operator, or the MCP token's
   // owner); the AI never resumes a turn.
@@ -455,6 +458,7 @@ export const claimTurnApprovalsOp = defineOperation({
 
 export const listTurnApprovalsOp = defineOperation({
   name: "chat.list_turn_approvals",
+  readScope: "request",
   // Why human-only: backs the chat UI's approval cards; the AI sees its own
   // paused calls in its transcript, and list_pending_proposals covers the
   // queued-proposal side.
@@ -489,6 +493,7 @@ export const listTurnApprovalsOp = defineOperation({
 
 export const decideTurnApprovalOp = defineOperation({
   name: "chat.decide_turn_approval",
+  readScope: "request",
   // Why human-only: the operator's click IS the §11.A decision; neither the
   // AI nor the external agent may make it.
   actorScope: ["human"],
@@ -591,6 +596,7 @@ async function agentApprovals(
 
 export const mcpGetChatApprovalStateOp = defineOperation({
   name: "mcp.get_chat_approval_state",
+  readScope: "request",
   // Why system-only: the bearer is in the input; the handler resolves it and
   // reads only that token's own approvals. Read-only — nothing here decides.
   actorScope: ["system"],

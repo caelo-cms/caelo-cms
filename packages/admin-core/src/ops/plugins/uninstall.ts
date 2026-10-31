@@ -65,6 +65,7 @@ function pluginSchemaName(slug: string): string {
 
 export const proposeUninstallPluginOp = defineOperation({
   name: "plugins.propose_uninstall",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -184,6 +185,7 @@ export const proposeUninstallPluginOp = defineOperation({
 
 const executeUninstallPluginOpDefinition = defineOperation({
   name: "plugins.execute_proposal",
+  readScope: "request",
   // Why human-only (+system): §11.A — dropping schemas is data loss and a
   // revoked grant disables the plugin; the Owner's click is the whole
   // point of the gate.

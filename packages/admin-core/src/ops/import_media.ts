@@ -232,6 +232,7 @@ const importAssetInput = z.object({
 
 export const importMediaUrlsOp = defineOperation({
   name: "imports.import_media_urls",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   // Issue #1210 — the downloads run outside any transaction (file header).
@@ -430,6 +431,7 @@ const pageAssetEntry = z.object({
  */
 export const listPageAssetsOp = defineOperation({
   name: "imports.list_page_assets",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

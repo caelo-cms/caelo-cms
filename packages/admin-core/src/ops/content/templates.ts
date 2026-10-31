@@ -115,6 +115,7 @@ async function pageTypesByTemplate(
 
 export const listTemplatesOp = defineOperation({
   name: "templates.list",
+  readScope: "request",
   // CLAUDE.md §11: AI plans cross-template moves and needs broad read.
   // Plugin actors read too, like pages.list (#396): consent-manager checks
   // a tag scoped to templates against the templates that exist (#1138).
@@ -152,6 +153,7 @@ export const listTemplatesOp = defineOperation({
 
 export const getTemplateOp = defineOperation({
   name: "templates.get",
+  readScope: "request",
   // CLAUDE.md §11: AI reads template state when planning page changes.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -192,6 +194,7 @@ export const getTemplateOp = defineOperation({
 
 export const createTemplateOp = defineOperation({
   name: "templates.create",
+  readScope: "request",
   // P18 AI-completeness — widened to default scope per CLAUDE.md §11.
   // Creating a NEW template doesn't affect existing pages (they bind by
   // id, not slug); the user just gets a new page-type to compose against.
@@ -379,6 +382,7 @@ export const createTemplateOp = defineOperation({
 
 export const updateTemplateOp = defineOperation({
   name: "templates.update",
+  readScope: "request",
   // Why human-only: §11.A — a template edit cascades to every page on it; the AI edits through
   // propose_update_template (Owner-approved) and re-points layouts via templates.set_layout.
   // Human-only writes. AI re-points layouts via the narrow
@@ -592,6 +596,7 @@ async function addTemplateToPageType(
  */
 export const setTemplateLayoutOp = defineOperation({
   name: "templates.set_layout",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -653,6 +658,7 @@ export const setTemplateLayoutOp = defineOperation({
 
 export const deleteTemplateOp = defineOperation({
   name: "templates.delete",
+  readScope: "request",
   // Why human-only: Owner-only — large blast radius (every page on the template fails).
   actorScope: ["human", "system"],
   database: "cms_admin",

@@ -11,7 +11,7 @@
  * the cold set when needed (audit / compliance flows in P14+).
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { archiveOlderThanInput, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -19,6 +19,7 @@ import { recordAudit } from "../../audit.js";
 
 export const archiveOlderThanOp = defineOperation({
   name: "snapshots.archive_older_than",
+  readScope: "request",
   // Why system-only: retention sweep run by the background worker on a schedule; archiving history
   // is not an editing action.
   actorScope: ["system"],
@@ -43,10 +44,7 @@ export const archiveOlderThanOp = defineOperation({
     await tx.execute(sql`
       UPDATE site_snapshots
       SET archived_at = now()
-      WHERE id IN (${sql.join(
-        target.map((t) => sql`${t.id}`),
-        sql`, `,
-      )})
+      WHERE id = ANY(${uuidArray(target.map((t) => t.id))})
     `);
 
     await recordAudit(tx, {

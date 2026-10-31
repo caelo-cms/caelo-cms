@@ -11,7 +11,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext, ListItem } from "@caelo-cms/shared";
+import { diffListItems, type ExecutionContext, type ListItem } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
@@ -537,23 +537,46 @@ describe("#1107 lists on the shared draft", () => {
     expect(refused).toContain("different");
   });
 
-  it("emits list.items_changed with the per-entry diff and the chat branch", async () => {
+  it("journals a list write on its chat branch with the snapshots a consumer diffs (#1267)", async () => {
     const a = await chat("events");
     const slug = `${PFX}events-menu`;
-    await op(a.ctx, "lists.upsert_many", {
+    const created = await op<{ lists: { id: string }[] }>(a.ctx, "lists.upsert_many", {
       lists: [{ slug, name: "Events", purpose: "x", type: "menu", items: menu(["One"]) }],
     });
-    const ev = await asSystem(
+    const listId = created.lists[0]?.id ?? "";
+    await op(a.ctx, "lists.patch_items_many", {
+      lists: [
+        {
+          slug,
+          patches: [{ op: "add", item: { node: "entry", values: { label: "Two" } } }],
+        },
+      ],
+    });
+    const rows = await asSystem(
       (tx) =>
         tx`
-        SELECT payload FROM domain_events
-        WHERE kind = 'list.items_changed' AND payload->>'slug' = ${slug}
-        ORDER BY id DESC LIMIT 1` as Promise<
-          { payload: { changes: { kind: string }[]; chatBranchId: string } }[]
+        SELECT ec.chat_branch_id::text AS branch, ec.op_name,
+               prev.state AS before, cur.state AS after
+          FROM entity_changes ec
+          JOIN list_snapshots cur
+            ON cur.site_snapshot_id = ec.site_snapshot_id AND cur.list_id = ${listId}::uuid
+          JOIN list_snapshots prev
+            ON prev.site_snapshot_id = ec.prev_snapshot_id AND prev.list_id = ${listId}::uuid
+         WHERE ec.kind = 'list' AND ec.table_name = 'list_snapshots' AND ec.row_id = ${listId}
+         ORDER BY ec.xid DESC LIMIT 1` as Promise<
+          {
+            branch: string;
+            op_name: string;
+            before: { items: ListItem[] };
+            after: { items: ListItem[] };
+          }[]
         >,
     );
-    expect(ev[0]?.payload.chatBranchId).toBe(a.branch);
-    expect(ev[0]?.payload.changes.map((c) => c.kind)).toEqual(["added"]);
+    expect(rows[0]?.branch).toBe(a.branch);
+    expect(rows[0]?.op_name).toBe("lists.patch_items_many");
+    // What the retired list.items_changed payload carried, from the diff.
+    const changes = diffListItems(rows[0]?.before.items ?? [], rows[0]?.after.items ?? []);
+    expect(changes.map((c) => c.kind)).toEqual(["added"]);
   });
 
   it("validates list field values on module and content instance writes, assigning entry ids", async () => {

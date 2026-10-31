@@ -23,6 +23,7 @@ import {
   defineStepwiseOperation,
   execute,
   OperationAbortError,
+  uuidArray,
 } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -38,7 +39,7 @@ import { CURRENT_GATE_RULES, decideGate, type GateDecision } from "../../quality
 import { groupOpenProblems, topProblemGroups } from "../../quality/problem-groups.js";
 import { appendChatMessageOp } from "../chat/messages.js";
 import { actorHasPermission } from "./_permissions.js";
-import { categorySchema, uuidList } from "./_shared.js";
+import { categorySchema } from "./_shared.js";
 import {
   latestSucceededRun,
   loadAcceptances,
@@ -108,6 +109,7 @@ async function gateFor(
 
 export const gateStatusOp = defineOperation({
   name: "quality_audits.gate_status",
+  readScope: "request",
   // CLAUDE.md §11: read-only — the AI checks whether Publish live is open
   // before suggesting it, and reads the next step when it is not.
   actorScope: ["human", "ai", "system"],
@@ -119,6 +121,7 @@ export const gateStatusOp = defineOperation({
 
 export const retryAuditOp = defineOperation({
   name: "quality_audits.retry",
+  readScope: "request",
   // Routine and harmless: re-measures the build that is already staged and
   // changes nothing on the site, so the AI may run it too (§11 default).
   actorScope: ["human", "ai", "system"],
@@ -266,6 +269,7 @@ export const fixSelectionSchema = z
 
 export const chatStatusOp = defineOperation({
   name: "quality_audits.chat_status",
+  readScope: "request",
   // Read-only; the chat panel polls it. Open to every actor (§11).
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -393,7 +397,7 @@ async function decidedSince(
   const at = since instanceof Date ? since.toISOString() : since;
   const rows = (await tx.execute(sql`
     SELECT 1 AS decided FROM quality_acceptances
-    WHERE (page_id = ANY(${uuidList(pageIds)}) OR page_id IS NULL)
+    WHERE (page_id = ANY(${uuidArray(pageIds)}) OR page_id IS NULL)
       AND (accepted_at >= ${at}::timestamptz OR revoked_at >= ${at}::timestamptz)
     LIMIT 1
   `)) as unknown as { decided: number }[];
@@ -437,6 +441,7 @@ const NOTIFY_LEASE_SECONDS = 120;
 
 export const claimChatNotificationOp = defineOperation({
   name: "quality_audits.claim_chat_notification",
+  readScope: "request",
   // Why human-only: the chat panel of the operator claims the message it is
   // about to deliver; a claim from anywhere else would swallow it.
   actorScope: ["human", "system"],
@@ -518,6 +523,7 @@ export const claimChatNotificationOp = defineOperation({
 
 export const ackChatNotificationOp = defineOperation({
   name: "quality_audits.ack_chat_notification",
+  readScope: "request",
   // Why human-only: the chat panel acknowledges the fix request the
   // operator's click has just sent (persisted by the chat stream) — see claim_chat_notification.
   actorScope: ["human", "system"],
@@ -535,6 +541,7 @@ export const ackChatNotificationOp = defineOperation({
 
 export const releaseChatNotificationOp = defineOperation({
   name: "quality_audits.release_chat_notification",
+  readScope: "request",
   // Why human-only: the chat panel gives back the claim of a fix request
   // the operator clicked that did NOT start a turn (an external agent works
   // in the chat, #682, or the send failed), so the card can be clicked again
@@ -569,6 +576,7 @@ const publishAnywayInput = z
 
 export const checkPublishAnywayOp = defineOperation({
   name: "quality_audits.check_publish_anyway",
+  readScope: "request",
   // Why human-only: the first step of quality_audits.publish_anyway (a
   // human's decision, #553); it writes nothing and no AI tool wraps it.
   actorScope: ["human", "system"],
@@ -612,6 +620,7 @@ export const checkPublishAnywayOp = defineOperation({
  */
 export const publishAnywayOp = defineStepwiseOperation({
   name: "quality_audits.publish_anyway",
+  readScope: "request",
   // Why human-only: this IS the human decision the gate exists to obtain
   // (#553: never the AI on its own). The AI reaches it only through the
   // approval card of publish_despite_failed_audit, applied as the human.

@@ -59,6 +59,7 @@ interface ActivationManifest {
 
 export const proposePluginActivationOp = defineOperation({
   name: "plugins.propose_activation",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -201,6 +202,7 @@ export const proposePluginActivationOp = defineOperation({
 
 const executePluginActivationOpDefinition = defineOperation({
   name: "plugins.execute_activation",
+  readScope: "request",
   // Why human-only (+system): §11.A — this is the click. The AI reaches
   // it only through the approved gated tool, never directly.
   actorScope: ["human", "system"],

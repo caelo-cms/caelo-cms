@@ -22,6 +22,7 @@ const keyShape = z
 
 export const getUserPreferenceOp = defineOperation({
   name: "user_preferences.get",
+  readScope: "request",
   // Why human-only: Per-user UI state; AI uses chat session memory + chips instead.
   actorScope: ["human"],
   database: "cms_admin",
@@ -43,6 +44,7 @@ export const getUserPreferenceOp = defineOperation({
 
 export const setUserPreferenceOp = defineOperation({
   name: "user_preferences.set",
+  readScope: "request",
   // Why human-only: Per-user UI state; AI uses chat session memory + chips instead.
   actorScope: ["human"],
   database: "cms_admin",

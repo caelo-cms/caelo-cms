@@ -19,11 +19,10 @@
  * the live rows are exactly what the generator renders.
  */
 
-import type { defineOperation } from "@caelo-cms/query-api";
+import { type defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { classifyStageChanges, type StageChange } from "../../quality/classify.js";
-import { uuidList } from "./_shared.js";
 import { touchedPageIds } from "./classify_stage.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
@@ -94,12 +93,12 @@ function diffFingerprints(before: RenderFingerprint, now: RenderFingerprint): Fi
 async function labels(tx: Tx, diffs: readonly FingerprintDiff[]): Promise<Map<string, string>> {
   const ids = [...new Set(diffs.map((d) => d.id))];
   const rows = (await tx.execute(sql`
-    SELECT id::text AS id, display_name AS label FROM modules WHERE id = ANY(${uuidList(ids)})
-    UNION ALL SELECT id::text, display_name FROM templates WHERE id = ANY(${uuidList(ids)})
-    UNION ALL SELECT id::text, display_name FROM layouts WHERE id = ANY(${uuidList(ids)})
-    UNION ALL SELECT id::text, display_name FROM themes WHERE id = ANY(${uuidList(ids)})
-    UNION ALL SELECT id::text, slug FROM plugins WHERE id = ANY(${uuidList(ids)})
-    UNION ALL SELECT id::text, COALESCE(current_path, title) FROM pages WHERE id = ANY(${uuidList(ids)})
+    SELECT id::text AS id, display_name AS label FROM modules WHERE id = ANY(${uuidArray(ids)})
+    UNION ALL SELECT id::text, display_name FROM templates WHERE id = ANY(${uuidArray(ids)})
+    UNION ALL SELECT id::text, display_name FROM layouts WHERE id = ANY(${uuidArray(ids)})
+    UNION ALL SELECT id::text, display_name FROM themes WHERE id = ANY(${uuidArray(ids)})
+    UNION ALL SELECT id::text, slug FROM plugins WHERE id = ANY(${uuidArray(ids)})
+    UNION ALL SELECT id::text, COALESCE(current_path, title) FROM pages WHERE id = ANY(${uuidArray(ids)})
   `)) as unknown as { id: string; label: string }[];
   return new Map(rows.map((r) => [r.id, r.label]));
 }

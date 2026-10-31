@@ -29,7 +29,6 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { emitDomainEvent } from "../../domain-events.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -139,16 +138,6 @@ export async function executePageMoves(
     chatBranchId: ctx.chatBranchId ?? null,
     entities,
   });
-  for (const e of entities) {
-    await emitDomainEvent(tx, {
-      kind: "page.updated",
-      entityId: e.entityId,
-      payload: {
-        moved: true,
-        ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
-      },
-    });
-  }
   return ok({
     moved: moved.map((m) => ({ pageId: m.pageId, from: m.from, to: m.to })),
     pendingPublish: branched,
@@ -158,6 +147,7 @@ export async function executePageMoves(
 
 export const movePagesManyOp = defineOperation({
   name: OP,
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: pagesMoveManySchema,
@@ -195,6 +185,7 @@ export const movePagesManyOp = defineOperation({
  */
 export const planPageMovesOp = defineOperation({
   name: "pages.plan_moves",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

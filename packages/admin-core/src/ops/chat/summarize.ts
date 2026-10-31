@@ -80,6 +80,7 @@ interface ToolCallRef {
 
 export const summarizeChatOp = defineOperation({
   name: "chat.summarize",
+  readScope: "request",
   // Read-only; same scope as chat.get_session.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",

@@ -4,6 +4,12 @@
  * Snapshot emitter — call from inside a mutation op handler, in the same
  * `tx`, so the snapshot row(s) and the live write share rollback semantics.
  *
+ * Who hears about the write is NOT decided here (#1267): the change
+ * journal's table triggers record every snapshot row this inserts, and
+ * every other path that writes a journaled table, so consumers read the
+ * journal instead of hooking this function (it is not a complete
+ * chokepoint — docs/dev/state-and-changes.md).
+ *
  * One `site_snapshots` row groups N entity-level rows (modules, templates,
  * pages, page layouts). The caller passes one flat `entities` array tagged
  * with `kind`; this collapses what used to be four separate optional arrays
@@ -17,7 +23,6 @@
 import { assertChatOpenForWrite, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { jsonbParam } from "../sql-helpers.js";
-import { queueModuleChangeNotice } from "./module-change-notify.js";
 import type {
   ContentInstanceState,
   ListState,
@@ -265,17 +270,6 @@ export async function emitSnapshot(
         break;
     }
   }
-
-  // #1214 — plugins keeping a per-module verdict hear about it once the
-  // write commits, in the writer's scope.
-  queueModuleChangeNotice(
-    tx,
-    {
-      actorId: input.actorId,
-      chatBranchId: input.chatBranchId ?? null,
-    },
-    input.entities,
-  );
 
   return { siteSnapshotId };
 }

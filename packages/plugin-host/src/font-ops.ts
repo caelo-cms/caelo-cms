@@ -36,6 +36,7 @@ export type PluginFontRead = keyof typeof READS;
 
 const readOp = defineOperation({
   name: FONT_READ_OP,
+  readScope: "request",
   // Why system-only: the host broker reads on the plugin's behalf, after
   // checking that the operator may author (images.ts does the same).
   actorScope: ["system"],

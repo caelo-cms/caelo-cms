@@ -25,7 +25,7 @@
  * them (#1126).
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { collectNestedRefs, rewriteNestedRefs } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { loadContentInstanceBranchStates, type SnapshotEntity } from "../../snapshots/index.js";
@@ -53,17 +53,14 @@ async function loadInstancesInView(
 ): Promise<Map<string, InstanceInView>> {
   const out = new Map<string, InstanceInView>();
   if (ids.length === 0) return out;
-  const idList = sql.join(
-    ids.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
+  const idList = uuidArray(ids);
   const visibility = chatBranchId
     ? sql`AND (chat_branch_id IS NULL OR chat_branch_id = ${chatBranchId}::uuid)`
     : sql`AND chat_branch_id IS NULL`;
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, module_id::text AS module_id, "values", deleted_at
       FROM content_instances
-     WHERE id IN (${idList}) ${visibility}
+     WHERE id = ANY(${idList}) ${visibility}
   `)) as unknown as {
     id: string;
     module_id: string;

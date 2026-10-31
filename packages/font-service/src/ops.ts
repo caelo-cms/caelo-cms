@@ -49,6 +49,7 @@ export async function fontRevisionVisible(tx: TransactionRunner, ref: FontRef): 
 
 export const importFontOp = defineOperation({
   name: "fonts.import",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: fontImportInput,
@@ -79,6 +80,7 @@ export const importFontOp = defineOperation({
 });
 export const findFontsOp = defineOperation({
   name: "fonts.find",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: fontFindInput,
@@ -100,6 +102,7 @@ export const findFontsOp = defineOperation({
 });
 export const inspectFontOp = defineOperation({
   name: "fonts.inspect",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: fontRef,
@@ -110,6 +113,7 @@ export const inspectFontOp = defineOperation({
 });
 export const resolveFontOp = defineOperation({
   name: "fonts.resolve",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: fontResolveInput,
@@ -126,6 +130,7 @@ export const resolveFontOp = defineOperation({
 });
 export const readFontOp = defineOperation({
   name: "fonts.read_chunk",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: fontReadInput,

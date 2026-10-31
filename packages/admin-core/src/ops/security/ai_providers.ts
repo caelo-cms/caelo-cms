@@ -46,6 +46,7 @@ const providerRow = z.object({
 
 export const listAiProvidersOp = defineOperation({
   name: "ai_providers.list",
+  readScope: "request",
   // CLAUDE.md §11: read surface open to AI. Writes stay Owner-only.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -102,6 +103,7 @@ export const listAiProvidersOp = defineOperation({
 
 export const setAiProvidersOp = defineOperation({
   name: "ai_providers.set",
+  readScope: "request",
   // Why human-only: Owner-only — provider config carries secrets and
   // routing decisions. AI can't paste a key.
   actorScope: ["human", "system"],
@@ -181,6 +183,7 @@ export const setAiProvidersOp = defineOperation({
 
 export const clearAiProviderKeyOp = defineOperation({
   name: "ai_providers.clear_key",
+  readScope: "request",
   // Why human-only: credential write; the AI reaches it only through propose_clear_ai_provider_key
   // (Owner-approved).
   // Owner-only — wipes the encrypted key + falls back to env-var (or
@@ -251,6 +254,7 @@ export const setTranslationModelInput = z
 
 export const setTranslationModelOp = defineOperation({
   name: "ai_providers.set_translation_model",
+  readScope: "request",
   // Why human-only: the translation model decides what every translation
   // costs; the AI reaches it only through
   // owner_settings.propose_set_translation_model (Owner-approved, §11.A).
@@ -291,6 +295,7 @@ export const setTranslationModelOp = defineOperation({
 
 export const anyAiProviderConfiguredOp = defineOperation({
   name: "ai_providers.any_configured",
+  readScope: "request",
   // Open read — the post-setup redirect logic (in +layout.server.ts)
   // calls this for every authenticated request until it returns true.
   actorScope: ["human", "ai", "system"],

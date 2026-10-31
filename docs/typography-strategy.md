@@ -168,10 +168,10 @@ license forbids subsetting is always delivered whole.
 
 **Cost per render (#803).** That scan reads the whole site, so
 `loadSiteFontUsage` caches its result in-process together with the Postgres
-snapshot it read. Every write to the scanned tables records its transaction id
-in `font_usage_changes` (migration 0395, insert-only so writers never wait on
-each other); a cached result is served only when the reader's snapshot provably
-sees the same rows, otherwise the scan runs again. Preview and build share the
+change-journal mark it read at. Every write to the scanned tables leaves rows in
+the entity change journal (#1267, migration 0430, insert-only so writers never
+wait on each other); a cached result is served only when the reader's snapshot
+provably sees the same rows, otherwise the scan runs again. Preview and build share the
 cache, so they keep deriving the same weights. `resolveThemeFonts` reads each
 bound face once per resolve however many roles bind it, and `fontReader` reads
 a revision's bytes in one query and keeps them in a bounded in-process cache

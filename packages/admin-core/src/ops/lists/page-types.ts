@@ -15,7 +15,7 @@
  */
 
 import { activeListExt } from "@caelo-cms/plugin-host";
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { checkPageTypeDef, ok, type PageTypeDef, pageTypeDefSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -75,6 +75,7 @@ async function rows(
 
 export const listPageTypesOp = defineOperation({
   name: "page_types.list",
+  readScope: "request",
   // Why plugin: the `lists` read grant (docs/lists.md §9) — a translation
   // plugin reads property definitions (and their `ext`) through named ops.
   actorScope: ["human", "ai", "plugin", "system"],
@@ -98,6 +99,7 @@ export const listPageTypesOp = defineOperation({
 
 export const getPageTypeOp = defineOperation({
   name: "page_types.get",
+  readScope: "request",
   // Why plugin: the `lists` read grant (see page_types.list).
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
@@ -139,6 +141,7 @@ const upsertItemSchema = pageTypeDefSchema.extend({
  */
 export const upsertPageTypesManyOp = defineOperation({
   name: "page_types.upsert_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -360,10 +363,7 @@ async function checkReferences(
     : sql`chat_branch_id IS NULL`;
   const tpl = (await tx.execute(sql`
     SELECT id::text AS id FROM templates
-    WHERE deleted_at IS NULL AND ${visible} AND id IN (${sql.join(
-      def.templates.map((t) => sql`${t}::uuid`),
-      sql`, `,
-    )})
+    WHERE deleted_at IS NULL AND ${visible} AND id = ANY(${uuidArray(def.templates)})
   `)) as unknown as { id: string }[];
   const have = new Set(tpl.map((t) => t.id));
   for (const t of def.templates) {
@@ -399,6 +399,7 @@ async function checkReferences(
 
 export const deletePageTypesManyOp = defineOperation({
   name: "page_types.delete_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ slugs: z.array(z.string().min(1).max(64)).min(1).max(50) }).strict(),

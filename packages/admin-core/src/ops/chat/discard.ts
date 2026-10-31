@@ -49,6 +49,7 @@ const BRANCHED_CREATE_TABLES = [
 
 export const discardChatBranchOp = defineOperation({
   name: "chat.discard_branch",
+  readScope: "request",
   // Why human-only: it throws away a chat's unpublished work and closes
   // the chat — the operator's decision, not something the AI does to its
   // own conversation.
