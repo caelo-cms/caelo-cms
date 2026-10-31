@@ -188,7 +188,7 @@ export async function loadPendingChangesFor(
       -- any chat and the chat's own change of it are one pending entity.
       SELECT DISTINCT ON (c.id, d.entity_kind, d.entity_id, d.entity_sub)
              c.id AS chat, c.branch, d.entity_kind AS kind, d.entity_id,
-             d.snapshot_row_id, d.page_id,
+             d.snapshot_row_id, d.page_id, d.plugin_id, d.table_name,
              bool_or(d.seo_changed)
                OVER (PARTITION BY c.id, d.entity_kind, d.entity_id, d.entity_sub) AS seo_changed
         FROM c
@@ -198,60 +198,76 @@ export async function loadPendingChangesFor(
        ORDER BY c.id, d.entity_kind, d.entity_id, d.entity_sub,
                 d.header_created_at DESC, d.row_created_at DESC
     )
+    -- Labels by primary key, one lookup per listed entity: correlated
+    -- subqueries, because joining every label table lets the planner hash
+    -- (seq-scan) all of them, which costs the size of the site.
     SELECT h.chat::text AS chat, h.kind, h.entity_id::text AS entity_id,
            CASE h.kind
-             WHEN 'pageModuleContent' THEN COALESCE(pc.title, pc.slug)
-             WHEN 'page' THEN COALESCE(p.title, p.slug)
-             WHEN 'pageLayout' THEN COALESCE(p.title, p.slug)
-             WHEN 'module' THEN m.display_name
-             WHEN 'template' THEN t.display_name
+             WHEN 'pageModuleContent'
+               THEN (SELECT COALESCE(x.title, x.slug) FROM pages x WHERE x.id = h.page_id)
+             WHEN 'page'
+               THEN (SELECT COALESCE(x.title, x.slug) FROM pages x WHERE x.id = h.entity_id)
+             WHEN 'pageLayout'
+               THEN (SELECT COALESCE(x.title, x.slug) FROM pages x WHERE x.id = h.entity_id)
+             WHEN 'module' THEN (SELECT x.display_name FROM modules x WHERE x.id = h.entity_id)
+             WHEN 'template' THEN (SELECT x.display_name FROM templates x WHERE x.id = h.entity_id)
              WHEN 'layoutChrome' THEN 'Layout chrome'
-             WHEN 'list' THEN COALESCE(li.name, li.slug, h.entity_id::text)
-             WHEN 'listType' THEN COALESCE(lt.definition->>'name', lt.slug, h.entity_id::text)
-             WHEN 'pageType' THEN COALESCE(pt.definition->>'name', pt.slug, h.entity_id::text)
-             WHEN 'contentInstance' THEN COALESCE(ci.display_name, ci.slug, h.entity_id::text)
-             WHEN 'theme' THEN COALESCE(th.display_name, th.slug, h.entity_id::text)
-             WHEN 'pluginRow' THEN COALESCE(pl.slug, prs.plugin_id::text) || ' · ' || prs.table_name
+             WHEN 'list' THEN COALESCE(
+               (SELECT COALESCE(x.name, x.slug) FROM lists x WHERE x.id = h.entity_id),
+               h.entity_id::text)
+             WHEN 'listType' THEN COALESCE(
+               (SELECT COALESCE(x.definition->>'name', x.slug) FROM list_types x WHERE x.id = h.entity_id),
+               h.entity_id::text)
+             WHEN 'pageType' THEN COALESCE(
+               (SELECT COALESCE(x.definition->>'name', x.slug) FROM page_types x WHERE x.id = h.entity_id),
+               h.entity_id::text)
+             WHEN 'contentInstance' THEN COALESCE(
+               (SELECT COALESCE(x.display_name, x.slug) FROM content_instances x WHERE x.id = h.entity_id),
+               h.entity_id::text)
+             WHEN 'theme' THEN COALESCE(
+               (SELECT COALESCE(x.display_name, x.slug) FROM themes x WHERE x.id = h.entity_id),
+               h.entity_id::text)
+             WHEN 'pluginRow' THEN COALESCE(
+               (SELECT x.slug FROM plugins x WHERE x.id = h.plugin_id), h.plugin_id::text)
+               || ' · ' || h.table_name
            END AS label,
            CASE h.kind
-             WHEN 'pageModuleContent'
-               THEN pc.current_path || ' · ' || pmcs.block_name || '#' || pmcs.position
+             WHEN 'pageModuleContent' THEN
+               (SELECT x.current_path FROM pages x WHERE x.id = h.page_id) || ' · ' ||
+               (SELECT x.block_name || '#' || x.position
+                  FROM page_module_content_snapshots x WHERE x.id = h.snapshot_row_id)
              -- #1156: an SEO change waiting for Stage is marked on its page.
-             WHEN 'page' THEN p.current_path || CASE WHEN h.seo_changed THEN ' · SEO' ELSE '' END
-             WHEN 'pageLayout' THEN p.current_path || ' · placements'
-             WHEN 'module' THEN m.slug
-             WHEN 'template' THEN t.slug
-             WHEN 'list' THEN li.slug
-             WHEN 'listType' THEN 'list type ' || lt.slug
-             WHEN 'pageType' THEN 'page type ' || pt.slug
-             WHEN 'contentInstance'
-               THEN ci_module.slug || CASE WHEN ci.slug IS NOT NULL THEN ' · ' || ci.slug ELSE '' END
-             WHEN 'theme' THEN th.slug
-             WHEN 'pluginRow'
-               THEN CASE WHEN prs.state->>'deletedAt' IS NOT NULL THEN 'deleted ' ELSE '' END
-                    || left(h.entity_id::text, 8)
+             WHEN 'page' THEN (SELECT x.current_path FROM pages x WHERE x.id = h.entity_id)
+               || CASE WHEN h.seo_changed THEN ' · SEO' ELSE '' END
+             WHEN 'pageLayout'
+               THEN (SELECT x.current_path FROM pages x WHERE x.id = h.entity_id) || ' · placements'
+             WHEN 'module' THEN (SELECT x.slug FROM modules x WHERE x.id = h.entity_id)
+             WHEN 'template' THEN (SELECT x.slug FROM templates x WHERE x.id = h.entity_id)
+             WHEN 'list' THEN (SELECT x.slug FROM lists x WHERE x.id = h.entity_id)
+             WHEN 'listType'
+               THEN (SELECT 'list type ' || x.slug FROM list_types x WHERE x.id = h.entity_id)
+             WHEN 'pageType'
+               THEN (SELECT 'page type ' || x.slug FROM page_types x WHERE x.id = h.entity_id)
+             WHEN 'contentInstance' THEN (
+               SELECT m.slug || CASE WHEN x.slug IS NOT NULL THEN ' · ' || x.slug ELSE '' END
+                 FROM content_instances x LEFT JOIN modules m ON m.id = x.module_id
+                WHERE x.id = h.entity_id)
+             WHEN 'theme' THEN (SELECT x.slug FROM themes x WHERE x.id = h.entity_id)
+             WHEN 'pluginRow' THEN
+               (SELECT CASE WHEN x.state->>'deletedAt' IS NOT NULL THEN 'deleted ' ELSE '' END
+                  FROM plugin_row_snapshots x WHERE x.id = h.snapshot_row_id)
+               || left(h.entity_id::text, 8)
            END AS detail,
-           COALESCE(mk.stage_state, 'pending') AS stage_state,
-           hs.description, hs.op_kind
+           CASE WHEN h.kind = 'layoutChrome' THEN 'pending' ELSE COALESCE(
+             (SELECT mk.stage_state FROM chat_branch_publish_marks mk
+               WHERE mk.chat_branch_id = h.branch AND mk.entity_kind = h.kind
+                 AND mk.entity_id = h.entity_id),
+             'pending') END AS stage_state,
+           CASE WHEN h.kind = 'layoutChrome'
+             THEN (SELECT x.description FROM site_snapshots x WHERE x.id = h.entity_id) END AS description,
+           CASE WHEN h.kind = 'layoutChrome'
+             THEN (SELECT x.op_kind FROM site_snapshots x WHERE x.id = h.entity_id) END AS op_kind
       FROM h
-      LEFT JOIN pages p ON h.kind IN ('page', 'pageLayout') AND p.id = h.entity_id
-      LEFT JOIN page_module_content_snapshots pmcs
-        ON h.kind = 'pageModuleContent' AND pmcs.id = h.snapshot_row_id
-      LEFT JOIN pages pc ON h.kind = 'pageModuleContent' AND pc.id = h.page_id
-      LEFT JOIN modules m ON h.kind = 'module' AND m.id = h.entity_id
-      LEFT JOIN templates t ON h.kind = 'template' AND t.id = h.entity_id
-      LEFT JOIN lists li ON h.kind = 'list' AND li.id = h.entity_id
-      LEFT JOIN list_types lt ON h.kind = 'listType' AND lt.id = h.entity_id
-      LEFT JOIN page_types pt ON h.kind = 'pageType' AND pt.id = h.entity_id
-      LEFT JOIN content_instances ci ON h.kind = 'contentInstance' AND ci.id = h.entity_id
-      LEFT JOIN modules ci_module ON ci_module.id = ci.module_id
-      LEFT JOIN themes th ON h.kind = 'theme' AND th.id = h.entity_id
-      LEFT JOIN plugin_row_snapshots prs ON h.kind = 'pluginRow' AND prs.id = h.snapshot_row_id
-      LEFT JOIN plugins pl ON pl.id = prs.plugin_id
-      LEFT JOIN site_snapshots hs ON h.kind = 'layoutChrome' AND hs.id = h.entity_id
-      LEFT JOIN chat_branch_publish_marks mk
-        ON h.kind <> 'layoutChrome' AND mk.chat_branch_id = h.branch
-       AND mk.entity_kind = h.kind AND mk.entity_id = h.entity_id
      ORDER BY 1, 4, 3
   `)) as unknown as LabelledRow[];
 
