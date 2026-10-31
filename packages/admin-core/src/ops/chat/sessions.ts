@@ -1088,9 +1088,12 @@ export const listOpenChatsWithPendingOp = defineOperation({
     const exclude = input.excludeChatSessionId ?? null;
     const rows = (await tx.execute(sql`
       SELECT cs.id::text AS chat_session_id, cs.title, cs.chat_branch_id::text AS branch_id,
-             cs.branch_kind, cs.page_id::text AS page_id, p.current_path AS page_path
+             cs.branch_kind, cs.page_id::text AS page_id,
+             -- By primary key per listed chat: a join lets the planner hash
+             -- every page (Postgres 17 did), which costs the size of the site.
+             (SELECT p.current_path FROM pages p
+               WHERE p.id = cs.page_id AND p.deleted_at IS NULL) AS page_path
       FROM chat_sessions cs
-      LEFT JOIN pages p ON p.id = cs.page_id AND p.deleted_at IS NULL
       WHERE cs.published_at IS NULL AND cs.archived_at IS NULL AND cs.discarded_at IS NULL
         AND cs.subagent_role IS NULL
         AND (${exclude}::uuid IS NULL OR cs.id <> ${exclude}::uuid)

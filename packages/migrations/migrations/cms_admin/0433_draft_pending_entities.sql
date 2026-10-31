@@ -39,6 +39,11 @@
 --   * a delete            — only a deleted head row can change the head; its
 --                           key is recomputed (also when the header is gone).
 --   * a truncate          — the kind's rows go (every kind for the headers).
+--   * subagent session GC — deleting a subagent's session changes whom its
+--                           snapshots belong to (caelo_chat_owner), so the
+--                           keys of its pending snapshots are recomputed.
+-- Every recompute covers the entity's whole pending set, not only the row
+-- the head points at: seo_changed depends on all of it.
 -- Discarding an isolated chat leaves its branch's snapshots pending by
 -- definition; its rows stay and every reader filters on open chats.
 --
@@ -128,11 +133,13 @@ CREATE POLICY draft_pending_entities_delete ON draft_pending_entities FOR DELETE
 
 /**
  * The snapshot tables the head covers: table, kind, entity column and the
- * column that splits an entity further (a layout's block). layoutChrome is
- * not here: it is a property of the header (caelo_draft_head_chrome_source).
+ * expression that splits an entity further, as a format() template over the
+ * row alias (`%1$s`): a layout's block, a plugin row's plugin and table
+ * (plugin row ids are table-local, 0215). layoutChrome is not here: it is a
+ * property of the header (caelo_draft_head_chrome_source).
  */
 CREATE FUNCTION caelo_draft_head_tables()
-  RETURNS TABLE (tbl text, kind text, key_col text, sub_col text)
+  RETURNS TABLE (tbl text, kind text, key_col text, sub_expr text)
   LANGUAGE sql IMMUTABLE
   AS $$
     VALUES
@@ -146,8 +153,16 @@ CREATE FUNCTION caelo_draft_head_tables()
       ('page_type_snapshots', 'pageType', 'page_type_id', ''),
       ('content_instance_snapshots', 'contentInstance', 'content_instance_id', ''),
       ('theme_snapshots', 'theme', 'theme_id', ''),
-      ('layout_module_snapshots', 'layoutBlock', 'layout_id', 'block_name'),
-      ('plugin_row_snapshots', 'pluginRow', 'row_id', '')
+      ('layout_module_snapshots', 'layoutBlock', 'layout_id', '%1$s.block_name'),
+      ('plugin_row_snapshots', 'pluginRow', 'row_id', '%1$s.plugin_id::text || ''/'' || %1$s.table_name')
+  $$;
+
+/** The sub-key expression of a head table over the row alias `p_alias`. */
+CREATE FUNCTION caelo_draft_head_sub(p_sub_expr text, p_alias text)
+  RETURNS text
+  LANGUAGE sql IMMUTABLE
+  AS $$
+    SELECT CASE WHEN p_sub_expr = '' THEN '''''::text' ELSE format(p_sub_expr, p_alias) END
   $$;
 
 /**
@@ -163,7 +178,6 @@ CREATE FUNCTION caelo_draft_head_source(p_tbl text, p_filter text)
   AS $fn$
 DECLARE
   t record;
-  v_sub text;
   v_extra text;
   v_seo text;
 BEGIN
@@ -171,7 +185,6 @@ BEGIN
   IF NOT FOUND THEN
     RAISE EXCEPTION 'caelo_draft_head_source: % is not a draft head table', p_tbl;
   END IF;
-  v_sub := CASE WHEN t.sub_col = '' THEN '''''::text' ELSE format('es.%I', t.sub_col) END;
   v_extra := CASE t.kind
     WHEN 'page' THEN
       'NULL::uuid, NULLIF(es.state->>''parentPageId'', '''')::uuid, es.state->>''slug'', NULL::uuid, NULL::text'
@@ -203,7 +216,7 @@ BEGIN
           op_kind)
      ORDER BY s.chat_branch_id, s.entity_id, s.entity_sub, s.owner,
               s.header_created_at DESC, s.row_created_at DESC, s.snapshot_row_id DESC
-  $q$, t.kind, t.key_col, v_sub, v_extra, t.tbl, p_filter, v_seo);
+  $q$, t.kind, t.key_col, caelo_draft_head_sub(t.sub_expr, 'es'), v_extra, t.tbl, p_filter, v_seo);
 END
 $fn$;
 
@@ -269,7 +282,7 @@ CREATE FUNCTION caelo_draft_head_upsert_sql(p_source text)
  * says now. Two statements on purpose: under READ COMMITTED the insert
  * takes a fresh snapshot after the delete waited out any concurrent writer
  * of the same rows, and the upsert keeps a newer head that writer added
- * meanwhile.
+ * meanwhile. A key with nothing pending simply ends up without a row.
  */
 CREATE FUNCTION caelo_draft_head_recompute(
   p_kind text, p_branches uuid[], p_entities uuid[], p_subs text[]
@@ -277,9 +290,7 @@ CREATE FUNCTION caelo_draft_head_recompute(
   LANGUAGE plpgsql
   AS $fn$
 DECLARE
-  v_tbl text;
-  v_key text;
-  v_sub text;
+  t record;
 BEGIN
   IF p_entities IS NULL OR cardinality(p_entities) = 0 THEN RETURN; END IF;
   DELETE FROM draft_pending_entities d
@@ -292,23 +303,69 @@ BEGIN
       USING p_branches, p_entities;
     RETURN;
   END IF;
-  SELECT r.tbl, r.key_col, r.sub_col INTO v_tbl, v_key, v_sub
-    FROM caelo_draft_head_tables() r WHERE r.kind = p_kind;
+  SELECT * INTO t FROM caelo_draft_head_tables() r WHERE r.kind = p_kind;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'caelo_draft_head_recompute: unknown kind %', p_kind;
   END IF;
   -- es.<key> = ANY($2) walks the kind's (key, created_at DESC) index (0430);
   -- the tuple filter keeps the exact (branch, entity, sub) keys.
-  EXECUTE caelo_draft_head_upsert_sql(caelo_draft_head_source(v_tbl, format(
+  EXECUTE caelo_draft_head_upsert_sql(caelo_draft_head_source(t.tbl, format(
     'es.%1$I = ANY($2) AND (h.chat_branch_id, es.%1$I, %2$s) IN (SELECT * FROM unnest($1, $2, $3))',
-    v_key, CASE WHEN v_sub = '' THEN '''''::text' ELSE format('es.%I', v_sub) END)))
+    t.key_col, caelo_draft_head_sub(t.sub_expr, 'es'))))
     USING p_branches, p_entities, p_subs;
 END
 $fn$;
 
 /**
+ * Recompute every head key the given headers can affect, on the given
+ * branches: the entities recorded under the headers (a Stage or an undo of
+ * an older snapshot changes what is pending of them, `seo_changed` too,
+ * even when the head points at a newer one), the head rows that point at
+ * the headers (their rows may be gone already), and the headers as
+ * layoutChrome. Shared by the header maintainer and the session maintainer.
+ */
+CREATE FUNCTION caelo_draft_head_recompute_headers(p_headers uuid[], p_branches uuid[])
+  RETURNS void
+  LANGUAGE plpgsql
+  AS $fn$
+DECLARE
+  t record;
+  k record;
+  v_b uuid[];
+  v_e uuid[];
+  v_s text[];
+BEGIN
+  IF p_headers IS NULL OR cardinality(p_headers) = 0 THEN RETURN; END IF;
+  FOR k IN
+    SELECT d.entity_kind, array_agg(d.chat_branch_id) AS b, array_agg(d.entity_id) AS e,
+           array_agg(d.entity_sub) AS s
+      FROM draft_pending_entities d
+     WHERE d.site_snapshot_id = ANY(p_headers)
+     GROUP BY d.entity_kind
+  LOOP
+    PERFORM caelo_draft_head_recompute(k.entity_kind, k.b, k.e, k.s);
+  END LOOP;
+  IF p_branches IS NULL OR cardinality(p_branches) = 0 THEN RETURN; END IF;
+  FOR t IN SELECT * FROM caelo_draft_head_tables() LOOP
+    EXECUTE format($q$
+      SELECT array_agg(b.id), array_agg(k.e), array_agg(k.s)
+        FROM (SELECT DISTINCT es.%1$I AS e, %2$s AS s FROM %3$I es
+               WHERE es.site_snapshot_id = ANY($1)) k
+        CROSS JOIN unnest($2) AS b(id)
+    $q$, t.key_col, caelo_draft_head_sub(t.sub_expr, 'es'), t.tbl)
+      INTO v_b, v_e, v_s USING p_headers, p_branches;
+    PERFORM caelo_draft_head_recompute(t.kind, v_b, v_e, v_s);
+  END LOOP;
+  SELECT array_agg(b.id), array_agg(h.id), array_agg(''::text)
+    INTO v_b, v_e, v_s
+    FROM unnest(p_headers) AS h(id) CROSS JOIN unnest(p_branches) AS b(id);
+  PERFORM caelo_draft_head_recompute('layoutChrome', v_b, v_e, v_s);
+END
+$fn$;
+
+/**
  * Maintainer on each snapshot table (statement level, transition tables).
- * TG_ARGV: kind, entity column, sub column ('' for none).
+ * TG_ARGV: kind, entity column, sub-key template (caelo_draft_head_tables).
  */
 CREATE FUNCTION caelo_draft_head_rows() RETURNS trigger
   LANGUAGE plpgsql
@@ -316,8 +373,7 @@ CREATE FUNCTION caelo_draft_head_rows() RETURNS trigger
 DECLARE
   a_kind text := TG_ARGV[0];
   a_key  text := TG_ARGV[1];
-  v_sub  text := CASE WHEN NULLIF(TG_ARGV[2], '') IS NULL THEN '''''::text'
-                      ELSE format('n.%I', TG_ARGV[2]) END;
+  a_sub  text := TG_ARGV[2];
   v_b uuid[];
   v_e uuid[];
   v_s text[];
@@ -333,47 +389,43 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  -- UPDATE / DELETE: the head can change only where a head row pointed at
-  -- a changed row (its old key), plus, for an UPDATE, wherever a changed
-  -- row now sits under a pending branch header (its new key — a takeover).
-  IF TG_OP = 'DELETE' THEN
-    SELECT array_agg(d.chat_branch_id), array_agg(d.entity_id), array_agg(d.entity_sub)
-      INTO v_b, v_e, v_s
-      FROM draft_pending_entities d
-     WHERE d.entity_kind = a_kind AND d.snapshot_row_id IN (SELECT o.id FROM old_rows o);
-  ELSE
-    EXECUTE format($q$
-      SELECT array_agg(k.b), array_agg(k.e), array_agg(k.s) FROM (
-        SELECT d.chat_branch_id AS b, d.entity_id AS e, d.entity_sub AS s
-          FROM draft_pending_entities d
-         WHERE d.entity_kind = %1$L AND d.snapshot_row_id IN (SELECT o.id FROM old_rows o)
-        UNION
-        SELECT h.chat_branch_id, n.%2$I, %3$s
-          FROM new_rows n JOIN site_snapshots h ON h.id = n.site_snapshot_id
-         WHERE h.chat_branch_id IS NOT NULL AND h.staged_at IS NULL AND h.undone_at IS NULL
-      ) k
-    $q$, a_kind, a_key, v_sub) INTO v_b, v_e, v_s;
-  END IF;
+  -- UPDATE / DELETE: every head row of a changed row's entity (on any
+  -- branch) is recomputed — the head and `seo_changed` depend on all of
+  -- the entity's pending snapshots, not only the one the head points at —
+  -- plus, for an UPDATE, wherever a changed row now sits under a pending
+  -- branch header (its new key — a takeover).
+  EXECUTE format($q$
+    SELECT array_agg(k.b), array_agg(k.e), array_agg(k.s) FROM (
+      SELECT d.chat_branch_id AS b, d.entity_id AS e, d.entity_sub AS s
+        FROM draft_pending_entities d
+       WHERE d.entity_kind = %1$L
+         AND (d.entity_id, d.entity_sub) IN (SELECT o.%2$I, %3$s FROM old_rows o)
+      %4$s
+    ) k
+  $q$, a_kind, a_key, caelo_draft_head_sub(a_sub, 'o'),
+    CASE WHEN TG_OP = 'UPDATE' THEN format($u$
+      UNION
+      SELECT h.chat_branch_id, n.%1$I, %2$s
+        FROM new_rows n JOIN site_snapshots h ON h.id = n.site_snapshot_id
+       WHERE h.chat_branch_id IS NOT NULL AND h.staged_at IS NULL AND h.undone_at IS NULL
+    $u$, a_key, caelo_draft_head_sub(a_sub, 'n')) ELSE '' END) INTO v_b, v_e, v_s;
   PERFORM caelo_draft_head_recompute(a_kind, v_b, v_e, v_s);
   RETURN NULL;
 END
 $fn$;
 
 /**
- * Maintainer on site_snapshots: layoutChrome headers, and every head row a
+ * Maintainer on site_snapshots: layoutChrome headers, and every head key a
  * Stage, an undo or a re-tagged header changes.
  */
 CREATE FUNCTION caelo_draft_head_headers() RETURNS trigger
   LANGUAGE plpgsql
   AS $fn$
 DECLARE
-  k record;
-  t record;
   v_changed uuid[];
-  v_pending uuid[];
-  v_b uuid[];
-  v_e uuid[];
-  v_s text[];
+  v_old uuid[];
+  v_new uuid[];
+  v_branches uuid[];
 BEGIN
   IF TG_OP = 'TRUNCATE' THEN
     DELETE FROM draft_pending_entities;
@@ -389,46 +441,44 @@ BEGIN
   END IF;
 
   IF TG_OP = 'DELETE' THEN
-    SELECT array_agg(o.id) INTO v_changed FROM old_rows o;
+    SELECT array_agg(o.id), array_agg(DISTINCT o.chat_branch_id)
+                              FILTER (WHERE o.chat_branch_id IS NOT NULL)
+      INTO v_changed, v_branches FROM old_rows o;
   ELSE
     -- Only a change of what makes a header pending, or of whose it is,
-    -- moves the head (archiving a header, say, does not).
-    SELECT array_agg(n.id),
-           array_agg(n.id) FILTER (WHERE n.chat_branch_id IS NOT NULL
-                                     AND n.staged_at IS NULL AND n.undone_at IS NULL)
-      INTO v_changed, v_pending
+    -- moves the head (archiving a header, say, does not). Both the branch
+    -- the header was on and the one it is on now are recomputed.
+    SELECT array_agg(n.id), array_agg(o.chat_branch_id), array_agg(n.chat_branch_id)
+      INTO v_changed, v_old, v_new
       FROM new_rows n JOIN old_rows o ON o.id = n.id
      WHERE (n.chat_branch_id, n.chat_task_id, n.staged_at, n.undone_at, n.op_kind)
            IS DISTINCT FROM (o.chat_branch_id, o.chat_task_id, o.staged_at, o.undone_at, o.op_kind);
+    v_branches := ARRAY(SELECT DISTINCT b FROM unnest(v_old || v_new) AS b WHERE b IS NOT NULL);
   END IF;
-  IF v_changed IS NULL THEN RETURN NULL; END IF;
+  PERFORM caelo_draft_head_recompute_headers(v_changed, v_branches);
+  RETURN NULL;
+END
+$fn$;
 
-  -- Old keys: the head rows that pointed at a changed header.
-  FOR k IN
-    SELECT d.entity_kind, array_agg(d.chat_branch_id) AS b, array_agg(d.entity_id) AS e,
-           array_agg(d.entity_sub) AS s
-      FROM draft_pending_entities d
-     WHERE d.site_snapshot_id = ANY(v_changed)
-     GROUP BY d.entity_kind
-  LOOP
-    PERFORM caelo_draft_head_recompute(k.entity_kind, k.b, k.e, k.s);
-  END LOOP;
-
-  -- New keys: rows under a header that is pending after the change (one
-  -- re-tagged to another branch or owner). A Stage or an undo has none.
-  IF v_pending IS NOT NULL THEN
-    EXECUTE caelo_draft_head_upsert_sql(caelo_draft_head_chrome_source('h.id = ANY($1)'))
-      USING v_pending;
-    FOR t IN SELECT * FROM caelo_draft_head_tables() LOOP
-      EXECUTE format($q$
-        SELECT array_agg(h.chat_branch_id), array_agg(es.%1$I), array_agg(%2$s)
-          FROM %3$I es JOIN site_snapshots h ON h.id = es.site_snapshot_id
-         WHERE es.site_snapshot_id = ANY($1)
-      $q$, t.key_col, CASE WHEN t.sub_col = '' THEN '''''::text' ELSE format('es.%I', t.sub_col) END,
-         t.tbl) INTO v_b, v_e, v_s USING v_pending;
-      PERFORM caelo_draft_head_recompute(t.kind, v_b, v_e, v_s);
-    END LOOP;
-  END IF;
+/**
+ * Maintainer on chat_sessions: a snapshot's owner is resolved through its
+ * chat task's session (caelo_chat_owner: a subagent's task belongs to its
+ * parent chat). Deleting a subagent session (subagent_runs GC) changes that
+ * answer for its pending snapshots, so their keys are recomputed.
+ */
+CREATE FUNCTION caelo_draft_head_sessions() RETURNS trigger
+  LANGUAGE plpgsql
+  AS $fn$
+DECLARE
+  v_headers uuid[];
+  v_branches uuid[];
+BEGIN
+  SELECT array_agg(h.id), array_agg(DISTINCT h.chat_branch_id)
+    INTO v_headers, v_branches
+    FROM site_snapshots h
+   WHERE h.chat_task_id IN (SELECT o.id FROM old_rows o WHERE o.parent_chat_session_id IS NOT NULL)
+     AND h.chat_branch_id IS NOT NULL AND h.staged_at IS NULL AND h.undone_at IS NULL;
+  PERFORM caelo_draft_head_recompute_headers(v_headers, v_branches);
   RETURN NULL;
 END
 $fn$;
@@ -467,7 +517,7 @@ DECLARE
   args text;
 BEGIN
   FOR t IN SELECT * FROM caelo_draft_head_tables() LOOP
-    args := format('%L, %L, %L', t.kind, t.key_col, t.sub_col);
+    args := format('%L, %L, %L', t.kind, t.key_col, t.sub_expr);
     EXECUTE format('CREATE TRIGGER caelo_draft_head_insert AFTER INSERT ON %I
                       REFERENCING NEW TABLE AS new_rows
                       FOR EACH STATEMENT EXECUTE FUNCTION caelo_draft_head_rows(%s)', t.tbl, args);
@@ -494,6 +544,9 @@ CREATE TRIGGER caelo_draft_head_delete AFTER DELETE ON site_snapshots
   FOR EACH STATEMENT EXECUTE FUNCTION caelo_draft_head_headers();
 CREATE TRIGGER caelo_draft_head_truncate AFTER TRUNCATE ON site_snapshots
   FOR EACH STATEMENT EXECUTE FUNCTION caelo_draft_head_headers();
+CREATE TRIGGER caelo_draft_head_delete AFTER DELETE ON chat_sessions
+  REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION caelo_draft_head_sessions();
 
 -- Backfill (rule 3): the head of every branch as the history says now.
 SELECT caelo_draft_head_rebuild();

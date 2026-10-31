@@ -304,6 +304,108 @@ describe("#1268 draft head", () => {
     expect(refused.ok).toBe(false);
   });
 
+  it("recomputes the SEO mark when an older SEO change is staged under a newer edit", async () => {
+    const a = await chat("seo A");
+    const page = await asSystem(
+      (tx) =>
+        tx`INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed,
+                              current_path, status)
+           SELECT ${`${PFX}seo`}, 'SEO page', 'SEO page', t.id, pt.id, true, ${`/${PFX}seo`}, 'draft'
+             FROM templates t, page_types pt
+            WHERE t.slug = 'home-template' AND pt.slug = 'home' AND pt.chat_branch_id IS NULL
+            LIMIT 1
+           RETURNING id::text AS id` as Promise<{ id: string }[]>,
+    );
+    const pageId = page[0]?.id ?? "";
+    // An SEO edit, then a newer non-SEO edit of the same page (seeded like a
+    // deferred Stage leaves them: the older header is finalized later).
+    const headers: string[] = [];
+    for (const [i, opKind] of ["pages_seo.set", "pages.update"].entries()) {
+      const h = await asSystem(
+        (tx) =>
+          tx`WITH h AS (
+               INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id,
+                                           created_at)
+               VALUES (${HUMAN}::uuid, ${opKind}, ${`${PFX}seo`}, ${a.id}::uuid, ${a.branch}::uuid,
+                       now() + make_interval(secs => ${i}))
+               RETURNING id, created_at)
+             INSERT INTO page_snapshots (site_snapshot_id, page_id, state, created_at)
+             SELECT h.id, ${pageId}::uuid, '{"slug": "seo"}'::jsonb, h.created_at FROM h
+             RETURNING site_snapshot_id::text AS id` as Promise<{ id: string }[]>,
+      );
+      headers.push(h[0]?.id ?? "");
+    }
+    const seo = async () =>
+      (
+        await asSystem(
+          (tx) =>
+            tx`SELECT seo_changed FROM draft_pending_entities
+                WHERE entity_kind = 'page' AND entity_id = ${pageId}::uuid` as Promise<
+              { seo_changed: boolean }[]
+            >,
+        )
+      )[0]?.seo_changed;
+    expect(await seo()).toBe(true);
+    await asSystem(
+      (tx) => tx`UPDATE site_snapshots SET staged_at = now() WHERE id = ${headers[0]}::uuid`,
+    );
+    expect(await seo()).toBe(false);
+    expect(await drift()).toEqual([]);
+  });
+
+  it("re-attributes a deleted subagent's pending changes, as the Stage selection does", async () => {
+    const parent = await chat("gc parent");
+    const m = await seedModule("gc");
+    const sub = await asSystem(
+      (tx) =>
+        tx`INSERT INTO chat_sessions (title, created_by, chat_branch_id, branch_kind,
+                                      parent_chat_session_id, subagent_role)
+           SELECT ${`${PFX}gc-sub`}, created_by, chat_branch_id, branch_kind, id, 'worker'
+             FROM chat_sessions WHERE id = ${parent.id}::uuid
+           RETURNING id::text AS id` as Promise<{ id: string }[]>,
+    );
+    const subId = sub[0]?.id ?? "";
+    await asSystem(
+      (tx) =>
+        tx`WITH h AS (
+             INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id)
+             VALUES (${HUMAN}::uuid, 'modules.update', ${`${PFX}gc`}, ${subId}::uuid, ${parent.branch}::uuid)
+             RETURNING id)
+           INSERT INTO module_snapshots (site_snapshot_id, module_id, state)
+           SELECT h.id, ${m}::uuid, '{"html": "<p>gc</p>"}'::jsonb FROM h`,
+    );
+    const owner = async () =>
+      (await head(parent.branch)).find((r) => r.entity === m)?.owner ?? null;
+    expect(await owner()).toBe(parent.id);
+    await asSystem((tx) => tx`DELETE FROM chat_sessions WHERE id = ${subId}::uuid`);
+    expect(await owner()).toBe(subId);
+    expect(await drift()).toEqual([]);
+  });
+
+  it("keeps plugin rows of two tables with the same row id apart", async () => {
+    const a = await chat("plugin rows");
+    const rowId = crypto.randomUUID();
+    await asSystem(
+      (tx) =>
+        tx`WITH pl AS (
+             INSERT INTO plugins (id, slug, version, tier, status, manifest_json, manifest_signature,
+                                  submitted_by)
+             VALUES ('00000000-0000-4000-8000-000000001268', ${`${PFX}plugin`}, '0.1.0', 1, 'disabled',
+                     '{}'::jsonb, 'fixture', ${HUMAN}::uuid)
+             ON CONFLICT (id) DO NOTHING RETURNING id),
+           h AS (
+             INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id)
+             VALUES (${HUMAN}::uuid, 'plugin_storage.update', ${`${PFX}rows`}, ${a.id}::uuid, ${a.branch}::uuid)
+             RETURNING id)
+           INSERT INTO plugin_row_snapshots (site_snapshot_id, plugin_id, schema_name, table_name, row_id, state)
+           SELECT h.id, '00000000-0000-4000-8000-000000001268', 'plugin_t1268', t, ${rowId}::uuid, '{}'::jsonb
+             FROM h, unnest(ARRAY['first_table', 'second_table']) AS t`,
+    );
+    const rows = (await head(a.branch)).filter((r) => r.kind === "pluginRow" && r.entity === rowId);
+    expect(rows.length).toBe(2);
+    expect(await drift()).toEqual([]);
+  });
+
   it("mirrors the SQL registry of head kinds", async () => {
     const rows = await asSystem(
       (tx) => tx`SELECT kind FROM caelo_draft_head_tables()` as Promise<{ kind: string }[]>,

@@ -122,9 +122,9 @@ export const listOpenChangesOp = defineOperation({
              cs.chat_branch_id::text AS chat_branch_id, cs.branch_kind,
              to_char(cs.last_active_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS last_active_at,
              cs.last_staged_at,
-             p.current_path AS page_path
+             (SELECT p.current_path FROM pages p
+               WHERE p.id = cs.page_id AND p.deleted_at IS NULL) AS page_path
       FROM chat_sessions cs
-      LEFT JOIN pages p ON p.id = cs.page_id AND p.deleted_at IS NULL
       WHERE cs.published_at IS NULL AND cs.archived_at IS NULL AND cs.discarded_at IS NULL
         AND cs.subagent_role IS NULL
         ${input.mineOnly ? sql`AND cs.created_by = ${ctx.actorId}::uuid` : sql``}
