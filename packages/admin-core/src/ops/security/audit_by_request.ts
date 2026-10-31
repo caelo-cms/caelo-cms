@@ -41,6 +41,7 @@ const aiCallRow = z.object({
 
 export const auditByRequestIdOp = defineOperation({
   name: "audit.by_request_id",
+  readScope: "request",
   // Why human-only: Owner debugging surface (raw audit + AI-call rows per request, including other
   // users' actions); no agent workflow needs it.
   // Owner debugging surface — Reviewers + Editors don't need it. Keep

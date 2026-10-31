@@ -104,7 +104,13 @@ export async function readExternalApproval(opts: {
   });
 }
 
-/** Whether the human a call acts for holds `permission`. */
+/**
+ * Whether the human a call acts for holds `permission`.
+ *
+ * @throws when the check itself could not run (a busy pool, a database
+ *   error): that is not a "no", and reporting it as one tells the operator
+ *   to ask an Owner for a permission they already hold (#1267 scale gate).
+ */
 export async function operatorHasPermission(
   infra: PluginHostInfra,
   systemActorId: string,
@@ -119,7 +125,12 @@ export async function operatorHasPermission(
     EXTERNAL_OPS.operatorHasPermission,
     { actorId, permission },
   );
-  return r.ok && (r.value as { allowed: boolean }).allowed;
+  if (!r.ok) {
+    throw new Error(
+      `could not check the ${permission} permission of the person this call acts for: ${"message" in r.error ? r.error.message : r.error.kind}`,
+    );
+  }
+  return (r.value as { allowed: boolean }).allowed;
 }
 
 /** Whether the human a call acts for may author content. */

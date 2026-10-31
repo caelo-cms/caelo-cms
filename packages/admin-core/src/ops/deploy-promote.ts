@@ -203,6 +203,8 @@ function refused(message: string): Result<never, QueryError> {
 
 export const startPromoteOp = defineOperation({
   name: "deploy.start_promote",
+  // Why site-wide: Publish live ships the whole staged site.
+  readScope: "site",
   // Why human-only: the first step of deploy.promote (itself human +
   // system), run under the promote's own context: its gates decide on the
   // caller (production needs a human; publish anyway needs a human holding
@@ -330,6 +332,7 @@ export const startPromoteOp = defineOperation({
 
 export const recheckPublishAnywayOp = defineOperation({
   name: "deploy.recheck_publish_anyway",
+  readScope: "request",
   // Why human-only: a step of deploy.promote (itself human + system), run
   // right before the release of a publish-anyway decision. Reads only.
   actorScope: ["human", "system"],
@@ -347,6 +350,8 @@ export const recheckPublishAnywayOp = defineOperation({
 
 export const finishPromoteOp = defineOperation({
   name: "deploy.finish_promote",
+  // Why site-wide: recording Publish live records the whole site's release.
+  readScope: "site",
   // Why human-only: the last step of deploy.promote (itself human +
   // system), run under the promote's own context (the publish-anyway
   // decision is recorded as the human who made it). No AI tool wraps it.
@@ -851,6 +856,8 @@ async function runPromote(
 
 export const promoteDeployOp = defineStepwiseOperation({
   name: "deploy.promote",
+  // Why site-wide: Publish live ships the whole staged site.
+  readScope: "site",
   // Why human-only: Ops-level decision per CMS_REQUIREMENTS §6 (staging → production gate).
   actorScope: ["human", "system"],
   database: "cms_admin",

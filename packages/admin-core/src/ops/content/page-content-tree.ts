@@ -19,7 +19,7 @@
  * and content instances), like the placements themselves.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import {
   loadBranchedModuleStates,
@@ -158,10 +158,7 @@ export async function loadNestedContent(
     if (ids.length > 0) {
       const rows = (await tx.execute(sql`
         SELECT id::text AS id, "values" FROM content_instances
-        WHERE id IN (${sql.join(
-          ids.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )}) AND deleted_at IS NULL
+        WHERE id = ANY(${uuidArray(ids)}) AND deleted_at IS NULL
       `)) as unknown as { id: string; values: unknown }[];
       for (const r of rows) {
         valuesOf.set(r.id, (r.values ?? {}) as Record<string, unknown>);
@@ -194,10 +191,7 @@ export async function loadNestedContent(
   const modules = new Map<string, { slug: string; fields: PlacementField[] }>();
   const moduleRows = (await tx.execute(sql`
     SELECT id::text AS id, slug, fields FROM modules
-    WHERE id IN (${sql.join(
-      [...moduleIds].map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )}) AND deleted_at IS NULL
+    WHERE id = ANY(${uuidArray([...moduleIds])}) AND deleted_at IS NULL
   `)) as unknown as { id: string; slug: string; fields: unknown }[];
   for (const m of moduleRows) {
     modules.set(m.id, { slug: m.slug, fields: placementFieldsOf(m.fields) });
@@ -244,10 +238,7 @@ async function exclusiveToTree(
   const ids = [...new Set(nestedIds)];
   const bound = (await tx.execute(sql`
     SELECT DISTINCT content_instance_id::text AS id FROM page_modules
-    WHERE content_instance_id IN (${sql.join(
-      ids.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )})
+    WHERE content_instance_id = ANY(${uuidArray(ids)})
   `)) as unknown as { id: string }[];
   const placed = new Set(bound.map((b) => b.id));
   const parents = new Map<string, Set<string>>();

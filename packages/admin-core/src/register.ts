@@ -40,6 +40,7 @@ import {
   resolveSessionOp,
 } from "./ops/auth.js";
 import { cancelProposalOp } from "./ops/cancel_proposal.js";
+import { collectJournalGarbageOp } from "./ops/change-journal.js";
 import {
   allowExternalAgentOp,
   cancelAgentsOp,
@@ -426,6 +427,7 @@ import {
 import { listPluginPendingActionsOp, rejectPluginProposalOp } from "./ops/plugins/pending_queue.js";
 import {
   activatePluginOp,
+  approvePluginCapabilitiesOp,
   disablePluginOp,
   getPluginOp,
   listPendingPluginsOp,
@@ -1316,6 +1318,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // (or the human Owner did). Restricted to the actor who proposed it
   // by the WHERE clause; doesn't grant cross-actor cancel rights.
   registry.register(cancelProposalOp);
+  registry.register(collectJournalGarbageOp);
   registry.register(listBranchEditedModulesOp);
   registry.register(listBranchEditedEntitiesOp);
   registry.register(countBranchChangesOp);
@@ -1409,6 +1412,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(preparePluginActivationOp);
   registry.register(activatePluginOp);
   registry.register(disablePluginOp);
+  registry.register(approvePluginCapabilitiesOp);
   registry.register(rejectPluginOp);
   registry.register(revalidatePluginOp);
   registry.register(reloadPluginOp);

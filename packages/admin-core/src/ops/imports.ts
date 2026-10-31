@@ -222,6 +222,7 @@ export const IMPORT_RUNS_LIST_MAX = 500;
 
 export const listImportRunsOp = defineOperation({
   name: "imports.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -256,6 +257,7 @@ export const listImportRunsOp = defineOperation({
 
 export const getImportRunOp = defineOperation({
   name: "imports.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid() }).strict(),
@@ -351,6 +353,7 @@ export const getImportRunOp = defineOperation({
  */
 export const listImportPagesOp = defineOperation({
   name: "imports.list_pages",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -482,6 +485,7 @@ export const listImportPagesOp = defineOperation({
 
 export const createImportRunOp = defineOperation({
   name: "imports.create_run",
+  readScope: "request",
   // Why human-only: Owner-direct crawl start (spends crawl budget without a proposal); the AI
   // starts crawls through propose_site_import (Owner-approved).
   actorScope: ["human", "system"],
@@ -595,6 +599,7 @@ export const proposeImportRunInput = z
 
 export const proposeImportRunOp = defineOperation({
   name: "imports.propose_run",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeImportRunInput,
@@ -658,6 +663,7 @@ export const proposeImportRunOp = defineOperation({
 
 export const listPendingImportProposalsOp = defineOperation({
   name: "imports.list_pending_proposals",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -696,6 +702,7 @@ export const listPendingImportProposalsOp = defineOperation({
  */
 const executeImportProposalOpDefinition = defineOperation({
   name: "imports.execute_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -809,6 +816,7 @@ export const executeImportProposalOp = requiresApproverPermission(
 
 export const rejectImportProposalOp = defineOperation({
   name: "imports.reject_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -836,6 +844,7 @@ export const rejectImportProposalOp = defineOperation({
 
 export const updateImportRunStatusOp = defineOperation({
   name: "imports.update_run_status",
+  readScope: "request",
   // Why system-only: crawl-worker write-back; the AI reads run state, it does not author it.
   actorScope: ["system"],
   database: "cms_admin",
@@ -900,6 +909,7 @@ export const importRunEventInput = z
  */
 export const logImportRunEventOp = defineOperation({
   name: "imports.log_event",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: importRunEventInput,
@@ -946,6 +956,7 @@ export const logImportRunEventOp = defineOperation({
  */
 export const logImportRunEventsOp = defineOperation({
   name: "imports.log_events",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ events: z.array(importRunEventInput).min(1).max(500) }).strict(),
@@ -984,6 +995,7 @@ export const logImportRunEventsOp = defineOperation({
  */
 export const updatePageCaptureOp = defineOperation({
   name: "imports.update_page_capture",
+  readScope: "request",
   // Why system-only: crawl-worker write-back of observed screenshots/tokens — ground truth the AI
   // reads, never writes.
   actorScope: ["system"],
@@ -1029,6 +1041,7 @@ export const updatePageCaptureOp = defineOperation({
  */
 export const setPageCapturesByUrlOp = defineOperation({
   name: "imports.set_page_captures_by_url",
+  readScope: "request",
   // Why system-only: crawl-worker write-back of observed captures — ground truth the AI reads,
   // never writes.
   actorScope: ["system"],
@@ -1095,6 +1108,7 @@ export const setPageCapturesByUrlOp = defineOperation({
  */
 export const setRunDesignTokensOp = defineOperation({
   name: "imports.set_run_design_tokens",
+  readScope: "request",
   // Why system-only: crawl-worker write-back of the observed design tokens — ground truth the AI
   // reads, never writes.
   actorScope: ["system"],
@@ -1215,6 +1229,7 @@ async function resolveImportPageRef(
  */
 export const getImportPageScreenshotKeysOp = defineOperation({
   name: "imports.get_page_screenshot_keys",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ importPageId: z.string().uuid() }).strict(),
@@ -1269,6 +1284,7 @@ export const getImportPageScreenshotKeysOp = defineOperation({
  */
 export const getImportPageGistOp = defineOperation({
   name: "imports.get_page_gist",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ importPageId: z.string().uuid() }).strict(),
@@ -1381,6 +1397,7 @@ export const getImportPageGistOp = defineOperation({
 
 export const writeExtractedPagesOp = defineOperation({
   name: "imports.write_extracted_pages",
+  readScope: "request",
   // Why system-only: crawl-worker write-back of the extracted pages — ground truth the AI reads,
   // never writes.
   actorScope: ["system"],
@@ -1556,6 +1573,7 @@ async function acceptImportedPage(
  */
 export const acceptImportedPageOp = defineOperation({
   name: "imports.accept_page",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: acceptImportedPageInput,
@@ -1585,6 +1603,7 @@ export const acceptImportedPageOp = defineOperation({
  */
 export const acceptImportedPagesOp = defineOperation({
   name: "imports.accept_pages",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -1671,6 +1690,7 @@ const noteCategory = z.enum([
  */
 export const addImportPageNotesOp = defineOperation({
   name: "imports.add_page_notes",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -1788,6 +1808,7 @@ function collectStringValues(value: unknown, depth = 0, out: string[] = []): str
  */
 export const checkImportPageInventoryOp = defineOperation({
   name: "imports.check_page_inventory",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -1980,6 +2001,7 @@ const boilerplateCandidateSchema = z.object({
  */
 export const detectImportBoilerplateOp = defineOperation({
   name: "imports.detect_boilerplate",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -2081,6 +2103,7 @@ export const detectImportBoilerplateOp = defineOperation({
  */
 export const getImportRunReportOp = defineOperation({
   name: "imports.get_run_report",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid() }).strict(),
@@ -2415,6 +2438,7 @@ async function loadImportRunLinks(
  */
 export const setCostCeilingOp = defineOperation({
   name: "imports.set_cost_ceiling",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -2548,6 +2572,7 @@ async function sumRunSpend(
 
 export const getRunCostOp = defineOperation({
   name: "imports.get_run_cost",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid() }).strict(),
@@ -2657,6 +2682,7 @@ export const getRunCostOp = defineOperation({
  */
 export const getSessionBudgetStateOp = defineOperation({
   name: "imports.get_session_budget_state",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
@@ -2759,6 +2785,7 @@ export const getSessionBudgetStateOp = defineOperation({
  */
 export const recordBudgetGateEventOp = defineOperation({
   name: "imports.record_budget_gate_event",
+  readScope: "request",
   // Why human-only: the budget-gate transition is detected by runner code, not chosen by the model
   // (see above).
   actorScope: ["human", "system"],
@@ -2828,6 +2855,7 @@ export const recordBudgetGateEventOp = defineOperation({
  */
 export const getRunCalibrationOp = defineOperation({
   name: "imports.get_run_calibration",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid() }).strict(),
@@ -2964,6 +2992,7 @@ export const getRunCalibrationOp = defineOperation({
 
 export const cleanupImportRunOp = defineOperation({
   name: "imports.cleanup_run",
+  readScope: "request",
   // Why human-only: irreversibly drops the crawl ground truth; the AI reaches it only through
   // cleanup_import_run, a needsApproval card whose handler runs with the approving Owner's context.
   actorScope: ["human", "system"],

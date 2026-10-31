@@ -264,6 +264,7 @@ export const UNRESOLVED_IMPORT_LINK_NEXT_STEP =
 
 export const resolveImportLinksOp = defineOperation({
   name: "imports.resolve_links",
+  readScope: "request",
   // Routine (CLAUDE.md §11): it rewrites only the content the run's own
   // rebuild recorded, through the normal write ops, on the run's chat
   // branch — snapshotted, undone with the chat. An AI may call it only

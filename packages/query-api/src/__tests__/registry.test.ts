@@ -7,6 +7,7 @@ import { defineOperation, OperationRegistry } from "../index.js";
 
 const noopOp = defineOperation({
   name: "test.noop",
+  readScope: "request",
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({}),

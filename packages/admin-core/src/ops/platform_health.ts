@@ -37,6 +37,7 @@ async function appliedMigrations(tx: TransactionRunner): Promise<string[]> {
 
 export const appliedAdminMigrationsOp = defineOperation({
   name: "platform_health.applied_admin_migrations",
+  readScope: "request",
   // Why system-only: deploy plumbing behind the admin's health route — the
   // route runs it as the system actor; no editor or AI decision reads it.
   actorScope: ["system"],
@@ -48,6 +49,7 @@ export const appliedAdminMigrationsOp = defineOperation({
 
 export const appliedPublicMigrationsOp = defineOperation({
   name: "platform_health.applied_public_migrations",
+  readScope: "request",
   // Why system-only: same as platform_health.applied_admin_migrations, for
   // cms_public.
   actorScope: ["system"],

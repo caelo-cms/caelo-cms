@@ -22,6 +22,7 @@ const environmentEnum = z.enum(["dev", "staging", "production"]);
 
 export const setProvisioningOutputsOp = defineOperation({
   name: "provisioning_outputs.set",
+  readScope: "request",
   // Why system-only: written by the provisioning CLI with the stack outputs (DNS records, bootstrap
   // URL) — infrastructure facts, not an authoring choice; the AI reads them via verify_dns_records.
   actorScope: ["system"],
@@ -80,6 +81,7 @@ const dnsRecord = z.object({
 
 export const getProvisioningOutputsOp = defineOperation({
   name: "provisioning_outputs.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -239,6 +241,7 @@ function isOwnedHostname(hostname: string, owned: ReadonlySet<string>): boolean 
 
 export const verifyDnsRecordOp = defineOperation({
   name: "dns.verify_record",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

@@ -103,6 +103,7 @@ function rowToOut(r: SkillDb): z.infer<typeof skillRow> {
 
 export const listSkillsOp = defineOperation({
   name: "skills.list",
+  readScope: "request",
   // CLAUDE.md §11: open read so the chat-runner matcher can fetch
   // every active skill per turn without a permission round-trip.
   actorScope: ["human", "ai", "system"],
@@ -150,6 +151,7 @@ export const listSkillsOp = defineOperation({
 
 export const getSkillOp = defineOperation({
   name: "skills.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ slug: z.string().min(1).max(120) }).strict(),
@@ -203,6 +205,7 @@ const setSkillInput = z
 
 export const setSkillOp = defineOperation({
   name: "skills.set",
+  readScope: "request",
   // Why human-only: skill bodies enter the AI's system prompt; an AI
   // editing its own instructions without Owner approval is the prompt-
   // injection foothold this gate prevents. AI uses `skills.propose`
@@ -279,6 +282,7 @@ export const setSkillOp = defineOperation({
 
 export const archiveSkillOp = defineOperation({
   name: "skills.archive",
+  readScope: "request",
   // Why human-only: archiving a skill removes it from the matcher
   // permanently. Owner intent only.
   actorScope: ["human", "system"],

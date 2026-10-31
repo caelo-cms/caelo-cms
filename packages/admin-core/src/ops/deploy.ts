@@ -143,6 +143,7 @@ function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
 
 export const listDeployTargetsOp = defineOperation({
   name: "deploy.list_targets",
+  readScope: "request",
   // CLAUDE.md §11: AI summarises deploy state when the user asks
   // ("which environments are configured?"). Read-only.
   actorScope: ["human", "ai", "system"],
@@ -161,6 +162,7 @@ export const listDeployTargetsOp = defineOperation({
 
 export const listDeployRunsOp = defineOperation({
   name: "deploy.list_runs",
+  readScope: "request",
   // CLAUDE.md §11: AI inspects deploy history when troubleshooting
   // ("did the last build succeed?"). Read-only. Plugin actors read it
   // too (epic #1107): international-site garbage-collects a removed
@@ -201,6 +203,7 @@ export const listDeployRunsOp = defineOperation({
 
 export const getDeployRunOp = defineOperation({
   name: "deploy.get_run",
+  readScope: "request",
   // CLAUDE.md §11: read-only. #1211 — a Stage that outlasts the caller's
   // wait keeps building; the AI reads its run to learn how far it got.
   actorScope: ["human", "ai", "system"],
@@ -228,6 +231,7 @@ export const getDeployRunOp = defineOperation({
 
 export const updateDeployProgressOp = defineOperation({
   name: "deploy.update_progress",
+  readScope: "request",
   // Why human-only: system internal callback; only the static-generator subprocess writes to it.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -274,6 +278,7 @@ async function servedStagingRun(tx: TransactionRunner): Promise<string | null> {
  */
 export const refreshStagingPreviewOp = defineOperation({
   name: "deploy.refresh_staging_preview",
+  readScope: "request",
   // Why human-only: a maintenance tick the keep-alive worker runs on a
   // timer; it decides nothing an editor or the AI chooses (Stage already
   // refreshes the preview), so it carries no AI tool.
@@ -333,6 +338,7 @@ const rollbackOutput = z.object({ buildId: z.string(), newRunId: z.string() });
 
 export const releaseRollbackOp = defineOperation({
   name: "deploy.release_rollback",
+  readScope: "request",
   // Why human-only: the one transactional step of deploy.rollback (itself
   // human + system, CMS_REQUIREMENTS §6), run as the rollback's caller.
   actorScope: ["human", "system"],
@@ -363,6 +369,7 @@ export const releaseRollbackOp = defineOperation({
  */
 export const rollbackDeployOp = defineStepwiseOperation({
   name: "deploy.rollback",
+  readScope: "request",
   // Why human-only: Ops-level decision per CMS_REQUIREMENTS §6.
   actorScope: ["human", "system"],
   database: "cms_admin",

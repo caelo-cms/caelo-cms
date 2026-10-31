@@ -108,6 +108,7 @@ function rowToOut(r: RunDb): z.infer<typeof runRow> {
 
 export const createPendingSubagentRunOp = defineOperation({
   name: "subagent_runs.create_pending",
+  readScope: "request",
   // Called from inside the spawn_subagent tool handler — AI actor.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -153,6 +154,7 @@ export const createPendingSubagentRunOp = defineOperation({
 
 export const finishSubagentRunOp = defineOperation({
   name: "subagent_runs.finish",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -245,6 +247,7 @@ export const finishSubagentRunOp = defineOperation({
 
 export const listSubagentRunsOp = defineOperation({
   name: "subagent_runs.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -303,6 +306,7 @@ export const listSubagentRunsOp = defineOperation({
 
 export const getSubagentRunOp = defineOperation({
   name: "subagent_runs.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ id: z.string().uuid() }).strict(),
@@ -351,6 +355,8 @@ export const getSubagentRunOp = defineOperation({
  */
 export const gcSubagentSessionsOp = defineOperation({
   name: "subagent_runs.gc_old_sessions",
+  // Why site-wide: garbage collection walks every old session by age.
+  readScope: "site",
   // Why human-only: hard delete of audit-adjacent data. Owner gate.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -387,6 +393,7 @@ export const gcSubagentSessionsOp = defineOperation({
 
 export const aggregateAiCallsForSessionOp = defineOperation({
   name: "ai_calls.aggregate_for_session",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),

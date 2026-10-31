@@ -48,7 +48,12 @@ import {
   resolvePublicPageUrls,
 } from "@caelo-cms/plugin-host";
 import type { DeferralCandidate } from "@caelo-cms/plugin-sdk";
-import { defineReadOperation, type QueryError, type ReadScope } from "@caelo-cms/query-api";
+import {
+  defineReadOperation,
+  type QueryError,
+  type ReadScope,
+  uuidArray,
+} from "@caelo-cms/query-api";
 import {
   applyDocumentLanguage,
   buildMediaUrl,
@@ -181,6 +186,7 @@ function failure(message: string): Result<Output, QueryError> {
 
 export const renderPagePreviewOp = defineReadOperation({
   name: OP,
+  readScope: "request",
   // CLAUDE.md §11: read-only render. AI runs preview to verify edits
   // before publishing — same path as the iframe in /content/pages/[id].
   actorScope: ["human", "ai", "system"],
@@ -820,10 +826,7 @@ async function enrichPreviewImages(
       (await tx.execute(sql`
         SELECT asset_id::text AS asset_id, variant, format, width
         FROM media_variants
-        WHERE asset_id IN (${sql.join(
-          assetIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})
+        WHERE asset_id = ANY(${uuidArray(assetIds)})
       `)) as unknown as {
         asset_id: string;
         variant: string;

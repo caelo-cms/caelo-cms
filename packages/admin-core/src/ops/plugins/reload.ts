@@ -27,6 +27,7 @@ import { recordAudit } from "../../audit.js";
 
 export const reloadPluginOp = defineOperation({
   name: "plugins.reload",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ slug: z.string().min(1).max(120) }).strict(),

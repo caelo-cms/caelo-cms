@@ -15,7 +15,7 @@
  * (CLAUDE.md §2) instead of shipping the parent without it.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import {
   type ComposeModuleFailure,
   collectNestedRefs,
@@ -99,10 +99,7 @@ export async function loadNestedModules(
       const rows = (await tx.execute(sql`
         SELECT id::text AS id, slug, html, css, js, fields::text AS fields
         FROM modules
-        WHERE id IN (${sql.join(
-          moduleIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})
+        WHERE id = ANY(${uuidArray(moduleIds)})
           AND deleted_at IS NULL
           AND chat_branch_id IS NULL
       `)) as unknown as {
@@ -128,10 +125,7 @@ export async function loadNestedModules(
       const rows = (await tx.execute(sql`
         SELECT id::text AS id, module_id::text AS module_id, "values"::text AS values
         FROM content_instances
-        WHERE id IN (${sql.join(
-          instanceIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})
+        WHERE id = ANY(${uuidArray(instanceIds)})
           AND deleted_at IS NULL
           AND chat_branch_id IS NULL
       `)) as unknown as { id: string; module_id: string; values: string | null }[];

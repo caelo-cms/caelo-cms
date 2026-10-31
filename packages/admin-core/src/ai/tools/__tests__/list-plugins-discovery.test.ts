@@ -31,6 +31,7 @@ function harness(value: unknown): ToolContext {
   registry.register(
     defineOperation({
       name: "plugins.list",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.any(),

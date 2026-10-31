@@ -38,6 +38,7 @@ const PAGE_ID = "55555555-5555-4555-8555-555555555555";
 function op(name: string, handler: (input: Record<string, string>) => unknown) {
   return defineOperation({
     name,
+    readScope: "request",
     actorScope: ["human", "ai", "system"],
     database: "cms_admin",
     input: z.any(),

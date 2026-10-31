@@ -30,6 +30,7 @@ const pendingRow = z.object({
 
 export const listPluginPendingActionsOp = defineOperation({
   name: "plugins.list_pending_actions",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ limit: z.number().int().min(1).max(200).optional() }).strict(),
@@ -64,6 +65,7 @@ export const listPluginPendingActionsOp = defineOperation({
 
 export const rejectPluginProposalOp = defineOperation({
   name: "plugins.reject_proposal",
+  readScope: "request",
   // Why human-only (+system): §11.A — the operator's Reject.
   actorScope: ["human", "system"],
   database: "cms_admin",

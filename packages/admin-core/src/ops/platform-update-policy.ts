@@ -109,6 +109,7 @@ const MISSING_ROW =
 
 export const platformUpdatePolicyGetOp = defineOperation({
   name: "platform_update_policy.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -128,6 +129,7 @@ export const platformUpdatePolicyGetOp = defineOperation({
 
 export const platformUpdatePolicySetOp = defineOperation({
   name: "platform_update_policy.set",
+  readScope: "request",
   // Why human-only: decides what installs without anyone clicking — a
   // deployment decision (CLAUDE.md §2) and a step-up action (#696 decision 4).
   actorScope: ["human"],
@@ -174,6 +176,7 @@ const MAX_PAUSE_DAYS = 366;
 
 export const platformUpdatePolicyPauseOp = defineOperation({
   name: "platform_update_policy.pause",
+  readScope: "request",
   // Why human-only: a change to the update policy (#696 decisions 4 + 6:
   // pausing is step-up gated like every policy change).
   actorScope: ["human"],
@@ -237,6 +240,7 @@ export const platformUpdatePolicyPauseOp = defineOperation({
 
 export const platformUpdatePolicyResumeOp = defineOperation({
   name: "platform_update_policy.resume",
+  readScope: "request",
   // Why human-only: lifts a pause — after a failed automatic install the
   // Owner decides when unattended installs may run again (#696 decision 6).
   actorScope: ["human"],

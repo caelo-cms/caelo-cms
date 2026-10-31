@@ -23,7 +23,7 @@
  * so they agree with each other and with the renderer.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { collectNestedRefs, rendersFieldDefault, type TemplateField } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../../draft.js";
@@ -71,17 +71,14 @@ export async function listPlacementsInView(
   branchId: string | null,
 ): Promise<PlacementInView[]> {
   if (contentInstanceIds.length === 0) return [];
-  const idList = sql.join(
-    contentInstanceIds.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
+  const idList = uuidArray(contentInstanceIds);
   const live = (await tx.execute(sql`
     SELECT pm.content_instance_id::text AS content_instance_id, pm.page_id::text AS page_id,
            p.current_path AS path, p.slug AS page_slug, p.title AS page_title,
            (p.deleted_at IS NOT NULL) AS page_deleted, pm.block_name, pm.position, pm.sync_mode
     FROM page_modules pm
     JOIN pages p ON p.id = pm.page_id
-    WHERE pm.content_instance_id IN (${idList})
+    WHERE pm.content_instance_id = ANY(${idList})
   `)) as unknown as {
     content_instance_id: string;
     page_id: string;
@@ -485,10 +482,7 @@ async function layoutsPlacingModules(
       FROM (${effectiveLayoutModulesSql(branchId)}) lm
       JOIN layouts l ON l.id = lm.layout_id
      WHERE l.deleted_at IS NULL AND ${visible}
-       AND lm.module_id IN (${sql.join(
-         moduleIds.map((id) => sql`${id}::uuid`),
-         sql`, `,
-       )})
+       AND lm.module_id = ANY(${uuidArray(moduleIds)})
   `)) as unknown as { module_id: string; layout_id: string; slug: string }[];
   for (const r of rows) {
     const layout = { layoutId: r.layout_id, slug: r.slug };

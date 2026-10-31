@@ -10,7 +10,12 @@
  * branch-isolated per chat until publish.
  */
 
-import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
+import {
+  defineOperation,
+  OperationAbortError,
+  type TransactionRunner,
+  uuidArray,
+} from "@caelo-cms/query-api";
 import { err, ok, pageModuleContentSetManySchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -76,6 +81,7 @@ function rowTo(r: {
 export const getPageModuleContentOp = withHumanisedLinks(
   defineOperation({
     name: "page_module_content.get",
+    readScope: "request",
     // #397 — plugin actors read too (international-site's translator).
     actorScope: ["human", "ai", "plugin", "system"],
     database: "cms_admin",
@@ -159,6 +165,7 @@ async function resolveNestedTarget(
  */
 export const setPageModuleContentOp = defineOperation({
   name: "page_module_content.set",
+  readScope: "request",
   // #397 — plugin actors write translated values (decision 3: signed
   // plugins hold cms_admin writes; every write still snapshots).
   actorScope: ["human", "ai", "plugin", "system"],
@@ -339,6 +346,7 @@ export const setPageModuleContentOp = defineOperation({
  */
 export const setPageModuleContentManyOp = defineOperation({
   name: "page_module_content.set_many",
+  readScope: "request",
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: pageModuleContentSetManySchema,
@@ -388,6 +396,7 @@ export const setPageModuleContentManyOp = defineOperation({
 export const listPageModuleContentOp = withHumanisedLinks(
   defineOperation({
     name: "page_module_content.list_for_page",
+    readScope: "request",
     actorScope: ["human", "ai", "plugin", "system"],
     database: "cms_admin",
     input: z.object({ pageId: z.string().uuid() }).strict(),
@@ -437,10 +446,7 @@ export const listPageModuleContentOp = withHumanisedLinks(
       const instanceIds = [...new Set(placed.map((p) => p.contentInstanceId))];
       const moduleRows = (await tx.execute(sql`
         SELECT id::text AS id, slug, fields, deleted_at FROM modules
-        WHERE id IN (${sql.join(
-          moduleIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})
+        WHERE id = ANY(${uuidArray(moduleIds)})
       `)) as unknown as {
         id: string;
         slug: string;
@@ -455,10 +461,7 @@ export const listPageModuleContentOp = withHumanisedLinks(
       );
       const instanceRows = (await tx.execute(sql`
         SELECT id::text AS id, "values" FROM content_instances
-        WHERE id IN (${sql.join(
-          instanceIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})
+        WHERE id = ANY(${uuidArray(instanceIds)})
       `)) as unknown as { id: string; values: unknown }[];
       const values = new Map<string, Record<string, unknown>>(
         instanceRows.map((r) => [r.id, (r.values ?? {}) as Record<string, unknown>]),

@@ -41,6 +41,7 @@ function countingAdapter(): { adapter: DatabaseAdapter; transactions: string[] }
 
 const stepOp = defineOperation({
   name: "test.step",
+  readScope: "request",
   actorScope: ["human"],
   database: "cms_admin",
   input: z.object({}),
@@ -53,6 +54,7 @@ describe("defineStepwiseOperation", () => {
     let seen: OperationSteps | null = null;
     const op = defineStepwiseOperation({
       name: "test.stepwise",
+      readScope: "request",
       actorScope: ["human"],
       database: "cms_admin",
       input: z.object({ n: z.number() }),
@@ -89,6 +91,7 @@ describe("defineStepwiseOperation", () => {
     let fail = false;
     const op = defineStepwiseOperation({
       name: "test.heard",
+      readScope: "request",
       actorScope: ["human"],
       database: "cms_admin",
       input: z.object({}),
@@ -116,6 +119,7 @@ describe("defineStepwiseOperation", () => {
     let ran = false;
     const op = defineStepwiseOperation({
       name: "test.guarded",
+      readScope: "request",
       actorScope: ["system"],
       database: "cms_admin",
       input: z.object({ n: z.number() }),
@@ -145,6 +149,7 @@ describe("defineStepwiseOperation", () => {
   it("refuses a direct handler call: there is no transaction to give it", async () => {
     const op = defineStepwiseOperation({
       name: "test.direct",
+      readScope: "request",
       actorScope: ["human"],
       database: "cms_admin",
       input: z.object({}),

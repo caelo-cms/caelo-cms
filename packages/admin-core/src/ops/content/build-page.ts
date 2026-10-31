@@ -107,6 +107,7 @@ interface BuildPageNextAction {
 
 export const buildPageOp = defineOperation({
   name: "pages.build_page",
+  readScope: "request",
   // CLAUDE.md §11 — the AI is the primary caller; humans/system may
   // drive the same composite from scripts.
   actorScope: ["human", "ai", "system"],

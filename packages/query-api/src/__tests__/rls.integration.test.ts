@@ -39,6 +39,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "audit.record_for_self",
+      readScope: "request",
       actorScope: ["human", "system"],
       database: "cms_admin",
       input: z.object({ operation: z.string() }),
@@ -55,6 +56,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "audit.record_spoofing_another_actor",
+      readScope: "request",
       actorScope: ["human", "system"],
       database: "cms_admin",
       input: z.object({ spoofActorId: z.string() }),
@@ -71,6 +73,7 @@ beforeAll(async () => {
   registry.register(
     defineOperation({
       name: "audit.count_mine",
+      readScope: "request",
       actorScope: ["human", "system"],
       database: "cms_admin",
       input: z.object({}),

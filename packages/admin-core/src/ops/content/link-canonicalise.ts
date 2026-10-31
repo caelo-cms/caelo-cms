@@ -43,6 +43,7 @@ const boundedValues = z
  */
 export const canonicaliseLinkValuesOp = defineOperation({
   name: "links.canonicalise_values",
+  readScope: "request",
   // Why system-only: plugin + system, no human, no AI — a write-path building
   // block, not an editing action. Plugins call it from their own write
   // operations (the AI reaches it through those tools, e.g.

@@ -86,31 +86,3 @@ export function adaptItemsToType(
     removals: [...counts.entries()].map(([what, count]) => ({ what, count })),
   };
 }
-
-/** What a definition change added or removed, for `list_type.changed`. */
-export interface ListTypeDiff {
-  /** `node.field` */
-  readonly fieldsAdded: readonly string[];
-  readonly fieldsRemoved: readonly string[];
-  readonly nodesRemoved: readonly string[];
-}
-
-/** Diff two definitions of one list type. */
-export function diffListTypeDefs(before: ListTypeDef | null, after: ListTypeDef): ListTypeDiff {
-  const fieldsOf = (def: ListTypeDef | null): Set<string> => {
-    const out = new Set<string>();
-    for (const [kind, node] of Object.entries(def?.nodes ?? {})) {
-      for (const f of node.fields) out.add(`${kind}.${f.name}`);
-    }
-    return out;
-  };
-  const a = fieldsOf(before);
-  const b = fieldsOf(after);
-  return {
-    fieldsAdded: [...b].filter((f) => !a.has(f)).sort(),
-    fieldsRemoved: [...a].filter((f) => !b.has(f)).sort(),
-    nodesRemoved: Object.keys(before?.nodes ?? {})
-      .filter((k) => !(k in after.nodes))
-      .sort(),
-  };
-}

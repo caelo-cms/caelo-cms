@@ -47,6 +47,7 @@ const handlerError = (operation: string, message: string) =>
 
 export const stepUpConfirmPasswordOp = defineOperation({
   name: "step_up.confirm_password",
+  readScope: "request",
   // Why human-only: proves a person is at the caller's own browser right
   // now; the AI and workers have no password and no browser session.
   actorScope: ["human"],

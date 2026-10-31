@@ -70,6 +70,7 @@ const faceDelivery = z.object({
 
 export const themeFontDeliveryOp = defineOperation({
   name: "themes.font_delivery",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ themeSlug: z.string().min(1).max(120).optional() }).strict(),

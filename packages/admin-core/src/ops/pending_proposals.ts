@@ -58,6 +58,7 @@ const byDomainSchema = z.record(z.string(), z.number().int().nonnegative());
 
 export const listPendingProposalsAcrossDomainsOp = defineOperation({
   name: "pending_proposals.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

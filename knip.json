@@ -29,7 +29,7 @@
   },
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.ts", "scripts/*.test.ts"]
+      "entry": ["scripts/*.ts", "scripts/*.test.ts", "scripts/scale-gate/*.ts"]
     },
     "apps/admin": {
       "entry": ["scripts/scan-media-alt.ts", "scripts/sign-tier1-manifest.ts"]
@@ -43,7 +43,8 @@
         "src/security/operator-access/sync-job.ts",
         "src/quality/lighthouse-child.ts",
         "scripts/lighthouse-smoke.ts",
-        "src/__tests__/*.bench.ts"
+        "src/__tests__/*.bench.ts",
+        "src/__tests__/fixtures/change-journal-instance.ts"
       ]
     },
     "packages/migrations": {

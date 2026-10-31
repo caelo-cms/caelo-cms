@@ -74,6 +74,7 @@ const countsSchema = z.object({
 
 export const getBugForwardingOp = defineOperation({
   name: "bug_forwarding.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -128,6 +129,7 @@ export const getBugForwardingOp = defineOperation({
 
 export const setBugForwardingOp = defineOperation({
   name: "bug_forwarding.set",
+  readScope: "request",
   // Why human-only: turning this on is the Owner's consent to send reports
   // from this install to the Caelo project, given on the page that shows
   // what is sent. Same stance as telemetry.set — an AI-drafted proposal
@@ -184,6 +186,7 @@ export const setBugForwardingOp = defineOperation({
  */
 export const queueUnsentBugReportsOp = defineOperation({
   name: "bug_forwarding.queue_unsent",
+  readScope: "request",
   // Why human-only: reports filed before the opt-in were not covered by it,
   // and re-sending a failed report is the Owner's call on the page that
   // shows the failure; neither is the AI's to decide.
@@ -237,6 +240,7 @@ export const queueUnsentBugReportsOp = defineOperation({
 
 export const previewBugForwardingOp = defineOperation({
   name: "bug_forwarding.preview",
+  readScope: "request",
   // Pure read: the exact payload that would be sent for one report.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -260,6 +264,7 @@ export const previewBugForwardingOp = defineOperation({
 
 export const claimDueBugReportsOp = defineOperation({
   name: "bug_forwarding.claim_due",
+  readScope: "request",
   // Why system-only: worker plumbing; the lease it takes is meaningless to a person or the AI.
   actorScope: ["system"],
   database: "cms_admin",
@@ -304,6 +309,7 @@ export const claimDueBugReportsOp = defineOperation({
 
 export const recordBugForwardResultOp = defineOperation({
   name: "bug_forwarding.record_result",
+  readScope: "request",
   // Why system-only: written by the forwarding worker from the intake's answer.
   actorScope: ["system"],
   database: "cms_admin",
@@ -358,6 +364,7 @@ export const recordBugForwardResultOp = defineOperation({
 
 export const bugForwardingIdentityOp = defineOperation({
   name: "bug_forwarding.identity",
+  readScope: "request",
   // Why system-only: returns the decrypted signing key for the worker.
   actorScope: ["system"],
   database: "cms_admin",
@@ -436,6 +443,7 @@ export const bugForwardingIdentityOp = defineOperation({
 
 export const markBugIntakeRegisteredOp = defineOperation({
   name: "bug_forwarding.mark_registered",
+  readScope: "request",
   // Why system-only: recorded by the worker once the intake pinned the key.
   actorScope: ["system"],
   database: "cms_admin",
@@ -453,6 +461,7 @@ export const markBugIntakeRegisteredOp = defineOperation({
 
 export const bugClustersToRefreshOp = defineOperation({
   name: "bug_forwarding.clusters_to_refresh",
+  readScope: "request",
   // Why system-only: worker plumbing for the upstream status refresh.
   actorScope: ["system"],
   database: "cms_admin",
@@ -484,6 +493,7 @@ export const bugClustersToRefreshOp = defineOperation({
 
 export const recordBugClusterStatusOp = defineOperation({
   name: "bug_forwarding.record_cluster_status",
+  readScope: "request",
   // Why system-only: written by the worker from the intake's answer.
   actorScope: ["system"],
   database: "cms_admin",

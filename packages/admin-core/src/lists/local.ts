@@ -13,7 +13,7 @@
  * pending snapshots — the same overlay every module / instance read uses.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ListPaginationSettings, SourceDef } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
@@ -128,10 +128,7 @@ export async function loadInstancesOfModules(
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, module_id::text AS module_id, "values", deleted_at
     FROM content_instances
-    WHERE ${visible} AND module_id IN (${sql.join(
-      moduleIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )})
+    WHERE ${visible} AND module_id = ANY(${uuidArray(moduleIds)})
     ORDER BY created_at, id
   `)) as unknown as {
     id: string;

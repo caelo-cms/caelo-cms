@@ -93,6 +93,7 @@ export const reconnectResultSchema = z.object({
 
 export const hostingStatusOp = defineOperation({
   name: "domains.hosting_status",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -164,6 +165,7 @@ export async function currentHostingHealth(
 
 export const reconnectHostingDomainOp = defineOperation({
   name: "domains.reconnect_hosting",
+  readScope: "request",
   // Why human-only: §11.A — deletes and re-creates the live hosting binding of a hostname; the AI
   // reaches it through propose_reconnect_domain (Owner-approved).
   actorScope: ["human", "system"],

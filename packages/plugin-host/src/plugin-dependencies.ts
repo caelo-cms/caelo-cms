@@ -18,7 +18,7 @@
  * activation and the check it depends on see the same rows.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
 /** The `requiresPlugins` of a stored manifest (the `manifest_json` jsonb). */
@@ -46,10 +46,7 @@ export async function inactiveRequiredPlugins(
   if (required.length === 0) return [];
   const rows = (await tx.execute(sql`
     SELECT slug, status FROM plugins
-    WHERE slug IN (${sql.join(
-      required.map((s) => sql`${s}`),
-      sql`, `,
-    )})
+    WHERE slug = ANY(${textArray(required)})
   `)) as unknown as { slug: string; status: string }[];
   const status = new Map(rows.map((r) => [r.slug, r.status]));
   return required

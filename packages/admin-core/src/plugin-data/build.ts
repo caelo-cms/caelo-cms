@@ -82,6 +82,7 @@ import {
   type OperationSteps,
   type QueryError,
   type TransactionRunner,
+  uuidArray,
 } from "@caelo-cms/query-api";
 import {
   CAELO_VERSION,
@@ -123,7 +124,6 @@ import {
 } from "../deploy/static-publisher.js";
 import { fenceRunLeases } from "../ops/deploy-lease-steps.js";
 import { beginRunInTx } from "../ops/deploy-run-lifecycle.js";
-import { uuidList } from "../ops/quality/_shared.js";
 import { jsonbParam } from "../sql-helpers.js";
 
 /** At most this many stale (plugin, page) marks are baked per build. */
@@ -465,6 +465,7 @@ const buildInput = z
 
 export const startPluginDataOp = defineOperation({
   name: "deploy.start_plugin_data",
+  readScope: "request",
   // Why system-only: the first step of deploy.build_plugin_data (the
   // plugin-data tick, system actor); it decides nothing of its own.
   actorScope: ["system"],
@@ -548,7 +549,7 @@ export const startPluginDataOp = defineOperation({
       SELECT plugin_id::text AS plugin_id, page_id::text AS page_id
       FROM plugin_data_stale_pages
       WHERE (baked_through IS NULL OR last_marked_at > baked_through)
-        AND plugin_id = ANY(${uuidList([...eligible.keys()])})
+        AND plugin_id = ANY(${uuidArray([...eligible.keys()])})
       ORDER BY last_marked_at
       LIMIT ${input.maxMarks}
     `)) as unknown as { plugin_id: string; page_id: string }[];
@@ -632,6 +633,7 @@ class LiveReleaseBusy extends Error {
 
 export const beginPluginDataRunOp = defineOperation({
   name: "deploy.begin_plugin_data_run",
+  readScope: "request",
   // Why system-only: a step of deploy.build_plugin_data (system actor).
   actorScope: ["system"],
   database: "cms_admin",
@@ -710,6 +712,7 @@ export const beginPluginDataRunOp = defineOperation({
 
 export const finishPluginDataRunOp = defineOperation({
   name: "deploy.finish_plugin_data_run",
+  readScope: "request",
   // Why system-only: a step of deploy.build_plugin_data (system actor).
   actorScope: ["system"],
   database: "cms_admin",
@@ -755,6 +758,7 @@ export const finishPluginDataRunOp = defineOperation({
 
 export const finishPluginDataTickOp = defineOperation({
   name: "deploy.finish_plugin_data_tick",
+  readScope: "request",
   // Why system-only: the last step of deploy.build_plugin_data (system actor).
   actorScope: ["system"],
   database: "cms_admin",
@@ -786,7 +790,7 @@ export const finishPluginDataTickOp = defineOperation({
              SET baked_through = ${input.baked.bakedAt}::timestamptz,
                  last_run_id = ${input.runIds.at(-1) ?? null}
            WHERE plugin_id = ${plugin.id}::uuid
-             AND page_id = ANY(${uuidList(plugin.pages)})
+             AND page_id = ANY(${uuidArray(plugin.pages)})
         `);
       }
     }
@@ -1053,6 +1057,8 @@ async function runPluginDataBuild(
 
 export const buildPluginDataOp = defineStepwiseOperation({
   name: "deploy.build_plugin_data",
+  // Why site-wide: the plugin-data build re-renders every baked region of the live site.
+  readScope: "site",
   // Why human-only: the plugin-data tick (plugin-data/worker.ts) runs it as
   // the system actor; it carries no decision — it republishes the build a
   // human published, with fresher data in plugin-owned regions only. No AI

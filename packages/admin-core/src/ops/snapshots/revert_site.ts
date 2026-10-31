@@ -37,6 +37,8 @@ import { applyPathMoveEffects } from "../content/path-moves.js";
  */
 export const revertSiteOp = defineOperation({
   name: "snapshots.revert_site",
+  // Why site-wide: a site revert rewinds every entity of the site.
+  readScope: "site",
   // Why human-only: Owner-only — atomic site-wide content rewind, large blast radius.
   actorScope: ["human", "system"],
   database: "cms_admin",

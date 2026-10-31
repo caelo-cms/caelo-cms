@@ -19,6 +19,7 @@ import { withSystemRls } from "./_helpers.js";
  */
 export const createFirstOwnerOp = defineOperation({
   name: "users.create_first_owner",
+  readScope: "request",
   // Why system-only: /setup mints the very first Owner before any session exists (bootstrap-token
   // gated); there is no actor yet to run it as.
   actorScope: ["system"],
@@ -172,6 +173,7 @@ async function redeemBootstrapToken(
 
 export const isSetupCompleteOp = defineOperation({
   name: "users.is_setup_complete",
+  readScope: "request",
   // Why human-only (+system): auth-page read (see below); the agent has no use for it.
   // human + system: the /login and /setup loads run this with the
   // REQUEST's ctx, which is a human actor whenever a session cookie
@@ -196,6 +198,7 @@ export const isSetupCompleteOp = defineOperation({
 
 export const listUsersOp = defineOperation({
   name: "users.list",
+  readScope: "request",
   // CLAUDE.md §11: read surface open to AI. Lets the AI answer
   // "which users have access?" without a human round-trip. Writes
   // (create, set_roles, delete) stay human-only — security domain.
@@ -296,6 +299,7 @@ export async function identityGateRefusal(tx: OpTx, email: string): Promise<stri
 
 export const createUserOp = defineOperation({
   name: "users.create",
+  readScope: "request",
   // Why human-only: Owner-only — security domain.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -386,6 +390,7 @@ export const FIRST_OWNER_KEEPS_OWNER_ROLE =
 
 export const setUserRolesOp = defineOperation({
   name: "users.set_roles",
+  readScope: "request",
   // Why human-only: Owner-only — security domain.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -446,6 +451,7 @@ export const setUserRolesOp = defineOperation({
  */
 export const setUserEmailOp = defineOperation({
   name: "users.set_email",
+  readScope: "request",
   // Why human-only: Owner-only — security domain, like users.create. The
   // email is the user's sign-in identity and their IAP principal. The AI
   // changes users only through the approval-gated propose tools: for a
@@ -512,6 +518,7 @@ export const setUserEmailOp = defineOperation({
  */
 export const deleteUserOp = defineOperation({
   name: "users.delete",
+  readScope: "request",
   // Why human-only: Owner-only — security domain.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -591,6 +598,7 @@ export const deleteUserOp = defineOperation({
  */
 export const changePasswordOp = defineOperation({
   name: "users.change_password",
+  readScope: "request",
   // Why human-only: an actor changes their OWN credential; AI/system never do.
   actorScope: ["human"],
   database: "cms_admin",
@@ -684,6 +692,7 @@ export const changePasswordOp = defineOperation({
  */
 export const adminSetPasswordOp = defineOperation({
   name: "users.admin_set_password",
+  readScope: "request",
   // Why human-only: sets another user's password — credentials never pass through the AI.
   // The route elevates to a system kind after a `users.manage` permission
   // check, so the cross-user write clears RLS. A bare human actor is blocked.

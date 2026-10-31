@@ -40,6 +40,7 @@ import { deleteTemplateOp, updateTemplateOp } from "./templates.js";
 
 export const proposeTemplateUpdateOp = defineOperation({
   name: "templates.propose_update",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: templateUpdateSchema,
@@ -92,6 +93,7 @@ const proposeDeleteInput = z.object({ templateId: z.string().uuid() }).strict();
 
 export const proposeTemplateDeleteOp = defineOperation({
   name: "templates.propose_delete",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeDeleteInput,
@@ -139,6 +141,7 @@ export const proposeTemplateDeleteOp = defineOperation({
 
 const executeTemplateProposalOpDefinition = defineOperation({
   name: "templates.execute_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -216,6 +219,7 @@ export const executeTemplateProposalOp = requiresApproverPermission(
 
 export const rejectTemplateProposalOp = defineOperation({
   name: "templates.reject_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -265,6 +269,7 @@ const proposalRowSchema = z.object({
 
 export const listPendingTemplateProposalsOp = defineOperation({
   name: "templates.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

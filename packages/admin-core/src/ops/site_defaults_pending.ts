@@ -82,6 +82,7 @@ const MISSING_ROW_MESSAGE =
 
 export const proposeSiteSeoSetOp = defineOperation({
   name: "site_defaults.propose_set_seo",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: siteSeoProposalInputSchema,
@@ -192,6 +193,7 @@ export const proposeSiteSeoSetOp = defineOperation({
 
 const executeSiteDefaultsProposalOpDefinition = defineOperation({
   name: "site_defaults.execute_proposal",
+  readScope: "request",
   // Why human-only: this IS the Owner's approval (CLAUDE.md §11.A) — the AI
   // proposes via site_defaults.propose_set_seo and cannot approve itself.
   actorScope: ["human", "system"],
@@ -282,6 +284,7 @@ export const executeSiteDefaultsProposalOp = requiresApproverPermission(
 
 export const rejectSiteDefaultsProposalOp = defineOperation({
   name: "site_defaults.reject_proposal",
+  readScope: "request",
   // Why human-only: rejecting is the Owner's decision on the AI's proposal;
   // the AI withdraws its own rows through pending_proposals.cancel.
   actorScope: ["human", "system"],
@@ -337,6 +340,7 @@ const proposalRowSchema = z.object({
 
 export const listPendingSiteDefaultsProposalsOp = defineOperation({
   name: "site_defaults.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ limit: z.number().int().min(1).max(200).optional() }).strict(),

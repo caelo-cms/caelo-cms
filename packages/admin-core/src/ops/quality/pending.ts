@@ -438,6 +438,7 @@ const proposeOutput = z.object({
 
 export const proposeAcceptOp = defineOperation({
   name: "quality_audits.propose_accept",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeAcceptInput,
@@ -488,6 +489,7 @@ export const proposePublishAnywayInput = z
 
 export const proposePublishAnywayOp = defineOperation({
   name: "quality_audits.propose_publish_anyway",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposePublishAnywayInput,
@@ -629,6 +631,7 @@ export const beginExecuteQualityProposalOp = requiresApproverPermission(
   ["content.write"],
   defineOperation({
     name: "quality_audits.begin_execute_proposal",
+    readScope: "request",
     // Why human-only: the first step of quality_audits.execute_proposal (the
     // click the §11.A gate exists to obtain), run as the approver.
     actorScope: ["human", "system"],
@@ -741,6 +744,7 @@ export const endExecuteQualityProposalOp = requiresApproverPermission(
   ["content.write", "deploy.trigger"],
   defineOperation({
     name: "quality_audits.end_execute_proposal",
+    readScope: "request",
     // Why human-only: the last step of quality_audits.execute_proposal, run
     // as the approver.
     actorScope: ["human", "system"],
@@ -843,6 +847,7 @@ async function runExecuteQualityProposal(
 
 const executeQualityProposalOpDefinition = defineStepwiseOperation({
   name: "quality_audits.execute_proposal",
+  readScope: "request",
   // Why human-only: the click the §11.A gate exists to obtain.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -863,6 +868,7 @@ export const executeQualityProposalOp = requiresApproverPermission(
 
 export const rejectQualityProposalOp = defineOperation({
   name: "quality_audits.reject_proposal",
+  readScope: "request",
   // Why human-only: rejecting is the human half of the §11.A decision.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -907,6 +913,7 @@ export const rejectQualityProposalOp = defineOperation({
 
 export const listPendingQualityProposalsOp = defineOperation({
   name: "quality_audits.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ limit: z.number().int().min(1).max(200).optional() }).strict(),

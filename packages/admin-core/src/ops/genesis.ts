@@ -76,6 +76,7 @@ const draftRow = z.object({
 
 export const addGenesisDraftOp = defineOperation({
   name: "genesis.add_draft",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: genesisAddDraftInput,
@@ -184,6 +185,7 @@ export const addGenesisDraftOp = defineOperation({
 
 export const listGenesisDraftsOp = defineOperation({
   name: "genesis.list_drafts",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -253,6 +255,7 @@ export const listGenesisDraftsOp = defineOperation({
 
 export const selectGenesisDraftOp = defineOperation({
   name: "genesis.select_draft",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ draftId: z.string().uuid() }).strict(),
@@ -319,6 +322,7 @@ export const selectGenesisDraftOp = defineOperation({
  */
 export const renderDesignDraftOp = defineOperation({
   name: "genesis.render_draft",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ draftId: z.string().uuid() }).strict(),

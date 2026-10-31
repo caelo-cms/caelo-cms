@@ -19,6 +19,7 @@ import { afterPluginCommit } from "./host-sync.js";
 
 export const stagePluginInstallationOp = defineOperation({
   name: "plugins.stage_installation",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -105,6 +106,7 @@ export const stagePluginInstallationOp = defineOperation({
 
 export const listPluginInstallationsOp = defineOperation({
   name: "plugins.list_installations",
+  readScope: "request",
   // Open to the AI so it can tell whether a package it submitted (or an
   // update to a running plugin) still waits for the Owner's review — the
   // plugins row alone does not show a staged update. Approval itself stays
@@ -220,6 +222,7 @@ const installationDecision = z
 /** Records the authenticated Owner decision. The host provisions and activates only afterwards. */
 export const approvePluginInstallationOp = defineOperation({
   name: "plugins.approve_installation",
+  readScope: "request",
   // Why human-only: this IS the Owner's grant decision on an exact artifact
   // (CLAUDE.md §2 — every capability is an explicit Owner grant bound to the
   // digest; the op re-checks plugins.install). The AI's half is
@@ -330,6 +333,7 @@ export const approvePluginInstallationOp = defineOperation({
 
 export const getApprovedPluginInstallationOp = defineOperation({
   name: "plugins.get_approved_installation",
+  readScope: "request",
   // Why system-only: the plugin host's read of an approved artifact + its
   // grant receipts while it provisions and loads the plugin.
   actorScope: ["system"],
@@ -385,6 +389,7 @@ export const getApprovedPluginInstallationOp = defineOperation({
 /** Internal completion after the host's schema and registration preflight; never callable by plugin or AI. */
 export const finalizePluginInstallationOp = defineOperation({
   name: "plugins.finalize_installation",
+  readScope: "request",
   // Why system-only: the host's commit after its schema and registration
   // preflight of an Owner-approved artifact; no actor decides anything here.
   actorScope: ["system"],
@@ -485,6 +490,7 @@ export const finalizePluginInstallationOp = defineOperation({
 
 export const revokePluginCapabilityOp = defineOperation({
   name: "plugins.revoke_capability",
+  readScope: "request",
   // Why human-only: the direct Owner action; the AI reaches it through the
   // §11.A-gated revoke proposal (plugin-lifecycle-tools.ts), applied on the
   // Owner's approval.

@@ -4,11 +4,9 @@
  * Issue #553 — shared Zod shapes and SQL helpers of the quality-audit ops.
  */
 
-import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { checkRuleProblemSchema } from "../../quality/checks/outcome.js";
 import { QUALITY_CATEGORIES } from "../../quality/ratchet.js";
-import { jsonbParam } from "../../sql-helpers.js";
 
 export const categorySchema = z.enum(QUALITY_CATEGORIES);
 
@@ -97,12 +95,6 @@ export const auditRunStatusSchema = z.enum([
   "skipped",
   "superseded",
 ]);
-
-/** `= ANY(...)` operand for a list of uuids, bound as ONE jsonb parameter
- *  (no string-inlined array literal). */
-export function uuidList(ids: readonly string[]): SQL {
-  return sql`ARRAY(SELECT jsonb_array_elements_text(${jsonbParam(ids)})::uuid)`;
-}
 
 /** Timestamp column → ISO string (bun-sql returns Date or string). */
 export function iso(v: string | Date): string {

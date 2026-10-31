@@ -25,6 +25,7 @@ import { branchVisibilityFilter } from "../../branch.js";
 
 export const setNotFoundPageOp = defineOperation({
   name: "pages.set_not_found_page",
+  readScope: "request",
   // CLAUDE.md §11 — a content decision the AI makes on the operator's
   // behalf ("use this page for broken links").
   actorScope: ["human", "ai", "system"],

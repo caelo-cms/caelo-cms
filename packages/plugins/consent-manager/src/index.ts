@@ -66,6 +66,7 @@ import {
   adminQueryOf,
   bumpPolicyVersion,
   categoriesOf,
+  cmsOf,
   type GuardRow,
   settingsOf,
 } from "./storage.js";
@@ -161,10 +162,51 @@ const deferralsArgs = z.object({
   ),
 });
 
-/** What core passes `module_changes` (#1214). */
+/** What the host passes the change consumer (`PluginChangesArgs`, #1267). */
 const moduleChangesArgs = z.object({
-  moduleIds: z.array(z.string().uuid()).min(1).max(1000),
+  chatBranchId: z.string().uuid().nullable(),
+  changes: z
+    .array(
+      z.object({
+        kind: z.string(),
+        op: z.enum(["insert", "update", "delete", "truncate"]),
+        rowId: z.string(),
+        parentId: z.string().nullable(),
+      }),
+    )
+    .min(1)
+    .max(500),
 });
+
+/**
+ * The modules a batch of journal changes may have changed what they reach:
+ * changed modules, and the modules of changed content instances (a live
+ * instance row names its module; a branch snapshot is looked up). `null`
+ * when a table was truncated: everything is rejudged.
+ */
+async function changedModuleIds(
+  ctx: PluginContextTier1,
+  changes: z.infer<typeof moduleChangesArgs>["changes"],
+): Promise<string[] | null> {
+  if (changes.some((c) => c.op === "truncate")) return null;
+  const moduleIds = new Set<string>();
+  const unresolved = new Set<string>();
+  for (const c of changes) {
+    if (c.kind === "module") moduleIds.add(c.rowId);
+    else if (c.kind === "content_instance") {
+      if (c.parentId) moduleIds.add(c.parentId);
+      else unresolved.add(c.rowId);
+    }
+  }
+  if (unresolved.size > 0) {
+    const { instances } = await cmsOf(ctx).call<{ instances: Array<{ moduleId: string }> }>(
+      "content_instances.list",
+      { ids: [...unresolved] },
+    );
+    for (const i of instances) moduleIds.add(i.moduleId);
+  }
+  return [...moduleIds];
+}
 
 /** A module the render-time gate withholds now, and why. */
 interface Withheld {
@@ -268,7 +310,7 @@ export default definePlugin<PluginContextTier1>({
     "cms_admin_schema",
     "chat_runner_tools",
     "cms_admin",
-    "domain_events",
+    "change_journal",
     "background_workers",
     "list_sources",
     "consent_provider",
@@ -396,8 +438,16 @@ export default definePlugin<PluginContextTier1>({
   /** A pending module blocks Publish live — see `audit_findings`. */
   auditFindingsOperation: "audit_findings",
 
-  /** Keeps each module's verdict current on the write that changed it (#1214). */
-  moduleChangesOperation: "module_changes",
+  /**
+   * Keeps each module's verdict current after the write that changed it,
+   * on that write's branch (#1214, now from the change journal, #1267).
+   */
+  changeConsumer: {
+    operationName: "module_changes",
+    rebuildOperationName: "scan_modules",
+    kinds: ["module", "content_instance"],
+    lines: "all",
+  },
 
   /** Keeps the scan current without anyone remembering to run it. */
   workers: [
@@ -702,11 +752,14 @@ export default definePlugin<PluginContextTier1>({
     scan_modules: async (ctx) => syncGuards(ctx),
 
     /**
-     * Core's notice that a committed write changed these modules (#1214):
-     * re-judge just them, in the writer's scope — on a chat's branch the
-     * rewritten guards stay on that branch and publish with it.
+     * The change consumer (#1267): committed module and content-instance
+     * changes, one branch per call, in that branch's scope — on a chat's
+     * branch the rewritten guards stay on that branch and publish with it.
      */
-    module_changes: async (ctx, args) => syncGuards(ctx, moduleChangesArgs.parse(args).moduleIds),
+    module_changes: async (ctx, args) => {
+      const ids = await changedModuleIds(ctx, moduleChangesArgs.parse(args).changes);
+      return ids === null ? syncGuards(ctx) : syncGuards(ctx, ids);
+    },
 
     // Read-only: reports the verdict every module would get now, stored
     // or not, so the list is never older than what the render gate

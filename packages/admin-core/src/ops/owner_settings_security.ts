@@ -64,6 +64,7 @@ const queuedPluginAiCostCap = z
 
 export const proposeSetPluginAiCostCapOp = defineOperation({
   name: "owner_settings.propose_set_plugin_ai_cost_cap",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposePluginAiCostCapInput,
@@ -119,6 +120,7 @@ export const proposeRotateCookieSecretInput = z
 
 export const proposeRotateGatewayCookieSecretOp = defineOperation({
   name: "owner_settings.propose_rotate_gateway_cookie_secret",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeRotateCookieSecretInput,

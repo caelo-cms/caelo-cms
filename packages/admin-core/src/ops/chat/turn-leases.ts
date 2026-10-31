@@ -39,6 +39,7 @@ const toIso = (v: string | Date): string => (v instanceof Date ? v : new Date(v)
 
 export const acquireChatTurnLeaseOp = defineOperation({
   name: "chat.acquire_turn_lease",
+  readScope: "request",
   // Runner plumbing driven under the turn's own context (operator, MCP, or a
   // subagent's); the AI has no tool for it.
   actorScope: ["human", "ai", "system"],
@@ -145,6 +146,7 @@ export const acquireChatTurnLeaseOp = defineOperation({
 
 export const renewChatTurnLeaseOp = defineOperation({
   name: "chat.renew_turn_lease",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: ttlInput,
@@ -167,6 +169,7 @@ export const renewChatTurnLeaseOp = defineOperation({
 
 export const releaseChatTurnLeaseOp = defineOperation({
   name: "chat.release_turn_lease",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: holderInput,

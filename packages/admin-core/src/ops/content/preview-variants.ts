@@ -27,7 +27,7 @@ import {
   resolveContentVariants,
 } from "@caelo-cms/plugin-host";
 import type { ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
 /** The module row shape the preview loads (layout and page modules). */
@@ -211,10 +211,7 @@ export async function loadVariantModules(
   const rows = (await tx.execute(sql`
     SELECT id::text AS module_id, slug, display_name, html, css, js, fields
     FROM modules
-    WHERE id IN (${sql.join(
-      moduleIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )}) AND deleted_at IS NULL ${branchScope}
+    WHERE id = ANY(${uuidArray(moduleIds)}) AND deleted_at IS NULL ${branchScope}
   `)) as unknown as Omit<VariantModuleRow, "block_name" | "position">[];
   for (const r of rows) modulesById.set(r.module_id, { ...r, block_name: "", position: 0 });
   return modulesById;

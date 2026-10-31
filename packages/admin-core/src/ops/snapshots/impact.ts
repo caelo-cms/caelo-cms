@@ -23,6 +23,7 @@ const affectedPageSchema = z.object({
  */
 export const moduleImpactOp = defineOperation({
   name: "snapshots.module_impact",
+  readScope: "request",
   // CLAUDE.md §11: AI checks blast radius before suggesting an edit.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",

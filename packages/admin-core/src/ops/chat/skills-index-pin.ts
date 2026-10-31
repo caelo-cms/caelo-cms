@@ -24,6 +24,7 @@ const slugList = z.array(z.string().min(1).max(120)).max(500);
 
 export const pinSkillsIndexOp = defineOperation({
   name: "chat.pin_skills_index",
+  readScope: "request",
   // Open to every actor kind (CLAUDE.md §11): the chat-runner calls it as
   // the chat's operator, and writing it twice changes nothing.
   actorScope: ["human", "ai", "system"],

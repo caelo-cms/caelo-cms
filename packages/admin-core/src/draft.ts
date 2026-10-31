@@ -33,7 +33,7 @@
  *     reported so the AI warns and asks before confirming.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
 import { lockedEntityLabel } from "./entity-labels.js";
 import { createdOnBranch, referencedEntities } from "./entity-refs.js";
@@ -240,10 +240,7 @@ async function chatTitles(
   if (ids.length === 0) return new Map();
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, title FROM chat_sessions
-    WHERE id IN (${sql.join(
-      ids.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )})
+    WHERE id = ANY(${uuidArray(ids)})
   `)) as unknown as { id: string; title: string }[];
   return new Map(rows.map((r) => [r.id, r.title]));
 }
@@ -339,15 +336,12 @@ async function branchCreatedRefs(
 ): Promise<Set<string>> {
   const out = new Set<string>();
   if (headerIds.length === 0) return out;
-  const ids = sql.join(
-    headerIds.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
+  const ids = uuidArray(headerIds);
   const checked = new Set<string>();
   for (const t of ENTITY_TABLES) {
     if (t.key === "pluginRow") continue;
     const rows = (await tx.execute(sql`
-      SELECT state FROM ${sql.raw(t.table)} WHERE site_snapshot_id IN (${ids})
+      SELECT state FROM ${sql.raw(t.table)} WHERE site_snapshot_id = ANY(${ids})
     `)) as unknown as { state: unknown }[];
     for (const r of rows) {
       const state = r.state;

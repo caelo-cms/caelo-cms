@@ -30,7 +30,7 @@
  * `errored` with the reasons: never a silent pass (CLAUDE.md §2).
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -47,7 +47,6 @@ import {
   type QualityProblem,
 } from "../../quality/ratchet.js";
 import { jsonbParam } from "../../sql-helpers.js";
-import { uuidList } from "./_shared.js";
 import {
   applyAcceptanceTightening,
   loadCheckAcceptances,
@@ -213,7 +212,7 @@ async function recordCompleted(
   const existing = new Set(
     (
       (await tx.execute(sql`
-        SELECT id::text AS id FROM pages WHERE id = ANY(${uuidList(named)})
+        SELECT id::text AS id FROM pages WHERE id = ANY(${uuidArray(named)})
       `)) as unknown as { id: string }[]
     ).map((r) => r.id),
   );
@@ -324,6 +323,7 @@ async function recordCompleted(
 
 export const recordAuditResultOp = defineOperation({
   name: "quality_audits.record_result",
+  readScope: "request",
   // Why human-only: worker-internal — the audit outcome comes from the
   // in-admin audit worker (system); nobody else may write scores or findings.
   actorScope: ["system"],

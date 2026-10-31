@@ -126,6 +126,7 @@ const handoffRow = z.object({
 
 export const listCredentialHandoffsOp = defineOperation({
   name: "credentials.list_handoffs",
+  readScope: "request",
   // Why human-only: the queue of credentials waiting for the human who
   // approved them (#971). The rows hold no secret, but the AI has no use for
   // them — it is told where the operator finds them, and RLS hides them from
@@ -167,6 +168,7 @@ const issueVia = z.enum(["reveal", "email"]);
 
 export const issueCredentialOp = defineOperation({
   name: "credentials.issue",
+  readScope: "request",
   // Why human-only: generates a credential and returns it in plain text
   // (#971). Only the human who approved its proposal may call it (RLS binds
   // the row to them); no AI or MCP surface ever reaches it.
