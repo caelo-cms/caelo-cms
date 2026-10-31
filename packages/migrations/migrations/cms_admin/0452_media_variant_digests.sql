@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0443 — stored digests of every media file (#1271).
+-- 0452 — stored digests of every media file (#1271).
 --
 -- A Stage used to read every referenced image and variant to name it
 -- (`_assets/<slug>.<hash>.<ext>`, #667), copy it into the build (on Cloud

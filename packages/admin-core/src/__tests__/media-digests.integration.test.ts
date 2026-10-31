@@ -180,7 +180,7 @@ describe("media digests are stored by every write path (consistency)", () => {
 });
 
 describe("media.rebuild_digests (backfill and rebuild)", () => {
-  it("scope missing fills rows written without digests (an older release, before 0443)", async () => {
+  it("scope missing fills rows written without digests (an older release, before 0452)", async () => {
     await asSystem(
       (tx) => tx`
         UPDATE media_variants

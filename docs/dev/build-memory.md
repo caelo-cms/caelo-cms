@@ -8,7 +8,7 @@ The rule since #1271: **build memory is a batch of pages plus a small record per
 
 - **Page batches.** Pages are composed, rewritten and written `PAGE_BATCH` (200) at a time. `page-batch.ts` loads each batch's placements, content variants (#592), nested modules and plugin list sources. Each per-page pass runs on the batch: media, SEO, plugin render, plugin assets, minify, write. Then the batch is released. Templates and layouts are loaded once, not repeated in every page row.
 - **Per-page records, not pages.** Later steps need something from every page: the sitemap, the routing manifest, render deps, link warnings, output-path collisions and the parity digests. Each of these keeps a small record per page. `prepareSeoPass` (`seo-pass.ts`) loads the SEO rows, plugin contributions and public URLs once. It applies them per batch and writes `sitemap.xml` at the end. The render-failure gate collects failure lines (`renderFailuresOf`), not HTML. Composing continues after a failure so the error names every failure, but nothing more is written.
-- **Media by stored digest.** `MediaPass` (`media-pass.ts`) resolves each media ref once, in one statement per batch. It names each file from `media_variants.content_sha256` (migration 0443) and never reads it. How the files reach the site depends on `mediaDelivery`:
+- **Media by stored digest.** `MediaPass` (`media-pass.ts`) resolves each media ref once, in one statement per batch. It names each file from `media_variants.content_sha256` (migration 0452) and never reads it. How the files reach the site depends on `mediaDelivery`:
   - `reference` (Firebase, GCS): each file is listed in `_caelo-asset-references.json` with its stored digests and storage key. A `stat` is the only check the build does on it.
   - `link` (self-hosted): each file is hard-linked into the build. The kernel copies it across filesystems. `syncContents` skips a content-hashed file that `current/` already has at the same size.
 - **Fonts** are referenced the same way (`font-assets.ts`). A file's digests are taken once and kept next to it in the fonts cache (`<file>.digest.json`).
@@ -23,7 +23,7 @@ The rule since #1271: **build memory is a batch of pages plus a small record per
 
 `_caelo-asset-references.json` and `_caelo-parity.json` are `BUILD_INTERNAL_FILES`. No publisher serves them.
 
-## Stored digests (`media_variants`, migration 0443)
+## Stored digests (`media_variants`, migration 0452)
 
 `content_sha256` names the file. `gzip_sha256` and `gzip_size` are what Firebase Hosting knows the file by (`populateFiles`). `digest_profile` fingerprints the gzip that produced them (`published-digest.ts`), because a zlib upgrade can change gzip output. These are derived state (#1267 rule 3):
 

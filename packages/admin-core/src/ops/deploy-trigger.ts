@@ -555,7 +555,7 @@ async function runTrigger(
     }
     // #1271 — the build names media by their stored digests and never
     // reads them. Rows still without digests (written before migration
-    // 0443, or by the previous release during an upgrade) get them now,
+    // 0452, or by the previous release during an upgrade) get them now,
     // the same way the favicon rendition is made above.
     const digested = await digestUndigestedMedia(registry, adapter, sys);
     if (digested !== null) {

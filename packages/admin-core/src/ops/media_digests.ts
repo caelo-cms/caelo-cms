@@ -3,10 +3,10 @@
 /**
  * #1271 — the backfill and the rebuild of the stored media digests
  * (`media_variants.content_sha256 / gzip_sha256 / gzip_size /
- * digest_profile`, migration 0443).
+ * digest_profile`, migration 0452).
  *
  * Every write path stores them with the variant; this op computes them for
- * the rows that have none — written before 0443, or by the previous
+ * the rows that have none — written before 0452, or by the previous
  * release during an upgrade — and, in `scope: "all"`, recomputes every row
  * and reports what was wrong (maintenance after a file was replaced outside
  * Caelo). System-only: nothing asks a person or the AI to run it. `deploy.trigger` runs it with `scope: "missing"` before the

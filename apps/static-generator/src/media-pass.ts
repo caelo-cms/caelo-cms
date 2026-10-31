@@ -19,7 +19,7 @@
  * while the UUID stays internal.
  *
  * #1271 — the pass reads no media byte. The hash in the name is the stored
- * `media_variants.content_sha256` (migration 0443), and each published file
+ * `media_variants.content_sha256` (migration 0452), and each published file
  * becomes an asset reference (asset-references.ts) the publisher delivers
  * from the media store: Firebase and GCS upload only what the provider
  * lacks, self-hosted hard-links it into the build ({@link MediaDelivery}).
