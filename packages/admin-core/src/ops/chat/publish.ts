@@ -26,7 +26,7 @@ import {
   type PluginRowState,
   withPluginScope,
 } from "@caelo-cms/plugin-host";
-import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError, textArray, uuidArray } from "@caelo-cms/query-api";
 import type { ChatPublishInput, ExecutionContext } from "@caelo-cms/shared";
 import { chatPublishInput, err, ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
@@ -218,12 +218,7 @@ export async function mergeBranchSnapshotsToMain(
     headerIds = [...fixedHeaderIds];
   }
   const windowFilter =
-    headerIds.length === 0
-      ? sql` AND false`
-      : sql` AND ss.id IN (${sql.join(
-          headerIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})`;
+    headerIds.length === 0 ? sql` AND false` : sql` AND ss.id = ANY(${uuidArray(headerIds)})`;
   const staging = options.sinceLastStagedAt || fixedHeaderIds;
   const filter = staging ? sql` AND ${pendingSnapshotSql()}${windowFilter}` : sql``;
   const merged = await mergeWindowToMain(
@@ -326,12 +321,7 @@ export async function mergeWindowToMain(
   const sinceFilter = window.filter;
 
   const inFilter = (ids: readonly string[] | null) =>
-    ids === null
-      ? sql``
-      : sql`AND entity_id_text IN (${sql.join(
-          ids.map((id) => sql`${id}`),
-          sql`, `,
-        )})`;
+    ids === null ? sql`` : sql`AND entity_id_text = ANY(${textArray(ids)})`;
   const notYetPublished = (
     kind:
       | "module"
@@ -1138,15 +1128,14 @@ async function markBranchStaged(
   await tx.execute(sql`
     UPDATE site_snapshots SET staged_at = COALESCE(${stagedAt}::timestamptz, now())
     WHERE chat_branch_id = ${branchId}::uuid AND staged_at IS NULL AND undone_at IS NULL
-      AND id IN (${sql.join(
-        headerIds.map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )})
+      AND id = ANY(${uuidArray(headerIds)})
   `);
 }
 
 export const publishChatSessionOp = defineOperation({
   name: "chat.publish",
+  // Why site-wide: Publish live builds and ships the whole site.
+  readScope: "site",
   // Why human-only: publish is a chat-keyed publish-boundary decision; AI proposes via the existing flow.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -1282,6 +1271,8 @@ const chatMergeToMainInput = chatPublishInput.extend({
 
 export const mergeChatToMainOp = defineOperation({
   name: "chat.merge_to_main",
+  // Why site-wide: a merge replays every pending change of the branch onto main.
+  readScope: "site",
   // Issue #620 Part B — the AI may Stage (stage_changes runs this op as
   // the AI). Staging is not public and snapshots stay revertable (§11.A
   // routine test). Production is built only by a human Publish live
@@ -1411,6 +1402,8 @@ export const mergeChatToMainOp = defineOperation({
  */
 export const finalizeStageOp = defineOperation({
   name: "chat.finalize_stage",
+  // Why site-wide: finalising a Stage records every merged change of the site.
+  readScope: "site",
   // Issue #620 Part B — paired with chat.merge_to_main, which the AI may
   // run (stage_changes); the Stage flow calls it after the staging build
   // succeeded.

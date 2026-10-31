@@ -76,6 +76,7 @@ const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{
 
 export const listDomainsOp = defineOperation({
   name: "domains.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -93,6 +94,7 @@ export const listDomainsOp = defineOperation({
 
 export const addDomainOp = defineOperation({
   name: "domains.add",
+  readScope: "request",
   // Why human-only: §11.A — DNS/TLS-affecting; the AI reaches it through propose_add_domain (Owner-
   // approved).
   actorScope: ["human", "system"],
@@ -138,6 +140,7 @@ export const addDomainOp = defineOperation({
 
 export const removeDomainOp = defineOperation({
   name: "domains.remove",
+  readScope: "request",
   // Why human-only: §11.A — takes a hostname off the site; the AI reaches it through
   // propose_remove_domain (Owner-approved).
   actorScope: ["human", "system"],
@@ -167,6 +170,7 @@ export const removeDomainOp = defineOperation({
  */
 export const verifyDomainOp = defineOperation({
   name: "domains.verify",
+  readScope: "request",
   // v0.2.30 — widened to AI: the op is diagnostic (DNS lookup +
   // last_verified_at refresh), no destructive side effect; the AI
   // calls it after the Owner approves a propose_add to surface an
@@ -219,6 +223,7 @@ export const verifyDomainOp = defineOperation({
 
 export const setDomainTlsStatusOp = defineOperation({
   name: "domains.set_tls_status",
+  readScope: "request",
   // Why system-only: written by the TLS/ACME status probe — an observation, not something the AI
   // may assert.
   actorScope: ["system"],

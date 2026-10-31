@@ -78,7 +78,7 @@ export function provisionedSchemaName(caller: string, ddl: string): string {
 export async function provisionPluginSchemaInTx(
   tx: DdlTx,
   caller: string,
-  opts: { pluginId: string; sql: string },
+  opts: { pluginId: string; sql: string; journal?: boolean },
 ): Promise<ProvisionOutcome> {
   const schemaName = provisionedSchemaName(caller, opts.sql);
   const digest = createHash("sha256").update(opts.sql).digest("hex");
@@ -99,6 +99,14 @@ export async function provisionPluginSchemaInTx(
   const dropped = (await tx.execute(
     sql.raw(`SELECT coalesce(current_setting('${DROPPED_COLUMNS_SETTING}', true), '') AS v`),
   )) as unknown as Array<{ v: string }>;
+  // #1267 — every table of a plugin's cms_admin schema writes the change
+  // journal (kind `plugin_storage`, keyed on the plugin id); re-attached on
+  // every new digest so a table a new version adds is journaled too.
+  if (opts.journal === true) {
+    await tx.execute(
+      sql`SELECT caelo_journal_attach_plugin_schema(${schemaName}, ${opts.pluginId}::uuid)`,
+    );
+  }
   await tx.execute(sql`
     INSERT INTO plugin_schema_provisions (schema_name, sql_digest)
     VALUES (${schemaName}, ${digest})

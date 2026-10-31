@@ -26,7 +26,7 @@ import { loadListEntityForUpsert } from "../../lists/store.js";
 import { emitSnapshot } from "../../snapshots/index.js";
 import { setContentInstanceValuesOp } from "../content/content-instances.js";
 import { updateModuleOp } from "../content/modules.js";
-import { branchOf, emitListItemsChanged, failBatch, handlerError } from "./_shared.js";
+import { branchOf, failBatch, handlerError } from "./_shared.js";
 import { writeListForOps } from "./lists.js";
 
 /** Entries without their ids — what "the same list" means across placements. */
@@ -44,6 +44,7 @@ function shape(items: unknown): string {
 
 export const promoteLocalListOp = defineOperation({
   name: "lists.promote_local",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -149,8 +150,6 @@ export const promoteLocalListOp = defineOperation({
       chatBranchId: branchId,
       entities: [{ kind: "list", entityId: r.id, state: r.state }],
     });
-    await emitListItemsChanged(tx, r.id, input.slug, [], r.state.items, branchId);
-
     // Rebind the field to the new list, fixed for every placement.
     const listRef = `caelo:list/${r.id}`;
     const fields = module.fields.map((f) => {

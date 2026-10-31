@@ -44,6 +44,7 @@ const toolApprovalQueueInput = z
 
 export const queueToolApprovalOp = defineOperation({
   name: "tool_approvals.queue",
+  readScope: "request",
   // CLAUDE.md §11A: AI proposes, human approves. AI must be able to
   // queue (it's the proposing actor); human + system retain it for
   // direct queueing too.
@@ -93,6 +94,7 @@ export const queueToolApprovalOp = defineOperation({
 
 export const readToolApprovalForExecuteOp = defineOperation({
   name: "tool_approvals.read_for_execute",
+  readScope: "request",
   // Why human-only: the actual dispatch happens in the route handler
   // running with the operator's session; AI cannot self-approve its
   // own queued proposals.
@@ -166,6 +168,7 @@ export const readToolApprovalForExecuteOp = defineOperation({
 
 export const markToolApprovalResultOp = defineOperation({
   name: "tool_approvals.mark_result",
+  readScope: "request",
   // Why human-only: records the outcome of the Owner-approved dispatch on its approval row; written
   // by the approve route, never by the proposer.
   actorScope: ["human", "system"],
@@ -202,6 +205,7 @@ export const markToolApprovalResultOp = defineOperation({
 
 export const rejectToolApprovalOp = defineOperation({
   name: "tool_approvals.reject_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -255,6 +259,7 @@ const toolApprovalRowSchema = z.object({
 
 export const listPendingToolApprovalsOp = defineOperation({
   name: "tool_approvals.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

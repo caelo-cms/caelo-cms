@@ -20,7 +20,7 @@ import {
   contentVariantProblemMarker,
   type ResolvedContentVariants,
 } from "@caelo-cms/plugin-host";
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ModuleFieldKind } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
@@ -143,10 +143,7 @@ export async function resolveBuildContentVariants(
     const rows = (await tx.execute(sql`
       SELECT id::text AS module_id, slug, display_name, html, css, js, fields::text AS fields
       FROM modules
-      WHERE id IN (${sql.join(
-        [...overrideIds].map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )})
+      WHERE id = ANY(${uuidArray([...overrideIds])})
         AND deleted_at IS NULL AND chat_branch_id IS NULL
     `)) as unknown as {
       module_id: string;

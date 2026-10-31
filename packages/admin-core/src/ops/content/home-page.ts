@@ -28,6 +28,7 @@ import { loadPageTree } from "./page-tree.js";
 
 export const setHomePageOp = defineOperation({
   name: "pages.set_home_page",
+  readScope: "request",
   // CLAUDE.md §11 — a content decision the AI makes on the operator's
   // behalf ("this page is the homepage").
   actorScope: ["human", "ai", "system"],

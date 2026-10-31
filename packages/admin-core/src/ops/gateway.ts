@@ -39,6 +39,7 @@ const settingsShape = z.object({
 
 export const getGatewaySettingsOp = defineOperation({
   name: "gateway.get_settings",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -108,6 +109,7 @@ export const gatewaySettingsInput = z
 
 export const setGatewaySettingsOp = defineOperation({
   name: "gateway.set_settings",
+  readScope: "request",
   // Why human-only: the direct write is the Owner's /settings/gateway form.
   // Captcha + body cap are the public write surface's abuse defences — a
   // wrong value is felt by visitors before anyone notices. The AI reaches it only through the
@@ -140,6 +142,7 @@ export const setGatewaySettingsOp = defineOperation({
 
 export const rotateCookieSecretOp = defineOperation({
   name: "gateway.rotate_cookie_secret",
+  readScope: "request",
   // Why human-only: rotation invalidates every cookie the gateway signed (all
   // visitors re-identified, signed-in site visitors sign in again) and the
   // old secret cannot be restored. The AI reaches it through
@@ -192,6 +195,7 @@ const requestLogRow = z.object({
  */
 export const listGatewayRequestsOp = defineOperation({
   name: "gateway.list_recent_requests",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_public",
   input: z
@@ -273,6 +277,7 @@ export const listGatewayRequestsOp = defineOperation({
  */
 export const listGatewayAnalyticsOp = defineOperation({
   name: "gateway.list_analytics",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   // #635 — the gateway logs in cms_public; the per-op names it wrote are
   // UNTRUSTED and validated below.
@@ -396,6 +401,7 @@ export const listGatewayAnalyticsOp = defineOperation({
 
 export const setRateLimitOverrideOp = defineOperation({
   name: "gateway.set_rate_limit_override",
+  readScope: "request",
   // Why human-only: the Owner's direct /settings/gateway form. The AI path to
   // the same write is tune_rate_limit → gateway.propose_rate_limit, applied
   // by gateway.execute_rate_limit_proposal after the Owner's click.
@@ -440,6 +446,7 @@ export const setRateLimitOverrideOp = defineOperation({
  */
 export const proposeRateLimitOp = defineOperation({
   name: "gateway.propose_rate_limit",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -484,6 +491,7 @@ export const proposeRateLimitOp = defineOperation({
 
 export const listPendingRateLimitProposalsOp = defineOperation({
   name: "gateway.list_pending_rate_limit_proposals",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -533,6 +541,7 @@ export const listPendingRateLimitProposalsOp = defineOperation({
 
 const executeRateLimitProposalOpDefinition = defineOperation({
   name: "gateway.execute_rate_limit_proposal",
+  readScope: "request",
   // Why human-only: this is the Owner's Approve on an AI rate-limit proposal
   // (§11.A); the AI must never decide its own proposal.
   actorScope: ["human", "system"],
@@ -607,6 +616,7 @@ export const executeRateLimitProposalOp = requiresApproverPermission(
  */
 export const listRateLimitProfilesOp = defineOperation({
   name: "gateway.list_rate_limit_profiles",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -654,6 +664,7 @@ export const listRateLimitProfilesOp = defineOperation({
 
 export const setRateLimitProfileOp = defineOperation({
   name: "gateway.set_rate_limit_profile",
+  readScope: "request",
   // Why human-only: no override can be pointed at a profile yet — nothing
   // writes plugin_rate_limit_overrides.profile_name — so a profile changes no
   // live limit and there is no operator flow to mirror. The AI tunes the
@@ -699,6 +710,7 @@ export const setRateLimitProfileOp = defineOperation({
 
 export const rejectRateLimitProposalOp = defineOperation({
   name: "gateway.reject_rate_limit_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Reject on an AI rate-limit proposal (§11.A).
   actorScope: ["human", "system"],
   database: "cms_admin",

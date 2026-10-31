@@ -51,6 +51,7 @@ const record = z.object({
 
 export const imageRequestsReadOp = defineOperation({
   name: "image_requests.read",
+  readScope: "request",
   // Why system-only: idempotency ledger the image service writes around each provider call —
   // infrastructure under generate_image / edit_image, not a separate action.
   actorScope: ["system"],
@@ -65,6 +66,7 @@ export const imageRequestsReadOp = defineOperation({
 
 export const imageRequestsReserveOp = defineOperation({
   name: "image_requests.reserve",
+  readScope: "request",
   // Why system-only: idempotency ledger the image service writes around each provider call —
   // infrastructure under generate_image / edit_image, not a separate action.
   actorScope: ["system"],
@@ -123,6 +125,7 @@ export const imageRequestsReserveOp = defineOperation({
 
 export const imageRequestsFinishOp = defineOperation({
   name: "image_requests.finish",
+  readScope: "request",
   // Why system-only: idempotency ledger the image service writes around each provider call —
   // infrastructure under generate_image / edit_image, not a separate action.
   actorScope: ["system"],
@@ -153,6 +156,7 @@ export const imageRequestsFinishOp = defineOperation({
 
 export const imageRequestsMarkUncertainOp = defineOperation({
   name: "image_requests.mark_uncertain",
+  readScope: "request",
   // Why system-only: idempotency ledger the image service writes around each provider call —
   // infrastructure under generate_image / edit_image, not a separate action.
   actorScope: ["system"],

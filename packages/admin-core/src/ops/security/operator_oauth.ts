@@ -36,6 +36,7 @@ const clientRow = z.object({ clientId: z.string(), configuredAt: z.string() });
 /** `operator_oauth.get` — the configured client, or null when Google sign-in is not set up. */
 export const getOperatorOAuthClientOp = defineOperation({
   name: "operator_oauth.get",
+  readScope: "request",
   // Why human-only: backs the Owner's Google sign-in and remote-MCP setup
   // pages; the client is credential configuration the AI neither sets nor
   // needs (the user-create guard reads the row inside its own op).
@@ -65,6 +66,7 @@ export const getOperatorOAuthClientOp = defineOperation({
 /** `operator_oauth.set` — record the client the Owner just stored in Secret Manager. */
 export const setOperatorOAuthClientOp = defineOperation({
   name: "operator_oauth.set",
+  readScope: "request",
   // Why human-only: decides which OAuth client Google IAP signs people in
   // with and accepts programmatically; it is set together with the client
   // secret, which the AI must never handle (CLAUDE.md §11.A credential rule).
@@ -97,6 +99,7 @@ export const setOperatorOAuthClientOp = defineOperation({
 /** `operator_oauth.clear` — Google sign-in removed: IAP falls back to its Google-managed client. */
 export const clearOperatorOAuthClientOp = defineOperation({
   name: "operator_oauth.clear",
+  readScope: "request",
   // Why human-only: the Owner's "Remove" under Settings → Google sign-in,
   // after a warning naming who loses access; same credential surface as
   // operator_oauth.set.
@@ -128,6 +131,7 @@ export const clearOperatorOAuthClientOp = defineOperation({
  */
 export const operatorOAuthClientForSyncOp = defineOperation({
   name: "operator_oauth.client_for_sync",
+  readScope: "request",
   // Why system-only: the input of the operator-access sync job, which runs
   // as a system actor with a read-only database role.
   actorScope: ["system"],

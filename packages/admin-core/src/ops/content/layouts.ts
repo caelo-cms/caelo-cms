@@ -13,7 +13,7 @@
  * the renderer never substitutes a missing layout; it errors loudly.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, textArray, uuidArray } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -108,6 +108,7 @@ async function loadBlocks(
 
 export const listLayoutsOp = defineOperation({
   name: "layouts.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ includeDeleted: z.boolean().default(false) }).strict(),
@@ -143,6 +144,7 @@ export const listLayoutsOp = defineOperation({
 
 export const getLayoutOp = defineOperation({
   name: "layouts.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -183,6 +185,7 @@ export const getLayoutOp = defineOperation({
 
 export const createLayoutOp = defineOperation({
   name: "layouts.create",
+  readScope: "request",
   // Why human-only: §11.A — site-wide chrome; the AI creates layouts through create_layout (an
   // Owner-approved proposal).
   // Owner-only. AI calls reject at the validator and surface a
@@ -297,6 +300,7 @@ export const createLayoutOp = defineOperation({
 
 export const updateLayoutOp = defineOperation({
   name: "layouts.update",
+  readScope: "request",
   // Why human-only: Owner-only — layouts are site-wide chrome; AI re-points templates via setTemplateLayout.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -402,6 +406,7 @@ export const updateLayoutOp = defineOperation({
 
 export const deleteLayoutOp = defineOperation({
   name: "layouts.delete",
+  readScope: "request",
   // Why human-only: Owner-only — layouts are site-wide chrome.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -446,6 +451,7 @@ export const deleteLayoutOp = defineOperation({
 
 export const getLayoutBlockModulesOp = defineOperation({
   name: "layout_modules.get",
+  readScope: "request",
   // Read-only — AI uses this to splice when adding to a layout block.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -471,6 +477,7 @@ export const getLayoutBlockModulesOp = defineOperation({
 
 export const setLayoutModulesOp = defineOperation({
   name: "layout_modules.set",
+  readScope: "request",
   // Filling the chrome blocks is a content op — AI may call this so it
   // can add a footer / menu module to the site-wide layout.
   actorScope: ["human", "ai", "system"],
@@ -537,10 +544,7 @@ export const setLayoutModulesOp = defineOperation({
       }
       const live = (await tx.execute(sql`
         SELECT id::text AS id FROM modules
-        WHERE id IN (${sql.join(
-          input.moduleIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )}) AND deleted_at IS NULL
+        WHERE id = ANY(${uuidArray(input.moduleIds)}) AND deleted_at IS NULL
       `)) as unknown as { id: string }[];
       const liveSet = new Set(live.map((r) => r.id));
       const missing = input.moduleIds.filter((id) => !liveSet.has(id));
@@ -626,6 +630,7 @@ const layoutBlocksSetSchema = z
 
 export const setLayoutBlocksOp = defineOperation({
   name: "layout_blocks.set",
+  readScope: "request",
   // Why human-only: Owner-only — block schema is structural; AI fills blocks via setLayoutModules.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -659,10 +664,7 @@ export const setLayoutBlocksOp = defineOperation({
     const orphanRows = (await tx.execute(sql`
       SELECT DISTINCT block_name FROM layout_modules
       WHERE layout_id = ${input.layoutId}::uuid
-        AND block_name NOT IN (${sql.join(
-          newBlockNames.map((n) => sql`${n}`),
-          sql`, `,
-        )})
+        AND block_name <> ALL(${textArray(newBlockNames)})
     `)) as unknown as { block_name: string }[];
     if (orphanRows.length > 0) {
       return err({

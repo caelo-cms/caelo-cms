@@ -6,7 +6,12 @@
  * scope here — `actorScope: ["human", "system"]` until P5 widens it.
  */
 
-import { defineOperation, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
+import {
+  defineOperation,
+  type QueryError,
+  type TransactionRunner,
+  uuidArray,
+} from "@caelo-cms/query-api";
 import {
   deriveModuleType,
   type ExecutionContext,
@@ -22,7 +27,6 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
-import { emitDomainEvent } from "../../domain-events.js";
 import { canonicaliseModuleCode } from "../../links/canonicalise-writes.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { recordPendingImportLinks } from "../../links/import-targets.js";
@@ -175,6 +179,7 @@ async function overlayBranchEdits(
  */
 export const listModulesUsageOp = defineOperation({
   name: "modules.list_usage",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}),
@@ -238,6 +243,7 @@ export const listModulesUsageOp = defineOperation({
 export const listModulesOp = withHumanisedLinks(
   defineOperation({
     name: "modules.list",
+    readScope: "request",
     // CLAUDE.md §11: read surfaces are open to AI. The AI uses this
     // to plan cross-module changes (e.g. "find every module with a
     // hero in its slug").
@@ -262,12 +268,7 @@ export const listModulesOp = withHumanisedLinks(
       // v0.9.0 — branch-aware: chats see main + their own branched
       // creates; system actors / cross-chat reads see main only.
       const branchFilter = branchVisibilityFilter(ctx);
-      const idFilter = input.moduleIds
-        ? sql`AND id IN (${sql.join(
-            input.moduleIds.map((id) => sql`${id}::uuid`),
-            sql`, `,
-          )})`
-        : sql``;
+      const idFilter = input.moduleIds ? sql`AND id = ANY(${uuidArray(input.moduleIds)})` : sql``;
       const rows = (await tx.execute(
         input.includeDeleted
           ? sql`
@@ -294,6 +295,7 @@ export const listModulesOp = withHumanisedLinks(
 export const getModuleOp = withHumanisedLinks(
   defineOperation({
     name: "modules.get",
+    readScope: "request",
     // CLAUDE.md §11: read surfaces are open to AI.
     actorScope: ["human", "ai", "system"],
     database: "cms_admin",
@@ -324,6 +326,7 @@ export const getModuleOp = withHumanisedLinks(
 
 export const createModuleOp = defineOperation({
   name: "modules.create",
+  readScope: "request",
   // P6.7.3 — AI can create modules via the `add_module_to_page` tool
   // (and templates-fan-out variants in later phases). Same audit +
   // snapshot path as a human create, just with actor_kind=ai.
@@ -553,6 +556,7 @@ export const createModuleOp = defineOperation({
 
 export const updateModuleOp = defineOperation({
   name: "modules.update",
+  readScope: "request",
   // AI in scope: `update_modules_many` and `edit_content` reach this op.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -807,14 +811,6 @@ export const updateModuleOp = defineOperation({
         chatBranchId: branchId,
         entities: [{ kind: "module", entityId: input.moduleId, state }],
       });
-      await emitDomainEvent(tx, {
-        kind: "module.updated",
-        entityId: input.moduleId,
-        payload: {
-          slug: state.slug,
-          ...(branchId ? { chatBranchId: branchId } : {}),
-        },
-      });
     }
     // Epic #724 — links to pages the chat's import run will still build.
     await recordPendingImportLinks(tx, linkCanon.pending, { kind: "module", id: input.moduleId });
@@ -928,6 +924,7 @@ async function softDeleteModule(
 
 export const deleteModuleOp = defineOperation({
   name: "modules.delete",
+  readScope: "request",
   // CLAUDE.md §11: AI cleans up stale modules in routine maintenance.
   // Soft-delete only (branched inside a chat); revert via the
   // snapshots.revert_module path. AI actors cannot delete a placed module.
@@ -972,6 +969,7 @@ export const deleteModuleOp = defineOperation({
 
 export const deleteModulesManyOp = defineOperation({
   name: "modules.delete_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -1038,6 +1036,7 @@ export const deleteModulesManyOp = defineOperation({
  */
 export const updateModulesManyOp = defineOperation({
   name: "modules.update_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ updates: z.array(moduleUpdateSchema).min(1).max(200) }).strict(),
@@ -1062,10 +1061,7 @@ export const updateModulesManyOp = defineOperation({
     const ids = [...new Set(input.updates.map((u) => u.moduleId))];
     const liveRows = (await tx.execute(sql`
       SELECT id::text AS id FROM modules
-      WHERE id IN (${sql.join(
-        ids.map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )}) AND deleted_at IS NULL
+      WHERE id = ANY(${uuidArray(ids)}) AND deleted_at IS NULL
     `)) as unknown as { id: string }[];
     const existing = new Set(liveRows.map((r) => r.id));
     if (ctx.chatBranchId) {

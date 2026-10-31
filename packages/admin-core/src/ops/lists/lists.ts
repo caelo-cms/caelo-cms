@@ -26,7 +26,6 @@ import {
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { emitDomainEvent } from "../../domain-events.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { recordPendingImportLinks } from "../../links/import-targets.js";
 import {
@@ -47,7 +46,6 @@ import {
   checkEntryRefs,
   conflictError,
   describeIssues,
-  emitListItemsChanged,
   failBatch,
   handlerError,
   listIssuesToDetails,
@@ -104,6 +102,7 @@ function textOf(items: readonly ListItem[]): string {
 export const listListsOp = withHumanisedLinks(
   defineOperation({
     name: "lists.list",
+    readScope: "request",
     // Why plugin: the `lists` read grant (docs/lists.md §9) — a plugin
     // reaches list data only through named ops of the domain.
     actorScope: ["human", "ai", "plugin", "system"],
@@ -184,6 +183,7 @@ export const listListsOp = withHumanisedLinks(
 export const getListOp = withHumanisedLinks(
   defineOperation({
     name: "lists.get",
+    readScope: "request",
     // Why plugin: the `lists` read grant (see lists.list).
     actorScope: ["human", "ai", "plugin", "system"],
     database: "cms_admin",
@@ -397,6 +397,7 @@ const upsertListSchema = z
 /** Create or replace shared lists (whole entry tree), one transaction. */
 export const upsertListsManyOp = defineOperation({
   name: "lists.upsert_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ lists: z.array(upsertListSchema).min(1).max(50) }).strict(),
@@ -479,14 +480,6 @@ export const upsertListsManyOp = defineOperation({
       }
       wrote = true;
       entities.push({ kind: "list", entityId: r.id, state: r.state });
-      await emitListItemsChanged(
-        tx,
-        r.id,
-        item.slug,
-        existing?.state.items ?? [],
-        r.state.items,
-        branchId,
-      );
       out.push({
         id: r.id,
         slug: item.slug,
@@ -572,6 +565,7 @@ const patchSchema = z.discriminatedUnion("op", [
  */
 export const patchListItemsManyOp = defineOperation({
   name: "lists.patch_items_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -678,14 +672,6 @@ export const patchListItemsManyOp = defineOperation({
         );
       wrote = true;
       entities.push({ kind: "list", entityId: r.id, state: r.state });
-      await emitListItemsChanged(
-        tx,
-        r.id,
-        existing.state.slug,
-        existing.state.items,
-        r.state.items,
-        branchId,
-      );
       out.push({ id: r.id, slug: existing.state.slug, version: r.state.version, addedItemIds });
     }
     await emitSnapshot(tx, {
@@ -718,6 +704,7 @@ export const patchListItemsManyOp = defineOperation({
 /** Delete shared lists nothing uses any more. Refused while bound (names who binds it). */
 export const deleteListsManyOp = defineOperation({
   name: "lists.delete_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ slugs: z.array(z.string().min(1).max(64)).min(1).max(50) }).strict(),
@@ -784,11 +771,6 @@ export const deleteListsManyOp = defineOperation({
       );
       wrote = true;
       entities.push({ kind: "list", entityId: l.id, state });
-      await emitDomainEvent(tx, {
-        kind: "list.deleted",
-        entityId: l.id,
-        payload: { slug, ...(branchId ? { chatBranchId: branchId } : {}) },
-      });
       deleted.push(slug);
     }
     await emitSnapshot(tx, {

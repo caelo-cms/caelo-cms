@@ -612,12 +612,13 @@ provides five neutral hooks:
    person or the AI cannot change or delete it (`ownerPlugin` in
    `list_types.list`). Uninstalling the plugin keeps the type as a site
    type (`ON DELETE SET NULL`) so the operator's lists survive.
-4. **Domain events** with the chat branch: `list.items_changed`
-   (`added | updated {fields, before} | moved | removed` per entry),
-   `list_type.changed` (`fieldsAdded/fieldsRemoved/nodesRemoved`),
-   `list.deleted`, `page.properties_changed`, `page.terms_changed` —
-   pollable by a plugin with the `domain_events` grant
-   (`PLUGIN_EVENT_KINDS` in the SDK). Plugins read list data through the
+4. **Change journal** (#1267, `docs/dev/state-and-changes.md`): every
+   committed list, list type, page type, page and term change is a
+   journal row with its chat branch; a snapshot row names the snapshot it
+   replaced, so a consumer diffs the two states — `diffListItems` gives the
+   per-entry `added | updated {fields, before} | moved | removed`. A plugin
+   reacts through a `changeConsumer` (the `change_journal` grant, and
+   `cms_admin` for core kinds). Plugins read list data through the
    named ops of the `lists` read domain (`lists.list` with
    `includeItems`, `lists.get`, `list_types.list` / `get`,
    `page_types.list` / `get`) and `pages.list_shared_content`

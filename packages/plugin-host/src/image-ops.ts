@@ -88,6 +88,7 @@ async function readRequest(
 
 const readOp = defineOperation({
   name: IMAGE_OPS.read,
+  readScope: "request",
   // Why system-only: host ledger; the broker reads on the plugin's behalf.
   actorScope: ["system"],
   database: "cms_admin",
@@ -99,6 +100,7 @@ const readOp = defineOperation({
 
 const reserveOp = defineOperation({
   name: IMAGE_OPS.reserve,
+  readScope: "request",
   // Why system-only: see read.
   actorScope: ["system"],
   database: "cms_admin",
@@ -197,6 +199,7 @@ const reserveOp = defineOperation({
 
 const finishOp = defineOperation({
   name: IMAGE_OPS.finish,
+  readScope: "request",
   // Why system-only: see read.
   actorScope: ["system"],
   database: "cms_admin",
@@ -224,6 +227,7 @@ const finishOp = defineOperation({
 
 const markUncertainOp = defineOperation({
   name: IMAGE_OPS.markUncertain,
+  readScope: "request",
   // Why system-only: see read.
   actorScope: ["system"],
   database: "cms_admin",

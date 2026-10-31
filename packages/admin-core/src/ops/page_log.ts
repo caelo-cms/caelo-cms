@@ -31,6 +31,7 @@ import { resolveChatSessionId } from "./_propose-helpers.js";
 
 export const appendPageLogOp = defineOperation({
   name: "page_log.append",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: pageLogAppendInputSchema,
@@ -95,6 +96,7 @@ export const appendPageLogOp = defineOperation({
 
 export const listPageLogOp = defineOperation({
   name: "page_log.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

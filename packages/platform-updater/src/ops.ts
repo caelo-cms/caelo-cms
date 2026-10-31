@@ -13,7 +13,7 @@
  * live in admin-core.
  */
 
-import { defineOperation, recordAudit, SYSTEM_ACTOR_ID } from "@caelo-cms/query-api";
+import { defineOperation, recordAudit, SYSTEM_ACTOR_ID, textArray } from "@caelo-cms/query-api";
 import {
   AUTO_UPDATE_BASES,
   type AutoUpdateBasis,
@@ -75,6 +75,7 @@ const claimOutput = z.object({
 
 export const jobClaimOp = defineOperation({
   name: "platform_updates.job_claim",
+  readScope: "request",
   // Why system-only: an update job's own claim of the next request; the
   // admin writes requests through platform_updates.request.
   actorScope: ["system"],
@@ -218,6 +219,7 @@ export const jobClaimOp = defineOperation({
 
 export const jobHandoverOp = defineOperation({
   name: "platform_updates.job_handover",
+  readScope: "request",
   // Why system-only: the converge job (#819) points its running request at
   // the execution that continues it — stage 1 releases it for its stage 2,
   // which adopts it, as does a run continuing a request whose run died.
@@ -264,6 +266,7 @@ export const jobHandoverOp = defineOperation({
 
 export const jobEventOp = defineOperation({
   name: "platform_updates.job_event",
+  readScope: "request",
   // Why system-only: the upgrader job's own timeline lines.
   actorScope: ["system"],
   database: "cms_admin",
@@ -289,6 +292,7 @@ const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 
 export const jobRecordOp = defineOperation({
   name: "platform_updates.job_record",
+  readScope: "request",
   // Why system-only: facts the upgrader job verified (signed manifest, backup).
   actorScope: ["system"],
   database: "cms_admin",
@@ -330,6 +334,7 @@ export const jobRecordOp = defineOperation({
 
 export const jobFinishOp = defineOperation({
   name: "platform_updates.job_finish",
+  readScope: "request",
   // Why system-only: the upgrader job ends the request it claimed.
   actorScope: ["system"],
   database: "cms_admin",
@@ -345,13 +350,7 @@ export const jobFinishOp = defineOperation({
   output: z.object({ finished: z.boolean() }),
   handler: async (ctx, input, tx) => {
     // drizzle expands a JS array into a parameter list, so build the array literal.
-    const codes =
-      input.codes.length > 0
-        ? sql`ARRAY[${sql.join(
-            input.codes.map((c) => sql`${c}`),
-            sql`, `,
-          )}]::text[]`
-        : sql`'{}'::text[]`;
+    const codes = textArray(input.codes);
     const rows = (await tx.execute(sql`
       UPDATE platform_update_requests
          SET status = ${input.status}, status_reason = ${input.reason},
@@ -382,6 +381,7 @@ export const jobFinishOp = defineOperation({
 
 export const agentHeartbeatOp = defineOperation({
   name: "platform_updates.agent_heartbeat",
+  readScope: "request",
   // Why system-only: the self-hosted host agent's own check-in (#696 Phase
   // 4c); the admin only reads it (platform_updates.agent_status).
   actorScope: ["system"],

@@ -45,7 +45,6 @@ import {
   type PluginAdminQuery,
   type PluginAi,
   type PluginContextTier1,
-  type PluginEvents,
   type PluginWrite,
   z,
 } from "@caelo-cms/plugin-sdk";
@@ -83,8 +82,11 @@ import {
   setListItemVisibility,
 } from "./list-translation-ops.js";
 import {
+  currentSourceFingerprint,
   type GlossaryRow,
+  loadPageSource,
   outcomeNextStep,
+  pageSourceFingerprint,
   pageTranslationBasis,
   preparePageTranslation,
   SEO_STALE_NEXT_STEP,
@@ -156,6 +158,12 @@ export interface PageVariantRow {
   locale_code: string;
   translation_status: "source" | "up_to_date" | "needs_update";
   source_event_cursor: number | null;
+  /**
+   * #1267 — fingerprint of the source page's translatable content when
+   * this variant became up to date (`pageSourceFingerprint`); null for a
+   * source row and for a variant made before #1267.
+   */
+  source_hash: string | null;
   created_at: string;
 }
 
@@ -208,14 +216,165 @@ function aiOf(ctx: unknown): PluginAi {
   return ai;
 }
 
-function eventsOf(ctx: unknown): PluginEvents {
-  const events = (ctx as { events?: PluginEvents }).events;
-  if (!events) {
-    throw new Error(
-      "international-site: ctx.events missing — domain_events capability not granted",
-    );
+/** What the host hands the change consumer (`PluginChangesArgs`, #1267). */
+const stalenessChangesArgs = z.object({
+  chatBranchId: z.string().uuid().nullable(),
+  changes: z
+    .array(
+      z.object({
+        kind: z.string(),
+        op: z.enum(["insert", "update", "delete", "truncate"]),
+        rowId: z.string(),
+        parentId: z.string().nullable(),
+      }),
+    )
+    .max(500),
+});
+
+/**
+ * #1267 — prefix of a `source_hash` the backfill adopted (the source's
+ * content when the backfill ran) rather than one a translation recorded.
+ * The backfill cannot know whether a change committed just before it read
+ * the source was already delivered, so a variant carrying one is flagged by
+ * any change to its source, as before #1267; a rebuild compares the
+ * fingerprint, so an unchanged source stays up to date.
+ */
+const BACKFILLED_HASH = "backfill:";
+
+/** `settings` key recording that the source-hash backfill ran. */
+const SOURCE_HASH_BACKFILL_KEY = "source_hash_backfill";
+
+/** The fingerprint a stored `source_hash` holds, without the backfill prefix. */
+function storedFingerprint(hash: string | null): string | null {
+  if (hash === null) return null;
+  return hash.startsWith(BACKFILLED_HASH) ? hash.slice(BACKFILLED_HASH.length) : hash;
+}
+
+/**
+ * Group id → its source page's fingerprint now, memoised for one pass; null
+ * when the group has no source, or its source page is deleted. Either way
+ * there is nothing to compare a translation with, so callers leave the
+ * group's variants as they are: a deleted source's translations are not
+ * "out of date", and an undo of the delete makes them comparable again.
+ */
+function sourceHashesOf(
+  deps: Pick<ChromeDeps, "q" | "cms" | "listTypes">,
+): (groupId: string) => Promise<string | null> {
+  const known = new Map<string, string | null>();
+  return async (groupId) => {
+    const hit = known.get(groupId);
+    if (hit !== undefined) return hit;
+    const source = (
+      (await deps.q.list("page_variants", {
+        group_id: groupId,
+        translation_status: "source",
+        limit: 1,
+      })) as unknown as PageVariantRow[]
+    )[0];
+    const content = source ? await loadPageSource(deps, source.page_id, deps.listTypes) : null;
+    const hash = content ? await pageSourceFingerprint(content) : null;
+    known.set(groupId, hash);
+    return hash;
+  };
+}
+
+/**
+ * #1267 — the backfill of `page_variants.source_hash` (rule 3: every
+ * derived structure has one). Every variant that is up to date and has no
+ * hash (translated before #1267) adopts its source's current fingerprint,
+ * so neither the first rebuild nor the first source change after the
+ * upgrade flags a translation nobody touched. Variants already
+ * `needs_update` stay as they are.
+ *
+ * Runs once, from onActivate, and only while the plugin's change cursor is
+ * continuous: then every change since the variants were last checked is
+ * delivered after this, and flags them (see {@link BACKFILLED_HASH}). With
+ * the cursor gone (a fresh or repeated activation) the rebuild decides
+ * instead, and a later activation finishes the backfill.
+ *
+ * @returns how many variants got a hash, or null when it did not run.
+ */
+async function backfillSourceHashes(ctx: unknown): Promise<number | null> {
+  const q = adminQueryOf(ctx);
+  const done = (await q.list("settings", {
+    key: SOURCE_HASH_BACKFILL_KEY,
+    limit: 1,
+  })) as unknown as SettingRow[];
+  if (done[0]) return null;
+  const state = await cmsOf(ctx).call<{ continuous: boolean }>("plugin_changes.cursor_state", {});
+  if (!state.continuous) return null;
+  const deps = await chromeDepsOf(ctx);
+  const sourceHashOf = sourceHashesOf(deps);
+  let filled = 0;
+  for (let afterId: string | undefined; ; ) {
+    const rows = (await q.list("page_variants", {
+      translation_status: "up_to_date",
+      orderBy: "id",
+      limit: 1000,
+      ...(afterId ? { afterId } : {}),
+    })) as unknown as PageVariantRow[];
+    for (const row of rows) {
+      if (row.source_hash !== null) continue;
+      const current = await sourceHashOf(row.group_id);
+      // No source to compare with (none, or deleted): left as it is.
+      if (current === null) continue;
+      await q.update("page_variants", row.id, { source_hash: `${BACKFILLED_HASH}${current}` });
+      filled += 1;
+    }
+    if (rows.length < 1000) break;
+    afterId = rows.at(-1)?.id;
   }
-  return events;
+  // Retired-outbox work outstanding at the upgrade (0430 marks its page
+  // part): chrome and list statuses are re-derived from their stored
+  // hashes, which covers module and list events the outbox still held.
+  await refreshChromeStaleness(deps);
+  await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
+  await q.insert("settings", { key: SOURCE_HASH_BACKFILL_KEY, value: { filled } });
+  return filled;
+}
+
+/**
+ * Of these possibly changed pages, the SOURCE pages: mark each up-to-date
+ * sibling variant `needs_update` whose `source_hash` no longer matches the
+ * source's content (#1267). The comparison is with the content, not with
+ * the delivery, so a change delivered after the translation it preceded
+ * flags nothing, and the rebuild decides exactly the same way. A sibling
+ * without a hash, or with a backfilled one, is flagged by any change.
+ */
+async function markSiblingsStale(
+  deps: Pick<ChromeDeps, "q" | "cms" | "listTypes">,
+  sourcePageIds: Iterable<string>,
+): Promise<number> {
+  const { q } = deps;
+  let marked = 0;
+  for (const pageId of sourcePageIds) {
+    const rows = (await q.list("page_variants", {
+      page_id: pageId,
+      limit: 1,
+    })) as unknown as PageVariantRow[];
+    const row = rows[0];
+    if (row?.translation_status !== "source") continue;
+    const siblings = (
+      (await q.list("page_variants", {
+        group_id: row.group_id,
+        limit: 100,
+      })) as unknown as PageVariantRow[]
+    ).filter((sib) => sib.id !== row.id && sib.translation_status === "up_to_date");
+    if (siblings.length === 0) continue;
+    // A deleted source (a soft delete keeps the linkage) is no basis: its
+    // variants stay as they are, and the rest of the batch goes on.
+    const content = await loadPageSource(deps, pageId, deps.listTypes);
+    if (!content) continue;
+    const current = await pageSourceFingerprint(content);
+    for (const sib of siblings) {
+      // A backfilled hash (BACKFILLED_HASH) is no basis for a delivered
+      // change: the change may predate the backfill's read.
+      if (sib.source_hash === current) continue;
+      await q.update("page_variants", sib.id, { translation_status: "needs_update" });
+      marked += 1;
+    }
+  }
+  return marked;
 }
 
 function adminQueryOf(ctx: unknown): PluginAdminQuery {
@@ -603,11 +762,25 @@ async function linkPageIntoGroup(
       `page ${pageId} is already in variant group ${dupe[0].group_id} — unlink_page_variants first`,
     );
   }
+  // A linked page is taken as translated as it stands: its basis is the
+  // group source's content now (#1267).
+  const sourceRows = (await q.list("page_variants", {
+    group_id: groupId,
+    translation_status: "source",
+    limit: 1,
+  })) as unknown as PageVariantRow[];
+  const sourcePageId = sourceRows[0]?.page_id;
+  if (!sourcePageId) {
+    throw new Error(
+      `variant group ${groupId} has no source variant — link the original page first`,
+    );
+  }
   await q.insert("page_variants", {
     group_id: groupId,
     page_id: pageId,
     locale_code: localeCode,
     translation_status: "up_to_date",
+    source_hash: await currentSourceFingerprint({ cms }, sourcePageId),
   });
   // The locale annotation changed → the composed path may move.
   const refreshed = await cms.call<{ path: string; moved: boolean }>("pages.refresh_current_path", {
@@ -889,6 +1062,12 @@ export default definePlugin<PluginContextTier1>({
       page_id: "ref:pages:cascade",
       locale_code: "string",
       translation_status: "enum:source,up_to_date,needs_update",
+      // #1267 — the source content's fingerprint when the variant became
+      // up to date, so a rebuild flags exactly the changed sources.
+      source_hash: "text",
+      // Retired by #1267 (it held a domain-event id): no longer written.
+      // Still declared so the previous release's writes succeed during the
+      // roll; removed with the domain-event tables (0442's release).
       source_event_cursor: "int",
       created_at: "timestamp",
     },
@@ -973,7 +1152,7 @@ export default definePlugin<PluginContextTier1>({
     "ai_provider",
     "chat_runner_tools",
     "background_workers",
-    "domain_events",
+    "change_journal",
     "head_contributions",
     "content_variants",
     "link_resolve",
@@ -1857,108 +2036,140 @@ export default definePlugin<PluginContextTier1>({
     },
 
     /**
-     * #397 worker tick — consume the domain-event outbox and mark
-     * sibling variants of edited SOURCE pages needs_update. Branch
-     * writes (payload.chatBranchId) are skipped: staleness starts when
-     * the change lands on main (page.updated on publish/merge carries
-     * no branch id). At-least-once delivery is safe — the mark is
-     * idempotent.
+     * The change consumer (#397, on the change journal since #1267): the
+     * host hands it committed changes of the MAIN line — a chat's change
+     * arrives when its Stage lands it there, which is when staleness
+     * starts. Marks the sibling variants of changed SOURCE pages
+     * needs_update, re-derives chrome staleness when a module or a shared
+     * content instance changed, and the list translations' statuses from
+     * the main line on any change. At-least-once delivery is safe: every
+     * mark is idempotent.
      */
-    translation_staleness_tick: async (ctx) => {
-      const q = adminQueryOf(ctx);
-      const events = eventsOf(ctx);
-      const batch = await events.poll({
-        kinds: [
-          "page.updated",
-          "page.published",
-          "module.updated",
-          "list.items_changed",
-          "list_type.changed",
-          "list.deleted",
-          "page.properties_changed",
-          "page.terms_changed",
-        ],
-        limit: 200,
-      });
-      if (batch.events.length === 0) return { marked: 0, scanned: 0 };
-      // Epic #1107 — any live change a list translation depends on
-      // (entries, list types, deleted lists, page properties, content
-      // instances, modules, publishing) re-derives the stored statuses
-      // from the main line: added → missing, changed → needs_update,
-      // gone → orphaned (kept), back → restored. Idempotent, so
-      // at-least-once delivery is safe. Branch changes wait for their
-      // Stage, like page staleness below; a chat's preview computes the
-      // same from hashes meanwhile.
-      const listsTouched = batch.events.some(
-        (ev) => !(ev.payload as { chatBranchId?: string | null } | null)?.chatBranchId,
-      );
+    translation_staleness_tick: async (ctx, args) => {
+      const { changes } = stalenessChangesArgs.parse(args);
+      if (changes.length === 0) return { marked: 0, scanned: 0 };
+      const cms = cmsOf(ctx);
       const sourcePageIds = new Set<string>();
+      const instanceIds = new Set<string>();
       // #592 — a live edit of a module (layout chrome renders its field
       // defaults) or of a shared content instance may change chrome a
       // translated locale variant was derived from.
       let chromeTouched = false;
-      for (const ev of batch.events) {
-        const payload = ev.payload as { chatBranchId?: string | null; contentInstanceId?: string };
-        if (payload?.chatBranchId) continue;
-        if (ev.kind === "module.updated") {
-          chromeTouched = true;
-          continue;
+      for (const c of changes) {
+        if (c.op === "truncate") continue;
+        switch (c.kind) {
+          case "module":
+            chromeTouched = true;
+            break;
+          case "content_instance":
+            chromeTouched = true;
+            instanceIds.add(c.rowId);
+            break;
+          case "page":
+          case "page_layout":
+          case "page_seo":
+            if (c.op !== "delete") sourcePageIds.add(c.rowId);
+            break;
+          case "page_module_content":
+            if (c.parentId) sourcePageIds.add(c.parentId);
+            break;
+          // Lists, list types, page types and terms are the list
+          // reconciliation's (below); a page's own staleness is its content.
+          default:
+            break;
         }
-        // List events are handled by the list reconciliation below; a
-        // page's own staleness is about its content, not its terms.
-        if (
-          ev.kind === "list.items_changed" ||
-          ev.kind === "list_type.changed" ||
-          ev.kind === "list.deleted" ||
-          ev.kind === "page.terms_changed" ||
-          ev.kind === "page.properties_changed"
-        ) {
-          continue;
-        }
-        if (payload?.contentInstanceId) chromeTouched = true;
-        sourcePageIds.add(ev.entityId);
       }
-      let marked = 0;
-      for (const pageId of sourcePageIds) {
-        const rows = (await q.list("page_variants", {
-          page_id: pageId,
-          limit: 1,
-        })) as unknown as PageVariantRow[];
-        const row = rows[0];
-        if (row?.translation_status !== "source") continue;
-        const siblings = (await q.list("page_variants", {
-          group_id: row.group_id,
-          limit: 100,
-        })) as unknown as PageVariantRow[];
-        for (const sib of siblings) {
-          if (sib.id === row.id || sib.translation_status === "needs_update") continue;
-          await q.update("page_variants", sib.id, {
-            translation_status: "needs_update",
-            source_event_cursor: batch.nextCursor,
+      // A value edit on a (possibly shared) instance is a content change on
+      // EVERY page it renders on (#627: its parents' pages included).
+      for (const id of instanceIds) {
+        const got = await cms
+          .call<{ renderedOn: { pageId: string }[] }>("content_instances.get", { id })
+          .catch((e: unknown) => {
+            // A deleted instance has no pages left to render on; its
+            // placements changed with it and arrive as page changes.
+            if (e instanceof Error && /not found|NotFound/i.test(e.message)) return null;
+            throw e;
           });
+        for (const p of got?.renderedOn ?? []) sourcePageIds.add(p.pageId);
+      }
+      const deps = await chromeDepsOf(ctx);
+      let marked = await markSiblingsStale(deps, sourcePageIds);
+      if (chromeTouched) marked += await refreshChromeStaleness(deps);
+      const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
+      return { marked, scanned: changes.length, lists };
+    },
+
+    /**
+     * The change consumer's rebuild (#1267): runs on first activation and
+     * when the plugin's journal cursor fell behind the journal's horizon
+     * (its consumer stalled for a week, or the plugin was deactivated in
+     * between). Every status is recomputed from stored source
+     * fingerprints, exactly: an up-to-date page variant is flagged
+     * needs_update only when its group source's content differs from the
+     * `source_hash` it was translated from (or that the backfill adopted).
+     * A variant with no hash has no basis to compare and is flagged; one
+     * whose source is gone (none, or deleted) is left as it is.
+     */
+    rebuild_translation_staleness: async (ctx) => {
+      const deps = await chromeDepsOf(ctx);
+      const { q } = deps;
+      let marked = 0;
+      const sourceHashOf = sourceHashesOf(deps);
+      for (let afterId: string | undefined; ; ) {
+        const rows = (await q.list("page_variants", {
+          translation_status: "up_to_date",
+          orderBy: "id",
+          limit: 1000,
+          ...(afterId ? { afterId } : {}),
+        })) as unknown as PageVariantRow[];
+        for (const row of rows) {
+          const current = await sourceHashOf(row.group_id);
+          // No source to compare with (none, or deleted): left as it is.
+          if (current === null || storedFingerprint(row.source_hash) === current) continue;
+          await q.update("page_variants", row.id, { translation_status: "needs_update" });
           marked += 1;
         }
+        if (rows.length < 1000) break;
+        afterId = rows.at(-1)?.id;
       }
-      if (chromeTouched) marked += await refreshChromeStaleness(await chromeDepsOf(ctx));
-      let lists = { updated: 0, inserted: 0, collected: 0 };
-      if (listsTouched) {
-        const deps = await chromeDepsOf(ctx);
-        lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
-      }
-      await events.commit(batch.nextCursor);
-      return { marked, scanned: batch.events.length, lists };
+      marked += await refreshChromeStaleness(deps);
+      const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
+      return { marked, lists };
     },
+  },
+  /**
+   * #1267 — backfill the source fingerprints of variants translated before
+   * the change journal ({@link backfillSourceHashes}); a no-op once done.
+   */
+  onActivate: async (ctx) => {
+    await backfillSourceHashes(ctx);
+  },
+  /**
+   * Translation staleness from the change journal (#397, #1267): live
+   * changes only — a chat's change counts once its Stage lands it.
+   */
+  changeConsumer: {
+    operationName: "translation_staleness_tick",
+    rebuildOperationName: "rebuild_translation_staleness",
+    kinds: [
+      "page",
+      "page_layout",
+      "page_seo",
+      "page_module_content",
+      "page_terms",
+      "page_type",
+      "module",
+      "content_instance",
+      "list",
+      "list_type",
+    ],
+    lines: "main",
   },
   workers: [
     {
       name: "locale-cache-refresh",
       cron: "0 * * * * *",
       operationName: "refresh_locales",
-    },
-    {
-      name: "translation-staleness",
-      cron: "*/30 * * * * *",
-      operationName: "translation_staleness_tick",
     },
   ],
   tools: [

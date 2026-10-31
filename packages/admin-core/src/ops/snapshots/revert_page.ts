@@ -28,6 +28,7 @@ import { applyPathMoveEffects } from "../content/path-moves.js";
  */
 export const revertPageOp = defineOperation({
   name: "snapshots.revert_page",
+  readScope: "request",
   // Why human-only: Owner-only — page revert; AI proposes via chat-keyed Undo path.
   actorScope: ["human", "system"],
   database: "cms_admin",

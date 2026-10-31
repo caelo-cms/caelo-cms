@@ -128,6 +128,7 @@ async function approvalDecidedAfterStop(
 
 export const getAgentStopEpochOp = defineOperation({
   name: "chat.get_agent_stop_epoch",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
@@ -177,6 +178,7 @@ async function workingExternalAgent(
 
 export const registerAgentRunOp = defineOperation({
   name: "chat.register_agent_run",
+  readScope: "request",
   // Runner plumbing driven under the turn's own context (operator, MCP,
   // subagent parent); no AI tool wraps it.
   actorScope: ["human", "ai", "system"],
@@ -357,6 +359,7 @@ export const registerAgentRunOp = defineOperation({
 
 export const heartbeatAgentRunOp = defineOperation({
   name: "chat.heartbeat_agent_run",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -404,6 +407,7 @@ export const heartbeatAgentRunOp = defineOperation({
 
 export const finishAgentRunOp = defineOperation({
   name: "chat.finish_agent_run",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid() }).strict(),
@@ -431,6 +435,7 @@ export const finishAgentRunOp = defineOperation({
 
 export const touchExternalAgentOp = defineOperation({
   name: "chat.touch_external_agent",
+  readScope: "request",
   // Driven by mcp.execute_tool under the token owner's context; no AI tool
   // wraps it (the external agent cannot mark itself un-stopped).
   actorScope: ["human", "ai", "system"],
@@ -495,6 +500,7 @@ export const touchExternalAgentOp = defineOperation({
 
 export const listAgentRunsOp = defineOperation({
   name: "chat.list_agent_runs",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -555,6 +561,7 @@ export const listAgentRunsOp = defineOperation({
 
 export const cancelAgentsOp = defineOperation({
   name: "chat.cancel_agents",
+  readScope: "request",
   // Why human-only: Stop is the operator's authority over the AI. An AI (or
   // an external agent) stopping work is not a thing this op serves; the AI
   // ends its own turn by answering.
@@ -679,6 +686,7 @@ export const cancelAgentsOp = defineOperation({
 
 export const allowExternalAgentOp = defineOperation({
   name: "chat.allow_external_agent",
+  readScope: "request",
   // Why human-only: lifting a Stop is the operator's decision; the stopped
   // agent must never be able to unblock itself.
   actorScope: ["human"],

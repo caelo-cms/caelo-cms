@@ -27,6 +27,7 @@ const budgetRow = z.object({
 
 export const listAiBudgetsOp = defineOperation({
   name: "ai_budgets.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -91,6 +92,7 @@ export const aiBudgetCellInput = z
 
 export const setAiBudgetOp = defineOperation({
   name: "ai_budgets.set",
+  readScope: "request",
   // Why human-only: the direct write is the Owner's /settings/ai/budgets
   // form. A spend cap is the guard that keeps AI cost bounded; an AI that
   // could raise its own cap defeats it (the set_migration_budget incident,
@@ -147,6 +149,7 @@ const statusRow = z.object({
  */
 export const aiBudgetsStatusOp = defineOperation({
   name: "ai_budgets.status",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

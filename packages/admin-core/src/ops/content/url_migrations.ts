@@ -133,6 +133,7 @@ const proposeInput = z
 
 export const proposeUrlMigrationOp = defineOperation({
   name: "url_migrations.propose_migrate",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeInput,
@@ -200,6 +201,8 @@ export const proposeUrlMigrationOp = defineOperation({
 
 const executeUrlMigrationOpDefinition = defineOperation({
   name: "url_migrations.execute_proposal",
+  // Why site-wide: a URL migration moves every affected URL of the site at once.
+  readScope: "site",
   // Why human-only (+system): §11.A — applying a site-wide URL move is
   // the click the gate exists to obtain. The AI proposes; the SDK
   // approval (or the /settings/pending queue) executes.
@@ -273,6 +276,7 @@ const pendingRow = z.object({
  */
 export const listUrlMigrationPendingOp = defineOperation({
   name: "url_migrations.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ limit: z.number().int().min(1).max(200).optional() }).strict(),
@@ -304,6 +308,7 @@ export const listUrlMigrationPendingOp = defineOperation({
 
 export const rejectUrlMigrationOp = defineOperation({
   name: "url_migrations.reject_proposal",
+  readScope: "request",
   // Why human-only (+system): §11.A — the operator's Reject.
   actorScope: ["human", "system"],
   database: "cms_admin",

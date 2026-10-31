@@ -76,6 +76,7 @@ function parseDesignBrief(raw: unknown): DesignBrief | null {
 
 export const getSiteDefaultsOp = defineOperation({
   name: "site_defaults.get",
+  readScope: "request",
   // Plugin actors read it to find the designated home page: a URL
   // plugin needs to know which page core treats as the root before it
   // can say which pages are the root of their own URL space (§11 —
@@ -136,6 +137,7 @@ export const getSiteDefaultsOp = defineOperation({
 
 export const setSiteDefaultsOp = defineOperation({
   name: "site_defaults.set",
+  readScope: "request",
   // AI-writable per §11.A reasoning above (existing content unaffected;
   // change is snapshot-revertable; first-run UX requires it).
   actorScope: ["human", "ai", "system"],
@@ -232,6 +234,7 @@ export const setSiteDefaultsOp = defineOperation({
  */
 export const setSiteIdentityOp = defineOperation({
   name: "site_defaults.set_identity",
+  readScope: "request",
   // AI-callable per §1A — the AI infers identity from the operator's
   // chat and writes it directly, same as `set_theme_tokens` and the
   // other routine writes. Snapshot-revertable via audit log if the

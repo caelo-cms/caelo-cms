@@ -44,6 +44,7 @@ const proposeSetInput = z
 
 export const proposeAiProvidersSetOp = defineOperation({
   name: "ai_providers.propose_set",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeSetInput,
@@ -95,6 +96,7 @@ const proposeClearKeyInput = z.object({ name: providerNameEnum }).strict();
 
 export const proposeAiProvidersClearKeyOp = defineOperation({
   name: "ai_providers.propose_clear_key",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeClearKeyInput,
@@ -150,6 +152,7 @@ export const proposeAiProvidersClearKeyOp = defineOperation({
 
 const executeAiProvidersProposalOpDefinition = defineOperation({
   name: "ai_providers.execute_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -253,6 +256,7 @@ export const executeAiProvidersProposalOp = requiresApproverPermission(
 
 export const rejectAiProvidersProposalOp = defineOperation({
   name: "ai_providers.reject_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -302,6 +306,7 @@ const proposalRowSchema = z.object({
 
 export const listPendingAiProvidersProposalsOp = defineOperation({
   name: "ai_providers.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

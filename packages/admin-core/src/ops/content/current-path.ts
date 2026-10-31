@@ -21,8 +21,7 @@ import {
   type RenderScope,
   type UrlCompositionView,
 } from "@caelo-cms/plugin-host";
-import type { TransactionRunner } from "@caelo-cms/query-api";
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -133,10 +132,7 @@ async function loadStoredPaths(
   if (pageIds.length === 0) return new Map();
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, current_path FROM pages
-    WHERE id IN (${sql.join(
-      pageIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )})
+    WHERE id = ANY(${uuidArray(pageIds)})
   `)) as unknown as { id: string; current_path: string }[];
   return new Map(rows.map((r) => [r.id, r.current_path]));
 }
@@ -167,10 +163,7 @@ async function movesPublishedPage(
 ): Promise<boolean> {
   const published = (await tx.execute(sql`
     SELECT id::text AS id FROM pages
-    WHERE status = 'published' AND id IN (${sql.join(
-      pageIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )})
+    WHERE status = 'published' AND id = ANY(${uuidArray(pageIds)})
   `)) as unknown as { id: string }[];
   if (published.length === 0) return false;
   const ids = published.map((r) => r.id);
@@ -206,6 +199,7 @@ export async function resolveCurrentPathsDryRun(
  */
 export const refreshCurrentPathOp = defineOperation({
   name: "pages.refresh_current_path",
+  readScope: "request",
   // Plugins call this after writing variant rows. For any other caller a
   // published page's move is held for the URL migration (#586); drafts
   // still refresh. Never destructive: recompute + 301.

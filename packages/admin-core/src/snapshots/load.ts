@@ -6,7 +6,7 @@
  * captured state matches what just landed on disk.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
 import type {
@@ -253,12 +253,7 @@ export async function loadBranchedModuleStates(
   const out = new Map<string, ModuleState>();
   if (moduleIds !== undefined && moduleIds.length === 0) return out;
   const idFilter =
-    moduleIds === undefined
-      ? sql``
-      : sql`AND ms.module_id IN (${sql.join(
-          moduleIds.map((id) => sql`${id}::uuid`),
-          sql`, `,
-        )})`;
+    moduleIds === undefined ? sql`` : sql`AND ms.module_id = ANY(${uuidArray(moduleIds)})`;
   const rows = (await tx.execute(sql`
     SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
       FROM module_snapshots ms
@@ -420,10 +415,7 @@ export async function loadContentInstanceBranchStates(
       FROM content_instance_snapshots cis
       JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
      WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-       AND cis.content_instance_id IN (${sql.join(
-         contentInstanceIds.map((id) => sql`${id}::uuid`),
-         sql`, `,
-       )})
+       AND cis.content_instance_id = ANY(${uuidArray(contentInstanceIds)})
      ORDER BY cis.content_instance_id, ss.created_at DESC
   `)) as unknown as { id: string; state: unknown }[];
   for (const r of rows) {

@@ -80,6 +80,7 @@ function buildFixtureQueryApi(): {
   registry.register(
     defineOperation({
       name: "chat.append_message",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: z.looseObject({ role: z.string(), content: z.string() }),

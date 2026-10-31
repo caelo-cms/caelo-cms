@@ -10,7 +10,6 @@ export * from "./chat_sessions.js";
 export * from "./chat_tool_results.js";
 export * from "./content_instance_snapshots.js";
 export * from "./content_instances.js";
-export * from "./domain_events.js";
 export * from "./entity_leases.js";
 export * from "./import_run_events.js";
 export * from "./module_snapshots.js";

@@ -177,6 +177,7 @@ export const patchPageModuleFieldsInput = z
 
 export const patchPageModuleFieldsOp = defineOperation({
   name: OP,
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: patchPageModuleFieldsInput,

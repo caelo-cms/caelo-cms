@@ -55,6 +55,7 @@ const proposeCreateInput = z
 
 export const proposeUserCreateOp = defineOperation({
   name: "users.propose_create",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeCreateInput,
@@ -103,6 +104,7 @@ const proposeSetRolesInput = z
 
 export const proposeUserSetRolesOp = defineOperation({
   name: "users.propose_set_roles",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeSetRolesInput,
@@ -169,6 +171,7 @@ const proposeDeleteInput = z.object({ userId: z.string().uuid() }).strict();
 
 export const proposeUserDeleteOp = defineOperation({
   name: "users.propose_delete",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeDeleteInput,
@@ -224,6 +227,7 @@ export const proposeUserDeleteOp = defineOperation({
 
 const executeUserProposalOpDefinition = defineOperation({
   name: "users.execute_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -330,6 +334,7 @@ export const executeUserProposalOp = requiresApproverPermission(
 
 export const rejectUserProposalOp = defineOperation({
   name: "users.reject_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -379,6 +384,7 @@ const proposalRowSchema = z.object({
 
 export const listPendingUserProposalsOp = defineOperation({
   name: "users.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

@@ -149,6 +149,7 @@ const queuedTranslationModel = z
 
 export const proposeSetAiBudgetOp = defineOperation({
   name: "owner_settings.propose_set_ai_budget",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeAiBudgetInput,
@@ -201,6 +202,7 @@ export const proposeSetAiBudgetOp = defineOperation({
 
 export const proposeSetAiPricingOp = defineOperation({
   name: "owner_settings.propose_set_ai_pricing",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeAiPricingInput,
@@ -281,6 +283,7 @@ async function mergedGatewaySettings(ctx: Ctx, tx: Tx, patch: GatewayPatch) {
 
 export const proposeSetGatewaySettingsOp = defineOperation({
   name: "owner_settings.propose_set_gateway_settings",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeGatewaySettingsInput,
@@ -323,6 +326,7 @@ async function textRate(tx: Tx, provider: string, model: string): Promise<string
 
 export const proposeSetTranslationModelOp = defineOperation({
   name: "owner_settings.propose_set_translation_model",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeTranslationModelInput,
@@ -379,6 +383,7 @@ export const proposeSetTranslationModelOp = defineOperation({
 
 const executeOwnerSettingsProposalOpDefinition = defineOperation({
   name: "owner_settings.execute_proposal",
+  readScope: "request",
   // Why human-only (+system): §11.A — this is the operator's Approve. The
   // AI reaches it only through the gated tool, after the click.
   actorScope: ["human", "system"],
@@ -483,6 +488,7 @@ export const executeOwnerSettingsProposalOp = requiresApproverPermission(
 
 export const rejectOwnerSettingsProposalOp = defineOperation({
   name: "owner_settings.reject_proposal",
+  readScope: "request",
   // Why human-only (+system): §11.A — the operator's Reject.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -528,6 +534,7 @@ const proposalRowSchema = z.object({
 
 export const listPendingOwnerSettingsProposalsOp = defineOperation({
   name: "owner_settings.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ limit: z.number().int().min(1).max(200).optional() }).strict(),

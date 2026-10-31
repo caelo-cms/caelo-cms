@@ -7,11 +7,11 @@
  * starts from the real staged numbers instead of running Lighthouse itself.
  */
 
-import type { defineOperation } from "@caelo-cms/query-api";
+import { type defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { performanceMetricsSchema } from "../../quality/lighthouse-protocol.js";
-import { iso, uuidList } from "./_shared.js";
+import { iso } from "./_shared.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -48,7 +48,7 @@ export async function lastPageMetrics(
       FROM quality_audit_pages qp
       JOIN pages p ON p.id = qp.page_id
       WHERE qp.metrics IS NOT NULL AND p.deleted_at IS NULL
-        AND (qp.page_id = ANY(${uuidList(pageIds)}) OR p.current_path = '/')
+        AND (qp.page_id = ANY(${uuidArray(pageIds)}) OR p.current_path = '/')
       ORDER BY qp.page_id, qp.created_at DESC
     ) latest
     ORDER BY (latest.current_path = '/') DESC, latest.current_path

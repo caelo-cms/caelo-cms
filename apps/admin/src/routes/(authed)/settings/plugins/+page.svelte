@@ -196,6 +196,22 @@
                 </TableCell>
                 <TableCell class="font-mono text-xs">{p.sourcePath ?? "—"}</TableCell>
                 <TableCell>
+                  {#if p.unapprovedCapabilities.length > 0}
+                    <!-- #1267 — a new release asks for more than the Owner
+                         approved: it stays installed and active, and does
+                         not run until this click. -->
+                    <p class="mb-1 text-xs" data-testid="unapproved-{p.slug}">
+                      This version asks for new permissions:
+                      <span class="font-mono">{p.unapprovedCapabilities.join(", ")}</span>. It does not
+                      run until you approve them.
+                    </p>
+                    <form method="post" action="?/approveCapabilities" use:enhance class="mb-1">
+                      <input type="hidden" name="slug" value={p.slug} />
+                      <Button type="submit" size="sm" data-testid="approve-capabilities-{p.slug}">
+                        Approve new permissions
+                      </Button>
+                    </form>
+                  {/if}
                   {#if p.status === "active" && p.health.state === "failing"}
                     <form method="post" action="?/reload" use:enhance class="mb-1">
                       <input type="hidden" name="slug" value={p.slug} />

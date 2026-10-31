@@ -18,6 +18,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
+  drainChangeConsumers,
   pluginWorkerScheduler,
   renderInvocation,
   resetPluginHost,
@@ -172,12 +173,13 @@ interface Overlay {
   hidden: string[];
 }
 
+/**
+ * What an instance woken by the change journal does (#1267): run the
+ * plugin's change consumer to the end of the journal.
+ */
 async function tick(): Promise<void> {
-  for (let i = 0; i < 100; i++) {
-    const r = await op<{ scanned: number }>("translation_staleness_tick");
-    if (r.scanned === 0) return;
-  }
-  throw new Error("event outbox did not drain");
+  const reports = await drainChangeConsumers({ adapter, registry });
+  for (const r of reports) if (r.error) throw new Error(`${r.slug}: ${r.error}`);
 }
 
 /** One preview of `pageId`: its HTML and the list_resolve calls it made. */

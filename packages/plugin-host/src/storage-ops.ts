@@ -265,6 +265,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
 
   const insert = defineOperation({
     name: `${family}.insert`,
+    readScope: "request",
     // Why plugin-only: the caller's plugin id scopes the RLS policy; any
     // other actor has no storage of its own here.
     actorScope: ["plugin"],
@@ -304,6 +305,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
 
   const list = defineOperation({
     name: `${family}.list`,
+    readScope: "request",
     // Why plugin-only: see insert.
     actorScope: ["plugin"],
     database,
@@ -335,7 +337,8 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
         wheres.push(
           values.length === 0
             ? sql`FALSE`
-            : sql`${sql.raw(`"${k}"`)} IN (${sql.join(
+            : // caelo:bounded-list parseAnyOf caps one column at ANY_OF_MAX (1000) values, and they bind typed (string | number | boolean)
+              sql`${sql.raw(`"${k}"`)} IN (${sql.join(
                 values.map((v) => sql`${v}`),
                 sql`, `,
               )})`,
@@ -355,6 +358,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
 
   const update = defineOperation({
     name: `${family}.update`,
+    readScope: "request",
     // Why plugin-only: see insert.
     actorScope: ["plugin"],
     database,
@@ -392,6 +396,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
 
   const remove = defineOperation({
     name: `${family}.delete`,
+    readScope: "request",
     // Why plugin-only: see insert.
     actorScope: ["plugin"],
     database,
@@ -417,6 +422,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
 
   const compareAndSwap = defineOperation({
     name: `${family}.compare_and_swap`,
+    readScope: "request",
     // Why plugin-only: see insert.
     actorScope: ["plugin"],
     database,

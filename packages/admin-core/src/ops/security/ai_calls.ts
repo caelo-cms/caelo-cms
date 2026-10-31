@@ -13,6 +13,7 @@ import { recordAudit } from "../../audit.js";
 
 export const aggregateAiCallsOp = defineOperation({
   name: "ai_calls.aggregate",
+  readScope: "request",
   // CLAUDE.md §11: AI summarises its own usage on user request
   // ("what have I been spending on AI calls today?").
   actorScope: ["human", "ai", "system"],
@@ -317,6 +318,7 @@ async function buildAttribution(
  */
 export const spendWindowOp = defineOperation({
   name: "ai_calls.spend_window",
+  readScope: "request",
   // Why human-only: header spend badge read on every authed page load; not an agent action (spend
   // questions belong to ai_calls.aggregate).
   actorScope: ["human", "system"],
@@ -353,6 +355,7 @@ export const spendWindowOp = defineOperation({
  */
 export const aggregatePluginAiSpendOp = defineOperation({
   name: "ai_calls.aggregate_per_plugin",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ pluginId: z.string().uuid() }).strict(),
@@ -426,6 +429,7 @@ export const aggregatePluginAiSpendOp = defineOperation({
  */
 export const setPluginAiCostCapOp = defineOperation({
   name: "plugins.set_ai_cost_cap",
+  readScope: "request",
   // Why human-only: a plugin's AI spend cap is money — a raised cap is spent
   // before anyone notices, a lowered one silently stops the plugin's AI
   // features. The AI reaches it through propose_set_plugin_ai_cost_cap

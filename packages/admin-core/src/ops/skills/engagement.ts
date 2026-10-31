@@ -64,6 +64,7 @@ const pinDefaultRow = z.object({
 
 export const listPinDefaultsOp = defineOperation({
   name: "skills.list_pin_defaults",
+  readScope: "request",
   // v0.2.19 — read-only per-user list. AI may want to surface "your
   // pinned skills are X, Y" in chat without bouncing through a
   // separate human round-trip.
@@ -109,6 +110,7 @@ export const listPinDefaultsOp = defineOperation({
 
 export const setPinDefaultsOp = defineOperation({
   name: "skills.set_pin_defaults",
+  readScope: "request",
   // v0.2.19 — per-user editorial preference; reverting is a one-call
   // re-pin, no blast radius beyond this user. AI-callable so the
   // operator can ask "always pin scoped-edit when I open a chat" and
@@ -164,6 +166,7 @@ const manualOverride = z
 
 export const setEngagedSkillsOp = defineOperation({
   name: "chat.set_engaged_skills",
+  readScope: "request",
   // Why human-only: CLAUDE.md §2 — manual skill (dis)engagement is the operator's override and
   // always wins; the AI loads skills with load_skill instead.
   // Per-chat manual overrides. Owner / editor curates their chat;

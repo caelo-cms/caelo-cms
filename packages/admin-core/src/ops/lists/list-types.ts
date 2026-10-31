@@ -27,7 +27,6 @@ import {
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { emitDomainEvent } from "../../domain-events.js";
 import { checkDefinitionExt, inertExtPaths } from "../../lists/ext.js";
 import {
   describeLocalPlace,
@@ -43,7 +42,7 @@ import {
   loadListEntityForUpsert,
   persistListEntity,
 } from "../../lists/store.js";
-import { adaptItemsToType, diffListTypeDefs } from "../../lists/type-change.js";
+import { adaptItemsToType } from "../../lists/type-change.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { emitSnapshot } from "../../snapshots/index.js";
 import type { ListState, ListTypeState } from "../../snapshots/state.js";
@@ -54,7 +53,6 @@ import {
   branchOf,
   conflictError,
   describeIssues,
-  emitListItemsChanged,
   failBatch,
   handlerError,
   listIssuesToDetails,
@@ -131,6 +129,7 @@ function summarizeNodes(def: ListTypeDef): string[] {
 
 export const listListTypesOp = defineOperation({
   name: "list_types.list",
+  readScope: "request",
   // Why plugin: the `lists` read grant (docs/lists.md §9) — a translation
   // plugin reads the definitions (and its `ext` attributes) through named
   // ops of the domain, never through a table.
@@ -171,6 +170,7 @@ export const listListTypesOp = defineOperation({
 
 export const getListTypeOp = defineOperation({
   name: "list_types.get",
+  readScope: "request",
   // Why plugin: the `lists` read grant (see list_types.list).
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
@@ -219,6 +219,7 @@ const upsertItemSchema = listTypeDefSchema.extend({
  */
 export const upsertListTypesManyOp = defineOperation({
   name: "list_types.upsert_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -447,14 +448,6 @@ export const upsertListTypesManyOp = defineOperation({
             false,
           );
           listEntities.push({ kind: "list", entityId: target.listId, state: next });
-          await emitListItemsChanged(
-            tx,
-            target.listId,
-            next.slug,
-            target.state.items,
-            rw.items,
-            branchId,
-          );
         } else {
           const r = await rewriteLocalList(ctx, tx, rw.target.place, rw.items);
           if (!r.ok) {
@@ -475,17 +468,6 @@ export const upsertListTypesManyOp = defineOperation({
           entities: listEntities,
         });
       }
-      const diff = diffListTypeDefs(existing?.state.definition ?? null, def);
-      await emitDomainEvent(tx, {
-        kind: "list_type.changed",
-        entityId: id,
-        payload: {
-          slug: def.slug,
-          created: existing === null,
-          ...diff,
-          ...(branchId ? { chatBranchId: branchId } : {}),
-        },
-      });
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
@@ -556,6 +538,7 @@ function errorText(e: { kind: string; message?: string }): string {
 
 export const deleteListTypesManyOp = defineOperation({
   name: "list_types.delete_many",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ slugs: z.array(z.string().min(1).max(64)).min(1).max(50) }).strict(),

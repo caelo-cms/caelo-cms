@@ -48,6 +48,7 @@ import {
   type InMemoryPlugin,
   type LoadReport,
   resolveTrustRoot,
+  unapprovedCapabilities,
   verifyDiskPlugin,
   verifyInMemoryPlugin,
 } from "./loader.js";
@@ -82,6 +83,7 @@ interface RegistryRow {
   readonly status: string;
   readonly version: string;
   readonly actor_id: string | null;
+  readonly approved_capabilities: readonly string[] | null;
 }
 
 let state: {
@@ -218,7 +220,14 @@ async function reconcile(
     // runs the definition shipped in this image whatever version the
     // admin's image registered — during an upgrade the admin rolls first,
     // and detaching would take its endpoints down until the gateway rolls.
-    const stale = !row || row.id !== p.pluginId || (p.tier === 2 && row.version !== p.version);
+    const stale =
+      !row ||
+      row.id !== p.pluginId ||
+      (p.tier === 2 && row.version !== p.version) ||
+      // #1267 — an approval withdrawn or narrowed detaches it.
+      (p.tier === 1 &&
+        unapprovedCapabilities(p.definition.requestedCapabilities ?? [], row.approved_capabilities)
+          .length > 0);
     if (stale) loadedPlugins.unload(p.slug);
   }
   for (const row of rows) {
@@ -241,13 +250,27 @@ async function reconcile(
 
 /**
  * A release-signed plugin runs from the definition THIS gateway verified;
- * the registry only says whether it runs and under which id and actor.
+ * the registry only says whether it runs, under which id and actor, and
+ * which capabilities the Owner approved for it.
  */
 function attachReleaseSigned(
   row: RegistryRow,
   definition: Definition | undefined,
 ): LoadedPlugin | null {
   if (!definition) return null; // active in the admin, not shipped in this image
+  // #1267 — the admin host's gate (loader.ts), applied to the definition
+  // this gateway runs: a plugin waiting for the Owner's approval of a
+  // capability runs no visitor-facing operation either.
+  const unapproved = unapprovedCapabilities(
+    definition.requestedCapabilities ?? [],
+    row.approved_capabilities,
+  );
+  if (unapproved.length > 0) {
+    console.warn(
+      `[plugin-host] ${row.slug} is not attached: it waits for the Owner to approve ${unapproved.join(", ")} at /settings/plugins`,
+    );
+    return null;
+  }
   return {
     pluginId: row.id,
     slug: row.slug,

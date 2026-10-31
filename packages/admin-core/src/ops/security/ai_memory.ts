@@ -38,6 +38,7 @@ const memoryRowSchema = z.object({
 
 export const listAiMemoryOp = defineOperation({
   name: "ai_memory.list",
+  readScope: "request",
   // Read for any in-scope actor — the chat send_message op needs to read
   // memory to compose the system prompt, even when running as the AI actor.
   actorScope: ["human", "ai", "system"],
@@ -68,6 +69,7 @@ export const listAiMemoryOp = defineOperation({
 
 export const setAiMemoryOp = defineOperation({
   name: "ai_memory.set",
+  readScope: "request",
   // Why human-only: CLAUDE.md §2 — AI-written site memory is proposal-gated; the AI suggests via
   // site_memory_propose and the Owner applies.
   // Owner-only writes — route layer enforces settings.write before the call.
@@ -111,6 +113,7 @@ export const setAiMemoryOp = defineOperation({
 
 export const proposeAiMemoryOp = defineOperation({
   name: "ai_memory.propose",
+  readScope: "request",
   // AI tool handler is the primary caller; humans can also propose via
   // some future surface.
   actorScope: ["human", "ai", "system"],
@@ -160,6 +163,7 @@ export const proposeAiMemoryOp = defineOperation({
 
 export const listMemoryProposalsOp = defineOperation({
   name: "ai_memory.list_proposals",
+  readScope: "request",
   // CLAUDE.md §11: AI checks its own pending proposals when planning
   // — avoids re-proposing the same memory the Owner is reviewing.
   actorScope: ["human", "ai", "system"],
@@ -219,6 +223,7 @@ export const listMemoryProposalsOp = defineOperation({
 
 export const reviewAiMemoryOp = defineOperation({
   name: "ai_memory.review",
+  readScope: "request",
   // Why human-only: Owner-only — accept/reject proposals; AI cannot review its own.
   actorScope: ["human", "system"],
   database: "cms_admin",

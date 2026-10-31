@@ -31,6 +31,7 @@ function fixture(): { tools: ToolRegistry; registry: OperationRegistry } {
   registry.register(
     defineOperation({
       name: "themes.propose_create",
+      readScope: "request",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
       input: themeInput,

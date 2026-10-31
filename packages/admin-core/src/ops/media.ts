@@ -20,7 +20,7 @@
  * loudly per the static-generator media-pass.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import {
   err,
   extractMediaRefs,
@@ -159,6 +159,7 @@ function rowToAsset(
 
 export const mediaUploadOp = defineOperation({
   name: "media.upload",
+  readScope: "request",
   // Why human-only: the HTTP upload endpoint writes the bytes, then this row; the AI's media intake
   // (import_media_from_urls, generate_image, edit_image) writes through its own ops.
   // Humans + system. AI uploads live in P11+ (plugin SDK) or the
@@ -277,6 +278,7 @@ export const mediaUploadOp = defineOperation({
 
 export const mediaListOp = defineOperation({
   name: "media.list",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: mediaListInputSchema,
@@ -364,6 +366,7 @@ export const mediaListOp = defineOperation({
 
 export const mediaGetOp = defineOperation({
   name: "media.get",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   // `assetId` accepts EITHER a UUID id or a meaningful slug: module HTML +
@@ -457,6 +460,7 @@ export const mediaGetOp = defineOperation({
 
 export const mediaUpdateAltOp = defineOperation({
   name: "media.update_alt",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: mediaUpdateAltInputSchema,
@@ -495,6 +499,7 @@ export const mediaUpdateAltOp = defineOperation({
 
 export const mediaSetSourceOp = defineOperation({
   name: "media.set_source",
+  readScope: "request",
   // CLAUDE.md §11: recording where media came from + its licence is
   // routine AI territory (after importing/generating, or when the
   // operator states a licence). Undoable by another set_source call.
@@ -537,6 +542,7 @@ export const mediaSetSourceOp = defineOperation({
 
 export const mediaSetVisibilityOp = defineOperation({
   name: "media.set_visibility",
+  readScope: "request",
   // CLAUDE.md §11: routine and undoable by the reverse call. Marking an
   // asset `reference` never unpublishes anything silently — a page that
   // uses it fails its next deploy with the fix spelled out.
@@ -576,6 +582,7 @@ export const mediaSetVisibilityOp = defineOperation({
 
 export const mediaDeleteOp = defineOperation({
   name: "media.delete",
+  readScope: "request",
   // CLAUDE.md §11: AI cleans stale media. Soft-delete only; the
   // referenced-rows guard refuses without `force=true` when usage_count
   // > 0, so an over-eager AI can't strand modules silently.
@@ -654,6 +661,7 @@ export const mediaDeleteOp = defineOperation({
 
 export const mediaRecordUsageOp = defineOperation({
   name: "media.record_usage",
+  readScope: "request",
   // Why system-only: usage-count bookkeeping driven by module writes (see above).
   actorScope: ["system"],
   database: "cms_admin",
@@ -681,6 +689,7 @@ export const mediaRecordUsageOp = defineOperation({
 
 export const mediaListUsagesOp = defineOperation({
   name: "media.list_usages",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ assetId: z.string().uuid() }).strict(),
@@ -717,6 +726,7 @@ export const mediaListUsagesOp = defineOperation({
 
 export const mediaGetSettingsOp = defineOperation({
   name: "media.get_settings",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -744,6 +754,7 @@ export const mediaGetSettingsOp = defineOperation({
 
 export const setMediaCdnOp = defineOperation({
   name: "site_defaults.set_media_cdn",
+  readScope: "request",
   // Why human-only: Owner-only — CDN copy is a billing/infrastructure decision.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -783,6 +794,7 @@ export const setMediaCdnOp = defineOperation({
 
 export const setFocalPointOp = defineOperation({
   name: "media.set_focal_point",
+  readScope: "request",
   // CLAUDE.md §11: visual content curation is AI territory ("center
   // the focal point on the model's face"). Two floats; bounded.
   actorScope: ["human", "ai", "system"],
@@ -823,6 +835,7 @@ export const setFocalPointOp = defineOperation({
 
 export const addCropOp = defineOperation({
   name: "media.add_crop",
+  readScope: "request",
   // CLAUDE.md §11: AI declares named crops for layouts that need
   // a square / wide / tall variant. Pipeline fans out the variants
   // on the next call.
@@ -872,6 +885,7 @@ export const addCropOp = defineOperation({
 
 export const deleteCropOp = defineOperation({
   name: "media.delete_crop",
+  readScope: "request",
   // CLAUDE.md §11: parity with add_crop.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -903,6 +917,7 @@ export const deleteCropOp = defineOperation({
 
 export const listCropsOp = defineOperation({
   name: "media.list_crops",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ assetId: z.string().uuid() }).strict(),
@@ -939,6 +954,7 @@ export const listCropsOp = defineOperation({
 
 export const getProcessingStatusOp = defineOperation({
   name: "media.get_processing_status",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ assetId: z.string().uuid() }).strict(),
@@ -984,6 +1000,7 @@ export const getProcessingStatusOp = defineOperation({
 
 export const proposeAltOp = defineOperation({
   name: "media.propose_alt",
+  readScope: "request",
   // Why system-only: proposals come from the alt-text scanner (see below); the AI writes alt text
   // directly with set_media_alt_many.
   // System-only — proposals come from a scanner CLI / future cron job.
@@ -1028,6 +1045,7 @@ export const proposeAltOp = defineOperation({
 
 export const listAltProposalsOp = defineOperation({
   name: "media.list_alt_proposals",
+  readScope: "request",
   // CLAUDE.md §11: AI inspects pending alt proposals so it doesn't
   // re-propose what the Owner is already reviewing.
   actorScope: ["human", "ai", "system"],
@@ -1103,6 +1121,7 @@ export const listAltProposalsOp = defineOperation({
 
 export const reviewAltProposalOp = defineOperation({
   name: "media.review_alt_proposal",
+  readScope: "request",
   // Why human-only: Owner approval queue — AI proposes via media.propose_alt; humans accept.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -1160,6 +1179,7 @@ export const reviewAltProposalOp = defineOperation({
 
 export const mediaDeleteManyOp = defineOperation({
   name: "media.delete_many",
+  readScope: "request",
   // CLAUDE.md §11: AI uses this for routine library cleanup; same
   // guard semantics as the singular `media.delete`.
   actorScope: ["human", "ai", "system"],
@@ -1221,12 +1241,7 @@ export const mediaDeleteManyOp = defineOperation({
           : (
               (await tx.execute(sql`
                 SELECT slug FROM modules
-                 WHERE id IN (${sql.join(
-                   [...new Set(instanceRefs.map((ci) => ci.moduleId))].map(
-                     (id) => sql`${id}::uuid`,
-                   ),
-                   sql`, `,
-                 )})
+                 WHERE id = ANY(${uuidArray([...new Set(instanceRefs.map((ci) => ci.moduleId))])})
               `)) as unknown as { slug: string }[]
             ).map((r) => r.slug);
       if ((usage > 0 || branchRefs.length > 0 || instanceRefs.length > 0) && !input.force) {

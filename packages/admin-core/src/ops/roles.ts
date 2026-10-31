@@ -13,6 +13,7 @@ const PermissionEnum = z.enum(
 
 export const listRolesOp = defineOperation({
   name: "roles.list",
+  readScope: "request",
   // CLAUDE.md §11: read surface open to AI ("explain what each role
   // can do"). Writes stay human-only — security domain.
   actorScope: ["human", "ai", "system"],
@@ -52,6 +53,7 @@ export const listRolesOp = defineOperation({
 
 export const createRoleOp = defineOperation({
   name: "roles.create",
+  readScope: "request",
   // Why human-only: Owner-only — security; defining new permission sets.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -118,6 +120,7 @@ export const createRoleOp = defineOperation({
 
 export const deleteRoleOp = defineOperation({
   name: "roles.delete",
+  readScope: "request",
   // Why human-only: Owner-only — security.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -170,6 +173,7 @@ export const OWNER_ROLE_PERMISSIONS_FIXED =
 
 export const updateRolePermissionsOp = defineOperation({
   name: "roles.update_permissions",
+  readScope: "request",
   // Why human-only: Owner-only — security.
   actorScope: ["human", "system"],
   database: "cms_admin",

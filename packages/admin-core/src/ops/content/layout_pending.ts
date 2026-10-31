@@ -57,6 +57,7 @@ const proposeCreateInput = z
 
 export const proposeLayoutCreateOp = defineOperation({
   name: "layouts.propose_create",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeCreateInput,
@@ -109,6 +110,7 @@ const proposeUpdateInput = z
 
 export const proposeLayoutUpdateOp = defineOperation({
   name: "layouts.propose_update",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeUpdateInput,
@@ -137,6 +139,7 @@ const proposeDeleteInput = z.object({ layoutId: z.string().uuid() }).strict();
 
 export const proposeLayoutDeleteOp = defineOperation({
   name: "layouts.propose_delete",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeDeleteInput,
@@ -184,6 +187,7 @@ const proposeSetBlocksInput = z
 
 export const proposeLayoutSetBlocksOp = defineOperation({
   name: "layouts.propose_set_blocks",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: proposeSetBlocksInput,
@@ -215,6 +219,7 @@ export const proposeLayoutSetBlocksOp = defineOperation({
 
 const executeLayoutProposalOpDefinition = defineOperation({
   name: "layouts.execute_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -323,6 +328,7 @@ export const executeLayoutProposalOp = requiresApproverPermission(
 
 export const rejectLayoutProposalOp = defineOperation({
   name: "layouts.reject_proposal",
+  readScope: "request",
   // Why human-only: the Owner's Approve/Reject click of the §11.A gate — the AI proposes, it can
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
@@ -372,6 +378,7 @@ const proposalRowSchema = z.object({
 
 export const listPendingLayoutProposalsOp = defineOperation({
   name: "layouts.list_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

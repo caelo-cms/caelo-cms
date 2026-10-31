@@ -21,6 +21,7 @@ import { listPagesOp } from "./content/pages.js";
 
 export const stageReadinessOp = defineOperation({
   name: "deploy.stage_readiness",
+  readScope: "request",
   // CLAUDE.md §11 — an open read: the AI plans its Stage with it.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",

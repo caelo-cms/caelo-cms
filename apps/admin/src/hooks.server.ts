@@ -45,8 +45,9 @@ import {
   makePluginTextProvider,
   startAutoUpdateScheduler,
   startBugForwardingWorker,
+  startChangeJournalGcWorker,
   startChatImageGcWorker,
-  startDomainEventGcWorker,
+  startLiveFanOut,
   startPluginDataBuildWorker,
   startProposalGcWorker,
   startPublicProjectionPublisher,
@@ -61,9 +62,11 @@ import {
 import {
   bootstrap as bootstrapPluginHost,
   ensureDevSignedManifests,
+  hostInstanceId,
   loadedPlugins,
   type AIProvider as PluginHostAIProvider,
   type SnapshotEmitter,
+  startChangeConsumers,
   syncPluginHost,
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
@@ -245,6 +248,11 @@ async function bootPluginHost(): Promise<void> {
   // are in place, then keep it current from the outbox.
   const publisher = startPublicProjectionPublisher({ adapter });
   await publisher.publishAll();
+  // #1267 — plugins' change consumers, woken by the change journal on any
+  // instance; one instance runs each consumer at a time (its claim).
+  startChangeConsumers({ adapter, registry }).catch((e) =>
+    console.error("[hooks] plugin change consumers did not start", e),
+  );
   // #724 rollout E — after the plugin host, so plugins' link hooks take
   // part, and after the gateway projection, which must not wait on a
   // site-wide content conversion (nor on the editor rows it locks).
@@ -541,10 +549,18 @@ function bootstrapSupersedeUpdateRequests(): void {
 // days → 'superseded' once per day across all *_pending_actions
 // tables. Keeps the bell badge meaningful.
 let proposalGcBootstrapped = false;
-function bootstrapDomainEventGc(): void {
-  const { adapter } = getQueryContext();
-  startDomainEventGcWorker({ adapter });
+function bootstrapChangeJournal(): void {
+  if (changeJournalBootstrapped) return;
+  changeJournalBootstrapped = true;
+  const { adapter, registry } = getQueryContext();
+  startChangeJournalGcWorker({ adapter, registry });
+  // #1267 — live topics across admin instances: every committing op's
+  // topics and every journaled change reach editors on every instance.
+  startLiveFanOut({ adapter, instanceId: hostInstanceId() }).catch((e) =>
+    console.error("[bootstrap.live_fan_out] failed", e),
+  );
 }
+let changeJournalBootstrapped = false;
 
 // #1157 — redirects sync to the hosting provider on save, no build. The
 // worker registers the post-commit push every redirects write runs and
@@ -641,7 +657,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapProposalGc();
   bootstrapChatImageGc();
   bootstrapMcpBridge();
-  bootstrapDomainEventGc();
+  bootstrapChangeJournal();
   bootstrapRedirectSync();
   bootstrapQualityAudits();
   bootstrapBugForwarding();

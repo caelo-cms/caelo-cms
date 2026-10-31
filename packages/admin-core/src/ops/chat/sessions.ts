@@ -91,6 +91,7 @@ function parsePinnedElements(raw: unknown): PinnedElement[] {
 
 export const listChatSessionsOp = defineOperation({
   name: "chat.list_sessions",
+  readScope: "request",
   // CLAUDE.md §11: read surface open to AI. The AI uses this in
   // long-running sessions to find prior conversations on the same
   // page / template and cite them.
@@ -174,6 +175,7 @@ export const listChatSessionsOp = defineOperation({
 
 export const createChatSessionOp = defineOperation({
   name: "chat.create_session",
+  readScope: "request",
   // CLAUDE.md §11: AI may spawn scoped chats (e.g. import-site skill
   // creates a session per imported page). The session row is owned by
   // the calling actor; AI sessions surface in the same picker.
@@ -396,6 +398,7 @@ async function readOwnSessionRow(
  */
 export const resolveChatSessionOp = defineOperation({
   name: "chat.resolve_session",
+  readScope: "request",
   // Same scope + owner filter as chat.get_session (read surface, §11).
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
@@ -420,6 +423,7 @@ export const CHAT_HISTORY_PAGE_MAX = 500;
 
 export const getChatSessionOp = defineOperation({
   name: "chat.get_session",
+  readScope: "request",
   // CLAUDE.md §11: read surface open to AI. The chat-runner already
   // executes as AI; without this scope it would have to use the human
   // ctx detour for every session reload.
@@ -577,6 +581,7 @@ export const getChatSessionOp = defineOperation({
  */
 export const getChatBranchIdOp = defineOperation({
   name: "chat.get_branch_id",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }),
@@ -611,6 +616,7 @@ export const getChatBranchIdOp = defineOperation({
 
 export const setChatExtendedThinkingOp = defineOperation({
   name: "chat.set_extended_thinking",
+  readScope: "request",
   // Why human-only: the operator's per-chat cost/latency preference; the AI does not raise its own
   // reasoning budget.
   actorScope: ["human", "system"],
@@ -648,6 +654,7 @@ export const setChatExtendedThinkingOp = defineOperation({
 
 export const renameChatSessionOp = defineOperation({
   name: "chat.rename_session",
+  readScope: "request",
   // v0.2.19 — title is just metadata; AI-renaming a chat to a more
   // descriptive label after a few turns is a useful affordance.
   actorScope: ["human", "ai", "system"],
@@ -677,6 +684,7 @@ export const renameChatSessionOp = defineOperation({
 // scopes by created_by). Keep this human-only.
 export const setPinnedElementsOp = defineOperation({
   name: "chat.set_pinned_elements",
+  readScope: "request",
   // Why human-only: per-user UI state; AI uses chips on the message instead.
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -699,6 +707,7 @@ export const setPinnedElementsOp = defineOperation({
 
 export const archiveChatSessionOp = defineOperation({
   name: "chat.archive_session",
+  readScope: "request",
   // CLAUDE.md §11: AI archives its own scoped sessions when done.
   // RLS enforces created_by ownership.
   actorScope: ["human", "ai", "system"],
@@ -758,6 +767,7 @@ export const archiveChatSessionOp = defineOperation({
  */
 export const listBranchEditedModulesOp = defineOperation({
   name: "chat.branch_edited_modules",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
@@ -803,6 +813,7 @@ export const listBranchEditedModulesOp = defineOperation({
  */
 export const listBranchEditedEntitiesOp = defineOperation({
   name: "chat.branch_edited_entities",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
@@ -877,6 +888,7 @@ export const listBranchEditedEntitiesOp = defineOperation({
 
 export const countBranchChangesOp = defineOperation({
   name: "chat.branch_change_count",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
@@ -1018,6 +1030,7 @@ export const countBranchChangesOp = defineOperation({
  */
 export const listActivePagesOp = defineOperation({
   name: "chat.list_active_pages",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
@@ -1077,6 +1090,7 @@ export const listActivePagesOp = defineOperation({
  */
 export const listOpenChatsWithPendingOp = defineOperation({
   name: "chat.list_open_with_pending",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

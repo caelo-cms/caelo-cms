@@ -64,6 +64,7 @@ interface AssetRow {
 
 export const regenerateMediaVariantsOp = defineOperation({
   name: "media.regenerate_variants",
+  readScope: "request",
   // Routine + recoverable (additive-only writes; nothing is deleted or
   // overwritten), so the AI can unblock a failed stage without a human
   // round-trip — CLAUDE.md §11.

@@ -26,6 +26,7 @@ import {
   fontReaderCachedBytes,
 } from "@caelo-cms/font-service";
 import {
+  collectJournalGarbage,
   DatabaseAdapter,
   execute,
   OperationRegistry,
@@ -321,85 +322,33 @@ test("usage cache: a write that commits after another transaction cached is seen
   await adapter.withAdminTransaction(ctx, (tx) => setCaptionCss(tx, ".cap{font-weight:400}"));
 });
 
-test("usage cache: garbage collection trims the change log and never serves a stale scan", async () => {
-  // 1000 finished change rows (tiny xids are below every snapshot's xmin).
-  await adapter.withAdminTransaction(ctx, (tx) =>
-    tx.execute(sql`
-      INSERT INTO font_usage_changes (kind, xid)
-        SELECT 'change', n::text::xid8 FROM generate_series(3, 1002) AS n
-        ON CONFLICT DO NOTHING
-    `),
-  );
-  await adapter.withAdminTransaction(ctx, async (tx) => {
-    await loadSiteFontUsage(tx, tokens); // miss → GC is due
-    const left = (await tx.execute(
-      sql`SELECT count(*)::int AS n FROM font_usage_changes WHERE kind = 'change' AND xid < '1003'::xid8`,
-    )) as unknown as { n: number }[];
-    expect(left[0]?.n).toBe(0);
-    const horizon = (await tx.execute(
-      sql`SELECT count(*)::int AS n FROM font_usage_changes WHERE kind = 'horizon'`,
-    )) as unknown as { n: number }[];
-    expect(horizon[0]?.n).toBeGreaterThan(0);
-  });
-  // After GC the cache still answers correctly, and settles back to hits.
+test("usage cache: journal garbage collection past the cached mark forces a rescan (#1267)", async () => {
   await adapter.withAdminTransaction(ctx, async (tx) => {
     await loadSiteFontUsage(tx, tokens);
+  });
+  // A content write after the scan, then GC with no retention (and no
+  // stall window, so no other test's consumer holds it back): its journal
+  // row goes too, so the horizon passes the cached scan's mark.
+  await adapter.withAdminTransaction(ctx, (tx) => setCaptionCss(tx, ".cap{font-weight:330}"));
+  await adapter.withAdminTransaction(ctx, async (tx) => {
+    expect(
+      await collectJournalGarbage(tx, { retentionMs: 0, stalledConsumerMs: 0 }),
+    ).toBeGreaterThan(0);
   });
   await adapter.withAdminTransaction(ctx, async (tx) => {
     const scans = siteFontUsageScanCount();
     const usage = await loadSiteFontUsage(tx, tokens);
-    expect(siteFontUsageScanCount() - scans).toBe(0);
+    // The rows the freshness check would need are gone: it cannot prove the
+    // cache current, so it rescans instead of trusting it.
+    expect(siteFontUsageScanCount() - scans).toBe(1);
     expect(usage).toEqual(await uncached(tx));
   });
-});
-
-// Codex review on #1219: two GC passes sharing one snapshot xmin inserted
-// the same horizon key, so the second waited on the first's uncommitted row.
-test("usage cache: concurrent garbage-collection passes never wait on each other", async () => {
-  await adapter.withAdminTransaction(ctx, (tx) =>
-    tx.execute(sql`
-      INSERT INTO font_usage_changes (kind, xid)
-        SELECT 'change', n::text::xid8 FROM generate_series(3, 2002) AS n
-        ON CONFLICT DO NOTHING
-    `),
-  );
-  let release!: () => void;
-  const released = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let collected!: () => void;
-  const isCollected = new Promise<void>((resolve) => {
-    collected = resolve;
-  });
-  // A: misses, collects one batch and its horizon, and stays open.
-  const first = adapter.withAdminTransaction(ctx, async (tx) => {
-    clearSiteFontUsageCache();
+  await adapter.withAdminTransaction(ctx, async (tx) => {
+    const scans = siteFontUsageScanCount();
     await loadSiteFontUsage(tx, tokens);
-    collected();
-    await released;
+    expect(siteFontUsageScanCount() - scans).toBe(0);
   });
-  await isCollected;
-  // B: misses too and collects the next batch while A is uncommitted. It
-  // must finish on its own; a lock wait would hang until A ends.
-  const second = otherAdapter.withAdminTransaction(ctx, async (tx) => {
-    clearSiteFontUsageCache();
-    await loadSiteFontUsage(tx, tokens);
-    return "done" as const;
-  });
-  const outcome = await Promise.race([
-    second,
-    new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 5000)),
-  ]);
-  release();
-  await first;
-  await second;
-  expect(outcome).toBe("done");
-  const left = (await adapter.withAdminTransaction(ctx, (tx) =>
-    tx.execute(
-      sql`SELECT count(*)::int AS n FROM font_usage_changes WHERE kind = 'change' AND xid < '2003'::xid8`,
-    ),
-  )) as unknown as { n: number }[];
-  expect(left[0]?.n).toBe(0);
+  await adapter.withAdminTransaction(ctx, (tx) => setCaptionCss(tx, ".cap{font-weight:400}"));
 });
 
 // Codex review on #1219: concurrent first reads of one face each stored it,

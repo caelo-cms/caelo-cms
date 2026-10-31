@@ -104,9 +104,11 @@ async function asSystem<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
 }
 
 const before = await asSystem(async (tx) => {
-  const plugins = (await tx`SELECT slug, status FROM plugins WHERE slug IN ${tx(SLUGS)}`) as {
+  const plugins = (await tx`
+    SELECT slug, status, approved_capabilities FROM plugins WHERE slug IN ${tx(SLUGS)}`) as {
     slug: string;
     status: string;
+    approved_capabilities: string[] | null;
   }[];
   const [site] =
     (await tx`SELECT site_language, site_base_url FROM site_defaults WHERE id = 1`) as {
@@ -117,8 +119,12 @@ const before = await asSystem(async (tx) => {
   // this fixture is the Owner turning them on for the test — dependency
   // first, in one transaction.
   for (const plugin of plugins) {
+    // Activating approves what the manifest asks for (#1267), as
+    // plugins.activate does.
     if (plugin.status !== "active") {
-      await tx`UPDATE plugins SET status = 'active' WHERE slug = ${plugin.slug}`;
+      await tx`UPDATE plugins SET status = 'active', approved_capabilities = ARRAY(
+        SELECT jsonb_array_elements_text(manifest_json -> 'requestedCapabilities'))
+        WHERE slug = ${plugin.slug}`;
     }
   }
   // A build needs both (<html lang>, canonical origin).
@@ -128,6 +134,7 @@ const before = await asSystem(async (tx) => {
   }
   return {
     pluginStatus: new Map(plugins.map((p) => [p.slug, p.status])),
+    pluginApproved: new Map(plugins.map((p) => [p.slug, p.approved_capabilities])),
     siteLanguage: site?.site_language ?? null,
     siteBaseUrl: site?.site_base_url ?? null,
   };
@@ -151,7 +158,11 @@ async function restore(): Promise<void> {
       await tx`DELETE FROM plugin_consent_manager.tags WHERE name = ${ANALYTICS_TAG}`;
     }
     for (const slug of [...SLUGS].reverse()) {
-      await tx`UPDATE plugins SET status = ${before.pluginStatus.get(slug) ?? "awaiting_activation"} WHERE slug = ${slug}`;
+      const approved = JSON.stringify(before.pluginApproved.get(slug) ?? null);
+      await tx`UPDATE plugins SET status = ${before.pluginStatus.get(slug) ?? "awaiting_activation"},
+        approved_capabilities = CASE WHEN (${approved}::text)::jsonb = 'null'::jsonb THEN NULL
+          ELSE ARRAY(SELECT jsonb_array_elements_text((${approved}::text)::jsonb)) END
+        WHERE slug = ${slug}`;
     }
     await tx`UPDATE site_defaults SET site_language = ${before.siteLanguage}, site_base_url = ${before.siteBaseUrl} WHERE id = 1`;
   });

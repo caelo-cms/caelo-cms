@@ -50,6 +50,7 @@ interface VariantDbRow {
 
 export const mediaListMissingFilesOp = defineOperation({
   name: "media.list_missing_files",
+  readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

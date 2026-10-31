@@ -22,7 +22,7 @@
  * records so the plugin does not silently vanish.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 
@@ -125,10 +125,7 @@ export async function readPluginHealth(
   const out = new Map<string, PluginHealth>();
   if (plugins.length === 0) return out;
   const slugs = plugins.map((p) => p.slug);
-  const slugArray = sql`ARRAY[${sql.join(
-    slugs.map((s) => sql`${s}`),
-    sql`, `,
-  )}]::text[]`;
+  const slugArray = textArray(slugs);
 
   const servers = (await tx.execute(sql`
     SELECT plugin_slug,

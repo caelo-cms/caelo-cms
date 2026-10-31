@@ -25,7 +25,7 @@
  * covered without touching each domain's executor.
  */
 
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -352,6 +352,7 @@ export async function readHandoffForAgent(
 
 export const listMcpApprovalHandoffsOp = defineOperation({
   name: "mcp_approval_handoffs.list",
+  readScope: "request",
   // Read surface — the Live Edit chat renders it, the AI may read it to
   // know which pending cards belong to an external agent.
   actorScope: ["human", "ai", "system"],
@@ -376,10 +377,7 @@ export const listMcpApprovalHandoffsOp = defineOperation({
       : sql``;
     const idFilter =
       input.proposalIds && input.proposalIds.length > 0
-        ? sql`AND proposal_id::text IN (${sql.join(
-            input.proposalIds.map((id) => sql`${id}`),
-            sql`, `,
-          )})`
+        ? sql`AND proposal_id::text = ANY(${textArray(input.proposalIds)})`
         : sql``;
     let actorFilter = sql``;
     if (ctx.actorKind === "human") {

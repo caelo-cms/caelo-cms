@@ -14,7 +14,7 @@
  * transaction only for these reads.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   type ComposeTheme,
@@ -102,12 +102,6 @@ export class PreviewLoadError extends Error {
 export function parseFields(raw: unknown): TemplateField[] {
   return templateFieldsFromJson(raw);
 }
-
-const uuidList = (ids: readonly string[]) =>
-  sql.join(
-    ids.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
 
 /**
  * Read the page bundle. Throws {@link PreviewLoadError} for a page that
@@ -269,7 +263,7 @@ export async function loadPreviewPage(
     const valueRows = (await tx.execute(sql`
       SELECT id::text AS id, module_id::text AS module_id, "values" AS values
       FROM content_instances
-      WHERE id IN (${uuidList(allInstanceIds)}) AND deleted_at IS NULL
+      WHERE id = ANY(${uuidArray(allInstanceIds)}) AND deleted_at IS NULL
     `)) as unknown as { id: string; module_id: string; values: unknown }[];
     for (const r of valueRows) {
       valuesByInstance.set(r.id, (r.values ?? {}) as Record<string, unknown>);
@@ -376,7 +370,7 @@ export async function loadPreviewPage(
     const counts = (await tx.execute(sql`
       SELECT content_instance_id::text AS id, count(DISTINCT page_id)::int AS pages
       FROM page_modules
-      WHERE content_instance_id IN (${uuidList([...new Set(syncedIds)])})
+      WHERE content_instance_id = ANY(${uuidArray([...new Set(syncedIds)])})
       GROUP BY content_instance_id
     `)) as unknown as { id: string; pages: number }[];
     for (const r of counts) sharedPageCounts.set(r.id, Number(r.pages));
@@ -450,7 +444,7 @@ async function branchPlacedModules(
     SELECT m.id::text AS module_id, m.slug AS slug, m.display_name AS display_name,
            m.html AS html, m.css AS css, m.js AS js, m.fields AS fields
     FROM modules m
-    WHERE m.id IN (${uuidList(moduleIds)}) AND m.deleted_at IS NULL
+    WHERE m.id = ANY(${uuidArray(moduleIds)}) AND m.deleted_at IS NULL
       AND (m.chat_branch_id IS NULL OR m.chat_branch_id = ${chatBranchId}::uuid)
   `)) as unknown as Omit<ModuleSourceRow, "block_name" | "position">[];
   const byId = new Map(fetched.map((m) => [m.module_id, m]));
@@ -490,7 +484,7 @@ async function overlayPlacedModuleCode(
      AND m.entity_kind = 'module'
      AND m.entity_id = ms.module_id
      AND m.stage_state = 'staged'
-    WHERE ms.module_id IN (${uuidList(ids)})
+    WHERE ms.module_id = ANY(${uuidArray(ids)})
       ${chatBranchId ? sql`AND ss.chat_branch_id <> ${chatBranchId}::uuid` : sql``}
     ORDER BY ms.module_id, ss.created_at DESC
   `)) as unknown as { module_id: string; state: unknown }[];
@@ -536,7 +530,7 @@ async function branchModuleStates(
     FROM module_snapshots ms
     JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
     WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-      AND ms.module_id IN (${uuidList(moduleIds)})
+      AND ms.module_id = ANY(${uuidArray(moduleIds)})
     ORDER BY ms.module_id, ss.created_at DESC
   `)) as unknown as { module_id: string; state: unknown }[];
   return new Map(rows.map((r) => [r.module_id, r.state as Record<string, unknown>]));
@@ -554,7 +548,7 @@ async function branchInstanceValues(
     FROM content_instance_snapshots cis
     JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
     WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-      AND cis.content_instance_id IN (${uuidList(instanceIds)})
+      AND cis.content_instance_id = ANY(${uuidArray(instanceIds)})
     ORDER BY cis.content_instance_id, ss.created_at DESC
   `)) as unknown as { id: string; state: unknown }[];
   const out = new Map<string, Record<string, unknown>>();
@@ -612,7 +606,7 @@ export async function expandNestedResources(
       const fetched = (await tx.execute(sql`
         SELECT id::text AS module_id, slug, display_name, html, css, js, fields
         FROM modules
-        WHERE id IN (${uuidList([...pendingModuleIds])}) AND deleted_at IS NULL
+        WHERE id = ANY(${uuidArray([...pendingModuleIds])}) AND deleted_at IS NULL
       `)) as unknown as ModuleSourceRow[];
       if (chatBranchId && fetched.length > 0) {
         const overlay = await branchModuleStates(
@@ -647,7 +641,7 @@ export async function expandNestedResources(
       const fetched = (await tx.execute(sql`
         SELECT id::text AS id, module_id::text AS module_id, "values" AS values
         FROM content_instances
-        WHERE id IN (${uuidList(ids)}) AND deleted_at IS NULL
+        WHERE id = ANY(${uuidArray(ids)}) AND deleted_at IS NULL
       `)) as unknown as { id: string; module_id: string; values: unknown }[];
       const overlay =
         chatBranchId && fetched.length > 0
