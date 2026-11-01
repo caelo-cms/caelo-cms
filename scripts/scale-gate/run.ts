@@ -14,7 +14,8 @@
  * (#1253 decisions): read the page (`inspect_page_render`), create its
  * German variant (`create_variant`), write the translated content
  * (`set_page_module_content_many`). Editors open `/edit` (first paint =
- * the whole HTML document, every awaited load done), preview a page
+ * the HTML document up to `</html>`, every awaited load done; the streamed
+ * parts that follow are not timed, #1268), preview a page
  * (`preview-by-path`) and preview it again unchanged.
  *
  * Every call has a timeout, so a run against a slow build still finishes
@@ -71,6 +72,36 @@ export interface ScaleGateReport {
  * answers it (the operator-facing message of `PoolAcquireTimeoutError`).
  */
 export const POOL_EXHAUSTED = /PoolAcquireTimeoutError|pool had no free connection/;
+
+/**
+ * #1268 — reads an `/edit` document up to the end of its HTML and returns
+ * that text. SvelteKit appends the load's streamed parts to the same
+ * response after `</html>`, so first paint ends there; the rest drains in
+ * the background and is not timed. Throws when the status is not 200 or
+ * the response ends without `</html>`.
+ */
+export async function readFirstPaint(res: Response): Promise<string> {
+  if (res.status !== 200)
+    throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("the response has no body");
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+    if (text.includes("</html>")) {
+      void (async () => {
+        while (!(await reader.read()).done) {
+          // Drain the streamed parts so the server finishes the response.
+        }
+      })().catch(() => undefined);
+      return text;
+    }
+  }
+  throw new Error(`the document ended without </html>: ${text.slice(0, 200)}`);
+}
 
 /** Nearest-rank percentile of sorted samples. */
 export function percentile(sorted: readonly number[], p: number): number {
@@ -298,7 +329,7 @@ async function main(): Promise<void> {
         "first_paint",
         `${baseUrl}/edit?page=${page.id}&chat=${e.chatSessionId}`,
         { headers },
-        readAll,
+        readFirstPaint,
       );
       if (Date.now() >= deadline) return;
       const preview = `${baseUrl}/edit/preview-by-path${page.path}?branch=${fixture.draftBranchId}`;

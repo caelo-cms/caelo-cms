@@ -366,6 +366,25 @@ export async function growFixture(
   if (!r?.page_id || !r.instance_id || !r.list_id || !r.media_id) {
     throw new Error("rows-read fixture: reference rows missing");
   }
+  // #1287 — the read target nests one child instance, so the reads of its
+  // nested content (`page_module_content.list_for_page`) look up the
+  // child's parents across every instance of the site. Added once; the
+  // large size reads the same child.
+  await asSystem(url, (tx) =>
+    tx.unsafe(`
+      WITH target AS (
+        SELECT id FROM content_instances
+         WHERE id = '${r.instance_id}' AND NOT ("values" ? 'card')),
+      child AS (
+        INSERT INTO content_instances (module_id, "values")
+        SELECT '${moduleId}', '{"heading": "Nested card"}'::jsonb FROM target
+        RETURNING id)
+      UPDATE content_instances ci
+         SET "values" = ci."values" || jsonb_build_object('card',
+               jsonb_build_object('moduleId', '${moduleId}', 'contentInstanceId', child.id::text))
+        FROM child
+       WHERE ci.id = '${r.instance_id}'`),
+  );
   return {
     moduleId,
     pageId: r.page_id,

@@ -39,7 +39,7 @@ import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../../draft.js";
 import { loadBranchedModuleStates } from "../../snapshots/load.js";
 import type { PageLayoutState, PageState } from "../../snapshots/state.js";
-import { findContentInstancesContaining } from "./content-instance-refs.js";
+import { findContentInstancesContaining, idNeedles } from "./content-instance-refs.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 
 /** Pages + layouts that still place one module (sorted, deduped). */
@@ -184,7 +184,7 @@ export async function findModulePlacements(
 
   // Nested references from content instances (live + this branch's view).
   const nestedByModule = new Map<string, Set<string>>();
-  const nesting = await findContentInstancesContaining(tx, branchId, moduleIds);
+  const nesting = await findContentInstancesContaining(tx, branchId, idNeedles(moduleIds));
   const parentIds = new Set<string>();
   for (const ref of nesting) {
     for (const id of moduleIds) {

@@ -34,6 +34,7 @@ import {
   type ContentInstanceRef,
   findContentInstancesContaining,
   findContentInstancesOfModules,
+  idNeedles,
 } from "./content-instance-refs.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 import { findModulePagePlacements } from "./module-placements.js";
@@ -174,35 +175,27 @@ export async function countPlacementsInView(
   return counts;
 }
 
-/** Above this many ids the parent scan matches any nested ref instead of OR-ing ids. */
-const NESTED_PARENT_ID_NEEDLES_MAX = 20;
-
 /**
  * The content instances (live + the caller's branch view, deleted ones
  * excluded) that list each of `contentInstanceIds` in a `module` /
  * `module-list` field, keyed by child id. A child with no placement of
  * its own still renders wherever such a parent renders — it is not an
- * orphan (#1067). The substring prefilter is confirmed against the
- * parsed refs. `"all"` returns the parents of every nested child (one
- * scan, for a walk over many ids).
+ * orphan (#1067). The indexed id match is confirmed against the parsed
+ * refs.
  */
 export async function nestedParentsInView(
   tx: Tx,
   branchId: string | null,
-  contentInstanceIds: readonly string[] | "all",
+  contentInstanceIds: readonly string[],
 ): Promise<Map<string, string[]>> {
   const out = new Map<string, string[]>();
   if (contentInstanceIds.length === 0) return out;
-  const wanted = contentInstanceIds === "all" ? null : new Set(contentInstanceIds);
-  const needles =
-    wanted === null || wanted.size > NESTED_PARENT_ID_NEEDLES_MAX
-      ? ["contentInstanceId"]
-      : [...wanted];
-  const candidates = await findContentInstancesContaining(tx, branchId, needles);
+  const wanted = new Set(contentInstanceIds);
+  const candidates = await findContentInstancesContaining(tx, branchId, idNeedles(wanted));
   for (const c of candidates) {
     const refs = collectNestedRefs(JSON.parse(c.valuesText) as Record<string, unknown>);
     for (const childId of new Set(refs.map((r) => r.contentInstanceId))) {
-      if (childId === c.contentInstanceId || (wanted !== null && !wanted.has(childId))) continue;
+      if (childId === c.contentInstanceId || !wanted.has(childId)) continue;
       const parents = out.get(childId) ?? [];
       parents.push(c.contentInstanceId);
       out.set(childId, parents);
@@ -294,8 +287,8 @@ export async function loadContentInstanceReach(
   // once: the walk below and the module-default reach both read it.
   const moduleParents = await moduleDefaultParents(tx, branchId);
 
-  // 1. Parent instances, transitively. Past a few ids one scan of every
-  // nested ref answers all levels of the walk. An instance whose module's
+  // 1. Parent instances, transitively, one indexed lookup per level
+  // (content_instance_refs, #1287). An instance whose module's
   // field default lists the child, and which leaves that field unset,
   // renders the child too (the renderer falls back to the default), so it
   // is walked as a parent as well — `parentsOf` keeps only the stored
@@ -303,13 +296,9 @@ export async function loadContentInstanceReach(
   const parentsOf = new Map<string, string[]>();
   const shownBy = new Map<string, string[]>();
   const instancesByModule = new Map<string, ContentInstanceRef[]>();
-  let everyParent: Map<string, string[]> | null = null;
   let frontier = ids;
   for (let depth = 0; depth < MAX_NESTING_DEPTH && frontier.length > 0; depth += 1) {
-    if (everyParent === null && frontier.length > NESTED_PARENT_ID_NEEDLES_MAX) {
-      everyParent = await nestedParentsInView(tx, branchId, "all");
-    }
-    const found = everyParent ?? (await nestedParentsInView(tx, branchId, frontier));
+    const found = await nestedParentsInView(tx, branchId, frontier);
     const unloaded = new Set<string>();
     for (const id of frontier) {
       for (const m of moduleParents.get(id) ?? []) {

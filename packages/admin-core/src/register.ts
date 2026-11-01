@@ -111,6 +111,7 @@ import {
 } from "./ops/chat/turn-leases.js";
 import { buildPageOp } from "./ops/content/build-page.js";
 import { listModulePeersOp } from "./ops/content/content-instance-peers.js";
+import { rebuildContentInstanceRefsOp } from "./ops/content/content-instance-refs.js";
 import {
   createContentInstanceOp,
   createContentInstancesManyOp,
@@ -814,6 +815,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(patchPageModuleFieldsOp);
   // v0.12.0 — content_instances + placement binding ops.
   registry.register(listContentInstancesOp);
+  registry.register(rebuildContentInstanceRefsOp);
   registry.register(listModulePeersOp);
   registry.register(getContentInstanceOp);
   registry.register(createContentInstanceOp);

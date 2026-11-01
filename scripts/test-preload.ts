@@ -316,6 +316,43 @@ async function assertDraftHeadConsistent(url: string): Promise<void> {
   }
 }
 
+/**
+ * #1287 — rule 3 of docs/dev/state-and-changes.md: after each integration
+ * file the maintained `content_instance_refs` equal what the extraction
+ * (`caelo_content_instance_ref_rows`, migration 0458) derives from the
+ * values now. Whatever the file wrote — an op, a helper, its own seed SQL,
+ * a Stage or a revert — a path the triggers miss fails here.
+ */
+async function assertContentInstanceRefsExact(url: string): Promise<void> {
+  const sql = new SQL(url, { max: 1 });
+  try {
+    const drift = (await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx.unsafe(`
+        WITH expected AS (
+          SELECT ci.id AS content_instance_id, r.ref_kind, r.ref
+            FROM content_instances ci
+           CROSS JOIN LATERAL caelo_content_instance_ref_rows(ci."values") r
+        )
+        SELECT
+          (SELECT count(*)::int FROM (SELECT * FROM expected
+             EXCEPT SELECT content_instance_id, ref_kind, ref FROM content_instance_refs) d) AS missing,
+          (SELECT count(*)::int FROM (SELECT content_instance_id, ref_kind, ref FROM content_instance_refs
+             EXCEPT SELECT * FROM expected) d) AS extra`);
+    })) as { missing: number; extra: number }[];
+    const d = drift[0];
+    if (d && (d.missing > 0 || d.extra > 0)) {
+      throw new Error(
+        `content_instance_refs drifted from content_instances (#1287): ${d.missing} missing, ${d.extra} extra. ` +
+          "A write changed content-instance values past the triggers of migration 0458 " +
+          "(a disabled trigger, a write into the table itself); content_instances.rebuild_refs repairs it.",
+      );
+    }
+  } finally {
+    await sql.end();
+  }
+}
+
 if (ADMIN_URL && PUBLIC_URL && RESET_OPTED_IN) {
   beforeAll(async () => {
     await Promise.all([
@@ -328,6 +365,7 @@ if (ADMIN_URL && PUBLIC_URL && RESET_OPTED_IN) {
       assertNoDoubleEncodedJsonb(ADMIN_URL),
       assertNoDoubleEncodedJsonb(PUBLIC_URL),
       assertDraftHeadConsistent(ADMIN_URL),
+      assertContentInstanceRefsExact(ADMIN_URL),
     ]);
   });
 } else if (ADMIN_URL && PUBLIC_URL) {

@@ -31,6 +31,13 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
   { op: "pages_seo.get", ctx: "chat", input: (r) => ({ pageId: r.pageId }) },
   { op: "modules.get", ctx: "chat", input: (r) => ({ moduleId: r.moduleId }) },
   { op: "content_instances.get", ctx: "chat", input: (r) => ({ id: r.instanceId }) },
+  // #1287 — international-site's translator reads every page through it;
+  // its nested-content parents come from the reference index.
+  {
+    op: "page_module_content.list_for_page",
+    ctx: "chat",
+    input: (r) => ({ pageId: r.pageId }),
+  },
   { op: "lists.get", ctx: "chat", input: (r) => ({ id: r.listId }) },
   { op: "media.get", ctx: "system", input: (r) => ({ assetId: r.mediaId }) },
   { op: "site_defaults.get", ctx: "system", input: () => ({}) },
