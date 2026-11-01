@@ -253,7 +253,7 @@ export default definePlugin<PluginContextTier1>({
      */
     summarize: async (ctx, args) => {
       const input = (args ?? {}) as { formSlug?: string; since?: string };
-      const since = input.since ? Date.parse(input.since) : null;
+      const since = input.since === undefined ? null : Date.parse(input.since);
       if (since !== null && Number.isNaN(since)) {
         throw new Error(
           `summarize: since "${input.since}" is not an ISO timestamp (e.g. 2026-11-01T00:00:00Z)`,

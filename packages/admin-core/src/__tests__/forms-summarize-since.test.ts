@@ -63,9 +63,11 @@ describe("#1297 — forms.summarize with since", () => {
 
   it("refuses a since that is not a timestamp before reading anything", async () => {
     const seen: Record<string, unknown>[] = [];
-    await expect(summarize(ctxWithHostRule(seen), { since: "last week" })).rejects.toThrow(
-      /not an ISO timestamp/,
-    );
+    for (const since of ["last week", ""]) {
+      await expect(summarize(ctxWithHostRule(seen), { since })).rejects.toThrow(
+        /not an ISO timestamp/,
+      );
+    }
     expect(seen).toEqual([]);
   });
 });
