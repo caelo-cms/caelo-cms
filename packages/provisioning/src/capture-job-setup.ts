@@ -239,7 +239,10 @@ export async function ensureCaptureJob(
       bucketUrl,
       `--member=${g.member}`,
       `--role=${g.role}`,
-      ...(g.condition ? [`--condition=${g.condition}`] : []),
+      // The out/-only grant leaves a conditional binding on the bucket, and
+      // gcloud then refuses any unconditional grant there in non-interactive
+      // mode unless it says so: `--condition=None`.
+      `--condition=${g.condition ?? "None"}`,
       project,
       "--quiet",
       "--format=none",
