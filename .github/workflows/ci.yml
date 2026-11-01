@@ -345,27 +345,29 @@ jobs:
           echo "GATE_DIR=$RUNNER_TEMP/query-index-gate" >> "$GITHUB_ENV"
           GATE_DIR="$RUNNER_TEMP/query-index-gate"
           mkdir -p "$GATE_DIR"
+          # The logging collector writes into a FIFO the filter reads:
+          # whole messages, never interleaved, and nothing on disk. The
+          # filter runs on the runner (mawk), not in the alpine container
+          # (busybox awk): a slow reader backs the collector up and with it
+          # every statement of the run.
+          mkfifo -m 666 "$GATE_DIR/pg.fifo"
+          nohup awk -v stats="$GATE_DIR/filter-stats.txt" -f scripts/query-index-gate/seqscan-filter.awk \
+            <> "$GATE_DIR/pg.fifo" > "$GATE_DIR/seq.log" 2> "$GATE_DIR/filter.err" &
           docker run -d --name gate-pg --network host \
             -e POSTGRES_USER -e POSTGRES_PASSWORD -e POSTGRES_DB \
-            -v "$GITHUB_WORKSPACE/scripts/query-index-gate:/gate:ro" \
             -v "$GATE_DIR:/out" \
-            --entrypoint sh postgres:17-alpine -c '
-              # The logging collector writes into a FIFO the filter reads:
-              # whole messages, never interleaved, and nothing on disk.
-              mkfifo -m 666 /out/pg.fifo
-              awk -v stats=/out/filter-stats.txt -f /gate/seqscan-filter.awk \
-                <> /out/pg.fifo > /out/seq.log &
-              exec docker-entrypoint.sh postgres \
-                -c logging_collector=on -c log_directory=/out -c log_filename=pg.fifo \
-                -c log_rotation_age=0 -c log_rotation_size=0 \
-                -c shared_preload_libraries=auto_explain \
-                -c auto_explain.log_min_duration=0 \
-                -c auto_explain.log_nested_statements=on \
-                -c auto_explain.log_verbose=on \
-                -c auto_explain.log_format=text \
-                -c auto_explain.log_parameter_max_length=0 \
-                -c enable_seqscan=off \
-                -c "log_line_prefix=@@%a@@ "'
+            -v "$GITHUB_WORKSPACE/scripts/query-index-gate:/gate:ro" \
+            postgres:17-alpine \
+            -c logging_collector=on -c log_directory=/out -c log_filename=pg.fifo \
+            -c log_rotation_age=0 -c log_rotation_size=0 \
+            -c shared_preload_libraries=auto_explain \
+            -c auto_explain.log_min_duration=0 \
+            -c auto_explain.log_nested_statements=on \
+            -c auto_explain.log_verbose=on \
+            -c auto_explain.log_format=text \
+            -c auto_explain.log_parameter_max_length=0 \
+            -c enable_seqscan=off \
+            -c "log_line_prefix=@@%a@@ "
           for i in $(seq 1 90); do
             docker exec gate-pg pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" && break
             sleep 1
