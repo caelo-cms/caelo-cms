@@ -253,17 +253,29 @@ export default definePlugin<PluginContextTier1>({
      */
     summarize: async (ctx, args) => {
       const input = (args ?? {}) as { formSlug?: string; since?: string };
+      const since = input.since ? Date.parse(input.since) : null;
+      if (since !== null && Number.isNaN(since)) {
+        throw new Error(
+          `summarize: since "${input.since}" is not an ISO timestamp (e.g. 2026-11-01T00:00:00Z)`,
+        );
+      }
       const filter: Record<string, unknown> = {
         limit: 50,
         orderBy: "submitted_at",
         orderDir: "desc",
       };
       if (input.formSlug) filter.form_slug = input.formSlug;
-      if (input.since) filter.since = input.since;
-      const rows = await ctx.query.list<"form_submissions", SubmissionRow>(
+      const latest = await ctx.query.list<"form_submissions", SubmissionRow>(
         "form_submissions",
         filter,
       );
+      // The window applies to submitted_at, the submissions' own time. The
+      // host's `since` filter is on created_at, which this table does not
+      // have, so it refused every windowed call (#1297). Newest first, the
+      // rows after `since` among the newest 50 are exactly the newest 50
+      // rows after `since`.
+      const rows =
+        since === null ? latest : latest.filter((r) => new Date(r.submitted_at).getTime() > since);
       if (rows.length === 0) {
         return { summary: "No submissions in the requested window." };
       }
