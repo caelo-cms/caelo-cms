@@ -251,6 +251,57 @@ describe("moduleFields list kind", () => {
     ]);
   });
 
+  // #1304 — `editable` is optional (none); #1281 — an incomplete query is
+  // refused at write time instead of rendering a list-malformed marker.
+  const queryField = (source: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    name: "guides",
+    label: "G",
+    kind: "list",
+    listType: "links",
+    bind: "source",
+    source: { kind: "query", ...source },
+    ...extra,
+  });
+
+  it("a query source without editable means none", () => {
+    const r = mod([
+      queryField({ defaults: { page_type: "guide", order: "title_asc", limit: 10 } }),
+    ]);
+    expect(r.success).toBe(true);
+    const field = r.success ? r.data.fields[0] : undefined;
+    expect(field?.kind === "list" ? field.source : undefined).toEqual({
+      kind: "query",
+      editable: [],
+      defaults: { page_type: "guide", order: "title_asc", limit: 10 },
+    });
+  });
+
+  it("refuses a query source whose defaults lack order or limit, naming the fix", () => {
+    const noOrder = messages(
+      mod([queryField({ editable: ["order"], defaults: { page_type: "guide", limit: 10 } })]),
+    );
+    expect(noOrder).toHaveLength(1);
+    expect(noOrder[0]).toContain('list field "guides": a query source needs order');
+    expect(noOrder[0]).toContain("in source.defaults");
+    const bare = messages(mod([queryField({ defaults: { page_type: "guide" } })]));
+    expect(bare).toHaveLength(1);
+    expect(bare[0]).toContain("needs order");
+    expect(bare[0]).toContain("and limit (1–50; for an overview of every matching page");
+    expect(bare[0]).toContain("paginate:{}");
+  });
+
+  it("a paginated query needs order but no limit", () => {
+    const paginated = { paginate: {} };
+    expect(
+      mod([queryField({ defaults: { page_type: "guide", order: "title_asc" } }, paginated)])
+        .success,
+    ).toBe(true);
+    const noOrder = messages(mod([queryField({ defaults: { page_type: "guide" } }, paginated)]));
+    expect(noOrder).toHaveLength(1);
+    expect(noOrder[0]).toContain("needs order");
+    expect(noOrder[0]).not.toContain("limit (1–50");
+  });
+
   it("refuses the removed text-list / link-list kinds", () => {
     expect(mod([{ name: "t", label: "T", kind: "text-list" }]).success).toBe(false);
     expect(mod([{ name: "l", label: "L", kind: "link-list" }]).success).toBe(false);

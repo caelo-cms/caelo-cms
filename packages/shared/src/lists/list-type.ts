@@ -82,12 +82,52 @@ export type PageQuery = z.infer<typeof pageQuerySchema>;
 /** Partial query: defaults on a node, or the knobs an entry overrides. */
 export const pageQueryPartialSchema = pageQuerySchema.partial();
 
+/** A complete query source, as the AI-facing examples and refusals show it. */
+export const QUERY_SOURCE_EXAMPLE =
+  '{kind:"query", defaults:{page_type:"<slug>", order:"published_desc", limit:10}}';
+
+/**
+ * #1281 — the knobs a query source's `defaults` must carry so it renders
+ * without any placement value: `order` always, `limit` unless the field
+ * is paginated (its page size is the limit). An editable knob is only an
+ * override, never a substitute: a placement that does not set it would
+ * leave the query incomplete. Returns the AI-actionable refusal, or null.
+ *
+ * @param where `"paginated"` — a module list field with `paginate`;
+ *   `"field"` — any other module list field (may opt into paginate);
+ *   `"node"` — a list-type node (never paginated).
+ */
+export function missingQueryDefaults(
+  defaults: { readonly order?: unknown; readonly limit?: unknown },
+  where: "paginated" | "field" | "node",
+): string | null {
+  const missing: string[] = [];
+  if (defaults.order === undefined) {
+    missing.push(
+      'order ("published_desc", "published_asc", "title_asc", or "prop_desc:<property>" / "prop_asc:<property>")',
+    );
+  }
+  if (where !== "paginated" && defaults.limit === undefined) {
+    missing.push(
+      where === "field"
+        ? "limit (1–50; for an overview of every matching page instead: no limit and `paginate:{}` on the list field)"
+        : "limit (1–50)",
+    );
+  }
+  if (missing.length === 0) return null;
+  return `a query source needs ${missing.join(" and ")} in source.defaults — e.g. ${QUERY_SOURCE_EXAMPLE}.`;
+}
+
 export const sourceDefSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("query"),
-      /** Which query parts an editor (or the AI) may set per entry/placement. */
-      editable: z.array(z.enum(QUERY_KNOBS)).max(QUERY_KNOBS.length),
+      /**
+       * Which query parts an editor (or the AI) may set per entry/placement.
+       * Optional, default none (#1304): most sources fix every knob, and a
+       * required empty array only produced refused tool calls.
+       */
+      editable: z.array(z.enum(QUERY_KNOBS)).max(QUERY_KNOBS.length).default([]),
       defaults: pageQueryPartialSchema,
     })
     .strict(),
@@ -227,22 +267,9 @@ export function checkListTypeDef(def: ListTypeDef): ListIssue[] {
       const q = pageQueryPartialSchema.safeParse(node.source.defaults);
       if (!q.success) {
         issues.push({ path: `${at}.source.defaults`, message: "query defaults are invalid." });
-      } else if (
-        node.source.defaults.order === undefined &&
-        !node.source.editable.includes("order")
-      ) {
-        issues.push({
-          path: `${at}.source`,
-          message: 'a query source needs a default "order" or "order" in editable.',
-        });
-      } else if (
-        node.source.defaults.limit === undefined &&
-        !node.source.editable.includes("limit")
-      ) {
-        issues.push({
-          path: `${at}.source`,
-          message: 'a query source needs a default "limit" or "limit" in editable.',
-        });
+      } else {
+        const missing = missingQueryDefaults(node.source.defaults, "node");
+        if (missing !== null) issues.push({ path: `${at}.source.defaults`, message: missing });
       }
     }
   }

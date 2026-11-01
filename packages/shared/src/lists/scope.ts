@@ -42,9 +42,11 @@ export type ScopeValue =
   /**
    * A value that could not resolve (a list source of an inactive plugin,
    * a malformed query). The engine renders the tag raw and reports
-   * `marker` — loud, never silently empty (CLAUDE.md §2).
+   * `marker` — loud, never silently empty (CLAUDE.md §2). `detail`, when
+   * set, says what is wrong and how to fix it (shown to the AI by
+   * `preview_list_source`, #1281).
    */
-  | { readonly kind: "failed"; readonly marker: string };
+  | { readonly kind: "failed"; readonly marker: string; readonly detail?: string };
 
 /** One entry a list section iterates. */
 export interface ScopeEntry {

@@ -159,7 +159,7 @@ function moduleFieldItemSchema(): Record<string, unknown> {
       source: {
         type: "object",
         description:
-          'bind "source": {kind:"query", editable, defaults} | {kind:"system", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:"plugin", name} (a plugin list iterated by name needs no field).',
+          'bind "source": {kind:"query", defaults:{page_type:"<slug>", order:"published_desc", limit:10}, editable?:[knobs a placement may set; default none]} — defaults need order and limit (no limit with paginate) | {kind:"system", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:"plugin", name} (a plugin list iterated by name needs no field).',
       },
       // #1257 — an overview listing every match over follow-up pages.
       paginate: {

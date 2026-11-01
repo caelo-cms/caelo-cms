@@ -88,7 +88,7 @@ describe("pageListingHints (#1256)", () => {
     expect(hints).toHaveLength(1);
     expect(hints[0]).toContain('4 of 6 published "Guide" pages, missing "Guide 4" (/guides/g4)');
     expect(hints[0]).toContain('"Guide 5" (/guides/g5)');
-    expect(hints[0]).toContain('defaults:{page_type:"guide"}');
+    expect(hints[0]).toContain('defaults:{page_type:"guide", order:"published_desc", limit:50}');
     expect(hints[0]).toContain("structure/manual-page-listing");
   });
 

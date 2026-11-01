@@ -14,7 +14,7 @@ import { z } from "zod";
 import { hasEscapedLineBreaks } from "./escaped-line-breaks.js";
 import { DEFAULT_LIST_TYPES, SITE_TEXTS_LIST_TYPE } from "./lists/default-types.js";
 import { listItemInputSchema } from "./lists/items.js";
-import { LIST_MAX_ITEMS, sourceDefSchema } from "./lists/list-type.js";
+import { LIST_MAX_ITEMS, missingQueryDefaults, sourceDefSchema } from "./lists/list-type.js";
 import { pageTypeDefSchema } from "./lists/page-type.js";
 import { listPaginationSchema } from "./lists/pagination.js";
 import { LIST_REF_RE } from "./lists/refs.js";
@@ -424,6 +424,15 @@ function listFieldIssues(f: z.infer<typeof moduleFieldListSchema>): string[] {
     issues.push(`list field "${f.name}": min is greater than max.`);
   }
   if (f.paginate !== undefined) issues.push(...paginateIssues(f));
+  // #1281 — a query whose defaults lack order/limit renders nothing but a
+  // `list-malformed` marker on every page; refuse it here, with the fix.
+  if (bind === "source" && f.source?.kind === "query") {
+    const missing = missingQueryDefaults(
+      f.source.defaults,
+      f.paginate !== undefined ? "paginated" : "field",
+    );
+    if (missing !== null) issues.push(`list field "${f.name}": ${missing}`);
+  }
   return issues;
 }
 

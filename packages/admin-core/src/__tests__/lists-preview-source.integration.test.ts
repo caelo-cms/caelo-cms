@@ -178,6 +178,22 @@ describe("#1107 lists.preview_source", () => {
     expect(notEditable).toContain("editable");
   });
 
+  // #1281 — an incomplete query names the missing knob and its fix, not
+  // the `editable` list (the AI had nothing to fix there).
+  it("a query without order / limit says which default is missing", async () => {
+    const noOrder = await fail(SYS, "lists.preview_source", {
+      source: { kind: "query", defaults: { page_type: NEWS } },
+    });
+    expect(noOrder).toContain("list-malformed:preview[query.order]");
+    expect(noOrder).toContain('the query has no "order" — add order (');
+    expect(noOrder).not.toContain("must be in its `editable` list");
+    const noLimit = await fail(SYS, "lists.preview_source", {
+      source: { kind: "query", defaults: { page_type: NEWS, order: "title_asc" } },
+    });
+    expect(noLimit).toContain("[query.limit]");
+    expect(noLimit).toContain('the query has no "limit" — add limit (1–50) to source.defaults');
+  });
+
   it("a query filters by terms; drafts never appear", async () => {
     const v = await op<Preview>(SYS, "lists.preview_source", {
       source: {

@@ -391,7 +391,7 @@ export const previewListSourceOp = withHumanisedLinks(
           ok: false,
           error: handlerError(
             OP,
-            `${spec.describe} does not resolve: ${resolved.marker}. Fix the source (list_list_types shows the type's sources; a query's knobs must be in its \`editable\` list).`,
+            `${spec.describe} does not resolve: ${resolved.marker}. ${resolved.detail ?? "Fix the source (list_list_types shows the type's sources)."}`,
           ),
         };
       }
@@ -413,7 +413,10 @@ export const previewListSourceOp = withHumanisedLinks(
         if (hit.value?.kind === "failed") {
           return {
             ok: false,
-            error: handlerError(OP, `${spec.describe} does not resolve: ${hit.value.marker}.`),
+            error: handlerError(
+              OP,
+              `${spec.describe} does not resolve: ${hit.value.marker}.${hit.value.detail === undefined ? "" : ` ${hit.value.detail}`}`,
+            ),
           };
         }
         entries = hit.value?.kind === "list" ? hit.value.entries : [];

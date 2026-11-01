@@ -224,7 +224,7 @@ describe("structure/manual-page-listing (#1256)", () => {
     expect(f?.message).toContain('"Guide 7" (/guides/g7)');
     expect(f?.message).toContain('"Guide 8" (/guides/g8)');
     expect(f?.fix?.tool).toBe("update_modules_many");
-    expect(f?.fix?.hint).toContain('page_type:"guide"');
+    expect(f?.fix?.hint).toContain('page_type:"guide", order:"published_desc", limit:50');
     expect(f?.fix?.hint).toContain('bind:"source"');
     expect(() => findingSchema.parse(f)).not.toThrow();
   });
