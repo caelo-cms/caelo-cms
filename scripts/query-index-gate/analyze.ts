@@ -301,12 +301,12 @@ function isPolicyTerm(term: string, policyTerms: ReadonlySet<string>): boolean {
 }
 
 const LITERAL = /'(?:[^']|'')*'/g;
-const SHIELD = /\u0000(\d+)\u0000/g;
+const SHIELD = /\uE000(\d+)\uE000/g;
 
 /**
  * A filter or policy qual in canonical form: casts, whitespace and the
  * scanned relation's own qualifier removed, literals kept but shielded (as
- * \u0000<n>\u0000) so splitting at AND / OR and stripping casts never look
+ * \uE000<n>\uE000) so splitting at AND / OR and stripping casts never look
  * inside a string.
  */
 function canonical(raw: string, ownNames: readonly string[]): { text: string; literals: string[] } {
@@ -314,7 +314,7 @@ function canonical(raw: string, ownNames: readonly string[]): { text: string; li
   let f = raw
     .replace(LITERAL, (m) => {
       literals.push(m);
-      return `\u0000${literals.length - 1}\u0000`;
+      return `\uE000${literals.length - 1}\uE000`;
     })
     .replace(/::"?[a-z_][a-z0-9_ ]*"?(\[\])?/gi, "")
     .replace(/\s+/g, " ")
