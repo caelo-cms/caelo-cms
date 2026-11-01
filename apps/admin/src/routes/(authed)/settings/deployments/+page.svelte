@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { describeStageRun, type StageStatusRun } from "@caelo-cms/shared";
   import { Rocket } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
@@ -42,6 +43,10 @@
   // the live-events wait that the hub holds while a run is in flight, and
   // when the tab regains focus. Nothing is read while the tab is hidden.
   let runs = $state(data.runs);
+  // #1288 — a Stage run's step, progress and estimated time left, by run id.
+  let stageStatus = $state<StageStatusRun[]>(data.stageStatus);
+  let stageStatusError = $state<string | null>(data.stageStatusError);
+  const stageById = $derived(new Map(stageStatus.map((s) => [s.runId, s])));
   let unregister: (() => void) | null = null;
   const inFlight = $derived(
     runs.some((r: { status: string }) => r.status === "running" || r.status === "pending"),
@@ -53,8 +58,14 @@
     try {
       const r = await liveFetch("/api/deploy-runs", { headers: { accept: "application/json" } });
       if (!r.ok) return;
-      const json = (await r.json()) as { runs: typeof data.runs };
+      const json = (await r.json()) as {
+        runs: typeof data.runs;
+        stageStatus: StageStatusRun[];
+        stageStatusError: string | null;
+      };
       runs = json.runs;
+      stageStatus = json.stageStatus;
+      stageStatusError = json.stageStatusError;
     } catch {
       // Network blip or deadline: the next topic or focus re-reads.
     }
@@ -174,6 +185,11 @@
   <Card>
     <CardHeader>
       <CardTitle class="text-base">Recent runs</CardTitle>
+      {#if stageStatusError}
+        <CardDescription class="text-destructive" data-testid="stage-status-error">
+          The Stage progress and time estimates could not be read: {stageStatusError}
+        </CardDescription>
+      {/if}
     </CardHeader>
     <CardContent>
       {#if runs.length === 0}
@@ -234,6 +250,12 @@
                         Deploying {r.targetName}: page {r.progress.pagesDone} of {r.progress.pagesTotal}
                       </span>
                     </div>
+                  {/if}
+                  {@const stage = stageById.get(r.id)}
+                  {#if stage && (stage.status === "queued" || stage.status === "running")}
+                    <p class="mt-1 text-xs text-muted-foreground" data-testid="stage-run-eta">
+                      {describeStageRun(stage)}
+                    </p>
                   {/if}
                   {#if r.errorMessage}
                     <pre class="mt-1 max-w-xl whitespace-pre-wrap text-xs text-destructive">{r.errorMessage}</pre>
