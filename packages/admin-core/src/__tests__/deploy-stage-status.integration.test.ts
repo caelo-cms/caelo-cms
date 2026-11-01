@@ -272,6 +272,34 @@ describe("deploy.stage_status (#1288)", () => {
     expect(statuses.get(dead)).toBe("failed");
   });
 
+  it("a plugin's deploy.list_runs reads a dead run as failed without correcting the row (#1307)", async () => {
+    const dead = await seedRun({
+      target: "staging",
+      status: "running",
+      agoSeconds: 900,
+      leaseSeconds: -600,
+    });
+    const alive = await seedRun({ target: "staging", status: "running", agoSeconds: 30 });
+    const plugin: ExecutionContext = {
+      ...HUMAN,
+      actorKind: "plugin",
+      pluginId: crypto.randomUUID(),
+    };
+    const listed = await execute(registry, adapter, plugin, "deploy.list_runs", {});
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const runs = new Map(
+      (
+        listed.value as { runs: { id: string; status: string; errorMessage: string | null }[] }
+      ).runs.map((r) => [r.id, r]),
+    );
+    expect(runs.get(alive)?.status).toBe("running");
+    expect(runs.get(dead)).toMatchObject({ status: "failed", errorMessage: ORPHANED_RUN_MESSAGE });
+    const rows = (await withSql(
+      (tx) => tx`SELECT status FROM deploy_runs WHERE id = ${dead}::uuid`,
+    )) as { status: string }[];
+    expect(rows[0]?.status).toBe("running");
+  });
+
   it("says why there is no estimate when no successful Stage recorded its steps", async () => {
     const running = await seedRun({ target: "staging", status: "running", agoSeconds: 5 });
     const run = (await stageStatus(AI, { deployRunId: running }))[0];

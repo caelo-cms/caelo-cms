@@ -111,6 +111,10 @@ export async function failRunIfOrphanedInTx(
     SET status = 'failed', finished_at = clock_timestamp(), error_message = ${ORPHANED_RUN_MESSAGE},
         lease_expires_at = NULL
     WHERE id = ${runId}::uuid AND status = 'running'
+      -- A heartbeat that renewed the lease after the check above wins: the
+      -- run is alive. A lease-less (legacy) run is held by the advisory
+      -- lock the check took for the rest of this transaction.
+      AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
     RETURNING finished_at
   `)) as unknown as { finished_at: string | Date }[];
   const finishedAt = marked[0]?.finished_at;
@@ -135,15 +139,23 @@ interface RunStateRow {
  * build died is marked failed ({@link failRunIfOrphanedInTx}): the
  * database row is corrected and the returned copy says what it now says.
  * For the reads that answer "where is this run?" — without it a dead Stage
- * read as running (with an estimate) until the next Stage swept it.
+ * read as running (with an estimate) until the next Stage swept it. With
+ * `correctRows: false` the rows are only projected, nothing is written.
  */
 export async function settleOrphanedRuns<R extends RunStateRow>(
   tx: TransactionRunner,
   rows: readonly R[],
+  opts: { readonly correctRows: boolean } = { correctRows: true },
 ): Promise<R[]> {
   const out: R[] = [];
   for (const row of rows) {
-    const finishedAt = row.status === "running" ? await failRunIfOrphanedInTx(tx, row.id) : null;
+    let finishedAt: string | Date | null = null;
+    if (row.status === "running") {
+      if (opts.correctRows) finishedAt = await failRunIfOrphanedInTx(tx, row.id);
+      // A read that must not write (a plugin's) still answers what the row
+      // will say once the next correcting read or run start sweeps it.
+      else if (await deployRunIsOrphaned(tx, row.id)) finishedAt = new Date();
+    }
     out.push(
       finishedAt === null
         ? row

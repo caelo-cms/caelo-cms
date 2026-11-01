@@ -200,8 +200,8 @@ export const listDeployRunsOp = defineOperation({
       LIMIT ${input.limit}
     `)) as unknown as RunDbRow[];
     // #1307 — a run whose build died answers failed, not running. A
-    // plugin's read reports, it does not correct the host's run rows.
-    const settled = ctx.actorKind === "plugin" ? rows : await settleOrphanedRuns(tx, rows);
+    // plugin's read reports it too, but does not correct the host's run rows.
+    const settled = await settleOrphanedRuns(tx, rows, { correctRows: ctx.actorKind !== "plugin" });
     return ok({ runs: settled.map(rowToRun) });
   },
 });
