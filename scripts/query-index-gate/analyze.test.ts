@@ -121,6 +121,45 @@ describe("query index gate analyzer (#1293)", () => {
     }
   });
 
+  it("reads a Filter with JSON operators (-> is not a plan child there)", () => {
+    const log = [
+      "@@caelo/fonts.find@@ LOG:  plan:",
+      "\tQuery Text: SELECT 1 FROM t WHERE payload ->> 'slug' = $1",
+      "\tSeq Scan on public.t",
+      "\t  Filter: ((t.payload ->> 'slug'::text) = $1)",
+      "@@END",
+      "",
+    ].join("\n");
+    expect(distinctFindings(parsePlanLog(log)).map((f) => f.filter)).toEqual([
+      "((payload ->> ?) = ?)",
+    ]);
+  });
+
+  it("keeps every scan of a plan the cut splits, with its Filter", async () => {
+    // A filtered scan deep in a long plan, an unfiltered one in the kept
+    // tail: the cut must not hide the first (Codex review, #1293).
+    const plan = [
+      "@@caelo/x.huge@@ LOG:  plan:",
+      "\tQuery Text: SELECT huge",
+      "\tAppend",
+      "\t  ->  Seq Scan on public.a",
+      "\t        Filter: (a.k = $1)",
+      ...Array.from({ length: 900 }, (_, i) => `\t  ->  Result r${i}`),
+      "\t  ->  Seq Scan on public.b",
+      "@@@@ LOG:  next",
+      "",
+    ].join("\n");
+    const proc = Bun.spawn(["bun", join(import.meta.dir, "seqscan-filter.ts")], {
+      stdin: new Blob([plan]),
+      stdout: "pipe",
+    });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    expect(out).toContain("@@TRUNCATED");
+    const v = evaluate(distinctFindings(parsePlanLog(out)), []);
+    expect(v.violations.map((f) => [f.relation, f.filter])).toEqual([["public.a", "(k = ?)"]]);
+  });
+
   it("fails closed when the filter's cut took the scan an entry was kept for", () => {
     const log = [
       "@@caelo/x.big@@ LOG:  plan:",

@@ -34,7 +34,7 @@
 import { appendFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { ALLOWED, type GateRule } from "./allowlist.js";
-import { TRUNCATED_MARK } from "./seqscan-filter.js";
+import { CHILD_NODE, TRUNCATED_MARK } from "./seqscan-filter.js";
 
 /** One plan of the filtered log. */
 export interface PlanEntry {
@@ -146,7 +146,7 @@ function scansOf(entry: PlanEntry, catalog: Catalog): ScanFinding[] {
     let indexCond = false;
     for (let j = i + 1; j < lines.length; j++) {
       const next = lines[j] ?? "";
-      if (next.search(/\S/) <= indent || next.includes("->")) break;
+      if (next.search(/\S/) <= indent || CHILD_NODE.test(next)) break;
       const filter = next.match(/^\s*Filter: (.*)$/);
       if (filter) raw = filter[1] ?? "";
       if (/^\s*Index Cond: /.test(next)) indexCond = true;

@@ -36,6 +36,11 @@ export const TRUNCATED_MARK = "\t@@TRUNCATED";
 const DROPPED = /^[ \t]*(Output|Query Identifier|Query Parameters|Buffers|Planning|Execution):/;
 const COST = / *\(cost=[^)]*\)/g;
 const INDEX_NODE = /Index (Only )?Scan (Backward )?using /;
+/** A scan node the analyzer reads (analyze.ts FULL_SCAN). */
+const SCAN_NODE = /Seq Scan on |Index (Only )?Scan (Backward )?using /;
+/** A plan child starts with "->"; a JSON operator inside a Filter does not. */
+export const CHILD_NODE = /^[ \t]*->/;
+const SCAN_PROPERTY = /^[ \t]*(Filter|Index Cond):/;
 
 const indentOf = (s: string): number => s.search(/[^ \t]/);
 
@@ -49,6 +54,10 @@ export class SeqScanFilter {
   #keep = false;
   #head: string[] = [];
   #tail: string[] = [];
+  /** Scan nodes and their Filter / Index Cond lines from the cut middle. */
+  #middle: string[] = [];
+  /** Indent of the scan node last moved to #middle, while its properties follow. */
+  #middleScanIndent = -1;
   #count = 0;
   #hasSeq = false;
   #fullIndex = false;
@@ -76,7 +85,7 @@ export class SeqScanFilter {
     this.#push(g);
     if (g.includes("Seq Scan on ")) this.#hasSeq = true;
     if (this.#inIndex) {
-      if (indentOf(g) <= this.#nodeIndent || g.includes("->")) this.#endIndexNode();
+      if (indentOf(g) <= this.#nodeIndent || CHILD_NODE.test(g)) this.#endIndexNode();
       else if (/^[ \t]*Index Cond:/.test(g)) this.#indexCond = true;
       else if (/^[ \t]*Filter:/.test(g)) this.#indexFilter = true;
     }
@@ -96,7 +105,7 @@ export class SeqScanFilter {
       // took the scan it was kept for (analyze.ts, TRUNCATED_MARK).
       const dropped = this.#count - HEAD - TAIL;
       const mark = dropped > 0 ? [`${TRUNCATED_MARK} ${dropped} lines dropped`] : [];
-      const entry = [...this.#head, ...mark, ...this.#orderedTail()].join("\n");
+      const entry = [...this.#head, ...mark, ...this.#middle, ...this.#orderedTail()].join("\n");
       if (!this.#seen.has(entry)) {
         this.#seen.add(entry);
         this.#emit(entry);
@@ -105,6 +114,8 @@ export class SeqScanFilter {
     this.#keep = false;
     this.#head = [];
     this.#tail = [];
+    this.#middle = [];
+    this.#middleScanIndent = -1;
     this.#count = 0;
     this.#hasSeq = false;
     this.#fullIndex = false;
@@ -112,8 +123,31 @@ export class SeqScanFilter {
 
   #push(s: string): void {
     if (this.#count < HEAD) this.#head.push(s);
-    else this.#tail[(this.#count - HEAD) % TAIL] = s;
+    else {
+      const slot = (this.#count - HEAD) % TAIL;
+      if (this.#count - HEAD >= TAIL) this.#evict(this.#tail[slot] ?? "");
+      this.#tail[slot] = s;
+    }
     this.#count++;
+  }
+
+  /**
+   * A line leaves the kept tail for the cut middle: keep it when it is a
+   * scan node, or a Filter / Index Cond of the scan node just kept — what
+   * the analyzer needs to judge every scan of a plan the cut would split.
+   */
+  #evict(line: string): void {
+    if (SCAN_NODE.test(line)) {
+      this.#middle.push(line);
+      this.#middleScanIndent = indentOf(line);
+      return;
+    }
+    if (this.#middleScanIndent < 0) return;
+    if (indentOf(line) <= this.#middleScanIndent || CHILD_NODE.test(line)) {
+      this.#middleScanIndent = -1;
+      return;
+    }
+    if (SCAN_PROPERTY.test(line)) this.#middle.push(line);
   }
 
   #orderedTail(): string[] {

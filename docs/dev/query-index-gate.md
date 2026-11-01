@@ -38,9 +38,10 @@ O(n) per call — and O(n²) per Stage when it runs once per page.
    reader must keep up — a slow one backs up the collector and with it
    every backend. The Bun filter reads ~270 MB/s, linear in the input, and
    keeps an entry's first 40 and last 400 lines (the statement's start and
-   the plan); a cut entry carries a marker, and when the cut took the scan
-   it was kept for, the analyzer fails with a `(truncated plan)` finding
-   instead of dropping it. An empty plan log passes (everything indexed);
+   the plan) plus every scan node of the cut middle with its `Filter` /
+   `Index Cond`; a cut entry carries a marker, and should no scan node
+   survive, the analyzer fails with a `(truncated plan)` finding instead
+   of dropping it. An empty plan log passes (everything indexed);
    a run in which the filter read under 50 MB of server log fails as
    unobserved (`--stats`). The filter keeps only
    tagged plans that contain a Seq Scan or an Index (Only) Scan with a
