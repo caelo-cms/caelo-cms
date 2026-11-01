@@ -22,10 +22,9 @@
 --                                 newest first.
 --   subagent_runs (finished_at) WHERE finished_at IS NOT NULL
 --                                 the GC of finished subagent sessions.
---   chat_sessions (created_at) WHERE open
---                                 the open-changes lists read the chats that
---                                 are neither published nor archived; most
---                                 chats of a long-lived site are closed.
+--
+-- (The open-chat lists the first run also found are served by 0434's
+-- chat_sessions_open_activity_idx, #1268.)
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
@@ -46,9 +45,5 @@ CREATE INDEX IF NOT EXISTS quality_audit_runs_override_idx
 CREATE INDEX IF NOT EXISTS subagent_runs_finished_idx
   ON subagent_runs (finished_at)
   WHERE finished_at IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS chat_sessions_open_idx
-  ON chat_sessions (created_at)
-  WHERE published_at IS NULL AND archived_at IS NULL AND subagent_role IS NULL;
 
 COMMIT;
