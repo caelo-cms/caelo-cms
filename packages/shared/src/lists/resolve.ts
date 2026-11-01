@@ -1155,6 +1155,7 @@ function createPageContext(
         rest,
         field.name,
         "query",
+        true,
       );
       if ("marker" in q) return { ok: false, marker: q.marker, detail: q.detail };
       const key = JSON.stringify(["query", { ...q, limit: null }]);

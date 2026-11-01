@@ -226,6 +226,21 @@ describe("module field schema", () => {
 });
 
 describe("resolver", () => {
+  // #1281 review — a paginated query without order must not be told to add
+  // a limit: paginateIssues refuses a limit next to paginate.
+  it("a paginated query without order names order, never a limit", () => {
+    const noOrder: ListFieldSpec = {
+      ...GUIDES,
+      source: { kind: "query", editable: [], defaults: { page_type: "guide" } },
+    };
+    const r = ctxFor(3).resolveField(noOrder, undefined, { contentInstanceId: null });
+    expect(r).toMatchObject({ ok: false, marker: "list-malformed:guides[query.order]" });
+    const detail = r.ok ? "" : (r.detail ?? "");
+    expect(detail).toContain('the query has no "order"');
+    expect(detail).toContain("paginate:{}");
+    expect(detail).not.toContain("limit:");
+  });
+
   it("shows 50 per page by default and records the sequence", () => {
     const ctx = ctxFor(63);
     const page1 = resolve(ctx, GUIDES);

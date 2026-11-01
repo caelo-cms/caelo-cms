@@ -87,6 +87,13 @@ export const QUERY_SOURCE_EXAMPLE =
   '{kind:"query", defaults:{page_type:"<slug>", order:"published_desc", limit:10}}';
 
 /**
+ * The same for a paginated field: no `limit` — `paginate.per_page` is the
+ * page size, and a limit next to paginate is refused.
+ */
+export const PAGINATED_QUERY_SOURCE_EXAMPLE =
+  '{kind:"query", defaults:{page_type:"<slug>", order:"published_desc"}} with paginate:{} on the field (no limit; paginate.per_page is the page size)';
+
+/**
  * #1281 — the knobs a query source's `defaults` must carry so it renders
  * without any placement value: `order` always, `limit` unless the field
  * is paginated (its page size is the limit). An editable knob is only an
@@ -115,7 +122,8 @@ export function missingQueryDefaults(
     );
   }
   if (missing.length === 0) return null;
-  return `a query source needs ${missing.join(" and ")} in source.defaults — e.g. ${QUERY_SOURCE_EXAMPLE}.`;
+  const example = where === "paginated" ? PAGINATED_QUERY_SOURCE_EXAMPLE : QUERY_SOURCE_EXAMPLE;
+  return `a query source needs ${missing.join(" and ")} in source.defaults — e.g. ${example}.`;
 }
 
 export const sourceDefSchema = z.discriminatedUnion("kind", [

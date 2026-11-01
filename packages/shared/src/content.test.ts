@@ -300,6 +300,9 @@ describe("moduleFields list kind", () => {
     expect(noOrder).toHaveLength(1);
     expect(noOrder[0]).toContain("needs order");
     expect(noOrder[0]).not.toContain("limit (1–50");
+    // The example must be one the next write accepts: no limit next to paginate.
+    expect(noOrder[0]).not.toContain("limit:");
+    expect(noOrder[0]).toContain("paginate:{}");
   });
 
   it("refuses the removed text-list / link-list kinds", () => {

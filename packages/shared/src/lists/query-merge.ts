@@ -10,6 +10,7 @@
  */
 
 import {
+  PAGINATED_QUERY_SOURCE_EXAMPLE,
   type PageQuery,
   pageQuerySchema,
   QUERY_SOURCE_EXAMPLE,
@@ -32,12 +33,15 @@ const ORDER_VALUES =
  *
  * @param field The list field the source belongs to (marker prefix).
  * @param path Where the overrides live (`query`, `<itemId>.query`).
+ * @param paginated The field is paginated: its page size is the limit, so
+ *   the fix never suggests one (a limit next to paginate is refused).
  */
 export function mergeQuerySource(
   source: Extract<SourceDef, { kind: "query" }>,
   overrides: unknown,
   field: string,
   path: string,
+  paginated = false,
 ): PageQuery | QueryMergeFailure {
   const fail = (at: string, detail: string): QueryMergeFailure => ({
     marker: `list-malformed:${field}[${at}]`,
@@ -67,7 +71,7 @@ export function mergeQuerySource(
   if (knob === "order" && merged.order === undefined) {
     return fail(
       at,
-      `the query has no "order" — add order (${ORDER_VALUES}) to source.defaults, e.g. ${QUERY_SOURCE_EXAMPLE}.`,
+      `the query has no "order" — add order (${ORDER_VALUES}) to source.defaults, e.g. ${paginated ? PAGINATED_QUERY_SOURCE_EXAMPLE : QUERY_SOURCE_EXAMPLE}.`,
     );
   }
   if (knob === "limit" && merged.limit === undefined) {
