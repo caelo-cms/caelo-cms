@@ -122,8 +122,12 @@ export class SeqScanFilter {
   }
 
   #push(s: string): void {
-    if (this.#count < HEAD) this.#head.push(s);
-    else {
+    if (this.#count < HEAD) {
+      this.#head.push(s);
+      // Track the scan block in the head too: a scan node on its last
+      // lines has its Filter in the tail, and evicting it must keep it.
+      this.#trackScanBlock(s);
+    } else {
       const slot = (this.#count - HEAD) % TAIL;
       if (this.#count - HEAD >= TAIL) this.#evict(this.#tail[slot] ?? "");
       this.#tail[slot] = s;
@@ -137,17 +141,24 @@ export class SeqScanFilter {
    * the analyzer needs to judge every scan of a plan the cut would split.
    */
   #evict(line: string): void {
+    if (this.#trackScanBlock(line)) this.#middle.push(line);
+  }
+
+  /**
+   * Follow the scan node block `line` belongs to, in input order; true when
+   * the line is a scan node or a Filter / Index Cond of the current one.
+   */
+  #trackScanBlock(line: string): boolean {
     if (SCAN_NODE.test(line)) {
-      this.#middle.push(line);
       this.#middleScanIndent = indentOf(line);
-      return;
+      return true;
     }
-    if (this.#middleScanIndent < 0) return;
+    if (this.#middleScanIndent < 0) return false;
     if (indentOf(line) <= this.#middleScanIndent || CHILD_NODE.test(line)) {
       this.#middleScanIndent = -1;
-      return;
+      return false;
     }
-    if (SCAN_PROPERTY.test(line)) this.#middle.push(line);
+    return SCAN_PROPERTY.test(line);
   }
 
   #orderedTail(): string[] {

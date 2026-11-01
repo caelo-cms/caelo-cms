@@ -160,6 +160,28 @@ describe("query index gate analyzer (#1293)", () => {
     expect(v.violations.map((f) => [f.relation, f.filter])).toEqual([["public.a", "(k = ?)"]]);
   });
 
+  it("keeps the Filter of a scan node on the head's last line (Codex review)", async () => {
+    const plan = [
+      "@@caelo/x.edge@@ LOG:  plan:",
+      "\tQuery Text: SELECT edge",
+      ...Array.from({ length: 37 }, (_, i) => `\t  ->  Result r${i}`),
+      "\t  ->  Seq Scan on public.c",
+      "\t        Filter: (c.k = $1)",
+      ...Array.from({ length: 500 }, (_, i) => `\t  ->  Result s${i}`),
+      "@@@@ LOG:  next",
+      "",
+    ].join("\n");
+    const proc = Bun.spawn(["bun", join(import.meta.dir, "seqscan-filter.ts")], {
+      stdin: new Blob([plan]),
+      stdout: "pipe",
+    });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    expect(out).toContain("@@TRUNCATED");
+    const v = evaluate(distinctFindings(parsePlanLog(out)), []);
+    expect(v.violations.map((f) => [f.relation, f.filter])).toEqual([["public.c", "(k = ?)"]]);
+  });
+
   it("fails closed when the filter's cut took the scan an entry was kept for", () => {
     const log = [
       "@@caelo/x.big@@ LOG:  plan:",

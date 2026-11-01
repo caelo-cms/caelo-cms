@@ -134,7 +134,10 @@ function filterColumns(filter: string): string[] {
 function scansOf(entry: PlanEntry, catalog: Catalog): ScanFinding[] {
   const out: ScanFinding[] = [];
   const kind = isRiStatement(entry.query) ? "fk" : "filter";
-  const lines = entry.lines;
+  // The cut's marker is not part of the plan: a scan node kept in the head
+  // finds its Filter on the far side of it.
+  const lines = entry.lines.filter((l) => !l.startsWith(TRUNCATED_MARK));
+  const truncated = lines.length !== entry.lines.length;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? "";
     const scan = line.match(FULL_SCAN);
@@ -177,7 +180,6 @@ function scansOf(entry: PlanEntry, catalog: Catalog): ScanFinding[] {
   }
   // The stream filter kept this entry for a full scan; if its cut took
   // every scan node, fail closed instead of dropping the entry silently.
-  const truncated = lines.some((l) => l.startsWith(TRUNCATED_MARK));
   if (truncated && !lines.some((l) => FULL_SCAN.test(l))) {
     out.push({
       op: entry.holder,
