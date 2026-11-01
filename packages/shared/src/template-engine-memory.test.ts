@@ -67,10 +67,14 @@ describe("shieldLiteralText", () => {
     expect(out).toBe(`<i>{{a}}KEY{{${"b".repeat(300)}}}`);
   });
 
-  it("leaves a template that changes the delimiters whole", () => {
-    const html = `{{=<% %>=}}${LONG}<% name %>`;
-    expect(shieldLiteralText(html, () => "KEY")).toBe(html);
-  });
+  for (const setDelimiters of ["{{=<% %>=}}", "{{ = <% %> = }}"]) {
+    it(`leaves a template that changes the delimiters whole: ${setDelimiters}`, () => {
+      const html = `${setDelimiters}${LONG}<% name %>${LONG}`;
+      expect(shieldLiteralText(html, () => "KEY")).toBe(html);
+      expect(renderShielded(html, { name: "N" })).toBe(Mustache.render(html, { name: "N" }));
+      expect(Mustache.render(html, { name: "N" })).toContain(`${LONG}N${LONG}`);
+    });
+  }
 });
 
 describe("renderTemplate keeps nothing it rendered", () => {

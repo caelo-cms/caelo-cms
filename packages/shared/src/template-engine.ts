@@ -502,6 +502,8 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
  * that stands in for it is not much shorter than the text.
  */
 const SHIELD_MIN_LENGTH = 256;
+/** A set-delimiters tag, with the whitespace Mustache allows after `{{`. */
+const SET_DELIMITERS_RE = /\{\{\s*=/;
 const SHIELD_CANDIDATE_RE = new RegExp(`[^{}\\n]{${SHIELD_MIN_LENGTH},}`, "g");
 
 /**
@@ -519,14 +521,15 @@ const SHIELD_CANDIDATE_RE = new RegExp(`[^{}\\n]{${SHIELD_MIN_LENGTH},}`, "g");
  *   line that holds only a section or comment tag);
  * - is never the inside of a tag (`{` right before it and `}` right after).
  *
- * A template that sets other delimiters (`{{=<% %>=}}`) is left whole:
- * there, text without braces can be a tag.
+ * A template that sets other delimiters (`{{=<% %>=}}`, or `{{ = … }}`:
+ * Mustache allows whitespace after the `{{`) is left whole: there, text
+ * without braces can be a tag.
  *
  * @param mkKey stores one run and returns the key standing in for it (no
  *   braces, no whitespace).
  */
 export function shieldLiteralText(html: string, mkKey: (text: string) => string): string {
-  if (html.length < SHIELD_MIN_LENGTH || html.includes("{{=")) return html;
+  if (html.length < SHIELD_MIN_LENGTH || SET_DELIMITERS_RE.test(html)) return html;
   return html.replace(SHIELD_CANDIDATE_RE, (run: string, offset: number) => {
     if (html[offset - 1] === "{" && html[offset + run.length] === "}") return run;
     if (run.trim().length === 0) return run;
