@@ -66,10 +66,6 @@ CREATE OR REPLACE FUNCTION caelo_setting_in(setting text, expected text[])
 COMMENT ON FUNCTION caelo_setting_in(text, text[]) IS
   'RLS: the session setting is one of expected (missing setting = false). Inlined by the planner and estimated as 99.5 % of rows instead of n × 0.5 % (#1297).';
 
-ALTER POLICY actors_actor_scope ON actors
-  USING (((id = (NULLIF(current_setting('caelo.actor_id', true), ''))::uuid) OR (caelo_setting_is('caelo.actor_kind', 'system'))))
-  WITH CHECK (((id = (NULLIF(current_setting('caelo.actor_id', true), ''))::uuid) OR (caelo_setting_is('caelo.actor_kind', 'system'))));
-
 ALTER POLICY ai_budgets_authed ON ai_budgets
   USING ((NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL))
   WITH CHECK ((caelo_setting_in('caelo.actor_kind', ARRAY['human', 'system'])));
@@ -77,10 +73,6 @@ ALTER POLICY ai_budgets_authed ON ai_budgets
 ALTER POLICY ai_pricing_authed ON ai_pricing
   USING ((NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL))
   WITH CHECK ((caelo_setting_in('caelo.actor_kind', ARRAY['human', 'system'])));
-
-ALTER POLICY audit_events_actor_scope ON audit_events
-  USING (((actor_id = (NULLIF(current_setting('caelo.actor_id', true), ''))::uuid) OR (caelo_setting_is('caelo.actor_kind', 'system'))))
-  WITH CHECK (((actor_id = (NULLIF(current_setting('caelo.actor_id', true), ''))::uuid) OR (caelo_setting_is('caelo.actor_kind', 'system'))));
 
 ALTER POLICY change_consumers_scope ON change_consumers
   USING (((caelo_setting_is('caelo.actor_kind', 'system')) OR ((plugin_id IS NOT NULL) AND (current_setting('caelo.plugin_id', true) = (plugin_id)::text))))
@@ -278,5 +270,24 @@ ALTER POLICY url_migration_pending_rw ON url_migration_pending_actions
 ALTER POLICY users_self_or_system ON users
   USING (((id = (NULLIF(current_setting('caelo.actor_id', true), ''))::uuid) OR (caelo_setting_is('caelo.actor_kind', 'system'))))
   WITH CHECK (((id = (NULLIF(current_setting('caelo.actor_id', true), ''))::uuid) OR (caelo_setting_is('caelo.actor_kind', 'system'))));
+
+-- actors and audit_events: their policies are created by
+-- 9999_rls_policies.sql, which sorts after this file. A fresh install runs
+-- 9999 after 0475 (and 9999 spells them with caelo_setting_is), so only an
+-- install that already ran 9999 has these two policies to rewrite here.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'actors_actor_scope' AND polrelid = 'actors'::regclass) THEN
+    ALTER POLICY actors_actor_scope ON actors
+      USING (((id = (NULLIF(current_setting('caelo.actor_id', true), ''))::uuid) OR (caelo_setting_is('caelo.actor_kind', 'system'))))
+      WITH CHECK (((id = (NULLIF(current_setting('caelo.actor_id', true), ''))::uuid) OR (caelo_setting_is('caelo.actor_kind', 'system'))));
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'audit_events_actor_scope' AND polrelid = 'audit_events'::regclass) THEN
+    ALTER POLICY audit_events_actor_scope ON audit_events
+      USING (((actor_id = (NULLIF(current_setting('caelo.actor_id', true), ''))::uuid) OR (caelo_setting_is('caelo.actor_kind', 'system'))))
+      WITH CHECK (((actor_id = (NULLIF(current_setting('caelo.actor_id', true), ''))::uuid) OR (caelo_setting_is('caelo.actor_kind', 'system'))));
+  END IF;
+END
+$$;
 
 COMMIT;
