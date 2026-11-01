@@ -255,7 +255,7 @@ export async function growFixture(
                jsonb_build_object('schemaVersion', 1, 'slug', pg.slug, 'title', pg.title || ' (h)',
                                   'shortTitle', pg.title, 'templateId', '${templateId}', 'status', 'published',
                                   'version', 1, 'deletedAt', null, 'parentPageId', null,
-                                  'pageTypeId', '${pageTypeId}', 'properties', '{}'::jsonb, 'terms', '[]'::jsonb)
+                                  'pageTypeId', '${pageTypeId}', 'pageTypeConfirmed', true, 'properties', '{}'::jsonb, 'terms', '[]'::jsonb)
           FROM (SELECT id, row_number() OVER (ORDER BY created_at) AS n FROM h) h
          CROSS JOIN cnt
           JOIN pg ON pg.rn = 1 + (h.n % cnt.c)`);

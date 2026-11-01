@@ -411,7 +411,7 @@ async function main(): Promise<void> {
       const pageState = (title: string) => `jsonb_build_object(
           'schemaVersion', 1, 'slug', p.slug, 'title', ${title}, 'shortTitle', p.short_title,
           'templateId', p.template_id, 'status', p.status, 'version', p.version, 'deletedAt', null,
-          'parentPageId', p.parent_page_id, 'pageTypeId', p.page_type_id, 'properties', p.properties,
+          'parentPageId', p.parent_page_id, 'pageTypeId', p.page_type_id, 'pageTypeConfirmed', p.page_type_confirmed, 'properties', p.properties,
           'terms', '[]'::jsonb)`;
       await tx.unsafe(`
         WITH pg AS (SELECT id, row_number() OVER (ORDER BY id) AS rn FROM pages),
