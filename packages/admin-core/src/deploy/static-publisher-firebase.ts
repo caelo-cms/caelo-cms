@@ -629,6 +629,14 @@ async function releaseAsTarget(args: {
  */
 const POPULATE_BATCH = 250;
 
+/**
+ * Gzipped bytes a batch reaches before it is told to Hosting even with
+ * fewer than {@link POPULATE_BATCH} files: 250 large pages would otherwise
+ * sit in the admin at once (the generator's stream window does not see
+ * them — a file is acknowledged once it is in the batch).
+ */
+const POPULATE_BATCH_BYTES = 8 * 1024 * 1024;
+
 /** A built file gzipped and waiting for its batch's `populateFiles`. */
 interface PendingFile {
   readonly path: string;
@@ -658,6 +666,8 @@ class FirebaseBuildUpload implements BuildUpload {
   /** Hashes this version uploaded or Hosting said it has. */
   readonly #known = new Set<string>();
   #batch: PendingFile[] = [];
+  /** Gzipped bytes of the waiting batch. */
+  #batchBytes = 0;
   /** Batches are told to Hosting one after another. */
   #flushing: Promise<void> = Promise.resolve();
   #uploadUrl: string | null = null;
@@ -695,13 +705,17 @@ class FirebaseBuildUpload implements BuildUpload {
       this.#redirectsFile = Buffer.from(file.body).toString("utf8");
     const { body, sha256 } = await gzipAndHashBytes(Buffer.from(file.body));
     this.#batch.push({ path: file.relPath, sha256, gzipped: body });
-    if (this.#batch.length >= POPULATE_BATCH) await this.#flush();
+    this.#batchBytes += body.byteLength;
+    if (this.#batch.length >= POPULATE_BATCH || this.#batchBytes >= POPULATE_BATCH_BYTES) {
+      await this.#flush();
+    }
   }
 
   /** Tell Hosting about the waiting files and upload the ones it lacks. */
   #flush(): Promise<void> {
     const batch = this.#batch;
     this.#batch = [];
+    this.#batchBytes = 0;
     this.#flushing = this.#flushing.then(async () => {
       if (batch.length === 0) return;
       const required = await this.#populate(batch.map((f) => [f.path, f.sha256]));

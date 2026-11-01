@@ -96,6 +96,17 @@ import { renderSections } from "./template-sections.js";
 // {{href}} test pins this; any leak of the default escape fails.
 Mustache.escape = (s: unknown): string => (s === null || s === undefined ? "" : String(s));
 
+// No parse cache. Mustache keeps the parsed tokens of every template it
+// renders, keyed by the full template text, for the life of the process,
+// and never evicts. The text this engine hands Mustache is different on
+// every call — the sentinels carry a per-call UUID, and list entries,
+// nested modules and link references are pasted in before Mustache runs —
+// so the cache never hits and only grows: every module of every page
+// stayed in memory for good, ~30x its own size (a 280 KB page ~2-5 MB).
+// The searchVIU admin and its Stage's generator were OOM-killed on a 2 GiB
+// container by it (2026-11-01). Parsing anew is what every call did anyway.
+Mustache.templateCache = undefined;
+
 /**
  * Subset of `modules.fields[]` the engine cares about. The full
  * schema lives in `content.ts`; the engine needs `name`, `kind`, the
@@ -448,8 +459,23 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   );
 
   // 4. Render. The view holds only lowercase keys; sentinels survive
-  //    untouched; sections + partials are already substituted.
-  const rendered = Mustache.render(html, view);
+  //    untouched; sections + partials are already substituted. Long runs
+  //    of literal text are shielded from Mustache's parser first (see
+  //    shieldLiteralText) and put back right after, BEFORE the sentinels:
+  //    a shielded run may hold sentinels, which step 5 then restores.
+  const literals: string[] = [];
+  const literalPrefix = `__CAELO_TXT_${globalThis.crypto.randomUUID()}_`;
+  const shielded = shieldLiteralText(html, (text) => {
+    literals.push(text);
+    return `${literalPrefix}${literals.length - 1}__`;
+  });
+  let rendered = Mustache.render(shielded, view);
+  if (literals.length > 0) {
+    rendered = rendered.replace(
+      new RegExp(`${literalPrefix}(\\d+)__`, "g"),
+      (key, i: string) => literals[Number(i)] ?? key,
+    );
+  }
 
   // 5. Restore sentinels in one pass. A single replace never re-scans
   //    the text it inserts, so restored content cannot be mistaken for a
@@ -469,6 +495,46 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   final = resolveLinkRefsInHtml(final, input.linkResolver, missing);
 
   return { html: final, missingSlots: missing };
+}
+
+/**
+ * Shortest literal run worth shielding from Mustache: below this the key
+ * that stands in for it is not much shorter than the text.
+ */
+const SHIELD_MIN_LENGTH = 256;
+/** A set-delimiters tag, with the whitespace Mustache allows after `{{`. */
+const SET_DELIMITERS_RE = /\{\{\s*=/;
+const SHIELD_CANDIDATE_RE = new RegExp(`[^{}\\n]{${SHIELD_MIN_LENGTH},}`, "g");
+
+/**
+ * Replace long runs of literal text with opaque keys before Mustache
+ * parses `html`. Mustache's parser allocates a token array per CHARACTER
+ * of literal text (mustache.js `parseTemplate`) before it squashes them,
+ * so a module's inline SVG or data-URI image cost the composer many times
+ * its size in garbage; a key is one short token instead.
+ *
+ * What Mustache renders is unchanged, because a shielded run:
+ * - holds no `{`, `}` or newline, so it never cuts a tag and every line
+ *   stays where it was;
+ * - holds a non-space character and so does the key, so no line's
+ *   standalone-tag verdict changes (Mustache drops the whitespace of a
+ *   line that holds only a section or comment tag);
+ * - is never the inside of a tag (`{` right before it and `}` right after).
+ *
+ * A template that sets other delimiters (`{{=<% %>=}}`, or `{{ = … }}`:
+ * Mustache allows whitespace after the `{{`) is left whole: there, text
+ * without braces can be a tag.
+ *
+ * @param mkKey stores one run and returns the key standing in for it (no
+ *   braces, no whitespace).
+ */
+export function shieldLiteralText(html: string, mkKey: (text: string) => string): string {
+  if (html.length < SHIELD_MIN_LENGTH || SET_DELIMITERS_RE.test(html)) return html;
+  return html.replace(SHIELD_CANDIDATE_RE, (run: string, offset: number) => {
+    if (html[offset - 1] === "{" && html[offset + run.length] === "}") return run;
+    if (run.trim().length === 0) return run;
+    return mkKey(run);
+  });
 }
 
 function renderModuleList(
