@@ -385,7 +385,18 @@ jobs:
           bun run db:migrate
 
       - name: Integration tier under the plan log
-        run: bun run test $(git ls-files '*.integration.test.ts')
+        run: |
+          # Every 20 s, the server's non-idle sessions and what they wait on:
+          # printed when the run fails, so a stalled run says what stalled it.
+          nohup sh -c 'while sleep 20; do
+            docker exec gate-pg psql -U "$POSTGRES_USER" -d postgres -At -f /gate/activity.sql
+          done' > "$GATE_DIR/activity.log" 2>&1 &
+          bun run test $(git ls-files '*.integration.test.ts') || {
+            echo "::group::Sessions busy for more than 5 s during the run"
+            cat "$GATE_DIR/activity.log"
+            echo "::endgroup::"
+            exit 1
+          }
 
       - name: Flush the stream filter
         if: always()
