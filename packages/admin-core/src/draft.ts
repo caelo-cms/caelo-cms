@@ -128,11 +128,11 @@ export function chatPendingSql(binding: ChatBinding, alias = "ss"): SQL {
 }
 
 /**
- * Issue #1268 — the draft head (`draft_pending_entities`, migration 0433):
+ * Issue #1268 — the draft head (`draft_pending_entities`, migration 0477):
  * one row per (branch, kind, entity, owner chat) pointing at the newest
  * pending snapshot that owner wrote of the entity, maintained by triggers
  * in the writing transaction. Readers of "what is pending" read the head
- * instead of walking the history; `caelo_draft_head_source()` in 0433 is
+ * instead of walking the history; `caelo_draft_head_source()` in 0477 is
  * the one definition both the maintainers and `chat.rebuild_draft_head`
  * run. This list mirrors `caelo_draft_head_tables()` plus the header kind
  * `layoutChrome` (a test holds the two in step).

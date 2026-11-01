@@ -23,7 +23,7 @@
 --   subagent_runs (finished_at) WHERE finished_at IS NOT NULL
 --                                 the GC of finished subagent sessions.
 --
--- (The open-chat lists the first run also found are served by 0434's
+-- (The open-chat lists the first run also found are served by 0478's
 -- chat_sessions_open_activity_idx, #1268.)
 
 BEGIN;

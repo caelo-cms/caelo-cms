@@ -10,7 +10,7 @@
  *                             maintained head had drifted.
  *
  * The head is maintained by triggers in every writing transaction
- * (migration 0433), so a rebuild finds no drift unless a maintainer has a
+ * (migration 0477), so a rebuild finds no drift unless a maintainer has a
  * bug; the consistency check after every integration test file
  * (scripts/test-preload.ts) is what catches such a bug. The rebuild exists
  * to repair an install a buggy release left inconsistent, and it reports

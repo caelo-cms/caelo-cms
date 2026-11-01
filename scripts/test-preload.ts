@@ -307,7 +307,7 @@ async function assertDraftHeadConsistent(url: string): Promise<void> {
     if (rows.length > 0) {
       throw new Error(
         `draft head (draft_pending_entities) differs from its rebuild (#1268): ${JSON.stringify(rows)}. ` +
-          "A write path changed snapshots without the 0433 maintainers keeping the head exact — " +
+          "A write path changed snapshots without the 0477 maintainers keeping the head exact — " +
           "fix the maintainer (caelo_draft_head_rows / caelo_draft_head_headers), never the reader.",
       );
     }
