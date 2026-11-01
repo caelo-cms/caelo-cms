@@ -47,6 +47,8 @@
   let stageStatus = $state<StageStatusRun[]>(data.stageStatus);
   let stageStatusError = $state<string | null>(data.stageStatusError);
   const stageById = $derived(new Map(stageStatus.map((s) => [s.runId, s])));
+  /** Why the latest re-read of the runs failed; null after a good one. */
+  let runsError = $state<string | null>(null);
   let unregister: (() => void) | null = null;
   const inFlight = $derived(
     runs.some((r: { status: string }) => r.status === "running" || r.status === "pending"),
@@ -57,7 +59,13 @@
     if (document.visibilityState !== "visible") return;
     try {
       const r = await liveFetch("/api/deploy-runs", { headers: { accept: "application/json" } });
-      if (!r.ok) return;
+      if (!r.ok) {
+        // The table keeps the last runs it showed; the header names the failure.
+        const body = (await r.json().catch(() => ({}))) as { error?: string };
+        runsError = body.error ?? `HTTP ${r.status}`;
+        return;
+      }
+      runsError = null;
       const json = (await r.json()) as {
         runs: typeof data.runs;
         stageStatus: StageStatusRun[];
@@ -185,6 +193,11 @@
   <Card>
     <CardHeader>
       <CardTitle class="text-base">Recent runs</CardTitle>
+      {#if runsError}
+        <CardDescription class="text-destructive" data-testid="deploy-runs-error">
+          The runs could not be refreshed: {runsError}
+        </CardDescription>
+      {/if}
       {#if stageStatusError}
         <CardDescription class="text-destructive" data-testid="stage-status-error">
           The Stage progress and time estimates could not be read: {stageStatusError}

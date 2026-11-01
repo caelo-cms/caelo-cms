@@ -6,6 +6,7 @@
  * estimated time left (#1288).
  */
 
+import { describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { json } from "@sveltejs/kit";
 import { getQueryContext } from "#lib/server/query.js";
@@ -19,6 +20,8 @@ export const GET: RequestHandler = async ({ locals }) => {
     // #1288 — the Stage runs' step, progress and estimated time left.
     execute(registry, adapter, locals.ctx, "deploy.stage_status", { limit: 20 }),
   ]);
-  if (!res.ok) return json({ runs: [] }, { status: 200 });
+  // A failed read is an error, not an empty list: the page keeps what it
+  // shows (it re-reads only on `r.ok`) instead of rendering a partial body.
+  if (!res.ok) return json({ error: describeError(res.error) }, { status: 500 });
   return json({ ...(res.value as object), ...stageStatusOf(stage) });
 };

@@ -97,6 +97,22 @@ test("a failed status read shows its reason in the menu", async ({ page }) => {
   );
 });
 
+test("Settings → Deployments names a failed runs refresh and keeps its table", async ({ page }) => {
+  await page.route("**/api/deploy-runs", (route) =>
+    route.fulfill({ status: 500, json: { error: "deploy.list_runs failed: test" } }),
+  );
+  const pageErrors: string[] = [];
+  page.on("pageerror", (e) => pageErrors.push(e.message));
+  await login(page);
+  await page.goto("/settings/deployments");
+  await expect(page.getByTestId("deploy-runs-error")).toContainText(
+    "deploy.list_runs failed: test",
+    { timeout: 15_000 },
+  );
+  await expect(page.getByText("Recent runs", { exact: true })).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
+
 test("Settings → Deployments shows the running Stage's estimate in its row", async ({ page }) => {
   await page.route("**/api/deploy-runs", (route) =>
     route.fulfill({
