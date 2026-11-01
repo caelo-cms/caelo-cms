@@ -23,9 +23,10 @@ import { fontReader } from "@caelo-cms/font-service";
  * modules rendered by the same recursive renderer as the editor preview,
  * so preview and production produce the same HTML.
  *
- * #1271 — memory does not grow with the site. Pages are composed,
- * rewritten and written {@link PAGE_BATCH} at a time (their placements,
- * variants and nested modules loaded per batch, page-batch.ts); what a
+ * #1271 — memory does not grow with the site. Pages are loaded
+ * {@link PAGE_BATCH} at a time (their placements, variants and nested
+ * modules, page-batch.ts) and composed, rewritten and written in chunks of
+ * at most {@link CHUNK_HTML_CHARS} of HTML; what a
  * later step needs from every page is a small record per page. Media and
  * fonts are never read: the build references them by their stored digests
  * (asset-references.ts) and the publisher delivers them — self-hosted
@@ -94,6 +95,7 @@ import {
 } from "./not-found-page.js";
 import {
   type LayoutModule,
+  type LoadedBatch,
   loadBatch,
   type PageRow,
   parseModuleFields,
@@ -120,12 +122,41 @@ import { syncContents } from "./sync-contents.js";
 const WRITE_PARALLELISM = 32;
 
 /**
- * #1271 — pages composed, rewritten and written together. Bounds the HTML
- * the build holds (a batch's pages) while keeping the per-batch reads and
- * plugin calls few: 200 pages are a few MB of HTML and one round of
- * statements and plugin calls each.
+ * #1271 — pages loaded together (placements, variants, nested modules,
+ * plugin list sources): one round of statements and plugin calls per 200
+ * pages. They are composed and written in chunks ({@link CHUNK_HTML_CHARS}).
  */
 export const PAGE_BATCH = 200;
+
+/**
+ * Composed HTML (in string length) a chunk of a batch reaches before its
+ * pages go through the per-page passes and are written. What bounds the
+ * build's memory is not the page count but the bytes composed between two
+ * collections: composing and rewriting a page (slot fills, head
+ * injections, media, SEO, plugin passes, minify) allocates ~10x its HTML in
+ * short-lived string copies, which the engine collects late (the full
+ * collection after each chunk). Measured on 170 KB pages (searchVIU-like,
+ * 2026-11-01): a 200-page batch was 34 MB of HTML and peaked the generator
+ * at ~650 MB; in 8 MB chunks it stays at ~370 MB whatever the page count
+ * (docs/dev/build-memory.md). Small pages still go 200 at a time
+ * (PAGE_BATCH is reached first).
+ */
+export const CHUNK_HTML_CHARS = 8 * 1024 * 1024;
+
+/** The pages of a batch composed since the previous chunk was written. */
+interface PageChunk {
+  readonly pages: BuiltPage[];
+  readonly bakeTargets: Map<string, BakeTarget>;
+  readonly paginatedOverviews: { path: string; slug: string }[];
+  /** Pages of the batch taken into this chunk (a page with no placements included). */
+  pageCount: number;
+  /** Length of the HTML composed into it. */
+  htmlChars: number;
+}
+
+function newPageChunk(): PageChunk {
+  return { pages: [], bakeTargets: new Map(), paginatedOverviews: [], pageCount: 0, htmlChars: 0 };
+}
 
 export interface DeployTarget {
   readonly id: string;
@@ -856,9 +887,10 @@ async function buildSite(
   let fileCount = 0;
   args.onProgress?.({ pagesDone: 0, pagesTotal: pageRows.length });
 
-  // #1271 — the build holds no page beyond the batch it is on, and no
-  // media or font byte at all. Pages are composed, rewritten and written
-  // PAGE_BATCH at a time; what a later pass needs from every page (the
+  // #1271 — the build holds no page beyond the chunk it is on, and no
+  // media or font byte at all. Pages are loaded PAGE_BATCH at a time and
+  // composed, rewritten and written a chunk at a time; what a later pass
+  // needs from every page (the
   // sitemap's entries, output paths, render deps, link warnings) is kept
   // as a small record per page. Media and fonts are referenced by their
   // stored digests (asset-references.ts): the publisher delivers them.
@@ -963,157 +995,144 @@ async function buildSite(
 
   const parts = new Map<string, PartTiming>();
   let pagesDone = 0;
-  for (let at = 0; at < pageRows.length; at += PAGE_BATCH) {
-    const batch = pageRows.slice(at, at + PAGE_BATCH);
-    const loaded = await timer.measure(parts, "load-batch", () =>
-      loadBatch({
-        tx,
-        plugins: args.plugins,
-        batch,
-        layoutModulesByLayout,
-        noLayoutModules,
-        listModuleRefs,
-        pageUrlStyle,
-      }),
-    );
-    const pages: BuiltPage[] = [];
-    const bakeTargets = new Map<string, BakeTarget>();
-    const paginatedOverviews: { path: string; slug: string }[] = [];
-    await timer.measure(parts, "compose", () => {
-      for (const page of batch) {
-        const composeInput = loaded.composeInputs.get(page.page_id);
-        if (!composeInput) continue;
-        const { blocks, layoutBlocks } = composeInput;
-        const template = templates.get(page.template_id);
-        const layout = layouts.get(page.layout_id);
-        if (!template || !layout) {
-          throw new Error(
-            `static-generator: page slug=${page.slug}: its template or layout was not loaded`,
-          );
-        }
-        // P6.7.6 — composer throws ComposeError on layout misconfiguration
-        // (e.g. layout HTML missing the required `content` slot). Surface
-        // it with the page slug so the deploy operator can locate the
-        // offending row, rather than silently emitting a body-less page.
-        const renderAt = (pagination?: PaginationRequest) => {
-          const linkResolver = linkIndex.forPage(page.page_id);
-          const lists = listContext.forPage(page.page_id, {
-            linkResolver,
-            pluginSources: loaded.sources.get(page.page_id) ?? {},
-            pageUrlStyle,
-            ...(pagination ? { pagination } : {}),
-          });
-          try {
-            const composed = composePageWithLayout({
-              templateHtml: template.html,
-              templateCss: template.css,
-              blocks,
-              theme: activeTheme,
-              fonts: themeFonts,
-              layoutHtml: layout.html,
-              layoutCss: layout.css,
-              layoutBlocks,
-              layoutSlug: layout.slug,
-              lists,
-              deferredModules,
-              nestedModules: loaded.nestedModules,
-              linkResolver,
-            });
-            return { composed, lists, linkResolver };
-          } catch (e) {
-            if (e instanceof ComposeError) {
-              throw new Error(`static-generator: page slug=${page.slug}: ${e.message}`);
-            }
-            throw e;
-          }
-        };
-        // #1257 — a paginated overview renders every page of its sequence:
-        // page 1 at its own path, page n at `<path>/page/<n>/`.
-        const renders = renderEveryPage(renderAt);
-        const pagination = renders[0]?.lists.pagination() ?? null;
-        assertPaginationRenderable(page, pagination, notFoundPageId);
-        if (renders.length > 1)
-          paginatedOverviews.push({ path: page.current_path, slug: page.slug });
 
-        renderDeps.set(page.page_id, mergeListRenderDeps(renders.map((r) => r.lists.deps())));
-        const seenTargets = new Set<string>();
-        renders.forEach(({ composed, lists, linkResolver }, index) => {
-          const n = index + 1;
-          for (const issue of lists.overlayIssues()) {
-            if (
-              !overlayIssues.some((i) => i.address === issue.address && i.variant === issue.variant)
-            ) {
-              overlayIssues.push(issue);
-            }
-          }
-          pages.push({
-            html: composed.html,
-            pageId: page.page_id,
-            pageSlug: page.slug,
-            pageTitle: page.title,
-            relPath:
-              n === 1
-                ? outputPathOf(page)
-                : pageOutputPath(pagedPath(page.current_path, n), target.pageUrlStyle),
-            breadcrumbTrail: lists.breadcrumbTrail(),
-            ...(n > 1 && pagination
-              ? { followUp: { page: n, indexable: pagination.followUps === "index" } }
-              : {}),
-          });
-          // A module whose content could not render (a broken nested ref, a
-          // malformed list item, …) would ship as a silently empty section.
-          // Collected for every page of the build, then refused with all of
-          // them named (assertNoRenderFailures).
-          renderFailures.push(
-            ...renderFailuresOf({
-              pageSlug: n === 1 ? page.slug : `${page.slug} (page ${n})`,
-              html: composed.html,
-              moduleFailures: composed.moduleFailures,
-              // #724 — a reference in the layout's own HTML that did not resolve.
-              layoutLinkMarkers: linkMarkersOf(composed.missingSlots),
-            }),
-          );
-          for (const o of linkResolver.observed) {
-            if (o.resolution.status !== "unpublished") continue;
-            // The page the link renders to — the referenced page, or its
-            // sibling in this page's variant (link-resolve point).
-            const targetPageId = o.resolution.pageId;
-            if (seenTargets.has(targetPageId)) continue;
-            seenTargets.add(targetPageId);
-            unpublishedLinkTargets.push({
-              pageSlug: page.slug,
-              pagePath: page.current_path,
-              targetPageId,
-              targetUrl: o.resolution.url,
-            });
-          }
+  /** Compose one page (a paginated overview: every page of it) into `chunk`. */
+  const composePage = (page: PageRow, loaded: LoadedBatch, chunk: PageChunk): void => {
+    const { pages, bakeTargets, paginatedOverviews } = chunk;
+    const composeInput = loaded.composeInputs.get(page.page_id);
+    if (!composeInput) return;
+    const { blocks, layoutBlocks } = composeInput;
+    const template = templates.get(page.template_id);
+    const layout = layouts.get(page.layout_id);
+    if (!template || !layout) {
+      throw new Error(
+        `static-generator: page slug=${page.slug}: its template or layout was not loaded`,
+      );
+    }
+    // P6.7.6 — composer throws ComposeError on layout misconfiguration
+    // (e.g. layout HTML missing the required `content` slot). Surface
+    // it with the page slug so the deploy operator can locate the
+    // offending row, rather than silently emitting a body-less page.
+    const renderAt = (pagination?: PaginationRequest) => {
+      const linkResolver = linkIndex.forPage(page.page_id);
+      const lists = listContext.forPage(page.page_id, {
+        linkResolver,
+        pluginSources: loaded.sources.get(page.page_id) ?? {},
+        pageUrlStyle,
+        ...(pagination ? { pagination } : {}),
+      });
+      try {
+        const composed = composePageWithLayout({
+          templateHtml: template.html,
+          templateCss: template.css,
+          blocks,
+          theme: activeTheme,
+          fonts: themeFonts,
+          layoutHtml: layout.html,
+          layoutCss: layout.css,
+          layoutBlocks,
+          layoutSlug: layout.slug,
+          lists,
+          deferredModules,
+          nestedModules: loaded.nestedModules,
+          linkResolver,
         });
-        for (const cut of renders[0]?.lists.truncatedLists() ?? []) {
-          // #1257 — a list cut by the query cap (not a chosen teaser limit).
-          if (cut.limit < LIST_QUERY_MAX_LIMIT) continue;
-          truncatedLists.push({ pageSlug: page.slug, pagePath: page.current_path, ...cut });
+        return { composed, lists, linkResolver };
+      } catch (e) {
+        if (e instanceof ComposeError) {
+          throw new Error(`static-generator: page slug=${page.slug}: ${e.message}`);
         }
-        if (renders.length > 1) {
-          followUpOutputPaths.set(
-            page.page_id,
-            renders
-              .slice(1)
-              .map((_, i) =>
-                pageOutputPath(pagedPath(page.current_path, i + 2), target.pageUrlStyle),
-              ),
-          );
+        throw e;
+      }
+    };
+    // #1257 — a paginated overview renders every page of its sequence:
+    // page 1 at its own path, page n at `<path>/page/<n>/`.
+    const renders = renderEveryPage(renderAt);
+    const pagination = renders[0]?.lists.pagination() ?? null;
+    assertPaginationRenderable(page, pagination, notFoundPageId);
+    if (renders.length > 1) paginatedOverviews.push({ path: page.current_path, slug: page.slug });
+
+    renderDeps.set(page.page_id, mergeListRenderDeps(renders.map((r) => r.lists.deps())));
+    const seenTargets = new Set<string>();
+    renders.forEach(({ composed, lists, linkResolver }, index) => {
+      const n = index + 1;
+      for (const issue of lists.overlayIssues()) {
+        if (
+          !overlayIssues.some((i) => i.address === issue.address && i.variant === issue.variant)
+        ) {
+          overlayIssues.push(issue);
         }
-        // P13 — record per-page bake target for the plugin render pass.
-        bakeTargets.set(page.page_id, { pageId: page.page_id, slug: page.slug });
+      }
+      pages.push({
+        html: composed.html,
+        pageId: page.page_id,
+        pageSlug: page.slug,
+        pageTitle: page.title,
+        relPath:
+          n === 1
+            ? outputPathOf(page)
+            : pageOutputPath(pagedPath(page.current_path, n), target.pageUrlStyle),
+        breadcrumbTrail: lists.breadcrumbTrail(),
+        ...(n > 1 && pagination
+          ? { followUp: { page: n, indexable: pagination.followUps === "index" } }
+          : {}),
+      });
+      chunk.htmlChars += composed.html.length;
+      // A module whose content could not render (a broken nested ref, a
+      // malformed list item, …) would ship as a silently empty section.
+      // Collected for every page of the build, then refused with all of
+      // them named (assertNoRenderFailures).
+      renderFailures.push(
+        ...renderFailuresOf({
+          pageSlug: n === 1 ? page.slug : `${page.slug} (page ${n})`,
+          html: composed.html,
+          moduleFailures: composed.moduleFailures,
+          // #724 — a reference in the layout's own HTML that did not resolve.
+          layoutLinkMarkers: linkMarkersOf(composed.missingSlots),
+        }),
+      );
+      for (const o of linkResolver.observed) {
+        if (o.resolution.status !== "unpublished") continue;
+        // The page the link renders to — the referenced page, or its
+        // sibling in this page's variant (link-resolve point).
+        const targetPageId = o.resolution.pageId;
+        if (seenTargets.has(targetPageId)) continue;
+        seenTargets.add(targetPageId);
+        unpublishedLinkTargets.push({
+          pageSlug: page.slug,
+          pagePath: page.current_path,
+          targetPageId,
+          targetUrl: o.resolution.url,
+        });
       }
     });
-    pagesDone += batch.length;
-    // A render failure anywhere fails the build: the remaining batches are
+    for (const cut of renders[0]?.lists.truncatedLists() ?? []) {
+      // #1257 — a list cut by the query cap (not a chosen teaser limit).
+      if (cut.limit < LIST_QUERY_MAX_LIMIT) continue;
+      truncatedLists.push({ pageSlug: page.slug, pagePath: page.current_path, ...cut });
+    }
+    if (renders.length > 1) {
+      followUpOutputPaths.set(
+        page.page_id,
+        renders
+          .slice(1)
+          .map((_, i) => pageOutputPath(pagedPath(page.current_path, i + 2), target.pageUrlStyle)),
+      );
+    }
+    // P13 — record per-page bake target for the plugin render pass.
+    bakeTargets.set(page.page_id, { pageId: page.page_id, slug: page.slug });
+  };
+
+  /** Run every per-page pass over the chunk's pages and write them. */
+  const finishChunk = async (chunk: PageChunk): Promise<void> => {
+    const { pages, bakeTargets, paginatedOverviews } = chunk;
+    pagesDone += chunk.pageCount;
+    // A render failure anywhere fails the build: the remaining pages are
     // still composed, so the error names every failure, but nothing more
     // is written.
     if (renderFailures.length > 0) {
       args.onProgress?.({ pagesDone, pagesTotal: pageRows.length });
-      continue;
+      return;
     }
     // #1257 — a page where an overview puts its follow-up pages.
     if (paginatedOverviews.length > 0) {
@@ -1178,12 +1197,39 @@ async function buildSite(
     });
     fileCount += pages.length;
     args.onProgress?.({ pagesDone, pagesTotal: pageRows.length });
-    // #1271 — a full collection after each batch. What the batch held is
+    // #1271 — a full collection after each chunk. What the chunk held is
     // garbage now, but the engine grows its heap with the allocation rate,
     // so without this the resident peak grew with the site although the
     // live heap did not (1k → 10k pages: 189 → 381 MB; with it 129 → 170 MB).
-    // It costs ~10 ms a batch, run on every core by the collector.
+    // It costs ~10 ms a chunk, run on every core by the collector.
     await timer.measure(parts, "gc", () => Bun.gc(true));
+  };
+
+  for (let at = 0; at < pageRows.length; at += PAGE_BATCH) {
+    const batch = pageRows.slice(at, at + PAGE_BATCH);
+    const loaded = await timer.measure(parts, "load-batch", () =>
+      loadBatch({
+        tx,
+        plugins: args.plugins,
+        batch,
+        layoutModulesByLayout,
+        noLayoutModules,
+        listModuleRefs,
+        pageUrlStyle,
+      }),
+    );
+    // The batch's pages go through the passes CHUNK_HTML_CHARS of HTML at
+    // a time (see there): a batch of large pages is several chunks.
+    let chunk = newPageChunk();
+    for (const page of batch) {
+      chunk.pageCount += 1;
+      await timer.measure(parts, "compose", () => composePage(page, loaded, chunk));
+      if (chunk.htmlChars >= CHUNK_HTML_CHARS) {
+        await finishChunk(chunk);
+        chunk = newPageChunk();
+      }
+    }
+    if (chunk.pageCount > 0) await finishChunk(chunk);
   }
   timer.lapParts(parts, "batches");
   // P13 — every fresh plugin bake of the build, upserted in one order.

@@ -68,16 +68,28 @@ export interface StreamedFile {
 /**
  * Hands each file to the admin over the generator's stdio and waits for the
  * admin's acknowledgement (the publisher accepted it). At most
- * {@link StreamOutput.WINDOW} files are in flight, so the bytes in the pipe
- * and in both processes stay bounded whatever the size of the site.
+ * {@link StreamOutput.WINDOW} files and {@link StreamOutput.WINDOW_BYTES}
+ * bytes are in flight, so the bytes in the pipe and in both processes stay
+ * bounded whatever the size of the site and of its pages.
  */
 export class StreamOutput implements BuildOutput {
   /** Files sent but not yet acknowledged. */
   static readonly WINDOW = 64;
+  /**
+   * Bytes sent but not yet acknowledged. A file in flight is held several
+   * times over (its bytes, their base64, the event line, the pipe buffer;
+   * the admin gzips it), so 64 pages of 170 KB kept ~100 MB in the
+   * generator alone. A file larger than this still goes, alone.
+   */
+  static readonly WINDOW_BYTES = 8 * 1024 * 1024;
   readonly local = false;
   readonly #send: (event: StreamedFile) => void;
-  readonly #pending = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
+  readonly #pending = new Map<
+    number,
+    { resolve: () => void; reject: (e: Error) => void; bytes: number }
+  >();
   readonly #waiting: (() => void)[] = [];
+  #inFlightBytes = 0;
   #nextId = 0;
   /** Why the channel closed, once it did. */
   #closed: string | null = null;
@@ -88,7 +100,11 @@ export class StreamOutput implements BuildOutput {
   }
 
   async write(file: BuildFileWrite): Promise<void> {
-    while (this.#closed === null && this.#pending.size >= StreamOutput.WINDOW) {
+    const size =
+      typeof file.content === "string"
+        ? Buffer.byteLength(file.content, "utf8")
+        : file.content.byteLength;
+    while (this.#closed === null && this.#full(size)) {
       await new Promise<void>((r) => this.#waiting.push(r));
     }
     if (this.#closed !== null) throw new Error(this.#closed);
@@ -97,7 +113,10 @@ export class StreamOutput implements BuildOutput {
       typeof file.content === "string"
         ? Buffer.from(file.content, "utf8")
         : Buffer.from(file.content);
-    const done = new Promise<void>((resolve, reject) => this.#pending.set(id, { resolve, reject }));
+    this.#inFlightBytes += size;
+    const done = new Promise<void>((resolve, reject) =>
+      this.#pending.set(id, { resolve, reject, bytes: size }),
+    );
     this.#send({
       kind: "file",
       id,
@@ -108,14 +127,22 @@ export class StreamOutput implements BuildOutput {
     await done;
   }
 
+  /** True while a file of `size` bytes has to wait for acknowledgements. */
+  #full(size: number): boolean {
+    if (this.#pending.size >= StreamOutput.WINDOW) return true;
+    return this.#pending.size > 0 && this.#inFlightBytes + size > StreamOutput.WINDOW_BYTES;
+  }
+
   /** The admin's answer to file `id`. */
   acknowledge(id: number, error: string | null): void {
     const waiter = this.#pending.get(id);
     if (!waiter) return;
     this.#pending.delete(id);
+    this.#inFlightBytes -= waiter.bytes;
     if (error === null) waiter.resolve();
     else waiter.reject(new Error(error));
-    this.#waiting.shift()?.();
+    // Every waiter checks again: one acknowledgement can make room for several.
+    for (const w of this.#waiting.splice(0)) w();
   }
 
   /** The admin went away: fail everything in flight. */
@@ -123,6 +150,7 @@ export class StreamOutput implements BuildOutput {
     this.#closed = reason;
     for (const w of this.#pending.values()) w.reject(new Error(reason));
     this.#pending.clear();
+    this.#inFlightBytes = 0;
     for (const w of this.#waiting.splice(0)) w();
   }
 }
