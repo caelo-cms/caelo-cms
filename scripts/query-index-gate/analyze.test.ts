@@ -121,6 +121,19 @@ describe("query index gate analyzer (#1293)", () => {
     }
   });
 
+  it("fails closed when the filter's cut took the scan an entry was kept for", () => {
+    const log = [
+      "@@caelo/x.big@@ LOG:  plan:",
+      "\tQuery Text: SELECT huge",
+      "\t@@TRUNCATED 5000 lines dropped",
+      "\t        ->  Result",
+      "@@END",
+      "",
+    ].join("\n");
+    const v = evaluate(distinctFindings(parsePlanLog(log)), []);
+    expect(v.violations.map((f) => f.relation)).toEqual(["(truncated plan)"]);
+  });
+
   it("passes allowlisted findings, and fails a stale entry", () => {
     const allowed = [
       { table: "public.redirects", reason: "test" },

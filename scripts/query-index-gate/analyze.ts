@@ -34,6 +34,7 @@
 import { appendFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { ALLOWED, type GateRule } from "./allowlist.js";
+import { TRUNCATED_MARK } from "./seqscan-filter.js";
 
 /** One plan of the filtered log. */
 export interface PlanEntry {
@@ -171,6 +172,19 @@ function scansOf(entry: PlanEntry, catalog: Catalog): ScanFinding[] {
       filter,
       kind,
       scan: isIndexWalk ? "index" : "seq",
+      sample: entry.query.slice(0, 200),
+    });
+  }
+  // The stream filter kept this entry for a full scan; if its cut took
+  // every scan node, fail closed instead of dropping the entry silently.
+  const truncated = lines.some((l) => l.startsWith(TRUNCATED_MARK));
+  if (truncated && !lines.some((l) => FULL_SCAN.test(l))) {
+    out.push({
+      op: entry.holder,
+      relation: "(truncated plan)",
+      filter: `raise TAIL in seqscan-filter.ts: the full scan this plan was kept for lies in the cut`,
+      kind: "filter",
+      scan: "seq",
       sample: entry.query.slice(0, 200),
     });
   }
@@ -477,6 +491,9 @@ function findingLines(f: ScanFinding): string[] {
   ];
 }
 
+/** Less raw log than this means auto_explain did not observe the run (a run logs ~1 GB). */
+const MIN_SERVER_LOG_BYTES = 50_000_000;
+
 if (import.meta.main) {
   const { values, positionals } = parseArgs({
     args: process.argv.slice(2),
@@ -484,13 +501,14 @@ if (import.meta.main) {
       json: { type: "string" },
       policies: { type: "string" },
       indexes: { type: "string" },
+      stats: { type: "string" },
     },
     allowPositionals: true,
   });
   const logPath = positionals[0];
-  if (!logPath || !values.policies || !values.indexes) {
+  if (!logPath || !values.policies || !values.indexes || !values.stats) {
     console.error(
-      "usage: bun scripts/query-index-gate/analyze.ts <filtered-plan-log> --policies <policies.tsv> --indexes <indexes.tsv> [--json <out>]",
+      "usage: bun scripts/query-index-gate/analyze.ts <filtered-plan-log> --policies <policies.tsv> --indexes <indexes.tsv> --stats <filter-stats.txt> [--json <out>]",
     );
     process.exit(2);
   }
@@ -504,13 +522,18 @@ if (import.meta.main) {
     );
     process.exit(1);
   }
-  const entries = parsePlanLog(await Bun.file(logPath).text());
-  if (entries.length === 0) {
+  // An empty plan log is a pass once every query is indexed; what must not
+  // pass is a run where nothing was logged at all. The stream filter counts
+  // the raw log it read; an integration run logs about a gigabyte.
+  const statsText = await Bun.file(values.stats).text();
+  const read = Math.max(0, ...[...statsText.matchAll(/^(\d+) bytes/gm)].map((m) => Number(m[1])));
+  if (read < MIN_SERVER_LOG_BYTES) {
     console.error(
-      `[query-index-gate] ${logPath} holds no tagged Seq Scan plans: auto_explain did not log, or the adapter no longer tags its transactions (packages/query-api/src/statement-tag.ts). Failing rather than passing an empty run.`,
+      `[query-index-gate] the stream filter read only ${read} bytes of server log (${values.stats}): auto_explain did not log the run. Failing rather than passing an unobserved run.`,
     );
     process.exit(1);
   }
+  const entries = parsePlanLog(await Bun.file(logPath).text());
   const findings = distinctFindings(entries, catalog);
   const verdict = evaluate(findings);
   const report = renderReport(verdict, entries.length);

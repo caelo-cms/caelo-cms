@@ -429,7 +429,7 @@ jobs:
         run: |
           bun scripts/query-index-gate/analyze.ts "$GATE_DIR/seq.log" \
             --policies "$GATE_DIR/policies.tsv" --indexes "$GATE_DIR/indexes.tsv" \
-            --json "$GATE_DIR/findings.json"
+            --stats "$GATE_DIR/filter-stats.txt" --json "$GATE_DIR/findings.json"
 
       - name: Upload plan log + findings
         if: always()

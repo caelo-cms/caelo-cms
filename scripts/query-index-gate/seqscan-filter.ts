@@ -31,6 +31,8 @@ import { appendFileSync, writeFileSync } from "node:fs";
 const HEAD = 40;
 const TAIL = 400;
 const STATS_EVERY = 50_000_000;
+/** Marks the cut in an entry longer than HEAD + TAIL lines (read by analyze.ts). */
+export const TRUNCATED_MARK = "\t@@TRUNCATED";
 const DROPPED = /^[ \t]*(Output|Query Identifier|Query Parameters|Buffers|Planning|Execution):/;
 const COST = / *\(cost=[^)]*\)/g;
 const INDEX_NODE = /Index (Only )?Scan (Backward )?using /;
@@ -90,7 +92,11 @@ export class SeqScanFilter {
   flush(): void {
     this.#endIndexNode();
     if (this.#keep && (this.#hasSeq || this.#fullIndex)) {
-      const entry = [...this.#head, ...this.#orderedTail()].join("\n");
+      // A truncated entry says so: the analyzer fails closed when the cut
+      // took the scan it was kept for (analyze.ts, TRUNCATED_MARK).
+      const dropped = this.#count - HEAD - TAIL;
+      const mark = dropped > 0 ? [`${TRUNCATED_MARK} ${dropped} lines dropped`] : [];
+      const entry = [...this.#head, ...mark, ...this.#orderedTail()].join("\n");
       if (!this.#seen.has(entry)) {
         this.#seen.add(entry);
         this.#emit(entry);

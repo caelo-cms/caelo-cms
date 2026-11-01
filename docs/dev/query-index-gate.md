@@ -38,7 +38,11 @@ O(n) per call — and O(n²) per Stage when it runs once per page.
    reader must keep up — a slow one backs up the collector and with it
    every backend. The Bun filter reads ~270 MB/s, linear in the input, and
    keeps an entry's first 40 and last 400 lines (the statement's start and
-   the plan). The filter keeps only
+   the plan); a cut entry carries a marker, and when the cut took the scan
+   it was kept for, the analyzer fails with a `(truncated plan)` finding
+   instead of dropping it. An empty plan log passes (everything indexed);
+   a run in which the filter read under 50 MB of server log fails as
+   unobserved (`--stats`). The filter keeps only
    tagged plans that contain a Seq Scan or an Index (Only) Scan with a
    `Filter` but no `Index Cond` (a whole index walked for its order), strips
    costs, durations and output lists, and drops repeats. Nothing else
@@ -114,7 +118,7 @@ same way.
 # Postgres 17 with auto_explain (Homebrew postgresql@17 ships it), on its own port.
 initdb -D /tmp/gate-pg -U postgres --auth=trust
 mkfifo -m 666 /tmp/gate-pg.fifo
-bun scripts/query-index-gate/seqscan-filter.ts <> /tmp/gate-pg.fifo > /tmp/seq.log &
+bun scripts/query-index-gate/seqscan-filter.ts /tmp/stats.txt <> /tmp/gate-pg.fifo > /tmp/seq.log &
 postgres -D /tmp/gate-pg -p 55493 -c listen_addresses=localhost \
   -c logging_collector=on -c log_directory=/tmp -c log_filename=gate-pg.fifo \
   -c log_rotation_age=0 -c log_rotation_size=0 \
@@ -132,7 +136,7 @@ for dump in policies indexes; do
   done > /tmp/$dump.tsv
 done
 bun scripts/query-index-gate/analyze.ts /tmp/seq.log \
-  --policies /tmp/policies.tsv --indexes /tmp/indexes.tsv
+  --policies /tmp/policies.tsv --indexes /tmp/indexes.tsv --stats /tmp/stats.txt
 ```
 
 One test file is enough to check a single change; stale entries are only
