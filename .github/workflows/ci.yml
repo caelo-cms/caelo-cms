@@ -394,7 +394,7 @@ jobs:
           nohup sh -c 'while sleep 20; do
             docker exec gate-pg psql -U "$POSTGRES_USER" -d postgres -At -f /gate/activity.sql
           done' > "$GATE_DIR/activity.log" 2>&1 &
-          bun run test packages/admin-core/src/__tests__/tool-list-stable-across-turns.integration.test.ts packages/admin-core/src/__tests__/international-site-list-resolve-scale.integration.test.ts packages/admin-core/src/__tests__/lists-plugin-hooks.integration.test.ts
+          bun run test $(git ls-files '*.integration.test.ts')
 
       - name: Sessions busy for more than 5 s during the run
         if: failure()
