@@ -367,7 +367,12 @@ export interface GateVerdict {
 
 const PLUGIN_SCHEMA = /^plugin_[a-z0-9_]+\./;
 
-/** Distinct findings of a run, one per (op, relation, filter, kind). */
+/**
+ * Distinct findings of a run, one per (scan, op, relation, filter, kind).
+ * The scan type is part of the key: a Seq Scan fails the gate and an index
+ * walk does not, so the same filter seen both ways must stay two findings
+ * whatever order the log has them in.
+ */
 export function distinctFindings(
   entries: readonly PlanEntry[],
   catalog: Catalog = EMPTY_CATALOG,
@@ -375,7 +380,7 @@ export function distinctFindings(
   const byKey = new Map<string, ScanFinding>();
   for (const entry of entries) {
     for (const f of scansOf(entry, catalog)) {
-      const key = `${f.kind}|${f.op}|${f.relation}|${f.filter}`;
+      const key = `${f.scan}|${f.kind}|${f.op}|${f.relation}|${f.filter}`;
       if (!byKey.has(key)) byKey.set(key, f);
     }
   }

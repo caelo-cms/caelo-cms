@@ -101,6 +101,26 @@ describe("query index gate analyzer (#1293)", () => {
     expect(renderReport(v, entries.length)).toContain("unindexed filter");
   });
 
+  it("keeps a Seq Scan whatever order its index-walk twin comes in", () => {
+    const walk = [
+      "@@caelo/x.list@@ LOG:  plan:",
+      "\tQuery Text: SELECT id FROM t WHERE k = $1 ORDER BY id",
+      "\tIndex Scan using t_pkey on public.t",
+      "\t  Filter: (t.k = $1)",
+    ].join("\n");
+    const seq = [
+      "@@caelo/x.list@@ LOG:  plan:",
+      "\tQuery Text: SELECT id FROM t WHERE k = $1",
+      "\tSeq Scan on public.t",
+      "\t  Filter: (t.k = $1)",
+    ].join("\n");
+    for (const log of [`${walk}\n@@END\n${seq}\n@@END\n`, `${seq}\n@@END\n${walk}\n@@END\n`]) {
+      const v = evaluate(distinctFindings(parsePlanLog(log)), [], []);
+      expect(v.violations.map((f) => [f.relation, f.scan])).toEqual([["public.t", "seq"]]);
+      expect(v.advisory.map((f) => f.scan)).toEqual(["index"]);
+    }
+  });
+
   it("passes allowlisted and pending findings, and fails a stale entry", () => {
     const allowed = [{ table: "public.redirects", reason: "test" }];
     const pending = [
