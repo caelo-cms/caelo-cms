@@ -231,6 +231,10 @@ async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promis
       // honours it under FORCE ROW LEVEL SECURITY, so set the session
       // var defensively.
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      // #1293 — the query index gate's server plans with seq scans off; the
+      // reset's bulk DELETEs would then walk a whole index for every FK
+      // check of every deleted row. The reset is fixture SQL, not gated.
+      await tx.unsafe("SET LOCAL enable_seqscan = on");
 
       // TRUNCATE the churn set in one statement. CASCADE propagates to
       // referencing tables, which is why any table a PRESERVE table
