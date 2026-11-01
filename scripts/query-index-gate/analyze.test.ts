@@ -229,6 +229,19 @@ describe("query index gate analyzer (#1293)", () => {
     );
   });
 
+  it("a policy's literal does not exempt an op's predicate with another value", () => {
+    const own = ["comment_archive"];
+    const terms = policyTermsOf(["(status = 'approved'::text)"], own);
+    expect(normaliseFilter("(comment_archive.status = 'approved'::text)", own, terms)).toBe("");
+    expect(normaliseFilter("(comment_archive.status = 'rejected'::text)", own, terms)).toBe(
+      "(status = ?)",
+    );
+    // A literal holding " AND " or "::" is not split or cast-stripped.
+    expect(normaliseFilter("((t.a = 'x AND y'::text) AND (t.b = $1))", ["t"])).toBe(
+      "(a = ?) AND (b = ?)",
+    );
+  });
+
   it("reads a live-rows-only filter as a whole-domain read, not a lookup", () => {
     expect(normaliseFilter("((l.chat_branch_id IS NULL) OR (l.chat_branch_id = $1))", ["l"])).toBe(
       "",

@@ -234,12 +234,22 @@ export function normaliseFilter(
   policyTerms: ReadonlySet<string> = new Set(),
 ): string {
   if (raw.trim() === "") return "";
-  const kept = splitTop(prepare(raw, ownNames), " AND ").filter(
-    (term) =>
-      !term.includes("current_setting(") &&
-      referencesColumn(term) &&
-      !isPolicyTerm(term, policyTerms),
-  );
+  // Policy terms are recognised with their literal values (a policy's
+  // status = 'approved' must not exempt an op's status = 'rejected'); the
+  // values are generalised only for the grouping key afterwards.
+  const c = canonical(raw, ownNames);
+  const kept = splitTop(c.text, " AND ")
+    .map((term) => ({
+      exact: restore(term, c.literals),
+      key: generalise(restore(term, c.literals)),
+    }))
+    .filter(
+      (t) =>
+        !t.exact.includes("current_setting(") &&
+        referencesColumn(t.key) &&
+        !isPolicyTerm(t.exact, policyTerms),
+    )
+    .map((t) => t.key);
   if (kept.every(isLivenessTerm)) return "";
   // One parenthesised form per term, whether Postgres printed the filter as
   // a single term or as a conjunction.
@@ -272,9 +282,9 @@ function isLivenessTerm(term: string): boolean {
 export function policyTermsOf(quals: readonly string[], ownNames: readonly string[]): Set<string> {
   const out = new Set<string>();
   for (const qual of quals) {
-    const q = prepare(qual, ownNames);
-    out.add(unwrap(q));
-    for (const term of splitTop(q, " AND ")) out.add(unwrap(term));
+    const q = canonical(qual, ownNames);
+    out.add(unwrap(restore(q.text, q.literals)));
+    for (const term of splitTop(q.text, " AND ")) out.add(unwrap(restore(term, q.literals)));
   }
   return out;
 }
@@ -282,28 +292,54 @@ export function policyTermsOf(quals: readonly string[], ownNames: readonly strin
 function isPolicyTerm(term: string, policyTerms: ReadonlySet<string>): boolean {
   const t = unwrap(term);
   if (policyTerms.has(t)) return true;
-  const alternatives = splitTop(t, " OR ");
+  const shielded = canonical(t, []);
+  const alternatives = splitTop(shielded.text, " OR ").map((a) => restore(a, shielded.literals));
   return (
     alternatives.length > 1 &&
     alternatives.every((a) => policyTerms.has(unwrap(a)) || a.includes("current_setting("))
   );
 }
 
-function prepare(raw: string, ownNames: readonly string[]): string {
+const LITERAL = /'(?:[^']|'')*'/g;
+const SHIELD = /\u0000(\d+)\u0000/g;
+
+/**
+ * A filter or policy qual in canonical form: casts, whitespace and the
+ * scanned relation's own qualifier removed, literals kept but shielded (as
+ * \u0000<n>\u0000) so splitting at AND / OR and stripping casts never look
+ * inside a string.
+ */
+function canonical(raw: string, ownNames: readonly string[]): { text: string; literals: string[] } {
+  const literals: string[] = [];
   let f = raw
-    .replace(/'(?:[^']|'')*'/g, "?")
-    .replace(/\$\d+/g, "?")
+    .replace(LITERAL, (m) => {
+      literals.push(m);
+      return `\u0000${literals.length - 1}\u0000`;
+    })
     .replace(/::"?[a-z_][a-z0-9_ ]*"?(\[\])?/gi, "")
-    .replace(/\b\d+(\.\d+)?\b/g, "?")
-    // An inlined array literal's length is a value, not a different filter.
-    .replace(/ARRAY\[\?(?:, \?)*\]/g, "ARRAY[?]")
     .replace(/\s+/g, " ")
     .replace(/\( /g, "(")
     .replace(/ \)/g, ")");
   for (const name of new Set(ownNames.filter((n) => n !== ""))) {
     f = f.replace(new RegExp(`\\b${escapeRegExp(name)}\\.`, "g"), "");
   }
-  return f.trim();
+  return { text: f.trim(), literals };
+}
+
+function restore(text: string, literals: readonly string[]): string {
+  return text.replace(SHIELD, (_m, i: string) => literals[Number(i)] ?? "");
+}
+
+/** The grouping form of a canonical term: literals, parameters and numbers as `?`. */
+function generalise(term: string): string {
+  return (
+    term
+      .replace(LITERAL, "?")
+      .replace(/\$\d+/g, "?")
+      .replace(/\b\d+(\.\d+)?\b/g, "?")
+      // An inlined array literal's length is a value, not a different filter.
+      .replace(/ARRAY\[\?(?:, \?)*\]/g, "ARRAY[?]")
+  );
 }
 
 function referencesColumn(term: string): boolean {
