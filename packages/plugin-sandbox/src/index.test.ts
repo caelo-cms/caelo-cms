@@ -242,7 +242,7 @@ describe("schemaFromSpec", () => {
     expect(out.sql).toContain('CREATE TABLE IF NOT EXISTS "plugin_hello_world"."greetings"');
     expect(out.sql).toContain("FORCE  ROW LEVEL SECURITY");
     expect(out.sql).toContain(
-      "current_setting('caelo.plugin_id', true) = '00000000-0000-0000-0000-000000000001'",
+      "USING (caelo_setting_is('caelo.plugin_id', '00000000-0000-0000-0000-000000000001'))",
     );
   });
 

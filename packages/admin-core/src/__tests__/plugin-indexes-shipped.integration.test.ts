@@ -269,11 +269,25 @@ beforeAll(async () => {
 /** Rows a seeded table holds: enough that an index beats a full scan on cost. */
 const SEED_ROWS = 3000;
 
-/** A SQL expression filling a column of the given spec for row `i`. */
+/**
+ * A SQL expression filling a column of the given spec for row `i`.
+ *
+ * An enum's first value — the open state of a work queue in every shipped
+ * plugin (`new`, `pending`, `approved`, `source`) — holds 2 % of the rows,
+ * the others share the rest. With the plugin policy estimated as passing
+ * every row (#1297), a uniform seed (a third of the rows `new`) makes
+ * "read the order index and filter" the cheapest plan for a status read
+ * with a LIMIT, which says nothing about whether the status index serves
+ * the read when the open rows are few — the case the index exists for.
+ */
 function seedValue(spec: string): string {
   if (spec.startsWith("enum:")) {
     const values = spec.slice("enum:".length).split(",");
-    return `(ARRAY[${values.map((v) => `'${v}'`).join(", ")}])[1 + i % ${values.length}]`;
+    const rest = values.slice(1);
+    const array = (vs: string[]) => `(ARRAY[${vs.map((v) => `'${v}'`).join(", ")}])`;
+    return rest.length === 0
+      ? `'${values[0]}'`
+      : `CASE WHEN i % 50 = 0 THEN '${values[0]}' ELSE ${array(rest)}[1 + i % ${rest.length}] END`;
   }
   if (spec.startsWith("ref:") || spec === "uuid") return "gen_random_uuid()";
   if (spec === "int") return "i";
@@ -418,16 +432,11 @@ async function plan(
       access: listAccessOf(parsed),
     });
     await tx.execute(sql.raw("SET LOCAL enable_seqscan = off"));
-    // An unfiltered ordered read: with sorting disabled too, the plan can
-    // only avoid a Sort by reading an index in order — which proves the
-    // index serves it. (Costed freely, the planner may still prefer a
-    // top-N sort: the RLS policy's `current_setting(...) = …` filter is
-    // estimated at 0.5% of rows, so a LIMIT looks like it needs the whole
-    // table either way.)
-    const access = listAccessOf(parsed);
-    if (access.equals.length === 0 && access.anyOf.length === 0 && !access.createdAtRange) {
-      await tx.execute(sql.raw("SET LOCAL enable_sort = off"));
-    }
+    // Sorting stays enabled: an unfiltered ordered read must come out of
+    // its index in order on cost alone. That needs the plugin policy to be
+    // estimated as passing the rows (#1297, `caelo_setting_is`); the plain
+    // `current_setting(...) = …` comparison was estimated at 0.5 % of them
+    // and made the planner prefer a full scan + top-N sort.
     await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${idOf(plugin)}, true)`);
     const rows = (await tx.execute(sql`EXPLAIN (FORMAT JSON) ${query}`)) as unknown as Array<
       Record<string, unknown>
