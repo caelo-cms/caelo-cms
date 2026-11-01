@@ -584,15 +584,21 @@ provides five neutral hooks:
    `listResolveOperation` (grant `list_resolve`), called with
    `{ variants, scope? }` (plugin-sdk `listResolveArgs`) as a read-only
    render invocation in the render's scope (a chat's preview sees the
-   chat's plugin storage). A build (the generator's `list-data.ts`) asks
-   once, right after `link-resolve`, for every variant of the partition
-   and no `scope`: the whole site. The editor preview (#1223) asks for
-   the rendered page's variant only, with `scope = { listIds,
+   chat's plugin storage). The editor preview (#1223) asks for the
+   rendered page's variant only, with `scope = { listIds,
    contentInstanceIds, pageIds }` — every shared list, the instances the
    page renders, and the pages whose `props` it can show
-   (`admin-core/src/lists/overlay-scope.ts`) — so the answer costs what
-   the page costs; a page that renders no list field and reads no
-   `page.*` / `site_text.*` asks nothing. A scoped answer must hold the
+   (`shared/src/lists/overlay-scope.ts`) — so the answer costs what the
+   page costs; a page that renders no list field and reads no `page.*` /
+   `site_text.*` asks nothing. A build (#1307, the generator's
+   `list-overlay-batches.ts`) asks the same way per page batch, once per
+   variant of the batch's pages, with the union of their scopes: the
+   shared lists and the pages a query or system source generates are asked
+   once per variant and kept for the build, the batch's instances and own
+   pages per batch, and every call of one build carries one pass id
+   (`renderId`) so a plugin reads its scope-independent rows once per
+   build. A build never asks without a scope; only a list's source preview
+   (`lists.preview_source`) still does (the whole site). A scoped answer must hold the
    whole-site answer's values for every address in the scope (it may
    hold more). Both pass the merged overlays as `ListRenderData.overlays`
    (with `overlaySources`, who sent what). An

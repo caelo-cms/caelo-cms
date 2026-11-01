@@ -79,6 +79,7 @@ import {
   type PaginationRequest,
   pagedPath,
   pagedUrl,
+  pageListOverlayScope,
   paginationMarkers,
   parsePagedPath,
   type Result,
@@ -106,7 +107,6 @@ import {
   resolveLinkPartition,
   resolvePageListOverlays,
 } from "../../lists/load.js";
-import { pageListOverlayScope } from "../../lists/overlay-scope.js";
 import { loadSiteView, type SiteView } from "../../site-view.js";
 import { previewBreadcrumbs } from "./preview-breadcrumbs.js";
 import {

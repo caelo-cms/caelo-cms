@@ -56,6 +56,7 @@ import {
   targetRow,
 } from "./deploy-common.js";
 import { abortableSleep } from "./deploy-lease-steps.js";
+import { settleOrphanedRuns } from "./deploy-run-lifecycle.js";
 
 export { effectiveOutDir } from "./deploy-common.js";
 export { promoteDeployOp } from "./deploy-promote.js";
@@ -182,7 +183,7 @@ export const listDeployRunsOp = defineOperation({
     buildKind: z.enum(["site", "plugin_data"]).optional(),
   }),
   output: z.object({ runs: z.array(runRow) }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT r.id::text AS id,
              r.target_id::text AS target_id,
@@ -198,7 +199,10 @@ export const listDeployRunsOp = defineOperation({
       ORDER BY r.started_at DESC
       LIMIT ${input.limit}
     `)) as unknown as RunDbRow[];
-    return ok({ runs: rows.map(rowToRun) });
+    // #1307 — a run whose build died answers failed, not running. A
+    // plugin's read reports, it does not correct the host's run rows.
+    const settled = ctx.actorKind === "plugin" ? rows : await settleOrphanedRuns(tx, rows);
+    return ok({ runs: settled.map(rowToRun) });
   },
 });
 
@@ -225,7 +229,8 @@ export const getDeployRunOp = defineOperation({
       FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
       WHERE r.id = ${input.runId}::uuid
     `)) as unknown as RunDbRow[];
-    const row = rows[0];
+    // #1307 — a run whose build died answers failed, not running.
+    const [row] = await settleOrphanedRuns(tx, rows);
     return ok({ run: row ? rowToRun(row) : null });
   },
 });

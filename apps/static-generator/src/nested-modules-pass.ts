@@ -71,7 +71,7 @@ export async function loadNestedModules(
   tx: TransactionRunner,
   placed: Iterable<ComposeModuleValues>,
   listRefs: readonly NestedRefValue[] = [],
-): Promise<NestedRenderResolver> {
+): Promise<LoadedNestedModules> {
   const modules = new Map<string, NestedModuleResource>();
   const instances = new Map<string, NestedContentInstanceResource>();
   const tried = new Set<string>();
@@ -144,7 +144,18 @@ export async function loadNestedModules(
   return {
     getModule: (id) => modules.get(id) ?? null,
     getContentInstance: (id) => instances.get(id) ?? null,
+    modules: [...modules.values()],
+    contentInstanceIds: [...instances.keys()],
   };
+}
+
+/**
+ * A batch's nested modules: the resolver, plus what it loaded — the
+ * batch's `list-resolve` scope reads which of them show lists (#1307).
+ */
+export interface LoadedNestedModules extends NestedRenderResolver {
+  readonly modules: readonly NestedModuleResource[];
+  readonly contentInstanceIds: readonly string[];
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

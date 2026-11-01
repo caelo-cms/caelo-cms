@@ -28,9 +28,14 @@
  * on it (placed, chrome, nested or a content variant) has a list field,
  * and no markup reads `page.*` or `site_text.*`. The preview then skips
  * `list-resolve` entirely.
+ *
+ * The static build asks per page batch with the union of its pages'
+ * scopes (#1307, the generator's `list-overlay-batches.ts`), so a build's
+ * `list-resolve` reads cost what the batch costs, not the site.
  */
 
-import type { ListRenderData, TemplateField } from "@caelo-cms/shared";
+import type { TemplateField } from "../template-engine.js";
+import type { ListRenderData } from "./render-data.js";
 
 /** The `scope` of a scoped `list-resolve` call (plugin-sdk `listResolveScope`). */
 export interface ListOverlayScope {
@@ -39,9 +44,12 @@ export interface ListOverlayScope {
   readonly pageIds: string[];
 }
 
+/** A module field as far as the scope cares (a build's fields may leave `kind` out: text). */
+export type ScopedField = Omit<TemplateField, "kind"> & { readonly kind?: string };
+
 /** A module as far as the scope cares: its fields and its markup. */
 export interface ScopedModule {
-  readonly fields: readonly TemplateField[];
+  readonly fields: readonly ScopedField[];
   readonly html: string;
 }
 
@@ -71,7 +79,7 @@ function readsLists(m: ScopedModule): boolean {
 }
 
 /** True when one of `fields` can generate page entries (a query or system source). */
-function generatesPages(fields: readonly TemplateField[], data: ListRenderData): boolean {
+function generatesPages(fields: readonly ScopedField[], data: ListRenderData): boolean {
   for (const f of fields) {
     if (f.kind !== "list") continue;
     if (f.bind === "source" && f.source?.kind !== "plugin") return true;

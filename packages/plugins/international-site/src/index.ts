@@ -1391,10 +1391,15 @@ export default definePlugin<PluginContextTier1>({
      */
     list_resolve: async (ctx, args) => {
       const deps = await chromeDepsOf(ctx);
-      return resolveListOverlays(deps, args, {
-        byPage: (pageIds) => loadVariantsByPage(deps.q, pageIds, ctx),
-        groupMembers: (groupIds) => loadGroupMembers(deps.q, groupIds, ctx),
-      });
+      return resolveListOverlays(
+        deps,
+        args,
+        {
+          byPage: (pageIds) => loadVariantsByPage(deps.q, pageIds, ctx),
+          groupMembers: (groupIds) => loadGroupMembers(deps.q, groupIds, ctx),
+        },
+        renderMemoOf(ctx),
+      );
     },
 
     /** Epic #1107 — hide or show list entries in one language. */

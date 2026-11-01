@@ -19,13 +19,15 @@
  * channel (`plugin_errors`, #1008) — loud, attributed, and never a
  * reason to switch the plugin off.
  *
- * Called once per build for every variant — the variants are known
- * before the first page renders, and the template engine resolves
- * synchronously — and once per editor preview for the rendered page's
- * variant, with the page's `scope` (#1223: the lists, content instances
- * and pages that page can show), so a preview costs what its page
- * costs. Without an active contributor (or without variants) nothing is
- * called.
+ * Always asked before the pages it is for render (the template engine
+ * resolves synchronously), with a `scope` (#1223: the lists, content
+ * instances and pages those pages can show): once per editor preview for
+ * the rendered page's variant, so a preview costs what its page costs,
+ * and once per page batch of a build for the batch's variants (#1307,
+ * the generator's `list-overlay-batches.ts`), so a build's call costs
+ * what the batch costs. Only a list's source preview still asks without
+ * a scope (the whole site). Without an active contributor (or without
+ * variants) nothing is called.
  *
  * Loud (CLAUDE.md §2): a failing plugin op throws (a preview reports it
  * and renders without the overlays, #1087); an ill-formed answer, an

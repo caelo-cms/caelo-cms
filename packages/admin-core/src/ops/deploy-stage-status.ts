@@ -28,6 +28,7 @@ import {
   type StageProgress,
   stagePhaseOf,
 } from "../deploy/stage-eta.js";
+import { settleOrphanedRuns } from "./deploy-run-lifecycle.js";
 
 /** How many recent successful Stages the estimate takes its median from. */
 const ETA_HISTORY_RUNS = 5;
@@ -72,7 +73,7 @@ export const stageStatusOp = defineOperation({
     .strict(),
   output: z.object({ runs: z.array(stageStatusRunSchema) }),
   handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
+    const read = (await tx.execute(sql`
       SELECT r.id::text AS id, t.name AS target_name, r.status,
              r.started_at, r.finished_at, r.error_message,
              r.progress, r.phase_timings, r.page_count,
@@ -83,7 +84,11 @@ export const stageStatusOp = defineOperation({
        ORDER BY r.started_at DESC
        LIMIT ${input.deployRunId ? 1 : input.limit}
     `)) as unknown as StageRunDbRow[];
-    if (rows.length === 0) return ok({ runs: [] });
+    if (read.length === 0) return ok({ runs: [] });
+    // #1307 — a Stage whose process died (its lease lapsed) answers failed
+    // with the restart hint, not running with an estimate: the AI polled
+    // such a run for hours. The row is corrected on the way.
+    const rows = await settleOrphanedRuns(tx, read);
 
     const needsEta = rows.some((r) => r.status === "pending" || r.status === "running");
     const history = needsEta

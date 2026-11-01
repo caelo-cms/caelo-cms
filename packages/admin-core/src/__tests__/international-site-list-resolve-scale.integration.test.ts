@@ -11,14 +11,25 @@
  * statements of that call are the same on a small site and on one with
  * 1,600 more variants. The scoped answer is the whole-site answer for
  * every address in the scope (golden comparison against the unscoped
- * call a build makes), the preview shows the translations, and a page
- * that renders no list asks nothing.
+ * call), the preview shows the translations, and a page that renders no
+ * list asks nothing.
+ *
+ * #1307 — the same holds for a build: it asks per page batch, always with
+ * a scope (a whole-site call fails this test), and its batch call costs
+ * the same operations and statements on the big site; the reads no scope
+ * changes (lists, modules, page types) happen once per build, not once per
+ * batch.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   bootstrap,
   drainChangeConsumers,
+  localBuildPluginServices,
   pluginWorkerScheduler,
   renderInvocation,
   resetPluginHost,
@@ -28,6 +39,7 @@ import {
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { type DeployTarget, generateSite, pageOutputPath } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
@@ -188,6 +200,40 @@ async function preview(pageId: string): Promise<{ html: string; calls: ListResol
   const r = await sysOp<{ html: string }>("pages.render_preview", { pageId });
   return { html: r.html, calls: [...calls] };
 }
+
+const buildRoots: string[] = [];
+
+/** A staging build of `pageIds` (one page batch): its build dir and list_resolve calls. */
+async function build(pageIds: string[]): Promise<{ dir: string; calls: ListResolveCall[] }> {
+  const root = mkdtempSync(join(tmpdir(), "caelo-t1307-"));
+  buildRoots.push(root);
+  const runId = crypto.randomUUID();
+  const target: DeployTarget = {
+    id: "00000000-0000-0000-0000-0000000013d7",
+    name: "staging",
+    env: "staging",
+    outDir: "out",
+    baseUrl: "https://example.com",
+    robotsDefault: "noindex",
+    pageUrlStyle: "directory",
+  };
+  calls.length = 0;
+  await adapter.withAdminTransaction(SYS, (tx) =>
+    generateSite({
+      publishAt: new Date().toISOString(),
+      tx,
+      plugins: localBuildPluginServices,
+      target,
+      runId,
+      repoRoot: root,
+      changedPageIds: pageIds,
+    }),
+  );
+  return { dir: join(root, "out", "builds", runId), calls: [...calls] };
+}
+
+/** Site-wide reads a batch call must not repeat (FIXME(#1269) in the rows-read gate). */
+const SITE_READS = ["lists.list", "modules.list", "page_types.list", "list_types.list"];
 
 function inScope(scope: Scope, address: string): boolean {
   const [kind, id] = address.split("/");
@@ -439,6 +485,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  for (const root of buildRoots) rmSync(root, { recursive: true, force: true });
   await cleanup();
   for (const restore of restores.reverse()) await restore();
   await adapter.close();
@@ -559,6 +606,59 @@ describe("#1223 — list-resolve per previewed page", () => {
     expect(r.calls).toEqual([]);
   });
 
+  let smallBuild: ListResolveCall[] | null = null;
+  const built = () => [ids.en, ids.de, ids.about, ids.plain];
+
+  it("#1307 — a build asks per batch, scoped to the batch's pages, and ships the translations", async () => {
+    const r = await build(built());
+    // One batch: German and English each asked once, never without a scope.
+    expect(r.calls.map((c) => c.args.variants)).toEqual([["de"], ["en"]]);
+    for (const c of r.calls) expect(c.args.scope).toBeDefined();
+    const de = r.calls[0] as ListResolveCall;
+    expect(de.args.scope?.contentInstanceIds).toEqual([ids.ci]);
+    expect(de.args.scope?.listIds).toContain(ids.list);
+    expect(de.args.scope?.pageIds).toEqual([ids.de]);
+    smallBuild = r.calls;
+
+    const path = (
+      await sqlSystem(
+        (tx) =>
+          tx`SELECT current_path FROM pages WHERE id = ${ids.de}::uuid` as Promise<
+            { current_path: string }[]
+          >,
+      )
+    )[0]?.current_path;
+    const html = await readFile(join(r.dir, pageOutputPath(path ?? "", "directory")), "utf8");
+    const nav = /<nav class="t1223"[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
+    expect([...nav.matchAll(/<li[^>]*>([^<]*)<\/li>/g)].map((m) => m[1])).toEqual([
+      "DE:Pricing",
+      "DE:Status",
+    ]);
+    expect(html).toContain("DE:Fast setup");
+    expect(html).toContain('<p class="t1223-tag">DE:Fast</p>');
+  });
+
+  it("#1307 — a pass reads the lists, modules and page types once, whatever the batches", async () => {
+    const scope = smallBuild?.[0]?.args.scope;
+    if (!scope) throw new Error("previous test did not run");
+    const renderId = crypto.randomUUID();
+    const ask = async () => {
+      calls.length = 0;
+      const r = await runPluginOperation({
+        invocation: renderInvocation({ chatBranchId: null, renderId }),
+        pluginSlug: "international-site",
+        operationName: "list_resolve",
+        args: { variants: ["de"], scope },
+      });
+      if (!r.ok) throw new Error(r.error.message);
+      return calls[0] as ListResolveCall;
+    };
+    const first = await ask();
+    const next = await ask();
+    expect(first.ops.filter((o) => SITE_READS.includes(o.split(":")[1] ?? ""))).not.toEqual([]);
+    expect(next.ops.filter((o) => SITE_READS.includes(o.split(":")[1] ?? ""))).toEqual([]);
+  });
+
   it("costs exactly as much on a site of 1,600 more variants", async () => {
     if (!small) throw new Error("previous test did not run");
     // The whole-site answer (a build's call) on the small site, for the record.
@@ -587,5 +687,20 @@ describe("#1223 — list-resolve per previewed page", () => {
     expect(big.statements).toBe(small.statements);
     // The whole site's answer (what every preview asked for before #1223).
     expect(big.statements).toBeLessThan(bigWhole?.statements ?? 0);
+  });
+
+  it("#1307 — a build's batch call costs exactly as much on the big site", async () => {
+    if (!smallBuild) throw new Error("the small build did not run");
+    const r = await build(built());
+    console.log(
+      "[list-resolve-scale] build",
+      JSON.stringify({
+        small: smallBuild.map((c) => [c.ops.length, c.statements]),
+        big: r.calls.map((c) => [c.ops.length, c.statements]),
+      }),
+    );
+    expect(r.calls.map((c) => c.args)).toEqual(smallBuild.map((c) => c.args));
+    expect(r.calls.map((c) => [...c.ops].sort())).toEqual(smallBuild.map((c) => [...c.ops].sort()));
+    expect(r.calls.map((c) => c.statements)).toEqual(smallBuild.map((c) => c.statements));
   });
 });

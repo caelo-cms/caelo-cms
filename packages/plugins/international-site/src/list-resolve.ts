@@ -5,21 +5,26 @@
  * non-default language (translations by address, hidden entries).
  *
  * Two shapes of the same answer (#1223):
- *   - a build asks without a scope: the whole site's list translation
- *     state (`loadListTranslationState`), read once for every language;
- *   - an editor preview asks for the one page it renders, with core's
- *     `scope` (the shared lists, the content instances whose local lists
- *     render, the pages whose properties render). Only those sources and
- *     their stored translations are read, so the answer costs what the
- *     page costs, not what the site costs. For every address in the scope
- *     it is the whole-site answer, value for value (the overlay of a list,
- *     an instance or a page depends only on that source, its stored rows
- *     and the variants of the pages its links point at).
+ *   - without a scope: the whole site's list translation state
+ *     (`loadListTranslationState`), read once for every language (a
+ *     list's source preview asks so);
+ *   - with core's `scope` (the shared lists, the content instances whose
+ *     local lists render, the pages whose properties render): the editor
+ *     preview asks for the one page it renders, a build for each page
+ *     batch (#1307). Only those sources and their stored translations are
+ *     read, so the answer costs what the page or the batch costs, not
+ *     what the site costs. For every address in the scope it is the
+ *     whole-site answer, value for value (the overlay of a list, an
+ *     instance or a page depends only on that source, its stored rows and
+ *     the variants of the pages its links point at).
  *
  * The page variants come through the render pass's shared reads
  * (`VariantReads`, index.ts): a preview's `link_resolve` already read the
  * rows of every page it renders, so the scoped answer re-reads none of
- * them.
+ * them. The reads that do not depend on the scope — every list, every
+ * module, the page types — are read once per pass too (`RenderMemo`): a
+ * build asks once per batch in one pass, and must not re-read them per
+ * batch.
  */
 
 import {
@@ -56,6 +61,7 @@ import {
   type ValueTranslationRow,
   type VisibilityRow,
 } from "./list-translation-ops.js";
+import { onceIn, type RenderMemo } from "./render-memo.js";
 import { chunked, listWhereAnyOf } from "./store-reads.js";
 
 /** Page variant reads shared with the render pass (index.ts). */
@@ -68,11 +74,17 @@ export interface VariantReads {
 
 const EMPTY = new Set<string>();
 
-/** The `list-resolve` answer: one overlay per requested non-default language. */
+/**
+ * The `list-resolve` answer: one overlay per requested non-default language.
+ *
+ * @param memo the render pass's memo (`renderMemoOf`): the scoped path
+ *   reads the scope-independent rows once per pass.
+ */
 export async function resolveListOverlays(
   deps: ChromeDeps,
   rawArgs: unknown,
   reads: VariantReads,
+  memo: RenderMemo,
 ): Promise<{ overlays: Record<string, LocaleOverlay> }> {
   const { variants, scope } = listResolveArgs.parse(rawArgs);
   const overlays: Record<string, LocaleOverlay> = {};
@@ -80,7 +92,7 @@ export async function resolveListOverlays(
   if (wanted.length === 0) return { overlays };
   if (scope) {
     for (const code of wanted) {
-      const state = await loadScopedListState(deps, scope, code, reads);
+      const state = await loadScopedListState(deps, scope, code, reads, memo);
       overlays[code] = overlayFor(
         state.snapshot,
         code,
@@ -132,8 +144,24 @@ async function loadScopedListState(
   scope: ListResolveScope,
   locale: string,
   reads: VariantReads,
+  memo: RenderMemo,
 ): Promise<ScopedListState> {
   const { cms, q } = deps;
+  // Scope-independent: once per pass, however many batches it asks for.
+  const allLists = () =>
+    onceIn(memo, "listResolve.lists", () =>
+      cms.call<{
+        lists: { id: string; slug: string; name: string; type: string; items?: ListItem[] }[];
+      }>("lists.list", { includeItems: true }),
+    );
+  const allModules = () =>
+    onceIn(memo, "listResolve.modules", () =>
+      cms.call<{ modules: ModuleInfo[] }>("modules.list", {}),
+    );
+  const allPageTypes = () =>
+    onceIn(memo, "listResolve.pageTypes", () =>
+      cms.call<{ pageTypes: PageTypeDef[] }>("page_types.list", {}),
+    );
   const defaultCode = [...deps.locales.values()].find((l) => l.is_default)?.code ?? null;
   const nonDefault = [...deps.locales.values()].filter((l) => !l.is_default).map((l) => l.code);
   // A variant row of a language the registry no longer has is no variant.
@@ -144,11 +172,7 @@ async function loadScopedListState(
   // 1. The shared lists, and which of the instances hold local lists on
   //    which pages.
   const [lists, placed] = await Promise.all([
-    listIds.size > 0
-      ? cms.call<{
-          lists: { id: string; slug: string; name: string; type: string; items?: ListItem[] }[];
-        }>("lists.list", { includeItems: true })
-      : { lists: [] },
+    listIds.size > 0 ? allLists() : { lists: [] },
     perChunk(scope.contentInstanceIds, async (slice) => {
       const r = await cms.call<{
         listInstances: { contentInstanceId: string; pageIds: string[] }[];
@@ -166,7 +190,7 @@ async function loadScopedListState(
             });
             return r.instances;
           }),
-          cms.call<{ modules: ModuleInfo[] }>("modules.list", {}),
+          allModules(),
         ])
       : [[] as InstanceInfo[], { modules: [] as ModuleInfo[] }];
 
@@ -229,9 +253,7 @@ async function loadScopedListState(
   const pageIds = [...new Set([...propVariants.map((v) => v.page_id), ...sourceByGroup.values()])];
   const [pages, pageTypes] = await Promise.all([
     readPages(cms, pageIds, paths),
-    propVariants.length > 0
-      ? cms.call<{ pageTypes: PageTypeDef[] }>("page_types.list", {})
-      : { pageTypes: [] as PageTypeDef[] },
+    propVariants.length > 0 ? allPageTypes() : { pageTypes: [] as PageTypeDef[] },
   ]);
   const pageById = new Map(pages.map((p) => [p.id, p]));
   const pageIdByPath = new Map<string, string>();

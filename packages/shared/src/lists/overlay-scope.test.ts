@@ -6,8 +6,10 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { ListPageRecord, ListRenderData, ListTypeDef, TemplateField } from "@caelo-cms/shared";
-import { pageListOverlayScope, type ScopedModule } from "../lists/overlay-scope.js";
+import type { TemplateField } from "../template-engine.js";
+import type { ListTypeDef } from "./list-type.js";
+import { pageListOverlayScope, type ScopedModule } from "./overlay-scope.js";
+import type { ListPageRecord, ListRenderData } from "./render-data.js";
 
 const P = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const CI = "00000000-0000-4000-9000-000000000001";
