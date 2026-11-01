@@ -25,7 +25,7 @@ import {
   loadBranchedModuleStates,
   loadContentInstanceBranchStates,
 } from "../../snapshots/index.js";
-import { findContentInstancesContaining } from "./content-instance-refs.js";
+import { findContentInstancesContaining, idNeedles } from "./content-instance-refs.js";
 
 /** A module field as readers of the page's text need it. */
 export interface PlacementField {
@@ -242,7 +242,7 @@ async function exclusiveToTree(
   `)) as unknown as { id: string }[];
   const placed = new Set(bound.map((b) => b.id));
   const parents = new Map<string, Set<string>>();
-  for (const c of await findContentInstancesContaining(tx, chatBranchId, ids)) {
+  for (const c of await findContentInstancesContaining(tx, chatBranchId, idNeedles(ids))) {
     const parsed = JSON.parse(c.valuesText) as Record<string, unknown>;
     for (const ref of nestedRefPaths(parsed)) {
       if (ref.contentInstanceId === c.contentInstanceId) continue;

@@ -220,6 +220,7 @@ export function extractPgFields(error: unknown): {
   table?: string;
   column?: string;
   detail?: string;
+  timeout?: "statement" | "lock";
 } | null {
   let current: unknown = error;
   for (let depth = 0; depth < 5 && typeof current === "object" && current !== null; depth++) {
@@ -230,6 +231,7 @@ export function extractPgFields(error: unknown): {
       constraint?: unknown;
       table?: unknown;
       column?: unknown;
+      message?: unknown;
       cause?: unknown;
     };
     // Bun.SQL sets `.code` to its own class (`ERR_POSTGRES_SERVER_ERROR`)
@@ -249,12 +251,19 @@ export function extractPgFields(error: unknown): {
         table?: string;
         column?: string;
         detail?: string;
+        timeout?: "statement" | "lock";
       } = {};
       if (code) out.code = code;
       if (constraint) out.constraint = constraint;
       if (table) out.table = table;
       if (column) out.column = column;
       if (detail) out.detail = detail;
+      // #1287 — which of migration 0392's limits ended the statement. The
+      // SQLSTATE alone does not say: 57014 is any cancel, 55P03 any lock
+      // that was not available.
+      const message = typeof e.message === "string" ? e.message : "";
+      if (code === "57014" && message.includes("statement timeout")) out.timeout = "statement";
+      if (code === "55P03" && message.includes("lock timeout")) out.timeout = "lock";
       return out;
     }
     current = e.cause;

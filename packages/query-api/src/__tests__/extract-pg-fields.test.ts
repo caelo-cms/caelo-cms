@@ -58,6 +58,24 @@ describe("extractPgFields", () => {
     expect(out?.constraint).toBe("pages_slug_locale_unique");
   });
 
+  it("#1287 — names which database limit ended the statement", () => {
+    // Bun.SQL's shape: its own class on .code, the SQLSTATE on .errno.
+    expect(
+      extractPgFields({
+        code: "ERR_POSTGRES_SERVER_ERROR",
+        errno: "57014",
+        message: "canceling statement due to statement timeout",
+      }),
+    ).toEqual({ code: "57014", timeout: "statement" });
+    expect(
+      extractPgFields({ errno: "55P03", message: "canceling statement due to lock timeout" }),
+    ).toEqual({ code: "55P03", timeout: "lock" });
+    // A cancel that is not the timeout (pg_cancel_backend) names none.
+    expect(
+      extractPgFields({ errno: "57014", message: "canceling statement due to user request" }),
+    ).toEqual({ code: "57014" });
+  });
+
   it("uses .errno when .code is absent (Bun.SQL fallback)", () => {
     const err = {
       errno: "42P01",
