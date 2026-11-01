@@ -71,6 +71,26 @@ const deployOf = (calls: string[][]) =>
   calls.find((c) => c[0] === "run" && c[1] === "jobs" && c[2] === "deploy") as string[];
 
 describe("ensureAuditJob", () => {
+  it("names --condition=None on every bucket grant (a bucket policy may already be conditional)", async () => {
+    // gcloud's answer on searchVIU (2026-11-01) to an unconditional grant on a
+    // bucket whose policy already holds a conditional binding.
+    const { run, calls } = fakeGcloud([
+      [
+        /^storage buckets add-iam-policy-binding (?!.*--condition=)/,
+        fail(
+          "ERROR: (gcloud.storage.buckets.add-iam-policy-binding) Adding a binding without specifying a condition to a policy containing conditions is prohibited in non-interactive mode. Run the command again with `--condition=None`",
+        ),
+      ],
+    ]);
+    const r = await ensureAuditJob(TARGET, { run, sleep: async () => {} });
+    expect(r.ok).toBe(true);
+    const bucketGrants = calls.filter(
+      (c) => c.slice(0, 3).join(" ") === "storage buckets add-iam-policy-binding",
+    );
+    expect(bucketGrants.length).toBeGreaterThan(0);
+    for (const c of bucketGrants) expect(flag(c, "condition")).toBe("None");
+  });
+
   it("grants the job only results-create, build-read (gcp) and logs", async () => {
     const { run, calls } = fakeGcloud();
     const r = await ensureAuditJob(TARGET, { run, sleep: async () => {} });
