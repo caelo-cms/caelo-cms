@@ -20,6 +20,8 @@
 --   quality_audit_runs (created_at DESC) WHERE publish_override_by IS NOT NULL
 --                                 the audit list's "published anyway" filter,
 --                                 newest first.
+--   subagent_runs (finished_at) WHERE finished_at IS NOT NULL
+--                                 the GC of finished subagent sessions.
 --   chat_sessions (created_at) WHERE open
 --                                 the open-changes lists read the chats that
 --                                 are neither published nor archived; most
@@ -40,6 +42,10 @@ CREATE INDEX IF NOT EXISTS plugin_tool_approval_bindings_created_idx
 CREATE INDEX IF NOT EXISTS quality_audit_runs_override_idx
   ON quality_audit_runs (created_at DESC)
   WHERE publish_override_by IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS subagent_runs_finished_idx
+  ON subagent_runs (finished_at)
+  WHERE finished_at IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS chat_sessions_open_idx
   ON chat_sessions (created_at)
