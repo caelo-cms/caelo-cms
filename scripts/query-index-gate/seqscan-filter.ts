@@ -21,8 +21,7 @@
  * collapse to one entry. Each kept entry ends with a line "@@END".
  *
  * It must keep up with the server: a slow reader backs the collector up and
- * with it every backend (an awk version kept up locally but stretched the
- * CI run past its timeout). So it is linear in the input, and an
+ * with it every backend. So it is linear in the input, and an
  * entry keeps only its first {@link HEAD} lines (the tag and the start of
  * the statement) and its last {@link TAIL} lines (the plan).
  */

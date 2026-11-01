@@ -345,6 +345,9 @@ jobs:
           echo "GATE_DIR=$RUNNER_TEMP/query-index-gate" >> "$GITHUB_ENV"
           GATE_DIR="$RUNNER_TEMP/query-index-gate"
           mkdir -p "$GATE_DIR"
+          # jit=off: a disabled seq scan prices a plan at 1e10, far above
+          # jit_above_cost, so with the image's LLVM JIT every such statement
+          # was JIT-compiled — seconds each, the run 8x slower.
           # The logging collector writes into a FIFO the filter reads:
           # whole messages, never interleaved, and nothing on disk. The
           # filter runs on the runner; it must keep up, because a slow
@@ -366,6 +369,7 @@ jobs:
             -c auto_explain.log_format=text \
             -c auto_explain.log_parameter_max_length=0 \
             -c enable_seqscan=off \
+            -c jit=off \
             -c "log_line_prefix=@@%a@@ "
           for i in $(seq 1 90); do
             docker exec gate-pg pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" && break

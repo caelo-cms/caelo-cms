@@ -231,10 +231,6 @@ async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promis
       // honours it under FORCE ROW LEVEL SECURITY, so set the session
       // var defensively.
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      // #1293 — the query index gate's server plans with seq scans off; the
-      // reset's bulk DELETEs would then walk a whole index for every FK
-      // check of every deleted row. The reset is fixture SQL, not gated.
-      await tx.unsafe("SET LOCAL enable_seqscan = on");
 
       // TRUNCATE the churn set in one statement. CASCADE propagates to
       // referencing tables, which is why any table a PRESERVE table
@@ -286,6 +282,77 @@ async function assertNoDoubleEncodedJsonb(url: string): Promise<void> {
   }
 }
 
+/**
+ * #1268 — after each integration file, the maintained draft head
+ * (`draft_pending_entities`) must equal the head rebuilt from the snapshot
+ * history (rule 3 of docs/dev/state-and-changes.md). Every write path the
+ * file exercised — an op, a Stage, an undo, a takeover, seed SQL — is held
+ * to it; a maintainer bug fails the file here instead of a reader showing a
+ * wrong count later.
+ */
+async function assertDraftHeadConsistent(url: string): Promise<void> {
+  const sql = new SQL(url, { max: 1 });
+  try {
+    const rows = (await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx.unsafe(`
+        WITH computed AS (SELECT * FROM caelo_draft_head_computed())
+        SELECT 'stale' AS side, to_jsonb(s) AS row FROM
+          (SELECT * FROM draft_pending_entities EXCEPT SELECT * FROM computed) s
+        UNION ALL
+        SELECT 'missing', to_jsonb(m) FROM
+          (SELECT * FROM computed EXCEPT SELECT * FROM draft_pending_entities) m
+        LIMIT 5`);
+    })) as unknown as { side: string; row: unknown }[];
+    if (rows.length > 0) {
+      throw new Error(
+        `draft head (draft_pending_entities) differs from its rebuild (#1268): ${JSON.stringify(rows)}. ` +
+          "A write path changed snapshots without the 0433 maintainers keeping the head exact — " +
+          "fix the maintainer (caelo_draft_head_rows / caelo_draft_head_headers), never the reader.",
+      );
+    }
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * #1287 — rule 3 of docs/dev/state-and-changes.md: after each integration
+ * file the maintained `content_instance_refs` equal what the extraction
+ * (`caelo_content_instance_ref_rows`, migration 0458) derives from the
+ * values now. Whatever the file wrote — an op, a helper, its own seed SQL,
+ * a Stage or a revert — a path the triggers miss fails here.
+ */
+async function assertContentInstanceRefsExact(url: string): Promise<void> {
+  const sql = new SQL(url, { max: 1 });
+  try {
+    const drift = (await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx.unsafe(`
+        WITH expected AS (
+          SELECT ci.id AS content_instance_id, r.ref_kind, r.ref
+            FROM content_instances ci
+           CROSS JOIN LATERAL caelo_content_instance_ref_rows(ci."values") r
+        )
+        SELECT
+          (SELECT count(*)::int FROM (SELECT * FROM expected
+             EXCEPT SELECT content_instance_id, ref_kind, ref FROM content_instance_refs) d) AS missing,
+          (SELECT count(*)::int FROM (SELECT content_instance_id, ref_kind, ref FROM content_instance_refs
+             EXCEPT SELECT * FROM expected) d) AS extra`);
+    })) as { missing: number; extra: number }[];
+    const d = drift[0];
+    if (d && (d.missing > 0 || d.extra > 0)) {
+      throw new Error(
+        `content_instance_refs drifted from content_instances (#1287): ${d.missing} missing, ${d.extra} extra. ` +
+          "A write changed content-instance values past the triggers of migration 0458 " +
+          "(a disabled trigger, a write into the table itself); content_instances.rebuild_refs repairs it.",
+      );
+    }
+  } finally {
+    await sql.end();
+  }
+}
+
 if (ADMIN_URL && PUBLIC_URL && RESET_OPTED_IN) {
   beforeAll(async () => {
     await Promise.all([
@@ -297,6 +364,8 @@ if (ADMIN_URL && PUBLIC_URL && RESET_OPTED_IN) {
     await Promise.all([
       assertNoDoubleEncodedJsonb(ADMIN_URL),
       assertNoDoubleEncodedJsonb(PUBLIC_URL),
+      assertDraftHeadConsistent(ADMIN_URL),
+      assertContentInstanceRefsExact(ADMIN_URL),
     ]);
   });
 } else if (ADMIN_URL && PUBLIC_URL) {

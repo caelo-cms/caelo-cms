@@ -36,10 +36,9 @@ O(n) per call — and O(n²) per Stage when it runs once per page.
    message, so the plans of concurrent backends never interleave, which
    they do on a plain stderr pipe once a plan exceeds `PIPE_BUF`). The
    reader must keep up — a slow one backs up the collector and with it
-   every backend (an awk version kept up locally but stretched the CI run
-   past its timeout). The Bun filter reads ~270 MB/s, linear in the input,
-   and keeps an entry's first 40 and last 400 lines (the statement's start
-   and the plan). The filter keeps only
+   every backend. The Bun filter reads ~270 MB/s, linear in the input, and
+   keeps an entry's first 40 and last 400 lines (the statement's start and
+   the plan). The filter keeps only
    tagged plans that contain a Seq Scan or an Index (Only) Scan with a
    `Filter` but no `Index Cond` (a whole index walked for its order), strips
    costs, durations and output lists, and drops repeats. Nothing else
@@ -122,7 +121,7 @@ postgres -D /tmp/gate-pg -p 55493 -c listen_addresses=localhost \
   -c log_rotation_age=0 -c log_rotation_size=0 \
   -c shared_preload_libraries=auto_explain -c auto_explain.log_min_duration=0 \
   -c auto_explain.log_nested_statements=on -c auto_explain.log_verbose=on \
-  -c auto_explain.log_parameter_max_length=0 -c enable_seqscan=off \
+  -c auto_explain.log_parameter_max_length=0 -c enable_seqscan=off -c jit=off \
   -c "log_line_prefix=@@%a@@ " &
 # bootstrap.sh + `bun run db:migrate` against port 55493, then:
 bun run test $(git ls-files '*.integration.test.ts')
@@ -147,10 +146,11 @@ meaningful over the whole tier.
 - An operation predicate written with `current_setting(...)` is dropped with
   the RLS terms.
 - Only code paths the integration tier runs are checked.
-- `enable_seqscan=off` is server-wide, so fixture SQL plans that way too.
-  A fixture that bulk-deletes thousands of rows makes every FK check walk
-  a whole index per deleted row (O(n²)) and can outlast the hook timeout;
-  such fixture transactions say `SET LOCAL enable_seqscan = on` (the
-  preload's reset and the list-resolve scale test do). A stalled gate run
-  prints the sessions that were busy for more than 5 s (`activity.sql`).
+- The server runs with `jit=off`. A disabled Seq Scan prices its plan at
+  1e10, far above `jit_above_cost`, so with JIT available (the
+  `postgres:17-alpine` image ships LLVM; Homebrew's build does not) every
+  such statement was JIT-compiled — seconds each, the run eight times
+  slower and fixtures' bulk deletes past their hook timeouts. A stalled
+  gate run prints the sessions that were busy for more than 5 s
+  (`activity.sql`).
 - Production plan monitoring (`pg_stat_statements`) is out of scope.

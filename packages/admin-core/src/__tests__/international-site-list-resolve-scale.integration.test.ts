@@ -131,11 +131,6 @@ async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   try {
     return await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      // #1293 — under the query index gate (enable_seqscan=off) the cleanup's
-      // bulk page delete walked a whole index for every FK check of each of
-      // the 3,200 seeded pages and outlasted the hook timeout. Fixture SQL
-      // is not gated, so it plans as usual.
-      await tx.unsafe("SET LOCAL enable_seqscan = on");
       return fn(tx as unknown as Bun.SQL);
     });
   } finally {
