@@ -33,7 +33,7 @@
  *     reported so the AI warns and asks before confirming.
  */
 
-import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
 import { lockedEntityLabel } from "./entity-labels.js";
 import { createdOnBranch, referencedEntities } from "./entity-refs.js";
@@ -128,15 +128,185 @@ export function chatPendingSql(binding: ChatBinding, alias = "ss"): SQL {
 }
 
 /**
- * Correlated form of {@link chatPendingSql} for queries that walk
- * `chat_sessions` (alias `cs`) and count each chat's pending headers
- * (alias `ss`).
+ * Issue #1268 — the draft head (`draft_pending_entities`, migration 0433):
+ * one row per (branch, kind, entity, owner chat) pointing at the newest
+ * pending snapshot that owner wrote of the entity, maintained by triggers
+ * in the writing transaction. Readers of "what is pending" read the head
+ * instead of walking the history; `caelo_draft_head_source()` in 0433 is
+ * the one definition both the maintainers and `chat.rebuild_draft_head`
+ * run. This list mirrors `caelo_draft_head_tables()` plus the header kind
+ * `layoutChrome` (a test holds the two in step).
  */
-export function sessionPendingSql(csAlias = "cs", ssAlias = "ss"): SQL {
-  return sql.raw(
-    `${ssAlias}.chat_branch_id = ${csAlias}.chat_branch_id AND ${ssAlias}.staged_at IS NULL AND ${ssAlias}.undone_at IS NULL` +
-      ` AND (${csAlias}.branch_kind <> 'draft' OR caelo_chat_owner(${ssAlias}.chat_task_id) = ${csAlias}.id)`,
+export const DRAFT_HEAD_KINDS = [
+  "module",
+  "template",
+  "page",
+  "pageLayout",
+  "pageModuleContent",
+  "listType",
+  "list",
+  "pageType",
+  "contentInstance",
+  "theme",
+  "layoutBlock",
+  "pluginRow",
+  "layoutChrome",
+] as const;
+
+/** A kind of the draft head. */
+export type DraftHeadKind = (typeof DRAFT_HEAD_KINDS)[number];
+
+/**
+ * THE pending changes a chat shows — the pill, the cross-chat banner, the
+ * changes page and the Stage list count and list exactly these kinds, one
+ * per head entity. `layoutBlock` is left out: a layout's chrome change is
+ * counted once, through its `layout_modules.set` header (`layoutChrome`),
+ * which is how the editor has always reported it.
+ */
+export const PENDING_CHANGE_KINDS: readonly DraftHeadKind[] = DRAFT_HEAD_KINDS.filter(
+  (k) => k !== "layoutBlock",
+);
+
+/**
+ * SQL predicate: the head row under `alias` is one of THIS chat's pending
+ * changes — on its branch and (on the shared draft) owned by this chat or
+ * one of its subagents. An isolated branch belongs to its chat, so every
+ * pending row on it counts, whoever wrote it.
+ */
+export function chatHeadSql(binding: ChatBinding, alias = "d"): SQL {
+  const owner =
+    binding.kind === "draft"
+      ? sql` AND ${sql.raw(alias)}.owner_chat_session_id = ${binding.chatSessionId}::uuid`
+      : sql``;
+  return sql`${sql.raw(alias)}.chat_branch_id = ${binding.branchId}::uuid${owner}`;
+}
+
+/**
+ * Correlated form of {@link chatHeadSql}: the head rows of the chat whose
+ * id, branch and branch kind are the SQL expressions given, as a row source
+ * for `CROSS JOIN LATERAL (...) d` or `EXISTS (...)`. Two arms instead of
+ * `(kind <> 'draft' OR owner = chat)`: the OR keeps Postgres from using the
+ * owner column of the index, so every chat would scan the whole shared
+ * draft's head; each arm here is one index range, the other is switched off
+ * by its constant test on the outer row. `where` adds a predicate on `d`.
+ */
+export function chatHeadRowsSql(
+  chat: { readonly id: string; readonly branch: string; readonly kind: string },
+  where: SQL = sql`true`,
+): SQL {
+  const id = sql.raw(chat.id);
+  const branch = sql.raw(chat.branch);
+  const kind = sql.raw(chat.kind);
+  return sql`
+    SELECT d.* FROM draft_pending_entities d
+     WHERE ${kind} = 'draft' AND d.chat_branch_id = ${branch}
+       AND d.owner_chat_session_id = ${id} AND ${where}
+    UNION ALL
+    SELECT d.* FROM draft_pending_entities d
+     WHERE ${kind} <> 'draft' AND d.chat_branch_id = ${branch} AND ${where}`;
+}
+
+/**
+ * SQL predicate: the `chat_sessions` row under `csAlias` has a pending
+ * change. A count, not `EXISTS` / `LIMIT 1`: with an early exit Postgres 17
+ * costs a sequential scan of the head as cheap ("the first match comes
+ * soon"), but head rows sit clustered by the chat that wrote them, so each
+ * probe read the shared draft's head up to its chat's rows (rows-read gate:
+ * 453 -> 6680 buffers). Counting all of the chat's rows makes the
+ * (branch, owner, kind) index the plan, and costs what the chat changed.
+ */
+export function sessionHasPendingSql(csAlias = "cs"): SQL {
+  return sql`(SELECT count(*) FROM (${sessionHeadRowsSql(csAlias, pendingChangeKindSql())}) p) > 0`;
+}
+
+/** {@link chatHeadRowsSql} for a `chat_sessions` row under `csAlias`. */
+export function sessionHeadRowsSql(csAlias = "cs", where?: SQL): SQL {
+  return chatHeadRowsSql(
+    {
+      id: `${csAlias}.id`,
+      branch: `${csAlias}.chat_branch_id`,
+      kind: `${csAlias}.branch_kind`,
+    },
+    where,
   );
+}
+
+/** SQL predicate: the head row under `alias` is of a {@link PENDING_CHANGE_KINDS} kind. */
+export function pendingChangeKindSql(alias = "d"): SQL {
+  return sql`${sql.raw(alias)}.entity_kind = ANY(${textArray(PENDING_CHANGE_KINDS)})`;
+}
+
+/**
+ * SQL of a branch overlay: the newest pending snapshot row (alias `es`) of
+ * each entity of `kind` on `branchId`, across owners, found through the
+ * draft head — so an overlay reads one head row per pending entity instead
+ * of the entity's whole pending history. Selects `entity_id` (text) plus
+ * `columns` (default `es.state`). `ids` narrows to those entities; `where`
+ * adds a predicate on `d` / `es`.
+ */
+export function headOverlaySql(spec: {
+  readonly kind: Exclude<DraftHeadKind, "layoutChrome">;
+  readonly table: string;
+  readonly branchId: string;
+  readonly ids?: readonly string[];
+  readonly columns?: SQL;
+  readonly where?: SQL;
+}): SQL {
+  return sql`
+    SELECT DISTINCT ON (d.entity_id, d.entity_sub) d.entity_id::text AS entity_id,
+           ${spec.columns ?? sql`es.state`}
+      FROM draft_pending_entities d
+      JOIN ${sql.raw(spec.table)} es ON es.id = d.snapshot_row_id
+     WHERE d.chat_branch_id = ${spec.branchId}::uuid AND d.entity_kind = ${spec.kind}
+       ${spec.ids ? sql`AND d.entity_id = ANY(${uuidArray(spec.ids)})` : sql``}
+       ${spec.where ? sql`AND ${spec.where}` : sql``}
+     ORDER BY d.entity_id, d.entity_sub,
+              d.header_created_at DESC, d.row_created_at DESC, d.snapshot_row_id DESC`;
+}
+
+/** The fields of a chat a head read needs (a {@link ChatBinding} has them). */
+export interface HeadChat {
+  readonly chatSessionId: string;
+  readonly branchId: string;
+  readonly kind: BranchKind;
+}
+
+/**
+ * Pending changes per kind for each chat, in one statement over the head:
+ * distinct entities, so a change two writers made (a chat and changes
+ * written outside any chat, on an isolated branch) counts once. Chats with
+ * nothing pending get an empty record.
+ */
+export async function pendingCountsByKind(
+  tx: TransactionRunner,
+  chats: readonly HeadChat[],
+): Promise<Map<string, Partial<Record<DraftHeadKind, number>>>> {
+  const out = new Map<string, Partial<Record<DraftHeadKind, number>>>();
+  for (const c of chats) out.set(c.chatSessionId, {});
+  if (chats.length === 0) return out;
+  const rows = (await tx.execute(sql`
+    SELECT c.id::text AS chat, d.entity_kind AS kind,
+           count(DISTINCT (d.entity_id, d.entity_sub))::int AS n
+    FROM unnest(
+      ${uuidArray(chats.map((c) => c.chatSessionId))},
+      ${uuidArray(chats.map((c) => c.branchId))},
+      ${textArray(chats.map((c) => c.kind))}
+    ) AS c(id, branch, branch_kind)
+    CROSS JOIN LATERAL (
+      ${chatHeadRowsSql({ id: "c.id", branch: "c.branch", kind: "c.branch_kind" }, pendingChangeKindSql())}
+    ) d
+    GROUP BY c.id, d.entity_kind
+  `)) as unknown as { chat: string; kind: DraftHeadKind; n: number }[];
+  for (const r of rows) {
+    const counts = out.get(r.chat);
+    if (counts) counts[r.kind] = r.n;
+  }
+  return out;
+}
+
+/** The total of a {@link pendingCountsByKind} record. */
+export function totalPending(counts: Partial<Record<DraftHeadKind, number>>): number {
+  return Object.values(counts).reduce((sum, n) => sum + (n ?? 0), 0);
 }
 
 /**

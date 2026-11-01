@@ -377,6 +377,15 @@ export const gcSubagentSessionsOp = defineOperation({
           WHERE finished_at IS NOT NULL
             AND finished_at < now() - (${days} || ' days')::interval
         )
+        -- #1268: a session whose task still owns pending draft changes
+        -- stays — deleting it would hand those changes to no chat (they
+        -- belong to the parent through it, caelo_chat_owner), and no chat
+        -- could stage or undo them any more.
+        AND NOT EXISTS (
+          SELECT 1 FROM site_snapshots ss
+          WHERE ss.chat_task_id = chat_sessions.id AND ss.chat_branch_id IS NOT NULL
+            AND ss.staged_at IS NULL AND ss.undone_at IS NULL
+        )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const sessionsDeleted = rows.length;

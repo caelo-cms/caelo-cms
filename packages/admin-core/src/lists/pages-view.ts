@@ -16,7 +16,7 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../draft.js";
+import { headOverlaySql } from "../draft.js";
 import type { PageState } from "../snapshots/state.js";
 
 /** One page in the caller's view. */
@@ -104,14 +104,12 @@ export async function loadPageRows(
   `)) as unknown as PageRow[];
   const pending = new Map<string, PageState>();
   if (branchId) {
-    const snaps = (await tx.execute(sql`
-      SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
-        FROM page_snapshots ps JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-       WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-       ORDER BY ps.page_id, ss.created_at DESC
-    `)) as unknown as { page_id: string; state: unknown }[];
+    // #1268 — the branch's pending pages from the draft head.
+    const snaps = (await tx.execute(
+      headOverlaySql({ kind: "page", table: "page_snapshots", branchId }),
+    )) as unknown as { entity_id: string; state: unknown }[];
     for (const s of snaps) {
-      pending.set(s.page_id, s.state as PageState);
+      pending.set(s.entity_id, s.state as PageState);
     }
   }
   return { rows, pending };
