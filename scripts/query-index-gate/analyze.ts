@@ -4,7 +4,7 @@
  * Issue #1293 — the query index gate's analyzer (docs/dev/query-index-gate.md).
  *
  * Input: the stream-filtered auto_explain log of an integration run
- * (`seqscan-filter.awk`): one entry per distinct plan that contains a Seq
+ * (`seqscan-filter.ts`): one entry per distinct plan that contains a Seq
  * Scan and ran inside a Database Adapter transaction, headed by its
  * `caelo/<holder>` tag. The run uses `enable_seqscan=off`, so the planner
  * takes any index that can serve a predicate, even on a three-row test

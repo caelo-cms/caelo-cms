@@ -311,8 +311,8 @@ jobs:
     # explain, and on a stale list entry. Its own database: auto_explain
     # must be preloaded (a services container cannot take server flags),
     # and its plan log stays out of the main check's timings. The server's
-    # log goes through the awk stream filter inside the container — the
-    # raw log of a run is gigabytes and never touches disk or `docker logs`.
+    # log goes through a FIFO into the stream filter — the raw log of a run
+    # is about a gigabyte and never touches disk or `docker logs`.
     env:
       POSTGRES_USER: caelo
       POSTGRES_PASSWORD: caelo_ci
@@ -347,11 +347,10 @@ jobs:
           mkdir -p "$GATE_DIR"
           # The logging collector writes into a FIFO the filter reads:
           # whole messages, never interleaved, and nothing on disk. The
-          # filter runs on the runner (mawk), not in the alpine container
-          # (busybox awk): a slow reader backs the collector up and with it
-          # every statement of the run.
+          # filter runs on the runner; it must keep up, because a slow
+          # reader backs the collector up and with it every statement.
           mkfifo -m 666 "$GATE_DIR/pg.fifo"
-          nohup awk -v stats="$GATE_DIR/filter-stats.txt" -f scripts/query-index-gate/seqscan-filter.awk \
+          nohup bun scripts/query-index-gate/seqscan-filter.ts "$GATE_DIR/filter-stats.txt" \
             <> "$GATE_DIR/pg.fifo" > "$GATE_DIR/seq.log" 2> "$GATE_DIR/filter.err" &
           docker run -d --name gate-pg --network host \
             -e POSTGRES_USER -e POSTGRES_PASSWORD -e POSTGRES_DB \

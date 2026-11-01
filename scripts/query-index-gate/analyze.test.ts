@@ -14,7 +14,7 @@ import {
   renderReport,
 } from "./analyze.js";
 
-/** Plan entries as seqscan-filter.awk prints them (tabs as Postgres logs them). */
+/** Plan entries as seqscan-filter.ts prints them (tabs as Postgres logs them). */
 const LOG = [
   "@@caelo/redirects.collapse@@ LOG:  plan:",
   "\tQuery Text: SELECT id FROM redirects WHERE to_path = $1",
@@ -158,7 +158,7 @@ describe("query index gate analyzer (#1293)", () => {
   });
 
   it("matches the shipped stream filter's output format", async () => {
-    // Feed the plan through the real awk filter: what it keeps is what the
+    // Feed the plan through the real stream filter: what it keeps is what the
     // analyzer parses, and an Index Scan with an Index Cond alone is dropped.
     const raw = [
       "@@caelo/a.b@@ LOG:  duration: 0.010 ms  plan:",
@@ -182,7 +182,7 @@ describe("query index gate analyzer (#1293)", () => {
       "@@@@ LOG:  statement: SELECT 1",
       "",
     ].join("\n");
-    const proc = Bun.spawn(["awk", "-f", join(import.meta.dir, "seqscan-filter.awk")], {
+    const proc = Bun.spawn(["bun", join(import.meta.dir, "seqscan-filter.ts")], {
       stdin: new Blob([raw]),
       stdout: "pipe",
     });
@@ -207,7 +207,7 @@ describe("query index gate analyzer (#1293)", () => {
       "",
     ].join("\n");
     const started = performance.now();
-    const proc = Bun.spawn(["awk", "-f", join(import.meta.dir, "seqscan-filter.awk")], {
+    const proc = Bun.spawn(["bun", join(import.meta.dir, "seqscan-filter.ts")], {
       stdin: new Blob([huge]),
       stdout: "pipe",
     });

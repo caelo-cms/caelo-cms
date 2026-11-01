@@ -32,12 +32,14 @@ O(n) per call — and O(n²) per Stage when it runs once per page.
    a full scan that still filters means no index serves that filter.
 3. **Stream filter.** The raw log of a run is about a gigabyte. The
    server's logging collector writes it into a FIFO that
-   `seqscan-filter.awk` reads on the runner (the collector reassembles each
+   `seqscan-filter.ts` reads on the runner (the collector reassembles each
    message, so the plans of concurrent backends never interleave, which
    they do on a plain stderr pipe once a plan exceeds `PIPE_BUF`). The
-   reader must keep up: a slow one (busybox awk in the container was) backs
-   up the collector and blocks backends mid-transaction, which surfaces as
-   lock timeouts in unrelated tests. The filter keeps only
+   reader must keep up — a slow one backs up the collector and with it
+   every backend (an awk version kept up locally but stretched the CI run
+   past its timeout). The Bun filter reads ~270 MB/s, linear in the input,
+   and keeps an entry's first 40 and last 400 lines (the statement's start
+   and the plan). The filter keeps only
    tagged plans that contain a Seq Scan or an Index (Only) Scan with a
    `Filter` but no `Index Cond` (a whole index walked for its order), strips
    costs, durations and output lists, and drops repeats. Nothing else
@@ -114,7 +116,7 @@ same way.
 # Postgres 17 with auto_explain (Homebrew postgresql@17 ships it), on its own port.
 initdb -D /tmp/gate-pg -U postgres --auth=trust
 mkfifo -m 666 /tmp/gate-pg.fifo
-awk -f scripts/query-index-gate/seqscan-filter.awk <> /tmp/gate-pg.fifo > /tmp/seq.log &
+bun scripts/query-index-gate/seqscan-filter.ts <> /tmp/gate-pg.fifo > /tmp/seq.log &
 postgres -D /tmp/gate-pg -p 55493 -c listen_addresses=localhost \
   -c logging_collector=on -c log_directory=/tmp -c log_filename=gate-pg.fifo \
   -c log_rotation_age=0 -c log_rotation_size=0 \
@@ -145,4 +147,10 @@ meaningful over the whole tier.
 - An operation predicate written with `current_setting(...)` is dropped with
   the RLS terms.
 - Only code paths the integration tier runs are checked.
+- `enable_seqscan=off` is server-wide, so fixture SQL plans that way too.
+  A fixture that bulk-deletes thousands of rows makes every FK check walk
+  a whole index per deleted row (O(n²)) and can outlast the hook timeout;
+  such fixture transactions say `SET LOCAL enable_seqscan = on` (the
+  preload's reset and the list-resolve scale test do). A stalled gate run
+  prints the sessions that were busy for more than 5 s (`activity.sql`).
 - Production plan monitoring (`pg_stat_statements`) is out of scope.
