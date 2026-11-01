@@ -274,6 +274,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   redirect_changes:
     "which transactions changed redirects, folded by the redirect sync; the journaled redirects table is the source",
   static_bakes: "derived build output of plugin-baked regions",
+  content_instance_refs:
+    "derived (synchronous, #1287): the ids and media slugs each content instance's values reference, maintained by triggers on the journaled content_instances; rebuilt by content_instances.rebuild_refs",
   plugin_data_build_state: RUNTIME,
   plugin_data_stale_pages: "derived: which pages' baked plugin regions are stale",
   plugin_runtime: RUNTIME,

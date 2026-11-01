@@ -23,7 +23,16 @@ export interface PgFailureFields {
   readonly table?: string;
   readonly column?: string;
   readonly detail?: string;
+  /** Which database limit of migration 0392 ended the statement, if one did. */
+  readonly timeout?: "statement" | "lock";
 }
+
+/**
+ * The limits migration 0392 sets on both databases. Kept here in seconds
+ * so the error a caller reads names the limit it hit (#1287).
+ */
+export const DATABASE_STATEMENT_TIMEOUT_SECONDS = 60;
+export const DATABASE_LOCK_TIMEOUT_SECONDS = 15;
 
 /** A readable failure, and whether it is a defect rather than bad input. */
 export interface PgFailureDescription {
@@ -99,12 +108,29 @@ export function describePgFailure(fields: PgFailureFields): PgFailureDescription
       return { message: "a text value is longer than allowed — shorten it", internal: false };
     case "22003":
       return { message: "a number is out of range", internal: false };
-    default:
-      return {
-        message: "a database error the call cannot fix — a defect in Caelo, reported automatically",
-        internal: true,
-      };
+    case "57014":
+      if (fields.timeout === "statement") {
+        // A statement past the limit reads more than the call names: a
+        // defect in our code, never something the caller's input fixes.
+        return {
+          message: `timed out after ${DATABASE_STATEMENT_TIMEOUT_SECONDS} s (the database's statement timeout) — a defect in Caelo, reported automatically`,
+          internal: true,
+        };
+      }
+      break;
+    case "55P03":
+      if (fields.timeout === "lock") {
+        return {
+          message: `waited ${DATABASE_LOCK_TIMEOUT_SECONDS} s for a row another change holds — try the call again once that change finished`,
+          internal: false,
+        };
+      }
+      break;
   }
+  return {
+    message: "a database error the call cannot fix — a defect in Caelo, reported automatically",
+    internal: true,
+  };
 }
 
 /**
