@@ -121,6 +121,32 @@ describe("ensureCaptureJob", () => {
     expect(signer?.member).toBe(ADMIN_SA);
   });
 
+  it("names --condition=None on the bucket's unconditional grant (the out/ grant made the policy conditional)", async () => {
+    // gcloud's answer on searchVIU (2026-11-01) to a grant without a condition
+    // on a bucket whose policy already holds a conditional binding.
+    const { run } = fakeGcloud([
+      [
+        /^storage buckets add-iam-policy-binding (?!.*--condition=)/,
+        fail(
+          "ERROR: (gcloud.storage.buckets.add-iam-policy-binding) Adding a binding without specifying a condition to a policy containing conditions is prohibited in non-interactive mode. Run the command again with `--condition=None`",
+        ),
+      ],
+    ]);
+    const calls: string[][] = [];
+    const r = await ensureCaptureJob(TARGET, {
+      run: async (args) => {
+        calls.push(args);
+        return run(args);
+      },
+      sleep: async () => {},
+    });
+    expect(r.ok).toBe(true);
+    const admin = grants(calls).find(
+      (g) => g.member === ADMIN_SA && g.role === "roles/storage.objectUser",
+    );
+    expect(admin?.condition).toBe("None");
+  });
+
   it("no principal but the admin gets a grant on the job or the bucket", async () => {
     const { run, calls } = fakeGcloud();
     await ensureCaptureJob(TARGET, { run, sleep: async () => {} });
