@@ -59,6 +59,7 @@ import {
   type PostCommitFailure,
   runPostCommitEffects,
 } from "./post-commit.js";
+import { transactionTag } from "./statement-tag.js";
 
 /**
  * Two connection pools per process — one per PostgreSQL role. Application code
@@ -830,7 +831,8 @@ export class DatabaseAdapter {
       set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true),
       set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true),
       set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true),
-      set_config('caelo.op_name', ${opName ?? ""}, true)`);
+      set_config('caelo.op_name', ${opName ?? ""}, true),
+      set_config('application_name', ${this.#tagOf(tx)}, true)`);
     this.#recordIdentity(tx, ctx, opName);
   }
 
@@ -839,8 +841,23 @@ export class DatabaseAdapter {
     await tx.execute(sql`SELECT
       set_config('caelo.actor_id', ${ctx.actorId}, true),
       set_config('caelo.actor_kind', ${ctx.actorKind}, true),
-      set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
+      set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true),
+      set_config('application_name', ${this.#tagOf(tx)}, true)`);
     this.#recordIdentity(tx, ctx, null);
+  }
+
+  /**
+   * Issue #1293 — the `application_name` tag of `tx`: its holder, from the
+   * marker the transaction left on this call chain (statement-tag.ts). Every
+   * identity is set inside a transaction of this adapter, so the marker is
+   * there; `adapter` only labels a transaction that somehow bypassed it.
+   */
+  #tagOf(tx: TransactionRunner): string {
+    for (const pool of ["admin", "public"] as const) {
+      const marker = this.#guard.held(pool);
+      if (marker !== null && marker.tx === tx) return transactionTag(marker.holder);
+    }
+    return transactionTag("adapter");
   }
 
   /** Remember `tx`'s identity on its marker, so a joined call can restore it (#1254). */
