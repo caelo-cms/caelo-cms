@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0434 — reads on the Live Edit first paint that grew with history get an
+-- 0478 — reads on the Live Edit first paint that grew with history get an
 -- index each, so they cost what they return (issue #1268, rule 7 of
 -- docs/dev/state-and-changes.md):
 --

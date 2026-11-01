@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0433 — the draft head (issue #1268): what every branch has pending,
+-- 0477 — the draft head (issue #1268): what every branch has pending,
 -- maintained at write time instead of recomputed from the history on
 -- every read.
 --

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #1268 — the draft head (`draft_pending_entities`, migration 0433).
+ * Issue #1268 — the draft head (`draft_pending_entities`, migration 0477).
  *
  *   - a write puts one head row per (entity, owner chat) on the branch,
  *     pointing at the owner's newest pending snapshot;

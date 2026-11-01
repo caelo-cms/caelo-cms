@@ -154,7 +154,7 @@ export async function loadBranchRowStates(
         ? sql`AND false`
         : sql`AND d.entity_id = ANY(${uuidArray(input.rowIds)})`;
   // Issue #1268 — the branch's pending rows of this table come from the
-  // draft head (admin-core draft.ts, migration 0433): one head row per
+  // draft head (admin-core draft.ts, migration 0477): one head row per
   // pending row and owner, the newest across owners wins. Only pending
   // snapshots (not staged, not undone) are in the head (issue #620).
   const rows = (await tx.execute(sql`
