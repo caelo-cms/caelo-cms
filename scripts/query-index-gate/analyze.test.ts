@@ -194,6 +194,31 @@ describe("query index gate analyzer (#1293)", () => {
     expect(out).not.toContain("Output:");
   });
 
+  it("reads a multi-megabyte statement in linear time and keeps its plan", async () => {
+    // A bulk INSERT's text: appending each line to one string made the
+    // filter quadratic, stalled it, and with it the server (CI, #1293).
+    const huge = [
+      "@@caelo/bulk.insert@@ LOG:  duration: 1.000 ms  plan:",
+      "\tQuery Text: INSERT INTO t SELECT * FROM (VALUES",
+      ...Array.from({ length: 200_000 }, (_, i) => `\t  ('${"x".repeat(60)}', ${i}),`),
+      "\tSeq Scan on public.t  (cost=0.00..1.00 rows=1 width=4)",
+      "\t  Filter: (t.x = $1)",
+      "@@@@ LOG:  next",
+      "",
+    ].join("\n");
+    const started = performance.now();
+    const proc = Bun.spawn(["awk", "-f", join(import.meta.dir, "seqscan-filter.awk")], {
+      stdin: new Blob([huge]),
+      stdout: "pipe",
+    });
+    const out = await new Response(proc.stdout).text();
+    expect(await proc.exited).toBe(0);
+    expect(performance.now() - started).toBeLessThan(10_000);
+    const [entry] = parsePlanLog(out);
+    expect(entry?.query).toStartWith("INSERT INTO t");
+    expect(distinctFindings(parsePlanLog(out)).map((f) => f.filter)).toEqual(["(x = ?)"]);
+  });
+
   it("every allowlist entry has a reason", () => {
     for (const r of ALLOWED) expect(r.reason.length).toBeGreaterThan(30);
     for (const p of PENDING) expect([1291, 1292]).toContain(p.issue);

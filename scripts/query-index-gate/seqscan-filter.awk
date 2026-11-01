@@ -26,6 +26,8 @@
 # job logs one after the run. With -v stats=<file>, the running count of
 # raw log bytes read is written there every 50 MB, for the job's summary.
 
+BEGIN { HEAD = 40; TAIL = 400 }
+
 {
   total += length($0) + 1
   if (stats != "" && total >= next_stat) {
@@ -45,9 +47,25 @@ function end_index_node() {
   in_index = 0
 }
 
-function flush() {
+# An entry's lines are collected in an array and joined only when the entry
+# is kept: appending to one growing string is quadratic in the entry's size,
+# and a statement with a multi-megabyte text (a bulk INSERT) then stalls the
+# reader for minutes — and with it the server. An entry keeps its first
+# HEAD lines (the tag and the start of the statement) and its last TAIL
+# lines (the plan): what the analyzer reads, at a bounded cost per entry.
+function keep_line(s) {
+  if (n < HEAD) lines[n] = s
+  else tail[(n - HEAD) % TAIL] = s
+  n++
+}
+
+function flush(   buf, i, start) {
   end_index_node()
-  if (keep && (buf ~ /Seq Scan on / || full_index)) {
+  if (keep && (has_seq || full_index)) {
+    buf = lines[0]
+    for (i = 1; i < n && i < HEAD; i++) buf = buf "\n" lines[i]
+    start = n - HEAD > TAIL ? n - HEAD - TAIL : 0
+    for (i = start; i < n - HEAD; i++) buf = buf "\n" tail[i % TAIL]
     if (!(buf in seen)) {
       seen[buf] = 1
       print buf
@@ -55,8 +73,9 @@ function flush() {
       fflush()
     }
   }
-  buf = ""
+  n = 0
   keep = 0
+  has_seq = 0
   full_index = 0
 }
 
@@ -66,7 +85,7 @@ function flush() {
     keep = 1
     line = $0
     sub(/duration: [0-9.]+ ms */, "", line)
-    buf = line
+    keep_line(line)
   }
   next
 }
@@ -75,7 +94,8 @@ keep {
   if ($0 ~ /^[ \t]*(Output|Query Identifier|Query Parameters|Buffers|Planning|Execution):/) next
   g = $0
   gsub(/ *\(cost=[^)]*\)/, "", g)
-  buf = buf "\n" g
+  keep_line(g)
+  if (g ~ /Seq Scan on /) has_seq = 1
   if (in_index) {
     if (indent_of(g) <= node_indent || g ~ /->/) end_index_node()
     else if (g ~ /^[ \t]*Index Cond:/) index_cond = 1

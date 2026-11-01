@@ -30,11 +30,14 @@ O(n) per call — and O(n²) per Stage when it runs once per page.
    `log_line_prefix='@@%a@@ '`. With `enable_seqscan=off` the planner takes
    any index that can serve a predicate, even on a three-row test table, so
    a full scan that still filters means no index serves that filter.
-3. **Stream filter.** The raw log of a run is gigabytes. Inside the
-   container, the logging collector writes the log into a FIFO that
-   `seqscan-filter.awk` reads (the collector reassembles each message, so
-   the plans of concurrent backends never interleave, which they do on a
-   plain stderr pipe once a plan exceeds `PIPE_BUF`). The filter keeps only
+3. **Stream filter.** The raw log of a run is about a gigabyte. The
+   server's logging collector writes it into a FIFO that
+   `seqscan-filter.awk` reads on the runner (the collector reassembles each
+   message, so the plans of concurrent backends never interleave, which
+   they do on a plain stderr pipe once a plan exceeds `PIPE_BUF`). The
+   reader must keep up: a slow one (busybox awk in the container was) backs
+   up the collector and blocks backends mid-transaction, which surfaces as
+   lock timeouts in unrelated tests. The filter keeps only
    tagged plans that contain a Seq Scan or an Index (Only) Scan with a
    `Filter` but no `Index Cond` (a whole index walked for its order), strips
    costs, durations and output lists, and drops repeats. Nothing else
