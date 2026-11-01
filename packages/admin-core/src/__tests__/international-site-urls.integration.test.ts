@@ -904,9 +904,9 @@ describe("#1305 — the 404 page is no language version", () => {
     const preise = variantGroups.get(idOf("t395-nf-preise"));
     expect(preise).toBeString();
     expect(variantGroups.get(idOf("t395-nf-pricing"))).toBe(preise as string);
-    expect(variantGroups.get(idOf("t395-nf-page-not-found"))).toBe(
-      variantGroups.get(idOf("t395-nf-seite-nicht-gefunden")) as string,
-    );
-    expect(variantGroups.get(idOf("t395-nf-seite-nicht-gefunden"))).not.toBe(preise as string);
+    const notFound = variantGroups.get(idOf("t395-nf-seite-nicht-gefunden"));
+    expect(notFound).toBeString();
+    expect(variantGroups.get(idOf("t395-nf-page-not-found"))).toBe(notFound as string);
+    expect(notFound).not.toBe(preise as string);
   });
 });
