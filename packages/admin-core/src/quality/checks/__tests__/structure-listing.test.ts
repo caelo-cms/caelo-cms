@@ -76,6 +76,7 @@ const INDEX: StructurePageIndex = {
     ]),
   ),
   siteHosts: new Set(["www.example.test"]),
+  variantGroups: new Map(),
 };
 
 // ─── Modules ─────────────────────────────────────────────────────────

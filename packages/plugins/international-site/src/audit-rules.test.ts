@@ -77,6 +77,7 @@ function state(overrides: Partial<AuditState> = {}): AuditState {
       { pageId: TEAM_DE, path: "/team" },
     ],
     siteHomePageId: HOME_DE,
+    notFoundPageId: null,
     glossary: [],
     chromeModuleIds: new Set([FOOTER]),
     staleChrome: [],
@@ -228,6 +229,44 @@ describe("hreflang, canonical, sitemap, page language", () => {
     expect(rules).toContainEqual(["hreflang-missing-version", PRICES_DE]);
     // The English page names the noindex German one.
     expect(rules).toContainEqual(["hreflang-target-not-indexable", PRICES_EN]);
+  });
+
+  it("#1305 — the 404 page and its group's other versions expect no hreflang", () => {
+    // /seite-nicht-gefunden is the site's 404 page (served as /404.html,
+    // noindex); /en/page-not-found is its English version, an ordinary page.
+    const NOT_FOUND_DE = id(6);
+    const NOT_FOUND_EN = id(7);
+    const base = state();
+    const model = new BuildModel(
+      state({
+        notFoundPageId: NOT_FOUND_DE,
+        variants: [
+          ...base.variants,
+          variant(NOT_FOUND_DE, "g-404", "de", "source"),
+          variant(NOT_FOUND_EN, "g-404", "en", "up_to_date"),
+        ],
+        stagedPages: [
+          ...base.stagedPages,
+          { pageId: NOT_FOUND_DE, path: "/seite-nicht-gefunden" },
+          { pageId: NOT_FOUND_EN, path: "/en/page-not-found" },
+        ],
+      }),
+    );
+    // What the build renders: no alternates on either page.
+    const found = pageFindings(model, [
+      facts(NOT_FOUND_DE, "/seite-nicht-gefunden", "de", {
+        robots: "noindex",
+        canonical: null,
+      }),
+      facts(NOT_FOUND_EN, "/en/page-not-found", "en"),
+    ]);
+    expect(
+      found.filter((f) => f.rule.startsWith("hreflang") || f.rule === "x-default-missing"),
+    ).toEqual([]);
+    expect(model.versionsOf(NOT_FOUND_EN)).toEqual(new Map([["en", NOT_FOUND_EN]]));
+    // Every other group still expects its full hreflang set.
+    const prices = pageFindings(model, [facts(PRICES_EN, "/en/pricing", "en", { alternates: [] })]);
+    expect(rulesOf(prices)).toContainEqual(["hreflang-self-missing", PRICES_EN]);
   });
 
   it("reports a wrong <html lang>, invalid codes and a sitemap that disagrees with the head", () => {

@@ -78,6 +78,14 @@ export interface StructurePageIndex {
    * page of the site.
    */
   readonly siteHosts: ReadonlySet<string>;
+  /**
+   * #1305 — page id → its variant group: pages that are versions of ONE
+   * page (international-site: its language versions), as a plugin's
+   * link-resolve answer partitions them. Pages in no group are absent;
+   * empty without such a plugin. Core knows no locales (epic #380): the
+   * partition is all it reads.
+   */
+  readonly variantGroups: ReadonlyMap<string, string>;
 }
 
 /** One listing seen on one or more pages (the same module, type and gap). */

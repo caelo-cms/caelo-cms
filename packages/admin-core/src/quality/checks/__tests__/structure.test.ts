@@ -39,6 +39,7 @@ const NO_TYPES: StructurePageIndex = {
   pageTypes: new Map(),
   pages: new Map(),
   siteHosts: new Set(),
+  variantGroups: new Map(),
 };
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -147,6 +148,95 @@ describe("structure/repeated-markup", () => {
     expect(
       structureFindings([page(1, "/a", text(chain(3)))], MODULES, noLayouts, NO_TYPES),
     ).toEqual([]);
+  });
+
+  describe("language versions of one page (#1305)", () => {
+    // /preise and /en/pricing are one page in two languages: the English
+    // version was translated from the German one, placement for placement.
+    const variants: StructurePageIndex = {
+      ...NO_TYPES,
+      variantGroups: new Map([
+        [id(1), "g-pricing"],
+        [id(2), "g-pricing"],
+        [id(3), "g-demo"],
+        [id(4), "g-demo"],
+      ]),
+    };
+    const repeatedOf = (findings: readonly { ruleId: string; pageId?: string }[]) =>
+      findings
+        .filter(
+          (f) =>
+            f.ruleId === "structure/repeated-markup" || f.ruleId === "structure/similar-markup",
+        )
+        .map((f) => [f.ruleId, f.pageId]);
+
+    it("the same free markup on the versions of one page is one occurrence", () => {
+      const findings = structureFindings(
+        [page(1, "/preise", text(chain(3))), page(2, "/en/pricing", text(chain(3)))],
+        MODULES,
+        noLayouts,
+        variants,
+      );
+      expect(repeatedOf(findings)).toEqual([]);
+      // A translation that drifted a little is still the same page.
+      const drifted = structureFindings(
+        [
+          page(1, "/preise", text(chain(3))),
+          page(2, "/en/pricing", text(chain(3, '<a class="more">More</a>'))),
+        ],
+        MODULES,
+        noLayouts,
+        variants,
+      );
+      expect(repeatedOf(drifted)).toEqual([]);
+    });
+
+    it("the same markup on two DIFFERENT pages still blocks, on every version", () => {
+      const findings = structureFindings(
+        [
+          page(1, "/preise", text(chain(3))),
+          page(2, "/en/pricing", text(chain(3))),
+          page(3, "/demo", text(chain(4))),
+          page(4, "/en/demo", text(chain(4))),
+        ],
+        MODULES,
+        noLayouts,
+        variants,
+      );
+      expect(repeatedOf(findings)).toEqual([
+        ["structure/repeated-markup", id(1)],
+        ["structure/repeated-markup", id(2)],
+        ["structure/repeated-markup", id(3)],
+        ["structure/repeated-markup", id(4)],
+      ]);
+      // An ungrouped page repeating a grouped one counts too.
+      const ungrouped = structureFindings(
+        [page(1, "/preise", text(chain(3))), page(5, "/team", text(chain(3)))],
+        MODULES,
+        noLayouts,
+        variants,
+      );
+      expect(repeatedOf(ungrouped)).toEqual([
+        ["structure/repeated-markup", id(1)],
+        ["structure/repeated-markup", id(5)],
+      ]);
+    });
+
+    it("a free copy of a module's markup still blocks on a page with versions", () => {
+      const findings = structureFindings(
+        [
+          page(1, "/preise", text(diffMarkup("Preise"))),
+          page(2, "/en/pricing", text(diffMarkup("Pricing"))),
+        ],
+        [TEXT, DIFF],
+        noLayouts,
+        variants,
+      );
+      expect(repeatedOf(findings)).toEqual([
+        ["structure/repeated-markup", id(1)],
+        ["structure/repeated-markup", id(2)],
+      ]);
+    });
   });
 
   it("the same pattern rendered by one module on many pages is the reuse we want", () => {

@@ -148,6 +148,12 @@ template) names no page and is filed once.
 broken or wrong), `warning` and `info` are reported. A missing
 translation is never an error: it is a clean 404 by design.
 
+The site's 404 page (`set_not_found_page`, shipped as `/404.html`) is
+no language version (#1305): it answers every unknown URL and never its
+own path, so it gets no hreflang, sitemap alternates or switcher entry,
+the other pages of its language group do not name it, and the hreflang
+rules expect nothing of it.
+
 | Rule | Severity | Finds |
 |---|---|---|
 | `hardcoded-language-link` | error | a language link (hreflang attribute, language name as text, or a language's home) that does not lead to the current page's version: fixed markup instead of `language_links` |

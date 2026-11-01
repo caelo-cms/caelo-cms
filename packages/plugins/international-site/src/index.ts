@@ -787,11 +787,36 @@ function provisionalSlug(slug: string, localeCode: string): string {
  * own tool description prescribes for the home.
  */
 async function siteHomePageId(cms: CmsHandle): Promise<string | null> {
-  const defaults = await cms.call<{ defaults: { rootPageId: string | null } | null }>(
-    "site_defaults.get",
-    {},
-  );
-  return defaults.defaults?.rootPageId ?? null;
+  return (await siteRootPages(cms)).rootPageId;
+}
+
+/** The root and 404 pages core names in `site_defaults.get`. */
+async function siteRootPages(
+  cms: CmsHandle,
+): Promise<{ rootPageId: string | null; notFoundPageId: string | null }> {
+  const defaults = await cms.call<{
+    defaults: { rootPageId: string | null; notFoundPageId: string | null } | null;
+  }>("site_defaults.get", {});
+  return {
+    rootPageId: defaults.defaults?.rootPageId ?? null,
+    notFoundPageId: defaults.defaults?.notFoundPageId ?? null,
+  };
+}
+
+/** {@link siteRootPages}, read once per render pass. */
+function siteRootPagesIn(ctx: unknown) {
+  return onceIn(renderMemoOf(ctx), "siteRootPages", () => siteRootPages(cmsOf(ctx)));
+}
+
+/**
+ * #1305 — the page core ships as `/404.html` (`set_not_found_page`), or
+ * null. It answers every unknown URL and never its own path, so it is
+ * no language version a visitor or a search engine can be sent to: it
+ * gets no hreflang, sitemap alternates or switcher entries, and the
+ * other pages of its group do not name it.
+ */
+async function notFoundPageId(ctx: unknown): Promise<string | null> {
+  return (await siteRootPagesIn(ctx)).notFoundPageId;
 }
 
 /** Shared by link_page_variants and create_variant: join `pageId` into
@@ -904,7 +929,8 @@ interface PublishedVariant {
  * #398 — per requested page: every PUBLISHED variant of its group with
  * its absolute URL. Pages outside any group, groups with fewer than
  * two published variants, and unpublished sole survivors contribute
- * nothing — hreflang only makes sense between real alternates.
+ * nothing — hreflang only makes sense between real alternates. The
+ * site's 404 page is no variant (#1305, {@link notFoundPageId}).
  *
  * #590 — the URLs come from core (`pages.resolve_public_urls`), never
  * from this plugin: core's builder is the one that produces each page's
@@ -958,17 +984,22 @@ async function computeVariantMatrix(
   const groupIds = [...new Set([...variants.values()].map((v) => v.group_id))];
   if (groupIds.length === 0) return out;
   const members = await loadGroupMembers(q, groupIds, ctx);
-  const statuses = await loadPageStatuses(
-    cms,
-    [...members.values()].flatMap((group) => group.map((v) => v.page_id)),
-    ctx,
-  );
+  const [statuses, notFound] = await Promise.all([
+    loadPageStatuses(
+      cms,
+      [...members.values()].flatMap((group) => group.map((v) => v.page_id)),
+      ctx,
+    ),
+    notFoundPageId(ctx),
+  ]);
 
   const groups: { groupId: string; published: Omit<PublishedVariant, "href">[] }[] = [];
   for (const groupId of groupIds) {
     const published: Omit<PublishedVariant, "href">[] = [];
     for (const v of members.get(groupId) ?? []) {
       if (statuses.get(v.page_id) !== "published") continue;
+      // #1305 — served as /404.html, never at its own URL: not a version.
+      if (v.page_id === notFound) continue;
       const locale = reg.byCode.get(v.locale_code);
       if (!locale) {
         throw new Error(
@@ -1010,7 +1041,7 @@ async function computeVariantMatrix(
   }
   for (const [pageId, v] of variants) {
     const published = byGroup.get(v.group_id);
-    if (published) out.set(pageId, published);
+    if (published && pageId !== notFound) out.set(pageId, published);
   }
   return out;
 }
@@ -1059,7 +1090,7 @@ async function localeRootPageIds(
 ): Promise<Set<string>> {
   // The home's counterparts are the same for every page of a pass.
   const roots = await onceIn(renderMemoOf(ctx), "localeRoots", async () => {
-    const homePageId = await siteHomePageId(cmsOf(ctx));
+    const homePageId = (await siteRootPagesIn(ctx)).rootPageId;
     if (!homePageId) return new Set<string>(); // the site has no home page at all
     const homeVariant = (await loadVariantsByPage(q, [homePageId], ctx)).get(homePageId);
     if (!homeVariant) return new Set<string>(); // home is not in any variant group

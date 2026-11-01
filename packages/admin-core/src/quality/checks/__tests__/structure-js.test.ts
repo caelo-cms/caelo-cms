@@ -92,6 +92,7 @@ function jsFindings(pages: StagedPage[], modules: StructureModule[], layouts = n
     pageTypes: new Map(),
     pages: new Map(),
     siteHosts: new Set<string>(),
+    variantGroups: new Map<string, string>(),
   };
   return structureFindings(pages, modules, layouts, noTypes).filter((f) =>
     /module-js|js-rendered|js-written/.test(f.ruleId),
