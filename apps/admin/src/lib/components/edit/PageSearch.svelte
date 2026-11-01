@@ -19,11 +19,14 @@
 
   let {
     pages,
+    loading = false,
     recent,
     currentPageId,
     onPick,
   }: {
     pages: readonly SearchablePage[];
+    /** #1268 — the page list is still streaming in. */
+    loading?: boolean;
     /** The pages changed last (newest first), or why they could not be loaded. */
     recent: { readonly pageIds: readonly string[] } | { readonly error: string };
     currentPageId: string;
@@ -122,7 +125,11 @@
         </Combobox.Group>
       {:else}
         <p class="px-2 py-3 text-center text-xs text-muted-foreground">
-          {query.trim() === "" ? "The site has no pages yet." : `No page matches “${query.trim()}”.`}
+          {loading
+            ? "Loading the pages…"
+            : query.trim() === ""
+              ? "The site has no pages yet."
+              : `No page matches “${query.trim()}”.`}
         </p>
       {/each}
     </Combobox.Content>

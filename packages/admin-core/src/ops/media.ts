@@ -1248,10 +1248,10 @@ export const mediaDeleteManyOp = defineOperation({
       const branchRefs = branchedModules.filter((m) => refersToTarget(m.html)).map((m) => m.slug);
       const instanceRefs = (
         await findContentInstancesContaining(tx, ctx.chatBranchId, [
-          `/_caelo/media/${target.slug}`,
-          `/_caelo/media/${assetId}/`,
-          // Epic #724 — the stored reference form.
-          `caelo:media/${assetId}`,
+          { kind: "media_slug", slug: target.slug },
+          // The id forms: legacy `/_caelo/media/<id>/<variant>` and the
+          // stored reference `caelo:media/<id>` (epic #724).
+          { kind: "id", id: assetId },
         ])
       ).filter((ci) => refersToTarget(ci.valuesText));
       const instanceModuleSlugs =

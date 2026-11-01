@@ -163,6 +163,30 @@ async function upsertPresence(
   `);
 }
 
+/**
+ * The spend statement of {@link spentMicrocents}. It runs on every capped
+ * MCP tool call, so both arms of the OR must stay index lookups
+ * (`ai_calls_chat_session_idx` + `ai_calls_actor_idx`, a BitmapOr — #1291)
+ * instead of a scan of every AI call ever made. Exported so the plan test
+ * checks this exact statement.
+ */
+export function spentMicrocentsSql(
+  actorId: string,
+  chatSessionId: string,
+  agent: Pick<McpAgentFields, "mcpTokenId" | "mcpRemoteConnectionId">,
+) {
+  const credentialCreatedAt =
+    agent.mcpTokenId !== undefined
+      ? sql`(SELECT created_at FROM mcp_tokens WHERE id = ${agent.mcpTokenId}::uuid)`
+      : sql`(SELECT created_at FROM mcp_remote_connections WHERE id = ${agent.mcpRemoteConnectionId ?? null}::uuid)`;
+  return sql`
+    SELECT COALESCE(SUM(cost_estimate_microcents), 0)::bigint AS spent
+    FROM ai_calls
+    WHERE chat_session_id = ${chatSessionId}::uuid
+       OR (actor_id = ${actorId}::uuid AND created_at >= ${credentialCreatedAt})
+  `;
+}
+
 /** The install's-AI spend of a capped credential (#741), as mcp.execute_tool always counted it. */
 async function spentMicrocents(
   tx: TransactionRunner,
@@ -170,16 +194,9 @@ async function spentMicrocents(
   chatSessionId: string,
   agent: McpAgentFields,
 ): Promise<bigint> {
-  const credentialCreatedAt =
-    agent.mcpTokenId !== undefined
-      ? sql`(SELECT created_at FROM mcp_tokens WHERE id = ${agent.mcpTokenId}::uuid)`
-      : sql`(SELECT created_at FROM mcp_remote_connections WHERE id = ${agent.mcpRemoteConnectionId ?? null}::uuid)`;
-  const rows = (await tx.execute(sql`
-    SELECT COALESCE(SUM(cost_estimate_microcents), 0)::bigint AS spent
-    FROM ai_calls
-    WHERE chat_session_id = ${chatSessionId}::uuid
-       OR (actor_id = ${actorId}::uuid AND created_at >= ${credentialCreatedAt})
-  `)) as unknown as Array<{ spent: bigint | string | number }>;
+  const rows = (await tx.execute(
+    spentMicrocentsSql(actorId, chatSessionId, agent),
+  )) as unknown as Array<{ spent: bigint | string | number }>;
   const raw = rows[0]?.spent ?? 0;
   // Compared as bigint — a Number round-trip loses precision past 2^53 µ¢
   // and could let a capped credential slip through (PR #379 review).

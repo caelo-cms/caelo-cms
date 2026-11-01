@@ -52,6 +52,7 @@ import {
   touchExternalAgentOp,
 } from "./ops/chat/agent-runs.js";
 import { discardChatBranchOp } from "./ops/chat/discard.js";
+import { rebuildDraftHeadOp } from "./ops/chat/draft-head.js";
 import {
   checkBranchAccessOp,
   finalizeDraftStageOp,
@@ -110,6 +111,7 @@ import {
 } from "./ops/chat/turn-leases.js";
 import { buildPageOp } from "./ops/content/build-page.js";
 import { listModulePeersOp } from "./ops/content/content-instance-peers.js";
+import { rebuildContentInstanceRefsOp } from "./ops/content/content-instance-refs.js";
 import {
   createContentInstanceOp,
   createContentInstancesManyOp,
@@ -236,6 +238,7 @@ import {
   renewDeployRunLeaseOp,
 } from "./ops/deploy-run-lifecycle.js";
 import { getDeployRunOriginOp } from "./ops/deploy-run-origin.js";
+import { stageStatusOp } from "./ops/deploy-stage-status.js";
 import { finishTriggerOp, startTriggerOp, triggerDeployOp } from "./ops/deploy-trigger.js";
 import { hostingStatusOp, reconnectHostingDomainOp } from "./ops/domain_hosting.js";
 import {
@@ -813,6 +816,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(patchPageModuleFieldsOp);
   // v0.12.0 — content_instances + placement binding ops.
   registry.register(listContentInstancesOp);
+  registry.register(rebuildContentInstanceRefsOp);
   registry.register(listModulePeersOp);
   registry.register(getContentInstanceOp);
   registry.register(createContentInstanceOp);
@@ -1044,6 +1048,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(acquireStagingPublicationOp);
   registry.register(failDeployRunOp);
   registry.register(getDeployRunOp);
+  // #1288 — where the Stage runs stand, with an estimate of the time left.
+  registry.register(stageStatusOp);
   registry.register(promoteDeployOp);
   // #1225 — deploy.promote's steps: it holds no transaction while it
   // rebuilds and uploads; the live-release lease orders it with rollback,
@@ -1333,6 +1339,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listActivePagesOp);
   // v0.8.0 — cross-chat awareness banner data for the /edit toolbar.
   registry.register(listOpenChatsWithPendingOp);
+  // #1268 — rebuild the draft head from the snapshot history (repair).
+  registry.register(rebuildDraftHeadOp);
   // v0.5.20 — per-chat completion view (powers /content/chat/[id]/summary).
   registry.register(summarizeChatOp);
   // P7 — media library.

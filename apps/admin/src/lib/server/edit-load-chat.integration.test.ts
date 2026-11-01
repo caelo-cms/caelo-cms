@@ -83,12 +83,33 @@ async function openLiveEdit(ctx: ExecutionContext, pageId: string) {
       ctx,
     },
     url: new URL(`http://admin.test/edit?page=${pageId}`),
+    setHeaders: () => {},
   } as unknown as Parameters<typeof load>[0];
-  const data = (await load(event)) as {
+  const data = (await load(event)) as Record<string, unknown> & {
     activeChat: { id: string; createdBy: string; pageId: string | null };
   };
+  // #1268 — the parts that stream after first paint settle with a value
+  // (and finish before the test closes the pool).
+  for (const key of STREAMED) {
+    const part = (await data[key]) as { ok: boolean; error?: string };
+    expect({ key, ...part }).toMatchObject({ key, ok: true });
+  }
   return data.activeChat;
 }
+
+/** The streamed parts of the /edit load (#1268). */
+const STREAMED = [
+  "pages",
+  "recentPageIds",
+  "modules",
+  "branchEditedModuleIds",
+  "branchChangeCount",
+  "pendingChanges",
+  "otherOpenChats",
+  "deployState",
+  "live",
+  "pageSeo",
+] as const;
 
 beforeAll(async () => {
   ({ templateId } = await op<{ templateId: string }>(SYSTEM, "templates.create", {
@@ -125,6 +146,30 @@ describe("#1201 — /edit opens a usable chat for the page", () => {
     const chat = await openLiveEdit(bob, pageId);
     expect(chat.id).not.toBe(alices);
     expect(chat.createdBy).toBe(bob.actorId);
+  });
+
+  it("opens the ?page= page at first paint without the page list (#1268)", async () => {
+    const me = await editor("first-paint");
+    const pageId = await seedPage("first-paint");
+    let headers: Record<string, string> = {};
+    const event = {
+      locals: { user: { permissions: new Set(["content.write", "content.read"]) }, ctx: me },
+      url: new URL(`http://admin.test/edit?page=${pageId}`),
+      setHeaders: (h: Record<string, string>) => {
+        headers = h;
+      },
+    } as unknown as Parameters<typeof load>[0];
+    const data = (await load(event)) as Record<string, unknown> & {
+      activePage: { id: string } | null;
+      pages: Promise<{ ok: boolean; value?: { id: string }[] }>;
+    };
+    expect(data.activePage?.id).toBe(pageId);
+    expect(data.pages).toBeInstanceOf(Promise);
+    const pages = await data.pages;
+    expect(pages.ok).toBe(true);
+    expect(pages.value?.some((p) => p.id === pageId)).toBe(true);
+    expect(headers["server-timing"]).toMatch(/page-main;dur=.*chats;dur=/);
+    for (const key of STREAMED) await data[key];
   });
 
   it("resumes the operator's open chat on the page", async () => {

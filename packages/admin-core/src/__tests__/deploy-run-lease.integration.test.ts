@@ -268,6 +268,10 @@ describe("#1204 a Stage whose caller goes away leaves nothing held", () => {
       expect(v.content).toContain("still running");
       const runId = /build run ([0-9a-f-]{36})/.exec(v.content)?.[1];
       expect(runId).toBeDefined();
+      // #1288 — the answer points at get_stage_status for this run, never at a re-run.
+      expect(v.content).toContain(`get_stage_status with deployRunId "${runId}"`);
+      expect(v.content).toContain("not in a loop");
+      expect(v.content).toContain("Do NOT call stage_changes again");
 
       // The chat is free at once: no turn lease, and a write would not be chat_busy.
       const leases = (await withSql(
@@ -303,6 +307,21 @@ describe("#1204 a Stage whose caller goes away leaves nothing held", () => {
       expect(audit.ok).toBe(false);
       expect(audit.content).toContain("failed");
       expect(audit.content).toContain("stub generator gave up");
+
+      // #1288 — get_stage_status over Power-MCP reports the same end and the next step.
+      const status = await execute(registry, adapter, SYSTEM, "mcp.execute_tool", {
+        plaintextToken: token,
+        chatSessionId,
+        toolName: "get_stage_status",
+        args: { deployRunId: runId },
+      });
+      if (!status.ok) throw new Error(`get_stage_status: ${JSON.stringify(status.error)}`);
+      const stage = status.value as { ok: boolean; content: string };
+      expect(stage.ok).toBe(true);
+      expect(stage.content).toContain(`Stage build run ${runId}`);
+      expect(stage.content).toContain("Failed");
+      expect(stage.content).toContain("stub generator gave up");
+      expect(stage.content).toContain("call stage_changes again");
     } finally {
       setEnv({
         CAELO_TEST_STUB_GENERATOR: undefined,

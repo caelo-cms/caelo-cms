@@ -103,6 +103,33 @@ describe("migration run ordering (#635)", () => {
     expect(await recorded()).toEqual([BASE, EXPAND, CONTRACT]);
   });
 
+  it("runs a caelo:no-transaction file outside a transaction, and repeats it after a failure (#1291)", async () => {
+    const dir = mkdtempSync(join(root, "concurrent-"));
+    writeFileSync(join(dir, BASE), BODIES[BASE] as string);
+    const concurrent = (failAtEnd: boolean) =>
+      [
+        "-- SPDX-License-Identifier: MPL-2.0",
+        "-- caelo:no-transaction",
+        "",
+        "DROP INDEX CONCURRENTLY IF EXISTS legacy_id_idx;",
+        "--> statement-breakpoint",
+        "CREATE INDEX CONCURRENTLY legacy_id_idx ON legacy (id);",
+        ...(failAtEnd ? ["--> statement-breakpoint", "SELECT 1 / 0;"] : []),
+      ].join("\n");
+    const NAME = "0002_concurrent.sql";
+    writeFileSync(join(dir, NAME), concurrent(true));
+    await expect(runMigrations(db, dir)).rejects.toThrow(/division by zero/);
+    // Not recorded: the next run repeats the whole file, the drop first.
+    expect(await recorded()).toEqual([BASE]);
+    writeFileSync(join(dir, NAME), concurrent(false));
+    expect(await runMigrations(db, dir)).toEqual([NAME]);
+    expect(await recorded()).toEqual([BASE, NAME]);
+    const [idx] = (await db`
+      SELECT i.indisvalid FROM pg_index i WHERE i.indexrelid = to_regclass('legacy_id_idx')
+    `) as { indisvalid: boolean }[];
+    expect(idx?.indisvalid).toBe(true);
+  });
+
   it("applies everything in one run on a fresh install", async () => {
     expect(await runMigrations(db, release([BASE, EXPAND, CONTRACT]))).toEqual([
       BASE,

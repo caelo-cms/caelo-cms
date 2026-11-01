@@ -29,6 +29,7 @@
   import { Popover, PopoverContent, PopoverTrigger } from "#lib/components/ui/popover/index.js";
   import { cn } from "#lib/utils.js";
   import { askInChat } from "./ask-in-chat.js";
+  import StageRunProgress from "./StageRunProgress.svelte";
   import {
     Dialog,
     DialogContent,
@@ -631,6 +632,8 @@
             {lastStaged ? `Built ${formatRelativeTime(lastStaged.finishedAt)}` : "Nothing staged yet"}
           </span>
         </div>
+        <!-- #1288 — a running Stage's step, progress and time left. -->
+        <StageRunProgress />
 
         {#if toolbarMode === "published"}
           <p class="text-xs text-muted-foreground">This chat's work was published live.</p>

@@ -246,6 +246,16 @@ const BACKFILLED_HASH = "backfill:";
 /** `settings` key recording that the source-hash backfill ran. */
 const SOURCE_HASH_BACKFILL_KEY = "source_hash_backfill";
 
+/** `settings` key holding where an unfinished backfill stopped (keyset over variant ids). */
+const SOURCE_HASH_BACKFILL_PROGRESS_KEY = "source_hash_backfill_progress";
+
+/**
+ * Variants one backfill step checks at most. Each needs its source page's
+ * content; a step is one worker tick, so a large site is filled over a few
+ * ticks instead of in one long call (#1287).
+ */
+const SOURCE_HASH_BACKFILL_BATCH = 100;
+
 /** The fingerprint a stored `source_hash` holds, without the backfill prefix. */
 function storedFingerprint(hash: string | null): string | null {
   if (hash === null) return null;
@@ -317,53 +327,111 @@ async function staysUpToDate(
  * upgrade flags a translation nobody touched. Variants already
  * `needs_update` stay as they are.
  *
- * Runs once, from onActivate, and only while the plugin's change cursor is
- * continuous: then every change since the variants were last checked is
- * delivered after this, and flags them (see {@link BACKFILLED_HASH}). With
- * the cursor gone (a fresh or repeated activation) the rebuild decides
- * instead, and a later activation finishes the backfill.
+ * Runs as the `source-hash-backfill` worker, one bounded step per tick, and
+ * only while the plugin's change cursor is continuous: then every change
+ * since the variants were last checked is delivered after this, and flags
+ * them (see {@link BACKFILLED_HASH}). With the cursor gone (a fresh or
+ * repeated activation) the rebuild decides first; the next tick after it
+ * finds the cursor continuous and goes on. Between steps the variants not
+ * reached yet carry no hash, which any change to their source flags — the
+ * same outcome a change delivered before the backfill had.
  *
- * @returns how many variants got a hash, or null when it did not run.
+ * #1287 — it used to run whole from `onActivate`. Reading every source
+ * page's content in that one call passed the database's statement timeout
+ * on a large site, which failed the activation, so the plugin did not run
+ * at all and every Stage failed on its missing language links. A one-time
+ * repair of the plugin's own rows is no precondition for running: here a
+ * failing step is recorded under the plugin (#1008) and retried on the
+ * next tick, with the plugin loaded.
+ *
+ * @returns what the step did and how many variants it gave a hash.
  */
-async function backfillSourceHashes(ctx: unknown): Promise<number | null> {
+async function backfillSourceHashesStep(
+  ctx: unknown,
+): Promise<{ status: "done" | "waiting" | "progress" | "finished"; filled: number }> {
   const q = adminQueryOf(ctx);
   const done = (await q.list("settings", {
     key: SOURCE_HASH_BACKFILL_KEY,
     limit: 1,
   })) as unknown as SettingRow[];
-  if (done[0]) return null;
+  if (done[0]) return { status: "done", filled: 0 };
   const state = await cmsOf(ctx).call<{ continuous: boolean }>("plugin_changes.cursor_state", {});
-  if (!state.continuous) return null;
+  if (!state.continuous) return { status: "waiting", filled: 0 };
+  const progressRows = (await q.list("settings", {
+    key: SOURCE_HASH_BACKFILL_PROGRESS_KEY,
+    limit: 1,
+  })) as unknown as SettingRow[];
+  const progressRow = progressRows[0];
+  const progress = (progressRow?.value ?? {}) as { afterId?: string; filled?: number };
+  const rows = (await q.list("page_variants", {
+    translation_status: "up_to_date",
+    source_hash: null,
+    // The store pages `afterId` by ascending id only.
+    orderBy: "id",
+    orderDir: "asc",
+    limit: SOURCE_HASH_BACKFILL_BATCH,
+    ...(progress.afterId ? { afterId: progress.afterId } : {}),
+  })) as unknown as PageVariantRow[];
   const deps = await chromeDepsOf(ctx);
   const sourceHashOf = sourceHashesOf(deps);
   let filled = 0;
-  for (let afterId: string | undefined; ; ) {
-    const rows = (await q.list("page_variants", {
-      translation_status: "up_to_date",
-      orderBy: "id",
-      limit: 1000,
-      ...(afterId ? { afterId } : {}),
-    })) as unknown as PageVariantRow[];
-    for (const row of rows) {
-      if (row.source_hash !== null) continue;
-      const current = await sourceHashOf(row.group_id);
-      // No source to compare with (none, or deleted): left as it is.
-      if (current === null) continue;
-      await q.update("page_variants", row.id, {
-        source_hash: `${BACKFILLED_HASH}${current.hash}`,
-      });
-      filled += 1;
-    }
-    if (rows.length < 1000) break;
-    afterId = rows.at(-1)?.id;
+  for (const row of rows) {
+    const current = await sourceHashOf(row.group_id);
+    // No source to compare with (none, or deleted): left as it is.
+    if (current === null) continue;
+    // A change-consumer tick or a rebuild runs beside this worker and may
+    // flag the variant between the read above and this write; only a
+    // variant still up to date and without a hash adopts the baseline.
+    // (A variant translated again carries a hash, so the swap cannot
+    // match a row that went stale and came back.)
+    const adopted = await q.compareAndSwap(
+      "page_variants",
+      row.id,
+      { translation_status: "up_to_date", source_hash: null },
+      { source_hash: `${BACKFILLED_HASH}${current.hash}` },
+    );
+    if (adopted) filled += 1;
+  }
+  const total = (progress.filled ?? 0) + filled;
+  const last = rows.at(-1)?.id;
+  if (rows.length === SOURCE_HASH_BACKFILL_BATCH && last) {
+    const value = { afterId: last, filled: total };
+    if (progressRow) await q.update("settings", progressRow.id, { value });
+    else await q.insert("settings", { key: SOURCE_HASH_BACKFILL_PROGRESS_KEY, value });
+    return { status: "progress", filled };
   }
   // Retired-outbox work outstanding at the upgrade (0430 marks its page
   // part): chrome and list statuses are re-derived from their stored
   // hashes, which covers module and list events the outbox still held.
   await refreshChromeStaleness(deps);
   await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
-  await q.insert("settings", { key: SOURCE_HASH_BACKFILL_KEY, value: { filled } });
-  return filled;
+  if (progressRow) await q.delete("settings", progressRow.id);
+  await q.insert("settings", { key: SOURCE_HASH_BACKFILL_KEY, value: { filled: total } });
+  return { status: "finished", filled };
+}
+
+/**
+ * A finished rebuild leaves the backfill nothing to do: it compared every
+ * up-to-date variant with its source (one without a hash is flagged) and
+ * re-derived the chrome and list statuses. Record the backfill as done, so
+ * the worker does not repeat that work after it.
+ */
+async function supersedeSourceHashBackfill(q: PluginAdminQuery): Promise<void> {
+  const progress = (await q.list("settings", {
+    key: SOURCE_HASH_BACKFILL_PROGRESS_KEY,
+    limit: 1,
+  })) as unknown as SettingRow[];
+  if (progress[0]) await q.delete("settings", progress[0].id);
+  const done = (await q.list("settings", {
+    key: SOURCE_HASH_BACKFILL_KEY,
+    limit: 1,
+  })) as unknown as SettingRow[];
+  if (!done[0]) {
+    await q.insert("settings", {
+      key: SOURCE_HASH_BACKFILL_KEY,
+      value: { supersededBy: "rebuild" },
+    });
+  }
 }
 
 /**
@@ -2170,36 +2238,32 @@ export default definePlugin<PluginContextTier1>({
       const { q } = deps;
       let marked = 0;
       const sourceHashOf = sourceHashesOf(deps);
-      for (let afterId: string | undefined; ; ) {
-        const rows = (await q.list("page_variants", {
-          translation_status: "up_to_date",
-          orderBy: "id",
-          limit: 1000,
-          ...(afterId ? { afterId } : {}),
-        })) as unknown as PageVariantRow[];
-        for (const row of rows) {
-          const current = await sourceHashOf(row.group_id);
-          // No source to compare with (none, or deleted): left as it is.
-          if (current === null) continue;
-          const same = (stored: string | null) => storedFingerprint(stored) === current.hash;
-          if (await staysUpToDate(deps, row, current, same)) continue;
-          await q.update("page_variants", row.id, { translation_status: "needs_update" });
-          marked += 1;
-        }
-        if (rows.length < 1000) break;
-        afterId = rows.at(-1)?.id;
+      // listAll pages by ascending id; the hand-rolled loop here asked for
+      // its second page in the store's default (descending) order, which
+      // the store refuses, so a site past 1000 variants failed its rebuild.
+      const rows = (await listAll(q, "page_variants", {
+        translation_status: "up_to_date",
+      })) as unknown as PageVariantRow[];
+      for (const row of rows) {
+        const current = await sourceHashOf(row.group_id);
+        // No source to compare with (none, or deleted): left as it is.
+        if (current === null) continue;
+        const same = (stored: string | null) => storedFingerprint(stored) === current.hash;
+        if (await staysUpToDate(deps, row, current, same)) continue;
+        await q.update("page_variants", row.id, { translation_status: "needs_update" });
+        marked += 1;
       }
       marked += await refreshChromeStaleness(deps);
       const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
+      await supersedeSourceHashBackfill(q);
       return { marked, lists };
     },
-  },
-  /**
-   * #1267 — backfill the source fingerprints of variants translated before
-   * the change journal ({@link backfillSourceHashes}); a no-op once done.
-   */
-  onActivate: async (ctx) => {
-    await backfillSourceHashes(ctx);
+
+    /**
+     * Worker tick — one step of the source-fingerprint backfill
+     * ({@link backfillSourceHashesStep}); a settings read once it is done.
+     */
+    backfill_source_hashes: async (ctx) => backfillSourceHashesStep(ctx),
   },
   /**
    * Translation staleness from the change journal (#397, #1267): live
@@ -2227,6 +2291,13 @@ export default definePlugin<PluginContextTier1>({
       name: "locale-cache-refresh",
       cron: "0 * * * * *",
       operationName: "refresh_locales",
+    },
+    {
+      // #1267 / #1287 — fills translations from before the change journal
+      // with their source's fingerprint, a bounded batch per tick.
+      name: "source-hash-backfill",
+      cron: "30 * * * * *",
+      operationName: "backfill_source_hashes",
     },
   ],
   tools: [

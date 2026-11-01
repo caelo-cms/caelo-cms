@@ -12,7 +12,7 @@
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { countPlacementsInView } from "../ops/content/content-instance-reach.js";
-import { findContentInstancesContaining } from "../ops/content/content-instance-refs.js";
+import { findContentInstancesContaining, idNeedles } from "../ops/content/content-instance-refs.js";
 import { listFieldsOf, loadModulesInView, pageTermsOfList } from "./local.js";
 import { loadListEntities } from "./store.js";
 
@@ -77,7 +77,9 @@ export async function loadListUsage(
   }
 
   const instancesByList = new Map<string, string[]>();
-  for (const ci of await findContentInstancesContaining(tx, branchId, [...refs.keys()])) {
+  // The index holds the list's id (it sits in `caelo:list/<id>`); the
+  // reference form is confirmed on the parsed values below.
+  for (const ci of await findContentInstancesContaining(tx, branchId, idNeedles(listIds))) {
     for (const [ref, listId] of refs) {
       if (!containsString(JSON.parse(ci.valuesText), ref)) continue;
       instancesByList.set(listId, [...(instancesByList.get(listId) ?? []), ci.contentInstanceId]);

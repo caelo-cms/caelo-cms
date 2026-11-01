@@ -2,7 +2,8 @@
 
 /**
  * Applies the committed SQL migrations of one database directory, in file
- * order, each in its own transaction, recording each in
+ * order, each in its own transaction (or, marked `caelo:no-transaction`,
+ * statement by statement outside one), recording each in
  * `__drizzle_migrations`. `migrate.ts` is the entrypoint; this module holds
  * the runner so it can be exercised against a real Postgres in tests.
  */
@@ -10,6 +11,59 @@
 import { readFile } from "node:fs/promises";
 import type { SQL } from "bun";
 import { MigrationRunOrderError, type PendingMigration, runOrderViolations } from "./run-order.js";
+
+const NO_TRANSACTION = /^--\s*caelo:no-transaction\s*$/;
+
+/**
+ * Whether a migration's leading comment header carries
+ * `-- caelo:no-transaction` (#1291). Such a file runs statement by
+ * statement outside a transaction, for what Postgres refuses inside one —
+ * `CREATE INDEX CONCURRENTLY` on a table that grows with every request,
+ * where a plain build's SHARE lock would stall the running admin's writes.
+ * Only the header counts, like `caelo:requires-earlier-run`.
+ */
+export function runsOutsideTransaction(body: string): boolean {
+  for (const raw of body.split("\n")) {
+    const line = raw.trim();
+    if (line === "") continue;
+    if (!line.startsWith("--")) return false;
+    if (NO_TRANSACTION.test(line)) return true;
+  }
+  return false;
+}
+
+/**
+ * Apply a `caelo:no-transaction` migration: each `--> statement-breakpoint`
+ * part is its own statement on one reserved connection (a multi-statement
+ * string would run as an implicit transaction again), then the file is
+ * recorded. A failure part-way leaves the file unrecorded, so the next run
+ * repeats it from the top — the file must be written to be re-run (drop an
+ * index before building it CONCURRENTLY: an interrupted build leaves an
+ * INVALID index that `IF NOT EXISTS` would keep).
+ */
+async function applyOutsideTransaction(
+  sql: SQL,
+  name: string,
+  statements: readonly string[],
+): Promise<void> {
+  const conn = await sql.reserve();
+  try {
+    // Session-level twins of the SET LOCALs the transactional path uses.
+    await conn.unsafe("SET caelo.actor_kind = 'system'");
+    await conn.unsafe("SET statement_timeout = 0");
+    await conn.unsafe("SET lock_timeout = 0");
+    await conn.unsafe("SET idle_in_transaction_session_timeout = 0");
+    for (const stmt of statements) {
+      await conn.unsafe(stmt);
+    }
+    await conn`INSERT INTO __drizzle_migrations (hash, created_at) VALUES (${name}, ${Date.now()})`;
+  } finally {
+    // A connection that broke mid-file cannot be reset; the error that broke
+    // it is the one that propagates, not this cleanup's.
+    await conn.unsafe("RESET ALL").catch(() => undefined);
+    conn.release();
+  }
+}
 
 /** The file name a migration is recorded under. */
 function migrationName(file: string): string {
@@ -67,6 +121,12 @@ export async function runMigrations(sql: SQL, dir: string): Promise<string[]> {
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
 
+    if (runsOutsideTransaction(body)) {
+      await applyOutsideTransaction(sql, name, statements);
+      console.log(`applied: ${name}`);
+      applied.push(name);
+      continue;
+    }
     // Run each migration inside a transaction with SET LOCAL caelo.actor_kind = 'system'
     // so seed INSERTs can write to RLS-`FORCE`d tables (actors, audit_events, etc.).
     // CREATE DATABASE isn't in migrations — those are handled by bootstrap.sh — so

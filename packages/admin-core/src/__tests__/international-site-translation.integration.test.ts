@@ -17,12 +17,14 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
   drainChangeConsumers,
+  loadedPlugins,
+  pluginWorkerScheduler,
   resetPluginHost,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
@@ -38,8 +40,45 @@ const SYS_CTX: ExecutionContext = {
   requestId: "t397",
 };
 
+/**
+ * The admin registry, with one fault switch: while `failing` names an
+ * operation, every call of it throws — a stand-in for the statement
+ * timeout that ended international-site's activation on a large site
+ * (#1287).
+ */
+class FaultInjectingRegistry extends OperationRegistry {
+  failing: string | null = null;
+  /** Runs before every call of `before.op` — a concurrent writer's change. */
+  before: { readonly op: string; readonly run: () => Promise<void> } | null = null;
+
+  override lookup(name: string): ReturnType<OperationRegistry["lookup"]> {
+    const found = super.lookup(name);
+    if (!found.ok) return found;
+    if (name === this.failing) {
+      return ok({
+        ...found.value,
+        handler: async () => {
+          throw new Error(`injected failure of ${name}`);
+        },
+      });
+    }
+    const before = this.before;
+    if (before && name === before.op) {
+      const handler = found.value.handler;
+      return ok({
+        ...found.value,
+        handler: async (...args: Parameters<typeof handler>) => {
+          await before.run();
+          return handler(...args);
+        },
+      });
+    }
+    return found;
+  }
+}
+
 let adapter: DatabaseAdapter;
-let registry: OperationRegistry;
+let registry: FaultInjectingRegistry;
 
 /** Scripted provider: each queued responder answers ONE structured
  *  (`generateObject`) call — the page translation's install-side path
@@ -136,11 +175,11 @@ async function cleanup(): Promise<void> {
   });
 }
 
-beforeAll(async () => {
-  adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
-  registry = new OperationRegistry();
-  registerAdminOps(registry);
-  await cleanup();
+/**
+ * Load the plugin with its workers paused: the tests drive the worker
+ * operations themselves, so no cron tick may run one in between steps.
+ */
+async function bootPlugin(): Promise<void> {
   const report = await bootstrap({
     infra: { adapter, registry, aiProvider: scriptedProvider },
     pluginsRoot: "/dev/null/unused",
@@ -148,6 +187,29 @@ beforeAll(async () => {
     testPlugins: [{ definition: intlPlugin }],
   });
   if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
+  pluginWorkerScheduler.pausePlugin("international-site");
+}
+
+/** Run the source-hash backfill worker until it reports done (#1287). */
+async function runBackfill(): Promise<number> {
+  let filled = 0;
+  for (let step = 0; step < 100; step += 1) {
+    const r = await op<{ status: string; filled: number }>("backfill_source_hashes", {
+      _trigger: "worker",
+    });
+    filled += r.filled;
+    if (r.status === "finished" || r.status === "done") return filled;
+    if (r.status === "waiting") throw new Error("backfill waits on a non-continuous cursor");
+  }
+  throw new Error("backfill did not finish in 100 steps");
+}
+
+beforeAll(async () => {
+  adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  registry = new FaultInjectingRegistry();
+  registerAdminOps(registry);
+  await cleanup();
+  await bootPlugin();
 });
 
 afterAll(async () => {
@@ -636,15 +698,12 @@ describe("#397 — context-aware translation", () => {
     });
     await drain();
 
-    // The first boot of the new release: onActivate runs the backfill.
+    // The first boot of the new release loads the plugin; its worker then
+    // runs the backfill (#1287: never inside the activation).
     resetPluginHost();
-    const report = await bootstrap({
-      infra: { adapter, registry, aiProvider: scriptedProvider },
-      pluginsRoot: "/dev/null/unused",
-      systemActorId: SYSTEM_ACTOR_ID,
-      testPlugins: [{ definition: intlPlugin }],
-    });
-    if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
+    await bootPlugin();
+    expect((await rowOf(de.pageId))?.source_hash).toBeNull();
+    expect(await runBackfill()).toBeGreaterThanOrEqual(1);
     expect((await rowOf(de.pageId))?.source_hash).toMatch(/^backfill:sha256:/);
     // Already flagged: it stays as it is.
     expect(await rowOf(fr.pageId)).toMatchObject({
@@ -818,18 +877,167 @@ describe("#397 — context-aware translation", () => {
 
     // The backfill then adopts only what is still up to date.
     resetPluginHost();
-    const report = await bootstrap({
-      infra: { adapter, registry, aiProvider: scriptedProvider },
-      pluginsRoot: "/dev/null/unused",
-      systemActorId: SYSTEM_ACTOR_ID,
-      testPlugins: [{ definition: intlPlugin }],
-    });
-    if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
+    await bootPlugin();
+    await runBackfill();
     expect(await rowOf(edited.pageId)).toEqual({
       translation_status: "needs_update",
       source_hash: null,
     });
     expect((await rowOf(seen.pageId))?.source_hash).toMatch(/^backfill:sha256:/);
+  }, 60_000);
+
+  it("#1287 — a failing backfill step leaves the plugin loaded, is recorded, and is retried", async () => {
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const sourceId = await seedSourcePage("-bff");
+    const de = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-bff-preise",
+    });
+    await drainChangeConsumers({ adapter, registry });
+    const hashOf = async () =>
+      (
+        await sqlAsPlugin(
+          async (tx) =>
+            (await tx.unsafe(
+              `SELECT source_hash FROM plugin_international_site.page_variants WHERE page_id = '${de.pageId}'`,
+            )) as { source_hash: string | null }[],
+        )
+      )[0]?.source_hash;
+    // A translation from before the journal, the backfill not run yet.
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `UPDATE plugin_international_site.page_variants SET source_hash = NULL, translation_status = 'up_to_date'
+          WHERE page_id = '${de.pageId}'`,
+      );
+      await tx.unsafe(
+        "DELETE FROM plugin_international_site.settings WHERE key IN ('source_hash_backfill', 'source_hash_backfill_progress')",
+      );
+    });
+    // Loading never runs the backfill, so the timeout that broke the
+    // activation cannot stop the plugin from loading.
+    resetPluginHost();
+    registry.failing = "page_module_content.list_for_page";
+    try {
+      await bootPlugin();
+      expect(loadedPlugins.bySlug("international-site")).toBeDefined();
+      const tick = await runPluginOperation({
+        invocation: { origin: "worker", actorId: "00000000-0000-0000-0000-000000000000" },
+        pluginSlug: "international-site",
+        operationName: "backfill_source_hashes",
+        args: { _trigger: "worker", workerName: "source-hash-backfill" },
+      });
+      expect(tick.ok).toBe(false);
+    } finally {
+      registry.failing = null;
+    }
+    expect(loadedPlugins.bySlug("international-site")).toBeDefined();
+    const recorded = (await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT phase, message FROM plugin_errors
+            WHERE plugin_slug = 'international-site' AND phase = 'worker'
+              AND message LIKE '%backfill_source_hashes%'`,
+        )) as { phase: string; message: string }[],
+    )) as { phase: string; message: string }[];
+    expect(recorded.length).toBeGreaterThan(0);
+    expect(await hashOf()).toBeNull();
+
+    // The next tick, with the fault gone, finishes it.
+    await runBackfill();
+    expect(await hashOf()).toMatch(/^backfill:sha256:/);
+  }, 60_000);
+
+  it("#1287 — a variant flagged while the backfill reads its source keeps no baseline", async () => {
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const sourceId = await seedSourcePage("-bfr");
+    const de = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-bfr-preise",
+    });
+    await drainChangeConsumers({ adapter, registry });
+    const rowOf = async () =>
+      (
+        await sqlAsPlugin(
+          async (tx) =>
+            (await tx.unsafe(
+              `SELECT translation_status, source_hash FROM plugin_international_site.page_variants WHERE page_id = '${de.pageId}'`,
+            )) as { translation_status: string; source_hash: string | null }[],
+        )
+      )[0];
+    const flag = `UPDATE plugin_international_site.page_variants SET translation_status = 'needs_update'
+                   WHERE page_id = '${de.pageId}'`;
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `UPDATE plugin_international_site.page_variants SET source_hash = NULL, translation_status = 'up_to_date'
+          WHERE page_id = '${de.pageId}'`,
+      );
+      await tx.unsafe(
+        "DELETE FROM plugin_international_site.settings WHERE key IN ('source_hash_backfill', 'source_hash_backfill_progress')",
+      );
+    });
+    // A consumer tick flags the variant while the step reads its source.
+    registry.before = {
+      op: "page_module_content.list_for_page",
+      run: async () => {
+        await sqlAsPlugin(async (tx) => tx.unsafe(flag));
+      },
+    };
+    try {
+      await runBackfill();
+    } finally {
+      registry.before = null;
+    }
+    expect(await rowOf()).toEqual({ translation_status: "needs_update", source_hash: null });
+  }, 60_000);
+
+  it("#1287 — the backfill pages past one batch, tick by tick", async () => {
+    // 150 old translations (more than one 100-variant batch), each a copy
+    // of an existing page whose group has no source to compare with.
+    const sourceId = await seedSourcePage("-bfp");
+    await sqlSystem(async (tx) => {
+      await tx.unsafe(`
+        INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed,
+                           current_path, status)
+        SELECT 't397-bfp-' || i, 'Page ' || i, 'Page ' || i, p.template_id, p.page_type_id, true,
+               '/t397-bfp-' || i, 'draft'
+          FROM pages p, generate_series(1, 150) i
+         WHERE p.id = '${sourceId}'`);
+    });
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(`
+        INSERT INTO plugin_international_site.page_variants
+               (group_id, page_id, locale_code, translation_status, source_hash, created_at)
+        SELECT gen_random_uuid(), p.id, 'de', 'up_to_date', NULL, now()
+          FROM pages p WHERE p.slug LIKE 't397-bfp-%'`);
+      await tx.unsafe(
+        "DELETE FROM plugin_international_site.settings WHERE key IN ('source_hash_backfill', 'source_hash_backfill_progress')",
+      );
+    });
+    const first = await op<{ status: string }>("backfill_source_hashes", { _trigger: "worker" });
+    expect(first.status).toBe("progress");
+    // The second tick reads on from where the first stopped and finishes.
+    await runBackfill();
+    // Store deletes are soft: the progress row is gone for every reader.
+    const done = await sqlAsPlugin(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT key FROM plugin_international_site.settings
+            WHERE key LIKE 'source_hash_backfill%' AND caelo_deleted_at IS NULL`,
+        )) as { key: string }[],
+    );
+    expect(done.map((d) => d.key)).toEqual(["source_hash_backfill"]);
   }, 60_000);
 
   it("#591 — fills a new variant's meta description; a live variant's SEO is never overwritten, only flagged stale", async () => {

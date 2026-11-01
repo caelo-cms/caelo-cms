@@ -316,6 +316,7 @@ describe("readStageAudit", () => {
           errorMessage: null,
           progress: null,
         }),
+        readStatus: async () => null,
         read: async () => (clock >= 30_000 ? running : noAudit),
       },
       {
