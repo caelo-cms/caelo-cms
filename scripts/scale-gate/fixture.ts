@@ -199,23 +199,20 @@ async function main(): Promise<void> {
     const catItems = (
       await op<{ list: { items: { id: string }[] } }>(SYS, "lists.get", { slug: "sg-categories" })
     ).list.items.map((it) => it.id);
+    // #1276 — a template serves a chosen page type; the News type is
+    // created with it, the template as its default.
     const { templateId } = await op<{ templateId: string }>(SYS, "templates.create", {
       slug: "sg-news",
       displayName: "News article",
       html: '<main><caelo-slot name="content"></caelo-slot></main>',
-    });
-    await op(SYS, "page_types.upsert_many", {
-      pageTypes: [
-        {
-          slug: "news",
-          name: "News",
-          purpose: "Dated news articles",
-          templates: [templateId],
-          defaultTemplate: templateId,
-          properties: [],
-          vocabularies: [{ list: vocabId, cardinality: "many" }],
-        },
-      ],
+      newPageType: {
+        slug: "news",
+        name: "News",
+        purpose: "Dated news articles",
+        collection: true,
+        properties: [],
+        vocabularies: [{ list: vocabId, cardinality: "many" }],
+      },
     });
     const article = await op<{ moduleId: string }>(SYS, "modules.create", {
       slug: "sg-article",
@@ -414,7 +411,7 @@ async function main(): Promise<void> {
       const pageState = (title: string) => `jsonb_build_object(
           'schemaVersion', 1, 'slug', p.slug, 'title', ${title}, 'shortTitle', p.short_title,
           'templateId', p.template_id, 'status', p.status, 'version', p.version, 'deletedAt', null,
-          'parentPageId', p.parent_page_id, 'pageTypeId', p.page_type_id, 'properties', p.properties,
+          'parentPageId', p.parent_page_id, 'pageTypeId', p.page_type_id, 'pageTypeConfirmed', p.page_type_confirmed, 'properties', p.properties,
           'terms', '[]'::jsonb)`;
       await tx.unsafe(`
         WITH pg AS (SELECT id, row_number() OVER (ORDER BY id) AS rn FROM pages),

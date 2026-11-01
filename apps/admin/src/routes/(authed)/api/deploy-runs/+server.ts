@@ -1,19 +1,27 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.6b — JSON endpoint backing the deployments page's progress
- * polling. Returns the latest 25 runs; the client filters for
- * `running` status to decide whether to keep polling.
+ * P6.6b — JSON endpoint backing the deployments page's live progress.
+ * Returns the latest 25 runs, plus the Stage runs' step, progress and
+ * estimated time left (#1288).
  */
 
+import { describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { json } from "@sveltejs/kit";
 import { getQueryContext } from "#lib/server/query.js";
+import { stageStatusOf } from "#lib/server/stage-status.js";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ locals }) => {
   const { adapter, registry } = getQueryContext();
-  const res = await execute(registry, adapter, locals.ctx, "deploy.list_runs", { limit: 25 });
-  if (!res.ok) return json({ runs: [] }, { status: 200 });
-  return json(res.value);
+  const [res, stage] = await Promise.all([
+    execute(registry, adapter, locals.ctx, "deploy.list_runs", { limit: 25 }),
+    // #1288 — the Stage runs' step, progress and estimated time left.
+    execute(registry, adapter, locals.ctx, "deploy.stage_status", { limit: 20 }),
+  ]);
+  // A failed read is an error, not an empty list: the page keeps what it
+  // shows (it re-reads only on `r.ok`) instead of rendering a partial body.
+  if (!res.ok) return json({ error: describeError(res.error) }, { status: 500 });
+  return json({ ...(res.value as object), ...stageStatusOf(stage) });
 };

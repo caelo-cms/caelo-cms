@@ -17,7 +17,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import * as yaml from "js-yaml";
-import { countNewMatches, POOL_EXHAUSTED, percentile, summarise } from "./scale-gate/run.ts";
+import {
+  countNewMatches,
+  POOL_EXHAUSTED,
+  percentile,
+  readFirstPaint,
+  summarise,
+} from "./scale-gate/run.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 
@@ -107,5 +113,36 @@ describe("scale-gate runner report", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("scale-gate first paint (#1268)", () => {
+  it("ends at </html>, before the streamed parts SvelteKit appends", async () => {
+    let more = () => {};
+    const tail = new Promise<void>((resolve) => {
+      more = resolve;
+    });
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode("<!doctype html><html><body>editor"));
+        controller.enqueue(encoder.encode("</body></html>\n"));
+        // A streamed part that settles only later.
+        await tail;
+        controller.enqueue(encoder.encode("<script>resolve(1)</script>"));
+        controller.close();
+      },
+    });
+    const text = await readFirstPaint(new Response(body, { status: 200 }));
+    expect(text).toContain("</html>");
+    expect(text).not.toContain("resolve(1)");
+    more();
+  });
+
+  it("fails on a status other than 200 and on a document without </html>", async () => {
+    await expect(readFirstPaint(new Response("down", { status: 500 }))).rejects.toThrow("HTTP 500");
+    await expect(readFirstPaint(new Response("<html>", { status: 200 }))).rejects.toThrow(
+      "without </html>",
+    );
   });
 });

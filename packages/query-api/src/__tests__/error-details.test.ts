@@ -180,6 +180,31 @@ describe("thrownToQueryError — no Postgres internals in the text", () => {
     }
     expect(describePgFailure({ code: "40P01" }).internal).toBe(true);
   });
+
+  it("#1287 — a statement timeout says so and how long, a lock timeout says to retry", () => {
+    const timedOut = describePgFailure({ code: "57014", timeout: "statement" });
+    expect(timedOut.message).toContain("timed out after 60 s");
+    expect(timedOut.internal).toBe(true);
+    const locked = describePgFailure({ code: "55P03", timeout: "lock" });
+    expect(locked.message).toContain("15 s");
+    expect(locked.internal).toBe(false);
+    // Any other cancel stays the generic defect sentence.
+    expect(describePgFailure({ code: "57014" }).message).toContain("cannot fix");
+  });
+
+  it("#1287 — thrownToQueryError names the op and the timeout", () => {
+    const e = thrownToQueryError(
+      "page_module_content.list_for_page",
+      Object.assign(new Error("Failed query: SELECT …"), {
+        cause: { errno: "57014", message: "canceling statement due to statement timeout" },
+      }),
+      "read",
+    );
+    expect(e.kind).toBe("HandlerError");
+    if (e.kind !== "HandlerError") return;
+    expect(e.operation).toBe("page_module_content.list_for_page");
+    expect(e.message).toContain("timed out after 60 s");
+  });
 });
 
 describe("linear-time text helpers (CodeQL js/polynomial-redos)", () => {

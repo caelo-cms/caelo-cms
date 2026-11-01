@@ -544,13 +544,16 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       const { runId, pageCount } = (r.ok ? r.value : null) as { runId: string; pageCount: number };
       // Before #1003 the row was invisible until commit and every progress
       // write matched no row: the deployments page never showed a Stage.
-      expect(midRun).toEqual([
-        { status: "running", progress: { pagesDone: pageCount, pagesTotal: pageCount } },
-      ]);
+      // #1288 — each write also stamps the database time of the newest and
+      // the first write (the run's pace for deploy.stage_status).
+      const counts = { pagesDone: pageCount, pagesTotal: pageCount };
+      expect(midRun).toHaveLength(1);
+      expect(midRun[0]).toMatchObject({ status: "running", progress: counts });
       expect(openTransactions).toEqual([]);
-      expect(await runRows(runId)).toEqual([
-        { status: "succeeded", progress: { pagesDone: pageCount, pagesTotal: pageCount } },
-      ]);
+      const [final] = await runRows(runId);
+      expect(final).toMatchObject({ status: "succeeded", progress: counts });
+      const stamps = final?.progress as unknown as { at: string; firstAt: string };
+      expect(Date.parse(stamps.at)).toBeGreaterThanOrEqual(Date.parse(stamps.firstAt));
     } finally {
       fake.onPopulate = null;
     }

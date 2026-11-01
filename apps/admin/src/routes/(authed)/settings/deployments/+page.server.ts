@@ -7,17 +7,21 @@ import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { enqueueStagingAudit } from "#lib/server/quality-audit.js";
 import { getQueryContext } from "#lib/server/query.js";
+import { stageStatusOf } from "#lib/server/stage-status.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "ops.view");
   const { adapter, registry } = getQueryContext();
-  const [targets, runs, gate] = await Promise.all([
+  const [targets, runs, gate, stage] = await Promise.all([
     execute(registry, adapter, locals.ctx, "deploy.list_targets", {}),
     execute(registry, adapter, locals.ctx, "deploy.list_runs", { limit: 25 }),
     execute(registry, adapter, locals.ctx, "quality_audits.gate_status", {}),
+    // #1288 — the Stage runs' step, progress and estimated time left.
+    execute(registry, adapter, locals.ctx, "deploy.stage_status", { limit: 20 }),
   ]);
   return {
+    ...stageStatusOf(stage),
     // #553 — a production build publishes what is staged, so it shows (and
     // obeys) the staged build's quality gate.
     qualityGate: gate.ok

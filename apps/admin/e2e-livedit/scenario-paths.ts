@@ -188,6 +188,9 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       // #1267 — the change journal every write passes through.
       `${A}/ops/change-journal.ts`,
       `${SHARED}/change-journal.ts`,
+      // #1288 — what stage_changes and get_quality_audit say about a Stage
+      // that outlasts their wait.
+      `${SHARED}/stage-status.ts`,
       `${A}/public-projection.ts`,
       `${A}/theme-document-input.ts`,
       `${A}/rate-limit.ts`,

@@ -245,9 +245,16 @@ export const updateDeployProgressOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
+    // #1288 — the database time of this write and of the first one (with
+    // its count) give deploy.stage_status this run's pace.
     await tx.execute(sql`
       UPDATE deploy_runs
-      SET progress = ${jsonbParam({ pagesDone: input.pagesDone, pagesTotal: input.pagesTotal })}
+      SET progress = jsonb_build_object(
+            'pagesDone', ${input.pagesDone}::int,
+            'pagesTotal', ${input.pagesTotal}::int,
+            'at', to_jsonb(clock_timestamp()),
+            'firstAt', COALESCE(progress->'firstAt', to_jsonb(clock_timestamp())),
+            'firstDone', COALESCE(progress->'firstDone', to_jsonb(${input.pagesDone}::int)))
       WHERE id = ${input.runId}::uuid
     `);
     return ok({});

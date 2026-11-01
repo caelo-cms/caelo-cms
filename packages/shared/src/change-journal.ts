@@ -241,6 +241,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   chat_branch_publish_marks:
     "which branch states reached main; the Stage that writes it also updates the journaled site_snapshots",
   draft_entity_observations: "which draft entity states a chat has read (conflict detection)",
+  draft_pending_entities:
+    "the draft head (#1268): derived state, maintained by triggers from the journaled snapshot tables and rebuildable from them",
   subagent_runs: "subagent bookkeeping of a chat turn",
   mcp_approval_handoffs: "approval hand-offs to an MCP client",
   tool_approval_actions: "approval decisions of chat tool calls",
@@ -274,6 +276,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   redirect_changes:
     "which transactions changed redirects, folded by the redirect sync; the journaled redirects table is the source",
   static_bakes: "derived build output of plugin-baked regions",
+  content_instance_refs:
+    "derived (synchronous, #1287): the ids and media slugs each content instance's values reference, maintained by triggers on the journaled content_instances; rebuilt by content_instances.rebuild_refs",
   plugin_data_build_state: RUNTIME,
   plugin_data_stale_pages: "derived: which pages' baked plugin regions are stale",
   plugin_runtime: RUNTIME,

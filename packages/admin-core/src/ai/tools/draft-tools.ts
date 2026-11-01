@@ -33,6 +33,7 @@ import { stageChatSessions } from "../../stage/stage-chats.js";
 import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 import { AUDIT_WAIT_MS } from "./quality-audit-tools.js";
+import { readStageStatus, stillRunningStageText } from "./stage-status-tool.js";
 
 const NO_CHAT =
   "this tool works on a chat session — open one first (Power-MCP: caelo_open_session).";
@@ -77,32 +78,20 @@ export function stageToolWaitMs(): number {
   return parsed;
 }
 
-/** The "still running" result: where the build stands and what to call next. */
+/**
+ * The "still running" result: where the build stands, the estimate of the
+ * time left and the one call to make next (#1288: get_stage_status).
+ */
 async function stillRunningResult(
   toolCtx: Parameters<ToolDefinitionWithHandler<unknown>["handler"]>[2],
   opCtx: ExecutionContext,
   deployRunId: string,
 ): Promise<{ ok: boolean; content: string; value: unknown }> {
-  const r = await execute(toolCtx.registry, toolCtx.adapter, opCtx, "deploy.get_run", {
-    runId: deployRunId,
-  });
-  const run = r.ok
-    ? (r.value as { run: { progress: { pagesDone: number; pagesTotal: number } | null } | null })
-        .run
-    : null;
-  const where =
-    run === null
-      ? "it is still merging the chats' changes"
-      : run.progress
-        ? `${run.progress.pagesDone} of ${run.progress.pagesTotal} pages built`
-        : "the build is starting";
+  const run = await readStageStatus(toolCtx, opCtx, deployRunId);
   return {
     ok: true,
-    content:
-      `The Stage is still running on the server (build run ${deployRunId}: ${where}). It continues without this call; ` +
-      "do NOT call stage_changes again and do not tell the operator it is staged yet. " +
-      `Call get_quality_audit with deployRunId "${deployRunId}": it waits for the build, then for its quality check, and says if the build failed.`,
-    value: { deployRunId, status: "running" },
+    content: stillRunningStageText(deployRunId, run),
+    value: { deployRunId, status: run?.status ?? "running", stage: run },
   };
 }
 
