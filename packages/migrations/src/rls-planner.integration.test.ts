@@ -158,6 +158,9 @@ async function planWith(policy: string, query: string): Promise<PlanNode> {
     await tx.unsafe(`DROP POLICY IF EXISTS scope ON ${LAB}.rows`);
     await tx.unsafe(`CREATE POLICY scope ON ${LAB}.rows USING (${policy})`);
     await tx.unsafe(`SELECT set_config('caelo.plugin_id', '${PLUGIN_ID}', true)`);
+    // These cases pin the default planner's choices; the query index gate's
+    // server (#1293) runs with enable_seqscan=off, which would change them.
+    await tx.unsafe("SET LOCAL enable_seqscan = on");
     const rows = (await tx.unsafe(`EXPLAIN (FORMAT JSON) ${query}`)) as Array<
       Record<string, unknown>
     >;

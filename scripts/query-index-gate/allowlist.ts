@@ -121,6 +121,12 @@ export const ALLOWED: readonly AllowedRule[] = [
       "The operator/AI redirect search (ILIKE '%…%'). #1291 tried a pg_trgm GIN index: under the table's RLS policy ~~* is not leakproof, so it can never become an index condition for admin_role. Operator search, not a per-request path.",
   },
   {
+    table: "public.font_assets",
+    op: "fonts.find",
+    reason:
+      "Substring search over the family names of the site's acquired fonts (a few dozen): position(lower(q) in lower(family)) matches anywhere in the name, which no b-tree serves, and a trigram index cannot become an index condition under RLS (#1297). Operator/AI search, not a per-request path.",
+  },
+  {
     table: "plugin_*.*",
     op: "plugin_storage.list",
     filter:
