@@ -26,6 +26,11 @@ import type { ListPlan } from "./private-storage.js";
 /** The columns one `list()` reads by, as the host parsed its filter. */
 export interface ListIndexAccess {
   readonly equals: ReadonlyArray<string>;
+  /**
+   * The `equals` columns compared with `null` — an `IS NULL`, which a
+   * hash index cannot answer (it only supports `=`). Omitted: none.
+   */
+  readonly isNull?: ReadonlyArray<string>;
   readonly anyOf: ReadonlyArray<string>;
   readonly orderBy: string | null;
   /** `since` or `before` — both range over `created_at`. */
@@ -36,6 +41,7 @@ export interface ListIndexAccess {
 export function listAccessOf(plan: ListPlan): ListIndexAccess {
   return {
     equals: plan.equals.map(([k]) => k),
+    isNull: plan.equals.filter(([, v]) => v === null).map(([k]) => k),
     anyOf: plan.anyOf.map(([k]) => k),
     orderBy: plan.orderBy,
     createdAtRange: plan.since !== null || plan.before !== null,
@@ -110,8 +116,11 @@ export function listIndexRefusal(args: {
   // and test every row. Only an unfiltered read is driven by its order.
   const driving = filtered.length > 0 ? filtered : ordered;
   if (driving.length === 0) return null;
-  const usable = filtered.length > 0 ? args.leads.any : args.leads.ordered;
-  if (driving.some((c) => usable.has(c))) return null;
+  // A btree index serves equality, IS NULL and order; a hash index only `=`.
+  const isNull = new Set(access.isNull ?? []);
+  const usable = (c: string) =>
+    filtered.length > 0 && !isNull.has(c) ? args.leads.any.has(c) : args.leads.ordered.has(c);
+  if (driving.some(usable)) return null;
   const suggestion = [...filtered, ...ordered].slice(0, PLUGIN_INDEX_MAX_COLUMNS);
   return (
     `${args.label}: no index covers this read of "${args.table}" (it ${filtered.length > 0 ? "filters" : "orders"} by ${driving.join(", ")}). ` +

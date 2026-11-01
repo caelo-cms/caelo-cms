@@ -227,7 +227,7 @@ describe("#1292 — the list operation refuses reads no index covers", () => {
     expect((await list({ limit: 5 })).ok).toBe(true);
   });
 
-  it("lets a hash index drive an equality filter but not an order", async () => {
+  it("lets a hash index drive an equality filter but not an order or IS NULL", async () => {
     await provision({ entries: [{ columns: ["slug"], method: "hash" }] });
     const def = (await indexes(PUBLIC_URL, "entries")).get(
       pluginIndexName("entries", ["slug"], false, "", "hash"),
@@ -235,6 +235,8 @@ describe("#1292 — the list operation refuses reads no index covers", () => {
     expect(def).toContain("USING hash (slug)");
     expect((await list({ slug: "a" })).ok).toBe(true);
     expect(messageOf(await list({ orderBy: "slug" }))).toContain("orders by slug");
+    // IS NULL is not `=`: a hash index cannot answer it.
+    expect(messageOf(await list({ slug: null }))).toContain("filters by slug");
     await provision({ entries: [["status", "created_at"]] });
   });
 

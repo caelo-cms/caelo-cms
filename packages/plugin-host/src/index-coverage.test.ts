@@ -64,6 +64,12 @@ describe("hash indexes", () => {
     expect(read({ anyOf: ["email"] }, ["id"], "schema", ["email"])).toBeNull();
     expect(read({ orderBy: "email" }, ["id"], "schema", ["email"])).toContain("orders by email");
   });
+
+  it("do not drive an IS NULL filter (hash supports only =)", () => {
+    const nullRead = { equals: ["email"], isNull: ["email"] };
+    expect(read(nullRead, ["id"], "schema", ["email"])).toContain("filters by email");
+    expect(read(nullRead, ["id", "email"])).toBeNull();
+  });
 });
 
 describe("readsByColumn", () => {
