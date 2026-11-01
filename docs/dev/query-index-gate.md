@@ -65,8 +65,8 @@ O(n) per call — and O(n²) per Stage when it runs once per page.
    so unlike a Seq Scan it proves nothing. Walks where another index leads
    with a filter column are dropped from the advisory list altogether
    (`indexes.sql`).
-5. **Verdict.** Every Seq Scan finding must match an `ALLOWED` or a `PENDING` entry
-   of `allowlist.ts`, and every entry must match at least one finding —
+5. **Verdict.** Every Seq Scan finding must match an `ALLOWED` entry of
+   `allowlist.ts`, and every entry must match at least one finding —
    a stale entry fails too. The job summary and the `query-index-gate`
    artifact (`seq.log`, `findings.json`) carry the details.
 
@@ -95,8 +95,7 @@ Then pick one:
   reason is reviewed like code.
 
 A **stale entry** means the index exists now or the query is gone: delete the
-entry. A `PENDING` entry is a `FIXME(issue #N)` for a known finding a tracked
-issue fixes; the fixing PR deletes the entries it makes stale.
+entry.
 
 ## Reading an FK lint failure
 

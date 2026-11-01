@@ -10,7 +10,6 @@ import { describe, expect, it } from "bun:test";
 import { SQL } from "bun";
 import {
   FK_EXEMPTIONS,
-  FK_PENDING,
   type ForeignKeyRow,
   judgeForeignKeys,
   UNINDEXED_FOREIGN_KEYS_SQL,
@@ -72,8 +71,7 @@ describe("FK index lint (#1293)", () => {
         >[];
         const verdict = judgeForeignKeys(
           rows.map((r) => ({ db: "cms_admin" as const, ...r })),
-          [],
-          [{ key: "cms_admin gone(x) -> lint_parent" }],
+          [{ key: "cms_admin gone(x) -> lint_parent", reason: "test" }],
         );
         expect(verdict.unexplained.filter((k) => k.includes("lint_"))).toEqual([
           "cms_admin lint_child(parent_id) -> lint_parent",
@@ -90,6 +88,7 @@ describe("FK index lint (#1293)", () => {
 
   it("every exemption carries a reason", () => {
     for (const e of FK_EXEMPTIONS) expect(e.reason.length).toBeGreaterThan(40);
-    expect(new Set(FK_PENDING.map((p) => p.key)).size).toBe(FK_PENDING.length);
+    const keys = FK_EXEMPTIONS.map((e) => ("key" in e ? e.key : e.references));
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });

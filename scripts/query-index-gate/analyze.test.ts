@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
-import { ALLOWED, PENDING } from "./allowlist.js";
+import { ALLOWED } from "./allowlist.js";
 import {
   distinctFindings,
   evaluate,
@@ -90,7 +90,7 @@ describe("query index gate analyzer (#1293)", () => {
   });
 
   it("fails unexplained findings and leaves core FK checks to the FK lint", () => {
-    const v = evaluate(findings, [], []);
+    const v = evaluate(findings, []);
     expect(v.coveredByFkLint).toBe(1);
     expect(v.violations.map((f) => f.relation).sort()).toEqual([
       "plugin_forms.submissions",
@@ -115,23 +115,22 @@ describe("query index gate analyzer (#1293)", () => {
       "\t  Filter: (t.k = $1)",
     ].join("\n");
     for (const log of [`${walk}\n@@END\n${seq}\n@@END\n`, `${seq}\n@@END\n${walk}\n@@END\n`]) {
-      const v = evaluate(distinctFindings(parsePlanLog(log)), [], []);
+      const v = evaluate(distinctFindings(parsePlanLog(log)), []);
       expect(v.violations.map((f) => [f.relation, f.scan])).toEqual([["public.t", "seq"]]);
       expect(v.advisory.map((f) => f.scan)).toEqual(["index"]);
     }
   });
 
-  it("passes allowlisted and pending findings, and fails a stale entry", () => {
-    const allowed = [{ table: "public.redirects", reason: "test" }];
-    const pending = [
-      { table: "plugin_forms.*", issue: 1292 as const },
-      { table: "public.gone", issue: 1291 as const },
+  it("passes allowlisted findings, and fails a stale entry", () => {
+    const allowed = [
+      { table: "public.redirects", reason: "test" },
+      { table: "plugin_forms.*", reason: "test" },
+      { table: "public.gone", reason: "test" },
     ];
-    const v = evaluate(findings, allowed, pending);
+    const v = evaluate(findings, allowed);
     expect(v.violations).toEqual([]);
-    expect(v.allowed).toBe(1);
-    expect(v.pending).toBe(1);
-    expect(v.stale).toEqual([{ table: "public.gone", issue: 1291 }]);
+    expect(v.allowed).toBe(2);
+    expect(v.stale).toEqual([{ table: "public.gone", reason: "test" }]);
   });
 
   it("drops the relation's RLS policy terms, also OR-ed permissive ones", () => {
@@ -241,6 +240,5 @@ describe("query index gate analyzer (#1293)", () => {
 
   it("every allowlist entry has a reason", () => {
     for (const r of ALLOWED) expect(r.reason.length).toBeGreaterThan(30);
-    for (const p of PENDING) expect([1291, 1292]).toContain(p.issue);
   });
 });

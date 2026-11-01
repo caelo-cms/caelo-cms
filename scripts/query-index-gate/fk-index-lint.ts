@@ -14,9 +14,9 @@
  * look indexed in review and are not. The one exception is a predicate of
  * exactly `<fk> IS NOT NULL`, which the lookup's `<fk> = $1` implies.
  *
- * {@link FK_EXEMPTIONS} carries the reasoned exceptions; {@link FK_PENDING}
- * the known gaps a tracked issue closes. A stale entry of either fails the
- * lint. Plugin schemas (`plugin_*`) are created at activation, not by the
+ * {@link FK_EXEMPTIONS} carries the reasoned exceptions (the decisions of
+ * #1291: index every FK whose parent production hard-deletes, and what those
+ * deletes cascade into; leave the rest). A stale entry fails the lint. Plugin schemas (`plugin_*`) are created at activation, not by the
  * migrations, so they are left to the plan gate (analyze.ts) and to
  * #1292's automatic `ref:` indexes.
  */
@@ -56,106 +56,90 @@ export const FK_EXEMPTIONS: readonly FkExemption[] = [
     reason:
       "site_defaults holds exactly one row (singleton table); the RI check on a parent delete reads that one row with or without an index.",
   })),
+  ...[
+    "cms_admin static_bakes(page_id) -> pages",
+    "cms_admin plugin_data_stale_pages(page_id) -> pages",
+  ].map((key) => ({
+    key,
+    reason:
+      "pages are soft-deleted; the bake tables' primary keys are (plugin_id, page_id) and every reader filters by plugin (#1291 decision).",
+  })),
+  ...[
+    "cms_admin media_assets(derived_from_id) -> media_assets",
+    "cms_admin pages_seo(og_image_asset_id) -> media_assets",
+    "cms_admin themes(favicon_media_id) -> media_assets",
+    "cms_admin themes(logo_dark_media_id) -> media_assets",
+    "cms_admin themes(logo_media_id) -> media_assets",
+    "cms_admin themes(social_share_media_id) -> media_assets",
+    "cms_admin genesis_drafts(reference_asset_id) -> media_assets",
+  ].map((key) => ({
+    key,
+    reason:
+      "No production code hard-deletes a media asset (deletion is soft) and no reader filters on the column (#1291 decision).",
+  })),
+  ...[
+    "cms_admin site_snapshots(revert_of) -> site_snapshots",
+    "cms_admin deploy_runs(site_snapshot_id) -> site_snapshots",
+    "cms_admin chat_branch_publish_marks(site_snapshot_id) -> site_snapshots",
+    "cms_admin link_migration_runs(site_snapshot_id) -> site_snapshots",
+    "cms_admin snapshot_revert_pending_actions(applied_snapshot_id) -> site_snapshots",
+    "cms_admin snapshot_revert_pending_actions(snapshot_id) -> site_snapshots",
+  ].map((key) => ({
+    key,
+    reason:
+      "Site snapshots are history and never hard-deleted; no reader filters on the column (#1291 decision).",
+  })),
+  ...[
+    "cms_admin deploy_runs(base_run_id) -> deploy_runs",
+    "cms_admin deploy_pending_actions(applied_run_id) -> deploy_runs",
+    "cms_admin plugin_data_stale_pages(last_run_id) -> deploy_runs",
+    "cms_admin deploy_leases(holder_run_id) -> deploy_runs",
+  ].map((key) => ({
+    key,
+    reason:
+      "Deploy runs are history and never hard-deleted; deploy_leases holds one row per lease (#1291 decision).",
+  })),
+  ...[
+    "cms_admin ai_calls(parent_ai_call_id) -> ai_calls",
+    "cms_admin image_requests(call_id) -> ai_calls",
+  ].map((key) => ({
+    key,
+    reason:
+      "AI call rows are cost history and never hard-deleted on their own; no reader filters on the column (#1291 decision).",
+  })),
+  ...[
+    "cms_admin quality_acceptances(audit_run_id) -> quality_audit_runs",
+    "cms_admin quality_audit_runs(retry_of) -> quality_audit_runs",
+    "cms_admin quality_baselines(updated_by_run) -> quality_audit_runs",
+    "cms_admin quality_pending_actions(audit_run_id) -> quality_audit_runs",
+    "cms_admin owner_bootstrap_tokens(used_by) -> users",
+    "cms_admin user_pending_actions(applied_user_id) -> users",
+    "cms_admin user_pending_actions(user_id) -> users",
+    "cms_admin template_pending_actions(template_id) -> templates",
+    "cms_admin templates(layout_id) -> layouts",
+    "cms_admin layout_pending_actions(applied_layout_id) -> layouts",
+    "cms_admin layout_pending_actions(layout_id) -> layouts",
+    "cms_admin layout_modules(module_id) -> modules",
+    "cms_admin skill_pin_defaults(skill_id) -> skills",
+    "cms_admin skill_proposals(resulting_skill_id) -> skills",
+    "cms_admin mcp_token_pending_actions(applied_token_id) -> mcp_tokens",
+    "cms_admin mcp_token_pending_actions(token_id) -> mcp_tokens",
+    "cms_admin chat_agent_runs(mcp_token_id) -> mcp_tokens",
+    "cms_admin chat_turn_approvals(mcp_token_id) -> mcp_tokens",
+    "cms_admin chat_agent_runs(mcp_remote_connection_id) -> mcp_remote_connections",
+    "cms_admin chat_turn_approvals(mcp_remote_connection_id) -> mcp_remote_connections",
+    "cms_admin platform_update_notifications(request_id) -> platform_update_requests",
+    "cms_admin pages(page_type_id) -> page_types",
+    "cms_admin lists(list_type_id) -> list_types",
+    "cms_admin plugin_rate_limit_overrides(profile_name) -> rate_limit_profiles",
+    "cms_admin plugin_errors(bug_report_id) -> ai_bug_reports",
+    "cms_admin role_permissions(permission_id) -> permissions",
+  ].map((key) => ({
+    key,
+    reason:
+      "The parent is kept or soft-deleted, never hard-deleted by production code, and no reader filters on the column (#1291 decision; if the parent gains a hard delete, index it and add the parent to core-indexes.integration.test.ts's roots).",
+  })),
 ];
-
-/**
- * FKs without a usable index that issue #1291 (core indexes) decides: index
- * the ones whose parent is hard-deleted or garbage-collected, exempt the
- * rest with a reason. FIXME(issue #1291): this list goes away with it —
- * every entry the fix indexes turns stale and fails the lint until removed.
- */
-export const FK_PENDING: readonly { readonly key: string; readonly issue: 1291 }[] = [
-  "cms_admin role_permissions(permission_id) -> permissions",
-  "cms_admin user_roles(role_id) -> roles",
-  "cms_admin role_pending_actions(applied_role_id) -> roles",
-  "cms_admin role_pending_actions(role_id) -> roles",
-  "cms_admin sessions(user_id) -> users",
-  "cms_admin owner_bootstrap_tokens(used_by) -> users",
-  "cms_admin user_pending_actions(applied_user_id) -> users",
-  "cms_admin user_pending_actions(user_id) -> users",
-  "cms_admin layout_modules(module_id) -> modules",
-  "cms_admin content_instances(module_id) -> modules",
-  "cms_admin template_pending_actions(template_id) -> templates",
-  "cms_admin pages(parent_page_id) -> pages",
-  "cms_admin static_bakes(page_id) -> pages",
-  "cms_admin import_pages(accepted_page_id) -> pages",
-  "cms_admin quality_acceptances(page_id) -> pages",
-  "cms_admin plugin_data_stale_pages(page_id) -> pages",
-  "cms_admin site_snapshots(revert_of) -> site_snapshots",
-  "cms_admin deploy_runs(site_snapshot_id) -> site_snapshots",
-  "cms_admin chat_branch_publish_marks(site_snapshot_id) -> site_snapshots",
-  "cms_admin snapshot_revert_pending_actions(applied_snapshot_id) -> site_snapshots",
-  "cms_admin snapshot_revert_pending_actions(snapshot_id) -> site_snapshots",
-  "cms_admin link_migration_runs(site_snapshot_id) -> site_snapshots",
-  "cms_admin chat_sessions(parent_chat_session_id) -> chat_sessions",
-  "cms_admin ai_calls(chat_session_id) -> chat_sessions",
-  "cms_admin ai_calls(parent_chat_session_id) -> chat_sessions",
-  "cms_admin site_memory_proposals(chat_session_id) -> chat_sessions",
-  "cms_admin skill_proposals(chat_session_id) -> chat_sessions",
-  "cms_admin subagent_runs(subagent_chat_session_id) -> chat_sessions",
-  "cms_admin plugin_rate_limit_proposals(chat_session_id) -> chat_sessions",
-  "cms_admin deploy_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin layout_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin user_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin role_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin snapshot_revert_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin email_config_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin ai_providers_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin mcp_token_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin template_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin domain_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin theme_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin page_edit_log(chat_session_id) -> chat_sessions",
-  "cms_admin image_requests(chat_session_id) -> chat_sessions",
-  "cms_admin owner_settings_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin site_defaults_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin quality_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin chat_lock_takeovers(from_chat_session_id) -> chat_sessions",
-  "cms_admin chat_lock_takeovers(to_chat_session_id) -> chat_sessions",
-  "cms_admin subagent_runs(parent_message_id) -> chat_messages",
-  "cms_admin ai_calls(parent_ai_call_id) -> ai_calls",
-  "cms_admin image_requests(call_id) -> ai_calls",
-  "cms_admin deploy_runs(base_run_id) -> deploy_runs",
-  "cms_admin deploy_pending_actions(applied_run_id) -> deploy_runs",
-  "cms_admin plugin_data_stale_pages(last_run_id) -> deploy_runs",
-  "cms_admin deploy_leases(holder_run_id) -> deploy_runs",
-  "cms_admin templates(layout_id) -> layouts",
-  "cms_admin layout_pending_actions(applied_layout_id) -> layouts",
-  "cms_admin layout_pending_actions(layout_id) -> layouts",
-  "cms_admin media_assets(derived_from_id) -> media_assets",
-  "cms_admin pages_seo(og_image_asset_id) -> media_assets",
-  "cms_admin themes(favicon_media_id) -> media_assets",
-  "cms_admin themes(logo_dark_media_id) -> media_assets",
-  "cms_admin themes(logo_media_id) -> media_assets",
-  "cms_admin themes(social_share_media_id) -> media_assets",
-  "cms_admin genesis_drafts(reference_asset_id) -> media_assets",
-  "cms_admin skill_proposals(resulting_skill_id) -> skills",
-  "cms_admin skill_pin_defaults(skill_id) -> skills",
-  "cms_admin plugin_pending_actions(plugin_id) -> plugins",
-  "cms_admin image_requests(plugin_id) -> plugins",
-  "cms_admin plugin_errors(plugin_id) -> plugins",
-  "cms_admin plugin_rate_limit_overrides(profile_name) -> rate_limit_profiles",
-  "cms_admin domain_pending_actions(applied_domain_id) -> domains",
-  "cms_admin domain_pending_actions(domain_id) -> domains",
-  "cms_admin mcp_token_pending_actions(applied_token_id) -> mcp_tokens",
-  "cms_admin mcp_token_pending_actions(token_id) -> mcp_tokens",
-  "cms_admin chat_agent_runs(mcp_token_id) -> mcp_tokens",
-  "cms_admin chat_turn_approvals(mcp_token_id) -> mcp_tokens",
-  "cms_admin theme_pending_actions(applied_theme_id) -> themes",
-  "cms_admin theme_pending_actions(theme_id) -> themes",
-  "cms_admin plugin_errors(bug_report_id) -> ai_bug_reports",
-  "cms_admin plugin_capability_grants(plugin_id,artifact_digest) -> plugin_installation_versions",
-  "cms_admin quality_audit_runs(retry_of) -> quality_audit_runs",
-  "cms_admin quality_baselines(updated_by_run) -> quality_audit_runs",
-  "cms_admin quality_acceptances(audit_run_id) -> quality_audit_runs",
-  "cms_admin quality_pending_actions(audit_run_id) -> quality_audit_runs",
-  "cms_admin platform_update_notifications(request_id) -> platform_update_requests",
-  "cms_admin chat_agent_runs(mcp_remote_connection_id) -> mcp_remote_connections",
-  "cms_admin chat_turn_approvals(mcp_remote_connection_id) -> mcp_remote_connections",
-  "cms_admin plugin_runtime(error_id) -> plugin_errors",
-  "cms_admin lists(list_type_id) -> list_types",
-  "cms_admin pages(page_type_id) -> page_types",
-].map((key) => ({ key, issue: 1291 as const }));
 
 /**
  * The catalog query: every FK outside the system and plugin schemas that no
@@ -190,29 +174,28 @@ export const UNINDEXED_FOREIGN_KEYS_SQL = `
 
 /** The lint's verdict over the unindexed FKs of both databases. */
 export interface FkLintVerdict {
-  /** FKs neither list explains. */
+  /** FKs no exemption explains. */
   readonly unexplained: readonly string[];
   /** List entries that matched no unindexed FK (indexed now, or gone). */
   readonly stale: readonly string[];
 }
 
-/** Judge the unindexed FKs against {@link FK_EXEMPTIONS} and {@link FK_PENDING}. */
+/** Judge the unindexed FKs against {@link FK_EXEMPTIONS}. */
 export function judgeForeignKeys(
   unindexed: readonly ForeignKeyRow[],
   exemptions: readonly FkExemption[] = FK_EXEMPTIONS,
-  pending: readonly { readonly key: string }[] = FK_PENDING,
 ): FkLintVerdict {
   const used = new Set<object>();
   const unexplained: string[] = [];
   for (const fk of unindexed) {
     const key = fkKey(fk);
-    const hit =
-      exemptions.find((e) => ("key" in e ? e.key === key : e.references === fk.references)) ??
-      pending.find((p) => p.key === key);
+    const hit = exemptions.find((e) =>
+      "key" in e ? e.key === key : e.references === fk.references,
+    );
     if (hit) used.add(hit);
     else unexplained.push(key);
   }
-  const stale = [...exemptions, ...pending]
+  const stale = exemptions
     .filter((e) => !used.has(e))
     .map((e) => ("key" in e ? e.key : `every FK -> ${e.references}`));
   return { unexplained, stale };

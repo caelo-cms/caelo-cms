@@ -26,15 +26,14 @@
  * activation, outside the migrated schema the lint reads, so the gate keeps
  * theirs.
  *
- * Each finding must match an {@link ALLOWED} entry (a reasoned exemption) or
- * a {@link PENDING} entry (a known finding a tracked issue fixes); an entry
- * that matched nothing in the run is stale and fails the gate too, so the
- * lists only ever describe the code as it is.
+ * Each finding must match an {@link ALLOWED} entry (a reasoned exemption);
+ * an entry that matched nothing in the run is stale and fails the gate too,
+ * so the list only ever describes the code as it is.
  */
 
 import { appendFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { ALLOWED, type GateRule, PENDING } from "./allowlist.js";
+import { ALLOWED, type GateRule } from "./allowlist.js";
 
 /** One plan of the filtered log. */
 export interface PlanEntry {
@@ -358,7 +357,6 @@ export interface GateVerdict {
   /** Whole-index walks with a filter: listed for a reviewer, never failing. */
   readonly advisory: readonly ScanFinding[];
   readonly allowed: number;
-  readonly pending: number;
   /** Core FK findings left to the schema lint. */
   readonly coveredByFkLint: number;
   /** Entries of the lists that matched nothing: each one fails the gate. */
@@ -392,16 +390,14 @@ export function distinctFindings(
   );
 }
 
-/** Judge `findings` against the allowlist and the pending list. */
+/** Judge `findings` against the allowlist. */
 export function evaluate(
   findings: readonly ScanFinding[],
   allowed: readonly GateRule[] = ALLOWED,
-  pending: readonly GateRule[] = PENDING,
 ): GateVerdict {
   const used = new Set<GateRule>();
   const violations: ScanFinding[] = [];
   let allowedCount = 0;
-  let pendingCount = 0;
   let coveredByFkLint = 0;
   const advisory: ScanFinding[] = [];
   for (const f of findings) {
@@ -423,20 +419,13 @@ export function evaluate(
       allowedCount++;
       continue;
     }
-    const known = pending.find((r) => ruleMatches(r, f));
-    if (known) {
-      used.add(known);
-      pendingCount++;
-      continue;
-    }
     violations.push(f);
   }
-  const stale = [...allowed, ...pending].filter((r) => !used.has(r));
+  const stale = allowed.filter((r) => !used.has(r));
   return {
     violations,
     advisory,
     allowed: allowedCount,
-    pending: pendingCount,
     coveredByFkLint,
     stale,
   };
@@ -446,7 +435,7 @@ export function evaluate(
 export function renderReport(verdict: GateVerdict, entries: number): string {
   const out: string[] = ["## Query index gate", ""];
   out.push(
-    `${entries} distinct Seq Scan plans from Query API transactions; ${verdict.allowed} findings allowlisted, ${verdict.pending} pending a tracked fix, ${verdict.coveredByFkLint} core FK checks left to the FK index lint.`,
+    `${entries} distinct Seq Scan plans from Query API transactions; ${verdict.allowed} findings allowlisted, ${verdict.coveredByFkLint} core FK checks left to the FK index lint.`,
     "",
   );
   if (verdict.violations.length > 0) {
