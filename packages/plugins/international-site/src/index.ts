@@ -379,10 +379,18 @@ async function backfillSourceHashesStep(
     const current = await sourceHashOf(row.group_id);
     // No source to compare with (none, or deleted): left as it is.
     if (current === null) continue;
-    await q.update("page_variants", row.id, {
-      source_hash: `${BACKFILLED_HASH}${current.hash}`,
-    });
-    filled += 1;
+    // A change-consumer tick or a rebuild runs beside this worker and may
+    // flag the variant between the read above and this write; only a
+    // variant still up to date and without a hash adopts the baseline.
+    // (A variant translated again carries a hash, so the swap cannot
+    // match a row that went stale and came back.)
+    const adopted = await q.compareAndSwap(
+      "page_variants",
+      row.id,
+      { translation_status: "up_to_date", source_hash: null },
+      { source_hash: `${BACKFILLED_HASH}${current.hash}` },
+    );
+    if (adopted) filled += 1;
   }
   const total = (progress.filled ?? 0) + filled;
   const last = rows.at(-1)?.id;

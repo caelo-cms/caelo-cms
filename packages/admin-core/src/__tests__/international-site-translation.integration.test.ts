@@ -48,16 +48,32 @@ const SYS_CTX: ExecutionContext = {
  */
 class FaultInjectingRegistry extends OperationRegistry {
   failing: string | null = null;
+  /** Runs before every call of `before.op` — a concurrent writer's change. */
+  before: { readonly op: string; readonly run: () => Promise<void> } | null = null;
 
   override lookup(name: string): ReturnType<OperationRegistry["lookup"]> {
     const found = super.lookup(name);
-    if (!found.ok || name !== this.failing) return found;
-    return ok({
-      ...found.value,
-      handler: async () => {
-        throw new Error(`injected failure of ${name}`);
-      },
-    });
+    if (!found.ok) return found;
+    if (name === this.failing) {
+      return ok({
+        ...found.value,
+        handler: async () => {
+          throw new Error(`injected failure of ${name}`);
+        },
+      });
+    }
+    const before = this.before;
+    if (before && name === before.op) {
+      const handler = found.value.handler;
+      return ok({
+        ...found.value,
+        handler: async (...args: Parameters<typeof handler>) => {
+          await before.run();
+          return handler(...args);
+        },
+      });
+    }
+    return found;
   }
 }
 
@@ -935,6 +951,55 @@ describe("#397 — context-aware translation", () => {
     // The next tick, with the fault gone, finishes it.
     await runBackfill();
     expect(await hashOf()).toMatch(/^backfill:sha256:/);
+  }, 60_000);
+
+  it("#1287 — a variant flagged while the backfill reads its source keeps no baseline", async () => {
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const sourceId = await seedSourcePage("-bfr");
+    const de = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-bfr-preise",
+    });
+    await drainChangeConsumers({ adapter, registry });
+    const rowOf = async () =>
+      (
+        await sqlAsPlugin(
+          async (tx) =>
+            (await tx.unsafe(
+              `SELECT translation_status, source_hash FROM plugin_international_site.page_variants WHERE page_id = '${de.pageId}'`,
+            )) as { translation_status: string; source_hash: string | null }[],
+        )
+      )[0];
+    const flag = `UPDATE plugin_international_site.page_variants SET translation_status = 'needs_update'
+                   WHERE page_id = '${de.pageId}'`;
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `UPDATE plugin_international_site.page_variants SET source_hash = NULL, translation_status = 'up_to_date'
+          WHERE page_id = '${de.pageId}'`,
+      );
+      await tx.unsafe(
+        "DELETE FROM plugin_international_site.settings WHERE key IN ('source_hash_backfill', 'source_hash_backfill_progress')",
+      );
+    });
+    // A consumer tick flags the variant while the step reads its source.
+    registry.before = {
+      op: "page_module_content.list_for_page",
+      run: async () => {
+        await sqlAsPlugin(async (tx) => tx.unsafe(flag));
+      },
+    };
+    try {
+      await runBackfill();
+    } finally {
+      registry.before = null;
+    }
+    expect(await rowOf()).toEqual({ translation_status: "needs_update", source_hash: null });
   }, 60_000);
 
   it("#1287 — the backfill pages past one batch, tick by tick", async () => {
