@@ -37,6 +37,12 @@ import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {
+  indexLeadColumns,
+  listAccessOf,
+  listIndexRefusal,
+  readsByColumn,
+} from "./index-coverage.js";
+import {
   type ListPlan,
   type PluginRowLocker,
   privateCompareAndSwap,
@@ -159,7 +165,7 @@ function undefinedValueProblem(
 }
 
 /** Parse a `list` filter once; the private zone applies it as SQL and to overlay rows. */
-function parseListFilter(
+export function parseListFilter(
   op: string,
   columns: Readonly<Record<string, string>>,
   filter: Readonly<Record<string, unknown>>,
@@ -247,6 +253,47 @@ function parseAnyOf(
   return null;
 }
 
+/**
+ * The statement a public-zone `list` runs. Exported so the index tests
+ * EXPLAIN exactly what runs (#1292).
+ */
+export function publicListSql(
+  t: {
+    readonly schema: string;
+    readonly table: string;
+    readonly columns: Readonly<Record<string, string>>;
+  },
+  plan: ListPlan,
+) {
+  const wheres: ReturnType<typeof sql>[] = [];
+  if (plan.since !== null) wheres.push(sql`"created_at" > ${plan.since}`);
+  if (plan.before !== null) wheres.push(sql`"created_at" < ${plan.before}`);
+  if (plan.afterId !== null) wheres.push(sql`"id" > ${plan.afterId}::uuid`);
+  for (const [k, v] of plan.equals) {
+    wheres.push(
+      v === null
+        ? sql`${sql.raw(`"${k}"`)} IS NULL`
+        : sql`${sql.raw(`"${k}"`)} = ${valueSql(t.columns, k, v)}`,
+    );
+  }
+  for (const [k, values] of plan.anyOf) {
+    wheres.push(
+      values.length === 0
+        ? sql`FALSE`
+        : // caelo:bounded-list parseAnyOf caps one column at ANY_OF_MAX (1000) values, and they bind typed (string | number | boolean)
+          sql`${sql.raw(`"${k}"`)} IN (${sql.join(
+            values.map((v) => sql`${v}`),
+            sql`, `,
+          )})`,
+    );
+  }
+  const whereSql = wheres.length === 0 ? sql.raw("") : sql`WHERE ${sql.join(wheres, sql` AND `)}`;
+  const orderSql = plan.orderBy
+    ? sql.raw(`ORDER BY "${plan.orderBy}" ${plan.orderDir.toUpperCase()}`)
+    : sql.raw("");
+  return sql`SELECT * FROM ${sql.raw(`"${t.schema}"."${t.table}"`)} ${whereSql} ${orderSql} ${sql.raw(`LIMIT ${plan.limit}`)}`;
+}
+
 function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
   const family = zone === "private" ? "plugin_storage" : "plugin_public_storage";
   const database = zone === "private" ? "cms_admin" : "cms_public";
@@ -321,37 +368,23 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       }
       const plan = parseListFilter(op, input.columns, input.filter ?? {});
       if (typeof plan === "string") return fail(op, plan);
+      // #1292 — no read that an index cannot drive (index-coverage.ts).
+      const access = listAccessOf(plan);
+      if (readsByColumn(access)) {
+        const unindexed = listIndexRefusal({
+          label: op,
+          zone: zone === "private" ? "adminSchema" : "schema",
+          table: input.table,
+          leads: await indexLeadColumns(tx, input.schema, input.table),
+          access,
+        });
+        if (unindexed) return fail(op, unindexed);
+      }
       if (zone === "private") return ok({ rows: await privateList(tx, ctx, input, plan) });
-      const wheres: ReturnType<typeof sql>[] = [];
-      if (plan.since !== null) wheres.push(sql`"created_at" > ${plan.since}`);
-      if (plan.before !== null) wheres.push(sql`"created_at" < ${plan.before}`);
-      if (plan.afterId !== null) wheres.push(sql`"id" > ${plan.afterId}::uuid`);
-      for (const [k, v] of plan.equals) {
-        wheres.push(
-          v === null
-            ? sql`${sql.raw(`"${k}"`)} IS NULL`
-            : sql`${sql.raw(`"${k}"`)} = ${valueSql(input.columns, k, v)}`,
-        );
-      }
-      for (const [k, values] of plan.anyOf) {
-        wheres.push(
-          values.length === 0
-            ? sql`FALSE`
-            : // caelo:bounded-list parseAnyOf caps one column at ANY_OF_MAX (1000) values, and they bind typed (string | number | boolean)
-              sql`${sql.raw(`"${k}"`)} IN (${sql.join(
-                values.map((v) => sql`${v}`),
-                sql`, `,
-              )})`,
-        );
-      }
-      const whereSql =
-        wheres.length === 0 ? sql.raw("") : sql`WHERE ${sql.join(wheres, sql` AND `)}`;
-      const orderSql = plan.orderBy
-        ? sql.raw(`ORDER BY "${plan.orderBy}" ${plan.orderDir.toUpperCase()}`)
-        : sql.raw("");
-      const rows = (await tx.execute(
-        sql`SELECT * FROM ${table(input.schema, input.table)} ${whereSql} ${orderSql} ${sql.raw(`LIMIT ${plan.limit}`)}`,
-      )) as unknown as Record<string, unknown>[];
+      const rows = (await tx.execute(publicListSql(input, plan))) as unknown as Record<
+        string,
+        unknown
+      >[];
       return ok({ rows });
     },
   });

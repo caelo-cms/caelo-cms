@@ -382,6 +382,21 @@ export default definePlugin<PluginContextTier1>({
     },
   },
 
+  /**
+   * #1292 — the consent log is paged and swept by time; guards are read
+   * by module (a `ref:` column, indexed by the host), by verdict and
+   * category, and paged by creation time; tags by name and category.
+   */
+  indexes: {
+    schema: { consent_log: [["created_at"]] },
+    adminSchema: {
+      settings: [["created_at"]],
+      categories: [["position"], ["created_at"]],
+      module_guards: [["status", "category_key"], ["created_at"]],
+      tags: [["name"], ["category_key", "enabled"]],
+    },
+  },
+
   /** Only the record itself. Everything else is the Owner's. */
   publicOperations: ["record_consent"],
 

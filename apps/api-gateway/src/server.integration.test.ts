@@ -108,6 +108,7 @@ async function provisionSchema(): Promise<void> {
     schema: {
       notes: { id: "uuid", visitor_id: "string", message: "string", created_at: "timestamp" },
     },
+    indexes: undefined,
   });
   await adapter.provisionPluginPublicSchema({ pluginId: id, sql: emitted.sql });
 }

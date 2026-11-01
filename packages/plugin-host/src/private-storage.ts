@@ -423,25 +423,22 @@ function declaredRowJson(columns: Readonly<Record<string, string>>) {
   return sql.join(chunks, sql` || `);
 }
 
-export async function privateList(
-  tx: TransactionRunner,
-  ctx: ExecutionContext,
+/**
+ * The main-line statement of a private-zone `list`: live rows not on a
+ * branch, minus the rows the caller's branch overlays (`excludedIds`).
+ * Its first two conditions are the predicate of every declared index of
+ * the zone (`PRIVATE_LIVE_ROW_PREDICATE`, plugin-sandbox), so the planner
+ * can use them. Exported so the index tests EXPLAIN exactly what runs.
+ */
+export function privateListSql(
   t: Target & { readonly columns: Readonly<Record<string, string>> },
   plan: ListPlan,
-): Promise<Record<string, unknown>[]> {
-  const overlay =
-    ctx.chatBranchId && ctx.pluginId
-      ? await loadBranchRowStates(tx, {
-          pluginId: ctx.pluginId,
-          table: t.table,
-          chatBranchId: ctx.chatBranchId,
-        })
-      : new Map<string, PluginRowState>();
-
+  excludedIds: readonly string[],
+) {
   const wheres = [sql`t."caelo_deleted_at" IS NULL`, sql`t."caelo_chat_branch_id" IS NULL`];
   // Rows the branch touched come from the overlay instead.
-  if (overlay.size > 0) {
-    wheres.push(sql`t.id <> ALL(${uuidArray([...overlay.keys()])})`);
+  if (excludedIds.length > 0) {
+    wheres.push(sql`t.id <> ALL(${uuidArray([...excludedIds])})`);
   }
   if (plan.since !== null) wheres.push(sql`t."created_at" > ${plan.since}`);
   if (plan.before !== null) wheres.push(sql`t."created_at" < ${plan.before}`);
@@ -463,10 +460,30 @@ export async function privateList(
   const orderSql = plan.orderBy
     ? sql.raw(`ORDER BY t."${plan.orderBy}" ${plan.orderDir.toUpperCase()}`)
     : sql.raw("");
-  const rows = (await tx.execute(sql`
+  return sql`
     SELECT ${declaredRowJson(t.columns)} AS row FROM ${table(t)} t
     WHERE ${sql.join(wheres, sql` AND `)} ${orderSql} ${sql.raw(`LIMIT ${plan.limit}`)}
-  `)) as unknown as { row: Record<string, unknown> }[];
+  `;
+}
+
+export async function privateList(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  t: Target & { readonly columns: Readonly<Record<string, string>> },
+  plan: ListPlan,
+): Promise<Record<string, unknown>[]> {
+  const overlay =
+    ctx.chatBranchId && ctx.pluginId
+      ? await loadBranchRowStates(tx, {
+          pluginId: ctx.pluginId,
+          table: t.table,
+          chatBranchId: ctx.chatBranchId,
+        })
+      : new Map<string, PluginRowState>();
+
+  const rows = (await tx.execute(privateListSql(t, plan, [...overlay.keys()]))) as unknown as {
+    row: Record<string, unknown>;
+  }[];
   const main = rows.map((r) => rowToState(r.row).values);
   if (overlay.size === 0) return main;
 

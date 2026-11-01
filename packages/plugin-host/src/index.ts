@@ -127,6 +127,12 @@ export {
   reserveImageRequest,
 } from "./image-ledger.js";
 export {
+  indexLeadColumns,
+  type ListIndexAccess,
+  listAccessOf,
+  listIndexRefusal,
+} from "./index-coverage.js";
+export {
   applyPluginLifecycle,
   deregisterPlugin,
   type PluginLifecycleAction,
@@ -186,7 +192,7 @@ export {
   requiredPluginsOf,
   requirementsMessage,
 } from "./plugin-dependencies.js";
-export type { PluginRowLocker } from "./private-storage.js";
+export { type ListPlan, type PluginRowLocker, privateListSql } from "./private-storage.js";
 export {
   type PromptContextRenderer,
   pluginPromptContextRegistry,
@@ -227,6 +233,12 @@ export {
   pluginWorkerScheduler,
   type ScheduledWorker,
 } from "./scheduler.js";
+export {
+  parseListFilter,
+  publicListSql,
+  registerPluginStorageOps,
+  STORAGE_OPS,
+} from "./storage-ops.js";
 export { recordExternalToolApproval } from "./tool-approval-binding.js";
 export {
   pluginToolsRegistry,

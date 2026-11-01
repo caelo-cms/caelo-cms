@@ -318,6 +318,7 @@ describe("plugins.activate", () => {
       pluginId,
       slug: HELLO_SLUG,
       schema: helloManifest.schema,
+      indexes: undefined,
     });
     await adapter.provisionPluginPublicSchema({ pluginId, sql: emitted.sql });
 

@@ -25,7 +25,15 @@
  *
  */
 
-import type { PluginSchemaMap } from "@caelo-cms/plugin-sdk";
+import { createHash } from "node:crypto";
+import {
+  automaticIndexColumns,
+  type NormalizedPluginIndex,
+  normalizePluginIndexes,
+  type PluginIndexMap,
+  type PluginSchemaMap,
+  type PluginStorageZone,
+} from "@caelo-cms/plugin-sdk";
 
 export interface EmittedSchema {
   /** The cms_public sub-schema name (e.g. "plugin_comments"). */
@@ -46,8 +54,15 @@ export function schemaFromSpec(opts: {
   pluginId: string;
   slug: string;
   schema: PluginSchemaMap;
+  /**
+   * #1292 — the manifest's `indexes.schema`. Required (pass `undefined`
+   * for none): the emitter drops every host index a table no longer
+   * declares, so a caller that forgot it would drop the plugin's indexes.
+   */
+  indexes: PluginIndexMap | undefined;
 }): EmittedSchema {
   assertValidPluginId(opts.pluginId, "schemaFromSpec");
+  assertIndexedTablesDeclared(opts.indexes, opts.schema, "schema");
   const schemaName = `plugin_${opts.slug.replace(/-/g, "_")}`;
   const stmts: string[] = [];
 
@@ -61,6 +76,9 @@ export function schemaFromSpec(opts: {
 
   for (const [tableName, columns] of Object.entries(opts.schema)) {
     stmts.push(emitCreateTable(schemaName, tableName, columns, opts.pluginId));
+    stmts.push(
+      emitIndexes(schemaName, tableName, columns, "schema", opts.indexes?.[tableName] ?? []),
+    );
   }
 
   return { schemaName, sql: stmts.join("\n\n") };
@@ -147,6 +165,157 @@ function dropUndeclaredColumns(schemaName: string, tableName: string, declared: 
     "END",
     "$caelo_drop$;",
   ].join("\n");
+}
+
+/** Every index the host creates on a plugin table starts with this. */
+export const PLUGIN_INDEX_PREFIX = "caelo_ix_";
+
+/**
+ * The predicate of a private-storage index on declared columns: exactly
+ * the main-line filter every host read of that zone carries (`privateList`
+ * and the reads beside it), so the planner can use the index for them and
+ * branch rows and tombstones never bloat it.
+ */
+export const PRIVATE_LIVE_ROW_PREDICATE =
+  `"caelo_chat_branch_id" IS NULL AND "caelo_deleted_at" IS NULL` as const;
+
+interface EmittedIndex {
+  readonly name: string;
+  readonly sql: string;
+}
+
+/**
+ * #1292 — a deterministic, length-safe index name. Readable part first
+ * (table + columns, cut to fit), then 8 hex of a hash over the whole
+ * definition (columns, uniqueness, predicate, method), so an index whose
+ * definition changes gets a new name — the old one is dropped and the
+ * new one built — and two long definitions never truncate into one name.
+ */
+export function pluginIndexName(
+  table: string,
+  columns: readonly string[],
+  unique: boolean,
+  predicate: string,
+  method: "btree" | "hash" = "btree",
+): string {
+  // `method` enters the hash only when it is not the default btree, so a
+  // btree index keeps the name it had before hash indexes existed.
+  const definition =
+    method === "btree"
+      ? { table, columns, unique, predicate }
+      : { table, columns, unique, predicate, method };
+  const digest = createHash("sha256").update(JSON.stringify(definition)).digest("hex").slice(0, 8);
+  const room = 63 - PLUGIN_INDEX_PREFIX.length - digest.length - 1;
+  const readable = `${table}_${columns.join("_")}`.slice(0, room).replace(/_+$/, "");
+  return `${PLUGIN_INDEX_PREFIX}${readable}_${digest}`;
+}
+
+/** Every table `indexes` names must be one the zone declares. */
+function assertIndexedTablesDeclared(
+  indexes: PluginIndexMap | undefined,
+  tables: PluginSchemaMap,
+  zone: PluginStorageZone,
+): void {
+  for (const table of Object.keys(indexes ?? {})) {
+    if (!(table in tables)) {
+      throw new Error(
+        `plugin schema: indexes.${zone} names table "${table}", which ${zone} does not declare`,
+      );
+    }
+  }
+}
+
+/**
+ * #1292 — the indexes of one plugin table: the declared ones and, in
+ * private storage, the automatic ones (each `ref:` column, which a core
+ * delete cascades by; the host's branch column, which a chat's publish
+ * and discard select by). Then every `caelo_ix_` index of the table that
+ * is not in this set is dropped — a new version that stops declaring an
+ * index loses it, like #1146 drops undeclared columns.
+ *
+ * The manifest validator already refused bad declarations
+ * (`checkPluginIndexes`); the checks here keep the DDL safe on their own.
+ */
+function emitIndexes(
+  schemaName: string,
+  tableName: string,
+  columns: Readonly<Record<string, string>>,
+  zone: PluginStorageZone,
+  specs: Parameters<typeof normalizePluginIndexes>[0],
+): string {
+  const fqTable = `${quoteIdent(schemaName)}.${quoteIdent(tableName)}`;
+  const out: EmittedIndex[] = [];
+  const add = (
+    cols: readonly string[],
+    unique: boolean,
+    predicate: string,
+    method: "btree" | "hash" = "btree",
+  ) => {
+    const name = pluginIndexName(tableName, cols, unique, predicate, method);
+    const where = predicate === "" ? "" : ` WHERE ${predicate}`;
+    const using = method === "hash" ? " USING hash" : "";
+    out.push({
+      name,
+      sql: `CREATE ${unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS ${quoteIdent(name)} ON ${fqTable}${using} (${cols.map(quoteIdent).join(", ")})${where};`,
+    });
+  };
+  for (const index of normalizePluginIndexes(specs)) {
+    assertIndexable(zone, tableName, columns, index);
+    add(
+      index.columns,
+      index.unique,
+      zone === "adminSchema" ? PRIVATE_LIVE_ROW_PREDICATE : "",
+      index.method,
+    );
+  }
+  if (zone === "adminSchema") {
+    for (const ref of automaticIndexColumns(zone, columns)) add([ref], false, "");
+    add(["caelo_chat_branch_id"], false, `"caelo_chat_branch_id" IS NOT NULL`);
+  }
+  const keep = out.map((ix) => `'${ix.name}'`);
+  return [
+    ...out.map((ix) => ix.sql),
+    "DO $caelo_indexes$",
+    "DECLARE",
+    "  ix text;",
+    "BEGIN",
+    "  FOR ix IN",
+    "    SELECT indexname FROM pg_indexes",
+    `     WHERE schemaname = '${schemaName}' AND tablename = '${tableName}'`,
+    // starts_with, not LIKE: "_" is a LIKE wildcard in the prefix.
+    `       AND starts_with(indexname, '${PLUGIN_INDEX_PREFIX}')`,
+    `       AND indexname <> ALL (ARRAY[${keep.join(", ")}]::text[])`,
+    "  LOOP",
+    `    EXECUTE format('DROP INDEX %I.%I', '${schemaName}', ix);`,
+    "  END LOOP;",
+    "END",
+    "$caelo_indexes$;",
+  ].join("\n");
+}
+
+function assertIndexable(
+  zone: PluginStorageZone,
+  table: string,
+  columns: Readonly<Record<string, string>>,
+  index: NormalizedPluginIndex,
+): void {
+  for (const c of index.columns) {
+    if (c.startsWith("caelo_") || (c !== "id" && !(c in columns)) || columns[c] === "jsonb") {
+      throw new Error(
+        `plugin schema: indexes.${zone}.${table} cannot index "${c}" — only declared, non-jsonb columns (and id after one of them)`,
+      );
+    }
+  }
+  if (index.method === "hash" && (index.columns.length !== 1 || index.unique)) {
+    throw new Error(
+      `plugin schema: indexes.${zone}.${table}: a hash index is one column and not unique`,
+    );
+  }
+  if (index.unique && zone === "adminSchema") {
+    throw new Error(
+      `plugin schema: indexes.adminSchema.${table}: unique indexes are cms_public only`,
+    );
+  }
 }
 
 function emitColumnDef(name: string, spec: string): string {
@@ -297,8 +466,11 @@ export function adminSchemaFromSpec(opts: {
    * an op, a branch publish, a revert. Tables not named lose the trigger.
    */
   projectedTables?: ReadonlyArray<string>;
+  /** #1292 — the manifest's `indexes.adminSchema`; see {@link schemaFromSpec}. */
+  indexes: PluginIndexMap | undefined;
 }): EmittedSchema {
   assertValidPluginId(opts.pluginId, "adminSchemaFromSpec");
+  assertIndexedTablesDeclared(opts.indexes, opts.adminSchema, "adminSchema");
   const schemaName = `plugin_${opts.slug.replace(/-/g, "_")}`;
   const stmts: string[] = [];
 
@@ -348,6 +520,7 @@ export function adminSchemaFromSpec(opts: {
         `  USING (current_setting('caelo.plugin_id', true) = '${opts.pluginId}')`,
         `  WITH CHECK (current_setting('caelo.plugin_id', true) = '${opts.pluginId}');`,
         grantStatement("cms_admin", "SELECT, INSERT, UPDATE, DELETE", fqTable, "admin_role"),
+        emitIndexes(schemaName, tableName, columns, "adminSchema", opts.indexes?.[tableName] ?? []),
       ].join("\n"),
     );
   }

@@ -363,6 +363,8 @@ describe("plugin storage through named operations (§14.7, step 2)", () => {
             tier: 1,
             schema: {},
             adminSchema: { settings: { label: "string" } },
+            // #1292 — `list_any` reads by label.
+            indexes: { adminSchema: { settings: [["label"]] } },
             requestedCapabilities: ["cms_admin_schema"],
             operations: {
               add: async (ctx, args) =>

@@ -73,7 +73,7 @@ afterAll(async () => {
 
 describe("#1008 — concurrent plugin schema provisioning", () => {
   it("cms_public: every instance succeeds and one schema results", async () => {
-    const emitted = schemaFromSpec({ pluginId: PLUGIN_ID, slug: SLUG, schema });
+    const emitted = schemaFromSpec({ pluginId: PLUGIN_ID, slug: SLUG, schema, indexes: undefined });
     const results = await Promise.allSettled(
       adapters.map((a) => a.provisionPluginPublicSchema({ pluginId: PLUGIN_ID, sql: emitted.sql })),
     );
@@ -82,7 +82,12 @@ describe("#1008 — concurrent plugin schema provisioning", () => {
   });
 
   it("cms_admin: every instance succeeds and one schema results", async () => {
-    const emitted = adminSchemaFromSpec({ pluginId: PLUGIN_ID, slug: SLUG, adminSchema: schema });
+    const emitted = adminSchemaFromSpec({
+      pluginId: PLUGIN_ID,
+      slug: SLUG,
+      adminSchema: schema,
+      indexes: undefined,
+    });
     const results = await Promise.allSettled(
       adapters.map((a) => a.provisionPluginAdminSchema({ pluginId: PLUGIN_ID, sql: emitted.sql })),
     );
@@ -91,7 +96,7 @@ describe("#1008 — concurrent plugin schema provisioning", () => {
   });
 
   it("re-provisioning the same SQL skips the DDL (no ACCESS EXCLUSIVE on a live table)", async () => {
-    const emitted = schemaFromSpec({ pluginId: PLUGIN_ID, slug: SLUG, schema });
+    const emitted = schemaFromSpec({ pluginId: PLUGIN_ID, slug: SLUG, schema, indexes: undefined });
     const first = adapters[0];
     if (!first) throw new Error("no adapter");
     // A concurrent reader holding a row lock-free SELECT open would block
@@ -121,6 +126,7 @@ describe("#1008 — concurrent plugin schema provisioning", () => {
       pluginId: PLUGIN_ID,
       slug: SLUG,
       schema: { ...schema, style_guides: { body: "text" } },
+      indexes: undefined,
     });
     const first = adapters[0];
     if (!first) throw new Error("no adapter");
@@ -129,7 +135,7 @@ describe("#1008 — concurrent plugin schema provisioning", () => {
   });
 
   it("a dropped schema is re-created even when its digest was recorded", async () => {
-    const emitted = schemaFromSpec({ pluginId: PLUGIN_ID, slug: SLUG, schema });
+    const emitted = schemaFromSpec({ pluginId: PLUGIN_ID, slug: SLUG, schema, indexes: undefined });
     const first = adapters[0];
     if (!first) throw new Error("no adapter");
     await first.provisionPluginPublicSchema({ pluginId: PLUGIN_ID, sql: emitted.sql });

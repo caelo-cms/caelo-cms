@@ -195,6 +195,8 @@ export default definePlugin<PluginContextTier1>({
       last_approved_at: "timestamp",
     },
   },
+  /** #1292 — the moderation queue reads by status, newest first. */
+  indexes: { schema: { comments: [["status", "submitted_at"]] } },
   requestedCapabilities: ["ai_provider", "chat_runner_tools", "cms_admin"],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */

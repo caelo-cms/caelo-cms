@@ -70,6 +70,8 @@ const plugin = definePlugin({
   tier: 1,
   schema: {},
   adminSchema: { notes: { label: "string" } },
+  // #1292 — the reads below order and filter by label.
+  indexes: { adminSchema: { notes: [["label"]] } },
   requestedCapabilities: ["cms_admin_schema", "cms_admin", "list_sources"],
   listSources: [
     {
