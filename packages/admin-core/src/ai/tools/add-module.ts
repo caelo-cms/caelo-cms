@@ -34,6 +34,7 @@ import {
   type ExecutionContext,
   type ModuleField,
 } from "@caelo-cms/shared";
+import { PLACE_MODULE_MAX_PAGES } from "../../ops/content/place-module.js";
 import { blockNotFoundError } from "./_block-name-enum.js";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
@@ -507,6 +508,12 @@ async function placeOnTemplate(
         reason:
           "verify templateId points at the intended template; add_module target='page' can attach the module to a specific page instead",
       },
+    };
+  }
+  if (targetPages.length > PLACE_MODULE_MAX_PAGES) {
+    return {
+      ok: false,
+      content: `this template has ${targetPages.length} pages; add_module places on at most ${PLACE_MODULE_MAX_PAGES} in one transaction, so nothing was written. Chrome that belongs on every page goes on the layout (target='layout', one placement every page renders); otherwise place it per page (target='page').`,
     };
   }
   // Every page of the template has the template's blocks: one read tells

@@ -215,6 +215,37 @@ describe("#1246 — add_module is all-or-nothing", () => {
     expect(instanceIds.size).toBe(2);
   });
 
+  it("layout: a placement that fails after the mint leaves no module behind", async () => {
+    const slug = `i1246-layout-${TS}`;
+    const { layoutId } = await op<{ layoutId: string }>("layouts.create", {
+      slug,
+      displayName: "I1246 L",
+      html: '<body><caelo-slot name="content">_</caelo-slot><caelo-slot name="footer">_</caelo-slot></body>',
+      blocks: [
+        { name: "content", displayName: "Content", position: 0 },
+        { name: "footer", displayName: "Footer", position: 1 },
+      ],
+    });
+    const name = `I1246 Chrome ${TS}`;
+    // The block check is layout_modules.set's, after modules.create ran.
+    const r = await execute(registry, adapter, SYSTEM, "pages.place_module", {
+      target: { kind: "layout", layoutId },
+      blockName: "sidebar",
+      position: "bottom",
+      module: {
+        create: { slug: `i1246-chrome-${TS}`, displayName: name, html: "<footer>(c)</footer>" },
+      },
+    });
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r.ok ? null : r.error)).toContain('block \\"sidebar\\" not on layout');
+    expect(await moduleNames()).not.toContain(name);
+    const footer = await op<{ moduleIds: string[] }>("layout_modules.get", {
+      layoutId,
+      blockName: "footer",
+    });
+    expect(footer.moduleIds).toEqual([]);
+  });
+
   it("chat branch: inserting at the top keeps the existing placement's content; a bad call changes nothing", async () => {
     const pageId = await newPage("i1246-branch");
     const first = await addModuleTool.handler(

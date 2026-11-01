@@ -16,6 +16,7 @@ import { describe, expect, it } from "bun:test";
 import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
+import { PLACE_MODULE_MAX_PAGES } from "../../ops/content/place-module.js";
 import { registerAdminOps } from "../../register.js";
 import { addModuleTool } from "../tools/add-module.js";
 import type { ToolContext } from "../tools/dispatch.js";
@@ -131,6 +132,41 @@ describe("add_module (target='template') place mode (issue #243)", () => {
     expect(calls.filter((c) => c === "pages.place_module")).toHaveLength(1);
     expect(inputs[0]?.target).toEqual({ kind: "pages", pageIds: [PAGE_A, PAGE_B] });
     expect(calls).not.toContain("modules.create");
+  });
+
+  it("refuses a fan-out above the one-transaction cap with what to do instead", async () => {
+    const calls: string[] = [];
+    const base = toolCtxWith(calls);
+    const many = Array.from({ length: PLACE_MODULE_MAX_PAGES + 1 }, (_, i) => ({
+      id: `11111111-1111-4111-8111-${String(i).padStart(12, "0")}`,
+      slug: `p${i}`,
+      templateId: TEMPLATE_ID,
+    }));
+    const adapter = {
+      runOperation: async (op: { name: string }, c: unknown, input: Record<string, unknown>) =>
+        op.name === "pages.list"
+          ? ok({ pages: many })
+          : (base.adapter as unknown as { runOperation: typeof adapter.runOperation }).runOperation(
+              op,
+              c,
+              input,
+            ),
+    };
+    const res = await addModuleTool.handler(
+      AI,
+      {
+        target: "template",
+        targetRef: TEMPLATE_ID,
+        blockName: "content",
+        position: "bottom",
+        moduleId: SHARED.id,
+      },
+      { adapter, registry } as unknown as ToolContext,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.content).toContain("nothing was written");
+    expect(res.content).toContain("target='layout'");
+    expect(calls).not.toContain("pages.place_module");
   });
 
   it("mint mode creates the module inside the placement op (no separate modules.create)", async () => {

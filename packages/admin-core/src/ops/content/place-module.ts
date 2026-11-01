@@ -40,6 +40,12 @@ import { setPageModulesOp } from "./pages.js";
 const OP = "pages.place_module";
 
 /** `top` / `bottom` / a 0-based index (clamped to the block's length). */
+/**
+ * Most pages one call places on, in one transaction. A template fan-out
+ * beyond it is refused by `add_module` with what to do instead.
+ */
+export const PLACE_MODULE_MAX_PAGES = 5000;
+
 const positionSchema = z.union([z.enum(["top", "bottom"]), z.number().int().min(0).max(1000)]);
 
 export const placeModuleInputSchema = z
@@ -49,7 +55,7 @@ export const placeModuleInputSchema = z
       z
         .object({
           kind: z.literal("pages"),
-          pageIds: z.array(z.string().uuid()).min(1).max(5000),
+          pageIds: z.array(z.string().uuid()).min(1).max(PLACE_MODULE_MAX_PAGES),
         })
         .strict(),
       z.object({ kind: z.literal("layout"), layoutId: z.string().uuid() }).strict(),
@@ -159,13 +165,20 @@ export const placeModuleOp = defineOperation({
       // The caller's branch view, so a chat's own pending placements stay.
       // Every surviving placement is named by its content instance (#1195),
       // so no placement trades content with another while the block shifts.
+      // A block without placement metadata (a pre-v0.12 layout snapshot)
+      // names none and leaves the binding to pages.set_modules' own
+      // per-(block, module) carry-over, exactly as a direct call would.
       const prior = await loadPageLayoutStateWithBranchOverlay(tx, pageId, branchId);
-      const blocks = prior.blocks.map((b) => ({
+      const blocks: {
+        blockName: string;
+        moduleIds: string[];
+        contentInstanceIds?: (string | null)[];
+      }[] = prior.blocks.map((b) => ({
         blockName: b.blockName,
         moduleIds: [...b.moduleIds],
-        contentInstanceIds: b.moduleIds.map(
-          (_, i) => b.placements?.[i]?.contentInstanceId ?? null,
-        ) as (string | null)[],
+        ...(b.placements !== undefined && b.placements.length === b.moduleIds.length
+          ? { contentInstanceIds: b.placements.map((p) => p.contentInstanceId) }
+          : {}),
       }));
       let target = blocks.find((b) => b.blockName === input.blockName);
       if (!target) {
@@ -174,7 +187,9 @@ export const placeModuleOp = defineOperation({
       }
       const spliced = spliceAt(target.moduleIds, moduleId, input.position);
       target.moduleIds = spliced.items;
-      target.contentInstanceIds = spliceAt(target.contentInstanceIds, null, input.position).items;
+      if (target.contentInstanceIds !== undefined) {
+        target.contentInstanceIds = spliceAt(target.contentInstanceIds, null, input.position).items;
+      }
       orAbort(await setPageModulesOp.handler(ctx, { pageId, blocks }, tx));
 
       // The instance pages.set_modules minted for the new placement.
