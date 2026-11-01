@@ -240,6 +240,15 @@ export default definePlugin<PluginContextTier1>({
       created_at: "timestamp",
     },
   },
+  /** #1292 — what the visitor path and the sweeps read by. */
+  indexes: {
+    schema: {
+      public_users: [["email"]],
+      visitor_sessions: [["token_hash"], ["public_user_id"], ["expires_at"]],
+      password_reset_tokens: [["token_hash"], ["expires_at"]],
+      auth_config_proposals: [["status", "created_at"]],
+    },
+  },
   requestedCapabilities: ["chat_runner_tools", "email", "background_workers"],
   /** Seed the auth_config singleton with the documented defaults (signup
    *  open, 8-char minimum). Idempotent; read paths never seed. */
@@ -258,7 +267,11 @@ export default definePlugin<PluginContextTier1>({
   operations: {
     signup: async (ctx, args) => {
       const input = args as SignupInput;
-      if (!input.email.includes("@")) throw new Error("signup: invalid email");
+      // 254 is the longest address SMTP can deliver; the bound also keeps
+      // the value inside one btree entry of the email index (#1292).
+      if (!input.email.includes("@") || input.email.length > 254) {
+        throw new Error("signup: invalid email");
+      }
       const cfg = await readAuthConfig(ctx.query, "signup");
       if (!cfg.signup_open) {
         throw new Error("signup: registration is closed");

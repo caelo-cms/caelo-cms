@@ -1,0 +1,69 @@
+# Plugin table indexes (#1292)
+
+A plugin's tables (`schema` in cms_public, `adminSchema` in cms_admin) get a primary key from the host and only the indexes the manifest asks for. Every read a plugin makes goes through `ctx.query.list` / `ctx.adminQuery.list` (the `plugin_storage.*` / `plugin_public_storage.*` operations), and the host refuses a read no index can drive, so no plugin read turns into a full table scan as the site grows (#1003: 50k pages × languages; the visitor path takes untrusted traffic, where a scan per request is a DoS amplifier, #635).
+
+## Declaring indexes
+
+```ts
+export default definePlugin({
+  slug: "reviews",
+  version: "1.1.0",
+  tier: 2,
+  schema: {
+    reviews: { page_id: "uuid", status: "enum:pending,approved", stars: "int", created_at: "timestamp" },
+  },
+  indexes: {
+    schema: {
+      // list("reviews", { page_id, status: "approved", orderBy: "created_at" })
+      // list("reviews", { status: "pending", orderBy: "created_at", orderDir: "desc" })
+      reviews: [["page_id", "status", "created_at"], ["status", "created_at"]],
+    },
+    // adminSchema: { <table>: [[...]] } for private storage.
+  },
+  operations: { /* ... */ },
+});
+```
+
+- `indexes.schema` indexes `schema` tables, `indexes.adminSchema` indexes `adminSchema` tables.
+- An index is a column list (`["status", "created_at"]`) or `{ columns, unique: true }`. At most 4 columns per index and 16 indexes per table.
+- Columns must be declared on the table. Refused: `caelo_` (host) columns, `jsonb` columns, `id` as the first column (it is the primary key; `["status", "id"]` is fine), a column twice, the same index twice, a single-column index on a `ref:` column (the host builds that one).
+- `unique` exists only in `schema` (cms_public). A private-storage row can change on a chat branch (as a snapshot, not as the row), where no index sees it until publish; check uniqueness in the operation instead.
+- Indexed values go into a btree, which holds at most ~2.7 KB per entry: bound the length of a text column you index.
+
+The validator checks the declaration with the rest of the manifest (`checkPluginIndexes`, `packages/plugin-sdk/src/indexes.ts`); the emitter re-checks before writing DDL.
+
+## Indexes the host builds itself
+
+| Index | Zone | Why |
+|---|---|---|
+| primary key on `id` | both | lookups and `orderBy: "id"` / `afterId` keyset paging |
+| each `ref:` column | private | a core delete cascades by it (`ON DELETE CASCADE`), and reads by it are covered |
+| `caelo_chat_branch_id` (partial, `IS NOT NULL`) | private | a chat's publish and discard select the chat's rows by it |
+
+Declared private-storage indexes are partial on `caelo_chat_branch_id IS NULL AND caelo_deleted_at IS NULL` — exactly the main-line filter every host read of private storage carries (`privateList`, `docs/branch-aware-plugin-storage.md`). A chat's own state comes from `plugin_row_snapshots` (the overlay), so branch reads use the same index for the main-line half.
+
+## Which reads are refused
+
+A `list()` is refused unless an index can drive it:
+
+- **Filtered** (`{ column: value }`, `anyOf`): one of the filter columns must be the first column of a declared or automatic index, or `id`. Ordering by an indexed column does not count — `orderBy: "id"` with an unindexed filter would walk the whole primary key and test every row.
+- **Unfiltered but ordered or ranged** (`orderBy`, `since` / `before`): one of those columns must lead an index. `since` and `before` range over `created_at`, so a table paged by time declares `["created_at"]` (or `[filter column, "created_at"]`). `orderBy: "id"` is always covered.
+- **Only a `limit`**: allowed; it stops after `limit` rows.
+
+Put the filter columns first and the order column last (`["status", "created_at"]`): one index then serves the filter and the order. The refusal names the index to declare:
+
+```
+plugin_public_storage.list: no index covers this read of "reviews" (it filters by page_id). Declare one in the plugin's manifest — indexes: { schema: { reviews: [["page_id","created_at"]] } } — and ship it as a new version. …
+```
+
+`id`-only reads and writes (`update`, `delete`, `compareAndSwap`) go by the primary key and need nothing.
+
+The check reads the table's indexes from the database catalog (`packages/plugin-host/src/index-coverage.ts`), not from the caller: the storage operations are reachable from plugin code (`ctx.cms.call`), so an index list passed in could claim indexes that do not exist. The catalog holds exactly what the emitters built from the manifest. A read with only a `limit` skips the catalog lookup.
+
+## Names, evolution, existing installs
+
+Index names are `caelo_ix_<table>_<columns>_<8 hex>`: the readable part is cut to fit Postgres' 63-byte limit, and the hash covers the whole definition (table, columns, uniqueness, predicate), so names are deterministic, two long definitions never truncate into one name, and a changed definition gets a new name.
+
+Both emitters (`schemaFromSpec` / `adminSchemaFromSpec`, `packages/plugin-sandbox/src/schema.ts`) emit `CREATE INDEX IF NOT EXISTS` for every index of a table and then drop each `caelo_ix_` index of the table they did not emit — like #1146 drops undeclared columns. The emitters run on every load of a plugin — at every admin boot for a release-shipped plugin, on activation and every load for an installed one — and provisioning applies their DDL whenever it differs from the digest recorded for the schema (`plugin_schema_provisions`, `packages/query-api/src/plugin-schema-provision.ts`). So an existing install gets a version's indexes the first time that version loads, and loses the ones it stopped declaring; nothing else has to run, and no migration is involved. The build takes a `SHARE` lock on the table while it runs (it is inside the provisioning transaction, so not `CONCURRENTLY`), which holds the plugin's writes for that time on a large table — once, on the first load of the version.
+
+`indexes` is part of the manifest, so changing it changes the artifact digest: a shipped plugin is re-signed with the release, an installed plugin's new version is a new artifact the Owner approves (CLAUDE.md §2, one plugin model). A version that does not declare what its reads need fails those reads with the message above — in its own tests, before it ships.

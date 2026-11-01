@@ -18,6 +18,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [themes.md](./themes.md) — the theme token document, token roles, the cold-start gate and theme assets.
 - [typography-strategy.md](./typography-strategy.md) — the core font service: immutable font registry, licensing, themes and static builds.
 - [branch-aware-plugin-storage.md](./branch-aware-plugin-storage.md) — how plugin writes land on a chat's branch instead of live (CMS_REQUIREMENTS §14.7).
+- [plugin-indexes.md](./plugin-indexes.md) — plugin table indexes: the manifest's `indexes`, the automatic ones, which reads the host refuses, names and evolution across versions (#1292).
 - [plugin-live-preview.md](./plugin-live-preview.md) — plugin preview documents shown in Live Edit.
 - [plugin-admin-panels.md](./plugin-admin-panels.md) — plugins' admin pages, declared as data and rendered only while the plugin is active.
 - [plugin-editor-toolbar.md](./plugin-editor-toolbar.md) — plugin places in the live editor's top bar (`editorToolbar`), declared as data, read-only on the chat's draft.

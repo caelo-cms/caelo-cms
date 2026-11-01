@@ -169,6 +169,18 @@ export default definePlugin<PluginContextTier1>({
     send_runs: SEND_RUNS_TABLE,
     send_progress: SEND_PROGRESS_TABLE,
   },
+  /** #1292 — the visitor links look subscribers up by hash or token; the worker reads runs oldest first. */
+  indexes: {
+    schema: {
+      subscribers: [["email_hash"], ["confirm_token"], ["unsub_token"]],
+      campaigns: [["created_at"]],
+      sends: [["status", "created_at"]],
+    },
+    adminSchema: {
+      send_runs: [["campaign_id", "created_at"], ["status", "created_at"], ["created_at"]],
+      send_progress: [["created_at"]],
+    },
+  },
   requestedCapabilities: [
     "ai_provider",
     "email",

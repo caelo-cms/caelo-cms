@@ -118,6 +118,17 @@ export default definePlugin<PluginContextTier1>({
       submitted_at: "timestamp",
     },
   },
+  /** #1292 — a submit looks its form up by slug; the inbox reads newest first. */
+  indexes: {
+    schema: {
+      forms: [["slug"]],
+      form_submissions: [
+        ["submitted_at"],
+        ["status", "submitted_at"],
+        ["form_slug", "submitted_at"],
+      ],
+    },
+  },
   requestedCapabilities: ["cms_admin", "ai_provider", "chat_runner_tools", "email"],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */

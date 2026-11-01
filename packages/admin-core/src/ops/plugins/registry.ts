@@ -37,6 +37,7 @@ import {
   schemaFromSpec,
   validatePlugin,
 } from "@caelo-cms/plugin-sandbox";
+import type { PluginIndexes } from "@caelo-cms/plugin-sdk";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -608,7 +609,10 @@ export const preparePluginActivationOp = defineOperation({
         provisionedByLoader: true,
       });
     }
-    const manifest = r.manifest_json as { schema?: Record<string, Record<string, string>> };
+    const manifest = r.manifest_json as {
+      schema?: Record<string, Record<string, string>>;
+      indexes?: PluginIndexes;
+    };
     if (!manifest?.schema || typeof manifest.schema !== "object") {
       return err({
         kind: "HandlerError",
@@ -622,6 +626,7 @@ export const preparePluginActivationOp = defineOperation({
         pluginId: r.id,
         slug: input.slug,
         schema: manifest.schema,
+        indexes: manifest.indexes?.schema,
       });
     } catch (e) {
       return err({

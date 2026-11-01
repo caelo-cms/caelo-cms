@@ -1179,6 +1179,28 @@ export default definePlugin<PluginContextTier1>({
       created_at: "timestamp",
     },
   },
+  /**
+   * #1292 — every table grows with pages × languages (#1003). `page_id`
+   * of page_variants is a `ref:` column, which the host indexes itself;
+   * the staleness passes page `translation_status` / `locale_code` rows
+   * by id; translations are read per language by address, page or term.
+   */
+  indexes: {
+    adminSchema: {
+      page_variants: [
+        ["group_id", "translation_status"],
+        ["translation_status", "id"],
+        ["locale_code", "id"],
+      ],
+      glossary: [["locale_code", "term"]],
+      style_guides: [["locale_code"]],
+      settings: [["key"]],
+      list_value_translations: [["locale_code", "address"]],
+      list_item_visibility: [["locale_code", "address"]],
+      term_translations: [["locale_code", "list_id", "item_id"]],
+      page_prop_translations: [["locale_code", "page_id", "field"]],
+    },
+  },
   requestedCapabilities: [
     "cms_admin",
     "cms_admin_schema",

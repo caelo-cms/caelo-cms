@@ -94,7 +94,12 @@ async function provisionAll(
       },
     );
     if (!id) throw new Error(`provisionAll: no plugin row for ${p.slug}`);
-    const emitted = schemaFromSpec({ pluginId: id, slug: p.slug, schema: p.schema });
+    const emitted = schemaFromSpec({
+      pluginId: id,
+      slug: p.slug,
+      schema: p.schema,
+      indexes: p.indexes?.schema,
+    });
     await adapter.provisionPluginPublicSchema({ pluginId: id, sql: emitted.sql });
   }
 }

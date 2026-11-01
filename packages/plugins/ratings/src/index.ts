@@ -70,6 +70,13 @@ export default definePlugin<PluginContextTier1>({
       updated_at: "timestamp",
     },
   },
+  /** #1292 — a vote finds the visitor's earlier one; the panel lists most-rated first. */
+  indexes: {
+    schema: {
+      ratings: [["visitor_id", "page_id"]],
+      rating_aggregates: [["page_id"], ["count"]],
+    },
+  },
   requestedCapabilities: ["background_workers", "chat_runner_tools"],
   // The visitor id below exists only with the visitor's consent, and only
   // a consent provider can ask for it.
