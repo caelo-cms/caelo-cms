@@ -6,7 +6,7 @@ The rule since #1271: **build memory is a batch of pages plus a small record per
 
 ## The generator (`apps/static-generator/src/generate.ts`)
 
-- **Page batches.** Pages are composed, rewritten and written `PAGE_BATCH` (200) at a time. `page-batch.ts` loads each batch's placements, content variants (#592), nested modules and plugin list sources. Each per-page pass runs on the batch: media, SEO, plugin render, plugin assets, minify, write. Then the batch is released. Templates and layouts are loaded once, not repeated in every page row.
+- **Page batches, written in chunks of HTML.** `page-batch.ts` loads `PAGE_BATCH` (200) pages at a time: their placements, content variants (#592), nested modules and plugin list sources. The batch's pages are then composed one by one, and every `CHUNK_HTML_CHARS` (8 MB) of composed HTML the chunk goes through every per-page pass (media, SEO, plugin render, plugin assets, minify, write) and is released. Small pages still go 200 at a time; large pages go a few dozen at a time. Templates and layouts are loaded once, not repeated in every page row.
 - **Per-page records, not pages.** Later steps need something from every page: the sitemap, the routing manifest, render deps, link warnings, output-path collisions and the parity digests. Each of these keeps a small record per page. `prepareSeoPass` (`seo-pass.ts`) loads the SEO rows, plugin contributions and public URLs once. It applies them per batch and writes `sitemap.xml` at the end. The render-failure gate collects failure lines (`renderFailuresOf`), not HTML. Composing continues after a failure so the error names every failure, but nothing more is written.
 - **Media by stored digest.** `MediaPass` (`media-pass.ts`) resolves each media ref once, in one statement per batch. It names each file from `media_variants.content_sha256` (migration 0452) and never reads it. How the files reach the site depends on `mediaDelivery`:
   - `reference` (Firebase, GCS): each file is listed in `_caelo-asset-references.json` with its stored digests and storage key. A `stat` is the only check the build does on it.
@@ -17,9 +17,27 @@ The rule since #1271: **build memory is a batch of pages plus a small record per
 
 - **Files go where they are served, as they are written** (`build-output.ts`).
   - Self-hosted serves the build directory, so the build is written there (`DiskOutput`).
-  - On an uploading publisher (Firebase, GCS), the generator hands each file to the admin over its stdio as it is written (`StreamOutput`), and the publisher's `BuildUpload` puts it into the provider's staging version right away. At most 64 files are unacknowledged at a time.
+  - On an uploading publisher (Firebase, GCS), the generator hands each file to the admin over its stdio as it is written (`StreamOutput`), and the publisher's `BuildUpload` puts it into the provider's staging version right away. At most 64 files and 8 MB are unacknowledged at a time.
   - Nothing of the site lands on the admin's disk, which on Cloud Run is memory. Only the build's description stays local: the asset references, the parity digests and the render deps of the target.
-- **A full garbage collection after every batch.** The engine grows its heap with the allocation rate. Without the collection, the resident peak grew with the site although the live heap did not: 189 → 381 MB from 1k to 10k pages. With it, the peak goes from 129 to 170 MB, at about 10 ms per batch spread across all cores.
+- **A full garbage collection after every chunk.** The engine grows its heap with the allocation rate. Without the collection, the resident peak grew with the site although the live heap did not: 189 → 381 MB from 1k to 10k pages. With it, the peak goes from 129 to 170 MB, at about 10 ms per chunk spread across all cores.
+
+## Large pages: the template engine and the chunk size (searchVIU, 2026-11-01)
+
+The searchVIU admin (2 GiB, v0.11.7) was OOM-killed staging 162 English pages of ~280 KB: inline SVG illustrations, data-URI images, a script and a stylesheet per module. The generator peaked at 1.3 GB, next to an admin that sat at 0.6–1.3 GB itself. The #1271 fixtures did not show it: their pages are a few KB and render one identical module text on every page. Three causes:
+
+- **Mustache's parse cache kept every render, in both processes.** Mustache caches the parsed tokens of every template text it renders, for the life of the process, and never evicts. The engine (`packages/shared/src/template-engine.ts`) hands it a different text on every call: its sentinels carry a per-call UUID, and list entries, nested modules and link references are pasted in before Mustache runs. So the cache never hit and kept every module of every page, ~30x its size. In the generator that grew the peak by ~3 MB per page. In the admin it kept every page that Live Edit, `inspect_page_render`, screenshots and the editor preview ever rendered: 2.5 GB after previewing 400 pages of the fixture below. The engine turns the cache off (`Mustache.templateCache = undefined`).
+- **Mustache's parser allocates per character.** Before it squashes them, `parseTemplate` creates a token array for every character of literal text, so a module's 30 KB SVG was 30,000 arrays of garbage on every render. `shieldLiteralText` replaces each run of 256+ characters without `{`, `}` or a newline by an opaque key before Mustache parses, and puts it back right after. The output is unchanged (`template-engine-memory.test.ts` pins it against Mustache), and `renderTemplate` got about 5x faster on such modules.
+- **A batch of 200 large pages is a lot of HTML.** Composing and rewriting a page (slot fills, head injections, media, SEO, plugin passes, minify) allocates about 10x its HTML in short-lived copies, and the engine collects them late. So the peak followed the HTML composed between two collections, which is 200 pages × page size. With `CHUNK_HTML_CHARS`, it follows a fixed 8 MB.
+
+Measured with `stage-memory-rich-pages.integration.test.ts` (fixture pages of ~230 KB, `fixtures/rich-site.ts`), generator peak RSS:
+
+| Pages | Before | After |
+|---|---|---|
+| 60 | 459 MB | 348 MB |
+| 162 | 816 MB | 364 MB |
+| 400 | 1,289 MB | 375 MB |
+
+The admin's live heap after previewing all 400 pages: 2,487 MB before, 7 MB after.
 
 `_caelo-asset-references.json` and `_caelo-parity.json` are `BUILD_INTERNAL_FILES`. No publisher serves them.
 
@@ -58,6 +76,7 @@ The admin's phases are measured in the admin, and the generator's phases (`gener
   - both RSS peaks stay flat;
   - the 10k Stage sends no media byte;
   - the bytes the build ever had on disk (tmpfs on Cloud Run) stay below 1 KB per page, where the HTML alone is about 2.8 KB per page.
+- `packages/admin-core/src/__tests__/stage-memory-rich-pages.integration.test.ts` stages 60 and 300 pages of ~230 KB (`RICH_PAGES` overrides the sizes). It asserts that the generator's peak grows by less than 100 MB between them, and that previewing every page in the admin keeps less than 24 MB of live heap.
 - `packages/admin-core/src/__tests__/stage-scale.bench.ts` is the per-phase benchmark, with `BENCH_PAGES` and `BENCH_MEDIA`. Run it only against a throwaway database (see its header).
 
 ## What still grows with the site

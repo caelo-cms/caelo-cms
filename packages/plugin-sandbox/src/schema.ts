@@ -115,12 +115,32 @@ function emitCreateTable(
     dropUndeclaredColumns(schemaName, tableName, Object.keys(columns)),
     `ALTER TABLE ${fqTable} ENABLE ROW LEVEL SECURITY;`,
     `ALTER TABLE ${fqTable} FORCE  ROW LEVEL SECURITY;`,
-    `DROP POLICY IF EXISTS ${quoteIdent(policyName)} ON ${fqTable};`,
-    `CREATE POLICY ${quoteIdent(policyName)} ON ${fqTable}`,
-    `  USING (current_setting('caelo.plugin_id', true) = '${pluginId}')`,
-    `  WITH CHECK (current_setting('caelo.plugin_id', true) = '${pluginId}');`,
+    pluginScopePolicy(fqTable, policyName, pluginId),
     grantStatement("cms_public", "SELECT, INSERT, UPDATE, DELETE", fqTable, "public_role"),
     grantStatement("cms_public", "SELECT, INSERT, UPDATE, DELETE", fqTable, "admin_role"),
+  ].join("\n");
+}
+
+/**
+ * The policy that scopes a plugin table to its plugin: only a session
+ * whose `caelo.plugin_id` is this plugin's id sees or writes a row.
+ *
+ * Spelled through `caelo_setting_is` (migration 0475), not as
+ * `current_setting('caelo.plugin_id', true) = '<id>'`: Postgres never
+ * treats a policy qual as a one-time filter, so the plain comparison is a
+ * row filter estimated at 0.5 % of the rows (no statistics on either
+ * side), and an unfiltered `ORDER BY … LIMIT` read planned a full scan +
+ * sort instead of reading its index in order (#1297). The helper inlines
+ * to a NullTest the planner estimates at 99.5 %, with the same truth
+ * table (a missing setting matches nothing).
+ */
+function pluginScopePolicy(fqTable: string, policyName: string, pluginId: string): string {
+  const scope = `caelo_setting_is('caelo.plugin_id', '${pluginId}')`;
+  return [
+    `DROP POLICY IF EXISTS ${quoteIdent(policyName)} ON ${fqTable};`,
+    `CREATE POLICY ${quoteIdent(policyName)} ON ${fqTable}`,
+    `  USING (${scope})`,
+    `  WITH CHECK (${scope});`,
   ].join("\n");
 }
 
@@ -515,10 +535,7 @@ export function adminSchemaFromSpec(opts: {
         dropUndeclaredColumns(schemaName, tableName, Object.keys(columns)),
         `ALTER TABLE ${fqTable} ENABLE ROW LEVEL SECURITY;`,
         `ALTER TABLE ${fqTable} FORCE  ROW LEVEL SECURITY;`,
-        `DROP POLICY IF EXISTS ${quoteIdent(policyName)} ON ${fqTable};`,
-        `CREATE POLICY ${quoteIdent(policyName)} ON ${fqTable}`,
-        `  USING (current_setting('caelo.plugin_id', true) = '${opts.pluginId}')`,
-        `  WITH CHECK (current_setting('caelo.plugin_id', true) = '${opts.pluginId}');`,
+        pluginScopePolicy(fqTable, policyName, opts.pluginId),
         grantStatement("cms_admin", "SELECT, INSERT, UPDATE, DELETE", fqTable, "admin_role"),
         emitIndexes(schemaName, tableName, columns, "adminSchema", opts.indexes?.[tableName] ?? []),
       ].join("\n"),

@@ -29,6 +29,7 @@ import {
   refreshToken,
   registerClient,
   SEAL_KEY_B64,
+  tamperSealed,
 } from "./__tests__/harness.js";
 import { seal } from "./seal.js";
 import { REFRESH_MAX_LIFETIME_SECONDS } from "./token.js";
@@ -709,7 +710,7 @@ describe("google-callback", () => {
       redirectUri: CLAUDE_REDIRECT,
       challenge: pkce().challenge,
     });
-    const tampered = `${googleState.slice(0, -2)}${googleState.endsWith("A") ? "B" : "A"}A`;
+    const tampered = tamperSealed(googleState);
     const forged = seal(new Uint8Array(32), "state", {
       client_id: clientId,
       redirect_uri: "https://evil.example/",

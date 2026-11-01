@@ -14,6 +14,7 @@ import {
   CONFIGURED_FILE,
   legacyAccessToken,
   PUBLIC,
+  tamperSealed,
 } from "./__tests__/harness.js";
 import type { ProxyLimits } from "./context.js";
 import { MAX_PROXY_BODY_BYTES, PROXY_LIMITS } from "./proxy.js";
@@ -219,7 +220,7 @@ describe("MCP proxy", () => {
       "eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJ4In0.c2ln",
       "ya29.google-access-token",
       accessToken("ok", null, { ttlSeconds: -1 }),
-      `${accessToken("ok").slice(0, -4)}AAAA`,
+      tamperSealed(accessToken("ok")),
       // Minted before #968 (no client): the client refreshes and gets one that names it.
       legacyAccessToken("ok"),
     ]) {

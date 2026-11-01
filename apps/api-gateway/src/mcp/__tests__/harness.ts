@@ -99,6 +99,21 @@ export function openAccess(
   return opened.value;
 }
 
+/**
+ * `sealed` with one ciphertext bit flipped: a forgery that always differs
+ * from the original (#1297). Rewriting the last characters of the
+ * base64url text is not one: they may already be the replacement, and
+ * the final character carries padding bits a decoder ignores, so the
+ * "forged" value can open as the genuine one.
+ */
+export function tamperSealed(sealed: string): string {
+  const parts = sealed.split(".");
+  const body = Buffer.from(parts.at(-1) ?? "", "base64url");
+  if (parts.length !== 4 || body.byteLength === 0) throw new Error("not a sealed value");
+  body[0] = (body[0] as number) ^ 0x01;
+  return [...parts.slice(0, -1), body.toString("base64url")].join(".");
+}
+
 /** An unsigned JWT shaped like a Google ID token (the broker reads, never verifies, it). */
 export function fakeIdToken(claims: Record<string, unknown>): string {
   const part = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");

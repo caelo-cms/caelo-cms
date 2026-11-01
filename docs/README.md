@@ -25,6 +25,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [plugin-baked-data.md](./plugin-baked-data.md) — how visitor plugin data (comments, ratings) reaches the static HTML through plugin-data builds that publish nothing else (#1155), and how a plugin declares `bakedData`.
 - [live-edit-references.md](./live-edit-references.md) — right-click / selection references and Ask AI in the Live Edit preview, and what the AI receives.
 - [inspect-tooling-redesign.md](./inspect-tooling-redesign.md) — gist-first inspection of external pages and on-demand HTML queries.
+- [dev/rls-and-the-planner.md](./dev/rls-and-the-planner.md) — how row-level security changes plans: write setting tests as `caelo_setting_is` / `caelo_setting_in` (a plain `current_setting(...) = 'x'` policy is estimated at 0.5 % of the rows), and why `ILIKE '%q%'` can never use an index under RLS (#1297).
 - [dev/public-admin-boundary.md](./dev/public-admin-boundary.md) — the public/admin boundary: the public side is assumed compromised.
 - [dev/public-admin-read-paths.md](./dev/public-admin-read-paths.md) — every path where the admin reads `cms_public` data, and how each treats it as untrusted.
 - [dev/mcp-access.md](./dev/mcp-access.md) — MCP access as one concept: token vs remote chat vs remote admin, who may use which, per-app connections, revoke/restore/block (#968).
