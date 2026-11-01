@@ -81,7 +81,11 @@ async function wipe(): Promise<void> {
 }
 
 async function provisionAll(
-  plugins: ReadonlyArray<{ slug: string; schema: Record<string, Record<string, string>> }>,
+  plugins: ReadonlyArray<{
+    slug: string;
+    schema: Record<string, Record<string, string>>;
+    indexes?: { schema?: Parameters<typeof schemaFromSpec>[0]["indexes"] };
+  }>,
 ): Promise<void> {
   for (const p of plugins) {
     const id = await adapter.withAdminTransaction(

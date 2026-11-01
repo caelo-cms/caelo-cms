@@ -68,6 +68,7 @@ describe("#1146 — columns a new plugin version no longer declares", () => {
       pluginId: PLUGIN_ID,
       slug: SLUG,
       schema: { log: { consent_id: "uuid", visitor_id: "string", created_at: "timestamp" } },
+      indexes: undefined,
     });
     await adapter.provisionPluginPublicSchema({ pluginId: PLUGIN_ID, sql: v1.sql });
     expect(await columns(PUBLIC_URL, "log")).toContain("visitor_id");
@@ -76,6 +77,7 @@ describe("#1146 — columns a new plugin version no longer declares", () => {
       pluginId: PLUGIN_ID,
       slug: SLUG,
       schema: { log: { consent_id: "uuid", created_at: "timestamp" } },
+      indexes: undefined,
     });
     await adapter.provisionPluginPublicSchema({ pluginId: PLUGIN_ID, sql: v2.sql });
     expect(await columns(PUBLIC_URL, "log")).toEqual(["consent_id", "created_at", "id"]);
@@ -94,12 +96,14 @@ describe("#1146 — columns a new plugin version no longer declares", () => {
       pluginId: PLUGIN_ID,
       slug: SLUG,
       adminSchema: { notes: { body: "text", ip_hash: "string" } },
+      indexes: undefined,
     });
     await adapter.provisionPluginAdminSchema({ pluginId: PLUGIN_ID, sql: v1.sql });
     const v2 = adminSchemaFromSpec({
       pluginId: PLUGIN_ID,
       slug: SLUG,
       adminSchema: { notes: { body: "text" } },
+      indexes: undefined,
     });
     await adapter.provisionPluginAdminSchema({ pluginId: PLUGIN_ID, sql: v2.sql });
     const cols = await columns(ADMIN_URL, "notes");

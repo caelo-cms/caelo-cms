@@ -59,7 +59,11 @@ describe("plugin schema DDL grants (#635)", () => {
   const cases: [PluginSchemaDatabase, string][] = [
     [
       "cms_public",
-      schemaFromSpec({ ...SPEC, schema: { comments: { body: "text" }, votes: { n: "int" } } }).sql,
+      schemaFromSpec({
+        ...SPEC,
+        schema: { comments: { body: "text" }, votes: { n: "int" } },
+        indexes: undefined,
+      }).sql,
     ],
     [
       "cms_admin",
@@ -67,6 +71,7 @@ describe("plugin schema DDL grants (#635)", () => {
         ...SPEC,
         adminSchema: { settings: { label: "string" }, approved: { digest: "text" } },
         projectedTables: ["settings"],
+        indexes: undefined,
       }).sql,
     ],
   ];

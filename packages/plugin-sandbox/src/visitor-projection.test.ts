@@ -62,6 +62,7 @@ describe("adminSchemaFromSpec projection triggers (#635)", () => {
       slug: "probe",
       adminSchema: base.adminSchema,
       projectedTables: ["settings"],
+      indexes: undefined,
     });
     expect(sql).toContain(
       `CREATE TRIGGER caelo_projection AFTER INSERT OR UPDATE OR DELETE ON "plugin_probe"."settings"`,
@@ -78,6 +79,7 @@ describe("adminSchemaFromSpec projection triggers (#635)", () => {
         slug: "probe",
         adminSchema: base.adminSchema,
         projectedTables: ["ghost"],
+        indexes: undefined,
       }),
     ).toThrow(/not in adminSchema/);
   });

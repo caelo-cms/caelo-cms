@@ -20,9 +20,13 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import { SQL } from "bun";
 import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
 
-const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
-const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
-if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
+function requiredUrl(name: string): string {
+  const url = process.env[name];
+  if (!url) throw new Error(`${name} required`);
+  return url;
+}
+const ADMIN_URL = requiredUrl("ADMIN_DATABASE_URL");
+const PUBLIC_URL = requiredUrl("PUBLIC_ADMIN_DATABASE_URL");
 
 const SLUG = "t1292-ix";
 const SCHEMA = "plugin_t1292_ix";

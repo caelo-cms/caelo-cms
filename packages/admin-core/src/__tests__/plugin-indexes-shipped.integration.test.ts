@@ -31,13 +31,17 @@ import newsletterPlugin from "@caelo-cms/plugin-newsletter";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
 import { adminSchemaFromSpec, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import type { PluginQueryFilter, PluginSchemaMap } from "@caelo-cms/plugin-sdk";
-import { DatabaseAdapter } from "@caelo-cms/query-api";
+import { DatabaseAdapter, type TransactionRunner } from "@caelo-cms/query-api";
 import { SQL as BunSQL } from "bun";
 import { sql } from "drizzle-orm";
 
-const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
-const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
-if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
+function requiredUrl(name: string): string {
+  const url = process.env[name];
+  if (!url) throw new Error(`${name} required`);
+  return url;
+}
+const ADMIN_URL = requiredUrl("ADMIN_DATABASE_URL");
+const PUBLIC_URL = requiredUrl("PUBLIC_ADMIN_DATABASE_URL");
 
 const SYSTEM = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -401,8 +405,11 @@ async function plan(
   if (typeof parsed === "string") throw new Error(parsed);
   const t = { schema: schemaOf(plugin), table, columns };
   const query = zone === "schema" ? publicListSql(t, parsed) : privateListSql(t, parsed, []);
-  const run = zone === "schema" ? adapter.withPublicTransaction : adapter.withAdminTransaction;
-  return run.call(adapter, SYSTEM, async (tx) => {
+  const inTx = <T>(fn: (tx: TransactionRunner) => Promise<T>): Promise<T> =>
+    zone === "schema"
+      ? adapter.withPublicTransaction(SYSTEM, fn)
+      : adapter.withAdminTransaction(SYSTEM, fn);
+  return inTx(async (tx) => {
     const refusal = listIndexRefusal({
       label: "probe.list",
       zone,
