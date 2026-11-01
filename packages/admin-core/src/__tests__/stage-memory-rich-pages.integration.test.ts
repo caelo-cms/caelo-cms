@@ -35,6 +35,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext, PhaseTiming } from "@caelo-cms/shared";
+import { PAGE_BATCH } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
 import { setDeployBridge } from "../ops/deploy.js";
@@ -69,8 +70,14 @@ const SYSTEM: ExecutionContext = {
   actorKind: "system",
   requestId: "stage-memory-rich-pages-test",
 };
-/** Page counts staged, ascending (override: RICH_PAGES=162,600). */
-const SIZES = (process.env.RICH_PAGES ?? "60,300")
+/**
+ * Page counts staged, ascending (override: RICH_PAGES=162,600). Both
+ * defaults are above PAGE_BATCH: the generator loads a whole batch's
+ * compose inputs at once, so a size below it measures how full the first
+ * batch is (60 -> 300 pages grew ~100 MB in load-batch alone), not whether
+ * the peak grows with the site.
+ */
+const SIZES = (process.env.RICH_PAGES ?? `${PAGE_BATCH + 20},${2 * PAGE_BATCH + 40}`)
   .split(",")
   .map((s) => Number.parseInt(s, 10))
   .filter((n) => n > 0)
