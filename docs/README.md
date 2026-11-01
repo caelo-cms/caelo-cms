@@ -50,6 +50,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [quality-checks.md](./quality-checks.md) — the quality audit's checks on the staged build (check framework, `structure`, `links`, `references`) and the Stage-time reference-integrity gate (#724).
 - [dev/coverage.md](./dev/coverage.md) — the coverage gate.
 - [dev/scale-gate.md](./dev/scale-gate.md) — the scale gate: 50,000 pages, 20 MCP agents and 5 editors on a db-f1-micro and a 1-vCPU admin; fixture, load, SLOs, running it locally (#1267).
+- [dev/query-index-gate.md](./dev/query-index-gate.md) — the query index gates: the seq-scan plan gate over the integration tier (op-tagged transactions, `enable_seqscan=off` + auto_explain, stream filter, allowlist) and the FK index lint; reading a failure, index vs. allowlist entry (#1293).
 - [dev/knip.md](./dev/knip.md) — the dead-code gate.
 - [dev/madge.md](./dev/madge.md) — the circular-dependency gate.
 - [dev/codeql.md](./dev/codeql.md) — CodeQL, dependency review and secret scanning.

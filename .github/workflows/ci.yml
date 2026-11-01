@@ -296,6 +296,130 @@ jobs:
           CAELO_ROWS_READ: "1"
         run: bun run test ./packages/admin-core/src/__tests__/rows-read.integration.test.ts --timeout 1500000
 
+  query-index-gate:
+    name: Query index gate (unindexed filters)
+    needs: lockfile
+    # Least-privilege GITHUB_TOKEN: read the repo + upload an artifact.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # Issue #1293 (docs/dev/query-index-gate.md) — the integration tier runs
+    # against a Postgres with `enable_seqscan=off` and auto_explain logging
+    # every plan; the job fails on a filtered full scan from a Query API
+    # transaction that scripts/query-index-gate/allowlist.ts does not
+    # explain, and on a stale list entry. Its own database: auto_explain
+    # must be preloaded (a services container cannot take server flags),
+    # and its plan log stays out of the main check's timings. The server's
+    # log goes through the awk stream filter inside the container — the
+    # raw log of a run is gigabytes and never touches disk or `docker logs`.
+    env:
+      POSTGRES_USER: caelo
+      POSTGRES_PASSWORD: caelo_ci
+      POSTGRES_DB: postgres
+      POSTGRES_PORT: 5432
+      ADMIN_ROLE_PASSWORD: caelo_admin_ci
+      PUBLIC_ROLE_PASSWORD: caelo_public_ci
+      ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_admin
+      PUBLIC_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_public
+      PUBLIC_DATABASE_URL: postgres://public_role:caelo_public_ci@localhost:5432/cms_public
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Setup Deno for external plugin tests
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
+        with:
+          deno-version: v2.9.6
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Start Postgres with auto_explain (plan log stream-filtered)
+        run: |
+          # The `runner` context is not available in job-level env.
+          echo "GATE_DIR=$RUNNER_TEMP/query-index-gate" >> "$GITHUB_ENV"
+          GATE_DIR="$RUNNER_TEMP/query-index-gate"
+          mkdir -p "$GATE_DIR"
+          docker run -d --name gate-pg --network host \
+            -e POSTGRES_USER -e POSTGRES_PASSWORD -e POSTGRES_DB \
+            -v "$GITHUB_WORKSPACE/scripts/query-index-gate:/gate:ro" \
+            -v "$GATE_DIR:/out" \
+            --entrypoint sh postgres:17-alpine -c '
+              # The logging collector writes into a FIFO the filter reads:
+              # whole messages, never interleaved, and nothing on disk.
+              mkfifo -m 666 /out/pg.fifo
+              awk -v stats=/out/filter-stats.txt -f /gate/seqscan-filter.awk \
+                <> /out/pg.fifo > /out/seq.log &
+              exec docker-entrypoint.sh postgres \
+                -c logging_collector=on -c log_directory=/out -c log_filename=pg.fifo \
+                -c log_rotation_age=0 -c log_rotation_size=0 \
+                -c shared_preload_libraries=auto_explain \
+                -c auto_explain.log_min_duration=0 \
+                -c auto_explain.log_nested_statements=on \
+                -c auto_explain.log_verbose=on \
+                -c auto_explain.log_format=text \
+                -c auto_explain.log_parameter_max_length=0 \
+                -c enable_seqscan=off \
+                -c "log_line_prefix=@@%a@@ "'
+          for i in $(seq 1 90); do
+            docker exec gate-pg pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" && break
+            sleep 1
+          done
+          docker exec gate-pg pg_isready -h 127.0.0.1 -U "$POSTGRES_USER"
+
+      - name: Bootstrap databases, migrate
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        run: |
+          chmod +x packages/migrations/src/bootstrap.sh
+          packages/migrations/src/bootstrap.sh
+          bun run db:migrate
+
+      - name: Integration tier under the plan log
+        run: bun run test $(git ls-files '*.integration.test.ts')
+
+      - name: Flush the stream filter
+        if: always()
+        run: |
+          # The filter prints an entry when the next message starts; one
+          # more statement closes the run's last plan.
+          docker exec gate-pg psql -U "$POSTGRES_USER" -d postgres -c 'SELECT 1' > /dev/null
+          sleep 2
+          cat "$GATE_DIR/filter-stats.txt"
+          ls -la "$GATE_DIR"
+
+      - name: Dump RLS policies (the analyzer drops their terms)
+        if: always()
+        run: |
+          for db in cms_admin cms_public; do
+            docker exec gate-pg psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$db" \
+              -At -F "$(printf '\t')" -f /gate/policies.sql
+          done > "$GATE_DIR/policies.tsv"
+          wc -l "$GATE_DIR/policies.tsv"
+
+      - name: Analyze plans
+        if: always()
+        run: |
+          bun scripts/query-index-gate/analyze.ts "$GATE_DIR/seq.log" \
+            --policies "$GATE_DIR/policies.tsv" --json "$GATE_DIR/findings.json"
+
+      - name: Upload plan log + findings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: query-index-gate
+          path: |
+            ${{ runner.temp }}/query-index-gate/seq.log
+            ${{ runner.temp }}/query-index-gate/findings.json
+          if-no-files-found: warn
+
   e2e:
     name: Playwright E2E (admin shell smoke)
     needs: check
