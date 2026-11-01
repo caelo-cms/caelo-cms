@@ -68,7 +68,7 @@ describe("schemaFromSpec — indexes", () => {
 
   it("drops the table's caelo_ix_ indexes it does not emit — all of them when none is declared", () => {
     const { sql } = schemaFromSpec({ pluginId: PID, slug: "probe", schema, indexes: undefined });
-    expect(sql).toContain("indexname LIKE 'caelo\\_ix\\_%'");
+    expect(sql).toContain("starts_with(indexname, 'caelo_ix_')");
     expect(sql).toContain("indexname <> ALL (ARRAY[]::text[])");
     expect(sql).toContain("EXECUTE format('DROP INDEX %I.%I', 'plugin_probe', ix);");
   });

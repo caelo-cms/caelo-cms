@@ -93,6 +93,25 @@ describe("pluginManifest — indexes", () => {
     ).toContain("declared twice");
   });
 
+  it("accepts a one-column hash index and refuses a wide or unique one", () => {
+    expect(manifest({ schema: { entries: [{ columns: ["body"], method: "hash" }] } }).success).toBe(
+      true,
+    );
+    expect(
+      messages(
+        manifest({ schema: { entries: [{ columns: ["body", "status"], method: "hash" }] } }),
+      ),
+    ).toContain("hash index covers exactly one column");
+    expect(
+      messages(
+        manifest({ schema: { entries: [{ columns: ["body"], method: "hash", unique: true }] } }),
+      ),
+    ).toContain("cannot be unique");
+    expect(manifest({ schema: { entries: [{ columns: ["body"], method: "gin" }] } }).success).toBe(
+      false,
+    );
+  });
+
   it("refuses unique indexes on private storage", () => {
     expect(
       messages(manifest({ adminSchema: { variants: [{ columns: ["group_id"], unique: true }] } })),
@@ -141,8 +160,8 @@ describe("manifestFromDefinition — indexes", () => {
 describe("normalizePluginIndexes", () => {
   it("resolves the shorthand and keeps the column order", () => {
     expect(normalizePluginIndexes([["b", "a"], { columns: ["c"], unique: true }])).toEqual([
-      { columns: ["b", "a"], unique: false },
-      { columns: ["c"], unique: true },
+      { columns: ["b", "a"], unique: false, method: "btree" },
+      { columns: ["c"], unique: true, method: "btree" },
     ]);
   });
 });

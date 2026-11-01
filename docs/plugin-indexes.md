@@ -25,10 +25,10 @@ export default definePlugin({
 ```
 
 - `indexes.schema` indexes `schema` tables, `indexes.adminSchema` indexes `adminSchema` tables.
-- An index is a column list (`["status", "created_at"]`) or `{ columns, unique: true }`. At most 4 columns per index and 16 indexes per table.
+- An index is a column list (`["status", "created_at"]`) or `{ columns, unique?: true, method?: "btree" | "hash" }`. At most 4 columns per index and 16 indexes per table.
 - Columns must be declared on the table. Refused: `caelo_` (host) columns, `jsonb` columns, `id` as the first column (it is the primary key; `["status", "id"]` is fine), a column twice, the same index twice, a single-column index on a `ref:` column (the host builds that one).
 - `unique` exists only in `schema` (cms_public). A private-storage row can change on a chat branch (as a snapshot, not as the row), where no index sees it until publish; check uniqueness in the operation instead.
-- Indexed values go into a btree, which holds at most ~2.7 KB per entry: bound the length of a text column you index.
+- Indexed values go into a btree, which holds at most ~2.7 KB per entry — a longer stored value fails the index build (and with it the plugin's load). Bound the length of a text column you index, or, for an equality-only lookup on a value of unbounded length, declare `{ columns: [col], method: "hash" }`: a hash index stores the value's hash, serves `=` and `anyOf`, never an order, and covers exactly one column (not unique). The auth plugin indexes `public_users.email` that way, because stored emails predate its length bound.
 
 The validator checks the declaration with the rest of the manifest (`checkPluginIndexes`, `packages/plugin-sdk/src/indexes.ts`); the emitter re-checks before writing DDL.
 
@@ -47,7 +47,7 @@ Declared private-storage indexes are partial on `caelo_chat_branch_id IS NULL AN
 A `list()` is refused unless an index can drive it:
 
 - **Filtered** (`{ column: value }`, `anyOf`): one of the filter columns must be the first column of a declared or automatic index, or `id`. Ordering by an indexed column does not count — `orderBy: "id"` with an unindexed filter would walk the whole primary key and test every row.
-- **Unfiltered but ordered or ranged** (`orderBy`, `since` / `before`): one of those columns must lead an index. `since` and `before` range over `created_at`, so a table paged by time declares `["created_at"]` (or `[filter column, "created_at"]`). `orderBy: "id"` is always covered.
+- **Unfiltered but ordered or ranged** (`orderBy`, `since` / `before`): one of those columns must lead a btree index (a hash index cannot return rows in order). `since` and `before` range over `created_at`, so a table paged by time declares `["created_at"]` (or `[filter column, "created_at"]`). `orderBy: "id"` is always covered.
 - **Only a `limit`**: allowed; it stops after `limit` rows.
 
 Put the filter columns first and the order column last (`["status", "created_at"]`): one index then serves the filter and the order. The refusal names the index to declare:

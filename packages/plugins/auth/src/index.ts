@@ -243,7 +243,9 @@ export default definePlugin<PluginContextTier1>({
   /** #1292 — what the visitor path and the sweeps read by. */
   indexes: {
     schema: {
-      public_users: [["email"]],
+      // Hash: a stored email may predate the 254-character signup bound,
+      // and a btree entry holds at most ~2.7 KB (it would fail the build).
+      public_users: [{ columns: ["email"], method: "hash" }],
       visitor_sessions: [["token_hash"], ["public_user_id"], ["expires_at"]],
       password_reset_tokens: [["token_hash"], ["expires_at"]],
       auth_config_proposals: [["status", "created_at"]],

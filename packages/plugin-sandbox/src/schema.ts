@@ -187,7 +187,7 @@ interface EmittedIndex {
 /**
  * #1292 — a deterministic, length-safe index name. Readable part first
  * (table + columns, cut to fit), then 8 hex of a hash over the whole
- * definition (columns, uniqueness, predicate), so an index whose
+ * definition (columns, uniqueness, predicate, method), so an index whose
  * definition changes gets a new name — the old one is dropped and the
  * new one built — and two long definitions never truncate into one name.
  */
@@ -196,11 +196,15 @@ export function pluginIndexName(
   columns: readonly string[],
   unique: boolean,
   predicate: string,
+  method: "btree" | "hash" = "btree",
 ): string {
-  const digest = createHash("sha256")
-    .update(JSON.stringify({ table, columns, unique, predicate }))
-    .digest("hex")
-    .slice(0, 8);
+  // `method` enters the hash only when it is not the default btree, so a
+  // btree index keeps the name it had before hash indexes existed.
+  const definition =
+    method === "btree"
+      ? { table, columns, unique, predicate }
+      : { table, columns, unique, predicate, method };
+  const digest = createHash("sha256").update(JSON.stringify(definition)).digest("hex").slice(0, 8);
   const room = 63 - PLUGIN_INDEX_PREFIX.length - digest.length - 1;
   const readable = `${table}_${columns.join("_")}`.slice(0, room).replace(/_+$/, "");
   return `${PLUGIN_INDEX_PREFIX}${readable}_${digest}`;
@@ -241,17 +245,28 @@ function emitIndexes(
 ): string {
   const fqTable = `${quoteIdent(schemaName)}.${quoteIdent(tableName)}`;
   const out: EmittedIndex[] = [];
-  const add = (cols: readonly string[], unique: boolean, predicate: string) => {
-    const name = pluginIndexName(tableName, cols, unique, predicate);
+  const add = (
+    cols: readonly string[],
+    unique: boolean,
+    predicate: string,
+    method: "btree" | "hash" = "btree",
+  ) => {
+    const name = pluginIndexName(tableName, cols, unique, predicate, method);
     const where = predicate === "" ? "" : ` WHERE ${predicate}`;
+    const using = method === "hash" ? " USING hash" : "";
     out.push({
       name,
-      sql: `CREATE ${unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS ${quoteIdent(name)} ON ${fqTable} (${cols.map(quoteIdent).join(", ")})${where};`,
+      sql: `CREATE ${unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS ${quoteIdent(name)} ON ${fqTable}${using} (${cols.map(quoteIdent).join(", ")})${where};`,
     });
   };
   for (const index of normalizePluginIndexes(specs)) {
     assertIndexable(zone, tableName, columns, index);
-    add(index.columns, index.unique, zone === "adminSchema" ? PRIVATE_LIVE_ROW_PREDICATE : "");
+    add(
+      index.columns,
+      index.unique,
+      zone === "adminSchema" ? PRIVATE_LIVE_ROW_PREDICATE : "",
+      index.method,
+    );
   }
   if (zone === "adminSchema") {
     for (const ref of automaticIndexColumns(zone, columns)) add([ref], false, "");
@@ -267,7 +282,8 @@ function emitIndexes(
     "  FOR ix IN",
     "    SELECT indexname FROM pg_indexes",
     `     WHERE schemaname = '${schemaName}' AND tablename = '${tableName}'`,
-    `       AND indexname LIKE '${PLUGIN_INDEX_PREFIX.replace(/_/g, "\\_")}%'`,
+    // starts_with, not LIKE: "_" is a LIKE wildcard in the prefix.
+    `       AND starts_with(indexname, '${PLUGIN_INDEX_PREFIX}')`,
     `       AND indexname <> ALL (ARRAY[${keep.join(", ")}]::text[])`,
     "  LOOP",
     `    EXECUTE format('DROP INDEX %I.%I', '${schemaName}', ix);`,
@@ -289,6 +305,11 @@ function assertIndexable(
         `plugin schema: indexes.${zone}.${table} cannot index "${c}" — only declared, non-jsonb columns (and id after one of them)`,
       );
     }
+  }
+  if (index.method === "hash" && (index.columns.length !== 1 || index.unique)) {
+    throw new Error(
+      `plugin schema: indexes.${zone}.${table}: a hash index is one column and not unique`,
+    );
   }
   if (index.unique && zone === "adminSchema") {
     throw new Error(

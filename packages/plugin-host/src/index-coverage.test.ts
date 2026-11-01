@@ -12,12 +12,13 @@ const read = (
   access: Partial<ListIndexAccess>,
   leads: string[] = ["id", "status"],
   zone: "schema" | "adminSchema" = "schema",
+  hashed: string[] = [],
 ) =>
   listIndexRefusal({
     label: "plugin_public_storage.list",
     zone,
     table: "entries",
-    leads: new Set(leads),
+    leads: { any: new Set([...leads, ...hashed]), ordered: new Set(leads) },
     access: { equals: [], anyOf: [], orderBy: null, createdAtRange: false, ...access },
   });
 
@@ -54,6 +55,14 @@ describe("listIndexRefusal", () => {
     expect(read({ equals: ["group_id"] }, ["id"], "adminSchema")).toContain(
       "indexes: { adminSchema: { entries:",
     );
+  });
+});
+
+describe("hash indexes", () => {
+  it("drive equality and anyOf filters, never an order", () => {
+    expect(read({ equals: ["email"] }, ["id"], "schema", ["email"])).toBeNull();
+    expect(read({ anyOf: ["email"] }, ["id"], "schema", ["email"])).toBeNull();
+    expect(read({ orderBy: "email" }, ["id"], "schema", ["email"])).toContain("orders by email");
   });
 });
 

@@ -61,11 +61,21 @@ const indexColumns = z.array(identifier).min(1).max(PLUGIN_INDEX_MAX_COLUMNS);
 /**
  * One index: its columns in order (`["group_id", "translation_status"]`),
  * or `{ columns, unique: true }` for a unique one (cms_public `schema`
- * only — see {@link checkPluginIndexes}).
+ * only — see {@link checkPluginIndexes}), or `{ columns: [col], method:
+ * "hash" }` for an equality-only lookup on a value of unbounded length
+ * (a btree entry holds at most ~2.7 KB, so a longer stored value fails
+ * the build; a hash index stores the value's hash and serves `=` and
+ * `anyOf`, never an order).
  */
 export const pluginIndexSpec = z.union([
   indexColumns,
-  z.object({ columns: indexColumns, unique: z.boolean().optional() }).strict(),
+  z
+    .object({
+      columns: indexColumns,
+      unique: z.boolean().optional(),
+      method: z.enum(["btree", "hash"]).optional(),
+    })
+    .strict(),
 ]);
 
 export type PluginIndexSpec = z.infer<typeof pluginIndexSpec>;
@@ -89,6 +99,7 @@ export type PluginIndexes = z.infer<typeof pluginIndexes>;
 export interface NormalizedPluginIndex {
   readonly columns: readonly string[];
   readonly unique: boolean;
+  readonly method: "btree" | "hash";
 }
 
 /** Resolve the `string[]` shorthand; order is kept. */
@@ -97,8 +108,8 @@ export function normalizePluginIndexes(
 ): NormalizedPluginIndex[] {
   return (specs ?? []).map((s) =>
     Array.isArray(s)
-      ? { columns: [...s], unique: false }
-      : { columns: [...s.columns], unique: s.unique === true },
+      ? { columns: [...s], unique: false, method: "btree" }
+      : { columns: [...s.columns], unique: s.unique === true, method: s.method ?? "btree" },
   );
 }
 
@@ -148,7 +159,7 @@ export function checkPluginIndexes(
         const at = [zone, table, i];
         const problem = indexProblem(zone, table, columns, index, automatic);
         if (problem) addIssue(at, problem);
-        const key = index.columns.join(",");
+        const key = `${index.method}:${index.columns.join(",")}`;
         if (seen.has(key)) {
           addIssue(at, `indexes.${zone}.${table}: (${key}) is declared twice`);
         }
@@ -182,6 +193,9 @@ function indexProblem(
     }
     if (names.has(column)) return `${where}: column "${column}" appears twice in one index`;
     names.add(column);
+  }
+  if (index.method === "hash" && (index.columns.length !== 1 || index.unique)) {
+    return `${where}: a hash index covers exactly one column and cannot be unique — use a btree index (the default) for several columns or uniqueness`;
   }
   if (index.unique && zone === "adminSchema") {
     return `${where}: unique indexes are only available in indexes.schema (cms_public). A private-storage row can change on a chat branch, which no index sees until publish — check uniqueness in the operation instead (list by the column, then insert)`;

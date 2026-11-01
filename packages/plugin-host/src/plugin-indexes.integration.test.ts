@@ -223,6 +223,17 @@ describe("#1292 — the list operation refuses reads no index covers", () => {
     expect((await list({ limit: 5 })).ok).toBe(true);
   });
 
+  it("lets a hash index drive an equality filter but not an order", async () => {
+    await provision({ entries: [{ columns: ["slug"], method: "hash" }] });
+    const def = (await indexes(PUBLIC_URL, "entries")).get(
+      pluginIndexName("entries", ["slug"], false, "", "hash"),
+    );
+    expect(def).toContain("USING hash (slug)");
+    expect((await list({ slug: "a" })).ok).toBe(true);
+    expect(messageOf(await list({ orderBy: "slug" }))).toContain("orders by slug");
+    await provision({ entries: [["status", "created_at"]] });
+  });
+
   it("follows the indexes the table has, not what a caller claims", async () => {
     // The column map comes from the caller; an index cannot: a version
     // that stops declaring the index loses the read with it.

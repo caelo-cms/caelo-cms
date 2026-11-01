@@ -52,23 +52,36 @@ export function readsByColumn(access: ListIndexAccess): boolean {
   );
 }
 
+/** The first columns of a table's indexes: all of them, and the btree ones (which can also deliver an order). */
+export interface IndexLeads {
+  readonly any: ReadonlySet<string>;
+  readonly ordered: ReadonlySet<string>;
+}
+
 /**
  * The first column of every valid index on `schema.table`, read from the
- * catalog in the caller's transaction. Identifiers are checked by the
- * caller (storage-ops validates both against its identifier pattern).
+ * catalog in the caller's transaction, split by whether the index can
+ * return rows in order (btree) or only find equal values (hash).
+ * Identifiers are checked by the caller (storage-ops validates both
+ * against its identifier pattern).
  */
 export async function indexLeadColumns(
   tx: TransactionRunner,
   schema: string,
   table: string,
-): Promise<Set<string>> {
+): Promise<IndexLeads> {
   const rows = (await tx.execute(sql`
-    SELECT DISTINCT a.attname::text AS col
+    SELECT DISTINCT a.attname::text AS col, am.amname = 'btree' AS ordered
     FROM pg_catalog.pg_index i
+    JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid
+    JOIN pg_catalog.pg_am am ON am.oid = c.relam
     JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
     WHERE i.indrelid = to_regclass(${`"${schema}"."${table}"`}) AND i.indisvalid
-  `)) as unknown as { col: string }[];
-  return new Set(rows.map((r) => r.col));
+  `)) as unknown as { col: string; ordered: boolean }[];
+  return {
+    any: new Set(rows.map((r) => r.col)),
+    ordered: new Set(rows.filter((r) => r.ordered).map((r) => r.col)),
+  };
 }
 
 /**
@@ -76,13 +89,14 @@ export async function indexLeadColumns(
  * names the index to declare and where.
  *
  * @param label error prefix, e.g. `plugin_storage.list`
- * @param leads the first columns of the table's indexes ({@link indexLeadColumns})
+ * @param leads the first columns of the table's indexes ({@link indexLeadColumns});
+ *   a filter may be driven by any index, an order only by a btree one
  */
 export function listIndexRefusal(args: {
   readonly label: string;
   readonly zone: PluginStorageZone;
   readonly table: string;
-  readonly leads: ReadonlySet<string>;
+  readonly leads: IndexLeads;
   readonly access: ListIndexAccess;
 }): string | null {
   const { access } = args;
@@ -96,7 +110,8 @@ export function listIndexRefusal(args: {
   // and test every row. Only an unfiltered read is driven by its order.
   const driving = filtered.length > 0 ? filtered : ordered;
   if (driving.length === 0) return null;
-  if (driving.some((c) => args.leads.has(c))) return null;
+  const usable = filtered.length > 0 ? args.leads.any : args.leads.ordered;
+  if (driving.some((c) => usable.has(c))) return null;
   const suggestion = [...filtered, ...ordered].slice(0, PLUGIN_INDEX_MAX_COLUMNS);
   return (
     `${args.label}: no index covers this read of "${args.table}" (it ${filtered.length > 0 ? "filters" : "orders"} by ${driving.join(", ")}). ` +
