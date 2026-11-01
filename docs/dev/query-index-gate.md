@@ -54,7 +54,14 @@ O(n) per call — and O(n²) per Stage when it runs once per page.
    `UPDATE ONLY … SET … = NULL`, `DELETE FROM ONLY …`) are classified `fk`;
    for core tables the FK lint owns those, for plugin tables (created at
    activation, not by migrations) the plan gate keeps them.
-5. **Verdict.** Every finding must match an `ALLOWED` or a `PENDING` entry
+   A whole-index walk with a filter is listed as **advisory** and never
+   fails the gate: on a near-empty test table the planner may walk an index
+   for its order at the same cost as the lookup it takes on real data (an
+   empty `media_assets` showed `WHERE id = $1` walking a partial index),
+   so unlike a Seq Scan it proves nothing. Walks where another index leads
+   with a filter column are dropped from the advisory list altogether
+   (`indexes.sql`).
+5. **Verdict.** Every Seq Scan finding must match an `ALLOWED` or a `PENDING` entry
    of `allowlist.ts`, and every entry must match at least one finding —
    a stale entry fails too. The job summary and the `query-index-gate`
    artifact (`seq.log`, `findings.json`) carry the details.
@@ -91,7 +98,9 @@ issue fixes; the fixing PR deletes the entries it makes stale.
 
 `cms_admin child(parent_id) -> parent` means deleting a `parent` row looks
 the children up by `parent_id` without an index: a full scan of `child` per
-deleted parent. Add a non-partial index with the FK columns leading, or an
+deleted parent. Add a non-partial index with the FK columns leading (a
+partial one counts only with exactly `WHERE <fk> IS NOT NULL`, which the
+lookup's `<fk> = $1` implies), or an
 `FK_EXEMPTIONS` entry in `fk-index-lint.ts` (FKs onto `actors` are exempt as
 a class: no operation deletes an actor). A stale entry fails the lint the
 same way.
@@ -112,11 +121,15 @@ postgres -D /tmp/gate-pg -p 55493 -c listen_addresses=localhost \
   -c "log_line_prefix=@@%a@@ " &
 # bootstrap.sh + `bun run db:migrate` against port 55493, then:
 bun run test $(git ls-files '*.integration.test.ts')
-for db in cms_admin cms_public; do
-  psql -h localhost -p 55493 -U postgres -d $db -At -F "$(printf '\t')" \
-    -f scripts/query-index-gate/policies.sql
-done > /tmp/policies.tsv
-bun scripts/query-index-gate/analyze.ts /tmp/seq.log --policies /tmp/policies.tsv
+psql -h localhost -p 55493 -U postgres -d postgres -c 'SELECT 1'   # flushes the last plan
+for dump in policies indexes; do
+  for db in cms_admin cms_public; do
+    psql -h localhost -p 55493 -U postgres -d $db -At -F "$(printf '\t')" \
+      -f scripts/query-index-gate/$dump.sql
+  done > /tmp/$dump.tsv
+done
+bun scripts/query-index-gate/analyze.ts /tmp/seq.log \
+  --policies /tmp/policies.tsv --indexes /tmp/indexes.tsv
 ```
 
 One test file is enough to check a single change; stale entries are only

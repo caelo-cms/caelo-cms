@@ -11,7 +11,8 @@
  * are exactly the FK columns, each of those is a full scan of the child,
  * per parent row. A PARTIAL index does not count: the RI statement carries
  * no `WHERE deleted_at IS NULL`, so the planner cannot use it — those FKs
- * look indexed in review and are not.
+ * look indexed in review and are not. The one exception is a predicate of
+ * exactly `<fk> IS NOT NULL`, which the lookup's `<fk> = $1` implies.
  *
  * {@link FK_EXEMPTIONS} carries the reasoned exceptions; {@link FK_PENDING}
  * the known gaps a tracked issue closes. A stale entry of either fails the
@@ -74,10 +75,8 @@ export const FK_PENDING: readonly { readonly key: string; readonly issue: 1291 }
   "cms_admin user_pending_actions(user_id) -> users",
   "cms_admin layout_modules(module_id) -> modules",
   "cms_admin content_instances(module_id) -> modules",
-  "cms_admin chat_sessions(template_id) -> templates",
   "cms_admin template_pending_actions(template_id) -> templates",
   "cms_admin pages(parent_page_id) -> pages",
-  "cms_admin chat_sessions(page_id) -> pages",
   "cms_admin static_bakes(page_id) -> pages",
   "cms_admin import_pages(accepted_page_id) -> pages",
   "cms_admin quality_acceptances(page_id) -> pages",
@@ -95,7 +94,6 @@ export const FK_PENDING: readonly { readonly key: string; readonly issue: 1291 }
   "cms_admin skill_proposals(chat_session_id) -> chat_sessions",
   "cms_admin subagent_runs(subagent_chat_session_id) -> chat_sessions",
   "cms_admin plugin_rate_limit_proposals(chat_session_id) -> chat_sessions",
-  "cms_admin import_runs(chat_session_id) -> chat_sessions",
   "cms_admin deploy_pending_actions(chat_session_id) -> chat_sessions",
   "cms_admin layout_pending_actions(chat_session_id) -> chat_sessions",
   "cms_admin user_pending_actions(chat_session_id) -> chat_sessions",
@@ -106,7 +104,6 @@ export const FK_PENDING: readonly { readonly key: string; readonly issue: 1291 }
   "cms_admin mcp_token_pending_actions(chat_session_id) -> chat_sessions",
   "cms_admin template_pending_actions(chat_session_id) -> chat_sessions",
   "cms_admin domain_pending_actions(chat_session_id) -> chat_sessions",
-  "cms_admin tool_approval_actions(chat_session_id) -> chat_sessions",
   "cms_admin theme_pending_actions(chat_session_id) -> chat_sessions",
   "cms_admin page_edit_log(chat_session_id) -> chat_sessions",
   "cms_admin image_requests(chat_session_id) -> chat_sessions",
@@ -132,16 +129,11 @@ export const FK_PENDING: readonly { readonly key: string; readonly issue: 1291 }
   "cms_admin themes(logo_media_id) -> media_assets",
   "cms_admin themes(social_share_media_id) -> media_assets",
   "cms_admin genesis_drafts(reference_asset_id) -> media_assets",
-  "cms_admin image_requests(output_media_id) -> media_assets",
   "cms_admin skill_proposals(resulting_skill_id) -> skills",
   "cms_admin skill_pin_defaults(skill_id) -> skills",
-  "cms_admin ai_calls(plugin_id) -> plugins",
-  "cms_admin skills(plugin_id) -> plugins",
   "cms_admin plugin_pending_actions(plugin_id) -> plugins",
   "cms_admin image_requests(plugin_id) -> plugins",
   "cms_admin plugin_errors(plugin_id) -> plugins",
-  "cms_admin list_types(plugin_id) -> plugins",
-  "cms_admin change_consumers(plugin_id) -> plugins",
   "cms_admin plugin_rate_limit_overrides(profile_name) -> rate_limit_profiles",
   "cms_admin domain_pending_actions(applied_domain_id) -> domains",
   "cms_admin domain_pending_actions(domain_id) -> domains",
@@ -157,7 +149,6 @@ export const FK_PENDING: readonly { readonly key: string; readonly issue: 1291 }
   "cms_admin quality_baselines(updated_by_run) -> quality_audit_runs",
   "cms_admin quality_acceptances(audit_run_id) -> quality_audit_runs",
   "cms_admin quality_pending_actions(audit_run_id) -> quality_audit_runs",
-  "cms_admin chat_agent_runs(parent_run_id) -> chat_agent_runs",
   "cms_admin platform_update_notifications(request_id) -> platform_update_requests",
   "cms_admin chat_agent_runs(mcp_remote_connection_id) -> mcp_remote_connections",
   "cms_admin chat_turn_approvals(mcp_remote_connection_id) -> mcp_remote_connections",
@@ -185,9 +176,16 @@ export const UNINDEXED_FOREIGN_KEYS_SQL = `
     AND ns.nspname NOT LIKE 'plugin\\_%'
     AND NOT EXISTS (
       SELECT 1 FROM pg_index i
-      WHERE i.indrelid = c.conrelid AND i.indisvalid AND i.indpred IS NULL
+      WHERE i.indrelid = c.conrelid AND i.indisvalid
         AND (i.indkey::int2[])[0:cardinality(c.conkey) - 1] @> c.conkey
-        AND (i.indkey::int2[])[0:cardinality(c.conkey) - 1] <@ c.conkey)
+        AND (i.indkey::int2[])[0:cardinality(c.conkey) - 1] <@ c.conkey
+        AND (i.indpred IS NULL
+             -- "WHERE fk IS NOT NULL" is implied by the RI lookup's
+             -- "fk = $1" (a strict operator), so the planner uses it.
+             OR (cardinality(c.conkey) = 1
+                 AND pg_get_expr(i.indpred, i.indrelid) = format('(%I IS NOT NULL)',
+                       (SELECT attname FROM pg_attribute
+                         WHERE attrelid = c.conrelid AND attnum = c.conkey[1])))))
   ORDER BY 1, 2`;
 
 /** The lint's verdict over the unindexed FKs of both databases. */

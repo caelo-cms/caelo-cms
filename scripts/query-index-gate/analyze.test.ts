@@ -8,8 +8,8 @@ import {
   evaluate,
   isRiStatement,
   normaliseFilter,
+  parseCatalogTsv,
   parsePlanLog,
-  parsePolicies,
   policyTermsOf,
   renderReport,
 } from "./analyze.js";
@@ -80,6 +80,13 @@ describe("query index gate analyzer (#1293)", () => {
   it("reports a whole-index walk with a filter, not an index lookup", () => {
     const chat = findings.filter((f) => f.relation === "public.chat_sessions");
     expect(chat.map((f) => [f.filter, f.scan])).toEqual([["(kind = ?)", "index"]]);
+    // An index leading with the filter's column: the walk was a cost tie on
+    // a near-empty table, not a missing index.
+    const withIndex = distinctFindings(entries, {
+      policies: new Map(),
+      leadingColumns: new Map([["public.chat_sessions", ["kind"]]]),
+    });
+    expect(withIndex.some((f) => f.relation === "public.chat_sessions")).toBe(false);
   });
 
   it("fails unexplained findings and leaves core FK checks to the FK lint", () => {
@@ -87,9 +94,10 @@ describe("query index gate analyzer (#1293)", () => {
     expect(v.coveredByFkLint).toBe(1);
     expect(v.violations.map((f) => f.relation).sort()).toEqual([
       "plugin_forms.submissions",
-      "public.chat_sessions",
       "public.redirects",
     ]);
+    // A whole-index walk is advisory: on a near-empty table it can tie with a lookup.
+    expect(v.advisory.map((f) => f.relation)).toEqual(["public.chat_sessions"]);
     expect(renderReport(v, entries.length)).toContain("unindexed filter");
   });
 
@@ -97,18 +105,17 @@ describe("query index gate analyzer (#1293)", () => {
     const allowed = [{ table: "public.redirects", reason: "test" }];
     const pending = [
       { table: "plugin_forms.*", issue: 1292 as const },
-      { table: "public.chat_sessions", filter: "(kind = ?)", issue: 1291 as const },
       { table: "public.gone", issue: 1291 as const },
     ];
     const v = evaluate(findings, allowed, pending);
     expect(v.violations).toEqual([]);
     expect(v.allowed).toBe(1);
-    expect(v.pending).toBe(2);
+    expect(v.pending).toBe(1);
     expect(v.stale).toEqual([{ table: "public.gone", issue: 1291 }]);
   });
 
   it("drops the relation's RLS policy terms, also OR-ed permissive ones", () => {
-    const quals = parsePolicies(
+    const quals = parseCatalogTsv(
       [
         "public.mcp_tokens\t(caelo_mcp_tokens_manage_all() OR (actor_id = caelo_mcp_token_principal()))",
         "public.mcp_tokens\t(NULLIF(current_setting('caelo.actor_kind'::text, true), ''::text) IS NOT NULL)",

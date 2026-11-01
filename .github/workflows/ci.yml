@@ -395,20 +395,23 @@ jobs:
           cat "$GATE_DIR/filter-stats.txt"
           ls -la "$GATE_DIR"
 
-      - name: Dump RLS policies (the analyzer drops their terms)
+      - name: Dump RLS policies and index leading columns (analyzer input)
         if: always()
         run: |
-          for db in cms_admin cms_public; do
-            docker exec gate-pg psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$db" \
-              -At -F "$(printf '\t')" -f /gate/policies.sql
-          done > "$GATE_DIR/policies.tsv"
-          wc -l "$GATE_DIR/policies.tsv"
+          for dump in policies indexes; do
+            for db in cms_admin cms_public; do
+              docker exec gate-pg psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$db" \
+                -At -F "$(printf '\t')" -f "/gate/$dump.sql"
+            done > "$GATE_DIR/$dump.tsv"
+            wc -l "$GATE_DIR/$dump.tsv"
+          done
 
       - name: Analyze plans
         if: always()
         run: |
           bun scripts/query-index-gate/analyze.ts "$GATE_DIR/seq.log" \
-            --policies "$GATE_DIR/policies.tsv" --json "$GATE_DIR/findings.json"
+            --policies "$GATE_DIR/policies.tsv" --indexes "$GATE_DIR/indexes.tsv" \
+            --json "$GATE_DIR/findings.json"
 
       - name: Upload plan log + findings
         if: always()

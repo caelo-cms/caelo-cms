@@ -48,7 +48,7 @@ describe("FK index lint (#1293)", () => {
     expect(verdict.stale).toEqual([]);
   });
 
-  it("fails a new FK without an index, and one whose only index is partial", async () => {
+  it("fails a new FK without an index or with a partial one; `fk IS NOT NULL` counts", async () => {
     // Temporary tables live in this session's pg_temp schema, which the
     // catalog query reads like any other: the lint sees them as it would
     // a migration's new FK, and they vanish with the connection.
@@ -63,7 +63,9 @@ describe("FK index lint (#1293)", () => {
                                        parent_id int REFERENCES lint_parent (id));
           CREATE INDEX ON lint_soft (parent_id) WHERE deleted_at IS NULL;
           CREATE TEMP TABLE lint_indexed (parent_id int REFERENCES lint_parent (id), x int);
-          CREATE INDEX ON lint_indexed (parent_id, x);`);
+          CREATE INDEX ON lint_indexed (parent_id, x);
+          CREATE TEMP TABLE lint_optional (parent_id int REFERENCES lint_parent (id));
+          CREATE INDEX ON lint_optional (parent_id) WHERE parent_id IS NOT NULL;`);
         const rows = (await conn.unsafe(UNINDEXED_FOREIGN_KEYS_SQL)) as unknown as Omit<
           ForeignKeyRow,
           "db"

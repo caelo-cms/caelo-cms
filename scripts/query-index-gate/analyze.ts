@@ -96,28 +96,42 @@ export function isRiStatement(query: string): boolean {
 const FULL_SCAN =
   /(?:(Seq) Scan on|Index (?:Only )?Scan (?:Backward )?using \S+ on) (\S+)(?: (?!\()(\S+))?/;
 
-/** RLS policy quals per schema-qualified relation (`pg_policies.qual`). */
-export type PolicyQuals = ReadonlyMap<string, readonly string[]>;
+/** What the gate reads from the catalogs after the run, per schema-qualified relation. */
+export interface Catalog {
+  /** RLS policy quals (`policies.sql`). */
+  readonly policies: ReadonlyMap<string, readonly string[]>;
+  /** Leading key column of each index (`indexes.sql`). */
+  readonly leadingColumns: ReadonlyMap<string, readonly string[]>;
+}
+
+const EMPTY_CATALOG: Catalog = { policies: new Map(), leadingColumns: new Map() };
 
 /**
- * Parse the policy dump the gate job writes: one `schema.table<TAB>qual`
- * line per policy, whitespace in the qual collapsed.
+ * Parse a catalog dump the gate job writes (`policies.sql`,
+ * `indexes.sql`): one `schema.table<TAB>value` line per row.
  */
-export function parsePolicies(tsv: string): Map<string, string[]> {
+export function parseCatalogTsv(tsv: string): Map<string, string[]> {
   const out = new Map<string, string[]>();
   for (const line of tsv.split("\n")) {
     const tab = line.indexOf("\t");
     if (tab <= 0) continue;
     const relation = line.slice(0, tab);
-    const quals = out.get(relation) ?? [];
-    quals.push(line.slice(tab + 1));
-    out.set(relation, quals);
+    const values = out.get(relation) ?? [];
+    values.push(line.slice(tab + 1));
+    out.set(relation, values);
   }
   return out;
 }
 
+/** Column names a normalised filter reads (identifiers not called as functions). */
+function filterColumns(filter: string): string[] {
+  return (filter.match(/\b[a-z_][a-z0-9_]*\b(?!\s*\()/gi) ?? []).filter(
+    (w) => !KEYWORDS.has(w.toLowerCase()),
+  );
+}
+
 /** The full scans of `entry` that carry a filter of the op's own. */
-function scansOf(entry: PlanEntry, policies: PolicyQuals): ScanFinding[] {
+function scansOf(entry: PlanEntry, catalog: Catalog): ScanFinding[] {
   const out: ScanFinding[] = [];
   const kind = isRiStatement(entry.query) ? "fk" : "filter";
   const lines = entry.lines;
@@ -137,20 +151,27 @@ function scansOf(entry: PlanEntry, policies: PolicyQuals): ScanFinding[] {
       if (filter) raw = filter[1] ?? "";
       if (/^\s*Index Cond: /.test(next)) indexCond = true;
     }
-    if (indexCond) continue;
+    if (indexCond || relation.startsWith("pg_catalog.")) continue;
     const ownNames = [alias, relation.split(".").pop() ?? ""];
     const filter = normaliseFilter(
       raw,
       ownNames,
-      policyTermsOf(policies.get(relation) ?? [], ownNames),
+      policyTermsOf(catalog.policies.get(relation) ?? [], ownNames),
     );
     if (filter === "") continue;
+    // A whole-index walk where another index leads with a filter column is
+    // a cost tie on a near-empty test table, not a missing index: with
+    // rows, the planner takes the lookup (seq scans have no such tie —
+    // `enable_seqscan=off` prices them out).
+    const isIndexWalk = scan[1] !== "Seq";
+    const leading = catalog.leadingColumns.get(relation) ?? [];
+    if (isIndexWalk && filterColumns(filter).some((c) => leading.includes(c))) continue;
     out.push({
       op: entry.holder,
       relation,
       filter,
       kind,
-      scan: scan[1] === "Seq" ? "seq" : "index",
+      scan: isIndexWalk ? "index" : "seq",
       sample: entry.query.slice(0, 200),
     });
   }
@@ -259,6 +280,8 @@ function prepare(raw: string, ownNames: readonly string[]): string {
     .replace(/\$\d+/g, "?")
     .replace(/::"?[a-z_][a-z0-9_ ]*"?(\[\])?/gi, "")
     .replace(/\b\d+(\.\d+)?\b/g, "?")
+    // An inlined array literal's length is a value, not a different filter.
+    .replace(/ARRAY\[\?(?:, \?)*\]/g, "ARRAY[?]")
     .replace(/\s+/g, " ")
     .replace(/\( /g, "(")
     .replace(/ \)/g, ")");
@@ -332,6 +355,8 @@ export function ruleMatches(rule: GateRule, finding: ScanFinding): boolean {
 export interface GateVerdict {
   /** Distinct findings nothing explains: each one fails the gate. */
   readonly violations: readonly ScanFinding[];
+  /** Whole-index walks with a filter: listed for a reviewer, never failing. */
+  readonly advisory: readonly ScanFinding[];
   readonly allowed: number;
   readonly pending: number;
   /** Core FK findings left to the schema lint. */
@@ -345,11 +370,11 @@ const PLUGIN_SCHEMA = /^plugin_[a-z0-9_]+\./;
 /** Distinct findings of a run, one per (op, relation, filter, kind). */
 export function distinctFindings(
   entries: readonly PlanEntry[],
-  policies: PolicyQuals = new Map(),
+  catalog: Catalog = EMPTY_CATALOG,
 ): ScanFinding[] {
   const byKey = new Map<string, ScanFinding>();
   for (const entry of entries) {
-    for (const f of scansOf(entry, policies)) {
+    for (const f of scansOf(entry, catalog)) {
       const key = `${f.kind}|${f.op}|${f.relation}|${f.filter}`;
       if (!byKey.has(key)) byKey.set(key, f);
     }
@@ -373,9 +398,18 @@ export function evaluate(
   let allowedCount = 0;
   let pendingCount = 0;
   let coveredByFkLint = 0;
+  const advisory: ScanFinding[] = [];
   for (const f of findings) {
     if (f.kind === "fk" && !PLUGIN_SCHEMA.test(f.relation)) {
       coveredByFkLint++;
+      continue;
+    }
+    // A whole-index walk is reported, never gated: on a near-empty test
+    // table it costs the same as the lookup a join or a cursor would do with
+    // rows, so it does not prove a missing index the way a Seq Scan under
+    // `enable_seqscan=off` does.
+    if (f.scan === "index") {
+      advisory.push(f);
       continue;
     }
     const allow = allowed.find((r) => ruleMatches(r, f));
@@ -395,6 +429,7 @@ export function evaluate(
   const stale = [...allowed, ...pending].filter((r) => !used.has(r));
   return {
     violations,
+    advisory,
     allowed: allowedCount,
     pending: pendingCount,
     coveredByFkLint,
@@ -415,12 +450,7 @@ export function renderReport(verdict: GateVerdict, entries: number): string {
       "Each is a query whose filter no index serves (the run uses `enable_seqscan=off`). Add an index (a migration), or — for a singleton table or a deliberate full read — an `ALLOWED` entry with its reason in `scripts/query-index-gate/allowlist.ts`. See docs/dev/query-index-gate.md.",
       "",
     );
-    for (const v of verdict.violations) {
-      out.push(
-        `- \`${v.relation}\` · op \`${v.op}\` · ${v.kind === "fk" ? "FK check" : "filter"} \`${v.filter}\`${v.scan === "index" ? " (whole index walked for its order)" : ""}`,
-        `  - statement: \`${v.sample.replace(/`/g, "'")}\``,
-      );
-    }
+    for (const v of verdict.violations) out.push(...findingLines(v));
     out.push("");
   }
   if (verdict.stale.length > 0) {
@@ -432,27 +462,51 @@ export function renderReport(verdict: GateVerdict, entries: number): string {
     for (const s of verdict.stale) out.push(`- ${JSON.stringify(s)}`);
     out.push("");
   }
+  if (verdict.advisory.length > 0) {
+    out.push(
+      `<details><summary>${verdict.advisory.length} whole-index walks with a filter (advisory, not gated)</summary>`,
+      "",
+      "The planner walked a whole index for its order and filtered each row. On a near-empty test table that can be a cost tie with the lookup it takes on real data, so these do not fail the gate; one on a growing table is worth a look.",
+      "",
+    );
+    for (const a of verdict.advisory) out.push(...findingLines(a));
+    out.push("", "</details>", "");
+  }
   if (verdict.violations.length === 0 && verdict.stale.length === 0) out.push("Gate passed.");
   return out.join("\n");
+}
+
+function findingLines(f: ScanFinding): string[] {
+  return [
+    `- \`${f.relation}\` · op \`${f.op}\` · ${f.kind === "fk" ? "FK check" : "filter"} \`${f.filter}\``,
+    `  - statement: \`${f.sample.replace(/`/g, "'")}\``,
+  ];
 }
 
 if (import.meta.main) {
   const { values, positionals } = parseArgs({
     args: process.argv.slice(2),
-    options: { json: { type: "string" }, policies: { type: "string" } },
+    options: {
+      json: { type: "string" },
+      policies: { type: "string" },
+      indexes: { type: "string" },
+    },
     allowPositionals: true,
   });
   const logPath = positionals[0];
-  if (!logPath || !values.policies) {
+  if (!logPath || !values.policies || !values.indexes) {
     console.error(
-      "usage: bun scripts/query-index-gate/analyze.ts <filtered-plan-log> --policies <pg_policies.tsv> [--json <out>]",
+      "usage: bun scripts/query-index-gate/analyze.ts <filtered-plan-log> --policies <policies.tsv> --indexes <indexes.tsv> [--json <out>]",
     );
     process.exit(2);
   }
-  const policies = parsePolicies(await Bun.file(values.policies).text());
-  if (policies.size === 0) {
+  const catalog: Catalog = {
+    policies: parseCatalogTsv(await Bun.file(values.policies).text()),
+    leadingColumns: parseCatalogTsv(await Bun.file(values.indexes).text()),
+  };
+  if (catalog.policies.size === 0 || catalog.leadingColumns.size === 0) {
     console.error(
-      `[query-index-gate] ${values.policies} lists no RLS policy: the dump failed. Every table has one (CLAUDE.md §2), so the gate cannot tell policy terms from op filters without it.`,
+      `[query-index-gate] the catalog dumps (${values.policies}, ${values.indexes}) are empty: the dump step failed. Every table has an RLS policy and a primary key, so the gate cannot judge plans without them.`,
     );
     process.exit(1);
   }
@@ -463,7 +517,7 @@ if (import.meta.main) {
     );
     process.exit(1);
   }
-  const findings = distinctFindings(entries, policies);
+  const findings = distinctFindings(entries, catalog);
   const verdict = evaluate(findings);
   const report = renderReport(verdict, entries.length);
   console.log(report);
