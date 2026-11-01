@@ -188,7 +188,7 @@ export async function loadPendingChangesFor(
       -- any chat and the chat's own change of it are one pending entity.
       SELECT DISTINCT ON (c.id, d.entity_kind, d.entity_id, d.entity_sub)
              c.id AS chat, c.branch, d.entity_kind AS kind, d.entity_id,
-             d.snapshot_row_id, d.page_id, d.plugin_id, d.table_name,
+             d.site_snapshot_id, d.snapshot_row_id, d.page_id, d.plugin_id, d.table_name,
              bool_or(d.seo_changed)
                OVER (PARTITION BY c.id, d.entity_kind, d.entity_id, d.entity_sub) AS seo_changed
         FROM c
@@ -258,10 +258,12 @@ export async function loadPendingChangesFor(
                   FROM plugin_row_snapshots x WHERE x.id = h.snapshot_row_id)
                || left(h.entity_id::text, 8)
            END AS detail,
+           -- The mark of THIS pending state (marks are keyed per snapshot):
+           -- a mark of an older snapshot is stale, the newer edit is pending.
            CASE WHEN h.kind = 'layoutChrome' THEN 'pending' ELSE COALESCE(
              (SELECT mk.stage_state FROM chat_branch_publish_marks mk
                WHERE mk.chat_branch_id = h.branch AND mk.entity_kind = h.kind
-                 AND mk.entity_id = h.entity_id),
+                 AND mk.entity_id = h.entity_id AND mk.site_snapshot_id = h.site_snapshot_id),
              'pending') END AS stage_state,
            CASE WHEN h.kind = 'layoutChrome'
              THEN (SELECT x.description FROM site_snapshots x WHERE x.id = h.entity_id) END AS description,

@@ -463,8 +463,12 @@ $fn$;
 /**
  * Maintainer on chat_sessions: a snapshot's owner is resolved through its
  * chat task's session (caelo_chat_owner: a subagent's task belongs to its
- * parent chat). Deleting a subagent session (subagent_runs GC) changes that
- * answer for its pending snapshots, so their keys are recomputed.
+ * parent chat). Deleting a subagent session, or unlinking one from its
+ * parent (the self-FK sets parent_chat_session_id NULL when the parent is
+ * deleted), changes that answer for its pending snapshots, so their keys
+ * are recomputed. Session GC keeps a subagent session that still owns
+ * pending snapshots (subagent_runs.gc_old_sessions), so this is the net
+ * for any other path, not the normal one.
  */
 CREATE FUNCTION caelo_draft_head_sessions() RETURNS trigger
   LANGUAGE plpgsql
@@ -473,11 +477,30 @@ DECLARE
   v_headers uuid[];
   v_branches uuid[];
 BEGIN
-  SELECT array_agg(h.id), array_agg(DISTINCT h.chat_branch_id)
-    INTO v_headers, v_branches
-    FROM site_snapshots h
-   WHERE h.chat_task_id IN (SELECT o.id FROM old_rows o WHERE o.parent_chat_session_id IS NOT NULL)
-     AND h.chat_branch_id IS NOT NULL AND h.staged_at IS NULL AND h.undone_at IS NULL;
+  -- Two statements: a DELETE trigger has no new_rows to name.
+  IF TG_OP = 'DELETE' THEN
+    SELECT array_agg(h.id), array_agg(DISTINCT h.chat_branch_id)
+      INTO v_headers, v_branches
+      FROM site_snapshots h
+     WHERE h.chat_task_id IN (SELECT o.id FROM old_rows o WHERE o.parent_chat_session_id IS NOT NULL)
+       AND h.chat_branch_id IS NOT NULL AND h.staged_at IS NULL AND h.undone_at IS NULL;
+  ELSE
+    -- Sessions are updated on every chat turn (last_active_at): leave at
+    -- once unless a parent link changed.
+    IF NOT EXISTS (
+      SELECT 1 FROM old_rows o JOIN new_rows n ON n.id = o.id
+       WHERE n.parent_chat_session_id IS DISTINCT FROM o.parent_chat_session_id
+    ) THEN
+      RETURN NULL;
+    END IF;
+    SELECT array_agg(h.id), array_agg(DISTINCT h.chat_branch_id)
+      INTO v_headers, v_branches
+      FROM site_snapshots h
+     WHERE h.chat_task_id IN (
+             SELECT o.id FROM old_rows o JOIN new_rows n ON n.id = o.id
+              WHERE n.parent_chat_session_id IS DISTINCT FROM o.parent_chat_session_id)
+       AND h.chat_branch_id IS NOT NULL AND h.staged_at IS NULL AND h.undone_at IS NULL;
+  END IF;
   PERFORM caelo_draft_head_recompute_headers(v_headers, v_branches);
   RETURN NULL;
 END
@@ -546,6 +569,9 @@ CREATE TRIGGER caelo_draft_head_truncate AFTER TRUNCATE ON site_snapshots
   FOR EACH STATEMENT EXECUTE FUNCTION caelo_draft_head_headers();
 CREATE TRIGGER caelo_draft_head_delete AFTER DELETE ON chat_sessions
   REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION caelo_draft_head_sessions();
+CREATE TRIGGER caelo_draft_head_update AFTER UPDATE ON chat_sessions
+  REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
   FOR EACH STATEMENT EXECUTE FUNCTION caelo_draft_head_sessions();
 
 -- Backfill (rule 3): the head of every branch as the history says now.

@@ -406,6 +406,88 @@ describe("#1268 draft head", () => {
     expect(await drift()).toEqual([]);
   });
 
+  it("follows a subagent unlinked from its parent, and session GC keeps a session that owns pending changes", async () => {
+    const parent = await chat("unlink parent");
+    const m = await seedModule("unlink");
+    const sub = await asSystem(
+      (tx) =>
+        tx`INSERT INTO chat_sessions (title, created_by, chat_branch_id, branch_kind,
+                                      parent_chat_session_id, subagent_role)
+           SELECT ${`${PFX}unlink-sub`}, created_by, chat_branch_id, branch_kind, id, 'worker'
+             FROM chat_sessions WHERE id = ${parent.id}::uuid
+           RETURNING id::text AS id` as Promise<{ id: string }[]>,
+    );
+    const subId = sub[0]?.id ?? "";
+    await asSystem(
+      (tx) =>
+        tx`WITH h AS (
+             INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id)
+             VALUES (${HUMAN}::uuid, 'modules.update', ${`${PFX}unlink`}, ${subId}::uuid, ${parent.branch}::uuid)
+             RETURNING id)
+           INSERT INTO module_snapshots (site_snapshot_id, module_id, state)
+           SELECT h.id, ${m}::uuid, '{"html": "<p>unlink</p>"}'::jsonb FROM h`,
+    );
+    // A finished run long past retention: GC must still keep the session.
+    await asSystem(
+      (tx) =>
+        tx`INSERT INTO subagent_runs (parent_chat_session_id, subagent_chat_session_id, role, task,
+                                      status, finished_at)
+           VALUES (${parent.id}::uuid, ${subId}::uuid, 'worker', 'test', 'completed',
+                   now() - interval '90 days')`,
+    );
+    const gc = await op<{ sessionsDeleted: number }>(SYS, "subagent_runs.gc_old_sessions", {
+      retentionDays: 30,
+    });
+    expect(gc.sessionsDeleted).toBe(0);
+    const owner = async () =>
+      (await head(parent.branch)).find((r) => r.entity === m)?.owner ?? null;
+    expect(await owner()).toBe(parent.id);
+    // What the self-FK does when the parent is deleted.
+    await asSystem(
+      (tx) => tx`UPDATE chat_sessions SET parent_chat_session_id = NULL WHERE id = ${subId}::uuid`,
+    );
+    expect(await owner()).toBe(subId);
+    expect(await drift()).toEqual([]);
+  });
+
+  it("lists an entity with several stage marks once, pending when its newest edit is unmarked", async () => {
+    const m = await seedModule("marks");
+    const exp = await op<{ chatSessionId: string; chatBranchId: string }>(
+      SYS,
+      "chat.create_session",
+      { title: `${PFX}marks`, isolation: "experiment" },
+    );
+    const ctx: ExecutionContext = {
+      actorId: HUMAN,
+      actorKind: "ai",
+      requestId: "t1268-marks",
+      chatBranchId: exp.chatBranchId,
+      chatTaskId: exp.chatSessionId,
+    };
+    await op(ctx, "modules.update", { moduleId: m, html: "<p>marks 1</p>" });
+    await op(ctx, "modules.update", { moduleId: m, html: "<p>marks 2</p>" });
+    await op(ctx, "modules.update", { moduleId: m, html: "<p>marks 3</p>" });
+    // Two marks of the module, on the two OLDER snapshots of the three.
+    const marked = await asSystem(
+      (tx) =>
+        tx`INSERT INTO chat_branch_publish_marks (chat_branch_id, entity_kind, entity_id, site_snapshot_id, stage_state)
+           SELECT ${exp.chatBranchId}::uuid, 'module', ${m}::uuid, o.id,
+                  CASE WHEN o.n = 1 THEN 'published' ELSE 'staged' END
+             FROM (SELECT ss.id, row_number() OVER (ORDER BY ss.created_at) AS n
+                     FROM module_snapshots ms JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+                    WHERE ms.module_id = ${m}::uuid AND ss.chat_branch_id = ${exp.chatBranchId}::uuid) o
+            WHERE o.n <= 2
+           RETURNING 1` as Promise<unknown[]>,
+    );
+    expect(marked.length).toBe(2);
+    const list = await op<{
+      pending: { globals: { kind: string; entityId: string }[] };
+      staged: { globals: { kind: string; entityId: string }[] };
+    }>(SYS, "chat.list_pending_changes", { chatSessionId: exp.chatSessionId });
+    expect(list.pending.globals.filter((g) => g.entityId === m).length).toBe(1);
+    expect(list.staged.globals.filter((g) => g.entityId === m).length).toBe(0);
+  });
+
   it("mirrors the SQL registry of head kinds", async () => {
     const rows = await asSystem(
       (tx) => tx`SELECT kind FROM caelo_draft_head_tables()` as Promise<{ kind: string }[]>,
