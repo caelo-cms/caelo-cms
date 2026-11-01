@@ -127,10 +127,15 @@ export class BuildModel {
     return this.pathOf.has(pageId) && pageId !== this.state.notFoundPageId;
   }
 
-  /** The PUBLISHED language versions of a page, itself included, by locale. */
+  /**
+   * The PUBLISHED language versions of a page, itself included, by
+   * locale. None for the 404 page: it renders no hreflang and no
+   * language switch entries (#1305).
+   */
   versionsOf(pageId: string): Map<string, string> {
     const v = this.variantOf.get(pageId);
     const out = new Map<string, string>();
+    if (pageId === this.state.notFoundPageId) return out;
     if (!v) {
       if (this.isVersion(pageId)) out.set(this.defaultLocale.code, pageId);
       return out;
@@ -494,9 +499,8 @@ function hreflang(
     });
   }
 
-  // #1305 — the 404 page carries no hreflang by design (core drops the
-  // plugin's head entries there): it answers every unknown URL.
-  if (versions.size < 2 || f.pageId === model.state.notFoundPageId) return out;
+  // The 404 page has no versions (#1305), so it expects no hreflang.
+  if (versions.size < 2) return out;
   const listed = new Map<string, string | null>();
   for (const a of f.alternates) listed.set(a.hreflang.toLowerCase(), a.path);
 
