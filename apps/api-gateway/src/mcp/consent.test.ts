@@ -20,6 +20,7 @@ import {
   pkce,
   readConsent,
   registerClient,
+  tamperSealed,
 } from "./__tests__/harness.js";
 import { escapeHtml } from "./consent.js";
 
@@ -154,7 +155,7 @@ describe("consent decision (POST /authorize)", () => {
     const h = harness();
     const clientId = await registerClient(h, [CLAUDE_REDIRECT]);
     const consent = await readConsent(await h.send(query(clientId)));
-    for (const token of [clientId, `${consent.token.slice(0, -2)}AA`, "v2.x.y.z"]) {
+    for (const token of [clientId, tamperSealed(consent.token), "v2.x.y.z"]) {
       expect((await decide(h, { token, cookie: consent.cookie })).status).toBe(400);
     }
     h.advance(10 * 60 * 1000);
