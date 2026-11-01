@@ -37,6 +37,7 @@ import {
   type PluginEditorToolbarItem,
   pluginEditorToolbarItem,
 } from "./editor-toolbar.js";
+import { checkPluginIndexes, type PluginIndexes, pluginIndexes } from "./indexes.js";
 
 /**
  * Epic #1107 — the list model a plugin plans with (`docs/lists.md`): the
@@ -59,6 +60,7 @@ export {
 } from "@caelo-cms/shared/lists-model";
 export * from "./admin-panels.js";
 export * from "./editor-toolbar.js";
+export * from "./indexes.js";
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
  *  §4 "Zod at every boundary") without importing zod directly — the
  *  sandbox validator allowlists only the SDK + component-kit. */
@@ -1053,6 +1055,8 @@ export const pluginManifest = z
      *  columns may FK onto allowlisted core tables. Requires the
      *  `cms_admin_schema` capability. */
     adminSchema: pluginSchemaMap.optional(),
+    /** #1292 — see `PluginDefinition.indexes`. */
+    indexes: pluginIndexes.optional(),
     /** Operation names. Bodies live in source — the manifest just lists names. */
     operations: z.array(z.string().min(1).max(120)).min(1),
     component: pluginComponent.optional(),
@@ -1170,6 +1174,9 @@ export const pluginManifest = z
   })
   .strict()
   .superRefine((m, ctx) => {
+    checkPluginIndexes(m, (path, message) =>
+      ctx.addIssue({ code: "custom", path: ["indexes", ...path], message }),
+    );
     checkAdminPanels(m.adminPanels ?? [], m.operations, (path, message) =>
       ctx.addIssue({ code: "custom", path: ["adminPanels", ...path], message }),
     );
@@ -1365,6 +1372,14 @@ export type PluginManifest = z.infer<typeof pluginManifest>;
  *   "desc"), `anyOf` (column → list of values, a parameterised IN),
  *   `afterId` (keyset cursor over `id`, see below).
  *   No raw SQL crosses the boundary — all values are parameterised.
+ *
+ * Indexes (#1292): a read that filters, orders or takes `since`/`before`
+ * is refused unless one of the columns it uses leads an index — declared
+ * in the manifest's `indexes` (see `PluginDefinition.indexes`), or
+ * automatic (`id`; `ref:` columns in private storage). `since`/`before`
+ * use `created_at`, so a table paged by time declares
+ * `[["created_at"]]` (or `[filter column, "created_at"]`). A read with
+ * only a `limit` needs no index.
  *
  * Reading a whole table past one read's 1000 rows (#1213): page by id.
  *
@@ -2028,6 +2043,23 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly schema: PluginSchemaMap;
   /** #389 — see `pluginManifest.adminSchema`. */
   readonly adminSchema?: PluginSchemaMap;
+  /**
+   * #1292 — the indexes the plugin's reads need, per zone and table
+   * (`indexes.schema` for `schema`, `indexes.adminSchema` for
+   * `adminSchema`). `id`, `ref:` columns and the host's branch column are
+   * indexed automatically; a `list()` that filters, orders or ranges by
+   * columns none of which leads an index is refused. Emitted on every
+   * load; an index a new version drops is dropped. See `./indexes.ts`.
+   *
+   * @example
+   * ```ts
+   * indexes: {
+   *   adminSchema: { page_variants: [["group_id", "translation_status"]] },
+   *   schema: { subscribers: [{ columns: ["email_hash"], unique: true }] },
+   * }
+   * ```
+   */
+  readonly indexes?: PluginIndexes;
   readonly operations: Readonly<Record<string, PluginOperation<C>>>;
   readonly component?: PluginComponent & {
     readonly mounted?: (host: HTMLElement, ctx: PluginFrontendContext) => Promise<void> | void;
@@ -2462,6 +2494,7 @@ export function manifestFromDefinition(def: {
   readonly tier: 1 | 2;
   readonly schema: PluginSchemaMap;
   readonly adminSchema?: PluginSchemaMap;
+  readonly indexes?: PluginIndexes;
   readonly urlContributions?: ReadonlyArray<{ readonly slot: UrlSlot }>;
   readonly contributes?: ReadonlyArray<ContributionKind>;
   readonly listSources?: ReadonlyArray<PluginListSourceSpec>;
@@ -2498,6 +2531,9 @@ export function manifestFromDefinition(def: {
     tier: def.tier,
     schema: def.schema,
     ...(def.adminSchema ? { adminSchema: def.adminSchema } : {}),
+    ...(def.indexes && (def.indexes.schema || def.indexes.adminSchema)
+      ? { indexes: def.indexes }
+      : {}),
     operations: Object.keys(def.operations),
     component: def.component
       ? { tag: def.component.tag, shadowMode: def.component.shadowMode ?? "open" }

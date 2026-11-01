@@ -464,6 +464,7 @@ async function loadTier2Row(
     pluginId: row.id,
     slug: row.slug,
     schema: definition.schema,
+    indexes: definition.indexes?.schema,
   });
   await inPhase("provision", async () => {
     await opts.infra.adapter.provisionPluginPublicSchema({
@@ -475,6 +476,7 @@ async function loadTier2Row(
         pluginId: row.id,
         slug: row.slug,
         adminSchema: definition.adminSchema,
+        indexes: definition.indexes?.adminSchema,
       });
       await opts.infra.adapter.provisionPluginAdminSchema({
         pluginId: row.id,
@@ -839,6 +841,7 @@ export async function activateApprovedExternalPlugin(
       pluginId: artifact.pluginId,
       slug: manifest.slug,
       schema: manifest.schema,
+      indexes: manifest.indexes?.schema,
     });
     await opts.infra.adapter.provisionPluginPublicSchema({
       pluginId: artifact.pluginId,
@@ -849,6 +852,7 @@ export async function activateApprovedExternalPlugin(
         pluginId: artifact.pluginId,
         slug: manifest.slug,
         adminSchema: manifest.adminSchema,
+        indexes: manifest.indexes?.adminSchema,
       });
       await opts.infra.adapter.provisionPluginAdminSchema({
         pluginId: artifact.pluginId,
@@ -1221,7 +1225,12 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // IF-NOT-EXISTS guarded, so re-provisioning on every boot is an
   // idempotent no-op for an already-provisioned schema.
   if (Object.keys(def.schema).length > 0) {
-    const emitted = schemaFromSpec({ pluginId, slug: def.slug, schema: def.schema });
+    const emitted = schemaFromSpec({
+      pluginId,
+      slug: def.slug,
+      schema: def.schema,
+      indexes: def.indexes?.schema,
+    });
     await inPhase("provision", () =>
       opts.infra.adapter.provisionPluginPublicSchema({ pluginId, sql: emitted.sql }),
     );
@@ -1237,6 +1246,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       pluginId,
       slug: def.slug,
       adminSchema: def.adminSchema,
+      indexes: def.indexes?.adminSchema,
       // #635 — the declared projection's tables republish on every write.
       projectedTables: Object.keys(def.visitorProjection ?? {}),
     });

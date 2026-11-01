@@ -258,6 +258,9 @@ export async function ensureAuditJob(
       `gs://${g.bucket}`,
       `--member=${g.member}`,
       `--role=${g.role}`,
+      // A bucket whose policy already holds a conditional binding refuses an
+      // unconditional grant in non-interactive mode unless it says so.
+      "--condition=None",
       project,
       "--quiet",
       "--format=none",

@@ -235,6 +235,7 @@ describe("schemaFromSpec", () => {
       pluginId: "00000000-0000-0000-0000-000000000001",
       slug: "hello-world",
       schema: { greetings: { id: "uuid", page_id: "string", locale: "string", message: "string" } },
+      indexes: undefined,
     });
     expect(out.schemaName).toBe("plugin_hello_world");
     expect(out.sql).toContain('CREATE SCHEMA IF NOT EXISTS "plugin_hello_world"');
@@ -250,6 +251,7 @@ describe("schemaFromSpec", () => {
       pluginId: "00000000-0000-0000-0000-000000000002",
       slug: "comments",
       schema: { comments: { status: "enum:pending,approved,rejected" } },
+      indexes: undefined,
     });
     expect(out.sql).toContain("CHECK (\"status\" IN ('pending', 'approved', 'rejected'))");
   });
@@ -259,6 +261,7 @@ describe("schemaFromSpec", () => {
       pluginId: "00000000-0000-0000-0000-000000000003",
       slug: "empty",
       schema: { rows: { name: "string" } },
+      indexes: undefined,
     });
     expect(out.sql).toContain("id uuid PRIMARY KEY DEFAULT gen_random_uuid()");
   });
@@ -344,6 +347,7 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
       pluginId: PID,
       slug: "probe",
       adminSchema: { settings: { id: "uuid", label: "string" } },
+      indexes: undefined,
     });
     for (const col of [
       "caelo_chat_branch_id uuid NULL",
@@ -362,6 +366,7 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
       pluginId: PID,
       slug: "probe",
       schema: { signups: { id: "uuid", email: "string" } },
+      indexes: undefined,
     });
     expect(sql).not.toContain("caelo_chat_branch_id");
   });
@@ -372,6 +377,7 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
         pluginId: PID,
         slug: "probe",
         adminSchema: { t: { id: "uuid", caelo_chat_branch_id: "uuid" } },
+        indexes: undefined,
       }),
     ).toThrow("reserved");
     expect(() =>
@@ -379,6 +385,7 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
         pluginId: PID,
         slug: "probe",
         schema: { t: { id: "uuid", caelo_x: "string" } },
+        indexes: undefined,
       }),
     ).toThrow("reserved");
   });
@@ -389,6 +396,7 @@ describe("private storage and the former gateway_role (#613, #635)", () => {
     pluginId: "11111111-1111-4111-8111-111111111111",
     slug: "probe",
     adminSchema: { settings: { label: "string" }, categories: { key: "string" } },
+    indexes: undefined,
   };
 
   it("grants the public side nothing and revokes what the former gateway_role held", () => {
@@ -418,6 +426,7 @@ describe("identifiers past Postgres' 63-byte limit (#515 review)", () => {
         pluginId: "11111111-1111-4111-8111-111111111111",
         slug: "probe",
         adminSchema: { [`t${"x".repeat(64)}`]: { body: "text" } },
+        indexes: undefined,
       }),
     ).toThrow("63-byte");
   });
@@ -498,6 +507,7 @@ describe("security hardening — AST escapes and schema pluginId validation", ()
         pluginId: "not-a-uuid'); DROP TABLE users; --",
         slug: "probe",
         schema: { rows: { name: "string" } },
+        indexes: undefined,
       }),
     ).toThrow("not a valid UUID");
     expect(() =>
@@ -505,6 +515,7 @@ describe("security hardening — AST escapes and schema pluginId validation", ()
         pluginId: "not-a-uuid'); DROP TABLE users; --",
         slug: "probe",
         adminSchema: { rows: { name: "string" } },
+        indexes: undefined,
       }),
     ).toThrow("not a valid UUID");
   });

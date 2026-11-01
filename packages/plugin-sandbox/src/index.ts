@@ -29,6 +29,9 @@ export {
   ADMIN_REF_ALLOWLIST,
   adminSchemaFromSpec,
   type EmittedSchema,
+  PLUGIN_INDEX_PREFIX,
+  PRIVATE_LIVE_ROW_PREDICATE,
+  pluginIndexName,
   privateReadColumns,
   schemaFromSpec,
 } from "./schema.js";

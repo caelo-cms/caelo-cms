@@ -78,6 +78,7 @@ async function wipe(): Promise<void> {
 async function provisionSchemaFor(
   slug: string,
   schema: Record<string, Record<string, string>>,
+  indexes?: Parameters<typeof schemaFromSpec>[0]["indexes"],
 ): Promise<void> {
   const id = await adapter.withAdminTransaction(
     { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "p" },
@@ -89,7 +90,7 @@ async function provisionSchemaFor(
     },
   );
   if (!id) throw new Error(`provisionSchemaFor: no plugin row for ${slug}`);
-  const emitted = schemaFromSpec({ pluginId: id, slug, schema });
+  const emitted = schemaFromSpec({ pluginId: id, slug, schema, indexes });
   await adapter.provisionPluginPublicSchema({ pluginId: id, sql: emitted.sql });
 }
 
@@ -100,7 +101,7 @@ async function bootstrapForms(): Promise<void> {
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [{ definition: formsPlugin }],
   });
-  await provisionSchemaFor("forms", formsPlugin.schema);
+  await provisionSchemaFor("forms", formsPlugin.schema, formsPlugin.indexes?.schema);
 }
 
 let savedCaptcha: { provider: string; prefix: string } | undefined;
@@ -423,7 +424,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
       systemActorId: SYSTEM_ACTOR_ID,
       testPlugins: [{ definition: formsPlugin }, { definition: otherPlugin }],
     });
-    await provisionSchemaFor("forms", formsPlugin.schema);
+    await provisionSchemaFor("forms", formsPlugin.schema, formsPlugin.indexes?.schema);
     await provisionSchemaFor("test-p12-other", otherPlugin.schema);
 
     // Forms plugin: create + submit one row.

@@ -56,6 +56,8 @@ function makePlugin(slug: string) {
     version: "1.0.0",
     tier: 1,
     schema: greetingsSchema,
+    // #1292 — the reads below filter by page and message and page by time.
+    indexes: { schema: { greetings: [["page_id"], ["message", "id"], ["created_at"]] } },
     operations: {
       add: async (ctx, args) => {
         const a = args as { pageId: string; message: string; tags?: unknown };
@@ -167,6 +169,7 @@ async function provisionPluginSchema(plugin: { slug: string }): Promise<void> {
     pluginId: r,
     slug: plugin.slug,
     schema: greetingsSchema,
+    indexes: pluginA.indexes?.schema,
   });
   await adapter.provisionPluginPublicSchema({ pluginId: r, sql: emitted.sql });
 }

@@ -65,6 +65,8 @@ export function externalPluginDefinition(opts: {
     tier: 2,
     schema: manifest.schema,
     adminSchema: manifest.adminSchema,
+    // #1292 — reviewed manifest data: the broker refuses reads no index covers.
+    ...(manifest.indexes ? { indexes: manifest.indexes } : {}),
     requestedCapabilities: manifest.requestedCapabilities,
     tools: manifest.tools,
     skills: manifest.skills,

@@ -83,7 +83,7 @@ Data lists, deferrals, head contributions, build assets and URL annotations take
 
 A scope that lives for exactly one render pass may also carry a `renderId` (#1213; the editor preview sets a fresh one per render). It reaches every plugin call of the pass as `invocation.renderId`, so a plugin can read its rows once for all of the pass's composition points (international-site: the locale registry, the page's variant group, the published-variant matrix behind hreflang and the language switcher). A plugin must not keep such reads past the pass: nothing tells it when its rows or the pages changed in between. `MAIN_RENDER` carries none.
 
-**Complete reads.** One `list` returns at most 1000 rows. To read more, page by id (`orderBy: "id", orderDir: "asc"`, then `afterId: <last id>` until a short page); to read the rows of a set of values, use `anyOf: { column: [values] }` (≤ 1000 values per column) instead of one read per value. Both apply to a chat's overlay rows exactly as to live rows. A plugin never plans with "the first 1000" rows (CLAUDE.md §2).
+**Complete reads.** One `list` returns at most 1000 rows. To read more, page by id (`orderBy: "id", orderDir: "asc"`, then `afterId: <last id>` until a short page); to read the rows of a set of values, use `anyOf: { column: [values] }` (≤ 1000 values per column) instead of one read per value. Both apply to a chat's overlay rows exactly as to live rows. A plugin never plans with "the first 1000" rows (CLAUDE.md §2). A filtered, ordered or ranged read needs an index its manifest declares ([plugin-indexes.md](./plugin-indexes.md), #1292).
 
 ### 6. Plugin-side changes
 

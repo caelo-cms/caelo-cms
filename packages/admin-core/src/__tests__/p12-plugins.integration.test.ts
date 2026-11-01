@@ -81,7 +81,11 @@ async function wipe(): Promise<void> {
 }
 
 async function provisionAll(
-  plugins: ReadonlyArray<{ slug: string; schema: Record<string, Record<string, string>> }>,
+  plugins: ReadonlyArray<{
+    slug: string;
+    schema: Record<string, Record<string, string>>;
+    indexes?: { schema?: Parameters<typeof schemaFromSpec>[0]["indexes"] };
+  }>,
 ): Promise<void> {
   for (const p of plugins) {
     const id = await adapter.withAdminTransaction(
@@ -94,7 +98,12 @@ async function provisionAll(
       },
     );
     if (!id) throw new Error(`provisionAll: no plugin row for ${p.slug}`);
-    const emitted = schemaFromSpec({ pluginId: id, slug: p.slug, schema: p.schema });
+    const emitted = schemaFromSpec({
+      pluginId: id,
+      slug: p.slug,
+      schema: p.schema,
+      indexes: p.indexes?.schema,
+    });
     await adapter.provisionPluginPublicSchema({ pluginId: id, sql: emitted.sql });
   }
 }
