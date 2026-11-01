@@ -248,6 +248,8 @@ describe("query index gate analyzer (#1293)", () => {
     // An InitPlan's output is not a column of the table: nothing of the op's left.
     expect(normaliseFilter("(t.id = (InitPlan 1).col1)", ["t"])).toBe("(id = (InitPlan ?).col1)");
     expect(normaliseFilter("((InitPlan 1).col1)", ["t"])).toBe("");
+    // A quoted column named like a keyword is a column.
+    expect(normaliseFilter('(t."end" = $1)', ["t"])).toBe('("end" = ?)');
   });
 
   it("reads a live-rows-only filter as a whole-domain read, not a lookup", () => {

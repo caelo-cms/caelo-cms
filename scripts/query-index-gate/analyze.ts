@@ -349,6 +349,8 @@ function generalise(term: string): string {
 const PLAN_OUTPUT = /\((?:hashed )?(?:InitPlan|SubPlan) \?\)\.col\d+/g;
 
 function referencesColumn(term: string): boolean {
+  // A quoted identifier is a column whatever it spells ("end", "in").
+  if (/"[^"]+"(?!\s*\()/.test(term)) return true;
   const idents = term.replace(PLAN_OUTPUT, "").match(/\b[a-z_][a-z0-9_]*\b(?!\s*\()/gi) ?? [];
   return idents.some((w) => !KEYWORDS.has(w.toLowerCase()));
 }
