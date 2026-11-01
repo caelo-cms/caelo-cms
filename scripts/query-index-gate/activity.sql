@@ -5,7 +5,8 @@
 -- more than 5 s and what they wait on, so a stalled run says what stalled it.
 SELECT now()::time(0) || ' | ' || pid || ' | ' || coalesce(application_name, '') || ' | ' ||
        coalesce(state, '') || ' | ' || coalesce(wait_event_type, '') || ':' ||
-       coalesce(wait_event, '') || ' | xact ' || coalesce((now() - xact_start)::interval(0)::text, '') ||
+       coalesce(wait_event, '') || ' | blocked by ' || pg_blocking_pids(pid)::text ||
+       ' | xact ' || coalesce((now() - xact_start)::interval(0)::text, '') ||
        ' | ' || left(regexp_replace(query, '\s+', ' ', 'g'), 200)
 FROM pg_stat_activity
 WHERE state <> 'idle'
