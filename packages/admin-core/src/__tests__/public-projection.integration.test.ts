@@ -61,7 +61,17 @@ let pageId = "";
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   pageId = await admin(async (tx) => {
-    const [tpl] = (await tx`SELECT id::text AS id FROM templates LIMIT 1`) as { id: string }[];
+    // A seeded template exactly one page type lists, so the page-type
+    // trigger can default it. "LIMIT 1" alone picked whatever template the
+    // plan reached first, and under the query index gate (#1293) that was
+    // sometimes one of two page types' templates.
+    const [tpl] = (await tx`
+      SELECT t.id::text AS id FROM templates t
+       WHERE t.deleted_at IS NULL
+         AND (SELECT count(*) FROM page_types pt
+               WHERE pt.deleted_at IS NULL AND pt.chat_branch_id IS NULL
+                 AND pt.definition->'templates' ? t.id::text) = 1
+       ORDER BY t.slug LIMIT 1`) as { id: string }[];
     const [page] = (await tx`
       INSERT INTO pages (slug, title, template_id, current_path, page_type_confirmed)
       VALUES (${`${P}-page`}, 'P', ${tpl?.id}::uuid, ${`/${P}-page`}, true) RETURNING id::text AS id`) as {
