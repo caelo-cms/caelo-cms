@@ -242,6 +242,14 @@ describe("query index gate analyzer (#1293)", () => {
     );
   });
 
+  it("drops session-setting calls, not values that spell one; colN columns count", () => {
+    expect(normaliseFilter("(t.title = 'current_setting('::text)", ["t"])).toBe("(title = ?)");
+    expect(normaliseFilter("(t.col1 = $1)", ["t"])).toBe("(col1 = ?)");
+    // An InitPlan's output is not a column of the table: nothing of the op's left.
+    expect(normaliseFilter("(t.id = (InitPlan 1).col1)", ["t"])).toBe("(id = (InitPlan ?).col1)");
+    expect(normaliseFilter("((InitPlan 1).col1)", ["t"])).toBe("");
+  });
+
   it("reads a live-rows-only filter as a whole-domain read, not a lookup", () => {
     expect(normaliseFilter("((l.chat_branch_id IS NULL) OR (l.chat_branch_id = $1))", ["l"])).toBe(
       "",

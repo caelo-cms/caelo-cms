@@ -245,7 +245,8 @@ export function normaliseFilter(
     }))
     .filter(
       (t) =>
-        !t.exact.includes("current_setting(") &&
+        // A call, not a literal that happens to spell it: checked on the key.
+        !t.key.includes("current_setting(") &&
         referencesColumn(t.key) &&
         !isPolicyTerm(t.exact, policyTerms),
     )
@@ -296,7 +297,9 @@ function isPolicyTerm(term: string, policyTerms: ReadonlySet<string>): boolean {
   const alternatives = splitTop(shielded.text, " OR ").map((a) => restore(a, shielded.literals));
   return (
     alternatives.length > 1 &&
-    alternatives.every((a) => policyTerms.has(unwrap(a)) || a.includes("current_setting("))
+    alternatives.every(
+      (a) => policyTerms.has(unwrap(a)) || generalise(a).includes("current_setting("),
+    )
   );
 }
 
@@ -342,9 +345,12 @@ function generalise(term: string): string {
   );
 }
 
+/** An InitPlan / SubPlan output (`(InitPlan 1).col1`), which is no column of the table. */
+const PLAN_OUTPUT = /\((?:hashed )?(?:InitPlan|SubPlan) \?\)\.col\d+/g;
+
 function referencesColumn(term: string): boolean {
-  const idents = term.match(/\b[a-z_][a-z0-9_]*\b(?!\s*\()/gi) ?? [];
-  return idents.some((w) => !KEYWORDS.has(w.toLowerCase()) && !/^col\d+$/.test(w));
+  const idents = term.replace(PLAN_OUTPUT, "").match(/\b[a-z_][a-z0-9_]*\b(?!\s*\()/gi) ?? [];
+  return idents.some((w) => !KEYWORDS.has(w.toLowerCase()));
 }
 
 /** Strip parentheses that wrap the whole of `t`. */
