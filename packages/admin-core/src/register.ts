@@ -237,6 +237,7 @@ import {
   renewDeployRunLeaseOp,
 } from "./ops/deploy-run-lifecycle.js";
 import { getDeployRunOriginOp } from "./ops/deploy-run-origin.js";
+import { stageStatusOp } from "./ops/deploy-stage-status.js";
 import { finishTriggerOp, startTriggerOp, triggerDeployOp } from "./ops/deploy-trigger.js";
 import { hostingStatusOp, reconnectHostingDomainOp } from "./ops/domain_hosting.js";
 import {
@@ -1046,6 +1047,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(acquireStagingPublicationOp);
   registry.register(failDeployRunOp);
   registry.register(getDeployRunOp);
+  // #1288 — where the Stage runs stand, with an estimate of the time left.
+  registry.register(stageStatusOp);
   registry.register(promoteDeployOp);
   // #1225 — deploy.promote's steps: it holds no transaction while it
   // rebuilds and uploads; the live-release lease orders it with rollback,

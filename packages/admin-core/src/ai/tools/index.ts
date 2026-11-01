@@ -238,6 +238,7 @@ import { setThemeAssetTool } from "./set-theme-asset.js";
 import { setThemeMetaTool } from "./set-theme-meta.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
 import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
+import { getStageStatusTool } from "./stage-status-tool.js";
 import {
   getStagingAccessTool,
   proposeRotateStagingCredentialsTool,
@@ -508,6 +509,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // #553 — quality gate read surface (Lighthouse audits after a Stage).
   registry.register(getQualityAuditTool);
   registry.register(checkStageAuditTool);
+  // #1288 — where a Stage build stands, with an estimate of the time left.
+  registry.register(getStageStatusTool);
   registry.register(listQualityAuditsTool);
   registry.register(listQualityAcceptancesTool);
   // #553 PR 2 — the Publish gate: read, retry, and the two in-chat
