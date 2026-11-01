@@ -40,6 +40,25 @@ export interface PathMoveEffects {
 }
 
 /**
+ * The chain-collapse statement of a move set: every redirect that pointed
+ * at a moved page's old path now points at its new one. Served by
+ * `redirects_to_path_idx` (#1291) — it runs on every page move and slug
+ * change, so a scan of the redirects table here grows with the site.
+ * Exported so the plan test checks this exact statement.
+ */
+export function collapseRedirectChainsSql(moves: ReadonlyArray<Pick<PathMove, "from" | "to">>) {
+  return sql`
+    UPDATE redirects r SET to_path = m.new_path
+    FROM (VALUES ${sql.join(
+      moves.map((m) => sql`(${m.from}, ${m.to})`),
+      sql`, `,
+    )}) AS m(old_path, new_path)
+    WHERE r.to_path = m.old_path
+    RETURNING 1 AS collapsed
+  `;
+}
+
+/**
  * Apply the side effects of already-persisted path moves.
  *
  * @param redirects `"skip"` suppresses the old-URL 301s (operator asked
@@ -77,15 +96,9 @@ export async function applyPathMoveEffects(
   // ONE statement against the original targets: with chained or swapped
   // moves (/a → /b, /b → /c) sequential updates would carry "/legacy →
   // /a" on to /c, i.e. to the wrong page.
-  const collapsed = (await tx.execute(sql`
-    UPDATE redirects r SET to_path = m.new_path
-    FROM (VALUES ${sql.join(
-      real.map((m) => sql`(${m.from}, ${m.to})`),
-      sql`, `,
-    )}) AS m(old_path, new_path)
-    WHERE r.to_path = m.old_path
-    RETURNING 1 AS collapsed
-  `)) as unknown as { collapsed: number }[];
+  const collapsed = (await tx.execute(collapseRedirectChainsSql(real))) as unknown as {
+    collapsed: number;
+  }[];
   redirectRowsChanged += collapsed.length;
   let redirectsCreated = 0;
   for (const m of real) {

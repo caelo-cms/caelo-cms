@@ -76,6 +76,20 @@ const pageErrorInput = z
   .strict();
 
 /**
+ * The live finding + score acceptances of one page. Runs once per audited
+ * page per Stage, so it must stay an index lookup
+ * (`quality_acceptances_page_kind_idx`, #1291) however many acceptances
+ * the site has. Exported so the plan test checks this exact statement.
+ */
+export function liveLighthouseAcceptancesSql(pageId: string) {
+  return sql`
+    SELECT id::text AS id, kind, audit_id, category, accepted_score
+    FROM quality_acceptances
+    WHERE page_id = ${pageId}::uuid AND kind IN ('finding', 'score') AND revoked_at IS NULL
+  `;
+}
+
+/**
  * The Lighthouse part of one page: every problem off target (ratchet.ts),
  * plus the acceptance ratchet — a deterministic score or finding measured
  * better than its accepted value tightens the acceptance, a category back
@@ -87,11 +101,7 @@ async function evaluateLighthousePage(
   page: z.infer<typeof auditedPageInput>,
 ): Promise<readonly QualityProblem[]> {
   const measurement = page.measurement as PageMeasurement;
-  const rows = (await tx.execute(sql`
-    SELECT id::text AS id, kind, audit_id, category, accepted_score
-    FROM quality_acceptances
-    WHERE page_id = ${page.pageId}::uuid AND kind IN ('finding', 'score') AND revoked_at IS NULL
-  `)) as unknown as {
+  const rows = (await tx.execute(liveLighthouseAcceptancesSql(page.pageId))) as unknown as {
     id: string;
     kind: "finding" | "score";
     audit_id: string | null;
