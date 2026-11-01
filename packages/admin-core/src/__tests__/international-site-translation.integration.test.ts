@@ -937,6 +937,44 @@ describe("#397 — context-aware translation", () => {
     expect(await hashOf()).toMatch(/^backfill:sha256:/);
   }, 60_000);
 
+  it("#1287 — the backfill pages past one batch, tick by tick", async () => {
+    // 150 old translations (more than one 100-variant batch), each a copy
+    // of an existing page whose group has no source to compare with.
+    const sourceId = await seedSourcePage("-bfp");
+    await sqlSystem(async (tx) => {
+      await tx.unsafe(`
+        INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed,
+                           current_path, status)
+        SELECT 't397-bfp-' || i, 'Page ' || i, 'Page ' || i, p.template_id, p.page_type_id, true,
+               '/t397-bfp-' || i, 'draft'
+          FROM pages p, generate_series(1, 150) i
+         WHERE p.id = '${sourceId}'`);
+    });
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(`
+        INSERT INTO plugin_international_site.page_variants
+               (group_id, page_id, locale_code, translation_status, source_hash, created_at)
+        SELECT gen_random_uuid(), p.id, 'de', 'up_to_date', NULL, now()
+          FROM pages p WHERE p.slug LIKE 't397-bfp-%'`);
+      await tx.unsafe(
+        "DELETE FROM plugin_international_site.settings WHERE key IN ('source_hash_backfill', 'source_hash_backfill_progress')",
+      );
+    });
+    const first = await op<{ status: string }>("backfill_source_hashes", { _trigger: "worker" });
+    expect(first.status).toBe("progress");
+    // The second tick reads on from where the first stopped and finishes.
+    await runBackfill();
+    // Store deletes are soft: the progress row is gone for every reader.
+    const done = await sqlAsPlugin(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT key FROM plugin_international_site.settings
+            WHERE key LIKE 'source_hash_backfill%' AND caelo_deleted_at IS NULL`,
+        )) as { key: string }[],
+    );
+    expect(done.map((d) => d.key)).toEqual(["source_hash_backfill"]);
+  }, 60_000);
+
   it("#591 — fills a new variant's meta description; a live variant's SEO is never overwritten, only flagged stale", async () => {
     const sourceId = await seedSourcePage("-seo");
     await op("set_locales", {

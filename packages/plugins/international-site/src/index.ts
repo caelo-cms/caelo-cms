@@ -366,7 +366,9 @@ async function backfillSourceHashesStep(
   const rows = (await q.list("page_variants", {
     translation_status: "up_to_date",
     source_hash: null,
+    // The store pages `afterId` by ascending id only.
     orderBy: "id",
+    orderDir: "asc",
     limit: SOURCE_HASH_BACKFILL_BATCH,
     ...(progress.afterId ? { afterId: progress.afterId } : {}),
   })) as unknown as PageVariantRow[];
@@ -2206,24 +2208,20 @@ export default definePlugin<PluginContextTier1>({
       const { q } = deps;
       let marked = 0;
       const sourceHashOf = sourceHashesOf(deps);
-      for (let afterId: string | undefined; ; ) {
-        const rows = (await q.list("page_variants", {
-          translation_status: "up_to_date",
-          orderBy: "id",
-          limit: 1000,
-          ...(afterId ? { afterId } : {}),
-        })) as unknown as PageVariantRow[];
-        for (const row of rows) {
-          const current = await sourceHashOf(row.group_id);
-          // No source to compare with (none, or deleted): left as it is.
-          if (current === null) continue;
-          const same = (stored: string | null) => storedFingerprint(stored) === current.hash;
-          if (await staysUpToDate(deps, row, current, same)) continue;
-          await q.update("page_variants", row.id, { translation_status: "needs_update" });
-          marked += 1;
-        }
-        if (rows.length < 1000) break;
-        afterId = rows.at(-1)?.id;
+      // listAll pages by ascending id; the hand-rolled loop here asked for
+      // its second page in the store's default (descending) order, which
+      // the store refuses, so a site past 1000 variants failed its rebuild.
+      const rows = (await listAll(q, "page_variants", {
+        translation_status: "up_to_date",
+      })) as unknown as PageVariantRow[];
+      for (const row of rows) {
+        const current = await sourceHashOf(row.group_id);
+        // No source to compare with (none, or deleted): left as it is.
+        if (current === null) continue;
+        const same = (stored: string | null) => storedFingerprint(stored) === current.hash;
+        if (await staysUpToDate(deps, row, current, same)) continue;
+        await q.update("page_variants", row.id, { translation_status: "needs_update" });
+        marked += 1;
       }
       marked += await refreshChromeStaleness(deps);
       const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
