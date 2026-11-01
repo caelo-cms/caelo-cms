@@ -243,16 +243,35 @@ export async function normaliseListFieldValues(
     const v = values[f.name];
     if (v === undefined || v === null) continue;
     if (bindingOf(f) === "shared" && f.list !== undefined) {
-      return {
-        ok: false,
-        message: `values.${f.name}: the module binds this field to ${f.list} for every placement — edit that list (lists.patch_items_many) instead of setting a value here.`,
-      };
+      return { ok: false, message: await sharedBoundRefusal(tx, branchId, f.name, f.list) };
     }
     const r = await normaliseOne(tx, ctx, branchId, f, v, `values.${f.name}`);
     if (!r.ok) return r;
     values[f.name] = r.value;
   }
   return { ok: true };
+}
+
+/**
+ * #1264 — the refusal of a placement value for a field whose module fixes
+ * the list. Names the list by the slug the list edit takes and carries the
+ * ready call, so the AI edits the list without first looking it up.
+ */
+async function sharedBoundRefusal(
+  tx: TransactionRunner,
+  branchId: string | null,
+  fieldName: string,
+  listRef: string,
+): Promise<string> {
+  const listId = parseListRef(listRef);
+  const list = listId === null ? null : await loadListEntity(tx, "list", branchId, listId);
+  const slug = list && list.state.deletedAt === null ? list.state.slug : null;
+  const head = `values.${fieldName}: the module shows ${slug === null ? `list ${listRef}` : `the shared list "${slug}"`} on every placement, so a value here is never used — leave ${fieldName} out of values`;
+  if (slug === null) return `${head}; that list no longer exists — lists.list shows the lists.`;
+  return (
+    `${head} and edit the list itself: lists.patch_items_many({lists: [{slug: "${slug}", patches: [{op: "add", item: {node, values}} | {op: "update", itemId, values} | {op: "remove", itemId}]}]}) ` +
+    `(lists.get with slug "${slug}" shows the entry ids).`
+  );
 }
 
 /** `link {label*, link*}; …` — each node kind with its fields, `*` = required. */

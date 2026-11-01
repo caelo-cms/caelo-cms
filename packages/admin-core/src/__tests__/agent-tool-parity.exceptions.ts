@@ -130,6 +130,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     by: ["create_content_instances"],
     note: "bulk-first sibling; content_instances.create_many runs the singular op path per item",
   },
+  "content_instances.set_values": {
+    kind: "covered",
+    by: ["set_content_instance_values_many", "add_module"],
+    note: "bulk-first sibling (content_instances.set_values_many); add_module's initial values run it inside pages.place_module (#1246)",
+  },
   "content_instances.delete": {
     kind: "covered",
     by: ["delete_content_instances"],

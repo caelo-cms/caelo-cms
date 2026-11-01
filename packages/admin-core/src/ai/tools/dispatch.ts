@@ -28,6 +28,7 @@ import type { z } from "zod";
 
 import type { CredentialKind } from "../../ops/credential_handoffs.js";
 import type { Permission } from "../../permissions.js";
+import { toolNamesIn } from "../op-tool-names.js";
 import type { AIProvider } from "../provider.js";
 import { compactInputSchema } from "./compact-input-schema.js";
 import { generateInputSchema } from "./generate-input-schema.js";
@@ -1007,6 +1008,17 @@ export class ToolRegistry {
       }
     }
     const result = await tool.handler(ctx, parsed.data, toolCtx);
-    return result.ok ? result : { ...result, call: { name, args: normalized.args } };
+    if (result.ok) return result;
+    // #1264 — the one place every tool's failure passes: op names a hint
+    // carries become the tools the AI can call. Successful results stay
+    // untouched (they may quote site content verbatim).
+    return {
+      ...result,
+      content: toolNamesIn(result.content),
+      ...(result.nextAction
+        ? { nextAction: { ...result.nextAction, reason: toolNamesIn(result.nextAction.reason) } }
+        : {}),
+      call: { name, args: normalized.args },
+    };
   }
 }

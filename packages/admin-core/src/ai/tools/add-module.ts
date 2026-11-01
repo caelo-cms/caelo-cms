@@ -11,18 +11,20 @@
  *     lack this — you couldn't reuse a built footer on a layout; now you can,
  *     closing the one asymmetry the three-tool split carried.
  *   - **mint**: pass raw `html` (+ optional `displayName`/`kind`/`fields`
- *     hints); the shared `mintModuleFromHtml` runs `moduleize` (a small focused
+ *     hints); the shared `prepareModuleMint` runs `moduleize` (a small focused
  *     AI call off the main turn) to turn it into a proper parametrised module
  *     with semantic {{fields}} before placing it.
  *
- * Placement differs per target, so the handler resolves + mints ONCE and then
- * routes:
- *   - page:     pages.get_with_modules → splice → pages.set_modules.
- *   - layout:   layouts.get → layout_modules.get → splice → layout_modules.set.
- *               (chrome renders from field DEFAULTS only — no content_instance
- *               binding — so mint-mode fields are validated for renderability.)
- *   - template: pages.list (filter by templateId) → fan out the splice to every
- *               bound page. Per-page failures are collected, not fatal.
+ * The handler resolves the module WITHOUT writing (reuse: modules.get; mint:
+ * the `modules.create` input), checks the target's block, and then runs ONE
+ * op, `pages.place_module`: the mint, the splice and the initial `values`
+ * commit together or not at all (#1246 — a `values` entry that did not fit
+ * used to leave an empty placement and a minted module behind).
+ *   - page:     one page.
+ *   - layout:   the layout block (chrome renders from field DEFAULTS only —
+ *               no content_instance binding — so mint-mode fields are
+ *               validated for renderability, and `values` become defaults).
+ *   - template: every page bound to the template, in the same transaction.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -42,8 +44,7 @@ import {
   findUnrenderableLayoutFields,
   unrenderableLayoutFieldsError,
 } from "./_layout-module-fields.js";
-import { toolNamesIn } from "./_list-tool-kit.js";
-import { mintModuleFromHtml } from "./_mint-module.js";
+import { type PreparedMint, prepareModuleMint } from "./_mint-module.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -77,9 +78,14 @@ interface LayoutDetail {
   blocks: { name: string }[];
 }
 
-/** Resolved module + whether it was reused (no fresh CSS to review) or minted. */
+/**
+ * The module a call places: an existing one (reuse — no fresh CSS to review)
+ * or the `modules.create` input of a mint. Nothing is written while
+ * resolving: `pages.place_module` creates a minted module in the same
+ * transaction as its placement and content (#1246).
+ */
 interface ResolvedModule {
-  moduleId: string;
+  source: { moduleId: string } | { create: PreparedMint["createInput"] };
   slug: string;
   note: string;
   css: string;
@@ -151,35 +157,7 @@ function mergeValuesIntoDefaults(
   );
 }
 
-/** Insert `moduleId` into `existing` at the requested position; returns new list + index. */
-function spliceAt(
-  existing: string[],
-  moduleId: string,
-  position: AddModuleToolInput["position"],
-): { ids: string[]; idx: number } {
-  const idx =
-    position === "top"
-      ? 0
-      : position === "bottom"
-        ? existing.length
-        : Math.min(position, existing.length);
-  return { ids: [...existing.slice(0, idx), moduleId, ...existing.slice(idx)], idx };
-}
-
-/** Rebuild the full block array for pages.set_modules, replacing one block's ids. */
-function withBlockIds(
-  blocks: PageWithModules["blocks"],
-  blockName: string,
-  ids: string[],
-): { blockName: string; moduleIds: string[] }[] {
-  return blocks.map((b) =>
-    b.blockName === blockName
-      ? { blockName: b.blockName, moduleIds: ids }
-      : { blockName: b.blockName, moduleIds: b.modules.map((m) => m.moduleId) },
-  );
-}
-
-/** Resolve the reuse module id, or mint a new one from the authoring fields. */
+/** Resolve the reuse module, or prepare the mint of a new one (no write). */
 async function resolveModule(
   ctx: ExecutionContext,
   toolCtx: ToolContext,
@@ -213,7 +191,7 @@ async function resolveModule(
     return {
       ok: true,
       module: {
-        moduleId: mod.id,
+        source: { moduleId: mod.id },
         slug: mod.slug,
         note: "",
         css: input.css ?? "",
@@ -236,7 +214,7 @@ async function resolveModule(
     input.target === "layout" && input.values !== undefined && input.fields !== undefined
       ? mergeValuesIntoDefaults(input.fields, input.values)
       : input.fields;
-  const minted = await mintModuleFromHtml(ctx, toolCtx, {
+  const prepared = await prepareModuleMint(ctx, toolCtx, {
     html: input.html as string,
     displayNameHint: input.displayName as string,
     fieldsHint,
@@ -247,20 +225,86 @@ async function resolveModule(
     js: input.js,
     bindThemeLiterals: input.bindThemeLiterals,
   });
-  if (!minted.ok) return { ok: false, content: minted.content };
+  if (!prepared.ok) return { ok: false, content: prepared.content };
   return {
     ok: true,
     module: {
-      moduleId: minted.moduleId,
-      slug: minted.slug,
-      note: minted.note,
-      css: minted.css,
-      kind: minted.kind,
+      source: { create: prepared.createInput },
+      slug: prepared.createInput.slug,
+      note: prepared.note,
+      css: prepared.css,
+      kind: prepared.kind,
       reused: false,
-      fields: minted.fields,
+      fields: prepared.fields,
       ignoredAuthoring: [],
     },
   };
+}
+
+/** What `pages.place_module` returns. */
+interface PlaceModuleResult {
+  moduleId: string;
+  placements: { pageId: string; position: number }[];
+  layoutPosition: number | null;
+}
+
+/**
+ * Run `pages.place_module` — the mint (if any), the placement(s) and the
+ * initial values in ONE transaction (#1246). On failure nothing was written,
+ * so the AI fixes the call and sends the same add_module again.
+ */
+async function place(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  input: AddModuleToolInput,
+  mod: ResolvedModule,
+  target: { kind: "pages"; pageIds: string[] } | { kind: "layout"; layoutId: string },
+): Promise<{ ok: true; value: PlaceModuleResult } | { ok: false; result: ToolResult }> {
+  const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.place_module", {
+    target,
+    blockName: input.blockName,
+    position: input.position,
+    module: mod.source,
+    ...(target.kind === "pages" && input.values !== undefined ? { values: input.values } : {}),
+  });
+  if (r.ok) return { ok: true, value: r.value as PlaceModuleResult };
+  const what = mod.reused ? "the module was not placed" : "no module was created or placed";
+  return {
+    ok: false,
+    result: toolError(
+      r.error,
+      `add_module wrote nothing (${what} — the target is as before): ${describeError(r.error)}`,
+    ),
+  };
+}
+
+/** The css-var / design / plugin-write / module-JS hints for a freshly minted module. */
+async function mintedModuleSuffix(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  input: AddModuleToolInput,
+  mod: ResolvedModule,
+  moduleId: string,
+): Promise<string> {
+  if (mod.reused) return "";
+  return `${await cssVarWarningSuffix(ctx, toolCtx, mod.css)}${await designGuardSuffix(ctx, toolCtx, { css: mod.css, html: input.html, excludeModuleIds: [moduleId] })}${await pluginWriteHintsSuffix(ctx, await storedModuleWrites(ctx, toolCtx, [moduleId]))}${await moduleJsGuardSuffix(ctx, toolCtx, [moduleId])}`;
+}
+
+/** Every ok result's tail: the hints on the new module + the §2 ignored-authoring note. */
+async function resultSuffix(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  input: AddModuleToolInput,
+  mod: ResolvedModule,
+  moduleId: string,
+): Promise<string> {
+  // §2 — reuse ignored some authoring fields the call also carried; say so
+  // loudly so an intended change never vanishes silently.
+  const ignoredNote =
+    mod.ignoredAuthoring.length > 0
+      ? ` ℹ️ placed by moduleId (placement-only) — NOT applied: ${mod.ignoredAuthoring.join(", ")}. To change that shared module, use update_modules_many.`
+      : "";
+  return `${await mintedModuleSuffix(ctx, toolCtx, input, mod, moduleId)}${ignoredNote}`;
 }
 
 export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
@@ -362,22 +406,11 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     const resolved = await resolveModule(ctx, toolCtx, input);
     if (!resolved.ok) return { ok: false, content: resolved.content };
     const mod = resolved.module;
-    // CSS/design-guard suffixes only apply to freshly authored CSS.
-    const cssSuffix = mod.reused
-      ? ""
-      : `${await cssVarWarningSuffix(ctx, toolCtx, mod.css)}${await designGuardSuffix(ctx, toolCtx, { css: mod.css, html: input.html, excludeModuleIds: [mod.moduleId] })}${await pluginWriteHintsSuffix(ctx, await storedModuleWrites(ctx, toolCtx, [mod.moduleId]))}${await moduleJsGuardSuffix(ctx, toolCtx, [mod.moduleId])}`;
-    // §2 — reuse ignored some authoring fields the call also carried; say so
-    // loudly so an intended change never vanishes silently.
-    const ignoredNote =
-      mod.ignoredAuthoring.length > 0
-        ? ` ℹ️ placed by moduleId (placement-only) — NOT applied: ${mod.ignoredAuthoring.join(", ")}. To change that shared module, use update_modules_many.`
-        : "";
-    const suffix = `${cssSuffix}${ignoredNote}`;
     const label = mod.reused ? "existing module" : "module";
 
-    if (input.target === "page") return placeOnPage(ctx, toolCtx, input, mod, suffix, label);
-    if (input.target === "layout") return placeOnLayout(ctx, toolCtx, input, mod, suffix, label);
-    return placeOnTemplate(ctx, toolCtx, input, mod, suffix, label);
+    if (input.target === "page") return placeOnPage(ctx, toolCtx, input, mod, label);
+    if (input.target === "layout") return placeOnLayout(ctx, toolCtx, input, mod, label);
+    return placeOnTemplate(ctx, toolCtx, input, mod, label);
   },
 };
 
@@ -386,7 +419,6 @@ async function placeOnPage(
   toolCtx: ToolContext,
   input: AddModuleToolInput,
   mod: ResolvedModule,
-  suffix: string,
   label: string,
 ): Promise<ToolResult> {
   const pageRef = await resolvePageRef(ctx, toolCtx, input.targetRef);
@@ -398,96 +430,22 @@ async function placeOnPage(
   if (!got.ok)
     return toolError(got.error, `pages.get_with_modules failed: ${describeError(got.error)}`);
   const page = (got.value as { page: PageWithModules }).page;
-  const targetBlock = page.blocks.find((b) => b.blockName === input.blockName);
-  if (!targetBlock)
+  if (!page.blocks.some((b) => b.blockName === input.blockName))
     return blockNotFoundError({
       blockName: input.blockName,
       blockNames: page.blocks.map((b) => b.blockName),
       pageId,
       argName: "blockName",
     });
-  const { ids, idx } = spliceAt(
-    targetBlock.modules.map((m) => m.moduleId),
-    mod.moduleId,
-    input.position,
-  );
-  const set = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.set_modules", {
-    pageId,
-    blocks: withBlockIds(page.blocks, input.blockName, ids),
-  });
-  if (!set.ok) return toolError(set.error, `pages.set_modules failed: ${describeError(set.error)}`);
-  // 2026-07 — apply the placement's initial content IN THIS CALL (a
-  // fresh module must never render empty waiting for a second
-  // set_page_module_content_many round-trip).
-  let valuesNote = "";
-  if (input.values !== undefined) {
-    const fill = await fillPlacementValues(
-      ctx,
-      toolCtx,
-      pageId,
-      input.blockName,
-      idx,
-      input.values,
-    );
-    if (!fill.ok) return fill;
-    valuesNote = " Initial content applied.";
-  }
+  const placed = await place(ctx, toolCtx, input, mod, { kind: "pages", pageIds: [pageId] });
+  if (!placed.ok) return placed.result;
+  const { moduleId } = placed.value;
+  const idx = placed.value.placements[0]?.position ?? 0;
+  const valuesNote = input.values !== undefined ? " Initial content applied." : "";
   return {
     ok: true,
-    content: `${label} ${mod.moduleId} (slug=${mod.slug}) added to page block "${input.blockName}" at position ${idx}.${valuesNote}${fieldsSummary(mod.fields)}${mod.note}${suffix}`,
+    content: `${label} ${moduleId} (slug=${mod.slug}) added to page block "${input.blockName}" at position ${idx}.${valuesNote}${fieldsSummary(mod.fields)}${mod.note}${await resultSuffix(ctx, toolCtx, input, mod, moduleId)}`,
   };
-}
-
-/**
- * Fill a just-created placement's content_instance with the initial
- * values. Reads the placement back (branch-aware) to learn the instance
- * id pages.set_modules minted, then writes through the standard
- * set_values op so field-shape validation applies.
- */
-async function fillPlacementValues(
-  ctx: ExecutionContext,
-  toolCtx: ToolContext,
-  pageId: string,
-  blockName: string,
-  position: number,
-  values: Record<string, unknown>,
-): Promise<{ ok: true } | ToolResult> {
-  const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", {
-    pageId,
-  });
-  if (!got.ok)
-    return toolError(got.error, `pages.get_with_modules failed: ${describeError(got.error)}`);
-  const page = (got.value as { page: PageWithModules }).page;
-  const block = page.blocks.find((b) => b.blockName === blockName);
-  const placement = block?.modules[position] as { contentInstanceId?: string | null } | undefined;
-  const instanceId = placement?.contentInstanceId;
-  if (!instanceId) {
-    return {
-      ok: false,
-      content: `placed the module, but could not resolve the new placement's content_instance to apply \`values\` — fill it via set_page_module_content_many({items: [{pageId: "${pageId}", blockName: "${blockName}", position: ${position}, contentValues: …}]}).`,
-    };
-  }
-  const write = await execute(
-    toolCtx.registry,
-    toolCtx.adapter,
-    ctx,
-    "content_instances.set_values",
-    {
-      id: instanceId,
-      values,
-    },
-  );
-  if (!write.ok) {
-    // #1149 — the placement exists (empty); re-running add_module would
-    // place the module a second time. Say where it is and what fills it.
-    return {
-      ok: false,
-      content:
-        `the module IS placed (page ${pageId}, block "${blockName}", position ${position}) but its content is empty: applying \`values\` failed: ${toolNamesIn(describeError(write.error))} ` +
-        `Do not call add_module again — fix the values and write them with set_page_module_content_many({items: [{pageId: "${pageId}", blockName: "${blockName}", position: ${position}, contentValues: …}]}).`,
-    };
-  }
-  return { ok: true };
 }
 
 async function placeOnLayout(
@@ -495,7 +453,6 @@ async function placeOnLayout(
   toolCtx: ToolContext,
   input: AddModuleToolInput,
   mod: ResolvedModule,
-  suffix: string,
   label: string,
 ): Promise<ToolResult> {
   const slug = await resolveLayoutSlug(ctx, toolCtx, input.targetRef);
@@ -514,36 +471,23 @@ async function placeOnLayout(
       },
     };
   }
-  const existing = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layout_modules.get", {
-    layoutId: layout.id,
-    blockName: input.blockName,
-  });
-  if (!existing.ok)
-    return toolError(existing.error, `layout_modules.get failed: ${describeError(existing.error)}`);
-  const { ids, idx } = spliceAt(
-    (existing.value as { moduleIds: string[] }).moduleIds,
-    mod.moduleId,
-    input.position,
-  );
-  const set = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layout_modules.set", {
-    layoutId: layout.id,
-    blockName: input.blockName,
-    moduleIds: ids,
-  });
-  if (!set.ok)
-    return toolError(set.error, `layout_modules.set failed: ${describeError(set.error)}`);
+  const placed = await place(ctx, toolCtx, input, mod, { kind: "layout", layoutId: layout.id });
+  if (!placed.ok) return placed.result;
+  const { moduleId, layoutPosition } = placed.value;
   return {
     ok: true,
-    content: `${label} ${mod.moduleId} (slug=${mod.slug}) added to layout "${layout.slug}" block "${input.blockName}" at position ${idx}; chrome now reaches every page on every template bound to this layout.${fieldsSummary(mod.fields)}${mod.note}${suffix}`,
+    content: `${label} ${moduleId} (slug=${mod.slug}) added to layout "${layout.slug}" block "${input.blockName}" at position ${layoutPosition ?? 0}; chrome now reaches every page on every template bound to this layout.${fieldsSummary(mod.fields)}${mod.note}${await resultSuffix(ctx, toolCtx, input, mod, moduleId)}`,
   };
 }
+
+/** Well-known layout-level chrome blocks (a template miss there meant target='layout'). */
+const CHROME_BLOCKS = new Set(["header", "footer", "nav", "navigation", "sidebar", "banner"]);
 
 async function placeOnTemplate(
   ctx: ExecutionContext,
   toolCtx: ToolContext,
   input: AddModuleToolInput,
   mod: ResolvedModule,
-  suffix: string,
   label: string,
 ): Promise<ToolResult> {
   const templateId = await resolveTemplateId(ctx, toolCtx, input.targetRef);
@@ -557,7 +501,7 @@ async function placeOnTemplate(
   if (targetPages.length === 0) {
     return {
       ok: true,
-      content: `${label} ${mod.moduleId} (slug=${mod.slug})${mod.reused ? "" : " created"}; no pages currently use this template, so nothing was placed.${mod.note}${suffix}`,
+      content: `no pages currently use this template, so nothing was placed${mod.reused ? "" : " and no module was created"}.`,
       nextAction: {
         tool: "list_templates",
         reason:
@@ -565,97 +509,63 @@ async function placeOnTemplate(
       },
     };
   }
-  const placements: string[] = [];
-  const failures: string[] = [];
-  for (const p of targetPages) {
-    const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", {
-      pageId: p.id,
-    });
-    if (!got.ok) {
-      failures.push(`${p.slug} (${describeError(got.error)})`);
-      continue;
-    }
-    const detail = (got.value as { page: PageWithModules }).page;
-    const targetBlock = detail.blocks.find((b) => b.blockName === input.blockName);
-    if (!targetBlock) {
-      const allowed = detail.blocks.map((b) => b.blockName).join(", ");
-      failures.push(
-        `${p.slug} (block "${input.blockName}" not on this page's template — available: ${allowed})`,
-      );
-      continue;
-    }
-    const { ids, idx } = spliceAt(
-      targetBlock.modules.map((m) => m.moduleId),
-      mod.moduleId,
-      input.position,
-    );
-    const set = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.set_modules", {
-      pageId: p.id,
-      blocks: withBlockIds(detail.blocks, input.blockName, ids),
-    });
-    if (set.ok) {
-      // 2026-07 — the fan-out carries the initial copy too: every
-      // created placement starts with the same values (unsynced, so
-      // pages can diverge later).
-      if (input.values !== undefined) {
-        const fill = await fillPlacementValues(
-          ctx,
-          toolCtx,
-          p.id,
-          input.blockName,
-          idx,
-          input.values,
-        );
-        if (!fill.ok) {
-          failures.push(`${p.slug} (placed, but values failed: ${fill.content})`);
-          continue;
-        }
-      }
-      placements.push(`${p.slug}@${idx}`);
-    } else failures.push(`${p.slug} (${describeError(set.error)})`);
-  }
-  const summary = [
-    `${label} ${mod.moduleId} (slug=${mod.slug}) added to block "${input.blockName}" on ${placements.length} of ${targetPages.length} pages using this template.${fieldsSummary(mod.fields)}${mod.note}${suffix}`,
-    placements.length > 0 ? `placed: ${placements.join(", ")}` : null,
-    failures.length > 0 ? `failed: ${failures.join("; ")}` : null,
-  ]
-    .filter((s): s is string => s !== null)
-    .join("\n");
-
-  // When EVERY failure is "block not on this page's template" AND the block is
-  // well-known layout-level chrome, the operator meant target='layout'. Surface
-  // the corrected call so the AI re-dispatches instead of caveating a failure.
-  const CHROME_BLOCKS = new Set(["header", "footer", "nav", "navigation", "sidebar", "banner"]);
-  if (
-    placements.length === 0 &&
-    CHROME_BLOCKS.has(input.blockName.toLowerCase()) &&
-    failures.every((f) => f.includes(`block "${input.blockName}" not on this page's template`))
-  ) {
-    return {
-      ok: false,
-      content: `${summary}\n[hint] "${input.blockName}" is layout-level chrome, not template-level. Re-dispatch with target='layout' — see nextAction.`,
-      nextAction: {
-        tool: "add_module",
-        args: {
-          target: "layout",
-          targetRef: "site-default",
-          blockName: input.blockName,
-          position: input.position,
-          ...(mod.reused
-            ? { moduleId: mod.moduleId }
-            : {
-                displayName: input.displayName,
-                html: input.html,
-                ...(input.css !== undefined ? { css: input.css } : {}),
-                ...(input.js !== undefined ? { js: input.js } : {}),
-                ...(input.fields !== undefined ? { fields: input.fields } : {}),
-              }),
+  // Every page of the template has the template's blocks: one read tells
+  // whether the block exists before anything is written.
+  const first = targetPages[0] as PageRow;
+  const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", {
+    pageId: first.id,
+  });
+  if (!got.ok)
+    return toolError(got.error, `pages.get_with_modules failed: ${describeError(got.error)}`);
+  const blockNames = (got.value as { page: PageWithModules }).page.blocks.map((b) => b.blockName);
+  if (!blockNames.includes(input.blockName)) {
+    const content = `block "${input.blockName}" is not on this template — available: ${blockNames.join(", ")}. Nothing was written.`;
+    // A chrome block missing from the template: the operator meant
+    // target='layout'. Surface the corrected call so the AI re-dispatches.
+    if (CHROME_BLOCKS.has(input.blockName.toLowerCase())) {
+      return {
+        ok: false,
+        content: `${content}\n[hint] "${input.blockName}" is layout-level chrome, not template-level. Re-dispatch with target='layout' — see nextAction.`,
+        nextAction: {
+          tool: "add_module",
+          args: {
+            target: "layout",
+            targetRef: "site-default",
+            blockName: input.blockName,
+            position: input.position,
+            ...(mod.reused
+              ? { moduleId: (mod.source as { moduleId: string }).moduleId }
+              : {
+                  displayName: input.displayName,
+                  html: input.html,
+                  ...(input.css !== undefined ? { css: input.css } : {}),
+                  ...(input.js !== undefined ? { js: input.js } : {}),
+                  ...(input.fields !== undefined ? { fields: input.fields } : {}),
+                }),
+          },
+          reason: `"${input.blockName}" is a layout-level chrome block. Re-dispatch via add_module target='layout' against targetRef="site-default" (confirm your actual layout slug via list_layouts if uncertain).`,
         },
-        reason: `"${input.blockName}" is a layout-level chrome block. Re-dispatch via add_module target='layout' against targetRef="site-default" (confirm your actual layout slug via list_layouts if uncertain).`,
-      },
-    };
+      };
+    }
+    return { ok: false, content, nextAction: { tool: "list_templates", reason: content } };
   }
-  return { ok: failures.length === 0, content: summary };
+  // One transaction for the whole fan-out: every page gets the module (and
+  // its own copy of `values`, unsynced so pages can diverge later), or none.
+  const placed = await place(ctx, toolCtx, input, mod, {
+    kind: "pages",
+    pageIds: targetPages.map((p) => p.id),
+  });
+  if (!placed.ok) return placed.result;
+  const { moduleId, placements } = placed.value;
+  const slugById = new Map(targetPages.map((p) => [p.id, p.slug]));
+  const valuesNote = input.values !== undefined ? " Initial content applied." : "";
+  return {
+    ok: true,
+    content: [
+      `${label} ${moduleId} (slug=${mod.slug}) added to block "${input.blockName}" on ${placements.length} of ${targetPages.length} pages using this template.${valuesNote}${fieldsSummary(mod.fields)}${mod.note}${await resultSuffix(ctx, toolCtx, input, mod, moduleId)}`,
+      `placed: ${placements.map((p) => `${slugById.get(p.pageId) ?? p.pageId}@${p.position}`).join(", ")}`,
+    ].join("\n"),
+  };
 }
 
 function refNotFound(target: string, ref: string): ToolResult {

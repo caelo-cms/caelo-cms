@@ -3,8 +3,9 @@
 /**
  * issue #243 — unit coverage for `add_module_to_template` place mode: an
  * existing moduleId is fanned out to every page bound to the template
- * WITHOUT a modules.create call (the reuse path CLAUDE.md §1A/§3.2
- * demands). Mint mode still chains modules.create.
+ * WITHOUT minting (the reuse path CLAUDE.md §1A/§3.2 demands). Mint mode
+ * hands the `modules.create` input to `pages.place_module`, which creates
+ * the module in the placement's transaction (#1246).
  *
  * Fake-adapter pattern as in add-module-place-and-list.test.ts: the real
  * OperationRegistry validates op names/scopes; `runOperation` returns
@@ -42,7 +43,7 @@ const PAGE_B = "11111111-1111-4111-8111-1111111100b2";
  * the AI actor isn't blocked) plus the ops the tool chains. Two pages are
  * bound to TEMPLATE_ID; a third page on another template must be skipped.
  */
-function toolCtxWith(calls: string[]): ToolContext {
+function toolCtxWith(calls: string[], inputs: Record<string, unknown>[] = []): ToolContext {
   const adapter = {
     // execute() calls runOperation(op, ctx, parsedInput).
     runOperation: async (op: { name: string }, _ctx: unknown, input: Record<string, unknown>) => {
@@ -60,10 +61,6 @@ function toolCtxWith(calls: string[]): ToolContext {
           });
         case "modules.get":
           return ok({ module: SHARED });
-        case "modules.create":
-          // Mint mode: hand back a real uuid so the downstream
-          // pages.set_modules input validation accepts the moduleIds array.
-          return ok({ moduleId: "11111111-1111-4111-8111-11111111be03" });
         case "pages.list":
           return ok({
             pages: [
@@ -86,8 +83,21 @@ function toolCtxWith(calls: string[]): ToolContext {
             },
           });
         }
-        case "pages.set_modules":
-          return ok({});
+        case "pages.place_module": {
+          inputs.push(input);
+          const pageIds = (input.target as { pageIds: string[] }).pageIds;
+          const module = input.module as { moduleId?: string };
+          return ok({
+            moduleId: module.moduleId ?? "11111111-1111-4111-8111-11111111be03",
+            minted: module.moduleId === undefined,
+            placements: pageIds.map((pageId) => ({
+              pageId,
+              position: 0,
+              contentInstanceId: "11111111-1111-4111-8111-11111111c1c1",
+            })),
+            layoutPosition: null,
+          });
+        }
         default:
           return ok({});
       }
@@ -99,6 +109,7 @@ function toolCtxWith(calls: string[]): ToolContext {
 describe("add_module (target='template') place mode (issue #243)", () => {
   it("fans an existing module out to every bound page without minting a duplicate", async () => {
     const calls: string[] = [];
+    const inputs: Record<string, unknown>[] = [];
     const res = await addModuleTool.handler(
       AI,
       {
@@ -108,7 +119,7 @@ describe("add_module (target='template') place mode (issue #243)", () => {
         position: "bottom",
         moduleId: SHARED.id,
       },
-      toolCtxWith(calls),
+      toolCtxWith(calls, inputs),
     );
     expect(res.ok).toBe(true);
     expect(res.content).toContain(SHARED.id);
@@ -116,12 +127,15 @@ describe("add_module (target='template') place mode (issue #243)", () => {
     // Fanned out to both bound pages (2 of 2), not the third template's page.
     expect(res.content).toContain("2 of 2 pages");
     expect(calls).toContain("modules.get");
-    expect(calls.filter((c) => c === "pages.set_modules")).toHaveLength(2);
+    // #1246 — one transaction for the whole fan-out, both pages in it.
+    expect(calls.filter((c) => c === "pages.place_module")).toHaveLength(1);
+    expect(inputs[0]?.target).toEqual({ kind: "pages", pageIds: [PAGE_A, PAGE_B] });
     expect(calls).not.toContain("modules.create");
   });
 
-  it("mint mode still chains modules.create (no regression)", async () => {
+  it("mint mode creates the module inside the placement op (no separate modules.create)", async () => {
     const calls: string[] = [];
+    const inputs: Record<string, unknown>[] = [];
     const res = await addModuleTool.handler(
       AI,
       {
@@ -133,10 +147,12 @@ describe("add_module (target='template') place mode (issue #243)", () => {
         html: "<footer>{{copyright}}</footer>",
         fields: [{ name: "copyright", kind: "text", label: "Copyright" }],
       },
-      toolCtxWith(calls),
+      toolCtxWith(calls, inputs),
     );
     expect(res.ok).toBe(true);
-    expect(calls).toContain("modules.create");
+    expect(calls).not.toContain("modules.create");
     expect(calls).not.toContain("modules.get");
+    const module = inputs[0]?.module as { create?: { displayName: string } };
+    expect(module.create?.displayName).toBe("Fresh footer");
   });
 });

@@ -14,7 +14,7 @@ import { LIST_TYPE_ROLES } from "@caelo-cms/shared";
 import { z } from "zod";
 import { deleteListTypesManyOp, upsertListTypesManyOp } from "../../ops/lists/list-types.js";
 import { describeError } from "./_describe-error.js";
-import { describeListType, makeOpTool, toolNamesIn } from "./_list-tool-kit.js";
+import { describeListType, makeOpTool } from "./_list-tool-kit.js";
 import { UPSERT_LIST_TYPES_JSON_SCHEMA } from "./_list-tool-schemas.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -66,7 +66,7 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
         slug: input.slug,
       });
       if (!r.ok) {
-        return { ok: false, content: `list_list_types: ${toolNamesIn(describeError(r.error))}` };
+        return { ok: false, content: `list_list_types: ${describeError(r.error)}` };
       }
       const v = r.value as {
         listType: ListTypeRow;
@@ -87,7 +87,7 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
     const { slug: _slug, ...filters } = input;
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "list_types.list", filters);
     if (!r.ok) {
-      return { ok: false, content: `list_list_types: ${toolNamesIn(describeError(r.error))}` };
+      return { ok: false, content: `list_list_types: ${describeError(r.error)}` };
     }
     const rows = (r.value as { listTypes: ListTypeRow[] }).listTypes;
     if (rows.length === 0) {

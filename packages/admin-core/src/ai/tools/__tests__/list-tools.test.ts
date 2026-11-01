@@ -24,7 +24,7 @@ import {
   ok,
 } from "@caelo-cms/shared";
 import { z } from "zod";
-import { toolNamesIn } from "../_list-tool-kit.js";
+import { toolNamesIn } from "../../op-tool-names.js";
 import {
   UPSERT_LIST_TYPES_JSON_SCHEMA,
   UPSERT_PAGE_TYPES_JSON_SCHEMA,

@@ -112,6 +112,44 @@ describe("field values", () => {
       expect(validateFieldValue(f, v, "p").length === 0).toBe(ok);
     }
   });
+  // #1265 — an object value that does not fit says what is wrong in it,
+  // not just "got object".
+  describe("object-shaped values name the problem", () => {
+    const link: FieldDef = { name: "link", label: "Link", type: "link" };
+    const mod: FieldDef = { name: "cta", label: "CTA", type: "module" };
+    const msg = (f: FieldDef, v: unknown) => validateFieldValue(f, v, "p")[0]?.message ?? "";
+
+    it("unknown key", () => {
+      const m = msg(link, { url: "/about" });
+      expect(m).toContain('unknown key "url" (put the address in href)');
+      expect(m).toContain("href missing");
+      expect(m).not.toContain("got object");
+    });
+    it("href missing", () => {
+      expect(msg(link, { target: "_blank" })).toContain("href missing");
+    });
+    it("target outside the enum", () => {
+      expect(msg(link, { href: "/a", target: "new" })).toContain(
+        'target must be "_self" | "_blank" (got "new")',
+      );
+    });
+    it("href of the wrong type or empty", () => {
+      expect(msg(link, { href: 5 })).toContain("href must be a string, got number");
+      expect(msg(link, { href: "" })).toContain("href is empty");
+    });
+    it("a non-object still says what it got", () => {
+      expect(msg(link, "/about")).toContain('got "/about"');
+    });
+    it("module value", () => {
+      const m = msg(mod, { moduleId: "x" });
+      expect(m).toContain("moduleId must be a uuid");
+      expect(m).toContain("contentInstanceId missing");
+      expect(msg(mod, { moduleId: PAGE, contentInstanceId: ITEM, extra: 1 })).toContain(
+        'unknown key "extra"',
+      );
+    });
+  });
+
   it("rejects reserved names and invalid defaults", () => {
     expect(checkFieldDef({ name: "is_open", label: "x", type: "boolean" }, "f")).toHaveLength(1);
     expect(checkFieldDef({ name: "depth", label: "x", type: "number" }, "f")).toHaveLength(1);

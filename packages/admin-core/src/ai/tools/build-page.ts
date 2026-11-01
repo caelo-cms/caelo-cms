@@ -20,7 +20,6 @@ import { cssVarWarnings } from "./_css-var-warnings.js";
 import { describeError, forwardNextAction, toolError } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
-import { toolNamesIn } from "./_list-tool-kit.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -286,7 +285,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       return {
         ...toolError(
           r.error,
-          `pages.build_page failed (nothing was written — the whole call rolled back): ${toolNamesIn(describeError(r.error))}`,
+          `pages.build_page failed (nothing was written — the whole call rolled back): ${describeError(r.error)}`,
         ),
         ...(next ? { nextAction: next } : {}),
       };

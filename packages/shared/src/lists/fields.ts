@@ -197,8 +197,20 @@ export function validateFieldValue(field: FieldDef, value: unknown, path: string
       ? [{ path, message: `"${field.name}" is required (${field.type}) — set a value.` }]
       : [];
   }
-  const bad = (expected: string): ListIssue[] => [
-    { path, message: `"${field.name}" must be ${expected}, got ${describe(value)}.` },
+  // #1265 — for an object-shaped value, say WHAT is wrong in it (the Zod
+  // issues) instead of "got object", which names nothing to fix.
+  const bad = (
+    expected: string,
+    error?: z.ZodError,
+    keyHints?: Readonly<Record<string, string>>,
+  ): ListIssue[] => [
+    {
+      path,
+      message:
+        error !== undefined && isPlainObject(value)
+          ? `"${field.name}" must be ${expected} — ${describeObjectIssues(error, value, keyHints)}.`
+          : `"${field.name}" must be ${expected}, got ${describe(value)}.`,
+    },
   ];
   switch (field.type) {
     case "text":
@@ -212,7 +224,9 @@ export function validateFieldValue(field: FieldDef, value: unknown, path: string
     }
     case "link": {
       const r = linkValueSchema.safeParse(value);
-      return r.success ? [] : bad('{ href, target? } (href like "/about" or "https://…")');
+      return r.success
+        ? []
+        : bad('{ href, target? } (href like "/about" or "https://…")', r.error, LINK_KEY_HINTS);
     }
     case "media":
       return typeof value === "string" && MEDIA_REF_RE.test(value)
@@ -238,10 +252,10 @@ export function validateFieldValue(field: FieldDef, value: unknown, path: string
         : bad("an ISO date YYYY-MM-DD");
     case "icon":
       return typeof value === "string" && ICON_RE.test(value) ? [] : bad("an icon name");
-    case "module":
-      return embeddedModuleValueSchema.safeParse(value).success
-        ? []
-        : bad("{ moduleId, contentInstanceId }");
+    case "module": {
+      const r = embeddedModuleValueSchema.safeParse(value);
+      return r.success ? [] : bad("{ moduleId, contentInstanceId }", r.error);
+    }
     case "term": {
       if (
         !Array.isArray(value) ||
@@ -283,6 +297,73 @@ export function checkFieldDef(field: FieldDef, path: string): ListIssue[] {
     issues.push({ path, message: "min is greater than max." });
   }
   return issues;
+}
+
+/** Keys a link value is often written with instead of `href`. */
+const LINK_KEY_HINTS: Readonly<Record<string, string>> = {
+  url: "put the address in href",
+  link: "put the address in href",
+  path: "put the address in href",
+  to: "put the address in href",
+  label: "the link text is its own field, not part of the link value",
+  text: "the link text is its own field, not part of the link value",
+};
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The Zod issues of an object value, in the caller's terms: `unknown key
+ * "url" (put the address in href), href missing, target must be "_self" |
+ * "_blank" (got "new")`.
+ */
+export function describeObjectIssues(
+  error: z.ZodError,
+  value: Record<string, unknown>,
+  keyHints: Readonly<Record<string, string>> = {},
+): string {
+  const parts: string[] = [];
+  for (const issue of error.issues) {
+    const key = issue.path.map(String).join(".");
+    const got = issue.path.length > 0 ? value[String(issue.path[0])] : value;
+    switch (issue.code) {
+      case "unrecognized_keys":
+        for (const k of issue.keys) {
+          const hint = keyHints[k];
+          parts.push(`unknown key "${k}"${hint ? ` (${hint})` : ""}`);
+        }
+        break;
+      case "invalid_type":
+        parts.push(
+          got === undefined
+            ? `${key} missing`
+            : `${key} must be a ${issue.expected}, got ${describe(got)}`,
+        );
+        break;
+      case "invalid_value":
+        parts.push(
+          `${key} must be ${issue.values.map((v) => JSON.stringify(v)).join(" | ")} (got ${describe(got)})`,
+        );
+        break;
+      case "too_small":
+        parts.push(
+          typeof got === "string" && got.length === 0
+            ? `${key} is empty`
+            : `${key} must have at least ${String(issue.minimum)} characters`,
+        );
+        break;
+      case "too_big":
+        parts.push(`${key} must have at most ${String(issue.maximum)} characters`);
+        break;
+      case "invalid_format":
+        parts.push(`${key} must be a ${issue.format} (got ${describe(got)})`);
+        break;
+      default:
+        parts.push(key.length > 0 ? `${key}: ${issue.message}` : issue.message);
+    }
+  }
+  return parts.length > 0 ? parts.join(", ") : "an object of another shape";
 }
 
 function describe(value: unknown): string {
