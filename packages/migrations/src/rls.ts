@@ -11,13 +11,19 @@
  *
  *   Per-actor (cms_admin):
  *     USING      (<actor_col> = NULLIF(current_setting('caelo.actor_id', true), '')::uuid
- *                 OR current_setting('caelo.actor_kind', true) = 'system')
+ *                 OR caelo_setting_is('caelo.actor_kind', 'system'))
  *     WITH CHECK (same — the `system` bypass must apply to writes too, or seeds
  *                 and P2 actor creation fail.)
  *
  *   Per-plugin (cms_public):
  *     USING      (<plugin_col> = NULLIF(current_setting('caelo.plugin_id', true), ''))
  *     WITH CHECK (same)
+ *
+ * A setting compared with literals is spelled `caelo_setting_is(name, value)`
+ * / `caelo_setting_in(name, ARRAY[...])`, never `current_setting(...) = 'x'`:
+ * a policy term without columns is estimated at 0.5 % of the rows otherwise
+ * (docs/dev/rls-and-the-planner.md, #1297; rls-planner.integration.test.ts
+ * refuses the old spelling).
  *
  * `NULLIF(..., '')` is load-bearing: a missing session setting returns empty
  * string in Postgres (not NULL), and NULLIF normalises it to NULL for

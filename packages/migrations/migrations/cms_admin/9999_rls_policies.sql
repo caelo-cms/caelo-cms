@@ -12,12 +12,12 @@ ALTER TABLE actors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE actors FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS actors_actor_scope ON actors;
 CREATE POLICY actors_actor_scope ON actors
-  USING (id = NULLIF(current_setting('caelo.actor_id', true), '')::uuid OR current_setting('caelo.actor_kind', true) = 'system')
-  WITH CHECK (id = NULLIF(current_setting('caelo.actor_id', true), '')::uuid OR current_setting('caelo.actor_kind', true) = 'system');
+  USING (id = NULLIF(current_setting('caelo.actor_id', true), '')::uuid OR caelo_setting_is('caelo.actor_kind', 'system'))
+  WITH CHECK (id = NULLIF(current_setting('caelo.actor_id', true), '')::uuid OR caelo_setting_is('caelo.actor_kind', 'system'));
 
 ALTER TABLE audit_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_events FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS audit_events_actor_scope ON audit_events;
 CREATE POLICY audit_events_actor_scope ON audit_events
-  USING (actor_id = NULLIF(current_setting('caelo.actor_id', true), '')::uuid OR current_setting('caelo.actor_kind', true) = 'system')
-  WITH CHECK (actor_id = NULLIF(current_setting('caelo.actor_id', true), '')::uuid OR current_setting('caelo.actor_kind', true) = 'system');
+  USING (actor_id = NULLIF(current_setting('caelo.actor_id', true), '')::uuid OR caelo_setting_is('caelo.actor_kind', 'system'))
+  WITH CHECK (actor_id = NULLIF(current_setting('caelo.actor_id', true), '')::uuid OR caelo_setting_is('caelo.actor_kind', 'system'));

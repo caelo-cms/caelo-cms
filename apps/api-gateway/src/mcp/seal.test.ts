@@ -5,6 +5,7 @@
 import { describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
+import { tamperSealed } from "./__tests__/harness.js";
 import { keyId, open, seal } from "./seal.js";
 
 const KEY = new Uint8Array(randomBytes(32));
@@ -45,6 +46,20 @@ describe("seal/open", () => {
     expect(
       open(KEY, "code", `${v}.${kid}.${ivBytes.toString("base64url")}.${body}`, Schema, NOW).ok,
     ).toBe(false);
+  });
+
+  it("tamperSealed always yields a different value that opens as forged (#1297)", () => {
+    // Rewriting the text's tail is not a forgery: the last base64url
+    // character carries bits the decoder drops, so "…Q" and "…R" can
+    // decode to the same bytes, and a tail already equal to the
+    // replacement changes nothing at all.
+    expect(Buffer.from("AAQ", "base64url")).toEqual(Buffer.from("AAR", "base64url"));
+    for (let i = 0; i < 200; i += 1) {
+      const s = seal(KEY, "consent", { a: "x".repeat(i % 7), exp: NOW + 60 });
+      const forged = tamperSealed(s);
+      expect(forged).not.toBe(s);
+      expect(open(KEY, "consent", forged, Schema, NOW)).toEqual({ ok: false, reason: "forged" });
+    }
   });
 
   it("refuses a value sealed under another key, even when its kid is swapped for ours", () => {
