@@ -88,9 +88,13 @@ describe("#1306 — a remote connection without Mcp-Session-Id", () => {
     expect(opened.value.carriedByConnection).toBe(false);
 
     const after = await powerNoWorkSessionMessage(bridge, await principal("dcr:Old Client"));
-    expect(after).toContain(`already opened work session ${opened.value.chatSessionId}`);
-    expect(after).toContain(`workSessionId: "${opened.value.chatSessionId}"`);
-    expect(after).toContain("Do not open another session");
+    const id = opened.value.chatSessionId;
+    expect(after).toContain(`work session ${id} was the last one opened on this connection`);
+    expect(after).toContain(`If you opened ${id}, do not open another`);
+    expect(after).toContain(`workSessionId: "${id}"`);
+    // A connection is shared by its agents: one that opened nothing is not
+    // steered into another agent's session.
+    expect(after).toContain("If you did not (another agent shares this connection)");
   });
 
   it("names the newest open, and keeps connections apart", async () => {

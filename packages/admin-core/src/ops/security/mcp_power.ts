@@ -513,7 +513,7 @@ export async function powerNoWorkSessionMessage(
   );
   return opened === null
     ? "no_work_session: this connection has not opened a work session. Call caelo_open_session, then pass the id it returns as workSessionId on every call — this connection sends no Mcp-Session-Id, so Caelo cannot remember the session between calls."
-    : `no_work_session: you already opened work session ${opened}, but this connection sends no Mcp-Session-Id, so Caelo cannot tell this call belongs to it. Do not open another session: repeat this call with workSessionId: "${opened}" and pass it on every call, or reconnect the MCP server (a new connection gets a session id).`;
+    : `no_work_session: work session ${opened} was the last one opened on this connection, but the connection sends no Mcp-Session-Id, so Caelo cannot tell which session this call belongs to. If you opened ${opened}, do not open another: repeat this call with workSessionId: "${opened}" and pass it on every call. If you did not (another agent shares this connection), call caelo_open_session and pass the id it returns as workSessionId on every call. Reconnecting the MCP server also works (a new connection gets a session id).`;
 }
 
 export const mcpOpenSessionOp = defineOperation({
