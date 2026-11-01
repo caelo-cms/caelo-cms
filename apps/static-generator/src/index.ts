@@ -42,6 +42,7 @@ export {
   type GenerateResult,
   generateSite,
   manifestBakesEnvNoindex,
+  PAGE_BATCH,
   pageOutputPath,
 } from "./generate.js";
 // Epic #1107 — the list render data assembler the preview loader shares

@@ -76,7 +76,7 @@ The admin's phases are measured in the admin, and the generator's phases (`gener
   - both RSS peaks stay flat;
   - the 10k Stage sends no media byte;
   - the bytes the build ever had on disk (tmpfs on Cloud Run) stay below 1 KB per page, where the HTML alone is about 2.8 KB per page.
-- `packages/admin-core/src/__tests__/stage-memory-rich-pages.integration.test.ts` stages 60 and 300 pages of ~230 KB (`RICH_PAGES` overrides the sizes). It asserts that the generator's peak grows by less than 100 MB between them, and that previewing every page in the admin keeps less than 24 MB of live heap.
+- `packages/admin-core/src/__tests__/stage-memory-rich-pages.integration.test.ts` stages 220 and 440 pages of ~230 KB (`RICH_PAGES` overrides the sizes; keep both above `PAGE_BATCH`, or the comparison measures how full the first batch is). It asserts that the generator's peak grows by less than 100 MB between them, and that previewing every page in the admin keeps less than 24 MB of live heap.
 - `packages/admin-core/src/__tests__/stage-scale.bench.ts` is the per-phase benchmark, with `BENCH_PAGES` and `BENCH_MEDIA`. Run it only against a throwaway database (see its header).
 
 ## What still grows with the site
