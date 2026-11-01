@@ -2,9 +2,11 @@
 
 /**
  * #1291 — core queries on hot paths and growing tables are served by an
- * index (migrations 0460–0462).
+ * index (migrations 0460–0463).
  *
- * Each plan is taken under `SET LOCAL enable_seqscan = off`: in that mode
+ * Each statement is planned twice under `SET LOCAL enable_seqscan = off`,
+ * with its values and as a generic prepared plan (`$1 = col`, the shape
+ * of Postgres's own FK checks and of a cached statement). In that mode
  * the planner takes any usable index even on an empty table, so a Seq
  * Scan left in the plan means no index can answer the predicate — which
  * is exactly the regression (a missing index, or a partial index whose
@@ -30,6 +32,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, type TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { collapseRedirectChainsSql } from "../ops/content/path-moves.js";
 import { liveLighthouseAcceptancesSql } from "../ops/quality/record-result.js";
 import { spentMicrocentsSql } from "../ops/security/mcp_tool_call.js";
@@ -55,15 +58,39 @@ afterAll(async () => {
   await adapter.close();
 });
 
-/** The plan of `statement` with sequential scans disabled, as JSON text. */
-async function planOf(statement: SQL): Promise<string> {
+const dialect = new PgDialect();
+
+/** A SQL string literal (the test's parameters are ids and paths). */
+function literal(value: unknown): string {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+/**
+ * The plans of `statement` with sequential scans disabled, as JSON text:
+ * the custom plan (bound values, as one execution plans it) and the
+ * generic plan (`$n` unknown, as a cached prepared statement — and
+ * Postgres's own FK checks — plan it). A partial index must serve both.
+ */
+async function plansOf(statement: SQL): Promise<{ custom: string; generic: string }> {
   return adapter.withAdminTransaction(SYS, async (tx: TransactionRunner) => {
     await tx.execute(sql`SET LOCAL enable_seqscan = off`);
-    const rows = (await tx.execute(sql`EXPLAIN (FORMAT JSON) ${statement}`)) as unknown as Record<
-      string,
-      unknown
-    >[];
-    return JSON.stringify(rows);
+    const explain = async (q: SQL) =>
+      JSON.stringify((await tx.execute(sql`EXPLAIN (FORMAT JSON) ${q}`)) as unknown);
+    const custom = await explain(statement);
+    const { sql: text, params } = dialect.sqlToQuery(statement);
+    await tx.execute(sql.raw(`PREPARE core_indexes_1291 AS ${text}`));
+    await tx.execute(sql`SET LOCAL plan_cache_mode = force_generic_plan`);
+    const args = params.length > 0 ? `(${params.map(literal).join(", ")})` : "";
+    const generic = await explain(sql.raw(`EXECUTE core_indexes_1291${args}`));
+    // The plan really was the generic one, not a custom plan of the values.
+    const [stats] = (await tx.execute(sql`
+      SELECT generic_plans, custom_plans FROM pg_prepared_statements
+       WHERE name = 'core_indexes_1291'
+    `)) as unknown as { generic_plans: number | string; custom_plans: number | string }[];
+    expect(Number(stats?.generic_plans)).toBe(1);
+    expect(Number(stats?.custom_plans)).toBe(0);
+    await tx.execute(sql`DEALLOCATE core_indexes_1291`);
+    return { custom, generic };
   });
 }
 
@@ -74,32 +101,36 @@ function seqScanned(plan: string): string[] {
   );
 }
 
-function expectIndexed(plan: string, table: string, index: string): void {
-  expect(seqScanned(plan)).not.toContain(table);
-  expect(plan).toContain(`"Index Name":"${index}"`);
+function expectIndexed(
+  plans: { custom: string; generic: string },
+  table: string,
+  ...indexes: string[]
+): void {
+  for (const plan of [plans.custom, plans.generic]) {
+    expect(seqScanned(plan)).not.toContain(table);
+    for (const index of indexes) expect(plan).toContain(`"Index Name":"${index}"`);
+  }
 }
 
 describe("#1291 — hot paths plan an index scan", () => {
   it("quality record-result reads a page's live acceptances by index", async () => {
-    const plan = await planOf(liveLighthouseAcceptancesSql(ID));
-    expectIndexed(plan, "quality_acceptances", "quality_acceptances_page_kind_idx");
+    const plans = await plansOf(liveLighthouseAcceptancesSql(ID));
+    expectIndexed(plans, "quality_acceptances", "quality_acceptances_page_kind_idx");
   });
 
   it("the MCP cost cap ORs two index lookups on ai_calls", async () => {
-    const plan = await planOf(spentMicrocentsSql(ID, ID, { mcpTokenId: ID }));
-    expect(seqScanned(plan)).not.toContain("ai_calls");
-    expect(plan).toContain('"Index Name":"ai_calls_chat_session_idx"');
-    expect(plan).toContain('"Index Name":"ai_calls_actor_idx"');
+    const plans = await plansOf(spentMicrocentsSql(ID, ID, { mcpTokenId: ID }));
+    expectIndexed(plans, "ai_calls", "ai_calls_chat_session_idx", "ai_calls_actor_idx");
   });
 
   it("a page move collapses redirect chains by index", async () => {
-    const plan = await planOf(
+    const plans = await plansOf(
       collapseRedirectChainsSql([
         { from: "/a", to: "/b" },
         { from: "/c", to: "/d" },
       ]),
     );
-    expectIndexed(plan, "redirects", "redirects_to_path_idx");
+    expectIndexed(plans, "redirects", "redirects_to_path_idx");
   });
 });
 
@@ -173,7 +204,7 @@ const READERS: ReadonlyArray<{ name: string; table: string; index: string; state
 describe("#1291 — readers and FK checks plan an index scan", () => {
   for (const r of READERS) {
     it(r.name, async () => {
-      expectIndexed(await planOf(r.statement), r.table, r.index);
+      expectIndexed(await plansOf(r.statement), r.table, r.index);
     });
   }
 });

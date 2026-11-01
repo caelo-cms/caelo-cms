@@ -7,10 +7,11 @@
 -- auto_explain: a filtered Seq Scan left in that mode means no usable
 -- index exists for the predicate.
 --
--- Plain CREATE INDEX (no CONCURRENTLY): the runner applies every file in
--- one transaction (runner.ts), and CONCURRENTLY cannot run inside one.
--- The tables below are small enough on today's installs that the build
--- lock lasts milliseconds; the scans they replace grow with the site.
+-- Plain CREATE INDEX in the runner's transaction: both tables hold one
+-- row per accepted finding / per redirect (thousands at most), so the
+-- build lock lasts milliseconds. The indexes on the tables that grow
+-- with every request (ai_calls, audit_events, chat_messages,
+-- page_edit_log) are built CONCURRENTLY in 0463.
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
@@ -24,18 +25,6 @@ SET LOCAL caelo.actor_kind = 'system';
 CREATE INDEX IF NOT EXISTS quality_acceptances_page_kind_idx
   ON quality_acceptances (page_id, kind);
 
--- MCP cost cap (`ops/security/mcp_tool_call.ts` spentMicrocents) runs on
--- every capped MCP tool call: `chat_session_id = $1 OR (actor_id = $2 AND
--- created_at >= …)`. With this index the planner ORs it with
--- ai_calls_actor_idx (a BitmapOr) instead of scanning every AI call ever
--- made. created_at also serves the quality gate's per-chat chain sum
--- (`ops/quality/gate.ts`). Partial: rows without a chat are never looked
--- up by it; `chat_session_id = $1` (and the FK check) implies NOT NULL,
--- so the planner still uses it.
-CREATE INDEX IF NOT EXISTS ai_calls_chat_session_idx
-  ON ai_calls (chat_session_id, created_at)
-  WHERE chat_session_id IS NOT NULL;
-
 -- Page moves and slug changes (`ops/content/path-moves.ts`) collapse
 -- redirect chains with `UPDATE redirects … WHERE to_path = old_path`.
 CREATE INDEX IF NOT EXISTS redirects_to_path_idx
@@ -46,11 +35,5 @@ CREATE INDEX IF NOT EXISTS redirects_to_path_idx
 -- evaluate the policy before any non-leakproof predicate, and ILIKE is
 -- not leakproof, so it can never become an index condition for
 -- admin_role (measured: a GIN trgm index stays unused, Seq Scan).
-
--- audit_events is the largest table and had indexes only on id,
--- entity_id and request_id. `audit_events.aggregate_by_op_prefix`
--- (`ops/security/ai_calls_by_op.ts`) reads a time window of it.
-CREATE INDEX IF NOT EXISTS audit_events_created_at_idx
-  ON audit_events (created_at);
 
 COMMIT;

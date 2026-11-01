@@ -12,14 +12,16 @@
 -- roles, themes, domains and plugins (their delete / uninstall ops).
 -- Pages, modules, media, snapshots, deploy runs, AI calls and users are
 -- soft-deleted or kept, so their FKs only get an index where a reader
--- needs one (0460/0461); FKs to `actors` stay unindexed for the same
+-- needs one (0460/0461/0463); FKs to `actors` stay unindexed for the same
 -- reason (actors are never deleted). The decisions are listed in #1291's
 -- PR.
 --
 -- Partial `IS NOT NULL` indexes: every column here is nullable and mostly
 -- NULL, and `$1 = col` implies `col IS NOT NULL`, so the FK check still
--- uses them. Plain CREATE INDEX: the runner wraps each file in a
--- transaction (runner.ts), where CONCURRENTLY cannot run.
+-- uses them. Plain CREATE INDEX in the runner's transaction: proposal,
+-- pending-action and plugin tables stay small. The chat_sessions FKs on
+-- the per-request tables (ai_calls.parent_chat_session_id,
+-- page_edit_log.chat_session_id) are built CONCURRENTLY in 0463.
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
@@ -27,9 +29,6 @@ SET LOCAL caelo.actor_kind = 'system';
 -- chat_sessions: deleted by the subagent session GC.
 CREATE INDEX IF NOT EXISTS chat_sessions_parent_chat_session_id_idx
   ON chat_sessions (parent_chat_session_id)
-  WHERE parent_chat_session_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS ai_calls_parent_chat_session_id_idx
-  ON ai_calls (parent_chat_session_id)
   WHERE parent_chat_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS site_memory_proposals_chat_session_id_idx
   ON site_memory_proposals (chat_session_id)
@@ -39,9 +38,6 @@ CREATE INDEX IF NOT EXISTS skill_proposals_chat_session_id_idx
   WHERE chat_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS plugin_rate_limit_proposals_chat_session_id_idx
   ON plugin_rate_limit_proposals (chat_session_id)
-  WHERE chat_session_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS page_edit_log_chat_session_id_idx
-  ON page_edit_log (chat_session_id)
   WHERE chat_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS image_requests_chat_session_id_idx
   ON image_requests (chat_session_id)

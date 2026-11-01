@@ -10,8 +10,10 @@
 -- `deleted_at` partial indexes below are replaced by `IS NOT NULL` ones
 -- (deleted rows are few, so live readers lose nothing measurable).
 --
--- Plain CREATE INDEX: the runner wraps each file in a transaction
--- (runner.ts), where CONCURRENTLY cannot run.
+-- Plain CREATE INDEX in the runner's transaction: these tables grow with
+-- the site's content (pages, instances, imports) or stay small (sessions,
+-- subagent runs, takeovers), so the build lock is short. The per-request
+-- tables are built CONCURRENTLY in 0463.
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
@@ -44,12 +46,6 @@ CREATE INDEX IF NOT EXISTS sessions_user_id_idx
 -- session GC (`subagent_runs.gc_old_sessions`) cascades through it.
 CREATE INDEX IF NOT EXISTS subagent_runs_subagent_session_idx
   ON subagent_runs (subagent_chat_session_id);
-
--- The chat-image GC (`chat-image-gc-worker.ts`) periodically reads every
--- message with attachments; most messages have none.
-CREATE INDEX IF NOT EXISTS chat_messages_with_attachments_idx
-  ON chat_messages (created_at)
-  WHERE attachments IS NOT NULL;
 
 -- import_pages.accepted_page_id: `resolveImportPageRef`
 -- (`ops/imports.ts`, `id = $1 OR accepted_page_id = $1`, a BitmapOr with
