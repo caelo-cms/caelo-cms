@@ -44,8 +44,9 @@ interface PluginRow {
   updatedAt: string;
   /** #1008 — what the running servers make of `status` (admin-core ops/plugins/health.ts). */
   health: {
-    state: "running" | "failing" | "unreported" | "not_running";
+    state: "running" | "failing" | "awaiting_approval" | "unreported" | "not_running";
     servers: { loaded: number; failing: number };
+    awaitingCapabilities: string[];
     problem: PluginErrorSummary | null;
     recentErrors: PluginErrorSummary[];
   };

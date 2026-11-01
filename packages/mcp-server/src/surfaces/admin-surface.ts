@@ -73,6 +73,11 @@ export interface OpenSessionResponse {
   readonly chatBranchId: string;
   readonly title: string;
   readonly resumed: boolean;
+  /**
+   * #1306 — false when the connection sends no `Mcp-Session-Id`, so the
+   * session is not remembered between calls: every call must name it.
+   */
+  readonly carriedByConnection?: boolean;
 }
 
 /** What `mcp.get_context` returns. */
@@ -182,15 +187,37 @@ function errorResult(text: string): CallToolResult {
   return { isError: true, content: [{ type: "text", text }] };
 }
 
-/** Thrown by a backend asked to run a call with no work session to run it in. */
+/**
+ * Thrown by a backend asked to run a call with no work session to run it in.
+ * `message` overrides the default when the backend knows more — the remote
+ * one says whether a session was opened and names it (#1306).
+ */
 export class NoWorkSessionError extends Error {
   override readonly name = "NoWorkSessionError";
-  constructor() {
+  constructor(message?: string) {
     super(
-      "no open work session — call caelo_open_session first. Every caelo write lands in a session's chat; " +
-        "when several agents share this connection, each opens its own session and passes it as workSessionId on every call.",
+      message ??
+        "no open work session — call caelo_open_session first. Every caelo write lands in a session's chat; " +
+          "when several agents share this connection, each opens its own session and passes it as workSessionId on every call.",
     );
   }
+}
+
+/** The prose after caelo_open_session's JSON: how later calls reach the session. */
+export function openSessionNote(session: OpenSessionResponse): string {
+  const opened = session.resumed
+    ? `Continuing session '${session.title}' — its earlier unstaged work continues here. `
+    : `Opened a new session '${session.title}' (a chat of your own in the Caelo admin). `;
+  const carry =
+    session.carriedByConnection === false
+      ? `This connection sends no Mcp-Session-Id, so Caelo cannot remember this session between calls: pass ${WORK_SESSION_ARG}: "${session.chatSessionId}" on EVERY call (a call without it is refused), or reconnect the MCP server to get a session id. Do not call caelo_open_session again for this work. `
+      : `If other agents share this connection, pass ${WORK_SESSION_ARG}: "${session.chatSessionId}" on every call. `;
+  return (
+    opened +
+    "Subsequent caelo tool calls write to the site's shared draft (or this session's experiment branch). " +
+    carry +
+    "Stage with stage_changes when the operator asks for it (otherwise offer it when a change is done); the operator clicks Publish live in the Caelo admin."
+  );
 }
 
 /** A catalogue tool's schema with the optional per-call work session (see the header). */
@@ -306,14 +333,7 @@ export function createAdminMcpServer(
           content: [
             {
               type: "text",
-              text:
-                JSON.stringify(session, null, 2) +
-                (session.resumed
-                  ? `\nContinuing session '${session.title}' — its earlier unstaged work continues here. `
-                  : `\nOpened a new session '${session.title}' (a chat of your own in the Caelo admin). `) +
-                "Subsequent caelo tool calls write to the site's shared draft (or this session's experiment branch). " +
-                `If other agents share this connection, pass ${WORK_SESSION_ARG}: "${session.chatSessionId}" on every call. ` +
-                "Stage with stage_changes when the operator asks for it (otherwise offer it when a change is done); the operator clicks Publish live in the Caelo admin.",
+              text: `${JSON.stringify(session, null, 2)}\n${openSessionNote(session)}`,
             },
           ],
         };

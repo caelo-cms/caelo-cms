@@ -149,6 +149,26 @@ async function readRequiredBy(
   return out;
 }
 
+/**
+ * #1267 — what an active or disabled release-signed plugin's manifest asks
+ * for beyond the Owner's approval; empty for runtime-installed plugins
+ * (their grants are per artifact) and for rows that never ran.
+ */
+function unapprovedOf(row: PluginDb): string[] {
+  return row.tier === 1 && (row.status === "active" || row.status === "disabled")
+    ? unapprovedCapabilities(requestedCapabilitiesOf(row.manifest_json), row.approved_capabilities)
+    : [];
+}
+
+/** The rows `readPluginHealth` takes, with what each still waits to be approved for. */
+function healthInputs(rows: readonly PluginDb[]) {
+  return rows.map((r) => ({
+    slug: r.slug,
+    status: r.status,
+    unapprovedCapabilities: unapprovedOf(r),
+  }));
+}
+
 function rowToOut(
   r: PluginDb,
   health: Map<string, PluginHealth>,
@@ -180,13 +200,7 @@ function rowToOut(
     health: h,
     requiresPlugins: requiredPluginsOf(row.manifest_json),
     requiredBy: requiredBy.get(row.slug) ?? [],
-    unapprovedCapabilities:
-      row.tier === 1 && (row.status === "active" || row.status === "disabled")
-        ? unapprovedCapabilities(
-            requestedCapabilitiesOf(row.manifest_json),
-            row.approved_capabilities,
-          )
-        : [],
+    unapprovedCapabilities: unapprovedOf(row),
   }));
 }
 
@@ -245,7 +259,7 @@ export const listPluginsOp = defineOperation({
       ${where}
       ORDER BY tier ASC, slug ASC
     `)) as unknown as PluginDb[];
-    const health = await readPluginHealth(tx, rows);
+    const health = await readPluginHealth(tx, healthInputs(rows));
     const requiredBy = await readRequiredBy(tx);
     return ok({
       plugins: rows.map((r) => rowToOut(r, health, requiredBy)),
@@ -288,7 +302,7 @@ export const getPluginOp = defineOperation({
       return ok({ plugin: null });
     }
     return ok({
-      plugin: rowToOut(r, await readPluginHealth(tx, [r]), await readRequiredBy(tx)),
+      plugin: rowToOut(r, await readPluginHealth(tx, healthInputs([r])), await readRequiredBy(tx)),
     });
   },
 });

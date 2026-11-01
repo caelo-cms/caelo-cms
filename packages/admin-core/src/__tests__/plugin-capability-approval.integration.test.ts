@@ -34,6 +34,16 @@ const OWNER: ExecutionContext = {
   requestId: "t1267a",
 };
 const SLUG = "t1267a-upgraded";
+/** What the pre-#1008 loader wrote on a failed load (searchVIU, 2026-10-22). */
+const STALE_FINDING = [{ kind: "load", hint: 'syntax error at or near "CREATE SCHEMA"' }];
+
+interface PluginOut {
+  slug: string;
+  status: string;
+  unapprovedCapabilities: string[];
+  validationErrors: unknown[];
+  health: { state: string; awaitingCapabilities: string[] };
+}
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
@@ -101,9 +111,12 @@ describe("#1267 — a new release's capabilities wait for the Owner", () => {
 
     // The previous release had been approved for less (what 0431 backfills).
     resetPluginHost();
+    // #1306 — and it carries a validator finding the pre-#1008 loader left.
     await asSystem(
       (tx) =>
-        tx`UPDATE plugins SET approved_capabilities = ARRAY['cms_admin'] WHERE slug = ${SLUG}`,
+        tx`UPDATE plugins SET approved_capabilities = ARRAY['cms_admin'],
+                              validation_errors = ${JSON.stringify(STALE_FINDING)}::jsonb
+           WHERE slug = ${SLUG}`,
     );
     const upgraded = await boot();
     expect(upgraded.loaded).toEqual([]);
@@ -115,10 +128,22 @@ describe("#1267 — a new release's capabilities wait for the Owner", () => {
     // Still the Owner's status: active, not switched off.
     const listed = await execute(registry, adapter, OWNER, "plugins.get", { slug: SLUG });
     if (!listed.ok) throw new Error(JSON.stringify(listed.error));
-    const row = (listed.value as { plugin: { status: string; unapprovedCapabilities: string[] } })
-      .plugin;
+    const row = (listed.value as { plugin: PluginOut }).plugin;
     expect(row.status).toBe("active");
     expect(row.unapprovedCapabilities).toEqual(["background_workers"]);
+    // #1306 — the health says why it does not run, not "unreported".
+    expect(row.health.state).toBe("awaiting_approval");
+    expect(row.health.awaitingCapabilities).toEqual(["background_workers"]);
+    // The load attempt's upsert cleared the stale finding.
+    expect(row.validationErrors).toEqual([]);
+    const all = await execute(registry, adapter, OWNER, "plugins.list", {});
+    if (!all.ok) throw new Error(JSON.stringify(all.error));
+    const inList = (all.value as { plugins: PluginOut[] }).plugins.find((p) => p.slug === SLUG);
+    expect(inList?.health.state).toBe("awaiting_approval");
+    // A reload says what starts it, not "plugin is …, not active".
+    const reloaded = await loadActivatedPlugin(SLUG);
+    expect(reloaded.loaded).toBe(false);
+    expect(reloaded.reason).toContain("Approve new permissions");
 
     const approved = await execute(registry, adapter, OWNER, "plugins.approve_capabilities", {
       slug: SLUG,
@@ -131,10 +156,10 @@ describe("#1267 — a new release's capabilities wait for the Owner", () => {
     expect((await loadActivatedPlugin(SLUG)).loaded).toBe(true);
     const after = await execute(registry, adapter, OWNER, "plugins.get", { slug: SLUG });
     if (!after.ok) throw new Error(JSON.stringify(after.error));
-    expect(
-      (after.value as { plugin: { unapprovedCapabilities: string[] } }).plugin
-        .unapprovedCapabilities,
-    ).toEqual([]);
+    const afterRow = (after.value as { plugin: PluginOut }).plugin;
+    expect(afterRow.unapprovedCapabilities).toEqual([]);
+    expect(afterRow.health.state).not.toBe("awaiting_approval");
+    expect(afterRow.health.awaitingCapabilities).toEqual([]);
   });
 
   it("refuses an AI actor and a plugin that is not installed", async () => {

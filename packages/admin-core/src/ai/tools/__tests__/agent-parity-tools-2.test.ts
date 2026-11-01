@@ -258,6 +258,37 @@ describe("get_plugin", () => {
     expect(h.calls[1]?.input).toEqual({ pluginId: U1 });
   });
 
+  it("says an active plugin waits for a capability approval and where the operator gives it (#1306)", async () => {
+    const h = harness({
+      "plugins.get": () => ({
+        plugin: {
+          ...PLUGIN,
+          unapprovedCapabilities: ["change_journal"],
+          health: {
+            state: "awaiting_approval",
+            servers: { loaded: 0, failing: 0 },
+            awaitingCapabilities: ["change_journal"],
+            problem: null,
+            recentErrors: [],
+          },
+        },
+      }),
+      "ai_calls.aggregate_per_plugin": () => ({
+        pluginId: U1,
+        capMicrocents: 100_000_000,
+        last24hMicrocents: 0,
+        last24hCalls: 0,
+        capPct: 0,
+        capExceeded: false,
+      }),
+    });
+    const r = await run(getPluginTool, { slug: "forms" }, h.toolCtx);
+    expect(r.content).toContain("health: awaiting_approval (servers: 0 loaded, 0 failing)");
+    expect(r.content).toContain("Owner has not approved (change_journal)");
+    expect(r.content).toContain("/settings/plugins");
+    expect(r.content).toContain("reload_plugin cannot approve");
+  });
+
   it("names list_plugins when the slug is unknown", async () => {
     const h = harness({ "plugins.get": () => ({ plugin: null }) });
     const r = await run(getPluginTool, { slug: "nope" }, h.toolCtx);
