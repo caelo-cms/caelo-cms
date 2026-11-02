@@ -278,7 +278,10 @@ async function main(): Promise<void> {
   for (const d of drift) {
     console.error(`drift: ${d.flag} is "${d.from}", want "enabled" on ${slug}`);
   }
-  output("drift", drift.map((d) => d.flag).join(","));
+  // Names come from the constant list, never from the API response, so no
+  // API text can reach $GITHUB_OUTPUT.
+  const drifted = new Set<string>(drift.map((d) => d.flag));
+  output("drift", MANAGED_SETTINGS.filter((name) => drifted.has(name)).join(","));
   process.exit(1);
 }
 
