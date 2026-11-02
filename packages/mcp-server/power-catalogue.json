@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
+  "version": "0.11.10",
   "tools": [
     {
       "name": "read_content",
@@ -4998,7 +4998,7 @@
           "manifest": {
             "type": "object",
             "additionalProperties": true,
-            "description": "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, hasStaticRender}."
+            "description": "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, tableKinds, hasStaticRender}. publicOperations entries are {name, kind: read|write, captcha: required|none, inputJsonSchema, reads, writes, rateLimit?: {max, windowSeconds}}; tableKinds gives every schema table one kind (published: visitors read; inbox: visitors only insert; visitor-state: visitors read+write; private: admin only)."
           },
           "source": {
             "type": "string",
