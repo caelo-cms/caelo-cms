@@ -6,10 +6,4 @@
  * importing it from here.
  */
 
-export {
-  type BodyCapResult,
-  type BodyCapTooLarge,
-  DEFAULT_MAX_BODY_BYTES,
-  HARD_MAX_BODY_BYTES,
-  readBodyWithCap,
-} from "@caelo-cms/shared";
+export { readBodyWithCap } from "@caelo-cms/shared";

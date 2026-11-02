@@ -45,7 +45,6 @@ import {
 // auto-update scheduler reads them too); re-exported so this module stays
 // the CLI's one import for release manifests.
 export {
-  OPTIONAL_RELEASE_IMAGES,
   RELEASE_CHANNELS,
   RELEASE_IMAGES,
   RELEASE_MANIFEST_ARTIFACT_TYPE,

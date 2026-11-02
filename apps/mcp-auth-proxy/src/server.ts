@@ -288,23 +288,6 @@ export function createProxyHandler(deps: ProxyServerDeps = {}): ProxyHandler {
   };
 }
 
-let defaultHandler: ProxyHandler | null = null;
-
-/**
- * Serve one request: with `deps`, through a handler built from them (tests);
- * without, through the process's handler over `process.env` (built once: it
- * owns the client-file cache and the rate buckets).
- */
-export function handleRequest(
-  req: Request,
-  conn: ProxyConnection = { peerAddress: null },
-  deps?: ProxyServerDeps,
-): Promise<Response> {
-  if (deps) return createProxyHandler(deps)(req, conn);
-  defaultHandler ??= createProxyHandler();
-  return defaultHandler(req, conn);
-}
-
 if (import.meta.main) {
   // Refuses to start on an invalid CAELO_REMOTE_MCP / forward origin.
   const handler = createProxyHandler();
