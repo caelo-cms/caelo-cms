@@ -124,7 +124,6 @@ function convergenceSql(password: PasswordSql, agent: boolean): string {
       `SELECT 'CREATE ROLE ${role} NOINHERIT LOGIN' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') \\gexec`,
       `ALTER ROLE ${role} WITH LOGIN PASSWORD ${password(role)};`,
     ]),
-    ...stagingDatabaseSql(password),
     ...publicRoleLimitsSql(),
     // The upgrader's role (migration 0267 creates it only with CREATEROLE,
     // which the self-hosted admin_role lacks).
@@ -144,6 +143,8 @@ function convergenceSql(password: PasswordSql, agent: boolean): string {
     "REVOKE ALL ON DATABASE cms_public FROM PUBLIC;",
     "GRANT CONNECT ON DATABASE cms_admin TO admin_role;",
     "GRANT CONNECT ON DATABASE cms_public TO public_role, admin_role;",
+    // #1329 — after the other two databases exist: its revokes name them.
+    ...stagingDatabaseSql(password),
     // #635 — the gateway's former cms_admin login goes, with whatever it
     // still holds in either database (the superuser may drop what
     // migration 0285 could only revoke).

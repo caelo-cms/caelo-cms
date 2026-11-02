@@ -58,7 +58,7 @@ config:
     description: Admin Cloud Run memory. 2Gi leaves room for the Lighthouse quality audit next to editor requests; billed only while an instance runs.
   caelo-gcp-firebase:adminMaxInstances:
     type: string
-    default: "5"
+    default: "4"
     description: Admin Cloud Run max instances.
   caelo-gcp-firebase:maxConnections:
     type: string
