@@ -52,14 +52,15 @@ describe("codeql.yml workflow", () => {
     expect(codeql).toMatch(/^\s*-\s*actions\s*$/m);
   });
 
-  it("CQ5: pins codeql-action init + analyze by major tag, no floating ref", () => {
-    expect(codeql).toMatch(/github\/codeql-action\/init@v4/);
-    expect(codeql).toMatch(/github\/codeql-action\/analyze@v4/);
-    // No floating @main / branch refs on the codeql action.
-    expect(codeql).not.toMatch(/github\/codeql-action\/\w+@main/);
-    for (const ref of codeql.match(/github\/codeql-action\/\w+@\S+/g) ?? []) {
-      expect(ref).toMatch(/@v\d+$/);
-    }
+  it("CQ5: pins codeql-action init + analyze to one commit SHA (no floating tag)", () => {
+    // The repo-wide SHA-pin rule lives in scripts/action-pins.test.ts (#104);
+    // here only that init and analyze come from the same release, because a
+    // mismatched pair fails the analysis upload.
+    const shas = [
+      ...codeql.matchAll(/github\/codeql-action\/(?:init|analyze)@([0-9a-f]{40})\b/g),
+    ].map((m) => m[1]);
+    expect(shas).toHaveLength(2);
+    expect(new Set(shas).size).toBe(1);
   });
 
   it("CQ6: uses the security-extended query suite", () => {
@@ -73,8 +74,8 @@ describe("codeql.yml workflow", () => {
     expect(codeql).not.toMatch(/contents:\s*write/);
   });
 
-  it("CQ8: pins actions/checkout by major tag", () => {
-    expect(codeql).toMatch(/actions\/checkout@v\d+/);
+  it("CQ8: pins actions/checkout by commit SHA", () => {
+    expect(codeql).toMatch(/actions\/checkout@[0-9a-f]{40}\b/);
   });
 });
 
@@ -83,12 +84,8 @@ describe("dependency-review.yml workflow", () => {
     expect(depReview).toMatch(/on:\s*\n\s*pull_request:\s*\n\s*branches:\s*\[main\]/);
   });
 
-  it("DR2: pins dependency-review-action by major tag, no floating ref", () => {
-    expect(depReview).toMatch(/actions\/dependency-review-action@v\d+/);
-    expect(depReview).not.toMatch(/actions\/dependency-review-action@main/);
-    for (const ref of depReview.match(/actions\/dependency-review-action@\S+/g) ?? []) {
-      expect(ref).toMatch(/@v\d+$/);
-    }
+  it("DR2: pins dependency-review-action by commit SHA (no floating tag or branch)", () => {
+    expect(depReview).toMatch(/actions\/dependency-review-action@[0-9a-f]{40}\b/);
   });
 
   it("DR3: fails on high-or-higher severity vulnerabilities", () => {
@@ -178,58 +175,13 @@ describe("license allow-list lockstep", () => {
   });
 });
 
-describe("issue #113 — workflow action pinning + least-privilege permissions", () => {
-  // The four workflows that carried actions/unpinned-tag +
-  // actions/missing-workflow-permissions alerts. Third-party actions must be
-  // SHA-pinned; first-party actions/* + github/* stay on major tags (GitHub's
-  // trust model — and codeql.yml/dependency-review.yml above keep them on @vN).
+describe("issue #113 — least-privilege workflow permissions", () => {
+  // Action pinning moved to scripts/action-pins.test.ts (#104), which covers
+  // every workflow and composite action, first-party actions included.
   const WORKFLOWS = ["ci.yml", "release.yml", "release-images.yml", "e2e-livedit.yml"].map((f) => ({
     name: f,
     body: readFileSync(resolve(REPO_ROOT, ".github/workflows", f), "utf8"),
   }));
-
-  const FIRST_PARTY = new Set(["actions", "github"]);
-
-  /**
-   * Every `uses:` ref in `body` whose owner is not GitHub-first-party.
-   * Matches only `uses:` in YAML step-key position (line start, optional
-   * `- `), so prose/comments that mention `uses:` are not treated as actions.
-   * Local (`./…`) reusable-workflow calls are skipped.
-   */
-  function thirdPartyUses(body: string): string[] {
-    const refs: string[] = [];
-    for (const m of body.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)/gm)) {
-      const ref = m[1] ?? "";
-      if (ref.startsWith("./") || ref.startsWith("docker://")) continue;
-      const owner = ref.split("/")[0] ?? "";
-      if (!FIRST_PARTY.has(owner)) refs.push(ref);
-    }
-    return refs;
-  }
-
-  it("P1: extraction finds the expected third-party action uses (guards a silent zero-match)", () => {
-    const total = WORKFLOWS.reduce((n, wf) => n + thirdPartyUses(wf.body).length, 0);
-    expect(total).toBeGreaterThanOrEqual(16);
-  });
-
-  it("P2: every third-party action is pinned to a full 40-char commit SHA (no floating tag)", () => {
-    for (const wf of WORKFLOWS) {
-      for (const ref of thirdPartyUses(wf.body)) {
-        expect(ref, `${wf.name}: ${ref} is not SHA-pinned`).toMatch(/@[0-9a-f]{40}$/);
-      }
-    }
-  });
-
-  it("P3: each SHA-pinned third-party action carries a # vN comment for Dependabot", () => {
-    for (const wf of WORKFLOWS) {
-      const pinned = wf.body.split("\n").filter((l) => /uses:\s*[^\s#]+@[0-9a-f]{40}/.test(l));
-      for (const line of pinned) {
-        expect(line, `${wf.name}: ${line.trim()} missing version comment`).toMatch(
-          /@[0-9a-f]{40}\s+#\s*v?\d/,
-        );
-      }
-    }
-  });
 
   it("P4: no workflow grants write-all", () => {
     for (const wf of WORKFLOWS) {

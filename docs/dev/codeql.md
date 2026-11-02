@@ -28,30 +28,44 @@ Both run the **`security-extended`** query suite. If first-run noise on the
 existing tree is too high, downgrade to the default `security` suite by editing
 the single `queries:` line in the workflow — that is the noise lever.
 
-### Action pinning policy (`actions/unpinned-tag`)
+### Action pinning policy (`actions/unpinned-tag`, #104)
 
-The `actions` analysis flags actions that aren't pinned to an immutable ref.
-The repo convention (issue #113):
+A tag such as `@v7` is mutable: whoever controls the action's repository can
+point it at another commit, and every workflow runs that commit on its next
+run. The `aquasecurity/trivy-action` tags were hijacked exactly this way in
+March 2026, `tj-actions/changed-files` in March 2025. A commit SHA cannot be
+re-pointed. So **every** `uses:` in `.github/workflows/` and
+`.github/actions/`, GitHub's own `actions/*` and `github/*` included, names a
+full 40-character commit SHA with a trailing comment for the exact release:
 
-- **Third-party actions** (anything outside the `actions/*` and `github/*`
-  GitHub-owned namespaces — e.g. `oven-sh/setup-bun`, `docker/*`,
-  `sigstore/cosign-installer`, `google-github-actions/auth`,
-  `softprops/action-gh-release`) are pinned to a **full 40-character commit
-  SHA** with a trailing `# vN` comment, e.g.
-  `uses: oven-sh/setup-bun@0c5077e…21857d6 # v2`. The SHA is the security
-  boundary; the comment lets Dependabot's `github-actions` ecosystem keep the
-  pin current.
-- **First-party `actions/*` and `github/*`** stay on a **major tag** (`@v4`).
-  CodeQL does not flag these (GitHub's own trust model), and
-  `codeql.yml` / `dependency-review.yml` pin `github/codeql-action` and
-  `actions/*` this way.
+```yaml
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+```
 
-`scripts/codeql-workflow.test.ts` encodes this split and fails CI if a
-third-party action regresses to a floating tag, if a SHA pin loses its version
-comment, or if a least-privilege job loses its `permissions:` block. Resolve a
-new `actions/missing-workflow-permissions` alert by adding the narrowest
-`permissions:` block the job needs (usually `contents: read`, or `{}` when the
-job touches no GitHub API).
+- **Resolve, never guess.** Take the SHA from the tag through the GitHub API
+  (`gh api repos/<owner>/<repo>/git/ref/tags/<tag>`; for an annotated tag,
+  follow `object.sha` through `git/tags/<sha>` to the commit). Check that the
+  commit is on a branch of the action's own repository
+  (`gh api repos/<owner>/<repo>/compare/<default-branch>...<sha>` reports
+  `behind` or `identical`), which rules out a commit that only exists in a
+  fork, and that the release was published right after that commit.
+- **Tag-less actions** (only `anthropics/claude-code-security-review`, which
+  has no releases) carry `# main (pinned YYYY-MM-DD)` instead.
+- **Forbidden actions.** Actions whose tags were hijacked are refused at any
+  ref, because a pin taken from a hijacked tag pins the malicious commit.
+  The list lives in `FORBIDDEN` in `scripts/action-pins.test.ts`.
+- **Dependabot keeps the pins current.** Its `github-actions` ecosystem reads
+  the `# vX.Y.Z` comment as the current version and bumps the SHA and the
+  comment together. `.github/dependabot.yml` lists `/` (the workflows) and
+  `/.github/actions/*` (the composite actions, which `/` does not cover).
+
+`scripts/action-pins.test.ts` fails CI on a floating tag or branch, a short
+SHA, a comment that names only a major (`# v2`), an unpinned `docker://`
+image, two SHAs under the same version, or a forbidden action.
+`scripts/codeql-workflow.test.ts` keeps the least-privilege `permissions:`
+blocks. Resolve a new `actions/missing-workflow-permissions` alert by adding
+the narrowest `permissions:` block the job needs (usually `contents: read`, or
+`{}` when the job touches no GitHub API).
 
 ### Triaging + dismissing alerts
 
@@ -179,15 +193,57 @@ like the branch-protection ruleset they are managed as config-as-code by a
 maintainer with repo-admin scope:
 
 ```bash
-bun run security:check    # report drift: are both flags enabled?
-bun run security:enable   # enable secret scanning + push protection (idempotent)
+bun run security:check    # report drift: secret scanning, push protection, Dependabot alerts
+bun run security:enable   # turn on whichever of them is off (idempotent)
 ```
 
 The script (`scripts/enable-security-features.ts`) PATCHes the repo's
-`secret_scanning` and `secret_scanning_push_protection` flags via the GitHub
-API. Enabling needs a token with **repo-admin** scope; a non-admin token gets a
-clear 403.
+`secret_scanning` and `secret_scanning_push_protection` flags and PUTs
+`/vulnerability-alerts` (Dependabot alerts, which need the dependency graph,
+so "alerts on" also proves the graph is on). Enabling needs a token with
+**repo-admin** scope; a non-admin token gets a clear 403.
 
 If push protection blocks a legitimate push (a value that only looks like a
 secret), follow the unblock prompt GitHub prints at the push — never bypass it
 for a real credential.
+
+### Drift guard
+
+`.github/workflows/security-drift.yml` (#105) runs `security:check` every
+Monday and on demand (*Actions → security-drift → Run workflow*). When a
+setting is off, the run fails and opens one issue titled *Security settings
+are off: …*; later runs update it and comment, never open a second one. When
+everything is on again, the next run comments and closes it. It never turns a
+setting back on itself: switching a security toggle from CI deserves its own
+decision.
+
+**Why not `GITHUB_TOKEN`.** GitHub returns the `security_and_analysis` block of
+`GET /repos/{owner}/{repo}` and the answer of
+`GET /repos/{owner}/{repo}/vulnerability-alerts` only to repo admins.
+`GITHUB_TOKEN` cannot be made an admin (its `permissions:` have no
+`administration` key), so with it the block is missing. The check never reads
+a missing block as "off" or "on": it exits 2 (*unreadable*), and the issue says
+the guard is blind.
+
+**The token: `SECURITY_SETTINGS_READ_TOKEN`.** An Actions secret holding a
+fine-grained personal access token:
+
+- Resource owner `caelo-cms`; repository access *Only select repositories* →
+  `caelo-cms/caelo-cms`.
+- Repository permissions: **Administration: Read-only** (Metadata: Read-only
+  is added automatically). Nothing else. Read-only, so a leaked token changes
+  nothing.
+- Created by a user who is a repo admin: GitHub answers with the creator's
+  role, capped by the token's permissions. If the organisation requires
+  approval of fine-grained tokens, an org owner approves it.
+- Expiry: at most a year; set a reminder. An expired token turns the run into
+  *unreadable*, so it fails loudly instead of passing.
+
+Store it with `gh secret set SECURITY_SETTINGS_READ_TOKEN -R caelo-cms/caelo-cms`
+and start one run by hand to confirm it reads the settings. A GitHub App
+installation token with *Administration: read* would work the same way; the
+PAT is the smaller setup for one repository.
+
+Only the check step gets the secret. The issue step uses the workflow's own
+`GITHUB_TOKEN` with `issues: write`, and the workflow never runs on
+`pull_request`, so no PR code can reach the PAT.
