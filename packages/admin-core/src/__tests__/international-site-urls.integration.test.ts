@@ -27,6 +27,7 @@ import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { structureSourcesFromOps } from "../quality/checks/structure-sources.js";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 import { ensureRoleUser } from "./fixtures/role-user.js";
@@ -101,7 +102,9 @@ async function cleanup(): Promise<void> {
       "DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'international-site')",
     );
     await tx.unsafe("DELETE FROM plugins WHERE slug = 'international-site'");
-    await tx.unsafe("UPDATE site_defaults SET home_page_id = NULL WHERE id = 1");
+    await tx.unsafe(
+      "UPDATE site_defaults SET home_page_id = NULL, not_found_page_id = NULL WHERE id = 1",
+    );
     await tx.unsafe("DELETE FROM pages WHERE slug LIKE 't395-%'");
     await tx.unsafe("DELETE FROM templates WHERE slug LIKE 't395-%'");
     await tx.unsafe("DELETE FROM layouts WHERE slug LIKE 't395-%'");
@@ -620,20 +623,20 @@ describe("create_variant — the slug the caller cannot invent", () => {
  * surface that reads the materialized path (canonical, sitemap,
  * language links) inherits the shape; hreflang is asserted directly.
  */
+const sys = { origin: "system" as const, actorId: "00000000-0000-0000-0000-000000000000" };
+
+async function pluginOp<T>(operationName: string, args: unknown): Promise<T> {
+  const r = await runPluginOperation({
+    invocation: sys,
+    pluginSlug: "international-site",
+    operationName,
+    args,
+  });
+  if (!r.ok) throw new Error(`${operationName}: ${r.error.message}`);
+  return r.value as T;
+}
+
 describe("prefixDefaultLocale — every locale prefixed, default home at '/'", () => {
-  const sys = { origin: "system" as const, actorId: "00000000-0000-0000-0000-000000000000" };
-
-  async function pluginOp<T>(operationName: string, args: unknown): Promise<T> {
-    const r = await runPluginOperation({
-      invocation: sys,
-      pluginSlug: "international-site",
-      operationName,
-      args,
-    });
-    if (!r.ok) throw new Error(`${operationName}: ${r.error.message}`);
-    return r.value as T;
-  }
-
   async function pathOf(pageId: string): Promise<string | undefined> {
     const rows = (await sqlSystem((tx) =>
       tx.unsafe(`SELECT current_path FROM pages WHERE id = '${pageId}'`),
@@ -814,5 +817,96 @@ describe("prefixDefaultLocale — every locale prefixed, default home at '/'", (
     await migrate();
     expect(await pathOf(preiseId)).toBe("/t395-px-preise");
     expect(await pathOf(homeId)).toBe("/");
+  });
+});
+
+describe("#1305 — the 404 page is no language version", () => {
+  it("emits no hreflang or sitemap alternates on the 404 page, nor towards it", async () => {
+    await cleanup();
+    const homeId = await seedPage("t395-nf-start");
+    const preiseId = await seedPage("t395-nf-preise");
+    const notFoundId = await seedPage("t395-nf-seite-nicht-gefunden");
+    const setHome = await execute(registry, adapter, SYS_CTX, "pages.set_home_page", {
+      pageId: homeId,
+    });
+    if (!setHome.ok) throw new Error(JSON.stringify(setHome.error));
+    await bootPlugin();
+    await pluginOp("set_locales", {
+      locales: [
+        { code: "de", displayName: "Deutsch", urlStrategy: "none", isDefault: true },
+        { code: "en", displayName: "English", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const enHome = await pluginOp<{ pageId: string }>("create_variant", {
+      sourcePageId: homeId,
+      localeCode: "en",
+    });
+    const enPricing = await pluginOp<{ pageId: string }>("create_variant", {
+      sourcePageId: preiseId,
+      localeCode: "en",
+      slug: "t395-nf-pricing",
+    });
+    const enNotFound = await pluginOp<{ pageId: string }>("create_variant", {
+      sourcePageId: notFoundId,
+      localeCode: "en",
+      slug: "t395-nf-page-not-found",
+    });
+    const ids = [homeId, preiseId, notFoundId, enHome.pageId, enPricing.pageId, enNotFound.pageId];
+    for (const id of ids) {
+      const pub = await execute(registry, adapter, SYS_CTX, "pages.set_status", {
+        pageId: id,
+        status: "published",
+      });
+      if (!pub.ok) throw new Error(JSON.stringify(pub.error));
+    }
+    const designate = await execute(registry, adapter, SYS_CTX, "pages.set_not_found_page", {
+      pageId: notFoundId,
+    });
+    if (!designate.ok) throw new Error(JSON.stringify(designate.error));
+
+    const base = "https://t1305.example";
+    const restoreBase = await pinSiteBaseUrl(ADMIN_URL, base);
+    const contributions = await pluginOp<{
+      head: Record<string, { hreflang: string; href: string }[]>;
+      sitemap: Record<string, { alternates: { hreflang: string; href: string }[] }>;
+    }>("head_contributions", {
+      pageIds: [preiseId, notFoundId, enPricing.pageId, enNotFound.pageId],
+      siteBaseUrl: base,
+      pageUrlStyle: "no-extension",
+    }).finally(restoreBase);
+
+    // The 404 page (served as /404.html, never at its own URL) and its
+    // English version are no alternates of each other.
+    for (const id of [notFoundId, enNotFound.pageId]) {
+      expect(contributions.head[id]).toBeUndefined();
+      expect(contributions.sitemap[id]).toBeUndefined();
+    }
+    // Every other group keeps its full hreflang set.
+    expect(
+      Object.fromEntries((contributions.head[preiseId] ?? []).map((e) => [e.hreflang, e.href])),
+    ).toEqual({
+      de: `${base}/t395-nf-preise`,
+      en: `${base}/en/t395-nf-pricing`,
+      "x-default": `${base}/t395-nf-preise`,
+    });
+    expect(contributions.sitemap[enPricing.pageId]?.alternates).toHaveLength(3);
+  });
+
+  it("the structure check reads the language groups from the link-resolve point", async () => {
+    // Runs on the plugin and pages of the previous case.
+    const rows = (await sqlSystem((tx) =>
+      tx.unsafe(
+        "SELECT id::text AS id, slug FROM pages WHERE slug LIKE 't395-nf-%' AND deleted_at IS NULL",
+      ),
+    )) as { id: string; slug: string }[];
+    const idOf = (slug: string) => rows.find((r) => r.slug === slug)?.id ?? "";
+    const { variantGroups } = await structureSourcesFromOps(registry, adapter, SYS_CTX).pageIndex();
+    const preise = variantGroups.get(idOf("t395-nf-preise"));
+    expect(preise).toBeString();
+    expect(variantGroups.get(idOf("t395-nf-pricing"))).toBe(preise as string);
+    const notFound = variantGroups.get(idOf("t395-nf-seite-nicht-gefunden"));
+    expect(notFound).toBeString();
+    expect(variantGroups.get(idOf("t395-nf-page-not-found"))).toBe(notFound as string);
+    expect(notFound).not.toBe(preise as string);
   });
 });

@@ -11,6 +11,7 @@
  * the audit fails loudly (runner.ts), instead of reading as "no findings".
  */
 
+import { hasLinkResolveContributors, resolveLinkVariants } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -173,9 +174,31 @@ export function structureSourcesFromOps(
           ]),
         ),
         siteHosts: siteHostsOf(siteUrls),
+        variantGroups: await readVariantGroups(
+          pages.map((p) => p.id),
+          ctx.chatBranchId ?? null,
+        ),
       };
     },
   };
+}
+
+/**
+ * #1305 — the variant groups of the link-resolve composition point (the
+ * same partition every render resolves page links with): page id → its
+ * group, for pages a plugin places in one. No plugin call without an
+ * active contributor.
+ */
+async function readVariantGroups(
+  pageIds: readonly string[],
+  chatBranchId: string | null,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (pageIds.length === 0 || !hasLinkResolveContributors()) return out;
+  for (const [pageId, v] of await resolveLinkVariants(pageIds, { chatBranchId })) {
+    if (v.group !== null) out.set(pageId, v.group);
+  }
+  return out;
 }
 
 /**

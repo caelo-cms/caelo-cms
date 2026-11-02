@@ -55,6 +55,12 @@ export interface AuditState {
   readonly stagedPages: readonly StagedPageRef[];
   /** The page core serves at `/` (its group holds every language's home). */
   readonly siteHomePageId: string | null;
+  /**
+   * #1305 — the page core ships as `/404.html` (null: none). It is
+   * staged, but served for unknown URLs and never at its own path, so it
+   * is no language version: no hreflang is expected on it or towards it.
+   */
+  readonly notFoundPageId: string | null;
   readonly glossary: readonly GlossaryRow[];
   /** Modules placed in a layout: their text is the site's chrome. */
   readonly chromeModuleIds: ReadonlySet<string>;
@@ -116,16 +122,26 @@ export class BuildModel {
     return this.variantOf.get(pageId)?.locale_code ?? this.defaultLocale.code;
   }
 
-  /** The PUBLISHED language versions of a page, itself included, by locale. */
+  /** Is the page published at its own path (the 404 page is not, #1305)? */
+  private isVersion(pageId: string): boolean {
+    return this.pathOf.has(pageId) && pageId !== this.state.notFoundPageId;
+  }
+
+  /**
+   * The PUBLISHED language versions of a page, itself included, by
+   * locale. None for the 404 page: it renders no hreflang and no
+   * language switch entries (#1305).
+   */
   versionsOf(pageId: string): Map<string, string> {
     const v = this.variantOf.get(pageId);
     const out = new Map<string, string>();
+    if (pageId === this.state.notFoundPageId) return out;
     if (!v) {
-      if (this.pathOf.has(pageId)) out.set(this.defaultLocale.code, pageId);
+      if (this.isVersion(pageId)) out.set(this.defaultLocale.code, pageId);
       return out;
     }
     for (const m of this.membersOf.get(v.group_id) ?? []) {
-      if (this.pathOf.has(m.page_id)) out.set(m.locale_code, m.page_id);
+      if (this.isVersion(m.page_id)) out.set(m.locale_code, m.page_id);
     }
     return out;
   }
@@ -483,6 +499,7 @@ function hreflang(
     });
   }
 
+  // The 404 page has no versions (#1305), so it expects no hreflang.
   if (versions.size < 2) return out;
   const listed = new Map<string, string | null>();
   for (const a of f.alternates) listed.set(a.hreflang.toLowerCase(), a.path);

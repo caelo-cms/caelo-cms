@@ -59,7 +59,9 @@ export async function loadAuditState(
   const [variants, glossary, defaults, shared, chromeRows, targets] = await Promise.all([
     listAll(deps.q, "page_variants") as Promise<PageVariantRow[]>,
     listAll(deps.q, "glossary") as Promise<GlossaryRow[]>,
-    deps.cms.call<{ defaults: { rootPageId: string | null } | null }>("site_defaults.get", {}),
+    deps.cms.call<{
+      defaults: { rootPageId: string | null; notFoundPageId: string | null } | null;
+    }>("site_defaults.get", {}),
     deps.cms.call<{
       layoutPlacements: { moduleId: string }[];
       sharedInstances: { moduleId: string }[];
@@ -73,6 +75,7 @@ export async function loadAuditState(
     variants,
     stagedPages,
     siteHomePageId: defaults.defaults?.rootPageId ?? null,
+    notFoundPageId: defaults.defaults?.notFoundPageId ?? null,
     glossary,
     chromeModuleIds: new Set([
       ...shared.layoutPlacements.map((p) => p.moduleId),

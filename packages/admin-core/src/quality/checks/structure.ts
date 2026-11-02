@@ -18,6 +18,11 @@
  *   identical templates. Keep one, give it the content as values.
  * - `structure/similar-markup` (warning): near matches of the above —
  *   likely the same pattern drifting, but not certain.
+ *
+ *   Both count PAGES, and the versions of one page (its language
+ *   versions, as the link-resolve plugin groups them: #1305) are one
+ *   page: a translation carries its source's markup by construction.
+ *   Markup repeated on two different pages counts in any language.
  * - `structure/layout-css-module-specific` (warning): layout CSS for
  *   classes only one module (or only free markup) uses.
  * - `structure/repeated-items` (warning, #1068): one pattern written out
@@ -137,7 +142,7 @@ export function structureFindings(
 ): Finding[] {
   const analysis = analyseStructure(pages, modules);
   const byId = new Map(modules.map((m) => [m.id, m]));
-  const groups = groupPatterns(analysis, byId);
+  const groups = groupPatterns(analysis, byId, pageCounter(pageIndex.variantGroups));
   const findings = [
     ...perPage("structure/repeated-markup", "error", groups.exact, byId),
     ...duplicateModules(analysis, byId),
@@ -156,9 +161,28 @@ export function structureFindings(
   return findings.sort((a, b) => rank(a) - rank(b)).slice(0, MAX_FINDINGS_PER_CALL);
 }
 
+/** How many distinct pages a set of occurrences spans. */
+type PageCounter = (list: readonly PatternOccurrence[]) => number;
+
+/**
+ * #1305 — distinct pages, counting the versions of one page as one: a
+ * German page and the English version a translation made of it carry the
+ * same markup in the same placements by construction — one page in two
+ * languages, not a pattern copied to a second page. A pattern repeated on
+ * two DIFFERENT pages still counts two, in any language.
+ */
+function pageCounter(variantGroups: ReadonlyMap<string, string>): PageCounter {
+  const keyOf = (pageId: string) => {
+    const group = variantGroups.get(pageId);
+    return group === undefined ? `page:${pageId}` : `group:${group}`;
+  };
+  return (list) => new Set(list.map((o) => keyOf(o.pageId))).size;
+}
+
 function groupPatterns(
   analysis: StructureAnalysis,
   byId: ReadonlyMap<string, StructureModule>,
+  pageCount: PageCounter,
 ): { exact: PatternGroup[]; near: PatternGroup[] } {
   // Every module counts, placed or not: a free copy of a module that
   // exists is a copy either way, and placing the module is the fix.
@@ -179,7 +203,10 @@ function groupPatterns(
       exact.push({ label: first.label, occurrences: list, module });
     else rest.push(list);
   }
-  return { exact, near: nearGroups(rest.slice(0, MAX_NEAR_CANDIDATES), templates, byId) };
+  return {
+    exact,
+    near: nearGroups(rest.slice(0, MAX_NEAR_CANDIDATES), templates, byId, pageCount),
+  };
 }
 
 /** Cluster one-page patterns that are near matches of each other or of a template. */
@@ -187,6 +214,7 @@ function nearGroups(
   lists: readonly PatternOccurrence[][],
   templates: readonly (readonly [string, SubtreeShape])[],
   byId: ReadonlyMap<string, StructureModule>,
+  pageCount: PageCounter,
 ): PatternGroup[] {
   const parent = lists.map((_, i) => i);
   const find = (i: number): number => {
@@ -219,10 +247,6 @@ function nearGroups(
     if (module || pageCount(occ) >= 2) out.push({ label: first.label, occurrences: occ, module });
   }
   return out;
-}
-
-function pageCount(list: readonly PatternOccurrence[]): number {
-  return new Set(list.map((o) => o.pageId)).size;
 }
 
 /** One finding per affected page, naming every group on it. */
