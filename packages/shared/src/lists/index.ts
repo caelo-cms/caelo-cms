@@ -8,6 +8,7 @@ export * from "./fields.js";
 export * from "./item-attr.js";
 export * from "./items.js";
 export * from "./list-type.js";
+export * from "./overlay-scope.js";
 export * from "./page-type.js";
 export * from "./paginated-render.js";
 export * from "./pagination.js";

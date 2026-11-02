@@ -20,6 +20,7 @@
 import { execute } from "@caelo-cms/query-api";
 import type { StageStatusRun } from "@caelo-cms/shared";
 import { z } from "zod";
+import { ORPHANED_RUN_MESSAGE } from "../../ops/deploy-run-lifecycle.js";
 import type { classifyStageOp } from "../../ops/quality/classify_stage.js";
 import type { getAuditOp, listAcceptancesOp, listAuditsOp } from "../../ops/quality/read.js";
 import { findingOwner } from "../../quality/platform-audits.js";
@@ -446,9 +447,13 @@ async function describeStageBuild(
     case "ready":
       return null;
     case "failed":
+      // #1307 — a build whose process died has nothing to fix: start it again.
       return {
         ok: false,
-        content: `The Stage's build (run ${runId}) failed, so nothing was staged and there is no quality check: ${state.run.errorMessage ?? "(no reason recorded)"}. Fix that cause, then call stage_changes again.`,
+        content:
+          state.run.errorMessage === ORPHANED_RUN_MESSAGE
+            ? `The Stage's build (run ${runId}) stopped without finishing (the admin restarted or crashed while it ran), so nothing was staged and there is no quality check. Call stage_changes again.`
+            : `The Stage's build (run ${runId}) failed, so nothing was staged and there is no quality check: ${state.run.errorMessage ?? "(no reason recorded)"}. Fix that cause, then call stage_changes again.`,
       };
     case "running":
       return { ok: true, content: stillRunningStageText(runId, await readStatus()) };

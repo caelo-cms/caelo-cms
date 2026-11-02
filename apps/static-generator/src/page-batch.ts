@@ -13,7 +13,6 @@ import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   type ComposeField,
   type NestedRefValue,
-  type NestedRenderResolver,
   type PageUrlStyle,
   templateFieldsFromJson,
 } from "@caelo-cms/shared";
@@ -23,7 +22,7 @@ import {
   resolveBuildContentVariants,
   type VariantComposeModule,
 } from "./content-variants-pass.js";
-import { loadNestedModules } from "./nested-modules-pass.js";
+import { type LoadedNestedModules, loadNestedModules } from "./nested-modules-pass.js";
 
 /** One page row of the build (its HTML lives in the template / layout maps). */
 export interface PageRow {
@@ -220,7 +219,7 @@ export interface LoadedBatch {
       layoutBlocks: ReturnType<typeof applyContentVariants>["layoutBlocks"];
     }
   >;
-  readonly nestedModules: NestedRenderResolver;
+  readonly nestedModules: LoadedNestedModules;
   /** Plugin list sources per page. */
   readonly sources: ListSources;
 }

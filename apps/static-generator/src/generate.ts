@@ -33,6 +33,7 @@ import { fontReader } from "@caelo-cms/font-service";
  * hard-links them into the build (`mediaDelivery: "link"`).
  */
 
+import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { type BuildPluginServices, injectPluginAssets } from "@caelo-cms/plugin-host";
@@ -50,6 +51,7 @@ import {
   fontUnresolvableMarker,
   isRasterImageMime,
   LIST_QUERY_MAX_LIMIT,
+  type ListRenderContext,
   type ListRenderDeps,
   linkMarkersOf,
   mergeListRenderDeps,
@@ -79,8 +81,11 @@ import {
   isIncremental,
   loadBuildListRenderData,
   readTargetRenderDeps,
+  renderVariants,
+  withListOverlays,
   writeRenderDeps,
 } from "./list-data.js";
+import { BuildListOverlays, type OverlayBatchPage } from "./list-overlay-batches.js";
 import { type MediaDelivery, MediaPass, readMediaSettings } from "./media-pass.js";
 import { MinifyCache, minifyPageAssets } from "./minify-pass.js";
 import {
@@ -952,9 +957,17 @@ async function buildSite(
   // batch's nested-module load includes them.
   const listModuleRefs = collectListModuleRefs(listData);
   const linkIndex = await loadBuildLinkIndex(tx, target.env, pageUrlStyle, args.plugins);
-  const listContext = createListRenderContext(listData, { dormantPluginSources: dormantSources });
+  const listRenderOpts = { dormantPluginSources: dormantSources };
+  const baseListContext = createListRenderContext(listData, listRenderOpts);
+  // #1307 — the list-resolve overlays, asked per batch for what its pages
+  // can show (never the whole site at once); none asked without variants
+  // or without a contributing plugin.
+  const listOverlays =
+    renderVariants(listData.pageVariants).length > 0 &&
+    (await args.plugins.hasListResolveContributors())
+      ? new BuildListOverlays(args.plugins, listData, randomUUID())
+      : null;
   const renderDeps = new Map<string, ListRenderDeps>();
-  const overlayIssues = [...listContext.overlayIssues];
   const unpublishedLinkTargets: UnpublishedLinkTarget[] = [];
   // #1257 — paginated overviews: their follow-up files, and lists cut at the cap.
   const followUpOutputPaths = new Map<string, string[]>();
@@ -997,7 +1010,12 @@ async function buildSite(
   let pagesDone = 0;
 
   /** Compose one page (a paginated overview: every page of it) into `chunk`. */
-  const composePage = (page: PageRow, loaded: LoadedBatch, chunk: PageChunk): void => {
+  const composePage = (
+    page: PageRow,
+    loaded: LoadedBatch,
+    listContext: ListRenderContext,
+    chunk: PageChunk,
+  ): void => {
     const { pages, bakeTargets, paginatedOverviews } = chunk;
     const composeInput = loaded.composeInputs.get(page.page_id);
     if (!composeInput) return;
@@ -1056,13 +1074,7 @@ async function buildSite(
     const seenTargets = new Set<string>();
     renders.forEach(({ composed, lists, linkResolver }, index) => {
       const n = index + 1;
-      for (const issue of lists.overlayIssues()) {
-        if (
-          !overlayIssues.some((i) => i.address === issue.address && i.variant === issue.variant)
-        ) {
-          overlayIssues.push(issue);
-        }
-      }
+      listOverlays?.noteIssues(lists.overlayIssues());
       pages.push({
         html: composed.html,
         pageId: page.page_id,
@@ -1205,6 +1217,38 @@ async function buildSite(
     await timer.measure(parts, "gc", () => Bun.gc(true));
   };
 
+  /**
+   * What each page of a loaded batch renders, for its list overlay scope:
+   * its placed and chrome modules, the batch's nested modules (loaded for
+   * the batch as a whole; a superset only costs a few rows), the template
+   * and layout markup, and its stored content instances.
+   */
+  const overlayBatchPages = (batch: readonly PageRow[], loaded: LoadedBatch): OverlayBatchPage[] =>
+    batch.flatMap((page) => {
+      const input = loaded.composeInputs.get(page.page_id);
+      if (!input) return [];
+      const placed = [...input.blocks, ...input.layoutBlocks].flatMap((b) => b.modules);
+      return [
+        {
+          pageId: page.page_id,
+          modules: [
+            ...placed.map((m) => ({ fields: m.fields ?? [], html: m.html })),
+            ...loaded.nestedModules.modules,
+          ],
+          markup: [
+            templates.get(page.template_id)?.html ?? "",
+            layouts.get(page.layout_id)?.html ?? "",
+          ],
+          contentInstanceIds: [
+            ...input.blocks.flatMap((b) =>
+              b.modules.flatMap((m) => (m.contentInstanceId ? [m.contentInstanceId] : [])),
+            ),
+            ...loaded.nestedModules.contentInstanceIds,
+          ],
+        },
+      ];
+    });
+
   for (let at = 0; at < pageRows.length; at += PAGE_BATCH) {
     const batch = pageRows.slice(at, at + PAGE_BATCH);
     const loaded = await timer.measure(parts, "load-batch", () =>
@@ -1218,12 +1262,22 @@ async function buildSite(
         pageUrlStyle,
       }),
     );
+    // #1307 — this batch's list overlays, held only while it renders.
+    const batchOverlays = listOverlays
+      ? await timer.measure(parts, "list-overlays", () =>
+          listOverlays.forBatch(overlayBatchPages(batch, loaded)),
+        )
+      : undefined;
+    const listContext = batchOverlays
+      ? createListRenderContext(withListOverlays(listData, batchOverlays), listRenderOpts)
+      : baseListContext;
+    listOverlays?.noteIssues(listContext.overlayIssues);
     // The batch's pages go through the passes CHUNK_HTML_CHARS of HTML at
     // a time (see there): a batch of large pages is several chunks.
     let chunk = newPageChunk();
     for (const page of batch) {
       chunk.pageCount += 1;
-      await timer.measure(parts, "compose", () => composePage(page, loaded, chunk));
+      await timer.measure(parts, "compose", () => composePage(page, loaded, listContext, chunk));
       if (chunk.htmlChars >= CHUNK_HTML_CHARS) {
         await finishChunk(chunk);
         chunk = newPageChunk();
@@ -1240,13 +1294,14 @@ async function buildSite(
   // structural change) is the plugin's fault, not the site's: the stored
   // value rendered instead, and the plugin's error channel says so
   // (plugin_errors → list_plugins / Settings → Plugins, #1008).
-  for (const i of overlayIssues) {
+  const overlayReport = listOverlays?.issueReport();
+  for (const i of overlayReport?.issues ?? []) {
     console.warn(
       `[static-generator] list overlay for variant "${i.variant}" refused at ${i.address}: ${i.reason}`,
     );
   }
-  if (overlayIssues.length > 0 && listData.overlaySources) {
-    await args.plugins.reportListOverlayIssues(listData.overlaySources, overlayIssues);
+  if (overlayReport && overlayReport.issues.length > 0) {
+    await args.plugins.reportListOverlayIssues(overlayReport.sources, overlayReport.issues);
   }
 
   const sitemapEmitted = await seo.writeSitemap(writeBuildFile);

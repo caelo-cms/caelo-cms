@@ -275,8 +275,9 @@ export function withListOverlays(
  * Load the list render data of a build: list types, lists, page types and
  * pages of the MAIN line (a chat's branch never ships; published =
  * `inBuild`), media metadata and the `link-resolve` page partition asked
- * of the same plugin services the link index asks, and the `list-resolve`
- * overlays of that partition's variants.
+ * of the same plugin services the link index asks. No `list-resolve`
+ * overlays: the build asks for them per page batch (#1307,
+ * `list-overlay-batches.ts`) and applies them with `withListOverlays`.
  */
 export async function loadBuildListRenderData(
   tx: TransactionRunner,
@@ -333,11 +334,6 @@ export async function loadBuildListRenderData(
     pages.length > 0 && (await opts.plugins.hasLinkResolveContributors())
       ? await opts.plugins.resolveLinkVariants(pages.map((p) => p.id))
       : undefined;
-  const variants = renderVariants(pageVariants);
-  const overlaySources =
-    variants.length > 0 && (await opts.plugins.hasListResolveContributors())
-      ? await opts.plugins.resolveListOverlays(variants)
-      : undefined;
   return assembleListRenderData(tx, {
     listTypes: listTypes.map((t) => ({ id: t.id, def: t.definition as ListTypeDef })),
     lists: lists.map((l) => ({
@@ -364,7 +360,6 @@ export async function loadBuildListRenderData(
       published: p.status === "published",
     })),
     ...(pageVariants ? { pageVariants } : {}),
-    ...(overlaySources ? { overlaySources } : {}),
     languageUnset: "refuse",
   });
 }

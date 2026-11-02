@@ -91,6 +91,87 @@ export const beginRunInput = z
   });
 
 /**
+ * Mark `runId` failed with {@link ORPHANED_RUN_MESSAGE} when it is still
+ * `running` but nothing builds it any more ({@link deployRunIsOrphaned}),
+ * and free the leases it held. The start of the next run sweeps every such
+ * run; the reads that report a run's state call this for the runs they
+ * return (#1307), so a Stage whose process died reads as failed with the
+ * restart hint instead of as running until someone starts another one.
+ *
+ * @returns the run's new `finished_at` when this call marked it failed,
+ *   else null.
+ */
+export async function failRunIfOrphanedInTx(
+  tx: TransactionRunner,
+  runId: string,
+): Promise<string | Date | null> {
+  if (!(await deployRunIsOrphaned(tx, runId))) return null;
+  const marked = (await tx.execute(sql`
+    UPDATE deploy_runs
+    SET status = 'failed', finished_at = clock_timestamp(), error_message = ${ORPHANED_RUN_MESSAGE},
+        lease_expires_at = NULL
+    WHERE id = ${runId}::uuid AND status = 'running'
+      -- A heartbeat that renewed the lease after the check above wins: the
+      -- run is alive. A lease-less (legacy) run is held by the advisory
+      -- lock the check took for the rest of this transaction.
+      AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
+    RETURNING finished_at
+  `)) as unknown as { finished_at: string | Date }[];
+  const finishedAt = marked[0]?.finished_at;
+  if (finishedAt === undefined) return null;
+  // A lease the dead run held has lapsed too; free it so the row says so.
+  await releaseStagingPublication(tx, runId);
+  await releaseLiveRelease(tx, runId);
+  console.error("[deploy] marked a run that stopped mid-build as failed", { runId });
+  return finishedAt;
+}
+
+/** The columns of a `deploy_runs` read that {@link settleOrphanedRuns} corrects. */
+interface RunStateRow {
+  readonly id: string;
+  readonly status: "pending" | "running" | "succeeded" | "failed";
+  readonly finished_at: string | Date | null;
+  readonly error_message: string | null;
+}
+
+/**
+ * #1307 — `rows` as they are once every `running` row among them whose
+ * build died is marked failed ({@link failRunIfOrphanedInTx}): the
+ * database row is corrected and the returned copy says what it now says.
+ * For the reads that answer "where is this run?" — without it a dead Stage
+ * read as running (with an estimate) until the next Stage swept it. With
+ * `correctRows: false` the rows are only projected, nothing is written.
+ */
+export async function settleOrphanedRuns<R extends RunStateRow>(
+  tx: TransactionRunner,
+  rows: readonly R[],
+  opts: { readonly correctRows: boolean } = { correctRows: true },
+): Promise<R[]> {
+  const out: R[] = [];
+  for (const row of rows) {
+    let finishedAt: string | Date | null = null;
+    if (row.status === "running") {
+      if (opts.correctRows) finishedAt = await failRunIfOrphanedInTx(tx, row.id);
+      // A read that must not write (a plugin's) still answers what the row
+      // will say once the next correcting read or run start sweeps it.
+      else if (await deployRunIsOrphaned(tx, row.id)) finishedAt = new Date();
+    }
+    out.push(
+      finishedAt === null
+        ? row
+        : // Every run status union has "failed"; R only narrows the other columns.
+          ({
+            ...row,
+            status: "failed",
+            finished_at: finishedAt,
+            error_message: ORPHANED_RUN_MESSAGE,
+          } as R),
+    );
+  }
+  return out;
+}
+
+/**
  * Sweep runs that died mid-build, then insert `input`'s row as running.
  * Runs in the caller's (start step's) transaction.
  *
@@ -105,17 +186,7 @@ export async function beginRunInTx(
   `)) as unknown as { id: string }[];
   const orphanedRunIds: string[] = [];
   for (const { id } of running) {
-    if (!(await deployRunIsOrphaned(tx, id))) continue;
-    await tx.execute(sql`
-      UPDATE deploy_runs
-      SET status = 'failed', finished_at = clock_timestamp(), error_message = ${ORPHANED_RUN_MESSAGE},
-          lease_expires_at = NULL
-      WHERE id = ${id}::uuid AND status = 'running'
-    `);
-    // A lease the dead run held has lapsed too; free it so the row says so.
-    await releaseStagingPublication(tx, id);
-    await releaseLiveRelease(tx, id);
-    orphanedRunIds.push(id);
+    if ((await failRunIfOrphanedInTx(tx, id)) !== null) orphanedRunIds.push(id);
   }
   await tx.execute(sql`
     INSERT INTO deploy_runs (id, target_id, actor_id, status, started_at, render_fingerprint,
@@ -130,9 +201,6 @@ export async function beginRunInTx(
             ${input.baseRunId === null ? sql`NULL` : sql`${input.baseRunId}::uuid`},
             clock_timestamp() + ${input.leaseTtlMs}::int * interval '1 millisecond')
   `);
-  if (orphanedRunIds.length > 0) {
-    console.error("[deploy] marked runs that stopped mid-build as failed", { orphanedRunIds });
-  }
   return orphanedRunIds;
 }
 

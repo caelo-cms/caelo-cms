@@ -26,6 +26,7 @@
  * main-line render (MAIN_RENDER): builds never render a chat branch.
  */
 
+import type { ListResolveScope } from "@caelo-cms/plugin-sdk";
 import type { ListOverlayIssue, PageUrlStyle } from "@caelo-cms/shared";
 import { collectBuildAssets, type PluginClientAsset } from "./client-assets.js";
 import {
@@ -86,8 +87,18 @@ export interface BuildPluginServices {
   /** Every declared list-source name, running or not. */
   declaredListSourceNames(): Promise<string[]>;
   hasListResolveContributors(): Promise<boolean>;
-  /** The list-resolve point's overlays for these variants (epic #1107). */
-  resolveListOverlays(variants: string[]): Promise<ResolvedListOverlays>;
+  /**
+   * The list-resolve point's overlays for these variants (epic #1107),
+   * for what one page batch can show (#1307): a build never asks for the
+   * whole site. Every call of one build carries the same `passId`, so a
+   * plugin reads what does not depend on the scope once per build
+   * (`RenderScope.renderId`).
+   */
+  resolveListOverlays(
+    variants: string[],
+    scope: ListResolveScope,
+    passId: string,
+  ): Promise<ResolvedListOverlays>;
   /** Hand refused overlay entries to the plugins' error channel. */
   reportListOverlayIssues(
     resolved: ResolvedListOverlays,
@@ -123,7 +134,8 @@ export const localBuildPluginServices: BuildPluginServices = {
   dormantListSourceNames: async () => dormantListSourceNames(),
   declaredListSourceNames: async () => pluginListSourcesRegistry.catalogue().map((c) => c.name),
   hasListResolveContributors: async () => hasListResolveContributors(),
-  resolveListOverlays: (variants) => resolveListOverlays(variants, MAIN_RENDER),
+  resolveListOverlays: (variants, scope, passId) =>
+    resolveListOverlays(variants, { ...MAIN_RENDER, renderId: passId }, scope),
   reportListOverlayIssues: (resolved, issues) => reportListOverlayIssues(resolved, issues),
   hasDeferralContributors: async () => hasDeferralContributors(),
   resolveModuleDeferrals: (modules) => resolveModuleDeferrals(modules, MAIN_RENDER),

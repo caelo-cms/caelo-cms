@@ -28,7 +28,7 @@
  * The editor preview renders one page, so it asks `list-resolve` for that
  * page only (#1223): the partition first ({@link resolveLinkPartition}),
  * the assembly without overlays, then the page's variant with what the
- * page can show ({@link resolvePageListOverlays}, `./overlay-scope.ts`),
+ * page can show ({@link resolvePageListOverlays}, shared `lists/overlay-scope.ts`),
  * applied with `withListOverlays`.
  */
 
@@ -42,6 +42,7 @@ import {
   resolveListOverlays,
 } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
+import type { ListOverlayScope } from "@caelo-cms/shared";
 import {
   assembleListRenderData,
   assembleListRenderDataFrom,
@@ -51,7 +52,6 @@ import {
   renderVariants,
 } from "@caelo-cms/static-generator";
 import type { SiteView } from "../site-view.js";
-import type { ListOverlayScope } from "./overlay-scope.js";
 import { loadPagesInView, type PageInView } from "./pages-view.js";
 import { type ListEntityView, loadListEntities } from "./store.js";
 
