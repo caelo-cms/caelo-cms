@@ -252,7 +252,7 @@
   const stagingView = $derived(
     stagingMenuState({
       mode: toolbarMode,
-      busy: staging || publishing,
+      staging,
       hasStagedBuild: lastStaged !== null,
       branchChangeCount,
       qualityGate: gate,
@@ -343,7 +343,7 @@
         data-testid={testid}
       >
         {#if publishing}
-          Publishing…
+          <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" />Publishing…
         {:else if productionMatchesStaging === true}
           <Check class="size-3.5" />Live
         {:else}

@@ -175,7 +175,7 @@ describe("Stage again in the toolbar (#835)", () => {
 describe("stagingMenuState — the Staging button's label", () => {
   const base = {
     mode: "promote-only" as const,
-    busy: false,
+    staging: false,
     hasStagedBuild: true,
     branchChangeCount: 0,
     qualityGate: null,
@@ -187,8 +187,8 @@ describe("stagingMenuState — the Staging button's label", () => {
     openProblemCount,
   });
 
-  it("says Staging… while a Stage or Publish runs", () => {
-    expect(stagingMenuState({ ...base, busy: true }).label).toBe("Staging…");
+  it("says Staging… while a Stage runs", () => {
+    expect(stagingMenuState({ ...base, staging: true }).label).toBe("Staging…");
   });
 
   it("marks unstaged edits as pending with their count in the tooltip", () => {
@@ -278,7 +278,7 @@ describe("#1207 — a failed Stage closes Publish live", () => {
     expect(
       stagingMenuState({
         mode: "pending",
-        busy: false,
+        staging: false,
         hasStagedBuild: true,
         branchChangeCount: 3,
         qualityGate: null,

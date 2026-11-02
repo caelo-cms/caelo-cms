@@ -233,14 +233,16 @@ export interface StagingMenuState {
  */
 export function stagingMenuState(args: {
   mode: StageToolbarMode;
-  busy: boolean;
+  /** A Stage request is in flight. A running Publish live is not a Stage:
+   *  it shows on the Publish button, and staging keeps its own state. */
+  staging: boolean;
   hasStagedBuild: boolean;
   branchChangeCount: number;
   qualityGate: QualityGateView | null;
   /** Why the newest Stage failed, or null (see {@link publishButtonState}). */
   stageFailure?: string | null;
 }): StagingMenuState {
-  if (args.busy) {
+  if (args.staging) {
     return { label: "Staging…", tone: "busy", tooltip: "Building staging and checking it" };
   }
   if (args.mode === "published") {
