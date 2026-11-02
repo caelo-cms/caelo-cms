@@ -206,7 +206,7 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
     expect(src).toMatch(
       /serviceName: "mcp-auth-proxy",\s*resourceName: `\$\{namePrefix\}-gateway`,/,
     );
-    expect(src).toContain("`${namePrefix}-gateway-public-invoker`");
+    expect(src).toMatch(/`\$\{namePrefix\}-gateway-public-invoker`/);
     expect(src).not.toContain("aliases");
   });
 

@@ -533,9 +533,7 @@ describe("MCP-Auth-Proxy contract (#1328)", () => {
       "data-gateway-public-invoker roles/run.invoker allUsers",
       "data-gateway-viewer-for-admin-sa roles/run.viewer run-sa",
     ]);
-    expect(on("mcp-auth-proxy")).toEqual([
-      "gateway-public-invoker roles/run.invoker allUsers",
-    ]);
+    expect(on("mcp-auth-proxy")).toEqual(["gateway-public-invoker roles/run.invoker allUsers"]);
   });
 });
 
