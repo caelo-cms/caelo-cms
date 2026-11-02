@@ -80,8 +80,10 @@ export interface ServiceImageSpec {
   readonly nodeModules: readonly string[];
   /** Repo globs copied to the same relative path under the app root. Each must match. */
   readonly copy: readonly string[];
-  /** Files the Dockerfile adds outside the app root. */
+  /** Binaries the Dockerfile adds outside the app root. */
   readonly binaries: readonly ImageBinary[];
+  /** Other image path globs (no leading slash) the Dockerfile adds outside the app root. */
+  readonly extraFiles: readonly string[];
   /** Image path globs that must each match at least one file. */
   readonly require: readonly string[];
 }
@@ -483,6 +485,7 @@ export function allowedPatterns(spec: ServiceImageSpec): string[] {
   const app = spec.appRoot.replace(/^\/+|\/+$/g, "");
   return [
     ...spec.binaries.map((b) => b.path),
+    ...spec.extraFiles,
     `${app}/${spec.bundle.outdir}/*`,
     ...spec.nodeModules.map((dir) => `${app}/${dir}/**`),
     ...spec.copy.map((pattern) => `${app}/${pattern}`),

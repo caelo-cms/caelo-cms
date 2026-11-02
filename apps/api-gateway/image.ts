@@ -70,6 +70,11 @@ const spec: ServiceImageSpec = {
     // Dockerfile's denoland/deno:bin-<version> (scripts/service-image.test.ts).
     { path: "usr/local/bin/deno", purl: "pkg:cargo/deno@2.9.8" },
   ],
+  // #1338 — the database CA bundles every verify-full URL names as
+  // `sslrootcert` (packages/shared database-tls.ts DATABASE_CA_DIR), copied by
+  // the Dockerfile from packages/shared/certs/. Allowlisted here ahead of the
+  // PR that adds the COPY (#1346); that PR also adds it to `require` below.
+  extraFiles: ["etc/caelo/db-ca/*"],
   require: [
     "usr/local/bin/bun",
     "usr/local/bin/deno",

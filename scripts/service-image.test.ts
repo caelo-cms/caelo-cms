@@ -137,6 +137,7 @@ const SPEC: ServiceImageSpec = {
   nodeModules: ["node_modules/zod"],
   copy: ["packages/plugins/*/manifest.json"],
   binaries: [{ path: "usr/local/bin/bun", purl: null }],
+  extraFiles: [],
   require: ["app/apps/svc/dist/server.js"],
 };
 
