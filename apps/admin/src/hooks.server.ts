@@ -247,7 +247,15 @@ async function bootPluginHost(): Promise<void> {
   // into cms_public now that the plugins (and their projection triggers)
   // are in place, then keep it current from the outbox.
   const publisher = startPublicProjectionPublisher({ adapter });
-  await publisher.publishAll();
+  // A failed boot publish (another publisher held the lock throughout, the
+  // database was overloaded) must not fail the plugin-host boot, which is
+  // memoised for the process: the publisher's poll retries the full
+  // publish until it succeeds.
+  await publisher.publishAll().catch((e: unknown) => {
+    console.error(
+      `[public-projection] boot publish failed; retried on the next poll: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  });
   // #1267 — plugins' change consumers, woken by the change journal on any
   // instance; one instance runs each consumer at a time (its claim).
   startChangeConsumers({ adapter, registry }).catch((e) =>
