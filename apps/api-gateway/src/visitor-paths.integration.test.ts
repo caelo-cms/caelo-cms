@@ -22,7 +22,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { drainProjectionOnce, publishProjectionOnce } from "@caelo-cms/admin-core";
+import {
+  drainProjectionOnce,
+  publishProjectionOnce,
+  releaseProjectionForTests,
+  stagingPublicAdapter,
+} from "@caelo-cms/admin-core";
 import commentsPlugin from "@caelo-cms/plugin-comments";
 import {
   bootstrap,
@@ -43,6 +48,9 @@ import {
   setGatewayAdapter,
 } from "./server.js";
 import { registerTestLiveOrigin, TEST_LIVE_ORIGIN, withErrorLog } from "./test-support.js";
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -103,7 +111,7 @@ async function setCaptcha(provider: "off" | "pow"): Promise<void> {
 
 /** The admin's outbox drain (#635): publish what changed, then the gateway drops its caches. */
 async function publish(): Promise<void> {
-  await drainProjectionOnce(adminAdapter, new Map());
+  await drainProjectionOnce(adminAdapter, STAGING_ADAPTER);
   invalidateGatewaySettings();
 }
 
@@ -205,7 +213,12 @@ beforeAll(async () => {
   });
   // The migration job / admin boot publish (#635), approved comments included.
   await registerTestLiveOrigin(ADMIN_URL as string);
-  await publishProjectionOnce(adminAdapter, { declarations: new Map(), comments: true });
+  // #1329 — the registry follows the release: published once released.
+  await releaseProjectionForTests(
+    adminAdapter,
+    STAGING_ADAPTER,
+    new Map([[commentsPlugin.slug, commentsPlugin.visitorProjection ?? null]]),
+  );
 
   // --- Gateway side: production wiring. ---
   const urls = gatewayDatabaseUrls({

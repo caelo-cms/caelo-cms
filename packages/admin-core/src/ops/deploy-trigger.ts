@@ -38,6 +38,13 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
+  freezeRelease,
+  pointLiveRelease,
+  pointStagingRelease,
+  ReleaseFreezeError,
+} from "@caelo-cms/migrations/public-projection";
+import { pluginHostBootstrapped } from "@caelo-cms/plugin-host";
+import {
   defineOperation,
   defineStepwiseOperation,
   execute,
@@ -103,7 +110,9 @@ import {
 import { truncatedListSchema } from "../deploy/truncated-lists.js";
 import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
+import { loadedVisitorProjections } from "../public-projection.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { clearStagingInbox } from "../stage/staging-inbox.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
 import {
   effectiveOutDir,
@@ -370,6 +379,30 @@ export const startTriggerOp = defineOperation({
       baseRunId: null,
       leaseTtlMs: input.leaseTtlMs,
     });
+    // #1329 — the projection's release sections (the plugin registry and
+    // each plugin's published rows) are frozen with the build, as the
+    // build reads the site: a Stage shows exactly this state on staging and
+    // Publish live releases exactly it; an Owner's production build
+    // releases it at once.
+    if (target.env === "staging" || target.env === "production") {
+      try {
+        await freezeRelease(tx, {
+          runId: input.runId,
+          reason: target.env === "staging" ? "stage" : "production-build",
+          declarations: loadedVisitorProjections(),
+          // A plugin not running here is recorded with the run (#1008) and
+          // Publish live refuses the Stage; staging shows it unpublished.
+          completeness: "as-loaded",
+        });
+      } catch (e) {
+        if (!(e instanceof ReleaseFreezeError)) throw e;
+        throw new OperationAbortError({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message: e.message,
+        });
+      }
+    }
     return ok({
       runId: input.runId,
       target: rowToTarget(target),
@@ -452,6 +485,17 @@ export const finishTriggerOp = defineOperation({
     // Epic #1107 — a production build is a Publish live: pages it ships
     // for the first time get their first_published_at.
     if (input.env === "production") await stampFirstPublished(tx, input.runId);
+    // #1329 — the environment now serves the projection state this run
+    // froze (deploy.start_trigger); the drain after this commit publishes
+    // it. Staging moves with every Stage; live only with an Owner's
+    // production build, which is a human's release like Publish live.
+    if (input.env === "staging") await pointStagingRelease(tx, input.runId);
+    if (input.env === "production") {
+      await pointLiveRelease(tx, input.runId);
+      await tx.execute(sql`
+        UPDATE deploy_runs SET projection_run_id = ${input.runId}::uuid WHERE id = ${input.runId}::uuid
+      `);
+    }
     await tx.execute(sql`
       UPDATE deploy_runs
       SET status = 'succeeded', finished_at = clock_timestamp(),
@@ -746,6 +790,25 @@ async function runTrigger(
       phaseTimings: timer.phases(),
     });
     if (!finished.ok) return await fail(describeError(finished.error));
+    // #1329 — staging starts from what this Stage publishes: the test
+    // inbox (comments, votes, form submissions sent on staging) goes.
+    // Outside any transaction; a failure is logged and the next Stage
+    // clears again — it never undoes the Stage.
+    if (plan.target.env === "staging") {
+      const staging = pluginHostBootstrapped()?.infra.stagingAdapter;
+      if (!staging) {
+        console.error(
+          "[deploy] the plugin host has no staging database adapter; the staging inbox was not cleared",
+        );
+      } else {
+        await clearStagingInbox(staging).catch((e: unknown) => {
+          console.error("[deploy] the staging inbox was not cleared; the next Stage tries again", {
+            runId,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        });
+      }
+    }
     // The run is recorded; now put the redirects table on the build the
     // target serves, in a transaction of its own. A failure is recorded and
     // retried by the redirect-sync worker (the target stays behind); it

@@ -32,7 +32,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, sep } from "node:path";
-import { publishProjectionOnce, registerAdminOps } from "@caelo-cms/admin-core";
+import {
+  publishProjectionOnce,
+  registerAdminOps,
+  stagingPublicAdapter,
+} from "@caelo-cms/admin-core";
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
@@ -55,6 +59,9 @@ import {
   invalidateGatewaySettings,
   setGatewayAdapter,
 } from "../src/server.js";
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
 
 function required(name: string): string {
   const v = process.env[name];
@@ -270,7 +277,7 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
     )
     .finally(() => buildAdapter.close());
   // The admin publishes what the gateway serves from (#635).
-  await publishProjectionOnce(adminAdapter, { comments: true });
+  await publishProjectionOnce(adminAdapter, STAGING_ADAPTER, { comments: true });
   resetPluginHost();
   await adminAdapter.close();
 
@@ -377,7 +384,9 @@ try {
     adminDatabaseUrl: ADMIN_URL,
     publicDatabaseUrl: PUBLIC_ADMIN_URL,
   });
-  await publishProjectionOnce(publisher, { comments: false }).finally(() => publisher.close());
+  await publishProjectionOnce(publisher, STAGING_ADAPTER, { comments: false }).finally(() =>
+    publisher.close(),
+  );
   invalidateGatewaySettings();
 } catch (e) {
   server.stop(true);

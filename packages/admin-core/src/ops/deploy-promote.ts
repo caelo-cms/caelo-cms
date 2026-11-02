@@ -58,6 +58,7 @@
 
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { hasFrozenRelease, pointLiveRelease } from "@caelo-cms/migrations/public-projection";
 import {
   defineOperation,
   defineStepwiseOperation,
@@ -263,6 +264,13 @@ export const startPromoteOp = defineOperation({
       if (stale) return refused(stale);
       const problems = await activePluginProblems(tx);
       if (problems.length > 0) return refused(describePluginProblems(problems));
+      // #1329 — Publish live releases the projection state the Stage froze
+      // with its build; a Stage from before #1329 froze none.
+      if (!(await hasFrozenRelease(tx, fromRow.id))) {
+        return refused(
+          `the staged build ${fromRow.id} was staged before Caelo froze the plugin data with each Stage, so Publish live cannot release what it showed. Stage again, then Publish live.`,
+        );
+      }
     }
 
     // #553 — the quality gate. Every Publish-live path runs this step (the
@@ -439,6 +447,15 @@ export const finishPromoteOp = defineOperation({
       // #1155 — the promoted build baked its plugin data when it was
       // staged; bakes a plugin-data build made since are pending again.
       await rewindBakesToRun(tx, input.fromRunId);
+      // #1329 — live visitors get the plugin data the Stage froze, exactly
+      // (deploy.start_promote checked it exists). The pointer move marks
+      // the release sections stale; the drain after this commit publishes
+      // them to cms_public.
+      await pointLiveRelease(tx, input.fromRunId);
+      await tx.execute(sql`
+        UPDATE deploy_runs SET projection_run_id = ${input.fromRunId}::uuid
+        WHERE id = ${input.runId}::uuid
+      `);
     }
     // #553 — the publish-anyway decision is recorded only now that the
     // build it allowed is live; a failed Publish live leaves the gate closed.

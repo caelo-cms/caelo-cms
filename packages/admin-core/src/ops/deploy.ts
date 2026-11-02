@@ -27,6 +27,7 @@
 
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
+import { pointLiveRelease } from "@caelo-cms/migrations/public-projection";
 import {
   type DatabaseAdapter,
   defineOperation,
@@ -477,13 +478,19 @@ async function rollbackOnce(
     );
   }
   const priorRows = (await tx.execute(sql`
-    SELECT build_id, publish_summary->>'location' AS location, caelo_version FROM deploy_runs
+    SELECT build_id, publish_summary->>'location' AS location, caelo_version,
+           projection_run_id::text AS projection_run_id FROM deploy_runs
     WHERE id = ${input.runId}::uuid
       AND target_id = ${target.id}::uuid
       AND status = 'succeeded'
       AND build_id IS NOT NULL
     LIMIT 1
-  `)) as unknown as { build_id: string; location: string | null; caelo_version: string | null }[];
+  `)) as unknown as {
+    build_id: string;
+    location: string | null;
+    caelo_version: string | null;
+    projection_run_id: string | null;
+  }[];
   const buildId = priorRows[0]?.build_id;
   if (!buildId) {
     return done(
@@ -533,14 +540,20 @@ async function rollbackOnce(
   // while the running version rendered the live build.
   const newRunRows = (await tx.execute(sql`
     INSERT INTO deploy_runs (id, target_id, actor_id, status, started_at, finished_at, build_id,
-                             publish_summary, caelo_version)
+                             publish_summary, caelo_version, projection_run_id)
     VALUES (${input.newRunId ?? randomUUID()}::uuid, ${target.id}::uuid, ${ctx.actorId}::uuid,
             'succeeded', ${startedAt}::timestamptz,
             clock_timestamp(), ${buildId}, ${jsonbParam(summary)},
-            ${priorRows[0]?.caelo_version ?? null})
+            ${priorRows[0]?.caelo_version ?? null},
+            ${target.env === "production" ? (priorRows[0]?.projection_run_id ?? null) : null}::uuid)
     RETURNING id::text AS id
   `)) as unknown as { id: string }[];
   const newRunId = newRunRows[0]?.id ?? "";
+  // #1329 — the plugin data the restored build was released with comes
+  // back with it (the drain after this commit publishes it). A run from
+  // before #1329 released no frozen state; live keeps the one it has.
+  const restored = priorRows[0]?.projection_run_id ?? null;
+  if (target.env === "production" && restored !== null) await pointLiveRelease(tx, restored);
   // #1157 — the rolled-back build carries the redirects of its own time;
   // the provider must serve the table as it is now. #1254 — marked here,
   // pushed by deploy.rollback after this transaction commits, so no

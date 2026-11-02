@@ -251,7 +251,7 @@ async function bootPluginHost(): Promise<void> {
   // #635 — the gateway has no cms_admin login: publish what it serves from
   // into cms_public now that the plugins (and their projection triggers)
   // are in place, then keep it current from the outbox.
-  const publisher = startPublicProjectionPublisher({ adapter });
+  const publisher = startPublicProjectionPublisher({ adapter, stagingAdapter });
   // A failed boot publish (another publisher held the lock throughout, the
   // database was overloaded) must not fail the plugin-host boot, which is
   // memoised for the process: the publisher's poll retries the full

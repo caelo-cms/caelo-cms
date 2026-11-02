@@ -33,8 +33,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   drainProjectionOnce,
+  loadedVisitorProjections,
   publishProjectionOnce,
   registerAdminOps,
+  releaseProjectionForTests,
+  stagingPublicAdapter,
 } from "@caelo-cms/admin-core";
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
@@ -70,6 +73,9 @@ import {
   setGatewayAdapter,
 } from "./server.js";
 import { registerTestLiveOrigin, TEST_LIVE_ORIGIN } from "./test-support.js";
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -181,12 +187,15 @@ async function setCaptcha(provider: "off" | "pow"): Promise<void> {
   await publish();
 }
 
-/** Consent-manager's declared projection: what the admin publishes of its private storage. */
-const DECLARATIONS = new Map([["consent-manager", consentPlugin.visitorProjection ?? {}]]);
+/**
+ * Every loaded plugin's declared projection (#1329: a release freezes all
+ * of them), captured right after the admin side's boot.
+ */
+let LOADED: ReturnType<typeof loadedVisitorProjections> = new Map();
 
 /** The admin's outbox drain (#635): publish what changed, then the gateway drops its caches. */
 async function publish(): Promise<void> {
-  await drainProjectionOnce(adminAdapter, DECLARATIONS);
+  await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, LOADED);
   invalidateGatewaySettings();
 }
 
@@ -356,7 +365,10 @@ beforeAll(async () => {
   });
   expect(adminReport.failed).toEqual([]);
   await registerTestLiveOrigin(ADMIN_URL as string);
-  await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
+  // #1329 — plugin data follows the release: everything loaded here is
+  // released at once, and again after each change (`publish`).
+  LOADED = loadedVisitorProjections();
+  await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, LOADED);
   resetPluginHost();
   pluginIds = await asAdmin(async (tx) => {
     const rows =

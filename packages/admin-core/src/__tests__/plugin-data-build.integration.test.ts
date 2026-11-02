@@ -46,10 +46,13 @@ import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { PLUGIN_DATA_ARCHIVES_KEPT } from "../plugin-data/build.js";
 import { runPluginDataBuildIfDue } from "../plugin-data/worker.js";
-import { publishProjectionOnce } from "../public-projection.js";
+import { releaseProjectionForTests, stagingPublicAdapter } from "../public-projection.js";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -366,7 +369,8 @@ beforeAll(async () => {
   );
   pluginId = rows[0]?.id ?? "";
   // The gateway may record op events only for a plugin the admin published.
-  await publishProjectionOnce(adapter, { declarations: new Map() });
+  // #1329 — the plugin registry follows the release: released once here.
+  await releaseProjectionForTests(adapter, STAGING_ADAPTER);
 });
 
 afterAll(async () => {

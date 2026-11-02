@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { publishProjectionOnce } from "@caelo-cms/admin-core";
+import { publishProjectionOnce, stagingPublicAdapter } from "@caelo-cms/admin-core";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { readBodyWithCap } from "./body-cap.js";
@@ -22,6 +22,9 @@ const SCOPE = "probe.submit";
 import { checkHoneypot } from "./honeypot.js";
 import { consumeRateLimit, ipScopedRateLimitKey, resolveRateLimitSpec } from "./rate-limit.js";
 import { generateCookieSecret, signCookieValue, verifySignedCookie } from "./signed-cookie.js";
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -186,7 +189,7 @@ describe("rate-limit", () => {
       },
     );
     // The gateway reads what the admin published (#635), not cms_admin.
-    await publishProjectionOnce(admin, { declarations: new Map() });
+    await publishProjectionOnce(admin, STAGING_ADAPTER, { declarations: new Map() });
     const spec = await resolveRateLimitSpec(adapter, slug, "submit");
     expect(spec.perVisitorMax).toBe(5);
     expect(spec.windowSeconds).toBe(30);

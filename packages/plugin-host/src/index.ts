@@ -176,6 +176,7 @@ export {
   bootstrap,
   type LoadReport,
   loadActivatedPlugin,
+  pluginHostBootstrapped,
   resetPluginHost,
   unapprovedCapabilities,
 } from "./loader.js";
