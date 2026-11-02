@@ -105,8 +105,9 @@ describe("remote-MCP identity (contract)", () => {
     // broker answers on the site host, through the LB (client + LB = 2).
     // gcp-firebase: on the gateway's own run.app URL, never through the
     // Firebase Hosting rewrite, so Cloud Run's front end appends the real
-    // client (1). A broker URL on the Hosting path would pool every client
-    // behind one CDN edge address.
+    // client (1). A broker URL on the Hosting path would key every client by
+    // a Google proxy address that changes per request
+    // (docs/dev/firebase-hosting-behaviour.md).
     expect(GATEWAY_TRUSTED_PROXY_HOPS.gcp).toBe(2);
     expect(
       remoteMcpIdentity({
