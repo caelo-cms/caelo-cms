@@ -213,12 +213,12 @@ jobs:
             sleep 30
           done
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.secret.outputs.enabled == 'true' && steps.carry.outputs.verdict == ''
 
       - name: Setup Bun
         if: steps.secret.outputs.enabled == 'true' && steps.carry.outputs.verdict == ''
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
 
@@ -403,7 +403,7 @@ jobs:
 
       - name: Upload the plan
         if: always() && steps.verdict.outputs.mode == 'run'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-livedit-plan-${{ github.run_id }}
           path: /tmp/e2e-livedit-plan/
@@ -522,15 +522,15 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
 
       - name: Fetch the plan
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: e2e-livedit-plan-${{ github.run_id }}
           path: apps/admin/test-results/livedit/plan
@@ -943,7 +943,7 @@ jobs:
             --out "$RUNNER_TEMP/scenario-greens.json"
       - name: Upload per-scenario results
         if: always() && steps.greens.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-livedit-scenario-greens-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/scenario-greens.json
@@ -995,7 +995,7 @@ jobs:
           echo "tree=$tree" >> "$GITHUB_OUTPUT"
       - name: Upload the tested tree (green only)
         if: success() && needs.plan.outputs.full == 'true' && steps.dedupe.outputs.dropped != 'true' && steps.suite.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-livedit-green-tree-${{ steps.green-tree.outputs.tree }}
           path: ${{ runner.temp }}/green-tree/tree.txt
@@ -1007,7 +1007,7 @@ jobs:
       # every run (green + red) so the metric series has no gaps.
       - name: Upload AI cost metric (always)
         if: always() && steps.provider-preflight.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-livedit-cost-${{ github.run_id }}
           path: apps/admin/test-results/livedit/ai-cost.json
@@ -1021,7 +1021,7 @@ jobs:
       # keeps its name for anything already scraping that series.
       - name: Upload detected-bugs metric (always)
         if: always() && steps.provider-preflight.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-livedit-bugs-${{ github.run_id }}
           path: apps/admin/test-results/livedit/bug-reports.json
@@ -1033,7 +1033,7 @@ jobs:
       # the score trend has no gaps before the judge is promoted to a gate.
       - name: Upload design report (always)
         if: always() && steps.provider-preflight.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-livedit-design-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/admin/test-results/livedit/design-report.jsonl
@@ -1047,7 +1047,7 @@ jobs:
       # attempt's turn — and a flake is a bug to root-cause (CLAUDE.md §4).
       - name: Upload chat transcripts (always)
         if: always() && steps.provider-preflight.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-livedit-transcripts-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/admin/test-results/livedit/transcripts/
@@ -1094,7 +1094,7 @@ jobs:
 
       - name: Upload artifacts on failure
         if: failure() && steps.provider-preflight.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-livedit-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -1115,7 +1115,7 @@ jobs:
       # lib/sticky-comment.sh.
       - name: Checkout the comment script (plan said not to run)
         if: failure() && github.event_name == 'pull_request' && steps.guard.outcome == 'failure'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: apps/admin/e2e-livedit/lib
 

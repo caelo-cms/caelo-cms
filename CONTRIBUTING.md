@@ -138,9 +138,12 @@ Three GitHub-native security gates run alongside the AI review (issue #26). Unli
 - **Secret scanning + push protection.** Enabled at the repo level so an accidental secret commit is rejected at `git push` before it ever lands (the mechanical backstop for CLAUDE.md §7). These are repo *settings*, not files; like the branch-protection ruleset they're managed as config-as-code by a maintainer with repo-admin scope:
 
   ```sh
-  bun run security:check    # report drift: are both flags enabled?
-  bun run security:enable   # enable secret scanning + push protection (idempotent)
+  bun run security:check    # report drift: secret scanning, push protection, Dependabot alerts
+  bun run security:enable   # turn on whichever of them is off (idempotent)
   ```
+
+  A weekly workflow (`.github/workflows/security-drift.yml`, #105) runs the same check and opens one issue when a setting is off; see [`docs/dev/codeql.md`](./docs/dev/codeql.md#drift-guard).
+- **Actions pinned by commit SHA.** Every `uses:` names a full commit SHA with a trailing `# vX.Y.Z` comment, GitHub's own actions included (#104). `scripts/action-pins.test.ts` fails on anything else; Dependabot keeps the pins current.
 
   If push protection blocks a legitimate push (a false positive, or a value that only looks like a secret), follow the unblock prompt GitHub prints at the push — never bypass it for a real credential.
 
