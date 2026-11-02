@@ -142,7 +142,7 @@ export function pageListingHints(groups: readonly ListingGroup[], site: ListingS
                 ", ",
               )}${missing.length > MAX_NAMED ? ` … (+${missing.length - MAX_NAMED})` : ""}`;
       hints.push(
-        `these values link ${gap} (page type \`${slug}\`) by hand — an overview kept as cards goes stale with the next ${slug} page: render it from ONE \`list\` field bound to a page query ({kind:"list", bind:"source", source:{kind:"query", defaults:{page_type:"${slug}"}}}; term_pages for a category, children for sub-pages) and drop the hand-kept cards; the structure quality check reports it (structure/manual-page-listing)`,
+        `these values link ${gap} (page type \`${slug}\`) by hand — an overview kept as cards goes stale with the next ${slug} page: render it from ONE \`list\` field bound to a page query ({kind:"list", bind:"source", source:{kind:"query", defaults:{page_type:"${slug}", order:"published_desc", limit:50}}}; paginate:{} instead of limit + a pager field for more than 50 pages; term_pages for a category, children for sub-pages) and drop the hand-kept cards; the structure quality check reports it (structure/manual-page-listing)`,
       );
     }
   }

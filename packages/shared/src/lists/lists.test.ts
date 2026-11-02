@@ -150,6 +150,34 @@ describe("list type definitions", () => {
     expect(paths).toContain("nodes.column.current_from");
     expect(paths).toContain("nodes.column");
   });
+  // #1281 — an editable knob is an override, not a default: an entry that
+  // does not set it would leave the query incomplete.
+  it("requires order and limit in a query node's defaults, naming the fix", () => {
+    const withSource = (source: unknown): ListTypeDef =>
+      listTypeDefSchema.parse({
+        slug: "teasers",
+        name: "Teasers",
+        purpose: "p",
+        role: "content",
+        root: { allow: ["news"] },
+        nodes: { news: { label: "News", fields: [], source } },
+      });
+    const issues = checkListTypeDef(
+      withSource({ kind: "query", editable: ["order", "limit"], defaults: { page_type: "news" } }),
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.path).toBe("nodes.news.source.defaults");
+    expect(issues[0]?.message).toContain("needs order");
+    expect(issues[0]?.message).toContain("and limit (1–50) in source.defaults");
+    expect(
+      checkListTypeDef(
+        withSource({
+          kind: "query",
+          defaults: { page_type: "news", order: "published_desc", limit: 3 },
+        }),
+      ),
+    ).toEqual([]);
+  });
   it("requires name+slug on vocabulary entries", () => {
     const t: ListTypeDef = {
       slug: "v",
@@ -318,6 +346,10 @@ describe("page types and addresses", () => {
 });
 
 describe("source definitions", () => {
+  it("a query source's editable is optional and means none (#1304)", () => {
+    const r = sourceDefSchema.parse({ kind: "query", defaults: { order: "title_asc", limit: 5 } });
+    expect(r).toEqual({ kind: "query", editable: [], defaults: { order: "title_asc", limit: 5 } });
+  });
   it("a plugin source written as a system source is refused with the plugin form (PR #1121 e2e)", () => {
     const r = sourceDefSchema.safeParse({ kind: "system", name: "consent_categories" });
     expect(r.success).toBe(false);

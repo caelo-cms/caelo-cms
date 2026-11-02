@@ -550,6 +550,23 @@ describe("list guidance in the seeded skills (epic #1107)", () => {
       });
     }
   });
+
+  // #1281 — 0418 taught a query source without order/limit; 0490 completes it.
+  it("the overview example in the page-building skills is a complete query", async () => {
+    const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
+    if (!r.ok) throw new Error("skills.list failed");
+    const skills = (r.value as { skills: { slug: string; body: string }[] }).skills;
+    for (const slug of ["manage-page-types", "compose-page"]) {
+      const body = skills.find((s) => s.slug === slug)?.body ?? "";
+      expect({ slug, incomplete: body.includes('defaults:{page_type:"<slug>"}}') }).toEqual({
+        slug,
+        incomplete: false,
+      });
+      expect(body).toContain(
+        'source:{kind:"query", defaults:{page_type:"<slug>", order:"published_desc", limit:50}}',
+      );
+    }
+  });
 });
 
 // Issue #417 — migration 0208 appended the field-naming subsection to the

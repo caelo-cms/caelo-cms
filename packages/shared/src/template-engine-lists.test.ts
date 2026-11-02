@@ -19,7 +19,7 @@ import {
   TERM,
 } from "./lists/list-fixtures.test.js";
 import { createListRenderContext, type ListPageContext } from "./lists/resolve.js";
-import { renderTemplate, type TemplateField } from "./template-engine.js";
+import { renderTemplate, type TemplateField, templateFieldsFromJson } from "./template-engine.js";
 
 function ctx(
   pageId: string | null = PAGE.home,
@@ -396,6 +396,32 @@ describe("lists — {{page.*}}", () => {
     expect(r.html).toBe(
       '<img src="/_caelo/media/hero" alt="Hero">We launched.|4;<img src="" alt="">|5;',
     );
+  });
+
+  // #1304 — a stored `modules.fields` jsonb whose query source omits
+  // `editable` renders through the parsed source (editable: []), never a
+  // raw one the resolver would read `editable` off.
+  it("a stored query source without editable renders (#1304)", () => {
+    const fields = templateFieldsFromJson([
+      {
+        name: "latest",
+        kind: "list",
+        listType: "links",
+        bind: "source",
+        source: {
+          kind: "query",
+          defaults: { page_type: "news", order: "prop_asc:rating", limit: 5 },
+        },
+      },
+    ]);
+    expect(fields[0]?.source).toEqual({
+      kind: "query",
+      editable: [],
+      defaults: { page_type: "news", order: "prop_asc:rating", limit: 5 },
+    });
+    const r = render("{{#latest}}{{props.rating}};{{/latest}}", fields, {}, ctx(PAGE.home));
+    expect(r.html).toBe("4;5;");
+    expect(r.missingSlots).toEqual([]);
   });
 });
 

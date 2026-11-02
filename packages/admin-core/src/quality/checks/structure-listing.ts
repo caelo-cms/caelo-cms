@@ -191,7 +191,7 @@ function listingFinding(
     message: truncateKeepingIds(message, 1000),
     fix: {
       tool: "update_modules_many",
-      hint: `replace the hand-kept cards with ONE \`list\` field bound to a page query — {kind:"list", bind:"source", source:{kind:"query", defaults:{page_type:"${slug}"}}} (term_pages for a category, children for sub-pages), rendered with {{#field}}…{{link}}…{{title}}…{{/field}}; check it with preview_list_source, then remove the stored cards from the page`,
+      hint: `replace the hand-kept cards with ONE \`list\` field bound to a page query — {kind:"list", bind:"source", source:{kind:"query", defaults:{page_type:"${slug}", order:"published_desc", limit:50}}}; paginate:{} instead of limit + a pager field for more than 50 pages (term_pages for a category, children for sub-pages), rendered with {{#field}}…{{link}}…{{title}}…{{/field}}; check it with preview_list_source, then remove the stored cards from the page`,
     },
   };
 }

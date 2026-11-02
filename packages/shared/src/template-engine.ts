@@ -140,6 +140,9 @@ export function templateFieldsFromJson(raw: unknown): TemplateField[] {
     if (!f || typeof f !== "object") continue;
     const o = f as Record<string, unknown>;
     if (typeof o.name !== "string") continue;
+    // The parsed source, not the stored one: parsing fills defaults
+    // (`editable: []` when the source omits it, #1304).
+    const source = sourceDefSchema.safeParse(o.source);
     out.push({
       name: o.name,
       kind: (typeof o.kind === "string" ? o.kind : "text") as ModuleFieldKind,
@@ -149,7 +152,7 @@ export function templateFieldsFromJson(raw: unknown): TemplateField[] {
       ...(typeof o.list === "string" ? { list: o.list } : {}),
       // A source that fails its schema stays absent: the resolver then
       // reports `list-malformed:<field>[source]` instead of guessing.
-      ...(sourceDefSchema.safeParse(o.source).success ? { source: o.source as SourceDef } : {}),
+      ...(source.success ? { source: source.data } : {}),
       // Passed as stored: the resolver validates it and reports a
       // malformed one as `list-malformed:<field>[paginate]`.
       ...(o.paginate !== undefined ? { paginate: o.paginate as ListPaginationSettings } : {}),

@@ -104,14 +104,34 @@ describe("query sources", () => {
     const q = query({ page_type: "news", order: "published_desc", limit: 3 }, ["limit"]);
     expect(entries(page(PAGE.home), q, { limit: 1 })).toHaveLength(1);
     const r = page(PAGE.home).resolveField(q, { page_type: "page" }, { contentInstanceId: null });
-    expect(r).toEqual({ ok: false, marker: "list-malformed:q[query.page_type]" });
+    expect(r).toMatchObject({ ok: false, marker: "list-malformed:q[query.page_type]" });
+    expect(r.ok ? "" : r.detail).toContain(
+      '"page_type" cannot be set per entry or placement — the source\'s editable list is limit.',
+    );
   });
 
-  it("an incomplete query (no order / limit) is malformed, never guessed", () => {
-    const r = page(PAGE.home).resolveField(query({ page_type: "news" }), undefined, {
+  // #1281 — the marker names the missing knob and `detail` says the fix
+  // (preview_list_source used to blame the `editable` list instead).
+  it("an incomplete query (no order / limit) is malformed, never guessed — naming the knob", () => {
+    const noOrder = page(PAGE.home).resolveField(query({ page_type: "news" }), undefined, {
       contentInstanceId: null,
     });
-    expect(r).toEqual({ ok: false, marker: "list-malformed:q[query]" });
+    expect(noOrder).toMatchObject({ ok: false, marker: "list-malformed:q[query.order]" });
+    expect(noOrder.ok ? "" : noOrder.detail).toContain('the query has no "order" — add order (');
+    const noLimit = page(PAGE.home).resolveField(
+      query({ page_type: "news", order: "title_asc" }),
+      undefined,
+      { contentInstanceId: null },
+    );
+    expect(noLimit).toMatchObject({ ok: false, marker: "list-malformed:q[query.limit]" });
+    expect(noLimit.ok ? "" : noLimit.detail).toContain('the query has no "limit"');
+    const badLimit = page(PAGE.home).resolveField(
+      query({ page_type: "news", order: "title_asc", limit: 3 }, ["limit"]),
+      { limit: 500 },
+      { contentInstanceId: null },
+    );
+    expect(badLimit).toMatchObject({ ok: false, marker: "list-malformed:q[query.limit]" });
+    expect(badLimit.ok ? "" : badLimit.detail).toContain('query knob "limit" is invalid');
   });
 
   it("returns only pages of the rendering page's variant", () => {

@@ -34,8 +34,6 @@ import {
   type ListTypeDef,
   type NodeDef,
   type PageQuery,
-  pageQuerySchema,
-  type QueryKnob,
   type SourceDef,
   type SystemSourceName,
 } from "./list-type.js";
@@ -49,6 +47,7 @@ import {
   pagedUrl,
   splitPaginationValue,
 } from "./pagination.js";
+import { mergeQuerySource } from "./query-merge.js";
 import { parseListRef } from "./refs.js";
 import type {
   ListPageRecord,
@@ -107,7 +106,7 @@ export interface ListFieldSpec {
 /** Result of resolving one list field for one page. */
 export type ListFieldResolution =
   | { readonly ok: true; readonly entries: readonly ScopeEntry[] }
-  | { readonly ok: false; readonly marker: string };
+  | { readonly ok: false; readonly marker: string; readonly detail?: string };
 
 /**
  * Where a local list is stored: the content instance holding the module
@@ -1098,29 +1097,6 @@ function createPageContext(
     );
   };
 
-  /** Merge a source's query defaults with the knobs an entry / placement may set. */
-  const mergedQuery = (
-    source: Extract<SourceDef, { kind: "query" }>,
-    overrides: unknown,
-    field: string,
-    path: string,
-  ): PageQuery | { marker: string } => {
-    const merged: Record<string, unknown> = { ...source.defaults };
-    if (overrides !== undefined && overrides !== null) {
-      if (typeof overrides !== "object" || Array.isArray(overrides)) {
-        return { marker: `list-malformed:${field}[${path}]` };
-      }
-      for (const [k, v] of Object.entries(overrides)) {
-        if (!(source.editable as readonly string[]).includes(k as QueryKnob)) {
-          return { marker: `list-malformed:${field}[${path}.${k}]` };
-        }
-        merged[k] = v;
-      }
-    }
-    const parsed = pageQuerySchema.safeParse(merged);
-    return parsed.success ? parsed.data : { marker: `list-malformed:${field}[${path}]` };
-  };
-
   /** Generated entries of a source node (`{{#items}}`). */
   const sourceItems = (
     source: SourceDef,
@@ -1130,8 +1106,10 @@ function createPageContext(
   ): ScopeValue => {
     switch (source.kind) {
       case "query": {
-        const q = mergedQuery(source, item.query, field, `${item.id}.query`);
-        return "marker" in q ? { kind: "failed", marker: q.marker } : runQuery(q, field);
+        const q = mergeQuerySource(source, item.query, field, `${item.id}.query`);
+        return "marker" in q
+          ? { kind: "failed", marker: q.marker, detail: q.detail }
+          : runQuery(q, field);
       }
       case "system": {
         const termFields = node.fields.filter((f) => f.type === "term");
@@ -1153,7 +1131,7 @@ function createPageContext(
 
   const fromValue = (v: ScopeValue): ListFieldResolution =>
     v.kind === "failed"
-      ? { ok: false, marker: v.marker }
+      ? { ok: false, marker: v.marker, ...(v.detail !== undefined ? { detail: v.detail } : {}) }
       : { ok: true, entries: v.kind === "list" ? v.entries : [] };
 
   /**
@@ -1172,13 +1150,14 @@ function createPageContext(
     if (eff === null) return { ok: false, marker: `list-malformed:${field.name}[paginate]` };
     const source = field.source;
     if (source?.kind === "query") {
-      const q = mergedQuery(
+      const q = mergeQuerySource(
         { ...source, defaults: { ...source.defaults, limit: eff.perPage } },
         rest,
         field.name,
         "query",
+        true,
       );
-      if ("marker" in q) return { ok: false, marker: q.marker };
+      if ("marker" in q) return { ok: false, marker: q.marker, detail: q.detail };
       const key = JSON.stringify(["query", { ...q, limit: null }]);
       return fromValue(paginate(field.name, key, queryHits(q), eff));
     }
@@ -1207,9 +1186,9 @@ function createPageContext(
       if (!source) return { ok: false, marker: `list-malformed:${field.name}[source]` };
       switch (source.kind) {
         case "query": {
-          const q = mergedQuery(source, value, field.name, "query");
+          const q = mergeQuerySource(source, value, field.name, "query");
           return "marker" in q
-            ? { ok: false, marker: q.marker }
+            ? { ok: false, marker: q.marker, detail: q.detail }
             : fromValue(runQuery(q, field.name));
         }
         case "system": {
