@@ -988,7 +988,7 @@
     },
     {
       "name": "list_plugins",
-      "description": "Installed plugins with `status` (Owner's decision) and `health` (what running servers make of it).\n- status: `active` = Owner wants it running | `awaiting_activation` = installed + verified, nothing loaded | `disabled` = Owner stopped it.\n- Availability ONLY from health: `running` = tools/skills usable now | `failing` = active but failed to load on a server (`problem` says why; NOT switched off -> tell the operator, details in `get_plugin`) | `unreported` = active, no server reported yet | `not_running` = not active. Never say a capability works while its plugin is failing.\n- `requires` = plugins that must be active first (activate those first, in that order) | `required_by` = active plugins needing this one (it cannot be disabled or uninstalled until they are).\nUSE FOR a capability you have no tool for (translation, forms, comments, newsletter, ratings): plugin installed-but-inactive -> TELL the operator it exists and one click at /settings/plugins turns it on. Plugins on disk that failed verification follow the table: NOT installed -> explain why + the fix.\nDO NOT USE as a general capability check before routine work — your tool catalogue already reflects everything running.",
+      "description": "Installed plugins with `status` (Owner's decision) and `health` (what running servers make of it).\n- status: `active` = Owner wants it running | `awaiting_activation` = installed + verified, nothing loaded | `disabled` = Owner stopped it.\n- Availability ONLY from health: `running` = tools/skills usable now | `failing` = active but failed to load on a server (`problem` says why; NOT switched off -> tell the operator, details in `get_plugin`) | `awaiting_approval` = active, but its release asks for capabilities the Owner has not approved, so it does not run (`problem` names them) -> tell the operator to approve them at /settings/plugins; reload_plugin cannot | `unreported` = active, no server reported yet | `not_running` = not active. Never say a capability works while its plugin is failing.\n- `requires` = plugins that must be active first (activate those first, in that order) | `required_by` = active plugins needing this one (it cannot be disabled or uninstalled until they are).\nUSE FOR a capability you have no tool for (translation, forms, comments, newsletter, ratings): plugin installed-but-inactive -> TELL the operator it exists and one click at /settings/plugins turns it on. Plugins on disk that failed verification follow the table: NOT installed -> explain why + the fix.\nDO NOT USE as a general capability check before routine work — your tool catalogue already reflects everything running.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1947,7 +1947,7 @@
     },
     {
       "name": "retry_tool_call",
-      "description": "Fix a failed write call with a small patch instead of resending it — only for a call whose result names `retry_tool_call`. Paths are segment arrays exactly as the error names them (`[\"page\",\"pageType\"]`, `[\"modules\",3,\"html\"]`). `set` writes a value, `remove` drops a key or array entry, `replace` swaps one exact text inside one string (must match once). The patched call runs as a new call (permissions, validation, approval re-checked); if it fails again, patch the same toolCallId again.",
+      "description": "Fix a failed write call with a small patch instead of resending it — only for a call whose result names `retry_tool_call`. Paths are segment arrays exactly as the error names them (`[\"page\",\"pageType\"]`, `[\"modules\",3,\"html\"]`). `set` writes a value, `remove` drops a key or array entry, `replace` swaps one exact text inside one string (must match once). The call stays kept while you make the calls its error asks for first (create the page type, then patch). The patched call runs as a new call (permissions, validation, approval re-checked); if it fails again, patch the same toolCallId again.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -5413,7 +5413,7 @@
     },
     {
       "name": "reload_plugin",
-      "description": "Retry loading an ACTIVE plugin on every server — the fix for health `failing` (servers don't retry on their own). Use after the cause was fixed, when transient, or when asked. Returns this server's result; others follow within seconds (`get_plugin`). Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`).",
+      "description": "Retry loading an ACTIVE plugin on every server — the fix for health `failing` (servers don't retry on their own). Use after the cause was fixed, when transient, or when asked. Returns this server's result; others follow within seconds (`get_plugin`). Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`), nor health `awaiting_approval` (the Owner approves its capabilities at /settings/plugins).",
       "inputSchema": {
         "type": "object",
         "properties": {
