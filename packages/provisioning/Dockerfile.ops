@@ -153,6 +153,9 @@ RUN set -eu && \
     gcloud version 2>/dev/null | grep -qx "Google Cloud SDK ${GCLOUD_VERSION}"
 
 COPY --from=builder /opt/caelo-ops /opt/caelo-ops
+# #1338 — the CA bundles of verify-full database URLs (the upgrader and
+# converge jobs connect to Cloud SQL; packages/shared database-tls.ts).
+COPY packages/shared/certs/ /etc/caelo/db-ca/
 
 # A wrapper, not a symlink: the CLI derives its repo root and stack paths
 # from its own file location (import.meta.dir), which a symlink in

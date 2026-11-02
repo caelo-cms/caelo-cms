@@ -25,6 +25,8 @@
  *     `gateway_role` (#635: gone, or left without any privilege where the
  *     migration role could not drop it): no role membership at all, no
  *     SUPERUSER / BYPASSRLS / REPLICATION, and no CONNECT on cms_admin.
+ *     public_role must also carry its database limits
+ *     ({@link PUBLIC_ROLE_LIMITS}, #1338).
  *   - `operator_access_reader`, `platform_updater` (NOLOGIN roles of the
  *     in-cloud jobs) and every login that is a member of them (the jobs'
  *     Cloud SQL IAM users, the self-hosted update agent): no membership in a
@@ -84,7 +86,28 @@ export interface AuditedRole {
   readonly memberOf: readonly string[];
   /** Whether it may connect to the database the audit runs in (cms_admin). */
   readonly canConnectHere: boolean;
+  /** `pg_roles.rolconnlimit` (-1 = unlimited). */
+  readonly connectionLimit: number;
+  /** `pg_roles.rolconfig`: the role's own `name=value` settings. */
+  readonly settings: readonly string[];
 }
+
+/**
+ * Issue #1338 — the limits public_role must carry (cms_admin migration
+ * 0500 sets them where the migration role may, bootstrap.sh everywhere
+ * else; the reasons live in that migration). The connection limit is the
+ * gateway's share of the pool budget at the default scale-out
+ * (`GATEWAY_ROLE_CONNECTION_LIMIT` in @caelo-cms/shared pool-budget.ts,
+ * pinned to this value by a test).
+ */
+export const PUBLIC_ROLE_LIMITS = {
+  connectionLimit: 30,
+  settings: {
+    statement_timeout: "5s",
+    idle_in_transaction_session_timeout: "15s",
+    work_mem: "1MB",
+  },
+} as const;
 
 /**
  * The audit query. Run while connected to cms_admin (the CONNECT check is
@@ -121,7 +144,9 @@ SELECT r.rolname::text AS rolname,
            WHERE m.member = r.oid),
          ARRAY[]::text[]
        ) AS member_of,
-       has_database_privilege(r.oid, current_database(), 'CONNECT') AS can_connect_here
+       has_database_privilege(r.oid, current_database(), 'CONNECT') AS can_connect_here,
+       r.rolconnlimit AS connection_limit,
+       COALESCE(r.rolconfig, ARRAY[]::text[]) AS settings
   FROM audited a JOIN pg_roles r ON r.oid = a.oid
  ORDER BY r.rolname
 `;
@@ -137,6 +162,8 @@ export interface RoleAuditRow {
   readonly rolreplication: boolean;
   readonly member_of: readonly string[] | null;
   readonly can_connect_here: boolean;
+  readonly connection_limit: number;
+  readonly settings: readonly string[] | null;
 }
 
 /** Normalise a row; throws on a kind the query cannot produce. */
@@ -154,7 +181,40 @@ export function toAuditedRole(row: RoleAuditRow): AuditedRole {
     rolreplication: row.rolreplication,
     memberOf: row.member_of ?? [],
     canConnectHere: row.can_connect_here,
+    connectionLimit: row.connection_limit,
+    settings: row.settings ?? [],
   };
+}
+
+/**
+ * What public_role lacks of {@link PUBLIC_ROLE_LIMITS}, one line each. A
+ * missing limit is a violation, not a warning: without it the visitor-facing
+ * login may take every connection and any amount of server time from the
+ * database all environments share (#763 H3).
+ */
+function publicRoleLimitProblems(role: AuditedRole): string[] {
+  const fix =
+    "set by cms_admin migration 0500 or packages/migrations/src/bootstrap.sh (self-hosted: `cms-provision upgrade` re-runs it)";
+  const out: string[] = [];
+  if (role.connectionLimit !== PUBLIC_ROLE_LIMITS.connectionLimit) {
+    out.push(
+      `${role.rolname} has CONNECTION LIMIT ${role.connectionLimit} (it must be ${PUBLIC_ROLE_LIMITS.connectionLimit}; ${fix})`,
+    );
+  }
+  const actual = new Map(
+    role.settings.map((s) => {
+      const i = s.indexOf("=");
+      return [s.slice(0, i), s.slice(i + 1)] as const;
+    }),
+  );
+  for (const [name, value] of Object.entries(PUBLIC_ROLE_LIMITS.settings)) {
+    if (actual.get(name) !== value) {
+      out.push(
+        `${role.rolname} has ${name} ${actual.has(name) ? `= ${actual.get(name)}` : "unset"} (it must be ${value}; ${fix})`,
+      );
+    }
+  }
+  return out;
 }
 
 export interface RoleAuditResult {
@@ -184,6 +244,7 @@ export function evaluateRoleAudit(roles: readonly AuditedRole[]): RoleAuditResul
       if (role.canConnectHere) {
         violations.push(`${name} can connect to cms_admin`);
       }
+      if (name === "public_role") violations.push(...publicRoleLimitProblems(role));
     } else {
       const privileged = role.memberOf.filter((g) => PRIVILEGED_GROUPS.includes(g));
       if (privileged.length > 0) {

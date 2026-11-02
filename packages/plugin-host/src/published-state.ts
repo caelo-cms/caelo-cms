@@ -294,7 +294,8 @@ function compareValues(a: unknown, b: unknown): number {
 
 /**
  * The gateway's plugin op audit (#635): one row per successful visitor
- * call, in cms_public. The admin reads it back only for the plugin-data
+ * call of a declared baked-data trigger (#1338: no row for any other call,
+ * which nobody reads), in cms_public. The admin reads it back only for the plugin-data
  * build (#1155), and treats every row as an UNTRUSTED hint: a page id
  * counts only for a declared baked-data trigger of a plugin the admin runs
  * and a page that exists (admin-core `plugin-data/visitor-hints.ts`). The operator's audit trail of authoring actions

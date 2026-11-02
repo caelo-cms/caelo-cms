@@ -89,6 +89,10 @@ COPY --from=deno /deno /usr/local/bin/deno
 # at run time. The sandbox writes only to its own temp dir under /tmp.
 COPY --from=builder /stage/app /app
 
+# #1338 — the CA bundles every database URL names as sslrootcert
+# (verify-full; packages/shared database-tls.ts DATABASE_CA_DIR).
+COPY packages/shared/certs/ /etc/caelo/db-ca/
+
 WORKDIR /app
 
 ENV NODE_ENV=production

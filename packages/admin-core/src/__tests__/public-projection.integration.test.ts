@@ -153,7 +153,7 @@ describe("drain (#635)", () => {
     expect(after).toEqual([]);
   });
 
-  it("publishes only the four gateway columns of site_settings", async () => {
+  it("publishes only the four gateway columns of site_settings, plus the live origins (#1326)", async () => {
     const cols = (await pub(
       async (tx) =>
         await tx`
@@ -166,6 +166,8 @@ describe("drain (#635)", () => {
       "max_body_bytes",
       "captcha_provider",
       "captcha_pow_target_prefix",
+      // Derived from the base URL and the public domains, never the staging host.
+      "live_origins",
     ]);
   });
 });

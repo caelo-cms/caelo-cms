@@ -10,8 +10,11 @@
  * Shape (maintainer decision on PR #583):
  * - bound to 127.0.0.1 on a random port, alive only for one audit;
  * - read-only for the build: GET and HEAD, nothing else;
- * - `/api/*` goes to the install's real gateway when `apiOrigin` is given,
- *   unchanged in method and body — see {@link StagedOriginOptions};
+ * - `/api/plugin/*` is answered here with the staging stub (#1326 interim,
+ *   @caelo-cms/shared `staging-plugin-stub.ts`): it never reaches live;
+ * - every other `/api/*` goes to the install's real gateway when
+ *   `apiOrigin` is given, unchanged in method and body — see
+ *   {@link StagedOriginOptions};
  * - path-traversal safe: the request path is decoded once and reduced to
  *   plain segments before it becomes a storage key; `.`/`..`, backslashes
  *   and NUL are refused, and a local file must resolve inside the build;
@@ -30,7 +33,11 @@ import {
 } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { join, sep } from "node:path";
-import { mediaSecurityHeaders } from "@caelo-cms/shared";
+import {
+  isPluginCallPath,
+  mediaSecurityHeaders,
+  STAGING_PLUGIN_STUB_BODY,
+} from "@caelo-cms/shared";
 import { readStagedBuildFiles, readStagedObject } from "../deploy/staged-build-files.js";
 import { cacheControlForContentType, contentTypeFor } from "../deploy/static-file-policy.js";
 
@@ -274,6 +281,20 @@ export async function serveStagedBuild(
   options: StagedOriginOptions = {},
 ): Promise<StagedOrigin> {
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // #1326 interim — a plugin call never goes to live: the live gateway
+    // refuses the staged page (no live Origin), and must. Answer it here
+    // the way the gateway answers staging (staging-plugin-stub.ts), so the
+    // page logs no failed request and writes nothing into live data.
+    if (isPluginCallPath(new URL(req.url ?? "/", "http://staged.invalid").pathname)) {
+      if (req.method !== "GET" && req.method !== "HEAD") req.resume();
+      res
+        .writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        })
+        .end(STAGING_PLUGIN_STUB_BODY);
+      return;
+    }
     const apiTarget = options.apiOrigin ? apiTargetFor(req.url ?? "/", options.apiOrigin) : null;
     if (apiTarget && options.apiOrigin) {
       const hasBody = req.method !== "GET" && req.method !== "HEAD";

@@ -13,8 +13,19 @@
  * password is a Secret Manager reference, so the password never shows up in
  * the service's configuration or its revision history.
  *
+ * A URL that reaches a database on another machine must ask for
+ * `sslmode=verify-full` (database-tls.ts, #1338); {@link databaseUrlFromEnv}
+ * refuses one that does not.
+ *
  * Pure module — no I/O.
  */
+
+import {
+  CLOUD_SQL_CA_BUNDLE,
+  databaseTlsProblem,
+  isIpLiteral,
+  verifyFullQuery,
+} from "./database-tls.js";
 
 /** The `<NAME>_PASSWORD` var that pairs with a `<NAME>_URL` var. */
 export function databasePasswordVar(urlVar: string): string {
@@ -75,6 +86,8 @@ export function databaseUrlFromEnv(
   for (const urlVar of urlVars) {
     const url = env[urlVar];
     if (!url) continue;
+    const tls = databaseTlsProblem(url, urlVar);
+    if (tls) throw new Error(tls);
     const passwordVar = databasePasswordVar(urlVar);
     const password = env[passwordVar];
     return password ? withDatabasePassword(url, password, `${urlVar} (with ${passwordVar})`) : url;
@@ -87,6 +100,8 @@ export function databaseUrlFromEnv(
  * how the in-cloud jobs (the operator-access sync job, the upgrader job)
  * connect: the user is the service account email without
  * `.gserviceaccount.com`, the password a short-lived OAuth access token.
+ * TLS is verify-full against Google's Cloud SQL shared-CA bundle, so `host`
+ * must be the instance's DNS name (its certificate names no IP).
  *
  * @example
  *   cloudSqlIamDatabaseUrls("10.0.0.3", "job@p.iam.gserviceaccount.com", "ya29.x").user
@@ -97,8 +112,13 @@ export function cloudSqlIamDatabaseUrls(
   serviceAccountEmail: string,
   accessToken: string,
 ): { admin: string; public: string; user: string } {
+  if (isIpLiteral(host)) {
+    throw new Error(
+      `the Cloud SQL host is the IP address ${host}, but the instance's certificate names only its DNS name, so a verify-full connection to it cannot succeed (#1338). Run the converge (\`cms-provision upgrade\`, or Install update for a cloud-setup release) — it moves the services onto the DNS name — then retry.`,
+    );
+  }
   const user = serviceAccountEmail.replace(/\.gserviceaccount\.com$/, "");
   const url = (db: string) =>
-    `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(accessToken)}@${host}:5432/${db}?sslmode=require`;
+    `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(accessToken)}@${host}:5432/${db}?${verifyFullQuery(CLOUD_SQL_CA_BUNDLE)}`;
   return { admin: url("cms_admin"), public: url("cms_public"), user };
 }

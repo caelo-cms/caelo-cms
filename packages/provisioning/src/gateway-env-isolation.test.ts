@@ -65,7 +65,7 @@ describe("gcp + gcp-firebase: the gateway env contract (#635)", () => {
     domain: "example.com",
     region: "europe-west1",
     stagingHost: "staging.example.com",
-    databaseUrls: databaseUrls("10.20.0.3"),
+    databaseUrls: databaseUrls("db1.p-label.europe-west1.sql-psa.goog"),
   });
 
   it("carries no cms_admin URL, role or credential name", () => {
@@ -75,7 +75,8 @@ describe("gcp + gcp-firebase: the gateway env contract (#635)", () => {
     }
     expect(env.find((v) => v.name === "PUBLIC_DATABASE_URL")).toEqual({
       name: "PUBLIC_DATABASE_URL",
-      value: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
+      value:
+        "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
     });
   });
 
@@ -135,6 +136,7 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
       postgresPassword: "superpw",
       rolePasswords: { admin: "adminpw", public: "publicpw" },
       caeloSecretKek: "0".repeat(64),
+      dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
       diskSize: "20Gi",
       images: {
@@ -151,9 +153,12 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
     expect(gateway).toContain("PUBLIC_DATABASE_URL:");
     expect(gateway).not.toMatch(ADMIN_ACCESS);
     expect(gateway).not.toMatch(/superpw|adminpw|gatewaypw/);
-    // No other way in: no Compose secrets, no env file, no mounts (a
-    // mounted file is read by no env check), and exactly its own env.
-    expect(gateway).not.toMatch(/^ {4}(secrets|env_file|volumes):/m);
+    // No other way in: no Compose secrets, no env file, and exactly one
+    // mount — the database CA certificate (#1338), public, no credential.
+    expect(gateway).not.toMatch(/^ {4}(secrets|env_file):/m);
+    expect(gateway).toContain(
+      "    volumes:\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro\n    restart:",
+    );
     const env = gateway.slice(gateway.indexOf("    environment:"));
     const keys = [...env.matchAll(/^ {6}([A-Z_][A-Z0-9_]*):/gm)].map((m) => m[1]);
     expect(keys.sort()).toEqual([

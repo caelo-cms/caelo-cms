@@ -42,6 +42,7 @@ import {
   invalidateGatewaySettings,
   setGatewayAdapter,
 } from "./server.js";
+import { registerTestLiveOrigin, TEST_LIVE_ORIGIN, withErrorLog } from "./test-support.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -115,6 +116,7 @@ function post(path: string, body: unknown, headers: Record<string, string> = {})
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Origin: TEST_LIVE_ORIGIN,
       "X-Forwarded-For": `203.0.113.${clientIp % 250}`,
       ...headers,
     },
@@ -198,6 +200,7 @@ beforeAll(async () => {
              (gen_random_uuid(), ${pageId}::uuid, 'Troll', 'rejected text', 'rejected', now())`;
   });
   // The migration job / admin boot publish (#635), approved comments included.
+  await registerTestLiveOrigin(ADMIN_URL as string);
   await publishProjectionOnce(adminAdapter, { declarations: new Map(), comments: true });
 
   // --- Gateway side: production wiring. ---
@@ -296,16 +299,18 @@ describe("comments submit: ctx.captcha.requireProof follows the gateway's verdic
 
   it("refuses a submission without a proof, even with the old 'dev' token", async () => {
     await setCaptcha("pow");
-    const r = await handleRequest(
-      post("/api/plugin/comments/submit", {
-        pageId,
-        authorName: "Bot",
-        content: "spam",
-        captchaToken: "dev",
-      }),
+    const { value: r, log } = await withErrorLog(() =>
+      handleRequest(
+        post("/api/plugin/comments/submit", {
+          pageId,
+          authorName: "Bot",
+          content: "spam",
+          captchaToken: "dev",
+        }),
+      ),
     );
     expect(r.status).not.toBe(200);
-    expect(await r.text()).toContain("captcha verification failed");
+    expect(log).toContain("captcha verification failed");
   });
 
   it("refuses a forged proof at the gateway", async () => {

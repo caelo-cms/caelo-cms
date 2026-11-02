@@ -64,6 +64,16 @@ $PSQL -c "GRANT CONNECT ON DATABASE cms_public TO public_role, admin_role;"
 # public_role gets zero default-schema privileges on cms_admin by omission;
 # enforced by the role-isolation.integration.test suite.
 
+# Issue #1338 — the database bounds what the public gateway's login may take
+# (values and reasons: cms_admin migration 0500, which sets them where the
+# migration role may; here admin_role has no CREATEROLE). The role audit
+# fails the migrations while one is missing. Re-run on every self-hosted
+# upgrade, so a value changed here reaches existing installs.
+$PSQL -c "ALTER ROLE public_role CONNECTION LIMIT 30;"
+$PSQL -c "ALTER ROLE public_role SET statement_timeout = '5s';"
+$PSQL -c "ALTER ROLE public_role SET idle_in_transaction_session_timeout = '15s';"
+$PSQL -c "ALTER ROLE public_role SET work_mem = '1MB';"
+
 # Issue #635 — the API gateway has no cms_admin login any more. A database
 # from before still holds the former gateway_role; migration 0285 strips its
 # grants but cannot drop a role the superuser created. Drop it here, with

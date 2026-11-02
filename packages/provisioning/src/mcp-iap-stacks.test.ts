@@ -48,7 +48,7 @@ describe.each(["gcp", "gcp-firebase"])("%s stack — MCP through IAP", (provider
       env: "production",
       domain: "d.com",
       region: "r",
-      databaseUrls: databaseUrls("10.0.0.3"),
+      databaseUrls: databaseUrls("db1.p-label.europe-west1.sql-psa.goog"),
     });
     expect(env).toContainEqual({
       name: "CAELO_MCP_IAP_SERVICE_ACCOUNT",

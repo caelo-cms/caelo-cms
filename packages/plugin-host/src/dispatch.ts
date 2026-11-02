@@ -31,7 +31,7 @@ import {
 } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { bakedDataPageIds } from "./baked-data-pages.js";
+import { bakedDataPageIds, bakedDataTrigger } from "./baked-data-pages.js";
 import { type ExternalApproval, operatorHasPermission } from "./external-authorization.js";
 import { previewContext } from "./preview-context.js";
 import type { PluginRowLocker } from "./private-storage.js";
@@ -700,6 +700,13 @@ async function runPluginOperationNow(
       // #635 — on the public side (no cms_admin login) the record lands in
       // cms_public, where the admin reads it back only as untrusted hints.
       if (isPublicSideHost(cachedInfra)) {
+        // #1338 — the admin reads these rows for one purpose only: the
+        // re-bake hint of a declared baked-data trigger (#1155). Any other
+        // call would be a write per visitor request that nobody reads, on
+        // the database every environment shares.
+        if (!bakedDataTrigger(plugin.definition.bakedData, opts.operationName)) {
+          return { ok: true, value };
+        }
         await emitPublicPluginOpEvent(cachedInfra, {
           pluginId: plugin.pluginId,
           actorId: plugin.pluginActorId,

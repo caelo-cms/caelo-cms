@@ -76,6 +76,7 @@ describe("self-hosted compose", () => {
     postgresPassword: "pw",
     rolePasswords: { admin: "a", public: "b" },
     caeloSecretKek: "0".repeat(64),
+    dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
     internalSecret: "i".repeat(48),
     diskSize: "20Gi",
     ports: { http: 80, https: 443 },

@@ -126,13 +126,13 @@ describe("liveContainerEnv / liveServiceAccount / liveDatabaseHost", () => {
 
   it("finds the Cloud SQL host in ADMIN_DATABASE_URL with or without an inline password", () => {
     for (const url of [
-      "postgresql://admin_role:pw@10.20.0.3:5432/cms_admin?sslmode=require",
-      "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+      "postgresql://admin_role:pw@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
     ]) {
       const host = liveDatabaseHost(
         new Map([["ADMIN_DATABASE_URL", { kind: "value", value: url }]]),
       );
-      expect(host).toEqual({ ok: true, host: "10.20.0.3" });
+      expect(host).toEqual({ ok: true, host: "db1.p-label.europe-west1.sql-psa.goog" });
     }
     expect(liveDatabaseHost(new Map()).ok).toBe(false);
   });
@@ -261,11 +261,13 @@ const secretRef = (name: string, secret: string) => ({
 const CONVERGED_ADMIN_DB = [
   {
     name: "ADMIN_DATABASE_URL",
-    value: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+    value:
+      "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   {
     name: "PUBLIC_ADMIN_DATABASE_URL",
-    value: "postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
+    value:
+      "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   secretRef("ADMIN_DATABASE_PASSWORD", "postgres-password"),
   secretRef("PUBLIC_ADMIN_DATABASE_PASSWORD", "postgres-password"),
@@ -276,7 +278,8 @@ const CONVERGED_ADMIN_DB = [
 const CONVERGED_GATEWAY_DB = [
   {
     name: "PUBLIC_DATABASE_URL",
-    value: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
+    value:
+      "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   secretRef("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
 ];
@@ -379,6 +382,56 @@ describe("planContractEnv", () => {
     );
     expect(plan.ok).toBe(false);
     expect(!plan.ok && plan.error).toContain("CAELO_FIREBASE_SITE");
+  });
+
+  it("#1338: an install on the instance's IP plans its database URLs only with the converge's host", () => {
+    const onIp = (db: { name: string; value?: string }[]) =>
+      db.map((e) =>
+        e.value
+          ? {
+              ...e,
+              value: e.value
+                .replace("db1.p-label.europe-west1.sql-psa.goog", "10.20.0.3")
+                .replace(/\?.*$/, "?sslmode=require"),
+            }
+          : e,
+      );
+    const services = {
+      admin: {
+        serviceName: "adm",
+        liveEnv: liveContainerEnv(serviceJson(onIp(CONVERGED_ADMIN_DB) as never)),
+      },
+      gateway: {
+        serviceName: "gw",
+        liveEnv: liveContainerEnv(serviceJson(onIp(CONVERGED_GATEWAY_DB) as never)),
+      },
+    };
+    const install = {
+      provider: "gcp" as const,
+      projectId: "a",
+      env: "production",
+      domain: "a.com",
+      stagingHost: "staging.a.com",
+      region: "r",
+    };
+    // Read-only plan: the URLs stay as they are and the plan says why.
+    const pending = planContractEnv(install, services);
+    if (!pending.ok) throw new Error(pending.error);
+    expect(pending.databaseHostPending).toBe(true);
+    for (const s of ["admin", "gateway"] as const) {
+      expect(pending.services[s].changes.map((c) => c.name)).not.toContainEqual(
+        expect.stringMatching(/DATABASE_URL$/),
+      );
+    }
+    // After the converge's TLS step: verify-full URLs on the DNS name.
+    const host = "db1.p-label.europe-west1.sql-psa.goog";
+    const moved = planContractEnv(install, services, { databaseHost: host });
+    if (!moved.ok) throw new Error(moved.error);
+    expect(moved.databaseHostPending).toBe(false);
+    const url = moved.services.gateway.changes.find((c) => c.name === "PUBLIC_DATABASE_URL");
+    expect(url?.to).toBe(
+      `postgresql://public_role@${host}:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem`,
+    );
   });
 
   it("fails loudly when the Cloud SQL host can't be discovered", () => {

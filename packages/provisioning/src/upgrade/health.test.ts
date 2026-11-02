@@ -73,26 +73,23 @@ describe("evaluateAdminDeepHealth", () => {
 });
 
 describe("evaluateGatewayDeepHealth", () => {
-  it("accepts a healthy gateway on the admin's version", () => {
-    expect(
-      evaluateGatewayDeepHealth(200, JSON.stringify({ ok: true, version: "0.11.0" }), "0.11.0"),
-    ).toEqual({ ok: true, detail: "gateway 0.11.0" });
+  it("accepts a healthy gateway; its version is not public any more (#1326)", () => {
+    expect(evaluateGatewayDeepHealth(200, JSON.stringify({ ok: true }))).toEqual({
+      ok: true,
+      detail: "gateway healthy",
+    });
   });
 
-  it("refuses a gateway on another version than the admin", () => {
-    const r = evaluateGatewayDeepHealth(
-      200,
-      JSON.stringify({ ok: true, version: "0.10.0" }),
-      "0.11.0",
+  it("ignores a version an older gateway still reports", () => {
+    expect(evaluateGatewayDeepHealth(200, JSON.stringify({ ok: true, version: "0.10.0" })).ok).toBe(
+      true,
     );
-    expect(r.ok).toBe(false);
   });
 
   it("refuses a gateway that can't reach its database", () => {
     const r = evaluateGatewayDeepHealth(
       503,
-      JSON.stringify({ ok: false, version: "0.11.0", error: { kind: "DbUnreachable" } }),
-      "0.11.0",
+      JSON.stringify({ ok: false, error: { kind: "DbUnreachable" } }),
     );
     expect(r).toEqual({ ok: false, error: "gateway reports unhealthy (HTTP 503, DbUnreachable)" });
   });
@@ -148,7 +145,7 @@ describe("createIapHealthProbe", () => {
   it("signs an IAP credential for the admin origin and sends it to the admin only", async () => {
     const net = network({
       admin: () => [200, adminBody()],
-      gateway: () => [200, JSON.stringify({ ok: true, version: "0.11.0" })],
+      gateway: () => [200, JSON.stringify({ ok: true })],
     });
     const probe = createIapHealthProbe(FIREBASE, {
       run: gcloudOk,
@@ -160,7 +157,7 @@ describe("createIapHealthProbe", () => {
     expect(await probe.deep({ version: "0.11.0" })).toEqual({
       ok: true,
       detail:
-        "admin 0.11.0, migrations at 0262_tool_approval_branch.sql / 0040_x.sql; gateway 0.11.0",
+        "admin 0.11.0, migrations at 0262_tool_approval_branch.sql / 0040_x.sql; gateway healthy",
     });
     const sign = net.requests[0];
     expect(sign?.url).toBe(
@@ -194,7 +191,7 @@ describe("createIapHealthProbe", () => {
           ? [503, adminBody({ ok: false, migrations: migrations(1) })]
           : [200, adminBody()];
       },
-      gateway: () => [200, JSON.stringify({ ok: true, version: "0.11.0" })],
+      gateway: () => [200, JSON.stringify({ ok: true })],
     });
     const probe = createIapHealthProbe(FIREBASE, {
       run: gcloudOk,

@@ -151,6 +151,7 @@ describe("docker-compose generator", () => {
       postgresPassword: "supersecret",
       rolePasswords: { admin: "adminpw", public: "publicpw" },
       caeloSecretKek: "0".repeat(64),
+      dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
       anthropicApiKey: "sk-ant-…",
       diskSize: "20Gi",
@@ -173,6 +174,7 @@ describe("docker-compose generator", () => {
       postgresPassword: "supersecret",
       rolePasswords: { admin: "adminpw", public: "publicpw" },
       caeloSecretKek: "0".repeat(64),
+      dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
       diskSize: "20Gi",
       images: RELEASE_IMAGES,
@@ -181,7 +183,7 @@ describe("docker-compose generator", () => {
     });
     const gateway = out.slice(out.indexOf("caelo-gateway:"), out.indexOf("\nvolumes:"));
     expect(gateway).toContain(
-      'PUBLIC_DATABASE_URL: "postgres://public_role:publicpw@postgres:5432/cms_public"',
+      'PUBLIC_DATABASE_URL: "postgres://public_role:publicpw@postgres:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/self-hosted-ca.pem"',
     );
     expect(gateway).not.toMatch(
       /ADMIN_DATABASE|GATEWAY_DATABASE|cms_admin|admin_role|gateway_role|adminpw|gatewaypw|supersecret|CAELO_SECRET_KEK/,
@@ -198,6 +200,7 @@ describe("docker-compose generator", () => {
       postgresPassword: 'pa"ss',
       rolePasswords: { admin: "a", public: "b" },
       caeloSecretKek: "0".repeat(64),
+      dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
       diskSize: "1Gi",
       images: RELEASE_IMAGES,

@@ -135,6 +135,42 @@ const CHUNK = 500;
 
 type Row = Record<string, unknown>;
 
+/**
+ * The origins the live site is served on, which alone may post to the
+ * gateway's `/api/plugin/*` (#1326): the site's base URL and every public
+ * domain of the domains registry, each as a browser sends it in `Origin`
+ * (`https://example.com`, no path, default port dropped). The staging host
+ * is never one of them, even when it is registered as a domain: it is
+ * same-site with live, and unreviewed module JS on staging must not post
+ * to the live data (#763 N4). An entry that is not a URL is left out; the
+ * admin reports a malformed base URL on every build.
+ *
+ * @example
+ *   liveSiteOrigins({ baseUrl: "https://Example.com/", publicHosts: ["www.example.com"],
+ *                     stagingHost: "staging.example.com" })
+ *   // → ["https://example.com", "https://www.example.com"]
+ */
+export function liveSiteOrigins(input: {
+  readonly baseUrl: string | null | undefined;
+  readonly publicHosts: readonly string[];
+  readonly stagingHost: string | null | undefined;
+}): string[] {
+  const originOf = (url: string): string | null => {
+    try {
+      const u = new URL(url);
+      return u.protocol === "https:" || u.protocol === "http:" ? u.origin : null;
+    } catch {
+      return null;
+    }
+  };
+  const staging = input.stagingHost ? originOf(`https://${input.stagingHost}`) : null;
+  const found = [
+    input.baseUrl ? originOf(input.baseUrl) : null,
+    ...input.publicHosts.map((h) => originOf(`https://${h}`)),
+  ].filter((o): o is string => o !== null && o !== staging);
+  return [...new Set(found)].sort();
+}
+
 async function rows(tx: ProjectionTx, query: SQL): Promise<Row[]> {
   return (await tx.execute(query)) as unknown as Row[];
 }
@@ -304,13 +340,31 @@ async function readSnapshot(
     commentChanges: new Map(),
   };
   if (want.has("settings")) {
-    snap.settings = await rows(
+    const settings = await rows(
       tx,
       sql`SELECT gateway_cookie_secret AS cookie_secret, gateway_max_body_bytes AS max_body_bytes,
                  captcha_provider, captcha_pow_target_prefix
           FROM site_settings WHERE id = 1 AND gateway_cookie_secret IS NOT NULL
             AND gateway_cookie_secret <> ''`,
     );
+    const origins = liveSiteOrigins({
+      baseUrl: (
+        (await rows(tx, sql`SELECT site_base_url FROM site_defaults WHERE id = 1`))[0] as
+          | { site_base_url: string | null }
+          | undefined
+      )?.site_base_url,
+      publicHosts: (
+        (await rows(tx, sql`SELECT hostname FROM domains WHERE kind = 'public'`)) as {
+          hostname: string;
+        }[]
+      ).map((d) => d.hostname),
+      stagingHost: (
+        (await rows(tx, sql`SELECT staging_host FROM staging_access WHERE id = 1`))[0] as
+          | { staging_host: string | null }
+          | undefined
+      )?.staging_host,
+    });
+    snap.settings = settings.map((s) => ({ ...s, live_origins: origins }));
   }
   if (want.has("staging")) {
     snap.staging = await rows(
@@ -403,8 +457,8 @@ async function writeSnapshot(
     await replaceAll(
       tx,
       "published_gateway_settings",
-      "cookie_secret, max_body_bytes, captcha_provider, captcha_pow_target_prefix",
-      "cookie_secret text, max_body_bytes int, captcha_provider text, captcha_pow_target_prefix text",
+      "cookie_secret, max_body_bytes, captcha_provider, captcha_pow_target_prefix, live_origins",
+      "cookie_secret text, max_body_bytes int, captcha_provider text, captcha_pow_target_prefix text, live_origins text[]",
       snap.settings,
     );
     sections.push("settings");

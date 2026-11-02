@@ -23,6 +23,7 @@ import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { handleRequest, invalidateGatewaySettings, setGatewayAdapter } from "./server.js";
+import { registerTestLiveOrigin, TEST_LIVE_ORIGIN } from "./test-support.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -137,6 +138,7 @@ beforeAll(async () => {
     expectedRoles: { admin: null, public: ["public_role"] },
   });
   setGatewayAdapter(gatewayAdapter);
+  await registerTestLiveOrigin(ADMIN_URL);
   await publishProjectionOnce(adapter, { declarations: new Map() });
   invalidateGatewaySettings();
 });
@@ -156,6 +158,7 @@ function postReq(path: string, body: unknown, cookieHeader?: string): Request {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "X-Forwarded-For": "203.0.113.20",
+    Origin: TEST_LIVE_ORIGIN,
   };
   if (cookieHeader) headers.cookie = cookieHeader;
   return new Request(`http://localhost${path}`, {
@@ -227,7 +230,106 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
     const r = await handleRequest(postReq(`/api/plugin/test-p12-nope/save`, {}));
     expect(r.status).toBe(404);
     const body = (await r.json()) as { ok: boolean; error: { kind: string } };
-    expect(body.error.kind).toBe("PluginNotFound");
+    expect(body.error.kind).toBe("NotFound");
+  });
+
+  it("writes no database row for an unknown plugin or operation (#1326)", async () => {
+    await bootstrapAndProvision();
+    const counts = async () => {
+      const sql = new SQL(PUBLIC_URL);
+      try {
+        return await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          const [row] = (await tx`SELECT
+              (SELECT count(*)::int FROM gateway_request_log) AS log,
+              (SELECT count(*)::int FROM gateway_rate_limit_buckets) AS buckets,
+              (SELECT count(*)::int FROM gateway_plugin_op_events) AS events`) as {
+            log: number;
+            buckets: number;
+            events: number;
+          }[];
+          return row;
+        });
+      } finally {
+        await sql.end();
+      }
+    };
+    const before = await counts();
+    for (const path of [
+      "/api/plugin/test-p12-nope/save",
+      `/api/plugin/${SLUG}/invented_${Date.now()}`,
+      `/api/plugin/${SLUG}/admin_only`,
+      `/api/plugin/${"x".repeat(80)}/save`,
+    ]) {
+      const r = await handleRequest(postReq(path, { message: "x" }));
+      expect(r.status).toBe(404);
+    }
+    expect(await counts()).toEqual(before);
+  });
+
+  it("answers every error as { kind, requestId } and logs the details under that id (#1326)", async () => {
+    await bootstrapAndProvision();
+    const r = await handleRequest(postReq(`/api/plugin/${SLUG}/save`, "not an object"));
+    const body = (await r.json()) as { ok: boolean; error: Record<string, unknown> };
+    expect(body.ok).toBe(false);
+    expect(Object.keys(body.error).sort()).toEqual(["kind", "requestId"]);
+    expect(r.headers.get("x-request-id")).toBe(String(body.error.requestId));
+    expect(r.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("answers a staged page's plugin call with the stub: no dispatch, no row, no failed request (#1326)", async () => {
+    await bootstrapAndProvision();
+    const asSystem = async (fn: (tx: SQL) => Promise<unknown>) => {
+      const sql = new SQL(ADMIN_URL);
+      try {
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          await fn(tx);
+        });
+      } finally {
+        await sql.end();
+      }
+    };
+    await asSystem(
+      (tx) => tx`UPDATE staging_access SET staging_host = 'staging.localhost' WHERE id = 1`,
+    );
+    await publishProjectionOnce(adapter, { declarations: new Map() });
+    invalidateGatewaySettings();
+    try {
+      const req = postReq(`/api/plugin/${SLUG}/save`, { message: "from staging" });
+      req.headers.set("Origin", "https://staging.localhost");
+      const r = await handleRequest(req);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual({ ok: false, error: { kind: "StagingPreview" } });
+      // Staging is never a live origin, whatever the domains registry says.
+      const live = await new SQL(PUBLIC_URL).begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return (await tx`SELECT live_origins FROM published_gateway_settings`) as {
+          live_origins: string[];
+        }[];
+      });
+      expect(live[0]?.live_origins).not.toContain("https://staging.localhost");
+    } finally {
+      await asSystem((tx) => tx`UPDATE staging_access SET staging_host = NULL WHERE id = 1`);
+      await publishProjectionOnce(adapter, { declarations: new Map() });
+      invalidateGatewaySettings();
+    }
+  });
+
+  it("refuses a foreign or a missing Origin, and non-JSON, before dispatch (#1326)", async () => {
+    await bootstrapAndProvision();
+    for (const [headers, status] of [
+      [{ Origin: "https://evil.example" }, 403],
+      [{ Origin: "" }, 403],
+      [{ "Content-Type": "text/plain" }, 415],
+    ] as const) {
+      const req = postReq(`/api/plugin/${SLUG}/save`, { message: "x" });
+      for (const [k, v] of Object.entries(headers)) {
+        if (v === "") req.headers.delete(k);
+        else req.headers.set(k, v);
+      }
+      expect((await handleRequest(req)).status).toBe(status);
+    }
   });
 
   it("returns 503 when the plugin is disabled", async () => {
@@ -238,10 +340,15 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
   });
 
   it("returns 400 for malformed JSON", async () => {
+    await bootstrapAndProvision();
     const r = await handleRequest(
       new Request(`http://localhost/api/plugin/${SLUG}/save`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Forwarded-For": "203.0.113.20",
+          Origin: TEST_LIVE_ORIGIN,
+        },
         body: "not json",
       }),
     );

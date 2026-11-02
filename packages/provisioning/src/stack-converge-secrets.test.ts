@@ -32,7 +32,7 @@ import {
 } from "./stack-converge.js";
 
 const PW = "4f2a9c0d1e2b3a4f5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b";
-const HOST = "10.20.0.3";
+const HOST = "db1.p-label.europe-west1.sql-psa.goog";
 
 /** Secret Manager as the fake revisions resolve it. */
 const SECRET_VALUES: Record<string, string> = {
@@ -141,7 +141,7 @@ function expectGatewayOnItsOwnLogins(env: Record<string, string>): void {
   expect(Object.values(env).join("\n")).not.toContain("g".repeat(64));
   expect(Object.values(env).join("\n")).not.toContain("cms_admin");
   expect(credentials(databaseUrlFromEnv(["PUBLIC_DATABASE_URL"], env))).toBe(
-    `public_role:${"p".repeat(64)}@${HOST}:5432/cms_public?sslmode=require`,
+    `public_role:${"p".repeat(64)}@${HOST}:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem`,
   );
 }
 
@@ -157,7 +157,7 @@ const serviceJson = (env: unknown[]) =>
 /** What `gcloud run services describe` showed on a live v0.10.29 gcp install. */
 function v01029Install(scheme: "postgresql" | "postgres") {
   const url = (role: string, db: string) =>
-    `${scheme}://${role}:${PW}@${HOST}:5432/${db}?sslmode=require`;
+    `${scheme}://${role}:${PW}@${HOST}:5432/${db}?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem`;
   const common = {
     CAELO_PROVIDER: "gcp",
     CAELO_ENV: "production",
@@ -297,7 +297,7 @@ describe.each(["postgresql", "postgres"] as const)(
  */
 function v01035Install() {
   const url = (role: string, db: string) =>
-    `postgresql://${role}@${HOST}:5432/${db}?sslmode=require`;
+    `postgresql://${role}@${HOST}:5432/${db}?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem`;
   const ref = (name: string, secret: string) => ({
     name,
     valueFrom: { secretKeyRef: { name: `caelo-production-${secret}`, key: "latest" } },
@@ -396,7 +396,7 @@ function v01050Install() {
   const env = new Map(services.gateway.env);
   env.set("GATEWAY_DATABASE_URL", {
     kind: "value",
-    value: `postgresql://gateway_role@${HOST}:5432/cms_admin?sslmode=require`,
+    value: `postgresql://gateway_role@${HOST}:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem`,
   });
   env.set("GATEWAY_DATABASE_PASSWORD", {
     kind: "secret",

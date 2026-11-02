@@ -20,7 +20,7 @@ adminPoolMax = floor((maxConnections − Σ reserves) / adminMaxInstances)
 | `migrations` | 2 | one connection per database during a migration run |
 | `jobs` | 4 (GCP), 2 (others) | operator-access sync, upgrader and converge jobs, or the operator's lifecycle commands |
 | `generator` | `concurrentBuilds` (2) × 2 pools × `GENERATOR_POOL_MAX` (2) | static-generator subprocesses: a Stage, a Publish live and a plugin-data build can overlap. A build runs in one transaction, so the admin sets the minimum pool on the child (`generatorEnv`, admin-core `deploy/generator-subprocess.ts`) |
-| `gateway` | `gatewayMaxInstances` × `GATEWAY_POOL_MAX` (2) | the gateway's only pool (`public_role` on `cms_public`) |
+| `gateway` | `gatewayMaxInstances` × `GATEWAY_POOL_MAX` (2) | the gateway's only pool (`public_role` on `cms_public`). The database caps `public_role` at `GATEWAY_ROLE_CONNECTION_LIMIT` (30) connections, pool and LISTEN together (#1338, [gateway-hardening.md](./gateway-hardening.md)), so `computePoolBudget` refuses more than 10 gateway instances |
 | `listen` | `adminMaxInstances` × 1 | the change journal's `LISTEN` connection, one per admin instance (#1267, `LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE`). A LISTEN connection stays open for the instance's lifetime and never serves a pool query, so it is budgeted outside the pools |
 | `gateway-listen` | `gatewayMaxInstances` × 1 | the gateway's `LISTEN caelo_gateway_settings` connection on `cms_public` (`LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE`), held outside its pool |
 | `admin-public` | `adminMaxInstances` × `ADMIN_PUBLIC_POOL_MAX` (4) | the admin's `cms_public` pool: plugin-data reads and the gateway projection |

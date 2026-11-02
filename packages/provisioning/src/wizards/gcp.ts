@@ -30,6 +30,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { CLOUD_SQL_CA_BUNDLE, verifyFullQuery } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { checkAdcImpersonation } from "../adc-impersonation.js";
@@ -118,6 +119,7 @@ import type { RunMode } from "../run-mode.js";
 import { selfCommand } from "../self-command.js";
 import {
   ABSENT_DEFAULT_FIREWALL_RULES,
+  cloudSqlPrivateDnsName,
   type RemoteMcpIdentity,
   sameRemoteMcpIdentity,
 } from "../stack-contract.js";
@@ -1905,8 +1907,10 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
     pgPass,
   ]);
 
-  // Resolve the SQL instance's private IP from gcloud (avoids reading
-  // Pulumi outputs from inside the wizard).
+  // Resolve the SQL instance's DNS name from gcloud (avoids reading
+  // Pulumi outputs from inside the wizard). #1338: the job connects with
+  // verify-full, and the shared-CA certificate names the DNS name, not the
+  // private IP.
   const sqlDescr = await gcloud([
     "sql",
     "instances",
@@ -1914,16 +1918,28 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
     "caelo-production-pg-1d65811",
     "--project",
     projectId,
-    "--format=value(ipAddresses[0].ipAddress)",
+    "--format=json(dnsNames)",
   ]);
-  const pgHost = (sqlDescr.stdout || "").trim();
+  let pgHost: string | null = null;
+  try {
+    pgHost = cloudSqlPrivateDnsName(
+      (
+        JSON.parse(sqlDescr.stdout || "{}") as {
+          dnsNames?: { name?: string; connectionType?: string }[];
+        }
+      ).dnsNames,
+    );
+  } catch {
+    pgHost = null;
+  }
   if (!pgHost) {
-    s.stop(yellow("Could not resolve Cloud SQL private IP — skipping drain"));
+    s.stop(yellow("Could not resolve the Cloud SQL instance's DNS name — skipping drain"));
     return;
   }
 
-  const adminPg = `postgres://postgres:${pgPass}@${pgHost}:5432/cms_admin`;
-  const publicPg = `postgres://postgres:${pgPass}@${pgHost}:5432/cms_public`;
+  const tls = verifyFullQuery(CLOUD_SQL_CA_BUNDLE);
+  const adminPg = `postgres://postgres:${pgPass}@${pgHost}:5432/cms_admin?${tls}`;
+  const publicPg = `postgres://postgres:${pgPass}@${pgHost}:5432/cms_public?${tls}`;
 
   // The cleanup script — uses bun's globalThis.Bun.SQL (already proven
   // pattern in hooks.server.ts + the migration runner). DO block makes
