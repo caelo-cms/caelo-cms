@@ -60,6 +60,7 @@ import {
 } from "./runtime-secrets.js";
 import { finishSealKeyRotation, startSealKeyRotation } from "./seal-key-rotation.js";
 import { selfCommand } from "./self-command.js";
+import { CLOUD_RUN_SLUGS, type CloudRunSlug, cloudRunServicePrefix } from "./stack-contract.js";
 import {
   backendShellEnv,
   localStateNotice,
@@ -720,6 +721,7 @@ async function gcpHealthProbe(
         domain: install.domain,
         adminServiceUrl: urls.admin as string,
         gatewayServiceUrl: urls.gateway as string,
+        mcpAuthProxyServiceUrl: urls["mcp-auth-proxy"] as string,
       },
       { run, http, sleep: realSleep, accessJustChanged: context.accessJustChanged },
     ),
@@ -880,23 +882,29 @@ export async function rotateSecretCommand(
   }
 
   if (name === SEAL_KEY_SECRET) {
-    const gateway = await resolveGcpResourceName(
+    // #1328 — the broker, and with it the seal key, lives in the MCP-Auth-Proxy.
+    const proxyPrefix = cloudRunServicePrefix(meta.provider, GCP_STACK_ENV, "mcp-auth-proxy");
+    const proxy = await resolveGcpResourceName(
       gcloud,
       "run-service",
-      "caelo-production-gateway",
+      proxyPrefix,
       meta.projectId,
       region,
     );
-    if (gateway.status !== "found") {
+    if (proxy.status !== "found") {
       log.error(
         red(
-          `${lookupFailure(gateway, "caelo-production-gateway* Cloud Run service", "operator")} — nothing rotated`,
+          `${lookupFailure(proxy, `${proxyPrefix}* Cloud Run service`, "operator")} — nothing rotated`,
         ),
       );
       return;
     }
-    const gatewayService = gateway.name;
-    const target = { projectId: meta.projectId, region, env: GCP_STACK_ENV, gatewayService };
+    const target = {
+      projectId: meta.projectId,
+      region,
+      env: GCP_STACK_ENV,
+      proxyService: proxy.name,
+    };
     const report = opts.finish
       ? await finishSealKeyRotation(target, {}, { now: opts.now === true })
       : await startSealKeyRotation(target);
@@ -910,19 +918,20 @@ export async function rotateSecretCommand(
 
   const s = spinner();
   s.start(`Rotating ${secret}...`);
-  const services: Partial<Record<"admin" | "gateway", string>> = {};
-  for (const slug of ["admin", "gateway"] as const) {
+  const services: Partial<Record<CloudRunSlug, string>> = {};
+  for (const slug of CLOUD_RUN_SLUGS) {
+    const prefix = cloudRunServicePrefix(meta.provider, GCP_STACK_ENV, slug);
     const service = await resolveGcpResourceName(
       gcloud,
       "run-service",
-      `caelo-production-${slug}`,
+      prefix,
       meta.projectId,
       region,
     );
     if (service.status !== "found") {
       s.stop(
         red(
-          `${lookupFailure(service, `caelo-production-${slug}* Cloud Run service`, "operator")} — nothing rotated`,
+          `${lookupFailure(service, `${prefix}* Cloud Run service`, "operator")} — nothing rotated`,
         ),
       );
       return;
@@ -952,7 +961,7 @@ export async function rotateSecretCommand(
       projectId: meta.projectId,
       region,
       env: GCP_STACK_ENV,
-      services: services as Record<"admin" | "gateway", string>,
+      services: services as Record<CloudRunSlug, string>,
       ...(sqlInstance ? { sqlInstance } : {}),
     },
     secret,

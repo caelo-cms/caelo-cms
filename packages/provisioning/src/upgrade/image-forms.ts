@@ -30,7 +30,7 @@
 import { z } from "zod";
 import type { ImageDigests } from "../install-state.js";
 import type { ReleaseManifest } from "../release-manifest.js";
-import type { RollSlug } from "./app-roll.js";
+import { ROLL_ORDER, type RollSlug } from "./app-roll.js";
 import { fetchRegistryManifest, IMAGE_DIGEST, RELEASE_REGISTRY } from "./release-images.js";
 
 /** The digests one release image is known by. */
@@ -178,12 +178,20 @@ export function createReleaseImageForms(fetchImpl: typeof fetch = fetch): Releas
   return {
     ofIndex,
     of: async (m, slug) => {
+      const index = m.digests[slug];
+      if (!index) {
+        // #1328 — a release from before the MCP-Auth-Proxy signs no image of it.
+        return {
+          ok: false,
+          transient: false,
+          message: `release ${m.version} ships no ${slug} image`,
+        };
+      }
       const signed = m.platformDigests?.[slug];
       if (signed) {
-        const index = m.digests[slug];
         return { ok: true, digests: [index, ...(signed === index ? [] : [signed])], amd64: signed };
       }
-      return ofIndex(slug, m.digests[slug]);
+      return ofIndex(slug, index);
     },
   };
 }
@@ -205,22 +213,29 @@ export async function platformDigestsOf(
   | { readonly ok: false; readonly message: string }
 > {
   const out: Partial<Record<RollSlug, string>> = {};
-  for (const slug of ["admin", "gateway"] as const) {
+  for (const slug of ROLL_ORDER) {
+    const index = digests[slug];
+    // #1328 — digests recorded before the MCP-Auth-Proxy existed carry none.
+    if (!index) continue;
     const found =
-      manifest && manifest.digests[slug] === digests[slug]
+      manifest && manifest.digests[slug] === index
         ? await forms.of(manifest, slug)
-        : await forms.ofIndex(slug, digests[slug]);
+        : await forms.ofIndex(slug, index);
     if (!found.ok) return { ok: false, message: found.message };
     if (!found.amd64) {
       return {
         ok: false,
-        message: `the ${slug} image index ${digests[slug]} lists no single linux/amd64 manifest`,
+        message: `the ${slug} image index ${index} lists no single linux/amd64 manifest`,
       };
     }
     out[slug] = found.amd64;
   }
   const { admin, gateway } = out;
+  const proxy = out["mcp-auth-proxy"];
   return admin && gateway
-    ? { ok: true, platformDigests: { admin, gateway } }
+    ? {
+        ok: true,
+        platformDigests: { admin, gateway, ...(proxy ? { "mcp-auth-proxy": proxy } : {}) },
+      }
     : { ok: false, message: "the platform digests could not be read" };
 }

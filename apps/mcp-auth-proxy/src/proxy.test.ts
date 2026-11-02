@@ -140,7 +140,7 @@ async function send(
 ) {
   seen = [];
   const res = await router(proxyLimits)(new Request(`${PUBLIC}${path}`, init), {
-    clientAddress: "198.51.100.7",
+    clientAddress: () => "198.51.100.7",
     setIdleTimeout: idle.setIdleTimeout,
   });
   if (!res) throw new Error("router declined");
@@ -507,7 +507,7 @@ describe("MCP proxy", () => {
         method: "POST",
         headers: { authorization: `Bearer ${accessToken("x")}` },
       }),
-      { clientAddress: "198.51.100.7", setIdleTimeout: () => {} },
+      { clientAddress: () => "198.51.100.7", setIdleTimeout: () => {} },
     );
     if (!res) throw new Error("router declined");
     expect(res.status).toBe(502);

@@ -7,7 +7,7 @@
  * - **CIMD** (Client ID Metadata Document): the `client_id` is an https URL
  *   on a host in {@link CIMD_ALLOWED_HOSTS}; the broker fetches it and
  *   takes the `redirect_uris` from it. Only those hosts are ever fetched,
- *   so a client id cannot make the gateway request an internal or
+ *   so a client id cannot make the proxy request an internal or
  *   attacker-chosen URL (SSRF). No redirects followed, ≤5 s, ≤64 KB.
  * - **DCR** (RFC 7591 `/register`): the returned `client_id` is a sealed
  *   blob of the registration itself, so "looking up" the client is opening
@@ -25,8 +25,8 @@
  * vendors' documents change on release cadence, not per request.
  */
 
+import { readBodyWithCap } from "@caelo-cms/shared";
 import { z } from "zod";
-import { readBodyWithCap } from "../middleware/body-cap.js";
 import { isWellFormedText, mcpClientKey } from "./access-token.js";
 import type { McpContext } from "./context.js";
 import { json, oauthError } from "./http.js";

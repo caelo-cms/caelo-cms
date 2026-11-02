@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   CLOUD_RUN_IGNORE_CHANGES,
+  type CloudRunSlug,
   type GcpProvider,
   type IamInvariant,
   runtimeSecretBindings,
@@ -61,9 +62,17 @@ const MEMBER_EXPR: Record<IamInvariant["member"], string> = {
   "run-sa": "runSa.email",
   // The secret loop resolves the SA per service through `serviceSa`.
   "gateway-sa": "gatewaySa.email",
+  "mcp-auth-proxy-sa": "mcpAuthProxySa.email",
   "static-publisher-sa": "staticPublisherSa.email",
   "iap-service-agent": "iapServiceIdentity.email",
   allUsers: 'member: "allUsers"',
+};
+
+/** The variable each stack holds a Cloud Run service in. */
+const SERVICE_VAR: Record<CloudRunSlug, string> = {
+  admin: "adminSvc",
+  gateway: "gatewaySvc",
+  "mcp-auth-proxy": "mcpAuthProxySvc",
 };
 
 function targetExpr(inv: IamInvariant): { type: RegExp; ref?: string } {
@@ -77,7 +86,7 @@ function targetExpr(inv: IamInvariant): { type: RegExp; ref?: string } {
     case "run-service":
       return {
         type: /^cloudrunv2\.ServiceIamMember$/,
-        ref: `name: ${inv.target.service}Svc.name`,
+        ref: `name: ${SERVICE_VAR[inv.target.service]}.name`,
       };
   }
 }
@@ -125,6 +134,19 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
     expect(unhandled).toEqual([]);
   });
 
+  it("#1328 — the MCP-Auth-Proxy's SA reads its two secrets and holds no other role", () => {
+    expect(src).toContain("accountId: mcpAuthProxyServiceAccountId(env)");
+    expect(src).toMatch(/"mcp-auth-proxy": mcpAuthProxySa,/);
+    // No binding but the secret loop names it: no project role, no bucket,
+    // no service — the loop gives it exactly serviceSecrets("mcp-auth-proxy").
+    expect(declared.filter((d) => d.body.includes("mcpAuthProxySa"))).toEqual([]);
+    expect(
+      runtimeSecretBindings()
+        .filter((b) => b.service === "mcp-auth-proxy")
+        .map((b) => b.secret),
+    ).toEqual(["mcp-oauth-seal-key", "operator-oauth-client"]);
+  });
+
   it("every invariant and exemption names a binding the stack still declares", () => {
     const names = new Set(declared.flatMap(expand));
     for (const inv of invariants) expect(names).toContain(inv.stackResource);
@@ -139,9 +161,20 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
     expect(src).toMatch(
       /serviceName: "admin",[\s\S]*?contractEnv: \[\s*\.\.\.adminEnvContract\([\s\S]*?\.\.\.remoteMcpEnv\.admin,\s*(\/\/[^\n]*\n\s*)?\.\.\.poolBudget\.env\.admin,?\s*\]/,
     );
+    // #1328 — the gateway carries no remote-MCP env any more.
     expect(src).toMatch(
-      /serviceName: "gateway",[\s\S]*?contractEnv: \[\s*\.\.\.gatewayEnvContract\([\s\S]*?\.\.\.remoteMcpEnv\.gateway,\s*\.\.\.poolBudget\.env\.gateway,?\s*\]/,
+      /serviceName: "gateway",[\s\S]*?contractEnv: \[\s*\.\.\.gatewayEnvContract\(envContractInputs\),\s*\.\.\.poolBudget\.env\.gateway,?\s*\]/,
     );
+    if (provider === "gcp-firebase") {
+      // The proxy: its contract, its identity env, and (until #1331) the
+      // data gateway it forwards to — a stack output no contract can name.
+      expect(src).toMatch(
+        /serviceName: "mcp-auth-proxy",[\s\S]*?contractEnv: \[\s*\.\.\.mcpAuthProxyEnvContract\(\{ provider: "gcp-firebase", env \}\),\s*\.\.\.remoteMcpEnv\["mcp-auth-proxy"\],[\s\S]*?\{ name: INTERIM_FORWARD_ORIGIN_ENV, value: gatewaySvc\.uri \},\s*\]/,
+      );
+    } else {
+      // gcp: the proxy is CLI-owned (mcp-auth-proxy-setup.ts), not a stack service.
+      expect(src).not.toContain('serviceName: "mcp-auth-proxy"');
+    }
     expect(src).toContain("envs: [...args.contractEnv],");
   });
 
@@ -151,16 +184,18 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
     expect(src).toContain(
       "const remoteMcpEnv = remoteMcpIdentityStackEnv(cfg.get(REMOTE_MCP_IDENTITY_CONFIG));",
     );
-    expect(src.match(/remoteMcpEnv\.(admin|gateway)/g)?.sort()).toEqual([
-      "remoteMcpEnv.admin",
-      "remoteMcpEnv.gateway",
-    ]);
+    expect(src.match(/remoteMcpEnv(\.\w+|\["[\w-]+"\])/g)?.sort()).toEqual(
+      provider === "gcp-firebase"
+        ? ["remoteMcpEnv.admin", 'remoteMcpEnv["mcp-auth-proxy"]']
+        : ["remoteMcpEnv.admin"],
+    );
   });
 
   it("#1082 — leaves client / clientVersion (who deployed last) to gcloud on both services", () => {
     expect(src.match(/new gcp\.cloudrunv2\.Service\(/g)).toHaveLength(1);
     expect(src).toMatch(
-      /new gcp\.cloudrunv2\.Service\([\s\S]*?\.\.\.opts,\s*\/\/[^\n]*\n\s*ignoreChanges: \[\.\.\.CLOUD_RUN_IGNORE_CHANGES\],/,
+      // (gcp-firebase: the proxy's aliases ride the same options, #1328.)
+      /new gcp\.cloudrunv2\.Service\([\s\S]*?\.\.\.opts,\s*(\.\.\.\(args\.aliases[^\n]*\n\s*)?\/\/[^\n]*\n\s*ignoreChanges: \[\.\.\.CLOUD_RUN_IGNORE_CHANGES\],/,
     );
     expect(CLOUD_RUN_IGNORE_CHANGES).toEqual(["client", "clientVersion"]);
   });
@@ -193,10 +228,17 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
     expect(src.match(/secretFileVolumesTemplate\(args\.serviceName, env\)/g)).toHaveLength(2);
   });
 
-  it("#806 — gives the gateway the contract's request timeout upgrade applies", () => {
-    expect(src).toMatch(
-      /serviceName: "gateway",[\s\S]*?timeout: `\$\{GATEWAY_TIMEOUT_SECONDS\}s`,[\s\S]*?contractEnv: \[\s*\.\.\.gatewayEnvContract\(/,
-    );
+  it("#806 — gives the MCP-Auth-Proxy the contract's request timeout upgrade applies", () => {
+    // #1328 — the long remote-MCP streams are the proxy's; the gateway keeps
+    // Cloud Run's default. On gcp the proxy is deployed by the CLI with the
+    // same constant (mcp-auth-proxy-setup.ts gcpProxyDeployArgs).
+    expect(src).toMatch(/serviceName: "gateway",[\s\S]*?timeout: "300s",/);
+    expect(src).not.toContain("GATEWAY_TIMEOUT_SECONDS");
+    if (provider === "gcp-firebase") {
+      expect(src).toMatch(
+        /serviceName: "mcp-auth-proxy",[\s\S]*?timeout: `\$\{MCP_AUTH_PROXY_TIMEOUT_SECONDS\}s`,/,
+      );
+    }
   });
 
   it("sets no env var outside the contract (C1: no secret value in a plain var)", () => {
@@ -235,11 +277,16 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
 
   it("pins images by the config keys upgrade writes back", () => {
     const keys = Object.keys(
-      imageDigestConfig(provider, { admin: "sha256:a", gateway: "sha256:b" }),
+      imageDigestConfig(provider, {
+        admin: "sha256:a",
+        gateway: "sha256:b",
+        "mcp-auth-proxy": "sha256:c",
+      }),
     );
     expect(keys).toEqual([
       `caelo-${provider}:image-digest-admin`,
       `caelo-${provider}:image-digest-gateway`,
+      `caelo-${provider}:image-digest-mcp-auth-proxy`,
     ]);
     // The stack reads `<ns>:image-digest-<service>` through pulumi.Config.
     expect(src).toMatch(/cfg\.get\(`image-digest-\$\{service\}`\)/);

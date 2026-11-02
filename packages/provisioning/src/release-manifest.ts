@@ -35,12 +35,17 @@ import {
   type ReleaseManifest,
 } from "@caelo-cms/shared";
 import { infraStepsText } from "./infra-contract.js";
-import { RELEASE_OIDC_ISSUER, RELEASE_WORKFLOWS_URL } from "./upgrade/release-images.js";
+import {
+  RELEASE_OIDC_ISSUER,
+  RELEASE_WORKFLOWS_URL,
+  releaseImageRef,
+} from "./upgrade/release-images.js";
 
 // The manifest's shape and location live in @caelo-cms/shared (the admin's
 // auto-update scheduler reads them too); re-exported so this module stays
 // the CLI's one import for release manifests.
 export {
+  OPTIONAL_RELEASE_IMAGES,
   RELEASE_CHANNELS,
   RELEASE_IMAGES,
   RELEASE_MANIFEST_ARTIFACT_TYPE,
@@ -223,9 +228,56 @@ export interface DigestMismatch {
   readonly image: ReleaseImage;
   /** Which digest differs: the image index, or its linux/amd64 manifest (#1025). */
   readonly form: "index" | "platform";
-  /** The manifest's digest; null when the manifest has no platform digests. */
+  /**
+   * The manifest's digest; null when the manifest names none for this form
+   * (no platform digests, or an image the release predates —
+   * OPTIONAL_RELEASE_IMAGES).
+   */
   readonly expected: string | null;
   readonly actual: string | null;
+}
+
+/** One service's digest-pinned image in the public mirror. */
+export interface ManifestServiceImage {
+  readonly digest: string;
+  readonly imageRef: string;
+}
+
+/**
+ * The images the app-roll moves the Cloud Run services onto, from the signed
+ * manifest's digests — never a registry tag lookup.
+ *
+ * Fails for a manifest without an MCP-Auth-Proxy digest: such a release
+ * predates #1328, and this code rolls three services, so installing it
+ * would leave the proxy on an image of another release.
+ */
+export function manifestServiceImages(m: Pick<ReleaseManifest, "version" | "digests">):
+  | {
+      readonly ok: true;
+      readonly images: Readonly<
+        Record<"admin" | "gateway" | "mcp-auth-proxy", ManifestServiceImage>
+      >;
+    }
+  | { readonly ok: false; readonly error: string } {
+  const proxy = m.digests["mcp-auth-proxy"];
+  if (!proxy) {
+    return {
+      ok: false,
+      error: `the signed manifest of ${m.version} names no mcp-auth-proxy image: that release predates the MCP-Auth-Proxy (#1328) and cannot be installed by this release's upgrader. Install it from a terminal with the version's own CLI (bunx @caelo-cms/provisioning@${m.version} upgrade).`,
+    };
+  }
+  const image = (slug: string, digest: string) => ({
+    digest,
+    imageRef: releaseImageRef(slug, digest),
+  });
+  return {
+    ok: true,
+    images: {
+      admin: image("admin", m.digests.admin),
+      gateway: image("gateway", m.digests.gateway),
+      "mcp-auth-proxy": image("mcp-auth-proxy", proxy),
+    },
+  };
 }
 
 /**
@@ -246,9 +298,13 @@ export function compareImageDigests(
   const out: DigestMismatch[] = [];
   for (const image of RELEASE_IMAGES) {
     if (image in resolved) {
+      // An image the signed manifest does not name (a release from before
+      // the image existed) can never match: a caller that resolved it is
+      // asking about an image the signature does not cover.
       const actual = resolved[image] ?? null;
-      if (actual !== manifest.digests[image]) {
-        out.push({ image, form: "index", expected: manifest.digests[image], actual });
+      const expected = manifest.digests[image] ?? null;
+      if (actual === null || actual !== expected) {
+        out.push({ image, form: "index", expected, actual });
       }
     }
     if (image in resolvedPlatform) {

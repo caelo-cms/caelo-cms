@@ -136,6 +136,7 @@ import {
 import { acquireStateLock, GcsStateStore } from "../state-store.js";
 import { createReleaseImageForms, platformDigestsOf } from "../upgrade/image-forms.js";
 import {
+  releaseImageRef,
   releaseVersionForDigest,
   resolveOpsImageRef,
   verifyCosignAll,
@@ -359,7 +360,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   const deployed = isStepDone(installId, `pulumi-up-${projectId}`);
   if (deployed) {
     // The kept release must be able to use the env the stack deploys.
-    const runtimeEnv = await checkDeployedRuntimeEnv({ projectId, region });
+    const runtimeEnv = await checkDeployedRuntimeEnv({ provider, projectId, region });
     if (!runtimeEnv.ok) {
       cancel(runtimeEnv.error);
       process.exit(1);
@@ -368,7 +369,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   const choice = await chooseImageDigests({
     recorded: recordedImageDigests(meta),
     deployed,
-    readLive: () => readDeployedImageDigests({ projectId, region }),
+    readLive: () => readDeployedImageDigests({ provider, projectId, region }),
     resolveLatest: resolveImageDigests,
   });
   if (!choice.ok) {
@@ -533,7 +534,14 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
 
   // === 11.6. Remote MCP (#806): LB rules (gcp) + a check of the identity env ===
   // The env itself came with `pulumi up` (step 10.05, #1082).
-  const remoteMcpReady = await stepRemoteMcp(projectId, provider, domain, identity);
+  const remoteMcpReady = await stepRemoteMcp(
+    projectId,
+    region,
+    provider,
+    domain,
+    identity,
+    imageDigests,
+  );
 
   // A fresh install ran every converge step above, so it is at this CLI's
   // infrastructure contract — recorded only when the upgrader and the
@@ -605,8 +613,12 @@ async function resolveImageDigests(): Promise<ImageDigests> {
   const project = "caelo-website";
   const registryRegion = "europe-west1";
   const repo = "caelo-cms-images";
-  const out = { admin: "", gateway: "" };
-  for (const service of ["admin", "gateway"] as const) {
+  const out: Record<"admin" | "gateway" | "mcp-auth-proxy", string> = {
+    admin: "",
+    gateway: "",
+    "mcp-auth-proxy": "",
+  };
+  for (const service of ["admin", "gateway", "mcp-auth-proxy"] as const) {
     const s = spinner();
     s.start(`Resolving ${service}:latest → digest...`);
     // gcloud's --filter='tag=latest' is in a transitional state (warns +
@@ -1311,9 +1323,11 @@ async function stepResolveRemoteMcpIdentity(
  */
 async function stepRemoteMcp(
   projectId: string,
+  region: string,
   provider: "gcp" | "gcp-firebase",
   domain: string,
   identity: ResolvedRemoteMcpIdentity | null,
+  imageDigests: ImageDigests,
 ): Promise<boolean> {
   const s = spinner();
   s.start(
@@ -1327,11 +1341,22 @@ async function stepRemoteMcp(
     return false;
   };
   if (!identity) return failed("its URLs and IAP audience could not be read (see above)");
-  const edge = await ensureRemoteMcpEdge({ provider, projectId, env: GCP_STACK_ENV, domain });
+  const proxyDigest = imageDigests["mcp-auth-proxy"];
+  if (!proxyDigest) return failed("the release records no MCP-Auth-Proxy image");
+  const edge = await ensureRemoteMcpEdge({
+    provider,
+    projectId,
+    region,
+    env: GCP_STACK_ENV,
+    domain,
+    mcpAuthProxyImageRef: releaseImageRef("mcp-auth-proxy", proxyDigest),
+  });
   if (!edge.ok) return failed(edge.error);
   const check = await checkRemoteMcpIdentityEnv(identity.target, identity.identity);
   if (!check.ok) return failed(check.error);
-  const missing = [...check.drift.admin, ...check.drift.gateway].map((c) => c.name);
+  const missing = Object.values(check.drift)
+    .flat()
+    .map((c) => c.name);
   if (missing.length > 0) {
     return failed(`pulumi up left ${[...new Set(missing)].join(", ")} out of the services' env`);
   }

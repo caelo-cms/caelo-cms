@@ -106,6 +106,14 @@
         "@caelo-cms/admin-core": "workspace:*",
       },
     },
+    "apps/mcp-auth-proxy": {
+      "name": "@caelo-cms/mcp-auth-proxy",
+      "version": "0.0.0",
+      "dependencies": {
+        "@caelo-cms/shared": "workspace:*",
+        "zod": "4.6.6",
+      },
+    },
     "apps/static-generator": {
       "name": "@caelo-cms/static-generator",
       "version": "0.0.0",
@@ -484,6 +492,8 @@
     "@caelo-cms/bug-intake": ["@caelo-cms/bug-intake@workspace:apps/bug-intake"],
 
     "@caelo-cms/font-service": ["@caelo-cms/font-service@workspace:packages/font-service"],
+
+    "@caelo-cms/mcp-auth-proxy": ["@caelo-cms/mcp-auth-proxy@workspace:apps/mcp-auth-proxy"],
 
     "@caelo-cms/mcp-server": ["@caelo-cms/mcp-server@workspace:packages/mcp-server"],
 
@@ -2234,6 +2244,8 @@
     "@axe-core/playwright/playwright-core": ["playwright-core@1.64.1", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ=="],
 
     "@caelo-cms/api-gateway/zod": ["zod@4.6.6", "", {}, "sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA=="],
+
+    "@caelo-cms/mcp-auth-proxy/zod": ["zod@4.6.6", "", {}, "sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA=="],
 
     "@caelo-cms/provisioning/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

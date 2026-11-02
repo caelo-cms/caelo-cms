@@ -31,7 +31,8 @@
 
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { ensureGcloudComponent } from "./gcloud-components.js";
-import { STAGING_HOST_ENV } from "./stack-contract.js";
+import { GCP_STACK_ENV } from "./gcp-names.js";
+import { cloudRunServicePrefix, STAGING_HOST_ENV } from "./stack-contract.js";
 import { liveContainerEnv } from "./stack-converge.js";
 
 type Run = (args: string[]) => Promise<GcloudResult>;
@@ -76,13 +77,17 @@ function logOf(opts: DomainOpts): (message: string) => void {
   return opts.log ?? ((message: string) => console.log(message));
 }
 
-/** The one deployed Cloud Run service of `slug` (Pulumi-suffixed name); also used by staging-admin.ts. */
+/**
+ * The one deployed Cloud Run service playing `slug` on a gcp-firebase
+ * install (stack-contract.ts cloudRunServicePrefix: since #1328 the visitor
+ * gateway is `caelo-production-data-gateway`); also used by staging-admin.ts.
+ */
 export async function findService(
   run: Run,
   scope: string[],
   slug: "admin" | "gateway",
 ): Promise<{ ok: true; service: string } | { ok: false; error: string }> {
-  const prefix = `caelo-production-${slug}`;
+  const prefix = cloudRunServicePrefix("gcp-firebase", GCP_STACK_ENV, slug);
   const services = await run([
     "run",
     "services",
@@ -128,6 +133,11 @@ export async function enableAdminDomain(opts: DomainOpts): Promise<AdminDomainRe
  * ingress is internal-only, so the gateway's ingress is opened first (the
  * stack declares the same since #650; installs from before keep the old
  * value until this runs). Idempotent like the admin mapping.
+ *
+ * #1328 — a new mapping goes to the data gateway, which runs the gate. A
+ * mapping made before stays on the service that was the gateway (now the
+ * MCP-Auth-Proxy, which forwards it there) until the staging cutover moves
+ * it (#1330, #1331); an existing mapping is only reported here.
  */
 export async function enableStagingDomain(
   opts: DomainOpts & { stagingHost: string },

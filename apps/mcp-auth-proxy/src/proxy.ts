@@ -247,7 +247,7 @@ export async function handleMcpProxy(
     if (overCap) return tooLarge(limits.maxBodyBytes);
     if (req.signal.aborted) return new Response(null, { status: 499 });
     if (firstResponse.signal.aborted) {
-      console.error("[api-gateway] mcp proxy: admin did not answer in time");
+      console.error("[mcp-auth-proxy] mcp proxy: admin did not answer in time");
       return json(
         {
           error: "admin_timeout",
@@ -257,7 +257,7 @@ export async function handleMcpProxy(
       );
     }
     console.error(
-      `[api-gateway] mcp proxy: admin unreachable (${e instanceof Error ? e.name : "fetch failed"})`,
+      `[mcp-auth-proxy] mcp proxy: admin unreachable (${e instanceof Error ? e.name : "fetch failed"})`,
     );
     return json(
       {

@@ -5,7 +5,8 @@
  * Pulumi) creates and maintains, through gcloud:
  *
  *   - {@link ensureGatewayServiceAccount}: the gateway's own run SA, so it
- *     can be granted only the secrets the gateway reads.
+ *     can be granted only the secrets the gateway reads; the same for the
+ *     MCP-Auth-Proxy ({@link ensureMcpAuthProxyServiceAccount}, #1328).
  *   - {@link ensureGeneratedSecrets}: the secrets in
  *     `CLI_GENERATED_SECRETS` (stack-contract.ts). The wizard runs it before
  *     `pulumi up`, upgrade on every roll, so installs that predate a secret
@@ -23,9 +24,16 @@
 import { randomBytes } from "node:crypto";
 import { gcloud as defaultGcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
-import { gatewayServiceAccountEmail, gatewayServiceAccountId, gcpSecretId } from "./gcp-names.js";
+import {
+  gatewayServiceAccountEmail,
+  gatewayServiceAccountId,
+  gcpSecretId,
+  mcpAuthProxyServiceAccountEmail,
+  mcpAuthProxyServiceAccountId,
+} from "./gcp-names.js";
 import {
   CLI_GENERATED_SECRETS,
+  CLOUD_RUN_SLUGS,
   type CloudRunSlug,
   DATABASE_ROLE_SECRET,
   type DatabaseRole,
@@ -84,14 +92,47 @@ const ALREADY_EXISTS = /ALREADY_EXISTS|already exists/i;
 // ===========================================================================
 
 /** Create the gateway's run SA unless it exists. */
-export async function ensureGatewayServiceAccount(
+export function ensureGatewayServiceAccount(
   install: { readonly projectId: string; readonly env: string },
   deps: RuntimeDeps = {},
 ): Promise<EnsureOutcome> {
+  return ensureServiceAccount(
+    install.projectId,
+    gatewayServiceAccountId(install.env),
+    gatewayServiceAccountEmail(install.projectId, install.env),
+    `Caelo ${install.env} gateway`,
+    deps,
+  );
+}
+
+/**
+ * #1328 — create the MCP-Auth-Proxy's run SA unless it exists. It gets no
+ * role here or anywhere: only `secretAccessor` on its two secrets
+ * (stack-contract.ts runtimeSecretBindings).
+ */
+export function ensureMcpAuthProxyServiceAccount(
+  install: { readonly projectId: string; readonly env: string },
+  deps: RuntimeDeps = {},
+): Promise<EnsureOutcome> {
+  return ensureServiceAccount(
+    install.projectId,
+    mcpAuthProxyServiceAccountId(install.env),
+    mcpAuthProxyServiceAccountEmail(install.projectId, install.env),
+    `Caelo ${install.env} MCP-Auth-Proxy`,
+    deps,
+  );
+}
+
+async function ensureServiceAccount(
+  projectId: string,
+  accountId: string,
+  email: string,
+  displayName: string,
+  deps: RuntimeDeps,
+): Promise<EnsureOutcome> {
   const run = deps.run ?? defaultGcloud;
-  const email = gatewayServiceAccountEmail(install.projectId, install.env);
   const id = `service account ${email}`;
-  const project = `--project=${install.projectId}`;
+  const project = `--project=${projectId}`;
   const describe = await run([
     "iam",
     "service-accounts",
@@ -108,9 +149,9 @@ export async function ensureGatewayServiceAccount(
     "iam",
     "service-accounts",
     "create",
-    gatewayServiceAccountId(install.env),
+    accountId,
     project,
-    `--display-name=Caelo ${install.env} gateway`,
+    `--display-name=${displayName}`,
     "--quiet",
   ]);
   if (create.ok || ALREADY_EXISTS.test(create.stderr)) return { id, status: "applied" };
@@ -470,7 +511,7 @@ async function checkRotationReaders(
   const isSecret = (live: { kind: string; secret?: string } | undefined) =>
     live?.kind === "secret" &&
     (live.secret === secretId || (live.secret?.endsWith(`/secrets/${secretId}`) ?? false));
-  for (const service of ["admin", "gateway"] as const) {
+  for (const service of CLOUD_RUN_SLUGS) {
     const vars = Object.entries(SERVICE_SECRET_ENV[service])
       .filter(([, s]) => s === secret)
       .map(([name]) => name);
@@ -696,7 +737,7 @@ export async function rotateRuntimeSecret(
   steps.push(`added a new version to ${secretId}`);
 
   const failures: string[] = [];
-  for (const service of ["admin", "gateway"] as const) {
+  for (const service of CLOUD_RUN_SLUGS) {
     if (!serviceSecrets(service).includes(secret)) continue;
     const name = target.services[service];
     const [update, flip] = rollArgs(name, target.region, target.projectId) as [string[], string[]];

@@ -73,6 +73,11 @@ function setupGrants(): Map<string, Set<string>> {
       `projects/${p}/serviceAccounts/caelo-production-gateway-sa@${p}.iam.gserviceaccount.com`,
       of("roles/iam.serviceAccountUser"),
     ],
+    // #1328 — the MCP-Auth-Proxy's revisions run as its own account.
+    [
+      `projects/${p}/serviceAccounts/caelo-production-mcp-proxy-sa@${p}.iam.gserviceaccount.com`,
+      of("roles/iam.serviceAccountUser"),
+    ],
     [
       `projects/${p}/serviceAccounts/caelo-production-upgrader@${p}.iam.gserviceaccount.com`,
       of("roles/iam.serviceAccountUser"),
@@ -152,6 +157,20 @@ describe("upgraderAccessChecks", () => {
       ],
     ]);
     expect(preflightMissingReason(r.missing, UPGRADER_PREFLIGHT_VOICE)).toContain("capture job");
+  });
+
+  it("#1328: the MCP-Auth-Proxy's account is checked, since every app-roll rolls the proxy", async () => {
+    const proxySa =
+      "projects/acme/serviceAccounts/caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com";
+    const grants = setupGrants();
+    grants.delete(proxySa);
+    const r = await runIamPreflight(upgraderAccessChecks(TARGET), tester(grants));
+    expect(r.kind).toBe("missing");
+    if (r.kind !== "missing") return;
+    expect(r.missing.map((m) => [resourceName(m.check.resource), m.missing])).toEqual([
+      [proxySa, ["iam.serviceAccounts.actAs"]],
+    ]);
+    expect(preflightMissingReason(r.missing, UPGRADER_PREFLIGHT_VOICE)).toContain("MCP-Auth-Proxy");
   });
 
   it("never needs a permission only a forbidden role would give (no compute, no IAM admin)", () => {

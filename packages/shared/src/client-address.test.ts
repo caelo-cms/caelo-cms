@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The visitor's address per deployment topology (client-ip.ts). Each case
+ * The visitor's address per deployment topology (client-address.ts). Each case
  * builds X-Forwarded-For the way the provider's proxies do: whatever the
  * client sent, then the entries the infrastructure appends.
  */
@@ -15,7 +15,7 @@ import {
   rateLimitAddress,
   TRUSTED_PROXY_HOPS_ENV,
   trustedProxyHopsFromEnv,
-} from "./client-ip.js";
+} from "./client-address.js";
 
 const VISITOR = "198.51.100.7";
 const FORGED = "6.6.6.6";

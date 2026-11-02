@@ -341,6 +341,45 @@ describe("adoptionCandidates — only declared creates of an adoptable kind", ()
     );
     expect(c?.label).toBe("service account");
   });
+
+  it("#1328 — names an explicitly named Cloud Run service (the data gateway) and only such", () => {
+    const SERVICE = "gcp:cloudrunv2/service:Service";
+    const [c, ...rest] = adoptionCandidates(
+      [
+        step({
+          type: SERVICE,
+          name: "caelo-production-data-gateway",
+          inputs: { name: "caelo-production-data-gateway", location: "europe-west1" },
+        }),
+        // Auto-named services (the admin, the proxy) have no name to look up.
+        step({
+          type: SERVICE,
+          name: "caelo-production-admin",
+          inputs: { location: "europe-west1" },
+        }),
+        step({
+          type: SERVICE,
+          name: "elsewhere",
+          inputs: { name: "x-svc", location: "europe-west1", project: "other-project" },
+        }),
+      ],
+      PROJECT,
+    );
+    expect(rest).toEqual([]);
+    expect(c?.label).toBe("Cloud Run service");
+    expect(c?.importId).toBe(
+      `projects/${PROJECT}/locations/europe-west1/services/caelo-production-data-gateway`,
+    );
+    expect(c?.describeArgs).toEqual([
+      "run",
+      "services",
+      "describe",
+      "caelo-production-data-gateway",
+      "--region=europe-west1",
+      `--project=${PROJECT}`,
+      "--format=value(metadata.name)",
+    ]);
+  });
 });
 
 describe("preview steps carry a create's inputs for adoption", () => {

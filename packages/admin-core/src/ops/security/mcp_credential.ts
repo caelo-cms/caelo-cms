@@ -15,8 +15,8 @@ export const mcpRemoteSurface = z.enum(["chat", "admin"]);
 export type McpRemoteSurface = z.infer<typeof mcpRemoteSurface>;
 
 /**
- * The header the gateway's MCP proxy names the client app in (URI-encoded;
- * apps/api-gateway/src/mcp/proxy.ts). Its value is the app's key from the
+ * The header the MCP-Auth-Proxy names the client app in (URI-encoded;
+ * apps/mcp-auth-proxy/src/proxy.ts). Its value is the app's key from the
  * broker's sealed access token (issue #968).
  */
 export const MCP_CLIENT_HEADER = "x-caelo-mcp-client";

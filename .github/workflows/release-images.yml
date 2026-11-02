@@ -2,11 +2,12 @@
 #
 # Caelo CMS — release-image workflow.
 #
-# Builds + publishes the two runtime container images (admin, gateway)
-# and the `caelo-ops` image (provisioning CLI + pinned Pulumi / gcloud /
+# Builds + publishes the runtime container images (admin, gateway, and
+# since #1328 the MCP-Auth-Proxy `mcp-auth-proxy` — its own minimal
+# bundle image, no database code) and the `caelo-ops` image (provisioning CLI + pinned Pulumi / gcloud /
 # cosign, epic #696) to GHCR on every push to main + every tagged
-# release. Signs every image with cosign (keyless / OIDC). admin +
-# gateway are single-arch (linux/amd64) for v0.x — every supported
+# release. Signs every image with cosign (keyless / OIDC). admin,
+# gateway and mcp-auth-proxy are single-arch (linux/amd64) for v0.x — every supported
 # managed cloud runtime (GCP Cloud Run, AWS Fargate, Azure Container
 # Apps) defaults to amd64, and ARM-host operators (Apple Silicon dev,
 # Hetzner CAX, Ampere) build locally from the repo. Multi-arch will
@@ -112,6 +113,13 @@ jobs:
             spec: apps/api-gateway/image.ts
             # The bundle's SBOM inside the image (scripts/service-image.ts).
             sbom: /app/apps/api-gateway/dist/bundled-packages.cdx.json
+          # #1328 — the remote-MCP OAuth broker + proxy, out of the visitor
+          # gateway into its own minimal service image (same checks).
+          - service: mcp-auth-proxy
+            dockerfile: apps/mcp-auth-proxy/Dockerfile
+            platforms: linux/amd64
+            spec: apps/mcp-auth-proxy/image.ts
+            sbom: /app/apps/mcp-auth-proxy/dist/bundled-packages.cdx.json
           - service: ops
             dockerfile: packages/provisioning/Dockerfile.ops
             platforms: linux/amd64,linux/arm64
@@ -352,6 +360,31 @@ jobs:
             echo "::error::a plugin failed to load in the gateway"; exit 1
           fi
           docker rm -f gw-smoke gw-smoke-pg >/dev/null
+
+      - name: MCP-Auth-Proxy boot smoke (health, fixed 404, refuses to start unconfigured)
+        if: matrix.service == 'mcp-auth-proxy'
+        env:
+          IMAGE: caelo-mcp-auth-proxy:smoke
+        run: |
+          set -euo pipefail
+          # No CAELO_REMOTE_MCP: the proxy must refuse to start (no default).
+          if docker run --rm "${IMAGE}" >/dev/null 2>&1; then
+            echo "::error::the MCP-Auth-Proxy started without CAELO_REMOTE_MCP"; exit 1
+          fi
+          docker run -d --name proxy-smoke -p 8095:8080 \
+            -e PORT=8080 -e CAELO_REMOTE_MCP=unavailable -e CAELO_TRUSTED_PROXY_HOPS=0 \
+            "${IMAGE}"
+          ok=""
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8095/api/mcp/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          docker logs proxy-smoke
+          test -n "${ok}" || { echo "::error::the MCP-Auth-Proxy did not answer its health check"; exit 1; }
+          # E14 a — remote MCP off: one fixed 404 to everything else.
+          status="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8095/api/mcp/chat)"
+          test "${status}" = "404" || { echo "::error::expected the fixed 404, got ${status}"; exit 1; }
+          docker rm -f proxy-smoke >/dev/null
 
       - name: Log in to GHCR
         if: github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch'

@@ -8,7 +8,6 @@
 
 import { describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { GOOGLE_AUTHORIZE_URL, GOOGLE_TOKEN_URL } from "../mcp/google.js";
 import {
   approve,
   authorizeQuery,
@@ -31,6 +30,7 @@ import {
   SEAL_KEY_B64,
   tamperSealed,
 } from "./__tests__/harness.js";
+import { GOOGLE_AUTHORIZE_URL, GOOGLE_TOKEN_URL } from "./google.js";
 import { seal } from "./seal.js";
 import { REFRESH_MAX_LIFETIME_SECONDS } from "./token.js";
 
@@ -75,7 +75,7 @@ describe("discovery metadata", () => {
     const h = harness();
     expect(
       await h.router(new Request(`${PUBLIC}/.well-known/openid-configuration/api/mcp/oauth`), {
-        clientAddress: "198.51.100.7",
+        clientAddress: () => "198.51.100.7",
         setIdleTimeout: () => {},
       }),
     ).toBeNull();
@@ -108,12 +108,12 @@ describe("discovery metadata", () => {
     }
   });
 
-  it("leaves other paths to the rest of the gateway", async () => {
+  it("leaves other paths to server.ts (the fixed 404)", async () => {
     const h = harness();
     for (const path of ["/api/plugin/x/y", "/.well-known/security.txt", "/api/mcpx"]) {
       expect(
         await h.router(new Request(`${PUBLIC}${path}`), {
-          clientAddress: "198.51.100.7",
+          clientAddress: () => "198.51.100.7",
           setIdleTimeout: () => {},
         }),
       ).toBeNull();
@@ -123,7 +123,7 @@ describe("discovery metadata", () => {
 
 describe("CORS", () => {
   it("answers preflight on the MCP, metadata, token and register endpoints", async () => {
-    const h = harness({ clientFile: "{}" });
+    const h = harness();
     for (const path of [
       "/api/mcp/chat",
       "/api/mcp/admin",
@@ -148,28 +148,27 @@ describe("CORS", () => {
   });
 });
 
+/** The fixed 404 body while remote MCP is off (http.ts FIXED_NOT_FOUND_BODY). */
+const OFF = { error: "not_found", configured: false };
+
 describe("not configured", () => {
-  it("answers 503 remote_mcp_not_configured everywhere while the client file is the placeholder", async () => {
+  it("answers the fixed 404 everywhere while the client file is the placeholder (E14 a)", async () => {
     const h = harness({ clientFile: "{}" });
     for (const [path, init] of [
       ["/api/mcp/chat", { method: "POST" }],
+      ["/api/mcp/chat", { method: "OPTIONS" }],
       ["/api/mcp/oauth/authorize", {}],
       ["/api/mcp/oauth/token", { method: "POST" }],
       ["/api/mcp/oauth/register", { method: "POST" }],
       ["/.well-known/oauth-authorization-server/api/mcp/oauth", {}],
       ["/api/mcp/oauth/protected-resource/admin", {}],
+      // The admin's setup self-check reads "off" from the same body.
+      ["/api/mcp/oauth/status", {}],
     ] as const) {
       const res = await h.send(path, init);
-      expect(res.status).toBe(503);
-      expect(await res.json()).toEqual({
-        error: "remote_mcp_not_configured",
-        message:
-          "Remote MCP is not set up on this site. An Owner enables it by setting up Google sign-in under Settings → Google sign-in.",
-      });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "not_found", configured: false });
     }
-    const status = await h.send("/api/mcp/oauth/status");
-    expect(status.status).toBe(200);
-    expect(await status.json()).toEqual({ configured: false });
   });
 
   it("names the missing env var instead of falling back", async () => {
@@ -205,10 +204,10 @@ describe("not configured", () => {
   it("reports the configured client id (never the secret) and picks up a saved client within 60 s", async () => {
     let file = "{}";
     const h = harness({ clientFile: () => file });
-    expect(await (await h.send("/api/mcp/oauth/status")).json()).toEqual({ configured: false });
+    expect(await (await h.send("/api/mcp/oauth/status")).json()).toEqual(OFF);
     file = JSON.stringify({ client_id: GOOGLE_CLIENT_ID, client_secret: GOOGLE_CLIENT_SECRET });
     // Cached: still the old answer right after the save.
-    expect(await (await h.send("/api/mcp/oauth/status")).json()).toEqual({ configured: false });
+    expect(await (await h.send("/api/mcp/oauth/status")).json()).toEqual(OFF);
     h.advance(60_000);
     const body = await (await h.send("/api/mcp/oauth/status")).text();
     expect(JSON.parse(body)).toEqual({ configured: true, clientId: GOOGLE_CLIENT_ID });
