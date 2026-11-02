@@ -10,8 +10,10 @@ import {
   DB_POOL_MAX_ENV,
   DB_PUBLIC_POOL_MAX_ENV,
   GATEWAY_POOL_MAX,
+  GATEWAY_ROLE_CONNECTION_LIMIT,
   GENERATOR_POOL_MAX,
   LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE,
+  LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE,
   type PoolBudgetInput,
   poolBudgetEnv,
 } from "./pool-budget.js";
@@ -67,13 +69,25 @@ describe("computePoolBudget", () => {
   });
 
   it("refuses a budget below the admin floor, naming the connections needed", () => {
-    // The pre-#1254 GCP shape: 100 gateway instances can never fit 100 slots.
-    expect(() => computePoolBudget({ ...GCP_DEFAULT, gatewayMaxInstances: 100 })).toThrow(
-      /Raise maxConnections to at least 364/,
+    // Ten gateway instances on 60 slots: 30 for the gateway leave too little.
+    expect(() => computePoolBudget({ ...GCP_DEFAULT, maxConnections: 60 })).toThrow(
+      /Raise maxConnections to at least 94/,
     );
     expect(() => computePoolBudget({ ...GCP_DEFAULT, maxConnections: 50 })).toThrow(
       new RegExp(`minimum of ${ADMIN_POOL_FLOOR}`),
     );
+  });
+
+  it("refuses a gateway scale-out beyond public_role's CONNECTION LIMIT (#1338)", () => {
+    expect(GATEWAY_ROLE_CONNECTION_LIMIT).toBe(
+      10 * (GATEWAY_POOL_MAX + LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE),
+    );
+    expect(() =>
+      computePoolBudget({ ...GCP_DEFAULT, maxConnections: 1000, gatewayMaxInstances: 11 }),
+    ).toThrow(
+      "11 gateway instances need 33 connections, but the database lets the gateway's login (public_role) hold at most 30",
+    );
+    expect(() => computePoolBudget({ ...GCP_DEFAULT, gatewayMaxInstances: 10 })).not.toThrow();
   });
 
   it("accepts exactly the floor", () => {

@@ -11,8 +11,8 @@
  *   - admin   `GET /_caelo/health?deep=1` → `{ ok, version, migrations }`:
  *             both databases reachable as the expected roles, and every
  *             migration the image ships recorded as applied.
- *   - gateway `GET /api/_caelo/health?deep=1` → `{ ok, version }`: its
- *             database logins work. Under `/api/` because that is the only
+ *   - gateway `GET /api/_caelo/health?deep=1` → `{ ok }` (no version since
+ *             #1326): its database login works. Under `/api/` because that is the only
  *             path the gcp load balancer routes to the gateway.
  *
  * Both answer with no secrets and no raw database errors. The admin sits
@@ -134,13 +134,16 @@ export function evaluateAdminDeepHealth(
   };
 }
 
-/** Judge the gateway's deep health answer against the version the admin runs. */
-export function evaluateGatewayDeepHealth(
-  status: number,
-  text: string,
-  expectedVersion: string,
-): HealthOutcome {
-  const body = parseJson<{ ok?: boolean; version?: string; error?: { kind?: string } }>(text);
+/**
+ * Judge the gateway's deep health answer. Since #1326 the public gateway
+ * reports no release version (a public version string names the flaws to
+ * try), so this proves only that its database login works. Which release
+ * it runs the roll itself establishes: `update --image` with the pinned
+ * digest succeeded and traffic moved to that revision (app-roll.ts), or the
+ * roll already failed.
+ */
+export function evaluateGatewayDeepHealth(status: number, text: string): HealthOutcome {
+  const body = parseJson<{ ok?: boolean; error?: { kind?: string } }>(text);
   if (!body) return { ok: false, error: `gateway answered HTTP ${status} without JSON` };
   if (status !== 200 || body.ok !== true) {
     return {
@@ -148,13 +151,7 @@ export function evaluateGatewayDeepHealth(
       error: `gateway reports unhealthy (HTTP ${status}, ${body.error?.kind ?? "no reason"})`,
     };
   }
-  if (body.version !== expectedVersion) {
-    return {
-      ok: false,
-      error: `gateway runs ${body.version ?? "an unknown version"}, the admin runs ${expectedVersion}`,
-    };
-  }
-  return { ok: true, detail: `gateway ${body.version}` };
+  return { ok: true, detail: "gateway healthy" };
 }
 
 /** Where the probe reaches the install. */
@@ -437,7 +434,7 @@ export function createIapHealthProbe(target: HealthTarget, deps: HealthProbeDeps
     if (!a.ok) return a;
     const gateway = await get(`${origins.gateway}/api/_caelo/health?deep=1`, {});
     if (!gateway.reached) return { ok: false, error: `gateway unreachable: ${gateway.error}` };
-    const g = evaluateGatewayDeepHealth(gateway.status, gateway.text, a.version);
+    const g = evaluateGatewayDeepHealth(gateway.status, gateway.text);
     return g.ok ? { ok: true, detail: `${a.detail}; ${g.detail}` } : g;
   }
 }

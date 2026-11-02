@@ -63,7 +63,7 @@ describe("stack pool budgets at the default config", () => {
         adminMaxInstances: 5,
         gatewayMaxInstances: 100,
       }),
-    ).toThrow(/Raise maxConnections/);
+    ).toThrow(/CONNECTION LIMIT, #1338/);
   });
 });
 

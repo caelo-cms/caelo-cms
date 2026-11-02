@@ -202,6 +202,7 @@ export {
   type PublicUrlPage,
   resolvePublicPageUrls,
 } from "./public-urls.js";
+export { unpublishedRegistryError } from "./published-state.js";
 export {
   type PluginNotRunning,
   pluginNotRunningMarker,

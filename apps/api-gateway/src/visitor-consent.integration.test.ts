@@ -53,6 +53,7 @@ import {
   parseCookies,
   setGatewayAdapter,
 } from "./server.js";
+import { registerTestLiveOrigin, TEST_LIVE_ORIGIN } from "./test-support.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -189,6 +190,7 @@ function post(path: string, body: unknown, cookies: string[] = []): Request {
   clientIp++;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    Origin: TEST_LIVE_ORIGIN,
     "X-Forwarded-For": `192.0.2.${clientIp % 250}`,
   };
   if (cookies.length > 0) headers.cookie = cookies.join("; ");
@@ -203,6 +205,7 @@ function post(path: string, body: unknown, cookies: string[] = []): Request {
 function postFrom(ip: string, path: string, body: unknown, cookies: string[] = []): Request {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    Origin: TEST_LIVE_ORIGIN,
     "X-Forwarded-For": ip,
   };
   if (cookies.length > 0) headers.cookie = cookies.join("; ");
@@ -298,6 +301,7 @@ beforeAll(async () => {
     ],
   });
   expect(adminReport.failed).toEqual([]);
+  await registerTestLiveOrigin(ADMIN_URL as string);
   await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
   resetPluginHost();
   pluginIds = await asAdmin(async (tx) => {
@@ -584,7 +588,9 @@ describe("a captcha challenge is bound to nobody", () => {
         post(RATE, { pageId: "p-unbound", score: 4, _caelo_captcha: proof }, alice),
       );
       await expectStatus(replay, 403);
-      expect(await replay.text()).toContain("already used");
+      expect(((await replay.json()) as { error: { kind: string } }).error.kind).toBe(
+        "CaptchaFailed",
+      );
       // A visitor without any cookie solves and redeems their own.
       const anon = await solvedProof([]);
       const anons = await handleRequest(
