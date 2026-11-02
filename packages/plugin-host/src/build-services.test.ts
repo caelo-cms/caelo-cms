@@ -55,10 +55,19 @@ describe("remote ↔ served build plugin calls", () => {
       const value = await serveBuildPluginCall(wire.method, wire.args, echo);
       return decodeBuildPayload(encodeBuildPayload(value));
     });
-    expect(await remote.staticRender("international-site", "p1", "directory")).toEqual({
+    // #650 — the build's origin crosses the wire with the URL style.
+    const urlContext = {
+      siteBaseUrl: "https://staging.example.com",
+      pageUrlStyle: "directory",
+    } as const;
+    expect(await remote.staticRender("international-site", "p1", urlContext)).toEqual({
       m: "staticRender",
-      args: ["international-site", "p1", "directory"],
+      args: ["international-site", "p1", urlContext],
     } as unknown as string);
+    expect(await remote.resolveListSources(["p1"], urlContext)).toEqual({
+      m: "resolveListSources",
+      args: [["p1"], urlContext],
+    } as unknown as Awaited<ReturnType<BuildPluginServices["resolveListSources"]>>);
     expect(await remote.declaredListSourceNames()).toEqual({
       m: "declaredListSourceNames",
       args: [],
