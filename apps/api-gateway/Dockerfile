@@ -75,6 +75,10 @@ FROM oven/bun:1.4.4-slim AS runtime
 
 COPY --from=deno /deno /usr/local/bin/deno
 
+# #1338 — the CA bundles every database URL names as sslrootcert
+# (verify-full; packages/shared database-tls.ts DATABASE_CA_DIR).
+COPY packages/shared/certs/ /etc/caelo/db-ca/
+
 WORKDIR /app
 
 # Reproduce the workspace layout so Bun's nested-node_modules resolution

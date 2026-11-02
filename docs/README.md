@@ -27,6 +27,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [inspect-tooling-redesign.md](./inspect-tooling-redesign.md) — gist-first inspection of external pages and on-demand HTML queries.
 - [dev/rls-and-the-planner.md](./dev/rls-and-the-planner.md) — how row-level security changes plans: write setting tests as `caelo_setting_is` / `caelo_setting_in` (a plain `current_setting(...) = 'x'` policy is estimated at 0.5 % of the rows), and why `ILIKE '%q%'` can never use an index under RLS (#1297).
 - [dev/public-admin-boundary.md](./dev/public-admin-boundary.md) — the public/admin boundary: the public side is assumed compromised.
+- [dev/database-tls.md](./dev/database-tls.md) — verify-full TLS to the database on every provider: hosts, CA bundles, the self-hosted CA, the upgrade path (#1338).
 - [dev/public-admin-read-paths.md](./dev/public-admin-read-paths.md) — every path where the admin reads `cms_public` data, and how each treats it as untrusted.
 - [dev/gateway-hardening.md](./dev/gateway-hardening.md) — the API gateway's own protection without a WAF: the input filter before the database, in-memory limits per client and per operation, live-origin rule, opaque errors, keyed IP hashes, database limits on `public_role`, batched GC (#1326, #1338).
 - [dev/mcp-access.md](./dev/mcp-access.md) — MCP access as one concept: token vs remote chat vs remote admin, who may use which, per-app connections, revoke/restore/block (#968).

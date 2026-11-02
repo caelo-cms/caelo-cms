@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
+  applyPublicRoleLimits,
   convergeSelfHostedRoles,
   decideUp,
+  PUBLIC_ROLE_LIMITS,
+  publicRoleLimitsScript,
   roleConvergenceScript,
   selfHostedBootstrapScript,
 } from "./self-hosted-roles.js";
@@ -124,5 +129,54 @@ describe("decideUp — `cms-provision up` never switches URLs onto unapplied pas
   it("an already converged config proceeds with a warning while Postgres is down", () => {
     const d = decideUp(true, { ok: false, reachable: false, error: "down" });
     expect(d).toMatchObject({ kind: "proceed", markConverged: false });
+  });
+});
+
+describe("public_role's limits (#1338, H3)", () => {
+  const statements = [
+    `ALTER ROLE public_role CONNECTION LIMIT ${PUBLIC_ROLE_LIMITS.connectionLimit};`,
+    `ALTER ROLE public_role SET statement_timeout = '${PUBLIC_ROLE_LIMITS.statementTimeout}';`,
+    `ALTER ROLE public_role SET idle_in_transaction_session_timeout = '${PUBLIC_ROLE_LIMITS.idleInTransactionSessionTimeout}';`,
+    `ALTER ROLE public_role SET work_mem = '${PUBLIC_ROLE_LIMITS.workMem}';`,
+  ];
+
+  it("are set on the first start, on every `up`, and alone before an upgrade's migrations", () => {
+    for (const script of [
+      selfHostedBootstrapScript({ agent: false }),
+      roleConvergenceScript(PASSWORDS),
+      publicRoleLimitsScript(),
+    ]) {
+      for (const st of statements) expect(script).toContain(st);
+    }
+    // The pre-migration script touches nothing else (no role drop, no grant).
+    expect(publicRoleLimitsScript().split("\n").filter(Boolean)).toEqual([
+      "\\set ON_ERROR_STOP on",
+      ...statements,
+    ]);
+  });
+
+  it("match the values packages/migrations/src/bootstrap.sh sets (dev, CI, Cloud SQL bootstrap)", () => {
+    const bootstrap = readFileSync(
+      resolve(import.meta.dir, "../../migrations/src/bootstrap.sh"),
+      "utf8",
+    );
+    for (const st of statements) expect(bootstrap).toContain(st);
+  });
+
+  it("refuse to run against a stopped database", async () => {
+    let ran = false;
+    const r = await applyPublicRoleLimits({
+      probe: async () => false,
+      psql: async () => {
+        ran = true;
+        return { exitCode: 0, stderr: "" };
+      },
+    });
+    expect(r).toEqual({
+      ok: false,
+      reachable: false,
+      error: "the Postgres container is not running",
+    });
+    expect(ran).toBe(false);
   });
 });

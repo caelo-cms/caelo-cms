@@ -68,8 +68,21 @@ describe("self-hosted Compose — connection budget (#1254)", () => {
 
   it("starts Postgres with the max_connections the budget is computed from", () => {
     expect(service(yaml, "postgres")).toContain(
-      'command: ["postgres", "-c", "max_connections=100"]',
+      'command: ["postgres", "-c", "max_connections=100", ',
     );
+  });
+
+  it("serves TLS with the install's own certificate, never a key it does not own (#1338)", () => {
+    const pg = service(yaml, "postgres");
+    expect(pg).toContain('"-c", "ssl=on"');
+    expect(pg).toContain("- ./postgres-tls/server.crt:/caelo-tls/server.crt:ro");
+    expect(pg).toContain("- ./postgres-tls/server.key:/caelo-tls/server.key:ro");
+    // The bind mount keeps the host's owner; Postgres only reads its own key.
+    expect(pg).toContain("install -o postgres -g postgres -m 0600 /caelo-tls/server.key");
+    expect(pg).toContain('exec docker-entrypoint.sh \\"$$@\\"');
+    // Only Postgres sees the server key; the CA key never leaves .caelo/.
+    expect(yaml.replace(pg, "")).not.toContain("server.key");
+    expect(yaml).not.toContain("ca.key");
   });
 
   it("sizes the admin's two pools and the gateway's one", () => {
@@ -104,10 +117,13 @@ describe("self-hosted Compose — release images (#696)", () => {
   it("mounts the bootstrap-token, site output + media dirs, never .caelo/ with its secrets", () => {
     const admin = service(yaml, "caelo-admin");
     expect(admin).toContain(
-      "    volumes:\n      - ./bootstrap:/app/.caelo\n      - ./output:/srv/caelo\n      - ./media:/data/media",
+      "    volumes:\n      - ./bootstrap:/app/.caelo\n      - ./output:/srv/caelo\n      - ./media:/data/media\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro",
     );
     expect(yaml).not.toMatch(/- \.\/?:/);
-    expect(service(yaml, "caelo-gateway")).not.toContain("volumes:");
+    // The gateway mounts the database CA (#1338) and nothing else.
+    expect(service(yaml, "caelo-gateway")).toContain(
+      "    volumes:\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro\n    restart:",
+    );
     expect(admin).toContain('CAELO_OUTPUT_ROOT: "/srv/caelo"');
     expect(admin).toContain('MEDIA_ROOT_DIR: "/data/media"');
     expect(service(yaml, "caddy")).toContain("- ./output:/srv/caelo:ro");
@@ -116,10 +132,10 @@ describe("self-hosted Compose — release images (#696)", () => {
   it("keeps the env + secret wiring of each service", () => {
     const admin = service(yaml, "caelo-admin");
     expect(admin).toContain(
-      'ADMIN_DATABASE_URL: "postgres://admin_role:adminpw@postgres:5432/cms_admin"',
+      'ADMIN_DATABASE_URL: "postgres://admin_role:adminpw@postgres:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/self-hosted-ca.pem"',
     );
     expect(admin).toContain(
-      'PUBLIC_ADMIN_DATABASE_URL: "postgres://admin_role:adminpw@postgres:5432/cms_public"',
+      'PUBLIC_ADMIN_DATABASE_URL: "postgres://admin_role:adminpw@postgres:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/self-hosted-ca.pem"',
     );
     expect(admin).toContain(`CAELO_SECRET_KEK: "${"0".repeat(64)}"`);
     expect(admin).toContain('CAELO_SITE_URL: "https://example.com"');

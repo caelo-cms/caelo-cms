@@ -33,6 +33,7 @@
   "files": [
     "dist/",
     "src/",
+    "certs/",
     "README.md",
     "package.json"
   ],

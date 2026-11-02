@@ -30,6 +30,12 @@
 
 import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
 import { ensureCaptureJob } from "../capture-job-setup.js";
+import {
+  dialsIpAddress,
+  ensureCloudSqlVerifyFull,
+  liveDatabaseUrls,
+  moveServicesToDnsHost,
+} from "../cloudsql-tls.js";
 import { ensureConvergeJob } from "../converge-job-setup.js";
 import { findSqlInstance, planPublicRoleSwitch } from "../gateway-credentials.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
@@ -54,6 +60,7 @@ import {
   CAPTURE_JOB_ENV_VAR,
   type CloudRunEnvVar,
   CONVERGE_JOB_ENV_VAR,
+  DATABASE_URL_VARS,
   MCP_ENV_VAR,
   OPERATOR_ACCESS_JOB_ENV_VAR,
   remoteMcpIdentityEnv,
@@ -459,6 +466,71 @@ export function startConverge(
     return name ? { kind: "backend-services", service: name } : null;
   }
 
+  /** #1338 — the host the database TLS step moved the services onto. */
+  let databaseHost: string | null = null;
+
+  async function databaseTls(): Promise<boolean> {
+    // #1338 — verify-full TLS needs the shared server CA, the instance's
+    // DNS name resolving in the VPC, and the services dialling that name
+    // (cloudsql-tls.ts). Before migrations: the migration job reads its host
+    // from the admin's live URL, and the new images refuse anything less
+    // than verify-full. A failure aborts — the new revisions could not
+    // reach the database.
+    const s = r.step("Setting up verify-full TLS to the database (shared CA, private DNS name)...");
+    const liveUrls = plan.services.map((p) => ({
+      serviceName: p.serviceName,
+      liveUrls: liveDatabaseUrls(p.liveEnv, DATABASE_URL_VARS[p.slug]),
+    }));
+    // Only this step moves the services off the instance's IP, and only
+    // after the instance, its certificate and the DNS name are in shape —
+    // so services that dial a host name already went through it.
+    const onIp = liveUrls.some((u) => Object.values(u.liveUrls).some((v) => dialsIpAddress(v)));
+    if (!onIp) {
+      s.done("Database TLS ready: the services already dial the instance's DNS name");
+      return true;
+    }
+    const lookup = await findSqlInstance(install, { run });
+    if (lookup.status !== "found") {
+      s.failed(
+        `${lookupFailure(lookup, "Cloud SQL instance", install.credentials)}. Aborting upgrade.`,
+      );
+      r.warn(
+        "No traffic was shifted and no migrations ran. Re-run upgrade once the instance is found.",
+      );
+      return false;
+    }
+    const tlsDeps = { ...runDeps, ...(deps.http ? { http: deps.http } : {}) };
+    const tls = await ensureCloudSqlVerifyFull(
+      { projectId: install.projectId, env: install.env, sqlInstance: lookup.name },
+      tlsDeps,
+    );
+    for (const line of tls.done) r.info(`  ${line}`);
+    if (!tls.ok) {
+      s.failed(`Database TLS could not be set up: ${tls.error}. Aborting upgrade.`);
+      r.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
+      return false;
+    }
+    const moved = await moveServicesToDnsHost(
+      { projectId: install.projectId, region: install.region },
+      liveUrls,
+      tls.host,
+      tlsDeps,
+    );
+    for (const line of moved.done) r.info(`  ${line}`);
+    if (!moved.ok) {
+      s.failed(
+        `The services could not be moved onto ${tls.host}: ${moved.error}. Aborting upgrade.`,
+      );
+      r.warn("No migrations ran. Fix the above and re-run.");
+      return false;
+    }
+    databaseHost = tls.host;
+    s.done(
+      `Database TLS ready: the services dial ${tls.host} (verify-full from the new revisions)`,
+    );
+    return true;
+  }
+
   async function databaseLogins(): Promise<boolean> {
     // #613 — public_role moves onto its own password right before the
     // gateway's roll. The gateway has no other database login (#635).
@@ -628,6 +700,7 @@ export function startConverge(
       if (!(await runtimeIdentities())) return false;
       if (!(await stackInvariants())) return false;
       if (!(await publicRoleIsolation())) return false;
+      if (!(await databaseTls())) return false;
       await mcpAccess();
       await urlMapRedirectsAccess();
       await auditJob();
@@ -647,6 +720,7 @@ export function startConverge(
           ok: true,
           leaveUntouched: [...leaveUntouched],
           ...(extraEnv ? { extraEnv } : {}),
+          ...(databaseHost ? { databaseHost } : {}),
         };
       },
       async beforeRoll(slug) {

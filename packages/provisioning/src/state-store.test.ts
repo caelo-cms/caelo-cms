@@ -36,7 +36,8 @@ function fakeBucket() {
   return { objects, calls, run };
 }
 
-const PASSWORD_URL = "postgres://admin_role:hunter2hunter2@10.0.0.3:5432/cms_admin";
+const PASSWORD_URL =
+  "postgres://admin_role:hunter2hunter2@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin";
 
 let root = "";
 beforeEach(() => {

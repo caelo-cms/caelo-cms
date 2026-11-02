@@ -34,6 +34,7 @@
  * Pure module — the stacks import it from `dist/`.
  */
 
+import { CLOUD_SQL_CA_BUNDLE, isIpLiteral, verifyFullQuery } from "@caelo-cms/shared";
 import { z } from "zod";
 import type { SupportedProvider } from "./adapter.js";
 import {
@@ -106,16 +107,77 @@ const DATABASE_PORT = 5432;
  * Password-less connection URLs for a Cloud SQL instance at `host`. The
  * password reaches the apps separately, as a Secret Manager reference
  * ({@link SERVICE_SECRET_ENV}).
+ *
+ * TLS is `verify-full` against Google's Cloud SQL shared-CA bundle, which
+ * every image carries (#1338, shared database-tls.ts). The shared CA's
+ * server certificate names the instance's DNS name and no IP, so `host`
+ * must be that name (cloudsql-tls.ts resolves it in the VPC); an IP is
+ * refused here rather than producing URLs no connection can verify.
+ *
+ * @throws Error when `host` is an IP literal
  */
 export function databaseUrls(host: string): DatabaseUrls {
+  if (isIpLiteral(host)) {
+    throw new Error(
+      `the Cloud SQL host is the IP address ${host}, but verify-full connections must use the instance's DNS name (its certificate names no IP, #1338). The converge moves the services onto it: run \`cms-provision upgrade\`.`,
+    );
+  }
   const url = (role: string, db: string) =>
-    `postgresql://${role}@${host}:${DATABASE_PORT}/${db}?sslmode=require`;
+    `postgresql://${role}@${host}:${DATABASE_PORT}/${db}?${verifyFullQuery(CLOUD_SQL_CA_BUNDLE)}`;
   return {
     admin: url("admin_role", "cms_admin"),
     publicAdmin: url("admin_role", "cms_public"),
     public: url("public_role", "cms_public"),
   };
 }
+
+/**
+ * #1338 — the Cloud SQL server CA mode every install runs: Google's shared
+ * CA. Its server certificate carries the instance's DNS name, so a client
+ * can verify the host (`sslmode=verify-full`). The default per-instance CA
+ * names no host a private-IP client can dial ("The SAN field contains the
+ * hostname (DNS name of the instance) only for instances enabled with
+ * Private Service Connect" — docs.cloud.google.com/sql/docs/postgres/authorize-ssl).
+ * An instance moves from per-instance to shared, never back.
+ */
+export const CLOUD_SQL_SERVER_CA_MODE = "GOOGLE_MANAGED_CAS_CA";
+
+/** #1338 — Cloud SQL refuses unencrypted connections: every client uses verify-full. */
+export const CLOUD_SQL_SSL_MODE = "ENCRYPTED_ONLY";
+
+/** The `dnsNames[].connectionType` of the name a private-services-access client dials. */
+export const CLOUD_SQL_PSA_CONNECTION_TYPE = "PRIVATE_SERVICES_ACCESS";
+
+/**
+ * The private Cloud DNS zone that resolves the instance's DNS name to its
+ * private IP inside the install's VPC. Cloud SQL assigns the name but does
+ * not resolve it: "create the DNS record in a private DNS zone in the
+ * corresponding Virtual Private Cloud (VPC) network"
+ * (docs.cloud.google.com/sql/docs/postgres/configure-ssl-instance). The zone
+ * is the name itself, holding its one A record.
+ */
+export function cloudSqlDnsZoneName(env: string): string {
+  return `${gcpNamePrefix(env)}-pg-dns`;
+}
+
+/**
+ * The DNS name a private-IP client dials, from an instance's `dnsNames`,
+ * lower-case and without the trailing dot. Null when the instance has none
+ * (a per-instance-CA instance before its move to the shared CA).
+ */
+export function cloudSqlPrivateDnsName(
+  dnsNames: readonly { readonly name?: string; readonly connectionType?: string }[] | undefined,
+): string | null {
+  const entry = (dnsNames ?? []).find((d) => d.connectionType === CLOUD_SQL_PSA_CONNECTION_TYPE);
+  const name = entry?.name?.replace(/\.$/, "").toLowerCase();
+  return name ? name : null;
+}
+
+/** The database URL vars each service carries (the env contract below sets them). */
+export const DATABASE_URL_VARS = {
+  admin: ["ADMIN_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL"],
+  gateway: ["PUBLIC_DATABASE_URL"],
+} as const;
 
 /** What a running service's env derives from: install metadata + the database. */
 export interface RuntimeEnvInputs<V = string> extends ServiceEnvInputs {

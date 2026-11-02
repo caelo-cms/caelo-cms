@@ -17,6 +17,7 @@ export * from "./css-gradient-scan.js";
 export * from "./css-scope-scan.js";
 export * from "./css-var-aliases.js";
 export * from "./css-var-scan.js";
+export * from "./database-tls.js";
 export * from "./database-url.js";
 export * from "./design-draft-shell.js";
 export * from "./document-language.js";

@@ -34,6 +34,7 @@
  * env vars wired by this stack.
  */
 
+import { verifyFullQuery } from "@caelo-cms/shared";
 import * as azure from "@pulumi/azure-native";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
@@ -191,18 +192,23 @@ const _pgPublic = new azure.dbforpostgresql.Database(`${namePrefix}-cms-public-d
   charset: "UTF8",
 });
 
+// #1338 — verify-full to the server's FQDN. Flexible Server's certificate chains
+// to public roots (DigiCert Global Root G2, Microsoft RSA Root CA 2017) that
+// Bun trusts out of the box, so no sslrootcert (shared database-tls.ts).
+const AZURE_TLS = verifyFullQuery();
+
 const adminDatabaseUrl = pulumi
   .all([pgServer.fullyQualifiedDomainName, postgresPassword])
-  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_admin?sslmode=require`);
+  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_admin?${AZURE_TLS}`);
 // What the admin connects to cms_public with (DDL, migrations, moderation).
 const publicAdminDatabaseUrl = pulumi
   .all([pgServer.fullyQualifiedDomainName, postgresPassword])
-  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_public?sslmode=require`);
+  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_public?${AZURE_TLS}`);
 // The gateway's only login (#613, #635): public_role on cms_public. It has
 // no cms_admin login at all (CLAUDE.md §2).
 const publicDatabaseUrl = pulumi
   .all([pgServer.fullyQualifiedDomainName, publicRolePassword])
-  .apply(([host, pw]) => `postgresql://public_role:${pw}@${host}:5432/cms_public?sslmode=require`);
+  .apply(([host, pw]) => `postgresql://public_role:${pw}@${host}:5432/cms_public?${AZURE_TLS}`);
 
 // === 4. Storage account + containers ===
 const storage = new azure.storage.StorageAccount(`${namePrefix}-st`, {

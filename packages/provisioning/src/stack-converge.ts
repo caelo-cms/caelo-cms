@@ -29,6 +29,7 @@
  *     (`SERVICE_CPU_IDLE`), in the same `services update`.
  */
 
+import { isIpLiteral } from "@caelo-cms/shared";
 import { removeDefaultFirewallRules } from "./default-firewall.js";
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
@@ -40,6 +41,7 @@ import {
   adminEnvContract,
   type CloudRunEnvVar,
   type CloudRunSlug,
+  DATABASE_URL_VARS,
   databaseUrls,
   type GcpProvider,
   gatewayEnvContract,
@@ -306,21 +308,42 @@ export function planContractEnv(
      * refused rather than silently doubled.
      */
     readonly extraEnv?: Readonly<Partial<Record<CloudRunSlug, readonly CloudRunEnvVar[]>>>;
+    /**
+     * #1338 — the database host the converge just set up (the instance's
+     * DNS name, cloudsql-tls.ts), in place of the one the services dialled
+     * when the plan was read.
+     */
+    readonly databaseHost?: string;
   } = {},
 ):
   | {
       readonly ok: true;
       readonly services: Record<CloudRunSlug, { flags: string[]; changes: EnvChange[] }>;
+      /**
+       * #1338 — the services still dial the instance's IP, which no
+       * verify-full connection can use; their database URLs were left as
+       * they are. Only a converge moves them (cloudsql-tls.ts); a roll must
+       * not start while this is true.
+       */
+      readonly databaseHostPending: boolean;
     }
   | { readonly ok: false; readonly error: string } {
-  const host = liveDatabaseHost(services.admin.liveEnv);
-  if (!host.ok) {
+  const live = liveDatabaseHost(services.admin.liveEnv);
+  if (!opts.databaseHost && !live.ok) {
     return {
       ok: false,
-      error: `the Cloud SQL host is unknown: the admin service (${services.admin.serviceName}) ${host.error}`,
+      error: `the Cloud SQL host is unknown: the admin service (${services.admin.serviceName}) ${live.error}`,
     };
   }
-  const runtime: RuntimeEnvInputs = { ...install, databaseUrls: databaseUrls(host.host) };
+  const host = opts.databaseHost ?? (live.ok ? live.host : "");
+  const databaseHostPending = isIpLiteral(host);
+  // An IP cannot carry a verify-full URL (databaseUrls refuses it): the URLs
+  // are planned from a placeholder name and then left untouched, so the
+  // rest of the env still plans and the caller can see what is pending.
+  const runtime: RuntimeEnvInputs = {
+    ...install,
+    databaseUrls: databaseUrls(databaseHostPending ? "pending.invalid" : host),
+  };
   let inputs: AdminEnvInputs;
   if (install.provider === "gcp-firebase") {
     // The site id carries a random suffix Pulumi generated at install time.
@@ -340,7 +363,10 @@ export function planContractEnv(
   } else {
     inputs = { ...runtime, provider: "gcp" };
   }
-  const skip = new Set(opts.leaveUntouched ?? []);
+  const skip = new Set([
+    ...(opts.leaveUntouched ?? []),
+    ...(databaseHostPending ? [...DATABASE_URL_VARS.admin, ...DATABASE_URL_VARS.gateway] : []),
+  ]);
   const desired = (slug: CloudRunSlug, contract: readonly CloudRunEnvVar[]) => {
     const extra = opts.extraEnv?.[slug] ?? [];
     const clash = extra.find((e) => contract.some((c) => c.name === e.name));
@@ -369,6 +395,7 @@ export function planContractEnv(
       admin: { flags: admin.flags, changes: admin.changes },
       gateway: { flags: gateway.flags, changes: gateway.changes },
     },
+    databaseHostPending,
   };
 }
 

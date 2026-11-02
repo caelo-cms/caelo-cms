@@ -75,6 +75,7 @@ import {
 } from "./compose.js";
 import { tightenPrivateTree, writePrivateFile } from "./private-file.js";
 import { selfCommand } from "./self-command.js";
+import { ensureSelfHostedDbTls } from "./self-hosted-db-tls.js";
 import { ensureInternalSecret, writeInternalSecret } from "./self-hosted-internal-secret.js";
 import {
   bunHostRunner,
@@ -84,6 +85,7 @@ import {
   resolveVerifiedRelease,
 } from "./self-hosted-release.js";
 import {
+  applyPublicRoleLimits,
   convergeSelfHostedRoles,
   decideUp,
   selfHostedBootstrapScript,
@@ -344,6 +346,9 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
       "config has no ports / composeProject — they are back-filled on load; this is a bug",
     );
   }
+  // #1338 — the install's database CA + server certificate the Compose file
+  // mounts (created once, the server certificate renewed when due).
+  for (const line of ensureSelfHostedDbTls(CAELO_DIR)) console.log(`  database TLS: ${line}`);
   return generateDockerCompose({
     domain: cfg.domain,
     postgresPassword: cfg.postgresPassword,
@@ -397,6 +402,8 @@ function agentContext(cfg: CaeloConfig): AgentCliContext {
         ...(activeAgent(cfg) ? { agentPassword: activeAgent(cfg)?.dbPassword } : {}),
       });
     },
+    applyPublicRoleLimits: () =>
+      applyPublicRoleLimits({ probe: postgresIsUp, psql: superuserPsql }),
     renderCompose: (images) => renderCompose(cfg, images),
     refreshCaddy: () => refreshCaddyfile(cfg),
     randomSecret: () => randomSecret(32),
@@ -1047,6 +1054,7 @@ async function upgradeSelfHostedCommand(opts: {
       runner: bunHostRunner,
       renderCompose: (images) => renderCompose(cfg, images),
       convergeRoles: agentContext(cfg).convergeRoles,
+      applyPublicRoleLimits: agentContext(cfg).applyPublicRoleLimits,
       refreshCaddy: () => refreshCaddyfile(cfg),
       log: {
         step: (m) => console.log(`\n==> ${m}`),

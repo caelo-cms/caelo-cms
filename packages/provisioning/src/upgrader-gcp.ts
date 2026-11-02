@@ -16,6 +16,13 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isIpLiteral } from "@caelo-cms/shared";
+import {
+  ensureCloudSqlVerifyFull,
+  liveDatabaseUrls,
+  moveServicesToDnsHost,
+} from "./cloudsql-tls.js";
+import { findSqlInstance } from "./gateway-credentials.js";
 import { gcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep } from "./gcloud-retry.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
@@ -23,10 +30,16 @@ import type { InstallMetadata } from "./install-state.js";
 import { readAdminConfig, runMigrationsViaCloudRunJob } from "./migration-runner.js";
 import { fetchVerifiedReleaseManifest } from "./release-manifest.js";
 import type { HttpFetch } from "./runtime-secrets.js";
+import { DATABASE_URL_VARS } from "./stack-contract.js";
+import { liveContainerEnv } from "./stack-converge.js";
 import { opsBucketName } from "./state-backend.js";
 import { acquireBucketStateLock, GcsStateStore, realSyncGcloud } from "./state-store.js";
 import type { AppRollPlan } from "./upgrade/app-roll.js";
-import { findServiceUrl } from "./upgrade/gcp-lookup.js";
+import {
+  describeServiceJson,
+  findServiceUrl,
+  resolveGcpResourceName,
+} from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe } from "./upgrade/health.js";
 import { createReleaseImageForms } from "./upgrade/image-forms.js";
 import { type IamTester, restIamTester } from "./upgrader-iam-preflight.js";
@@ -56,6 +69,54 @@ export async function upgraderDatabaseHost(
     );
   }
   return cfg.databaseHost;
+}
+
+/**
+ * #1338 — the database host for the converge job (#819), after making sure
+ * a verify-full connection to it can work. The job opens its database
+ * queue before it converges anything, with this release's code, which
+ * connects with verify-full only; on an install whose services still dial
+ * the instance's IP it first runs the converge's database TLS step
+ * (cloudsql-tls.ts: shared CA, private DNS name, services moved onto it).
+ * The job runs as the install's `caelo-provisioner`, which holds
+ * `roles/cloudsql.admin` and `roles/dns.admin` (gcloud.ts PROVISIONER_ROLES).
+ * Idempotent: the converge's own step finds everything in shape.
+ */
+export async function convergeDatabaseHost(
+  placement: Pick<UpgraderPlacement, "projectId" | "region">,
+  run: GcloudRunner = gcloud,
+  http?: HttpFetch,
+): Promise<string> {
+  const host = await upgraderDatabaseHost(placement, run);
+  if (!isIpLiteral(host)) return host;
+  const install = { projectId: placement.projectId, env: GCP_STACK_ENV };
+  const lookup = await findSqlInstance(install, { run });
+  if (lookup.status !== "found") {
+    throw new Error(`could not find the install's Cloud SQL instance (${lookup.status})`);
+  }
+  const deps = { run, ...(http ? { http } : {}) };
+  const tls = await ensureCloudSqlVerifyFull({ ...install, sqlInstance: lookup.name }, deps);
+  if (!tls.ok) throw new Error(`database TLS could not be set up: ${tls.error}`);
+  const services: { serviceName: string; liveUrls: Record<string, string> }[] = [];
+  for (const slug of ["admin", "gateway"] as const) {
+    const found = await resolveGcpResourceName(
+      run,
+      "run-service",
+      `caelo-${GCP_STACK_ENV}-${slug}`,
+      placement.projectId,
+      placement.region,
+    );
+    if (found.status !== "found") throw new Error(`could not find the ${slug} service`);
+    const json = await describeServiceJson(run, placement.projectId, placement.region, found.name);
+    if (!json) throw new Error(`could not read the ${slug} service's configuration`);
+    services.push({
+      serviceName: found.name,
+      liveUrls: liveDatabaseUrls(liveContainerEnv(json), DATABASE_URL_VARS[slug]),
+    });
+  }
+  const moved = await moveServicesToDnsHost(placement, services, tls.host, deps);
+  if (!moved.ok) throw new Error(moved.error);
+  return tls.host;
 }
 
 /**

@@ -141,7 +141,8 @@ const ADMIN_JSON = serviceJson("registry/admin@sha256:old", [
   { name: "CAELO_FIREBASE_SITE", value: "caelo-production-site-abc123" },
   {
     name: "ADMIN_DATABASE_URL",
-    value: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+    value:
+      "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   secretRef("ADMIN_DATABASE_PASSWORD", "postgres-password"),
 ]);

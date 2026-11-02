@@ -45,7 +45,7 @@ describe("admin env contract — operator access", () => {
       domain: "acme.com",
       stagingHost: "staging.acme.com",
       region: "europe-west1",
-      databaseUrls: databaseUrls("10.0.0.3"),
+      databaseUrls: databaseUrls("db1.p-label.europe-west1.sql-psa.goog"),
     });
     expect(env).toContainEqual({
       name: "CAELO_OPERATOR_ACCESS_JOB",

@@ -289,7 +289,7 @@ describe("the gateway's database identity (#613, #635)", () => {
   it("needs only PUBLIC_DATABASE_URL, with its _PASSWORD companion", () => {
     expect(() => gatewayDatabaseUrls({})).toThrow(/PUBLIC_DATABASE_URL/);
     const urls = gatewayDatabaseUrls({
-      PUBLIC_DATABASE_URL: "postgresql://public_role@h:5432/cms_public",
+      PUBLIC_DATABASE_URL: "postgresql://public_role@h:5432/cms_public?sslmode=verify-full",
       PUBLIC_DATABASE_PASSWORD: "p",
     });
     expect(new URL(urls.public).password).toBe("p");

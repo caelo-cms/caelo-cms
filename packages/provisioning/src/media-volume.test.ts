@@ -152,7 +152,7 @@ describe("admin media volume contract", () => {
       domain: "acme.com",
       stagingHost: "staging.acme.com",
       region: "europe-west1",
-      databaseUrls: databaseUrls("10.0.0.3"),
+      databaseUrls: databaseUrls("db1.p-label.europe-west1.sql-psa.goog"),
     });
     expect(env).toContainEqual({ name: "MEDIA_ROOT_DIR", value: MEDIA_MOUNT_PATH });
   });

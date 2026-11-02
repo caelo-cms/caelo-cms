@@ -77,11 +77,13 @@ const ADMIN_JSON = serviceJson(OLD_ADMIN_IMAGE, [
   { name: "CAELO_FIREBASE_SITE", value: "caelo-production-site-abc123" },
   {
     name: "ADMIN_DATABASE_URL",
-    value: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+    value:
+      "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   {
     name: "PUBLIC_ADMIN_DATABASE_URL",
-    value: "postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
+    value:
+      "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   secretRef("ADMIN_DATABASE_PASSWORD", "postgres-password"),
   secretRef("PUBLIC_ADMIN_DATABASE_PASSWORD", "postgres-password"),
@@ -89,7 +91,8 @@ const ADMIN_JSON = serviceJson(OLD_ADMIN_IMAGE, [
 const GATEWAY_JSON = serviceJson("registry/gateway@sha256:old", [
   {
     name: "PUBLIC_DATABASE_URL",
-    value: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
+    value:
+      "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   secretRef("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
 ]);
@@ -988,6 +991,34 @@ describe("app-roll and converge stay on their side", () => {
     expect(result).toEqual({ ok: true, digests: DIGEST });
     expect(calls.filter((c) => CONVERGE_WRITE.test(c))).toEqual([]);
     expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(2);
+  });
+
+  it("#1338: without a converge, a plan whose services dial the database's IP stops before migrations", async () => {
+    const events: string[] = [];
+    const { run, calls } = fakeInstall(events);
+    const plan = { ...(await plannedRoll(run)), databaseHostPending: true };
+    const { reporter, lines } = recordingReporter();
+    let migrated = false;
+    const result = await executeAppRoll(
+      { plan, backup: BACKUP, targetVersion: "0.11.0", migrationsContract: false },
+      {},
+      {
+        run,
+        sleep: noSleep,
+        reporter,
+        migrate: async () => {
+          migrated = true;
+          return { ok: true };
+        },
+        health: fakeHealth(events),
+        resolveOpsImage: async () => `registry/ops@sha256:${"c".repeat(64)}`,
+        recordDigests: async () => {},
+      },
+    );
+    expect(result).toEqual({ ok: false, phase: "migrations", migrated: false, rolledBack: false });
+    expect(migrated).toBe(false);
+    expect(calls.filter((c) => APP_ROLL_WRITE.test(c))).toEqual([]);
+    expect(lines.join("\n")).toContain("verify-full TLS");
   });
 
   it("converge alone never rolls a service or runs migrations", async () => {

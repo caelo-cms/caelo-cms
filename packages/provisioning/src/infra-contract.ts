@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 14;
+export const INFRA_CONTRACT_VERSION = 15;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -110,6 +110,13 @@ export const INFRA_CONTRACT_VERSION = 14;
 //       CAELO_CAPTURE_BUCKET / CAELO_MEDIA_BUCKET on the admin. The new admin
 //       runs no browser itself on GCP and the app-roll moves the job's image,
 //       so it must exist before an in-cloud upgrader rolls onto it.
+//  15 — #1338: verify-full TLS to Cloud SQL. The instance moves to the
+//       shared server CA (a patch plus a server-certificate rotation) and
+//       refuses plaintext, a private Cloud DNS zone resolves its DNS name in
+//       the VPC, and the services dial that name (cloudsql-tls.ts). The new
+//       images refuse any database URL weaker than verify-full, and the
+//       in-cloud upgrader may neither patch the instance nor create a DNS
+//       zone, so it must not roll an install onto them first.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -131,6 +138,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   12: "Google sign-in at project level: the operator-access job's permission to set the sign-in client in the project's IAP settings (#914)",
   13: "the public site's security headers at the edge: nosniff on every file, uploaded SVGs no longer run as documents on the site's origin, and a one-time CDN purge (#891)",
   14: "the capture job that takes server-side screenshots outside the admin, its service account, bucket and grants (#1217)",
+  15: "verified TLS to the database: Cloud SQL's shared server CA, encrypted connections only, and a private DNS name the services dial (#1338)",
 };
 
 /**

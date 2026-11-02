@@ -96,6 +96,7 @@ export {
   type RequestDecision,
 } from "./upgrader-assess.js";
 export {
+  convergeDatabaseHost,
   gcpUpgraderDeps,
   type UpgraderPlacement,
   upgraderDatabaseHost,

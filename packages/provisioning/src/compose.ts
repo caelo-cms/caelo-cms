@@ -27,9 +27,14 @@
  * every fresh `docker compose up` fail.
  */
 
-import { CADDY_REDIRECTS_FILE } from "@caelo-cms/shared";
+import { CADDY_REDIRECTS_FILE, SELF_HOSTED_CA_FILE, verifyFullQuery } from "@caelo-cms/shared";
 import { caddyRedirectReloadCommand } from "./caddy-redirects.js";
 import { DEFAULT_MAX_CONNECTIONS, stackPoolBudget } from "./pool-budget-stack.js";
+import {
+  SELF_HOSTED_DB_HOST,
+  SELF_HOSTED_TLS_DIR,
+  SELF_HOSTED_TLS_FILES,
+} from "./self-hosted-db-tls.js";
 import {
   ADMIN_MEMORY_DEFAULT,
   GATEWAY_TRUSTED_PROXY_HOPS,
@@ -281,10 +286,16 @@ export function generateDockerCompose(spec: ComposeSpec): string {
 name: ${spec.project}
 
 services:
-  postgres:
+  ${SELF_HOSTED_DB_HOST}:
     image: postgres:16-alpine
-    # The pool budget (COMPOSE_POOL_BUDGET) is computed from this number.
-    command: ["postgres", "-c", "max_connections=${DEFAULT_MAX_CONNECTIONS["self-hosted"]}"]
+    # #1338 — TLS with the install's own certificate for the host name
+    # \`${SELF_HOSTED_DB_HOST}\` (self-hosted-db-tls.ts); every client connects with
+    # verify-full. Postgres refuses a key file it does not own, and a bind
+    # mount keeps the host's owner, so the entrypoint copies the pair to a
+    # container-local path owned by postgres first.
+    entrypoint: ${POSTGRES_TLS_ENTRYPOINT}
+    # The pool budget (COMPOSE_POOL_BUDGET) is computed from max_connections.
+    command: ["postgres", "-c", "max_connections=${DEFAULT_MAX_CONNECTIONS["self-hosted"]}", "-c", "ssl=on", "-c", "ssl_cert_file=${POSTGRES_TLS_RUNTIME_DIR}/server.crt", "-c", "ssl_key_file=${POSTGRES_TLS_RUNTIME_DIR}/server.key", "-c", "ssl_min_protocol_version=TLSv1.2"]
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: "${escapeYaml(spec.postgresPassword)}"
@@ -295,6 +306,8 @@ services:
 ${postgresAgent(spec.agent)}    volumes:
       - caelo-pg:/var/lib/postgresql/data
       - ./bootstrap.sh:/docker-entrypoint-initdb.d/00_bootstrap.sh:ro
+      - ./${SELF_HOSTED_TLS_DIR}/${SELF_HOSTED_TLS_FILES.serverCert}:${POSTGRES_TLS_MOUNT_DIR}/server.crt:ro
+      - ./${SELF_HOSTED_TLS_DIR}/${SELF_HOSTED_TLS_FILES.serverKey}:${POSTGRES_TLS_MOUNT_DIR}/server.key:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U caelo"]
       interval: 10s
@@ -398,6 +411,7 @@ ${serviceRuntime(
     `./${BOOTSTRAP_DIR}:/app/.caelo`,
     `./output:${SITE_OUTPUT_ROOT}`,
     `./${MEDIA_DIR}:${MEDIA_ROOT}`,
+    DATABASE_CA_MOUNT,
   ],
 )}
     restart: unless-stopped
@@ -422,7 +436,7 @@ ${env("RESEND_API_KEY", spec.resendApiKey)}`;
 
 function gatewayService(spec: ComposeSpec): string {
   return `  caelo-gateway:
-${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts")}
+${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts", [DATABASE_CA_MOUNT])}
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
@@ -442,10 +456,30 @@ ${poolEnvLines("gateway")}
       NODE_ENV: production`;
 }
 
-/** A compose-network database URL, password URL-encoded and YAML-escaped. */
+/**
+ * A compose-network database URL, password URL-encoded and YAML-escaped.
+ * #1338 — verify-full against the install's own CA (self-hosted-db-tls.ts),
+ * mounted at shared `SELF_HOSTED_CA_FILE` ({@link DATABASE_CA_MOUNT}).
+ */
 function dbUrl(role: string, password: string, database: string): string {
-  return escapeYaml(`postgres://${role}:${encodeURIComponent(password)}@postgres:5432/${database}`);
+  return escapeYaml(
+    `postgres://${role}:${encodeURIComponent(password)}@${SELF_HOSTED_DB_HOST}:5432/${database}?${verifyFullQuery(SELF_HOSTED_CA_FILE)}`,
+  );
 }
+
+/** Where the server certificate + key are bind-mounted into Postgres (host-owned). */
+const POSTGRES_TLS_MOUNT_DIR = "/caelo-tls";
+/** Where the entrypoint copies them, owned by postgres (Postgres refuses others' keys). */
+const POSTGRES_TLS_RUNTIME_DIR = "/var/lib/postgresql/caelo-tls";
+/** The Postgres entrypoint: copy the TLS pair into place, then the image's own entrypoint. */
+const POSTGRES_TLS_ENTRYPOINT = JSON.stringify([
+  "/bin/sh",
+  "-c",
+  `install -d -o postgres -g postgres -m 0700 ${POSTGRES_TLS_RUNTIME_DIR} && install -o postgres -g postgres -m 0644 ${POSTGRES_TLS_MOUNT_DIR}/server.crt ${POSTGRES_TLS_RUNTIME_DIR}/server.crt && install -o postgres -g postgres -m 0600 ${POSTGRES_TLS_MOUNT_DIR}/server.key ${POSTGRES_TLS_RUNTIME_DIR}/server.key && exec docker-entrypoint.sh "$$@"`,
+  "--",
+]);
+/** The install's database CA, read-only, where every verify-full URL names it. */
+const DATABASE_CA_MOUNT = `./${SELF_HOSTED_TLS_DIR}/${SELF_HOSTED_TLS_FILES.caCert}:${SELF_HOSTED_CA_FILE}:ro`;
 
 function escapeYaml(s: string): string {
   // Conservative escape for double-quoted YAML strings.

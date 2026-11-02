@@ -22,10 +22,10 @@
  */
 
 import {
+  convergeDatabaseHost,
   convergeExecutionNameError,
   gcpConvergeDeps,
   runConvergeJob,
-  upgraderDatabaseHost,
 } from "@caelo-cms/provisioning";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { cloudSqlIamDatabaseUrls } from "@caelo-cms/shared";
@@ -37,7 +37,9 @@ async function main(): Promise<void> {
   const { projectId, region, email, execution } = await jobPlacement();
   const badExecution = convergeExecutionNameError(execution);
   if (badExecution) throw new Error(`refused to run: ${badExecution}`);
-  const host = await upgraderDatabaseHost({ projectId, region });
+  // #1338 — verify-full needs the instance's DNS name: on an install that
+  // still dials its IP this sets it up first (provisioning upgrader-gcp.ts).
+  const host = await convergeDatabaseHost({ projectId, region });
   const db = tokenRefreshingConvergeQueue({
     fetchToken: accessToken,
     open: (token) => {
