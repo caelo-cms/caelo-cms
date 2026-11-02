@@ -27,11 +27,11 @@
  *     PULUMI_*) and so act as the provisioner (#883 review). The custom role
  *     has no `runWithOverrides` and no `*.setIamPolicy`. Updating another
  *     job (the converge job's image, say) additionally needs `actAs` on its
- *     service account, which the upgrader holds only on the admin, gateway
- *     and its own. A grant of `roles/run.developer` left by an earlier
+ *     service account, which the upgrader holds only on the admin, gateway,
+ *     MCP-Auth-Proxy and its own. A grant of `roles/run.developer` left by an earlier
  *     setup is removed.
- *   - `roles/iam.serviceAccountUser` on exactly the admin's and the
- *     gateway's runtime service accounts (a revision runs as them), on
+ *   - `roles/iam.serviceAccountUser` on exactly the admin's, the
+ *     gateway's and the MCP-Auth-Proxy's (#1328) runtime service accounts (a revision runs as them), on
  *     itself (its own job) and on the quality-audit and capture jobs'
  *     accounts (the app-roll moves those jobs' images, #875, #1217) — not
  *     on the project.
@@ -79,6 +79,7 @@ import {
   auditServiceAccountEmail,
   captureServiceAccountEmail,
   gatewayServiceAccountEmail,
+  mcpAuthProxyServiceAccountEmail,
   mcpIapServiceAccountEmail,
   runServiceAccountEmail,
   upgraderJobName,
@@ -366,6 +367,11 @@ export async function ensureUpgraderJob(
       account: gatewayServiceAccountEmail(projectId, env),
       role: "roles/iam.serviceAccountUser",
       why: "gateway revisions run as it",
+    },
+    {
+      account: mcpAuthProxyServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "MCP-Auth-Proxy revisions run as it (#1328)",
     },
     { account: sa, role: "roles/iam.serviceAccountUser", why: "the job updates its own image" },
     {

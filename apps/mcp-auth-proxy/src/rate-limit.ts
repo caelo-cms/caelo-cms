@@ -4,21 +4,20 @@
  * Per-client-address throttling of the remote-MCP routes (issue #806
  * follow-up, CLAUDE.md §7: public writes are rate limited).
  *
- * Why in-process token buckets instead of the gateway's Postgres buckets
- * (middleware/rate-limit.ts): the MCP router deliberately runs before, and
- * without, the database (routes.ts) — remote MCP must answer when the
- * gateway's settings are unavailable, and a proxied MCP session would
- * otherwise cost a database round trip per JSON-RPC message. The trade-off
- * is that each gateway instance counts on its own, so the effective limit
+ * Why in-process token buckets instead of the visitor gateway's Postgres
+ * buckets: the MCP-Auth-Proxy has no database at all (#1328,
+ * no-db-imports.test.ts), and a proxied MCP session would otherwise cost a
+ * round trip per JSON-RPC message. The trade-off
+ * is that each proxy instance counts on its own, so the effective limit
  * is the per-instance limit times the instance count; Cloud Run's maximum
  * instance count bounds that. The limits exist to stop one address from
  * hammering Google's token endpoint, the CIMD hosts or the admin through
- * this gateway — which matters most on gcp-firebase, where the gateway is
+ * this proxy — which matters most on gcp-firebase, where the proxy is
  * reachable directly on *.run.app with no WAF in front (§11.B Tier 3) —
  * not to meter fair use, so per-instance precision is enough.
  *
- * The address comes from the gateway's one client-address rule
- * (client-ip.ts), the same one every other rate limit uses.
+ * The address comes from the one client-address rule every public service
+ * uses (@caelo-cms/shared client-address.ts).
  */
 
 /** One bucket class: `capacity` requests at once, refilled to full over `windowSeconds`. */

@@ -35,6 +35,27 @@ export function corsPreflight(): Response {
   return new Response(null, { status: 204, headers });
 }
 
+/**
+ * The fixed body of {@link fixedNotFound}. `configured: false` lets the
+ * admin's setup self-check (admin-core security/remote-mcp/setup.ts) read
+ * "remote MCP is off" from it like it reads the status endpoint.
+ */
+export const FIXED_NOT_FOUND_BODY = '{"error":"not_found","configured":false}';
+
+/**
+ * E14 (a, #1328) — the proxy is always deployed, at zero minimum instances;
+ * while its feature is off (remote MCP unavailable on the provider, or the
+ * Owner has not set up Google sign-in) and for any path that is not remote
+ * MCP, it answers this one constant response before it parses anything of
+ * the request, so the code a request can reach stays a few lines long.
+ */
+export function fixedNotFound(): Response {
+  return new Response(FIXED_NOT_FOUND_BODY, {
+    status: 404,
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
+  });
+}
+
 /** A JSON response with CORS and `no-store` (tokens and metadata must not sit in shared caches). */
 export function json(body: unknown, status = 200, extra?: Record<string, string>): Response {
   const headers = withCors(new Headers(extra));

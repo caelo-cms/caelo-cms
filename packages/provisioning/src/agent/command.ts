@@ -419,12 +419,15 @@ function pruneVerifiedClis(caeloDir: string, keep: readonly (string | undefined)
   }
 }
 
-/** Start the target release's `agent apply` and wait for it. */
-async function spawnApply(request: AgentApplyRequest): Promise<AgentApplyOutcome> {
-  // The verified install (agent/cli-provenance.ts) — never `bun x`, which
-  // would fetch an unverified copy.
-  const argv = [
-    process.execPath,
+/**
+ * The argv that starts the target release's `agent apply` with `bun` at
+ * `execPath`: the verified install (agent/cli-provenance.ts) — never
+ * `bun x`, which would fetch an unverified copy — and the digests the signed
+ * manifest names, the MCP-Auth-Proxy's only when it names one (#1328).
+ */
+export function applyArgv(execPath: string, request: AgentApplyRequest): string[] {
+  return [
+    execPath,
     request.cliPath,
     "agent",
     "apply",
@@ -438,7 +441,15 @@ async function spawnApply(request: AgentApplyRequest): Promise<AgentApplyOutcome
     request.digests.admin,
     "--gateway-digest",
     request.digests.gateway,
+    ...(request.digests["mcp-auth-proxy"]
+      ? ["--mcp-auth-proxy-digest", request.digests["mcp-auth-proxy"]]
+      : []),
   ];
+}
+
+/** Start the target release's `agent apply` and wait for it. */
+async function spawnApply(request: AgentApplyRequest): Promise<AgentApplyOutcome> {
+  const argv = applyArgv(process.execPath, request);
   try {
     const proc = Bun.spawn(argv, {
       stdout: "pipe",
@@ -506,16 +517,25 @@ const applyArgs = z.object({
   trigger: z.enum(PLATFORM_UPDATE_TRIGGERS),
   adminDigest: digest,
   gatewayDigest: digest,
+  // #1328 — an agent of a release before the MCP-Auth-Proxy starts this
+  // without it; the signed manifest the apply reads names it anyway.
+  mcpAuthProxyDigest: digest.optional(),
 });
 
-async function agentApply(argv: readonly string[], ctx: AgentCliContext): Promise<number> {
-  const parsed = applyArgs.safeParse({
+/** The `agent apply` flags {@link applyArgv} writes, validated. */
+export function parseApplyArgs(argv: readonly string[]) {
+  return applyArgs.safeParse({
     request: flag(argv, "request"),
     version: flag(argv, "version"),
     trigger: flag(argv, "trigger"),
     adminDigest: flag(argv, "admin-digest"),
     gatewayDigest: flag(argv, "gateway-digest"),
+    mcpAuthProxyDigest: flag(argv, "mcp-auth-proxy-digest"),
   });
+}
+
+async function agentApply(argv: readonly string[], ctx: AgentCliContext): Promise<number> {
+  const parsed = parseApplyArgs(argv);
   if (!parsed.success) {
     console.error(
       `agent apply is started by the update agent, not by hand (${parsed.error.issues.map((i) => i.path.join(".")).join(", ")}).`,
@@ -541,7 +561,11 @@ async function agentApply(argv: readonly string[], ctx: AgentCliContext): Promis
         upgradeSelfHosted(
           {
             version: args.version,
-            expectedDigests: { admin: args.adminDigest, gateway: args.gatewayDigest },
+            expectedDigests: {
+              admin: args.adminDigest,
+              gateway: args.gatewayDigest,
+              ...(args.mcpAuthProxyDigest ? { "mcp-auth-proxy": args.mcpAuthProxyDigest } : {}),
+            },
           },
           {
             caeloDir: ctx.caeloDir,

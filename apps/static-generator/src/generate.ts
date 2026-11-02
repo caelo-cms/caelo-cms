@@ -1176,6 +1176,7 @@ async function buildSite(
         pages,
         bakeTargets,
         pageUrlStyle,
+        siteBaseUrl: seoSettings.siteBaseUrl,
         bakes,
       }),
     );
@@ -1260,6 +1261,7 @@ async function buildSite(
         noLayoutModules,
         listModuleRefs,
         pageUrlStyle,
+        siteBaseUrl: seoSettings.siteBaseUrl,
       }),
     );
     // #1307 — this batch's list overlays, held only while it renders.

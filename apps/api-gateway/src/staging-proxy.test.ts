@@ -8,6 +8,7 @@ import { describe, expect, it } from "bun:test";
 import {
   DEFAULT_STAGING_HEADER_NAME,
   deriveStagingCredential,
+  INTERIM_FORWARDED_HOST_HEADER,
   STAGING_SESSION_COOKIE,
   type StagingAccessSettings,
   signStagingToken,
@@ -20,6 +21,7 @@ import {
   rewriteLocation,
   type StagingState,
   stagingGateFromEnv,
+  upstreamHeaders,
 } from "./staging-proxy.js";
 
 const SECRET = "gate-secret-for-tests";
@@ -91,6 +93,27 @@ describe("staging host detection + config", () => {
     // A host the operator chose instead of staging.<domain>.
     expect(isStagingRequest(req("preview.other.de"), "preview.other.de")).toBe(true);
     expect(isStagingRequest(req("www.example.com"), "staging.example.com")).toBe(false);
+  });
+
+  it("honours the MCP-Auth-Proxy's interim forwarded host outside /api/ only (#1331)", () => {
+    const forwarded = (path: string, host: string) =>
+      new Request(`https://gw-abc.a.run.app${path}`, {
+        headers: { host: "gw-abc.a.run.app", [INTERIM_FORWARDED_HOST_HEADER]: host },
+      });
+    const staging = "staging.example.com";
+    expect(isStagingRequest(forwarded("/about/", staging), staging)).toBe(true);
+    expect(isStagingRequest(forwarded("/about/", "www.example.com"), staging)).toBe(false);
+    // A live /api/* request never becomes a staging one, whatever it claims.
+    expect(isStagingRequest(forwarded("/api/plugin/forms/submit", staging), staging)).toBe(false);
+  });
+
+  it("does not pass the interim forwarded-host header on to the staged build", () => {
+    const req = new Request("https://staging.example.com/", {
+      headers: { [INTERIM_FORWARDED_HOST_HEADER]: "staging.example.com", accept: "text/html" },
+    });
+    const headers = upstreamHeaders(req, SETTINGS, [], "staging.example.com");
+    expect(headers.get(INTERIM_FORWARDED_HOST_HEADER)).toBeNull();
+    expect(headers.get("accept")).toBe("text/html");
   });
 });
 

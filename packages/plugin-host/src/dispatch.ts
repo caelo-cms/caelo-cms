@@ -450,6 +450,12 @@ export interface RenderScope {
    * it out, because a plugin would then reuse reads across passes.
    */
   readonly renderId?: string;
+  /**
+   * #650 — the public origin a static build renders for (see
+   * `PluginInvocation.siteBaseUrl`). Unset outside a build: core then
+   * builds URLs on the stored site base URL.
+   */
+  readonly siteBaseUrl?: string;
 }
 
 /** A render of the deployed site / live state: no branch. */
@@ -462,6 +468,7 @@ export function renderInvocation(scope: RenderScope): PluginInvocation {
     actorId: hostSystemActorId(),
     ...(scope.chatBranchId ? { chatBranchId: scope.chatBranchId } : {}),
     ...(scope.renderId ? { renderId: scope.renderId } : {}),
+    ...(scope.siteBaseUrl ? { siteBaseUrl: scope.siteBaseUrl } : {}),
   };
 }
 

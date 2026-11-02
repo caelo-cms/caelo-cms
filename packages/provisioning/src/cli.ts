@@ -63,6 +63,7 @@ import {
   BOOTSTRAP_DIR,
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   type ComposeImages,
   composeProjectName,
   generateDockerCompose,
@@ -307,6 +308,7 @@ function writeCaddyfile(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[]): void
     // localhost (#707).
     adminUpstream: COMPOSE_ADMIN_UPSTREAM,
     gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
+    mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
     domains: dedupeDomains([
       ...selfHostedSeedDomains(cfg.domain, cfg.stagingDomain),
       ...extraDomains,
@@ -1027,7 +1029,7 @@ async function upgradeSelfHostedCommand(opts: {
     console.error(
       "This is a DEV MODE install: the admin + gateway run your Caelo checkout, so there are\n" +
         "no images to upgrade. Update the checkout (git pull), then `bun packages/provisioning/src/cli.ts migrate` and\n" +
-        `\`docker compose -f ${COMPOSE_PATH} restart caelo-admin caelo-gateway\`.`,
+        `\`docker compose -f ${COMPOSE_PATH} restart caelo-admin caelo-gateway caelo-mcp-auth-proxy\`.`,
     );
     process.exit(2);
   }

@@ -314,7 +314,7 @@ describe("rotateRuntimeSecret", () => {
     projectId: "acme",
     region: "europe-west1",
     env: "production",
-    services: { admin: "adm-svc", gateway: "gw-svc" },
+    services: { admin: "adm-svc", gateway: "gw-svc", "mcp-auth-proxy": "px-svc" },
     sqlInstance: "caelo-production-pg-1",
   };
   const ref = (name: string, secret: string, version = "latest") => ({
@@ -336,6 +336,10 @@ describe("rotateRuntimeSecret", () => {
     ],
     "run services describe gw-svc": [
       service([ref("PUBLIC_DATABASE_PASSWORD", "public-role-password")]),
+    ],
+    // #1328 — the proxy reads none of the rotatable database secrets.
+    "run services describe px-svc": [
+      service([ref("CAELO_MCP_OAUTH_SEAL_KEY", "mcp-oauth-seal-key")]),
     ],
     "auth print-access-token": [ok("tok\n")],
   });

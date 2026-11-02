@@ -99,6 +99,12 @@ The operator can hide an entry in one language on purpose
 - Skill `international-qa` says how to fix each finding.
 - `language_links` is a list source (`listSources`): entries
   `{ href: link, label, locale, is_current: boolean }`, id = locale code.
+- Every URL the plugin emits (hreflang, sitemap alternates, switcher
+  links) is absolute and comes from core's `pages.resolve_public_urls`.
+  Inside a static build that op builds on the build's origin
+  (`PluginInvocation.siteBaseUrl`), so a Stage on its own staging host
+  links staging, exactly like its canonical (#650). A host-strategy
+  locale keeps its configured `url_host` on staging too.
 - `editor_languages` answers the plugin's place in the live editor's
   toolbar (`editorToolbar`, `docs/plugin-editor-toolbar.md`): the shown
   page's language code, its other versions (each opens in the editor),

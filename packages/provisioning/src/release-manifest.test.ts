@@ -240,6 +240,23 @@ describe("ReleaseManifestSchema", () => {
     const partial = { ...MANIFEST, platformDigests: { admin: d("1"), gateway: d("2") } };
     expect(ReleaseManifestSchema.safeParse(partial).success).toBe(false);
   });
+
+  it("#1328: mcp-auth-proxy is optional (older signed manifests lack it) and checked when present", () => {
+    // The canonical fixture is a pre-#1328 manifest: it names no proxy image.
+    expect("mcp-auth-proxy" in MANIFEST.digests).toBe(false);
+    const digests = { ...MANIFEST.digests, "mcp-auth-proxy": d("4") };
+    const platformDigests = {
+      admin: d("1"),
+      gateway: d("2"),
+      ops: d("3"),
+      "mcp-auth-proxy": d("5"),
+    };
+    const parsed = ReleaseManifestSchema.safeParse({ ...MANIFEST, digests, platformDigests });
+    expect(parsed.success && parsed.data.digests["mcp-auth-proxy"]).toBe(d("4"));
+    expect(parsed.success && parsed.data.platformDigests?.["mcp-auth-proxy"]).toBe(d("5"));
+    const bad = { ...MANIFEST, digests: { ...MANIFEST.digests, "mcp-auth-proxy": "sha256:nope" } };
+    expect(ReleaseManifestSchema.safeParse(bad).success).toBe(false);
+  });
 });
 
 describe("compareImageDigests", () => {
@@ -269,6 +286,14 @@ describe("compareImageDigests", () => {
     expect(compareImageDigests(MANIFEST, {}, { admin: d("1") })).toEqual([
       { image: "admin", form: "platform", expected: null, actual: d("1") },
     ]);
+  });
+
+  it("#1328: a resolved image the manifest does not sign (a pre-proxy release) never matches", () => {
+    expect(compareImageDigests(MANIFEST, { "mcp-auth-proxy": d("4") })).toEqual([
+      { image: "mcp-auth-proxy", form: "index", expected: null, actual: d("4") },
+    ]);
+    const signed = { ...MANIFEST, digests: { ...MANIFEST.digests, "mcp-auth-proxy": d("4") } };
+    expect(compareImageDigests(signed, { "mcp-auth-proxy": d("4") })).toEqual([]);
   });
 });
 

@@ -14,7 +14,8 @@
  *   4. start everything (`--remove-orphans` drops services an older Compose
  *      file had, e.g. the pgBackRest sidecar);
  *   5. health-check the admin (`/_caelo/health` proves the DB pool and its
- *      role) and the gateway;
+ *      role), the gateway and — when the release has one — the
+ *      MCP-Auth-Proxy (#1328);
  *   6. reload Caddy — Compose does not restart a running Caddy when only
  *      its bind-mounted Caddyfile changed, so a re-run `up` would otherwise
  *      keep serving the old vhosts.
@@ -22,8 +23,10 @@
  * stopped.
  */
 
+import { COMPOSE_MCP_AUTH_PROXY_SERVICE } from "./compose.js";
 import type { HostRunner } from "./self-hosted-release.js";
 import { compose, runMigrations, waitHealthy } from "./self-hosted-upgrade.js";
+import type { ReleaseService } from "./upgrade/release-images.js";
 
 export interface StartDeps {
   readonly caeloDir: string;
@@ -71,7 +74,22 @@ export async function startSelfHosted(deps: StartDeps): Promise<StartResult> {
   });
   if (up.exitCode !== 0) return fail("start", "docker compose up failed (see above).");
 
-  for (const service of ["admin", "gateway"] as const) {
+  // #1328 — the MCP-Auth-Proxy too, when the release this file runs has one
+  // (a release from before it has none; Compose knows which).
+  const listed = await runner.run(compose(caeloDir, "config", "--services"));
+  if (listed.exitCode !== 0) {
+    return fail("start", `docker compose config --services failed: ${listed.stderr.trim()}`);
+  }
+  const runsProxy = listed.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .includes(COMPOSE_MCP_AUTH_PROXY_SERVICE);
+  const services: ReleaseService[] = [
+    "admin",
+    "gateway",
+    ...(runsProxy ? (["mcp-auth-proxy"] as const) : []),
+  ];
+  for (const service of services) {
     log(`Waiting for the ${service} to answer its health check …`);
     const healthy = await waitHealthy(service, caeloDir, {
       runner,

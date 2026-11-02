@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 15;
+export const INFRA_CONTRACT_VERSION = 16;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -117,6 +117,20 @@ export const INFRA_CONTRACT_VERSION = 15;
 //       images refuse any database URL weaker than verify-full, and the
 //       in-cloud upgrader may neither patch the instance nor create a DNS
 //       zone, so it must not roll an install onto them first.
+//  16 — #1328: the MCP-Auth-Proxy, remote MCP's broker as a service of its
+//       own (no database, its own image). Its service account with
+//       secretAccessor on exactly the Google sign-in client and the seal
+//       key, and the upgrader's actAs on it. On `gcp-firebase` the visitor
+//       gateway moves to a new Cloud Run service (`caelo-<env>-data-gateway`,
+//       public invoker, the admin's run.viewer for the Firebase rewrite) and
+//       the old `gateway` service, whose run.app URL every connector holds
+//       (E13 a), becomes the proxy: new image, new account, no VPC, no
+//       database env. On `gcp` the proxy is a new service behind its own
+//       serverless NEG, backend service and Cloud Armor policy (the MCP rule
+//       moves there) and the URL map sends the MCP paths to it. New
+//       services, accounts, IAM and load-balancer resources — none of which
+//       the in-cloud upgrader may create, and the app-roll rolls three
+//       services from now on.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -139,6 +153,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   13: "the public site's security headers at the edge: nosniff on every file, uploaded SVGs no longer run as documents on the site's origin, and a one-time CDN purge (#891)",
   14: "the capture job that takes server-side screenshots outside the admin, its service account, bucket and grants (#1217)",
   15: "verified TLS to the database: Cloud SQL's shared server CA, encrypted connections only, and a private DNS name the services dial (#1338)",
+  16: "the MCP sign-in service as its own Cloud Run service with its own account (no database access), the visitor gateway as its own service on Firebase installs, and on Google Cloud load-balancer installs the sign-in service's backend and Cloud Armor rule (#1328)",
 };
 
 /**

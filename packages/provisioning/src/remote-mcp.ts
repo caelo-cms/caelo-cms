@@ -12,13 +12,13 @@
  *     (#1082: the stack is their one owner — stack-contract.ts says why
  *     they cannot be plain resource inputs), and
  *     {@link checkRemoteMcpIdentityEnv}, the read-only check after it.
- *   - {@link ensureRemoteMcpEdge} (`gcp` only): the load balancer's part for
- *     installs whose URL map / Cloud Armor policy predate it — the
- *     `/.well-known/oauth-*` path rules (the stack ignores `pathRules` after
- *     creation, gcp-url-map.ts) and the `/api/mcp/*` Cloud Armor rule
- *     (remote-mcp-edge.ts).
+ *   - {@link ensureRemoteMcpEdge} (`gcp` only): the MCP-Auth-Proxy's
+ *     load-balancer part (#1328) — its service, serverless NEG, backend and
+ *     own Cloud Armor policy with the `/api/mcp/*` rule (remote-mcp-edge.ts),
+ *     and the URL map's rule sending the remote-MCP paths to it (the stack
+ *     ignores `pathRules` after creation, gcp-url-map.ts).
  *
- * The secrets, the IAM bindings, the gateway's secret volume and timeout
+ * The secrets, the IAM bindings, the proxy's secret volume and timeout
  * come through the shared contract like everything else
  * (runtime-secrets.ts, stack-contract.ts, upgrade/app-roll.ts).
  *
@@ -28,13 +28,14 @@
  *
  * Nothing here enables remote MCP: that happens when the Owner sets up the
  * install's Google sign-in client (Settings → Google sign-in). Until then
- * the gateway answers 503 `remote_mcp_not_configured`.
+ * the MCP-Auth-Proxy answers its fixed 404.
  */
 
-import { GCP_PUBLIC_BASE_PATHS } from "@caelo-cms/shared";
+import { GCP_MCP_AUTH_PROXY_PATHS } from "@caelo-cms/shared";
 import { gcloud as defaultGcloud } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
-import { gcpNamePrefix } from "./gcp-names.js";
+import { gcpNamePrefix, mcpAuthProxyEdgeNames } from "./gcp-names.js";
+import { ensureMcpAuthProxyServiceGcp } from "./mcp-auth-proxy-setup.js";
 import {
   isMcpArmorRule,
   type LiveArmorRule,
@@ -43,7 +44,10 @@ import {
 } from "./remote-mcp-edge.js";
 import type { HttpFetch } from "./runtime-secrets.js";
 import {
+  CLOUD_RUN_SLUGS,
   type CloudRunSlug,
+  cloudRunServicePrefix,
+  fixedCloudRunServiceName,
   type GcpProvider,
   REMOTE_MCP_ENV,
   type RemoteMcpIdentity,
@@ -209,12 +213,15 @@ async function resolveServiceIdentity(
     const value = r.ok ? r.stdout.trim() : "";
     return value.startsWith("https://") ? value : null;
   };
+  // #1328 — the broker answers on the MCP-Auth-Proxy's URL: the service
+  // that was the gateway before (E13 a), so the URL connectors hold stays.
+  const proxyService = target.services["mcp-auth-proxy"];
   const adminUrl = await url(target.services.admin);
-  const gatewayUrl = await url(target.services.gateway);
-  if (!adminUrl || !gatewayUrl) {
+  const proxyUrl = await url(proxyService);
+  if (!adminUrl || !proxyUrl) {
     return {
       ok: false,
-      error: `read the Cloud Run URL of the ${adminUrl ? "gateway" : "admin"} service (${adminUrl ? target.services.gateway : target.services.admin})`,
+      error: `read the Cloud Run URL of the ${adminUrl ? "MCP-Auth-Proxy" : "admin"} service (${adminUrl ? proxyService : target.services.admin})`,
     };
   }
   return {
@@ -225,7 +232,7 @@ async function resolveServiceIdentity(
       region: target.region,
       adminServiceName: target.services.admin,
       adminServiceUrl: adminUrl,
-      gatewayServiceUrl: gatewayUrl,
+      mcpAuthProxyServiceUrl: proxyUrl,
     }),
   };
 }
@@ -262,8 +269,15 @@ export async function findRemoteMcpTarget(
 ): Promise<RemoteMcpResult<{ readonly target: RemoteMcpTarget }>> {
   const run = deps.run ?? defaultGcloud;
   const services: Partial<Record<CloudRunSlug, string>> = {};
-  for (const slug of ["admin", "gateway"] as const) {
-    const prefix = `${gcpNamePrefix(base.env)}-${slug}`;
+  for (const slug of CLOUD_RUN_SLUGS) {
+    // A service created under a fixed name needs no lookup — and on `gcp`
+    // the MCP-Auth-Proxy is created after the stack's first `up`.
+    const fixed = fixedCloudRunServiceName(base.provider, base.env, slug);
+    if (fixed) {
+      services[slug] = fixed;
+      continue;
+    }
+    const prefix = cloudRunServicePrefix(base.provider, base.env, slug);
     const lookup = await resolveGcpResourceName(
       run,
       "run-service",
@@ -331,8 +345,8 @@ export async function checkRemoteMcpIdentityEnv(
 ): Promise<RemoteMcpResult<{ readonly drift: Record<CloudRunSlug, EnvChange[]> }>> {
   const run = deps.run ?? defaultGcloud;
   const desired = remoteMcpIdentityEnv(identity);
-  const drift: Record<CloudRunSlug, EnvChange[]> = { admin: [], gateway: [] };
-  for (const slug of ["admin", "gateway"] as const) {
+  const drift: Record<CloudRunSlug, EnvChange[]> = { admin: [], gateway: [], "mcp-auth-proxy": [] };
+  for (const slug of CLOUD_RUN_SLUGS) {
     const described = await describeService(target, target.services[slug], run);
     if (!described.ok) return described;
     const plan = planEnvUpdate(liveContainerEnv(described.json), desired[slug]);
@@ -364,16 +378,32 @@ export interface LiveUrlMap {
 }
 
 export type UrlMapPathsPlan =
-  | { readonly ok: true; readonly map: LiveUrlMap; readonly added: string[] }
+  | {
+      readonly ok: true;
+      readonly map: LiveUrlMap;
+      /** What changed, for the log; empty when the map was already right. */
+      readonly changes: string[];
+    }
   | { readonly ok: false; readonly error: string };
 
+/** Whether a rule's `service` (a full self-link) is the backend service named `name`. */
+function targetsBackend(rule: UrlMapPathRule, name: string): boolean {
+  return rule.service?.endsWith(`/backendServices/${name}`) ?? false;
+}
+
 /**
- * The URL map with every {@link GCP_PUBLIC_BASE_PATHS} entry routed like
- * `/api/*` (to the gateway). Only the rule that carries `/api/*` changes;
- * redirect rules the admin wrote stay as they are. `added` is empty when the
- * map is already complete.
+ * #1328 — the URL map with the remote-MCP paths ({@link GCP_MCP_AUTH_PROXY_PATHS})
+ * on their own rule to the MCP-Auth-Proxy's backend, and none of them left
+ * on the gateway's `/api/*` rule (#806 put the discovery paths there). Only
+ * those two rules change; redirect rules the admin wrote stay as they are.
+ *
+ * @param proxyBackend the proxy backend's self-link
  */
-export function planUrlMapPaths(maps: readonly LiveUrlMap[], siteHost: string): UrlMapPathsPlan {
+export function planUrlMapPaths(
+  maps: readonly LiveUrlMap[],
+  siteHost: string,
+  proxyBackend: string,
+): UrlMapPathsPlan {
   const routing = maps.flatMap((m) =>
     (m.hostRules ?? [])
       .filter((h) => h.hosts.includes(siteHost))
@@ -387,47 +417,69 @@ export function planUrlMapPaths(maps: readonly LiveUrlMap[], siteHost: string): 
   }
   const { map, pathMatcher } = routing[0] as (typeof routing)[number];
   const matcher = (map.pathMatchers ?? []).find((m) => m.name === pathMatcher);
-  const gatewayRule = matcher?.pathRules?.find(
-    (r) => r.service !== undefined && r.urlRedirect === undefined && r.paths.includes("/api/*"),
-  );
-  if (!matcher || !gatewayRule) {
+  const isGatewayRule = (r: UrlMapPathRule) =>
+    r.service !== undefined && r.urlRedirect === undefined && r.paths.includes("/api/*");
+  if (!matcher || !(matcher.pathRules ?? []).some(isGatewayRule)) {
     return {
       ok: false,
       error: `URL map ${map.name} has no /api/* rule to the gateway in path matcher ${pathMatcher}; re-run the installer to restore the load balancer`,
     };
   }
-  const added = GCP_PUBLIC_BASE_PATHS.filter((p) => !gatewayRule.paths.includes(p));
-  if (added.length === 0) return { ok: true, map, added };
+  const proxyName = proxyBackend.slice(proxyBackend.lastIndexOf("/") + 1);
+  const changes: string[] = [];
+  const rules: UrlMapPathRule[] = [];
+  let proxyRule = false;
+  for (const r of matcher.pathRules ?? []) {
+    if (isGatewayRule(r)) {
+      const moved = r.paths.filter((p) => GCP_MCP_AUTH_PROXY_PATHS.includes(p));
+      if (moved.length > 0) changes.push(`moved ${moved.join(", ")} off the gateway's rule`);
+      rules.push({ ...r, paths: r.paths.filter((p) => !GCP_MCP_AUTH_PROXY_PATHS.includes(p)) });
+      continue;
+    }
+    if (targetsBackend(r, proxyName)) {
+      proxyRule = true;
+      const same =
+        r.paths.length === GCP_MCP_AUTH_PROXY_PATHS.length &&
+        GCP_MCP_AUTH_PROXY_PATHS.every((p) => r.paths.includes(p));
+      if (!same)
+        changes.push(`set the MCP-Auth-Proxy rule to ${GCP_MCP_AUTH_PROXY_PATHS.join(", ")}`);
+      rules.push({ ...r, paths: [...GCP_MCP_AUTH_PROXY_PATHS] });
+      continue;
+    }
+    rules.push(r);
+  }
+  if (!proxyRule) {
+    changes.push(`routed ${GCP_MCP_AUTH_PROXY_PATHS.join(", ")} to the MCP-Auth-Proxy`);
+    // Before the admin's redirect rules: GCP orders nothing by position for
+    // path rules (the longest match wins), but a stable place keeps diffs small.
+    const at = rules.findIndex(isGatewayRule) + 1;
+    rules.splice(at, 0, { paths: [...GCP_MCP_AUTH_PROXY_PATHS], service: proxyBackend });
+  }
+  if (changes.length === 0) return { ok: true, map, changes };
   const next: LiveUrlMap = {
     ...map,
     pathMatchers: (map.pathMatchers ?? []).map((m) =>
-      m !== matcher
-        ? m
-        : {
-            ...m,
-            pathRules: (m.pathRules ?? []).map((r) =>
-              r === gatewayRule ? { ...r, paths: [...r.paths, ...added] } : r,
-            ),
-          },
+      m !== matcher ? m : { ...m, pathRules: rules },
     ),
   };
-  return { ok: true, map: next, added };
+  return { ok: true, map: next, changes };
 }
 
 const COMPUTE_API = "https://compute.googleapis.com/compute/v1";
 const OPERATION_POLLS = 60;
 
 /**
- * Route the remote-MCP discovery paths to the gateway on an existing `gcp`
- * install: read the URL map, add the missing paths to its `/api/*` rule and
- * write it back through the Compute API (`urlMaps.update` carries the map's
- * fingerprint, so a concurrent write — the admin publishing redirects —
- * fails instead of being lost; a re-run then succeeds).
+ * Route the remote-MCP paths to the MCP-Auth-Proxy on a `gcp` install: read
+ * the URL map, apply {@link planUrlMapPaths} and write it back through the
+ * Compute API (`urlMaps.update` carries the map's fingerprint, so a
+ * concurrent write — the admin publishing redirects — fails instead of
+ * being lost; a re-run then succeeds).
  */
 export async function ensureUrlMapRemoteMcpPaths(
   target: Pick<RemoteMcpTarget, "projectId" | "domain">,
+  proxyBackend: string,
   deps: { run?: GcloudRunner; http?: HttpFetch; sleep?: (ms: number) => Promise<void> } = {},
-): Promise<RemoteMcpResult<{ readonly added: string[] }>> {
+): Promise<RemoteMcpResult<{ readonly changes: string[] }>> {
   const run = deps.run ?? defaultGcloud;
   const http = deps.http ?? (fetch as unknown as HttpFetch);
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -442,9 +494,9 @@ export async function ensureUrlMapRemoteMcpPaths(
   if (!list.ok) return { ok: false, error: `list URL maps: ${list.stderr.trim()}` };
   const maps = parseJson(list.stdout || "[]");
   if (!Array.isArray(maps)) return { ok: false, error: "list URL maps: output is not a JSON list" };
-  const plan = planUrlMapPaths(maps as LiveUrlMap[], target.domain);
+  const plan = planUrlMapPaths(maps as LiveUrlMap[], target.domain, proxyBackend);
   if (!plan.ok) return plan;
-  if (plan.added.length === 0) return { ok: true, added: [] };
+  if (plan.changes.length === 0) return { ok: true, changes: [] };
   const token = await run(["auth", "print-access-token"]);
   const bearer = token.ok ? token.stdout.trim() : "";
   if (!bearer)
@@ -481,13 +533,43 @@ export async function ensureUrlMapRemoteMcpPaths(
       error: `URL-map update failed: ${errors.map((e) => e.message).join("; ")}`,
     };
   }
-  return { ok: true, added: plan.added };
+  return { ok: true, changes: plan.changes };
 }
 
+/** A Cloud Armor policy's rules, or why they could not be read; `missing` when it does not exist. */
+async function describePolicyRules(
+  run: GcloudRunner,
+  policy: string,
+  project: string,
+): Promise<
+  | { readonly ok: true; readonly rules: LiveArmorRule[] }
+  | { readonly ok: false; readonly missing: boolean; readonly error: string }
+> {
+  const describe = await run([
+    "compute",
+    "security-policies",
+    "describe",
+    policy,
+    project,
+    "--format=json",
+  ]);
+  if (!describe.ok) {
+    return { ok: false, missing: NOT_FOUND.test(describe.stderr), error: describe.stderr.trim() };
+  }
+  const described = parseJson(describe.stdout) as { rules?: LiveArmorRule[] } | null;
+  if (!described)
+    return { ok: false, missing: false, error: `describe ${policy}: output is not JSON` };
+  return { ok: true, rules: described.rules ?? [] };
+}
+
+const NOT_FOUND = /NOT_FOUND|not found|was not found|does not exist/i;
+
 /**
- * Give the gateway's Cloud Armor policy the `/api/mcp/*` rule
- * ({@link MCP_ARMOR_RULE}): create it, or bring a rule at its priority back
- * to spec.
+ * #1328 — the MCP-Auth-Proxy's own Cloud Armor policy with the `/api/mcp/*`
+ * rule ({@link MCP_ARMOR_RULE}; remote-mcp-edge.ts says why): created when
+ * missing, a rule at its priority brought back to spec. Everything else the
+ * policy's default rule allows: the proxy rate-limits every route itself
+ * (apps/mcp-auth-proxy rate-limit.ts).
  */
 export async function ensureMcpArmorRule(
   target: Pick<RemoteMcpTarget, "projectId" | "env">,
@@ -497,37 +579,23 @@ export async function ensureMcpArmorRule(
 > {
   const run = deps.run ?? defaultGcloud;
   const project = `--project=${target.projectId}`;
-  const prefix = `${gcpNamePrefix(target.env)}-waf`;
-  const list = await run([
-    "compute",
-    "security-policies",
-    "list",
-    project,
-    `--filter=name~^${prefix}`,
-    "--format=value(name)",
-  ]);
-  if (!list.ok) return { ok: false, error: `list security policies: ${list.stderr.trim()}` };
-  const names = lines(list.stdout);
-  if (names.length !== 1) {
-    return {
-      ok: false,
-      error: `expected exactly one ${prefix}* Cloud Armor policy, found ${names.length}`,
-    };
+  const { policy } = mcpAuthProxyEdgeNames(target.env);
+  let described = await describePolicyRules(run, policy, project);
+  if (!described.ok && described.missing) {
+    const created = await run([
+      "compute",
+      "security-policies",
+      "create",
+      policy,
+      project,
+      `--description=Caelo ${target.env} MCP-Auth-Proxy — remote-MCP throttle`,
+      "--quiet",
+    ]);
+    if (!created.ok) return { ok: false, error: `create ${policy}: ${created.stderr.trim()}` };
+    described = await describePolicyRules(run, policy, project);
   }
-  const policy = names[0] as string;
-  const describe = await run([
-    "compute",
-    "security-policies",
-    "describe",
-    policy,
-    project,
-    "--format=json",
-  ]);
-  if (!describe.ok) return { ok: false, error: `describe ${policy}: ${describe.stderr.trim()}` };
-  const described = parseJson(describe.stdout) as { rules?: LiveArmorRule[] } | null;
-  if (!described) return { ok: false, error: `describe ${policy}: output is not JSON` };
-  const rules = described.rules ?? [];
-  const existing = rules.find((r) => r.priority === MCP_ARMOR_RULE.priority);
+  if (!described.ok) return { ok: false, error: `describe ${policy}: ${described.error}` };
+  const existing = described.rules.find((r) => r.priority === MCP_ARMOR_RULE.priority);
   if (existing && isMcpArmorRule(existing)) return { ok: true, policy, action: "present" };
   const verb = existing ? "update" : "create";
   const r = await run([
@@ -549,22 +617,213 @@ export async function ensureMcpArmorRule(
   return { ok: true, policy, action: existing ? "updated" : "created" };
 }
 
-/** Both load-balancer parts on `gcp`; a no-op success on `gcp-firebase`. */
+/**
+ * #1328 — drop the `/api/mcp/*` rule #806 put on the gateway's policy, once
+ * the URL map no longer sends those paths to the gateway: there it would
+ * only exempt matching paths from the OWASP packs and the ban. A rule at the
+ * priority that is not exactly the MCP rule is someone's own and stays.
+ */
+export async function retireGatewayMcpArmorRule(
+  target: Pick<RemoteMcpTarget, "projectId" | "env">,
+  deps: { run?: GcloudRunner } = {},
+): Promise<RemoteMcpResult<{ readonly removed: string | null }>> {
+  const run = deps.run ?? defaultGcloud;
+  const project = `--project=${target.projectId}`;
+  const prefix = `${gcpNamePrefix(target.env)}-waf`;
+  const list = await run([
+    "compute",
+    "security-policies",
+    "list",
+    project,
+    `--filter=name~^${prefix}`,
+    "--format=value(name)",
+  ]);
+  if (!list.ok) return { ok: false, error: `list security policies: ${list.stderr.trim()}` };
+  const names = lines(list.stdout);
+  if (names.length !== 1) {
+    return {
+      ok: false,
+      error: `expected exactly one ${prefix}* Cloud Armor policy, found ${names.length}`,
+    };
+  }
+  const policy = names[0] as string;
+  const described = await describePolicyRules(run, policy, project);
+  if (!described.ok) return { ok: false, error: `describe ${policy}: ${described.error}` };
+  const rule = described.rules.find((r) => r.priority === MCP_ARMOR_RULE.priority);
+  if (!rule || !isMcpArmorRule(rule)) return { ok: true, removed: null };
+  const r = await run([
+    "compute",
+    "security-policies",
+    "rules",
+    "delete",
+    String(MCP_ARMOR_RULE.priority),
+    `--security-policy=${policy}`,
+    project,
+    "--quiet",
+  ]);
+  if (!r.ok) {
+    return {
+      ok: false,
+      error: `delete rule ${MCP_ARMOR_RULE.priority} on ${policy}: ${r.stderr.trim()}`,
+    };
+  }
+  return { ok: true, removed: policy };
+}
+
+/**
+ * #1328 — the proxy's serverless NEG and backend service (EXTERNAL_MANAGED,
+ * its own Cloud Armor policy), created when missing. Returns the backend's
+ * self-link for the URL map.
+ */
+export async function ensureMcpAuthProxyBackend(
+  target: Pick<RemoteMcpTarget, "projectId" | "region" | "env">,
+  deps: { run?: GcloudRunner } = {},
+): Promise<RemoteMcpResult<{ readonly backend: string; readonly done: string[] }>> {
+  const run = deps.run ?? defaultGcloud;
+  const project = `--project=${target.projectId}`;
+  const names = mcpAuthProxyEdgeNames(target.env);
+  const service = fixedCloudRunServiceName("gcp", target.env, "mcp-auth-proxy") as string;
+  const done: string[] = [];
+  const neg = await run([
+    "compute",
+    "network-endpoint-groups",
+    "describe",
+    names.neg,
+    `--region=${target.region}`,
+    project,
+    "--format=value(name)",
+  ]);
+  if (!neg.ok) {
+    if (!NOT_FOUND.test(neg.stderr))
+      return { ok: false, error: `describe ${names.neg}: ${neg.stderr.trim()}` };
+    const created = await run([
+      "compute",
+      "network-endpoint-groups",
+      "create",
+      names.neg,
+      `--region=${target.region}`,
+      project,
+      "--network-endpoint-type=serverless",
+      `--cloud-run-service=${service}`,
+      "--quiet",
+    ]);
+    if (!created.ok) return { ok: false, error: `create ${names.neg}: ${created.stderr.trim()}` };
+    done.push(`created serverless NEG ${names.neg} → ${service}`);
+  }
+  const backend = await run([
+    "compute",
+    "backend-services",
+    "describe",
+    names.backend,
+    "--global",
+    project,
+    "--format=json",
+  ]);
+  let backendJson: { selfLink?: string; securityPolicy?: string; backends?: { group?: string }[] };
+  if (!backend.ok) {
+    if (!NOT_FOUND.test(backend.stderr)) {
+      return { ok: false, error: `describe ${names.backend}: ${backend.stderr.trim()}` };
+    }
+    const created = await run([
+      "compute",
+      "backend-services",
+      "create",
+      names.backend,
+      "--global",
+      project,
+      "--load-balancing-scheme=EXTERNAL_MANAGED",
+      "--protocol=HTTPS",
+      `--security-policy=${names.policy}`,
+      "--format=json",
+      "--quiet",
+    ]);
+    if (!created.ok)
+      return { ok: false, error: `create ${names.backend}: ${created.stderr.trim()}` };
+    done.push(`created backend service ${names.backend} (Cloud Armor ${names.policy})`);
+    const parsed = parseJson(created.stdout);
+    backendJson = (Array.isArray(parsed) ? parsed[0] : parsed) ?? {};
+  } else {
+    backendJson = (parseJson(backend.stdout) ?? {}) as typeof backendJson;
+    if (!backendJson.securityPolicy?.endsWith(`/securityPolicies/${names.policy}`)) {
+      const set = await run([
+        "compute",
+        "backend-services",
+        "update",
+        names.backend,
+        "--global",
+        project,
+        `--security-policy=${names.policy}`,
+        "--quiet",
+      ]);
+      if (!set.ok) return { ok: false, error: `attach ${names.policy}: ${set.stderr.trim()}` };
+      done.push(`attached Cloud Armor ${names.policy} to ${names.backend}`);
+    }
+  }
+  if (
+    !(backendJson.backends ?? []).some((b) =>
+      b.group?.endsWith(`/networkEndpointGroups/${names.neg}`),
+    )
+  ) {
+    const added = await run([
+      "compute",
+      "backend-services",
+      "add-backend",
+      names.backend,
+      "--global",
+      project,
+      `--network-endpoint-group=${names.neg}`,
+      `--network-endpoint-group-region=${target.region}`,
+      "--quiet",
+    ]);
+    if (!added.ok)
+      return { ok: false, error: `add ${names.neg} to ${names.backend}: ${added.stderr.trim()}` };
+    done.push(`added ${names.neg} to ${names.backend}`);
+  }
+  const selfLink =
+    backendJson.selfLink ??
+    `https://www.googleapis.com/compute/v1/projects/${target.projectId}/global/backendServices/${names.backend}`;
+  return { ok: true, backend: selfLink, done };
+}
+
+/**
+ * The MCP-Auth-Proxy's load-balancer part on `gcp`, in the order that never
+ * routes a request to something that is not there yet: its service (created
+ * once with the release's image; mcp-auth-proxy-setup.ts), its Cloud Armor
+ * policy, NEG and backend, the URL map's MCP rule, and last the old MCP rule
+ * off the gateway's policy. A no-op success on `gcp-firebase`, where the
+ * proxy is reached on its own run.app URL.
+ */
 export async function ensureRemoteMcpEdge(
-  target: Pick<RemoteMcpTarget, "provider" | "projectId" | "env" | "domain">,
+  target: Pick<RemoteMcpTarget, "provider" | "projectId" | "region" | "env" | "domain"> & {
+    /** The release's digest-pinned proxy image, for a proxy service that does not exist yet. */
+    readonly mcpAuthProxyImageRef: string;
+  },
   deps: { run?: GcloudRunner; http?: HttpFetch; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<RemoteMcpResult<{ readonly done: string[] }>> {
   if (target.provider !== "gcp") return { ok: true, done: [] };
+  const run = deps.run ?? defaultGcloud;
   const done: string[] = [];
-  const armor = await ensureMcpArmorRule(target, deps);
+  const service = await ensureMcpAuthProxyServiceGcp({ ...target, provider: "gcp" }, run);
+  if (service.status === "failed")
+    return { ok: false, error: `${service.id}: ${service.error ?? ""}` };
+  done.push(`${service.id}: ${service.status}`);
+  const armor = await ensureMcpArmorRule(target, { run });
   if (!armor.ok) return { ok: false, error: `Cloud Armor: ${armor.error}` };
   done.push(`Cloud Armor rule ${MCP_ARMOR_RULE.priority} on ${armor.policy}: ${armor.action}`);
-  const paths = await ensureUrlMapRemoteMcpPaths(target, deps);
+  const backend = await ensureMcpAuthProxyBackend(target, { run });
+  if (!backend.ok) return { ok: false, error: `backend: ${backend.error}` };
+  done.push(...backend.done);
+  const paths = await ensureUrlMapRemoteMcpPaths(target, backend.backend, deps);
   if (!paths.ok) return { ok: false, error: `URL map: ${paths.error}` };
   done.push(
-    paths.added.length > 0
-      ? `URL map: routed ${paths.added.join(", ")} to the gateway`
-      : "URL map: discovery paths already routed to the gateway",
+    paths.changes.length > 0
+      ? `URL map: ${paths.changes.join("; ")}`
+      : "URL map: remote-MCP paths already routed to the MCP-Auth-Proxy",
   );
+  const retired = await retireGatewayMcpArmorRule(target, { run });
+  if (!retired.ok) return { ok: false, error: `gateway Cloud Armor: ${retired.error}` };
+  if (retired.removed) {
+    done.push(`removed the remote-MCP rule ${MCP_ARMOR_RULE.priority} from ${retired.removed}`);
+  }
   return { ok: true, done };
 }

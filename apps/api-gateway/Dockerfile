@@ -3,8 +3,8 @@
 # Caelo CMS — API gateway.
 #
 # Public-facing HTTP entry point for visitor writes (form submissions,
-# comments, newsletter signups) and the remote-MCP OAuth broker. It is the
-# one service that takes untrusted traffic (CLAUDE.md §11.B Tier 3), so the
+# comments, newsletter signups). Remote MCP is the MCP-Auth-Proxy's
+# (apps/mcp-auth-proxy, #1328). It takes untrusted visitor traffic (CLAUDE.md §11.B Tier 3), so the
 # image is minimal (issue #1327):
 #
 #   - the server is a Bun bundle (apps/api-gateway/dist), not the monorepo;

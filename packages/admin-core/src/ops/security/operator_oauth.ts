@@ -9,7 +9,7 @@
  * programmatic access, and the remote-MCP broker (#806). Never a second one.
  *
  * The secret lives in Secret Manager, written by the admin's setup flow
- * (security/google-sign-in/configure.ts) and read by the gateway's broker
+ * (security/google-sign-in/configure.ts) and read by the MCP-Auth-Proxy's broker
  * and the operator-access sync job. The ID is stored here for the sync job,
  * which sets the project's IAP `oauthSettings` to exactly this client
  * ({@link operatorOAuthClientForSyncOp}), for the setup pages, and for the

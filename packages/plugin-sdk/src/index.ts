@@ -1790,6 +1790,15 @@ export interface PluginInvocation {
    * in between. Absent outside a render pass.
    */
   readonly renderId?: string;
+  /**
+   * #650 — set for origin `render` by a static build: the public origin
+   * the build renders for (`https://staging.<domain>` on a Stage with its
+   * own staging host, else the site base URL). Core operations the plugin
+   * calls during the render build page URLs on this origin, so hreflang,
+   * sitemap alternates and switcher links match the build's canonical.
+   * Set by the host only; a plugin reads it, never chooses it.
+   */
+  readonly siteBaseUrl?: string;
 }
 
 /** Prefix of the error the host throws when a plugin calls `ctx.ai` or

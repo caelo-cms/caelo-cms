@@ -15,7 +15,14 @@ import { gcloud as defaultGcloud } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import { GCP_STACK_ENV, gcpNamePrefix } from "./gcp-names.js";
 import type { ImageDigests } from "./install-state.js";
-import { type CloudRunSlug, RETIRED_SERVICE_ENV, SERVICE_SECRET_ENV } from "./stack-contract.js";
+import {
+  CLOUD_RUN_SLUGS,
+  type CloudRunSlug,
+  cloudRunServicePrefix,
+  type GcpProvider,
+  RETIRED_SERVICE_ENV,
+  SERVICE_SECRET_ENV,
+} from "./stack-contract.js";
 import { liveContainerEnv } from "./stack-converge.js";
 
 /** The `sha256:…` digest an image reference pins, or null for a tag reference. */
@@ -23,13 +30,13 @@ export function digestFromImageRef(ref: string): string | null {
   return ref.trim().match(/@(sha256:[0-9a-f]{64})$/)?.[1] ?? null;
 }
 
-/** The single deployed (Pulumi-suffixed) Cloud Run service for `slug`. */
+/** The single deployed Cloud Run service playing `slug` (stack-contract.ts cloudRunServicePrefix). */
 async function findDeployedService(
   run: GcloudRunner,
-  opts: { projectId: string; region: string },
+  opts: { provider: GcpProvider; projectId: string; region: string },
   slug: CloudRunSlug,
 ): Promise<{ ok: true; name: string } | { ok: false; error: string }> {
-  const prefix = `${gcpNamePrefix(GCP_STACK_ENV)}-${slug}`;
+  const prefix = cloudRunServicePrefix(opts.provider, GCP_STACK_ENV, slug);
   const list = await run([
     "run",
     "services",
@@ -47,7 +54,10 @@ async function findDeployedService(
   if (names.length !== 1) {
     return {
       ok: false,
-      error: `expected one ${prefix}* Cloud Run service, found ${names.length === 0 ? "none" : names.join(", ")}`,
+      error:
+        names.length === 0
+          ? `no ${prefix}* Cloud Run service: the install runs a release from before it (the ${slug} became its own service in #1328). Run \`upgrade\` first: it creates the service and moves the release over.`
+          : `expected one ${prefix}* Cloud Run service, found ${names.join(", ")}`,
     };
   }
   return { ok: true, name: names[0] as string };
@@ -68,12 +78,13 @@ async function findDeployedService(
  * and the env in one revision.
  */
 export async function checkDeployedRuntimeEnv(opts: {
+  provider: GcpProvider;
   projectId: string;
   region: string;
   run?: GcloudRunner;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const run = opts.run ?? defaultGcloud;
-  for (const slug of ["admin", "gateway"] as const) {
+  for (const slug of CLOUD_RUN_SLUGS) {
     const found = await findDeployedService(run, opts, slug);
     if (!found.ok) return found;
     const describe = await run([
@@ -109,18 +120,19 @@ export async function checkDeployedRuntimeEnv(opts: {
 }
 
 /**
- * Read the image digests the admin and gateway services run. Fails, naming
+ * Read the image digests the Cloud Run services run. Fails, naming
  * what is missing, when a service can't be found unambiguously or doesn't
  * run a digest-pinned image.
  */
 export async function readDeployedImageDigests(opts: {
+  provider: GcpProvider;
   projectId: string;
   region: string;
   run?: GcloudRunner;
 }): Promise<{ ok: true; digests: ImageDigests } | { ok: false; error: string }> {
   const run = opts.run ?? defaultGcloud;
-  const digests = { admin: "", gateway: "" };
-  for (const slug of ["admin", "gateway"] as const) {
+  const digests: Record<CloudRunSlug, string> = { admin: "", gateway: "", "mcp-auth-proxy": "" };
+  for (const slug of CLOUD_RUN_SLUGS) {
     const found = await findDeployedService(run, opts, slug);
     if (!found.ok) return found;
     const image = await run([
@@ -170,6 +182,15 @@ export async function chooseImageDigests(opts: {
   readonly readLive: () => ReturnType<typeof readDeployedImageDigests>;
   readonly resolveLatest: () => Promise<ImageDigests>;
 }): Promise<DigestChoice> {
+  if (opts.recorded && !opts.recorded["mcp-auth-proxy"]) {
+    // #1328 — the release it records predates the MCP-Auth-Proxy: this
+    // installer's stack would deploy a proxy image of another release.
+    return {
+      ok: false,
+      error:
+        "This install runs a release from before the MCP-Auth-Proxy (its install.json records no mcp-auth-proxy image). Run `upgrade` first — it sets the proxy up and records the release — then re-run the installer.",
+    };
+  }
   if (opts.recorded) return { ok: true, source: "recorded", digests: opts.recorded };
   if (!opts.deployed) return { ok: true, source: "latest", digests: await opts.resolveLatest() };
   const live = await opts.readLive();

@@ -4,7 +4,7 @@
  * Shared fakes for the remote-MCP tests (#806): a router wired to an
  * injected fetch that plays Google's token endpoint, CIMD hosts and the
  * admin, and helpers that walk the OAuth flow (consent page included) the
- * way a browser does. Test-only; not imported by the gateway.
+ * way a browser does. Test-only; not imported by the proxy.
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -213,7 +213,7 @@ export function harness(opts: HarnessOptions = {}): Harness {
     nowSeconds: () => Math.floor(now / 1000),
     async send(path, init, clientAddress = CLIENT_IP) {
       const res = await router(new Request(`${PUBLIC}${path}`, init), {
-        clientAddress,
+        clientAddress: () => clientAddress,
         setIdleTimeout: () => {},
       });
       if (!res) throw new Error(`router declined ${path}`);

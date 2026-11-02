@@ -31,6 +31,7 @@ import {
   CADDY_IMAGE,
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   COMPOSE_REDIRECT_SNIPPETS,
   SITE_OUTPUT_ROOT,
 } from "./compose.js";
@@ -149,6 +150,7 @@ describe.skipIf(!dockerUp)(`self-hosted redirects through ${CADDY_IMAGE}`, () =>
         stagingSiteRoot: `${SITE_OUTPUT_ROOT}/output/staging/current`,
         adminUpstream: COMPOSE_ADMIN_UPSTREAM,
         gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
+        mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
         domains: selfHostedSeedDomains(LIVE, STAGING),
       }),
     );

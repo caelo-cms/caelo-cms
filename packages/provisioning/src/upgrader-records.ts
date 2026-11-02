@@ -30,14 +30,16 @@
 import type { GcloudRunner } from "./gcloud-retry.js";
 import type { ImageDigests, InstallMetadata } from "./install-state.js";
 import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
-import type { RollSlug } from "./upgrade/app-roll.js";
+import { ROLL_ORDER, type RollSlug } from "./upgrade/app-roll.js";
 import type { ReleaseImageForms } from "./upgrade/image-forms.js";
 import { releaseVersionForDigest } from "./upgrade/release-images.js";
 
 /** Every digest each serving image is known by (gcp-lookup.ts servingImageDigests). */
 export type ServingDigests = Readonly<Record<RollSlug, readonly string[]>>;
 
-const SLUGS: readonly RollSlug[] = ["admin", "gateway"];
+// #1328 — the MCP-Auth-Proxy serves on every install this code runs on (the
+// upgrader runs only on installs converged to its contract).
+const SLUGS: readonly RollSlug[] = ROLL_ORDER;
 
 /**
  * Whether install.json names the images that serve: per service, the
@@ -50,11 +52,14 @@ export function recordMatchesServing(
 ): boolean {
   const { imageDigests, platformDigests } = recorded;
   if (!imageDigests) return false;
-  return SLUGS.every(
-    (slug) =>
-      serving[slug].includes(imageDigests[slug]) ||
-      (platformDigests !== undefined && serving[slug].includes(platformDigests[slug])),
-  );
+  return SLUGS.every((slug) => {
+    const index = imageDigests[slug];
+    const platform = platformDigests?.[slug];
+    return (
+      (index !== undefined && serving[slug].includes(index)) ||
+      (platform !== undefined && serving[slug].includes(platform))
+    );
+  });
 }
 
 /** What {@link findServingRelease} learned. */
@@ -139,7 +144,7 @@ export async function findServingRelease(
     if (judged.matching.length > 0) {
       const other = SLUGS.filter((s) => !judged.matching.includes(s));
       partial.push(
-        `the ${judged.matching.join(", ")} serves v${m.version}'s image, the ${other.join(", ")} does not`,
+        `${serviceList(judged.matching)} ${judged.matching.length > 1 ? "serve" : "serves"} v${m.version}'s image, ${serviceList(other)} ${other.length > 1 ? "do" : "does"} not`,
       );
     }
   }
@@ -162,7 +167,7 @@ export async function findServingRelease(
       ...(unverified.length > 0
         ? [`These release records could not be verified: ${unverified.join("; ")}.`]
         : []),
-      "Nothing was changed. Check who deployed these images (the Cloud Run revision history of both services); an upgrade with Cloud Shell puts a signed release back.",
+      "Nothing was changed. Check who deployed these images (the Cloud Run revision history of the services); an upgrade with Cloud Shell puts a signed release back.",
     ].join(" "),
   };
 }
@@ -189,7 +194,10 @@ async function judgeRelease(
   const matching: RollSlug[] = [];
   const platform: Partial<Record<RollSlug, string>> = {};
   for (const slug of SLUGS) {
-    if (serving[slug].includes(m.digests[slug])) {
+    const index = m.digests[slug];
+    // #1328 — a release from before the proxy cannot be what serves here.
+    if (!index) continue;
+    if (serving[slug].includes(index)) {
       matching.push(slug);
       const signed = m.platformDigests?.[slug];
       if (signed) platform[slug] = signed;
@@ -205,10 +213,12 @@ async function judgeRelease(
     }
   }
   const { admin, gateway } = platform;
+  const proxy = platform["mcp-auth-proxy"];
   return {
     kind: "judged",
     matching,
-    platformDigests: admin && gateway ? { admin, gateway } : null,
+    platformDigests:
+      admin && gateway ? { admin, gateway, ...(proxy ? { "mcp-auth-proxy": proxy } : {}) } : null,
   };
 }
 
@@ -244,4 +254,11 @@ async function* candidateVersions(
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** `the admin`, `the gateway and the MCP-Auth-Proxy`, … for the refusal text. */
+function serviceList(slugs: readonly RollSlug[]): string {
+  const names = slugs.map((s) => (s === "mcp-auth-proxy" ? "the MCP-Auth-Proxy" : `the ${s}`));
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }

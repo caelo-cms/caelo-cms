@@ -6,8 +6,8 @@
  *
  * `.caelo/release.json` is the install metadata for self-hosted (the cloud
  * providers keep theirs in `~/.caelo-<id>/install.json`): the release
- * version, the digest-pinned admin + gateway image references the Compose
- * file runs, and a short history of installs/upgrades/rollbacks. It holds no
+ * version, the digest-pinned image references the Compose file runs (admin,
+ * gateway, and since #1328 the MCP-Auth-Proxy), and a short history of installs/upgrades/rollbacks. It holds no
  * secrets (config.json does), so it is safe to read from tooling and
  * backups; writes refuse secret material like install.json's do.
  *
@@ -27,6 +27,7 @@ import {
   GHCR_NAMESPACE,
   GHCR_REGISTRY,
   RELEASE_SERVICES,
+  type ReleaseService,
   resolveRegistryDigest,
 } from "./upgrade/release-images.js";
 
@@ -103,7 +104,12 @@ export interface ReleaseHistoryEntry {
 export interface SelfHostedRelease {
   /** The release tag the images were resolved from (e.g. `0.10.43`). */
   readonly version: string;
-  readonly images: { readonly admin: string; readonly gateway: string };
+  readonly images: {
+    readonly admin: string;
+    readonly gateway: string;
+    /** #1328 — absent in records of releases from before the MCP-Auth-Proxy. */
+    readonly "mcp-auth-proxy"?: string;
+  };
   readonly installedAt: string;
   /** Newest last; capped at {@link HISTORY_LIMIT}. */
   readonly history: readonly ReleaseHistoryEntry[];
@@ -117,7 +123,17 @@ export function releasePath(caeloDir: string): string {
 
 /** The images of a recorded release, as the Compose generator takes them. */
 export function releaseImages(release: SelfHostedRelease): ReleaseImages {
-  return { mode: "release", admin: release.images.admin, gateway: release.images.gateway };
+  return { mode: "release", ...release.images };
+}
+
+/** The image references of `images`, as release.json stores them. */
+function recordedImages(images: ReleaseImages): SelfHostedRelease["images"] {
+  const proxy = images["mcp-auth-proxy"];
+  return {
+    admin: images.admin,
+    gateway: images.gateway,
+    ...(proxy !== undefined ? { "mcp-auth-proxy": proxy } : {}),
+  };
 }
 
 /**
@@ -131,10 +147,12 @@ export function readRelease(caeloDir: string): SelfHostedRelease | null {
   const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<SelfHostedRelease>;
   const admin = raw.images?.admin ?? "";
   const gateway = raw.images?.gateway ?? "";
+  const proxy = raw.images?.["mcp-auth-proxy"];
   if (
     typeof raw.version !== "string" ||
     !ghcrImageDigest("admin", admin) ||
-    !ghcrImageDigest("gateway", gateway)
+    !ghcrImageDigest("gateway", gateway) ||
+    (proxy !== undefined && !ghcrImageDigest("mcp-auth-proxy", proxy))
   ) {
     throw new Error(
       `${path} is malformed (needs version + digest-pinned ghcr.io/caelo-cms images); fix it or re-run \`${selfCommand("upgrade", "--version", "<x.y.z>")}\`.`,
@@ -142,7 +160,7 @@ export function readRelease(caeloDir: string): SelfHostedRelease | null {
   }
   return {
     version: raw.version,
-    images: { admin, gateway },
+    images: { admin, gateway, ...(proxy !== undefined ? { "mcp-auth-proxy": proxy } : {}) },
     installedAt: raw.installedAt ?? "",
     history: Array.isArray(raw.history) ? raw.history : [],
   };
@@ -162,7 +180,7 @@ export function recordRelease(
   const at = now.toISOString();
   const record: SelfHostedRelease = {
     version: next.version,
-    images: { admin: next.images.admin, gateway: next.images.gateway },
+    images: recordedImages(next.images),
     installedAt:
       prior && prior.version === next.version && entry.outcome === "rolled-back"
         ? prior.installedAt
@@ -195,7 +213,7 @@ export type VerifiedRelease =
   | { readonly ok: false; readonly error: string };
 
 /**
- * Resolve the admin + gateway images of release `tag` in GHCR to digests,
+ * Resolve every release image of `tag` (RELEASE_SERVICES) in GHCR to digests,
  * then cosign-verify each digest against the Caelo release workflow
  * identity (unless `skipVerify`, the escape hatch for forks). The returned
  * references are digest-pinned, so what was verified is exactly what runs.
@@ -209,7 +227,7 @@ export async function resolveVerifiedRelease(
     readonly onProgress?: (message: string) => void;
   },
 ): Promise<VerifiedRelease> {
-  const refs: Partial<Record<"admin" | "gateway", string>> = {};
+  const refs: Partial<Record<ReleaseService, string>> = {};
   for (const service of RELEASE_SERVICES) {
     deps.onProgress?.(`Resolving ${GHCR_REGISTRY}/${GHCR_NAMESPACE}/${service}:${tag}`);
     const r = await resolveRegistryDigest(
@@ -218,6 +236,14 @@ export async function resolveVerifiedRelease(
       tag,
       deps.fetchImpl,
     );
+    if (!r.ok && r.notFound && service === "mcp-auth-proxy") {
+      // #1328 — releases from before the MCP-Auth-Proxy ship no image of it,
+      // and they stay installable and rollback targets: their Compose file
+      // simply has no proxy (ReleaseImages models the absence). Only a
+      // registry verdict that the tag does not exist means that; an outage
+      // still fails below, never silently installs a release without it.
+      continue;
+    }
     if (!r.ok) {
       return {
         ok: false,
@@ -228,10 +254,12 @@ export async function resolveVerifiedRelease(
     }
     refs[service] = ghcrImageRef(service, r.digest);
   }
+  const proxy = refs["mcp-auth-proxy"];
   const images: ReleaseImages = {
     mode: "release",
     admin: refs.admin ?? "",
     gateway: refs.gateway ?? "",
+    ...(proxy ? { "mcp-auth-proxy": proxy } : {}),
   };
   if (deps.skipVerify) return { ok: true, images };
 
@@ -246,13 +274,15 @@ export async function resolveVerifiedRelease(
     };
   }
   for (const service of RELEASE_SERVICES) {
+    const ref = images[service];
+    if (ref === undefined) continue;
     deps.onProgress?.(`Verifying the signature of ${service}`);
-    const v = await deps.runner.run(cosignVerifyArgv(images[service]));
+    const v = await deps.runner.run(cosignVerifyArgv(ref));
     if (v.exitCode !== 0) {
       return {
         ok: false,
         error:
-          `cosign verify FAILED for ${images[service]}: its signature does not match the Caelo release workflow.\n` +
+          `cosign verify FAILED for ${ref}: its signature does not match the Caelo release workflow.\n` +
           "Either the registry was compromised, the image is a fork's, or sigstore had an outage (retry).\n" +
           `cosign: ${v.stderr.trim().slice(0, 500)}`,
       };

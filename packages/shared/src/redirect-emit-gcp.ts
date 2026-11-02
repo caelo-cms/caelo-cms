@@ -161,19 +161,32 @@ export function assertGcpRedirectBudget(
   withGcpRedirects({ name: "budget-check", pathRules: baseRules }, plan);
 }
 
+/** The paths the `gcp` load balancer sends to the visitor gateway: its whole API. */
+export const GCP_GATEWAY_PATHS: readonly string[] = ["/api/*"];
+
 /**
- * The site's own routing in the `public` path matcher (stack + budget): the
- * paths the load balancer sends to the gateway instead of the static bucket.
- * `/api/*` is the gateway's whole API, the remote-MCP broker included
- * (#806). The two `/.well-known/oauth-*` prefixes are the broker's
- * discovery documents, which MCP clients look up at the host root (RFC 9728
- * protected-resource metadata, RFC 8414 authorization-server metadata) —
- * they must reach the gateway, not 404 in the bucket. No
- * `openid-configuration` prefix: the broker is not an OpenID provider and
- * serves no such document (#899), so the site keeps that path.
+ * #1328 — the paths the `gcp` load balancer sends to the MCP-Auth-Proxy, the
+ * remote-MCP broker's own service (#806 put it inside the gateway). The
+ * endpoints and the broker's OAuth routes under `/api/mcp/*` — the more
+ * specific prefix wins over `/api/*` in one path matcher — and the two
+ * `/.well-known/oauth-*` prefixes, the broker's discovery documents, which
+ * MCP clients look up at the host root (RFC 9728 protected-resource
+ * metadata, RFC 8414 authorization-server metadata); they must reach the
+ * proxy, not 404 in the bucket. No `openid-configuration` prefix: the broker
+ * is not an OpenID provider and serves no such document (#899), so the site
+ * keeps that path.
  */
-export const GCP_PUBLIC_BASE_PATHS: readonly string[] = [
-  "/api/*",
+export const GCP_MCP_AUTH_PROXY_PATHS: readonly string[] = [
+  "/api/mcp/*",
   "/.well-known/oauth-protected-resource/*",
   "/.well-known/oauth-authorization-server/*",
+];
+
+/**
+ * The site's own routing in the `public` path matcher (stack + budget): the
+ * paths the load balancer sends to a service instead of the static bucket.
+ */
+export const GCP_PUBLIC_BASE_PATHS: readonly string[] = [
+  ...GCP_GATEWAY_PATHS,
+  ...GCP_MCP_AUTH_PROXY_PATHS,
 ];

@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "noEmit": false
+  },
+  "include": ["src/**/*"],
+  "references": [{ "path": "../../packages/shared" }],
+  "exclude": ["**/*.test.ts", "**/__tests__/**", "**/dist", "**/node_modules"]
+}

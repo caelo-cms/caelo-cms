@@ -8,8 +8,11 @@
  * (#914) — the same one IAP uses for browser login. That client is set up,
  * replaced and removed under Settings → Google sign-in
  * (security/google-sign-in/), never here: one client per install. Remote MCP
- * is on whenever that client is configured; the gateway's broker re-reads
- * it from its secret file within a minute.
+ * is on whenever that client is configured; the broker in the MCP sign-in
+ * service (the MCP-Auth-Proxy, apps/mcp-auth-proxy, #1328) re-reads it from
+ * its secret file within a minute. While it is not configured that service
+ * answers every path with a fixed 404 whose body still says
+ * `configured: false`, so the "off" check below reads it as off.
  *
  * What stays MCP-specific, checked here:
  *
@@ -24,7 +27,7 @@ import { GOOGLE_IAP_PROVIDERS, GOOGLE_SIGN_IN_SETTINGS_PATH } from "../identity-
 /** The admin env remote MCP needs (set by the provisioner, stack-contract.ts). */
 export interface RemoteMcpEnv {
   readonly CAELO_PROVIDER?: string;
-  /** The broker's public origin (gateway). */
+  /** The broker's public origin (the MCP sign-in service). */
   readonly CAELO_MCP_PUBLIC_URL?: string;
   /** The `aud` of the admin's IAP JWTs (read by the remote-MCP endpoints). */
   readonly CAELO_IAP_AUDIENCE?: string;
@@ -120,8 +123,8 @@ export async function checkGatewayClient(
   const now = deps.now ?? Date.now;
   const url = `${mcpPublicUrl}/api/mcp/oauth/status`;
   const label = clientId
-    ? "The gateway signs MCP users in with this install's Google sign-in client"
-    : "The gateway reports remote MCP as off";
+    ? "The MCP sign-in service signs MCP users in with this install's Google sign-in client"
+    : "The MCP sign-in service reports remote MCP as off";
   const deadline = now() + timeoutMs;
   let last = "";
   for (;;) {
@@ -148,7 +151,7 @@ export async function checkGatewayClient(
     ok: false,
     detail: `${url}: ${last}`,
     nextStep:
-      "The gateway re-reads its client within a minute — run the check again shortly. If it keeps failing, run `cms-provision upgrade` (it mounts the client file on the gateway) and check the gateway's logs.",
+      "The MCP sign-in service re-reads its client within a minute — run the check again shortly. If it keeps failing, run `cms-provision upgrade` (it mounts the client file on that service) and check that service's logs.",
   };
 }
 
@@ -170,8 +173,8 @@ export async function checkAuthorizationServer(
         ok: false,
         detail: `${url}: ${r.ok ? `issuer is not ${issuer}` : r.error}`,
         nextStep: mcpPublicUrl.includes(".run.app")
-          ? "The gateway does not answer yet. Run `cms-provision upgrade`, then check again."
-          : "This URL must reach the gateway through the load balancer. If the site's domain does not point at the load balancer yet (before go-live), remote MCP works once it does; otherwise run `cms-provision upgrade` (it adds the routes).",
+          ? "The MCP sign-in service does not answer yet. Run `cms-provision upgrade`, then check again."
+          : "This URL must reach the MCP sign-in service through the load balancer. If the site's domain does not point at the load balancer yet (before go-live), remote MCP works once it does; otherwise run `cms-provision upgrade` (it adds the routes).",
       };
 }
 
@@ -202,8 +205,8 @@ export async function checkProtectedResource(
 
 /**
  * The broker's part of the chain for the configured Google sign-in client:
- * the gateway serves it, then the two discovery documents. Without a client
- * only the gateway's "off" is checked.
+ * the MCP sign-in service serves it, then the two discovery documents.
+ * Without a client only its "off" is checked.
  */
 export async function runRemoteMcpSelfCheck(
   deps: SelfCheckDeps,
