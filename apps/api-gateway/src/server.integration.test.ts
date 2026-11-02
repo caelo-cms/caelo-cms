@@ -277,10 +277,48 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
     expect(r.headers.get("x-content-type-options")).toBe("nosniff");
   });
 
-  it("refuses a staging, a foreign or a missing Origin, and non-JSON, before dispatch (#1326)", async () => {
+  it("answers a staged page's plugin call with the stub: no dispatch, no row, no failed request (#1326)", async () => {
+    await bootstrapAndProvision();
+    const asSystem = async (fn: (tx: SQL) => Promise<unknown>) => {
+      const sql = new SQL(ADMIN_URL);
+      try {
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          await fn(tx);
+        });
+      } finally {
+        await sql.end();
+      }
+    };
+    await asSystem(
+      (tx) => tx`UPDATE staging_access SET staging_host = 'staging.localhost' WHERE id = 1`,
+    );
+    await publishProjectionOnce(adapter, { declarations: new Map() });
+    invalidateGatewaySettings();
+    try {
+      const req = postReq(`/api/plugin/${SLUG}/save`, { message: "from staging" });
+      req.headers.set("Origin", "https://staging.localhost");
+      const r = await handleRequest(req);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual({ ok: false, error: { kind: "StagingPreview" } });
+      // Staging is never a live origin, whatever the domains registry says.
+      const live = await new SQL(PUBLIC_URL).begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return (await tx`SELECT live_origins FROM published_gateway_settings`) as {
+          live_origins: string[];
+        }[];
+      });
+      expect(live[0]?.live_origins).not.toContain("https://staging.localhost");
+    } finally {
+      await asSystem((tx) => tx`UPDATE staging_access SET staging_host = NULL WHERE id = 1`);
+      await publishProjectionOnce(adapter, { declarations: new Map() });
+      invalidateGatewaySettings();
+    }
+  });
+
+  it("refuses a foreign or a missing Origin, and non-JSON, before dispatch (#1326)", async () => {
     await bootstrapAndProvision();
     for (const [headers, status] of [
-      [{ Origin: "https://staging.localhost" }, 403],
       [{ Origin: "https://evil.example" }, 403],
       [{ Origin: "" }, 403],
       [{ "Content-Type": "text/plain" }, 415],

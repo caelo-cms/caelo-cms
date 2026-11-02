@@ -28,7 +28,12 @@ The admin publishes `published_gateway_settings.live_origins` (cms_public 0500) 
 
 A request without `Origin` is refused: every browser sends it on a POST. NULL (an older admin published the row) and an empty list are a 503 whose log line names the fix.
 
-Consequence: until staging gets its own gateway (#1329, #1330), plugin components on a staging page get a 403 from the live gateway. This is intended (#763 N4).
+Interim until staging gets its own gateway (#1329, #1330): a staged page's plugin call never runs against live data (#763 N4), but it must not fail visibly either, or the Stage quality audit would count a "Failed to load resource" console error on every page with a plugin component and block Publish live. So both places it can reach answer it with HTTP 200 `{ ok: false, error: { kind: "StagingPreview" } }` (`@caelo-cms/shared` `staging-plugin-stub.ts`), dispatching and writing nothing:
+
+- the gateway, for a POST whose `Origin` is the published staging host (gcp-firebase and self-hosted, where staging's `/api` reaches the live gateway);
+- the audit's loopback origin (`admin-core quality/staged-origin.ts`, gcp / aws / azure), which no longer forwards `/api/plugin/*` to live at all.
+
+Components take their ordinary "no data" path, so plugin data does not show on staging in the meantime. The captcha challenge (a GET, no Origin) is still forwarded and may mint a challenge row in live, bounded by its per-address limit.
 
 ## Errors and headers
 

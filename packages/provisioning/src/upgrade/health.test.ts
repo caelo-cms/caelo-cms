@@ -81,9 +81,9 @@ describe("evaluateGatewayDeepHealth", () => {
   });
 
   it("ignores a version an older gateway still reports", () => {
-    expect(
-      evaluateGatewayDeepHealth(200, JSON.stringify({ ok: true, version: "0.10.0" })).ok,
-    ).toBe(true);
+    expect(evaluateGatewayDeepHealth(200, JSON.stringify({ ok: true, version: "0.10.0" })).ok).toBe(
+      true,
+    );
   });
 
   it("refuses a gateway that can't reach its database", () => {

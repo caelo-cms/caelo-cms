@@ -75,6 +75,7 @@ import {
   VISITOR_ID_PURPOSE,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
+import { STAGING_PLUGIN_STUB_BODY } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import {
   ClientAddressError,
@@ -759,6 +760,24 @@ async function servedToVisitors(
   return served ? "served" : "unknown";
 }
 
+/**
+ * Whether `req` comes from the staging host's pages (`Origin` is
+ * `https://<staging host>`, as the admin published it). False when no
+ * staging host is set or the gate state cannot be read: the caller then
+ * refuses the request like any other foreign origin.
+ */
+async function isStagingOrigin(req: Request, adapter: DatabaseAdapter): Promise<boolean> {
+  const origin = req.headers.get("origin")?.toLowerCase();
+  if (!origin) return false;
+  try {
+    const state = await loadStagingState(adapter);
+    return state.host !== null && origin === `https://${state.host.toLowerCase()}`;
+  } catch (e) {
+    console.error(`[api-gateway] staging host unavailable: ${describeFailure(e)}`);
+    return false;
+  }
+}
+
 /** `POST /api/plugin/<slug>/<operation>` (pipeline in the file comment). */
 async function pluginOperation(
   req: Request,
@@ -783,6 +802,20 @@ async function pluginOperation(
     return errorResponse("Forbidden", 403, requestId);
   }
   const refused = refusePluginRequest(req, settings.liveOrigins);
+  if (refused?.kind === "OriginNotAllowed" && (await isStagingOrigin(req, adapter))) {
+    // #1326 interim (until staging has its own gateway, #1329/#1330): a
+    // staged page's plugin call is refused without a failed request in
+    // the browser, so the Stage audit does not count it as a page error.
+    // Nothing is dispatched or written.
+    return new Response(STAGING_PLUGIN_STUB_BODY, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-Request-Id": requestId,
+      },
+    });
+  }
   if (refused) {
     return errorResponse(refused.kind, refused.status, requestId, {
       log: `${req.headers.get("content-type") ?? "no content-type"} from ${req.headers.get("origin") ?? "no origin"} to ${slug}.${operationName}`,

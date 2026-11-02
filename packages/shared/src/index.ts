@@ -82,6 +82,7 @@ export * from "./snapshots.js";
 export * from "./source-text-transport.js";
 export * from "./stage-status.js";
 export * from "./staging-gate.js";
+export * from "./staging-plugin-stub.js";
 export * from "./static-cache-policy.js";
 export * from "./static-security-headers.js";
 export * from "./strip-cdata.js";
