@@ -109,10 +109,11 @@ async function load(publicOperations?: PublicOperationDef[]): Promise<void> {
         return { length: a.text.length, stars: a.stars.toFixed(0) };
       },
       moderate: async () => ({ moderated: true }),
-      crash: async () => {
-        const nothing = undefined as unknown as { boom: () => void };
-        nothing.boom();
-        return {};
+      // A handler bug: it reads a field its (empty) input never has, and the
+      // runtime's TypeError text must not reach the visitor.
+      crash: async (_ctx, args) => {
+        const { missing } = args as { missing: { length: number } };
+        return { length: missing.length };
       },
       refuse: async () => {
         throw new PublicOperationError("this form is closed");
