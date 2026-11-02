@@ -81,6 +81,8 @@ describe("ensureUpgraderJob", () => {
         "projects add-iam-policy-binding acme → projects/acme/roles/caeloUpgraderSqlBackup",
         "iam service-accounts add-iam-policy-binding caelo-production-run-sa@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "iam service-accounts add-iam-policy-binding caelo-production-gateway-sa@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
+        // #1328 — the MCP-Auth-Proxy's revisions run as its own account.
+        "iam service-accounts add-iam-policy-binding caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "iam service-accounts add-iam-policy-binding caelo-production-upgrader@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "iam service-accounts add-iam-policy-binding caelo-mcp@acme.iam.gserviceaccount.com → roles/iam.serviceAccountTokenCreator",
         "iam service-accounts add-iam-policy-binding caelo-production-audit@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",

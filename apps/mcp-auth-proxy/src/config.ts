@@ -14,7 +14,7 @@
  *   progress", not "use something else".
  * - **The Google OAuth client** the Owner creates AFTER deploy — the install's
  *   Google sign-in client (#914), the same one IAP signs people in with. It reaches
- *   the gateway as a Cloud Run secret volume (`CAELO_OPERATOR_OAUTH_CLIENT_FILE`)
+ *   the MCP-Auth-Proxy as a Cloud Run secret volume (`CAELO_OPERATOR_OAUTH_CLIENT_FILE`)
  *   whose placeholder content `{}` means "not set up yet", so it is re-read
  *   with a short cache instead of once at boot: saving it must not need a
  *   redeploy.
@@ -40,7 +40,7 @@ export const MCP_ENV = {
   clientFile: "CAELO_OPERATOR_OAUTH_CLIENT_FILE",
 } as const;
 
-/** The two MCP surfaces the gateway exposes. */
+/** The two MCP surfaces the proxy exposes. */
 export const MCP_SURFACES = ["chat", "admin"] as const;
 export type McpSurface = (typeof MCP_SURFACES)[number];
 
@@ -179,7 +179,7 @@ export class McpConfigLoader {
       return {
         ok: false,
         notSetUp: false,
-        message: `Remote MCP is not available on this install: the gateway lacks ${missing.join(", ")}. Remote MCP needs a Google Cloud install (gcp or gcp-firebase) upgraded with \`cms-provision upgrade\`.`,
+        message: `Remote MCP is not available on this install: the MCP sign-in service lacks ${missing.join(", ")}. Remote MCP needs a Google Cloud install (gcp or gcp-firebase) upgraded with \`cms-provision upgrade\`.`,
       };
     }
     const publicUrl = originFromEnv(MCP_ENV.publicUrl, raw.publicUrl);

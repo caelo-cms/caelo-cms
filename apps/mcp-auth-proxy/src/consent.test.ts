@@ -59,7 +59,7 @@ describe("consent page", () => {
     expect(html).toContain("Full admin access");
     expect(html).toContain("settings.write");
     expect(html).not.toContain("accounts.google.com/o/oauth2");
-    // Nothing left the gateway: no Google, no CIMD for a DCR client.
+    // Nothing left the proxy: no Google, no CIMD for a DCR client.
     expect(h.calls).toHaveLength(0);
   });
 

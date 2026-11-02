@@ -20,10 +20,11 @@ pulumi config set caelo-self-hosted:ownerEmail me@example.com
 # verified and recorded in .caelo/release.json:
 pulumi config set caelo-self-hosted:adminImage ghcr.io/caelo-cms/admin@sha256:<digest>
 pulumi config set caelo-self-hosted:gatewayImage ghcr.io/caelo-cms/gateway@sha256:<digest>
+pulumi config set caelo-self-hosted:mcpAuthProxyImage ghcr.io/caelo-cms/mcp-auth-proxy@sha256:<digest>
 pulumi up
 ```
 
-Pulumi mints the postgres and role passwords and the KEK, generates `docker-compose.yml` + `Caddyfile` + `bootstrap.sh` + `pending-token.json` under `.caelo/`, starts Postgres, runs the migrations and runs `docker compose up -d`. Point DNS for `<domain>`, `admin.<domain>` and `staging.<domain>` at the host. After the run:
+Pulumi mints the postgres and role passwords and the KEK, generates `docker-compose.yml` + `Caddyfile` + `bootstrap.sh` + `pending-token.json` under `.caelo/`, starts Postgres, runs the migrations and runs `docker compose up -d`. Point DNS for `<domain>`, `admin.<domain>` and `staging.<domain>` at the host (`mcp.<domain>`, the MCP sign-in service's own host, is optional until remote MCP is available on self-hosted installs; it answers 404 until then). After the run:
 
 ```bash
 pulumi stack output bootstrapUrl

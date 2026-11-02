@@ -56,15 +56,21 @@ import type {
   StoredUpdatePolicy,
 } from "@caelo-cms/shared";
 import type { GcloudRunner, Sleep } from "./gcloud-retry.js";
-import { gcpNamePrefix, upgraderJobName } from "./gcp-names.js";
+import { upgraderJobName } from "./gcp-names.js";
 import type { InstallMetadata } from "./install-state.js";
-import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
+import {
+  manifestServiceImages,
+  type ReleaseManifest,
+  type ReleaseManifestResult,
+} from "./release-manifest.js";
+import { cloudRunServicePrefix } from "./stack-contract.js";
 import { StateLockHeldError } from "./state-store.js";
 import {
   type AppRollPlan,
   executeAppRoll,
   planAppRoll,
   type ReleaseImage,
+  ROLL_ORDER,
   type RollSlug,
 } from "./upgrade/app-roll.js";
 import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
@@ -389,7 +395,7 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     // install.json must describe what actually serves: if a previous run
     // rolled but could not record it, the recorded version is stale and
     // the downgrade / minFromVersion checks would judge against it.
-    const serving = await servingDigests(deps);
+    const serving = await servingDigests(deps, meta.provider);
     if (!serving.ok) {
       return stopWith("failed", ["lookup"], `Nothing was changed: ${serving.error}.`);
     }
@@ -424,6 +430,9 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
         imageDigests: {
           admin: found.manifest.digests.admin,
           gateway: found.manifest.digests.gateway,
+          ...(found.manifest.digests["mcp-auth-proxy"]
+            ? { "mcp-auth-proxy": found.manifest.digests["mcp-auth-proxy"] }
+            : {}),
         },
         ...(found.platformDigests ? { platformDigests: found.platformDigests } : {}),
         releaseVersion: found.manifest.version,
@@ -500,13 +509,10 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     r.info("The upgrader has every permission this update needs.");
 
     const m = decision.manifest;
-    const images: Record<RollSlug, ReleaseImage> = {
-      admin: { digest: m.digests.admin, imageRef: releaseImageRef("admin", m.digests.admin) },
-      gateway: {
-        digest: m.digests.gateway,
-        imageRef: releaseImageRef("gateway", m.digests.gateway),
-      },
-    };
+    const resolved = manifestServiceImages(m);
+    if (!resolved.ok)
+      return stopWith("failed", ["manifest"], `Nothing was changed: ${resolved.error}.`);
+    const images: Record<RollSlug, ReleaseImage> = resolved.images;
     const planned = await planAppRoll(
       {
         provider: meta.provider,
@@ -694,7 +700,10 @@ export async function recordUpdateEnd(
 }
 
 /** Every digest the revisions serving traffic are known by, per service. */
-async function servingDigests(deps: UpgraderJobDeps): Promise<
+async function servingDigests(
+  deps: UpgraderJobDeps,
+  provider: InstallMetadata["provider"],
+): Promise<
   | {
       ok: true;
       digests: ServingDigests;
@@ -705,8 +714,12 @@ async function servingDigests(deps: UpgraderJobDeps): Promise<
 > {
   const digests: Partial<Record<RollSlug, readonly string[]>> = {};
   const services: Partial<Record<RollSlug, string>> = {};
-  for (const slug of ["admin", "gateway"] as const) {
-    const prefix = `${gcpNamePrefix(deps.env)}-${slug}`;
+  if (provider !== "gcp" && provider !== "gcp-firebase") {
+    return { ok: false, error: `the upgrader runs on Google Cloud installs only, not ${provider}` };
+  }
+  for (const slug of ROLL_ORDER) {
+    // #1328 — which service plays which role differs per provider.
+    const prefix = cloudRunServicePrefix(provider, deps.env, slug);
     const service = await resolveGcpResourceName(
       deps.run,
       "run-service",
@@ -739,7 +752,7 @@ async function templateDigests(
   services: Readonly<Record<RollSlug, string>>,
 ): Promise<ServingDigests> {
   const out: Partial<Record<RollSlug, readonly string[]>> = {};
-  for (const slug of ["admin", "gateway"] as const) {
+  for (const slug of ROLL_ORDER) {
     const d = await findTemplateImageDigest(deps.run, deps.projectId, deps.region, services[slug]);
     out[slug] = d ? [d] : [];
   }

@@ -23,7 +23,7 @@
  *     Storage volume + mount), added in the same `services update` when
  *     missing.
  *   - {@link planSecretFiles} / {@link planRequestTimeout} (#806): the
- *     gateway's secret file (the remote-MCP OAuth client) and its request
+ *     MCP-Auth-Proxy.s secret file (the remote-MCP OAuth client) and its request
  *     timeout, in the same `services update`.
  *   - {@link planCpuIdle}: request-based CPU where the contract wants it
  *     (`SERVICE_CPU_IDLE`), in the same `services update`.
@@ -38,6 +38,7 @@ import {
   ADMIN_MEMORY_DEFAULT,
   type AdminEnvInputs,
   adminEnvContract,
+  CLOUD_RUN_SLUGS,
   type CloudRunEnvVar,
   type CloudRunSlug,
   databaseUrls,
@@ -47,6 +48,7 @@ import {
   type IamTarget,
   iamMember,
   type MediaVolumeContract,
+  mcpAuthProxyEnvContract,
   memoryQuantityMiB,
   RETIRED_IAM_BINDINGS,
   RETIRED_RUNTIME_SECRETS,
@@ -167,7 +169,7 @@ function maskUrlPassword(value: string): string {
  * gcloud's list flags split on `,`; a value containing one needs the
  * `^<delim>^` escape syntax (`gcloud topic escaping`).
  */
-function listFlag(flag: string, pairs: string[]): string {
+export function listFlag(flag: string, pairs: string[]): string {
   const joined = pairs.join(",");
   if (!pairs.some((p) => p.includes(","))) return `${flag}=${joined}`;
   const delim = ["@", "|", "#", "~", ";"].find((d) => !pairs.some((p) => p.includes(d)));
@@ -347,29 +349,23 @@ export function planContractEnv(
     if (clash) throw new Error(`${slug}: ${clash.name} is both in the contract and extra env`);
     return [...contract, ...extra].filter((e) => !skip.has(e.name));
   };
-  let adminDesired: CloudRunEnvVar[];
-  let gatewayDesired: CloudRunEnvVar[];
+  let contracts: Record<CloudRunSlug, CloudRunEnvVar[]>;
   try {
-    adminDesired = desired("admin", adminEnvContract(inputs));
-    gatewayDesired = desired("gateway", gatewayEnvContract(runtime));
+    contracts = {
+      admin: desired("admin", adminEnvContract(inputs)),
+      gateway: desired("gateway", gatewayEnvContract(runtime)),
+      "mcp-auth-proxy": desired("mcp-auth-proxy", mcpAuthProxyEnvContract(install)),
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
-  const admin = planEnvUpdate(services.admin.liveEnv, adminDesired, RETIRED_SERVICE_ENV.admin);
-  if (!admin.ok) return { ok: false, error: `admin: ${admin.error}` };
-  const gateway = planEnvUpdate(
-    services.gateway.liveEnv,
-    gatewayDesired,
-    RETIRED_SERVICE_ENV.gateway,
-  );
-  if (!gateway.ok) return { ok: false, error: `gateway: ${gateway.error}` };
-  return {
-    ok: true,
-    services: {
-      admin: { flags: admin.flags, changes: admin.changes },
-      gateway: { flags: gateway.flags, changes: gateway.changes },
-    },
-  };
+  const out = {} as Record<CloudRunSlug, { flags: string[]; changes: EnvChange[] }>;
+  for (const slug of CLOUD_RUN_SLUGS) {
+    const plan = planEnvUpdate(services[slug].liveEnv, contracts[slug], RETIRED_SERVICE_ENV[slug]);
+    if (!plan.ok) return { ok: false, error: `${slug}: ${plan.error}` };
+    out[slug] = { flags: plan.flags, changes: plan.changes };
+  }
+  return { ok: true, services: out };
 }
 
 // ===========================================================================
@@ -618,16 +614,24 @@ export function liveIngress(serviceJson: string): string | null {
  * the serving one and the app-roll's rollback target stay as they are. On
  * `gcp` the stack declares load-balancer-only and `staging-domain enable`
  * (admin-domain.ts) opens it deliberately, so this never runs there.
+ *
+ * #1328 — both public services of a gcp-firebase install: the data gateway
+ * (the Firebase rewrite, the health probe) and the MCP-Auth-Proxy (remote-MCP
+ * clients, and until #1331 the staging mapping it forwards).
  */
-async function ensureGatewayIngress(
+async function ensurePublicIngress(
   install: InstallTarget,
+  slug: "gateway" | "mcp-auth-proxy",
   run: GcloudRunner,
 ): Promise<InvariantOutcome> {
-  const service = install.services.gateway;
+  const service = install.services[slug];
   const base = {
     id: `ingress all on ${service}`,
     onFailure: "abort" as const,
-    why: "the gcp-firebase stack's gateway ingress (#650); the health check, the staging domain and remote MCP reach its run.app URL",
+    why:
+      slug === "gateway"
+        ? "the gcp-firebase stack's gateway ingress (#650); Firebase Hosting and the health check reach its run.app URL"
+        : "the gcp-firebase stack's MCP-Auth-Proxy ingress (#1328); remote-MCP clients, the health check and the staging domain reach its run.app URL",
   };
   const where = [`--region=${install.region}`, `--project=${install.projectId}`];
   const describe = await run(["run", "services", "describe", service, ...where, "--format=json"]);
@@ -697,7 +701,10 @@ export async function ensureStackInvariants(
     outcomes.push(await ensureCdnPolicy(install, run));
     outcomes.push(await ensureSvgDownloads(install, run));
   }
-  if (install.provider === "gcp-firebase") outcomes.push(await ensureGatewayIngress(install, run));
+  if (install.provider === "gcp-firebase") {
+    outcomes.push(await ensurePublicIngress(install, "gateway", run));
+    outcomes.push(await ensurePublicIngress(install, "mcp-auth-proxy", run));
+  }
   outcomes.push(...(await removeDefaultFirewallRules(install.projectId, { run })));
 
   return {
@@ -1180,6 +1187,35 @@ export function planCpuIdle(live: boolean, desired: boolean): RollAdditionsPlan 
     ok: true,
     flags: ["--cpu-throttling"],
     changes: ["CPU: always allocated → only during requests"],
+  };
+}
+
+/**
+ * Whether the service's revision template egresses into a VPC (Direct VPC
+ * egress, the stacks' `vpcAccess.networkInterfaces`).
+ */
+export function liveDirectVpc(serviceJson: string): boolean {
+  const svc = JSON.parse(serviceJson) as {
+    spec?: { template?: { metadata?: { annotations?: Record<string, string> } } };
+  };
+  return Boolean(
+    svc.spec?.template?.metadata?.annotations?.["run.googleapis.com/network-interfaces"],
+  );
+}
+
+/**
+ * #1328 — `--clear-network` when a service the contract keeps off the VPC
+ * still egresses into it. The MCP-Auth-Proxy on gcp-firebase is the service
+ * that was the gateway, which reached Cloud SQL's private IP that way; the
+ * proxy talks to the admin's public URL only, so it loses the route to the
+ * database's network together with its database credentials.
+ */
+export function planNoVpc(live: boolean): RollAdditionsPlan {
+  if (!live) return { ok: true, flags: [], changes: [] };
+  return {
+    ok: true,
+    flags: ["--clear-network"],
+    changes: ["VPC egress (private ranges) → none"],
   };
 }
 

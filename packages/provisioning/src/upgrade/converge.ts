@@ -54,6 +54,7 @@ import {
   CAPTURE_JOB_ENV_VAR,
   type CloudRunEnvVar,
   CONVERGE_JOB_ENV_VAR,
+  INTERIM_FORWARD_ORIGIN_ENV,
   MCP_ENV_VAR,
   OPERATOR_ACCESS_JOB_ENV_VAR,
   remoteMcpIdentityEnv,
@@ -68,7 +69,7 @@ import {
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import type { AppRollHooks, AppRollPlan, RollPlan, RollSlug } from "./app-roll.js";
-import { lookupFailure } from "./gcp-lookup.js";
+import { findServiceUrl, lookupFailure } from "./gcp-lookup.js";
 import type { UpgradeReporter } from "./reporter.js";
 
 /**
@@ -139,7 +140,11 @@ export function startConverge(
   const { reporter: r, run } = deps;
   const runDeps = { run, ...(deps.sleep ? { sleep: deps.sleep } : {}) };
   const service = (slug: RollSlug) => plan.services.find((s) => s.slug === slug) as RollPlan;
-  const services = { admin: service("admin").serviceName, gateway: service("gateway").serviceName };
+  const services = {
+    admin: service("admin").serviceName,
+    gateway: service("gateway").serviceName,
+    "mcp-auth-proxy": service("mcp-auth-proxy").serviceName,
+  };
   const target = {
     provider: install.provider,
     projectId: install.projectId,
@@ -371,31 +376,48 @@ export function startConverge(
   }
 
   async function remoteMcpEdge(): Promise<void> {
-    // #806 — on `gcp` the load balancer routes the remote-MCP discovery
-    // paths to the gateway and Cloud Armor lets agent traffic through on
-    // /api/mcp/* (remote-mcp-edge.ts). Only remote MCP depends on it, so a
-    // failure warns.
+    // #806 / #1328 — on `gcp` the load balancer routes the remote-MCP paths
+    // to the MCP-Auth-Proxy's own backend, whose Cloud Armor policy lets
+    // agent traffic through on /api/mcp/* (remote-mcp-edge.ts). Only remote
+    // MCP depends on it, so a failure warns. The gateway being rolled in
+    // this run no longer answers those paths, so until this succeeds remote
+    // MCP is down on the site's domain — said below.
     if (install.provider !== "gcp") return;
-    const s = r.step("Ensuring the load balancer's remote-MCP routes and Cloud Armor rule...");
+    const s = r.step("Ensuring the MCP-Auth-Proxy's load-balancer route and Cloud Armor rule...");
     const edge = await ensureRemoteMcpEdge(
       {
         provider: install.provider,
         projectId: install.projectId,
+        region: install.region,
         env: install.env,
         domain: install.domain,
+        mcpAuthProxyImageRef: service("mcp-auth-proxy").imageRef,
       },
       { ...runDeps, ...(deps.http ? { http: deps.http } : {}) },
     );
     if (edge.ok) {
       for (const line of edge.done) r.info(`  ${line}`);
-      s.done("Remote-MCP load-balancer rules ready");
+      s.done("Remote-MCP load-balancer route ready");
       return;
     }
-    s.warned(`Remote-MCP load-balancer rules not set up: ${edge.error}`);
+    s.warned(`Remote-MCP load-balancer route not set up: ${edge.error}`);
     r.warn(
       "The upgrade continues; remote MCP (Settings → MCP → Remote) cannot be reached through the site's domain until this succeeds. Re-run upgrade once the cause is fixed.",
     );
     incomplete = true;
+  }
+
+  async function interimForwardEnv(): Promise<CloudRunEnvVar[]> {
+    // #1328 — on gcp-firebase the proxy is the service the current live
+    // release's Firebase rewrite and the staging domain mapping still
+    // point at; it forwards that traffic to the data gateway, whose URL is
+    // its origin (stack-contract.ts INTERIM_FORWARD_ORIGIN_ENV). Without it
+    // the proxy answers the live site's /api/** with 404 until the next
+    // Publish live, and the staging host with 404 — so this aborts.
+    if (install.provider !== "gcp-firebase") return [];
+    const url = await findServiceUrl(run, install.projectId, install.region, services.gateway);
+    if (!url) throw new Error(`could not read the URL of ${services.gateway}`);
+    return [{ name: INTERIM_FORWARD_ORIGIN_ENV, value: new URL(url).origin }];
   }
 
   async function remoteMcpIdentity(): Promise<Record<RollSlug, CloudRunEnvVar[]> | null> {
@@ -642,12 +664,21 @@ export function startConverge(
         await upgraderJob();
         await convergeJob();
         await operatorAccess();
-        const extraEnv = await remoteMcpIdentity();
-        return {
-          ok: true,
-          leaveUntouched: [...leaveUntouched],
-          ...(extraEnv ? { extraEnv } : {}),
+        const identity = await remoteMcpIdentity();
+        let forward: CloudRunEnvVar[];
+        try {
+          forward = await interimForwardEnv();
+        } catch (e) {
+          r.error(
+            `The MCP-Auth-Proxy cannot be pointed at the data gateway: ${e instanceof Error ? e.message : String(e)}. Nothing was rolled; re-run upgrade once it is fixed.`,
+          );
+          return { ok: false };
+        }
+        const extraEnv: Partial<Record<RollSlug, CloudRunEnvVar[]>> = {
+          ...(identity ?? {}),
+          "mcp-auth-proxy": [...(identity?.["mcp-auth-proxy"] ?? []), ...forward],
         };
+        return { ok: true, leaveUntouched: [...leaveUntouched], extraEnv };
       },
       async beforeRoll(slug) {
         if (slug !== "gateway" || !publicRole) return { ok: true };

@@ -57,6 +57,37 @@ export function gatewayServiceAccountEmail(projectId: string, env: string): stri
 }
 
 /**
+ * #1328 — account id of the service account the MCP-Auth-Proxy runs as. It
+ * may read the Google sign-in client and the broker's seal key and nothing
+ * else: no database password, no project role (stack-contract.ts
+ * `SERVICE_SECRET_ENV` / `SERVICE_SECRET_FILES`). Shortened from the
+ * service's name: account ids max out at 30 characters.
+ */
+export function mcpAuthProxyServiceAccountId(env: string): string {
+  return `${gcpNamePrefix(env)}-mcp-proxy-sa`;
+}
+
+/**
+ * #1328 — the `gcp` MCP-Auth-Proxy's load-balancer resources, CLI-owned
+ * (remote-mcp.ts ensureRemoteMcpEdge): its serverless NEG, its backend
+ * service and its own Cloud Armor policy. None matches a prefix the other
+ * lookups use (`…-waf`, `…-admin-backend`, `…-gateway-backend`).
+ */
+export function mcpAuthProxyEdgeNames(env: string): {
+  readonly neg: string;
+  readonly backend: string;
+  readonly policy: string;
+} {
+  const prefix = `${gcpNamePrefix(env)}-mcp-auth-proxy`;
+  return { neg: `${prefix}-neg`, backend: `${prefix}-backend`, policy: `${prefix}-armor` };
+}
+
+/** Email of the service account the MCP-Auth-Proxy runs as. */
+export function mcpAuthProxyServiceAccountEmail(projectId: string, env: string): string {
+  return `${mcpAuthProxyServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+}
+
+/**
  * Account id of the `gcp` stack's static-publisher service account. Account
  * ids max out at 30 chars, so the env is shortened.
  */

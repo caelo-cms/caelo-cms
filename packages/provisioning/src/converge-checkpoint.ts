@@ -44,7 +44,14 @@ export const ConvergeCheckpointSchema = InstallJobStatusSchema.extend({
       backupId: z.string().min(1),
     })
     .optional(),
-  priorRevisions: z.object({ admin: z.string().min(1), gateway: z.string().min(1) }).optional(),
+  priorRevisions: z
+    .object({
+      admin: z.string().min(1),
+      gateway: z.string().min(1),
+      // #1328 — absent in a checkpoint an older release wrote.
+      "mcp-auth-proxy": z.string().min(1).optional(),
+    })
+    .optional(),
 });
 /**
  * The ops-bucket prefix of the converge job's own files — outside the

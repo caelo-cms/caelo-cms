@@ -22,8 +22,8 @@
  * response without it.
  */
 
+import { readBodyWithCap } from "@caelo-cms/shared";
 import { z } from "zod";
-import { readBodyWithCap } from "../middleware/body-cap.js";
 import {
   CONSENT_TTL_SECONDS,
   clearBindingCookie,

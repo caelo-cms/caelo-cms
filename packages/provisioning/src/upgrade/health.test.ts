@@ -6,7 +6,7 @@ import type { HttpFetch } from "../runtime-secrets.js";
 import {
   createIapHealthProbe,
   evaluateAdminDeepHealth,
-  evaluateGatewayDeepHealth,
+  evaluatePublicServiceDeepHealth,
   type HealthTarget,
   healthOrigins,
   IAM_PROPAGATION_WINDOW_MS,
@@ -72,15 +72,21 @@ describe("evaluateAdminDeepHealth", () => {
   });
 });
 
-describe("evaluateGatewayDeepHealth", () => {
+describe("evaluatePublicServiceDeepHealth", () => {
   it("accepts a healthy gateway on the admin's version", () => {
     expect(
-      evaluateGatewayDeepHealth(200, JSON.stringify({ ok: true, version: "0.11.0" }), "0.11.0"),
+      evaluatePublicServiceDeepHealth(
+        "gateway",
+        200,
+        JSON.stringify({ ok: true, version: "0.11.0" }),
+        "0.11.0",
+      ),
     ).toEqual({ ok: true, detail: "gateway 0.11.0" });
   });
 
   it("refuses a gateway on another version than the admin", () => {
-    const r = evaluateGatewayDeepHealth(
+    const r = evaluatePublicServiceDeepHealth(
+      "gateway",
       200,
       JSON.stringify({ ok: true, version: "0.10.0" }),
       "0.11.0",
@@ -89,7 +95,8 @@ describe("evaluateGatewayDeepHealth", () => {
   });
 
   it("refuses a gateway that can't reach its database", () => {
-    const r = evaluateGatewayDeepHealth(
+    const r = evaluatePublicServiceDeepHealth(
+      "gateway",
       503,
       JSON.stringify({ ok: false, version: "0.11.0", error: { kind: "DbUnreachable" } }),
       "0.11.0",
@@ -103,7 +110,8 @@ const FIREBASE: HealthTarget = {
   projectId: "acme",
   domain: "acme.com",
   adminServiceUrl: "https://caelo-production-admin-aaa-xyz.a.run.app",
-  gatewayServiceUrl: "https://caelo-production-gateway-bbb-xyz.a.run.app",
+  gatewayServiceUrl: "https://caelo-production-data-gateway-ddd-xyz.a.run.app",
+  mcpAuthProxyServiceUrl: "https://caelo-production-gateway-bbb-xyz.a.run.app",
 };
 
 describe("healthOrigins", () => {
@@ -111,13 +119,15 @@ describe("healthOrigins", () => {
     expect(healthOrigins({ ...FIREBASE, provider: "gcp" })).toEqual({
       admin: "https://admin.acme.com",
       gateway: "https://acme.com",
+      mcpAuthProxy: "https://acme.com",
     });
   });
 
   it("uses the run.app URLs on gcp-firebase", () => {
     expect(healthOrigins(FIREBASE)).toEqual({
       admin: "https://caelo-production-admin-aaa-xyz.a.run.app",
-      gateway: "https://caelo-production-gateway-bbb-xyz.a.run.app",
+      gateway: "https://caelo-production-data-gateway-ddd-xyz.a.run.app",
+      mcpAuthProxy: "https://caelo-production-gateway-bbb-xyz.a.run.app",
     });
   });
 });
@@ -130,8 +140,12 @@ describe("createIapHealthProbe", () => {
     exitCode: 0,
   });
 
-  /** A fake network: signJwt + the two health endpoints. */
-  function network(answers: { admin: () => [number, string]; gateway: () => [number, string] }) {
+  /** A fake network: signJwt + the three health endpoints (the proxy answers healthy unless given). */
+  function network(answers: {
+    admin: () => [number, string];
+    gateway: () => [number, string];
+    proxy?: () => [number, string];
+  }) {
     const requests: { url: string; headers: Record<string, string>; body?: string }[] = [];
     const http: HttpFetch = async (url, init) => {
       requests.push({ url, headers: init.headers, ...(init.body ? { body: init.body } : {}) });
@@ -139,7 +153,9 @@ describe("createIapHealthProbe", () => {
         ? [200, JSON.stringify({ signedJwt: "signed.jwt" })]
         : url.includes("admin")
           ? answers.admin()
-          : answers.gateway();
+          : url.endsWith("/api/mcp/health")
+            ? (answers.proxy ?? (() => [200, JSON.stringify({ ok: true, version: "0.11.0" })]))()
+            : answers.gateway();
       return { ok: status < 400, status, text: async () => text };
     };
     return { http, requests };
@@ -160,7 +176,7 @@ describe("createIapHealthProbe", () => {
     expect(await probe.deep({ version: "0.11.0" })).toEqual({
       ok: true,
       detail:
-        "admin 0.11.0, migrations at 0262_tool_approval_branch.sql / 0040_x.sql; gateway 0.11.0",
+        "admin 0.11.0, migrations at 0262_tool_approval_branch.sql / 0040_x.sql; gateway 0.11.0; MCP-Auth-Proxy 0.11.0",
     });
     const sign = net.requests[0];
     expect(sign?.url).toBe(
@@ -180,9 +196,36 @@ describe("createIapHealthProbe", () => {
     expect(admin?.headers.Authorization).toBe("Bearer signed.jwt");
     const gateway = net.requests.find((r) => r.url.endsWith("/api/_caelo/health?deep=1"));
     expect(gateway?.url).toBe(
-      "https://caelo-production-gateway-bbb-xyz.a.run.app/api/_caelo/health?deep=1",
+      "https://caelo-production-data-gateway-ddd-xyz.a.run.app/api/_caelo/health?deep=1",
     );
     expect(gateway?.headers.Authorization).toBeUndefined();
+    // #1328 — the proxy, on the service that was the gateway, by version.
+    const proxy = net.requests.find((r) => r.url.endsWith("/api/mcp/health"));
+    expect(proxy?.url).toBe("https://caelo-production-gateway-bbb-xyz.a.run.app/api/mcp/health");
+    expect(proxy?.headers.Authorization).toBeUndefined();
+  });
+
+  it("#1328 — fails the deep check while the MCP-Auth-Proxy runs another release or does not answer", async () => {
+    const deepWith = (proxy: () => [number, string]) =>
+      createIapHealthProbe(FIREBASE, {
+        run: gcloudOk,
+        http: network({
+          admin: () => [200, adminBody()],
+          gateway: () => [200, JSON.stringify({ ok: true, version: "0.11.0" })],
+          proxy,
+        }).http,
+        sleep: async () => {},
+        accessJustChanged: false,
+        attempts: 1,
+      }).deep({ version: "0.11.0" });
+    expect(await deepWith(() => [200, JSON.stringify({ ok: true, version: "0.10.99" })])).toEqual({
+      ok: false,
+      error: "MCP-Auth-Proxy runs 0.10.99, the admin runs 0.11.0",
+    });
+    expect(await deepWith(() => [404, "<html>Not Found</html>"])).toEqual({
+      ok: false,
+      error: "MCP-Auth-Proxy answered HTTP 404 without JSON",
+    });
   });
 
   it("retries while the new revisions warm up, then gives the last error", async () => {

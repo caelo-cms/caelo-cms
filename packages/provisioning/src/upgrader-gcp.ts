@@ -25,7 +25,7 @@ import { fetchVerifiedReleaseManifest } from "./release-manifest.js";
 import type { HttpFetch } from "./runtime-secrets.js";
 import { opsBucketName } from "./state-backend.js";
 import { acquireBucketStateLock, GcsStateStore, realSyncGcloud } from "./state-store.js";
-import type { AppRollPlan } from "./upgrade/app-roll.js";
+import type { AppRollPlan, RollSlug } from "./upgrade/app-roll.js";
 import { findServiceUrl } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe } from "./upgrade/health.js";
 import { createReleaseImageForms } from "./upgrade/image-forms.js";
@@ -71,7 +71,7 @@ export async function healthProbeFor(
   context: { readonly accessJustChanged: boolean },
 ) {
   const { install } = plan;
-  const urls: Partial<Record<"admin" | "gateway", string>> = {};
+  const urls: Partial<Record<RollSlug, string>> = {};
   for (const s of plan.services) {
     const url = await findServiceUrl(run, install.projectId, install.region, s.serviceName);
     if (!url) {
@@ -88,6 +88,7 @@ export async function healthProbeFor(
         domain: install.domain,
         adminServiceUrl: urls.admin as string,
         gatewayServiceUrl: urls.gateway as string,
+        mcpAuthProxyServiceUrl: urls["mcp-auth-proxy"] as string,
       },
       { run, http, sleep: realSleep, accessJustChanged: context.accessJustChanged },
     ),

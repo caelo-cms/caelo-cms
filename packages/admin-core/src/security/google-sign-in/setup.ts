@@ -59,7 +59,7 @@ export interface GoogleSignInEnv {
   readonly CAELO_PROVIDER?: string;
   /** The admin's own URL behind IAP (what signed-out people open). */
   readonly CAELO_ADMIN_URL?: string;
-  /** The remote-MCP broker's public origin (gateway) — its callback is one of the client's redirect URIs. */
+  /** The remote-MCP broker's public origin (the MCP-Auth-Proxy) — its callback is one of the client's redirect URIs. */
   readonly CAELO_MCP_PUBLIC_URL?: string;
   /** `projects/<project>/secrets/<id>` the client is written to. */
   readonly CAELO_OPERATOR_OAUTH_CLIENT_STORE?: string;
@@ -168,7 +168,7 @@ export function googleSignInAvailability(env: GoogleSignInEnv): GoogleSignInAvai
 /** A Google OAuth client secret as the console shows it (`GOCSPX-…`, older ones without the prefix). */
 export const GOOGLE_OAUTH_CLIENT_SECRET = /^[A-Za-z0-9_-]{16,128}$/;
 
-/** What the gateway's broker and the sync job read from the secret (contract #806/#914); `{}` = none. */
+/** What the MCP-Auth-Proxy's broker and the sync job read from the secret (contract #806/#914); `{}` = none. */
 export function oauthClientFile(
   client: { readonly clientId: string; readonly clientSecret: string } | null,
 ): string {

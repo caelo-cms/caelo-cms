@@ -22,6 +22,7 @@ describe("Caddyfile generator", () => {
       tls: "acme",
       adminUpstream: "caelo-admin:5173",
       gatewayUpstream: "caelo-gateway:8090",
+      mcpAuthProxyUpstream: "caelo-mcp-auth-proxy:8095",
       domains: [
         { hostname: "example.com", kind: "public", env: "production" },
         { hostname: "staging.example.com", kind: "public", env: "staging" },
@@ -49,6 +50,7 @@ describe("Caddyfile generator", () => {
       tls: "acme",
       adminUpstream: "caelo-admin:5173",
       gatewayUpstream: "caelo-gateway:8090",
+      mcpAuthProxyUpstream: "caelo-mcp-auth-proxy:8095",
       domains: [],
     });
     expect(out).toContain(":8081 {");
@@ -64,6 +66,7 @@ describe("Caddy cache policy for content-hashed assets", () => {
     tls: "acme",
     adminUpstream: "caelo-admin:5173",
     gatewayUpstream: "caelo-gateway:8090",
+    mcpAuthProxyUpstream: "caelo-mcp-auth-proxy:8095",
     domains: [
       { hostname: "example.com", kind: "public", env: "production" },
       { hostname: "admin.example.com", kind: "admin", env: "production" },

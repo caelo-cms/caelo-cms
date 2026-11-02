@@ -7,8 +7,10 @@
  *
  *   bun scripts/release-manifest.ts generate --version 0.11.0 \
  *     --digest admin=sha256:… --digest gateway=sha256:… --digest ops=sha256:… \
+ *     --digest mcp-auth-proxy=sha256:… \
  *     --platform-digest admin=sha256:… --platform-digest gateway=sha256:… \
- *     --platform-digest ops=sha256:… --out release-manifest.json
+ *     --platform-digest ops=sha256:… --platform-digest mcp-auth-proxy=sha256:… \
+ *     --out release-manifest.json
  *       Re-runs the release-cut checks against `release-meta.json` and
  *       writes the manifest. `--platform-digest` names each index's
  *       linux/amd64 manifest (#1025). Signing happens in the workflow
@@ -40,8 +42,9 @@ import { type ReleaseMeta, readReleaseMeta, runReleaseChecks } from "./release-c
 /**
  * Assemble the manifest from the checked declaration + build facts.
  *
- * @throws Error when the version names no known channel or the result
- *   fails the schema (both are pipeline bugs, not operator input).
+ * @throws Error when an image has no digest, the version names no known
+ *   channel or the result fails the schema (all pipeline bugs, not
+ *   operator input).
  */
 export function buildReleaseManifest(input: {
   meta: ReleaseMeta;
@@ -51,6 +54,16 @@ export function buildReleaseManifest(input: {
   contractMigrations: boolean;
   migrationHead: string;
 }): ReleaseManifest {
+  // The schema lets an image added later be absent (OPTIONAL_RELEASE_IMAGES:
+  // manifests signed before it must still parse); a release cut now ships
+  // and signs every image, so none may be missing here.
+  for (const [what, forms] of [
+    ["digest", input.digests],
+    ["platform digest", input.platformDigests],
+  ] as const) {
+    const missing = RELEASE_IMAGES.filter((i) => !forms[i]);
+    if (missing.length > 0) throw new Error(`no ${what} for: ${missing.join(", ")}`);
+  }
   const channel = channelForVersion(input.meta.version);
   if (!channel) {
     throw new Error(
@@ -90,7 +103,7 @@ export function parseDigestFlags(
     const [image, digest] = (argv[i + 1] ?? "").split("=");
     if (!image || !digest || !(RELEASE_IMAGES as readonly string[]).includes(image)) {
       throw new Error(
-        `bad ${flagName} "${argv[i + 1] ?? ""}" — expected <admin|gateway|ops>=sha256:…`,
+        `bad ${flagName} "${argv[i + 1] ?? ""}" — expected <${RELEASE_IMAGES.join("|")}>=sha256:…`,
       );
     }
     out[image as ReleaseImage] = digest;

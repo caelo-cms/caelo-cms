@@ -3,7 +3,7 @@
 # Caelo CMS — API gateway.
 #
 # Public-facing HTTP entry point for visitor writes (form submissions,
-# comments, newsletter signups, MCP `caelo_chat`). Runs on Bun directly
+# comments, newsletter signups). Runs on Bun directly
 # — no SvelteKit / no build step. Single source file (src/server.ts)
 # with the workspace's shared deps.
 #

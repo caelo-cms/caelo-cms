@@ -16,6 +16,7 @@ import { describe, expect, it } from "bun:test";
 import { databaseUrlFromEnv } from "@caelo-cms/shared";
 import type { GcloudResult } from "./gcloud.js";
 import {
+  CLOUD_RUN_SLUGS,
   type CloudRunSlug,
   OPERATOR_OAUTH_CLIENT_FILE,
   RETIRED_SECRET_FILES,
@@ -200,20 +201,30 @@ const INSTALL = {
   stagingHost: "staging.acme.com",
   region: "europe-west1",
 };
+/** The fixtures' services; the proxy is added by {@link upgrade} when absent. */
+type InstallServices = Record<"admin" | "gateway", FakeService> & {
+  "mcp-auth-proxy"?: FakeService;
+};
+
 const SERVICE_ACCOUNTS: Record<CloudRunSlug, string> = {
   admin: "caelo-production-run-sa@acme.iam.gserviceaccount.com",
   gateway: "caelo-production-gateway-sa@acme.iam.gserviceaccount.com",
+  "mcp-auth-proxy": "caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com",
 };
 
 /** Plan + apply one upgrade roll on the fake services, as upgradeCommand does. */
-function upgrade(services: Record<CloudRunSlug, FakeService>) {
+function upgrade(services: InstallServices) {
+  // #1328 — the gcp MCP-Auth-Proxy: created by the converge before the plan,
+  // with no env yet in these fixtures (they are about database logins).
+  services["mcp-auth-proxy"] ??= new FakeService(new Map(), SERVICE_ACCOUNTS["mcp-auth-proxy"]);
   const plan = planContractEnv(INSTALL, {
     admin: { serviceName: "adm", liveEnv: services.admin.env },
     gateway: { serviceName: "gw", liveEnv: services.gateway.env },
+    "mcp-auth-proxy": { serviceName: "proxy", liveEnv: services["mcp-auth-proxy"].env },
   });
   if (!plan.ok) throw new Error(plan.error);
-  for (const slug of ["admin", "gateway"] as const) {
-    services[slug].update(
+  for (const slug of CLOUD_RUN_SLUGS) {
+    (services[slug] as FakeService).update(
       serviceRollArgs({
         serviceName: slug,
         region: INSTALL.region,
@@ -349,10 +360,7 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
     expect(plan.ok && plan.services.gateway.changes.map((c) => c.name).sort()).toEqual([
       "ADMIN_DATABASE_PASSWORD",
       "ADMIN_DATABASE_URL",
-      // #806 — the remote-MCP broker's seal key and (#914) the Google
-      // sign-in client file path.
-      "CAELO_MCP_OAUTH_SEAL_KEY",
-      "CAELO_OPERATOR_OAUTH_CLIENT_FILE",
+      // No remote-MCP env: the broker is the MCP-Auth-Proxy's (#1328).
       // #650 — the staging gate key arrives in the same roll.
       "CAELO_STAGING_GATE_SECRET",
       // #845 — and which forwarded address is the visitor.
@@ -488,7 +496,12 @@ describe("retiring a secret file removes its volume too (#954)", () => {
     },
   };
   const plan = (live: Parameters<typeof planSecretFiles>[0]) =>
-    planSecretFiles(live, [OPERATOR_OAUTH_CLIENT_FILE], "production", RETIRED_SECRET_FILES.gateway);
+    planSecretFiles(
+      live,
+      [OPERATOR_OAUTH_CLIENT_FILE],
+      "production",
+      RETIRED_SECRET_FILES["mcp-auth-proxy"],
+    );
 
   it("a retired mount: removes the file, the mount and the volume behind it in the roll", () => {
     const r = plan({

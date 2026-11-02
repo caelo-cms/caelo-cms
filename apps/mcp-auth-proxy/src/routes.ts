@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Remote MCP on the public gateway (issue #806): the OAuth broker and the
- * streaming proxy to the IAP-protected admin, as one router `server.ts`
- * consults before its database-backed plugin pipeline.
+ * Remote MCP (issue #806): the OAuth broker and the streaming proxy to the
+ * IAP-protected admin, as the one router of the MCP-Auth-Proxy (#1328,
+ * server.ts). It ran inside the visitor gateway until #1328 moved it into
+ * its own service, so a hole in a visitor handler can never reach the
+ * operators' Google ID tokens.
  *
- * Nothing here touches a database or admin-only code (the gateway
- * boundary, docs/dev/public-admin-boundary.md): configuration is env plus
+ * Nothing here touches a database or admin-only code (no-db-imports.test.ts
+ * enforces it; docs/dev/public-admin-boundary.md): configuration is env plus
  * one secret-volume file, every value the broker must remember is sealed
  * into what it hands the client, and the per-address rate limits are
  * in-process (rate-limit.ts says why).
@@ -33,7 +35,7 @@ import {
   type ReadTextFile,
 } from "./config.js";
 import type { McpContext, ProxyLimits } from "./context.js";
-import { corsPreflight, json } from "./http.js";
+import { corsPreflight, fixedNotFound, json } from "./http.js";
 import {
   AS_METADATA_PATHS,
   authorizationServerMetadata,
@@ -62,8 +64,14 @@ export interface McpRouterDeps {
 
 /** Per-request facts only the server knows. */
 export interface McpRequestHooks {
-  /** The client's address under the deployment's proxy topology (client-ip.ts). */
-  readonly clientAddress: string;
+  /**
+   * The client's address under the deployment's proxy topology
+   * (@caelo-cms/shared client-address.ts). A function, called only once the
+   * request is known to be served — while remote MCP is off nothing of the
+   * request is read. It may throw `ClientAddressError`, which server.ts
+   * answers with a 503.
+   */
+  readonly clientAddress: () => string;
   /** Set Bun's idle timeout for this request, in seconds (`server.timeout(req, s)`; 0 = none). */
   readonly setIdleTimeout: (seconds: number) => void;
 }
@@ -116,9 +124,14 @@ export function createMcpRouter(deps: McpRouterDeps = {}): McpRouter {
   return async (req, hooks) => {
     const { pathname } = new URL(req.url);
     if (!isMcpPath(pathname)) return null;
+    // E14 (a, #1328): while the Owner has not set up Google sign-in the
+    // feature is off — one constant answer before the request is read.
+    // Loading reads env and the (cached) client file only.
+    const loaded = await loader.load();
+    if (!loaded.ok && loaded.notSetUp) return fixedNotFound();
     if (req.method === "OPTIONS") return corsPreflight();
 
-    const taken = limiter.take(rateClass(pathname), hooks.clientAddress);
+    const taken = limiter.take(rateClass(pathname), hooks.clientAddress());
     if (!taken.ok) {
       return json(
         {
@@ -130,17 +143,14 @@ export function createMcpRouter(deps: McpRouterDeps = {}): McpRouter {
       );
     }
 
-    const loaded = await loader.load();
-
     if (pathname === `${OAUTH_PREFIX}status`) {
       if (req.method !== "GET") return methodNotAllowed("GET");
       // The admin's setup self-check: whether the Owner's client reached
-      // this gateway. The client ID is public (every /authorize redirect to
+      // this proxy. The client ID is public (every /authorize redirect to
       // Google carries it); the secret never leaves the file.
       if (loaded.ok) {
         return json({ configured: true, clientId: loaded.config.google.clientId });
       }
-      if (loaded.notSetUp) return json({ configured: false });
       return notConfiguredResponse(loaded.message);
     }
     if (!loaded.ok) return notConfiguredResponse(loaded.message);

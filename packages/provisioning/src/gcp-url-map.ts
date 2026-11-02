@@ -19,7 +19,7 @@
  * Imported by the stack from `dist/`; keep it free of CLI dependencies.
  */
 
-import { GCP_PUBLIC_BASE_PATHS } from "@caelo-cms/shared";
+import { GCP_GATEWAY_PATHS } from "@caelo-cms/shared";
 import * as gcp from "@pulumi/gcp";
 import type * as pulumi from "@pulumi/pulumi";
 
@@ -58,7 +58,11 @@ export function siteUrlMapArgs(i: SiteUrlMapInputs): gcp.compute.URLMapArgs {
       {
         name: PUBLIC_PATH_MATCHER,
         defaultService: i.staticBackend,
-        pathRules: [{ paths: [...GCP_PUBLIC_BASE_PATHS], service: i.gatewayBackend }],
+        // #1328 — the MCP-Auth-Proxy's rule (GCP_MCP_AUTH_PROXY_PATHS) is the
+        // CLI's: it creates the proxy's backend after the first `up`
+        // (remote-mcp.ts ensureRemoteMcpEdge), and the stack ignores
+        // `pathRules` after creation anyway.
+        pathRules: [{ paths: [...GCP_GATEWAY_PATHS], service: i.gatewayBackend }],
       },
       {
         name: "admin",

@@ -10,6 +10,7 @@
 import { describe, expect, it } from "bun:test";
 import type { GcloudResult } from "../gcloud.js";
 import type { GcloudRunner } from "../gcloud-retry.js";
+import { MCP_ARMOR_RULE } from "../remote-mcp-edge.js";
 import type { HttpFetch } from "../runtime-secrets.js";
 import {
   type AppRollInstall,
@@ -34,13 +35,26 @@ const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitC
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
 
 const ADMIN = "caelo-production-admin-aaa";
-const GATEWAY = "caelo-production-gateway-bbb";
+/** gcp-firebase: the visitor gateway, under its fixed name since #1328. */
+const GATEWAY = "caelo-production-data-gateway";
+/** gcp-firebase: the service that was the gateway and is the MCP-Auth-Proxy (E13 a). */
+const PROXY = "caelo-production-gateway-bbb";
+/** gcp: the proxy's fixed name (the gateway keeps its auto-named service). */
+const GCP_PROXY = "caelo-production-mcp-auth-proxy";
 const SQL = "caelo-production-pg-abc";
 const BACKUP_ID = "1760000000000";
-const DIGEST = { admin: `sha256:${"a".repeat(64)}`, gateway: `sha256:${"b".repeat(64)}` };
+const DIGEST = {
+  admin: `sha256:${"a".repeat(64)}`,
+  gateway: `sha256:${"b".repeat(64)}`,
+  "mcp-auth-proxy": `sha256:${"d".repeat(64)}`,
+};
 const IMAGES: Record<RollSlug, ReleaseImage> = {
   admin: { digest: DIGEST.admin, imageRef: `registry/admin@${DIGEST.admin}` },
   gateway: { digest: DIGEST.gateway, imageRef: `registry/gateway@${DIGEST.gateway}` },
+  "mcp-auth-proxy": {
+    digest: DIGEST["mcp-auth-proxy"],
+    imageRef: `registry/mcp-auth-proxy@${DIGEST["mcp-auth-proxy"]}`,
+  },
 };
 
 const secretRef = (name: string, secret: string) => ({
@@ -53,7 +67,7 @@ const secretRef = (name: string, secret: string) => ({
  * returns it. `ingress`: the service-level setting (#732). Always-on CPU,
  * as every install the stacks created before `cpuIdle` was set runs.
  */
-const serviceJson = (image: string, env: unknown[], ingress = "all") =>
+const serviceJson = (image: string, env: unknown[], ingress = "all", vpc = true) =>
   JSON.stringify({
     metadata: { annotations: { "run.googleapis.com/ingress": ingress } },
     spec: {
@@ -61,9 +75,13 @@ const serviceJson = (image: string, env: unknown[], ingress = "all") =>
         metadata: {
           annotations: {
             "run.googleapis.com/cpu-throttling": "false",
-            "run.googleapis.com/network-interfaces": JSON.stringify([
-              { network: "caelo-production-vpc", subnetwork: "caelo-production-subnet" },
-            ]),
+            ...(vpc
+              ? {
+                  "run.googleapis.com/network-interfaces": JSON.stringify([
+                    { network: "caelo-production-vpc", subnetwork: "caelo-production-subnet" },
+                  ]),
+                }
+              : {}),
           },
         },
         spec: { containers: [{ image, env }] },
@@ -94,6 +112,24 @@ const GATEWAY_JSON = serviceJson("registry/gateway@sha256:old", [
   secretRef("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
 ]);
 
+/**
+ * gcp-firebase: the service that was the gateway, before this upgrade turns
+ * it into the MCP-Auth-Proxy — the visitor gateway's database login, the
+ * staging gate key and the remote-MCP broker's env, on the VPC.
+ */
+const PROXY_JSON = serviceJson("registry/gateway@sha256:old", [
+  {
+    name: "PUBLIC_DATABASE_URL",
+    value: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
+  },
+  secretRef("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
+  secretRef("CAELO_STAGING_GATE_SECRET", "staging-gate-secret"),
+  secretRef("CAELO_MCP_OAUTH_SEAL_KEY", "mcp-oauth-seal-key"),
+  { name: "CAELO_OPERATOR_OAUTH_CLIENT_FILE", value: "/secrets/operator-oauth-client/client.json" },
+]);
+/** gcp: the MCP-Auth-Proxy the converge deployed (no VPC, no database). */
+const GCP_PROXY_JSON = serviceJson("registry/mcp-auth-proxy@sha256:old", [], "all", false);
+
 type Answer = GcloudResult | ((line: string) => GcloudResult);
 
 /**
@@ -106,10 +142,15 @@ function fakeInstall(events: string[], overrides: [RegExp, Answer][] = []) {
   const rules: [RegExp, Answer][] = [
     ...overrides,
     [/^run services list .*caelo-production-admin/, ok(`${ADMIN}\n`)],
-    [/^run services list .*caelo-production-gateway/, ok(`${GATEWAY}\n`)],
+    [/^run services list .*caelo-production-data-gateway/, ok(`${GATEWAY}\n`)],
+    // On gcp this prefix is the gateway's, on gcp-firebase the proxy's.
+    [/^run services list .*caelo-production-gateway/, ok(`${PROXY}\n`)],
+    [/^run services list .*caelo-production-mcp-auth-proxy/, ok(`${GCP_PROXY}\n`)],
     [/describe (\S+) .*revisionName/, (l) => ok(`${l.split(" ")[3]}-00001-old\n`)],
     [new RegExp(`describe ${ADMIN} .*--format=json`), ok(ADMIN_JSON)],
     [new RegExp(`describe ${GATEWAY} .*--format=json`), ok(GATEWAY_JSON)],
+    [new RegExp(`describe ${PROXY} .*--format=json`), ok(PROXY_JSON)],
+    [new RegExp(`describe ${GCP_PROXY} .*--format=json`), ok(GCP_PROXY_JSON)],
     [/describe (\S+) .*status\.url/, (l) => ok(`https://${l.split(" ")[3]}-xyz.a.run.app\n`)],
     [
       /^run jobs describe caelo-production-(audit|capture) .*containers\[0\]\.image/,
@@ -247,6 +288,14 @@ const APP_ROLL_WRITE =
 const ANY_WRITE =
   /\b(create|update|update-traffic|delete|add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|execute|enable|add|restore)\b/;
 
+/**
+ * #1328 — the only writes allowed before the backup: the MCP-Auth-Proxy's
+ * account, its secretAccessor on its two secrets, and the services an older
+ * install lacks (mcp-auth-proxy-setup.ts). Additive; nothing serves on them.
+ */
+const PRE_PLAN_WRITE =
+  /^(iam service-accounts create caelo-production-mcp-proxy-sa |secrets add-iam-policy-binding caelo-production-(mcp-oauth-seal-key|operator-oauth-client) .*--member=serviceAccount:caelo-production-mcp-proxy-sa@|run services replace |run deploy caelo-production-mcp-auth-proxy )/;
+
 const indexOf = (events: string[], pattern: RegExp): number => {
   const i = events.findIndex((e) => pattern.test(e));
   if (i < 0) throw new Error(`no event matches ${pattern}:\n${events.join("\n")}`);
@@ -260,25 +309,31 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
 
     const backup = indexOf(events, /^gcloud sql backups create/);
-    const firstConvergeWrite = indexOf(events, /^gcloud .*(add-iam-policy-binding|secrets create)/);
+    const firstConvergeWrite =
+      backup + indexOf(events.slice(backup), /^gcloud .*(add-iam-policy-binding|secrets create)/);
     const baseline = indexOf(events, /^health baseline/);
     const migrate = indexOf(events, /^migrate registry\/admin@/);
     const adminRoll = indexOf(events, new RegExp(`^gcloud run services update ${ADMIN} `));
     const gatewayRoll = indexOf(events, new RegExp(`^gcloud run services update ${GATEWAY} `));
+    const proxyRoll = indexOf(events, new RegExp(`^gcloud run services update ${PROXY} `));
     const deep = indexOf(events, /^health deep 0\.11\.0/);
     const digests = indexOf(events, /^record digests/);
 
-    // Nothing writes before the backup.
+    // Before the backup only the additive pre-plan step writes (#1328): the
+    // MCP-Auth-Proxy's account and its two secret grants.
     for (const e of events.slice(0, backup)) expect(e).not.toMatch(/^(migrate|record)/);
     for (const e of events.slice(0, backup).filter((e) => e.startsWith("gcloud "))) {
-      expect(e.slice("gcloud ".length)).not.toMatch(ANY_WRITE);
+      const call = e.slice("gcloud ".length);
+      if (ANY_WRITE.test(call)) expect(call).toMatch(PRE_PLAN_WRITE);
     }
     expect(backup).toBeLessThan(firstConvergeWrite);
     expect(firstConvergeWrite).toBeLessThan(baseline);
     expect(baseline).toBeLessThan(migrate);
     expect(migrate).toBeLessThan(adminRoll);
     expect(adminRoll).toBeLessThan(gatewayRoll);
-    expect(gatewayRoll).toBeLessThan(deep);
+    // The proxy rolls last: on gcp-firebase it forwards to the new gateway.
+    expect(gatewayRoll).toBeLessThan(proxyRoll);
+    expect(proxyRoll).toBeLessThan(deep);
     expect(deep).toBeLessThan(digests);
     expect(recorded.digests).toEqual([DIGEST]);
     expect(lines).toContain(`done: Pre-upgrade backup ${BACKUP_ID} of ${SQL} taken`);
@@ -462,7 +517,8 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     });
     expect(await upgradeGcpInstall(TARGET, deps)).toBe(false);
 
-    const writes = calls.filter((c) => ANY_WRITE.test(c));
+    // Only the additive pre-plan grants (#1328) came before it.
+    const writes = calls.filter((c) => ANY_WRITE.test(c) && !PRE_PLAN_WRITE.test(c));
     expect(writes).toEqual([
       expect.stringMatching(/^sql backups create --instance caelo-production-pg-abc/),
     ]);
@@ -485,7 +541,12 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     const rollbacks = events
       .slice(deep)
       .filter((e) => e.includes("update-traffic") && e.includes("--to-revisions"));
+    // Newest first: the proxy (back to the gateway release it was), the
+    // gateway, the admin.
     expect(rollbacks).toEqual([
+      expect.stringContaining(
+        `${PROXY} --region europe-west1 --project acme --to-revisions ${PROXY}-00001-old=100`,
+      ),
       expect.stringContaining(
         `${GATEWAY} --region europe-west1 --project acme --to-revisions ${GATEWAY}-00001-old=100`,
       ),
@@ -624,7 +685,11 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     const { deps, lines } = upgradeDeps(events, {
       deep: { ok: false, error: "unhealthy" },
     });
-    const before = { admin: `${ADMIN}-00000-before`, gateway: `${GATEWAY}-00000-before` };
+    const before = {
+      admin: `${ADMIN}-00000-before`,
+      gateway: `${GATEWAY}-00000-before`,
+      "mcp-auth-proxy": `${PROXY}-00000-before`,
+    };
     expect(
       await upgradeGcpInstall(TARGET, {
         ...deps,
@@ -642,6 +707,27 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     );
     const rollbacks = events.filter((e) => e.includes("--to-revisions"));
     expect(rollbacks).toEqual([
+      expect.stringContaining(`--to-revisions ${before["mcp-auth-proxy"]}=100`),
+      expect.stringContaining(`--to-revisions ${before.gateway}=100`),
+      expect.stringContaining(`--to-revisions ${before.admin}=100`),
+    ]);
+  });
+
+  it("#1328 — a checkpoint without the proxy's revision (an older release wrote it) keeps the planned one", async () => {
+    const events: string[] = [];
+    const { deps } = upgradeDeps(events, { deep: { ok: false, error: "unhealthy" } });
+    const before = { admin: `${ADMIN}-00000-before`, gateway: `${GATEWAY}-00000-before` };
+    expect(
+      await upgradeGcpInstall(TARGET, {
+        ...deps,
+        resume: {
+          backup: { projectId: "acme", instance: SQL, backupId: "1759999999999" },
+          priorRevisions: before,
+        },
+      }),
+    ).toBe(false);
+    expect(events.filter((e) => e.includes("--to-revisions"))).toEqual([
+      expect.stringContaining(`--to-revisions ${PROXY}-00001-old=100`),
       expect.stringContaining(`--to-revisions ${before.gateway}=100`),
       expect.stringContaining(`--to-revisions ${before.admin}=100`),
     ]);
@@ -714,7 +800,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(recorded.contract).toEqual([]);
   });
 
-  it("#806 — the rolls carry remote MCP: identity env, the gateway's client file and timeout", async () => {
+  it("#806/#1328 — the rolls carry remote MCP: identity env, the proxy's client file and timeout", async () => {
     const events: string[] = [];
     const { deps, calls } = upgradeDeps(events);
     expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
@@ -723,19 +809,129 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     );
     const admin = rolls.find((c) => c.startsWith(`run services update ${ADMIN} `)) ?? "";
     const gateway = rolls.find((c) => c.startsWith(`run services update ${GATEWAY} `)) ?? "";
+    const proxy = rolls.find((c) => c.startsWith(`run services update ${PROXY} `)) ?? "";
     expect(admin).toContain(
       `CAELO_IAP_AUDIENCE=/projects/42/locations/europe-west1/services/${ADMIN}`,
     );
-    expect(admin).toContain(`CAELO_MCP_PUBLIC_URL=https://${GATEWAY}-xyz.a.run.app`);
-    expect(gateway).toContain(`CAELO_ADMIN_URL=https://${ADMIN}-xyz.a.run.app`);
-    expect(gateway).toContain(`CAELO_MCP_PUBLIC_URL=https://${GATEWAY}-xyz.a.run.app`);
-    expect(gateway).toContain(
-      "--update-secrets=/secrets/operator-oauth-client/client.json=caelo-production-operator-oauth-client:latest",
+    // E13 a: the MCP address stays the run.app URL of the service that was the gateway.
+    expect(admin).toContain(`CAELO_MCP_PUBLIC_URL=https://${PROXY}-xyz.a.run.app`);
+    // The Firebase rewrite follows the data gateway.
+    expect(admin).toContain(`CAELO_GATEWAY_SERVICE=${GATEWAY}`);
+    expect(proxy).toContain(`--image ${IMAGES["mcp-auth-proxy"].imageRef}`);
+    expect(proxy).toContain(`CAELO_ADMIN_URL=https://${ADMIN}-xyz.a.run.app`);
+    expect(proxy).toContain(`CAELO_MCP_PUBLIC_URL=https://${PROXY}-xyz.a.run.app`);
+    expect(proxy).toContain(
+      "/secrets/operator-oauth-client/client.json=caelo-production-operator-oauth-client:latest",
     );
-    expect(gateway).toContain("--timeout=3600");
+    expect(proxy).toContain("--timeout=3600");
+    // The gateway carries none of it any more.
+    expect(gateway).not.toContain("CAELO_MCP_PUBLIC_URL=");
+    expect(gateway).not.toContain("operator-oauth-client");
+    expect(gateway).not.toContain("--timeout");
     expect(admin).not.toContain("--timeout");
     // No extra revision: everything rides the image rolls.
-    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(2);
+    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(3);
+  });
+
+  it("#1328 — the gcp-firebase proxy roll leaves the VPC, drops every database login and forwards to the data gateway", async () => {
+    const events: string[] = [];
+    const { deps, calls } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const proxy =
+      calls.find((c) => new RegExp(`^run services update ${PROXY} .*--image`).test(c)) ?? "";
+    expect(proxy).toContain(
+      "--service-account=caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com",
+    );
+    expect(proxy).toContain("--clear-network");
+    expect(proxy).toContain("CAELO_REMOTE_MCP=available");
+    expect(proxy).toContain(`CAELO_INTERIM_FORWARD_ORIGIN=https://${GATEWAY}-xyz.a.run.app`);
+    const removedEnv = proxy.match(/--remove-env-vars=(\S+)/)?.[1]?.split(",") ?? [];
+    const removedSecrets = proxy.match(/--remove-secrets=(\S+)/)?.[1]?.split(",") ?? [];
+    expect(removedEnv).toContain("PUBLIC_DATABASE_URL");
+    expect(removedSecrets).toEqual(
+      expect.arrayContaining(["PUBLIC_DATABASE_PASSWORD", "CAELO_STAGING_GATE_SECRET"]),
+    );
+    // The gateway keeps its VPC route to Cloud SQL.
+    const gateway =
+      calls.find((c) => new RegExp(`^run services update ${GATEWAY} .*--image`).test(c)) ?? "";
+    expect(gateway).not.toContain("--clear-network");
+  });
+
+  it("#1328 — gcp-firebase: the pre-plan step copies the data gateway from the old gateway when it is missing", async () => {
+    const events: string[] = [];
+    const { deps, calls, lines } = upgradeDeps(events, {
+      overrides: [
+        [
+          new RegExp(`^run services describe ${GATEWAY} .*metadata\\.name`),
+          fail(`ERROR: Cannot find service [${GATEWAY}]. NOT_FOUND`),
+        ],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const replace = indexOf(events, /^gcloud run services replace /);
+    expect(replace).toBeLessThan(indexOf(events, /^gcloud sql backups create/));
+    expect(lines).toContain(
+      `info:   created: Cloud Run service ${GATEWAY} (the visitor gateway) (copied from ${PROXY})`,
+    );
+    // Nothing else is deployed before the plan: the proxy is rolled later.
+    expect(calls.some((c) => /^run deploy /.test(c))).toBe(false);
+  });
+
+  it("#1328 — gcp-firebase: an existing data gateway makes the pre-plan step a no-op", async () => {
+    const events: string[] = [];
+    const { deps, calls } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(calls.some((c) => /^run services replace |^run deploy /.test(c))).toBe(false);
+  });
+
+  it("#1328 — a failed pre-plan step stops before the backup, with nothing rolled", async () => {
+    const events: string[] = [];
+    const { deps, calls, lines } = upgradeDeps(events, {
+      overrides: [[/^secrets add-iam-policy-binding/, fail("PERMISSION_DENIED: setIamPolicy")]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(false);
+    expect(calls.some((c) => /^sql backups create/.test(c))).toBe(false);
+    expect(calls.filter((c) => APP_ROLL_WRITE.test(c))).toEqual([]);
+    expect(events.some((e) => e.startsWith("migrate"))).toBe(false);
+    expect(
+      lines.some((l) => l.startsWith("failed: The services this release runs could not be set up")),
+    ).toBe(true);
+  });
+
+  it("#1328 — gcp: the proxy is deployed only after its image's signature verifies", async () => {
+    const missingProxy: [RegExp, Answer] = [
+      new RegExp(`^run services describe ${GCP_PROXY} .*metadata\\.name`),
+      fail(`ERROR: Cannot find service [${GCP_PROXY}]. NOT_FOUND`),
+    ];
+    const events: string[] = [];
+    const { deps } = upgradeDeps(events, { overrides: [missingProxy] });
+    expect(
+      await upgradeGcpInstall(GCP_TARGET, {
+        ...deps,
+        verifyImages: async (images) => {
+          events.push(`verify ${images.map((i) => i.slug).join(",")}`);
+          return true;
+        },
+      }),
+    ).toBe(true);
+    const verify = indexOf(events, /^verify mcp-auth-proxy$/);
+    const deploy = indexOf(events, new RegExp(`^gcloud run deploy ${GCP_PROXY} `));
+    expect(verify).toBeLessThan(deploy);
+    expect(events[deploy]).toContain(`--image=${IMAGES["mcp-auth-proxy"].imageRef}`);
+    expect(events[deploy]).toContain("--ingress=internal-and-cloud-load-balancing");
+    expect(deploy).toBeLessThan(indexOf(events, /^gcloud sql backups create/));
+
+    // A signature that does not verify: nothing is deployed, nothing backed up.
+    const refused: string[] = [];
+    const bad = upgradeDeps(refused, { overrides: [missingProxy] });
+    expect(
+      await upgradeGcpInstall(GCP_TARGET, {
+        ...bad.deps,
+        verifyImages: async (images) => !images.some((i) => i.slug === "mcp-auth-proxy"),
+      }),
+    ).toBe(false);
+    expect(bad.calls.some((c) => /^run deploy /.test(c))).toBe(false);
+    expect(bad.calls.some((c) => /^sql backups create/.test(c))).toBe(false);
   });
 
   it("moves the gateway to request-based CPU in its image roll; the admin keeps its CPU", async () => {
@@ -747,44 +943,120 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     );
     const admin = rolls.find((c) => c.startsWith(`run services update ${ADMIN} `)) ?? "";
     const gateway = rolls.find((c) => c.startsWith(`run services update ${GATEWAY} `)) ?? "";
+    const proxy = rolls.find((c) => c.startsWith(`run services update ${PROXY} `)) ?? "";
     expect(gateway).toContain("--cpu-throttling");
+    expect(proxy).toContain("--cpu-throttling");
     expect(admin).not.toContain("cpu-throttling");
-    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(2);
+    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(3);
   });
 
-  it("#806 — on gcp, routes the discovery paths and adds the Cloud Armor rule before the roll", async () => {
+  it("#806/#1328 — on gcp, moves the remote-MCP paths and the Cloud Armor rule to the proxy's backend before the roll", async () => {
     const events: string[] = [];
+    // The #806 shape: the discovery paths on the gateway's rule, the MCP
+    // rule on the gateway's policy.
+    const gatewayBackend =
+      "https://www.googleapis.com/compute/v1/projects/acme/global/backendServices/caelo-production-gateway-backend-1";
     const urlMap = {
       name: "caelo-production-url-map-1",
       hostRules: [{ hosts: ["acme.com"], pathMatcher: "public" }],
-      pathMatchers: [{ name: "public", pathRules: [{ paths: ["/api/*"], service: "gw" }] }],
+      pathMatchers: [
+        {
+          name: "public",
+          pathRules: [
+            {
+              paths: [
+                "/api/*",
+                "/.well-known/oauth-protected-resource/*",
+                "/.well-known/oauth-authorization-server/*",
+              ],
+              service: gatewayBackend,
+            },
+          ],
+        },
+      ],
     };
+    const r = MCP_ARMOR_RULE;
+    const gatewayMcpRule = {
+      priority: r.priority,
+      action: r.action,
+      match: { expr: { expression: r.expression } },
+      rateLimitOptions: {
+        rateLimitThreshold: { count: r.count, intervalSec: r.intervalSec },
+        conformAction: r.conformAction,
+        exceedAction: r.exceedAction,
+        enforceOnKey: r.enforceOnKey,
+      },
+    };
+    let proxyPolicyCreated = false;
     const puts: string[] = [];
     const { deps, lines } = upgradeDeps(events, {
       overrides: [
         [/^compute url-maps list/, ok(JSON.stringify([urlMap]))],
         [/^compute security-policies list/, ok("caelo-production-waf-1\n")],
-        [/^compute security-policies describe/, ok(JSON.stringify({ rules: [] }))],
+        [
+          /^compute security-policies describe caelo-production-mcp-auth-proxy-armor /,
+          () =>
+            proxyPolicyCreated
+              ? ok(JSON.stringify({ rules: [] }))
+              : fail("ERROR: The resource 'caelo-production-mcp-auth-proxy-armor' was not found"),
+        ],
+        [
+          /^compute security-policies create caelo-production-mcp-auth-proxy-armor /,
+          () => {
+            proxyPolicyCreated = true;
+            return ok();
+          },
+        ],
+        [
+          /^compute security-policies describe caelo-production-waf-1 /,
+          ok(JSON.stringify({ rules: [gatewayMcpRule] })),
+        ],
+        [/^compute (network-endpoint-groups|backend-services) describe/, fail("NOT_FOUND")],
       ],
     });
     const recordingHttp: HttpFetch = async (url, init) => {
-      if (init.method === "PUT" && url.includes("/urlMaps/"))
-        puts.push(`${url} ${init.body ?? ""}`);
+      if (init.method === "PUT" && url.includes("/urlMaps/")) puts.push(init.body ?? "");
       return http(url, init);
     };
     expect(await upgradeGcpInstall(GCP_TARGET, { ...deps, http: recordingHttp })).toBe(true);
-    expect(events).toContainEqual(
-      expect.stringMatching(
-        /^gcloud compute security-policies rules create 900 --security-policy=caelo-production-waf-1 /,
-      ),
+    const armor = indexOf(
+      events,
+      /^gcloud compute security-policies rules create 900 --security-policy=caelo-production-mcp-auth-proxy-armor /,
+    );
+    const neg = indexOf(
+      events,
+      /^gcloud compute network-endpoint-groups create caelo-production-mcp-auth-proxy-neg .*--cloud-run-service=caelo-production-mcp-auth-proxy/,
+    );
+    const backend = indexOf(
+      events,
+      /^gcloud compute backend-services create caelo-production-mcp-auth-proxy-backend .*--security-policy=caelo-production-mcp-auth-proxy-armor/,
+    );
+    const retire = indexOf(
+      events,
+      /^gcloud compute security-policies rules delete 900 --security-policy=caelo-production-waf-1 /,
     );
     expect(puts).toHaveLength(1);
-    expect(puts[0]).toContain("/global/urlMaps/caelo-production-url-map-1");
-    expect(puts[0]).toContain("/.well-known/oauth-authorization-server/*");
-    expect(lines).toContain("done: Remote-MCP load-balancer rules ready");
-    expect(indexOf(events, /security-policies rules create/)).toBeLessThan(
-      indexOf(events, /^migrate /),
-    );
+    const put = JSON.parse(puts[0] as string) as typeof urlMap;
+    const rules = put.pathMatchers[0]?.pathRules ?? [];
+    expect(rules).toEqual([
+      { paths: ["/api/*"], service: gatewayBackend },
+      {
+        paths: [
+          "/api/mcp/*",
+          "/.well-known/oauth-protected-resource/*",
+          "/.well-known/oauth-authorization-server/*",
+        ],
+        service:
+          "https://www.googleapis.com/compute/v1/projects/acme/global/backendServices/caelo-production-mcp-auth-proxy-backend",
+      },
+    ]);
+    expect(lines).toContain("done: Remote-MCP load-balancer route ready");
+    // Proxy policy before its backend, the old gateway rule only once the
+    // URL map no longer sends MCP there; all before the migrations.
+    expect(armor).toBeLessThan(backend);
+    expect(neg).toBeLessThan(backend);
+    expect(backend).toBeLessThan(retire);
+    expect(retire).toBeLessThan(indexOf(events, /^migrate /));
   });
 
   it("on gcp-firebase there is no URL map: no redirects role", async () => {
@@ -809,7 +1081,11 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
       indexOf(events, /^provisioner identity/),
     );
     expect(events.some((e) => e.startsWith("migrate"))).toBe(false);
-    expect(calls.filter((c) => CONVERGE_WRITE.test(c) || APP_ROLL_WRITE.test(c))).toEqual([]);
+    expect(
+      calls.filter(
+        (c) => (CONVERGE_WRITE.test(c) && !PRE_PLAN_WRITE.test(c)) || APP_ROLL_WRITE.test(c),
+      ),
+    ).toEqual([]);
   });
 
   it("a deep health probe that throws still rolls back", async () => {
@@ -827,7 +1103,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
         healthProbe: async () => ({ ok: true, probe: throwing }),
       }),
     ).toBe(false);
-    expect(events.filter((e) => e.includes("--to-revisions"))).toHaveLength(2);
+    expect(events.filter((e) => e.includes("--to-revisions"))).toHaveLength(3);
     expect(recorded.digests).toEqual([]);
   });
 
@@ -868,7 +1144,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     // Its own update: the image roll does not carry it (no new revision).
     expect(events.filter((e) => e.includes("--ingress=all"))).toHaveLength(1);
     expect(lines).toContain(
-      `info:   applied: ingress internal-and-cloud-load-balancing → all on ${GATEWAY} (the gcp-firebase stack's gateway ingress (#650); the health check, the staging domain and remote MCP reach its run.app URL)`,
+      `info:   applied: ingress internal-and-cloud-load-balancing → all on ${GATEWAY} (the gcp-firebase stack's gateway ingress (#650); Firebase Hosting and the health check reach its run.app URL)`,
     );
   });
 
@@ -919,6 +1195,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
               domain: "acme.com",
               adminServiceUrl: `https://${ADMIN}-xyz.a.run.app`,
               gatewayServiceUrl: `https://${GATEWAY}-xyz.a.run.app`,
+              mcpAuthProxyServiceUrl: `https://${PROXY}-xyz.a.run.app`,
             },
             { run: deps.run, http: htmlGateway, sleep: noSleep, accessJustChanged: false },
           ),
@@ -987,7 +1264,7 @@ describe("app-roll and converge stay on their side", () => {
     );
     expect(result).toEqual({ ok: true, digests: DIGEST });
     expect(calls.filter((c) => CONVERGE_WRITE.test(c))).toEqual([]);
-    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(2);
+    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(3);
   });
 
   it("converge alone never rolls a service or runs migrations", async () => {

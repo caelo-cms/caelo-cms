@@ -1,6 +1,6 @@
 # Maintainer one-time setup — public image registry mirrors
 
-The release-images workflow publishes the `admin`, `gateway` and `ops` containers (and release.yml the signed `release-manifest` artifact, epic #696) to:
+The release-images workflow publishes the `admin`, `gateway`, `mcp-auth-proxy` and `ops` containers (and release.yml the signed `release-manifest` artifact, epic #696) to:
 1. `ghcr.io/caelo-cms/<service>` — canonical, used by Compose installs.
 2. `<region>-docker.pkg.dev/<project>/caelo-cms-images/<service>` — required because Cloud Run rejects ghcr.io directly.
 3. *(P15)* `public.ecr.aws/caelo-cms/<service>` — for AWS adapter.
@@ -100,7 +100,7 @@ git commit --allow-empty -m "chore: trigger release-images for AR mirror"
 git push origin main
 ```
 
-Watch `gh run watch` — the workflow's "Mirror image to GCP public AR" step should succeed for both admin + gateway. Then anonymous pull should work:
+Watch `gh run watch` — the workflow's "Mirror image to GCP public AR" step should succeed for every image (admin, gateway, mcp-auth-proxy, ops). A new GHCR package (such as `mcp-auth-proxy` on its first push, #1328) starts private: set its visibility to public and link it to the repo under the package's settings, or anonymous Compose pulls and the retention workflow fail for it. Then anonymous pull should work:
 
 ```bash
 gcloud artifacts docker images list europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images

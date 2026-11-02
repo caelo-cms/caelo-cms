@@ -8,9 +8,6 @@
  *   GET  /api/captcha/challenge             PoW challenge envelope
  *   GET  /healthz                           liveness probe
  *   GET  /api/_caelo/health[?deep=1]        upgrade health check (health.ts)
- *   *    /api/mcp/*, /.well-known/oauth-*    #806 remote MCP: OAuth broker +
- *                                           streaming proxy to the IAP-protected
- *                                           admin (mcp/routes.ts); no database
  *   *    (Host: staging.<domain>)           #650 staging gate + proxy to the
  *                                           staged build (staging-proxy.ts)
  *
@@ -79,7 +76,6 @@ import {
 } from "./database-env.js";
 import { gatewayStateGc } from "./gc.js";
 import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
-import { createMcpRouter, isMcpPath } from "./mcp/routes.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
 import { type CaptchaConfig, issuePowChallenge, verifyPowProof } from "./middleware/captcha.js";
 import { checkHoneypot } from "./middleware/honeypot.js";
@@ -452,22 +448,7 @@ function jsonResponse(
 export interface GatewayConnection {
   /** The TCP peer (Bun `server.requestIP`); read only when no proxy is in front. */
   readonly peerAddress: string | null;
-  /**
-   * Set Bun's idle timeout for this request (`server.timeout(req, s)`, 0 =
-   * none): the remote-MCP proxy waits up to its first-response timeout for
-   * the admin, then lifts it for an SSE stream that may stay quiet longer
-   * than the 10 s default. Absent outside Bun.serve (tests), where there is
-   * no timeout to change.
-   */
-  readonly setIdleTimeout?: (seconds: number) => void;
 }
-
-/**
- * #806 remote MCP. Created once: it caches the OAuth client file. It reads
- * env + that file only — no database, so it answers before (and without)
- * the gateway's settings.
- */
-const mcpRouter = createMcpRouter();
 
 type Resolved<T> =
   | { readonly ok: true; readonly value: T }
@@ -549,22 +530,6 @@ export async function handleRequest(
   }
   if (req.method === "GET" && url.pathname === GATEWAY_HEALTH_PATH) {
     return gatewayHealth(url, cachedAdapter);
-  }
-
-  // #806 — before the database-backed pipeline: remote MCP needs neither
-  // the gateway's settings nor its plugin host.
-  // Rate limited per client address inside the router (mcp/rate-limit.ts),
-  // so the address is resolved by the same rule as every other limit here.
-  if (isMcpPath(url.pathname)) {
-    const mcpClient = resolveClientAddress(() =>
-      clientAddress(req, trustedProxyHopsFromEnv(process.env), conn.peerAddress),
-    );
-    if (!mcpClient.ok) return mcpClient.response;
-    const mcp = await mcpRouter(req, {
-      clientAddress: mcpClient.value,
-      setIdleTimeout: conn.setIdleTimeout ?? (() => {}),
-    });
-    if (mcp) return mcp;
   }
 
   if (!cachedAdapter) {
@@ -958,7 +923,6 @@ if (import.meta.main) {
     fetch: (req, srv) =>
       handleRequest(req, {
         peerAddress: srv.requestIP(req)?.address ?? null,
-        setIdleTimeout: (seconds) => srv.timeout(req, seconds),
       }),
   });
   console.log(`[api-gateway] listening on :${server.port}`);

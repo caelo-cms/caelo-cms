@@ -26,6 +26,9 @@ const REPO = resolve(import.meta.dir, "../../..");
 /** Workspace directories whose code must never load in the gateway. */
 const ADMIN_ONLY = [
   "apps/admin",
+  // #1328 — the MCP-Auth-Proxy's code (operators' Google ID tokens) runs in
+  // its own service, never in the visitor gateway.
+  "apps/mcp-auth-proxy",
   "apps/static-generator",
   "packages/admin-core",
   "packages/mcp-server",

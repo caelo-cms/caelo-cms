@@ -22,8 +22,8 @@
  */
 
 import { createHash, timingSafeEqual } from "node:crypto";
+import { readBodyWithCap } from "@caelo-cms/shared";
 import { z } from "zod";
-import { readBodyWithCap } from "../middleware/body-cap.js";
 import { MAX_CLIENT_KEY_LENGTH, sealAccessToken } from "./access-token.js";
 import { CodeSealSchema } from "./authorize.js";
 import { type McpContext, resourceUrls } from "./context.js";
@@ -111,7 +111,7 @@ function googleFailure(result: Extract<GoogleTokenResult, { ok: false }>, what: 
     return oauthError("invalid_grant", `${what} is invalid, expired or revoked; sign in again`);
   }
   // Never the token or code: status + Google's error code only.
-  console.error(`[api-gateway] mcp oauth: Google ${what} call failed (${result.detail})`);
+  console.error(`[mcp-auth-proxy] mcp oauth: Google ${what} call failed (${result.detail})`);
   return oauthError(
     "temporarily_unavailable",
     "Google sign-in is unavailable for this site right now. If it persists, an Owner checks the Google sign-in client under Settings → Google sign-in.",

@@ -28,6 +28,7 @@
     { "path": "./apps/admin" },
     { "path": "./apps/api-gateway" },
     { "path": "./apps/bug-intake" },
+    { "path": "./apps/mcp-auth-proxy" },
     { "path": "./apps/static-generator" }
   ]
 }
