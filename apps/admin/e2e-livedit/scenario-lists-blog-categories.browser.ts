@@ -23,7 +23,6 @@ import {
   assertNoChatRunnerDiagWarnings,
   attachChatSessionTracker,
   loginAsDevOwner,
-  primePostOnboarding,
   resetLiveditFixtures,
   seedMinimalSite,
   sendChatPromptAndWait,
@@ -39,7 +38,6 @@ const PROMPT =
 test("#1107: blog categories are a vocabulary the article pages carry", async ({ page }) => {
   await resetLiveditFixtures();
   seedMinimalSite();
-  primePostOnboarding();
   attachChatSessionTracker(page);
   await loginAsDevOwner(page);
   await page.goto("/edit");
