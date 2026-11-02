@@ -90,6 +90,7 @@ import {
   resolveRateLimitSpec,
 } from "./middleware/rate-limit.js";
 import { signCookieValue } from "./middleware/signed-cookie.js";
+import { GATEWAY_PLUGINS_ROOT } from "./plugins-root.js";
 import {
   listenForPublishedChanges,
   mayCacheRead,
@@ -125,7 +126,7 @@ const SYSTEM_ACTOR_ID = process.env.CAELO_SYSTEM_ACTOR_ID ?? "00000000-0000-0000
 // platform deploy needs no extra config. GATEWAY_PORT is the historical
 // name retained for self-hosted Compose installs.
 const PORT = Number.parseInt(process.env.PORT ?? process.env.GATEWAY_PORT ?? "8090", 10);
-const PLUGINS_ROOT = resolve(import.meta.dir, "../../../packages/plugins");
+const PLUGINS_ROOT = GATEWAY_PLUGINS_ROOT;
 
 const SYSTEM_CTX = {
   actorId: SYSTEM_ACTOR_ID,

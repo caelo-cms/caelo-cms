@@ -126,6 +126,7 @@ export {
   readImageRequest,
   reserveImageRequest,
 } from "./image-ledger.js";
+export { checkPluginRuntime, type PluginRuntimeReport } from "./image-self-check.js";
 export {
   indexLeadColumns,
   type ListIndexAccess,
