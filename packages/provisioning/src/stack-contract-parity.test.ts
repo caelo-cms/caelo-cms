@@ -194,10 +194,20 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
   it("#1082 — leaves client / clientVersion (who deployed last) to gcloud on both services", () => {
     expect(src.match(/new gcp\.cloudrunv2\.Service\(/g)).toHaveLength(1);
     expect(src).toMatch(
-      // (gcp-firebase: the proxy's aliases ride the same options, #1328.)
-      /new gcp\.cloudrunv2\.Service\([\s\S]*?\.\.\.opts,\s*(\.\.\.\(args\.aliases[^\n]*\n\s*)?\/\/[^\n]*\n\s*ignoreChanges: \[\.\.\.CLOUD_RUN_IGNORE_CHANGES\],/,
+      /new gcp\.cloudrunv2\.Service\([\s\S]*?\.\.\.opts,\s*\/\/[^\n]*\n\s*ignoreChanges: \[\.\.\.CLOUD_RUN_IGNORE_CHANGES\],/,
     );
     expect(CLOUD_RUN_IGNORE_CHANGES).toEqual(["client", "clientVersion"]);
+  });
+
+  it("#1328 E13 a — the proxy keeps the gateway's logical resource names, so its service and URL stay", () => {
+    if (!src.includes('serviceName: "mcp-auth-proxy"')) return; // the gcp stack: CLI-owned proxy
+    // Same URN as before → Pulumi updates the existing service (keeping its
+    // auto-generated name and run.app URL) instead of creating a new one.
+    expect(src).toMatch(
+      /serviceName: "mcp-auth-proxy",\s*resourceName: `\$\{namePrefix\}-gateway`,/,
+    );
+    expect(src).toContain("`${namePrefix}-gateway-public-invoker`");
+    expect(src).not.toContain("aliases");
   });
 
   it("mounts the media bucket on the admin, and only there, from the contract upgrade applies", () => {

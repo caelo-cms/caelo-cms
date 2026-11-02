@@ -118,10 +118,13 @@ export const COMPOSE_MCP_AUTH_PROXY_PORT = 8095;
 export const COMPOSE_MCP_AUTH_PROXY_SERVICE = "caelo-mcp-auth-proxy";
 
 /**
- * The Compose services that run Caelo code — what `restore` stops while it
- * rewrites the databases, and what the health checks probe. Workers run
- * inside the admin (CLAUDE.md §11.B Tier 5); there is no orchestrator or
- * runner service.
+ * The Compose services that touch the databases — what `backup` and
+ * `restore` stop while they read or rewrite them. Workers run inside the
+ * admin (CLAUDE.md §11.B Tier 5); there is no orchestrator or runner
+ * service. The MCP-Auth-Proxy (#1328) is deliberately not here: it holds no
+ * database login, so it keeps running, and a release from before it has no
+ * such service for `up` to start. Its health is checked wherever the
+ * install starts (self-hosted-start.ts) or rolls (self-hosted-upgrade.ts).
  */
 export const COMPOSE_APP_SERVICES = ["caelo-admin", "caelo-gateway"] as const;
 

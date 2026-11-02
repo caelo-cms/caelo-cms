@@ -120,7 +120,13 @@ export function releaseTag(opts: {
   return "latest";
 }
 
-export type DigestResult = { ok: true; digest: string } | { ok: false; reason: string };
+/**
+ * `notFound`: the registry answered that the tag does not exist (HTTP 404)
+ * — a verdict, unlike an outage, a refused token or a malformed answer.
+ */
+export type DigestResult =
+  | { ok: true; digest: string }
+  | { ok: false; reason: string; notFound?: true };
 
 /** Manifest media types: single-arch manifests and multi-arch indexes, Docker + OCI. */
 const MANIFEST_ACCEPT = [
@@ -159,7 +165,13 @@ export async function resolveRegistryDigest(
         headers: { Accept: MANIFEST_ACCEPT, Authorization: `Bearer ${token.token}` },
       });
     }
-    if (!res.ok) return { ok: false, reason: `HTTP ${res.status} ${res.statusText}` };
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: `HTTP ${res.status} ${res.statusText}`,
+        ...(res.status === 404 ? { notFound: true as const } : {}),
+      };
+    }
     const header = res.headers.get("docker-content-digest");
     const digest = header ? canonicalDigest(header) : null;
     if (!digest) {

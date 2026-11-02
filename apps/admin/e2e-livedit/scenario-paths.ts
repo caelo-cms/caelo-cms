@@ -491,6 +491,9 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${SHARED}/bug-intake.ts`,
   `${SHARED}/mcp-access.ts`,
   `${SHARED}/redirect-emit-*.ts`,
+  // #1328 — HTTP plumbing of the public gateway and the MCP-Auth-Proxy;
+  // the admin and the AI never run it.
+  `${SHARED}/{body-cap,client-address,interim-forwarded-host,json-security-headers}.ts`,
   `${ADMIN}/lib/server/google-iap.ts`,
   `${ADMIN}/lib/server/forgot-password.ts`,
   `${ADMIN}/lib/server/operator-access.ts`,

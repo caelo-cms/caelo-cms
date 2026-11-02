@@ -114,18 +114,23 @@ export function selfHostedMcpHost(domain: string): string {
 /**
  * The vhosts every self-hosted install serves before an Owner adds domains
  * in the admin: the admin on `admin.<domain>`, the live site on `<domain>`,
- * the staging site on its own host, and the MCP-Auth-Proxy on
- * `mcp.<domain>` (#1328). The admin needs its own host — it routes from `/`
- * (`/setup`, `/login`, …), so it cannot share one with the public site, and
- * Caddy refuses two site blocks for the same address. The proxy needs its
- * own host so it never shares an origin with module JS.
+ * the staging site on its own host. The admin needs its own host — it routes
+ * from `/` (`/setup`, `/login`, …), so it cannot share one with the public
+ * site, and Caddy refuses two site blocks for the same address.
+ *
+ * #1328 — the MCP-Auth-Proxy's vhost (`mcp.<domain>`, kind `mcp`) is not
+ * seeded: remote MCP needs an identity proxy in front of the admin (§11.B),
+ * which a self-hosted install does not have yet, so the proxy runs
+ * unexposed on the Compose network (E14 a: provisioned, fixed 404) — the
+ * same honest refusal as on aws and azure. Seeding it would make Caddy
+ * fetch and retry an ACME certificate for a host nobody has a DNS record
+ * for. The vhost comes with remote MCP on self-hosted.
  */
 export function selfHostedSeedDomains(domain: string, stagingDomain: string): CaddyDomainSpec[] {
   return [
     { hostname: selfHostedAdminHost(domain), kind: "admin", env: "production" },
     { hostname: domain, kind: "public", env: "production" },
     { hostname: stagingDomain, kind: "public", env: "staging" },
-    { hostname: selfHostedMcpHost(domain), kind: "mcp", env: "production" },
   ];
 }
 

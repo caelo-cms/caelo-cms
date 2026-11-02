@@ -561,12 +561,13 @@ const firebaseCustomDomain = new gcp.firebase.HostingCustomDomain(
 interface CloudRunArgs {
   readonly serviceName: CloudRunSlug;
   /**
-   * The Pulumi resource name, when it is not `${namePrefix}-<serviceName>`,
-   * and the names the resource had before (#1328 E13 a: the proxy is the
-   * resource that was the gateway, so it keeps its service and URL).
+   * The Pulumi resource name, when it is not `${namePrefix}-<serviceName>`.
+   * #1328 E13 a: the proxy keeps the logical name the gateway had, so Pulumi
+   * keeps the same resource and its auto-generated service name — an alias
+   * under a new name would let the provider pick a new name, and a new
+   * service means a new run.app URL.
    */
   readonly resourceName?: string;
-  readonly aliases?: readonly string[];
   readonly minInstances: number;
   readonly maxInstances: number;
   readonly memory: string;
@@ -672,7 +673,6 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
     },
     {
       ...opts,
-      ...(args.aliases ? { aliases: args.aliases.map((name) => ({ name })) } : {}),
       // #1082 — which tool deployed last; see CLOUD_RUN_IGNORE_CHANGES.
       ignoreChanges: [...CLOUD_RUN_IGNORE_CHANGES],
       dependsOn: [
@@ -733,14 +733,13 @@ const gatewaySvc = cloudRunService({
 // #1328 — the MCP-Auth-Proxy: remote MCP's sign-in broker and its stream to
 // the IAP-protected admin, with no database, no VPC route and an account
 // that reads two secrets. E13 (a) of #763: it is the resource that was the
-// gateway (`aliases`), so its service and run.app URL — the address every
+// gateway (same logical name), so its service and run.app URL — the address every
 // connector in claude.ai / ChatGPT holds, and the Google sign-in client's
 // registered redirect URI — stay as they were. Always deployed at minimum
 // zero; while remote MCP is not set up it answers a fixed 404 (E14 a).
 const mcpAuthProxySvc = cloudRunService({
   serviceName: "mcp-auth-proxy",
-  resourceName: `${namePrefix}-mcp-auth-proxy`,
-  aliases: [`${namePrefix}-gateway`],
+  resourceName: `${namePrefix}-gateway`,
   minInstances: 0,
   maxInstances: DEFAULT_MCP_AUTH_PROXY_MAX_INSTANCES,
   memory: "512Mi",
@@ -827,10 +826,10 @@ new gcp.cloudrunv2.ServiceIamMember(
 );
 
 // #1328 — the MCP-Auth-Proxy: MCP clients sign in and call it without a
-// Google identity of their own. The binding the service had as the gateway
-// (`aliases`), so it never lapses.
+// Google identity of their own. The binding the service had as the gateway,
+// under its old logical name, so it never lapses.
 new gcp.cloudrunv2.ServiceIamMember(
-  `${namePrefix}-mcp-auth-proxy-public-invoker`,
+  `${namePrefix}-gateway-public-invoker`,
   {
     project,
     location: region,
@@ -838,7 +837,7 @@ new gcp.cloudrunv2.ServiceIamMember(
     role: "roles/run.invoker",
     member: "allUsers",
   },
-  { ...opts, aliases: [{ name: `${namePrefix}-gateway-public-invoker` }] },
+  opts,
 );
 
 // v0.6.5 — `run.services.get` on the gateway for the admin runtime

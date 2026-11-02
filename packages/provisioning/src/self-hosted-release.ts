@@ -236,6 +236,14 @@ export async function resolveVerifiedRelease(
       tag,
       deps.fetchImpl,
     );
+    if (!r.ok && r.notFound && service === "mcp-auth-proxy") {
+      // #1328 — releases from before the MCP-Auth-Proxy ship no image of it,
+      // and they stay installable and rollback targets: their Compose file
+      // simply has no proxy (ReleaseImages models the absence). Only a
+      // registry verdict that the tag does not exist means that; an outage
+      // still fails below, never silently installs a release without it.
+      continue;
+    }
     if (!r.ok) {
       return {
         ok: false,
@@ -246,11 +254,12 @@ export async function resolveVerifiedRelease(
     }
     refs[service] = ghcrImageRef(service, r.digest);
   }
+  const proxy = refs["mcp-auth-proxy"];
   const images: ReleaseImages = {
     mode: "release",
     admin: refs.admin ?? "",
     gateway: refs.gateway ?? "",
-    "mcp-auth-proxy": refs["mcp-auth-proxy"] ?? "",
+    ...(proxy ? { "mcp-auth-proxy": proxy } : {}),
   };
   if (deps.skipVerify) return { ok: true, images };
 
@@ -265,8 +274,9 @@ export async function resolveVerifiedRelease(
     };
   }
   for (const service of RELEASE_SERVICES) {
+    const ref = images[service];
+    if (ref === undefined) continue;
     deps.onProgress?.(`Verifying the signature of ${service}`);
-    const ref = images[service] ?? "";
     const v = await deps.runner.run(cosignVerifyArgv(ref));
     if (v.exitCode !== 0) {
       return {

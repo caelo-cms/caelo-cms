@@ -40,8 +40,12 @@ describe("self-hosted seed vhosts", () => {
       { hostname: "admin.example.com", kind: "admin", env: "production" },
       { hostname: "example.com", kind: "public", env: "production" },
       { hostname: "staging.example.com", kind: "public", env: "staging" },
-      { hostname: "mcp.example.com", kind: "mcp", env: "production" },
     ]);
+    // #1328 — no MCP vhost until remote MCP exists on self-hosted: Caddy would
+    // otherwise chase an ACME certificate for a host without a DNS record.
+    expect(
+      selfHostedSeedDomains("example.com", "staging.example.com").some((d) => d.kind === "mcp"),
+    ).toBe(false);
     expect(selfHostedAdminHost("example.com")).toBe("admin.example.com");
     expect(selfHostedMcpHost("example.com")).toBe("mcp.example.com");
   });
@@ -50,7 +54,10 @@ describe("self-hosted seed vhosts", () => {
   it("serves the MCP-Auth-Proxy on its own vhost, nothing else of the site", () => {
     const out = generateCaddyfile({
       ...spec,
-      domains: selfHostedSeedDomains("example.com", "staging.example.com"),
+      domains: [
+        ...selfHostedSeedDomains("example.com", "staging.example.com"),
+        { hostname: selfHostedMcpHost("example.com"), kind: "mcp", env: "production" },
+      ],
     });
     const block = out.slice(out.indexOf("mcp.example.com {"));
     const mcp = block.slice(0, block.indexOf("\n}\n") + 3);
