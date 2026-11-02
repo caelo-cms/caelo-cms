@@ -658,6 +658,9 @@ function makePluginCms(
           requestId: `plugin-${plugin.slug}`,
           pluginId: plugin.pluginId,
           ...branch,
+          ...(invocation.origin === "render" && invocation.siteBaseUrl
+            ? { renderSiteBaseUrl: invocation.siteBaseUrl }
+            : {}),
         },
         opName,
         input as unknown,

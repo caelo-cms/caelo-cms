@@ -227,8 +227,10 @@ async function bakeTarget(args: {
   live: LiveBuildRef;
   plugins: readonly RenderablePlugin[];
   bakedAt: string;
+  /** The live site's origin: re-rendered regions link pages on it (#650). */
+  siteBaseUrl: string;
 }): Promise<TargetBake> {
-  const { publisher, target, live, plugins, bakedAt } = args;
+  const { publisher, target, live, plugins, bakedAt, siteBaseUrl } = args;
   const manifestRaw = (
     await publisher.readLiveFiles({ target, live, paths: ["routing-manifest.json"] })
   ).get("routing-manifest.json");
@@ -304,11 +306,10 @@ async function bakeTarget(args: {
       // would remove the published items from the page.
       renders.set(
         key,
-        await localBuildPluginServices.staticRender(
-          region.slug,
-          region.pageId,
-          target.pageUrlStyle ?? "directory",
-        ),
+        await localBuildPluginServices.staticRender(region.slug, region.pageId, {
+          siteBaseUrl,
+          pageUrlStyle: target.pageUrlStyle ?? "directory",
+        }),
       );
     }
   }
@@ -436,6 +437,8 @@ const pluginDataPlan = z.discriminatedUnion("kind", [
     kind: z.literal("bake"),
     /** The bake's `data-baked-at` (see the start step). */
     bakedAt: z.string(),
+    /** The site base URL the live builds were published for. */
+    siteBaseUrl: z.string(),
     plugins: z.array(
       z.object({
         id: z.string(),
@@ -521,6 +524,16 @@ export const startPluginDataOp = defineOperation({
       FROM deploy_targets WHERE env = 'production' ORDER BY is_default DESC, name
     `)) as unknown as TargetRow[];
     if (targets.length === 0) return done("blocked", "no production deploy target is configured");
+    const base = (await tx.execute(sql`
+      SELECT site_base_url FROM site_defaults WHERE id = 1 LIMIT 1
+    `)) as unknown as { site_base_url: string | null }[];
+    const siteBaseUrl = base[0]?.site_base_url;
+    if (!siteBaseUrl) {
+      return done(
+        "blocked",
+        "the site base URL is not configured, so the re-rendered regions cannot link pages (Settings → SEO)",
+      );
+    }
 
     // #1008 — re-render only plugins that run; their marks wait otherwise.
     const problems = new Map((await activePluginProblems(tx)).map((p) => [p.slug, p.reason]));
@@ -602,6 +615,7 @@ export const startPluginDataOp = defineOperation({
     return ok({
       kind: "bake" as const,
       bakedAt: iso(dataAsOf),
+      siteBaseUrl,
       plugins,
       targets: live,
       waitingNote,
@@ -909,6 +923,7 @@ async function runPluginDataBuild(
         live,
         plugins: renderable,
         bakedAt: plan.bakedAt,
+        siteBaseUrl: plan.siteBaseUrl,
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

@@ -27,7 +27,7 @@
  */
 
 import type { ListResolveScope } from "@caelo-cms/plugin-sdk";
-import type { ListOverlayIssue, PageUrlStyle } from "@caelo-cms/shared";
+import type { ListOverlayIssue } from "@caelo-cms/shared";
 import { collectBuildAssets, type PluginClientAsset } from "./client-assets.js";
 import {
   hasContentVariantContributors,
@@ -80,8 +80,12 @@ export interface StaticRenderPlugin {
 
 /** The plugin answers a static build consumes. All main-line renders. */
 export interface BuildPluginServices {
-  /** Plugin list-source entries per page (epic #1107). */
-  resolveListSources(pageIds: string[], pageUrlStyle: PageUrlStyle): Promise<ResolvedListSources>;
+  /**
+   * Plugin list-source entries per page (epic #1107). `urlContext` is the
+   * build's origin and URL style: a source that links pages (the language
+   * switcher) links them on the origin the build serves (#650).
+   */
+  resolveListSources(pageIds: string[], urlContext: PublicUrlContext): Promise<ResolvedListSources>;
   /** Declared list-source names whose plugin is not running (name → plugin). */
   dormantListSourceNames(): Promise<Record<string, string>>;
   /** Every declared list-source name, running or not. */
@@ -124,13 +128,18 @@ export interface BuildPluginServices {
   staticRenderPlugins(): Promise<StaticRenderPlugin[]>;
   metaSignatureBatch(pluginSlug: string, pageIds: string[]): Promise<ReadonlyMap<string, string>>;
   metaSignature(pluginSlug: string, pageId: string): Promise<string>;
-  staticRender(pluginSlug: string, pageId: string, pageUrlStyle: PageUrlStyle): Promise<string>;
+  /** One placeholder's markup, its page links on the build's origin (#650). */
+  staticRender(pluginSlug: string, pageId: string, urlContext: PublicUrlContext): Promise<string>;
 }
 
 /** The plugin host of THIS process — the admin's, where plugins run. */
 export const localBuildPluginServices: BuildPluginServices = {
-  resolveListSources: (pageIds, pageUrlStyle) =>
-    resolveListSources(pageIds, MAIN_RENDER, pageUrlStyle),
+  resolveListSources: (pageIds, urlContext) =>
+    resolveListSources(
+      pageIds,
+      { ...MAIN_RENDER, siteBaseUrl: urlContext.siteBaseUrl },
+      urlContext.pageUrlStyle,
+    ),
   dormantListSourceNames: async () => dormantListSourceNames(),
   declaredListSourceNames: async () => pluginListSourcesRegistry.catalogue().map((c) => c.name),
   hasListResolveContributors: async () => hasListResolveContributors(),
@@ -160,12 +169,12 @@ export const localBuildPluginServices: BuildPluginServices = {
     runPluginMetaSignatureBatch({ invocation: renderInvocation(MAIN_RENDER), pluginSlug, pageIds }),
   metaSignature: (pluginSlug, pageId) =>
     runPluginMetaSignature({ invocation: renderInvocation(MAIN_RENDER), pluginSlug, pageId }),
-  staticRender: async (pluginSlug, pageId, pageUrlStyle) =>
+  staticRender: async (pluginSlug, pageId, urlContext) =>
     (await runPluginStaticRender({
-      invocation: renderInvocation(MAIN_RENDER),
+      invocation: renderInvocation({ ...MAIN_RENDER, siteBaseUrl: urlContext.siteBaseUrl }),
       pluginSlug,
       pageId,
-      pageUrlStyle,
+      pageUrlStyle: urlContext.pageUrlStyle,
     })) ?? "",
 };
 

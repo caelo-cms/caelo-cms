@@ -52,10 +52,11 @@ export const resolvePublicUrlsOp = defineOperation({
     .strict(),
   output: z.object({ urls: z.record(z.string(), z.string()) }),
   handler: async (ctx, input, tx) => {
-    const base = (await tx.execute(sql`
-      SELECT site_base_url FROM site_defaults WHERE id = 1 LIMIT 1
-    `)) as unknown as { site_base_url: string | null }[];
-    const siteBaseUrl = base[0]?.site_base_url;
+    // #650 — a plugin's call inside a static build gets the build's origin
+    // (a Stage with its own staging host renders that host into the
+    // canonical); the stored base URL would point its hreflang and
+    // switcher links at the live site.
+    const siteBaseUrl = ctx.renderSiteBaseUrl ?? (await storedSiteBaseUrl(tx));
     if (!siteBaseUrl) {
       // #551 — absolute URLs need the real public origin; a substituted
       // host would ship unreachable alternates.
@@ -107,3 +108,11 @@ export const resolvePublicUrlsOp = defineOperation({
     return ok({ urls: Object.fromEntries(urls) });
   },
 });
+
+/** `site_defaults.site_base_url`, or null while it is unset (#551). */
+async function storedSiteBaseUrl(tx: TransactionRunner): Promise<string | null> {
+  const base = (await tx.execute(sql`
+    SELECT site_base_url FROM site_defaults WHERE id = 1 LIMIT 1
+  `)) as unknown as { site_base_url: string | null }[];
+  return base[0]?.site_base_url ?? null;
+}
