@@ -4,16 +4,17 @@
  * Who a visitor request comes from — and whether the gateway may
  * recognise them at all (#677).
  *
- * `caelo_visitor_id` is a signed, HttpOnly, 30-day cookie that ties one
- * browser's requests together. Core needs it for nothing: rate limits are
- * keyed by client address (a cookie the abuser can simply drop is no
- * limit), and a captcha proof is bound to nothing but its own single use.
- * It exists only for a plugin that declares the `visitor_id` consent
- * purpose in its manifest (`consentPurposes`; today: ratings, to keep one
- * rating per visitor and page) — and that declaration names the consent
- * category the cookie sits under. The gateway therefore:
+ * The visitor id is a signed entry of the gateway's HttpOnly `__session`
+ * cookie (gateway-cookies.ts, #1343) that ties one browser's requests
+ * together for 30 days. Core needs it for nothing: rate limits are keyed
+ * by client address (a cookie the abuser can simply drop is no limit), and
+ * a captcha proof is bound to nothing but its own single use. It exists
+ * only for a plugin that declares the `visitor_id` consent purpose in its
+ * manifest (`consentPurposes`; today: ratings, to keep one rating per
+ * visitor and page) — and that declaration names the consent category the
+ * id sits under. The gateway therefore:
  *
- *   - sets it only when some ACTIVE plugin declares `visitor_id` AND the
+ *   - stores it only when some ACTIVE plugin declares `visitor_id` AND the
  *     visitor's current decision grants that purpose's category (the
  *     consent provider's `visitor_consent_rule` maps purpose → category
  *     from the declarations it lists through `ctx.consentPurposes`) —
@@ -21,11 +22,16 @@
  *     with no consent provider (nobody can have agreed) and never when no
  *     running plugin asks for it;
  *   - ignores an existing one otherwise, so nothing is keyed to it, and
- *     expires it in the same response — consent withdrawn in the banner
+ *     removes it in the same response — consent withdrawn in the banner
  *     (or the last declaring plugin switched off) reaches the HttpOnly
- *     cookie, which the page's script cannot delete itself, on the next
- *     gateway call (the consent runtime's own `record_consent` beacon is
+ *     cookie, which the page's script cannot change itself, on the next
+ *     gateway call (the consent runtime's own `record_consent` call is
  *     that call).
+ *
+ * The decision itself arrives in the `x-caelo-consent` request header the
+ * consent runtime and the component kit send (plugin-host
+ * visitor-consent.ts), never in a cookie: behind Firebase Hosting only
+ * `__session` reaches the gateway, on every provider alike.
  *
  * Both answers come from this process: the declarations are read off the
  * plugins the gateway's dispatch-only host attached from what the admin
@@ -39,10 +45,13 @@ import {
   consentPurposeDeclared,
   declaredConsentPurposes,
   resolveVisitorConsentRule,
+  VISITOR_CONSENT_HEADER,
   VISITOR_ID_PURPOSE,
   type VisitorConsentRule,
   visitorConsentGranted,
 } from "@caelo-cms/plugin-host";
+import { SESSION_ENTRY } from "@caelo-cms/shared";
+import { GatewayCookies, VISITOR_COOKIE_MAX_AGE } from "./gateway-cookies.js";
 import { verifySignedCookie } from "./middleware/signed-cookie.js";
 import {
   mayCacheRead,
@@ -50,9 +59,7 @@ import {
   publishedCacheUsable,
 } from "./published-changes.js";
 
-export const VISITOR_COOKIE = "caelo_visitor_id";
-export const VISITOR_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
-export const SESSION_COOKIE = "caelo_session";
+export { parseCookies, VISITOR_COOKIE_MAX_AGE } from "./gateway-cookies.js";
 
 /**
  * The invocation actor of a visitor call that carries no visitor id. The
@@ -60,48 +67,6 @@ export const SESSION_COOKIE = "caelo_session";
  * instead of standing in for an id.
  */
 export const ANONYMOUS_VISITOR_ACTOR = "anonymous-visitor";
-
-/**
- * Parse a `Cookie` header. A pair whose value is not valid
- * percent-encoding is skipped: the header is visitor-controlled, and one
- * malformed cookie must not fail the request.
- */
-export function parseCookies(header: string | null): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!header) return out;
-  for (const part of header.split(/;\s*/)) {
-    const eq = part.indexOf("=");
-    if (eq <= 0) continue;
-    const name = part.slice(0, eq).trim();
-    try {
-      out[name] = decodeURIComponent(part.slice(eq + 1).trim());
-    } catch {
-      // URIError on malformed percent-encoding: treat the cookie as absent.
-    }
-  }
-  return out;
-}
-
-function secureFlag(flags: string[]): string {
-  if (process.env.NODE_ENV === "production") flags.push("Secure");
-  return flags.join("; ");
-}
-
-/** Set-Cookie for a freshly minted, signed visitor id. */
-export function visitorCookieHeader(value: string): string {
-  return secureFlag([
-    `${VISITOR_COOKIE}=${encodeURIComponent(value)}`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    `Max-Age=${VISITOR_COOKIE_MAX_AGE}`,
-  ]);
-}
-
-/** Set-Cookie that expires the visitor id (consent withdrawn or never given). */
-export function clearVisitorCookieHeader(): string {
-  return secureFlag([`${VISITOR_COOKIE}=`, "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"]);
-}
 
 // The provider's rule changes when the Owner bumps the policy version or
 // the set of declared purposes changes. Cached like the gateway's settings
@@ -153,9 +118,11 @@ export interface ResolvedVisitor {
    *  (or no running plugin declares the purpose it serves). */
   readonly visitorId: string | null;
   readonly sessionToken: string | null;
-  /** Visitor-cookie Set-Cookie headers this response must carry: a freshly
-   *  minted id, or the expiry of one the visitor may no longer hold. */
-  readonly setCookies: readonly string[];
+  /** The request's `__session` container, already carrying this
+   *  resolution's changes (a freshly minted id, or the removal of one the
+   *  visitor may no longer hold). The response's Set-Cookie headers come
+   *  from it. */
+  readonly cookies: GatewayCookies;
 }
 
 /**
@@ -164,7 +131,7 @@ export interface ResolvedVisitor {
  * @param rule the provider's rule, or null when no consent provider runs.
  * @param visitorIdDeclared whether an active plugin declares the
  *   `visitor_id` purpose; without one the id is never set.
- * @param sign signs a freshly minted id for its cookie.
+ * @param sign signs a freshly minted id for its cookie entry.
  * @throws when a plugin declares the visitor-id purpose but the provider's
  *   rule does not classify it — a wiring error, not a silent no.
  */
@@ -175,46 +142,49 @@ export async function resolveVisitor(args: {
   readonly visitorIdDeclared: boolean;
   readonly sign: (value: string) => Promise<string>;
 }): Promise<ResolvedVisitor> {
-  const cookies = parseCookies(args.req.headers.get("cookie"));
-  const rawVisitor = cookies[VISITOR_COOKIE] ?? "";
-  const sessionToken = await verifiedSessionToken(cookies[SESSION_COOKIE] ?? "", args.secret);
+  const cookies = await GatewayCookies.fromRequest(args.req, args.secret);
+  const sessionToken = await verifiedSessionToken(cookies, args.secret);
+  const decision = args.req.headers.get(VISITOR_CONSENT_HEADER);
 
-  if (!args.visitorIdDeclared || !visitorConsentGranted(args.rule, VISITOR_ID_PURPOSE, cookies)) {
-    return {
-      visitorId: null,
-      sessionToken,
-      // Expire whatever the browser still holds — set before the visitor
-      // declined, under a policy version that no longer counts, or for a
-      // plugin that no longer runs.
-      setCookies: rawVisitor ? [clearVisitorCookieHeader()] : [],
-    };
+  if (!args.visitorIdDeclared || !visitorConsentGranted(args.rule, VISITOR_ID_PURPOSE, decision)) {
+    // Remove whatever the browser still holds — set before the visitor
+    // declined, under a policy version that no longer counts, or for a
+    // plugin that no longer runs.
+    cookies.remove(SESSION_ENTRY.visitorId);
+    return { visitorId: null, sessionToken, cookies };
   }
 
-  if (rawVisitor) {
+  const held = cookies.signed(SESSION_ENTRY.visitorId);
+  if (held) {
     const v = await verifySignedCookie({
-      signed: rawVisitor,
+      signed: held,
       secret: args.secret,
       maxAgeSeconds: VISITOR_COOKIE_MAX_AGE,
     });
     if (v && /^[0-9a-fA-F-]{36}$/.test(v.value)) {
-      return { visitorId: v.value, sessionToken, setCookies: [] };
+      return { visitorId: v.value, sessionToken, cookies };
     }
   }
   // Consented, but no valid id yet (first contact, expired, tampered).
   const visitorId = crypto.randomUUID();
-  return {
-    visitorId,
-    sessionToken,
-    setCookies: [visitorCookieHeader(await args.sign(visitorId))],
-  };
+  cookies.setVisitorId(await args.sign(visitorId));
+  return { visitorId, sessionToken, cookies };
 }
 
-async function verifiedSessionToken(raw: string, secret: string): Promise<string | null> {
+/** The login entry's session token, or null; a bad entry is removed. */
+async function verifiedSessionToken(
+  cookies: GatewayCookies,
+  secret: string,
+): Promise<string | null> {
+  const raw = cookies.signed(SESSION_ENTRY.login);
   if (!raw) return null;
   const s = await verifySignedCookie({
     signed: raw,
     secret,
     maxAgeSeconds: VISITOR_COOKIE_MAX_AGE,
   });
-  return s && /^[0-9a-fA-F]{64}$/.test(s.value) ? s.value : null;
+  if (s && /^[0-9a-fA-F]{64}$/.test(s.value)) return s.value;
+  // Tampered, or signed with a secret that has since been rotated.
+  cookies.remove(SESSION_ENTRY.login);
+  return null;
 }

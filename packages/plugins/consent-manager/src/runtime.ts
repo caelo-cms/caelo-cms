@@ -50,9 +50,13 @@ import { jsonForInlineScript } from "./tags.js";
 /**
  * The first-party cookie holding the visitor's decision, as URI-encoded
  * JSON `{id: string, granted: string[], offered: string[], policyVersion: number,
- * at: string}`. The API
- * gateway reads it too (via `visitor_consent_rule`, #677), so the server
- * never sets the visitor-id cookie on a decision the browser did not make.
+ * at: string}`. Only this runtime reads it. The API gateway learns the
+ * decision from the `x-caelo-consent` header instead (#1343): behind
+ * Firebase Hosting no cookie but `__session` reaches it. The runtime sends
+ * that header on its own `record_consent` call, and hands it to the
+ * component kit through `window.caeloConsent.decisionHeader()`, so the
+ * gateway never stores a visitor id on a decision the browser did not make
+ * (#677).
  */
 export const CONSENT_COOKIE = "caelo_consent";
 
@@ -63,6 +67,8 @@ export interface RuntimeConfig {
   readonly policyVersion: number;
   /** Where the runtime posts the record. */
   readonly recordEndpoint: string;
+  /** The request header the gateway reads the decision from (plugin SDK `VISITOR_CONSENT_HEADER`). */
+  readonly consentHeader: string;
 }
 
 /**
@@ -190,6 +196,18 @@ function isGranted(key) {
 }
 
 /**
+ * The visitor's current decision as the API gateway reads it, the value
+ * of the consent header ("v=<policyVersion>; granted=<key>,<key>"), or
+ * null when there is no current decision. Only what the gateway needs: the
+ * consent id and timestamps stay in the cookie.
+ */
+function decisionHeader() {
+  var s = currentState();
+  if (!s) return null;
+  return "v=" + s.policyVersion + "; granted=" + s.granted.join(",");
+}
+
+/**
  * Whether this page is already running something the visitor may just
  * have revoked: a loaded tag or a module cloned out of its template.
  */
@@ -254,32 +272,34 @@ function record(keys) {
   // Proof-of-consent lives server-side; the cookie is only what the
   // browser needs to act. A failed post must not undo the visitor's
   // choice, so it is reported and not retried into a loop.
+  //
+  // A keepalive fetch, not sendBeacon: a beacon cannot carry the consent
+  // header, and this call is the one that tells the gateway about the
+  // new decision (a withdrawal removes the visitor id it holds).
   try {
-    var body = JSON.stringify({
-      consentId: state.id,
-      granted: keys,
-      policyVersion: CONFIG.policyVersion,
+    var headers = { "content-type": "application/json" };
+    var decision = decisionHeader();
+    if (decision) headers[CONFIG.consentHeader] = decision;
+    fetch(CONFIG.recordEndpoint, {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({
+        consentId: state.id,
+        granted: keys,
+        policyVersion: CONFIG.policyVersion,
+      }),
+      credentials: "same-origin",
+      keepalive: true,
+    })["catch"](function () {
+      warn("could not record the consent decision server-side");
     });
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon(CONFIG.recordEndpoint, new Blob([body], { type: "application/json" }));
-    } else {
-      fetch(CONFIG.recordEndpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: body,
-        credentials: "include",
-        keepalive: true,
-      })["catch"](function () {
-        warn("could not record the consent decision server-side");
-      });
-    }
   } catch (e) {
     warn("could not record the consent decision server-side");
   }
   // A withdrawal must stop what already runs, and a loaded tag or a
   // cloned-in embed cannot be unloaded in place. Reloading re-renders
-  // the page under the narrower decision; the record above is a beacon
-  // (or keepalive fetch), so it survives the navigation.
+  // the page under the narrower decision; the record above is a keepalive
+  // fetch, so it survives the navigation.
   if (revoked && somethingLoaded()) location.reload();
 }
 
@@ -536,6 +556,8 @@ function start() {
 window.caeloConsent = {
   granted: granted,
   isGranted: isGranted,
+  // The component kit sends this with every gateway call (#1343).
+  decisionHeader: decisionHeader,
   grantAll: function () {
     record(allKeys());
   },

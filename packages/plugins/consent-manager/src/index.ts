@@ -39,6 +39,7 @@ import {
   type PluginAdminQuery,
   type PluginContextTier1,
   PublicOperationError,
+  VISITOR_CONSENT_HEADER,
   z,
 } from "@caelo-cms/plugin-sdk";
 import { unreviewedEmbedFindings } from "./audit.js";
@@ -521,6 +522,7 @@ export default definePlugin<PluginContextTier1>({
           slug: SLUG,
           policyVersion: settings.policy_version,
           recordEndpoint: RECORD_ENDPOINT,
+          consentHeader: VISITOR_CONSENT_HEADER,
           categories: categories.map((c) => ({
             key: c.key,
             displayName: c.display_name,
@@ -961,11 +963,12 @@ export default definePlugin<PluginContextTier1>({
     },
 
     /**
-     * Core's question to the consent provider (#677): which cookie holds
-     * the visitor's decision, which policy version a decision must carry
-     * to count, and which category covers each purpose the active plugins
-     * declare. The API gateway asks before it sets `caelo_visitor_id`
-     * (the `visitor_id` purpose).
+     * Core's question to the consent provider (#677): which policy
+     * version a decision must carry to count, and which category covers
+     * each purpose the active plugins declare. The API gateway asks before
+     * it stores a visitor id (the `visitor_id` purpose); the decision
+     * itself reaches it in the `x-caelo-consent` header this plugin's
+     * runtime produces (#1343).
      *
      * The categories are the declaring plugins' own (`consentPurposes`,
      * read through `ctx.consentPurposes`): the plugin that needs a purpose
@@ -985,11 +988,7 @@ export default definePlugin<PluginContextTier1>({
           purposes[p.key] = p.category;
         }
       }
-      return {
-        cookie: CONSENT_COOKIE,
-        policyVersion: settings.policy_version,
-        purposes,
-      };
+      return { policyVersion: settings.policy_version, purposes };
     },
 
     /**

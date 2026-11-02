@@ -272,9 +272,9 @@ export interface VisitorCaptchaVerdict {
  * gateway reads it post-dispatch.
  */
 export interface VisitorDispatchContext {
-  /** The `caelo_visitor_id` cookie's id, or null when the visitor has not
-   *  consented to being recognised (#677) — the gateway then sets no
-   *  cookie and the plugin sees `ctx.visitor.id === null`. */
+  /** The visitor id from the gateway's `__session` cookie, or null when the
+   *  visitor has not consented to being recognised (#677) — the gateway
+   *  then stores no id and the plugin sees `ctx.visitor.id === null`. */
   readonly visitorId: string | null;
   readonly sessionToken: string | null;
   /** The gateway's captcha verdict for this request; `ctx.captcha.requireProof` answers from it. */

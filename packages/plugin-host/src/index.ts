@@ -264,7 +264,9 @@ export {
   urlContributionsRegistry,
 } from "./url-composition.js";
 export {
+  parseVisitorConsentHeader,
   resolveVisitorConsentRule,
+  VISITOR_CONSENT_HEADER,
   VISITOR_ID_PURPOSE,
   type VisitorConsentRule,
   visitorConsentGranted,

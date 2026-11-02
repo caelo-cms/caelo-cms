@@ -25,14 +25,14 @@ The same request straight to the service's `*.run.app` URL arrived with all five
 
 Docs: "cookies are generally stripped from incoming requests … Only the specially-named `__session` cookie is permitted to pass through to the execution of your app." (<https://firebase.google.com/docs/hosting/manage-cache#using_cookies>)
 
-What follows on gcp-firebase, for every request that comes through `/api/**`:
+What followed on gcp-firebase up to release 0.11.5, for every request that came through `/api/**`:
 
-- `caelo_consent` (consent-manager) never reaches the gateway. `resolveVisitor` (`apps/api-gateway/src/visitor.ts`) reads consent from that cookie, so the `visitor_id` purpose never counts as granted.
-- `caelo_visitor_id` is therefore never minted, and if the browser held one it would not arrive anyway. `ctx.visitor.id` is always null for plugins.
-- `caelo_session` (visitor login) is set by the gateway but never comes back: a visitor cannot stay logged in.
+- `caelo_consent` (consent-manager) never reached the gateway. `resolveVisitor` (`apps/api-gateway/src/visitor.ts`) read consent from that cookie, so the `visitor_id` purpose never counted as granted.
+- `caelo_visitor_id` was therefore never minted, and if the browser held one it would not have arrived anyway. `ctx.visitor.id` was always null for plugins.
+- `caelo_session` (visitor login) was set by the gateway but never came back: a visitor could not stay logged in.
 - The MCP consent cookie (`__Host-caelo-mcp-consent-*`) is unaffected: remote MCP talks to the gateway's `*.run.app` URL directly.
 
-Bug: #1343.
+Fixed in #1343, the same way on every provider: the gateway reads exactly one cookie, `__session`, a container whose `vid` and `login` entries hold the signed visitor id and visitor session; the consent decision travels in the `x-caelo-consent` request header the consent runtime and the component kit send. See [`../visitor-privacy.md`](../visitor-privacy.md). Anything else that must reach the gateway from the browser has to be an entry of that container (the staging gate's session, E13 (a), has the reserved key `staging`) or a request header.
 
 ## 2. Client address: what the gateway sees
 
@@ -90,7 +90,7 @@ Docs: "Firebase Hosting is subject to a 60-second request timeout" (<https://fir
 
 What P3b-2 must handle for (a):
 
-- The staging gate's session cookie (`caelo_staging_access`, `packages/shared/src/staging-gate.ts`) must be named `__session` on that site. It is the only cookie the staging host can ever receive, so nothing else on the staging host may need a cookie of its own.
+- The staging gate's session cookie (`caelo_staging_access`, `packages/shared/src/staging-gate.ts`) must be named `__session` on that site. It is the only cookie the staging host can ever receive, so nothing else on the staging host may need a cookie of its own. Since #1343 `__session` is a container shared by several owners (`packages/shared/src/session-cookie.ts`): the gate's session goes in its reserved `staging` entry, and whoever writes the cookie keeps the other entries it received.
 - `isStagingRequest` (`apps/api-gateway/src/staging-proxy.ts`) compares `Host`; behind the rewrite it must read `X-Forwarded-Host`. That header is forgeable on `*.run.app`, which is acceptable only because the gate itself still decides every request.
 - The gate's **IP allowlist mode cannot work behind the rewrite**: the only trustworthy address is a Google proxy, and any earlier entry is forgeable on `*.run.app`. On gcp-firebase under (a) the allowlist mode has to be refused (or replaced by the secret header), not silently kept.
 - Staging responses are proxied static files from the preview channel, so 60 s is enough. A slow GET must still never be allowed to run past 60 s: Firebase would replay it up to 8 times.

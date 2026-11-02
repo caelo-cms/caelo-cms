@@ -22,11 +22,14 @@
  *
  * Each public-write request flows through (in order):
  *   1. Body-size cap (default 64 KB; 1 MB hard ceiling).
- *   2. Resolve signed visitor cookie + signed session cookie (HMAC-SHA256).
- *      The visitor id exists only when an active plugin declares the
- *      `visitor_id` consent purpose and the visitor granted its category
- *      (#677, visitor.ts): otherwise no id, no Set-Cookie, and any id the
- *      browser still holds is expired. Tampered → a fresh id (consented).
+ *   2. Resolve the signed visitor id + signed login session (HMAC-SHA256),
+ *      both entries of the one `__session` cookie — the only cookie
+ *      Firebase Hosting forwards, used on every provider (#1343,
+ *      gateway-cookies.ts). The visitor id exists only when an active
+ *      plugin declares the `visitor_id` consent purpose and the decision
+ *      in the request's `x-caelo-consent` header grants its category
+ *      (#677, visitor.ts): otherwise no id, and any id the browser still
+ *      holds is removed. Tampered → a fresh id (consented).
  *   3. Honeypot edge-evict — bot-filled `hp_address` returns {ok:true}
  *      immediately, no DB writes, no audit, only an IP-scoped rate-limit
  *      token.
@@ -73,7 +76,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
-import { STAGING_PLUGIN_STUB_BODY } from "@caelo-cms/shared";
+import { SESSION_ENTRY, STAGING_PLUGIN_STUB_BODY } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import {
   ClientAddressError,
@@ -127,7 +130,6 @@ import {
   loadVisitorConsentRule,
   type ResolvedVisitor,
   resolveVisitor,
-  SESSION_COOKIE,
   visitorIdDeclared,
 } from "./visitor.js";
 
@@ -136,7 +138,7 @@ export {
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
 } from "./database-env.js";
-export { parseCookies, VISITOR_COOKIE } from "./visitor.js";
+export { parseCookies } from "./visitor.js";
 
 const SYSTEM_ACTOR_ID = process.env.CAELO_SYSTEM_ACTOR_ID ?? "00000000-0000-0000-0000-00000000ffff";
 // Cloud Run sets PORT=8080 on every container; read that first so a
@@ -150,28 +152,6 @@ const SYSTEM_CTX = {
   actorKind: "system" as const,
   requestId: "gateway",
 };
-
-// ---------------------------------------------------------------------------
-// Cookie helpers (signed via HMAC-SHA256).
-// ---------------------------------------------------------------------------
-
-export function sessionCookieHeader(args: { value: string; maxAge: number }): string {
-  const flags = [
-    `${SESSION_COOKIE}=${encodeURIComponent(args.value)}`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    `Max-Age=${args.maxAge}`,
-  ];
-  if (process.env.NODE_ENV === "production") flags.push("Secure");
-  return flags.join("; ");
-}
-
-export function clearSessionCookieHeader(): string {
-  const flags = [`${SESSION_COOKIE}=`, "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"];
-  if (process.env.NODE_ENV === "production") flags.push("Secure");
-  return flags.join("; ");
-}
 
 // ---------------------------------------------------------------------------
 // Settings cache — gateway secret + body cap + captcha provider, as the
@@ -708,12 +688,15 @@ async function captchaChallenge(
   });
   if (!challengeRl.allowed) {
     return errorResponse("RateLimited", 429, requestId, {
-      setCookies: [...visitor.setCookies],
+      setCookies: visitor.cookies.setCookieHeaders(),
       retryAfterSec: challengeRl.retryAfterSec,
     });
   }
   const challenge = await issuePowChallenge(adapter, { config: settings.captcha });
-  return jsonResponse({ ok: true, data: challenge }, { setCookies: [...visitor.setCookies] });
+  return jsonResponse(
+    { ok: true, data: challenge },
+    { setCookies: visitor.cookies.setCookieHeaders() },
+  );
 }
 
 /**
@@ -848,7 +831,8 @@ async function pluginOperation(
   const resolved = await resolveConsentedVisitor(req, settings, requestId);
   if (!resolved.ok) return resolved.response;
   const { visitor } = resolved;
-  const cookies: string[] = [...visitor.setCookies];
+  // The `__session` container; each response below stores what changed.
+  const { cookies } = visitor;
 
   // Every rate limit is keyed by the client address the deployment's
   // proxies vouch for (client-ip.ts), never by an entry the client wrote
@@ -908,7 +892,7 @@ async function pluginOperation(
       cap.bytes,
     );
     return errorResponse("RateLimited", 429, requestId, {
-      setCookies: cookies,
+      setCookies: cookies.setCookieHeaders(),
       retryAfterSec: rl.retryAfterSec,
     });
   }
@@ -933,7 +917,7 @@ async function pluginOperation(
           cap.bytes,
         );
         return errorResponse("CaptchaFailed", 403, requestId, {
-          setCookies: cookies,
+          setCookies: cookies.setCookieHeaders(),
           log: verify.reason,
         });
       }
@@ -970,17 +954,14 @@ async function pluginOperation(
   });
 
   if (sessionMutation.current.kind === "set") {
-    const expiresMs = Math.max(
-      1,
-      Math.floor((new Date(sessionMutation.current.expiresAt).getTime() - Date.now()) / 1000),
-    );
+    const expiresAt = new Date(sessionMutation.current.expiresAt).getTime() / 1000;
     const signed = await signCookieValue({
       value: sessionMutation.current.sessionToken,
       secret: settings.cookieSecret,
     });
-    cookies.push(sessionCookieHeader({ value: signed, maxAge: expiresMs }));
+    cookies.setLogin(signed, expiresAt);
   } else if (sessionMutation.current.kind === "clear") {
-    cookies.push(clearSessionCookieHeader());
+    cookies.remove(SESSION_ENTRY.login);
   }
 
   if (!result.ok) {
@@ -1018,7 +999,7 @@ async function pluginOperation(
     );
     // The plugin's message (an exception's text, #763 M4) stays in the log.
     return errorResponse(result.error.kind, status, requestId, {
-      setCookies: cookies,
+      setCookies: cookies.setCookieHeaders(),
       log: `${slug}.${operationName}: ${result.error.message ?? "no message"}`,
     });
   }
@@ -1026,7 +1007,7 @@ async function pluginOperation(
     { statusCode: 200, wasRateLimited: false, wasHoneypotCaught: false, captchaPassed },
     cap.bytes,
   );
-  return jsonResponse({ ok: true, data: result.value }, { setCookies: cookies });
+  return jsonResponse({ ok: true, data: result.value }, { setCookies: cookies.setCookieHeaders() });
 }
 
 // ---------------------------------------------------------------------------

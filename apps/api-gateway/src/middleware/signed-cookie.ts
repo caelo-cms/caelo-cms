@@ -3,10 +3,11 @@
 /**
  * P13 — HMAC-signed gateway cookies.
  *
- * Both `caelo_visitor_id` and `caelo_session` carry a server-side secret
- * signature so a hostile sister-subdomain or a compromised first-party
- * script can't forge a cookie value (e.g. impersonate another visitor's
- * rate-limit bucket or replay a session token from a different user).
+ * Both gateway entries of the `__session` cookie (`vid`, the visitor id,
+ * and `login`, the visitor session; gateway-cookies.ts) carry a
+ * server-side secret signature so a hostile sister-subdomain or a
+ * compromised first-party script can't forge a value (e.g. impersonate
+ * another visitor or replay a session token from a different user).
  *
  * Format:
  *   <value>.<issued_at_seconds>.<signature_hex>

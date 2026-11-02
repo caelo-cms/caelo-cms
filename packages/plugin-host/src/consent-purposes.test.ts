@@ -24,7 +24,7 @@ const VISITOR_ID: PluginConsentPurpose = {
   key: "visitor_id",
   category: "functional",
   purpose: "One rating per visitor.",
-  cookies: [{ name: "caelo_visitor_id", lifetime: "30 days", purpose: "Remembers it." }],
+  cookies: [{ name: "__session", lifetime: "30 days", purpose: "Remembers it." }],
 };
 
 function load(slug: string, consentPurposes?: PluginConsentPurpose[]): void {

@@ -12,5 +12,8 @@
   "scripts": {
     "typecheck": "tsc -b"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "devDependencies": {
+    "@caelo-cms/plugin-sdk": "workspace:*"
+  }
 }
