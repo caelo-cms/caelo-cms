@@ -155,9 +155,24 @@ export function recordableStagingHost(host: string): string | null {
 export interface ImageDigests {
   readonly admin: string;
   readonly gateway: string;
+  /**
+   * #1328 — the MCP-Auth-Proxy's. Absent on installs recorded before it
+   * existed: their first upgrade to a release with it records it, and a
+   * stack run without it deploys the release tag's proxy image.
+   */
+  readonly "mcp-auth-proxy"?: string;
 }
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+/** {@link ImageDigests} without the keys that are absent (a JSON-stable copy). */
+function imageDigestsRecord(d: ImageDigests): ImageDigests {
+  return {
+    admin: d.admin,
+    gateway: d.gateway,
+    ...(d["mcp-auth-proxy"] ? { "mcp-auth-proxy": d["mcp-auth-proxy"] } : {}),
+  };
+}
 
 /**
  * The image digests recorded for an install, or null when none are. Throws
@@ -166,7 +181,12 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 export function recordedImageDigests(meta: InstallMetadata): ImageDigests | null {
   const d = meta.imageDigests;
   if (d === undefined) return null;
-  if (!DIGEST.test(d.admin ?? "") || !DIGEST.test(d.gateway ?? "")) {
+  const proxy = d["mcp-auth-proxy"];
+  if (
+    !DIGEST.test(d.admin ?? "") ||
+    !DIGEST.test(d.gateway ?? "") ||
+    (proxy !== undefined && !DIGEST.test(proxy))
+  ) {
     throw new Error(
       `install.json imageDigests is malformed (${JSON.stringify(d)}); fix or remove it, then re-run.`,
     );
@@ -211,15 +231,17 @@ export function recordImageDigests(
   // drop it — a stale one would be worse than none (the upgrader job
   // refuses on none and judges downgrades by it).
   const same =
-    meta.imageDigests?.admin === digests.admin && meta.imageDigests?.gateway === digests.gateway;
+    meta.imageDigests?.admin === digests.admin &&
+    meta.imageDigests?.gateway === digests.gateway &&
+    meta.imageDigests?.["mcp-auth-proxy"] === digests["mcp-auth-proxy"];
   const { releaseVersion: previous, platformDigests: previousPlatform, ...rest } = meta;
   const version = releaseVersion ?? (same ? previous : undefined);
   // The platform forms belong to their indexes just as the version does.
   const platform = platformDigests ?? (same ? previousPlatform : undefined);
   writeMetadata(installId, {
     ...rest,
-    imageDigests: { admin: digests.admin, gateway: digests.gateway },
-    ...(platform ? { platformDigests: { admin: platform.admin, gateway: platform.gateway } } : {}),
+    imageDigests: imageDigestsRecord(digests),
+    ...(platform ? { platformDigests: imageDigestsRecord(platform) } : {}),
     ...(version ? { releaseVersion: version } : {}),
   });
 }

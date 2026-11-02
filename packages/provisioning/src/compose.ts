@@ -3,9 +3,9 @@
 /**
  * P14 — production docker-compose.yml generator.
  *
- * Emits the production stack: Postgres + Caddy + the two Caelo services
- * (admin, gateway). Idempotent: same input →
- * byte-identical output. The CLI's `init` / `up` / `upgrade` sub-commands
+ * Emits the production stack: Postgres + Caddy + the Caelo services
+ * (admin, gateway and — #1328 — the MCP-Auth-Proxy). Idempotent: same
+ * input → byte-identical output. The CLI's `init` / `up` / `upgrade` sub-commands
  * write this to `.caelo/docker-compose.yml`.
  *
  * #696 — the admin and gateway run the PREBUILT, cosign-verified release
@@ -38,17 +38,26 @@ import {
 import {
   ADMIN_MEMORY_DEFAULT,
   GATEWAY_TRUSTED_PROXY_HOPS,
+  MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS,
   memoryQuantityMiB,
   publicSiteUrl,
+  REMOTE_MCP_MODE,
+  REMOTE_MCP_MODE_ENV,
   TRUSTED_PROXY_HOPS_ENV,
 } from "./stack-contract.js";
 import { ghcrRepository, isImageDigest, type ReleaseService } from "./upgrade/release-images.js";
 
-/** The admin + gateway release images, each `ghcr.io/caelo-cms/<svc>@sha256:…`. */
+/** The release images, each `ghcr.io/caelo-cms/<svc>@sha256:…`. */
 export interface ReleaseImages {
   readonly mode: "release";
   readonly admin: string;
   readonly gateway: string;
+  /**
+   * #1328 — the MCP-Auth-Proxy. Absent only for a release recorded before
+   * the proxy shipped (a rollback target in release.json): its Compose file
+   * then has no proxy service, exactly as that release ran.
+   */
+  readonly "mcp-auth-proxy"?: string;
 }
 
 /**
@@ -107,11 +116,20 @@ export const MEDIA_ROOT = "/data/media";
 /** The gateway's HTTP port inside the Compose network. */
 export const COMPOSE_GATEWAY_PORT = 8090;
 
+/** #1328 — the MCP-Auth-Proxy's HTTP port inside the Compose network. */
+export const COMPOSE_MCP_AUTH_PROXY_PORT = 8095;
+
+/** #1328 — the Compose service name of the MCP-Auth-Proxy. */
+export const COMPOSE_MCP_AUTH_PROXY_SERVICE = "caelo-mcp-auth-proxy";
+
 /**
- * The Compose services that run Caelo code — what `restore` stops while it
- * rewrites the databases, and what the health checks probe. Workers run
- * inside the admin (CLAUDE.md §11.B Tier 5); there is no orchestrator or
- * runner service.
+ * The Compose services that touch the databases — what `backup` and
+ * `restore` stop while they read or rewrite them. Workers run inside the
+ * admin (CLAUDE.md §11.B Tier 5); there is no orchestrator or runner
+ * service. The MCP-Auth-Proxy (#1328) is deliberately not here: it holds no
+ * database login, so it keeps running, and a release from before it has no
+ * such service for `up` to start. Its health is checked wherever the
+ * install starts (self-hosted-start.ts) or rolls (self-hosted-upgrade.ts).
  */
 export const COMPOSE_APP_SERVICES = ["caelo-admin", "caelo-gateway"] as const;
 
@@ -122,6 +140,7 @@ export const COMPOSE_APP_SERVICES = ["caelo-admin", "caelo-gateway"] as const;
  */
 export const COMPOSE_ADMIN_UPSTREAM = `caelo-admin:${COMPOSE_ADMIN_PORT}`;
 export const COMPOSE_GATEWAY_UPSTREAM = `caelo-gateway:${COMPOSE_GATEWAY_PORT}`;
+export const COMPOSE_MCP_AUTH_PROXY_UPSTREAM = `${COMPOSE_MCP_AUTH_PROXY_SERVICE}:${COMPOSE_MCP_AUTH_PROXY_PORT}`;
 
 /**
  * The Caddy image, pinned to the release the generated Caddyfile is
@@ -237,7 +256,7 @@ export interface ComposeSpec {
    * busy host never OOM-kills the admin at the limit.
    */
   readonly adminMemory?: string;
-  /** Which admin + gateway images run (see {@link ComposeImages}). */
+  /** Which Caelo images run (see {@link ComposeImages}). */
   readonly images: ComposeImages;
   /**
    * The host ports Caddy listens on (`80` / `443` for a public install —
@@ -346,7 +365,7 @@ ${postgresAgent(spec.agent)}    volumes:
 ${adminService(spec, adminMemoryMiB, env)}
 
 ${gatewayService(spec)}
-
+${mcpAuthProxyService(spec.images)}
 volumes:
   caelo-pg:
   caelo-caddy-data:
@@ -398,10 +417,11 @@ function serviceRuntime(
       ...volumes(["../..:/app", ...mounts]),
     ].join("\n");
   }
-  const digest = ghcrImageDigest(service, images[service]);
+  const ref = images[service] ?? "";
+  const digest = ghcrImageDigest(service, ref);
   if (!digest) {
     throw new Error(
-      `${service} image ${JSON.stringify(images[service])} is not ${ghcrRepository(service)}@sha256:<digest>`,
+      `${service} image ${JSON.stringify(ref)} is not ${ghcrRepository(service)}@sha256:<digest>`,
     );
   }
   // The image's own CMD starts the service; no source is mounted.
@@ -464,12 +484,43 @@ ${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts
       # Caddy is the one proxy in front (client-ip.ts in the gateway).
       ${TRUSTED_PROXY_HOPS_ENV}: "${GATEWAY_TRUSTED_PROXY_HOPS["self-hosted"]}"
 ${poolEnvLines("gateway")}
-      # #806 — no remote MCP here: it rides Google IAP, which this install
-      # does not have. CAELO_ADMIN_URL / CAELO_MCP_PUBLIC_URL /
-      # CAELO_OPERATOR_OAUTH_CLIENT_FILE stay unset, so the gateway's /api/mcp/*
-      # answers 503 remote_mcp_not_configured and Settings → MCP says
-      # "not available on this install".
       NODE_ENV: production`;
+}
+
+/**
+ * #1328 — the MCP-Auth-Proxy: remote MCP's sign-in broker, its own
+ * container so it never shares a process with visitor handlers. Remote MCP
+ * needs the admin behind Google IAP, which a Compose install does not have,
+ * so it runs with `CAELO_REMOTE_MCP=unavailable` and answers every request
+ * but its health check with one fixed 404 (E14 a of #763: the service
+ * exists on every provider, its attack surface one branch). Caddy serves it
+ * on its own host (`mcp.<domain>`, caddy.ts), never on the site's origin.
+ *
+ * It gets no database URL, no secret and no mount: there is nothing it
+ * could read. The container is locked down on top — read-only root
+ * filesystem, every capability dropped, no privilege escalation — because
+ * it is the Caelo service that holds operators' Google tokens wherever
+ * remote MCP runs. Empty for a release recorded before the proxy shipped
+ * ({@link ReleaseImages}).
+ */
+function mcpAuthProxyService(images: ComposeImages): string {
+  if (images.mode === "release" && images["mcp-auth-proxy"] === undefined) return "";
+  return `
+  ${COMPOSE_MCP_AUTH_PROXY_SERVICE}:
+${serviceRuntime(images, "mcp-auth-proxy", "bun run apps/mcp-auth-proxy/src/server.ts")}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CAELO_PROVIDER: "self-hosted"
+      ${REMOTE_MCP_MODE_ENV}: "${REMOTE_MCP_MODE["self-hosted"]}"
+      MCP_AUTH_PROXY_PORT: "${COMPOSE_MCP_AUTH_PROXY_PORT}"
+      # Caddy is the one proxy in front (@caelo-cms/shared client-address.ts).
+      ${TRUSTED_PROXY_HOPS_ENV}: "${MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS["self-hosted"]}"
+      NODE_ENV: production
+`;
 }
 
 /**

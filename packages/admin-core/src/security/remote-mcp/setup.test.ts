@@ -133,4 +133,22 @@ describe("self-check", () => {
     const offLines = await runRemoteMcpSelfCheck(off, { mcpPublicUrl: PUBLIC, clientId: null });
     expect(offLines.map((l) => [l.id, l.ok])).toEqual([["gateway-client", true]]);
   });
+
+  it("reads 'off' from the MCP-Auth-Proxy's fixed 404 (#1328, E14 a)", async () => {
+    // While remote MCP is off the proxy answers every path with this one
+    // constant response (apps/mcp-auth-proxy http.ts FIXED_NOT_FOUND_BODY).
+    const deps: SelfCheckDeps = {
+      fetch: (async () =>
+        new Response('{"error":"not_found","configured":false}', {
+          status: 404,
+        })) as unknown as typeof fetch,
+      sleep: async () => {},
+    };
+    const off = await checkGatewayClient(deps, PUBLIC, null, 0);
+    expect(off.ok).toBe(true);
+    // With a client saved, the same answer means the proxy has not picked it up.
+    const waiting = await checkGatewayClient(deps, PUBLIC, CLIENT, 0);
+    expect(waiting.ok).toBe(false);
+    expect(waiting.detail).toContain("not configured");
+  });
 });

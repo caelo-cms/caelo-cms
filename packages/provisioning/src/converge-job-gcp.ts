@@ -42,7 +42,7 @@ import {
 } from "./install-state.js";
 import { runMigrationsViaCloudRunJob } from "./migration-runner.js";
 import { installIapAllowlist } from "./operator-access.js";
-import { fetchVerifiedReleaseManifest } from "./release-manifest.js";
+import { fetchVerifiedReleaseManifest, manifestServiceImages } from "./release-manifest.js";
 import type { HttpFetch } from "./runtime-secrets.js";
 import { publicSiteUrl, STAGING_HOST_ENV } from "./stack-contract.js";
 import { attachInstall } from "./state-attach.js";
@@ -314,16 +314,7 @@ export function gcpConvergeDeps(
         sleep: realSleep,
         reporter,
         // The signed manifest's digests — never a registry tag lookup.
-        resolveImages: async () => ({
-          ok: true,
-          images: {
-            admin: { digest: m.digests.admin, imageRef: releaseImageRef("admin", m.digests.admin) },
-            gateway: {
-              digest: m.digests.gateway,
-              imageRef: releaseImageRef("gateway", m.digests.gateway),
-            },
-          },
-        }),
+        resolveImages: async () => manifestServiceImages(m),
         verifyImages: verifyCosignAll,
         migrate: (imageRef) =>
           runMigrationsViaCloudRunJob(

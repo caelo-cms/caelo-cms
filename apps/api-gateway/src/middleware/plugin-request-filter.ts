@@ -19,9 +19,6 @@
  *     there must not post into the live data (#763 N4). A request without
  *     `Origin` is refused too: every browser sends it on a POST, and a
  *     non-browser client has no business on these routes.
- *
- * The remote-MCP OAuth routes post forms without `Origin`; they are routed
- * before this filter (server.ts) and never reach it.
  */
 
 /** `/api/plugin/<slug>/<operation>`, bounded like `gateway_plugin_op_events.operation`. */

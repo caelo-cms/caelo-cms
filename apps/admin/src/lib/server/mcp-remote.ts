@@ -4,7 +4,7 @@
  * Issue #806 — the admin side of remote MCP: `/api/mcp/remote/chat` and
  * `/api/mcp/remote/admin`, MCP Streamable HTTP endpoints for clients that
  * reach the admin through Google IAP with the user's own Google identity
- * (via the gateway's OAuth broker; no bearer token, no local shim).
+ * (via the MCP-Auth-Proxy's OAuth broker; no bearer token, no local shim).
  *
  * Identity is IAP's signed assertion — verified, mapped to a Caelo user and
  * that user's `mcp_remote_connections` row for the client app the gateway

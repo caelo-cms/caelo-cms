@@ -4,14 +4,17 @@
  * `cms-provision upgrade` for one gcp / gcp-firebase install: converge, then
  * app-roll (epic #696). The order, and why:
  *
- *   1. plan (read-only): release digests, both services, the env contract
+ *   1. plan: release digests, the services, the env contract — read-only
+ *      but for the services an older install lacks (#1328, additive and
+ *      serving nothing yet: mcp-auth-proxy-setup.ts)
  *   2. verify the images' signatures
  *   3. pre-upgrade Cloud SQL backup — the first change; if it fails, the
  *      install is exactly as it was
  *   4. converge, the part before the roll (keyless provisioner, IAM, secrets,
  *      MCP access)
  *   5. app-roll: health baseline, migrations, the converge steps that must
- *      follow migrations, admin + gateway rolls, deep health check, rollback
+ *      follow migrations, admin, gateway and MCP-Auth-Proxy rolls, deep
+ *      health check, rollback
  *      on failure, recorded digests
  *   6. converge, the part after the roll; a complete converge records the
  *      install's infrastructure contract version
@@ -29,6 +32,7 @@
 
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import type { ImageDigests } from "../install-state.js";
+import { ensureReleaseServices } from "../mcp-auth-proxy-setup.js";
 import type { HttpFetch } from "../runtime-secrets.js";
 import {
   type AppRollPlan,
@@ -75,8 +79,16 @@ export interface GcpUpgradeTarget {
  */
 export interface UpgradeCheckpoint {
   readonly backup?: SqlBackup;
-  readonly priorRevisions?: Readonly<Record<RollSlug, string>>;
+  readonly priorRevisions?: PriorRevisions;
 }
+
+/**
+ * The rollback target per service. The MCP-Auth-Proxy's is absent in a
+ * checkpoint a release before #1328 wrote; its planned revision is kept then.
+ */
+export type PriorRevisions = Readonly<Record<"admin" | "gateway", string>> & {
+  readonly "mcp-auth-proxy"?: string;
+};
 
 export interface GcpUpgradeDeps {
   readonly run: GcloudRunner;
@@ -164,6 +176,41 @@ export async function upgradeGcpInstallOutcome(
     sPre.failed("Couldn't resolve the release images");
     r.error(images.error);
     return failed;
+  }
+  // #1328 — the services the plan must find: the MCP-Auth-Proxy's account
+  // and, on an install whose stack predates it, the data gateway
+  // (gcp-firebase) or the proxy's own service (gcp). Additive, serving
+  // nothing yet, so the install keeps running as it is when this or
+  // anything after it fails. The gcp proxy runs the new release's image,
+  // so that image's signature is checked before it is deployed.
+  const proxyImage = images.images["mcp-auth-proxy"];
+  if (
+    target.provider === "gcp" &&
+    !target.skipVerify &&
+    !(await deps.verifyImages([{ slug: "mcp-auth-proxy", digest: proxyImage.digest }]))
+  ) {
+    sPre.failed("The MCP-Auth-Proxy image's signature did not verify");
+    return failed;
+  }
+  const ensured = await ensureReleaseServices(
+    {
+      provider: target.provider,
+      projectId,
+      region: target.region,
+      env: target.env,
+      domain: target.domain,
+      mcpAuthProxyImageRef: proxyImage.imageRef,
+    },
+    { run },
+  );
+  const ensureFailed = ensured.filter((o) => o.status === "failed");
+  if (ensureFailed.length > 0) {
+    sPre.failed("The services this release runs could not be set up. Nothing was changed.");
+    for (const o of ensureFailed) r.error(`  FAILED: ${o.id}\n    ${o.error ?? ""}`);
+    return failed;
+  }
+  for (const o of ensured.filter((o) => o.status === "applied")) {
+    r.info(`  created: ${o.id}${o.detail ? ` (${o.detail})` : ""}`);
   }
   const planned = await planAppRoll(
     {
@@ -269,7 +316,9 @@ export async function upgradeGcpInstallOutcome(
     },
   );
   if (!rolled.ok) return { ok: false, rolledBack: rolled.rolledBack };
-  r.success(`Upgrade to ${target.targetTag} complete (admin + gateway revisions serving).`);
+  r.success(
+    `Upgrade to ${target.targetTag} complete (admin, gateway and MCP-Auth-Proxy revisions serving).`,
+  );
   r.info(
     `Pre-upgrade backup: ${backup.backup.backupId} (restore: ${restoreCommand(backup.backup)})`,
   );
@@ -314,8 +363,8 @@ function withPriorRevisions(
   return {
     ...plan,
     services: plan.services.map((s) => {
-      const before = recorded[s.slug];
-      if (before === s.priorRevision) return s;
+      const before: string | undefined = recorded[s.slug];
+      if (before === undefined || before === s.priorRevision) return s;
       r.info(
         `Continuing an interrupted update: ${s.slug} goes back to ${before} (what served before it started) if the new release fails its checks.`,
       );

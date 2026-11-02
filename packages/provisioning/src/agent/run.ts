@@ -48,7 +48,12 @@ export interface AgentApplyRequest {
   readonly targetVersion: string;
   readonly trigger: PlatformUpdateTrigger;
   /** From the verified manifest: the images the target must resolve to. */
-  readonly digests: { readonly admin: string; readonly gateway: string };
+  readonly digests: {
+    readonly admin: string;
+    readonly gateway: string;
+    /** #1328 — absent in manifests of releases from before the MCP-Auth-Proxy. */
+    readonly "mcp-auth-proxy"?: string;
+  };
   /** The target's CLI, installed and provenance-verified (agent/cli-provenance.ts). */
   readonly cliPath: string;
 }
@@ -254,7 +259,11 @@ export async function runAgentOnce(deps: AgentRunDeps): Promise<AgentRunResult> 
         requestId: request.id,
         targetVersion: m.version,
         trigger: request.trigger,
-        digests: { admin: m.digests.admin, gateway: m.digests.gateway },
+        digests: {
+          admin: m.digests.admin,
+          gateway: m.digests.gateway,
+          ...(m.digests["mcp-auth-proxy"] ? { "mcp-auth-proxy": m.digests["mcp-auth-proxy"] } : {}),
+        },
         cliPath: cli.cliPath,
       });
     } finally {

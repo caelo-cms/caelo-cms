@@ -8,9 +8,6 @@
  *   GET  /api/captcha/challenge             PoW challenge envelope
  *   GET  /healthz                           liveness probe
  *   GET  /api/_caelo/health[?deep=1]        upgrade health check (health.ts)
- *   *    /api/mcp/*, /.well-known/oauth-*    #806 remote MCP: OAuth broker +
- *                                           streaming proxy to the IAP-protected
- *                                           admin (mcp/routes.ts); no database
  *   *    (Host: staging.<domain>)           #650 staging gate + proxy to the
  *                                           staged build (staging-proxy.ts)
  *
@@ -92,8 +89,6 @@ import {
 import { gatewayStateGc } from "./gc.js";
 import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
 import { type IpHashKeys, ipHashKeys } from "./ip-hash-key.js";
-import { MAX_PROXY_BODY_BYTES } from "./mcp/proxy.js";
-import { createMcpRouter, isMcpPath } from "./mcp/routes.js";
 import { HARD_MAX_BODY_BYTES, readBodyWithCap } from "./middleware/body-cap.js";
 import { type CaptchaConfig, issuePowChallenge, verifyPowProof } from "./middleware/captcha.js";
 import { checkHoneypot } from "./middleware/honeypot.js";
@@ -451,12 +446,12 @@ export const CAPTCHA_CHALLENGE_RATE_LIMIT = { perVisitorMax: 60, windowSeconds: 
 
 /**
  * The largest request body Bun accepts at all (#1326): the visitor routes'
- * hard ceiling, or the remote-MCP proxy's (image uploads), whichever is
- * larger. Each route still enforces its own, smaller cap while it reads;
+ * hard ceiling (#1328 moved the remote-MCP proxy and its larger image
+ * uploads to the MCP-Auth-Proxy). Each route still enforces its own cap;
  * this one stops a body nobody would read before it is buffered (Bun's
  * default is 128 MB).
  */
-export const SERVER_MAX_REQUEST_BODY_BYTES = Math.max(HARD_MAX_BODY_BYTES, MAX_PROXY_BODY_BYTES);
+export const SERVER_MAX_REQUEST_BODY_BYTES = HARD_MAX_BODY_BYTES;
 
 /** Every visitor route's in-memory budget per client, before the database (#1326). */
 const visitorMemoryLimiter = new MemoryRateLimiter(VISITOR_MEMORY_LIMIT);
@@ -529,22 +524,7 @@ function errorResponse(
 export interface GatewayConnection {
   /** The TCP peer (Bun `server.requestIP`); read only when no proxy is in front. */
   readonly peerAddress: string | null;
-  /**
-   * Set Bun's idle timeout for this request (`server.timeout(req, s)`, 0 =
-   * none): the remote-MCP proxy waits up to its first-response timeout for
-   * the admin, then lifts it for an SSE stream that may stay quiet longer
-   * than the 10 s default. Absent outside Bun.serve (tests), where there is
-   * no timeout to change.
-   */
-  readonly setIdleTimeout?: (seconds: number) => void;
 }
-
-/**
- * #806 remote MCP. Created once: it caches the OAuth client file. It reads
- * env + that file only — no database, so it answers before (and without)
- * the gateway's settings.
- */
-const mcpRouter = createMcpRouter();
 
 type Resolved<T> =
   | { readonly ok: true; readonly value: T }
@@ -603,7 +583,7 @@ export async function handleRequest(
   conn: GatewayConnection = { peerAddress: null },
 ): Promise<Response> {
   // Every JSON answer carries the security headers (#1326), also the ones
-  // the staging proxy and the remote-MCP router build themselves.
+  // the staging proxy builds itself.
   const requestId = crypto.randomUUID();
   try {
     return withJsonSecurityHeaders(await routeRequest(req, conn, requestId));
@@ -668,22 +648,6 @@ async function routeRequest(
       client = rateLimitAddress(address.value);
     }
     return gatewayHealth(url, cachedAdapter, { client, requestId });
-  }
-
-  // #806 — before the database-backed pipeline: remote MCP needs neither
-  // the gateway's settings nor its plugin host.
-  // Rate limited per client address inside the router (mcp/rate-limit.ts),
-  // so the address is resolved by the same rule as every other limit here.
-  // Its OAuth routes post forms without `Origin`, so the plugin routes'
-  // Origin rule below never applies to them.
-  if (isMcpPath(url.pathname)) {
-    const mcpClient = requestClientAddress(req, conn, requestId);
-    if (!mcpClient.ok) return mcpClient.response;
-    const mcp = await mcpRouter(req, {
-      clientAddress: mcpClient.value,
-      setIdleTimeout: conn.setIdleTimeout ?? (() => {}),
-    });
-    if (mcp) return mcp;
   }
 
   // ---- #1326: the input filter, before any database access ----
@@ -1132,7 +1096,6 @@ if (import.meta.main) {
     fetch: (req, srv) =>
       handleRequest(req, {
         peerAddress: srv.requestIP(req)?.address ?? null,
-        setIdleTimeout: (seconds) => srv.timeout(req, seconds),
       }),
   });
   console.log(`[api-gateway] listening on :${server.port}`);

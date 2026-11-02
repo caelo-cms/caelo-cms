@@ -27,6 +27,7 @@ import {
   gcpBucketName,
   gcpSecretId,
   MCP_IAP_SERVICE_ACCOUNT_ID,
+  mcpAuthProxyServiceAccountId,
   runServiceAccountId,
   staticPublisherServiceAccountId,
 } from "../../dist/gcp-names.js";
@@ -36,7 +37,6 @@ import {
   DEFAULT_MAX_CONNECTIONS,
   stackPoolBudget,
 } from "../../dist/pool-budget-stack.js";
-import { mcpArmorRuleArgs } from "../../dist/remote-mcp-edge.js";
 import {
   ADMIN_MEMORY_DEFAULT,
   adminEnvContract,
@@ -52,7 +52,6 @@ import {
   cloudSqlPrivateDnsName,
   databaseUrls,
   defaultStagingHost,
-  GATEWAY_TIMEOUT_SECONDS,
   gatewayEnvContract,
   REMOTE_MCP_IDENTITY_CONFIG,
   type RuntimeSecret,
@@ -525,9 +524,24 @@ const gatewaySa = new gcp.serviceaccount.Account(
   },
   opts,
 );
+// #1328 — the MCP-Auth-Proxy's own SA and (below) its secretAccessor on its
+// two secrets, nothing else. The proxy's service, NEG, backend and Cloud
+// Armor policy are the CLI's (remote-mcp.ts ensureRemoteMcpEdge, after the
+// first `up`), like the jobs: the converge creates the same on existing
+// installs, and the URL map's path rules are the CLI's already.
+const mcpAuthProxySa = new gcp.serviceaccount.Account(
+  `${namePrefix}-mcp-auth-proxy-sa`,
+  {
+    accountId: mcpAuthProxyServiceAccountId(env),
+    displayName: `Caelo ${env} MCP-Auth-Proxy`,
+    createIgnoreAlreadyExists: true,
+  },
+  opts,
+);
 const serviceSa: Record<CloudRunSlug, gcp.serviceaccount.Account> = {
   admin: runSa,
   gateway: gatewaySa,
+  "mcp-auth-proxy": mcpAuthProxySa,
 };
 
 // secretAccessor for each service's SA on exactly the secrets its env reads.
@@ -536,6 +550,7 @@ const serviceSa: Record<CloudRunSlug, gcp.serviceaccount.Account> = {
 const secretBindings: Record<CloudRunSlug, gcp.secretmanager.SecretIamMember[]> = {
   admin: [],
   gateway: [],
+  "mcp-auth-proxy": [],
 };
 for (const binding of runtimeSecretBindings()) {
   secretBindings[binding.service].push(
@@ -712,7 +727,8 @@ function imageTag(service: string): pulumi.Output<string> {
 }
 
 interface CloudRunArgs {
-  readonly serviceName: "admin" | "gateway";
+  /** The MCP-Auth-Proxy is CLI-owned on this stack (see mcpAuthProxySa). */
+  readonly serviceName: Exclude<CloudRunSlug, "mcp-auth-proxy">;
   readonly minInstances: number;
   readonly maxInstances: number;
   readonly memory: string;
@@ -720,8 +736,7 @@ interface CloudRunArgs {
    * Per-request timeout. Cloud Run's default is 300s (5min), which is too
    * short for the admin's SSE chat-stream — a multi-tool compose-page session
    * regularly runs 5–15 min. Pass an explicit "<n>s" Pulumi-style duration
-   * string. The gateway gets the same (#806): it proxies remote-MCP chat
-   * streams to the admin.
+   * string.
    */
   readonly timeout?: string;
   /**
@@ -866,18 +881,12 @@ const gatewaySvc = cloudRunService({
   minInstances: gatewayMinInstances,
   maxInstances: gatewayMaxInstances,
   memory: "512Mi",
-  // #806 — remote MCP: chat turns stream through the gateway for minutes,
-  // so it gets the admin's 3600 s instead of Cloud Run's 300 s default
-  // (stack-contract.ts GATEWAY_TIMEOUT_SECONDS). The LB in front imposes no
-  // shorter limit on serverless NEG backends.
-  timeout: `${GATEWAY_TIMEOUT_SECONDS}s`,
+  // Visitor requests only (#1328 moved remote MCP's long streams to the
+  // MCP-Auth-Proxy): Cloud Run's default.
+  timeout: "300s",
   // public_role on cms_public only: no cms_admin login of any role
   // (#613, #635, CLAUDE.md §2).
-  contractEnv: [
-    ...gatewayEnvContract(envContractInputs),
-    ...remoteMcpEnv.gateway,
-    ...poolBudget.env.gateway,
-  ],
+  contractEnv: [...gatewayEnvContract(envContractInputs), ...poolBudget.env.gateway],
 });
 
 // =========================================================================
@@ -888,6 +897,9 @@ const gatewaySvc = cloudRunService({
 // admin.caelo-cms.com. Three backends routed by Host header / path:
 //   - host=caelo-cms.com, default          → static bucket (Cloud CDN)
 //   - host=caelo-cms.com, path=/api/*      → gateway Cloud Run (Cloud Armor)
+//   - host=caelo-cms.com, path=/api/mcp/*, /.well-known/oauth-*
+//                                          → MCP-Auth-Proxy Cloud Run (its own
+//                                            Cloud Armor; CLI-owned, #1328)
 //   - host=admin.caelo-cms.com, default    → admin Cloud Run (IAP-gated)
 //
 // CLAUDE.md §11.B Tier 2: admin behind cloud-native identity proxy. IAP
@@ -910,12 +922,10 @@ const wafPolicy = new gcp.compute.SecurityPolicy(
   {
     description: `Caelo ${env} Cloud Armor — rate limit + OWASP`,
     rules: [
-      // #806 — remote MCP (/api/mcp/*): a per-IP throttle sized for agent
-      // traffic behind shared connector IPs, evaluated first; below it the
-      // rule allows, so the OWASP packs (MCP bodies carry HTML) and the
-      // general ban below do not apply there. src/remote-mcp-edge.ts says
-      // why; `cms-provision upgrade` adds the same rule to existing installs.
-      mcpArmorRuleArgs(),
+      // #1328 — no remote-MCP rule here any more: the URL map sends
+      // /api/mcp/* to the MCP-Auth-Proxy's backend, whose own policy carries
+      // it (remote-mcp-edge.ts, created by the CLI; `upgrade` drops the old
+      // rule from this policy).
       // Rate limit per source IP — 100 req / min sliding window.
       {
         action: "rate_based_ban",

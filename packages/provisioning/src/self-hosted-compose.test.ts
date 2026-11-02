@@ -6,6 +6,8 @@ import {
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_APP_SERVICES,
   COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_MCP_AUTH_PROXY_SERVICE,
+  COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   COMPOSE_POOL_BUDGET,
   type ComposeSpec,
   composeProjectName,
@@ -343,5 +345,68 @@ describe("self-hosted Compose — the host update agent (#696 Phase 4c)", () => 
     expect(() =>
       generateDockerCompose({ ...base, images, agent: { dbPort: 443, dbPassword: "x" } }),
     ).toThrow(/between 1024 and 65535/);
+  });
+});
+
+describe("self-hosted Compose — the MCP-Auth-Proxy (#1328)", () => {
+  const PROXY = `ghcr.io/caelo-cms/mcp-auth-proxy@sha256:${"c".repeat(64)}`;
+  const yaml = generateDockerCompose({
+    ...base,
+    images: { mode: "release", admin: ADMIN, gateway: GATEWAY, "mcp-auth-proxy": PROXY },
+  });
+  const proxy = service(yaml, COMPOSE_MCP_AUTH_PROXY_SERVICE);
+
+  it("runs the digest-pinned release image on the port Caddy proxies to", () => {
+    expect(proxy).toContain(`image: ${PROXY}`);
+    expect(proxy).toContain('MCP_AUTH_PROXY_PORT: "8095"');
+    expect(COMPOSE_MCP_AUTH_PROXY_UPSTREAM).toBe("caelo-mcp-auth-proxy:8095");
+  });
+
+  it("says remote MCP is unavailable here and trusts Caddy as the one hop", () => {
+    expect(proxy).toContain('CAELO_REMOTE_MCP: "unavailable"');
+    expect(proxy).toContain('CAELO_TRUSTED_PROXY_HOPS: "1"');
+    expect(proxy).toContain('CAELO_PROVIDER: "self-hosted"');
+  });
+
+  it("gets no database URL, no secret, no mount and no dependency on Postgres", () => {
+    expect(proxy).not.toMatch(/DATABASE|PASSWORD|SECRET|KEK|postgres:\/\/|volumes:|depends_on/);
+    expect(proxy).not.toContain("adminpw");
+    expect(proxy).not.toContain("publicpw");
+  });
+
+  it("runs locked down: read-only root, no capabilities, no privilege escalation", () => {
+    expect(proxy).toContain("read_only: true");
+    expect(proxy).toContain('cap_drop: ["ALL"]');
+    expect(proxy).toContain('security_opt: ["no-new-privileges:true"]');
+  });
+
+  it("is absent for a release recorded before the proxy shipped", () => {
+    const old = generateDockerCompose({
+      ...base,
+      images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+    });
+    expect(old).not.toContain(COMPOSE_MCP_AUTH_PROXY_SERVICE);
+    expect(old).toContain("\n\nvolumes:\n");
+  });
+
+  it("runs the checkout's proxy in dev mode", () => {
+    const dev = generateDockerCompose({ ...base, images: { mode: "dev" } });
+    expect(service(dev, COMPOSE_MCP_AUTH_PROXY_SERVICE)).toContain(
+      "command: bun run apps/mcp-auth-proxy/src/server.ts",
+    );
+  });
+
+  it("refuses a proxy image that is not a digest-pinned GHCR reference", () => {
+    expect(() =>
+      generateDockerCompose({
+        ...base,
+        images: {
+          mode: "release",
+          admin: ADMIN,
+          gateway: GATEWAY,
+          "mcp-auth-proxy": "ghcr.io/caelo-cms/mcp-auth-proxy:latest",
+        },
+      }),
+    ).toThrow(/mcp-auth-proxy image/);
   });
 });

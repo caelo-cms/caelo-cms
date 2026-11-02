@@ -15,7 +15,7 @@ const T = {
   projectId: "acme",
   region: "europe-west1",
   env: "production",
-  gatewayService: "caelo-production-gateway-abc",
+  proxyService: "caelo-production-gateway-abc",
 };
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 20);
@@ -122,7 +122,7 @@ describe("seal-key rotation (#806)", () => {
 
   it("keeps the window equal to the broker's refresh-token lifetime", async () => {
     const src = await Bun.file(
-      new URL("../../../apps/api-gateway/src/mcp/token.ts", import.meta.url),
+      new URL("../../../apps/mcp-auth-proxy/src/token.ts", import.meta.url),
     ).text();
     expect(src).toContain(
       `REFRESH_MAX_LIFETIME_SECONDS = ${SEAL_KEY_ROTATION_WINDOW_DAYS} * 24 * 60 * 60`,

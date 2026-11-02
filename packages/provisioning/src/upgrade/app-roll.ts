@@ -25,15 +25,23 @@
  */
 
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
-import { gatewayServiceAccountEmail, runServiceAccountEmail } from "../gcp-names.js";
+import {
+  gatewayServiceAccountEmail,
+  mcpAuthProxyServiceAccountEmail,
+  runServiceAccountEmail,
+} from "../gcp-names.js";
 import type { ImageDigests } from "../install-state.js";
 import {
   adminMediaVolume,
+  CLOUD_RUN_SLUGS,
   type CloudRunEnvVar,
-  GATEWAY_TIMEOUT_SECONDS,
+  type CloudRunSlug,
+  cloudRunServicePrefix,
+  MCP_AUTH_PROXY_TIMEOUT_SECONDS,
   RETIRED_SECRET_FILES,
   SERVICE_CPU_IDLE,
   SERVICE_SECRET_FILES,
+  SERVICE_VPC_EGRESS,
 } from "../stack-contract.js";
 import {
   type DeployedService,
@@ -44,12 +52,14 @@ import {
   liveContainerEnv,
   liveContainerMemory,
   liveCpuIdle,
+  liveDirectVpc,
   liveTimeoutSeconds,
   liveVolumes,
   planAdminMemory,
   planContractEnv,
   planCpuIdle,
   planMediaVolume,
+  planNoVpc,
   planRequestTimeout,
   planSecretFiles,
   rollService,
@@ -69,10 +79,27 @@ import {
 import type { HealthProbe } from "./health.js";
 import type { UpgradeReporter } from "./reporter.js";
 
-export type RollSlug = "admin" | "gateway";
+export type RollSlug = CloudRunSlug;
 
-/** The roll order: the gateway follows the admin, never the other way round. */
-export const ROLL_ORDER: readonly RollSlug[] = ["admin", "gateway"];
+/**
+ * The roll order: the gateway follows the admin, never the other way round,
+ * and the MCP-Auth-Proxy comes last (#1328) — on gcp-firebase it forwards
+ * the visitor traffic still addressed to it to the gateway, which must
+ * already serve the new release by then.
+ */
+export const ROLL_ORDER: readonly RollSlug[] = CLOUD_RUN_SLUGS;
+
+/** The service account each service's new revision runs as. */
+export function rollServiceAccount(slug: RollSlug, projectId: string, env: string): string {
+  switch (slug) {
+    case "admin":
+      return runServiceAccountEmail(projectId, env);
+    case "gateway":
+      return gatewayServiceAccountEmail(projectId, env);
+    case "mcp-auth-proxy":
+      return mcpAuthProxyServiceAccountEmail(projectId, env);
+  }
+}
 
 /** The install an app-roll acts on. */
 export interface AppRollInstall {
@@ -110,6 +137,8 @@ export interface ServicePlan {
   readonly liveTimeout: number | null;
   /** Whether the service gets CPU only during requests now. */
   readonly liveCpuIdle: boolean;
+  /** Whether the service egresses into the install's VPC now. */
+  readonly liveDirectVpc: boolean;
 }
 
 /** A service plan plus the changes its roll applies. */
@@ -173,7 +202,7 @@ export async function planAppRoll(
 ): Promise<PlanResult> {
   const services: ServicePlan[] = [];
   for (const slug of ROLL_ORDER) {
-    const prefix = `caelo-${install.env}-${slug}`;
+    const prefix = cloudRunServicePrefix(install.provider, install.env, slug);
     const lookup = await resolveGcpResourceName(
       run,
       "run-service",
@@ -217,6 +246,7 @@ export async function planAppRoll(
       liveVolumes: liveVolumes(json),
       liveTimeout: liveTimeoutSeconds(json),
       liveCpuIdle: liveCpuIdle(json),
+      liveDirectVpc: liveDirectVpc(json),
     });
   }
   const env = planEnv(install, services, {});
@@ -272,23 +302,31 @@ export async function planAppRoll(
     // stack's memory default (never lowered; an unparsable value is kept).
     const memory = s.slug === "admin" ? planAdminMemory(s.liveMemory) : null;
     if (memory && !memory.ok) warnings.push(`admin memory left as is: ${memory.error}`);
-    // #806 — the gateway streams remote-MCP chat turns (stack-contract.ts
-    // GATEWAY_TIMEOUT_SECONDS). The admin's timeout is the stacks' alone.
+    // #806 — the MCP-Auth-Proxy streams remote-MCP chat turns
+    // (stack-contract.ts MCP_AUTH_PROXY_TIMEOUT_SECONDS). The other services'
+    // timeouts are the stacks' alone.
     const timeout =
-      s.slug === "gateway" ? planRequestTimeout(s.liveTimeout, GATEWAY_TIMEOUT_SECONDS) : null;
+      s.slug === "mcp-auth-proxy"
+        ? planRequestTimeout(s.liveTimeout, MCP_AUTH_PROXY_TIMEOUT_SECONDS)
+        : null;
     const memoryFlags = memory?.ok ? memory.flags : [];
     const timeoutFlags = timeout?.ok ? timeout.flags : [];
     const cpu = planCpuIdle(s.liveCpuIdle, SERVICE_CPU_IDLE[s.slug]);
     const cpuFlags = cpu.ok ? cpu.flags : [];
+    // #1328 — the gcp-firebase proxy is the former gateway service: it
+    // leaves the VPC in the same revision that drops its database env.
+    const vpc = SERVICE_VPC_EGRESS[s.slug] ? null : planNoVpc(s.liveDirectVpc);
+    const vpcFlags = vpc?.ok ? vpc.flags : [];
     return {
       ...s,
       envFlags: env.services[s.slug].flags,
       envChanges: env.services[s.slug].changes,
-      resourceFlags: [...memoryFlags, ...timeoutFlags, ...cpuFlags],
+      resourceFlags: [...memoryFlags, ...timeoutFlags, ...cpuFlags, ...vpcFlags],
       resourceChanges: [
         ...memoryFlags.map((f) => `${s.liveMemory ?? "(default)"} → ${f}`),
         ...(timeout?.ok ? timeout.changes : []),
         ...(cpu.ok ? cpu.changes : []),
+        ...(vpc?.ok ? vpc.changes : []),
       ],
       volumeFlags: [...(s.slug === "admin" ? media.flags : []), ...secretFiles[s.slug].flags],
       volumeChanges: [...(s.slug === "admin" ? media.changes : []), ...secretFiles[s.slug].changes],
@@ -580,10 +618,7 @@ export async function executeAppRoll(
         region: install.region,
         projectId: install.projectId,
         imageRef: p.imageRef,
-        serviceAccount:
-          p.slug === "admin"
-            ? runServiceAccountEmail(install.projectId, install.env)
-            : gatewayServiceAccountEmail(install.projectId, install.env),
+        serviceAccount: rollServiceAccount(p.slug, install.projectId, install.env),
         envFlags: p.envFlags,
         resourceFlags: p.resourceFlags,
         volumeFlags: p.volumeFlags,
@@ -677,9 +712,12 @@ export async function executeAppRoll(
     s.done(`Healthy: ${deep.detail}`);
   }
 
+  const digestOf = (slug: RollSlug) =>
+    (plan.services.find((s) => s.slug === slug) as RollPlan).digest;
   const digests: ImageDigests = {
-    admin: (plan.services.find((s) => s.slug === "admin") as RollPlan).digest,
-    gateway: (plan.services.find((s) => s.slug === "gateway") as RollPlan).digest,
+    admin: digestOf("admin"),
+    gateway: digestOf("gateway"),
+    "mcp-auth-proxy": digestOf("mcp-auth-proxy"),
   };
   await deps.recordDigests(digests);
   return { ok: true, digests };

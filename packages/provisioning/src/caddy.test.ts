@@ -6,9 +6,14 @@ import {
   caddyTokenProblem,
   generateCaddyfile,
   selfHostedAdminHost,
+  selfHostedMcpHost,
   selfHostedSeedDomains,
 } from "./caddy.js";
-import { COMPOSE_ADMIN_UPSTREAM, COMPOSE_GATEWAY_UPSTREAM } from "./compose.js";
+import {
+  COMPOSE_ADMIN_UPSTREAM,
+  COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
+} from "./compose.js";
 
 /** The inputs `cms-provision init` passes for example.com. */
 const spec: CaddyfileSpec = {
@@ -18,6 +23,7 @@ const spec: CaddyfileSpec = {
   stagingSiteRoot: "/srv/caelo/output/staging/current",
   adminUpstream: COMPOSE_ADMIN_UPSTREAM,
   gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
+  mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   domains: selfHostedSeedDomains("example.com", "staging.example.com"),
 };
 
@@ -35,7 +41,39 @@ describe("self-hosted seed vhosts", () => {
       { hostname: "example.com", kind: "public", env: "production" },
       { hostname: "staging.example.com", kind: "public", env: "staging" },
     ]);
+    // #1328 — no MCP vhost until remote MCP exists on self-hosted: Caddy would
+    // otherwise chase an ACME certificate for a host without a DNS record.
+    expect(
+      selfHostedSeedDomains("example.com", "staging.example.com").some((d) => d.kind === "mcp"),
+    ).toBe(false);
     expect(selfHostedAdminHost("example.com")).toBe("admin.example.com");
+    expect(selfHostedMcpHost("example.com")).toBe("mcp.example.com");
+  });
+
+  // #1328 — the MCP-Auth-Proxy never shares an origin with the site's module JS.
+  it("serves the MCP-Auth-Proxy on its own vhost, nothing else of the site", () => {
+    const out = generateCaddyfile({
+      ...spec,
+      domains: [
+        ...selfHostedSeedDomains("example.com", "staging.example.com"),
+        { hostname: selfHostedMcpHost("example.com"), kind: "mcp", env: "production" },
+      ],
+    });
+    const block = out.slice(out.indexOf("mcp.example.com {"));
+    const mcp = block.slice(0, block.indexOf("\n}\n") + 3);
+    expect(mcp).toContain(`reverse_proxy ${COMPOSE_MCP_AUTH_PROXY_UPSTREAM}`);
+    expect(mcp).toContain('X-Robots-Tag "noindex"');
+    expect(mcp).not.toContain("file_server");
+    expect(mcp).not.toContain(COMPOSE_GATEWAY_UPSTREAM);
+    // ... and the site's vhost does not route the proxy.
+    const site = out.slice(out.indexOf("\nexample.com {"));
+    expect(site.slice(0, site.indexOf("\n}\n"))).not.toContain(COMPOSE_MCP_AUTH_PROXY_UPSTREAM);
+  });
+
+  it("refuses an MCP-Auth-Proxy upstream that would break out of its token", () => {
+    expect(() => generateCaddyfile({ ...spec, mcpAuthProxyUpstream: "x }\nevil {" })).toThrow(
+      /mcpAuthProxyUpstream/,
+    );
   });
 
   it("refuses two vhosts for one host — Caddy would reject the whole file", () => {

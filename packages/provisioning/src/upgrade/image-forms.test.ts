@@ -184,6 +184,40 @@ describe("platformDigestsOf", () => {
     expect(calls).toEqual([]);
   });
 
+  it("#1328: carries the MCP-Auth-Proxy's signed form, and skips a proxy digest install.json lacks", async () => {
+    const calls: string[] = [];
+    const forms = createReleaseImageForms(fakeRegistryFetch(calls));
+    const m = {
+      version: "0.12.0",
+      digests: { admin: D("a"), gateway: D("b"), ops: D("c"), "mcp-auth-proxy": D("d") },
+      platformDigests: { admin: D("1"), gateway: D("2"), ops: D("3"), "mcp-auth-proxy": D("4") },
+    };
+    expect(
+      await platformDigestsOf(
+        { admin: D("a"), gateway: D("b"), "mcp-auth-proxy": D("d") },
+        forms,
+        m,
+      ),
+    ).toEqual({
+      ok: true,
+      platformDigests: { admin: D("1"), gateway: D("2"), "mcp-auth-proxy": D("4") },
+    });
+    // Recorded before the proxy existed: no proxy form, and nothing looked up for it.
+    expect(await platformDigestsOf({ admin: D("a"), gateway: D("b") }, forms, m)).toEqual({
+      ok: true,
+      platformDigests: { admin: D("1"), gateway: D("2") },
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("#1328: a release from before the proxy ships no proxy image form", async () => {
+    const forms = createReleaseImageForms(fakeRegistryFetch([]));
+    const m = { version: "0.11.0", digests: { admin: D("a"), gateway: D("b"), ops: D("c") } };
+    const r = await forms.of(m, "mcp-auth-proxy");
+    expect(r).toMatchObject({ ok: false, transient: false });
+    expect(r.ok ? "" : r.message).toContain("ships no mcp-auth-proxy image");
+  });
+
   it("says why when an index cannot be read", async () => {
     const forms = createReleaseImageForms(fakeRegistryFetch([], { status: 503 }));
     const r = await platformDigestsOf({ admin: ADMIN_INDEX, gateway: GATEWAY_INDEX }, forms);

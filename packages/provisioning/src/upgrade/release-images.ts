@@ -17,11 +17,15 @@ import { IMAGE_DIGEST } from "@caelo-cms/shared";
 import { confirm, isCancel, log, spinner } from "@clack/prompts";
 import { green, red } from "kleur/colors";
 
-/** The two Caelo services shipped as release images. */
-export type ReleaseService = "admin" | "gateway";
+/** The Caelo services shipped as release images (#1328 added the MCP-Auth-Proxy). */
+export type ReleaseService = "admin" | "gateway" | "mcp-auth-proxy";
 
-/** The services every install runs, in roll order (admin first, then gateway). */
-export const RELEASE_SERVICES: readonly ReleaseService[] = ["admin", "gateway"];
+/**
+ * The services every install runs, in roll order: the admin first, then the
+ * gateway, then the MCP-Auth-Proxy (its own service since #1328, so a hole in
+ * a visitor handler never shares a process with the operators' tokens).
+ */
+export const RELEASE_SERVICES: readonly ReleaseService[] = ["admin", "gateway", "mcp-auth-proxy"];
 
 /** GHCR — the canonical registry (release-images.yml), used by self-hosted Compose. */
 export const GHCR_REGISTRY = "ghcr.io";
@@ -116,7 +120,13 @@ export function releaseTag(opts: {
   return "latest";
 }
 
-export type DigestResult = { ok: true; digest: string } | { ok: false; reason: string };
+/**
+ * `notFound`: the registry answered that the tag does not exist (HTTP 404)
+ * — a verdict, unlike an outage, a refused token or a malformed answer.
+ */
+export type DigestResult =
+  | { ok: true; digest: string }
+  | { ok: false; reason: string; notFound?: true };
 
 /** Manifest media types: single-arch manifests and multi-arch indexes, Docker + OCI. */
 const MANIFEST_ACCEPT = [
@@ -155,7 +165,13 @@ export async function resolveRegistryDigest(
         headers: { Accept: MANIFEST_ACCEPT, Authorization: `Bearer ${token.token}` },
       });
     }
-    if (!res.ok) return { ok: false, reason: `HTTP ${res.status} ${res.statusText}` };
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: `HTTP ${res.status} ${res.statusText}`,
+        ...(res.status === 404 ? { notFound: true as const } : {}),
+      };
+    }
     const header = res.headers.get("docker-content-digest");
     const digest = header ? canonicalDigest(header) : null;
     if (!digest) {

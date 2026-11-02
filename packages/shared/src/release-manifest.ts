@@ -19,9 +19,24 @@ import { z } from "zod";
 export const RELEASE_CHANNELS = ["stable", "rc", "beta", "alpha"] as const;
 export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
 
-/** The services a release ships images for. */
-export const RELEASE_IMAGES = ["admin", "gateway", "ops"] as const;
+/**
+ * The services a release ships images for. Every release cut from now on
+ * signs all of them (scripts/release-manifest.ts requires a digest each);
+ * `mcp-auth-proxy` (#1328) is the one manifests of older releases lack —
+ * see {@link OPTIONAL_RELEASE_IMAGES}.
+ */
+export const RELEASE_IMAGES = ["admin", "gateway", "ops", "mcp-auth-proxy"] as const;
 export type ReleaseImage = (typeof RELEASE_IMAGES)[number];
+
+/**
+ * Images a signed manifest may lack because they were added after
+ * releases that are still installable or rolled back to: the
+ * MCP-Auth-Proxy got its own image in #1328, so every manifest signed
+ * before it names none. Optional in the schema (manifestVersion stays 1;
+ * readers older than the key strip it as an unknown key), required by the
+ * release script for every new release.
+ */
+export const OPTIONAL_RELEASE_IMAGES: readonly ReleaseImage[] = ["mcp-auth-proxy"];
 
 /** A `sha256:<64 hex>` image / blob digest. */
 export const IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -39,7 +54,13 @@ export const ReleaseManifestSchema = z.object({
   manifestVersion: z.literal(1),
   version: z.string().regex(SEMVER, "expected a SemVer version without a leading v"),
   channel: z.enum(RELEASE_CHANNELS),
-  digests: z.object({ admin: digest, gateway: digest, ops: digest }),
+  digests: z.object({
+    admin: digest,
+    gateway: digest,
+    ops: digest,
+    /** Absent on releases before #1328 (see {@link OPTIONAL_RELEASE_IMAGES}). */
+    "mcp-auth-proxy": digest.optional(),
+  }),
   /**
    * #1025 — the linux/amd64 platform manifest inside each image index of
    * `digests`. The release images are OCI indexes (buildx adds an
@@ -52,7 +73,15 @@ export const ReleaseManifestSchema = z.object({
    * and older readers ignore it; readers then list the index itself
    * (content-addressed, so it cannot be forged either).
    */
-  platformDigests: z.object({ admin: digest, gateway: digest, ops: digest }).optional(),
+  platformDigests: z
+    .object({
+      admin: digest,
+      gateway: digest,
+      ops: digest,
+      /** Absent on releases before #1328 (see {@link OPTIONAL_RELEASE_IMAGES}). */
+      "mcp-auth-proxy": digest.optional(),
+    })
+    .optional(),
   minFromVersion: z.string().regex(SEMVER),
   infraContractVersion: z.number().int().positive(),
   migrations: z.object({
