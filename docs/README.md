@@ -59,6 +59,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 
 ## Releases and operations
 
+- [dev/service-images.md](./dev/service-images.md) — minimal service images (the gateway, #1327): a Bun bundle on a digest-pinned distroless base, non-root, no shell, allowlisted content, bundle SBOM and licences, the Trivy gate and boot smoke, and how to add one.
 - [dev/release-manifest.md](./dev/release-manifest.md) — the signed release manifest and the `caelo-ops` image.
 - [dev/upgrader-smoke.md](./dev/upgrader-smoke.md) — the real-GCP upgrader smoke test (release gate + post-install verify via Settings → Updates) and its one-time setup.
 - [maintainer-public-registry-setup.md](./maintainer-public-registry-setup.md) — one-time setup of the public image registry mirrors.
