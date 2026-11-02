@@ -22,7 +22,6 @@ import {
   assertNoChatRunnerDiagWarnings,
   attachChatSessionTracker,
   loginAsDevOwner,
-  primePostOnboarding,
   resetLiveditFixtures,
   runBunInline,
   seedMinimalSite,
@@ -117,7 +116,6 @@ test("#1275: a kept build_page failure is fixed with retry_tool_call, not a rese
 }) => {
   await resetLiveditFixtures();
   seedMinimalSite();
-  primePostOnboarding();
   const tracker = attachChatSessionTracker(page);
   await loginAsDevOwner(page);
   await page.goto("/edit");

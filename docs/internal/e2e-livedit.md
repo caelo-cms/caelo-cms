@@ -418,9 +418,19 @@ lists, page types, pages with their terms, modules, layout chrome and
 content-instance values, and the pure analysers (`chromeBoundLists`,
 `megaMenuFacts`, `blogCategoryFacts`, `calledTool`) turn it into the facts
 a spec asserts. The analysers are unit-tested in `lib/list-model.test.ts`.
-`seedLayoutBlocks`, `primePostOnboarding` and `seedNewsArticles` in
-`helpers.ts` seed chrome blocks, a post-onboarding theme and published
-news articles for list scenarios.
+`seedLayoutBlocks` and `seedNewsArticles` in `helpers.ts` seed chrome
+blocks and published news articles for list scenarios.
+
+**The seeded site is an onboarded site.** `seedMinimalSite` also captures
+a site identity and gives the active theme a described, chromatic brand
+palette, so the cold-start gate never intercepts a scenario that is not
+about onboarding. `resetLiveditFixtures` does not reset identity or
+theme, so a scenario must never rely on an earlier scenario having set
+them: the release gate runs only the scenarios whose files changed, in
+a different order than a full run (the v0.11.10 gate ran the consent
+scenario first, on a grey seed theme, and its turn built nothing).
+Only scenario-homepage, which skips `seedMinimalSite`, walks the
+cold-start path.
 
 ## What each assertion class catches
 
