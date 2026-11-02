@@ -38,6 +38,46 @@ export const AGENT_DB_ROLE = "caelo_agent";
 const APP_ROLES = ["admin_role", "public_role"] as const;
 type AppRole = (typeof APP_ROLES)[number];
 
+/**
+ * #1338 (gateway hardening H3) — what bounds public_role, the gateway's
+ * login, on the database: at most this many connections, no statement or
+ * idle transaction that runs away, little sort memory per query. The same
+ * values as packages/migrations/src/bootstrap.sh and the cms_admin
+ * migration that sets them where admin_role may (Cloud SQL); the role audit
+ * (packages/migrations role-audit.ts) refuses an install without them.
+ * Self-hosted admin_role has no CREATEROLE, so the superuser applies them
+ * here — on the volume's first start (bootstrap.sh), on every `up`, and
+ * before the migrations of every upgrade ({@link publicRoleLimitsScript}).
+ */
+export const PUBLIC_ROLE_LIMITS = {
+  connectionLimit: 30,
+  statementTimeout: "5s",
+  idleInTransactionSessionTimeout: "15s",
+  workMem: "1MB",
+} as const;
+
+/** The statements that apply {@link PUBLIC_ROLE_LIMITS} (idempotent). */
+function publicRoleLimitsSql(): string[] {
+  const l = PUBLIC_ROLE_LIMITS;
+  return [
+    `ALTER ROLE public_role CONNECTION LIMIT ${l.connectionLimit};`,
+    `ALTER ROLE public_role SET statement_timeout = '${l.statementTimeout}';`,
+    `ALTER ROLE public_role SET idle_in_transaction_session_timeout = '${l.idleInTransactionSessionTimeout}';`,
+    `ALTER ROLE public_role SET work_mem = '${l.workMem}';`,
+  ];
+}
+
+/**
+ * The psql script (superuser) that applies only {@link PUBLIC_ROLE_LIMITS}.
+ * The self-hosted upgrade runs it BEFORE the migrations: their role audit
+ * refuses public_role without the limits, and the full convergence must
+ * wait until after them (it drops roles a migration retired). Fails when
+ * public_role does not exist — the install's roles were never created.
+ */
+export function publicRoleLimitsScript(): string {
+  return ["\\set ON_ERROR_STOP on", ...publicRoleLimitsSql(), ""].join("\n");
+}
+
 /** How a role's password appears in the SQL: a literal, or a psql variable. */
 type PasswordSql = (role: AppRole | typeof AGENT_DB_ROLE) => string;
 
@@ -52,6 +92,7 @@ function convergenceSql(password: PasswordSql, agent: boolean): string {
       `SELECT 'CREATE ROLE ${role} NOINHERIT LOGIN' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') \\gexec`,
       `ALTER ROLE ${role} WITH LOGIN PASSWORD ${password(role)};`,
     ]),
+    ...publicRoleLimitsSql(),
     // The upgrader's role (migration 0267 creates it only with CREATEROLE,
     // which the self-hosted admin_role lacks).
     "SELECT 'CREATE ROLE platform_updater NOLOGIN' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'platform_updater') \\gexec",
@@ -142,6 +183,23 @@ ${convergenceSql((role) => `:'${role}_pw'`, opts.agent)}CAELO_SQL
 
 /** Runs a psql script as the superuser; resolves to psql's exit code + stderr. */
 export type SuperuserPsql = (script: string) => Promise<{ exitCode: number; stderr: string }>;
+
+/**
+ * Apply {@link publicRoleLimitsScript} through the running Postgres
+ * container. Unlike {@link convergeSelfHostedRoles} a stopped database is a
+ * failure: the upgrade runs it right before migrations that need it.
+ */
+export async function applyPublicRoleLimits(deps: {
+  readonly probe: () => Promise<boolean>;
+  readonly psql: SuperuserPsql;
+}): Promise<ConvergeOutcome> {
+  if (!(await deps.probe())) {
+    return { ok: false, reachable: false, error: "the Postgres container is not running" };
+  }
+  const r = await deps.psql(publicRoleLimitsScript());
+  if (r.exitCode === 0) return { ok: true };
+  return { ok: false, reachable: true, error: r.stderr.trim() || `psql exited ${r.exitCode}` };
+}
 
 export type ConvergeOutcome =
   | { readonly ok: true }

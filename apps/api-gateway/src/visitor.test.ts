@@ -256,9 +256,10 @@ describe("signed-cookie hex & session maxAge hardening", () => {
     );
   });
 
-  it("hashes client addresses with 256-bit SHA-256 (64 hex chars)", () => {
-    const h = hashClientAddress("192.0.2.1");
+  it("hashes client addresses with keyed 256-bit HMAC-SHA256 (64 hex chars, #1338)", () => {
+    const key = new Uint8Array(32).fill(1);
+    const h = hashClientAddress("192.0.2.1", key);
     expect(h).toMatch(/^[0-9a-f]{64}$/);
-    expect(h).not.toBe(hashClientAddress("192.0.2.2"));
+    expect(h).not.toBe(hashClientAddress("192.0.2.2", key));
   });
 });

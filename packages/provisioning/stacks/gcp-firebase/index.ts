@@ -48,8 +48,13 @@ import {
   adminMediaVolume,
   adminMediaVolumeTemplate,
   CLOUD_RUN_IGNORE_CHANGES,
+  CLOUD_SQL_PSA_CONNECTION_TYPE,
+  CLOUD_SQL_SERVER_CA_MODE,
+  CLOUD_SQL_SSL_MODE,
   type CloudRunEnvVar,
   type CloudRunSlug,
+  cloudSqlDnsZoneName,
+  cloudSqlPrivateDnsName,
   databaseUrls,
   defaultStagingHost,
   GATEWAY_TIMEOUT_SECONDS,
@@ -293,6 +298,11 @@ const sqlInstance = new gcp.sql.DatabaseInstance(
         ipv4Enabled: false,
         privateNetwork: network.id,
         enablePrivatePathForGoogleCloudServices: true,
+        // #1338 — the shared CA names the instance's DNS name in its server
+        // certificate, so every client verifies it (sslmode=verify-full);
+        // unencrypted connections are refused outright.
+        serverCaMode: CLOUD_SQL_SERVER_CA_MODE,
+        sslMode: CLOUD_SQL_SSL_MODE,
       },
       databaseFlags: [
         { name: "max_connections", value: maxConnections.toString() },
@@ -335,9 +345,49 @@ new gcp.sql.User(
   opts,
 );
 
+// #1338 — the instance's DNS name, resolved to its private IP by a private
+// zone in the VPC (Cloud SQL assigns the name, it does not resolve it).
+// Every client dials this name with sslmode=verify-full; the certificate
+// names no IP. `cms-provision upgrade` converges the same zone and record
+// through gcloud (cloudsql-tls.ts); the installer adopts them (#1079).
+const sqlDnsName = sqlInstance.dnsNames.apply((names) => {
+  const name = cloudSqlPrivateDnsName(names);
+  if (!name) {
+    throw new Error(
+      `Cloud SQL instance has no ${CLOUD_SQL_PSA_CONNECTION_TYPE} DNS name; it needs the shared server CA (${CLOUD_SQL_SERVER_CA_MODE}) for verify-full connections (#1338)`,
+    );
+  }
+  return name;
+});
+const sqlDnsZone = new gcp.dns.ManagedZone(
+  `${namePrefix}-pg-dns`,
+  {
+    name: cloudSqlDnsZoneName(env),
+    dnsName: pulumi.interpolate`${sqlDnsName}.`,
+    visibility: "private",
+    privateVisibilityConfig: { networks: [{ networkUrl: network.id }] },
+    description: `Caelo ${env}: the Cloud SQL instance's DNS name inside the VPC (#1338)`,
+  },
+  opts,
+);
+const sqlDnsRecord = new gcp.dns.RecordSet(
+  `${namePrefix}-pg-dns-a`,
+  {
+    // Literal names, not the zone's outputs: the installer can then adopt
+    // a record an upgrade created (adopt-existing.ts) from the preview.
+    managedZone: cloudSqlDnsZoneName(env),
+    name: pulumi.interpolate`${sqlDnsName}.`,
+    type: "A",
+    ttl: 300,
+    rrdatas: [sqlInstance.privateIpAddress],
+  },
+  { ...opts, dependsOn: [sqlDnsZone] },
+);
+
 // Password-less connection URLs (stack-contract.ts databaseUrls); the
-// services get the password as a Secret Manager reference.
-const dbUrls = sqlInstance.privateIpAddress.apply(databaseUrls);
+// services get the password as a Secret Manager reference. Tied to the
+// record so no revision boots before its database host resolves.
+const dbUrls = pulumi.all([sqlDnsName, sqlDnsRecord.id]).apply(([host]) => databaseUrls(host));
 
 // =========================================================================
 // Media bucket — private, signed-URL access only (same as `gcp` stack)

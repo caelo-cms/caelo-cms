@@ -135,6 +135,10 @@ function deps(
       runner.calls.push("converge roles");
       return roles;
     },
+    applyPublicRoleLimits: async () => {
+      runner.calls.push("public role limits");
+      return { ok: true } as const;
+    },
     refreshCaddy: async () => {
       runner.calls.push("refresh caddy");
       return caddy;
@@ -162,6 +166,8 @@ describe("upgradeSelfHosted", () => {
       "dump cms_admin",
       "dump cms_public",
       "pull",
+      "up postgres",
+      "public role limits",
       "migrate admin",
       "migrate public",
       "converge roles",
@@ -305,7 +311,9 @@ describe("upgradeSelfHosted", () => {
     ]);
     const r = await upgradeSelfHosted({ version: "0.11.0" }, deps(runner));
     expect(r).toMatchObject({ ok: false, stage: "migrate", previousRunning: true });
-    expect(steps(runner.calls).some((s) => s.startsWith("up "))).toBe(false);
+    // Postgres moved onto this release's TLS config before the migrations
+    // (it serves the previous release too); no Caelo service restarted.
+    expect(steps(runner.calls).some((s) => s.startsWith("up caelo"))).toBe(false);
     expect(readFileSync(composePath(dir), "utf8")).toBe(render(OLD));
   });
 
@@ -325,7 +333,9 @@ describe("upgradeSelfHosted", () => {
     );
     expect(r).toMatchObject({ ok: false, stage: "roles", previousRunning: true });
     if (!r.ok) expect(r.error).toContain("role is busy");
-    expect(steps(runner.calls).some((x) => x.startsWith("up "))).toBe(false);
+    // Postgres moved onto this release's TLS config before the migrations
+    // (it serves the previous release too); no Caelo service restarted.
+    expect(steps(runner.calls).some((x) => x.startsWith("up caelo"))).toBe(false);
     expect(readFileSync(composePath(dir), "utf8")).toBe(render(OLD));
     expect(readRelease(dir)?.version).toBe("0.10.0");
   });

@@ -41,7 +41,7 @@ const contractInputs = {
   domain: "viu.one",
   region: "europe-west1",
   stagingHost: "staging.viu.one",
-  databaseUrls: databaseUrls("10.153.0.3"),
+  databaseUrls: databaseUrls("db1.p-label.europe-west1.sql-psa.goog"),
 } as const;
 const contract = {
   admin: adminEnvContract({

@@ -72,10 +72,11 @@ const spec: ServiceImageSpec = {
   ],
   // #1338 — the database CA bundles every verify-full URL names as
   // `sslrootcert` (packages/shared database-tls.ts DATABASE_CA_DIR), copied by
-  // the Dockerfile from packages/shared/certs/. Allowlisted here ahead of the
-  // PR that adds the COPY (#1346); that PR also adds it to `require` below.
+  // the Dockerfile from packages/shared/certs/. Required: without them the
+  // gateway cannot open a single database connection.
   extraFiles: ["etc/caelo/db-ca/*"],
   require: [
+    "etc/caelo/db-ca/*.pem",
     "usr/local/bin/bun",
     "usr/local/bin/deno",
     "app/apps/api-gateway/dist/server.js",

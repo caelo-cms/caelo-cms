@@ -18,7 +18,9 @@ import {
   type SecretFileReader,
 } from "./database-env.js";
 
-const OWN = { PUBLIC_DATABASE_URL: "postgres://public_role:p@db:5432/cms_public" };
+const OWN = {
+  PUBLIC_DATABASE_URL: "postgres://public_role:p@db:5432/cms_public?sslmode=verify-full",
+};
 
 /** A filesystem with exactly `files` (path → contents). */
 function fakeFiles(files: Record<string, string> = {}): SecretFileReader {

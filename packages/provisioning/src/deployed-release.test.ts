@@ -151,7 +151,10 @@ describe("checkDeployedRuntimeEnv", () => {
       ...lists(),
       "describe caelo-production-admin-abc": [
         svc([
-          { name: "ADMIN_DATABASE_URL", value: "postgres://admin_role:pw@10.0.0.3:5432/cms_admin" },
+          {
+            name: "ADMIN_DATABASE_URL",
+            value: "postgres://admin_role:pw@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin",
+          },
         ]),
       ],
     });

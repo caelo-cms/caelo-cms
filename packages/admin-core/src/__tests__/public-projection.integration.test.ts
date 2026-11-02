@@ -16,7 +16,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { drainPublicProjection } from "@caelo-cms/migrations/public-projection";
+import {
+  drainPublicProjection,
+  ProjectionBusyError,
+} from "@caelo-cms/migrations/public-projection";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
@@ -153,7 +156,7 @@ describe("drain (#635)", () => {
     expect(after).toEqual([]);
   });
 
-  it("publishes only the four gateway columns of site_settings", async () => {
+  it("publishes only the four gateway columns of site_settings, plus the live origins (#1326)", async () => {
     const cols = (await pub(
       async (tx) =>
         await tx`
@@ -166,6 +169,8 @@ describe("drain (#635)", () => {
       "max_body_bytes",
       "captcha_provider",
       "captcha_pow_target_prefix",
+      // Derived from the base URL and the public domains, never the staging host.
+      "live_origins",
     ]);
   });
 });
@@ -341,6 +346,129 @@ describe("the plugins section (#635 review)", () => {
         await tx`DELETE FROM plugins WHERE id = ${pluginId}::uuid`;
       });
       await publishProjectionOnce(adapter, { declarations: new Map(), comments: false });
+    }
+  });
+});
+
+describe("the projection lock never holds a waiting connection (2026-11-02 incident)", () => {
+  const LOCK = "SELECT pg_advisory_xact_lock(hashtext('caelo_public_projection'))";
+
+  /** Backends that wait on an advisory lock right now (the old waiting publishers). */
+  async function advisoryWaiters(): Promise<number> {
+    const [row] = (await admin(
+      async (tx) =>
+        await tx`SELECT count(*)::int AS n FROM pg_stat_activity
+                 WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`,
+    )) as { n: number }[];
+    return row?.n ?? 0;
+  }
+
+  /** Another publisher (another admin instance) holding the lock until `release`. */
+  async function holdLock(): Promise<{ release: () => Promise<void> }> {
+    const raw = new SQL(ADMIN_URL as string);
+    const conn = await raw.reserve();
+    await conn`BEGIN`;
+    await conn.unsafe(LOCK);
+    return {
+      release: async () => {
+        await conn`COMMIT`;
+        conn.release();
+        await raw.end();
+      },
+    };
+  }
+
+  it("a drain waits for a busy lock without a connection, then publishes", async () => {
+    await admin(async (tx) => {
+      await tx`UPDATE plugin_rate_limit_overrides SET per_visitor_max = 21 WHERE plugin_slug = ${P}`;
+    });
+    const holder = await holdLock();
+    let settled = false;
+    const drain = drainPublicProjection(projectionDatabases(adapter), new Map(), {
+      lockWait: { waitMs: 10_000, retryMs: 100 },
+    }).finally(() => {
+      settled = true;
+    });
+    try {
+      await Bun.sleep(600);
+      expect(settled).toBe(false);
+      expect(await advisoryWaiters()).toBe(0);
+    } finally {
+      await holder.release();
+    }
+    const report = await drain;
+    expect(report.sections).toContain("rate_limits");
+    const rows = (await pub(
+      async (tx) =>
+        await tx`SELECT per_visitor_max FROM published_rate_limits WHERE plugin_slug = ${P}`,
+    )) as { per_visitor_max: number }[];
+    expect(rows).toEqual([{ per_visitor_max: 21 }]);
+  });
+
+  it("gives up with ProjectionBusyError when the lock stays busy, leaving the outbox", async () => {
+    await admin(async (tx) => {
+      await tx`UPDATE plugin_rate_limit_overrides SET per_visitor_max = 22 WHERE plugin_slug = ${P}`;
+    });
+    const holder = await holdLock();
+    try {
+      await expect(
+        drainPublicProjection(projectionDatabases(adapter), new Map(), {
+          lockWait: { waitMs: 700, retryMs: 100 },
+        }),
+      ).rejects.toBeInstanceOf(ProjectionBusyError);
+      expect(await outboxSections()).toContain("rate_limits");
+    } finally {
+      await holder.release();
+    }
+    await drainProjectionOnce(adapter, new Map());
+    expect(await outboxSections()).toEqual([]);
+  });
+
+  it("drains asked for while one waits to start join it instead of queueing one each", async () => {
+    const publisher = startPublicProjectionPublisher({
+      adapter,
+      declarations: () => new Map(),
+      intervalMs: 3_600_000,
+    });
+    const holder = await holdLock();
+    let released = false;
+    try {
+      const running = publisher.drain();
+      // Let it start: it now waits for the lock, so it may have read the
+      // outbox before a later commit and cannot be joined.
+      await Bun.sleep(50);
+      const second = publisher.drain();
+      const third = publisher.drain();
+      expect(second).toBe(third);
+      expect(second).not.toBe(running);
+      await holder.release();
+      released = true;
+      await Promise.all([running, second, third]);
+    } finally {
+      if (!released) await holder.release();
+      publisher.stop();
+    }
+  });
+  it("full publishes asked for while one waits to start join it (the timer's retries stay bounded)", async () => {
+    const publisher = startPublicProjectionPublisher({
+      adapter,
+      declarations: () => new Map(),
+      intervalMs: 3_600_000,
+    });
+    const holder = await holdLock();
+    let released = false;
+    try {
+      const running = publisher.publishAll();
+      await Bun.sleep(50);
+      const retries = [publisher.publishAll(), publisher.publishAll(), publisher.publishAll()];
+      expect(new Set(retries).size).toBe(1);
+      expect(retries[0]).not.toBe(running);
+      await holder.release();
+      released = true;
+      await Promise.all([running, ...retries]);
+    } finally {
+      if (!released) await holder.release();
+      publisher.stop();
     }
   });
 });

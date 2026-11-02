@@ -33,6 +33,16 @@
  * and the cms_public write, so an older read can never overwrite a newer
  * publish.
  *
+ * A publisher never WAITS on that lock while holding a connection: it asks
+ * with `pg_try_advisory_xact_lock`, and when another publisher has it, it
+ * ends its transaction and asks again after a short pause (see
+ * {@link withProjectionLock}). Waiting inside the transaction used to hold
+ * one admin connection per waiter for up to the 15 s `lock_timeout`
+ * (migration 0392); every admin instance drains every 2 s and after every
+ * write, so on 2026-11-02 the waiters took every pooled connection while
+ * the holder itself waited for a cms_public connection, and the admin
+ * stopped answering for ten minutes.
+ *
  * ## Why this is not a set of Query API ops
  *
  * CLAUDE.md §2 routes every *actor's* database access through Query API
@@ -126,7 +136,7 @@ function uuidArray(values: readonly string[]): SQL {
   return sql`ARRAY(SELECT jsonb_array_elements_text((${JSON.stringify(values)}::text)::jsonb)::uuid)`;
 }
 
-const PROJECTION_LOCK = sql`SELECT pg_advisory_xact_lock(hashtext('caelo_public_projection'))`;
+const PROJECTION_TRY_LOCK = sql`SELECT pg_try_advisory_xact_lock(hashtext('caelo_public_projection')) AS locked`;
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/;
 const SLUG_RE = /^[a-z][a-z0-9-]*$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -134,6 +144,42 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const CHUNK = 500;
 
 type Row = Record<string, unknown>;
+
+/**
+ * The origins the live site is served on, which alone may post to the
+ * gateway's `/api/plugin/*` (#1326): the site's base URL and every public
+ * domain of the domains registry, each as a browser sends it in `Origin`
+ * (`https://example.com`, no path, default port dropped). The staging host
+ * is never one of them, even when it is registered as a domain: it is
+ * same-site with live, and unreviewed module JS on staging must not post
+ * to the live data (#763 N4). An entry that is not a URL is left out; the
+ * admin reports a malformed base URL on every build.
+ *
+ * @example
+ *   liveSiteOrigins({ baseUrl: "https://Example.com/", publicHosts: ["www.example.com"],
+ *                     stagingHost: "staging.example.com" })
+ *   // → ["https://example.com", "https://www.example.com"]
+ */
+export function liveSiteOrigins(input: {
+  readonly baseUrl: string | null | undefined;
+  readonly publicHosts: readonly string[];
+  readonly stagingHost: string | null | undefined;
+}): string[] {
+  const originOf = (url: string): string | null => {
+    try {
+      const u = new URL(url);
+      return u.protocol === "https:" || u.protocol === "http:" ? u.origin : null;
+    } catch {
+      return null;
+    }
+  };
+  const staging = input.stagingHost ? originOf(`https://${input.stagingHost}`) : null;
+  const found = [
+    input.baseUrl ? originOf(input.baseUrl) : null,
+    ...input.publicHosts.map((h) => originOf(`https://${h}`)),
+  ].filter((o): o is string => o !== null && o !== staging);
+  return [...new Set(found)].sort();
+}
 
 async function rows(tx: ProjectionTx, query: SQL): Promise<Row[]> {
   return (await tx.execute(query)) as unknown as Row[];
@@ -304,13 +350,31 @@ async function readSnapshot(
     commentChanges: new Map(),
   };
   if (want.has("settings")) {
-    snap.settings = await rows(
+    const settings = await rows(
       tx,
       sql`SELECT gateway_cookie_secret AS cookie_secret, gateway_max_body_bytes AS max_body_bytes,
                  captcha_provider, captcha_pow_target_prefix
           FROM site_settings WHERE id = 1 AND gateway_cookie_secret IS NOT NULL
             AND gateway_cookie_secret <> ''`,
     );
+    const origins = liveSiteOrigins({
+      baseUrl: (
+        (await rows(tx, sql`SELECT site_base_url FROM site_defaults WHERE id = 1`))[0] as
+          | { site_base_url: string | null }
+          | undefined
+      )?.site_base_url,
+      publicHosts: (
+        (await rows(tx, sql`SELECT hostname FROM domains WHERE kind = 'public'`)) as {
+          hostname: string;
+        }[]
+      ).map((d) => d.hostname),
+      stagingHost: (
+        (await rows(tx, sql`SELECT staging_host FROM staging_access WHERE id = 1`))[0] as
+          | { staging_host: string | null }
+          | undefined
+      )?.staging_host,
+    });
+    snap.settings = settings.map((s) => ({ ...s, live_origins: origins }));
   }
   if (want.has("staging")) {
     snap.staging = await rows(
@@ -403,8 +467,8 @@ async function writeSnapshot(
     await replaceAll(
       tx,
       "published_gateway_settings",
-      "cookie_secret, max_body_bytes, captcha_provider, captcha_pow_target_prefix",
-      "cookie_secret text, max_body_bytes int, captcha_provider text, captcha_pow_target_prefix text",
+      "cookie_secret, max_body_bytes, captcha_provider, captcha_pow_target_prefix, live_origins",
+      "cookie_secret text, max_body_bytes int, captcha_provider text, captcha_pow_target_prefix text, live_origins text[]",
       snap.settings,
     );
     sections.push("settings");
@@ -521,10 +585,9 @@ const SMALL_SECTIONS: readonly ProjectionSection[] = [
 export async function publishPublicProjection(
   dbs: ProjectionDatabases,
   declarations: VisitorProjectionDeclarations,
-  opts: { readonly comments: boolean },
+  opts: { readonly comments: boolean; readonly lockWait?: ProjectionLockWait },
 ): Promise<PublishReport> {
-  return dbs.readAdmin(async (tx) => {
-    await tx.execute(PROJECTION_LOCK);
+  return withProjectionLock(dbs, opts.lockWait ?? {}, async (tx) => {
     const outbox = await readOutbox(tx, await foreignPluginSections(tx, declarations));
     const commentIds = opts.comments ? new Set<string>() : outbox.commentIds;
     const snap = await readSnapshot(
@@ -557,6 +620,69 @@ interface OutboxBatch {
 }
 
 const OUTBOX_BATCH = 5000;
+
+/**
+ * How long a publisher keeps asking for the projection lock while another
+ * publisher holds it. Every pause is spent without a connection.
+ */
+export interface ProjectionLockWait {
+  /** Give up after this long (default 15 s, the 0392 `lock_timeout` it replaces). */
+  readonly waitMs?: number;
+  /** Pause between two attempts (default 200 ms, jittered ±50 %). */
+  readonly retryMs?: number;
+  /** Overrides for tests. */
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly now?: () => number;
+}
+
+const DEFAULT_LOCK_WAIT_MS = 15_000;
+const DEFAULT_LOCK_RETRY_MS = 200;
+
+/**
+ * Another publisher held the projection lock for the whole wait. Nothing
+ * was published or consumed; the outbox keeps every change for the next
+ * drain.
+ */
+export class ProjectionBusyError extends Error {
+  override readonly name = "ProjectionBusyError";
+  constructor(readonly waitedMs: number) {
+    super(
+      `another publisher held the gateway projection lock for ${waitedMs} ms; nothing was published and the outbox keeps the changes — the next drain publishes them`,
+    );
+  }
+}
+
+/**
+ * Run `fn` in an admin transaction that holds the projection lock. When
+ * another publisher holds it, the transaction ends at once (releasing its
+ * connection) and a new one asks again after a pause, until
+ * `wait.waitMs` has passed.
+ *
+ * @throws ProjectionBusyError when the lock never became free in time.
+ */
+export async function withProjectionLock<T>(
+  dbs: ProjectionDatabases,
+  wait: ProjectionLockWait,
+  fn: (tx: ProjectionTx) => Promise<T>,
+): Promise<T> {
+  const now = wait.now ?? Date.now;
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const waitMs = wait.waitMs ?? DEFAULT_LOCK_WAIT_MS;
+  const retryMs = wait.retryMs ?? DEFAULT_LOCK_RETRY_MS;
+  const started = now();
+  for (;;) {
+    const attempt = await dbs.readAdmin(async (tx) => {
+      const [row] = await rows(tx, PROJECTION_TRY_LOCK);
+      if (row?.locked !== true) return { locked: false as const };
+      return { locked: true as const, value: await fn(tx) };
+    });
+    if (attempt.locked) return attempt.value;
+    const waited = now() - started;
+    if (waited >= waitMs) throw new ProjectionBusyError(waited);
+    // Jitter so publishers of several instances do not retry in lockstep.
+    await sleep(Math.min(retryMs * (0.5 + Math.random()), Math.max(0, waitMs - waited)));
+  }
+}
 
 /**
  * The sections of active plugins this publisher does not have (see
@@ -625,9 +751,9 @@ async function consumeOutbox(tx: ProjectionTx, ids: readonly string[]): Promise<
 export async function drainPublicProjection(
   dbs: ProjectionDatabases,
   declarations: VisitorProjectionDeclarations,
+  opts: { readonly lockWait?: ProjectionLockWait } = {},
 ): Promise<PublishReport> {
-  return dbs.readAdmin(async (tx) => {
-    await tx.execute(PROJECTION_LOCK);
+  return withProjectionLock(dbs, opts.lockWait ?? {}, async (tx) => {
     const outbox = await readOutbox(tx, await foreignPluginSections(tx, declarations));
     if (outbox.count === 0) {
       return { sections: [], comments: 0, drained: 0, pendingPlugins: [] };

@@ -207,7 +207,17 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
 
   it("builds no database URL with a password in it", () => {
     expect(src).not.toMatch(/:\$\{postgresPassword\}@|\$\{pw\}@/);
-    expect(src).toContain("sqlInstance.privateIpAddress.apply(databaseUrls)");
+    // #1338 — from the instance's DNS name, once its private zone record exists.
+    expect(src).toContain(".apply(([host]) => databaseUrls(host))");
+  });
+
+  it("serves verify-full TLS: shared server CA, encrypted only, DNS name in the VPC (#1338)", () => {
+    expect(src).toContain("serverCaMode: CLOUD_SQL_SERVER_CA_MODE");
+    expect(src).toContain("sslMode: CLOUD_SQL_SSL_MODE");
+    // The names cloudsql-tls.ts converges and adopt-existing.ts adopts.
+    expect(src).toContain("name: cloudSqlDnsZoneName(env)");
+    expect(src).toContain("managedZone: cloudSqlDnsZoneName(env)");
+    expect(src).toContain('visibility: "private"');
   });
 
   it("references the CLI-generated secrets by id instead of creating them", () => {

@@ -25,7 +25,9 @@
  *   4. A second preview: what the review shows and `up` applies. An adopted
  *      resource that is still planned as a create stops the run.
  *
- * Why only service accounts ({@link ADOPTABLE_KINDS}). A kind is adopted
+ * Why service accounts and, since #1338, the Cloud SQL private DNS zone and
+ * its record (cloudsql-tls.ts creates both on upgrade) — {@link
+ * ADOPTABLE_KINDS}. A kind is adopted
  * when the stack declares it AND the CLI also creates it through gcloud, and
  * its name is unique in the project. Checked per kind against both stacks:
  *
@@ -99,6 +101,54 @@ export const ADOPTABLE_KINDS: Readonly<Record<string, AdoptableKind>> = {
           "--format=value(email)",
         ],
         importId: `projects/${projectId}/serviceAccounts/${email}`,
+      };
+    },
+  },
+  // #1338 — the private zone + A record that resolve the Cloud SQL
+  // instance's DNS name in the VPC. `cms-provision upgrade` creates both
+  // through gcloud (cloudsql-tls.ts) on installs that predate them; the
+  // stacks declare them with literal names so the preview pins them down.
+  "gcp:dns/managedZone:ManagedZone": {
+    label: "private DNS zone",
+    target(inputs, projectId) {
+      const name = inputs.name;
+      if (typeof name !== "string" || !/^[a-z][a-z0-9-]{0,62}$/.test(name)) return null;
+      if ((inputs.project ?? projectId) !== projectId) return null;
+      return {
+        display: name,
+        describeArgs: [
+          "dns",
+          "managed-zones",
+          "describe",
+          name,
+          `--project=${projectId}`,
+          "--format=value(name)",
+        ],
+        importId: `projects/${projectId}/managedZones/${name}`,
+      };
+    },
+  },
+  "gcp:dns/recordSet:RecordSet": {
+    label: "DNS record",
+    target(inputs, projectId) {
+      const { managedZone: zone, name, type } = inputs;
+      if (typeof zone !== "string" || !/^[a-z][a-z0-9-]{0,62}$/.test(zone)) return null;
+      if (typeof name !== "string" || !/^[a-z0-9.-]{1,253}\.$/.test(name)) return null;
+      if (typeof type !== "string" || !/^[A-Z]{1,10}$/.test(type)) return null;
+      if ((inputs.project ?? projectId) !== projectId) return null;
+      return {
+        display: `${name} ${type}`,
+        describeArgs: [
+          "dns",
+          "record-sets",
+          "describe",
+          name,
+          `--zone=${zone}`,
+          `--type=${type}`,
+          `--project=${projectId}`,
+          "--format=value(name)",
+        ],
+        importId: `projects/${projectId}/managedZones/${zone}/rrsets/${name}/${type}`,
       };
     },
   },

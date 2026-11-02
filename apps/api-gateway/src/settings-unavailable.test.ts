@@ -2,12 +2,12 @@
 
 /**
  * #613 review — a settings load that fails must not hand an unauthenticated
- * caller the raw database error (hosts, role names, SQL). Only the gateway's
- * own readiness reason is shown; anything else is logged and answered with
- * a generic 503.
+ * caller the raw database error (hosts, role names, SQL). Since #1326 the
+ * caller gets `{ kind, requestId }` only, the gateway's own readiness
+ * reason included; both are logged under the request id.
  */
 
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { handleRequest, invalidateGatewaySettings, setGatewayAdapter } from "./server.js";
 
@@ -21,7 +21,19 @@ function fakeAdapter(outcome: { rows: unknown[] } | { error: Error }): DatabaseA
   } as unknown as DatabaseAdapter;
 }
 
-const challenge = () => handleRequest(new Request("http://localhost/api/captcha/challenge"));
+const challenge = () =>
+  handleRequest(new Request("http://localhost/api/captcha/challenge"), {
+    peerAddress: "198.51.100.7",
+  });
+
+const priorHops = process.env.CAELO_TRUSTED_PROXY_HOPS;
+beforeAll(() => {
+  process.env.CAELO_TRUSTED_PROXY_HOPS = "0";
+});
+afterAll(() => {
+  if (priorHops === undefined) delete process.env.CAELO_TRUSTED_PROXY_HOPS;
+  else process.env.CAELO_TRUSTED_PROXY_HOPS = priorHops;
+});
 
 afterEach(() => {
   invalidateGatewaySettings();
@@ -42,11 +54,14 @@ describe("settings that cannot be loaded (#613 review)", () => {
       const r = await challenge();
       expect(r.status).toBe(503);
       const text = await r.text();
-      expect(text).toContain("temporarily unavailable");
+      const body = JSON.parse(text) as { error: { kind: string; requestId: string } };
+      expect(body.error.kind).toBe("ServiceUnavailable");
+      expect(Object.keys(body.error).sort()).toEqual(["kind", "requestId"]);
       for (const leak of ["10.20.0.3", "gateway_role", "site_settings", "hunter2"]) {
         expect(text).not.toContain(leak);
       }
       const line = logged.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(line).toContain(`request ${body.error.requestId}: ServiceUnavailable`);
       expect(line).toContain("(42P01)");
       expect(line).toContain("postgres://***@10.20.0.3");
       expect(line).not.toContain("hunter2");
@@ -55,13 +70,21 @@ describe("settings that cannot be loaded (#613 review)", () => {
     }
   });
 
-  it("shows the gateway's own readiness reason", async () => {
-    setGatewayAdapter(fakeAdapter({ rows: [] }));
-    invalidateGatewaySettings();
-    const r = await challenge();
-    expect(r.status).toBe(503);
-    expect(await r.text()).toContain(
-      "the admin has not published the gateway settings yet; run the database migrations",
-    );
+  it("logs the gateway's own readiness reason and answers only its kind", async () => {
+    const logged = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      setGatewayAdapter(fakeAdapter({ rows: [] }));
+      invalidateGatewaySettings();
+      const r = await challenge();
+      expect(r.status).toBe(503);
+      const text = await r.text();
+      expect(text).not.toContain("migrations");
+      const line = logged.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(line).toContain(
+        "the admin has not published the gateway settings yet; run the database migrations",
+      );
+    } finally {
+      logged.mockRestore();
+    }
   });
 });

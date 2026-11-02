@@ -139,6 +139,13 @@ export interface AppRollPlan {
   readonly services: readonly RollPlan[];
   /** Notes for the operator (e.g. a memory limit left as is). */
   readonly warnings: readonly string[];
+  /**
+   * #1338 — the services dial the Cloud SQL instance's IP, which no
+   * verify-full connection can use, so their database URLs are not planned.
+   * A converge moves them onto the instance's DNS name
+   * ({@link EnvAdjustments.databaseHost}); a roll refuses while this holds.
+   */
+  readonly databaseHostPending?: boolean;
 }
 
 export type PlanResult =
@@ -287,7 +294,15 @@ export async function planAppRoll(
       volumeChanges: [...(s.slug === "admin" ? media.changes : []), ...secretFiles[s.slug].changes],
     };
   });
-  return { ok: true, plan: { install, services: rolls, warnings } };
+  if (env.databaseHostPending) {
+    warnings.push(
+      "the services still dial the Cloud SQL instance's IP; the converge moves them onto its DNS name for verify-full TLS (#1338) before anything rolls",
+    );
+  }
+  return {
+    ok: true,
+    plan: { install, services: rolls, warnings, databaseHostPending: env.databaseHostPending },
+  };
 }
 
 /** Env the converge half adds to, or keeps out of, the rolls ({@link AppRollHooks.afterMigrations}). */
@@ -299,6 +314,11 @@ export interface EnvAdjustments {
    * identity env, which only the converge (operator identity) can resolve.
    */
   readonly extraEnv?: Readonly<Partial<Record<RollSlug, readonly CloudRunEnvVar[]>>>;
+  /**
+   * #1338 — the database host the converge moved the services onto (the
+   * Cloud SQL instance's DNS name, cloudsql-tls.ts).
+   */
+  readonly databaseHost?: string;
 }
 
 function planEnv(
@@ -322,6 +342,7 @@ function planEnv(
     {
       leaveUntouched: adjust.leaveUntouched ?? [],
       ...(adjust.extraEnv ? { extraEnv: adjust.extraEnv } : {}),
+      ...(adjust.databaseHost ? { databaseHost: adjust.databaseHost } : {}),
     },
   );
 }
@@ -333,11 +354,12 @@ function planEnv(
  */
 export function adjustingEnv(plan: AppRollPlan, adjust: EnvAdjustments): AppRollPlan {
   const extra = Object.values(adjust.extraEnv ?? {}).some((v) => (v?.length ?? 0) > 0);
-  if ((adjust.leaveUntouched?.length ?? 0) === 0 && !extra) return plan;
+  if ((adjust.leaveUntouched?.length ?? 0) === 0 && !extra && !adjust.databaseHost) return plan;
   const env = planEnv(plan.install, plan.services, adjust);
   if (!env.ok) return plan;
   return {
     ...plan,
+    databaseHostPending: env.databaseHostPending,
     services: plan.services.map((s) => ({
       ...s,
       envFlags: env.services[s.slug].flags,
@@ -370,7 +392,7 @@ export interface AppRollHooks {
   afterMigrations?(): Promise<
     | ({ readonly ok: true; readonly leaveUntouched: readonly string[] } & Pick<
         EnvAdjustments,
-        "extraEnv"
+        "extraEnv" | "databaseHost"
       >)
     | { readonly ok: false }
   >;
@@ -470,6 +492,17 @@ export async function executeAppRoll(
     r.warn("--skip-health-check set — the new revisions get Cloud Run's readiness check only.");
   }
 
+  // #1338 — the new images refuse a database URL without verify-full, and
+  // only a converge can move the services off the instance's IP. Without
+  // one (the in-cloud upgrader) the roll stops before it changes anything.
+  if (plan.databaseHostPending && !hooks.afterMigrations) {
+    r.error(
+      "The services still dial the Cloud SQL instance's IP address. This release connects with verify-full TLS, which needs the instance's DNS name: run the converge first (Settings → Updates installs it as a cloud-setup release, or `cms-provision upgrade` from a terminal).",
+    );
+    r.warn("No migrations ran and no traffic moved.");
+    return fail("migrations", false);
+  }
+
   // Migrations BEFORE any traffic moves, with the NEW admin image: the old
   // image does not carry the release's migration files (v0.9.2).
   const admin = plan.services.find((s) => s.slug === "admin") as RollPlan;
@@ -490,7 +523,14 @@ export async function executeAppRoll(
     plan = adjustingEnv(plan, {
       leaveUntouched: converged.leaveUntouched,
       ...(converged.extraEnv ? { extraEnv: converged.extraEnv } : {}),
+      ...(converged.databaseHost ? { databaseHost: converged.databaseHost } : {}),
     });
+  }
+  if (plan.databaseHostPending) {
+    r.error(
+      "The converge did not move the services onto the Cloud SQL instance's DNS name, so the new revisions could not reach the database with verify-full TLS (#1338). Nothing rolled; fix the database TLS step above and re-run.",
+    );
+    return fail("converge", true);
   }
 
   const rolled: RollPlan[] = [];

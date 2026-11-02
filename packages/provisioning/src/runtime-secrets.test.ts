@@ -451,7 +451,10 @@ describe("rotateRuntimeSecret", () => {
     const { run, lines } = fakeGcloud({
       "run services describe adm-svc": [
         service([
-          { name: "ADMIN_DATABASE_URL", value: "postgres://admin_role:pw@10.0.0.3:5432/cms_admin" },
+          {
+            name: "ADMIN_DATABASE_URL",
+            value: "postgres://admin_role:pw@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin",
+          },
         ]),
       ],
     });
@@ -534,17 +537,23 @@ describe("parseAdminConfig", () => {
   it("marks an admin still on an inline-password URL (jobs on its image need upgrade first)", () => {
     const cfg = parseAdminConfig(
       admin([
-        { name: "ADMIN_DATABASE_URL", value: "postgres://admin_role:pw@10.0.0.3:5432/cms_admin" },
+        {
+          name: "ADMIN_DATABASE_URL",
+          value: "postgres://admin_role:pw@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin",
+        },
       ]),
     );
-    expect(cfg?.databaseHost).toBe("10.0.0.3");
+    expect(cfg?.databaseHost).toBe("db1.p-label.europe-west1.sql-psa.goog");
     expect(cfg?.secretEnv).toBe(false);
   });
 
   it("marks an admin that reads the password from Secret Manager", () => {
     const cfg = parseAdminConfig(
       admin([
-        { name: "ADMIN_DATABASE_URL", value: "postgresql://admin_role@10.0.0.3:5432/cms_admin" },
+        {
+          name: "ADMIN_DATABASE_URL",
+          value: "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin",
+        },
         {
           name: "ADMIN_DATABASE_PASSWORD",
           valueFrom: {
@@ -559,9 +568,9 @@ describe("parseAdminConfig", () => {
 
 describe("migrationJobEnvArgs", () => {
   it("gives the job password-less URLs and the password as a secret reference", () => {
-    const args = migrationJobEnvArgs("10.20.0.3");
+    const args = migrationJobEnvArgs("db1.p-label.europe-west1.sql-psa.goog");
     expect(args).toEqual([
-      "--set-env-vars=ADMIN_DATABASE_URL=postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require,PUBLIC_ADMIN_DATABASE_URL=postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
+      "--set-env-vars=ADMIN_DATABASE_URL=postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem,PUBLIC_ADMIN_DATABASE_URL=postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       "--set-secrets=ADMIN_DATABASE_PASSWORD=caelo-production-postgres-password:latest,PUBLIC_ADMIN_DATABASE_PASSWORD=caelo-production-postgres-password:latest",
     ]);
   });

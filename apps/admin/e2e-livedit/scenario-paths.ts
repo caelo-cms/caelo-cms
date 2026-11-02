@@ -465,6 +465,10 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/healthcheck.ts`,
   // Install-time connection budget, read by provisioning (#1254).
   `${SHARED}/pool-budget.ts`,
+  // Database TLS rules every process applies at boot (#1338) and the
+  // gateway's staging stub for plugin calls (#1326): no AI path.
+  `${SHARED}/database-tls.ts`,
+  `${SHARED}/staging-plugin-stub.ts`,
   `${A}/security/**`,
   `${A}/ops/security/**`,
   `${A}/ops/step-up.ts`,

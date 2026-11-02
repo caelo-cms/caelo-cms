@@ -27,7 +27,11 @@
  * is to wire those env vars to AWS-native resources.
  */
 
-import { cloudFrontRedirectFunctionCode } from "@caelo-cms/shared";
+import {
+  AWS_RDS_CA_BUNDLE,
+  cloudFrontRedirectFunctionCode,
+  verifyFullQuery,
+} from "@caelo-cms/shared";
 import * as aws from "@pulumi/aws";
 import * as awsx from "@pulumi/awsx";
 import * as pulumi from "@pulumi/pulumi";
@@ -171,8 +175,14 @@ const dbParameters = new aws.rds.ParameterGroup(`${namePrefix}-pg-params`, {
   family: "postgres16",
   parameters: [
     { name: "max_connections", value: String(maxConnections), applyMethod: "pending-reboot" },
+    // #1338 — refuse plaintext; every client connects with verify-full.
+    { name: "rds.force_ssl", value: "1", applyMethod: "pending-reboot" },
   ],
 });
+
+// #1338 — verify-full against Amazon's RDS CA bundle (shipped in every image,
+// shared database-tls.ts); the RDS certificate names the endpoint host.
+const RDS_TLS = verifyFullQuery(AWS_RDS_CA_BUNDLE);
 
 const db = new aws.rds.Instance(`${namePrefix}-pg`, {
   engine: "postgres",
@@ -196,14 +206,12 @@ const db = new aws.rds.Instance(`${namePrefix}-pg`, {
 const adminDatabaseUrl = pulumi
   .all([db.address, db.port, postgresPassword])
   .apply(
-    ([host, port, pw]) =>
-      `postgresql://caelo_admin:${pw}@${host}:${port}/cms_admin?sslmode=require`,
+    ([host, port, pw]) => `postgresql://caelo_admin:${pw}@${host}:${port}/cms_admin?${RDS_TLS}`,
   );
 const publicDatabaseUrl = pulumi
   .all([db.address, db.port, publicRolePassword])
   .apply(
-    ([host, port, pw]) =>
-      `postgresql://public_role:${pw}@${host}:${port}/cms_public?sslmode=require`,
+    ([host, port, pw]) => `postgresql://public_role:${pw}@${host}:${port}/cms_public?${RDS_TLS}`,
   );
 
 // === 4. S3 buckets ===

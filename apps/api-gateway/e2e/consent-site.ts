@@ -364,6 +364,28 @@ const server = Bun.serve({
   },
 });
 
+// #1326 — the gateway takes plugin posts only from a live site origin the
+// admin published. This origin is only known now that the server listens:
+// make it the site's base URL (restore() puts the previous one back) and
+// publish it.
+try {
+  await asSystem(async (tx) => {
+    await tx`UPDATE site_defaults SET site_base_url = ${`http://127.0.0.1:${server.port}`} WHERE id = 1`;
+  });
+  const publisher = new DatabaseAdapter({
+    adminDatabaseUrl: ADMIN_URL,
+    publicDatabaseUrl: PUBLIC_ADMIN_URL,
+  });
+  await publishProjectionOnce(publisher, { comments: false }).finally(() => publisher.close());
+  invalidateGatewaySettings();
+} catch (e) {
+  server.stop(true);
+  await gatewayAdapter.close();
+  await restore();
+  rmSync(root, { recursive: true, force: true });
+  throw e;
+}
+
 let stopping = false;
 async function stop(): Promise<void> {
   if (stopping) return;

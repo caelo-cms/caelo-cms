@@ -9,6 +9,12 @@
  *   2. back up both databases (pg_dump, hard-fail) — the last moment the
  *      schema is guaranteed to match the running images;
  *   3. write the new digests into the Compose file, `docker compose pull`;
+ *   3b. #1338 — recreate Postgres when the Compose file changed it (TLS with
+ *      the install's own certificate, self-hosted-db-tls.ts: the new images
+ *      connect with verify-full only; the old containers keep connecting,
+ *      Postgres still accepts them) and apply public_role's limits as the
+ *      superuser (the migrations' role audit refuses public_role without
+ *      them, and the self-hosted admin_role cannot set them);
  *   4. run the migrations from the NEW admin image (`docker compose run`,
  *      the same `migrate.ts` entrypoint the GCP migrate job runs) while the
  *      old containers keep serving — migrations are expand-only, so the
@@ -92,6 +98,12 @@ export interface SelfHostedUpgradeDeps {
    * (`convergeSelfHostedRoles`); drops roles a release retired (#635).
    */
   readonly convergeRoles: () => Promise<ConvergeOutcome>;
+  /**
+   * #1338 — applies public_role's limits as the Postgres superuser
+   * (`applyPublicRoleLimits`), before the migrations whose role audit
+   * checks them.
+   */
+  readonly applyPublicRoleLimits: () => Promise<ConvergeOutcome>;
   /**
    * Re-writes the Caddyfile from the install's config + domains table and
    * reloads Caddy (#891): the edge headers (the SVG CSP, nosniff) live in
@@ -333,6 +345,34 @@ export async function upgradeSelfHosted(
   if (pull.exitCode !== 0) {
     restoreCompose(file, previousCompose);
     return fail("pull", `docker compose pull failed: ${tail(pull.stderr)}`, true);
+  }
+
+  // 3b. Postgres on this release's config (TLS, #1338). `up -d` recreates
+  // it only when its definition changed; `--wait` returns once it is
+  // healthy. The data volume stays; the old admin and gateway reconnect.
+  log.step("Bringing Postgres onto this release's configuration (TLS)");
+  const pg = await runner.run(compose(caeloDir, "up", "-d", "--no-deps", "--wait", "postgres"));
+  if (pg.exitCode !== 0) {
+    restoreCompose(file, previousCompose);
+    const back = await runner.run(compose(caeloDir, "up", "-d", "--no-deps", "--wait", "postgres"));
+    return fail(
+      "pull",
+      `Postgres did not come up on the new configuration: ${tail(pg.stderr)}\n${
+        back.exitCode === 0
+          ? "Postgres runs on the previous configuration again; nothing else changed."
+          : `Postgres did not come back on the previous configuration either: ${tail(back.stderr)}. Check \`docker compose ps\` / \`docker compose logs postgres\`.`
+      }`,
+      back.exitCode === 0,
+    );
+  }
+  const limits = await deps.applyPublicRoleLimits();
+  if (!limits.ok) {
+    restoreCompose(file, previousCompose);
+    return fail(
+      "roles",
+      `Could not apply public_role's connection and statement limits: ${limits.error}\nThe previous release keeps running; no migration ran. Database backup: ${backup.dir}`,
+      true,
+    );
   }
 
   // 4. Migrations from the new admin image; the old containers keep serving.
