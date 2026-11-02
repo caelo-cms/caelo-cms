@@ -170,9 +170,9 @@ describe("enableStagingDomain (#650)", () => {
     },
   });
 
-  it("opens the gateway's ingress, maps staging.<domain> to the gateway and prints the record", async () => {
+  it("#1328 — maps staging.<domain> to the data gateway (it runs the gate), opening its ingress", async () => {
     const { run, calls } = fakeGcloud({
-      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services list": [ok("caelo-production-data-gateway\n")],
       "run services describe": [ok("internal-and-cloud-load-balancing\n")],
       "beta run domain-mappings describe": [fail("NOT_FOUND"), ok(STAGING_MAPPING)],
       "domains list-user-verified": [ok("example.com\n")],
@@ -189,21 +189,22 @@ describe("enableStagingDomain (#650)", () => {
       "run",
       "services",
       "update",
-      "caelo-production-gateway-xyz",
+      "caelo-production-data-gateway",
       "--region=europe-west1",
       "--project=p",
       "--ingress=all",
       "--quiet",
     ]);
     expect(calls.find((c) => c.includes("create"))).toContain(
-      "--service=caelo-production-gateway-xyz",
+      "--service=caelo-production-data-gateway",
     );
-    expect(calls[0]).toContain("--filter=metadata.name~^caelo-production-gateway");
+    // Never the old gateway service, which is the MCP-Auth-Proxy now.
+    expect(calls[0]).toContain("--filter=metadata.name~^caelo-production-data-gateway");
   });
 
   it("is idempotent: ingress already open and mapping present ⇒ no update, no create", async () => {
     const { run, calls } = fakeGcloud({
-      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services list": [ok("caelo-production-data-gateway\n")],
       "run services describe": [ok("all\n")],
       "beta run domain-mappings describe": [ok(STAGING_MAPPING)],
     });
@@ -215,7 +216,7 @@ describe("enableStagingDomain (#650)", () => {
 
   it("maps a host the operator chose on another domain, verifying that host itself", async () => {
     const { run, calls } = fakeGcloud({
-      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services list": [ok("caelo-production-data-gateway\n")],
       "run services describe": [ok("all\n")],
       "beta run domain-mappings describe": [fail("NOT_FOUND")],
       "domains list-user-verified": [ok("example.com\n")],
@@ -240,7 +241,7 @@ describe("enableStagingDomain (#650)", () => {
   it("installs the missing beta component before its first beta command", async () => {
     const { run, calls } = fakeGcloud({
       "components list": [ok("")],
-      "run services list": [ok("caelo-production-gateway-xyz\n")],
+      "run services list": [ok("caelo-production-data-gateway\n")],
       "run services describe": [ok("all\n")],
       "beta run domain-mappings describe": [ok(STAGING_MAPPING)],
     });

@@ -78,6 +78,17 @@ export const LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE = 1;
  */
 export const LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE = 1;
 
+/**
+ * #1338 — public_role's `CONNECTION LIMIT` (cms_admin migration 0500,
+ * bootstrap.sh; the role audit's `PUBLIC_ROLE_LIMITS` pins the same value):
+ * the gateway's share at ten instances, `10 × (GATEWAY_POOL_MAX +
+ * LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE)`. The database refuses the
+ * gateway's connections beyond it, so {@link computePoolBudget} refuses a
+ * scale-out that would need more instead of letting instances fail to
+ * connect under load.
+ */
+export const GATEWAY_ROLE_CONNECTION_LIMIT = 30;
+
 /** What the budget is computed from: the server and the scale-out limits. */
 export interface PoolBudgetInput {
   /** The server's `max_connections`, as provisioning sets it. */
@@ -173,6 +184,14 @@ export function computePoolBudget(input: PoolBudgetInput): PoolBudget {
   positiveInteger(input.maintenanceReserve, "maintenanceReserve", 0);
   positiveInteger(input.migrationsReserve, "migrationsReserve", 0);
   positiveInteger(input.jobsReserve, "jobsReserve", 0);
+  const gatewayConnections =
+    input.gatewayMaxInstances * (GATEWAY_POOL_MAX + LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE);
+  if (gatewayConnections > GATEWAY_ROLE_CONNECTION_LIMIT) {
+    throw new Error(
+      `pool budget: ${input.gatewayMaxInstances} gateway instances need ${gatewayConnections} connections, but the database lets the gateway's login (public_role) hold at most ${GATEWAY_ROLE_CONNECTION_LIMIT} (CONNECTION LIMIT, #1338). ` +
+        `Lower gatewayMaxInstances to at most ${Math.floor(GATEWAY_ROLE_CONNECTION_LIMIT / (GATEWAY_POOL_MAX + LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE))}.`,
+    );
+  }
 
   const reserves: PoolBudgetReserve[] = [
     { name: "maintenance", connections: input.maintenanceReserve },

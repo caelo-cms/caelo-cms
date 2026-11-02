@@ -3,9 +3,9 @@
 /**
  * P14 — production docker-compose.yml generator.
  *
- * Emits the production stack: Postgres + Caddy + the two Caelo services
- * (admin, gateway). Idempotent: same input →
- * byte-identical output. The CLI's `init` / `up` / `upgrade` sub-commands
+ * Emits the production stack: Postgres + Caddy + the Caelo services
+ * (admin, gateway and — #1328 — the MCP-Auth-Proxy). Idempotent: same
+ * input → byte-identical output. The CLI's `init` / `up` / `upgrade` sub-commands
  * write this to `.caelo/docker-compose.yml`.
  *
  * #696 — the admin and gateway run the PREBUILT, cosign-verified release
@@ -27,23 +27,37 @@
  * every fresh `docker compose up` fail.
  */
 
-import { CADDY_REDIRECTS_FILE } from "@caelo-cms/shared";
+import { CADDY_REDIRECTS_FILE, SELF_HOSTED_CA_FILE, verifyFullQuery } from "@caelo-cms/shared";
 import { caddyRedirectReloadCommand } from "./caddy-redirects.js";
 import { DEFAULT_MAX_CONNECTIONS, stackPoolBudget } from "./pool-budget-stack.js";
 import {
+  SELF_HOSTED_DB_HOST,
+  SELF_HOSTED_TLS_DIR,
+  SELF_HOSTED_TLS_FILES,
+} from "./self-hosted-db-tls.js";
+import {
   ADMIN_MEMORY_DEFAULT,
   GATEWAY_TRUSTED_PROXY_HOPS,
+  MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS,
   memoryQuantityMiB,
   publicSiteUrl,
+  REMOTE_MCP_MODE,
+  REMOTE_MCP_MODE_ENV,
   TRUSTED_PROXY_HOPS_ENV,
 } from "./stack-contract.js";
 import { ghcrRepository, isImageDigest, type ReleaseService } from "./upgrade/release-images.js";
 
-/** The admin + gateway release images, each `ghcr.io/caelo-cms/<svc>@sha256:…`. */
+/** The release images, each `ghcr.io/caelo-cms/<svc>@sha256:…`. */
 export interface ReleaseImages {
   readonly mode: "release";
   readonly admin: string;
   readonly gateway: string;
+  /**
+   * #1328 — the MCP-Auth-Proxy. Absent only for a release recorded before
+   * the proxy shipped (a rollback target in release.json): its Compose file
+   * then has no proxy service, exactly as that release ran.
+   */
+  readonly "mcp-auth-proxy"?: string;
 }
 
 /**
@@ -102,11 +116,20 @@ export const MEDIA_ROOT = "/data/media";
 /** The gateway's HTTP port inside the Compose network. */
 export const COMPOSE_GATEWAY_PORT = 8090;
 
+/** #1328 — the MCP-Auth-Proxy's HTTP port inside the Compose network. */
+export const COMPOSE_MCP_AUTH_PROXY_PORT = 8095;
+
+/** #1328 — the Compose service name of the MCP-Auth-Proxy. */
+export const COMPOSE_MCP_AUTH_PROXY_SERVICE = "caelo-mcp-auth-proxy";
+
 /**
- * The Compose services that run Caelo code — what `restore` stops while it
- * rewrites the databases, and what the health checks probe. Workers run
- * inside the admin (CLAUDE.md §11.B Tier 5); there is no orchestrator or
- * runner service.
+ * The Compose services that touch the databases — what `backup` and
+ * `restore` stop while they read or rewrite them. Workers run inside the
+ * admin (CLAUDE.md §11.B Tier 5); there is no orchestrator or runner
+ * service. The MCP-Auth-Proxy (#1328) is deliberately not here: it holds no
+ * database login, so it keeps running, and a release from before it has no
+ * such service for `up` to start. Its health is checked wherever the
+ * install starts (self-hosted-start.ts) or rolls (self-hosted-upgrade.ts).
  */
 export const COMPOSE_APP_SERVICES = ["caelo-admin", "caelo-gateway"] as const;
 
@@ -117,6 +140,7 @@ export const COMPOSE_APP_SERVICES = ["caelo-admin", "caelo-gateway"] as const;
  */
 export const COMPOSE_ADMIN_UPSTREAM = `caelo-admin:${COMPOSE_ADMIN_PORT}`;
 export const COMPOSE_GATEWAY_UPSTREAM = `caelo-gateway:${COMPOSE_GATEWAY_PORT}`;
+export const COMPOSE_MCP_AUTH_PROXY_UPSTREAM = `${COMPOSE_MCP_AUTH_PROXY_SERVICE}:${COMPOSE_MCP_AUTH_PROXY_PORT}`;
 
 /**
  * The Caddy image, pinned to the release the generated Caddyfile is
@@ -213,6 +237,15 @@ export interface ComposeSpec {
    * the gateway never gets it.
    */
   readonly internalSecret: string;
+  /**
+   * #1338 — SHA-256 (hex) of the database server certificate the Postgres
+   * service mounts (`.caelo/postgres-tls/server.crt`). It is part of the
+   * service's environment so a renewed certificate changes the service's
+   * definition and `docker compose up -d` recreates Postgres: a bind-mounted
+   * file whose content changes does not, and Postgres would keep serving
+   * the old certificate until verify-full clients refuse it.
+   */
+  readonly dbTlsServerCertSha256: string;
   readonly anthropicApiKey?: string;
   readonly resendApiKey?: string;
   readonly diskSize: string;
@@ -223,7 +256,7 @@ export interface ComposeSpec {
    * busy host never OOM-kills the admin at the limit.
    */
   readonly adminMemory?: string;
-  /** Which admin + gateway images run (see {@link ComposeImages}). */
+  /** Which Caelo images run (see {@link ComposeImages}). */
   readonly images: ComposeImages;
   /**
    * The host ports Caddy listens on (`80` / `443` for a public install —
@@ -274,6 +307,11 @@ export function generateDockerCompose(spec: ComposeSpec): string {
   if (spec.internalSecret.length < 32) {
     throw new Error("internalSecret is shorter than 32 characters (.caelo/internal-secret.json)");
   }
+  if (!/^[0-9a-f]{64}$/.test(spec.dbTlsServerCertSha256)) {
+    throw new Error(
+      "dbTlsServerCertSha256 is not a SHA-256 hex digest of .caelo/postgres-tls/server.crt",
+    );
+  }
   return `# SPDX-License-Identifier: MPL-2.0
 # Generated by cms-provision — do not edit; re-run \`bunx cms-provision up\`.
 # Domain: ${spec.domain}
@@ -281,10 +319,16 @@ export function generateDockerCompose(spec: ComposeSpec): string {
 name: ${spec.project}
 
 services:
-  postgres:
+  ${SELF_HOSTED_DB_HOST}:
     image: postgres:16-alpine
-    # The pool budget (COMPOSE_POOL_BUDGET) is computed from this number.
-    command: ["postgres", "-c", "max_connections=${DEFAULT_MAX_CONNECTIONS["self-hosted"]}"]
+    # #1338 — TLS with the install's own certificate for the host name
+    # \`${SELF_HOSTED_DB_HOST}\` (self-hosted-db-tls.ts); every client connects with
+    # verify-full. Postgres refuses a key file it does not own, and a bind
+    # mount keeps the host's owner, so the entrypoint copies the pair to a
+    # container-local path owned by postgres first.
+    entrypoint: ${POSTGRES_TLS_ENTRYPOINT}
+    # The pool budget (COMPOSE_POOL_BUDGET) is computed from max_connections.
+    command: ["postgres", "-c", "max_connections=${DEFAULT_MAX_CONNECTIONS["self-hosted"]}", "-c", "ssl=on", "-c", "ssl_cert_file=${POSTGRES_TLS_RUNTIME_DIR}/server.crt", "-c", "ssl_key_file=${POSTGRES_TLS_RUNTIME_DIR}/server.key", "-c", "ssl_min_protocol_version=TLSv1.2"]
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: "${escapeYaml(spec.postgresPassword)}"
@@ -292,9 +336,13 @@ services:
       POSTGRES_DB: caelo
       ADMIN_ROLE_PASSWORD: "${escapeYaml(spec.rolePasswords.admin)}"
       PUBLIC_ROLE_PASSWORD: "${escapeYaml(spec.rolePasswords.public)}"
+      # Recreates Postgres when its certificate is renewed (see the spec).
+      CAELO_DB_TLS_SERVER_CERT_SHA256: "${spec.dbTlsServerCertSha256}"
 ${postgresAgent(spec.agent)}    volumes:
       - caelo-pg:/var/lib/postgresql/data
       - ./bootstrap.sh:/docker-entrypoint-initdb.d/00_bootstrap.sh:ro
+      - ./${SELF_HOSTED_TLS_DIR}/${SELF_HOSTED_TLS_FILES.serverCert}:${POSTGRES_TLS_MOUNT_DIR}/server.crt:ro
+      - ./${SELF_HOSTED_TLS_DIR}/${SELF_HOSTED_TLS_FILES.serverKey}:${POSTGRES_TLS_MOUNT_DIR}/server.key:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U caelo"]
       interval: 10s
@@ -317,7 +365,7 @@ ${postgresAgent(spec.agent)}    volumes:
 ${adminService(spec, adminMemoryMiB, env)}
 
 ${gatewayService(spec)}
-
+${mcpAuthProxyService(spec.images)}
 volumes:
   caelo-pg:
   caelo-caddy-data:
@@ -369,10 +417,11 @@ function serviceRuntime(
       ...volumes(["../..:/app", ...mounts]),
     ].join("\n");
   }
-  const digest = ghcrImageDigest(service, images[service]);
+  const ref = images[service] ?? "";
+  const digest = ghcrImageDigest(service, ref);
   if (!digest) {
     throw new Error(
-      `${service} image ${JSON.stringify(images[service])} is not ${ghcrRepository(service)}@sha256:<digest>`,
+      `${service} image ${JSON.stringify(ref)} is not ${ghcrRepository(service)}@sha256:<digest>`,
     );
   }
   // The image's own CMD starts the service; no source is mounted.
@@ -398,6 +447,7 @@ ${serviceRuntime(
     `./${BOOTSTRAP_DIR}:/app/.caelo`,
     `./output:${SITE_OUTPUT_ROOT}`,
     `./${MEDIA_DIR}:${MEDIA_ROOT}`,
+    DATABASE_CA_MOUNT,
   ],
 )}
     restart: unless-stopped
@@ -422,7 +472,7 @@ ${env("RESEND_API_KEY", spec.resendApiKey)}`;
 
 function gatewayService(spec: ComposeSpec): string {
   return `  caelo-gateway:
-${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts")}
+${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts", [DATABASE_CA_MOUNT])}
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
@@ -434,18 +484,69 @@ ${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts
       # Caddy is the one proxy in front (client-ip.ts in the gateway).
       ${TRUSTED_PROXY_HOPS_ENV}: "${GATEWAY_TRUSTED_PROXY_HOPS["self-hosted"]}"
 ${poolEnvLines("gateway")}
-      # #806 — no remote MCP here: it rides Google IAP, which this install
-      # does not have. CAELO_ADMIN_URL / CAELO_MCP_PUBLIC_URL /
-      # CAELO_OPERATOR_OAUTH_CLIENT_FILE stay unset, so the gateway's /api/mcp/*
-      # answers 503 remote_mcp_not_configured and Settings → MCP says
-      # "not available on this install".
       NODE_ENV: production`;
 }
 
-/** A compose-network database URL, password URL-encoded and YAML-escaped. */
-function dbUrl(role: string, password: string, database: string): string {
-  return escapeYaml(`postgres://${role}:${encodeURIComponent(password)}@postgres:5432/${database}`);
+/**
+ * #1328 — the MCP-Auth-Proxy: remote MCP's sign-in broker, its own
+ * container so it never shares a process with visitor handlers. Remote MCP
+ * needs the admin behind Google IAP, which a Compose install does not have,
+ * so it runs with `CAELO_REMOTE_MCP=unavailable` and answers every request
+ * but its health check with one fixed 404 (E14 a of #763: the service
+ * exists on every provider, its attack surface one branch). Caddy serves it
+ * on its own host (`mcp.<domain>`, caddy.ts), never on the site's origin.
+ *
+ * It gets no database URL, no secret and no mount: there is nothing it
+ * could read. The container is locked down on top — read-only root
+ * filesystem, every capability dropped, no privilege escalation — because
+ * it is the Caelo service that holds operators' Google tokens wherever
+ * remote MCP runs. Empty for a release recorded before the proxy shipped
+ * ({@link ReleaseImages}).
+ */
+function mcpAuthProxyService(images: ComposeImages): string {
+  if (images.mode === "release" && images["mcp-auth-proxy"] === undefined) return "";
+  return `
+  ${COMPOSE_MCP_AUTH_PROXY_SERVICE}:
+${serviceRuntime(images, "mcp-auth-proxy", "bun run apps/mcp-auth-proxy/src/server.ts")}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CAELO_PROVIDER: "self-hosted"
+      ${REMOTE_MCP_MODE_ENV}: "${REMOTE_MCP_MODE["self-hosted"]}"
+      MCP_AUTH_PROXY_PORT: "${COMPOSE_MCP_AUTH_PROXY_PORT}"
+      # Caddy is the one proxy in front (@caelo-cms/shared client-address.ts).
+      ${TRUSTED_PROXY_HOPS_ENV}: "${MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS["self-hosted"]}"
+      NODE_ENV: production
+`;
 }
+
+/**
+ * A compose-network database URL, password URL-encoded and YAML-escaped.
+ * #1338 — verify-full against the install's own CA (self-hosted-db-tls.ts),
+ * mounted at shared `SELF_HOSTED_CA_FILE` ({@link DATABASE_CA_MOUNT}).
+ */
+function dbUrl(role: string, password: string, database: string): string {
+  return escapeYaml(
+    `postgres://${role}:${encodeURIComponent(password)}@${SELF_HOSTED_DB_HOST}:5432/${database}?${verifyFullQuery(SELF_HOSTED_CA_FILE)}`,
+  );
+}
+
+/** Where the server certificate + key are bind-mounted into Postgres (host-owned). */
+const POSTGRES_TLS_MOUNT_DIR = "/caelo-tls";
+/** Where the entrypoint copies them, owned by postgres (Postgres refuses others' keys). */
+const POSTGRES_TLS_RUNTIME_DIR = "/var/lib/postgresql/caelo-tls";
+/** The Postgres entrypoint: copy the TLS pair into place, then the image's own entrypoint. */
+const POSTGRES_TLS_ENTRYPOINT = JSON.stringify([
+  "/bin/sh",
+  "-c",
+  `install -d -o postgres -g postgres -m 0700 ${POSTGRES_TLS_RUNTIME_DIR} && install -o postgres -g postgres -m 0644 ${POSTGRES_TLS_MOUNT_DIR}/server.crt ${POSTGRES_TLS_RUNTIME_DIR}/server.crt && install -o postgres -g postgres -m 0600 ${POSTGRES_TLS_MOUNT_DIR}/server.key ${POSTGRES_TLS_RUNTIME_DIR}/server.key && exec docker-entrypoint.sh "$$@"`,
+  "--",
+]);
+/** The install's database CA, read-only, where every verify-full URL names it. */
+const DATABASE_CA_MOUNT = `./${SELF_HOSTED_TLS_DIR}/${SELF_HOSTED_TLS_FILES.caCert}:${SELF_HOSTED_CA_FILE}:ro`;
 
 function escapeYaml(s: string): string {
   // Conservative escape for double-quoted YAML strings.

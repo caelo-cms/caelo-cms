@@ -11,6 +11,8 @@
  * Per-vhost shape:
  *   <hostname> {
  *     # admin   → reverse_proxy <adminUpstream>
+ *     # mcp     → reverse_proxy <mcpAuthProxyUpstream> (#1328: the
+ *     #           MCP-Auth-Proxy on its own host, never the site's origin)
  *     # public  → /api/* → <gatewayUpstream>; everything else is the
  *     #           static site (try_files + file_server, 404 → /404.html)
  *   }
@@ -68,7 +70,12 @@ import {
 
 export interface CaddyDomainSpec {
   readonly hostname: string;
-  readonly kind: "admin" | "public";
+  /**
+   * `mcp` (#1328) is the MCP-Auth-Proxy's own host: remote MCP's sign-in
+   * pages and its forwarder must never share an origin with the site, whose
+   * module JS could otherwise read them same-origin or toss their cookies.
+   */
+  readonly kind: "admin" | "public" | "mcp";
   readonly env: "production" | "staging";
 }
 
@@ -89,6 +96,8 @@ export interface CaddyfileSpec {
   readonly adminUpstream: string;
   /** `host:port` of the API gateway as Caddy reaches it (Compose: `caelo-gateway:8090`). */
   readonly gatewayUpstream: string;
+  /** `host:port` of the MCP-Auth-Proxy as Caddy reaches it (Compose: `caelo-mcp-auth-proxy:8095`). */
+  readonly mcpAuthProxyUpstream: string;
   readonly domains: ReadonlyArray<CaddyDomainSpec>;
 }
 
@@ -97,12 +106,25 @@ export function selfHostedAdminHost(domain: string): string {
   return `admin.${domain}`;
 }
 
+/** #1328 — the host the MCP-Auth-Proxy of a self-hosted install answers on. */
+export function selfHostedMcpHost(domain: string): string {
+  return `mcp.${domain}`;
+}
+
 /**
  * The vhosts every self-hosted install serves before an Owner adds domains
  * in the admin: the admin on `admin.<domain>`, the live site on `<domain>`,
- * the staging site on its own host. The admin needs its own host — it
- * routes from `/` (`/setup`, `/login`, …), so it cannot share one with the
- * public site, and Caddy refuses two site blocks for the same address.
+ * the staging site on its own host. The admin needs its own host — it routes
+ * from `/` (`/setup`, `/login`, …), so it cannot share one with the public
+ * site, and Caddy refuses two site blocks for the same address.
+ *
+ * #1328 — the MCP-Auth-Proxy's vhost (`mcp.<domain>`, kind `mcp`) is not
+ * seeded: remote MCP needs an identity proxy in front of the admin (§11.B),
+ * which a self-hosted install does not have yet, so the proxy runs
+ * unexposed on the Compose network (E14 a: provisioned, fixed 404) — the
+ * same honest refusal as on aws and azure. Seeding it would make Caddy
+ * fetch and retry an ACME certificate for a host nobody has a DNS record
+ * for. The vhost comes with remote MCP on self-hosted.
  */
 export function selfHostedSeedDomains(domain: string, stagingDomain: string): CaddyDomainSpec[] {
   return [
@@ -154,6 +176,7 @@ export function generateCaddyfile(spec: CaddyfileSpec): string {
   assertSafeCaddyToken("stagingSiteRoot", spec.stagingSiteRoot, "token");
   assertSafeCaddyToken("adminUpstream", spec.adminUpstream, "token");
   assertSafeCaddyToken("gatewayUpstream", spec.gatewayUpstream, "token");
+  assertSafeCaddyToken("mcpAuthProxyUpstream", spec.mcpAuthProxyUpstream, "token");
 
   const hostnames = new Set<string>();
   for (const d of spec.domains) {
@@ -199,6 +222,15 @@ function vhost(d: CaddyDomainSpec, spec: CaddyfileSpec): string {
   if (d.kind === "admin") {
     return `${d.hostname} {${noindex}
   reverse_proxy ${spec.adminUpstream}
+}
+`;
+  }
+  if (d.kind === "mcp") {
+    // Everything on this host goes to the proxy: it answers its own 404s.
+    return `${d.hostname} {
+  header X-Robots-Tag "noindex"
+  header X-Content-Type-Options "${NOSNIFF}"
+  reverse_proxy ${spec.mcpAuthProxyUpstream}
 }
 `;
   }

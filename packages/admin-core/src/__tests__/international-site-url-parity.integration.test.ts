@@ -287,6 +287,73 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
     }, 60_000);
   }
 
+  it("#650 — a Stage on its own staging host gets staging URLs from the plugin too", async () => {
+    // searchVIU: the Stage's canonical was on staging.<domain>, its hreflang
+    // and language switcher on the live domain, because the plugin's
+    // pages.resolve_public_urls read the stored base URL.
+    const STAGING = "https://staging.example.com";
+    const style = "directory" as const;
+    await setPublishStyle(style);
+    const onStaging = (url: string): string => url.replace(BASE, STAGING);
+    const expected = Object.fromEntries(
+      Object.entries(EXPECTED[style]).map(([code, url]) => [code, onStaging(url)]),
+    );
+    // The fr locale's own host stays: a staging host per language domain is
+    // the separate multi-domain question.
+    expect(expected.fr).toBe(`https://${FR_HOST}/t590-prix/`);
+
+    const built = pages.map((p) => ({
+      pageId: p.id,
+      pageSlug: p.slug,
+      pageTitle: p.slug,
+      html: "<!doctype html><html><head><title>x</title></head><body></body></html>",
+    }));
+    await adapter.withAdminTransaction(SYS_CTX, async (tx) => {
+      await runSeoPass({
+        tx,
+        plugins: localBuildPluginServices,
+        buildDir,
+        mediaRoot: buildDir,
+        pages: built,
+        settings: {
+          siteBaseUrl: STAGING,
+          sitemapEnabled: true,
+          siteLanguage: "en",
+          organization: {},
+        },
+        pageUrlStyle: style,
+        notFoundPageId: null,
+      });
+    });
+    const allAlternates = { ...expected, "x-default": expected.en };
+    for (const p of pages) {
+      const html = built.find((b) => b.pageSlug === p.slug)?.html ?? "";
+      expect(canonicalOf(html)).toBe(expected[p.locale] as string);
+      expect(hreflangsOf(html)).toEqual(allAlternates);
+    }
+
+    const urlContext = { siteBaseUrl: STAGING, pageUrlStyle: style };
+    const lists = await localBuildPluginServices.resolveListSources(
+      pages.map((p) => p.id),
+      urlContext,
+    );
+    for (const p of pages) {
+      const items = lists.get(p.id)?.language_links ?? [];
+      expect(
+        Object.fromEntries(
+          items.map((i) => [i.values.locale, (i.values.href as { href: string }).href]),
+        ),
+      ).toEqual(expected);
+    }
+    const selector = await localBuildPluginServices.staticRender(
+      "international-site",
+      pages[1]?.id ?? "",
+      urlContext,
+    );
+    for (const href of Object.values(expected)) expect(selector).toContain(`<a href="${href}"`);
+    expect(selector).not.toContain(`href="${BASE}/`);
+  }, 60_000);
+
   it("pages.resolve_public_urls refuses AI actors and stale ids with a next step", async () => {
     const ai = await execute(
       registry,

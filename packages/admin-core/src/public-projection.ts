@@ -96,7 +96,11 @@ export function drainProjectionOnce(
 }
 
 export interface PublicProjectionPublisher {
-  /** Publish every section (not the full comment set; the outbox carries comment changes). */
+  /**
+   * Publish every section (not the full comment set; the outbox carries
+   * comment changes). Until one succeeds, the poll retries it instead of a
+   * plain drain, so a failed boot publish converges without a restart.
+   */
   publishAll(): Promise<PublishReport>;
   /** Republish whatever the outbox marks stale. */
   drain(): Promise<PublishReport>;
@@ -106,6 +110,14 @@ export interface PublicProjectionPublisher {
 /**
  * Start draining the outbox on an interval. The caller runs
  * {@link PublicProjectionPublisher.publishAll} once its plugin host booted.
+ *
+ * Per process, publishes run one at a time, and drains coalesce: a drain
+ * asked for while another drain is still WAITING to start joins that one —
+ * it starts after the asker's commit, so it publishes the asker's change
+ * too. Only a drain that already started (and may have read the outbox
+ * before that commit) gets a new one queued behind it. So a burst of
+ * writes costs at most two drains, not one per write; across processes
+ * the advisory lock serialises (`withProjectionLock`).
  */
 export function startPublicProjectionPublisher(opts: {
   readonly adapter: DatabaseAdapter;
@@ -114,28 +126,50 @@ export function startPublicProjectionPublisher(opts: {
 }): PublicProjectionPublisher {
   const dbs = projectionDatabases(opts.adapter);
   const declarations = opts.declarations ?? loadedVisitorProjections;
-  let running: Promise<PublishReport> | null = null;
-  // One publish at a time per process; the advisory lock serialises
-  // processes (several admin instances, the migration job).
-  const serial = (fn: () => Promise<PublishReport>): Promise<PublishReport> => {
-    const next = (running ?? Promise.resolve(null)).then(fn, fn);
-    running = next.finally(() => {
-      if (running === next) running = null;
-    }) as Promise<PublishReport>;
+  let tail: Promise<unknown> = Promise.resolve();
+  let waitingDrain: Promise<PublishReport> | null = null;
+  let waitingFull: Promise<PublishReport> | null = null;
+  let fullPublishDue = false;
+  const enqueue = (fn: () => Promise<PublishReport>): Promise<PublishReport> => {
+    const next = tail.then(fn, fn);
+    tail = next.catch(() => undefined);
     return next;
   };
   const publisher: PublicProjectionPublisher = {
-    publishAll: () =>
-      serial(async () => {
-        const report = await publishPublicProjection(dbs, declarations(), { comments: false });
+    publishAll: () => {
+      // Same coalescing as drain: while the lock or the database is down the
+      // timer retries a failed full publish every tick, and each tick must
+      // join the one already queued instead of adding one more to replay.
+      if (waitingFull !== null) return waitingFull;
+      const full = enqueue(async () => {
+        waitingFull = null;
+        let report: PublishReport;
+        try {
+          report = await publishPublicProjection(dbs, declarations(), { comments: false });
+        } catch (e) {
+          fullPublishDue = true;
+          throw e;
+        }
+        fullPublishDue = false;
         for (const slug of report.pendingPlugins) {
           console.error(
             `[public-projection] ${slug}: declared tables are not provisioned; its visitor operations will answer "not published" until the plugin loads`,
           );
         }
         return report;
-      }),
-    drain: () => serial(() => drainPublicProjection(dbs, declarations())),
+      });
+      waitingFull = full;
+      return full;
+    },
+    drain: () => {
+      if (waitingDrain !== null) return waitingDrain;
+      const drain = enqueue(() => {
+        waitingDrain = null;
+        return drainPublicProjection(dbs, declarations());
+      });
+      waitingDrain = drain;
+      return drain;
+    },
     stop: () => {
       clearInterval(timer);
       opts.adapter.setProjectionPublisher(null);
@@ -145,9 +179,10 @@ export function startPublicProjectionPublisher(opts: {
   // after the caller's commit and therefore sees that commit's outbox rows.
   opts.adapter.setProjectionPublisher(() => publisher.drain());
   const timer = setInterval(() => {
-    publisher.drain().catch((e: unknown) => {
+    const full = fullPublishDue;
+    (full ? publisher.publishAll() : publisher.drain()).catch((e: unknown) => {
       console.error(
-        `[public-projection] drain failed: ${e instanceof Error ? e.message : String(e)}`,
+        `[public-projection] ${full ? "full publish" : "drain"} failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     });
   }, opts.intervalMs ?? DRAIN_INTERVAL_MS);

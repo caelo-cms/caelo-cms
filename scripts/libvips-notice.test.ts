@@ -163,7 +163,10 @@ describe("repo licence texts", () => {
 });
 
 describe("images that ship sharp generate the notice", () => {
-  it.each(["apps/admin/Dockerfile", "apps/api-gateway/Dockerfile"])("%s", (path) => {
+  // The gateway image (#1327) ships no sharp: its allowlist
+  // (apps/api-gateway/image.ts, checked by scripts/service-image.test.ts)
+  // keeps @img/sharp-libvips-* out, so it has no LGPL library to give notice of.
+  it.each(["apps/admin/Dockerfile"])("%s", (path) => {
     const dockerfile = readFileSync(resolve(REPO_ROOT, path), "utf8");
     const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
     expect(runtime).toContain("COPY scripts/libvips-notice.ts /tmp/notice/libvips-notice.ts");

@@ -54,6 +54,7 @@ import {
   auditServiceAccountEmail,
   captureServiceAccountEmail,
   gatewayServiceAccountEmail,
+  mcpAuthProxyServiceAccountEmail,
   mcpIapServiceAccountEmail,
   runServiceAccountEmail,
   upgraderJobName,
@@ -184,6 +185,11 @@ export function upgraderAccessChecks(target: {
     {
       need: "run the gateway as its service account",
       resource: sa(gatewayServiceAccountEmail(projectId, env)),
+      permissions: ["iam.serviceAccounts.actAs"],
+    },
+    {
+      need: "run the MCP-Auth-Proxy as its service account",
+      resource: sa(mcpAuthProxyServiceAccountEmail(projectId, env)),
       permissions: ["iam.serviceAccounts.actAs"],
     },
     {

@@ -225,7 +225,7 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────────
   # Signed release manifest (epic #696). One JSON document naming the
-  # exact admin/gateway/ops digests plus what an upgrader must know
+  # exact admin/gateway/ops/mcp-auth-proxy digests plus what an upgrader must know
   # before installing unattended: minFromVersion, infraContractVersion,
   # contract migrations, security flag + advisories. The declaration
   # half comes from release-meta.json (written by scripts/release.ts at
@@ -285,7 +285,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Install oras
-        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -299,7 +299,7 @@ jobs:
           set -euo pipefail
           echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           flags=""
-          for svc in admin gateway ops; do
+          for svc in admin gateway ops mcp-auth-proxy; do
             digest="$(oras resolve "ghcr.io/caelo-cms/${svc}:${V}")"
             # #1025: Cloud Run records the linux/amd64 platform manifest it
             # resolved, not the index a deploy pins, so the manifest signs
@@ -569,7 +569,7 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          for service in admin gateway ops; do
+          for service in admin gateway ops mcp-auth-proxy; do
             IMAGE="ghcr.io/caelo-cms/${service}:${VERSION}"
             echo "Pulling ${IMAGE}..."
             docker pull "${IMAGE}" || { echo "::error::failed to pull ${IMAGE}"; exit 1; }

@@ -43,6 +43,7 @@ import {
   invalidateGatewaySettings,
   setGatewayAdapter,
 } from "./server.js";
+import { registerTestLiveOrigin, TEST_LIVE_ORIGIN } from "./test-support.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -207,6 +208,7 @@ beforeAll(async () => {
     }[];
     return Object.fromEntries(rows.map((r) => [r.slug, r.id]));
   });
+  await registerTestLiveOrigin(ADMIN_URL as string);
   await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
   resetPluginHost();
 
@@ -285,11 +287,15 @@ describe("public_role op events are tied to published plugins (#856)", () => {
     expect(await gatewayInsert(pluginIds.ratings as string, "ratings.submit")).toBe("ok");
   });
 
-  it("the real gateway dispatch still records a shipped plugin's event", async () => {
+  it("the real gateway dispatch writes no event for a plugin without bakedData (#1338)", async () => {
     const r = await handleRequest(
       new Request("http://localhost/api/plugin/ratings/submit", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Forwarded-For": "192.0.2.86" },
+        headers: {
+          "Content-Type": "application/json",
+          Origin: TEST_LIVE_ORIGIN,
+          "X-Forwarded-For": "192.0.2.86",
+        },
         body: JSON.stringify({ pageId: "p-856", score: 4 }),
       }),
     );
@@ -305,10 +311,9 @@ describe("public_role op events are tied to published plugins (#856)", () => {
           succeeded: boolean;
         }[],
     );
-    expect(events).toContainEqual({
-      operation: "ratings.submit",
-      entity_id: data.id,
-      succeeded: true,
-    });
+    // ratings bakes nothing into pages, so nobody would read the event: the
+    // visitor call costs no op-event row (the RLS check above still guards
+    // the plugins that do write one).
+    expect(events.map((e) => e.entity_id)).not.toContain(data.id);
   });
 });

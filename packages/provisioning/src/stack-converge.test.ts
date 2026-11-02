@@ -13,9 +13,11 @@ import {
   type LiveEnvValue,
   liveContainerEnv,
   liveDatabaseHost,
+  liveDirectVpc,
   liveServiceAccount,
   planContractEnv,
   planEnvUpdate,
+  planNoVpc,
   policyGrants,
   removeRetiredIamBindings,
   rollService,
@@ -56,6 +58,7 @@ const policy = (bindings: { role: string; members: string[]; condition?: unknown
 
 const RUN_SA = "serviceAccount:caelo-production-run-sa@acme.iam.gserviceaccount.com";
 const GW_SA = "serviceAccount:caelo-production-gateway-sa@acme.iam.gserviceaccount.com";
+const PROXY_SA = "serviceAccount:caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com";
 const GW_TELEMETRY = [
   { role: "roles/logging.logWriter", members: [GW_SA] },
   { role: "roles/monitoring.metricWriter", members: [GW_SA] },
@@ -67,7 +70,11 @@ const firebase: InstallTarget = {
   projectId: "acme",
   region: "europe-west1",
   env: "production",
-  services: { admin: "caelo-production-admin-aaa", gateway: "caelo-production-gateway-bbb" },
+  services: {
+    admin: "caelo-production-admin-aaa",
+    gateway: "caelo-production-data-gateway",
+    "mcp-auth-proxy": "caelo-production-gateway-bbb",
+  },
 };
 const gcp: InstallTarget = { ...firebase, provider: "gcp" };
 
@@ -126,13 +133,13 @@ describe("liveContainerEnv / liveServiceAccount / liveDatabaseHost", () => {
 
   it("finds the Cloud SQL host in ADMIN_DATABASE_URL with or without an inline password", () => {
     for (const url of [
-      "postgresql://admin_role:pw@10.20.0.3:5432/cms_admin?sslmode=require",
-      "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+      "postgresql://admin_role:pw@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
     ]) {
       const host = liveDatabaseHost(
         new Map([["ADMIN_DATABASE_URL", { kind: "value", value: url }]]),
       );
-      expect(host).toEqual({ ok: true, host: "10.20.0.3" });
+      expect(host).toEqual({ ok: true, host: "db1.p-label.europe-west1.sql-psa.goog" });
     }
     expect(liveDatabaseHost(new Map()).ok).toBe(false);
   });
@@ -261,11 +268,13 @@ const secretRef = (name: string, secret: string) => ({
 const CONVERGED_ADMIN_DB = [
   {
     name: "ADMIN_DATABASE_URL",
-    value: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+    value:
+      "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   {
     name: "PUBLIC_ADMIN_DATABASE_URL",
-    value: "postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
+    value:
+      "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   secretRef("ADMIN_DATABASE_PASSWORD", "postgres-password"),
   secretRef("PUBLIC_ADMIN_DATABASE_PASSWORD", "postgres-password"),
@@ -276,7 +285,8 @@ const CONVERGED_ADMIN_DB = [
 const CONVERGED_GATEWAY_DB = [
   {
     name: "PUBLIC_DATABASE_URL",
-    value: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
+    value:
+      "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   secretRef("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
 ];
@@ -315,21 +325,33 @@ describe("planContractEnv", () => {
       },
       {
         admin: { serviceName: "caelo-production-admin-aaa", liveEnv: adminLive },
-        gateway: { serviceName: "caelo-production-gateway-bbb", liveEnv: gatewayLive },
+        // #1328 — the data gateway, a copy of the old gateway service.
+        gateway: { serviceName: "caelo-production-data-gateway", liveEnv: gatewayLive },
+        // The old gateway service, which becomes the MCP-Auth-Proxy (E13 a).
+        "mcp-auth-proxy": { serviceName: "caelo-production-gateway-bbb", liveEnv: gatewayLive },
       },
     );
     if (!plan.ok) throw new Error(plan.error);
     // #650 — the same roll converges the protected staging domain's host
     // and gate key onto an install that predates it.
     expect(plan.services.admin.flags).toEqual([
-      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_CONVERGE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-converge,CAELO_AUDIT_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit,CAELO_AUDIT_RESULTS_BUCKET=acme-caelo-production-audit-results,CAELO_CAPTURE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-capture,CAELO_CAPTURE_BUCKET=acme-caelo-production-capture,CAELO_MEDIA_BUCKET=acme-caelo-production-media,CAELO_OPERATOR_OAUTH_CLIENT_STORE=projects/acme/secrets/caelo-production-operator-oauth-client,CAELO_STAGING_HOST=staging.acme.com",
+      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_CONVERGE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-converge,CAELO_AUDIT_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit,CAELO_AUDIT_RESULTS_BUCKET=acme-caelo-production-audit-results,CAELO_CAPTURE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-capture,CAELO_CAPTURE_BUCKET=acme-caelo-production-capture,CAELO_MEDIA_BUCKET=acme-caelo-production-media,CAELO_OPERATOR_OAUTH_CLIENT_STORE=projects/acme/secrets/caelo-production-operator-oauth-client,CAELO_GATEWAY_SERVICE=caelo-production-data-gateway,CAELO_STAGING_HOST=staging.acme.com",
       "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
+    // #1328 — the Firebase rewrite follows the data gateway (above), which
+    // gets no remote-MCP env.
     expect(plan.services.gateway.flags).toEqual([
       // The gateway learns which forwarded address is the visitor (#845).
-      // #806 — and where the remote-MCP broker's client file and seal key are.
-      "--update-env-vars=CAELO_TRUSTED_PROXY_HOPS=1,CAELO_OPERATOR_OAUTH_CLIENT_FILE=/secrets/operator-oauth-client/client.json",
-      "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest,CAELO_MCP_OAUTH_SEAL_KEY=caelo-production-mcp-oauth-seal-key:latest",
+      "--update-env-vars=CAELO_TRUSTED_PROXY_HOPS=1",
+      "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
+    ]);
+    // The old gateway service becomes the proxy in one revision: every
+    // database and site var goes, its own contract arrives.
+    expect(plan.services["mcp-auth-proxy"].flags).toEqual([
+      "--remove-env-vars=PUBLIC_DATABASE_URL,CAELO_ENV,MEDIA_STORAGE_URL",
+      "--update-env-vars=CAELO_REMOTE_MCP=available,CAELO_TRUSTED_PROXY_HOPS=1,CAELO_OPERATOR_OAUTH_CLIENT_FILE=/secrets/operator-oauth-client/client.json",
+      "--remove-secrets=PUBLIC_DATABASE_PASSWORD",
+      "--update-secrets=CAELO_MCP_OAUTH_SEAL_KEY=caelo-production-mcp-oauth-seal-key:latest",
     ]);
   });
 
@@ -352,9 +374,10 @@ describe("planContractEnv", () => {
       {
         admin: { serviceName: "caelo-production-admin-aaa", liveEnv: live },
         gateway: {
-          serviceName: "caelo-production-gateway-bbb",
+          serviceName: "caelo-production-data-gateway",
           liveEnv: liveContainerEnv(serviceJson(CONVERGED_GATEWAY_DB)),
         },
+        "mcp-auth-proxy": { serviceName: "caelo-production-gateway-bbb", liveEnv: new Map() },
       },
       { leaveUntouched: ["CAELO_MCP_IAP_SERVICE_ACCOUNT", "CAELO_OPERATOR_ACCESS_JOB"] },
     );
@@ -375,10 +398,63 @@ describe("planContractEnv", () => {
       {
         admin: { serviceName: "adm", liveEnv: liveContainerEnv(serviceJson(CONVERGED_ADMIN_DB)) },
         gateway: { serviceName: "gw", liveEnv: new Map() },
+        "mcp-auth-proxy": { serviceName: "px", liveEnv: new Map() },
       },
     );
     expect(plan.ok).toBe(false);
     expect(!plan.ok && plan.error).toContain("CAELO_FIREBASE_SITE");
+  });
+
+  it("#1338: an install on the instance's IP plans its database URLs only with the converge's host", () => {
+    const onIp = (db: { name: string; value?: string }[]) =>
+      db.map((e) =>
+        e.value
+          ? {
+              ...e,
+              value: e.value
+                .replace("db1.p-label.europe-west1.sql-psa.goog", "10.20.0.3")
+                .replace(/\?.*$/, "?sslmode=require"),
+            }
+          : e,
+      );
+    const services = {
+      admin: {
+        serviceName: "adm",
+        liveEnv: liveContainerEnv(serviceJson(onIp(CONVERGED_ADMIN_DB) as never)),
+      },
+      gateway: {
+        serviceName: "gw",
+        liveEnv: liveContainerEnv(serviceJson(onIp(CONVERGED_GATEWAY_DB) as never)),
+      },
+      // #1328 — no database URL, so the TLS step has nothing to move on it.
+      "mcp-auth-proxy": { serviceName: "px", liveEnv: new Map() },
+    };
+    const install = {
+      provider: "gcp" as const,
+      projectId: "a",
+      env: "production",
+      domain: "a.com",
+      stagingHost: "staging.a.com",
+      region: "r",
+    };
+    // Read-only plan: the URLs stay as they are and the plan says why.
+    const pending = planContractEnv(install, services);
+    if (!pending.ok) throw new Error(pending.error);
+    expect(pending.databaseHostPending).toBe(true);
+    for (const s of ["admin", "gateway"] as const) {
+      expect(pending.services[s].changes.map((c) => c.name)).not.toContainEqual(
+        expect.stringMatching(/DATABASE_URL$/),
+      );
+    }
+    // After the converge's TLS step: verify-full URLs on the DNS name.
+    const host = "db1.p-label.europe-west1.sql-psa.goog";
+    const moved = planContractEnv(install, services, { databaseHost: host });
+    if (!moved.ok) throw new Error(moved.error);
+    expect(moved.databaseHostPending).toBe(false);
+    const url = moved.services.gateway.changes.find((c) => c.name === "PUBLIC_DATABASE_URL");
+    expect(url?.to).toBe(
+      `postgresql://public_role@${host}:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem`,
+    );
   });
 
   it("fails loudly when the Cloud SQL host can't be discovered", () => {
@@ -387,6 +463,7 @@ describe("planContractEnv", () => {
       {
         admin: { serviceName: "adm", liveEnv: new Map() },
         gateway: { serviceName: "gw", liveEnv: new Map() },
+        "mcp-auth-proxy": { serviceName: "px", liveEnv: new Map() },
       },
     );
     expect(plan.ok).toBe(false);
@@ -486,7 +563,7 @@ describe("ensureStackInvariants", () => {
     ],
     "secrets get-iam-policy": [
       policy([
-        { role: "roles/secretmanager.secretAccessor", members: [RUN_SA, GW_SA] },
+        { role: "roles/secretmanager.secretAccessor", members: [RUN_SA, GW_SA, PROXY_SA] },
         // #806 — the admin adds remote-MCP OAuth client versions.
         { role: "roles/secretmanager.secretVersionAdder", members: [RUN_SA] },
       ]),
@@ -494,17 +571,23 @@ describe("ensureStackInvariants", () => {
     "storage buckets get-iam-policy": [
       policy([{ role: "roles/storage.objectAdmin", members: [RUN_SA] }]),
     ],
-    "run services get-iam-policy caelo-production-gateway-bbb": [
+    // #1328 — the data gateway: the Firebase rewrite target.
+    "run services get-iam-policy caelo-production-data-gateway": [
       policy([
         { role: "roles/run.invoker", members: ["allUsers"] },
         { role: "roles/run.viewer", members: [RUN_SA] },
       ]),
+    ],
+    // The MCP-Auth-Proxy: public for MCP clients.
+    "run services get-iam-policy caelo-production-gateway-bbb": [
+      policy([{ role: "roles/run.invoker", members: ["allUsers"] }]),
     ],
     "run services get-iam-policy caelo-production-admin-aaa": [
       policy([{ role: "roles/run.invoker", members: [IAP_AGENT] }]),
     ],
     "compute firewall-rules list": [ok("[]")],
     "run services describe caelo-production-gateway-bbb": [ok(ingressJson("all"))],
+    "run services describe caelo-production-data-gateway": [ok(ingressJson("all"))],
   });
 
   it("is a read-only no-op on an install that is already in shape", async () => {
@@ -513,7 +596,8 @@ describe("ensureStackInvariants", () => {
     expect(report.mustAbort).toBe(false);
     expect(report.outcomes.every((o) => o.status === "present")).toBe(true);
     expect(report.outcomes).toHaveLength(
-      stackIamInvariants("gcp-firebase").length + ABSENT_DEFAULT_FIREWALL_RULES.length + 1,
+      // The two public services' ingress (#732, #1328).
+      stackIamInvariants("gcp-firebase").length + ABSENT_DEFAULT_FIREWALL_RULES.length + 2,
     );
     expect(calls.some((c) => c.startsWith("compute firewall-rules delete"))).toBe(false);
     expect(calls.some((c) => c.includes("add-iam-policy-binding"))).toBe(false);
@@ -628,7 +712,7 @@ describe("ensureStackInvariants", () => {
     answers["projects get-iam-policy"] = [
       policy([{ role: "roles/firebasehosting.admin", members: [RUN_SA] }, ...GW_TELEMETRY]),
     ];
-    answers["run services get-iam-policy caelo-production-gateway-bbb"] = [
+    answers["run services get-iam-policy caelo-production-data-gateway"] = [
       policy([{ role: "roles/run.invoker", members: ["allUsers"] }]),
     ];
     const { run, calls } = fakeGcloud(answers);
@@ -636,7 +720,7 @@ describe("ensureStackInvariants", () => {
 
     expect(report.mustAbort).toBe(false);
     expect(calls).toContain(
-      `run services add-iam-policy-binding caelo-production-gateway-bbb --region=europe-west1 --project=acme --member=${RUN_SA} --role=roles/run.viewer --quiet --format=none`,
+      `run services add-iam-policy-binding caelo-production-data-gateway --region=europe-west1 --project=acme --member=${RUN_SA} --role=roles/run.viewer --quiet --format=none`,
     );
     for (const role of ["roles/logging.logWriter", "roles/monitoring.metricWriter"]) {
       expect(calls).toContain(
@@ -650,7 +734,7 @@ describe("ensureStackInvariants", () => {
 
   it("aborts when a binding the install needs can't be added", async () => {
     const answers = fullFirebase();
-    answers["run services get-iam-policy caelo-production-gateway-bbb"] = [
+    answers["run services get-iam-policy caelo-production-data-gateway"] = [
       policy([{ role: "roles/run.invoker", members: ["allUsers"] }]),
     ];
     answers["run services add-iam-policy-binding"] = [
@@ -739,7 +823,7 @@ describe("ensureStackInvariants", () => {
       ],
       "secrets get-iam-policy": [
         policy([
-          { role: "roles/secretmanager.secretAccessor", members: [RUN_SA, GW_SA] },
+          { role: "roles/secretmanager.secretAccessor", members: [RUN_SA, GW_SA, PROXY_SA] },
           { role: "roles/secretmanager.secretVersionAdder", members: [RUN_SA] },
         ]),
       ],
@@ -871,10 +955,19 @@ describe("ensureStackInvariants", () => {
       expect(gatewayGrants).toEqual([
         `secrets add-iam-policy-binding caelo-production-public-role-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
         `secrets add-iam-policy-binding caelo-production-staging-gate-secret --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
-        // #806 — the remote-MCP broker's seal key and OAuth client file.
-        `secrets add-iam-policy-binding caelo-production-mcp-oauth-seal-key --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
-        `secrets add-iam-policy-binding caelo-production-operator-oauth-client --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
       ]);
+      // #1328 — the remote-MCP broker's seal key and OAuth client file are
+      // the MCP-Auth-Proxy's, and those two secrets are all its SA reads.
+      expect(
+        calls.filter((c) => c.startsWith("secrets add-iam-policy-binding") && c.includes(PROXY_SA)),
+      ).toEqual([
+        `secrets add-iam-policy-binding caelo-production-mcp-oauth-seal-key --project=acme --member=${PROXY_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+        `secrets add-iam-policy-binding caelo-production-operator-oauth-client --project=acme --member=${PROXY_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+      ]);
+      // …and it holds no project role.
+      expect(
+        calls.some((c) => c.startsWith("projects add-iam-policy-binding") && c.includes(PROXY_SA)),
+      ).toBe(false);
       // #806 — the admin may add versions to the OAuth client secret, and to no other.
       const adders = calls.filter((c) => c.includes("roles/secretmanager.secretVersionAdder"));
       expect(adders).toEqual([
@@ -900,7 +993,13 @@ describe("removeRetiredIamBindings (#613)", () => {
     });
     const outcomes = await removeRetiredIamBindings(gcp, { run, sleep: async () => {} });
     // postgres-password removed; gateway-role-password (#635) already clean.
-    expect(outcomes.map((o) => o.status)).toEqual(["removed", "absent"]);
+    expect(outcomes.map((o) => o.status)).toEqual([
+      "removed",
+      "absent",
+      "absent",
+      "absent",
+      "absent",
+    ]);
     expect(calls).toContain(REMOVE);
     // The admin's own binding on the same secret is never touched.
     expect(calls.some((c) => c.includes("remove") && c.includes(RUN_SA))).toBe(false);
@@ -913,7 +1012,13 @@ describe("removeRetiredIamBindings (#613)", () => {
       ],
     });
     const outcomes = await removeRetiredIamBindings(firebase, { run, sleep: async () => {} });
-    expect(outcomes.map((o) => o.status)).toEqual(["absent", "absent"]);
+    expect(outcomes.map((o) => o.status)).toEqual([
+      "absent",
+      "absent",
+      "absent",
+      "absent",
+      "absent",
+    ]);
     expect(calls.filter((c) => c.includes("remove-iam-policy-binding"))).toEqual([]);
   });
 
@@ -924,10 +1029,49 @@ describe("removeRetiredIamBindings (#613)", () => {
       ],
     });
     const outcomes = await removeRetiredIamBindings(gcp, { run, sleep: async () => {} });
-    expect(outcomes.map((o) => o.status)).toEqual(["absent", "removed"]);
+    expect(outcomes.map((o) => o.status)).toEqual([
+      "absent",
+      "removed",
+      "absent",
+      "absent",
+      "absent",
+    ]);
     expect(calls).toContain(
       `secrets remove-iam-policy-binding caelo-production-gateway-role-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
     );
+  });
+
+  it("#1328: takes the gateway SA off the broker's secrets and the admin's viewer off the proxy", async () => {
+    const { run, calls } = fakeGcloud({
+      "secrets get-iam-policy caelo-production-mcp-oauth-seal-key": [
+        policy([{ role: "roles/secretmanager.secretAccessor", members: [GW_SA, PROXY_SA] }]),
+      ],
+      "secrets get-iam-policy caelo-production-operator-oauth-client": [
+        policy([{ role: "roles/secretmanager.secretAccessor", members: [GW_SA, PROXY_SA] }]),
+      ],
+      "run services get-iam-policy caelo-production-gateway-bbb": [
+        policy([
+          { role: "roles/run.invoker", members: ["allUsers"] },
+          { role: "roles/run.viewer", members: [RUN_SA] },
+        ]),
+      ],
+    });
+    const outcomes = await removeRetiredIamBindings(firebase, { run, sleep: async () => {} });
+    expect(outcomes.map((o) => o.status)).toEqual([
+      "absent",
+      "absent",
+      "removed",
+      "removed",
+      "removed",
+    ]);
+    for (const secret of ["mcp-oauth-seal-key", "operator-oauth-client"]) {
+      expect(calls).toContain(
+        `secrets remove-iam-policy-binding caelo-production-${secret} --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+      );
+    }
+    // The proxy keeps its own access and its public invoker.
+    expect(calls.some((c) => c.includes("remove") && c.includes(PROXY_SA))).toBe(false);
+    expect(calls.some((c) => c.includes("remove") && c.includes("allUsers"))).toBe(false);
   });
 
   it("reports a failed removal instead of throwing", async () => {
@@ -940,5 +1084,34 @@ describe("removeRetiredIamBindings (#613)", () => {
     const [o] = await removeRetiredIamBindings(gcp, { run, sleep: async () => {} });
     expect(o?.status).toBe("failed");
     expect(o?.error).toContain("PERMISSION_DENIED");
+  });
+});
+
+describe("liveDirectVpc / planNoVpc (#1328)", () => {
+  const withNetwork = JSON.stringify({
+    spec: {
+      template: {
+        metadata: {
+          annotations: {
+            "run.googleapis.com/network-interfaces": '[{"network":"caelo-production-vpc"}]',
+            "run.googleapis.com/vpc-access-egress": "private-ranges-only",
+          },
+        },
+      },
+    },
+  });
+
+  it("reads Direct VPC egress from the revision template", () => {
+    expect(liveDirectVpc(withNetwork)).toBe(true);
+    expect(liveDirectVpc(JSON.stringify({ spec: { template: { metadata: {} } } }))).toBe(false);
+  });
+
+  it("takes a service off the VPC in its roll, and leaves one that is off alone", () => {
+    expect(planNoVpc(true)).toEqual({
+      ok: true,
+      flags: ["--clear-network"],
+      changes: ["VPC egress (private ranges) → none"],
+    });
+    expect(planNoVpc(false)).toEqual({ ok: true, flags: [], changes: [] });
   });
 });

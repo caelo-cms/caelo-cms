@@ -198,6 +198,25 @@ describe("runAgentOnce", () => {
     expect(locks).toEqual({ taken: 1, released: 1 });
   });
 
+  it("#1328: hands over the MCP-Auth-Proxy digest the signed manifest names", async () => {
+    const withProxy: ReleaseManifest = {
+      ...MANIFEST,
+      digests: { ...MANIFEST.digests, "mcp-auth-proxy": D("d") },
+    };
+    const { deps, applied } = setup({
+      fetchManifest: async (): Promise<ReleaseManifestResult> => ({
+        ok: true,
+        manifest: withProxy,
+      }),
+    });
+    await runAgentOnce(deps);
+    expect(applied[0]?.digests).toEqual({
+      admin: D("a"),
+      gateway: D("b"),
+      "mcp-auth-proxy": D("d"),
+    });
+  });
+
   interface RefusalRow {
     readonly name: string;
     readonly over: Partial<AgentRunDeps>;

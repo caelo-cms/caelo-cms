@@ -51,7 +51,7 @@ const target: OperatorAccessSyncTarget = {
   imageRef: "europe-west1-docker.pkg.dev/r/admin@sha256:new",
   network: "net",
   subnet: "sub",
-  databaseHost: "10.0.0.3",
+  databaseHost: "db1.p-label.europe-west1.sql-psa.goog",
 };
 
 const roleJson = JSON.stringify({ includedPermissions: [...OPERATOR_ACCESS_ROLE.permissions] });
@@ -201,7 +201,7 @@ describe("ensureOperatorAccessSync", () => {
       "--args=--bun,/app/packages/admin-core/src/security/operator-access/sync-job.ts",
     );
     expect(deploy).toContain(
-      "--set-env-vars=^|^CAELO_OPERATOR_ACCESS_IAP_WEB=cloud_run-europe-west1/services/caelo-production-admin-abc|CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@p.iam.gserviceaccount.com|CAELO_OPERATOR_ACCESS_STATIC_MEMBERS=user:owner@x.com|CAELO_OPERATOR_ACCESS_DB_HOST=10.0.0.3|CAELO_OPERATOR_OAUTH_CLIENT_SECRET=projects/p/secrets/caelo-production-operator-oauth-client",
+      "--set-env-vars=^|^CAELO_OPERATOR_ACCESS_IAP_WEB=cloud_run-europe-west1/services/caelo-production-admin-abc|CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@p.iam.gserviceaccount.com|CAELO_OPERATOR_ACCESS_STATIC_MEMBERS=user:owner@x.com|CAELO_OPERATOR_ACCESS_DB_HOST=db1.p-label.europe-west1.sql-psa.goog|CAELO_OPERATOR_OAUTH_CLIENT_SECRET=projects/p/secrets/caelo-production-operator-oauth-client",
     );
   });
 
@@ -322,7 +322,8 @@ describe("resolveOperatorAccessTarget", () => {
               env: [
                 {
                   name: "ADMIN_DATABASE_URL",
-                  value: "postgresql://admin_role@10.0.0.3:5432/cms_admin",
+                  value:
+                    "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin",
                 },
               ],
             },
@@ -351,7 +352,7 @@ describe("resolveOperatorAccessTarget", () => {
         imageRef: "img@sha256:new",
         network: "net",
         subnet: "sub",
-        databaseHost: "10.0.0.3",
+        databaseHost: "db1.p-label.europe-west1.sql-psa.goog",
       },
     });
   });

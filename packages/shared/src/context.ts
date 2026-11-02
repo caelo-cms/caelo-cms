@@ -38,6 +38,14 @@ export interface ExecutionContext {
    */
   readonly pluginArtifactDigest?: string;
   /**
+   * #650 — the public origin of the static build a plugin's render-time
+   * call belongs to. `pages.resolve_public_urls` builds URLs on it
+   * instead of the stored site base URL, so a Stage with its own staging
+   * host gets staging URLs from plugins too. Set by the plugin host from
+   * the render invocation only.
+   */
+  readonly renderSiteBaseUrl?: string;
+  /**
    * P10.5: parent attribution for subagent invocations. When the
    * `spawn_subagent` tool calls runChatTurn for the child, it carries
    * these fields so the existing ai_calls + audit_events writers

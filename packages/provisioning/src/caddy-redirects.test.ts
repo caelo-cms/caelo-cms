@@ -15,6 +15,7 @@ import { caddyRedirectReloadCommand, caddyRedirectReloadScript } from "./caddy-r
 import {
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   COMPOSE_REDIRECT_SNIPPETS,
   generateDockerCompose,
 } from "./compose.js";
@@ -26,6 +27,7 @@ const caddyfile = generateCaddyfile({
   stagingSiteRoot: "/srv/caelo/output/staging/current",
   adminUpstream: COMPOSE_ADMIN_UPSTREAM,
   gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
+  mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   domains: selfHostedSeedDomains("example.com", "staging.example.com"),
 });
 
@@ -63,6 +65,7 @@ describe("Compose — Caddy picks up new redirects (#587)", () => {
     postgresPassword: "pgpw",
     rolePasswords: { admin: "a", public: "p" },
     caeloSecretKek: "0".repeat(64),
+    dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
     internalSecret: "i".repeat(48),
     diskSize: "20Gi",
     ports: { http: 80, https: 443 },

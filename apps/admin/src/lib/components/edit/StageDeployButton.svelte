@@ -253,7 +253,7 @@
   const stagingView = $derived(
     stagingMenuState({
       mode: toolbarMode,
-      busy: staging || publishing,
+      staging,
       hasStagedBuild: lastStaged !== null,
       branchChangeCount,
       qualityGate: gate,
@@ -344,7 +344,7 @@
         data-testid={testid}
       >
         {#if publishing}
-          Publishing…
+          <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" />Publishing…
         {:else if productionMatchesStaging === true}
           <Check class="size-3.5" />Live
         {:else}
@@ -404,7 +404,7 @@
               Staging still holds the build from {formatRelativeTime(lastStaged.finishedAt)}, without
               the changes of the failed Stage.
             </p>
-            <Button type="submit" size="sm" variant="outline" class="w-full" disabled={publishing}>
+            <Button type="submit" size="sm" variant="outline" class="w-full" disabled={staging || publishing}>
               Publish that build live anyway
             </Button>
           </form>
@@ -761,14 +761,14 @@
       method="post"
       action="?/stageAndDeployStaging"
       use:enhance={() => {
-        publishing = true;
+        staging = true;
         stageError = null;
         restageError = null;
         return async ({ result, update }) => {
           try {
             await update({ reset: false });
           } finally {
-            publishing = false;
+            staging = false;
           }
           // run #10 D6 — shared result→message mapping with the
           // Publish-live inline alert (stage-deploy-state.ts).
@@ -903,10 +903,10 @@
         <Button
           type="submit"
           size="sm"
-          disabled={publishing}
+          disabled={staging || publishing}
           data-testid="stage-submit-btn"
         >
-          {publishing ? "Staging…" : "Stage to staging"}
+          {staging ? "Staging…" : "Stage to staging"}
         </Button>
       </DialogFooter>
     </form>
@@ -968,7 +968,7 @@
         <Button type="button" variant="outline" size="sm" onclick={() => (publishAnywayOpen = false)}>
           Cancel
         </Button>
-        <Button type="submit" size="sm" variant="destructive" disabled={publishing} data-testid="publish-anyway-submit">
+        <Button type="submit" size="sm" variant="destructive" disabled={staging || publishing} data-testid="publish-anyway-submit">
           {publishing ? "Publishing…" : "Publish anyway"}
         </Button>
       </DialogFooter>

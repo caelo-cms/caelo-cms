@@ -8,11 +8,17 @@
  *   GET  /api/captcha/challenge             PoW challenge envelope
  *   GET  /healthz                           liveness probe
  *   GET  /api/_caelo/health[?deep=1]        upgrade health check (health.ts)
- *   *    /api/mcp/*, /.well-known/oauth-*    #806 remote MCP: OAuth broker +
- *                                           streaming proxy to the IAP-protected
- *                                           admin (mcp/routes.ts); no database
  *   *    (Host: staging.<domain>)           #650 staging gate + proxy to the
  *                                           staged build (staging-proxy.ts)
+ *
+ * Before anything reaches the database (#1326 — the cheap setup has no WAF
+ * in front, E3, so the gateway must shed junk itself): a path that names no
+ * route is a 404; every visitor route takes a token from the per-client
+ * in-memory limiter (memory-limiter.ts); a plugin POST must be JSON from a
+ * live-site Origin (plugin-request-filter.ts) and name an operation an
+ * active plugin serves to visitors, or it gets a 404 that writes nothing.
+ * Every error a visitor sees is `{ kind, requestId }`; the details go to
+ * the log under that request id, never into the answer.
  *
  * Each public-write request flows through (in order):
  *   1. Body-size cap (default 64 KB; 1 MB hard ceiling).
@@ -62,14 +68,18 @@ import {
   registerGatewayOperations,
   runPluginOperation,
   syncDispatchPlugins,
+  unpublishedRegistryError,
   VISITOR_ID_PURPOSE,
 } from "@caelo-cms/plugin-host";
+import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
+import { STAGING_PLUGIN_STUB_BODY } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import {
   ClientAddressError,
   clientAddress,
   hashClientAddress,
+  rateLimitAddress,
   trustedProxyHopsFromEnv,
 } from "./client-ip.js";
 import {
@@ -79,17 +89,25 @@ import {
 } from "./database-env.js";
 import { gatewayStateGc } from "./gc.js";
 import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
-import { createMcpRouter, isMcpPath } from "./mcp/routes.js";
-import { readBodyWithCap } from "./middleware/body-cap.js";
+import { type IpHashKeys, ipHashKeys } from "./ip-hash-key.js";
+import { HARD_MAX_BODY_BYTES, readBodyWithCap } from "./middleware/body-cap.js";
 import { type CaptchaConfig, issuePowChallenge, verifyPowProof } from "./middleware/captcha.js";
 import { checkHoneypot } from "./middleware/honeypot.js";
+import {
+  MemoryRateLimiter,
+  OPERATION_MEMORY_LIMIT,
+  VISITOR_MEMORY_LIMIT,
+} from "./middleware/memory-limiter.js";
+import { parsePluginPath, refusePluginRequest } from "./middleware/plugin-request-filter.js";
 import {
   consumeRateLimit,
   invalidateRateLimitSpecCache,
   ipScopedRateLimitKey,
   resolveRateLimitSpec,
 } from "./middleware/rate-limit.js";
+import { addJsonSecurityHeaders, withJsonSecurityHeaders } from "./middleware/security-headers.js";
 import { signCookieValue } from "./middleware/signed-cookie.js";
+import { GATEWAY_PLUGINS_ROOT } from "./plugins-root.js";
 import {
   listenForPublishedChanges,
   mayCacheRead,
@@ -125,7 +143,7 @@ const SYSTEM_ACTOR_ID = process.env.CAELO_SYSTEM_ACTOR_ID ?? "00000000-0000-0000
 // platform deploy needs no extra config. GATEWAY_PORT is the historical
 // name retained for self-hosted Compose installs.
 const PORT = Number.parseInt(process.env.PORT ?? process.env.GATEWAY_PORT ?? "8090", 10);
-const PLUGINS_ROOT = resolve(import.meta.dir, "../../../packages/plugins");
+const PLUGINS_ROOT = GATEWAY_PLUGINS_ROOT;
 
 const SYSTEM_CTX = {
   actorId: SYSTEM_ACTOR_ID,
@@ -164,6 +182,11 @@ interface GatewaySettings {
   cookieSecret: string;
   maxBodyBytes: number;
   captcha: CaptchaConfig;
+  /**
+   * #1326 — the live site's origins, the only ones plugin posts are taken
+   * from; null when the admin that published the row predates the column.
+   */
+  liveOrigins: readonly string[] | null;
 }
 
 // Cached while the LISTEN on the admin's publish notifications is
@@ -178,13 +201,15 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
   const { published, rows } = await adapter.withPublicTransaction(SYSTEM_CTX, async (tx) => ({
     published: await sectionPublished(tx, "settings"),
     rows: (await tx.execute(sql`
-      SELECT cookie_secret, max_body_bytes, captcha_provider, captcha_pow_target_prefix
+      SELECT cookie_secret, max_body_bytes, captcha_provider, captcha_pow_target_prefix,
+             live_origins
       FROM published_gateway_settings WHERE id = 1
     `)) as unknown as {
       cookie_secret: string | null;
       max_body_bytes: number;
       captcha_provider: "off" | "pow" | "turnstile" | "hcaptcha";
       captcha_pow_target_prefix: string;
+      live_origins: string[] | null;
     }[],
   }));
   const row = rows[0];
@@ -205,6 +230,7 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
       provider: row?.captcha_provider ?? "pow",
       powTargetPrefix: row?.captcha_pow_target_prefix ?? "000fff",
     },
+    liveOrigins: row.live_origins,
   };
   if (mayCacheRead(startedAt)) cachedSettings = settings;
   return settings;
@@ -216,27 +242,20 @@ export class GatewayNotReadyError extends Error {
 }
 
 /**
- * The 503 for settings that could not be loaded. Only the gateway's own
- * readiness reason ({@link GatewayNotReadyError}) reaches the caller; any
- * other failure (an unreachable database, a refused login, a broken query)
- * would hand an unauthenticated visitor hosts, role names or SQL, so it is
- * logged here and the visitor gets a generic message.
+ * The 503 for settings that could not be loaded. The visitor learns the
+ * kind and the request id, nothing else (#1326): an unreachable database, a
+ * refused login or a broken query would hand an unauthenticated visitor
+ * hosts, role names or SQL, and even the gateway's own readiness reason
+ * ({@link GatewayNotReadyError}) is for the operator. Both are logged under
+ * the request id.
  */
-export function settingsUnavailable(e: unknown): Response {
-  if (e instanceof GatewayNotReadyError) {
-    return jsonResponse(
-      { ok: false, error: { kind: "ServiceUnavailable", message: e.message } },
-      { status: 503 },
-    );
-  }
-  console.error(`[api-gateway] gateway settings could not be loaded: ${describeFailure(e)}`);
-  return jsonResponse(
-    {
-      ok: false,
-      error: { kind: "ServiceUnavailable", message: "the gateway is temporarily unavailable" },
-    },
-    { status: 503 },
-  );
+export function settingsUnavailable(e: unknown, requestId: string): Response {
+  return errorResponse("ServiceUnavailable", 503, requestId, {
+    log:
+      e instanceof GatewayNotReadyError
+        ? `gateway not ready: ${e.message}`
+        : `gateway settings could not be loaded: ${describeFailure(e)}`,
+  });
 }
 
 /**
@@ -337,6 +356,7 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
 async function resolveConsentedVisitor(
   req: Request,
   settings: GatewaySettings,
+  requestId: string,
 ): Promise<{ ok: true; visitor: ResolvedVisitor } | { ok: false; response: Response }> {
   try {
     // The registry sync first, so a consent provider an Owner just
@@ -352,20 +372,11 @@ async function resolveConsentedVisitor(
     });
     return { ok: true, visitor };
   } catch (e) {
-    console.error(`[api-gateway] visitor consent could not be resolved: ${describeFailure(e)}`);
     return {
       ok: false,
-      response: jsonResponse(
-        {
-          ok: false,
-          error: {
-            kind: "ConsentUnavailable",
-            message:
-              "the site's consent settings could not be read, so this request was not processed",
-          },
-        },
-        { status: 503 },
-      ),
+      response: errorResponse("ConsentUnavailable", 503, requestId, {
+        log: `visitor consent could not be resolved: ${describeFailure(e)}`,
+      }),
     };
   }
 }
@@ -389,9 +400,12 @@ interface RequestLogRow {
 let cachedAdapter: DatabaseAdapter | null = null;
 /** The gateway's own state, expired rows only (#763 L4: never waits on the admin). */
 let sweepGatewayStateIfDue: (() => Promise<void>) | null = null;
+/** #1338 — the rotating key of the client-address hashes (ip-hash-key.ts). */
+let addressHashKeys: IpHashKeys | null = null;
 export function setGatewayAdapter(adapter: DatabaseAdapter): void {
   cachedAdapter = adapter;
   sweepGatewayStateIfDue = gatewayStateGc(adapter);
+  addressHashKeys = ipHashKeys(adapter);
 }
 
 /**
@@ -424,8 +438,6 @@ async function recordRequest(row: RequestLogRow): Promise<void> {
 // JSON response helper.
 // ---------------------------------------------------------------------------
 
-const PLUGIN_PATH_RE = /^\/api\/plugin\/([a-z][a-z0-9-]*)\/([a-z_][a-z0-9_]*)$/;
-
 /**
  * Captcha challenges one client address may mint. A real
  * visitor needs one per form submission; the cap bounds the rows a flood
@@ -433,41 +445,87 @@ const PLUGIN_PATH_RE = /^\/api\/plugin\/([a-z][a-z0-9-]*)\/([a-z_][a-z0-9_]*)$/;
  */
 export const CAPTCHA_CHALLENGE_RATE_LIMIT = { perVisitorMax: 60, windowSeconds: 60 } as const;
 
+/**
+ * The largest request body Bun accepts at all (#1326): the visitor routes'
+ * hard ceiling (#1328 moved the remote-MCP proxy and its larger image
+ * uploads to the MCP-Auth-Proxy). Each route still enforces its own cap;
+ * this one stops a body nobody would read before it is buffered (Bun's
+ * default is 128 MB).
+ */
+export const SERVER_MAX_REQUEST_BODY_BYTES = HARD_MAX_BODY_BYTES;
+
+/** Every visitor route's in-memory budget per client, before the database (#1326). */
+const visitorMemoryLimiter = new MemoryRateLimiter(VISITOR_MEMORY_LIMIT);
+
+/**
+ * Every visitor route's in-memory budget per operation, whoever calls it
+ * (#1326; the binding guard on gcp-firebase, where no client address is
+ * stable — memory-limiter.ts OPERATION_MEMORY_LIMIT).
+ */
+const operationMemoryLimiter = new MemoryRateLimiter(OPERATION_MEMORY_LIMIT, 10_000);
+
+/** Take one token of `operation`'s budget: the 429, or null to go on. */
+function operationRateLimited(operation: string, requestId: string): Response | null {
+  const take = operationMemoryLimiter.take(operation);
+  if (take.allowed) return null;
+  return errorResponse("RateLimited", 429, requestId, {
+    retryAfterSec: take.retryAfterSec,
+    log: `site-wide budget of ${operation} spent on this instance`,
+  });
+}
+
 function jsonResponse(
   body: unknown,
-  init: { status?: number; setCookies?: string[]; retryAfterSec?: number } = {},
+  init: {
+    status?: number;
+    setCookies?: string[];
+    retryAfterSec?: number;
+    requestId?: string;
+  } = {},
 ): Response {
   const headers = new Headers({
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
   });
+  addJsonSecurityHeaders(headers);
   for (const c of init.setCookies ?? []) headers.append("Set-Cookie", c);
   if (init.retryAfterSec !== undefined) {
     headers.set("Retry-After", String(init.retryAfterSec));
   }
+  if (init.requestId) headers.set("X-Request-Id", init.requestId);
   return new Response(JSON.stringify(body), { status: init.status ?? 200, headers });
+}
+
+/**
+ * The only shape of error a visitor sees (#1326): `{ ok: false, error: {
+ * kind, requestId } }`. No message: what went wrong in detail — an
+ * exception's text, a plugin's, a limit's numbers — goes to the log under
+ * the same request id (`log`), so an operator can find it from a visitor's
+ * report and the visitor learns nothing about the inside.
+ */
+function errorResponse(
+  kind: string,
+  status: number,
+  requestId: string,
+  init: { setCookies?: string[]; retryAfterSec?: number; log?: string } = {},
+): Response {
+  if (init.log) console.error(`[api-gateway] request ${requestId}: ${kind} — ${init.log}`);
+  return jsonResponse(
+    { ok: false, error: { kind, requestId } },
+    {
+      status,
+      requestId,
+      ...(init.setCookies ? { setCookies: init.setCookies } : {}),
+      ...(init.retryAfterSec !== undefined ? { retryAfterSec: init.retryAfterSec } : {}),
+    },
+  );
 }
 
 /** The connection facts `handleRequest` cannot read from the Request itself. */
 export interface GatewayConnection {
   /** The TCP peer (Bun `server.requestIP`); read only when no proxy is in front. */
   readonly peerAddress: string | null;
-  /**
-   * Set Bun's idle timeout for this request (`server.timeout(req, s)`, 0 =
-   * none): the remote-MCP proxy waits up to its first-response timeout for
-   * the admin, then lifts it for an SSE stream that may stay quiet longer
-   * than the 10 s default. Absent outside Bun.serve (tests), where there is
-   * no timeout to change.
-   */
-  readonly setIdleTimeout?: (seconds: number) => void;
 }
-
-/**
- * #806 remote MCP. Created once: it caches the OAuth client file. It reads
- * env + that file only — no database, so it answers before (and without)
- * the gateway's settings.
- */
-const mcpRouter = createMcpRouter();
 
 type Resolved<T> =
   | { readonly ok: true; readonly value: T }
@@ -477,27 +535,44 @@ type Resolved<T> =
  * Run a client-address lookup (client-ip.ts), answering a deployment that
  * cannot name the visitor with a 503 that says why instead of a guess.
  */
-function resolveClientAddress<T>(lookup: () => T): Resolved<T> {
+function resolveClientAddress<T>(lookup: () => T, requestId: string): Resolved<T> {
   try {
     return { ok: true, value: lookup() };
   } catch (e) {
     if (!(e instanceof ClientAddressError)) throw e;
-    console.error(`[api-gateway] ${e.message}`);
     return {
       ok: false,
-      response: jsonResponse(
-        { ok: false, error: { kind: "ClientAddressUnavailable", message: e.message } },
-        { status: 503 },
-      ),
+      response: errorResponse("ClientAddressUnavailable", 503, requestId, { log: e.message }),
     };
   }
 }
 
-/** The rate-limit bucket hash of `req`'s client address. */
-function clientIpHash(req: Request, conn: GatewayConnection): Resolved<string> {
-  return resolveClientAddress(() =>
-    hashClientAddress(clientAddress(req, trustedProxyHopsFromEnv(process.env), conn.peerAddress)),
+/** `req`'s client address under the deployment's proxy hops (client-ip.ts). */
+function requestClientAddress(
+  req: Request,
+  conn: GatewayConnection,
+  requestId: string,
+): Resolved<string> {
+  return resolveClientAddress(
+    () => clientAddress(req, trustedProxyHopsFromEnv(process.env), conn.peerAddress),
+    requestId,
   );
+}
+
+/** The rate-limit bucket hash of a client address, under today's key (#1338). */
+async function clientIpHash(address: string): Promise<string> {
+  if (!addressHashKeys) throw new Error("gateway not bootstrapped (no IP-hash key store)");
+  return hashClientAddress(address, await addressHashKeys.current());
+}
+
+/**
+ * Take one token of the client's in-memory budget (#1326): the 429 before
+ * any database access, or null when the request may go on.
+ */
+function memoryRateLimited(address: string, requestId: string): Response | null {
+  const take = visitorMemoryLimiter.take(rateLimitAddress(address));
+  if (take.allowed) return null;
+  return errorResponse("RateLimited", 429, requestId, { retryAfterSec: take.retryAfterSec });
 }
 
 // ---------------------------------------------------------------------------
@@ -508,8 +583,28 @@ export async function handleRequest(
   req: Request,
   conn: GatewayConnection = { peerAddress: null },
 ): Promise<Response> {
+  // Every JSON answer carries the security headers (#1326), also the ones
+  // the staging proxy builds itself.
+  const requestId = crypto.randomUUID();
+  try {
+    return withJsonSecurityHeaders(await routeRequest(req, conn, requestId));
+  } catch (e) {
+    // The last boundary: a database failure in the rate limit, the captcha
+    // or the request pipeline is still answered in the visitor error shape,
+    // with the details in the log under the request id — never as Bun's
+    // generic 500 or the exception's text.
+    return errorResponse("ServiceUnavailable", 503, requestId, {
+      log: `unhandled: ${describeFailure(e)}`,
+    });
+  }
+}
+
+async function routeRequest(
+  req: Request,
+  conn: GatewayConnection,
+  requestId: string,
+): Promise<Response> {
   const url = new URL(req.url);
-  await sweepGatewayStateIfDue?.();
 
   // #650 — the staging host (gcp-firebase; the stored setting, default
   // staging.<domain>): the access gate + proxy to the staged build. Nothing
@@ -532,9 +627,7 @@ export async function handleRequest(
     if (state?.host && isStagingRequest(req, state.host)) {
       const loaded = state;
       // The allowlist matches the same address the rate limits bucket by.
-      const clientIp = resolveClientAddress(() =>
-        clientAddress(req, trustedProxyHopsFromEnv(process.env), conn.peerAddress),
-      );
+      const clientIp = requestClientAddress(req, conn, requestId);
       if (!clientIp.ok) return clientIp.response;
       return handleStagingRequest(req, {
         config: { stagingOrigin: `https://${loaded.host}`, secret: stagingGate.secret },
@@ -548,157 +641,211 @@ export async function handleRequest(
     return jsonResponse({ ok: true });
   }
   if (req.method === "GET" && url.pathname === GATEWAY_HEALTH_PATH) {
-    return gatewayHealth(url, cachedAdapter);
+    // The deep check is throttled per client (health.ts); liveness needs no address.
+    let client: string | null = null;
+    if (url.searchParams.get("deep") === "1") {
+      const address = requestClientAddress(req, conn, requestId);
+      if (!address.ok) return address.response;
+      client = rateLimitAddress(address.value);
+    }
+    return gatewayHealth(url, cachedAdapter, { client, requestId });
   }
 
-  // #806 — before the database-backed pipeline: remote MCP needs neither
-  // the gateway's settings nor its plugin host.
-  // Rate limited per client address inside the router (mcp/rate-limit.ts),
-  // so the address is resolved by the same rule as every other limit here.
-  if (isMcpPath(url.pathname)) {
-    const mcpClient = resolveClientAddress(() =>
-      clientAddress(req, trustedProxyHopsFromEnv(process.env), conn.peerAddress),
-    );
-    if (!mcpClient.ok) return mcpClient.response;
-    const mcp = await mcpRouter(req, {
-      clientAddress: mcpClient.value,
-      setIdleTimeout: conn.setIdleTimeout ?? (() => {}),
-    });
-    if (mcp) return mcp;
+  // ---- #1326: the input filter, before any database access ----
+  const isCaptchaChallenge = req.method === "GET" && url.pathname === "/api/captcha/challenge";
+  const pluginRoute = req.method === "POST" ? parsePluginPath(url.pathname) : null;
+  if (!isCaptchaChallenge && !pluginRoute) {
+    return errorResponse("NotFound", 404, requestId);
   }
+  const client = requestClientAddress(req, conn, requestId);
+  if (!client.ok) return client.response;
+  const memoryLimited = memoryRateLimited(client.value, requestId);
+  if (memoryLimited) return memoryLimited;
 
   if (!cachedAdapter) {
-    return jsonResponse(
-      { ok: false, error: { kind: "ServiceUnavailable", message: "gateway not bootstrapped" } },
-      { status: 503 },
-    );
+    return errorResponse("ServiceUnavailable", 503, requestId, { log: "gateway not bootstrapped" });
   }
+  const adapter = cachedAdapter;
   let settings: GatewaySettings;
   try {
-    settings = await loadSettings(cachedAdapter);
+    settings = await loadSettings(adapter);
   } catch (e) {
-    return settingsUnavailable(e);
+    return settingsUnavailable(e, requestId);
   }
 
-  // ---- Captcha challenge endpoint ----
-  if (req.method === "GET" && url.pathname === "/api/captcha/challenge") {
-    if (settings.captcha.provider === "off") {
-      return new Response(null, { status: 204 });
-    }
-    if (settings.captcha.provider !== "pow") {
-      return jsonResponse(
-        {
-          ok: false,
-          error: {
-            kind: "NotImplemented",
-            message: `provider ${settings.captcha.provider} not yet wired`,
-          },
-        },
-        { status: 501 },
-      );
-    }
-    const resolved = await resolveConsentedVisitor(req, settings);
-    if (!resolved.ok) return resolved.response;
-    const { visitor } = resolved;
-    // Each challenge is a row in gateway_pow_challenges: bound the minting
-    // per client address (client-ip.ts).
-    const ipHash = clientIpHash(req, conn);
-    if (!ipHash.ok) return ipHash.response;
-    const challengeRl = await consumeRateLimit(cachedAdapter, {
-      key: ipScopedRateLimitKey("_captcha", "challenge", ipHash.value),
-      spec: CAPTCHA_CHALLENGE_RATE_LIMIT,
+  if (isCaptchaChallenge) return captchaChallenge(req, settings, client.value, requestId);
+  if (!pluginRoute) return errorResponse("NotFound", 404, requestId);
+  return pluginOperation(req, settings, client.value, pluginRoute, requestId);
+}
+
+/** `GET /api/captcha/challenge`: a PoW challenge, bounded per client address. */
+async function captchaChallenge(
+  req: Request,
+  settings: GatewaySettings,
+  clientIp: string,
+  requestId: string,
+): Promise<Response> {
+  const adapter = cachedAdapter as DatabaseAdapter;
+  if (settings.captcha.provider === "off") {
+    return new Response(null, { status: 204 });
+  }
+  if (settings.captcha.provider !== "pow") {
+    return errorResponse("NotImplemented", 501, requestId, {
+      log: `captcha provider ${settings.captcha.provider} is not wired yet`,
     });
-    if (!challengeRl.allowed) {
-      return jsonResponse(
-        {
-          ok: false,
-          error: {
-            kind: "RateLimited",
-            message: "captcha challenge rate limit exceeded",
-          },
-        },
-        {
-          status: 429,
-          setCookies: [...visitor.setCookies],
-          retryAfterSec: challengeRl.retryAfterSec,
-        },
-      );
-    }
-    const challenge = await issuePowChallenge(cachedAdapter, { config: settings.captcha });
-    return jsonResponse({ ok: true, data: challenge }, { setCookies: [...visitor.setCookies] });
   }
+  const opLimited = operationRateLimited("_captcha.challenge", requestId);
+  if (opLimited) return opLimited;
+  await sweepGatewayStateIfDue?.();
+  const resolved = await resolveConsentedVisitor(req, settings, requestId);
+  if (!resolved.ok) return resolved.response;
+  const { visitor } = resolved;
+  // Each challenge is a row in gateway_pow_challenges: bound the minting
+  // per client address (client-ip.ts).
+  const challengeRl = await consumeRateLimit(adapter, {
+    key: ipScopedRateLimitKey("_captcha", "challenge", await clientIpHash(clientIp)),
+    spec: CAPTCHA_CHALLENGE_RATE_LIMIT,
+  });
+  if (!challengeRl.allowed) {
+    return errorResponse("RateLimited", 429, requestId, {
+      setCookies: [...visitor.setCookies],
+      retryAfterSec: challengeRl.retryAfterSec,
+    });
+  }
+  const challenge = await issuePowChallenge(adapter, { config: settings.captcha });
+  return jsonResponse({ ok: true, data: challenge }, { setCookies: [...visitor.setCookies] });
+}
 
-  // ---- Plugin dispatch ----
-  if (req.method !== "POST" || !url.pathname.startsWith("/api/plugin/")) {
-    return jsonResponse({ ok: false, error: { kind: "NotFound" } }, { status: 404 });
+/**
+ * Whether the active plugin `slug` serves `operation` to visitors, from
+ * the registry the admin published (synced at most every few seconds, no
+ * write): the 404 for an invented name comes before the body is read, a
+ * rate-limit bucket exists or a log row is written (#1326 M1). The
+ * dispatcher keeps its own default-deny check; this one only keeps junk
+ * out of the database.
+ */
+async function servedToVisitors(
+  slug: string,
+  operation: string,
+): Promise<"served" | "unknown" | "unpublished"> {
+  await syncDispatchPlugins();
+  const plugin = loadedPlugins.bySlug(slug);
+  if (!plugin) return unpublishedRegistryError() ? "unpublished" : "unknown";
+  const served =
+    Object.hasOwn(plugin.definition.operations, operation) &&
+    publicOperationOf(plugin.definition.publicOperations, operation) !== undefined;
+  return served ? "served" : "unknown";
+}
+
+/**
+ * Whether `req` comes from the staging host's pages (`Origin` is
+ * `https://<staging host>`, as the admin published it). False when no
+ * staging host is set or the gate state cannot be read: the caller then
+ * refuses the request like any other foreign origin.
+ */
+async function isStagingOrigin(req: Request, adapter: DatabaseAdapter): Promise<boolean> {
+  const origin = req.headers.get("origin")?.toLowerCase();
+  if (!origin) return false;
+  try {
+    const state = await loadStagingState(adapter);
+    return state.host !== null && origin === `https://${state.host.toLowerCase()}`;
+  } catch (e) {
+    console.error(`[api-gateway] staging host unavailable: ${describeFailure(e)}`);
+    return false;
   }
-  // A browser marks a POST another site's page triggers as cross-site; the
-  // site's own components post same-origin (the gateway serves /api/* on the
-  // site's host). Callers without the header (non-browser clients, old
-  // browsers) pass: this is defense in depth over the SameSite=Lax cookies.
+}
+
+/** `POST /api/plugin/<slug>/<operation>` (pipeline in the file comment). */
+async function pluginOperation(
+  req: Request,
+  settings: GatewaySettings,
+  clientIp: string,
+  route: { readonly slug: string; readonly operation: string },
+  requestId: string,
+): Promise<Response> {
+  const adapter = cachedAdapter as DatabaseAdapter;
+  const { slug, operation: operationName } = route;
+  if (settings.liveOrigins === null || settings.liveOrigins.length === 0) {
+    return errorResponse("ServiceUnavailable", 503, requestId, {
+      log:
+        settings.liveOrigins === null
+          ? "the admin has not published the live site origins yet (published_gateway_settings.live_origins); run the database migrations (they publish them) or start the admin"
+          : "no live site origin is known, so no plugin request can be accepted; set the site's base URL (site_defaults.site_base_url, Settings → SEO) or add a public domain (Settings → Domains)",
+    });
+  }
+  // A browser marks a POST another site's page triggers as cross-site.
+  // Defense in depth below the Origin rule, which also refuses staging.
   if (req.headers.get("sec-fetch-site") === "cross-site") {
-    return jsonResponse(
-      {
-        ok: false,
-        error: {
-          kind: "Forbidden",
-          message: "cross-site plugin requests are not allowed",
-        },
+    return errorResponse("Forbidden", 403, requestId);
+  }
+  const refused = refusePluginRequest(req, settings.liveOrigins);
+  if (refused?.kind === "OriginNotAllowed" && (await isStagingOrigin(req, adapter))) {
+    // #1326 interim (until staging has its own gateway, #1329/#1330): a
+    // staged page's plugin call is refused without a failed request in
+    // the browser, so the Stage audit does not count it as a page error.
+    // Nothing is dispatched or written.
+    return new Response(STAGING_PLUGIN_STUB_BODY, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-Request-Id": requestId,
       },
-      { status: 403 },
-    );
+    });
   }
-  const match = PLUGIN_PATH_RE.exec(url.pathname);
-  if (!match) {
-    return jsonResponse(
-      { ok: false, error: { kind: "BadRequest", message: "invalid plugin route" } },
-      { status: 400 },
-    );
+  if (refused) {
+    return errorResponse(refused.kind, refused.status, requestId, {
+      log: `${req.headers.get("content-type") ?? "no content-type"} from ${req.headers.get("origin") ?? "no origin"} to ${slug}.${operationName}`,
+    });
   }
-  const [, slug, operationName] = match;
-  if (!slug || !operationName) {
-    return jsonResponse({ ok: false, error: { kind: "BadRequest" } }, { status: 400 });
+  const served = await servedToVisitors(slug, operationName);
+  if (served === "unpublished") {
+    return errorResponse("ProjectionNotPublished", 503, requestId, {
+      log: unpublishedRegistryError()?.message ?? "plugin registry not published",
+    });
   }
+  if (served === "unknown") return errorResponse("NotFound", 404, requestId);
+  const opLimited = operationRateLimited(`${slug}.${operationName}`, requestId);
+  if (opLimited) return opLimited;
+  await sweepGatewayStateIfDue?.();
 
   const start = performance.now();
+  const logRow = (
+    row: Omit<RequestLogRow, "pluginSlug" | "operation" | "durationMs" | "bodyBytes">,
+    bodyBytes: number,
+  ) =>
+    recordRequest({
+      pluginSlug: slug,
+      operation: operationName,
+      durationMs: Math.round(performance.now() - start),
+      bodyBytes,
+      ...row,
+    });
 
   // 1. Body size cap.
   const cap = await readBodyWithCap(req, settings.maxBodyBytes);
   if (!cap.ok) {
-    await recordRequest({
-      pluginSlug: slug,
-      operation: operationName,
-      statusCode: 413,
-      durationMs: Math.round(performance.now() - start),
-      bodyBytes: cap.bytes,
-      wasRateLimited: false,
-      wasHoneypotCaught: false,
-      captchaPassed: false,
-      errorKind: "PayloadTooLarge",
-    });
-    return jsonResponse(
+    await logRow(
       {
-        ok: false,
-        error: {
-          kind: "PayloadTooLarge",
-          message: `body exceeded ${cap.limit} bytes (saw ${cap.bytes})`,
-        },
+        statusCode: 413,
+        wasRateLimited: false,
+        wasHoneypotCaught: false,
+        captchaPassed: false,
+        errorKind: "PayloadTooLarge",
       },
-      { status: 413 },
+      cap.bytes,
     );
+    return errorResponse("PayloadTooLarge", 413, requestId);
   }
   let body: unknown;
   try {
     body = cap.bytes > 0 ? JSON.parse(new TextDecoder().decode(cap.body)) : {};
   } catch {
-    return jsonResponse(
-      { ok: false, error: { kind: "BadRequest", message: "expected JSON body" } },
-      { status: 400 },
-    );
+    return errorResponse("BadRequest", 400, requestId);
   }
 
   // 2. Resolve the visitor — an id only with the visitor's consent (#677).
-  const resolved = await resolveConsentedVisitor(req, settings);
+  const resolved = await resolveConsentedVisitor(req, settings, requestId);
   if (!resolved.ok) return resolved.response;
   const { visitor } = resolved;
   const cookies: string[] = [...visitor.setCookies];
@@ -708,68 +855,62 @@ export async function handleRequest(
   // and never by the visitor cookie: a client can drop, rotate or withhold
   // a cookie at will, so a cookie-keyed budget would be no limit at all.
   // Visitors behind one NAT share a budget — the usual trade-off.
-  const resolvedIp = clientIpHash(req, conn);
-  if (!resolvedIp.ok) return resolvedIp.response;
-  const ipHash = resolvedIp.value;
-  const rateKey = ipScopedRateLimitKey(slug, operationName, ipHash);
+  const ipHash = await clientIpHash(clientIp);
+  const plugin = loadedPlugins.bySlug(slug);
+  // Only a served operation reaches this line, so the spec cache holds
+  // real operations only (#1326 M1).
+  const spec = await resolveRateLimitSpec(adapter, slug, operationName, plugin);
 
-  // 3. Honeypot edge-evict — lie to the bot, never touch the DB.
-  // P13 audit fix #5 — DO NOT mint a fresh visitor cookie for caught
-  // bots: nothing a bot does should hand it a stable identity. Drop the
-  // cookies array on this branch.
-  // P13 audit re-pass — also consume an IP-scoped rate-limit token so
-  // sustained spam from a single IP eventually gets throttled.
+  // 3. Honeypot edge-evict — lie to the bot, never touch the DB beyond its
+  // bucket. P13 audit fix #5 — DO NOT mint a fresh visitor cookie for caught
+  // bots: nothing a bot does should hand it a stable identity. An
+  // IP-scoped bucket throttles sustained spam from one address; once it is
+  // spent the bot gets the 429 (#1326: its decision used to be discarded).
   const hp = checkHoneypot(body);
   if (hp.tripped) {
-    const honeypotSpec = await resolveRateLimitSpec(cachedAdapter, slug, operationName);
-    await consumeRateLimit(cachedAdapter, {
+    const honeypotRl = await consumeRateLimit(adapter, {
       key: ipScopedRateLimitKey(slug, "honeypot", ipHash),
-      spec: honeypotSpec,
-    }).catch(() => undefined);
-    await recordRequest({
-      pluginSlug: slug,
-      operation: operationName,
-      statusCode: 200,
-      durationMs: Math.round(performance.now() - start),
-      bodyBytes: cap.bytes,
-      wasRateLimited: false,
-      wasHoneypotCaught: true,
-      captchaPassed: false,
+      spec,
     });
+    await logRow(
+      {
+        statusCode: honeypotRl.allowed ? 200 : 429,
+        wasRateLimited: !honeypotRl.allowed,
+        wasHoneypotCaught: true,
+        captchaPassed: false,
+      },
+      cap.bytes,
+    );
+    if (!honeypotRl.allowed) {
+      return errorResponse("RateLimited", 429, requestId, {
+        retryAfterSec: honeypotRl.retryAfterSec,
+      });
+    }
     return jsonResponse({ ok: true, data: { accepted: true } });
   }
 
-  // 4. Rate limit. The registry was synced while resolving the visitor
-  // (step 2), so a plugin an Owner just activated (or disabled) is seen
-  // with its manifest's limits.
-  const plugin = loadedPlugins.bySlug(slug);
-  const spec = await resolveRateLimitSpec(cachedAdapter, slug, operationName, plugin);
-  const rl = await consumeRateLimit(cachedAdapter, {
-    key: rateKey,
+  // 4. Rate limit. The registry was synced by the served check above, so a
+  // plugin an Owner just activated (or disabled) is seen with its
+  // manifest's limits.
+  const rl = await consumeRateLimit(adapter, {
+    key: ipScopedRateLimitKey(slug, operationName, ipHash),
     spec,
   });
   if (!rl.allowed) {
-    await recordRequest({
-      pluginSlug: slug,
-      operation: operationName,
-      statusCode: 429,
-      durationMs: Math.round(performance.now() - start),
-      bodyBytes: cap.bytes,
-      wasRateLimited: true,
-      wasHoneypotCaught: false,
-      captchaPassed: false,
-      errorKind: "RateLimited",
-    });
-    return jsonResponse(
+    await logRow(
       {
-        ok: false,
-        error: {
-          kind: "RateLimited",
-          message: `rate limit exceeded (${spec.perVisitorMax} per ${spec.windowSeconds}s)`,
-        },
+        statusCode: 429,
+        wasRateLimited: true,
+        wasHoneypotCaught: false,
+        captchaPassed: false,
+        errorKind: "RateLimited",
       },
-      { status: 429, setCookies: cookies, retryAfterSec: rl.retryAfterSec },
+      cap.bytes,
     );
+    return errorResponse("RateLimited", 429, requestId, {
+      setCookies: cookies,
+      retryAfterSec: rl.retryAfterSec,
+    });
   }
 
   // 5. Captcha verify (when caller supplied one + provider is PoW).
@@ -779,23 +920,22 @@ export async function handleRequest(
       ._caelo_captcha;
     if (proof) {
       // #1332 — a proof is valid only for the operation it was solved for.
-      const verify = await verifyPowProof(cachedAdapter, proof, `${slug}.${operationName}`);
+      const verify = await verifyPowProof(adapter, proof, `${slug}.${operationName}`);
       if (!verify.ok) {
-        await recordRequest({
-          pluginSlug: slug,
-          operation: operationName,
-          statusCode: 403,
-          durationMs: Math.round(performance.now() - start),
-          bodyBytes: cap.bytes,
-          wasRateLimited: false,
-          wasHoneypotCaught: false,
-          captchaPassed: false,
-          errorKind: "CaptchaFailed",
-        });
-        return jsonResponse(
-          { ok: false, error: { kind: "CaptchaFailed", message: verify.reason } },
-          { status: 403, setCookies: cookies },
+        await logRow(
+          {
+            statusCode: 403,
+            wasRateLimited: false,
+            wasHoneypotCaught: false,
+            captchaPassed: false,
+            errorKind: "CaptchaFailed",
+          },
+          cap.bytes,
         );
+        return errorResponse("CaptchaFailed", 403, requestId, {
+          setCookies: cookies,
+          log: verify.reason,
+        });
       }
       captchaPassed = true;
     }
@@ -857,7 +997,8 @@ export async function handleRequest(
               result.error.kind === "OperationNotPublic"
               ? 404
               : // #1332 — refused by the operation's declared contract, or
-                // by the plugin in words meant for the visitor.
+                // by the plugin; the detail (Zod issues, the plugin's words)
+                // stays in the log like every other error (#1346).
                 result.error.kind === "InvalidInput"
                 ? 400
                 : result.error.kind === "CaptchaRequired"
@@ -865,29 +1006,26 @@ export async function handleRequest(
                   : result.error.kind === "Rejected"
                     ? 422
                     : 500;
-    await recordRequest({
-      pluginSlug: slug,
-      operation: operationName,
-      statusCode: status,
-      durationMs: Math.round(performance.now() - start),
-      bodyBytes: cap.bytes,
-      wasRateLimited: false,
-      wasHoneypotCaught: false,
-      captchaPassed,
-      errorKind: result.error.kind,
+    await logRow(
+      {
+        statusCode: status,
+        wasRateLimited: false,
+        wasHoneypotCaught: false,
+        captchaPassed,
+        errorKind: result.error.kind,
+      },
+      cap.bytes,
+    );
+    // The plugin's message (an exception's text, #763 M4) stays in the log.
+    return errorResponse(result.error.kind, status, requestId, {
+      setCookies: cookies,
+      log: `${slug}.${operationName}: ${result.error.message ?? "no message"}`,
     });
-    return jsonResponse({ ok: false, error: result.error }, { status, setCookies: cookies });
   }
-  await recordRequest({
-    pluginSlug: slug,
-    operation: operationName,
-    statusCode: 200,
-    durationMs: Math.round(performance.now() - start),
-    bodyBytes: cap.bytes,
-    wasRateLimited: false,
-    wasHoneypotCaught: false,
-    captchaPassed,
-  });
+  await logRow(
+    { statusCode: 200, wasRateLimited: false, wasHoneypotCaught: false, captchaPassed },
+    cap.bytes,
+  );
   return jsonResponse({ ok: true, data: result.value }, { setCookies: cookies });
 }
 
@@ -964,10 +1102,11 @@ if (import.meta.main) {
   }
   const server = Bun.serve({
     port: PORT,
+    // #1326 — explicit, not Bun's 128 MB default: no route reads more.
+    maxRequestBodySize: SERVER_MAX_REQUEST_BODY_BYTES,
     fetch: (req, srv) =>
       handleRequest(req, {
         peerAddress: srv.requestIP(req)?.address ?? null,
-        setIdleTimeout: (seconds) => srv.timeout(req, seconds),
       }),
   });
   console.log(`[api-gateway] listening on :${server.port}`);

@@ -34,6 +34,7 @@ import {
   invalidateGatewaySettings,
   setGatewayAdapter,
 } from "./server.js";
+import { registerTestLiveOrigin, TEST_LIVE_ORIGIN } from "./test-support.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -112,7 +113,11 @@ function ping(): Promise<Response> {
   return handleRequest(
     new Request(`http://localhost/api/plugin/${SLUG}/ping`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Forwarded-For": "192.0.2.67" },
+      headers: {
+        "Content-Type": "application/json",
+        Origin: TEST_LIVE_ORIGIN,
+        "X-Forwarded-For": "192.0.2.67",
+      },
       body: "{}",
     }),
   );
@@ -148,6 +153,7 @@ beforeAll(async () => {
     await tx`UPDATE plugins SET approved_capabilities = '{}'::text[] WHERE slug = ${SLUG}`;
     await tx`UPDATE site_settings SET captcha_provider = 'off' WHERE id = 1`;
   });
+  await registerTestLiveOrigin(ADMIN_URL as string);
   await publishProjectionOnce(adminAdapter, { declarations: new Map() });
   resetPluginHost();
 

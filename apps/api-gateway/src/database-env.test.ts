@@ -18,7 +18,9 @@ import {
   type SecretFileReader,
 } from "./database-env.js";
 
-const OWN = { PUBLIC_DATABASE_URL: "postgres://public_role:p@db:5432/cms_public" };
+const OWN = {
+  PUBLIC_DATABASE_URL: "postgres://public_role:p@db:5432/cms_public?sslmode=verify-full",
+};
 
 /** A filesystem with exactly `files` (path → contents). */
 function fakeFiles(files: Record<string, string> = {}): SecretFileReader {
@@ -59,27 +61,6 @@ describe("adminDatabaseAccessInEnv (#635)", () => {
         PAGE_SIZE: "50",
         BYPASS_CACHE: "1",
       }),
-    ).toEqual([]);
-  });
-
-  it("accepts the remote-MCP broker's env and its OAuth client file (#806)", () => {
-    const clientFile = "/secrets/operator-oauth-client/latest";
-    expect(
-      check(
-        {
-          ...OWN,
-          CAELO_MCP_PUBLIC_URL: "https://caelo-production-gateway-abc-ew.a.run.app",
-          CAELO_ADMIN_URL: "https://caelo-production-admin-abc-ew.a.run.app",
-          CAELO_MCP_OAUTH_SEAL_KEY: "q0pW0X9mY3l0ZXMtb2Yta2V5LW1hdGVyaWFsLTMyYg==",
-          CAELO_OPERATOR_OAUTH_CLIENT_FILE: clientFile,
-        },
-        fakeFiles({
-          [clientFile]: JSON.stringify({
-            client_id: "1234-abc.apps.googleusercontent.com",
-            client_secret: "GOCSPX-abcdef",
-          }),
-        }),
-      ),
     ).toEqual([]);
   });
 

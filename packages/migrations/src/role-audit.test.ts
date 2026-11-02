@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { GATEWAY_ROLE_CONNECTION_LIMIT } from "@caelo-cms/shared";
 import { assertNoRlsPolicyDrift, evaluateRlsDrift, RLS_DRIFT_SQL } from "./rls.js";
 import {
   type AuditedRole,
   assertRoleIsolation,
   type CrossDatabaseGrantRow,
   evaluateRoleAudit,
+  PUBLIC_ROLE_LIMITS,
   ROLE_AUDIT_NEXT_STEP,
   ROLE_AUDIT_SQL,
   type RoleAuditRow,
   roleAuditError,
   toAuditedRole,
 } from "./role-audit.js";
+
+const PUBLIC_ROLE_SET = {
+  connectionLimit: PUBLIC_ROLE_LIMITS.connectionLimit,
+  settings: Object.entries(PUBLIC_ROLE_LIMITS.settings).map(([k, v]) => `${k}=${v}`),
+};
 
 const clean = (rolname: string, kind: AuditedRole["kind"]): AuditedRole => ({
   rolname,
@@ -24,6 +31,8 @@ const clean = (rolname: string, kind: AuditedRole["kind"]): AuditedRole => ({
   rolreplication: false,
   memberOf: [],
   canConnectHere: false,
+  // #1338 — public_role as bootstrap.sh / migration 0500 leave it.
+  ...(rolname === "public_role" ? PUBLIC_ROLE_SET : { connectionLimit: -1, settings: [] }),
 });
 
 /** public_role exactly as the Cloud SQL Admin API leaves it (#633). */
@@ -115,6 +124,64 @@ describe("evaluateRoleAudit (#633)", () => {
   });
 });
 
+describe("public_role database limits (#1338)", () => {
+  it("refuses public_role without its connection limit and settings", () => {
+    const r = evaluateRoleAudit([
+      { ...clean("public_role", "gateway-login"), connectionLimit: -1, settings: [] },
+    ]);
+    expect(r.violations).toHaveLength(4);
+    expect(r.violations[0]).toStartWith(
+      "public_role has CONNECTION LIMIT -1 (it must be 30; set by cms_admin migration 0500",
+    );
+    expect(r.violations.slice(1).map((v) => v.split(" (")[0])).toEqual([
+      "public_role has statement_timeout unset",
+      "public_role has idle_in_transaction_session_timeout unset",
+      "public_role has work_mem unset",
+    ]);
+  });
+
+  it("refuses a weaker value, and leaves the former gateway_role alone", () => {
+    const r = evaluateRoleAudit([
+      {
+        ...clean("public_role", "gateway-login"),
+        settings: PUBLIC_ROLE_SET.settings.map((s) =>
+          s.startsWith("statement_timeout=") ? "statement_timeout=0" : s,
+        ),
+      },
+      clean("gateway_role", "gateway-login"),
+    ]);
+    expect(r.violations).toEqual([
+      "public_role has statement_timeout = 0 (it must be 5s; set by cms_admin migration 0500 or packages/migrations/src/bootstrap.sh (self-hosted: `cms-provision upgrade` re-runs it))",
+    ]);
+  });
+
+  it("is the limit the pool budget refuses to exceed", () => {
+    expect(PUBLIC_ROLE_LIMITS.connectionLimit).toBe(GATEWAY_ROLE_CONNECTION_LIMIT);
+  });
+
+  it("asks the database for both", () => {
+    expect(ROLE_AUDIT_SQL).toContain("r.rolconnlimit AS connection_limit");
+    expect(ROLE_AUDIT_SQL).toContain("COALESCE(r.rolconfig, ARRAY[]::text[]) AS settings");
+  });
+
+  it("bootstrap.sh and migration 0500 set exactly these values", async () => {
+    const root = new URL("../", import.meta.url);
+    const texts = await Promise.all(
+      ["src/bootstrap.sh", "migrations/cms_admin/0500_gateway_role_limits_live_origins.sql"].map(
+        (p) => Bun.file(new URL(p, root)).text(),
+      ),
+    );
+    for (const text of texts) {
+      expect(text).toContain(
+        `ALTER ROLE public_role CONNECTION LIMIT ${PUBLIC_ROLE_LIMITS.connectionLimit};`,
+      );
+      for (const [k, v] of Object.entries(PUBLIC_ROLE_LIMITS.settings)) {
+        expect(text).toContain(`ALTER ROLE public_role SET ${k} = '${v}';`);
+      }
+    }
+  });
+});
+
 describe("toAuditedRole", () => {
   const row: RoleAuditRow = {
     rolname: "public_role",
@@ -126,6 +193,8 @@ describe("toAuditedRole", () => {
     rolreplication: false,
     member_of: null,
     can_connect_here: false,
+    connection_limit: PUBLIC_ROLE_SET.connectionLimit,
+    settings: PUBLIC_ROLE_SET.settings,
   };
 
   it("maps a row, a NULL membership list to none", () => {
@@ -169,6 +238,8 @@ describe("assertRoleIsolation", () => {
     rolreplication: a.rolreplication,
     member_of: [...a.memberOf],
     can_connect_here: a.canConnectHere,
+    connection_limit: a.connectionLimit,
+    settings: [...a.settings],
   });
 
   it("throws the violations and the next step", async () => {

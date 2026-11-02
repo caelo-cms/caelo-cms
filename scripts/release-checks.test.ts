@@ -284,8 +284,13 @@ describe("ownerAction rule (#868)", () => {
 });
 
 describe("buildReleaseManifest / parseDigestFlags", () => {
-  const digests = { admin: d("a"), gateway: d("b"), ops: d("c") };
-  const platformDigests = { admin: d("1"), gateway: d("2"), ops: d("3") };
+  const digests = { admin: d("a"), gateway: d("b"), ops: d("c"), "mcp-auth-proxy": d("d") };
+  const platformDigests = {
+    admin: d("1"),
+    gateway: d("2"),
+    ops: d("3"),
+    "mcp-auth-proxy": d("4"),
+  };
 
   it("builds a schema-valid manifest carrying the declaration", () => {
     const m = buildReleaseManifest({
@@ -338,6 +343,37 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
         migrationHead: "h",
       }),
     ).toThrow();
+  });
+
+  it("#1328: refuses a release without the mcp-auth-proxy image (the schema alone would accept it)", () => {
+    const { "mcp-auth-proxy": _proxy, ...withoutProxy } = digests;
+    expect(() =>
+      buildReleaseManifest({
+        meta: META,
+        digests: withoutProxy as typeof digests,
+        platformDigests,
+        contractMigrations: false,
+        migrationHead: "h",
+      }),
+    ).toThrow(/no digest for: mcp-auth-proxy/);
+    const { "mcp-auth-proxy": _p, ...platformWithoutProxy } = platformDigests;
+    expect(() =>
+      buildReleaseManifest({
+        meta: META,
+        digests,
+        platformDigests: platformWithoutProxy as typeof platformDigests,
+        contractMigrations: false,
+        migrationHead: "h",
+      }),
+    ).toThrow(/no platform digest for: mcp-auth-proxy/);
+    const m = buildReleaseManifest({
+      meta: META,
+      digests,
+      platformDigests,
+      contractMigrations: false,
+      migrationHead: "h",
+    });
+    expect(m.digests["mcp-auth-proxy"]).toBe(d("d"));
   });
 
   it("parses --digest flags and rejects unknown images", () => {

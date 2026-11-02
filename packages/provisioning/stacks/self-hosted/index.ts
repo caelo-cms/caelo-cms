@@ -29,6 +29,7 @@ import { generateCaddyfile, selfHostedAdminHost, selfHostedSeedDomains } from ".
 import {
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   composeProjectName,
   generateDockerCompose,
   SITE_OUTPUT_ROOT,
@@ -49,6 +50,9 @@ const adminMemory = cfg.get("adminMemory");
 // .caelo/release.json; copy those values here.
 const adminImage = cfg.require("adminImage");
 const gatewayImage = cfg.require("gatewayImage");
+// #1328 — the MCP-Auth-Proxy (remote MCP's sign-in service, its own
+// container and its own host `mcp.<domain>`).
+const mcpAuthProxyImage = cfg.require("mcpAuthProxyImage");
 
 const composePath = resolve(caeloDir, "docker-compose.yml");
 const caddyPath = resolve(caeloDir, "Caddyfile");
@@ -80,7 +84,12 @@ const composeYaml = pulumi
       resendApiKey: process.env.RESEND_API_KEY,
       diskSize: "20Gi",
       ...(adminMemory ? { adminMemory } : {}),
-      images: { mode: "release", admin: adminImage, gateway: gatewayImage },
+      images: {
+        mode: "release",
+        admin: adminImage,
+        gateway: gatewayImage,
+        "mcp-auth-proxy": mcpAuthProxyImage,
+      },
       ports: { http: 80, https: 443 },
       project: composeProjectName(domain),
     }),
@@ -95,6 +104,7 @@ const caddyConf = generateCaddyfile({
   stagingSiteRoot: `${SITE_OUTPUT_ROOT}/output/staging/current`,
   adminUpstream: COMPOSE_ADMIN_UPSTREAM,
   gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
+  mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   domains: selfHostedSeedDomains(domain, stagingHost),
 });
 const bootstrapScript = selfHostedBootstrapScript({ agent: false });

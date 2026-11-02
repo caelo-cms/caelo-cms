@@ -9,7 +9,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { GCP_PUBLIC_BASE_PATHS, isGcpRedirectRule, withGcpRedirects } from "@caelo-cms/shared";
+import { GCP_GATEWAY_PATHS, isGcpRedirectRule, withGcpRedirects } from "@caelo-cms/shared";
 import * as pulumi from "@pulumi/pulumi";
 import { URL_MAP_REDIRECTS_PERMISSIONS, urlMapRedirectsRoleId } from "./gcp-names.js";
 
@@ -66,7 +66,8 @@ describe("gcp stack URL map (Pulumi mocks)", () => {
       {
         name: PUBLIC_PATH_MATCHER,
         defaultService: "bucket-id",
-        pathRules: [{ paths: [...GCP_PUBLIC_BASE_PATHS], service: "gateway-id" }],
+        // #1328 — only /api/* here: the MCP-Auth-Proxy's rule is the CLI's.
+        pathRules: [{ paths: [...GCP_GATEWAY_PATHS], service: "gateway-id" }],
       },
       { name: "admin", defaultService: "admin-id" },
     ]);
@@ -102,12 +103,9 @@ describe("gcp stack URL map (Pulumi mocks)", () => {
     );
     expect(withRedirects.pathRules?.filter((r) => !isGcpRedirectRule(r))).toEqual([
       {
-        paths: [
-          "/api/*",
-          // #806 — the remote-MCP broker's discovery documents.
-          "/.well-known/oauth-protected-resource/*",
-          "/.well-known/oauth-authorization-server/*",
-        ],
+        // #1328 — the remote-MCP discovery paths go to the MCP-Auth-Proxy's
+        // own rule, which the CLI adds (remote-mcp.ts planUrlMapPaths).
+        paths: ["/api/*"],
         service: "gateway-id",
       },
     ]);

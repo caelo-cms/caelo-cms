@@ -16,12 +16,11 @@
  * rewrite what the admin published.
  */
 
-import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { drainProjectionOnce, publishProjectionOnce } from "@caelo-cms/admin-core";
 import {
   bootstrap,
   bootstrapDispatchOnly,
-  GENERIC_VISITOR_FAILURE,
   loadedPlugins,
   resetDispatchOnlyHost,
   resetPluginHost,
@@ -46,6 +45,7 @@ import {
   invalidateGatewaySettings,
   setGatewayAdapter,
 } from "./server.js";
+import { registerTestLiveOrigin, TEST_LIVE_ORIGIN, withErrorLog } from "./test-support.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -237,6 +237,7 @@ function post(path: string, body: unknown, headers: Record<string, string> = {})
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Origin: TEST_LIVE_ORIGIN,
       "X-Forwarded-For": viaLb(nextClient()),
       ...headers,
     },
@@ -277,6 +278,7 @@ beforeAll(async () => {
     );
     await tx.unsafe(`INSERT INTO ${SCHEMA}.drafts (body) VALUES ('unpublished')`);
   }, pluginId);
+  await registerTestLiveOrigin(ADMIN_URL as string);
   await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
   // The admin process goes away; only the gateway's view remains.
   resetPluginHost();
@@ -329,7 +331,7 @@ describe("the gateway's database identity (#613, #635)", () => {
   it("needs only PUBLIC_DATABASE_URL, with its _PASSWORD companion", () => {
     expect(() => gatewayDatabaseUrls({})).toThrow(/PUBLIC_DATABASE_URL/);
     const urls = gatewayDatabaseUrls({
-      PUBLIC_DATABASE_URL: "postgresql://public_role@h:5432/cms_public",
+      PUBLIC_DATABASE_URL: "postgresql://public_role@h:5432/cms_public?sslmode=verify-full",
       PUBLIC_DATABASE_PASSWORD: "p",
     });
     expect(new URL(urls.public).password).toBe("p");
@@ -380,7 +382,7 @@ describe("/api/* served from cms_public alone (#635)", () => {
   it("records the page a declared baked-data trigger names with its op event (#1155)", async () => {
     const pageId = "11550000-0000-4000-8000-0000000000aa";
     await expectStatus(await handleRequest(post(`/api/plugin/${SLUG}/vote`, { pageId })), 200);
-    // Not a trigger: no page, whatever the visitor sends.
+    // Not a trigger: no event at all, whatever the visitor sends (#1338).
     await expectStatus(
       await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "x", pageId })),
       200,
@@ -391,13 +393,10 @@ describe("/api/* served from cms_public alone (#635)", () => {
                   WHERE plugin_id = ${pluginId}::uuid AND operation IN (${`${SLUG}.vote`}, ${`${SLUG}.save`})
                   ORDER BY id DESC LIMIT 2`) as { operation: string; page_id: string | null }[],
     );
-    expect(events).toEqual([
-      { operation: `${SLUG}.save`, page_id: null },
-      { operation: `${SLUG}.vote`, page_id: pageId },
-    ]);
+    expect(events).toEqual([{ operation: `${SLUG}.vote`, page_id: pageId }]);
   });
 
-  it("dispatches a visitor write, logs the request and records the op event in cms_public", async () => {
+  it("dispatches a visitor write and logs the request, without an op event nobody reads", async () => {
     const r = await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "hi" }));
     await expectStatus(r, 200);
     // No consent provider runs here, so nobody has consented to the
@@ -421,7 +420,9 @@ describe("/api/* served from cms_public alone (#635)", () => {
           entity_id: string;
         }[],
     );
-    expect(events).toContainEqual({ operation: `${SLUG}.save`, entity_id: data.id });
+    // #1338 — `save` is no baked-data trigger: nobody reads an event of it,
+    // so the gateway writes none.
+    expect(events.map((e) => e.entity_id)).not.toContain(data.id);
     // Nothing of the visitor call landed in the authoring audit trail.
     const audited = await asAdmin(
       async (tx) =>
@@ -441,24 +442,19 @@ describe("/api/* served from cms_public alone (#635)", () => {
   });
 
   it("an undeclared table is unreachable, and private storage is read-only", async () => {
-    // #1332 — the visitor reads one generic sentence; the reason is in the
-    // gateway's log, never in the response.
-    const logged = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const internal = await handleRequest(post(`/api/plugin/${SLUG}/read_internal`, {}));
-      expect(internal.status).toBe(500);
-      const internalText = await internal.text();
-      expect(internalText).toContain(GENERIC_VISITOR_FAILURE);
-      expect(internalText).not.toContain("visitorProjection");
-      const write = await handleRequest(post(`/api/plugin/${SLUG}/write_setting`, {}));
-      expect(write.status).toBe(500);
-      expect(await write.text()).not.toContain("private storage");
-      const lines = logged.mock.calls.map((c) => String(c[0])).join("\n");
-      expect(lines).toContain("not in the plugin's visitorProjection");
-      expect(lines).toContain("cannot write private storage");
-    } finally {
-      logged.mockRestore();
-    }
+    // #1326 — the plugin's error text reaches the log, never the visitor.
+    const internal = await withErrorLog(() =>
+      handleRequest(post(`/api/plugin/${SLUG}/read_internal`, {})),
+    );
+    expect(internal.value.status).toBe(500);
+    expect(await internal.value.text()).not.toContain("visitorProjection");
+    expect(internal.log).toContain("not in the plugin's visitorProjection");
+    const write = await withErrorLog(() =>
+      handleRequest(post(`/api/plugin/${SLUG}/write_setting`, {})),
+    );
+    expect(write.value.status).toBe(500);
+    expect(await write.value.text()).not.toContain("private storage");
+    expect(write.log).toContain("cannot write private storage");
   });
 
   it("follows an admin write through the outbox", async () => {
@@ -509,11 +505,13 @@ describe("/api/* served from cms_public alone (#635)", () => {
       comments: false,
     });
     try {
-      const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
+      const { value: r, log } = await withErrorLog(() =>
+        handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {})),
+      );
       await expectStatus(r, 503);
-      const body = (await r.json()) as { error: { kind: string; message: string } };
+      const body = (await r.json()) as { error: { kind: string } };
       expect(body.error.kind).toBe("ProjectionNotPublished");
-      expect(body.error.message).toContain(`plugin:${pluginId}`);
+      expect(log).toContain(`plugin:${pluginId}`);
       const left = await asPublicAdmin(
         async (tx) =>
           (await tx`SELECT 1 FROM published_plugin_rows WHERE plugin_id = ${pluginId}::uuid`) as unknown[],
@@ -538,11 +536,13 @@ describe("/api/* served from cms_public alone (#635)", () => {
         systemActorId: SYSTEM_ACTOR_ID,
         testPlugins: [{ definition: fixture }],
       });
-      const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
+      const { value: r, log } = await withErrorLog(() =>
+        handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {})),
+      );
       await expectStatus(r, 503);
-      const body = (await r.json()) as { error: { kind: string; message: string } };
+      const body = (await r.json()) as { error: { kind: string } };
       expect(body.error.kind).toBe("ProjectionNotPublished");
-      expect(body.error.message).toContain('"plugins"');
+      expect(log).toContain('"plugins"');
     } finally {
       await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS, comments: false });
       resetDispatchOnlyHost();
@@ -728,9 +728,12 @@ describe("the public side cannot rewrite what the admin published (#635, adversa
     });
     invalidateGatewaySettings();
     try {
-      const r = await handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "x" }));
+      const { value: r, log } = await withErrorLog(() =>
+        handleRequest(post(`/api/plugin/${SLUG}/save`, { message: "x" })),
+      );
       expect(r.status).toBe(503);
-      expect(await r.text()).toContain("has not published the gateway settings");
+      expect(await r.text()).not.toContain("published");
+      expect(log).toContain("has not published the gateway settings");
     } finally {
       await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS, comments: false });
       invalidateGatewaySettings();
@@ -780,20 +783,20 @@ describe("the visitor's address behind the gcp load balancer (#845)", () => {
   });
 
   it("refuses a request without the LB's entries instead of guessing (503)", async () => {
-    const r = await save(nextClient());
+    const { value: r, log } = await withErrorLog(() => save(nextClient()));
     await expectStatus(r, 503);
-    const err = ((await r.json()) as { error: { kind: string; message: string } }).error;
+    const err = ((await r.json()) as { error: { kind: string } }).error;
     expect(err.kind).toBe("ClientAddressUnavailable");
-    expect(err.message).toContain("CAELO_TRUSTED_PROXY_HOPS");
+    expect(log).toContain("CAELO_TRUSTED_PROXY_HOPS");
   });
 
   it("refuses to start serving without the hop count, naming the fix", async () => {
     const saved = process.env.CAELO_TRUSTED_PROXY_HOPS;
     delete process.env.CAELO_TRUSTED_PROXY_HOPS;
     try {
-      const r = await save(viaLb(nextClient()));
+      const { value: r, log } = await withErrorLog(() => save(viaLb(nextClient())));
       await expectStatus(r, 503);
-      expect(await r.text()).toContain("cms-provision upgrade");
+      expect(log).toContain("cms-provision upgrade");
     } finally {
       process.env.CAELO_TRUSTED_PROXY_HOPS = saved;
     }

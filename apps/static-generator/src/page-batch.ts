@@ -238,6 +238,8 @@ export async function loadBatch(args: {
   readonly noLayoutModules: ReadonlyMap<string, VariantComposeModule[]>;
   readonly listModuleRefs: readonly NestedRefValue[];
   readonly pageUrlStyle: PageUrlStyle;
+  /** The origin the build renders for (#650): plugin list sources link on it. */
+  readonly siteBaseUrl: string;
 }): Promise<LoadedBatch> {
   const { tx, plugins, batch } = args;
   const ids = batch.map((p) => p.page_id);
@@ -336,6 +338,9 @@ export async function loadBatch(args: {
     ),
     args.listModuleRefs,
   );
-  const sources = await plugins.resolveListSources(ids, args.pageUrlStyle);
+  const sources = await plugins.resolveListSources(ids, {
+    siteBaseUrl: args.siteBaseUrl,
+    pageUrlStyle: args.pageUrlStyle,
+  });
   return { composeInputs, nestedModules, sources };
 }

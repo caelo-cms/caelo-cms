@@ -17,7 +17,7 @@
     "@caelo-cms/plugin-sdk": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
-    "croner": "10.0.1",
+    "croner": "11.0.0",
     "drizzle-orm": "0.45.4",
     "zod": "4.6.7",
     "@caelo-cms/font-service": "workspace:*"

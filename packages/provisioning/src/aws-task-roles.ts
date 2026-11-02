@@ -20,12 +20,14 @@ export type AwsSecret =
   | "resend-api-key";
 
 /** A service with its own ECS task role. */
-export type AwsTaskService = "admin" | "gateway";
+export type AwsTaskService = "admin" | "gateway" | "mcp-auth-proxy";
 
 /**
  * The secrets each service's task role may read. The admin side (admin and
  * its in-process workers) reads all of them; the gateway reads only
- * public_role's password — its one database login.
+ * public_role's password — its one database login; the MCP-Auth-Proxy
+ * (#1328) reads none: remote MCP is not available on AWS, so it holds
+ * neither a database login nor the broker's keys.
  */
 export const AWS_SERVICE_SECRETS: Readonly<Record<AwsTaskService, readonly AwsSecret[]>> = {
   admin: [
@@ -37,6 +39,7 @@ export const AWS_SERVICE_SECRETS: Readonly<Record<AwsTaskService, readonly AwsSe
     "resend-api-key",
   ],
   gateway: ["public-role-password"],
+  "mcp-auth-proxy": [],
 };
 
 /**

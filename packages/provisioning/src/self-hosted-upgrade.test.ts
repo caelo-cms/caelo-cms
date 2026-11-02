@@ -27,24 +27,34 @@ import {
   upgradeSelfHosted,
 } from "./self-hosted-upgrade.js";
 
+// OLD is a release from before #1328: it has no MCP-Auth-Proxy image.
 const OLD_DIGEST = { admin: `sha256:${"1".repeat(64)}`, gateway: `sha256:${"2".repeat(64)}` };
 const OLD: ReleaseImages = {
   mode: "release",
   admin: `ghcr.io/caelo-cms/admin@${OLD_DIGEST.admin}`,
   gateway: `ghcr.io/caelo-cms/gateway@${OLD_DIGEST.gateway}`,
 };
-const NEW_DIGEST = { admin: `sha256:${"a".repeat(64)}`, gateway: `sha256:${"b".repeat(64)}` };
+const NEW_DIGEST = {
+  admin: `sha256:${"a".repeat(64)}`,
+  gateway: `sha256:${"b".repeat(64)}`,
+  "mcp-auth-proxy": `sha256:${"c".repeat(64)}`,
+};
 const NEW: ReleaseImages = {
   mode: "release",
   admin: `ghcr.io/caelo-cms/admin@${NEW_DIGEST.admin}`,
   gateway: `ghcr.io/caelo-cms/gateway@${NEW_DIGEST.gateway}`,
+  "mcp-auth-proxy": `ghcr.io/caelo-cms/mcp-auth-proxy@${NEW_DIGEST["mcp-auth-proxy"]}`,
 };
 
 /** A stand-in for generateDockerCompose: just the two image lines. */
 const render = (images: ReleaseImages) => `admin: ${images.admin}\ngateway: ${images.gateway}\n`;
 
 /** GHCR fake: the anonymous token dance, then `digests` per repository. */
-function registryServing(digests: { admin: string; gateway: string }): typeof fetch {
+function registryServing(digests: {
+  admin: string;
+  gateway: string;
+  "mcp-auth-proxy"?: string;
+}): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.startsWith("https://api.github.com/")) return Response.json({ tag_name: "v0.11.0" });
@@ -55,11 +65,14 @@ function registryServing(digests: { admin: string; gateway: string }): typeof fe
         headers: { "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io"' },
       });
     }
-    const service = url.includes("/caelo-cms/admin/") ? "admin" : "gateway";
-    return new Response(null, {
-      status: 200,
-      headers: { "docker-content-digest": digests[service] },
-    });
+    const service = url.includes("/caelo-cms/admin/")
+      ? "admin"
+      : url.includes("/caelo-cms/mcp-auth-proxy/")
+        ? "mcp-auth-proxy"
+        : "gateway";
+    const digest = digests[service];
+    if (!digest) return new Response(null, { status: 404, statusText: "Not Found" });
+    return new Response(null, { status: 200, headers: { "docker-content-digest": digest } });
   }) as typeof fetch;
 }
 const registry = registryServing(NEW_DIGEST);
@@ -86,17 +99,20 @@ function fakeRunner(rules: Rule[] = []): HostRunner & { calls: string[] } {
 function steps(calls: readonly string[]): string[] {
   return calls.map((c) => {
     if (c.startsWith("cosign verify"))
-      return `verify ${c.includes("/admin@") ? "admin" : "gateway"}`;
+      return `verify ${c.includes("/admin@") ? "admin" : c.includes("/mcp-auth-proxy@") ? "mcp-auth-proxy" : "gateway"}`;
     if (c.startsWith("cosign")) return "cosign-probe";
     if (c.includes("pg_isready")) return "pg_isready";
     if (c.includes("pg_dumpall")) return "dump globals";
     if (c.includes("pg_dump ")) return `dump ${c.split(" ").at(-1)}`;
     if (c.includes(" pull ")) return "pull";
     if (c.includes("migrate.ts")) return `migrate ${c.split(" ").at(-1)}`;
+    if (c.includes(" up -d --no-deps caelo-admin caelo-gateway caelo-mcp-auth-proxy"))
+      return "up all";
     if (c.includes(" up -d --no-deps caelo-admin caelo-gateway")) return "up both";
     if (c.includes(" up -d --no-deps ")) return `up ${c.split(" ").at(-1)}`;
     if (c.includes("/_caelo/health")) return "health admin";
     if (c.includes("/healthz")) return "health gateway";
+    if (c.includes("/api/mcp/health")) return "health mcp-auth-proxy";
     return c;
   });
 }
@@ -135,6 +151,10 @@ function deps(
       runner.calls.push("converge roles");
       return roles;
     },
+    applyPublicRoleLimits: async () => {
+      runner.calls.push("public role limits");
+      return { ok: true } as const;
+    },
     refreshCaddy: async () => {
       runner.calls.push("refresh caddy");
       return caddy;
@@ -157,11 +177,14 @@ describe("upgradeSelfHosted", () => {
       "cosign-probe",
       "verify admin",
       "verify gateway",
+      "verify mcp-auth-proxy",
       "pg_isready",
       "dump globals",
       "dump cms_admin",
       "dump cms_public",
       "pull",
+      "up postgres",
+      "public role limits",
       "migrate admin",
       "migrate public",
       "converge roles",
@@ -169,13 +192,20 @@ describe("upgradeSelfHosted", () => {
       "health admin",
       "up caelo-gateway",
       "health gateway",
+      // #1328 — the upgrade from a release without the proxy creates it.
+      "up caelo-mcp-auth-proxy",
+      "health mcp-auth-proxy",
       "refresh caddy",
     ]);
     // The migrations run the NEW admin image: the Compose file already names it.
     expect(readFileSync(composePath(dir), "utf8")).toBe(render(NEW));
     const release = readRelease(dir);
     expect(release?.version).toBe("0.11.0");
-    expect(release?.images).toEqual({ admin: NEW.admin, gateway: NEW.gateway });
+    expect(release?.images).toEqual({
+      admin: NEW.admin,
+      gateway: NEW.gateway,
+      "mcp-auth-proxy": NEW["mcp-auth-proxy"],
+    });
     expect(release?.history.at(-1)).toMatchObject({
       from: "0.10.0",
       to: "0.11.0",
@@ -206,9 +236,11 @@ describe("upgradeSelfHosted", () => {
       "cosign-probe",
       "verify admin",
       "verify gateway",
-      "up both",
+      "verify mcp-auth-proxy",
+      "up all",
       "health admin",
       "health gateway",
+      "health mcp-auth-proxy",
       "refresh caddy",
     ]);
   });
@@ -257,7 +289,13 @@ describe("upgradeSelfHosted", () => {
       { version: "0.10.0" },
       {
         ...deps(runner),
-        fetchImpl: registryServing({ admin: OLD_DIGEST.admin, gateway: OLD_DIGEST.gateway }),
+        // The target release ships a proxy image; the fake render prints
+        // only admin + gateway, so the file still reads as OLD.
+        fetchImpl: registryServing({
+          admin: OLD_DIGEST.admin,
+          gateway: OLD_DIGEST.gateway,
+          "mcp-auth-proxy": NEW_DIGEST["mcp-auth-proxy"],
+        }),
       },
     );
     expect(r).toEqual({ ok: true, status: "upgraded", version: "0.10.0" });
@@ -305,7 +343,9 @@ describe("upgradeSelfHosted", () => {
     ]);
     const r = await upgradeSelfHosted({ version: "0.11.0" }, deps(runner));
     expect(r).toMatchObject({ ok: false, stage: "migrate", previousRunning: true });
-    expect(steps(runner.calls).some((s) => s.startsWith("up "))).toBe(false);
+    // Postgres moved onto this release's TLS config before the migrations
+    // (it serves the previous release too); no Caelo service restarted.
+    expect(steps(runner.calls).some((s) => s.startsWith("up caelo"))).toBe(false);
     expect(readFileSync(composePath(dir), "utf8")).toBe(render(OLD));
   });
 
@@ -325,7 +365,9 @@ describe("upgradeSelfHosted", () => {
     );
     expect(r).toMatchObject({ ok: false, stage: "roles", previousRunning: true });
     if (!r.ok) expect(r.error).toContain("role is busy");
-    expect(steps(runner.calls).some((x) => x.startsWith("up "))).toBe(false);
+    // Postgres moved onto this release's TLS config before the migrations
+    // (it serves the previous release too); no Caelo service restarted.
+    expect(steps(runner.calls).some((x) => x.startsWith("up caelo"))).toBe(false);
     expect(readFileSync(composePath(dir), "utf8")).toBe(render(OLD));
     expect(readRelease(dir)?.version).toBe("0.10.0");
   });
@@ -357,6 +399,23 @@ describe("upgradeSelfHosted", () => {
     expect(release?.version).toBe("0.10.0");
     expect(release?.images.admin).toBe(OLD.admin);
     expect(release?.history.at(-1)).toMatchObject({ to: "0.11.0", outcome: "rolled-back" });
+  });
+
+  it("rolls back to a release without the proxy when the new MCP-Auth-Proxy is unhealthy (#1328)", async () => {
+    const runner = fakeRunner([
+      (c) => (c.includes("/api/mcp/health") ? { exitCode: 1 } : undefined),
+    ]);
+    const r = await upgradeSelfHosted({ version: "0.11.0" }, deps(runner));
+    expect(r).toMatchObject({ ok: false, stage: "roll-mcp-auth-proxy", previousRunning: true });
+    const s = steps(runner.calls);
+    // OLD predates the proxy: the rollback starts and checks only admin + gateway.
+    expect(s.slice(s.lastIndexOf("up both"))).toEqual([
+      "up both",
+      "health admin",
+      "health gateway",
+    ]);
+    expect(readFileSync(composePath(dir), "utf8")).toBe(render(OLD));
+    expect(readRelease(dir)?.images["mcp-auth-proxy"]).toBeUndefined();
   });
 
   it("reports a failed rollback loudly", async () => {
@@ -429,8 +488,36 @@ describe("upgradeSelfHosted — driven by the host agent (#696 Phase 4c)", () =>
     );
     expect(r).toMatchObject({ ok: false, stage: "verify", previousRunning: true });
     expect(r.ok ? "" : r.error).toContain("gateway");
-    expect(steps(runner.calls)).toEqual(["cosign-probe", "verify admin", "verify gateway"]);
+    expect(steps(runner.calls)).toEqual([
+      "cosign-probe",
+      "verify admin",
+      "verify gateway",
+      "verify mcp-auth-proxy",
+    ]);
     expect(readFileSync(composePath(dir), "utf8")).toBe(render(OLD));
+  });
+
+  it("refuses a registry that serves another MCP-Auth-Proxy than the manifest names (#1328)", async () => {
+    const r = await upgradeSelfHosted(
+      {
+        version: "0.11.0",
+        expectedDigests: { ...NEW_DIGEST, "mcp-auth-proxy": `sha256:${"d".repeat(64)}` },
+      },
+      deps(fakeRunner()),
+    );
+    expect(r).toMatchObject({ ok: false, stage: "verify", previousRunning: true });
+    expect(r.ok ? "" : r.error).toContain("mcp-auth-proxy");
+  });
+
+  it("checks only admin + gateway for an agent that names no proxy digest", async () => {
+    const r = await upgradeSelfHosted(
+      {
+        version: "0.11.0",
+        expectedDigests: { admin: NEW_DIGEST.admin, gateway: NEW_DIGEST.gateway },
+      },
+      deps(fakeRunner()),
+    );
+    expect(r.ok).toBe(true);
   });
 
   it("names its stages for the admin's timeline, in order", async () => {
@@ -445,6 +532,8 @@ describe("upgradeSelfHosted — driven by the host agent (#696 Phase 4c)", () =>
       "backup",
       "roll",
       "migrations",
+      "roll",
+      "health",
       "roll",
       "health",
       "roll",

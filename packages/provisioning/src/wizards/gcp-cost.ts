@@ -116,12 +116,23 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
         "one short container per server-side screenshot or page render (~20-40 s at 1 vCPU / 2 GiB): ~$0.001 each, a 50-page site import ~$0.05; mostly in the free tier; capture bucket ~$0",
     },
     {
-      name: "Cloud Run gateway",
+      // #1328 — on gcp-firebase the visitor gateway is the new
+      // `caelo-<env>-data-gateway` service; same billing either way.
+      name: provider === "gcp" ? "Cloud Run gateway" : "Cloud Run data gateway",
       monthlyUsd: inputs.gatewayMinInstances === 0 ? 1 : 1 + inputs.gatewayMinInstances * 15,
       notes:
         inputs.gatewayMinInstances === 0
           ? "scale-to-zero; ~$1/mo light traffic"
           : `${inputs.gatewayMinInstances} min-instance${inputs.gatewayMinInstances > 1 ? "s" : ""}`,
+    },
+    {
+      // #1328 — remote MCP's sign-in service, its own service on every
+      // install (E14 a of #763): always provisioned, zero minimum instances,
+      // CPU only during requests, so it costs nothing while nobody connects.
+      name: "Cloud Run MCP-Auth-Proxy",
+      monthlyUsd: 0,
+      notes:
+        "scale-to-zero, request-based CPU; only external AI apps' sign-in and MCP calls wake it, mostly in the free tier",
     },
     // v0.3.3 — LB / Cloud CDN / Cloud Armor lines apply only to the
     // gcp variant. gcp-firebase has no LB (Firebase Hosting is the
@@ -148,12 +159,18 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
               : "Free tier — rate limit + OWASP basic rules",
           },
           {
-            // #806 — the remote-MCP throttle (src/remote-mcp-edge.ts) is one
-            // more rule on the gateway's policy; Cloud Armor Standard bills
-            // each rule at about $1/mo.
-            name: "Cloud Armor rule: remote MCP throttle",
-            monthlyUsd: 1,
-            notes: "Per-IP throttle for /api/mcp/* (remote MCP clients)",
+            // #1328 — the MCP-Auth-Proxy's own backend (serverless NEG +
+            // backend service, no extra LB fee: same URL map) with its own
+            // Cloud Armor policy carrying the remote-MCP throttle
+            // (src/remote-mcp-edge.ts) and the default rule. Cloud Armor
+            // Standard: $0.006849315/policy-hour (~$5/mo) and
+            // $0.001369863/rule-hour (~$1/mo), plus $0.75 per million
+            // requests on a global policy — cloud.google.com/armor/pricing,
+            // checked 2026-11-02.
+            name: "MCP-Auth-Proxy backend + Cloud Armor policy",
+            monthlyUsd: 7,
+            notes:
+              "own policy ($5) with 2 rules ($2): per-IP throttle for remote MCP clients; requests ~$0",
           },
         ] satisfies CostLine[])
       : ([

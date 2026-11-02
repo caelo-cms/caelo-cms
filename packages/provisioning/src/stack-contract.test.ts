@@ -6,16 +6,26 @@ import { generateDockerCompose } from "./compose.js";
 import {
   adminEnvContract,
   CLI_GENERATED_SECRETS,
+  CLOUD_RUN_SLUGS,
   type CloudRunEnvVar,
+  cloudRunServicePrefix,
   DATABASE_ROLE_SECRET,
   databaseUrls,
   defaultStagingHost,
+  fixedCloudRunServiceName,
   gatewayEnvContract,
+  INTERIM_FORWARD_ORIGIN_ENV,
   iamMember,
+  MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS,
+  mcpAuthProxyEnvContract,
+  REMOTE_MCP_MODE,
   RETIRED_IAM_BINDINGS,
+  RETIRED_SECRET_FILES,
   RETIRED_SERVICE_ENV,
   runtimeSecretBindings,
   SERVICE_SECRET_ENV,
+  SERVICE_SECRET_FILES,
+  SERVICE_VPC_EGRESS,
   STACK_IAM_NOT_ENSURED,
   serviceSecrets,
   stackIamInvariants,
@@ -27,7 +37,7 @@ const base = {
   domain: "acme.com",
   stagingHost: "staging.acme.com",
   region: "europe-west1",
-  databaseUrls: databaseUrls("10.20.0.3"),
+  databaseUrls: databaseUrls("db1.p-label.europe-west1.sql-psa.goog"),
 };
 const asRecord = (vars: CloudRunEnvVar[]) =>
   Object.fromEntries(
@@ -50,10 +60,13 @@ const ADMIN_SECRETS = {
 
 describe("databaseUrls", () => {
   it("builds password-less URLs for the three role/database pairs", () => {
-    expect(databaseUrls("10.20.0.3")).toEqual({
-      admin: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
-      publicAdmin: "postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
-      public: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
+    expect(databaseUrls("db1.p-label.europe-west1.sql-psa.goog")).toEqual({
+      admin:
+        "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      publicAdmin:
+        "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      public:
+        "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
     });
   });
 });
@@ -64,9 +77,10 @@ describe("adminEnvContract", () => {
       CAELO_PROVIDER: "gcp",
       CAELO_ENV: "production",
       MEDIA_STORAGE_URL: "gs://acme-caelo-production-media",
-      ADMIN_DATABASE_URL: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+      ADMIN_DATABASE_URL:
+        "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       PUBLIC_ADMIN_DATABASE_URL:
-        "postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
+        "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       CAELO_SITE_URL: "https://acme.com",
       CAELO_GENERATOR_CLI: "/app/apps/static-generator/src/cli.ts",
       MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
@@ -103,9 +117,10 @@ describe("adminEnvContract", () => {
       CAELO_PROVIDER: "gcp-firebase",
       CAELO_ENV: "production",
       MEDIA_STORAGE_URL: "gs://acme-caelo-production-media",
-      ADMIN_DATABASE_URL: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+      ADMIN_DATABASE_URL:
+        "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       PUBLIC_ADMIN_DATABASE_URL:
-        "postgresql://admin_role@10.20.0.3:5432/cms_public?sslmode=require",
+        "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       CAELO_SITE_URL: "https://acme.com",
       CAELO_GENERATOR_CLI: "/app/apps/static-generator/src/cli.ts",
       MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
@@ -178,12 +193,11 @@ describe("gatewayEnvContract", () => {
       MEDIA_STORAGE_URL: "gs://acme-caelo-production-media",
       // #845 — gcp: the LB appends <client>,<LB IP>.
       CAELO_TRUSTED_PROXY_HOPS: "2",
-      PUBLIC_DATABASE_URL: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
+      PUBLIC_DATABASE_URL:
+        "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-role-password:latest",
       CAELO_STAGING_GATE_SECRET: "secret:caelo-production-staging-gate-secret:latest",
-      // #806 — the remote-MCP broker: its client file and its seal key.
-      CAELO_OPERATOR_OAUTH_CLIENT_FILE: "/secrets/operator-oauth-client/client.json",
-      CAELO_MCP_OAUTH_SEAL_KEY: "secret:caelo-production-mcp-oauth-seal-key:latest",
+      // No remote-MCP env: the broker is the MCP-Auth-Proxy's (#1328).
     });
   });
 
@@ -215,13 +229,7 @@ describe("gatewayEnvContract", () => {
   });
 
   it("the gateway's run SA reads no admin-only secret (admin password, KEK, internal, tool approval)", () => {
-    expect(serviceSecrets("gateway")).toEqual([
-      "public-role-password",
-      "staging-gate-secret",
-      // #806 — the broker's seal key (env) and OAuth client (file).
-      "mcp-oauth-seal-key",
-      "operator-oauth-client",
-    ]);
+    expect(serviceSecrets("gateway")).toEqual(["public-role-password", "staging-gate-secret"]);
     for (const v of gateway) {
       expect(v.name).not.toMatch(/KEK|INTERNAL|TOOL_APPROVAL|PUBLIC_ADMIN/);
     }
@@ -318,23 +326,24 @@ describe("runtime secrets", () => {
         secret: "staging-gate-secret",
         stackResource: "gateway-staging-gate-secret-binding",
       },
+      // #1328 — the broker's seal key (env) and Google sign-in client (a
+      // file, which counts like an env secret: the SA reads it).
       {
-        service: "gateway",
+        service: "mcp-auth-proxy",
         secret: "mcp-oauth-seal-key",
-        stackResource: "gateway-mcp-oauth-seal-key-binding",
+        stackResource: "mcp-auth-proxy-mcp-oauth-seal-key-binding",
       },
-      // The secret file counts like an env secret: the SA reads it.
       {
-        service: "gateway",
+        service: "mcp-auth-proxy",
         secret: "operator-oauth-client",
-        stackResource: "gateway-operator-oauth-client-binding",
+        stackResource: "mcp-auth-proxy-operator-oauth-client-binding",
       },
     ]);
   });
 
   it("every CLI-generated secret is read by some service", () => {
     for (const s of CLI_GENERATED_SECRETS) {
-      expect([...serviceSecrets("admin"), ...serviceSecrets("gateway")]).toContain(s);
+      expect(CLOUD_RUN_SLUGS.flatMap((slug) => serviceSecrets(slug))).toContain(s);
     }
   });
 });
@@ -346,6 +355,7 @@ describe("self-hosted compose", () => {
       postgresPassword: "p",
       rolePasswords: { admin: "a", public: "b" },
       caeloSecretKek: "k",
+      dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
       diskSize: "10G",
       ports: { http: 80, https: 443 },
@@ -386,14 +396,12 @@ describe("stackIamInvariants", () => {
     }
   });
 
-  it("grants the gateway SA only its own role password, the staging gate key, the sign-in client, the seal key + telemetry roles", () => {
+  it("grants the gateway SA only its own role password, the staging gate key + telemetry roles", () => {
     for (const provider of ["gcp", "gcp-firebase"] as const) {
       const gateway = stackIamInvariants(provider).filter((i) => i.member === "gateway-sa");
       expect(gateway.map((i) => `${i.role} ${JSON.stringify(i.target)}`).sort()).toEqual([
         'roles/logging.logWriter {"kind":"project"}',
         'roles/monitoring.metricWriter {"kind":"project"}',
-        'roles/secretmanager.secretAccessor {"kind":"secret","name":"mcp-oauth-seal-key"}',
-        'roles/secretmanager.secretAccessor {"kind":"secret","name":"operator-oauth-client"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"public-role-password"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"staging-gate-secret"}',
       ]);
@@ -407,6 +415,135 @@ describe("stackIamInvariants", () => {
   });
 });
 
+describe("MCP-Auth-Proxy contract (#1328)", () => {
+  it("names one service per role; no prefix is a prefix of another", () => {
+    for (const provider of ["gcp", "gcp-firebase"] as const) {
+      const prefixes = CLOUD_RUN_SLUGS.map((s) => cloudRunServicePrefix(provider, "production", s));
+      expect(new Set(prefixes).size).toBe(prefixes.length);
+      for (const a of prefixes) {
+        for (const b of prefixes) if (a !== b) expect(b.startsWith(a)).toBe(false);
+      }
+    }
+    // E13 (a): on gcp-firebase the proxy keeps the old gateway service.
+    expect(cloudRunServicePrefix("gcp-firebase", "production", "mcp-auth-proxy")).toBe(
+      "caelo-production-gateway",
+    );
+    expect(cloudRunServicePrefix("gcp-firebase", "production", "gateway")).toBe(
+      "caelo-production-data-gateway",
+    );
+    expect(cloudRunServicePrefix("gcp", "production", "gateway")).toBe("caelo-production-gateway");
+    expect(cloudRunServicePrefix("gcp", "production", "mcp-auth-proxy")).toBe(
+      "caelo-production-mcp-auth-proxy",
+    );
+  });
+
+  it("fixes the names of exactly the services the converge creates", () => {
+    expect(fixedCloudRunServiceName("gcp-firebase", "production", "gateway")).toBe(
+      "caelo-production-data-gateway",
+    );
+    expect(fixedCloudRunServiceName("gcp", "production", "mcp-auth-proxy")).toBe(
+      "caelo-production-mcp-auth-proxy",
+    );
+    for (const [provider, slug] of [
+      ["gcp-firebase", "admin"],
+      ["gcp-firebase", "mcp-auth-proxy"],
+      ["gcp", "admin"],
+      ["gcp", "gateway"],
+    ] as const) {
+      expect(fixedCloudRunServiceName(provider, "production", slug)).toBeNull();
+    }
+  });
+
+  it("gives the proxy no database, site or pool env — only its mode, hops, file and seal key", () => {
+    for (const provider of ["gcp", "gcp-firebase"] as const) {
+      const env = asRecord(mcpAuthProxyEnvContract({ provider, env: "production" }));
+      expect(env).toEqual({
+        CAELO_PROVIDER: provider,
+        CAELO_REMOTE_MCP: "available",
+        CAELO_TRUSTED_PROXY_HOPS: provider === "gcp" ? "2" : "1",
+        CAELO_OPERATOR_OAUTH_CLIENT_FILE: "/secrets/operator-oauth-client/client.json",
+        CAELO_MCP_OAUTH_SEAL_KEY: "secret:caelo-production-mcp-oauth-seal-key:latest",
+      });
+      for (const name of Object.keys(env)) expect(name).not.toMatch(/DATABASE|POOL|KEK|STAGING/);
+    }
+    // Remote MCP needs Google IAP: everywhere else the proxy answers its 404.
+    expect(REMOTE_MCP_MODE).toEqual({
+      gcp: "available",
+      "gcp-firebase": "available",
+      "self-hosted": "unavailable",
+      aws: "unavailable",
+      azure: "unavailable",
+    });
+    expect(
+      asRecord(mcpAuthProxyEnvContract({ provider: "azure", env: "production" })),
+    ).toMatchObject({
+      CAELO_REMOTE_MCP: "unavailable",
+      CAELO_TRUSTED_PROXY_HOPS: String(MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS.azure),
+    });
+    // The interim forward origin is the stack's / converge's, never the contract's.
+    expect(
+      mcpAuthProxyEnvContract({ provider: "gcp-firebase", env: "production" }).map((v) => v.name),
+    ).not.toContain(INTERIM_FORWARD_ORIGIN_ENV);
+  });
+
+  it("the proxy's SA reads exactly its two secrets and holds no other invariant", () => {
+    expect(serviceSecrets("mcp-auth-proxy")).toEqual([
+      "mcp-oauth-seal-key",
+      "operator-oauth-client",
+    ]);
+    for (const provider of ["gcp", "gcp-firebase"] as const) {
+      const proxy = stackIamInvariants(provider).filter((i) => i.member === "mcp-auth-proxy-sa");
+      expect(proxy.map((i) => `${i.role} ${JSON.stringify(i.target)}`).sort()).toEqual([
+        'roles/secretmanager.secretAccessor {"kind":"secret","name":"mcp-oauth-seal-key"}',
+        'roles/secretmanager.secretAccessor {"kind":"secret","name":"operator-oauth-client"}',
+      ]);
+    }
+    expect(SERVICE_VPC_EGRESS["mcp-auth-proxy"]).toBe(false);
+    expect(SERVICE_SECRET_FILES["mcp-auth-proxy"]).toHaveLength(1);
+    expect(SERVICE_SECRET_FILES.gateway).toEqual([]);
+  });
+
+  it("retires the broker's env, file and secret access on the gateway", () => {
+    for (const name of [
+      "CAELO_OPERATOR_OAUTH_CLIENT_FILE",
+      "CAELO_MCP_OAUTH_SEAL_KEY",
+      "CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS",
+      "CAELO_MCP_PUBLIC_URL",
+      "CAELO_ADMIN_URL",
+    ]) {
+      expect(RETIRED_SERVICE_ENV.gateway).toContain(name);
+    }
+    expect(RETIRED_SECRET_FILES.gateway.map((f) => f.secret)).toContain("operator-oauth-client");
+    for (const secret of ["mcp-oauth-seal-key", "operator-oauth-client"]) {
+      expect(RETIRED_IAM_BINDINGS).toContainEqual(
+        expect.objectContaining({ member: "gateway-sa", target: { kind: "secret", name: secret } }),
+      );
+    }
+    // On gcp-firebase the proxy is the old gateway service: its visitor env goes.
+    for (const name of [
+      "PUBLIC_DATABASE_URL",
+      "PUBLIC_DATABASE_PASSWORD",
+      "CAELO_STAGING_GATE_SECRET",
+    ]) {
+      expect(RETIRED_SERVICE_ENV["mcp-auth-proxy"]).toContain(name);
+    }
+  });
+
+  it("gcp-firebase: the data gateway is the rewrite target, the proxy public", () => {
+    const inv = stackIamInvariants("gcp-firebase");
+    const on = (service: string) =>
+      inv
+        .filter((i) => i.target.kind === "run-service" && i.target.service === service)
+        .map((i) => `${i.stackResource} ${i.role} ${i.member}`)
+        .sort();
+    expect(on("gateway")).toEqual([
+      "data-gateway-public-invoker roles/run.invoker allUsers",
+      "data-gateway-viewer-for-admin-sa roles/run.viewer run-sa",
+    ]);
+    expect(on("mcp-auth-proxy")).toEqual(["gateway-public-invoker roles/run.invoker allUsers"]);
+  });
+});
+
 describe("iamMember", () => {
   const install = { projectId: "acme", projectNumber: "123", env: "production" };
   it("resolves every principal to the name the stack gives it", () => {
@@ -415,6 +552,9 @@ describe("iamMember", () => {
     );
     expect(iamMember("gateway-sa", install)).toBe(
       "serviceAccount:caelo-production-gateway-sa@acme.iam.gserviceaccount.com",
+    );
+    expect(iamMember("mcp-auth-proxy-sa", install)).toBe(
+      "serviceAccount:caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com",
     );
     expect(iamMember("static-publisher-sa", install)).toBe(
       "serviceAccount:caelo-prod-publisher@acme.iam.gserviceaccount.com",

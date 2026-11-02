@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SVG_DOCUMENT_CSP } from "@caelo-cms/shared";
+import { STAGING_PLUGIN_STUB_BODY, SVG_DOCUMENT_CSP } from "@caelo-cms/shared";
 import {
   apiTargetFor,
   localBuildSource,
@@ -230,8 +230,8 @@ describe("serveStagedBuild with the gateway behind /api/", () => {
     await new Promise<void>((r) => gateway.close(() => r()));
   });
 
-  it("forwards a plugin POST with its body and cookie and returns the answer unchanged", async () => {
-    const res = await fetch(`${origin.baseUrl}/api/plugin/ratings/summary`, {
+  it("forwards a non-plugin /api/ call with its body and cookie and returns the answer unchanged", async () => {
+    const res = await fetch(`${origin.baseUrl}/api/variant.js?x=1`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: "caelo_v=x" },
       body: JSON.stringify({ pageId: "p1" }),
@@ -241,12 +241,31 @@ describe("serveStagedBuild with the gateway behind /api/", () => {
     expect(res.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
     expect(seen.at(-1)).toMatchObject({
       method: "POST",
-      url: "/api/plugin/ratings/summary",
+      url: "/api/variant.js?x=1",
       body: JSON.stringify({ pageId: "p1" }),
       cookie: "caelo_v=x",
     });
     // The gateway sees its own host, not the loopback's.
     expect(seen.at(-1)?.host).not.toBe(new URL(origin.baseUrl).host);
+  });
+
+  it("answers plugin calls itself with the staging stub and never forwards them to live (#1326)", async () => {
+    const before = seen.length;
+    for (const init of [
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pageId: "p1" }),
+      },
+      { method: "POST", body: new Uint8Array(1024 * 1024 + 1) },
+      { method: "GET" },
+    ]) {
+      const res = await fetch(`${origin.baseUrl}/api/plugin/ratings/summary`, init);
+      // 200: the audit browser logs no failed request.
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe(STAGING_PLUGIN_STUB_BODY);
+    }
+    expect(seen.length).toBe(before);
   });
 
   it("forwards GETs and still serves the build and refuses build writes", async () => {
@@ -258,7 +277,7 @@ describe("serveStagedBuild with the gateway behind /api/", () => {
 
   it("refuses a body above the gateway's ceiling without forwarding it", async () => {
     const before = seen.length;
-    const res = await fetch(`${origin.baseUrl}/api/plugin/forms/submit`, {
+    const res = await fetch(`${origin.baseUrl}/api/variant.js`, {
       method: "POST",
       body: new Uint8Array(1024 * 1024 + 1),
     });

@@ -27,7 +27,11 @@
  * is to wire those env vars to AWS-native resources.
  */
 
-import { cloudFrontRedirectFunctionCode } from "@caelo-cms/shared";
+import {
+  AWS_RDS_CA_BUNDLE,
+  cloudFrontRedirectFunctionCode,
+  verifyFullQuery,
+} from "@caelo-cms/shared";
 import * as aws from "@pulumi/aws";
 import * as awsx from "@pulumi/awsx";
 import * as pulumi from "@pulumi/pulumi";
@@ -171,8 +175,14 @@ const dbParameters = new aws.rds.ParameterGroup(`${namePrefix}-pg-params`, {
   family: "postgres16",
   parameters: [
     { name: "max_connections", value: String(maxConnections), applyMethod: "pending-reboot" },
+    // #1338 — refuse plaintext; every client connects with verify-full.
+    { name: "rds.force_ssl", value: "1", applyMethod: "pending-reboot" },
   ],
 });
+
+// #1338 — verify-full against Amazon's RDS CA bundle (shipped in every image,
+// shared database-tls.ts); the RDS certificate names the endpoint host.
+const RDS_TLS = verifyFullQuery(AWS_RDS_CA_BUNDLE);
 
 const db = new aws.rds.Instance(`${namePrefix}-pg`, {
   engine: "postgres",
@@ -196,14 +206,12 @@ const db = new aws.rds.Instance(`${namePrefix}-pg`, {
 const adminDatabaseUrl = pulumi
   .all([db.address, db.port, postgresPassword])
   .apply(
-    ([host, port, pw]) =>
-      `postgresql://caelo_admin:${pw}@${host}:${port}/cms_admin?sslmode=require`,
+    ([host, port, pw]) => `postgresql://caelo_admin:${pw}@${host}:${port}/cms_admin?${RDS_TLS}`,
   );
 const publicDatabaseUrl = pulumi
   .all([db.address, db.port, publicRolePassword])
   .apply(
-    ([host, port, pw]) =>
-      `postgresql://public_role:${pw}@${host}:${port}/cms_public?sslmode=require`,
+    ([host, port, pw]) => `postgresql://public_role:${pw}@${host}:${port}/cms_public?${RDS_TLS}`,
   );
 
 // === 4. S3 buckets ===
@@ -450,9 +458,12 @@ const cluster = new aws.ecs.Cluster(`${namePrefix}-ecs`, {
   settings: [{ name: "containerInsights", value: "enabled" }],
 });
 
-// #806 — no remote MCP on AWS: it rides Google IAP (gcp stacks only). The
-// gateway task definition, once it exists, sets none of its env, so /api/mcp/*
-// answers 503 remote_mcp_not_configured and the admin reports it unavailable.
+// #1328 — the MCP-Auth-Proxy (remote MCP's sign-in service) is a service of
+// its own on every provider, with its own task role that may read NO secret.
+// Remote MCP rides Google IAP (gcp stacks only), so on AWS it would run with
+// CAELO_REMOTE_MCP=unavailable and answer a fixed 404. Like the admin and
+// gateway it has no task definition yet: the service lands with #749, in the
+// same shape (own origin, zero minimum tasks, no database env).
 //
 // One task role per service (#635): the gateway's may read only the
 // public_role password, never a secret that unlocks a cms_admin login
@@ -482,18 +493,23 @@ function taskRole(service: AwsTaskService): aws.iam.Role {
       ],
     }),
   });
-  new aws.iam.RolePolicy(`${prefix}-task-secrets`, {
-    role: role.id,
-    policy: pulumi
-      .all(AWS_SERVICE_SECRETS[service].map((name) => secretArns[name]))
-      .apply(secretsReadPolicy),
-  });
+  // A service that reads no secret gets no secrets policy at all (an empty
+  // policy is malformed, see secretsReadPolicy).
+  if (AWS_SERVICE_SECRETS[service].length > 0) {
+    new aws.iam.RolePolicy(`${prefix}-task-secrets`, {
+      role: role.id,
+      policy: pulumi
+        .all(AWS_SERVICE_SECRETS[service].map((name) => secretArns[name]))
+        .apply(secretsReadPolicy),
+    });
+  }
   return role;
 }
 
 const taskRoles: Record<AwsTaskService, aws.iam.Role> = {
   admin: taskRole("admin"),
   gateway: taskRole("gateway"),
+  "mcp-auth-proxy": taskRole("mcp-auth-proxy"),
 };
 
 const execRole = new aws.iam.Role(`${namePrefix}-exec-role`, {
@@ -563,6 +579,8 @@ export const rdsAddressOut = db.address;
 // The task roles the admin-side and gateway task definitions run as.
 export const adminTaskRoleArnOut = taskRoles.admin.arn;
 export const gatewayTaskRoleArnOut = taskRoles.gateway.arn;
+// #1328 — the role the MCP-Auth-Proxy task definition will run as (#749).
+export const mcpAuthProxyTaskRoleArnOut = taskRoles["mcp-auth-proxy"].arn;
 // #1254 — the pool env the admin and gateway task definitions set.
 export const poolBudgetEnvOut = poolBudget.env;
 

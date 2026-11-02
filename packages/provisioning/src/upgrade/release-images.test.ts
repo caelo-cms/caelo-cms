@@ -70,7 +70,11 @@ describe("resolveRegistryDigest", () => {
     const missing = fakeFetch(() => new Response(null, { status: 404, statusText: "Not Found" }));
     expect(
       await resolveRegistryDigest("ghcr.io", "caelo-cms/admin", "9.9.9", missing.impl),
-    ).toEqual({ ok: false, reason: "HTTP 404 Not Found" });
+    ).toEqual({ ok: false, reason: "HTTP 404 Not Found", notFound: true });
+    // Only a 404 is the verdict "no such tag" (#1328); an outage is not.
+    const down = fakeFetch(() => new Response(null, { status: 503 }));
+    const outage = await resolveRegistryDigest("ghcr.io", "caelo-cms/admin", "9.9.9", down.impl);
+    expect(outage.ok === false && "notFound" in outage).toBe(false);
     const bad = fakeFetch(
       () => new Response(null, { status: 200, headers: { "docker-content-digest": "md5:x" } }),
     );

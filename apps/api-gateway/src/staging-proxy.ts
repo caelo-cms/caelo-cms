@@ -42,6 +42,7 @@
 
 import {
   decideStagingAccess,
+  INTERIM_FORWARDED_HOST_HEADER,
   STAGING_ACCESS_PATH,
   STAGING_SESSION_COOKIE,
   STAGING_SESSION_TTL_SECONDS,
@@ -99,9 +100,32 @@ export function stagingGateFromEnv(
   return { secret: env.CAELO_STAGING_GATE_SECRET || null };
 }
 
-/** True when `req` is addressed to the staging host (the stored setting). */
+/**
+ * True when `req` is addressed to the staging host (the stored setting).
+ *
+ * FIXME(issue #1331): or when the MCP-Auth-Proxy forwarded it for that
+ * host (#1328, @caelo-cms/shared INTERIM_FORWARDED_HOST_HEADER).
+ * On gcp-firebase the Cloud Run service `gateway` became the MCP-Auth-Proxy
+ * (E13 a: the connectors' URL stays), but an existing install's staging
+ * domain mapping (#650) still points at that service, and only a verified
+ * domain owner can move a mapping. Until P3b-2 serves staging from its own
+ * gateway, the proxy streams every request that is not its own MCP traffic
+ * to this gateway's run.app URL (Cloud Run routes by Host, so the visitor's
+ * host cannot travel as Host) and names the host the visitor asked for here.
+ *
+ * Trusting it is safe: anyone can send it, but it only selects the staging
+ * gate, the same gate the staging host itself shows. It is honoured outside
+ * `/api/` only, so a live `/api/*` request never turns into a staging one.
+ * The gate's IP allowlist then sees the proxy's egress address and admits
+ * nobody (fails closed); the session link, basic auth (crawler access) and
+ * the secret header keep working.
+ */
 export function isStagingRequest(req: Request, stagingHost: string): boolean {
-  const host = (req.headers.get("host") ?? new URL(req.url).host).toLowerCase();
+  const url = new URL(req.url);
+  const forwarded = url.pathname.startsWith("/api/")
+    ? null
+    : req.headers.get(INTERIM_FORWARDED_HOST_HEADER);
+  const host = (forwarded ?? req.headers.get("host") ?? url.host).toLowerCase();
   return host === stagingHost.toLowerCase();
 }
 
@@ -182,6 +206,7 @@ export function upstreamHeaders(
   for (const [name, value] of req.headers) {
     const n = name.toLowerCase();
     if (HOP_BY_HOP.has(n) || n === "host" || n === "cookie" || n === "content-length") continue;
+    if (n === INTERIM_FORWARDED_HOST_HEADER) continue;
     if (satisfied.includes("header") && n === settings.headerName.toLowerCase()) continue;
     if (satisfied.includes("basic-auth") && n === "authorization") continue;
     headers.set(name, value);

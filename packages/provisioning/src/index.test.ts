@@ -22,6 +22,7 @@ describe("Caddyfile generator", () => {
       tls: "acme",
       adminUpstream: "caelo-admin:5173",
       gatewayUpstream: "caelo-gateway:8090",
+      mcpAuthProxyUpstream: "caelo-mcp-auth-proxy:8095",
       domains: [
         { hostname: "example.com", kind: "public", env: "production" },
         { hostname: "staging.example.com", kind: "public", env: "staging" },
@@ -49,6 +50,7 @@ describe("Caddyfile generator", () => {
       tls: "acme",
       adminUpstream: "caelo-admin:5173",
       gatewayUpstream: "caelo-gateway:8090",
+      mcpAuthProxyUpstream: "caelo-mcp-auth-proxy:8095",
       domains: [],
     });
     expect(out).toContain(":8081 {");
@@ -64,6 +66,7 @@ describe("Caddy cache policy for content-hashed assets", () => {
     tls: "acme",
     adminUpstream: "caelo-admin:5173",
     gatewayUpstream: "caelo-gateway:8090",
+    mcpAuthProxyUpstream: "caelo-mcp-auth-proxy:8095",
     domains: [
       { hostname: "example.com", kind: "public", env: "production" },
       { hostname: "admin.example.com", kind: "admin", env: "production" },
@@ -151,6 +154,7 @@ describe("docker-compose generator", () => {
       postgresPassword: "supersecret",
       rolePasswords: { admin: "adminpw", public: "publicpw" },
       caeloSecretKek: "0".repeat(64),
+      dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
       anthropicApiKey: "sk-ant-…",
       diskSize: "20Gi",
@@ -173,6 +177,7 @@ describe("docker-compose generator", () => {
       postgresPassword: "supersecret",
       rolePasswords: { admin: "adminpw", public: "publicpw" },
       caeloSecretKek: "0".repeat(64),
+      dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
       diskSize: "20Gi",
       images: RELEASE_IMAGES,
@@ -181,7 +186,7 @@ describe("docker-compose generator", () => {
     });
     const gateway = out.slice(out.indexOf("caelo-gateway:"), out.indexOf("\nvolumes:"));
     expect(gateway).toContain(
-      'PUBLIC_DATABASE_URL: "postgres://public_role:publicpw@postgres:5432/cms_public"',
+      'PUBLIC_DATABASE_URL: "postgres://public_role:publicpw@postgres:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/self-hosted-ca.pem"',
     );
     expect(gateway).not.toMatch(
       /ADMIN_DATABASE|GATEWAY_DATABASE|cms_admin|admin_role|gateway_role|adminpw|gatewaypw|supersecret|CAELO_SECRET_KEK/,
@@ -198,6 +203,7 @@ describe("docker-compose generator", () => {
       postgresPassword: 'pa"ss',
       rolePasswords: { admin: "a", public: "b" },
       caeloSecretKek: "0".repeat(64),
+      dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
       diskSize: "1Gi",
       images: RELEASE_IMAGES,

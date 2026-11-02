@@ -8,7 +8,12 @@
 
 import { describe, expect, it } from "bun:test";
 import type { CommandResult, HostRunner } from "../self-hosted-release.js";
-import { applyDatabaseSide, POSTGRES_RESTART_NOTICE } from "./command.js";
+import {
+  applyArgv,
+  applyDatabaseSide,
+  POSTGRES_RESTART_NOTICE,
+  parseApplyArgs,
+} from "./command.js";
 
 function runner(published: string | null): HostRunner & { calls: string[] } {
   const calls: string[] = [];
@@ -73,5 +78,48 @@ describe("applyDatabaseSide", () => {
     );
     expect(out.ok).toBe(false);
     expect(r.calls).toEqual([]);
+  });
+});
+
+describe("agent apply argv (#1328)", () => {
+  const D = (c: string) => `sha256:${c.repeat(64)}`;
+  const request = {
+    requestId: "11111111-1111-4111-8111-111111111111",
+    targetVersion: "0.12.0",
+    trigger: "manual" as const,
+    cliPath: "/srv/.caelo/agent/cli/caelo-0.12.0/node_modules/@caelo-cms/provisioning/dist/cli.js",
+  };
+
+  it("passes the MCP-Auth-Proxy digest when the manifest names one, and the apply reads it back", () => {
+    const argv = applyArgv("/usr/bin/bun", {
+      ...request,
+      digests: { admin: D("a"), gateway: D("b"), "mcp-auth-proxy": D("d") },
+    });
+    expect(argv.slice(argv.indexOf("--mcp-auth-proxy-digest"))).toEqual([
+      "--mcp-auth-proxy-digest",
+      D("d"),
+    ]);
+    const parsed = parseApplyArgs(argv);
+    expect(parsed.success && parsed.data.mcpAuthProxyDigest).toBe(D("d"));
+  });
+
+  it("an agent of a release from before the proxy starts the apply without it", () => {
+    const argv = applyArgv("/usr/bin/bun", {
+      ...request,
+      digests: { admin: D("a"), gateway: D("b") },
+    });
+    expect(argv).not.toContain("--mcp-auth-proxy-digest");
+    const parsed = parseApplyArgs(argv);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.mcpAuthProxyDigest).toBeUndefined();
+  });
+
+  it("refuses a malformed proxy digest", () => {
+    const argv = [
+      ...applyArgv("/usr/bin/bun", { ...request, digests: { admin: D("a"), gateway: D("b") } }),
+      "--mcp-auth-proxy-digest",
+      "latest",
+    ];
+    expect(parseApplyArgs(argv).success).toBe(false);
   });
 });

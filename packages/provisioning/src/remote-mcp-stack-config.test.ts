@@ -15,7 +15,7 @@ import {
   adminEnvContract,
   type CloudRunEnvVar,
   databaseUrls,
-  gatewayEnvContract,
+  mcpAuthProxyEnvContract,
   parseRemoteMcpIdentityConfig,
   REMOTE_MCP_ENV,
   REMOTE_MCP_IDENTITY_CONFIG,
@@ -41,24 +41,28 @@ const contractInputs = {
   domain: "viu.one",
   region: "europe-west1",
   stagingHost: "staging.viu.one",
-  databaseUrls: databaseUrls("10.153.0.3"),
+  databaseUrls: databaseUrls("db1.p-label.europe-west1.sql-psa.goog"),
 } as const;
 const contract = {
   admin: adminEnvContract({
     ...contractInputs,
     firebaseSiteId: "caelo-production-site-eb4697",
-    gatewayService: "caelo-production-gateway-6da3bb0",
+    gatewayService: "caelo-production-data-gateway",
   }),
-  gateway: gatewayEnvContract(contractInputs),
+  // #1328 — the broker's identity env is the MCP-Auth-Proxy's, the service
+  // that was the gateway (E13 a), so its URL is the old gateway's.
+  "mcp-auth-proxy": mcpAuthProxyEnvContract(contractInputs),
 };
 
+type IdentitySlug = keyof typeof contract;
+
 /** The env a stack declares for one service, given the config value. */
-function declared(slug: "admin" | "gateway", config: string | undefined): CloudRunEnvVar[] {
+function declared(slug: IdentitySlug, config: string | undefined): CloudRunEnvVar[] {
   return [...contract[slug], ...remoteMcpIdentityStackEnv(config)[slug]];
 }
 
 /** The live services after an installer run plus its old gcloud post-step: gcloud reorders. */
-function live(slug: "admin" | "gateway"): CloudRunEnvVar[] {
+function live(slug: IdentitySlug): CloudRunEnvVar[] {
   return [...contract[slug], ...remoteMcpIdentityEnv(identity)[slug]].reverse();
 }
 
@@ -89,7 +93,11 @@ describe("remote-MCP identity as stack config (#1082)", () => {
 
   it("declares nothing while the config is unset (a fresh install's first up)", () => {
     expect(parseRemoteMcpIdentityConfig(undefined)).toBeNull();
-    expect(remoteMcpIdentityStackEnv(undefined)).toEqual({ admin: [], gateway: [] });
+    expect(remoteMcpIdentityStackEnv(undefined)).toEqual({
+      admin: [],
+      gateway: [],
+      "mcp-auth-proxy": [],
+    });
   });
 
   it("refuses a corrupt or foreign value loudly instead of dropping the vars", () => {
@@ -111,9 +119,11 @@ describe("remote-MCP identity as stack config (#1082)", () => {
         .admin.map((v) => v.name)
         .sort(),
     ).toEqual(Object.values(REMOTE_MCP_ENV).sort());
+    // #1328 — the visitor gateway carries none of it.
+    expect(remoteMcpIdentityStackEnv(serializeRemoteMcpIdentity(identity)).gateway).toEqual([]);
   });
 
-  it.each(["admin", "gateway"] as const)(
+  it.each(["admin", "mcp-auth-proxy"] as const)(
     "%s: with the config the CLI writes, a refreshed plan removes and changes nothing",
     (slug) => {
       const plan = envPlan(declared(slug, serializeRemoteMcpIdentity(identity)), live(slug));
@@ -128,7 +138,7 @@ describe("remote-MCP identity as stack config (#1082)", () => {
       "CAELO_IAP_AUDIENCE",
       "CAELO_MCP_PUBLIC_URL",
     ]);
-    expect(envPlan(declared("gateway", undefined), live("gateway")).removed).toEqual([
+    expect(envPlan(declared("mcp-auth-proxy", undefined), live("mcp-auth-proxy")).removed).toEqual([
       "CAELO_ADMIN_URL",
       "CAELO_MCP_PUBLIC_URL",
     ]);

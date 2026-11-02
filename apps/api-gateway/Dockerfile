@@ -3,22 +3,37 @@
 # Caelo CMS — API gateway.
 #
 # Public-facing HTTP entry point for visitor writes (form submissions,
-# comments, newsletter signups, MCP `caelo_chat`). Runs on Bun directly
-# — no SvelteKit / no build step. Single source file (src/server.ts)
-# with the workspace's shared deps.
+# comments, newsletter signups). Remote MCP is the MCP-Auth-Proxy's
+# (apps/mcp-auth-proxy, #1328). It takes untrusted visitor traffic (CLAUDE.md §11.B Tier 3), so the
+# image is minimal (issue #1327):
+#
+#   - the server is a Bun bundle (apps/api-gateway/dist), not the monorepo;
+#   - the runtime base is distroless (no shell, no package manager), pinned
+#     by digest, and the process runs as its non-root user 65532;
+#   - every file the image adds to that base is allowlisted in
+#     apps/api-gateway/image.ts, and CI refuses an image with anything else
+#     (`scripts/service-image.ts verify`), with a high/critical Trivy finding,
+#     or that does not boot (release-images.yml).
+#
+# Until plugins leave the gateway (E2-B, v0.13) it also carries Deno, the
+# signed plugin dists with their trust root, and the packages the plugin
+# dists and the sandbox bundler resolve from disk — see image.ts.
+#
+# Every FROM is pinned by digest; Dependabot (docker ecosystem) proposes the
+# bumps. The `cc` distroless variant because Deno links libgcc_s.
 #
 # CLAUDE.md §11.C: published to ghcr.io/caelo-cms/gateway by the
 # .github/workflows/release-images.yml workflow on every release.
 
-FROM denoland/deno:bin-2.9.8 AS deno
+FROM denoland/deno:bin-2.9.8@sha256:b507583d3c68ba69f3ed2ce5969ae5b8b70f43421c781279c7aea06435263543 AS deno
 
-FROM oven/bun:1.4.4 AS builder
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS builder
 
 WORKDIR /repo
 
 # bunfig.toml pins `linker = "hoisted"` (see admin Dockerfile for the
-# load-bearing reason). Both images install the same workspace topology;
-# both need the file in place before `bun install` runs.
+# load-bearing reason) — and the staging step below reproduces exactly that
+# hoisted layout in the image. Both need the file before `bun install`.
 COPY package.json bun.lock bunfig.toml tsconfig.base.json tsconfig.json ./
 COPY apps/api-gateway/package.json apps/api-gateway/
 COPY apps/admin/package.json apps/admin/
@@ -45,65 +60,53 @@ COPY packages/plugins/consent-manager/package.json packages/plugins/consent-mana
 
 RUN bun install --frozen-lockfile
 
-# Copy gateway source + every workspace it transitively imports.
-# Pulling everything keeps the workspace symlinks resolvable; Bun's
-# tree-shaking discards unused code at runtime.
 COPY apps/api-gateway apps/api-gateway/
 COPY packages packages/
 
-# Build @caelo-cms/shared. Mirrors the admin Dockerfile's same step.
-# `shared` ships to npm so its `main` points at `./dist/index.js`; the
-# gateway runs the workspace's TS source directly, but the runtime
-# resolver still reads `packages/shared/package.json#main` and 404s
-# without the dist/ artifacts. Build the package once so the symlink
-# target carries a real `dist/` directory.
+# @caelo-cms/shared ships to npm, so its non-Bun export conditions point at
+# dist/. The sandbox bundler builds for the browser target and resolves
+# those, so dist/ must exist before staging.
 RUN bun run --filter @caelo-cms/shared build
 
 # #387 — build every Tier-1 plugin's dist and sign the manifests with a
-# throwaway build key (mirrors the admin Dockerfile). Before this the
-# gateway image shipped NO plugin dists and NO manifests, so its disk
-# loader silently loaded zero plugins — every visitor-facing plugin
-# endpoint 404'd in production. The .tier1-trust-root drop file bakes
-# the verification key next to the manifests; the private half is
-# deleted in the same layer.
+# throwaway build key (mirrors the admin Dockerfile). The .tier1-trust-root
+# drop file carries the verification key next to the manifests; the private
+# half is deleted in the same layer and never staged.
 RUN bunx tsc -b packages/plugins/*
 COPY apps/admin/scripts/sign-tier1-manifest.ts apps/admin/scripts/
 RUN bun run apps/admin/scripts/sign-tier1-manifest.ts --new-key && rm -f .caelo-dev-key
 
-# ---------------------------------------------------------------------------
-FROM oven/bun:1.4.4-slim AS runtime
+# Bundle the server and stage the app tree: exactly what image.ts lists.
+COPY scripts/service-image.ts scripts/
+RUN bun scripts/service-image.ts stage apps/api-gateway/image.ts /stage
 
+# ---------------------------------------------------------------------------
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:08476c244888bfb425bae1ae4dd7c17f093e972aab8426883d97f3c6f280f7c1 AS runtime
+
+COPY --from=builder /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=deno /deno /usr/local/bin/deno
+# Owned by root and not writable by the service user: the app is immutable
+# at run time. The sandbox writes only to its own temp dir under /tmp.
+COPY --from=builder /stage/app /app
+
+# #1338 — the CA bundles every database URL names as sslrootcert
+# (verify-full; packages/shared database-tls.ts DATABASE_CA_DIR).
+COPY packages/shared/certs/ /etc/caelo/db-ca/
 
 WORKDIR /app
 
-# Reproduce the workspace layout so Bun's nested-node_modules resolution
-# matches build time (gateway-specific deps live under
-# apps/api-gateway/node_modules; root only has hoisted shared deps).
-COPY --from=builder /repo/package.json ./package.json
-COPY --from=builder /repo/bun.lock ./bun.lock
-COPY --from=builder /repo/node_modules ./node_modules
-COPY --from=builder /repo/packages ./packages
-COPY --from=builder /repo/apps/api-gateway ./apps/api-gateway
-
-# #794 — sharp loads the prebuilt libvips from @img/sharp-libvips-<platform>,
-# which this image redistributes. libvips and several bundled libraries are
-# LGPL-3.0-or-later and the npm package carries no licence file, so generate
-# the LGPL-3.0 §4 notice (versions, source link, LGPL + GPL texts) from what
-# is installed in the final tree. The generator fails if it finds no libvips
-# package; the licence texts come from the repo, not the network.
-COPY scripts/libvips-notice.ts /tmp/notice/libvips-notice.ts
-COPY licenses /tmp/notice/licenses
-RUN bun /tmp/notice/libvips-notice.ts --root /app --licenses /tmp/notice/licenses \
-      --out /app/THIRD_PARTY_NOTICES.txt && \
-    rm -rf /tmp/notice
-
 ENV NODE_ENV=production
+# The sandbox spawns this binary directly (plugin-host sandbox-runtime.ts).
+ENV CAELO_DENO_BINARY=/usr/local/bin/deno
+# The image is read-only for the service; Bun must not try to cache
+# transpiled sources (the plugin SDK is TypeScript) under $HOME.
+ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
+
+USER 65532:65532
+
 # Cloud Run defaults to PORT=8080 (platform-injected); local Compose
 # can override via GATEWAY_PORT. Server reads either.
 EXPOSE 8080
 
-# Run the TS source directly — Bun's runtime handles .ts natively, no
-# transpile step. The gateway is small + the cold-start savings vs a
-# pre-bundled .js are real (Cloud Run scale-to-zero defaults).
-CMD ["bun", "--bun", "apps/api-gateway/src/server.ts"]
+ENTRYPOINT ["/usr/local/bin/bun"]
+CMD ["apps/api-gateway/dist/server.js"]

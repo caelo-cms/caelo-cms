@@ -25,15 +25,23 @@
  */
 
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
-import { gatewayServiceAccountEmail, runServiceAccountEmail } from "../gcp-names.js";
+import {
+  gatewayServiceAccountEmail,
+  mcpAuthProxyServiceAccountEmail,
+  runServiceAccountEmail,
+} from "../gcp-names.js";
 import type { ImageDigests } from "../install-state.js";
 import {
   adminMediaVolume,
+  CLOUD_RUN_SLUGS,
   type CloudRunEnvVar,
-  GATEWAY_TIMEOUT_SECONDS,
+  type CloudRunSlug,
+  cloudRunServicePrefix,
+  MCP_AUTH_PROXY_TIMEOUT_SECONDS,
   RETIRED_SECRET_FILES,
   SERVICE_CPU_IDLE,
   SERVICE_SECRET_FILES,
+  SERVICE_VPC_EGRESS,
 } from "../stack-contract.js";
 import {
   type DeployedService,
@@ -44,12 +52,14 @@ import {
   liveContainerEnv,
   liveContainerMemory,
   liveCpuIdle,
+  liveDirectVpc,
   liveTimeoutSeconds,
   liveVolumes,
   planAdminMemory,
   planContractEnv,
   planCpuIdle,
   planMediaVolume,
+  planNoVpc,
   planRequestTimeout,
   planSecretFiles,
   rollService,
@@ -69,10 +79,27 @@ import {
 import type { HealthProbe } from "./health.js";
 import type { UpgradeReporter } from "./reporter.js";
 
-export type RollSlug = "admin" | "gateway";
+export type RollSlug = CloudRunSlug;
 
-/** The roll order: the gateway follows the admin, never the other way round. */
-export const ROLL_ORDER: readonly RollSlug[] = ["admin", "gateway"];
+/**
+ * The roll order: the gateway follows the admin, never the other way round,
+ * and the MCP-Auth-Proxy comes last (#1328) — on gcp-firebase it forwards
+ * the visitor traffic still addressed to it to the gateway, which must
+ * already serve the new release by then.
+ */
+export const ROLL_ORDER: readonly RollSlug[] = CLOUD_RUN_SLUGS;
+
+/** The service account each service's new revision runs as. */
+export function rollServiceAccount(slug: RollSlug, projectId: string, env: string): string {
+  switch (slug) {
+    case "admin":
+      return runServiceAccountEmail(projectId, env);
+    case "gateway":
+      return gatewayServiceAccountEmail(projectId, env);
+    case "mcp-auth-proxy":
+      return mcpAuthProxyServiceAccountEmail(projectId, env);
+  }
+}
 
 /** The install an app-roll acts on. */
 export interface AppRollInstall {
@@ -110,6 +137,8 @@ export interface ServicePlan {
   readonly liveTimeout: number | null;
   /** Whether the service gets CPU only during requests now. */
   readonly liveCpuIdle: boolean;
+  /** Whether the service egresses into the install's VPC now. */
+  readonly liveDirectVpc: boolean;
 }
 
 /** A service plan plus the changes its roll applies. */
@@ -139,6 +168,13 @@ export interface AppRollPlan {
   readonly services: readonly RollPlan[];
   /** Notes for the operator (e.g. a memory limit left as is). */
   readonly warnings: readonly string[];
+  /**
+   * #1338 — the services dial the Cloud SQL instance's IP, which no
+   * verify-full connection can use, so their database URLs are not planned.
+   * A converge moves them onto the instance's DNS name
+   * ({@link EnvAdjustments.databaseHost}); a roll refuses while this holds.
+   */
+  readonly databaseHostPending?: boolean;
 }
 
 export type PlanResult =
@@ -166,7 +202,7 @@ export async function planAppRoll(
 ): Promise<PlanResult> {
   const services: ServicePlan[] = [];
   for (const slug of ROLL_ORDER) {
-    const prefix = `caelo-${install.env}-${slug}`;
+    const prefix = cloudRunServicePrefix(install.provider, install.env, slug);
     const lookup = await resolveGcpResourceName(
       run,
       "run-service",
@@ -210,6 +246,7 @@ export async function planAppRoll(
       liveVolumes: liveVolumes(json),
       liveTimeout: liveTimeoutSeconds(json),
       liveCpuIdle: liveCpuIdle(json),
+      liveDirectVpc: liveDirectVpc(json),
     });
   }
   const env = planEnv(install, services, {});
@@ -265,29 +302,45 @@ export async function planAppRoll(
     // stack's memory default (never lowered; an unparsable value is kept).
     const memory = s.slug === "admin" ? planAdminMemory(s.liveMemory) : null;
     if (memory && !memory.ok) warnings.push(`admin memory left as is: ${memory.error}`);
-    // #806 — the gateway streams remote-MCP chat turns (stack-contract.ts
-    // GATEWAY_TIMEOUT_SECONDS). The admin's timeout is the stacks' alone.
+    // #806 — the MCP-Auth-Proxy streams remote-MCP chat turns
+    // (stack-contract.ts MCP_AUTH_PROXY_TIMEOUT_SECONDS). The other services'
+    // timeouts are the stacks' alone.
     const timeout =
-      s.slug === "gateway" ? planRequestTimeout(s.liveTimeout, GATEWAY_TIMEOUT_SECONDS) : null;
+      s.slug === "mcp-auth-proxy"
+        ? planRequestTimeout(s.liveTimeout, MCP_AUTH_PROXY_TIMEOUT_SECONDS)
+        : null;
     const memoryFlags = memory?.ok ? memory.flags : [];
     const timeoutFlags = timeout?.ok ? timeout.flags : [];
     const cpu = planCpuIdle(s.liveCpuIdle, SERVICE_CPU_IDLE[s.slug]);
     const cpuFlags = cpu.ok ? cpu.flags : [];
+    // #1328 — the gcp-firebase proxy is the former gateway service: it
+    // leaves the VPC in the same revision that drops its database env.
+    const vpc = SERVICE_VPC_EGRESS[s.slug] ? null : planNoVpc(s.liveDirectVpc);
+    const vpcFlags = vpc?.ok ? vpc.flags : [];
     return {
       ...s,
       envFlags: env.services[s.slug].flags,
       envChanges: env.services[s.slug].changes,
-      resourceFlags: [...memoryFlags, ...timeoutFlags, ...cpuFlags],
+      resourceFlags: [...memoryFlags, ...timeoutFlags, ...cpuFlags, ...vpcFlags],
       resourceChanges: [
         ...memoryFlags.map((f) => `${s.liveMemory ?? "(default)"} → ${f}`),
         ...(timeout?.ok ? timeout.changes : []),
         ...(cpu.ok ? cpu.changes : []),
+        ...(vpc?.ok ? vpc.changes : []),
       ],
       volumeFlags: [...(s.slug === "admin" ? media.flags : []), ...secretFiles[s.slug].flags],
       volumeChanges: [...(s.slug === "admin" ? media.changes : []), ...secretFiles[s.slug].changes],
     };
   });
-  return { ok: true, plan: { install, services: rolls, warnings } };
+  if (env.databaseHostPending) {
+    warnings.push(
+      "the services still dial the Cloud SQL instance's IP; the converge moves them onto its DNS name for verify-full TLS (#1338) before anything rolls",
+    );
+  }
+  return {
+    ok: true,
+    plan: { install, services: rolls, warnings, databaseHostPending: env.databaseHostPending },
+  };
 }
 
 /** Env the converge half adds to, or keeps out of, the rolls ({@link AppRollHooks.afterMigrations}). */
@@ -299,6 +352,11 @@ export interface EnvAdjustments {
    * identity env, which only the converge (operator identity) can resolve.
    */
   readonly extraEnv?: Readonly<Partial<Record<RollSlug, readonly CloudRunEnvVar[]>>>;
+  /**
+   * #1338 — the database host the converge moved the services onto (the
+   * Cloud SQL instance's DNS name, cloudsql-tls.ts).
+   */
+  readonly databaseHost?: string;
 }
 
 function planEnv(
@@ -322,6 +380,7 @@ function planEnv(
     {
       leaveUntouched: adjust.leaveUntouched ?? [],
       ...(adjust.extraEnv ? { extraEnv: adjust.extraEnv } : {}),
+      ...(adjust.databaseHost ? { databaseHost: adjust.databaseHost } : {}),
     },
   );
 }
@@ -333,11 +392,12 @@ function planEnv(
  */
 export function adjustingEnv(plan: AppRollPlan, adjust: EnvAdjustments): AppRollPlan {
   const extra = Object.values(adjust.extraEnv ?? {}).some((v) => (v?.length ?? 0) > 0);
-  if ((adjust.leaveUntouched?.length ?? 0) === 0 && !extra) return plan;
+  if ((adjust.leaveUntouched?.length ?? 0) === 0 && !extra && !adjust.databaseHost) return plan;
   const env = planEnv(plan.install, plan.services, adjust);
   if (!env.ok) return plan;
   return {
     ...plan,
+    databaseHostPending: env.databaseHostPending,
     services: plan.services.map((s) => ({
       ...s,
       envFlags: env.services[s.slug].flags,
@@ -370,7 +430,7 @@ export interface AppRollHooks {
   afterMigrations?(): Promise<
     | ({ readonly ok: true; readonly leaveUntouched: readonly string[] } & Pick<
         EnvAdjustments,
-        "extraEnv"
+        "extraEnv" | "databaseHost"
       >)
     | { readonly ok: false }
   >;
@@ -470,6 +530,17 @@ export async function executeAppRoll(
     r.warn("--skip-health-check set — the new revisions get Cloud Run's readiness check only.");
   }
 
+  // #1338 — the new images refuse a database URL without verify-full, and
+  // only a converge can move the services off the instance's IP. Without
+  // one (the in-cloud upgrader) the roll stops before it changes anything.
+  if (plan.databaseHostPending && !hooks.afterMigrations) {
+    r.error(
+      "The services still dial the Cloud SQL instance's IP address. This release connects with verify-full TLS, which needs the instance's DNS name: run the converge first (Settings → Updates installs it as a cloud-setup release, or `cms-provision upgrade` from a terminal).",
+    );
+    r.warn("No migrations ran and no traffic moved.");
+    return fail("migrations", false);
+  }
+
   // Migrations BEFORE any traffic moves, with the NEW admin image: the old
   // image does not carry the release's migration files (v0.9.2).
   const admin = plan.services.find((s) => s.slug === "admin") as RollPlan;
@@ -490,7 +561,14 @@ export async function executeAppRoll(
     plan = adjustingEnv(plan, {
       leaveUntouched: converged.leaveUntouched,
       ...(converged.extraEnv ? { extraEnv: converged.extraEnv } : {}),
+      ...(converged.databaseHost ? { databaseHost: converged.databaseHost } : {}),
     });
+  }
+  if (plan.databaseHostPending) {
+    r.error(
+      "The converge did not move the services onto the Cloud SQL instance's DNS name, so the new revisions could not reach the database with verify-full TLS (#1338). Nothing rolled; fix the database TLS step above and re-run.",
+    );
+    return fail("converge", true);
   }
 
   const rolled: RollPlan[] = [];
@@ -540,10 +618,7 @@ export async function executeAppRoll(
         region: install.region,
         projectId: install.projectId,
         imageRef: p.imageRef,
-        serviceAccount:
-          p.slug === "admin"
-            ? runServiceAccountEmail(install.projectId, install.env)
-            : gatewayServiceAccountEmail(install.projectId, install.env),
+        serviceAccount: rollServiceAccount(p.slug, install.projectId, install.env),
         envFlags: p.envFlags,
         resourceFlags: p.resourceFlags,
         volumeFlags: p.volumeFlags,
@@ -637,9 +712,12 @@ export async function executeAppRoll(
     s.done(`Healthy: ${deep.detail}`);
   }
 
+  const digestOf = (slug: RollSlug) =>
+    (plan.services.find((s) => s.slug === slug) as RollPlan).digest;
   const digests: ImageDigests = {
-    admin: (plan.services.find((s) => s.slug === "admin") as RollPlan).digest,
-    gateway: (plan.services.find((s) => s.slug === "gateway") as RollPlan).digest,
+    admin: digestOf("admin"),
+    gateway: digestOf("gateway"),
+    "mcp-auth-proxy": digestOf("mcp-auth-proxy"),
   };
   await deps.recordDigests(digests);
   return { ok: true, digests };

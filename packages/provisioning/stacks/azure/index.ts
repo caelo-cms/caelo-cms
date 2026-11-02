@@ -13,7 +13,8 @@
  *  4. Azure Front Door Standard serving the static website on the primary
  *     domain with a managed certificate — files served as files, no compute
  *     on the request path (CLAUDE.md §11.B Tier 1).
- *  5. Azure Container Apps (admin/gateway/orchestrator/runner),
+ *  5. Azure Container Apps (admin/gateway/orchestrator/runner, and the
+ *     MCP-Auth-Proxy without any secret, #1328),
  *     mounted with Key Vault secrets via managed identity.
  *  6. Key Vault entries (postgres-password, csrf-secret, cookie-secret,
  *     anthropic-api-key, resend-api-key).
@@ -34,6 +35,7 @@
  * env vars wired by this stack.
  */
 
+import { verifyFullQuery } from "@caelo-cms/shared";
 import * as azure from "@pulumi/azure-native";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
@@ -44,6 +46,9 @@ import {
   ADMIN_MEMORY_DEFAULT,
   azureContainerAppResources,
   GATEWAY_TRUSTED_PROXY_HOPS,
+  MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS,
+  REMOTE_MCP_MODE,
+  REMOTE_MCP_MODE_ENV,
   TRUSTED_PROXY_HOPS_ENV,
 } from "../../dist/stack-contract.js";
 import {
@@ -191,18 +196,23 @@ const _pgPublic = new azure.dbforpostgresql.Database(`${namePrefix}-cms-public-d
   charset: "UTF8",
 });
 
+// #1338 — verify-full to the server's FQDN. Flexible Server's certificate chains
+// to public roots (DigiCert Global Root G2, Microsoft RSA Root CA 2017) that
+// Bun trusts out of the box, so no sslrootcert (shared database-tls.ts).
+const AZURE_TLS = verifyFullQuery();
+
 const adminDatabaseUrl = pulumi
   .all([pgServer.fullyQualifiedDomainName, postgresPassword])
-  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_admin?sslmode=require`);
+  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_admin?${AZURE_TLS}`);
 // What the admin connects to cms_public with (DDL, migrations, moderation).
 const publicAdminDatabaseUrl = pulumi
   .all([pgServer.fullyQualifiedDomainName, postgresPassword])
-  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_public?sslmode=require`);
+  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_public?${AZURE_TLS}`);
 // The gateway's only login (#613, #635): public_role on cms_public. It has
 // no cms_admin login at all (CLAUDE.md §2).
 const publicDatabaseUrl = pulumi
   .all([pgServer.fullyQualifiedDomainName, publicRolePassword])
-  .apply(([host, pw]) => `postgresql://public_role:${pw}@${host}:5432/cms_public?sslmode=require`);
+  .apply(([host, pw]) => `postgresql://public_role:${pw}@${host}:5432/cms_public?${AZURE_TLS}`);
 
 // === 4. Storage account + containers ===
 const storage = new azure.storage.StorageAccount(`${namePrefix}-st`, {
@@ -437,6 +447,12 @@ interface ContainerAppArgs {
   readonly extraEnv?: ReadonlyArray<{ name: string; value: pulumi.Input<string> }>;
   /** Defaults to 0.5 vCPU / 1 GiB. */
   readonly resources?: { readonly cpu: number; readonly memory: string };
+  /**
+   * #1328 — a service that reads nothing of the install: no CAELO_ENV, no
+   * media URL, only `CAELO_PROVIDER` plus {@link extraEnv}, and zero
+   * minimum replicas in every environment (E14 a of #763).
+   */
+  readonly isolated?: true;
 }
 
 function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
@@ -454,7 +470,10 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
       },
     },
     template: {
-      scale: { minReplicas: env === "production" ? 1 : 0, maxReplicas: MAX_REPLICAS },
+      scale: {
+        minReplicas: args.isolated || env !== "production" ? 0 : 1,
+        maxReplicas: MAX_REPLICAS,
+      },
       containers: [
         {
           name: args.serviceName,
@@ -462,16 +481,18 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
           image:
             cfg.get(`image-${args.serviceName}`) ??
             `${namePrefix}.azurecr.io/${args.serviceName}:latest`,
-          env: [
-            { name: "CAELO_PROVIDER", value: "azure" },
-            { name: "CAELO_ENV", value: env },
-            ...args.databaseEnv,
-            {
-              name: "MEDIA_STORAGE_URL",
-              value: pulumi.interpolate`https://${storage.name}.blob.core.windows.net/media`,
-            },
-            ...(args.extraEnv ?? []),
-          ],
+          env: args.isolated
+            ? [{ name: "CAELO_PROVIDER", value: "azure" }, ...(args.extraEnv ?? [])]
+            : [
+                { name: "CAELO_PROVIDER", value: "azure" },
+                { name: "CAELO_ENV", value: env },
+                ...args.databaseEnv,
+                {
+                  name: "MEDIA_STORAGE_URL",
+                  value: pulumi.interpolate`https://${storage.name}.blob.core.windows.net/media`,
+                },
+                ...(args.extraEnv ?? []),
+              ],
           resources: args.resources ?? { cpu: 0.5, memory: "1.0Gi" },
         },
       ],
@@ -499,10 +520,28 @@ const _gatewayApp = containerApp({
     ...poolBudget.env.gateway,
   ],
   // Which X-Forwarded-For entry is the visitor (api-gateway client-ip.ts).
-  // #806 — no remote-MCP env: remote MCP rides Google IAP (gcp stacks
-  // only); unset, the gateway answers /api/mcp/* with 503
-  // remote_mcp_not_configured and the admin reports it unavailable.
   extraEnv: [{ name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS.azure) }],
+});
+// #1328 — the MCP-Auth-Proxy, its own Container App and so its own FQDN:
+// remote MCP's sign-in pages never share an origin with the site's module
+// JS. Remote MCP needs the admin behind Google IAP, which Azure does not
+// have, so it runs with CAELO_REMOTE_MCP=unavailable and answers everything
+// but its health check (`/api/mcp/health`) with one fixed 404; the admin
+// reports remote MCP as not available here. No database URL, no secret
+// and no managed identity, because there is nothing it may read. Same
+// shape as on every provider (E11 of #763), at zero replicas until a
+// request comes.
+const _mcpAuthProxyApp = containerApp({
+  serviceName: "mcp-auth-proxy",
+  databaseEnv: [],
+  isolated: true,
+  resources: { cpu: 0.25, memory: "0.5Gi" },
+  extraEnv: [
+    { name: REMOTE_MCP_MODE_ENV, value: REMOTE_MCP_MODE.azure },
+    { name: TRUSTED_PROXY_HOPS_ENV, value: String(MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS.azure) },
+    // The app's ingress targets 8080 (containerApp above).
+    { name: "PORT", value: "8080" },
+  ],
 });
 const _orchestratorApp = containerApp({
   serviceName: "orchestrator",

@@ -6,7 +6,7 @@ How people connect AI tools to a Caelo site over MCP (Model Context Protocol), w
 
 | Path | Address | Who signs in, and how | For |
 |---|---|---|---|
-| **Remote chat** | `https://<site>/api/mcp/chat` | Each person, with their own Google account (OAuth through the gateway's broker, then Google IAP) | ChatGPT, claude.ai, Claude Code, Cursor, VS Code, Gemini CLI, … asking **this site's AI** to do the work (`caelo_chat`) |
+| **Remote chat** | `https://<site>/api/mcp/chat` | Each person, with their own Google account (OAuth through the MCP-Auth-Proxy's broker, then Google IAP) | ChatGPT, claude.ai, Claude Code, Cursor, VS Code, Gemini CLI, … asking **this site's AI** to do the work (`caelo_chat`) |
 | **Remote admin** (Power-MCP, #376) | `https://<site>/api/mcp/admin` | Same | An external agent that does the work **itself** with every tool Caelo's AI has |
 | **Token** | the local MCP server (stdio) + `/api/mcp/*` | A bearer token an Owner mints under Settings → MCP | Tools that run Caelo's MCP server on a computer, CI jobs, and installs without remote MCP (self-hosted, AWS, Azure) |
 
@@ -25,7 +25,7 @@ Remote MCP exists only on the Google Cloud installs (`gcp`, `gcp-firebase`), bec
 | chat | `content.write` | owner, editor |
 | admin | `settings.write` (what minting an admin-scoped token needs) | owner |
 
-The rule lives in one place: `MCP_SURFACE_PERMISSION` in `packages/shared/src/mcp-access.ts`. The resolver (`packages/admin-core/src/ops/security/mcp_principal.ts`), Settings → MCP and the gateway's consent page all read it, so the code, the UI and the error messages cannot drift apart.
+The rule lives in one place: `MCP_SURFACE_PERMISSION` in `packages/shared/src/mcp-access.ts`. The resolver (`packages/admin-core/src/ops/security/mcp_principal.ts`), Settings → MCP and the MCP-Auth-Proxy's consent page all read it, so the code, the UI and the error messages cannot drift apart.
 
 A person without the permission gets `403 permission_denied` on their first MCP request. The message names the address, the missing permission, the person's roles and the roles that would allow it.
 
@@ -37,13 +37,13 @@ A **connection** is one row in `mcp_remote_connections`: one person, one surface
 
 ### The client app's identity
 
-The gateway's OAuth broker knows which app it issued a grant to. `mcpClientKey` (`apps/api-gateway/src/mcp/access-token.ts`) turns that into a stable key:
+The MCP-Auth-Proxy's OAuth broker knows which app it issued a grant to. `mcpClientKey` (`apps/mcp-auth-proxy/src/access-token.ts`) turns that into a stable key:
 
 - **CIMD** clients (ChatGPT, claude.ai, Claude Code): the client metadata document URL, e.g. `https://chatgpt.com/oauth/client.json`.
 - **DCR** clients: `dcr:<client_name>`. The DCR `client_id` itself is a fresh seal per registration, and clients register again whenever they lose their cached registration, so keying by the id would turn every re-registration into a new connection.
 - **DCR without a name**: `dcr:` plus a hash of the registration.
 
-The key is sealed into the access token next to the surface (RFC 8707 resource). The proxy forwards it to the admin as `x-caelo-mcp-client`. An inbound `x-caelo-*` header never passes the proxy's allowlist, so a client cannot claim another app's identity through the gateway, and a stolen token stays bound to its app.
+The key is sealed into the access token next to the surface (RFC 8707 resource). The proxy forwards it to the admin as `x-caelo-mcp-client`. An inbound `x-caelo-*` header never passes the proxy's allowlist, so a client cannot claim another app's identity through the proxy, and a stolen token stays bound to its app.
 
 **What the key is not.** It is not a security boundary against the person themselves. The key comes from a self-chosen name (DCR registration is open), and a person who calls the IAP-protected admin directly can send any value. Both only ever pick that person's own rows, and the key grants nothing: IAP and the person's Caelo role decide access. Revoking one app is for "this app should stop", not for cutting off a person. That is what the block is for.
 
@@ -67,7 +67,7 @@ Migration 0339 keeps existing rows with `client_key IS NULL`. The first app whos
 - A new app's row starts with the old row's cap and AI delegation.
 - If the old row is revoked, a request that does not identify its app (no MCP `initialize`, for example a client resuming after the upgrade) is refused with a "reconnect this app" message. That request might come from the revoked app itself. Reconnecting makes the app identify itself, and adoption then decides.
 
-The gateway fixes an app's key at sign-in and carries it in the sealed refresh token. A refresh never recomputes it, so rotating the seal key cannot turn a revoked DCR app into a new, active connection.
+The MCP-Auth-Proxy fixes an app's key at sign-in and carries it in the sealed refresh token. A refresh never recomputes it, so rotating the seal key cannot turn a revoked DCR app into a new, active connection.
 
 ## Settings → MCP
 
@@ -79,7 +79,7 @@ The page is state-aware:
 
 ## Invariants (#376, #806)
 
-- **IAP is the gate.** No MCP request reaches the admin without IAP. The gateway holds no admin credential and forwards only the person's own Google ID token (#806).
+- **IAP is the gate.** No MCP request reaches the admin without IAP. The MCP-Auth-Proxy holds no admin credential and forwards only the person's own Google ID token (#806).
 - **External agents are AI actors.** Every write from either surface runs as an `ai` actor on a chat session's preview branch. Nothing reaches the live site until a person publishes. Approval-gated tools pause for an Owner's click in the Caelo admin, never in the AI tool (CLAUDE.md §11.A).
 - **One work session per agent (#1253).** `caelo_open_session` without arguments always opens a NEW chat in the shared draft, marked as an agent chat of its client (`chat_sessions.agent_client`). It never resumes the operator's own chat; `chatSessionId` continues a named one. The chat list groups agent chats per client, and Live Edit never picks one as the operator's chat. Undo, Stop and presence are each agent's own.
 - **Which session a call runs in.** A call's own `workSessionId` argument wins (the Power-MCP surface adds it to every catalogue tool and strips it before dispatch), so sub-agents sharing one connection keep their own sessions. Otherwise: the stdio shim's last opened session (process memory), or, on the stateless remote transport, the session bound to the client's MCP transport session. The admin mints `Mcp-Session-Id` on `initialize`; `caelo_open_session` binds it in `mcp_transport_sessions` (0453), scoped to the connection row, so a made-up header names only the caller's own mappings. A client that sends no `Mcp-Session-Id` (one connected before 0.11.6) cannot carry a bound session: `caelo_open_session` then says so and tells it to pass `workSessionId` on every call (or reconnect), and remembers the session in `mcp_unbound_work_sessions` (0481), so a later call without one is refused with that session's id instead of "open a session first" (#1306).

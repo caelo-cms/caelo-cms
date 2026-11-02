@@ -32,14 +32,20 @@ import {
 import { databaseUrls } from "./stack-contract.js";
 
 const FAKE_PW = "fakePw0rdForTests123";
-const legacyAdminUrl = `postgresql://admin_role:${FAKE_PW}@10.1.2.3:5432/cms_admin?sslmode=require`;
-const legacyPublicUrl = `postgresql://public_role:${FAKE_PW}@10.1.2.3:5432/cms_public?sslmode=require`;
+const legacyAdminUrl = `postgresql://admin_role:${FAKE_PW}@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem`;
+const legacyPublicUrl = `postgresql://public_role:${FAKE_PW}@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem`;
 const setupLink = "https://admin.acme.test/setup?token=fakeSetupToken0123456789";
 
 /** What `pulumi up` returns on the current stacks, secret flags included. */
 const stackOutputs = {
-  adminDatabaseUrlOut: { value: databaseUrls("10.1.2.3").admin, secret: false },
-  publicDatabaseUrlOut: { value: databaseUrls("10.1.2.3").public, secret: false },
+  adminDatabaseUrlOut: {
+    value: databaseUrls("db1.p-label.europe-west1.sql-psa.goog").admin,
+    secret: false,
+  },
+  publicDatabaseUrlOut: {
+    value: databaseUrls("db1.p-label.europe-west1.sql-psa.goog").public,
+    secret: false,
+  },
   bootstrapUrlOut: { value: setupLink, secret: false },
   bootstrapTokenExpiresAtOut: { value: "2026-10-13T00:00:00.000Z", secret: false },
   providerOut: { value: "gcp", secret: false },
@@ -97,7 +103,7 @@ describe("findSecrets", () => {
   });
 
   it("does not flag the password-less database URLs the stacks export today", () => {
-    expect(findSecrets(databaseUrls("10.1.2.3"))).toEqual([]);
+    expect(findSecrets(databaseUrls("db1.p-label.europe-west1.sql-psa.goog"))).toEqual([]);
   });
 
   it("flags secret-named keys holding a value, not markers or look-alikes", () => {
@@ -314,7 +320,9 @@ describe("redactCredentials", () => {
   it("masks URL passwords and leaves the rest readable", () => {
     const out = redactCredentials(`connect failed: ${legacyAdminUrl} (timeout)`);
     expect(out).not.toContain(FAKE_PW);
-    expect(out).toContain("postgresql://admin_role:***@10.1.2.3:5432/cms_admin");
+    expect(out).toContain(
+      "postgresql://admin_role:***@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin",
+    );
     expect(redactCredentials("https://admin.acme.test/x")).toBe("https://admin.acme.test/x");
   });
 });

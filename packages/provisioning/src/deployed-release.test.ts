@@ -29,6 +29,17 @@ function fakeGcloud(answers: Record<string, GcloudResult[]>) {
   return { run, calls };
 }
 
+/**
+ * A gcp-firebase install since #1328: the admin, the data gateway and the
+ * MCP-Auth-Proxy — the service that was the gateway (E13 a).
+ */
+const FIREBASE = { provider: "gcp-firebase" as const, projectId: "p", region: "europe-west1" };
+const firebaseLists = () => ({
+  "metadata.name~^caelo-production-admin": [ok("caelo-production-admin-abc\n")],
+  "metadata.name~^caelo-production-data-gateway": [ok("caelo-production-data-gateway\n")],
+  "metadata.name~^caelo-production-gateway": [ok("caelo-production-gateway-def\n")],
+});
+
 describe("digestFromImageRef", () => {
   it("extracts the pinned digest", () => {
     expect(digestFromImageRef(`${REG}/admin@${A}\n`)).toBe(A);
@@ -39,16 +50,43 @@ describe("digestFromImageRef", () => {
 });
 
 describe("readDeployedImageDigests", () => {
-  it("reads both services' digests", async () => {
+  it("reads the three services' digests, each from the service playing its role", async () => {
     const { run, calls } = fakeGcloud({
+      ...firebaseLists(),
+      "describe caelo-production-admin-abc": [ok(`${REG}/admin@${A}`)],
+      "describe caelo-production-data-gateway": [ok(`${REG}/gateway@${B}`)],
+      "describe caelo-production-gateway-def": [ok(`${REG}/mcp-auth-proxy@${C}`)],
+    });
+    const r = await readDeployedImageDigests({ ...FIREBASE, run });
+    expect(r).toEqual({ ok: true, digests: { admin: A, gateway: B, "mcp-auth-proxy": C } });
+    expect(calls.every((c) => c.includes("--project=p"))).toBe(true);
+  });
+
+  it("finds the gcp proxy under its own name", async () => {
+    const { run } = fakeGcloud({
       "metadata.name~^caelo-production-admin": [ok("caelo-production-admin-abc\n")],
       "metadata.name~^caelo-production-gateway": [ok("caelo-production-gateway-def\n")],
+      "metadata.name~^caelo-production-mcp-auth-proxy": [ok("caelo-production-mcp-auth-proxy\n")],
       "describe caelo-production-admin-abc": [ok(`${REG}/admin@${A}`)],
       "describe caelo-production-gateway-def": [ok(`${REG}/gateway@${B}`)],
+      "describe caelo-production-mcp-auth-proxy": [ok(`${REG}/mcp-auth-proxy@${C}`)],
     });
-    const r = await readDeployedImageDigests({ projectId: "p", region: "europe-west1", run });
-    expect(r).toEqual({ ok: true, digests: { admin: A, gateway: B } });
-    expect(calls.every((c) => c.includes("--project=p"))).toBe(true);
+    const r = await readDeployedImageDigests({ ...FIREBASE, provider: "gcp", run });
+    expect(r).toEqual({ ok: true, digests: { admin: A, gateway: B, "mcp-auth-proxy": C } });
+  });
+
+  it("sends an install without its #1328 services to upgrade", async () => {
+    const { run } = fakeGcloud({
+      "metadata.name~^caelo-production-admin": [ok("caelo-production-admin-abc\n")],
+      "metadata.name~^caelo-production-data-gateway": [ok("")],
+      "describe caelo-production-admin-abc": [ok(`${REG}/admin@${A}`)],
+    });
+    const r = await readDeployedImageDigests({ ...FIREBASE, run });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("no caelo-production-data-gateway* Cloud Run service");
+      expect(r.error).toContain("Run `upgrade` first");
+    }
   });
 
   it("refuses an ambiguous service match", async () => {
@@ -57,7 +95,7 @@ describe("readDeployedImageDigests", () => {
         ok("caelo-production-admin-a\ncaelo-production-admin-b\n"),
       ],
     });
-    const r = await readDeployedImageDigests({ projectId: "p", region: "r", run });
+    const r = await readDeployedImageDigests({ ...FIREBASE, run });
     expect(r.ok).toBe(false);
     if (!r.ok)
       expect(r.error).toContain("found caelo-production-admin-a, caelo-production-admin-b");
@@ -68,14 +106,14 @@ describe("readDeployedImageDigests", () => {
       "metadata.name~^caelo-production-admin": [ok("caelo-production-admin-abc\n")],
       "describe caelo-production-admin-abc": [ok(`${REG}/admin:latest`)],
     });
-    const r = await readDeployedImageDigests({ projectId: "p", region: "r", run });
+    const r = await readDeployedImageDigests({ ...FIREBASE, run });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("not pinned to a digest");
   });
 
   it("surfaces a gcloud failure", async () => {
     const { run } = fakeGcloud({ "services list": [fail("PERMISSION_DENIED")] });
-    const r = await readDeployedImageDigests({ projectId: "p", region: "r", run });
+    const r = await readDeployedImageDigests({ ...FIREBASE, run });
     expect(r).toEqual({ ok: false, error: "list Cloud Run services: PERMISSION_DENIED" });
   });
 });
@@ -87,40 +125,50 @@ describe("checkDeployedRuntimeEnv", () => {
     name,
     valueFrom: { secretKeyRef: { name: `caelo-production-${id}`, key: "latest" } },
   });
-  const lists = () => ({
-    "metadata.name~^caelo-production-admin": [ok("caelo-production-admin-abc\n")],
-    "metadata.name~^caelo-production-gateway": [ok("caelo-production-gateway-def\n")],
+  const adminOk = svc([
+    secret("ADMIN_DATABASE_PASSWORD"),
+    secret("PUBLIC_ADMIN_DATABASE_PASSWORD"),
+  ]);
+  const gatewayOk = svc([secret("PUBLIC_DATABASE_PASSWORD", "public-role-password")]);
+  const proxyOk = svc([secret("CAELO_MCP_OAUTH_SEAL_KEY", "mcp-oauth-seal-key")]);
+
+  it("passes once every service runs the current env", async () => {
+    const { run } = fakeGcloud({
+      ...firebaseLists(),
+      "describe caelo-production-admin-abc": [adminOk],
+      "describe caelo-production-data-gateway": [gatewayOk],
+      "describe caelo-production-gateway-def": [proxyOk],
+    });
+    expect(await checkDeployedRuntimeEnv({ ...FIREBASE, run })).toEqual({ ok: true });
   });
 
-  it("passes once both services read the password from Secret Manager", async () => {
+  it("#1328 — stops a wizard re-run while the proxy is still the old gateway (database env)", async () => {
     const { run } = fakeGcloud({
-      ...lists(),
-      "describe caelo-production-admin-abc": [
-        svc([secret("ADMIN_DATABASE_PASSWORD"), secret("PUBLIC_ADMIN_DATABASE_PASSWORD")]),
-      ],
-      "describe caelo-production-gateway-def": [
-        svc([secret("PUBLIC_DATABASE_PASSWORD", "public-role-password")]),
-      ],
+      ...firebaseLists(),
+      "describe caelo-production-admin-abc": [adminOk],
+      "describe caelo-production-data-gateway": [gatewayOk],
+      "describe caelo-production-gateway-def": [gatewayOk],
     });
-    expect(await checkDeployedRuntimeEnv({ projectId: "p", region: "r", run })).toEqual({
-      ok: true,
-    });
+    const r = await checkDeployedRuntimeEnv({ ...FIREBASE, run });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("PUBLIC_DATABASE_PASSWORD");
+      expect(r.error).toContain("Run `upgrade` first");
+    }
   });
 
   it("stops a wizard re-run on a gateway from before #635 (it needs its gateway_role pool)", async () => {
     const { run } = fakeGcloud({
-      ...lists(),
-      "describe caelo-production-admin-abc": [
-        svc([secret("ADMIN_DATABASE_PASSWORD"), secret("PUBLIC_ADMIN_DATABASE_PASSWORD")]),
-      ],
-      "describe caelo-production-gateway-def": [
+      ...firebaseLists(),
+      "describe caelo-production-admin-abc": [adminOk],
+      "describe caelo-production-data-gateway": [
         svc([
           secret("GATEWAY_DATABASE_PASSWORD", "gateway-role-password"),
           secret("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
         ]),
       ],
     });
-    const r = await checkDeployedRuntimeEnv({ projectId: "p", region: "r", run });
+    const r = await checkDeployedRuntimeEnv({ ...FIREBASE, run });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error).toContain("GATEWAY_DATABASE_PASSWORD");
@@ -130,15 +178,13 @@ describe("checkDeployedRuntimeEnv", () => {
 
   it("stops a wizard re-run on a gateway from before #613 (it needs the admin_role pool)", async () => {
     const { run } = fakeGcloud({
-      ...lists(),
-      "describe caelo-production-admin-abc": [
-        svc([secret("ADMIN_DATABASE_PASSWORD"), secret("PUBLIC_ADMIN_DATABASE_PASSWORD")]),
-      ],
-      "describe caelo-production-gateway-def": [
+      ...firebaseLists(),
+      "describe caelo-production-admin-abc": [adminOk],
+      "describe caelo-production-data-gateway": [
         svc([secret("ADMIN_DATABASE_PASSWORD"), secret("PUBLIC_DATABASE_PASSWORD")]),
       ],
     });
-    const r = await checkDeployedRuntimeEnv({ projectId: "p", region: "r", run });
+    const r = await checkDeployedRuntimeEnv({ ...FIREBASE, run });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error).toContain("ADMIN_DATABASE_PASSWORD");
@@ -148,14 +194,17 @@ describe("checkDeployedRuntimeEnv", () => {
 
   it("stops a wizard re-run on an install upgrade hasn't moved over (password in the URL)", async () => {
     const { run } = fakeGcloud({
-      ...lists(),
+      ...firebaseLists(),
       "describe caelo-production-admin-abc": [
         svc([
-          { name: "ADMIN_DATABASE_URL", value: "postgres://admin_role:pw@10.0.0.3:5432/cms_admin" },
+          {
+            name: "ADMIN_DATABASE_URL",
+            value: "postgres://admin_role:pw@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin",
+          },
         ]),
       ],
     });
-    const r = await checkDeployedRuntimeEnv({ projectId: "p", region: "r", run });
+    const r = await checkDeployedRuntimeEnv({ ...FIREBASE, run });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error).toContain("Run `upgrade` first");
@@ -165,29 +214,44 @@ describe("checkDeployedRuntimeEnv", () => {
 });
 
 describe("chooseImageDigests", () => {
-  const latest = { admin: C, gateway: C };
+  const latest = { admin: C, gateway: C, "mcp-auth-proxy": C };
+  const recorded = { admin: A, gateway: B, "mcp-auth-proxy": C };
   const never = () => {
     throw new Error("must not be called");
   };
 
   it("keeps the recorded release", async () => {
     const r = await chooseImageDigests({
+      recorded,
+      deployed: true,
+      readLive: never,
+      resolveLatest: never,
+    });
+    expect(r).toEqual({ ok: true, source: "recorded", digests: recorded });
+  });
+
+  it("#1328 — sends a record from before the MCP-Auth-Proxy to upgrade instead of mixing releases", async () => {
+    const r = await chooseImageDigests({
       recorded: { admin: A, gateway: B },
       deployed: true,
       readLive: never,
       resolveLatest: never,
     });
-    expect(r).toEqual({ ok: true, source: "recorded", digests: { admin: A, gateway: B } });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("records no mcp-auth-proxy image");
+      expect(r.error).toContain("Run `upgrade` first");
+    }
   });
 
   it("keeps what a provisioned install without a record runs (no :latest roll)", async () => {
     const r = await chooseImageDigests({
       recorded: null,
       deployed: true,
-      readLive: async () => ({ ok: true, digests: { admin: A, gateway: B } }),
+      readLive: async () => ({ ok: true, digests: recorded }),
       resolveLatest: never,
     });
-    expect(r).toEqual({ ok: true, source: "live", digests: { admin: A, gateway: B } });
+    expect(r).toEqual({ ok: true, source: "live", digests: recorded });
   });
 
   it("stops and points at upgrade when the running release can't be read", async () => {

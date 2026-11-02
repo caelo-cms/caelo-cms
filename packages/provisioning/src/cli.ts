@@ -63,6 +63,7 @@ import {
   BOOTSTRAP_DIR,
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   type ComposeImages,
   composeProjectName,
   generateDockerCompose,
@@ -75,6 +76,7 @@ import {
 } from "./compose.js";
 import { tightenPrivateTree, writePrivateFile } from "./private-file.js";
 import { selfCommand } from "./self-command.js";
+import { ensureSelfHostedDbTls, selfHostedDbTlsServerCertSha256 } from "./self-hosted-db-tls.js";
 import { ensureInternalSecret, writeInternalSecret } from "./self-hosted-internal-secret.js";
 import {
   bunHostRunner,
@@ -84,6 +86,7 @@ import {
   resolveVerifiedRelease,
 } from "./self-hosted-release.js";
 import {
+  applyPublicRoleLimits,
   convergeSelfHostedRoles,
   decideUp,
   selfHostedBootstrapScript,
@@ -305,6 +308,7 @@ function writeCaddyfile(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[]): void
     // localhost (#707).
     adminUpstream: COMPOSE_ADMIN_UPSTREAM,
     gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
+    mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
     domains: dedupeDomains([
       ...selfHostedSeedDomains(cfg.domain, cfg.stagingDomain),
       ...extraDomains,
@@ -344,6 +348,9 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
       "config has no ports / composeProject — they are back-filled on load; this is a bug",
     );
   }
+  // #1338 — the install's database CA + server certificate the Compose file
+  // mounts (created once, the server certificate renewed when due).
+  for (const line of ensureSelfHostedDbTls(CAELO_DIR)) console.log(`  database TLS: ${line}`);
   return generateDockerCompose({
     domain: cfg.domain,
     postgresPassword: cfg.postgresPassword,
@@ -351,6 +358,7 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
     caeloSecretKek: cfg.caeloSecretKek,
     // #770 — every render (up, upgrade, agent apply) hands the admin the
     // secret host-side commands sign their /api/internal/* tokens with.
+    dbTlsServerCertSha256: selfHostedDbTlsServerCertSha256(CAELO_DIR),
     internalSecret: ensureInternalSecret(CAELO_DIR, {
       randomSecret: () => randomSecret(48),
       report: (line) => console.log(line),
@@ -397,6 +405,8 @@ function agentContext(cfg: CaeloConfig): AgentCliContext {
         ...(activeAgent(cfg) ? { agentPassword: activeAgent(cfg)?.dbPassword } : {}),
       });
     },
+    applyPublicRoleLimits: () =>
+      applyPublicRoleLimits({ probe: postgresIsUp, psql: superuserPsql }),
     renderCompose: (images) => renderCompose(cfg, images),
     refreshCaddy: () => refreshCaddyfile(cfg),
     randomSecret: () => randomSecret(32),
@@ -1019,7 +1029,7 @@ async function upgradeSelfHostedCommand(opts: {
     console.error(
       "This is a DEV MODE install: the admin + gateway run your Caelo checkout, so there are\n" +
         "no images to upgrade. Update the checkout (git pull), then `bun packages/provisioning/src/cli.ts migrate` and\n" +
-        `\`docker compose -f ${COMPOSE_PATH} restart caelo-admin caelo-gateway\`.`,
+        `\`docker compose -f ${COMPOSE_PATH} restart caelo-admin caelo-gateway caelo-mcp-auth-proxy\`.`,
     );
     process.exit(2);
   }
@@ -1047,6 +1057,7 @@ async function upgradeSelfHostedCommand(opts: {
       runner: bunHostRunner,
       renderCompose: (images) => renderCompose(cfg, images),
       convergeRoles: agentContext(cfg).convergeRoles,
+      applyPublicRoleLimits: agentContext(cfg).applyPublicRoleLimits,
       refreshCaddy: () => refreshCaddyfile(cfg),
       log: {
         step: (m) => console.log(`\n==> ${m}`),

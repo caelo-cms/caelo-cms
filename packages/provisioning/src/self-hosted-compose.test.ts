@@ -6,6 +6,8 @@ import {
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_APP_SERVICES,
   COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_MCP_AUTH_PROXY_SERVICE,
+  COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   COMPOSE_POOL_BUDGET,
   type ComposeSpec,
   composeProjectName,
@@ -22,6 +24,7 @@ const base: Omit<ComposeSpec, "images"> = {
   postgresPassword: "pgpw",
   rolePasswords: { admin: "adminpw", public: "publicpw" },
   caeloSecretKek: "0".repeat(64),
+  dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
   internalSecret: "i".repeat(48),
   anthropicApiKey: "sk-ant-x",
   diskSize: "20Gi",
@@ -53,6 +56,7 @@ describe("self-hosted Compose — internal secret (#770)", () => {
     expect(() =>
       generateDockerCompose({
         ...base,
+        dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
         internalSecret: "short",
         images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
       }),
@@ -68,8 +72,21 @@ describe("self-hosted Compose — connection budget (#1254)", () => {
 
   it("starts Postgres with the max_connections the budget is computed from", () => {
     expect(service(yaml, "postgres")).toContain(
-      'command: ["postgres", "-c", "max_connections=100"]',
+      'command: ["postgres", "-c", "max_connections=100", ',
     );
+  });
+
+  it("serves TLS with the install's own certificate, never a key it does not own (#1338)", () => {
+    const pg = service(yaml, "postgres");
+    expect(pg).toContain('"-c", "ssl=on"');
+    expect(pg).toContain("- ./postgres-tls/server.crt:/caelo-tls/server.crt:ro");
+    expect(pg).toContain("- ./postgres-tls/server.key:/caelo-tls/server.key:ro");
+    // The bind mount keeps the host's owner; Postgres only reads its own key.
+    expect(pg).toContain("install -o postgres -g postgres -m 0600 /caelo-tls/server.key");
+    expect(pg).toContain('exec docker-entrypoint.sh \\"$$@\\"');
+    // Only Postgres sees the server key; the CA key never leaves .caelo/.
+    expect(yaml.replace(pg, "")).not.toContain("server.key");
+    expect(yaml).not.toContain("ca.key");
   });
 
   it("sizes the admin's two pools and the gateway's one", () => {
@@ -79,6 +96,26 @@ describe("self-hosted Compose — connection budget (#1254)", () => {
     expect(service(yaml, "caelo-admin")).toContain('      CAELO_DB_PUBLIC_POOL_MAX: "4"');
     expect(service(yaml, "caelo-gateway")).toContain('      CAELO_DB_PUBLIC_POOL_MAX: "2"');
     expect(service(yaml, "caelo-gateway")).not.toContain("CAELO_DB_POOL_MAX:");
+  });
+});
+
+describe("self-hosted Compose — database certificate renewal (#1338)", () => {
+  const render = (digest: string) =>
+    generateDockerCompose({
+      ...base,
+      dbTlsServerCertSha256: digest,
+      images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+    });
+
+  it("carries the server certificate's digest on Postgres, so a renewal recreates it", () => {
+    const before = service(render("a".repeat(64)), "postgres");
+    const after = service(render("c".repeat(64)), "postgres");
+    expect(before).toContain(`CAELO_DB_TLS_SERVER_CERT_SHA256: "${"a".repeat(64)}"`);
+    expect(after).not.toBe(before);
+  });
+
+  it("refuses a value that is no SHA-256 digest", () => {
+    expect(() => render("not-a-digest")).toThrow("dbTlsServerCertSha256");
   });
 });
 
@@ -104,10 +141,13 @@ describe("self-hosted Compose — release images (#696)", () => {
   it("mounts the bootstrap-token, site output + media dirs, never .caelo/ with its secrets", () => {
     const admin = service(yaml, "caelo-admin");
     expect(admin).toContain(
-      "    volumes:\n      - ./bootstrap:/app/.caelo\n      - ./output:/srv/caelo\n      - ./media:/data/media",
+      "    volumes:\n      - ./bootstrap:/app/.caelo\n      - ./output:/srv/caelo\n      - ./media:/data/media\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro",
     );
     expect(yaml).not.toMatch(/- \.\/?:/);
-    expect(service(yaml, "caelo-gateway")).not.toContain("volumes:");
+    // The gateway mounts the database CA (#1338) and nothing else.
+    expect(service(yaml, "caelo-gateway")).toContain(
+      "    volumes:\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro\n    restart:",
+    );
     expect(admin).toContain('CAELO_OUTPUT_ROOT: "/srv/caelo"');
     expect(admin).toContain('MEDIA_ROOT_DIR: "/data/media"');
     expect(service(yaml, "caddy")).toContain("- ./output:/srv/caelo:ro");
@@ -116,10 +156,10 @@ describe("self-hosted Compose — release images (#696)", () => {
   it("keeps the env + secret wiring of each service", () => {
     const admin = service(yaml, "caelo-admin");
     expect(admin).toContain(
-      'ADMIN_DATABASE_URL: "postgres://admin_role:adminpw@postgres:5432/cms_admin"',
+      'ADMIN_DATABASE_URL: "postgres://admin_role:adminpw@postgres:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/self-hosted-ca.pem"',
     );
     expect(admin).toContain(
-      'PUBLIC_ADMIN_DATABASE_URL: "postgres://admin_role:adminpw@postgres:5432/cms_public"',
+      'PUBLIC_ADMIN_DATABASE_URL: "postgres://admin_role:adminpw@postgres:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/self-hosted-ca.pem"',
     );
     expect(admin).toContain(`CAELO_SECRET_KEK: "${"0".repeat(64)}"`);
     expect(admin).toContain('CAELO_SITE_URL: "https://example.com"');
@@ -305,5 +345,68 @@ describe("self-hosted Compose — the host update agent (#696 Phase 4c)", () => 
     expect(() =>
       generateDockerCompose({ ...base, images, agent: { dbPort: 443, dbPassword: "x" } }),
     ).toThrow(/between 1024 and 65535/);
+  });
+});
+
+describe("self-hosted Compose — the MCP-Auth-Proxy (#1328)", () => {
+  const PROXY = `ghcr.io/caelo-cms/mcp-auth-proxy@sha256:${"c".repeat(64)}`;
+  const yaml = generateDockerCompose({
+    ...base,
+    images: { mode: "release", admin: ADMIN, gateway: GATEWAY, "mcp-auth-proxy": PROXY },
+  });
+  const proxy = service(yaml, COMPOSE_MCP_AUTH_PROXY_SERVICE);
+
+  it("runs the digest-pinned release image on the port Caddy proxies to", () => {
+    expect(proxy).toContain(`image: ${PROXY}`);
+    expect(proxy).toContain('MCP_AUTH_PROXY_PORT: "8095"');
+    expect(COMPOSE_MCP_AUTH_PROXY_UPSTREAM).toBe("caelo-mcp-auth-proxy:8095");
+  });
+
+  it("says remote MCP is unavailable here and trusts Caddy as the one hop", () => {
+    expect(proxy).toContain('CAELO_REMOTE_MCP: "unavailable"');
+    expect(proxy).toContain('CAELO_TRUSTED_PROXY_HOPS: "1"');
+    expect(proxy).toContain('CAELO_PROVIDER: "self-hosted"');
+  });
+
+  it("gets no database URL, no secret, no mount and no dependency on Postgres", () => {
+    expect(proxy).not.toMatch(/DATABASE|PASSWORD|SECRET|KEK|postgres:\/\/|volumes:|depends_on/);
+    expect(proxy).not.toContain("adminpw");
+    expect(proxy).not.toContain("publicpw");
+  });
+
+  it("runs locked down: read-only root, no capabilities, no privilege escalation", () => {
+    expect(proxy).toContain("read_only: true");
+    expect(proxy).toContain('cap_drop: ["ALL"]');
+    expect(proxy).toContain('security_opt: ["no-new-privileges:true"]');
+  });
+
+  it("is absent for a release recorded before the proxy shipped", () => {
+    const old = generateDockerCompose({
+      ...base,
+      images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+    });
+    expect(old).not.toContain(COMPOSE_MCP_AUTH_PROXY_SERVICE);
+    expect(old).toContain("\n\nvolumes:\n");
+  });
+
+  it("runs the checkout's proxy in dev mode", () => {
+    const dev = generateDockerCompose({ ...base, images: { mode: "dev" } });
+    expect(service(dev, COMPOSE_MCP_AUTH_PROXY_SERVICE)).toContain(
+      "command: bun run apps/mcp-auth-proxy/src/server.ts",
+    );
+  });
+
+  it("refuses a proxy image that is not a digest-pinned GHCR reference", () => {
+    expect(() =>
+      generateDockerCompose({
+        ...base,
+        images: {
+          mode: "release",
+          admin: ADMIN,
+          gateway: GATEWAY,
+          "mcp-auth-proxy": "ghcr.io/caelo-cms/mcp-auth-proxy:latest",
+        },
+      }),
+    ).toThrow(/mcp-auth-proxy image/);
   });
 });

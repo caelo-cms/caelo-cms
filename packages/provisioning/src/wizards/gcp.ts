@@ -30,6 +30,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { CLOUD_SQL_CA_BUNDLE, verifyFullQuery } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { checkAdcImpersonation } from "../adc-impersonation.js";
@@ -118,6 +119,7 @@ import type { RunMode } from "../run-mode.js";
 import { selfCommand } from "../self-command.js";
 import {
   ABSENT_DEFAULT_FIREWALL_RULES,
+  cloudSqlPrivateDnsName,
   type RemoteMcpIdentity,
   sameRemoteMcpIdentity,
 } from "../stack-contract.js";
@@ -134,6 +136,7 @@ import {
 import { acquireStateLock, GcsStateStore } from "../state-store.js";
 import { createReleaseImageForms, platformDigestsOf } from "../upgrade/image-forms.js";
 import {
+  releaseImageRef,
   releaseVersionForDigest,
   resolveOpsImageRef,
   verifyCosignAll,
@@ -357,7 +360,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   const deployed = isStepDone(installId, `pulumi-up-${projectId}`);
   if (deployed) {
     // The kept release must be able to use the env the stack deploys.
-    const runtimeEnv = await checkDeployedRuntimeEnv({ projectId, region });
+    const runtimeEnv = await checkDeployedRuntimeEnv({ provider, projectId, region });
     if (!runtimeEnv.ok) {
       cancel(runtimeEnv.error);
       process.exit(1);
@@ -366,7 +369,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   const choice = await chooseImageDigests({
     recorded: recordedImageDigests(meta),
     deployed,
-    readLive: () => readDeployedImageDigests({ projectId, region }),
+    readLive: () => readDeployedImageDigests({ provider, projectId, region }),
     resolveLatest: resolveImageDigests,
   });
   if (!choice.ok) {
@@ -531,7 +534,14 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
 
   // === 11.6. Remote MCP (#806): LB rules (gcp) + a check of the identity env ===
   // The env itself came with `pulumi up` (step 10.05, #1082).
-  const remoteMcpReady = await stepRemoteMcp(projectId, provider, domain, identity);
+  const remoteMcpReady = await stepRemoteMcp(
+    projectId,
+    region,
+    provider,
+    domain,
+    identity,
+    imageDigests,
+  );
 
   // A fresh install ran every converge step above, so it is at this CLI's
   // infrastructure contract — recorded only when the upgrader and the
@@ -603,8 +613,12 @@ async function resolveImageDigests(): Promise<ImageDigests> {
   const project = "caelo-website";
   const registryRegion = "europe-west1";
   const repo = "caelo-cms-images";
-  const out = { admin: "", gateway: "" };
-  for (const service of ["admin", "gateway"] as const) {
+  const out: Record<"admin" | "gateway" | "mcp-auth-proxy", string> = {
+    admin: "",
+    gateway: "",
+    "mcp-auth-proxy": "",
+  };
+  for (const service of ["admin", "gateway", "mcp-auth-proxy"] as const) {
     const s = spinner();
     s.start(`Resolving ${service}:latest → digest...`);
     // gcloud's --filter='tag=latest' is in a transitional state (warns +
@@ -1309,9 +1323,11 @@ async function stepResolveRemoteMcpIdentity(
  */
 async function stepRemoteMcp(
   projectId: string,
+  region: string,
   provider: "gcp" | "gcp-firebase",
   domain: string,
   identity: ResolvedRemoteMcpIdentity | null,
+  imageDigests: ImageDigests,
 ): Promise<boolean> {
   const s = spinner();
   s.start(
@@ -1325,11 +1341,22 @@ async function stepRemoteMcp(
     return false;
   };
   if (!identity) return failed("its URLs and IAP audience could not be read (see above)");
-  const edge = await ensureRemoteMcpEdge({ provider, projectId, env: GCP_STACK_ENV, domain });
+  const proxyDigest = imageDigests["mcp-auth-proxy"];
+  if (!proxyDigest) return failed("the release records no MCP-Auth-Proxy image");
+  const edge = await ensureRemoteMcpEdge({
+    provider,
+    projectId,
+    region,
+    env: GCP_STACK_ENV,
+    domain,
+    mcpAuthProxyImageRef: releaseImageRef("mcp-auth-proxy", proxyDigest),
+  });
   if (!edge.ok) return failed(edge.error);
   const check = await checkRemoteMcpIdentityEnv(identity.target, identity.identity);
   if (!check.ok) return failed(check.error);
-  const missing = [...check.drift.admin, ...check.drift.gateway].map((c) => c.name);
+  const missing = Object.values(check.drift)
+    .flat()
+    .map((c) => c.name);
   if (missing.length > 0) {
     return failed(`pulumi up left ${[...new Set(missing)].join(", ")} out of the services' env`);
   }
@@ -1905,8 +1932,10 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
     pgPass,
   ]);
 
-  // Resolve the SQL instance's private IP from gcloud (avoids reading
-  // Pulumi outputs from inside the wizard).
+  // Resolve the SQL instance's DNS name from gcloud (avoids reading
+  // Pulumi outputs from inside the wizard). #1338: the job connects with
+  // verify-full, and the shared-CA certificate names the DNS name, not the
+  // private IP.
   const sqlDescr = await gcloud([
     "sql",
     "instances",
@@ -1914,16 +1943,28 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
     "caelo-production-pg-1d65811",
     "--project",
     projectId,
-    "--format=value(ipAddresses[0].ipAddress)",
+    "--format=json(dnsNames)",
   ]);
-  const pgHost = (sqlDescr.stdout || "").trim();
+  let pgHost: string | null = null;
+  try {
+    pgHost = cloudSqlPrivateDnsName(
+      (
+        JSON.parse(sqlDescr.stdout || "{}") as {
+          dnsNames?: { name?: string; connectionType?: string }[];
+        }
+      ).dnsNames,
+    );
+  } catch {
+    pgHost = null;
+  }
   if (!pgHost) {
-    s.stop(yellow("Could not resolve Cloud SQL private IP — skipping drain"));
+    s.stop(yellow("Could not resolve the Cloud SQL instance's DNS name — skipping drain"));
     return;
   }
 
-  const adminPg = `postgres://postgres:${pgPass}@${pgHost}:5432/cms_admin`;
-  const publicPg = `postgres://postgres:${pgPass}@${pgHost}:5432/cms_public`;
+  const tls = verifyFullQuery(CLOUD_SQL_CA_BUNDLE);
+  const adminPg = `postgres://postgres:${pgPass}@${pgHost}:5432/cms_admin?${tls}`;
+  const publicPg = `postgres://postgres:${pgPass}@${pgHost}:5432/cms_public?${tls}`;
 
   // The cleanup script — uses bun's globalThis.Bun.SQL (already proven
   // pattern in hooks.server.ts + the migration runner). DO block makes

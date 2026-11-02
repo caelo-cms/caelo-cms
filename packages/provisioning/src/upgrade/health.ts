@@ -11,9 +11,12 @@
  *   - admin   `GET /_caelo/health?deep=1` → `{ ok, version, migrations }`:
  *             both databases reachable as the expected roles, and every
  *             migration the image ships recorded as applied.
- *   - gateway `GET /api/_caelo/health?deep=1` → `{ ok, version }`: its
- *             database logins work. Under `/api/` because that is the only
+ *   - gateway `GET /api/_caelo/health?deep=1` → `{ ok }` (no version since
+ *             #1326): its database login works. Under `/api/` because that is the only
  *             path the gcp load balancer routes to the gateway.
+ *   - MCP-Auth-Proxy `GET /api/mcp/health` → `{ ok }` (#1328, no version
+ *             either): it has no database, so it answers once it runs; under
+ *             `/api/mcp/`, the prefix the gcp load balancer routes to it.
  *
  * Both answer with no secrets and no raw database errors. The admin sits
  * behind IAP, so the probe signs an IAP credential as the install's MCP
@@ -134,28 +137,40 @@ export function evaluateAdminDeepHealth(
   };
 }
 
-/** Judge the gateway's deep health answer against the version the admin runs. */
-export function evaluateGatewayDeepHealth(
+/**
+ * Judge a public service's deep health answer: the gateway's, or the
+ * MCP-Auth-Proxy's (#1328). Since #1326 the public services report no
+ * release version (a public version string names the flaws to try), so
+ * this proves only that the service answers healthy — for the gateway,
+ * that its database login works. Which release it runs the roll itself
+ * establishes: `update --image` with the pinned digest succeeded and
+ * traffic moved to that revision (app-roll.ts), or the roll already failed.
+ *
+ * @param service how the errors name it (`gateway`, `MCP-Auth-Proxy`)
+ */
+export function evaluatePublicServiceDeepHealth(
+  service: string,
   status: number,
   text: string,
-  expectedVersion: string,
 ): HealthOutcome {
-  const body = parseJson<{ ok?: boolean; version?: string; error?: { kind?: string } }>(text);
-  if (!body) return { ok: false, error: `gateway answered HTTP ${status} without JSON` };
+  const body = parseJson<{ ok?: boolean; error?: { kind?: string } }>(text);
+  if (!body) return { ok: false, error: `${service} answered HTTP ${status} without JSON` };
   if (status !== 200 || body.ok !== true) {
     return {
       ok: false,
-      error: `gateway reports unhealthy (HTTP ${status}, ${body.error?.kind ?? "no reason"})`,
+      error: `${service} reports unhealthy (HTTP ${status}, ${body.error?.kind ?? "no reason"})`,
     };
   }
-  if (body.version !== expectedVersion) {
-    return {
-      ok: false,
-      error: `gateway runs ${body.version ?? "an unknown version"}, the admin runs ${expectedVersion}`,
-    };
-  }
-  return { ok: true, detail: `gateway ${body.version}` };
+  return { ok: true, detail: `${service} healthy` };
 }
+
+/**
+ * The MCP-Auth-Proxy's health path (apps/mcp-auth-proxy server.ts). Under
+ * `/api/mcp/` because on gcp that is the prefix the load balancer routes to
+ * the proxy; it answers before any other routing, also while remote MCP is
+ * off.
+ */
+export const MCP_AUTH_PROXY_HEALTH_PATH = "/api/mcp/health";
 
 /** Where the probe reaches the install. */
 export interface HealthTarget {
@@ -166,20 +181,32 @@ export interface HealthTarget {
   readonly adminServiceUrl: string;
   /** The gateway service's `run.app` URL (public on gcp-firebase). */
   readonly gatewayServiceUrl: string;
+  /** The MCP-Auth-Proxy service's `run.app` URL (public on gcp-firebase). */
+  readonly mcpAuthProxyServiceUrl: string;
 }
 
 /**
  * The origins the probe calls. On gcp the admin's IAP lives on the load
- * balancer (`admin.<domain>`) and the gateway's ingress is load-balancer-only
- * (`<domain>/api/*`); on gcp-firebase both `run.app` URLs are reachable — the
- * admin's through Cloud Run's own IAP, the gateway's publicly.
+ * balancer (`admin.<domain>`), and the gateway's and the proxy's ingress is
+ * load-balancer-only (`<domain>/api/*`, `<domain>/api/mcp/*`); on
+ * gcp-firebase every `run.app` URL is reachable — the admin's through Cloud
+ * Run's own IAP, the others publicly.
  */
-export function healthOrigins(target: HealthTarget): { admin: string; gateway: string } {
+export function healthOrigins(target: HealthTarget): {
+  admin: string;
+  gateway: string;
+  mcpAuthProxy: string;
+} {
   return target.provider === "gcp"
-    ? { admin: `https://admin.${target.domain}`, gateway: `https://${target.domain}` }
+    ? {
+        admin: `https://admin.${target.domain}`,
+        gateway: `https://${target.domain}`,
+        mcpAuthProxy: `https://${target.domain}`,
+      }
     : {
         admin: new URL(target.adminServiceUrl).origin,
         gateway: new URL(target.gatewayServiceUrl).origin,
+        mcpAuthProxy: new URL(target.mcpAuthProxyServiceUrl).origin,
       };
 }
 
@@ -437,7 +464,12 @@ export function createIapHealthProbe(target: HealthTarget, deps: HealthProbeDeps
     if (!a.ok) return a;
     const gateway = await get(`${origins.gateway}/api/_caelo/health?deep=1`, {});
     if (!gateway.reached) return { ok: false, error: `gateway unreachable: ${gateway.error}` };
-    const g = evaluateGatewayDeepHealth(gateway.status, gateway.text, a.version);
-    return g.ok ? { ok: true, detail: `${a.detail}; ${g.detail}` } : g;
+    const g = evaluatePublicServiceDeepHealth("gateway", gateway.status, gateway.text);
+    if (!g.ok) return g;
+    // #1328 — the proxy holds no database login: healthy once it answers.
+    const proxy = await get(`${origins.mcpAuthProxy}${MCP_AUTH_PROXY_HEALTH_PATH}`, {});
+    if (!proxy.reached) return { ok: false, error: `MCP-Auth-Proxy unreachable: ${proxy.error}` };
+    const p = evaluatePublicServiceDeepHealth("MCP-Auth-Proxy", proxy.status, proxy.text);
+    return p.ok ? { ok: true, detail: `${a.detail}; ${g.detail}; ${p.detail}` } : p;
   }
 }

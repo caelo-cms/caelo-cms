@@ -34,6 +34,7 @@
  * Pure module — the stacks import it from `dist/`.
  */
 
+import { CLOUD_SQL_CA_BUNDLE, isIpLiteral, verifyFullQuery } from "@caelo-cms/shared";
 import { z } from "zod";
 import type { SupportedProvider } from "./adapter.js";
 import {
@@ -44,6 +45,7 @@ import {
   gcpBucketName,
   gcpNamePrefix,
   gcpSecretId,
+  mcpAuthProxyServiceAccountEmail,
   mcpIapServiceAccountEmail,
   operatorAccessJobResource,
   runServiceAccountEmail,
@@ -52,7 +54,69 @@ import {
 } from "./gcp-names.js";
 
 export type GcpProvider = "gcp" | "gcp-firebase";
-export type CloudRunSlug = "admin" | "gateway";
+/**
+ * The install's Cloud Run services, by role: the admin, the visitor data
+ * gateway and (#1328) the MCP-Auth-Proxy — remote MCP's sign-in broker and
+ * its forwarder to the IAP-protected admin, a service of its own so a hole
+ * in a visitor handler can never reach the operators' Google tokens.
+ * Which deployed service plays which role is {@link cloudRunServicePrefix}.
+ */
+export type CloudRunSlug = "admin" | "gateway" | "mcp-auth-proxy";
+
+/** Every {@link CloudRunSlug}, in roll order: the admin first, the proxy last. */
+export const CLOUD_RUN_SLUGS: readonly CloudRunSlug[] = ["admin", "gateway", "mcp-auth-proxy"];
+
+/**
+ * The name prefix of the Cloud Run service that plays `slug` on an install
+ * (Pulumi suffixes the names it generates; the services named explicitly,
+ * {@link fixedCloudRunServiceName}, match their prefix exactly).
+ *
+ * One asymmetry, decided as E13 (a) of the gateway hardening plan (#763):
+ * on `gcp-firebase` the MCP-Auth-Proxy is the service that was the gateway
+ * before #1328. Its `run.app` URL is the remote-MCP address every connector
+ * in claude.ai / ChatGPT holds, and the Google sign-in client's registered
+ * redirect URI points at it; neither can move without the Owner
+ * re-connecting every client and editing the OAuth client by hand. So that
+ * service keeps its name and becomes the proxy, and the visitor gateway is
+ * the new `caelo-<env>-data-gateway` (the Firebase `/api/**` rewrite the
+ * publisher writes follows the admin's `CAELO_GATEWAY_SERVICE`). On `gcp`
+ * the MCP address is the site's own host behind the load balancer, so no
+ * service name is pinned there and the proxy is the new service.
+ *
+ * No prefix is a prefix of another (`…-gateway` does not prefix
+ * `…-data-gateway`), so a `metadata.name~^<prefix>` lookup finds one role.
+ */
+export function cloudRunServicePrefix(
+  provider: GcpProvider,
+  env: string,
+  slug: CloudRunSlug,
+): string {
+  const prefix = gcpNamePrefix(env);
+  if (slug === "admin") return `${prefix}-admin`;
+  if (provider === "gcp-firebase") {
+    return slug === "gateway" ? `${prefix}-data-gateway` : `${prefix}-gateway`;
+  }
+  return slug === "gateway" ? `${prefix}-gateway` : `${prefix}-mcp-auth-proxy`;
+}
+
+/**
+ * The exact name of a service that is created under a fixed name (#1328):
+ * the `gcp-firebase` data gateway and the `gcp` MCP-Auth-Proxy. Fixed, not
+ * Pulumi-suffixed, because the converge creates them on existing installs
+ * with gcloud, and the stack's next `pulumi up` must then find the same
+ * service instead of creating a second one. Null for the services Pulumi
+ * has always auto-named.
+ */
+export function fixedCloudRunServiceName(
+  provider: GcpProvider,
+  env: string,
+  slug: CloudRunSlug,
+): string | null {
+  const fixed =
+    (provider === "gcp-firebase" && slug === "gateway") ||
+    (provider === "gcp" && slug === "mcp-auth-proxy");
+  return fixed ? cloudRunServicePrefix(provider, env, slug) : null;
+}
 
 /**
  * One container env var, in the shape Pulumi's `gcp.cloudrunv2.Service`
@@ -106,16 +170,81 @@ const DATABASE_PORT = 5432;
  * Password-less connection URLs for a Cloud SQL instance at `host`. The
  * password reaches the apps separately, as a Secret Manager reference
  * ({@link SERVICE_SECRET_ENV}).
+ *
+ * TLS is `verify-full` against Google's Cloud SQL shared-CA bundle, which
+ * every image carries (#1338, shared database-tls.ts). The shared CA's
+ * server certificate names the instance's DNS name and no IP, so `host`
+ * must be that name (cloudsql-tls.ts resolves it in the VPC); an IP is
+ * refused here rather than producing URLs no connection can verify.
+ *
+ * @throws Error when `host` is an IP literal
  */
 export function databaseUrls(host: string): DatabaseUrls {
+  if (isIpLiteral(host)) {
+    throw new Error(
+      `the Cloud SQL host is the IP address ${host}, but verify-full connections must use the instance's DNS name (its certificate names no IP, #1338). The converge moves the services onto it: run \`cms-provision upgrade\`.`,
+    );
+  }
   const url = (role: string, db: string) =>
-    `postgresql://${role}@${host}:${DATABASE_PORT}/${db}?sslmode=require`;
+    `postgresql://${role}@${host}:${DATABASE_PORT}/${db}?${verifyFullQuery(CLOUD_SQL_CA_BUNDLE)}`;
   return {
     admin: url("admin_role", "cms_admin"),
     publicAdmin: url("admin_role", "cms_public"),
     public: url("public_role", "cms_public"),
   };
 }
+
+/**
+ * #1338 — the Cloud SQL server CA mode every install runs: Google's shared
+ * CA. Its server certificate carries the instance's DNS name, so a client
+ * can verify the host (`sslmode=verify-full`). The default per-instance CA
+ * names no host a private-IP client can dial ("The SAN field contains the
+ * hostname (DNS name of the instance) only for instances enabled with
+ * Private Service Connect" — docs.cloud.google.com/sql/docs/postgres/authorize-ssl).
+ * An instance moves from per-instance to shared, never back.
+ */
+export const CLOUD_SQL_SERVER_CA_MODE = "GOOGLE_MANAGED_CAS_CA";
+
+/** #1338 — Cloud SQL refuses unencrypted connections: every client uses verify-full. */
+export const CLOUD_SQL_SSL_MODE = "ENCRYPTED_ONLY";
+
+/** The `dnsNames[].connectionType` of the name a private-services-access client dials. */
+export const CLOUD_SQL_PSA_CONNECTION_TYPE = "PRIVATE_SERVICES_ACCESS";
+
+/**
+ * The private Cloud DNS zone that resolves the instance's DNS name to its
+ * private IP inside the install's VPC. Cloud SQL assigns the name but does
+ * not resolve it: "create the DNS record in a private DNS zone in the
+ * corresponding Virtual Private Cloud (VPC) network"
+ * (docs.cloud.google.com/sql/docs/postgres/configure-ssl-instance). The zone
+ * is the name itself, holding its one A record.
+ */
+export function cloudSqlDnsZoneName(env: string): string {
+  return `${gcpNamePrefix(env)}-pg-dns`;
+}
+
+/**
+ * The DNS name a private-IP client dials, from an instance's `dnsNames`,
+ * lower-case and without the trailing dot. Null when the instance has none
+ * (a per-instance-CA instance before its move to the shared CA).
+ */
+export function cloudSqlPrivateDnsName(
+  dnsNames: readonly { readonly name?: string; readonly connectionType?: string }[] | undefined,
+): string | null {
+  const entry = (dnsNames ?? []).find((d) => d.connectionType === CLOUD_SQL_PSA_CONNECTION_TYPE);
+  const name = entry?.name?.replace(/\.$/, "").toLowerCase();
+  return name ? name : null;
+}
+
+/** The database URL vars each service carries (the env contract below sets them). */
+export const DATABASE_URL_VARS = {
+  admin: ["ADMIN_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL"],
+  gateway: ["PUBLIC_DATABASE_URL"],
+  // #1328 — no database login at all. On gcp-firebase the service still
+  // carries the gateway's URL until its roll removes it with the rest of
+  // the gateway env (RETIRED_SERVICE_ENV), so the TLS step leaves it alone.
+  "mcp-auth-proxy": [],
+} as const;
 
 /** What a running service's env derives from: install metadata + the database. */
 export interface RuntimeEnvInputs<V = string> extends ServiceEnvInputs {
@@ -398,6 +527,10 @@ export const SERVICE_SECRET_ENV: Readonly<
     PUBLIC_DATABASE_PASSWORD: "public-role-password",
     // #650 — verifies staging-host requests (api-gateway staging-proxy.ts).
     CAELO_STAGING_GATE_SECRET: "staging-gate-secret",
+  },
+  // #1328 — with the Google sign-in client file below, the proxy's whole
+  // Secret Manager reach: no database password, no other key.
+  "mcp-auth-proxy": {
     // #806 — seals the remote-MCP broker's state, codes and refresh tokens.
     CAELO_MCP_OAUTH_SEAL_KEY: "mcp-oauth-seal-key",
   },
@@ -418,9 +551,9 @@ export const OPERATOR_OAUTH_CLIENT_FILE_ENV = "CAELO_OPERATOR_OAUTH_CLIENT_FILE"
  * time the file is read ("When reading a volume, Cloud Run always fetches
  * the secret value from the Secret Manager to use the value with the latest
  * version" — cloud.google.com/run/docs/configuring/services/secrets). So the
- * client the Owner saves under Settings → Google sign-in reaches the running gateway
- * (which re-reads it within 60 s) without a new revision, and the admin
- * needs no right to deploy the gateway.
+ * client the Owner saves under Settings → Google sign-in reaches the running
+ * MCP-Auth-Proxy (which re-reads it within 60 s) without a new revision, and
+ * the admin needs no right to deploy the proxy.
  */
 export interface SecretFileContract {
   readonly secret: RuntimeSecret;
@@ -433,7 +566,7 @@ export interface SecretFileContract {
   readonly version: "latest";
 }
 
-/** The gateway's Google sign-in client file, read by the remote-MCP broker (#806, #914). */
+/** The Google sign-in client file the remote-MCP broker reads (#806, #914; in the MCP-Auth-Proxy since #1328). */
 export const OPERATOR_OAUTH_CLIENT_FILE: SecretFileContract = {
   secret: "operator-oauth-client",
   volumeName: "operator-oauth-client",
@@ -447,10 +580,11 @@ export function secretFilePath(file: SecretFileContract): string {
   return `${file.mountDir}/${file.fileName}`;
 }
 
-/** Each service's secret files. The admin has none. */
+/** Each service's secret files. Only the MCP-Auth-Proxy has one. */
 export const SERVICE_SECRET_FILES: Readonly<Record<CloudRunSlug, readonly SecretFileContract[]>> = {
   admin: [],
-  gateway: [OPERATOR_OAUTH_CLIENT_FILE],
+  gateway: [],
+  "mcp-auth-proxy": [OPERATOR_OAUTH_CLIENT_FILE],
 };
 
 /** A secret file an older contract mounted; upgrade unmounts it in the roll. */
@@ -476,6 +610,22 @@ export const RETIRED_SECRET_FILES: Readonly<Record<CloudRunSlug, readonly Retire
   admin: [],
   gateway: [
     {
+      secret: "mcp-oauth-client",
+      mountDir: "/secrets/mcp-oauth-client",
+      fileName: "client.json",
+      why: "the Google sign-in client is mounted from operator-oauth-client now (#914)",
+    },
+    {
+      secret: "operator-oauth-client",
+      mountDir: "/secrets/operator-oauth-client",
+      fileName: "client.json",
+      why: "the remote-MCP broker moved to the MCP-Auth-Proxy (#1328); the visitor gateway must not hold the Google sign-in client",
+    },
+  ],
+  "mcp-auth-proxy": [
+    {
+      // gcp-firebase: the proxy is the service that was the gateway, which
+      // mounted this file until #914.
       secret: "mcp-oauth-client",
       mountDir: "/secrets/mcp-oauth-client",
       fileName: "client.json",
@@ -540,6 +690,30 @@ export const RETIRED_SERVICE_ENV: Readonly<Record<CloudRunSlug, readonly string[
     // #635 — its gateway_role login on cms_admin is gone too.
     "GATEWAY_DATABASE_URL",
     "GATEWAY_DATABASE_PASSWORD",
+    // #1328 — remote MCP moved to the MCP-Auth-Proxy.
+    "CAELO_OPERATOR_OAUTH_CLIENT_FILE",
+    "CAELO_MCP_OAUTH_SEAL_KEY",
+    "CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS",
+    "CAELO_MCP_PUBLIC_URL",
+    "CAELO_ADMIN_URL",
+  ],
+  // #1328 — on gcp-firebase the proxy is the service that was the gateway:
+  // everything that service carried for visitor traffic goes, above all
+  // every database login and the staging gate key. The proxy's SA cannot
+  // read their secrets, so a revision that kept one would not even deploy.
+  "mcp-auth-proxy": [
+    "PUBLIC_DATABASE_URL",
+    "PUBLIC_DATABASE_PASSWORD",
+    "CAELO_STAGING_GATE_SECRET",
+    "CAELO_ENV",
+    "MEDIA_STORAGE_URL",
+    "CAELO_DB_PUBLIC_POOL_MAX",
+    "CAELO_MCP_OAUTH_CLIENT_FILE",
+    "CAELO_SECRET_KEK",
+    "ADMIN_DATABASE_URL",
+    "ADMIN_DATABASE_PASSWORD",
+    "GATEWAY_DATABASE_URL",
+    "GATEWAY_DATABASE_PASSWORD",
   ],
 };
 
@@ -586,10 +760,12 @@ export const GATEWAY_TRUSTED_PROXY_HOPS: Readonly<Record<SupportedProvider, numb
   // ingress is internal-and-LB only, so nothing reaches it around the LB.
   gcp: 2,
   // Cloud Run's front end appends its peer. Behind the Firebase Hosting
-  // rewrite that peer is the Hosting CDN edge, and the entry Hosting adds
-  // before it cannot be told apart from a forged one (the service is
-  // invokable on *.run.app too) — so the edge address is the most that can
-  // be trusted. Staging (Cloud Run domain mapping) gets the visitor.
+  // rewrite that peer is a Google front-end proxy that changes per request,
+  // and the visitor entry Hosting writes before it cannot be told apart
+  // from a forged one (the service is invokable on *.run.app too) — so the
+  // proxy address is the most that can be trusted
+  // (docs/dev/firebase-hosting-behaviour.md). Staging (Cloud Run domain
+  // mapping) gets the visitor.
   "gcp-firebase": 1,
   // Caddy without `trusted_proxies` replaces the header with its peer; the
   // gateway is reachable only on the Compose network.
@@ -611,25 +787,109 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
     ...commonEnv(inputs),
     { name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS[inputs.provider]) },
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
-    // #806 — where the remote-MCP broker reads its Google OAuth client
-    // (the secret volume of SERVICE_SECRET_FILES).
-    { name: OPERATOR_OAUTH_CLIENT_FILE_ENV, value: secretFilePath(OPERATOR_OAUTH_CLIENT_FILE) },
     ...secretEnv("gateway", inputs.env),
   ];
 }
 
 /**
- * #806 — the gateway's request timeout, in seconds: Cloud Run's maximum.
- * The gateway proxies remote-MCP requests to the admin, and a `caelo_chat`
- * turn streams for as long as the admin's own chat stream may (the admin
- * runs at 3600 s for the same reason). Visitor endpoints are unaffected: a
- * timeout is a ceiling, not a reservation, and Cloud Run bills request time,
- * not the allowed maximum. On `gcp` the load balancer in front adds no
- * shorter limit — the backend-service timeout does not apply to serverless
- * NEGs, which get a fixed 60 minutes
+ * #1328 — whether remote MCP can exist on a provider, as the MCP-Auth-Proxy
+ * reads it. It needs the admin behind Google IAP, which only the Google
+ * Cloud installs have. `unavailable` makes the proxy answer one fixed 404
+ * to everything but its health check: the service exists on every provider
+ * at zero minimum instances (E14 a of #763), its attack surface one branch.
+ * The proxy refuses to start without the var — no default (CLAUDE.md §2).
+ */
+export const REMOTE_MCP_MODE_ENV = "CAELO_REMOTE_MCP";
+
+/** {@link REMOTE_MCP_MODE_ENV} per provider. */
+export const REMOTE_MCP_MODE: Readonly<Record<SupportedProvider, "available" | "unavailable">> = {
+  gcp: "available",
+  "gcp-firebase": "available",
+  "self-hosted": "unavailable",
+  aws: "unavailable",
+  azure: "unavailable",
+};
+
+/**
+ * {@link TRUSTED_PROXY_HOPS_ENV} of the MCP-Auth-Proxy per provider: its
+ * rate limits key on the client address by the same rule as the gateway's
+ * (@caelo-cms/shared client-address.ts), under its own topology.
+ */
+export const MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS: Readonly<Record<SupportedProvider, number>> = {
+  // Behind the external Application LB (`<client>,<LB IP>`); its ingress
+  // is internal-and-LB only.
+  gcp: 2,
+  // Its own run.app URL with no rewrite in front: Cloud Run's front end
+  // appends the client.
+  "gcp-firebase": 1,
+  // Caddy (its own vhost) replaces the header with its peer.
+  "self-hosted": 1,
+  // Not deployed yet (#749); the gateway's topology once it is.
+  aws: 2,
+  // Container Apps ingress appends its peer.
+  azure: 1,
+};
+
+/**
+ * #1328 — points the `gcp-firebase` MCP-Auth-Proxy at the visitor data
+ * gateway for the traffic that still reaches the service that used to be
+ * the gateway: the Firebase `/api/**` rewrite of the release that is live
+ * until the next Publish live, and the staging host's Cloud Run domain
+ * mapping (#650), which only the domain's verified owner could move. The
+ * proxy streams that traffic to the data gateway unchanged instead of
+ * answering it (apps/mcp-auth-proxy interim-forward.ts). gcp-firebase only.
+ */
+// FIXME(issue #1331): goes with the staging cutover, once neither a mapping
+// nor a published rewrite can point at the proxy any more.
+export const INTERIM_FORWARD_ORIGIN_ENV = "CAELO_INTERIM_FORWARD_ORIGIN";
+
+/**
+ * The env of the MCP-Auth-Proxy. No database URL, no pool size, no site
+ * settings: the broker reads env plus one secret file and nothing else
+ * (apps/mcp-auth-proxy, whose import lint keeps every database client out).
+ * The remote-MCP identity env — its public origin, the admin's URL — comes
+ * on top from {@link remoteMcpIdentityEnv}, the gcp-firebase forward origin
+ * from the stack or the converge ({@link INTERIM_FORWARD_ORIGIN_ENV}).
+ */
+export function mcpAuthProxyEnvContract(inputs: {
+  readonly provider: SupportedProvider;
+  readonly env: string;
+}): CloudRunEnvVar[] {
+  return [
+    { name: "CAELO_PROVIDER", value: inputs.provider },
+    { name: REMOTE_MCP_MODE_ENV, value: REMOTE_MCP_MODE[inputs.provider] },
+    {
+      name: TRUSTED_PROXY_HOPS_ENV,
+      value: String(MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS[inputs.provider]),
+    },
+    // #806 — where the broker reads the Google sign-in client (the secret
+    // volume of SERVICE_SECRET_FILES).
+    { name: OPERATOR_OAUTH_CLIENT_FILE_ENV, value: secretFilePath(OPERATOR_OAUTH_CLIENT_FILE) },
+    ...secretEnv("mcp-auth-proxy", inputs.env),
+  ];
+}
+
+/**
+ * #806 — the MCP-Auth-Proxy's request timeout, in seconds: Cloud Run's
+ * maximum (the gateway's until #1328 moved the broker out). The proxy
+ * streams remote-MCP requests to the admin, and a `caelo_chat` turn streams
+ * for as long as the admin's own chat stream may (the admin runs at 3600 s
+ * for the same reason). A timeout is a ceiling, not a reservation: Cloud
+ * Run bills request time, not the allowed maximum. On `gcp` the load
+ * balancer in front adds no shorter limit — the backend-service timeout
+ * does not apply to serverless NEGs, which get a fixed 60 minutes
  * (cloud.google.com/load-balancing/docs/negs/serverless-neg-concepts).
  */
-export const GATEWAY_TIMEOUT_SECONDS = 3600;
+export const MCP_AUTH_PROXY_TIMEOUT_SECONDS = 3600;
+
+/**
+ * #1328 — the MCP-Auth-Proxy's maximum instances. It holds no database
+ * pool, so the connection budget does not bound it; ten instances of
+ * streaming proxies carry far more agent sessions than an install has
+ * operators, and the ceiling caps what a flood of sign-in requests can cost.
+ * Always provisioned at minimum 0 (E14 a of #763).
+ */
+export const DEFAULT_MCP_AUTH_PROXY_MAX_INSTANCES = 10;
 
 /**
  * Whether each Cloud Run service gets CPU only while it handles a request
@@ -639,15 +899,28 @@ export const GATEWAY_TIMEOUT_SECONDS = 3600;
  * `resources`, which is how both services ran with always-on CPU without
  * anyone choosing it — billed for every idle minute an instance stayed up.
  *
- * The gateway only does work inside requests. The admin still runs its
- * background work (Tier 5: audit worker, importer, plugin cron, GC) on
- * in-process timers that need CPU between requests.
+ * The gateway and the MCP-Auth-Proxy only do work inside requests. The
+ * admin still runs its background work (Tier 5: audit worker, importer,
+ * plugin cron, GC) on in-process timers that need CPU between requests.
  */
 export const SERVICE_CPU_IDLE: Readonly<Record<CloudRunSlug, boolean>> = {
   // FIXME(issue #1140): true once the admin's background work no longer
   // depends on CPU between requests (jobs, scheduler, plugin host).
   admin: false,
   gateway: true,
+  "mcp-auth-proxy": true,
+};
+
+/**
+ * Whether each service egresses into the install's VPC: the admin and the
+ * gateway reach Cloud SQL's private IP; the MCP-Auth-Proxy reaches nothing
+ * private (#1328) — it calls Google's token endpoint and the admin's public,
+ * IAP-gated URL, so it gets no route to the database's network at all.
+ */
+export const SERVICE_VPC_EGRESS: Readonly<Record<CloudRunSlug, boolean>> = {
+  admin: true,
+  gateway: true,
+  "mcp-auth-proxy": false,
 };
 
 /** Admin env var naming the Secret Manager secret the Owner writes the Google sign-in client to. */
@@ -696,7 +969,7 @@ export function operatorOAuthClientSecretResource(projectId: string, env: string
  * usually can.
  */
 export interface RemoteMcpIdentity {
-  /** Where the gateway proxies `/api/mcp/<surface>` to (IAP in front). */
+  /** Where the MCP-Auth-Proxy forwards `/api/mcp/<surface>` to (IAP in front). */
   readonly adminUrl: string;
   /** The broker's public origin; no trailing slash. */
   readonly mcpPublicUrl: string;
@@ -734,18 +1007,20 @@ export type RemoteMcpIdentityInputs =
       readonly adminServiceName: string;
       /** The services' `status.url` (`https://<name>-<hash>-<r>.a.run.app`). */
       readonly adminServiceUrl: string;
-      readonly gatewayServiceUrl: string;
+      /** The MCP-Auth-Proxy's: the service that was the gateway before #1328 (E13 a). */
+      readonly mcpAuthProxyServiceUrl: string;
     };
 
 /**
  * The install's remote-MCP identity.
  *
  * - `gcp`: the broker answers on the site's own host through the load
- *   balancer (`/api/*` and the `/.well-known/oauth-*` path rules), the admin
- *   on `admin.<domain>` behind the LB's IAP; the IAP audience is
- *   `/projects/<number>/global/backendServices/<id>`.
- * - `gcp-firebase`: the broker answers on the gateway's own Cloud Run URL
- *   (Firebase Hosting rewrites cut requests at 60 s and buffer streams), the
+ *   balancer (its MCP path rules route to the MCP-Auth-Proxy's backend,
+ *   #1328), the admin on `admin.<domain>` behind the LB's IAP; the IAP
+ *   audience is `/projects/<number>/global/backendServices/<id>`.
+ * - `gcp-firebase`: the broker answers on the MCP-Auth-Proxy's own Cloud Run
+ *   URL — the URL the gateway had before #1328 (E13 a) — never through
+ *   Firebase Hosting (rewrites cut requests at 60 s and buffer streams), the
  *   admin on its Cloud Run URL behind native IAP — whatever custom domain
  *   is mapped to it, IAP and its audience are the service's; the audience
  *   is `/projects/<number>/locations/<region>/services/<name>`.
@@ -763,7 +1038,7 @@ export function remoteMcpIdentity(i: RemoteMcpIdentityInputs): RemoteMcpIdentity
   }
   return {
     adminUrl: origin(i.adminServiceUrl),
-    mcpPublicUrl: origin(i.gatewayServiceUrl),
+    mcpPublicUrl: origin(i.mcpAuthProxyServiceUrl),
     iapAudience: `/projects/${i.projectNumber}/locations/${i.region}/services/${i.adminServiceName}`,
   };
 }
@@ -785,7 +1060,10 @@ export function remoteMcpIdentityEnv(
         ? [{ name: REMOTE_MCP_ENV.googleOrgDomain, value: id.googleOrgDomain }]
         : []),
     ],
-    gateway: [
+    // #1328 — the broker lives in the MCP-Auth-Proxy; the visitor gateway
+    // gets none of it.
+    gateway: [],
+    "mcp-auth-proxy": [
       { name: REMOTE_MCP_ENV.adminUrl, value: id.adminUrl },
       { name: REMOTE_MCP_ENV.mcpPublicUrl, value: id.mcpPublicUrl },
     ],
@@ -852,7 +1130,7 @@ export function remoteMcpIdentityStackEnv(
   raw: string | undefined,
 ): Record<CloudRunSlug, CloudRunEnvVar[]> {
   const id = parseRemoteMcpIdentityConfig(raw);
-  return id ? remoteMcpIdentityEnv(id) : { admin: [], gateway: [] };
+  return id ? remoteMcpIdentityEnv(id) : { admin: [], gateway: [], "mcp-auth-proxy": [] };
 }
 
 /** Whether two identities would give the services the same env. */
@@ -991,6 +1269,8 @@ export type IamPrincipal =
   | "run-sa"
   /** The runtime SA the gateway runs as. */
   | "gateway-sa"
+  /** #1328 — the MCP-Auth-Proxy's SA: two secrets, nothing else. */
+  | "mcp-auth-proxy-sa"
   /** The `gcp` stack's static-publisher SA. */
   | "static-publisher-sa"
   /** IAP's Google-managed service agent (forwards IAP traffic to Cloud Run). */
@@ -1041,21 +1321,28 @@ export interface RuntimeSecretBinding {
  * on exactly the secrets its env reads ({@link SERVICE_SECRET_ENV}).
  */
 export function runtimeSecretBindings(): RuntimeSecretBinding[] {
-  return (["admin", "gateway"] as const).flatMap((service) =>
+  return CLOUD_RUN_SLUGS.flatMap((service) =>
     serviceSecrets(service).map((secret) => ({
       service,
       secret,
       // The admin's keep the names they had when one SA served both.
-      stackResource: service === "admin" ? `${secret}-binding` : `gateway-${secret}-binding`,
+      stackResource: service === "admin" ? `${secret}-binding` : `${service}-${secret}-binding`,
     })),
   );
 }
+
+/** The runtime SA each Cloud Run service runs as. */
+export const SERVICE_PRINCIPAL: Readonly<Record<CloudRunSlug, IamPrincipal>> = {
+  admin: "run-sa",
+  gateway: "gateway-sa",
+  "mcp-auth-proxy": "mcp-auth-proxy-sa",
+};
 
 function secretAccessors(): IamInvariant[] {
   return runtimeSecretBindings().map((b) => ({
     stackResource: b.stackResource,
     role: SECRET_ACCESSOR,
-    member: b.service === "admin" ? "run-sa" : "gateway-sa",
+    member: SERVICE_PRINCIPAL[b.service],
     target: { kind: "secret", name: b.secret },
     onFailure: "abort",
     why: `the ${b.service} reads ${b.secret} from Secret Manager at boot`,
@@ -1185,7 +1472,7 @@ const GCP_FIREBASE_ONLY: readonly IamInvariant[] = [
     why: "the admin publishes the site to Firebase Hosting",
   },
   {
-    stackResource: "gateway-public-invoker",
+    stackResource: "data-gateway-public-invoker",
     role: "roles/run.invoker",
     member: "allUsers",
     target: { kind: "run-service", service: "gateway" },
@@ -1193,12 +1480,23 @@ const GCP_FIREBASE_ONLY: readonly IamInvariant[] = [
     why: "Firebase Hosting rewrites /api/** to the public gateway",
   },
   {
-    stackResource: "gateway-viewer-for-admin-sa",
+    stackResource: "data-gateway-viewer-for-admin-sa",
     role: "roles/run.viewer",
     member: "run-sa",
     target: { kind: "run-service", service: "gateway" },
     onFailure: "abort",
     why: "Firebase Hosting checks run.services.get on the rewrite target at deploy time (v0.6.5; without it every publish 403s)",
+  },
+  {
+    // #1328 — the service that was the gateway (E13 a); MCP clients call
+    // its run.app URL without a Google identity of their own. The stack
+    // keeps the binding's old logical name, like the service's.
+    stackResource: "gateway-public-invoker",
+    role: "roles/run.invoker",
+    member: "allUsers",
+    target: { kind: "run-service", service: "mcp-auth-proxy" },
+    onFailure: "abort",
+    why: "MCP clients sign in and call remote MCP at the MCP-Auth-Proxy's run.app URL",
   },
   {
     stackResource: "admin-iap-sa-invoker",
@@ -1239,6 +1537,26 @@ export const RETIRED_IAM_BINDINGS: readonly RetiredIamBinding[] = [
     member: "gateway-sa",
     target: { kind: "secret", name: "gateway-role-password" },
     why: "the gateway has no cms_admin login at all and must not be able to read gateway_role's password (CLAUDE.md §2, #635)",
+  },
+  {
+    role: SECRET_ACCESSOR,
+    member: "gateway-sa",
+    target: { kind: "secret", name: "mcp-oauth-seal-key" },
+    why: "the remote-MCP broker moved to the MCP-Auth-Proxy (#1328); a hole in a visitor handler must not open or mint the broker's sealed tokens",
+  },
+  {
+    role: SECRET_ACCESSOR,
+    member: "gateway-sa",
+    target: { kind: "secret", name: "operator-oauth-client" },
+    why: "the remote-MCP broker moved to the MCP-Auth-Proxy (#1328); the visitor gateway must not read the Google sign-in client's secret",
+  },
+  {
+    // gcp-firebase: the Firebase rewrite targets the data gateway since
+    // #1328, so the publisher no longer needs to read the proxy.
+    role: "roles/run.viewer",
+    member: "run-sa",
+    target: { kind: "run-service", service: "mcp-auth-proxy" },
+    why: "the Firebase /api/** rewrite targets the data gateway since #1328; the admin needs no read access to the MCP-Auth-Proxy",
   },
 ];
 
@@ -1286,6 +1604,8 @@ export function iamMember(
       return `serviceAccount:${runServiceAccountEmail(install.projectId, install.env)}`;
     case "gateway-sa":
       return `serviceAccount:${gatewayServiceAccountEmail(install.projectId, install.env)}`;
+    case "mcp-auth-proxy-sa":
+      return `serviceAccount:${mcpAuthProxyServiceAccountEmail(install.projectId, install.env)}`;
     case "static-publisher-sa":
       return `serviceAccount:${staticPublisherServiceAccountId(install.env)}@${install.projectId}.iam.gserviceaccount.com`;
     case "iap-service-agent":

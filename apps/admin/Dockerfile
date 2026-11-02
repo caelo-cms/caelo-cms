@@ -13,7 +13,7 @@
 
 FROM denoland/deno:bin-2.9.8 AS deno
 
-FROM node:26.12.1-bookworm-slim AS node
+FROM node:26.13.0-bookworm-slim AS node
 
 FROM oven/bun:1.4.4 AS builder
 
@@ -200,6 +200,11 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 COPY --from=builder /repo/node_modules/playwright /tmp/pw/node_modules/playwright
 RUN bun /tmp/pw/node_modules/playwright/cli.js install --with-deps --no-shell chromium && \
     rm -rf /tmp/pw /var/lib/apt/lists/*
+
+# #1338 — the CA bundles every database URL names as sslrootcert
+# (verify-full; packages/shared database-tls.ts DATABASE_CA_DIR). A fixed
+# path outside /app, so a URL built anywhere names a file in every image.
+COPY packages/shared/certs/ /etc/caelo/db-ca/
 
 # Reproduce the workspace layout under /app so node_modules resolution
 # works the same way it did at build time (Bun nests admin-specific

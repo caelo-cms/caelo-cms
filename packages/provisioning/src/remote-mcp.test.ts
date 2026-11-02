@@ -7,12 +7,14 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { GCP_PUBLIC_BASE_PATHS } from "@caelo-cms/shared";
+import { GCP_GATEWAY_PATHS, GCP_MCP_AUTH_PROXY_PATHS } from "@caelo-cms/shared";
 import type { GcloudResult } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import {
   checkRemoteMcpIdentityEnv,
   ensureMcpArmorRule,
+  ensureMcpAuthProxyBackend,
+  ensureRemoteMcpEdge,
   findRemoteMcpTarget,
   type LiveUrlMap,
   planUrlMapPaths,
@@ -20,6 +22,7 @@ import {
   resolveGoogleOrgDomain,
   resolveRemoteMcpIdentity,
   resolveStackRemoteMcpIdentity,
+  retireGatewayMcpArmorRule,
 } from "./remote-mcp.js";
 import {
   GENERAL_RATE_LIMIT_PRIORITY,
@@ -33,9 +36,10 @@ import {
 import { initialSecretValue } from "./runtime-secrets.js";
 import {
   CLI_GENERATED_SECRETS,
-  GATEWAY_TIMEOUT_SECONDS,
   GATEWAY_TRUSTED_PROXY_HOPS,
   GENERATED_SECRET_FORMAT,
+  MCP_AUTH_PROXY_TIMEOUT_SECONDS,
+  MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS,
   OPERATOR_OAUTH_CLIENT_FILE,
   REMOTE_MCP_ENV,
   RETIRED_RUNTIME_SECRETS,
@@ -82,7 +86,7 @@ describe("remote-MCP identity (contract)", () => {
     });
   });
 
-  it("gcp-firebase: the gateway's and admin's Cloud Run URLs, the service's audience", () => {
+  it("gcp-firebase: the MCP-Auth-Proxy's (the old gateway service, E13 a) and admin's Cloud Run URLs, the service's audience", () => {
     expect(
       remoteMcpIdentity({
         provider: "gcp-firebase",
@@ -90,7 +94,7 @@ describe("remote-MCP identity (contract)", () => {
         region: "europe-west1",
         adminServiceName: "caelo-production-admin-aaa",
         adminServiceUrl: "https://caelo-production-admin-aaa-xyz.a.run.app/",
-        gatewayServiceUrl: "https://caelo-production-gateway-bbb-xyz.a.run.app",
+        mcpAuthProxyServiceUrl: "https://caelo-production-gateway-bbb-xyz.a.run.app",
       }),
     ).toEqual({
       adminUrl: "https://caelo-production-admin-aaa-xyz.a.run.app",
@@ -105,8 +109,10 @@ describe("remote-MCP identity (contract)", () => {
     // broker answers on the site host, through the LB (client + LB = 2).
     // gcp-firebase: on the gateway's own run.app URL, never through the
     // Firebase Hosting rewrite, so Cloud Run's front end appends the real
-    // client (1). A broker URL on the Hosting path would pool every client
-    // behind one CDN edge address.
+    // client (1). A broker URL on the Hosting path would key every client by
+    // a Google proxy address that changes per request
+    // (docs/dev/firebase-hosting-behaviour.md).
+    expect(MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS.gcp).toBe(2);
     expect(GATEWAY_TRUSTED_PROXY_HOPS.gcp).toBe(2);
     expect(
       remoteMcpIdentity({
@@ -116,19 +122,19 @@ describe("remote-MCP identity (contract)", () => {
         adminBackendServiceId: "1",
       }).mcpPublicUrl,
     ).toBe("https://acme.com");
-    expect(GATEWAY_TRUSTED_PROXY_HOPS["gcp-firebase"]).toBe(1);
+    expect(MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS["gcp-firebase"]).toBe(1);
     const firebase = remoteMcpIdentity({
       provider: "gcp-firebase",
       projectNumber: "42",
       region: "europe-west1",
       adminServiceName: "a",
       adminServiceUrl: "https://a-xyz.a.run.app",
-      gatewayServiceUrl: "https://g-xyz.a.run.app",
+      mcpAuthProxyServiceUrl: "https://g-xyz.a.run.app",
     });
     expect(new URL(firebase.mcpPublicUrl).hostname.endsWith(".run.app")).toBe(true);
   });
 
-  it("gives the admin the audience, public URL and its own URL, and the gateway the admin + public URL", () => {
+  it("gives the admin the audience, public URL and its own URL, the proxy the admin + public URL, the gateway nothing", () => {
     const env = remoteMcpIdentityEnv({ adminUrl: "A", mcpPublicUrl: "P", iapAudience: "AUD" });
     expect(env.admin).toEqual([
       { name: REMOTE_MCP_ENV.iapAudience, value: "AUD" },
@@ -136,10 +142,12 @@ describe("remote-MCP identity (contract)", () => {
       // #914 — Google sign-in's self-check opens the admin signed out.
       { name: REMOTE_MCP_ENV.adminUrl, value: "A" },
     ]);
-    expect(env.gateway).toEqual([
+    expect(env["mcp-auth-proxy"]).toEqual([
       { name: REMOTE_MCP_ENV.adminUrl, value: "A" },
       { name: REMOTE_MCP_ENV.mcpPublicUrl, value: "P" },
     ]);
+    // #1328 — the visitor gateway holds none of remote MCP.
+    expect(env.gateway).toEqual([]);
     expect(REMOTE_MCP_ENV).toEqual({
       adminUrl: "CAELO_ADMIN_URL",
       mcpPublicUrl: "CAELO_MCP_PUBLIC_URL",
@@ -156,7 +164,7 @@ describe("remote-MCP identity (contract)", () => {
       googleOrgDomain: "acme.com",
     });
     expect(known.admin).toContainEqual({ name: "CAELO_GOOGLE_ORG_DOMAIN", value: "acme.com" });
-    expect(known.gateway.map((e) => e.name)).not.toContain("CAELO_GOOGLE_ORG_DOMAIN");
+    expect(known["mcp-auth-proxy"].map((e) => e.name)).not.toContain("CAELO_GOOGLE_ORG_DOMAIN");
     const unknown = remoteMcpIdentityEnv({ adminUrl: "A", mcpPublicUrl: "P", iapAudience: "AUD" });
     expect(unknown.admin.map((e) => e.name)).not.toContain("CAELO_GOOGLE_ORG_DOMAIN");
   });
@@ -199,10 +207,11 @@ describe("remote-MCP secrets + IAM (contract)", () => {
     }
   });
 
-  it("mounts the OAuth client on the gateway only, at latest, as the file its env names", () => {
+  it("mounts the OAuth client on the MCP-Auth-Proxy only, at latest, as the file its env names", () => {
     expect(SERVICE_SECRET_FILES.admin).toEqual([]);
-    expect(SERVICE_SECRET_FILES.gateway).toEqual([OPERATOR_OAUTH_CLIENT_FILE]);
-    expect(secretFileVolumesTemplate("gateway", "production")).toEqual({
+    expect(SERVICE_SECRET_FILES.gateway).toEqual([]);
+    expect(SERVICE_SECRET_FILES["mcp-auth-proxy"]).toEqual([OPERATOR_OAUTH_CLIENT_FILE]);
+    expect(secretFileVolumesTemplate("mcp-auth-proxy", "production")).toEqual({
       volumes: [
         {
           name: "operator-oauth-client",
@@ -261,7 +270,7 @@ describe("planSecretFiles / planRequestTimeout (upgrade)", () => {
     }
   });
 
-  it("#914 — moves the gateway from the retired mcp-oauth-client mount to the renamed secret in one roll", () => {
+  it("#914 — moves the MCP-Auth-Proxy (the old gateway service) from the retired mcp-oauth-client mount to the renamed secret in one roll", () => {
     const live = {
       executionEnvironment: null,
       volumes: [
@@ -275,14 +284,19 @@ describe("planSecretFiles / planRequestTimeout (upgrade)", () => {
       ],
       mounts: [{ name: "mcp-oauth-client", mountPath: "/secrets/mcp-oauth-client" }],
     };
+    expect(RETIRED_SECRET_FILES["mcp-auth-proxy"].map((f) => f.mountDir)).toEqual([
+      "/secrets/mcp-oauth-client",
+    ]);
+    // #1328 — and the gateway gives the client file up altogether.
     expect(RETIRED_SECRET_FILES.gateway.map((f) => f.mountDir)).toEqual([
       "/secrets/mcp-oauth-client",
+      "/secrets/operator-oauth-client",
     ]);
     const plan = planSecretFiles(
       live,
       [OPERATOR_OAUTH_CLIENT_FILE],
       "production",
-      RETIRED_SECRET_FILES.gateway,
+      RETIRED_SECRET_FILES["mcp-auth-proxy"],
     );
     expect(plan.ok && plan.flags).toEqual([
       "--remove-secrets=/secrets/mcp-oauth-client/client.json",
@@ -309,7 +323,7 @@ describe("planSecretFiles / planRequestTimeout (upgrade)", () => {
         after,
         [OPERATOR_OAUTH_CLIENT_FILE],
         "production",
-        RETIRED_SECRET_FILES.gateway,
+        RETIRED_SECRET_FILES["mcp-auth-proxy"],
       ),
     ).toEqual({ ok: true, flags: [], changes: [] });
   });
@@ -378,8 +392,8 @@ describe("planSecretFiles / planRequestTimeout (upgrade)", () => {
       expect(plan.error).toContain("--remove-volume-mount=/secrets/operator-oauth-client");
   });
 
-  it("raises the gateway's request timeout to the contract's", () => {
-    expect(GATEWAY_TIMEOUT_SECONDS).toBe(3600);
+  it("raises the MCP-Auth-Proxy's request timeout to the contract's", () => {
+    expect(MCP_AUTH_PROXY_TIMEOUT_SECONDS).toBe(3600);
     expect(planRequestTimeout(null, 3600).ok && planRequestTimeout(null, 3600)).toEqual({
       ok: true,
       flags: ["--timeout=3600"],
@@ -396,7 +410,11 @@ const firebase: RemoteMcpTarget = {
   region: "europe-west1",
   env: "production",
   domain: "acme.com",
-  services: { admin: "caelo-production-admin-aaa", gateway: "caelo-production-gateway-bbb" },
+  services: {
+    admin: "caelo-production-admin-aaa",
+    gateway: "caelo-production-data-gateway",
+    "mcp-auth-proxy": "caelo-production-gateway-bbb",
+  },
 };
 
 const ANCESTORS_IN_ORG = ok(
@@ -408,7 +426,7 @@ const ANCESTORS_IN_ORG = ok(
 );
 
 describe("resolveRemoteMcpIdentity", () => {
-  it("gcp-firebase: reads the project number, both services' URLs and the organisation", async () => {
+  it("gcp-firebase: reads the project number, the admin's and the MCP-Auth-Proxy's URLs and the organisation", async () => {
     const { run } = fakeGcloud({
       "projects describe acme": ok("42\n"),
       "projects get-ancestors acme": ANCESTORS_IN_ORG,
@@ -504,7 +522,7 @@ const serviceJson = (env: { name: string; value: string }[]) =>
 const DESCRIBE_JSON = "--region=europe-west1 --project=acme --format=json";
 
 describe("findRemoteMcpTarget (#1082)", () => {
-  it("finds the Pulumi-suffixed services by prefix", async () => {
+  it("finds the Pulumi-suffixed services by prefix and names the fixed one (#1328)", async () => {
     const { run } = fakeGcloud({
       "run services list --region europe-west1 --project acme --filter metadata.name~^caelo-production-admin":
         ok("caelo-production-admin-aaa\n"),
@@ -582,12 +600,13 @@ describe("checkRemoteMcpIdentityEnv (#1082)", () => {
       [`run services describe caelo-production-admin-aaa ${DESCRIBE_JSON}`]: serviceJson(
         plain(full.admin),
       ),
+      [`run services describe caelo-production-data-gateway ${DESCRIBE_JSON}`]: serviceJson([]),
       [`run services describe caelo-production-gateway-bbb ${DESCRIBE_JSON}`]: serviceJson(
-        plain(full.gateway),
+        plain(full["mcp-auth-proxy"]),
       ),
     });
     const r = await checkRemoteMcpIdentityEnv(firebase, identity, { run });
-    expect(r).toEqual({ ok: true, drift: { admin: [], gateway: [] } });
+    expect(r).toEqual({ ok: true, drift: { admin: [], gateway: [], "mcp-auth-proxy": [] } });
     expect(calls.some((c) => c.startsWith("run services update"))).toBe(false);
   });
 
@@ -596,10 +615,12 @@ describe("checkRemoteMcpIdentityEnv (#1082)", () => {
       [`run services describe caelo-production-admin-aaa ${DESCRIBE_JSON}`]: serviceJson(
         plain(full.admin),
       ),
+      [`run services describe caelo-production-data-gateway ${DESCRIBE_JSON}`]: serviceJson([]),
       [`run services describe caelo-production-gateway-bbb ${DESCRIBE_JSON}`]: serviceJson([]),
     });
     const r = await checkRemoteMcpIdentityEnv(firebase, identity, { run });
-    expect(r.ok && r.drift.gateway.map((c) => c.name)).toEqual([
+    expect(r.ok && r.drift.gateway).toEqual([]);
+    expect(r.ok && r.drift["mcp-auth-proxy"].map((c) => c.name)).toEqual([
       "CAELO_ADMIN_URL",
       "CAELO_MCP_PUBLIC_URL",
     ]);
@@ -646,7 +667,7 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     // Every /api/mcp/ route the gateway documents — the consent page's
     // POST /api/mcp/oauth/authorize included — is covered.
     const routes = await Bun.file(
-      new URL("../../../apps/api-gateway/src/mcp/routes.ts", import.meta.url),
+      new URL("../../../apps/mcp-auth-proxy/src/routes.ts", import.meta.url),
     ).text();
     const documented = [...routes.matchAll(/^ \* {3}[A-Z|]+ +(\/api\/mcp\/[^\s]+)/gm)]
       .map((m) => m[1] as string)
@@ -665,7 +686,7 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     // gateway: CAELO_TRUSTED_PROXY_HOPS). Neither may be the tighter one by
     // accident — a lower edge limit would 429 traffic the broker allows.
     const src = await Bun.file(
-      new URL("../../../apps/api-gateway/src/mcp/rate-limit.ts", import.meta.url),
+      new URL("../../../apps/mcp-auth-proxy/src/rate-limit.ts", import.meta.url),
     ).text();
     const proxy = /proxy: \{ capacity: (\d+), windowSeconds: (\d+) \}/.exec(src);
     expect(proxy).not.toBeNull();
@@ -692,14 +713,13 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     ]);
   });
 
-  it("the gcp stack declares the rule from the shared module", async () => {
+  it("#1328 — the gcp stack's own WAF policy no longer carries the rule (the proxy's policy does)", async () => {
     const src = await Bun.file(new URL("../stacks/gcp/index.ts", import.meta.url)).text();
-    expect(src).toContain("mcpArmorRuleArgs(),");
-    expect(src.indexOf("mcpArmorRuleArgs(),")).toBeLessThan(
-      src.indexOf("evaluatePreconfiguredWaf"),
-    );
+    expect(src).not.toContain("mcpArmorRuleArgs");
   });
 
+  const PROXY_BACKEND =
+    "https://www.googleapis.com/compute/v1/projects/acme/global/backendServices/caelo-production-mcp-auth-proxy-backend";
   const map = (paths: string[], extra: object[] = []): LiveUrlMap => ({
     name: "caelo-production-url-map-abc",
     fingerprint: "fp",
@@ -718,46 +738,87 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
       { name: "admin", pathRules: [] },
     ],
   });
+  const redirect = { paths: ["/old"], urlRedirect: { pathRedirect: "/new" } };
 
-  it("adds the discovery paths to the /api/* rule and keeps the admin's redirects", () => {
-    const redirect = { paths: ["/old"], urlRedirect: { pathRedirect: "/new" } };
-    const plan = planUrlMapPaths([map(["/api/*"], [redirect])], "acme.com");
+  it("#1328 — moves the remote-MCP paths off the gateway's rule onto the proxy's, keeping redirects", () => {
+    // What #806 left: the discovery paths on the gateway's /api/* rule.
+    const plan = planUrlMapPaths(
+      [map(["/api/*", ...GCP_MCP_AUTH_PROXY_PATHS.slice(1)], [redirect])],
+      "acme.com",
+      PROXY_BACKEND,
+    );
     if (!plan.ok) throw new Error(plan.error);
-    expect(plan.added).toEqual(GCP_PUBLIC_BASE_PATHS.filter((p) => p !== "/api/*"));
     const rules = plan.map.pathMatchers?.[0]?.pathRules ?? [];
-    expect(rules[0]?.paths).toEqual([...GCP_PUBLIC_BASE_PATHS]);
-    expect(rules[1]).toEqual(redirect);
+    expect(rules).toEqual([
+      { paths: [...GCP_GATEWAY_PATHS], service: "projects/acme/global/backendServices/gw" },
+      { paths: [...GCP_MCP_AUTH_PROXY_PATHS], service: PROXY_BACKEND },
+      redirect,
+    ]);
+    expect(plan.changes).toHaveLength(2);
     expect(plan.map.fingerprint).toBe("fp");
+    // The admin host's matcher is not touched.
+    expect(plan.map.pathMatchers?.[1]).toEqual({ name: "admin", pathRules: [] });
   });
 
-  it("changes nothing on a map that already routes them", () => {
-    const plan = planUrlMapPaths([map([...GCP_PUBLIC_BASE_PATHS])], "acme.com");
-    expect(plan.ok && plan.added).toEqual([]);
+  it("#1328 — is idempotent, and brings a drifted proxy rule back to its paths", () => {
+    const converged = map(
+      [...GCP_GATEWAY_PATHS],
+      [{ paths: [...GCP_MCP_AUTH_PROXY_PATHS], service: PROXY_BACKEND }, redirect],
+    );
+    const again = planUrlMapPaths([converged], "acme.com", PROXY_BACKEND);
+    expect(again.ok && again.changes).toEqual([]);
+    expect(again.ok && again.map).toBe(converged);
+
+    const drifted = map(
+      [...GCP_GATEWAY_PATHS],
+      [{ paths: ["/api/mcp/*"], service: PROXY_BACKEND }],
+    );
+    const fixed = planUrlMapPaths([drifted], "acme.com", PROXY_BACKEND);
+    if (!fixed.ok) throw new Error(fixed.error);
+    expect(fixed.map.pathMatchers?.[0]?.pathRules?.[1]).toEqual({
+      paths: [...GCP_MCP_AUTH_PROXY_PATHS],
+      service: PROXY_BACKEND,
+    });
   });
 
   it("refuses a map without the gateway rule instead of inventing one", () => {
-    const plan = planUrlMapPaths([map(["/other/*"])], "acme.com");
+    const plan = planUrlMapPaths([map(["/other/*"])], "acme.com", PROXY_BACKEND);
     expect(plan.ok).toBe(false);
-    expect(planUrlMapPaths([], "acme.com").ok).toBe(false);
+    expect(planUrlMapPaths([], "acme.com", PROXY_BACKEND).ok).toBe(false);
   });
 
-  it("creates the Cloud Armor rule when missing, leaves it alone when in shape", async () => {
-    const policyJson = (rules: object[]) => ok(JSON.stringify({ rules }));
-    const missing = fakeGcloud({
-      "compute security-policies list": ok("caelo-production-waf-1a2b\n"),
-      "compute security-policies describe": policyJson([{ priority: 1000 }]),
-      "compute security-policies rules create 900": ok(),
-    });
-    expect(await ensureMcpArmorRule({ projectId: "acme", env: "production" }, missing)).toEqual({
+  const policyJson = (rules: object[]) => ok(JSON.stringify({ rules }));
+  const PROXY_POLICY = "caelo-production-mcp-auth-proxy-armor";
+
+  it("#1328 — creates the proxy's own policy and its rule when missing", async () => {
+    let created = false;
+    const calls: string[] = [];
+    const run: GcloudRunner = async (args) => {
+      const line = args.join(" ");
+      calls.push(line);
+      if (line.startsWith(`compute security-policies describe ${PROXY_POLICY}`)) {
+        return created ? policyJson([{ priority: 2147483647 }]) : fail("NOT_FOUND: not found");
+      }
+      if (line.startsWith(`compute security-policies create ${PROXY_POLICY}`)) {
+        created = true;
+        return ok();
+      }
+      if (line.startsWith("compute security-policies rules create 900")) return ok();
+      return fail(`unexpected: ${line}`);
+    };
+    expect(await ensureMcpArmorRule({ projectId: "acme", env: "production" }, { run })).toEqual({
       ok: true,
-      policy: "caelo-production-waf-1a2b",
+      policy: PROXY_POLICY,
       action: "created",
     });
-    expect(missing.calls.at(-1)).toContain("--security-policy=caelo-production-waf-1a2b");
+    expect(calls.at(-1)).toContain(`--security-policy=${PROXY_POLICY}`);
+    // Never the gateway's policy.
+    expect(calls.some((c) => c.includes("-waf"))).toBe(false);
+  });
 
+  it("leaves a rule in shape alone and brings a drifted one back", async () => {
     const args = mcpArmorRuleArgs();
     const present = fakeGcloud({
-      "compute security-policies list": ok("caelo-production-waf-1a2b\n"),
       "compute security-policies describe": policyJson([{ ...args }]),
     });
     const r = await ensureMcpArmorRule({ projectId: "acme", env: "production" }, present);
@@ -765,11 +826,145 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     expect(present.calls.some((c) => c.includes("rules "))).toBe(false);
 
     const drifted = fakeGcloud({
-      "compute security-policies list": ok("caelo-production-waf-1a2b\n"),
       "compute security-policies describe": policyJson([{ ...args, action: "allow" }]),
       "compute security-policies rules update 900": ok(),
     });
     const d = await ensureMcpArmorRule({ projectId: "acme", env: "production" }, drifted);
     expect(d.ok && d.action).toBe("updated");
+  });
+
+  it("#1328 — takes the MCP rule off the gateway's policy, and only exactly that rule", async () => {
+    const args = mcpArmorRuleArgs();
+    const withRule = fakeGcloud({
+      "compute security-policies list": ok("caelo-production-waf-1a2b\n"),
+      "compute security-policies describe caelo-production-waf-1a2b": policyJson([{ ...args }]),
+      "compute security-policies rules delete 900": ok(),
+    });
+    expect(
+      await retireGatewayMcpArmorRule({ projectId: "acme", env: "production" }, withRule),
+    ).toEqual({ ok: true, removed: "caelo-production-waf-1a2b" });
+    expect(withRule.calls.at(-1)).toContain("--security-policy=caelo-production-waf-1a2b");
+
+    // Someone's own rule at the priority stays.
+    const own = fakeGcloud({
+      "compute security-policies list": ok("caelo-production-waf-1a2b\n"),
+      "compute security-policies describe caelo-production-waf-1a2b": policyJson([
+        { priority: 900, action: "deny(403)" },
+      ]),
+    });
+    expect(await retireGatewayMcpArmorRule({ projectId: "acme", env: "production" }, own)).toEqual({
+      ok: true,
+      removed: null,
+    });
+    expect(own.calls.some((c) => c.includes("rules delete"))).toBe(false);
+  });
+
+  it("#1328 — creates the proxy's NEG and backend with its policy, then is a no-op", async () => {
+    const target = { projectId: "acme", region: "europe-west1", env: "production" };
+    const missing = fakeGcloud({
+      "compute network-endpoint-groups describe": fail("NOT_FOUND: was not found"),
+      "compute network-endpoint-groups create": ok(),
+      "compute backend-services describe": fail("NOT_FOUND: was not found"),
+      "compute backend-services create": ok(JSON.stringify([{ selfLink: PROXY_BACKEND }])),
+      "compute backend-services add-backend": ok(),
+    });
+    const r = await ensureMcpAuthProxyBackend(target, missing);
+    expect(r.ok && r.backend).toBe(PROXY_BACKEND);
+    expect(missing.calls).toContain(
+      "compute network-endpoint-groups create caelo-production-mcp-auth-proxy-neg --region=europe-west1 --project=acme --network-endpoint-type=serverless --cloud-run-service=caelo-production-mcp-auth-proxy --quiet",
+    );
+    expect(missing.calls.find((c) => c.startsWith("compute backend-services create"))).toContain(
+      `--security-policy=${PROXY_POLICY}`,
+    );
+    expect(
+      missing.calls.find((c) => c.startsWith("compute backend-services add-backend")),
+    ).toContain("--network-endpoint-group=caelo-production-mcp-auth-proxy-neg");
+
+    const present = fakeGcloud({
+      "compute network-endpoint-groups describe": ok("caelo-production-mcp-auth-proxy-neg\n"),
+      "compute backend-services describe": ok(
+        JSON.stringify({
+          selfLink: PROXY_BACKEND,
+          securityPolicy: `https://www.googleapis.com/compute/v1/projects/acme/global/securityPolicies/${PROXY_POLICY}`,
+          backends: [
+            {
+              group:
+                "https://www.googleapis.com/compute/v1/projects/acme/regions/europe-west1/networkEndpointGroups/caelo-production-mcp-auth-proxy-neg",
+            },
+          ],
+        }),
+      ),
+    });
+    const again = await ensureMcpAuthProxyBackend(target, present);
+    expect(again).toEqual({ ok: true, backend: PROXY_BACKEND, done: [] });
+  });
+
+  it("#1328 — ensureRemoteMcpEdge: service, policy, backend, URL map, then the gateway rule; no-op on gcp-firebase", async () => {
+    expect(
+      await ensureRemoteMcpEdge({
+        provider: "gcp-firebase",
+        projectId: "acme",
+        region: "europe-west1",
+        env: "production",
+        domain: "acme.com",
+        mcpAuthProxyImageRef: "img",
+      }),
+    ).toEqual({ ok: true, done: [] });
+
+    const order: string[] = [];
+    const run: GcloudRunner = async (args) => {
+      const line = args.join(" ");
+      const step = [
+        ["run services describe caelo-production-mcp-auth-proxy", "service"],
+        [`compute security-policies describe ${PROXY_POLICY}`, "policy"],
+        ["compute network-endpoint-groups describe", "neg"],
+        ["compute backend-services describe", "backend"],
+        ["compute url-maps list", "url-map"],
+        ["compute security-policies list", "gateway-policy"],
+      ].find(([prefix]) => line.startsWith(prefix as string))?.[1];
+      if (step) order.push(step);
+      if (line.startsWith("run services describe")) return ok("caelo-production-mcp-auth-proxy\n");
+      if (line.startsWith(`compute security-policies describe ${PROXY_POLICY}`)) {
+        return policyJson([{ ...mcpArmorRuleArgs() }]);
+      }
+      if (line.startsWith("compute network-endpoint-groups describe")) return ok("neg\n");
+      if (line.startsWith("compute backend-services describe")) {
+        return ok(
+          JSON.stringify({
+            selfLink: PROXY_BACKEND,
+            securityPolicy: `x/securityPolicies/${PROXY_POLICY}`,
+            backends: [{ group: "x/networkEndpointGroups/caelo-production-mcp-auth-proxy-neg" }],
+          }),
+        );
+      }
+      if (line.startsWith("compute url-maps list")) {
+        return ok(
+          JSON.stringify([
+            map(
+              [...GCP_GATEWAY_PATHS],
+              [{ paths: [...GCP_MCP_AUTH_PROXY_PATHS], service: PROXY_BACKEND }],
+            ),
+          ]),
+        );
+      }
+      if (line.startsWith("compute security-policies list")) return ok("caelo-production-waf-1\n");
+      if (line.startsWith("compute security-policies describe caelo-production-waf-1")) {
+        return policyJson([]);
+      }
+      return fail(`unexpected: ${line}`);
+    };
+    const r = await ensureRemoteMcpEdge(
+      {
+        provider: "gcp",
+        projectId: "acme",
+        region: "europe-west1",
+        env: "production",
+        domain: "acme.com",
+        mcpAuthProxyImageRef: "img",
+      },
+      { run },
+    );
+    expect(r.ok).toBe(true);
+    expect(order).toEqual(["service", "policy", "neg", "backend", "url-map", "gateway-policy"]);
   });
 });

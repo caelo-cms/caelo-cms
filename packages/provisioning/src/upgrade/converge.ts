@@ -30,6 +30,12 @@
 
 import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
 import { ensureCaptureJob } from "../capture-job-setup.js";
+import {
+  dialsIpAddress,
+  ensureCloudSqlVerifyFull,
+  liveDatabaseUrls,
+  moveServicesToDnsHost,
+} from "../cloudsql-tls.js";
 import { ensureConvergeJob } from "../converge-job-setup.js";
 import { findSqlInstance, planPublicRoleSwitch } from "../gateway-credentials.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
@@ -54,6 +60,8 @@ import {
   CAPTURE_JOB_ENV_VAR,
   type CloudRunEnvVar,
   CONVERGE_JOB_ENV_VAR,
+  DATABASE_URL_VARS,
+  INTERIM_FORWARD_ORIGIN_ENV,
   MCP_ENV_VAR,
   OPERATOR_ACCESS_JOB_ENV_VAR,
   remoteMcpIdentityEnv,
@@ -68,7 +76,7 @@ import {
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import type { AppRollHooks, AppRollPlan, RollPlan, RollSlug } from "./app-roll.js";
-import { lookupFailure } from "./gcp-lookup.js";
+import { findServiceUrl, lookupFailure } from "./gcp-lookup.js";
 import type { UpgradeReporter } from "./reporter.js";
 
 /**
@@ -139,7 +147,11 @@ export function startConverge(
   const { reporter: r, run } = deps;
   const runDeps = { run, ...(deps.sleep ? { sleep: deps.sleep } : {}) };
   const service = (slug: RollSlug) => plan.services.find((s) => s.slug === slug) as RollPlan;
-  const services = { admin: service("admin").serviceName, gateway: service("gateway").serviceName };
+  const services = {
+    admin: service("admin").serviceName,
+    gateway: service("gateway").serviceName,
+    "mcp-auth-proxy": service("mcp-auth-proxy").serviceName,
+  };
   const target = {
     provider: install.provider,
     projectId: install.projectId,
@@ -371,31 +383,48 @@ export function startConverge(
   }
 
   async function remoteMcpEdge(): Promise<void> {
-    // #806 — on `gcp` the load balancer routes the remote-MCP discovery
-    // paths to the gateway and Cloud Armor lets agent traffic through on
-    // /api/mcp/* (remote-mcp-edge.ts). Only remote MCP depends on it, so a
-    // failure warns.
+    // #806 / #1328 — on `gcp` the load balancer routes the remote-MCP paths
+    // to the MCP-Auth-Proxy's own backend, whose Cloud Armor policy lets
+    // agent traffic through on /api/mcp/* (remote-mcp-edge.ts). Only remote
+    // MCP depends on it, so a failure warns. The gateway being rolled in
+    // this run no longer answers those paths, so until this succeeds remote
+    // MCP is down on the site's domain — said below.
     if (install.provider !== "gcp") return;
-    const s = r.step("Ensuring the load balancer's remote-MCP routes and Cloud Armor rule...");
+    const s = r.step("Ensuring the MCP-Auth-Proxy's load-balancer route and Cloud Armor rule...");
     const edge = await ensureRemoteMcpEdge(
       {
         provider: install.provider,
         projectId: install.projectId,
+        region: install.region,
         env: install.env,
         domain: install.domain,
+        mcpAuthProxyImageRef: service("mcp-auth-proxy").imageRef,
       },
       { ...runDeps, ...(deps.http ? { http: deps.http } : {}) },
     );
     if (edge.ok) {
       for (const line of edge.done) r.info(`  ${line}`);
-      s.done("Remote-MCP load-balancer rules ready");
+      s.done("Remote-MCP load-balancer route ready");
       return;
     }
-    s.warned(`Remote-MCP load-balancer rules not set up: ${edge.error}`);
+    s.warned(`Remote-MCP load-balancer route not set up: ${edge.error}`);
     r.warn(
       "The upgrade continues; remote MCP (Settings → MCP → Remote) cannot be reached through the site's domain until this succeeds. Re-run upgrade once the cause is fixed.",
     );
     incomplete = true;
+  }
+
+  async function interimForwardEnv(): Promise<CloudRunEnvVar[]> {
+    // #1328 — on gcp-firebase the proxy is the service the current live
+    // release's Firebase rewrite and the staging domain mapping still
+    // point at; it forwards that traffic to the data gateway, whose URL is
+    // its origin (stack-contract.ts INTERIM_FORWARD_ORIGIN_ENV). Without it
+    // the proxy answers the live site's /api/** with 404 until the next
+    // Publish live, and the staging host with 404 — so this aborts.
+    if (install.provider !== "gcp-firebase") return [];
+    const url = await findServiceUrl(run, install.projectId, install.region, services.gateway);
+    if (!url) throw new Error(`could not read the URL of ${services.gateway}`);
+    return [{ name: INTERIM_FORWARD_ORIGIN_ENV, value: new URL(url).origin }];
   }
 
   async function remoteMcpIdentity(): Promise<Record<RollSlug, CloudRunEnvVar[]> | null> {
@@ -457,6 +486,71 @@ export function startConverge(
     ]);
     const name = res.ok ? res.stdout.trim().split("\n")[0]?.trim() : "";
     return name ? { kind: "backend-services", service: name } : null;
+  }
+
+  /** #1338 — the host the database TLS step moved the services onto. */
+  let databaseHost: string | null = null;
+
+  async function databaseTls(): Promise<boolean> {
+    // #1338 — verify-full TLS needs the shared server CA, the instance's
+    // DNS name resolving in the VPC, and the services dialling that name
+    // (cloudsql-tls.ts). Before migrations: the migration job reads its host
+    // from the admin's live URL, and the new images refuse anything less
+    // than verify-full. A failure aborts — the new revisions could not
+    // reach the database.
+    const s = r.step("Setting up verify-full TLS to the database (shared CA, private DNS name)...");
+    const liveUrls = plan.services.map((p) => ({
+      serviceName: p.serviceName,
+      liveUrls: liveDatabaseUrls(p.liveEnv, DATABASE_URL_VARS[p.slug]),
+    }));
+    // Only this step moves the services off the instance's IP, and only
+    // after the instance, its certificate and the DNS name are in shape —
+    // so services that dial a host name already went through it.
+    const onIp = liveUrls.some((u) => Object.values(u.liveUrls).some((v) => dialsIpAddress(v)));
+    if (!onIp) {
+      s.done("Database TLS ready: the services already dial the instance's DNS name");
+      return true;
+    }
+    const lookup = await findSqlInstance(install, { run });
+    if (lookup.status !== "found") {
+      s.failed(
+        `${lookupFailure(lookup, "Cloud SQL instance", install.credentials)}. Aborting upgrade.`,
+      );
+      r.warn(
+        "No traffic was shifted and no migrations ran. Re-run upgrade once the instance is found.",
+      );
+      return false;
+    }
+    const tlsDeps = { ...runDeps, ...(deps.http ? { http: deps.http } : {}) };
+    const tls = await ensureCloudSqlVerifyFull(
+      { projectId: install.projectId, env: install.env, sqlInstance: lookup.name },
+      tlsDeps,
+    );
+    for (const line of tls.done) r.info(`  ${line}`);
+    if (!tls.ok) {
+      s.failed(`Database TLS could not be set up: ${tls.error}. Aborting upgrade.`);
+      r.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
+      return false;
+    }
+    const moved = await moveServicesToDnsHost(
+      { projectId: install.projectId, region: install.region },
+      liveUrls,
+      tls.host,
+      tlsDeps,
+    );
+    for (const line of moved.done) r.info(`  ${line}`);
+    if (!moved.ok) {
+      s.failed(
+        `The services could not be moved onto ${tls.host}: ${moved.error}. Aborting upgrade.`,
+      );
+      r.warn("No migrations ran. Fix the above and re-run.");
+      return false;
+    }
+    databaseHost = tls.host;
+    s.done(
+      `Database TLS ready: the services dial ${tls.host} (verify-full from the new revisions)`,
+    );
+    return true;
   }
 
   async function databaseLogins(): Promise<boolean> {
@@ -628,6 +722,7 @@ export function startConverge(
       if (!(await runtimeIdentities())) return false;
       if (!(await stackInvariants())) return false;
       if (!(await publicRoleIsolation())) return false;
+      if (!(await databaseTls())) return false;
       await mcpAccess();
       await urlMapRedirectsAccess();
       await auditJob();
@@ -642,11 +737,25 @@ export function startConverge(
         await upgraderJob();
         await convergeJob();
         await operatorAccess();
-        const extraEnv = await remoteMcpIdentity();
+        const identity = await remoteMcpIdentity();
+        let forward: CloudRunEnvVar[];
+        try {
+          forward = await interimForwardEnv();
+        } catch (e) {
+          r.error(
+            `The MCP-Auth-Proxy cannot be pointed at the data gateway: ${e instanceof Error ? e.message : String(e)}. Nothing was rolled; re-run upgrade once it is fixed.`,
+          );
+          return { ok: false };
+        }
+        const extraEnv: Partial<Record<RollSlug, CloudRunEnvVar[]>> = {
+          ...(identity ?? {}),
+          "mcp-auth-proxy": [...(identity?.["mcp-auth-proxy"] ?? []), ...forward],
+        };
         return {
           ok: true,
           leaveUntouched: [...leaveUntouched],
-          ...(extraEnv ? { extraEnv } : {}),
+          extraEnv,
+          ...(databaseHost ? { databaseHost } : {}),
         };
       },
       async beforeRoll(slug) {

@@ -25,7 +25,9 @@
  *   4. A second preview: what the review shows and `up` applies. An adopted
  *      resource that is still planned as a create stops the run.
  *
- * Why only service accounts ({@link ADOPTABLE_KINDS}). A kind is adopted
+ * Why service accounts, since #1338 the Cloud SQL private DNS zone and its
+ * record (cloudsql-tls.ts creates both on upgrade), and since #1328
+ * explicitly named Cloud Run services — {@link ADOPTABLE_KINDS}. A kind is adopted
  * when the stack declares it AND the CLI also creates it through gcloud, and
  * its name is unique in the project. Checked per kind against both stacks:
  *
@@ -34,6 +36,9 @@
  *     (stack-contract.ts CLI_GENERATED_SECRETS) the stack only references by
  *     id. Adopting a secret without its value resource would also make `up`
  *     add a version with a freshly generated value — a new KEK.
+ *   - Cloud Run services: only the ones the stack names explicitly (#1328:
+ *     the gcp-firebase data gateway, which the converge creates on older
+ *     installs); the auto-named admin and proxy are Pulumi's alone.
  *   - Buckets, Cloud Run jobs, custom roles: the stack's buckets are made by
  *     Pulumi alone; the CLI's own (ops, audit results, the upgrader, converge,
  *     audit and operator-access jobs, their custom roles) are not declared.
@@ -99,6 +104,83 @@ export const ADOPTABLE_KINDS: Readonly<Record<string, AdoptableKind>> = {
           "--format=value(email)",
         ],
         importId: `projects/${projectId}/serviceAccounts/${email}`,
+      };
+    },
+  },
+  // #1338 — the private zone + A record that resolve the Cloud SQL
+  // instance's DNS name in the VPC. `cms-provision upgrade` creates both
+  // through gcloud (cloudsql-tls.ts) on installs that predate them; the
+  // stacks declare them with literal names so the preview pins them down.
+  "gcp:dns/managedZone:ManagedZone": {
+    label: "private DNS zone",
+    target(inputs, projectId) {
+      const name = inputs.name;
+      if (typeof name !== "string" || !/^[a-z][a-z0-9-]{0,62}$/.test(name)) return null;
+      if ((inputs.project ?? projectId) !== projectId) return null;
+      return {
+        display: name,
+        describeArgs: [
+          "dns",
+          "managed-zones",
+          "describe",
+          name,
+          `--project=${projectId}`,
+          "--format=value(name)",
+        ],
+        importId: `projects/${projectId}/managedZones/${name}`,
+      };
+    },
+  },
+  "gcp:dns/recordSet:RecordSet": {
+    label: "DNS record",
+    target(inputs, projectId) {
+      const { managedZone: zone, name, type } = inputs;
+      if (typeof zone !== "string" || !/^[a-z][a-z0-9-]{0,62}$/.test(zone)) return null;
+      if (typeof name !== "string" || !/^[a-z0-9.-]{1,253}\.$/.test(name)) return null;
+      if (typeof type !== "string" || !/^[A-Z]{1,10}$/.test(type)) return null;
+      if ((inputs.project ?? projectId) !== projectId) return null;
+      return {
+        display: `${name} ${type}`,
+        describeArgs: [
+          "dns",
+          "record-sets",
+          "describe",
+          name,
+          `--zone=${zone}`,
+          `--type=${type}`,
+          `--project=${projectId}`,
+          "--format=value(name)",
+        ],
+        importId: `projects/${projectId}/managedZones/${zone}/rrsets/${name}/${type}`,
+      };
+    },
+  },
+  // #1328 — the gcp-firebase data gateway: the stack declares it under a
+  // fixed name (stack-contract.ts fixedCloudRunServiceName), and the converge
+  // creates the same service on installs whose stack predates it. Only a
+  // service the stack names explicitly is a candidate: an auto-named one has
+  // no name until Pulumi picks it.
+  "gcp:cloudrunv2/service:Service": {
+    label: "Cloud Run service",
+    target(inputs, projectId) {
+      const name = inputs.name;
+      const location = inputs.location;
+      if (typeof name !== "string" || !/^[a-z][a-z0-9-]{0,47}[a-z0-9]$/.test(name)) return null;
+      if (typeof location !== "string" || !/^[a-z]+-[a-z]+\d+$/.test(location)) return null;
+      const project = inputs.project ?? projectId;
+      if (project !== projectId) return null;
+      return {
+        display: `${name} (${location})`,
+        describeArgs: [
+          "run",
+          "services",
+          "describe",
+          name,
+          `--region=${location}`,
+          `--project=${projectId}`,
+          "--format=value(metadata.name)",
+        ],
+        importId: `projects/${projectId}/locations/${location}/services/${name}`,
       };
     },
   },

@@ -16,7 +16,12 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type CaddyfileSpec, generateCaddyfile, selfHostedSeedDomains } from "./caddy.js";
-import { CADDY_IMAGE, COMPOSE_ADMIN_UPSTREAM, COMPOSE_GATEWAY_UPSTREAM } from "./compose.js";
+import {
+  CADDY_IMAGE,
+  COMPOSE_ADMIN_UPSTREAM,
+  COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
+} from "./compose.js";
 
 const REQUIRED = process.env.CAELO_CADDY_VALIDATE === "required";
 
@@ -62,6 +67,7 @@ const base: CaddyfileSpec = {
   stagingSiteRoot: "/srv/caelo/output/staging/current",
   adminUpstream: COMPOSE_ADMIN_UPSTREAM,
   gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
+  mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   domains: selfHostedSeedDomains("example.com", "staging.example.com"),
 };
 

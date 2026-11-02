@@ -9,6 +9,12 @@
  *   2. back up both databases (pg_dump, hard-fail) — the last moment the
  *      schema is guaranteed to match the running images;
  *   3. write the new digests into the Compose file, `docker compose pull`;
+ *   3b. #1338 — recreate Postgres when the Compose file changed it (TLS with
+ *      the install's own certificate, self-hosted-db-tls.ts: the new images
+ *      connect with verify-full only; the old containers keep connecting,
+ *      Postgres still accepts them) and apply public_role's limits as the
+ *      superuser (the migrations' role audit refuses public_role without
+ *      them, and the self-hosted admin_role cannot set them);
  *   4. run the migrations from the NEW admin image (`docker compose run`,
  *      the same `migrate.ts` entrypoint the GCP migrate job runs) while the
  *      old containers keep serving — migrations are expand-only, so the
@@ -20,7 +26,9 @@
  *      refuses an install that skipped the release the old role's last user
  *      was retired in (run-order.ts): past it, nothing running uses it;
  *   6. recreate the admin, health-check it (`/_caelo/health`, which proves
- *      the DB pool and roles); then the gateway (`/healthz`);
+ *      the DB pool and roles); then the gateway (`/healthz`); then the
+ *      MCP-Auth-Proxy (`/api/mcp/health`, #1328) — on the upgrade that first
+ *      brings it, this creates its container;
  *   7. re-write the Caddyfile and reload Caddy — the edge headers live there
  *      (#891), and only the new release's generator knows them;
  *   8. record the release in `.caelo/release.json`.
@@ -50,7 +58,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { PlatformUpdatePhase } from "@caelo-cms/shared";
-import { ghcrImageDigest, MEDIA_DIR, type ReleaseImages } from "./compose.js";
+import {
+  COMPOSE_MCP_AUTH_PROXY_PORT,
+  COMPOSE_MCP_AUTH_PROXY_SERVICE,
+  ghcrImageDigest,
+  MEDIA_DIR,
+  type ReleaseImages,
+} from "./compose.js";
 import { selfCommand } from "./self-command.js";
 import {
   type HostRunner,
@@ -61,10 +75,28 @@ import {
   resolveVerifiedRelease,
 } from "./self-hosted-release.js";
 import type { ConvergeOutcome } from "./self-hosted-roles.js";
-import { fetchLatestReleaseTag, RELEASE_SERVICES, releaseTag } from "./upgrade/release-images.js";
+import {
+  fetchLatestReleaseTag,
+  RELEASE_SERVICES,
+  type ReleaseService,
+  releaseTag,
+} from "./upgrade/release-images.js";
 
-/** The Compose service names of the two Caelo services. */
-const COMPOSE_SERVICE = { admin: "caelo-admin", gateway: "caelo-gateway" } as const;
+/** The Compose service names of the Caelo services. */
+const COMPOSE_SERVICE: Readonly<Record<ReleaseService, string>> = {
+  admin: "caelo-admin",
+  gateway: "caelo-gateway",
+  "mcp-auth-proxy": COMPOSE_MCP_AUTH_PROXY_SERVICE,
+};
+
+/**
+ * The release services a Compose file for `images` runs, in roll order: all
+ * of them, except the MCP-Auth-Proxy for a release recorded before it
+ * shipped (#1328, compose.ts ReleaseImages).
+ */
+function servicesOf(images: ReleaseImages): ReleaseService[] {
+  return RELEASE_SERVICES.filter((s) => images[s] !== undefined);
+}
 
 /** Progress output; the CLI wires it to the terminal, tests to an array. */
 export interface UpgradeLog {
@@ -93,6 +125,12 @@ export interface SelfHostedUpgradeDeps {
    */
   readonly convergeRoles: () => Promise<ConvergeOutcome>;
   /**
+   * #1338 — applies public_role's limits as the Postgres superuser
+   * (`applyPublicRoleLimits`), before the migrations whose role audit
+   * checks them.
+   */
+  readonly applyPublicRoleLimits: () => Promise<ConvergeOutcome>;
+  /**
    * Re-writes the Caddyfile from the install's config + domains table and
    * reloads Caddy (#891): the edge headers (the SVG CSP, nosniff) live in
    * the Caddyfile this release's generator writes, so an upgrade that only
@@ -112,12 +150,17 @@ export interface SelfHostedUpgradeOpts {
   readonly channel?: "stable" | "rc" | "beta";
   readonly skipVerify?: boolean;
   /**
-   * The admin + gateway digests the release's signed manifest names (the
-   * host agent passes them). The digests GHCR serves for the tag must match,
-   * or nothing changes — a registry cannot swap in another signed image of
-   * an older release under the new tag.
+   * The digests the release's signed manifest names (the host agent passes
+   * them). The digests GHCR serves for the tag must match, or nothing
+   * changes — a registry cannot swap in another signed image of an older
+   * release under the new tag. The MCP-Auth-Proxy's is compared whenever it
+   * is given (#1328; an agent from before it passes only admin + gateway).
    */
-  readonly expectedDigests?: { readonly admin: string; readonly gateway: string };
+  readonly expectedDigests?: {
+    readonly admin: string;
+    readonly gateway: string;
+    readonly "mcp-auth-proxy"?: string;
+  };
 }
 
 export type SelfHostedUpgradeResult =
@@ -140,6 +183,7 @@ type UpgradeStage =
   | "roles"
   | "roll-admin"
   | "roll-gateway"
+  | "roll-mcp-auth-proxy"
   | "caddy";
 
 /** Where an install from before #696 keeps its original Compose file during the move. */
@@ -247,6 +291,10 @@ export async function upgradeSelfHosted(
   const previousCompose = current
     ? deps.renderCompose(releaseImages(current))
     : legacyComposeCheckpoint(caeloDir, live);
+  // The legacy (repo-mounted) file predates the MCP-Auth-Proxy.
+  const previousServices: readonly ReleaseService[] = current
+    ? servicesOf(releaseImages(current))
+    : ["admin", "gateway"];
 
   // 1. Target release → verified digests.
   log.phase?.("verify");
@@ -265,8 +313,9 @@ export async function upgradeSelfHosted(
   if (opts.skipVerify) log.warn("--skip-verify set — image signatures NOT verified.");
   const images = resolved.images;
   if (opts.expectedDigests) {
+    const expected = opts.expectedDigests;
     const mismatch = RELEASE_SERVICES.filter(
-      (s) => ghcrImageDigest(s, images[s]) !== opts.expectedDigests?.[s],
+      (s) => expected[s] !== undefined && ghcrImageDigest(s, images[s] ?? "") !== expected[s],
     );
     if (mismatch.length > 0) {
       return fail(
@@ -278,8 +327,7 @@ export async function upgradeSelfHosted(
   }
   if (
     current &&
-    current.images.admin === images.admin &&
-    current.images.gateway === images.gateway &&
+    RELEASE_SERVICES.every((s) => current.images[s] === images[s]) &&
     live === previousCompose
   ) {
     // Recorded, and the Compose file agrees. `up` converges containers a
@@ -289,7 +337,7 @@ export async function upgradeSelfHosted(
     log.info(
       `Already on ${current.version}; checking the running containers match and are healthy.`,
     );
-    const converged = await startBoth(deps);
+    const converged = await startAll(deps, servicesOf(images));
     if (!converged.ok) {
       return fail(
         "converge",
@@ -328,11 +376,39 @@ export async function upgradeSelfHosted(
   log.phase?.("roll");
   log.step("Pulling the new images");
   const pull = await runner.run(
-    compose(caeloDir, "pull", COMPOSE_SERVICE.admin, COMPOSE_SERVICE.gateway),
+    compose(caeloDir, "pull", ...servicesOf(images).map((s) => COMPOSE_SERVICE[s])),
   );
   if (pull.exitCode !== 0) {
     restoreCompose(file, previousCompose);
     return fail("pull", `docker compose pull failed: ${tail(pull.stderr)}`, true);
+  }
+
+  // 3b. Postgres on this release's config (TLS, #1338). `up -d` recreates
+  // it only when its definition changed; `--wait` returns once it is
+  // healthy. The data volume stays; the old admin and gateway reconnect.
+  log.step("Bringing Postgres onto this release's configuration (TLS)");
+  const pg = await runner.run(compose(caeloDir, "up", "-d", "--no-deps", "--wait", "postgres"));
+  if (pg.exitCode !== 0) {
+    restoreCompose(file, previousCompose);
+    const back = await runner.run(compose(caeloDir, "up", "-d", "--no-deps", "--wait", "postgres"));
+    return fail(
+      "pull",
+      `Postgres did not come up on the new configuration: ${tail(pg.stderr)}\n${
+        back.exitCode === 0
+          ? "Postgres runs on the previous configuration again; nothing else changed."
+          : `Postgres did not come back on the previous configuration either: ${tail(back.stderr)}. Check \`docker compose ps\` / \`docker compose logs postgres\`.`
+      }`,
+      back.exitCode === 0,
+    );
+  }
+  const limits = await deps.applyPublicRoleLimits();
+  if (!limits.ok) {
+    restoreCompose(file, previousCompose);
+    return fail(
+      "roles",
+      `Could not apply public_role's connection and statement limits: ${limits.error}\nThe previous release keeps running; no migration ran. Database backup: ${backup.dir}`,
+      true,
+    );
   }
 
   // 4. Migrations from the new admin image; the old containers keep serving.
@@ -360,11 +436,11 @@ export async function upgradeSelfHosted(
     );
   }
 
-  // 6. Roll admin, then gateway, each health-checked.
-  for (const service of RELEASE_SERVICES) {
-    const stage = service === "admin" ? "roll-admin" : "roll-gateway";
+  // 6. Roll admin, then gateway, then the MCP-Auth-Proxy, each health-checked.
+  for (const service of servicesOf(images)) {
+    const stage: UpgradeStage = `roll-${service}`;
     log.phase?.("roll");
-    log.step(`Restarting ${service} on ${shortDigest(images[service])}`);
+    log.step(`Restarting ${service} on ${shortDigest(images[service] ?? "")}`);
     const up = await runner.run(
       compose(caeloDir, "up", "-d", "--no-deps", COMPOSE_SERVICE[service]),
     );
@@ -375,7 +451,7 @@ export async function upgradeSelfHosted(
         : { ok: false as const, error: `docker compose up failed: ${tail(up.stderr)}` };
     if (!healthy.ok) {
       log.error(`${service} is not healthy on ${target.version}: ${healthy.error}`);
-      const restored = await rollback(file, previousCompose, deps);
+      const restored = await rollback(file, previousCompose, previousServices, deps);
       if (current) {
         recordRollback(caeloDir, current, target.version, `${stage}: ${healthy.error}`, now());
       }
@@ -559,13 +635,16 @@ export async function runMigrations(
  * In-container probe scripts (`bun -e`): the containers publish no host
  * ports, so the probe runs where the service listens. The admin's
  * `/_caelo/health` checks the DB pool + roles; the gateway's `/healthz` is
- * its liveness endpoint.
+ * its liveness endpoint; the MCP-Auth-Proxy's `/api/mcp/health` answers
+ * even while remote MCP is unavailable (#1328). Its image has no shell, so
+ * the probe is `bun -e`, never `sh -c`.
  */
-const HEALTH_PROBE: Record<"admin" | "gateway", string> = {
+const HEALTH_PROBE: Record<ReleaseService, string> = {
   admin:
     'const r=await fetch("http://127.0.0.1:"+(process.env.PORT||"3000")+"/_caelo/health").catch(()=>null);process.exit(r&&r.ok?0:1)',
   gateway:
     'const r=await fetch("http://127.0.0.1:"+(process.env.PORT||process.env.GATEWAY_PORT||"8090")+"/healthz").catch(()=>null);process.exit(r&&r.ok?0:1)',
+  "mcp-auth-proxy": `const r=await fetch("http://127.0.0.1:"+(process.env.MCP_AUTH_PROXY_PORT||"${COMPOSE_MCP_AUTH_PROXY_PORT}")+"/api/mcp/health").catch(()=>null);process.exit(r&&r.ok?0:1)`,
 };
 
 /**
@@ -573,7 +652,7 @@ const HEALTH_PROBE: Record<"admin" | "gateway", string> = {
  * after `healthAttempts` tries (default 45, 2 s apart).
  */
 export async function waitHealthy(
-  service: "admin" | "gateway",
+  service: ReleaseService,
   caeloDir: string,
   deps: Pick<SelfHostedUpgradeDeps, "runner" | "sleep" | "healthAttempts" | "healthIntervalMs">,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -595,28 +674,35 @@ export async function waitHealthy(
   };
 }
 
-/** Put the previous Compose file back, restart both services on it, health-check them. */
+/**
+ * Put the previous Compose file back, restart its services on it,
+ * health-check them. `previousServices` are the services that file runs (a
+ * release from before #1328 has no MCP-Auth-Proxy; a proxy container the
+ * failed run created then keeps running unused until the next upgrade).
+ */
 async function rollback(
   file: string,
   previousCompose: string,
+  previousServices: readonly ReleaseService[],
   deps: SelfHostedUpgradeDeps,
 ): Promise<boolean> {
   deps.log.phase?.("rollback");
   deps.log.warn("Rolling back to the previous images");
   restoreCompose(file, previousCompose);
-  return (await startBoth(deps)).ok;
+  return (await startAll(deps, previousServices)).ok;
 }
 
-/** `up -d` both services on the current Compose file, then health-check each. */
-async function startBoth(
+/** `up -d` `services` on the current Compose file, then health-check each. */
+async function startAll(
   deps: SelfHostedUpgradeDeps,
+  services: readonly ReleaseService[],
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const up = await deps.runner.run(
-    compose(deps.caeloDir, "up", "-d", "--no-deps", COMPOSE_SERVICE.admin, COMPOSE_SERVICE.gateway),
+    compose(deps.caeloDir, "up", "-d", "--no-deps", ...services.map((s) => COMPOSE_SERVICE[s])),
   );
   if (up.exitCode !== 0)
     return { ok: false, error: `docker compose up failed: ${tail(up.stderr)}` };
-  for (const service of RELEASE_SERVICES) {
+  for (const service of services) {
     const healthy = await waitHealthy(service, deps.caeloDir, deps);
     if (!healthy.ok) return { ok: false, error: `${service}: ${healthy.error}` };
   }

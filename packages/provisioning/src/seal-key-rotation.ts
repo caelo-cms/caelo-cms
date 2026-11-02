@@ -5,7 +5,7 @@
  * every connected MCP client out.
  *
  * The broker seals its OAuth state, codes and refresh tokens under
- * `CAELO_MCP_OAUTH_SEAL_KEY` (api-gateway mcp/seal.ts, envelope v2 with a
+ * `CAELO_MCP_OAUTH_SEAL_KEY` (apps/mcp-auth-proxy seal.ts, envelope v2 with a
  * key id). While `CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS` is set it also opens
  * values sealed under that key, and seals everything new under the current
  * one. Refresh tokens live at most {@link SEAL_KEY_ROTATION_WINDOW_DAYS}
@@ -14,7 +14,7 @@
  *
  * Two steps, both `cms-provision rotate-secret mcp-oauth-seal-key`:
  *
- *   start   — add a new version to the secret, then roll the gateway with
+ *   start   — add a new version to the secret, then roll the MCP-Auth-Proxy with
  *             the current key at `latest` and the previous key PINNED to
  *             the version that was latest before (a pinned version never
  *             follows the new one), labelled with the start time.
@@ -27,7 +27,7 @@
  * progress (a second start would pin the CURRENT key as "previous" and drop
  * the real previous one early), and finishing before the window ends.
  *
- * A `cms-provision upgrade` whose `pulumi up` rewrites the gateway template
+ * A `cms-provision upgrade` whose `pulumi up` rewrites the MCP-Auth-Proxy template
  * during the window drops the previous key (the stack does not declare it):
  * clients sealed under it sign in again. That fails safe — no token lives
  * longer than intended — and is documented in the rotate output.
@@ -39,27 +39,27 @@ import { gcpSecretId } from "./gcp-names.js";
 import { initialSecretValue } from "./runtime-secrets.js";
 import { liveContainerEnv } from "./stack-converge.js";
 
-/** The gateway env var holding the previous key during a rotation. */
+/** The MCP-Auth-Proxy env var holding the previous key during a rotation. */
 export const SEAL_KEY_PREVIOUS_ENV = "CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS";
-/** The gateway env var holding the current key (stack-contract SERVICE_SECRET_ENV). */
+/** The MCP-Auth-Proxy env var holding the current key (stack-contract SERVICE_SECRET_ENV). */
 export const SEAL_KEY_ENV = "CAELO_MCP_OAUTH_SEAL_KEY";
-/** Label on the gateway service: when the rotation started (epoch ms). */
+/** Label on the MCP-Auth-Proxy service: when the rotation started (epoch ms). */
 export const SEAL_ROTATION_LABEL = "caelo-seal-rotation-started";
 /**
  * Days the previous key must stay: the broker's refresh-token lifetime
- * (api-gateway mcp/token.ts REFRESH_MAX_LIFETIME_SECONDS, 30 days).
+ * (apps/mcp-auth-proxy token.ts REFRESH_MAX_LIFETIME_SECONDS, 30 days).
  */
 export const SEAL_KEY_ROTATION_WINDOW_DAYS = 30;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** The deployed gateway a rotation works on. */
+/** The deployed MCP-Auth-Proxy a rotation works on. */
 export interface SealRotationTarget {
   readonly projectId: string;
   readonly region: string;
   readonly env: string;
-  /** Deployed (Pulumi-suffixed) gateway Cloud Run service name. */
-  readonly gatewayService: string;
+  /** Deployed (Pulumi-suffixed or fixed) MCP-Auth-Proxy Cloud Run service name. */
+  readonly proxyService: string;
 }
 
 export interface SealRotationReport {
@@ -80,7 +80,7 @@ interface GatewayState {
   readonly startedAtMs: number | null;
 }
 
-async function gatewayState(
+async function proxyState(
   run: GcloudRunner,
   t: SealRotationTarget,
 ): Promise<{ ok: true; state: GatewayState } | { ok: false; error: string }> {
@@ -88,13 +88,13 @@ async function gatewayState(
     "run",
     "services",
     "describe",
-    t.gatewayService,
+    t.proxyService,
     "--region",
     t.region,
     `--project=${t.projectId}`,
     "--format=json",
   ]);
-  if (!r.ok) return { ok: false, error: `read the gateway service: ${r.stderr.trim()}` };
+  if (!r.ok) return { ok: false, error: `read the MCP-Auth-Proxy service: ${r.stderr.trim()}` };
   const env = liveContainerEnv(r.stdout);
   const labels =
     (JSON.parse(r.stdout) as { metadata?: { labels?: Record<string, string> } }).metadata?.labels ??
@@ -105,7 +105,7 @@ async function gatewayState(
   if (current?.kind !== "secret") {
     return {
       ok: false,
-      error: `${SEAL_KEY_ENV} on ${t.gatewayService} is not a Secret Manager reference — run \`cms-provision upgrade\` first (it installs remote MCP's secrets).`,
+      error: `${SEAL_KEY_ENV} on ${t.proxyService} is not a Secret Manager reference — run \`cms-provision upgrade\` first (it installs remote MCP's secrets).`,
     };
   }
   return {
@@ -119,7 +119,7 @@ function rollFlip(t: SealRotationTarget): string[] {
     "run",
     "services",
     "update-traffic",
-    t.gatewayService,
+    t.proxyService,
     "--region",
     t.region,
     `--project=${t.projectId}`,
@@ -140,7 +140,7 @@ export async function startSealKeyRotation(
   const project = `--project=${t.projectId}`;
   const steps: string[] = [];
 
-  const live = await gatewayState(run, t);
+  const live = await proxyState(run, t);
   if (!live.ok) return { ok: false, steps, error: live.error };
   if (live.state.previousPinned) {
     const since = live.state.startedAtMs;
@@ -181,7 +181,7 @@ export async function startSealKeyRotation(
     "run",
     "services",
     "update",
-    t.gatewayService,
+    t.proxyService,
     "--region",
     t.region,
     project,
@@ -195,11 +195,11 @@ export async function startSealKeyRotation(
     return {
       ok: false,
       steps,
-      error: `The new key is stored but the gateway does not use it yet. Do not rotate again — roll the gateway:\n    gcloud ${update.join(" ")}\n    gcloud ${rollFlip(t).join(" ")}\n(${flipped.stderr.trim()})`,
+      error: `The new key is stored but the MCP-Auth-Proxy does not use it yet. Do not rotate again — roll the MCP-Auth-Proxy:\n    gcloud ${update.join(" ")}\n    gcloud ${rollFlip(t).join(" ")}\n(${flipped.stderr.trim()})`,
     };
   }
   steps.push(
-    `rolled the gateway onto the new key; tokens sealed under version ${version} keep working`,
+    `rolled the MCP-Auth-Proxy onto the new key; tokens sealed under version ${version} keep working`,
     `finish after ${new Date(now + SEAL_KEY_ROTATION_WINDOW_DAYS * DAY_MS).toISOString()} with: cms-provision rotate-secret mcp-oauth-seal-key --finish`,
     "a `cms-provision upgrade` before then drops the previous key early: clients sealed under it sign in again",
   );
@@ -215,13 +215,13 @@ export async function finishSealKeyRotation(
   const run = deps.run ?? defaultGcloud;
   const now = (deps.nowMs ?? Date.now)();
   const steps: string[] = [];
-  const live = await gatewayState(run, t);
+  const live = await proxyState(run, t);
   if (!live.ok) return { ok: false, steps, error: live.error };
   if (!live.state.previousPinned) {
     return {
       ok: false,
       steps,
-      error: `No seal-key rotation is in progress on ${t.gatewayService} (${SEAL_KEY_PREVIOUS_ENV} is not set). Start one with \`cms-provision rotate-secret mcp-oauth-seal-key\`.`,
+      error: `No seal-key rotation is in progress on ${t.proxyService} (${SEAL_KEY_PREVIOUS_ENV} is not set). Start one with \`cms-provision rotate-secret mcp-oauth-seal-key\`.`,
     };
   }
   const started = live.state.startedAtMs;
@@ -232,7 +232,7 @@ export async function finishSealKeyRotation(
       steps,
       error:
         due === null
-          ? `The gateway has ${SEAL_KEY_PREVIOUS_ENV} but no ${SEAL_ROTATION_LABEL} label, so the rotation's start is unknown. Wait ${SEAL_KEY_ROTATION_WINDOW_DAYS} days from when it started, then run --finish --now.`
+          ? `The MCP-Auth-Proxy has ${SEAL_KEY_PREVIOUS_ENV} but no ${SEAL_ROTATION_LABEL} label, so the rotation's start is unknown. Wait ${SEAL_KEY_ROTATION_WINDOW_DAYS} days from when it started, then run --finish --now.`
           : `The previous key still opens refresh tokens until ${new Date(due).toISOString()} (${SEAL_KEY_ROTATION_WINDOW_DAYS}-day lifetime). Finishing now would sign those clients out; run --finish after that time, or --finish --now if the old key leaked.`,
     };
   }
@@ -240,7 +240,7 @@ export async function finishSealKeyRotation(
     "run",
     "services",
     "update",
-    t.gatewayService,
+    t.proxyService,
     "--region",
     t.region,
     `--project=${t.projectId}`,
@@ -251,8 +251,8 @@ export async function finishSealKeyRotation(
   const rolled = await run(update);
   const flipped = rolled.ok ? await run(rollFlip(t)) : rolled;
   if (!flipped.ok) {
-    return { ok: false, steps, error: `roll the gateway: ${flipped.stderr.trim()}` };
+    return { ok: false, steps, error: `roll the MCP-Auth-Proxy: ${flipped.stderr.trim()}` };
   }
-  steps.push("removed the previous seal key from the gateway; the rotation is complete");
+  steps.push("removed the previous seal key from the MCP-Auth-Proxy; the rotation is complete");
   return { ok: true, steps };
 }

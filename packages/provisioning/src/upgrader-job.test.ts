@@ -57,14 +57,16 @@ const revisionJson = (deployed: string | null, resolved: string) =>
     status: { imageDigest: `${MIRROR}@${resolved}` },
   });
 
-/** Serving revisions deployed as `admin` / `gateway` (index digests). */
+/** Serving revisions deployed as `admin` / `gateway` (index digests); the proxy serves D("3"). */
 const servingAs = (admin: string, gateway: string): [RegExp, Answer] => [
   /^run revisions describe (\S+)/,
   (l) =>
     ok(
       l.includes("-admin-")
         ? revisionJson(admin, `sha256:${"e".repeat(64)}`)
-        : revisionJson(gateway, `sha256:${"d".repeat(64)}`),
+        : l.includes(PROXY)
+          ? revisionJson(D("3"), P("3"))
+          : revisionJson(gateway, `sha256:${"d".repeat(64)}`),
     ),
 ];
 
@@ -79,13 +81,16 @@ const releaseTags = (slug: "admin" | "gateway", tags: Record<string, string>): [
 ];
 
 const ADMIN = "caelo-production-admin-aaa";
-const GATEWAY = "caelo-production-gateway-bbb";
+// #1328 — gcp-firebase: the visitor gateway is the fixed-name data gateway,
+// the MCP-Auth-Proxy the service that was the gateway (E13 a).
+const GATEWAY = "caelo-production-data-gateway";
+const PROXY = "caelo-production-gateway-bbb";
 
 const MANIFEST: ReleaseManifest = {
   manifestVersion: 1,
   version: "0.11.0",
   channel: "stable",
-  digests: { admin: D("a"), gateway: D("b"), ops: D("c") },
+  digests: { admin: D("a"), gateway: D("b"), ops: D("c"), "mcp-auth-proxy": D("d") },
   minFromVersion: "0.10.0",
   infraContractVersion: 2,
   migrations: { contract: false, lastContractVersion: null, head: "0267_platform_updates" },
@@ -121,14 +126,23 @@ const META: InstallMetadata = {
   ownerEmail: "owner@acme.com",
   region: "europe-west1",
   createdAt: "2026-01-01T00:00:00Z",
-  imageDigests: { admin: D("1"), gateway: D("2") },
+  imageDigests: { admin: D("1"), gateway: D("2"), "mcp-auth-proxy": D("3") },
   releaseVersion: "0.10.45",
   infraContractVersion: 2,
 };
 
-const manifestOf = (version: string, admin: string, gateway: string): ReleaseManifestResult => ({
+const manifestOf = (
+  version: string,
+  admin: string,
+  gateway: string,
+  proxy = D("3"),
+): ReleaseManifestResult => ({
   ok: true,
-  manifest: { ...MANIFEST, version, digests: { admin, gateway, ops: D("c") } },
+  manifest: {
+    ...MANIFEST,
+    version,
+    digests: { admin, gateway, ops: D("c"), "mcp-auth-proxy": proxy },
+  },
 });
 
 const serviceJson = (image: string, env: unknown[]) =>
@@ -141,11 +155,13 @@ const ADMIN_JSON = serviceJson("registry/admin@sha256:old", [
   { name: "CAELO_FIREBASE_SITE", value: "caelo-production-site-abc123" },
   {
     name: "ADMIN_DATABASE_URL",
-    value: "postgresql://admin_role@10.20.0.3:5432/cms_admin?sslmode=require",
+    value:
+      "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   secretRef("ADMIN_DATABASE_PASSWORD", "postgres-password"),
 ]);
 const GATEWAY_JSON = serviceJson("registry/gateway@sha256:old", []);
+const PROXY_JSON = serviceJson("registry/mcp-auth-proxy@sha256:old", []);
 
 type Answer = GcloudResult | ((line: string) => GcloudResult);
 
@@ -153,15 +169,23 @@ function fakeGcloud(events: string[], overrides: [RegExp, Answer][] = []) {
   const rules: [RegExp, Answer][] = [
     ...overrides,
     [/^run services list .*caelo-production-admin/, ok(`${ADMIN}\n`)],
-    [/^run services list .*caelo-production-gateway/, ok(`${GATEWAY}\n`)],
+    [/^run services list .*caelo-production-data-gateway/, ok(`${GATEWAY}\n`)],
+    [/^run services list .*caelo-production-gateway/, ok(`${PROXY}\n`)],
     [/describe (\S+) .*revisionName/, (l) => ok(`${l.split(" ")[3]}-00001-old\n`)],
     [new RegExp(`describe ${ADMIN} .*--format=json`), ok(ADMIN_JSON)],
     [new RegExp(`describe ${GATEWAY} .*--format=json`), ok(GATEWAY_JSON)],
+    [new RegExp(`describe ${PROXY} .*--format=json`), ok(PROXY_JSON)],
     [/describe (\S+) .*status\.url/, (l) => ok(`https://${l.split(" ")[3]}-xyz.a.run.app\n`)],
     [
       /^run revisions describe (\S+)/,
       (l) =>
-        ok(l.includes("-admin-") ? revisionJson(D("1"), P("1")) : revisionJson(D("2"), P("2"))),
+        ok(
+          l.includes("-admin-")
+            ? revisionJson(D("1"), P("1"))
+            : l.includes(PROXY)
+              ? revisionJson(D("3"), P("3"))
+              : revisionJson(D("2"), P("2")),
+        ),
     ],
     [/^sql instances list/, ok("caelo-production-pg-abc\n")],
     [/^sql backups list/, ok("1760000000000\n")],
@@ -307,9 +331,11 @@ function fakeImageForms(order: string[], down: boolean): ReleaseImageForms {
   return {
     ofIndex,
     of: async (m, slug) => {
+      const index = m.digests[slug];
+      if (!index) return { ok: false, transient: false, message: `no ${slug} image` };
       const signed = m.platformDigests?.[slug];
-      if (signed) return { ok: true, digests: [m.digests[slug], signed], amd64: signed };
-      return ofIndex(slug, m.digests[slug]);
+      if (signed) return { ok: true, digests: [index, signed], amd64: signed };
+      return ofIndex(slug, index);
     },
   };
 }
@@ -393,6 +419,21 @@ describe("runUpgraderJob", () => {
     ]);
   });
 
+  it("#1328: a target manifest without an MCP-Auth-Proxy image stops before anything changes", async () => {
+    const { "mcp-auth-proxy": _none, ...digests } = MANIFEST.digests;
+    const { deps, order, q, written } = setup({
+      manifest: { ok: true, manifest: { ...MANIFEST, digests } },
+    });
+    const r = await runUpgraderJob(deps);
+    expect(r.status).toBe("failed");
+    expect(q.end()?.codes).toEqual(["manifest"]);
+    expect(q.end()?.reason).toContain("names no mcp-auth-proxy image");
+    expect(order.some((l) => l.startsWith("gcloud sql backups create"))).toBe(false);
+    expect(order.some((l) => l.startsWith("migrate "))).toBe(false);
+    expect(order.some((l) => l.startsWith("gcloud run services update"))).toBe(false);
+    expect(written).toEqual([]);
+  });
+
   it("#815: decides first, locks right before the backup, holds the lock to the end", async () => {
     const ok = setup();
     await runUpgraderJob(ok.deps);
@@ -429,6 +470,7 @@ describe("runUpgraderJob", () => {
         "iam projects/acme/serviceAccounts/caelo-production-audit@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-capture@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-gateway-sa@acme.iam.gserviceaccount.com",
+        "iam projects/acme/serviceAccounts/caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-run-sa@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-upgrader@acme.iam.gserviceaccount.com",
         "iam projects/caelo-website/locations/europe-west1/repositories/caelo-cms-images",
@@ -616,12 +658,21 @@ describe("runUpgraderJob", () => {
 
   it("a revision deployed by tag matches by the digest Cloud Run resolved", async () => {
     const { deps, written } = setup({
-      meta: { ...META, imageDigests: { admin: P("1"), gateway: D("2") } },
+      meta: {
+        ...META,
+        imageDigests: { admin: P("1"), gateway: D("2"), "mcp-auth-proxy": D("3") },
+      },
       gcloud: [
         [
           /^run revisions describe (\S+)/,
           (l) =>
-            ok(l.includes("-admin-") ? revisionJson(null, P("1")) : revisionJson(D("2"), P("2"))),
+            ok(
+              l.includes("-admin-")
+                ? revisionJson(null, P("1"))
+                : l.includes(PROXY)
+                  ? revisionJson(D("3"), P("3"))
+                  : revisionJson(D("2"), P("2")),
+            ),
         ],
       ],
     });
@@ -664,14 +715,20 @@ describe("runUpgraderJob", () => {
 
   it("#815: drift + a stop verdict: the records are corrected under the lock, the verdict stands", async () => {
     const drift = {
-      meta: { ...META, imageDigests: { admin: D("9"), gateway: D("2") }, infraContractVersion: 1 },
+      meta: {
+        ...META,
+        imageDigests: { admin: D("9"), gateway: D("2"), "mcp-auth-proxy": D("3") },
+        infraContractVersion: 1,
+      },
       manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
     };
     const free = setup(drift);
     expect((await runUpgraderJob(free.deps)).status).toBe("needs_cloud_shell");
     expect(free.q.end()?.codes).toEqual(["infra-contract"]);
     expect(free.written).toEqual([
-      expect.objectContaining({ imageDigests: { admin: D("1"), gateway: D("2") } }),
+      expect.objectContaining({
+        imageDigests: { admin: D("1"), gateway: D("2"), "mcp-auth-proxy": D("3") },
+      }),
     ]);
     expect(free.order.indexOf("lock")).toBeGreaterThan(step(free.order, /^manifest 0\.11\.0/));
     expect(free.order).toContain("unlock");
@@ -814,7 +871,8 @@ describe("runUpgraderJob", () => {
     const servingPlatform = (admin: string, gateway: string): [RegExp, Answer] => [
       /^run revisions describe (\S+)/,
       (l) => {
-        const d = l.includes("-admin-") ? admin : gateway;
+        // The MCP-Auth-Proxy serves its recorded index D("3") throughout.
+        const d = l.includes("-admin-") ? admin : l.includes(PROXY) ? D("3") : gateway;
         return ok(revisionJson(d, d));
       },
     ];
@@ -824,12 +882,17 @@ describe("runUpgraderJob", () => {
       const v064 = {
         ...MANIFEST,
         version: "0.10.64",
-        digests: { admin: ADMIN_INDEX, gateway: GATEWAY_INDEX, ops: D("c") },
+        digests: {
+          admin: ADMIN_INDEX,
+          gateway: GATEWAY_INDEX,
+          ops: D("c"),
+          "mcp-auth-proxy": D("3"),
+        },
       };
       const { deps, q, written } = setup({
         meta: {
           ...META,
-          imageDigests: { admin: ADMIN_INDEX, gateway: GATEWAY_INDEX },
+          imageDigests: { admin: ADMIN_INDEX, gateway: GATEWAY_INDEX, "mcp-auth-proxy": D("3") },
           releaseVersion: "0.10.64",
         },
         manifests: { "0.10.64": { ok: true, manifest: v064 } },
@@ -839,7 +902,7 @@ describe("runUpgraderJob", () => {
       expect((await runUpgraderJob(deps)).status).toBe("succeeded");
       expect(written[0]).toMatchObject({
         releaseVersion: "0.10.64",
-        imageDigests: { admin: ADMIN_INDEX, gateway: GATEWAY_INDEX },
+        imageDigests: { admin: ADMIN_INDEX, gateway: GATEWAY_INDEX, "mcp-auth-proxy": D("3") },
         platformDigests: { admin: ADMIN_AMD64, gateway: GATEWAY_AMD64 },
       });
       expect(q.events.some((e) => e.message.startsWith("0.10.64 → 0.11.0"))).toBe(true);
@@ -861,6 +924,7 @@ describe("runUpgraderJob", () => {
       expect(order.filter((l) => l.startsWith("index "))).toEqual([
         `index admin@${D("a")}`,
         `index gateway@${D("b")}`,
+        `index mcp-auth-proxy@${D("d")}`,
       ]);
       expect(q.events.some((e) => e.message.includes("refreshed its install records"))).toBe(false);
     });
@@ -868,14 +932,14 @@ describe("runUpgraderJob", () => {
     it("the roll records the new release's platform forms, signed ones first", async () => {
       const signed = {
         ...MANIFEST,
-        platformDigests: { admin: P("x"), gateway: P("y"), ops: P("z") },
+        platformDigests: { admin: P("x"), gateway: P("y"), ops: P("z"), "mcp-auth-proxy": P("w") },
       };
       const { deps, order, written } = setup({ manifest: { ok: true, manifest: signed } });
       expect((await runUpgraderJob(deps)).status).toBe("succeeded");
       expect(written.at(-1)).toMatchObject({
         releaseVersion: "0.11.0",
-        imageDigests: { admin: D("a"), gateway: D("b") },
-        platformDigests: { admin: P("x"), gateway: P("y") },
+        imageDigests: { admin: D("a"), gateway: D("b"), "mcp-auth-proxy": D("d") },
+        platformDigests: { admin: P("x"), gateway: P("y"), "mcp-auth-proxy": P("w") },
       });
       expect(order.some((l) => l.startsWith("index "))).toBe(false);
     });
@@ -886,7 +950,11 @@ describe("runUpgraderJob", () => {
         imageForms: "down",
       });
       expect((await runUpgraderJob(deps)).status).toBe("succeeded");
-      expect(written.at(-1)?.imageDigests).toEqual({ admin: D("a"), gateway: D("b") });
+      expect(written.at(-1)?.imageDigests).toEqual({
+        admin: D("a"),
+        gateway: D("b"),
+        "mcp-auth-proxy": D("d"),
+      });
       expect(written.at(-1)?.platformDigests).toBeUndefined();
       expect(q.events.some((e) => e.level === "warn" && e.message.includes("linux/amd64"))).toBe(
         true,
@@ -995,7 +1063,9 @@ describe("runUpgraderJob", () => {
       manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
     });
     expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
-    expect(q.end()?.reason).toContain("The admin serves v0.10.45's image, the gateway does not");
+    expect(q.end()?.reason).toContain(
+      "The admin and the MCP-Auth-Proxy serve v0.10.45's image, the gateway does not",
+    );
     expect(written).toEqual([]);
   });
 
@@ -1021,8 +1091,12 @@ describe("runUpgraderJob", () => {
     expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
     const end = q.end();
     expect(end?.codes).toEqual(["install-state-drift"]);
-    expect(end?.reason).toContain("The gateway serves v0.10.45's image, the admin does not");
-    expect(end?.reason).toContain("the admin serves v0.10.44's image, the gateway does not");
+    expect(end?.reason).toContain(
+      "The gateway and the MCP-Auth-Proxy serve v0.10.45's image, the admin does not",
+    );
+    expect(end?.reason).toContain(
+      "the admin and the MCP-Auth-Proxy serve v0.10.44's image, the gateway does not",
+    );
     expect(written).toEqual([]);
   });
 
