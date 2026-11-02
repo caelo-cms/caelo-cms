@@ -151,7 +151,9 @@ async function captchaProof(): Promise<{ _caelo_captcha: { challenge: string; no
  * The gateway sits behind one proxy (self-hosted Caddy), which sets
  * X-Forwarded-For to the visitor's address (api-gateway client-ip.ts).
  */
-const BEHIND_CADDY = { "X-Forwarded-For": "203.0.113.10" };
+// #1326 — the gateway takes plugin posts only from a live site origin the
+// admin published; `localhost` is registered as a public domain below.
+const BEHIND_CADDY = { "X-Forwarded-For": "203.0.113.10", Origin: "https://localhost" };
 
 beforeAll(async () => {
   process.env.CAELO_TRUSTED_PROXY_HOPS = "1";
@@ -170,6 +172,16 @@ beforeAll(async () => {
   setGatewayAdapter(gatewayAdapter);
   // One hex digit keeps the proofs cheap to compute.
   savedCaptcha = await captchaSettings({ provider: "pow", prefix: "0" });
+  const admin = new SQL(ADMIN_URL as string);
+  try {
+    await admin.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`INSERT INTO domains (hostname, kind) VALUES ('localhost', 'public')
+               ON CONFLICT (hostname) DO NOTHING`;
+    });
+  } finally {
+    await admin.end();
+  }
   await publishProjectionOnce(adapter, { declarations: new Map(), comments: false });
   invalidateGatewaySettings();
 });
@@ -381,20 +393,30 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
 
   it("submit refuses unknown form slug", async () => {
     await bootstrapForms();
-    const r = await handleRequest(
-      new Request("http://localhost/api/plugin/forms/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...BEHIND_CADDY },
-        body: JSON.stringify({
-          formSlug: "no-such-form",
-          data: { x: 1 },
-          ...(await captchaProof()),
+    const proof = await captchaProof();
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    };
+    let r: Response;
+    try {
+      r = await handleRequest(
+        new Request("http://localhost/api/plugin/forms/submit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...BEHIND_CADDY },
+          body: JSON.stringify({ formSlug: "no-such-form", data: { x: 1 }, ...proof }),
         }),
-      }),
-    );
+      );
+    } finally {
+      console.error = original;
+    }
     expect(r.status).toBe(500); // OperationFailed surfaced as 500
-    const body = (await r.json()) as { ok: boolean; error: { kind: string; message: string } };
-    expect(body.error.message).toContain("no form with slug");
+    // #1326 — the visitor gets the kind and the request id; the plugin's
+    // message is in the gateway log under that id.
+    const body = (await r.json()) as { ok: boolean; error: { kind: string; requestId: string } };
+    expect(Object.keys(body.error).sort()).toEqual(["kind", "requestId"]);
+    expect(logged.join("\n")).toContain("no form with slug");
   });
 
   it("cross-plugin isolation: another plugin can't read forms data", async () => {
