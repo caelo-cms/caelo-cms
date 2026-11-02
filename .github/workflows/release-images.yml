@@ -305,9 +305,15 @@ jobs:
           # 1. Plugins: every shipped plugin verifies and the Deno sandbox
           #    runs a probe — no database needed.
           docker run --rm "${IMAGE}" apps/api-gateway/dist/image-self-check.js
-          # 2. Boot against a migrated database, the way an install runs it.
+          # 2. Boot against a migrated database, the way an install runs it:
+          #    over TLS with verify-full (#1338). The database gets a server
+          #    certificate for `postgres` from the self-hosted installer's own
+          #    CA code, and the gateway verifies it against that CA.
+          bun install --frozen-lockfile
+          TLS_DIR="$(mktemp -d)"
+          bun -e 'const m = await import("./packages/provisioning/src/self-hosted-db-tls.ts"); m.ensureSelfHostedDbTls(process.argv[1]);' "${TLS_DIR}"
           docker network create gw-smoke
-          docker run -d --name gw-smoke-pg --network gw-smoke -p 5432:5432 \
+          docker run -d --name gw-smoke-pg --network gw-smoke --network-alias postgres -p 5432:5432 \
             -e POSTGRES_USER -e POSTGRES_PASSWORD -e POSTGRES_DB \
             postgres:17-alpine
           for i in $(seq 1 90); do
@@ -315,13 +321,23 @@ jobs:
             sleep 1
           done
           docker exec gw-smoke-pg pg_isready -h 127.0.0.1 -U "${POSTGRES_USER}"
-          bun install --frozen-lockfile
+          # Postgres refuses a key it does not own: copy the pair in, then
+          # switch TLS on (a reload is enough for ssl since PostgreSQL 10).
+          docker cp "${TLS_DIR}/postgres-tls/server.crt" gw-smoke-pg:/var/lib/postgresql/server.crt
+          docker cp "${TLS_DIR}/postgres-tls/server.key" gw-smoke-pg:/var/lib/postgresql/server.key
+          docker exec gw-smoke-pg sh -c 'chown postgres:postgres /var/lib/postgresql/server.crt /var/lib/postgresql/server.key && chmod 600 /var/lib/postgresql/server.key'
+          docker exec gw-smoke-pg psql -U "${POSTGRES_USER}" -d postgres \
+            -c "ALTER SYSTEM SET ssl_cert_file = '/var/lib/postgresql/server.crt'" \
+            -c "ALTER SYSTEM SET ssl_key_file = '/var/lib/postgresql/server.key'" \
+            -c "ALTER SYSTEM SET ssl = 'on'" \
+            -c "SELECT pg_reload_conf()"
           chmod +x packages/migrations/src/bootstrap.sh
           packages/migrations/src/bootstrap.sh
           bun run db:migrate
           docker run -d --name gw-smoke --network gw-smoke -p 8090:8080 \
             -e PORT=8080 -e CAELO_TRUSTED_PROXY_HOPS=0 \
-            -e PUBLIC_DATABASE_URL=postgres://public_role:caelo_public_ci@gw-smoke-pg:5432/cms_public \
+            -v "${TLS_DIR}/postgres-tls/ca.crt:/etc/caelo/smoke-db-ca.crt:ro" \
+            -e "PUBLIC_DATABASE_URL=postgres://public_role:caelo_public_ci@postgres:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/smoke-db-ca.crt" \
             "${IMAGE}"
           ok=""
           for i in $(seq 1 30); do
