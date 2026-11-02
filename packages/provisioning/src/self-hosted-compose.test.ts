@@ -22,6 +22,7 @@ const base: Omit<ComposeSpec, "images"> = {
   postgresPassword: "pgpw",
   rolePasswords: { admin: "adminpw", public: "publicpw" },
   caeloSecretKek: "0".repeat(64),
+  dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
   internalSecret: "i".repeat(48),
   anthropicApiKey: "sk-ant-x",
   diskSize: "20Gi",
@@ -53,6 +54,7 @@ describe("self-hosted Compose — internal secret (#770)", () => {
     expect(() =>
       generateDockerCompose({
         ...base,
+        dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
         internalSecret: "short",
         images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
       }),
@@ -92,6 +94,26 @@ describe("self-hosted Compose — connection budget (#1254)", () => {
     expect(service(yaml, "caelo-admin")).toContain('      CAELO_DB_PUBLIC_POOL_MAX: "4"');
     expect(service(yaml, "caelo-gateway")).toContain('      CAELO_DB_PUBLIC_POOL_MAX: "2"');
     expect(service(yaml, "caelo-gateway")).not.toContain("CAELO_DB_POOL_MAX:");
+  });
+});
+
+describe("self-hosted Compose — database certificate renewal (#1338)", () => {
+  const render = (digest: string) =>
+    generateDockerCompose({
+      ...base,
+      dbTlsServerCertSha256: digest,
+      images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+    });
+
+  it("carries the server certificate's digest on Postgres, so a renewal recreates it", () => {
+    const before = service(render("a".repeat(64)), "postgres");
+    const after = service(render("c".repeat(64)), "postgres");
+    expect(before).toContain(`CAELO_DB_TLS_SERVER_CERT_SHA256: "${"a".repeat(64)}"`);
+    expect(after).not.toBe(before);
+  });
+
+  it("refuses a value that is no SHA-256 digest", () => {
+    expect(() => render("not-a-digest")).toThrow("dbTlsServerCertSha256");
   });
 });
 

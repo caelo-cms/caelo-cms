@@ -35,18 +35,25 @@ export interface HealthAdapter {
 /** Per-client throttle of the deep check (one per gateway instance). */
 const deepLimiter = new MemoryRateLimiter(DEEP_HEALTH_MEMORY_LIMIT);
 
-/**
- * Answer a health request; `adapter` is null until the gateway bootstrapped.
- *
- * @param client the caller's rate-limit address (client-ip.ts), which the
- *   deep check is throttled by; null only when the address is unknown,
- *   where the deep check is refused rather than left unthrottled.
- */
+/** Who asks, for the deep check's throttle and the error answer. */
+export interface HealthRequest {
+  /**
+   * The caller's rate-limit address (client-ip.ts), which the deep check is
+   * throttled by; null only when the address is unknown, where the deep
+   * check is refused rather than left unthrottled.
+   */
+  readonly client: string | null;
+  /** The request id an error answer carries (body and `X-Request-Id`, #1326). */
+  readonly requestId: string;
+  /** The deep check's throttle; one per gateway instance unless a test passes its own. */
+  readonly limiter?: MemoryRateLimiter;
+}
+
+/** Answer a health request; `adapter` is null until the gateway bootstrapped. */
 export async function gatewayHealth(
   url: URL,
   adapter: HealthAdapter | null,
-  client: string | null,
-  limiter: MemoryRateLimiter = deepLimiter,
+  request: HealthRequest,
 ): Promise<Response> {
   const answer = (status: number, body: unknown, extra: Record<string, string> = {}) =>
     new Response(JSON.stringify(body), {
@@ -58,23 +65,26 @@ export async function gatewayHealth(
         ...extra,
       },
     });
-  if (url.searchParams.get("deep") !== "1") return answer(200, { ok: true });
-  const take = client === null ? null : limiter.take(client);
-  if (!take?.allowed) {
-    return answer(
-      429,
-      { ok: false, error: { kind: "RateLimited" } },
-      {
-        "Retry-After": String(take?.retryAfterSec ?? 60),
-      },
+  const failure = (status: number, kind: string, extra: Record<string, string> = {}) =>
+    answer(
+      status,
+      { ok: false, error: { kind, requestId: request.requestId } },
+      { "X-Request-Id": request.requestId, ...extra },
     );
+  if (url.searchParams.get("deep") !== "1") return answer(200, { ok: true });
+  const limiter = request.limiter ?? deepLimiter;
+  const take = request.client === null ? null : limiter.take(request.client);
+  if (!take?.allowed) {
+    return failure(429, "RateLimited", { "Retry-After": String(take?.retryAfterSec ?? 60) });
   }
-  if (!adapter) return answer(503, { ok: false, error: { kind: "NotBootstrapped" } });
+  if (!adapter) return failure(503, "NotBootstrapped");
   try {
     await adapter.verifyRoles();
   } catch (e) {
-    console.error(`[api-gateway] health: ${e instanceof Error ? e.message : String(e)}`);
-    return answer(503, { ok: false, error: { kind: "DbUnreachable" } });
+    console.error(
+      `[api-gateway] request ${request.requestId}: health — ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return failure(503, "DbUnreachable");
   }
   return answer(200, { ok: true });
 }

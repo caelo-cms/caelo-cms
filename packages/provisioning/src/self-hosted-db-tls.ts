@@ -25,6 +25,7 @@
  */
 
 import {
+  createHash,
   createPrivateKey,
   generateKeyPairSync,
   type KeyObject,
@@ -271,4 +272,16 @@ export function ensureSelfHostedDbTls(caeloDir: string, now: Date = new Date()):
   write("serverKey", issued.serverKey);
   done.push(`re-issued the database server certificate (${problem ?? "its key was missing"})`);
   return done;
+}
+
+/**
+ * SHA-256 (hex) of the install's database server certificate, which the
+ * Compose file carries on the Postgres service so a renewed certificate
+ * recreates it (compose.ts `dbTlsServerCertSha256`).
+ *
+ * @throws when the certificate is missing: call {@link ensureSelfHostedDbTls} first.
+ */
+export function selfHostedDbTlsServerCertSha256(caeloDir: string): string {
+  const cert = readFileSync(join(caeloDir, SELF_HOSTED_TLS_DIR, SELF_HOSTED_TLS_FILES.serverCert));
+  return createHash("sha256").update(cert).digest("hex");
 }

@@ -10,6 +10,9 @@
  * (migration 0500), one per UTC day, so every gateway instance hashes an
  * address alike and their buckets agree:
  *
+ *   - RLS allows minting only for the database's today or tomorrow, never
+ *     a past day (a planted back-dated key would keep that day's hashes
+ *     reversible);
  *   - the first instance that needs today's key mints it (32 random bytes,
  *     `INSERT … ON CONFLICT DO NOTHING`) and every instance then reads the
  *     one that won;
@@ -76,13 +79,19 @@ export function ipHashKeys(adapter: DatabaseAdapter, now: () => number = Date.no
 async function loadOrMint(adapter: DatabaseAdapter, epoch: number): Promise<Uint8Array> {
   const candidate = crypto.getRandomValues(new Uint8Array(32));
   const rows = await adapter.withPublicTransaction(SYSTEM_CTX, async (tx) => {
+    // Never a day before the database's own: the mint policy refuses a
+    // back-dated key, so an instance whose clock lags at midnight uses
+    // the database's today rather than failing.
+    const [day] = (await tx.execute(sql`
+      SELECT GREATEST(${epoch}::int, floor(extract(epoch FROM now()) / 86400)::int) AS day
+    `)) as unknown as { day: number }[];
     await tx.execute(sql`
       INSERT INTO gateway_ip_hash_keys (epoch, key)
-      VALUES (${epoch}, decode(${Buffer.from(candidate).toString("hex")}, 'hex'))
+      VALUES (${day?.day}, decode(${Buffer.from(candidate).toString("hex")}, 'hex'))
       ON CONFLICT (epoch) DO NOTHING
     `);
     return (await tx.execute(sql`
-      SELECT encode(key, 'hex') AS key FROM gateway_ip_hash_keys WHERE epoch = ${epoch}
+      SELECT encode(key, 'hex') AS key FROM gateway_ip_hash_keys WHERE epoch = ${day?.day}
     `)) as unknown as { key: string }[];
   });
   const hex = rows[0]?.key;

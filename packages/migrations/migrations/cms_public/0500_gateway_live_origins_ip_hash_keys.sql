@@ -48,12 +48,14 @@ ALTER TABLE gateway_ip_hash_keys FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS gateway_ip_hash_keys_read ON gateway_ip_hash_keys;
 CREATE POLICY gateway_ip_hash_keys_read ON gateway_ip_hash_keys
   FOR SELECT TO public_role USING (true);
--- A key may be minted only for today or tomorrow (clock skew between
--- instances at midnight), never back-dated or far ahead.
+-- A key may be minted only for the database's today or tomorrow (an
+-- instance whose clock runs ahead at midnight), never back-dated: a planted
+-- key for a past day would keep that day's hashes reversible. An instance
+-- whose clock lags mints for the database's today instead (ip-hash-key.ts).
 DROP POLICY IF EXISTS gateway_ip_hash_keys_mint ON gateway_ip_hash_keys;
 CREATE POLICY gateway_ip_hash_keys_mint ON gateway_ip_hash_keys
   FOR INSERT TO public_role
-  WITH CHECK (epoch BETWEEN floor(extract(epoch FROM now()) / 86400)::int - 1
+  WITH CHECK (epoch BETWEEN floor(extract(epoch FROM now()) / 86400)::int
                         AND floor(extract(epoch FROM now()) / 86400)::int + 1);
 -- Only a key whose day ended at least two days ago may be deleted.
 DROP POLICY IF EXISTS gateway_ip_hash_keys_gc ON gateway_ip_hash_keys;

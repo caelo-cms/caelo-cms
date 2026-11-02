@@ -75,7 +75,7 @@ import {
 } from "./compose.js";
 import { tightenPrivateTree, writePrivateFile } from "./private-file.js";
 import { selfCommand } from "./self-command.js";
-import { ensureSelfHostedDbTls } from "./self-hosted-db-tls.js";
+import { ensureSelfHostedDbTls, selfHostedDbTlsServerCertSha256 } from "./self-hosted-db-tls.js";
 import { ensureInternalSecret, writeInternalSecret } from "./self-hosted-internal-secret.js";
 import {
   bunHostRunner,
@@ -356,6 +356,7 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
     caeloSecretKek: cfg.caeloSecretKek,
     // #770 — every render (up, upgrade, agent apply) hands the admin the
     // secret host-side commands sign their /api/internal/* tokens with.
+    dbTlsServerCertSha256: selfHostedDbTlsServerCertSha256(CAELO_DIR),
     internalSecret: ensureInternalSecret(CAELO_DIR, {
       randomSecret: () => randomSecret(48),
       report: (line) => console.log(line),

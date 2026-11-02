@@ -30,6 +30,7 @@ describe("database URL builders (#1338)", () => {
       postgresPassword: "superpw",
       rolePasswords: { admin: "adminpw", public: "publicpw" },
       caeloSecretKek: "0".repeat(64),
+      dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
       diskSize: "20Gi",
       images: {

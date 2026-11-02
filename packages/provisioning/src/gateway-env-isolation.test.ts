@@ -136,6 +136,7 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
       postgresPassword: "superpw",
       rolePasswords: { admin: "adminpw", public: "publicpw" },
       caeloSecretKek: "0".repeat(64),
+      dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
       diskSize: "20Gi",
       images: {

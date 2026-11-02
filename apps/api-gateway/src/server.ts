@@ -603,7 +603,18 @@ export async function handleRequest(
 ): Promise<Response> {
   // Every JSON answer carries the security headers (#1326), also the ones
   // the staging proxy and the remote-MCP router build themselves.
-  return withJsonSecurityHeaders(await routeRequest(req, conn, crypto.randomUUID()));
+  const requestId = crypto.randomUUID();
+  try {
+    return withJsonSecurityHeaders(await routeRequest(req, conn, requestId));
+  } catch (e) {
+    // The last boundary: a database failure in the rate limit, the captcha
+    // or the request pipeline is still answered in the visitor error shape,
+    // with the details in the log under the request id — never as Bun's
+    // generic 500 or the exception's text.
+    return errorResponse("ServiceUnavailable", 503, requestId, {
+      log: `unhandled: ${describeFailure(e)}`,
+    });
+  }
 }
 
 async function routeRequest(
@@ -655,7 +666,7 @@ async function routeRequest(
       if (!address.ok) return address.response;
       client = rateLimitAddress(address.value);
     }
-    return gatewayHealth(url, cachedAdapter, client);
+    return gatewayHealth(url, cachedAdapter, { client, requestId });
   }
 
   // #806 — before the database-backed pipeline: remote MCP needs neither

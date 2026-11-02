@@ -52,8 +52,14 @@ describe("gateway IP-hash keys (#1338)", () => {
     );
   });
 
-  it("refuses a back-dated key, so nobody can plant one for hashes already stored", async () => {
-    const epoch = ipHashKeyEpoch(Date.now()) - 5;
+  it("an instance whose clock lags a day uses the database's today, not a back-dated key", async () => {
+    const today = await ipHashKeys(adapter).current();
+    const lagging = await ipHashKeys(adapter, () => Date.now() - DAY).current();
+    expect(Buffer.from(lagging).equals(Buffer.from(today))).toBe(true);
+  });
+
+  it("refuses a back-dated key, even yesterday's, so nobody can plant one for hashes already stored", async () => {
+    const epoch = ipHashKeyEpoch(Date.now()) - 1;
     await expect(
       adapter.withPublicTransaction(
         { actorId: "00000000-0000-0000-0000-00000000ffff", actorKind: "system", requestId: "t" },
