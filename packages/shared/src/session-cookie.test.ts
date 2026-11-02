@@ -60,10 +60,12 @@ describe("__session container (#1343)", () => {
         ["login", "notanumber.abc"],
         ["Bad-Key", `${NOW + 9}.x`],
         ["staging", `${NOW + 9}.has space`],
-        ["ok", `${NOW + 9}.fine`],
+        ["vid", `${NOW + 9}.fine`],
+        ["vid", `${NOW + 9}.repeated`],
       ]).toString(),
     );
-    expect([...readSessionCookie(`__session=${value}`, NOW).keys()]).toEqual(["ok"]);
+    const read = readSessionCookie(`__session=${value}`, NOW);
+    expect([...read]).toEqual([["vid", { value: "fine", expiresAt: NOW + 9 }]]);
     expect(readSessionCookie("__session=%E0%A4%A", NOW).size).toBe(0);
     expect(readSessionCookie("caelo_visitor_id=x", NOW).size).toBe(0);
     expect(readSessionCookie(null, NOW).size).toBe(0);
@@ -73,8 +75,22 @@ describe("__session container (#1343)", () => {
     expect(() => sessionCookieValue(entries({ vid: { value: "a;b", expiresAt: NOW } }))).toThrow(
       "invalid value",
     );
-    expect(() => sessionCookieValue(entries({ "x-y": { value: "a", expiresAt: NOW } }))).toThrow(
-      "invalid entry key",
+    expect(() => sessionCookieValue(entries({ other: { value: "a", expiresAt: NOW } }))).toThrow(
+      "unknown entry key",
     );
+  });
+
+  it("holds only the known owners' keys, so no visitor input can grow it (PR #1354 review)", () => {
+    const crafted = new URLSearchParams(
+      Array.from({ length: 20 }, (_, i) => [`k${i}`, `${NOW + 9}.x`] as [string, string]),
+    );
+    crafted.append("login", `${NOW + 9}.kept`);
+    const read = readSessionCookie(`__session=${encodeURIComponent(crafted.toString())}`, NOW);
+    expect([...read.keys()]).toEqual(["login"]);
+    // A gateway write on top of the full known set still serialises.
+    const all = new Map(read);
+    all.set("vid", { value: "v", expiresAt: NOW + 9 });
+    all.set("staging", { value: "s", expiresAt: NOW + 9 });
+    expect(() => sessionCookieValue(all)).not.toThrow();
   });
 });

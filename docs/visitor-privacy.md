@@ -25,6 +25,7 @@ Rules for anyone who writes the cookie:
 
 - Keep every entry you received and did not mean to change. Entries of different owners share the cookie, so dropping one you do not own logs a visitor out or loses their staging access.
 - Every value carries its own integrity check, made and checked by its owner. The container is not signed: `expiresAt` only sets the browser's Max-Age and lets the reader drop an entry early, which a client could do anyway.
+- Only the keys in `SESSION_ENTRY` exist. An unknown key in a request is dropped on read, so visitor input cannot grow the container; a new owner adds its key there first.
 - The cookie's Max-Age follows its longest-lived entry. When no entry is left the cookie is expired.
 
 The gateway's side is `apps/api-gateway/src/gateway-cookies.ts`. It writes the cookie only when one of its entries changed in that request, so most responses carry no `Set-Cookie`. Two requests in flight at once can still race: each writes the container it read plus its own change, and the later response wins. That needs a login and a first visitor-id mint at the same moment, and costs either the new id (minted again on the next call) or the new login.

@@ -61,10 +61,15 @@ export interface SessionEntry {
 /** Entries by key, as {@link readSessionCookie} returns them. */
 export type SessionEntries = ReadonlyMap<string, SessionEntry>;
 
-const ENTRY_KEY = /^[a-z][a-z0-9_]{0,15}$/;
+/**
+ * The only keys the container holds. An unknown key is visitor input with
+ * no owner: reading leaves it out, so the container never grows past these
+ * three and a gateway write can never overflow it (PR #1354 review). A new
+ * owner adds its key to {@link SESSION_ENTRY}.
+ */
+const KNOWN_KEYS: ReadonlySet<string> = new Set(Object.values(SESSION_ENTRY));
 /** Values the entries' owners write: signed tokens, no separators of ours. */
 const ENTRY_VALUE = /^[A-Za-z0-9._~-]{1,512}$/;
-const MAX_ENTRIES = 8;
 
 /** The raw `__session` value of a `Cookie` header, or null. */
 function rawSessionCookie(cookieHeader: string | null): string | null {
@@ -81,10 +86,10 @@ function rawSessionCookie(cookieHeader: string | null): string | null {
 /**
  * Parse the request's `__session` container.
  *
- * Visitor-controlled input: a malformed container, entry, key or value is
- * left out rather than failing the request, and an entry past its
- * `expiresAt` is left out too. The caller still verifies each value it
- * uses.
+ * Visitor-controlled input: a malformed container, entry or value, a key
+ * not in {@link SESSION_ENTRY} and a repeated key are left out rather than
+ * failing the request, and an entry past its `expiresAt` is left out too.
+ * The caller still verifies each value it uses.
  *
  * @param cookieHeader the request's `Cookie` header.
  * @param nowSeconds the current time, unix seconds.
@@ -100,8 +105,7 @@ export function readSessionCookie(cookieHeader: string | null, nowSeconds: numbe
     return out;
   }
   for (const [key, entry] of new URLSearchParams(decoded)) {
-    if (out.size >= MAX_ENTRIES) break;
-    if (!ENTRY_KEY.test(key) || out.has(key)) continue;
+    if (!KNOWN_KEYS.has(key) || out.has(key)) continue;
     const dot = entry.indexOf(".");
     const expRaw = entry.slice(0, dot);
     const value = entry.slice(dot + 1);
@@ -122,15 +126,12 @@ export function readSessionCookie(cookieHeader: string | null, nowSeconds: numbe
 export function sessionCookieValue(entries: SessionEntries): string {
   const params = new URLSearchParams();
   for (const [key, e] of [...entries].sort(([a], [b]) => a.localeCompare(b))) {
-    if (!ENTRY_KEY.test(key)) throw new Error(`session cookie: invalid entry key "${key}"`);
+    if (!KNOWN_KEYS.has(key)) throw new Error(`session cookie: unknown entry key "${key}"`);
     if (!ENTRY_VALUE.test(e.value)) throw new Error(`session cookie: invalid value for "${key}"`);
     if (!Number.isInteger(e.expiresAt) || e.expiresAt <= 0) {
       throw new Error(`session cookie: invalid expiresAt for "${key}"`);
     }
     params.append(key, `${e.expiresAt}.${e.value}`);
-  }
-  if ([...params.keys()].length > MAX_ENTRIES) {
-    throw new Error(`session cookie: more than ${MAX_ENTRIES} entries`);
   }
   return encodeURIComponent(params.toString());
 }

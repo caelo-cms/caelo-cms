@@ -12,9 +12,10 @@
  *   - `vid`   the visitor id, only with the visitor's consent (visitor.ts)
  *   - `login` the visitor's login session (the auth plugin's setSession)
  *
- * Any other entry that arrives (the staging gate's, E13 (a)) is kept as it
- * came: the gateway rewrites the container whenever its own entries
- * change, and must never drop another owner's.
+ * The other known entry (the staging gate's, E13 (a)) is kept as it came:
+ * the gateway rewrites the container whenever its own entries change, and
+ * must never drop another owner's. Keys no owner declared never survive
+ * the read, so a crafted cookie cannot grow the container.
  *
  * ## Cookies from before the container
  *
