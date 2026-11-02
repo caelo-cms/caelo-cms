@@ -82,9 +82,14 @@ An AI-facing error is complete and patchable:
 A failed write call whose error meets the bar above is **kept**: its
 normalized arguments ride its `chat_tool_results` row (`args`, migration
 0449), and its result ends with "Fix with `retry_tool_call({toolCallId:…,
-set:[…]})` … or resend." The AI then sends a patch — `set`, `remove`, or
-`replace` (exact text inside one string, must match once) at the same
-segment paths the `errors[]` name — instead of the whole call again.
+set:[…]})` — also after the calls the error asks for first … resend only
+when inputs the errors do not name must change." The AI then sends a
+patch — `set`, `remove`, or `replace` (exact text inside one string, must
+match once) at the same segment paths the `errors[]` name — instead of
+the whole call again. This notice is the one AI-facing text that names a
+resend, and only as the exception: offered as an equal choice ("… or
+resend"), the AI resent a whole page after creating the page type the
+error asked for (v0.11.9 release gate, `scenario-retry-tool-call`).
 
 - **Which failures** (`ai/tools/_retry-keep.ts`, from the structure, never
   the text): `InvalidArguments`, `ValidationFailed`, `Conflict` (a
