@@ -13,7 +13,7 @@
 
 FROM denoland/deno:bin-2.9.8 AS deno
 
-FROM node:26.12.1-bookworm-slim AS node
+FROM node:26.13.0-bookworm-slim AS node
 
 FROM oven/bun:1.4.4 AS builder
 
