@@ -155,7 +155,7 @@ lockstep; `scripts/font-license-exception.test.ts` guards the font rule.
   add another font, add it to both lists.
 - **LGPL-3.0-or-later, `@img/sharp-libvips-*` only** (#794): the prebuilt
   libvips that `sharp` loads at runtime as a separate shared library. The admin
-  and gateway images redistribute it, so their Dockerfiles run
+  image redistributes it, so its Dockerfile runs
   `scripts/libvips-notice.ts` against the final `/app` tree to write
   `/app/THIRD_PARTY_NOTICES.txt` (package and bundled library versions, the
   `lovell/sharp-libvips` release for corresponding source, and the LGPL-3.0 and

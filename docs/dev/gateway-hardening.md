@@ -20,7 +20,7 @@ An invented slug or operation therefore never creates a rate-limit bucket, a req
 
 ### Why a per-operation budget
 
-On gcp-firebase the only `X-Forwarded-For` entry nobody can forge is the one Cloud Run appends, and that is a Google front-end proxy that changes per request (measured in #1325, see `docs/dev/firebase-hosting-behaviour.md` from that change). Per-client buckets there are close to one bucket per request. The per-operation budget is what bounds a flood from many addresses. It is per instance; Cloud Run runs at most `gatewayMaxInstances` of them.
+On gcp-firebase the only `X-Forwarded-For` entry nobody can forge is the one Cloud Run appends, and that is a Google front-end proxy that changes per request (measured in #1325, [firebase-hosting-behaviour.md](./firebase-hosting-behaviour.md)). Per-client buckets there are close to one bucket per request. The per-operation budget is what bounds a flood from many addresses. It is per instance; Cloud Run runs at most `gatewayMaxInstances` of them.
 
 ## Live origins
 

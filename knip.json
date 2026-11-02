@@ -40,7 +40,7 @@
       "entry": ["scripts/scan-media-alt.ts", "scripts/sign-tier1-manifest.ts"]
     },
     "apps/api-gateway": {
-      "entry": ["e2e/*.ts"]
+      "entry": ["e2e/*.ts", "image.ts", "src/image-self-check.ts"]
     },
     "packages/admin-core": {
       "entry": [

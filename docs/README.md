@@ -28,6 +28,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [dev/rls-and-the-planner.md](./dev/rls-and-the-planner.md) — how row-level security changes plans: write setting tests as `caelo_setting_is` / `caelo_setting_in` (a plain `current_setting(...) = 'x'` policy is estimated at 0.5 % of the rows), and why `ILIKE '%q%'` can never use an index under RLS (#1297).
 - [dev/public-admin-boundary.md](./dev/public-admin-boundary.md) — the public/admin boundary: the public side is assumed compromised.
 - [dev/database-tls.md](./dev/database-tls.md) — verify-full TLS to the database on every provider: hosts, CA bundles, the self-hosted CA, the upgrade path (#1338).
+- [dev/firebase-hosting-behaviour.md](./dev/firebase-hosting-behaviour.md) — what Firebase Hosting does to requests on their way to the gateway, measured on a live gcp-firebase install: only `__session` arrives, `X-Forwarded-For` and the client address, the 60 s rewrite cut and its GET retries, domain-mapping regions (#1325).
 - [dev/public-admin-read-paths.md](./dev/public-admin-read-paths.md) — every path where the admin reads `cms_public` data, and how each treats it as untrusted.
 - [dev/gateway-hardening.md](./dev/gateway-hardening.md) — the API gateway's own protection without a WAF: the input filter before the database, in-memory limits per client and per operation, live-origin rule, opaque errors, keyed IP hashes, database limits on `public_role`, batched GC (#1326, #1338).
 - [dev/mcp-access.md](./dev/mcp-access.md) — MCP access as one concept: token vs remote chat vs remote admin, who may use which, per-app connections, revoke/restore/block (#968).
@@ -61,6 +62,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 
 ## Releases and operations
 
+- [dev/service-images.md](./dev/service-images.md) — minimal service images (the gateway, #1327): a Bun bundle on a digest-pinned distroless base, non-root, no shell, allowlisted content, bundle SBOM and licences, the Trivy gate and boot smoke, and how to add one.
 - [dev/release-manifest.md](./dev/release-manifest.md) — the signed release manifest and the `caelo-ops` image.
 - [dev/upgrader-smoke.md](./dev/upgrader-smoke.md) — the real-GCP upgrader smoke test (release gate + post-install verify via Settings → Updates) and its one-time setup.
 - [maintainer-public-registry-setup.md](./maintainer-public-registry-setup.md) — one-time setup of the public image registry mirrors.

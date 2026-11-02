@@ -648,10 +648,12 @@ export const GATEWAY_TRUSTED_PROXY_HOPS: Readonly<Record<SupportedProvider, numb
   // ingress is internal-and-LB only, so nothing reaches it around the LB.
   gcp: 2,
   // Cloud Run's front end appends its peer. Behind the Firebase Hosting
-  // rewrite that peer is the Hosting CDN edge, and the entry Hosting adds
-  // before it cannot be told apart from a forged one (the service is
-  // invokable on *.run.app too) — so the edge address is the most that can
-  // be trusted. Staging (Cloud Run domain mapping) gets the visitor.
+  // rewrite that peer is a Google front-end proxy that changes per request,
+  // and the visitor entry Hosting writes before it cannot be told apart
+  // from a forged one (the service is invokable on *.run.app too) — so the
+  // proxy address is the most that can be trusted
+  // (docs/dev/firebase-hosting-behaviour.md). Staging (Cloud Run domain
+  // mapping) gets the visitor.
   "gcp-firebase": 1,
   // Caddy without `trusted_proxies` replaces the header with its peer; the
   // gateway is reachable only on the Compose network.
