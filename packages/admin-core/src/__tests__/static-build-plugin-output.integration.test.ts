@@ -339,9 +339,11 @@ describe("#605 — the published site carries every plugin's output", () => {
 
   it("the language switcher: the data list and the staticRender placeholder", () => {
     const about = published(`${PFX}about/index.html`);
-    expect(about).toContain(`<a href="${BASE}/de/${PFX}ueber-uns/" hreflang="de">Deutsch</a>`);
+    // By path, not `${BASE}/de/…`: the same build serves staging too.
+    expect(about).toContain(`<a href="/de/${PFX}ueber-uns/" hreflang="de">Deutsch</a>`);
     expect(about).toContain('<nav class="caelo-language-selector" aria-label="Language">');
-    expect(about).toContain(`href="${BASE}/de/${PFX}ueber-uns/" hreflang="de"`);
+    expect(about).toContain(`href="/de/${PFX}ueber-uns/" hreflang="de"`);
+    expect(about).not.toContain(`<a href="${BASE}/`);
   });
 
   it("#1220 — the bake cache is written over the build's own transaction", async () => {

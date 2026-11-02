@@ -13,6 +13,7 @@ import {
   encodeLocalePrefix,
   PREFIX_DEFAULT_LOCALE_ANNOTATION,
   prefixDefaultLocaleError,
+  switcherHref,
   type UrlLocale,
 } from "./url.js";
 
@@ -130,5 +131,25 @@ describe("defaultLocaleRootRedirect", () => {
       toPath: "/",
       statusCode: 301,
     });
+  });
+});
+
+describe("switcherHref", () => {
+  it("links a version on the page's own host by path, so staging links stay on staging", () => {
+    expect(
+      switcherHref("https://www.example.com/de/preise/", "https://www.example.com/pricing/"),
+    ).toBe("/de/preise/");
+    expect(switcherHref("https://example.com/en/?q=1#top", "https://example.com/")).toBe(
+      "/en/?q=1#top",
+    );
+  });
+
+  it("keeps the absolute URL of a version on another host (subdomain or domain locale)", () => {
+    expect(switcherHref("https://fr.example.com/prix", "https://example.com/pricing")).toBe(
+      "https://fr.example.com/prix",
+    );
+    expect(switcherHref("https://example.com/pricing", "https://fr.example.com/prix")).toBe(
+      "https://example.com/pricing",
+    );
   });
 });

@@ -99,6 +99,11 @@ The operator can hide an entry in one language on purpose
 - Skill `international-qa` says how to fix each finding.
 - `language_links` is a list source (`listSources`): entries
   `{ href: link, label, locale, is_current: boolean }`, id = locale code.
+  The switcher `href` (here and in the ready-made `staticRender` nav) is
+  the version's canonical URL by path when it is on the page's own host,
+  so one build links correctly on staging and live; a version on another
+  host (subdomain / domain locale) keeps its absolute URL. hreflang and
+  sitemap alternates are always absolute.
 - `editor_languages` answers the plugin's place in the live editor's
   toolbar (`editorToolbar`, `docs/plugin-editor-toolbar.md`): the shown
   page's language code, its other versions (each opens in the editor),

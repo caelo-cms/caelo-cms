@@ -142,6 +142,7 @@ import {
   encodeLocalePrefix,
   PREFIX_DEFAULT_LOCALE_ANNOTATION,
   prefixDefaultLocaleError,
+  switcherHref,
 } from "./url.js";
 
 export interface LocaleRow {
@@ -966,6 +967,45 @@ async function publishedVariantMatrix(
 }
 
 /**
+ * `matrix` as a language switcher links it: each version's href relative
+ * on the page's own host ({@link switcherHref}). A page's own URL comes
+ * from its matrix entry; a draft page has none (only published versions
+ * are listed), so its URL is resolved here.
+ */
+async function switcherMatrixOf(
+  ctx: unknown,
+  matrix: ReadonlyMap<string, readonly PublishedVariant[]>,
+  pageUrlStyle: PageUrlStyle,
+): Promise<Map<string, PublishedVariant[]>> {
+  const own = new Map<string, string>();
+  const unlisted: string[] = [];
+  for (const [pageId, variants] of matrix) {
+    const self = variants.find((v) => v.pageId === pageId);
+    if (self) own.set(pageId, self.href);
+    else unlisted.push(pageId);
+  }
+  for (const slice of chunked(unlisted)) {
+    const resolved = await cmsOf(ctx).call<{ urls: Record<string, string> }>(
+      "pages.resolve_public_urls",
+      { pageIds: slice, pageUrlStyle },
+    );
+    for (const [pageId, url] of Object.entries(resolved.urls)) own.set(pageId, url);
+  }
+  const out = new Map<string, PublishedVariant[]>();
+  for (const [pageId, variants] of matrix) {
+    const current = own.get(pageId);
+    if (current === undefined) {
+      throw new Error(`international-site: core resolved no public URL for page ${pageId}`);
+    }
+    out.set(
+      pageId,
+      variants.map((v) => ({ ...v, href: switcherHref(v.href, current) })),
+    );
+  }
+  return out;
+}
+
+/**
  * The matrix for `pageIds`, from the variant rows of those pages and of
  * their groups only (#1213): its cost follows the pages asked about, not
  * the site. It used to read every variant row (silently only the first
@@ -1390,7 +1430,13 @@ export default definePlugin<PluginContextTier1>({
      */
     language_links: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
-      const matrix = await publishedVariantMatrix(ctx, pageIds, pageUrlStyleOf(args));
+      const style = pageUrlStyleOf(args);
+      // Switcher links, not hreflang: relative on the page's own host.
+      const matrix = await switcherMatrixOf(
+        ctx,
+        await publishedVariantMatrix(ctx, pageIds, style),
+        style,
+      );
       const sources: Record<
         string,
         Record<string, Array<{ id: string; values: Record<string, unknown> }>>
@@ -2674,7 +2720,7 @@ export default definePlugin<PluginContextTier1>({
    */
   staticRender: async (ctx, { pageId, pageUrlStyle }) => {
     const matrix = await publishedVariantMatrix(ctx, [pageId], pageUrlStyle);
-    const variants = matrix.get(pageId);
+    const variants = (await switcherMatrixOf(ctx, matrix, pageUrlStyle)).get(pageId);
     if (!variants) return "";
     const items = variants
       .map((v) => {

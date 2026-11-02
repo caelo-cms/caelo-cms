@@ -101,3 +101,19 @@ export function defaultLocaleRootRedirect(defaultLocaleCode: string): {
 } {
   return { fromPath: `/${defaultLocaleCode}`, toPath: "/", statusCode: 301 };
 }
+
+/**
+ * The href a language switcher on the page at `currentUrl` uses for the
+ * version at `targetUrl` (both absolute, from core's URL builder). A
+ * version on the same host links by path: the same build then works on
+ * every host it is served from — staging, a preview, the live domain —
+ * instead of sending a staging visitor to production. A version on
+ * another host (a subdomain or domain locale) keeps its absolute URL,
+ * the only way to reach it. hreflang and sitemap alternates stay
+ * absolute; search engines require that.
+ */
+export function switcherHref(targetUrl: string, currentUrl: string): string {
+  const target = new URL(targetUrl);
+  if (target.origin !== new URL(currentUrl).origin) return targetUrl;
+  return `${target.pathname}${target.search}${target.hash}`;
+}

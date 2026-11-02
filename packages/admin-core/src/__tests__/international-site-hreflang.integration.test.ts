@@ -54,7 +54,7 @@ let registry: OperationRegistry;
 /**
  * The base URL is ambient config: `collectContributions` is TOLD the
  * base (it takes `siteBaseUrl`), but `staticRender` READS it from
- * `site_defaults.get_seo`. Asserting the selector's absolute hrefs
+ * `site_defaults.get_seo`. Asserting the hreflang hrefs
  * against a hardcoded BASE therefore only holds if the site happens to
  * be configured that way — a fresh database has it unset (#551), a dev
  * box holds whatever the operator set. Pin it for the duration of the file
@@ -244,7 +244,8 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     ]);
 
     // Language selector: build-time HTML, links to both published
-    // variants, aria-current on self, display names as labels.
+    // variants by path (same host: the build also serves staging),
+    // aria-current on self, display names as labels.
     const html = await runPluginStaticRender({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
@@ -252,9 +253,9 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
       pageUrlStyle: "directory",
     });
     expect(html).toContain('aria-label="Language"');
-    expect(html).toContain(`<a href="${BASE}/t398-pricing/" hreflang="en">English</a>`);
+    expect(html).toContain(`<a href="/t398-pricing/" hreflang="en">English</a>`);
     expect(html).toContain(
-      `<a href="${BASE}/de/t398-preise/" hreflang="de" aria-current="page">Deutsch</a>`,
+      `<a href="/de/t398-preise/" hreflang="de" aria-current="page">Deutsch</a>`,
     );
     expect(html).not.toContain("fr");
     expect(html).not.toContain("<script");

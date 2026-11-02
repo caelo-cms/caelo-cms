@@ -2,10 +2,12 @@
 
 /**
  * #590 — one URL builder. For every page and locale, the canonical, the
- * sitemap `<loc>`, every hreflang / x-default href and every language
- * switcher href must be byte-identical — for both deploy-target page URL
- * styles and for host-strategy locales — on the static build AND in the
- * editor preview.
+ * sitemap `<loc>` and every hreflang / x-default href must be
+ * byte-identical — for both deploy-target page URL styles and for
+ * host-strategy locales — on the static build AND in the editor preview.
+ * A language switcher href is the same URL, by path when the version is
+ * on the page's own host: an absolute switcher link sent staging visitors
+ * to the live domain.
  *
  * The regression this pins: the plugin built hreflang as
  * `base + current_path` while core's canonical followed the target's
@@ -260,13 +262,23 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
         MAIN_RENDER,
         style,
       );
+      // Same host → the path of the URL above; another host → absolute.
+      const switcherOn = (locale: string): Record<string, string> => {
+        const own = new URL(expected[locale] as string).origin;
+        return Object.fromEntries(
+          Object.entries(expected).map(([code, url]) => {
+            const u = new URL(url);
+            return [code, u.origin === own ? `${u.pathname}${u.search}` : url];
+          }),
+        );
+      };
       for (const p of pages) {
         const items = lists.get(p.id)?.language_links ?? [];
         expect(
           Object.fromEntries(
             items.map((i) => [i.values.locale, (i.values.href as { href: string }).href]),
           ),
-        ).toEqual(expected);
+        ).toEqual(switcherOn(p.locale));
       }
       const selector = await runPluginStaticRender({
         invocation: { origin: "system", actorId: SYSTEM_ACTOR_ID },
@@ -274,7 +286,7 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
         pageId: pages[1]?.id ?? "",
         pageUrlStyle: style,
       });
-      for (const href of Object.values(expected)) {
+      for (const href of Object.values(switcherOn(pages[1]?.locale ?? ""))) {
         expect(selector).toContain(`<a href="${href}"`);
       }
 
