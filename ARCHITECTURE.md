@@ -132,6 +132,8 @@ flowchart LR
 | "add Careers under Company" | `patch_list_items_many` | the shared menu list; every module bound to it |
 | "make the primary brighter" | `set_theme_tokens` | the active theme |
 
+Whatever the target, `add_module` writes through ONE op, `pages.place_module`: a minted module, the placement(s) and their initial `values` commit in one transaction (every page of a template included), so a value that does not fit leaves nothing behind (#1246).
+
 Mutations on layouts and site_defaults are Owner-only (`actorScope: ["human","system"]`); AI calls return `ActorScopeRejected` and the chat surfaces a permission message instead of retrying.
 
 ---

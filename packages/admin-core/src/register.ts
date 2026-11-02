@@ -185,6 +185,7 @@ import {
   updatePagesManyOp,
 } from "./ops/content/pages.js";
 import { listRecentlyEditedPagesOp } from "./ops/content/pages-recently-edited.js";
+import { placeModuleOp } from "./ops/content/place-module.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
 import { resolvePublicUrlsOp } from "./ops/content/public-urls.js";
 import { listSharedContentOp } from "./ops/content/shared-content.js";
@@ -781,6 +782,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setPageModulesOp);
   // issue #299 — bulk-first build path (CLAUDE.md §11): one call per page.
   registry.register(buildPageOp);
+  // #1246 — add_module's mint + placement + initial values in one tx.
+  registry.register(placeModuleOp);
   // 0184 — explicit homepage designation (site_defaults.home_page_id).
   registry.register(setHomePageOp);
   // 0284 (#802) — the page the static build ships as /404.html.

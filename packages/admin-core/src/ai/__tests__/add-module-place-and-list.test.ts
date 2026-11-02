@@ -3,8 +3,8 @@
 /**
  * issue #159 — unit coverage for the two tool-surface changes:
  *
- *   1. `add_module_to_page` place mode: an existing moduleId is spliced
- *      into the block WITHOUT a modules.create call (the reuse path).
+ *   1. `add_module` place mode: an existing moduleId is spliced into the
+ *      block WITHOUT minting (the reuse path).
  *   2. `list_modules`: full-catalog read with kind/filter params,
  *      metadata only — html/css/js must never leak into the payload.
  *
@@ -99,8 +99,19 @@ function toolCtxWith(calls: string[]): ToolContext {
               ],
             },
           });
-        case "pages.set_modules":
-          return ok({});
+        case "pages.place_module":
+          return ok({
+            moduleId: HERO.id,
+            minted: false,
+            placements: [
+              {
+                pageId: "11111111-1111-4111-8111-11111111ea9e",
+                position: 0,
+                contentInstanceId: "11111111-1111-4111-8111-11111111c1c1",
+              },
+            ],
+            layoutPosition: null,
+          });
         default:
           return ok({});
       }
@@ -127,7 +138,8 @@ describe("add_module (target='page') place mode (issue #159)", () => {
     expect(res.content).toContain(HERO.id);
     expect(res.content).toContain("existing module");
     expect(calls).toContain("modules.get");
-    expect(calls).toContain("pages.set_modules");
+    // #1246 — placement (+ values) is one op, one transaction.
+    expect(calls).toContain("pages.place_module");
     expect(calls).not.toContain("modules.create");
   });
 });

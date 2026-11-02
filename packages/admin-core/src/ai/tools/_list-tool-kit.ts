@@ -22,36 +22,6 @@ import type { z } from "zod";
 import { describeError, forwardRefusal } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
-/**
- * The list ops write their AI-actionable hints with op names ("create it
- * with lists.upsert_many"); the model calls tools, so the tool layer says
- * the tool. Longest names first so `lists.get` never eats a longer name.
- */
-const OP_TO_TOOL: readonly (readonly [string, string])[] = [
-  ["list_types.upsert_many", "upsert_list_types_many"],
-  ["list_types.delete_many", "delete_list_types_many"],
-  ["list_types.list", "list_list_types"],
-  ["list_types.get", "list_list_types (with slug)"],
-  ["lists.patch_items_many", "patch_list_items_many"],
-  ["lists.upsert_many", "upsert_lists_many"],
-  ["lists.delete_many", "delete_lists_many"],
-  ["lists.promote_local", "promote_local_list"],
-  ["lists.preview_source", "preview_list_source"],
-  ["lists.list", "list_lists"],
-  ["lists.get", "get_list"],
-  ["page_types.upsert_many", "upsert_page_types_many"],
-  ["page_types.delete_many", "delete_page_types_many"],
-  ["page_types.list", "list_page_types"],
-  ["page_types.get", "list_page_types (with slug)"],
-];
-
-/** `text` with list-model op names replaced by the tools that call them. */
-export function toolNamesIn(text: string): string {
-  let out = text;
-  for (const [op, tool] of OP_TO_TOOL) out = out.split(op).join(tool);
-  return out;
-}
-
 /** Configuration of {@link makeOpTool}. */
 export interface MakeOpToolArgs<I> {
   readonly name: string;
@@ -85,7 +55,7 @@ export function makeOpTool<I>(args: MakeOpToolArgs<I>): ToolDefinitionWithHandle
       if (!r.ok) {
         return {
           ok: false,
-          content: `${args.name} failed: ${toolNamesIn(describeError(r.error))}`,
+          content: `${args.name} failed: ${describeError(r.error)}`,
           ...forwardRefusal(r.error),
         };
       }

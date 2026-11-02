@@ -22,7 +22,6 @@ import { execute } from "@caelo-cms/query-api";
 import { type ExecutionContext, type ModuleField, slugifyModuleName } from "@caelo-cms/shared";
 import { moduleize } from "../moduleize.js";
 import { describeError } from "./_describe-error.js";
-import { toolNamesIn } from "./_list-tool-kit.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolContext } from "./dispatch.js";
 
@@ -76,15 +75,39 @@ export const DELEGATED_MINT_NEEDS_FIELDS =
   'fields `[{name: "steps", kind: "list", listType: "texts", label: "Steps"}]`, values `{steps: [{node: "text", values: {text: "Crawl"}}, {node: "text", values: {text: "Diff"}}, {node: "text", values: {text: "Alert"}}]}`. ' +
   "Never paste component markup into a richtext field of another module instead — that is free HTML the structure quality check blocks once it repeats.";
 
+/** The `modules.create` input a mint resolved to, plus what the tools report about it. */
+export interface PreparedMint {
+  readonly ok: true;
+  readonly createInput: {
+    readonly slug: string;
+    readonly displayName: string;
+    readonly description?: string;
+    readonly kind?: "chrome" | "hero" | "content" | "cta" | "utility";
+    readonly type?: string;
+    readonly html: string;
+    readonly css: string;
+    readonly js: string;
+    readonly fields?: readonly ModuleField[];
+  };
+  /** Human note appended to the tool result (moduleize summary / bind report). */
+  readonly note: string;
+  readonly css: string;
+  readonly kind: "chrome" | "hero" | "content" | "cta" | "utility" | undefined;
+  readonly fields: readonly ModuleField[] | undefined;
+}
+
 /**
- * Mint a module from HTML: moduleize (when a provider is available) → create.
- * Returns the new module id + slug, or a structured tool error.
+ * Resolve a mint WITHOUT writing: moduleize (when a provider is available)
+ * and theme-literal binding turn the caller's HTML into the `modules.create`
+ * input. `add_module` (#1246) hands it to `pages.place_module`, which creates
+ * the module in the same transaction as its placement and content — so a
+ * placement that fails leaves no module behind.
  */
-export async function mintModuleFromHtml(
+export async function prepareModuleMint(
   ctx: ExecutionContext,
   toolCtx: ToolContext,
   args: MintModuleArgs,
-): Promise<MintModuleOk | MintModuleErr> {
+): Promise<PreparedMint | MintModuleErr> {
   let html = args.html;
   let fields: readonly ModuleField[] | undefined = args.fieldsHint;
   let displayName = args.displayNameHint;
@@ -188,31 +211,54 @@ export async function mintModuleFromHtml(
     note += bound.report;
   }
 
-  const slug = slugifyModuleName(displayName);
-  const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
-    slug,
-    displayName,
-    ...(description !== undefined ? { description } : {}),
-    ...(kind !== undefined ? { kind } : {}),
-    ...(args.type !== undefined ? { type: args.type } : {}),
-    html,
-    css,
-    js: args.js ?? "",
-    ...(fields ? { fields } : {}),
-  });
-  if (!created.ok) {
-    return {
-      ok: false,
-      content: `modules.create failed: ${toolNamesIn(describeError(created.error))}`,
-    };
-  }
   return {
     ok: true,
-    moduleId: (created.value as { moduleId: string }).moduleId,
-    slug,
+    createInput: {
+      slug: slugifyModuleName(displayName),
+      displayName,
+      ...(description !== undefined ? { description } : {}),
+      ...(kind !== undefined ? { kind } : {}),
+      ...(args.type !== undefined ? { type: args.type } : {}),
+      html,
+      css,
+      js: args.js ?? "",
+      ...(fields ? { fields } : {}),
+    },
     note,
     css,
     kind,
     fields,
+  };
+}
+
+/**
+ * Mint a module from HTML: {@link prepareModuleMint} then `modules.create`.
+ * Returns the new module id + slug, or a structured tool error.
+ */
+export async function mintModuleFromHtml(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  args: MintModuleArgs,
+): Promise<MintModuleOk | MintModuleErr> {
+  const prepared = await prepareModuleMint(ctx, toolCtx, args);
+  if (!prepared.ok) return prepared;
+  const created = await execute(
+    toolCtx.registry,
+    toolCtx.adapter,
+    ctx,
+    "modules.create",
+    prepared.createInput,
+  );
+  if (!created.ok) {
+    return { ok: false, content: `modules.create failed: ${describeError(created.error)}` };
+  }
+  return {
+    ok: true,
+    moduleId: (created.value as { moduleId: string }).moduleId,
+    slug: prepared.createInput.slug,
+    note: prepared.note,
+    css: prepared.css,
+    kind: prepared.kind,
+    fields: prepared.fields,
   };
 }

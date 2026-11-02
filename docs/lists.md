@@ -782,7 +782,9 @@ definitions; the recursive entry tree comes out as `$defs` + `$ref`
 (docs/internal/google-models.md). Module authoring tools embed list entries
 inside the `fields` schema, where a root-relative `$ref` cannot resolve, so
 they declare three fixed levels instead (enough for `menu`). Op error hints
-that name ops are rewritten to tool names (`toolNamesIn`). Every list tool
+that name ops are rewritten to tool names (`toolNamesIn`,
+`ai/op-tool-names.ts`) — centrally, in `describeError` and for every
+failed result of the tool registry's dispatch (#1264). Every list tool
 repeats the alias (menus, navigation, footer links, categories and tags are
 shared lists; a list only one module shows stays local); the module tools
 carry the list field contract (template keys, the three bindings and their

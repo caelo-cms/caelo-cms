@@ -17,9 +17,20 @@ import {
   type PgFailureFields,
   trimTrailingPunctuation,
 } from "@caelo-cms/query-api";
+import { toolNamesIn } from "../op-tool-names.js";
 import type { ToolResult } from "./dispatch.js";
 
+/**
+ * The text of a Query API error for an AI tool result, with op names
+ * replaced by the tools the AI calls (`ai/op-tool-names.ts`).
+ */
 export function describeError(error: unknown): string {
+  // #1264 — an op's hint names ops ("edit that list (lists.patch_items_many)");
+  // the AI calls tools, so every description says the tool.
+  return toolNamesIn(describeRaw(error));
+}
+
+function describeRaw(error: unknown): string {
   if (!error || typeof error !== "object") return "unknown";
   const e = error as {
     kind?: string;
@@ -147,7 +158,7 @@ export function toolError(
   );
   return {
     ok: false,
-    content,
+    content: toolNamesIn(content),
     failureKind: failureKindOf(error),
     ...(errors.length > 0 ? { errors } : {}),
     ...forwardRefusal(error),
