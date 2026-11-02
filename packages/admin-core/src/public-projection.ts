@@ -128,6 +128,7 @@ export function startPublicProjectionPublisher(opts: {
   const declarations = opts.declarations ?? loadedVisitorProjections;
   let tail: Promise<unknown> = Promise.resolve();
   let waitingDrain: Promise<PublishReport> | null = null;
+  let waitingFull: Promise<PublishReport> | null = null;
   let fullPublishDue = false;
   const enqueue = (fn: () => Promise<PublishReport>): Promise<PublishReport> => {
     const next = tail.then(fn, fn);
@@ -135,8 +136,13 @@ export function startPublicProjectionPublisher(opts: {
     return next;
   };
   const publisher: PublicProjectionPublisher = {
-    publishAll: () =>
-      enqueue(async () => {
+    publishAll: () => {
+      // Same coalescing as drain: while the lock or the database is down the
+      // timer retries a failed full publish every tick, and each tick must
+      // join the one already queued instead of adding one more to replay.
+      if (waitingFull !== null) return waitingFull;
+      const full = enqueue(async () => {
+        waitingFull = null;
         let report: PublishReport;
         try {
           report = await publishPublicProjection(dbs, declarations(), { comments: false });
@@ -151,7 +157,10 @@ export function startPublicProjectionPublisher(opts: {
           );
         }
         return report;
-      }),
+      });
+      waitingFull = full;
+      return full;
+    },
     drain: () => {
       if (waitingDrain !== null) return waitingDrain;
       const drain = enqueue(() => {

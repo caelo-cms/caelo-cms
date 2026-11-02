@@ -447,4 +447,26 @@ describe("the projection lock never holds a waiting connection (2026-11-02 incid
       publisher.stop();
     }
   });
+  it("full publishes asked for while one waits to start join it (the timer's retries stay bounded)", async () => {
+    const publisher = startPublicProjectionPublisher({
+      adapter,
+      declarations: () => new Map(),
+      intervalMs: 3_600_000,
+    });
+    const holder = await holdLock();
+    let released = false;
+    try {
+      const running = publisher.publishAll();
+      await Bun.sleep(50);
+      const retries = [publisher.publishAll(), publisher.publishAll(), publisher.publishAll()];
+      expect(new Set(retries).size).toBe(1);
+      expect(retries[0]).not.toBe(running);
+      await holder.release();
+      released = true;
+      await Promise.all([running, ...retries]);
+    } finally {
+      if (!released) await holder.release();
+      publisher.stop();
+    }
+  });
 });
