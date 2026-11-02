@@ -59,7 +59,7 @@ export const ADMIN_PUBLIC_POOL_MAX = 4;
  * minimum pool, set by the admin in code (no env var): its work is a few
  * short DDL and publish transactions, one at a time per instance.
  */
-export const ADMIN_PUBLIC_STAGING_POOL_MAX = MIN_POOL_MAX;
+export const ADMIN_PUBLIC_STAGING_POOL_MAX = 2;
 
 /** The gateway's only pool (public_role on cms_public), per instance. */
 export const GATEWAY_POOL_MAX = 2;
@@ -102,7 +102,7 @@ export const GATEWAY_ROLE_CONNECTION_LIMIT = 30;
  * 0530, bootstrap.sh): the same bound as the live gateway's login. The
  * database refuses the staging gateway's connections beyond it.
  */
-export const STAGING_GATEWAY_ROLE_CONNECTION_LIMIT = GATEWAY_ROLE_CONNECTION_LIMIT;
+export const STAGING_GATEWAY_ROLE_CONNECTION_LIMIT = 30;
 
 /**
  * #1329 — staging gateway instances the stacks let start. Staging serves

@@ -10,6 +10,3 @@
  * staging site's twin, with its own gateway login).
  */
 export const MIGRATION_TARGETS = ["admin", "public", "public-staging"] as const;
-
-/** One {@link MIGRATION_TARGETS} entry. */
-export type MigrationTarget = (typeof MIGRATION_TARGETS)[number];
