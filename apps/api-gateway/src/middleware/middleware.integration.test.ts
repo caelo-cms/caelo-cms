@@ -14,7 +14,11 @@ import { publishProjectionOnce } from "@caelo-cms/admin-core";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { readBodyWithCap } from "./body-cap.js";
-import { issuePowChallenge, verifyPowProof } from "./captcha.js";
+import { issuePowChallenge, powPreimage, verifyPowProof } from "./captcha.js";
+
+/** The operation the proofs below are solved for (#1332: a proof is bound to one). */
+const SCOPE = "probe.submit";
+
 import { checkHoneypot } from "./honeypot.js";
 import { consumeRateLimit, ipScopedRateLimitKey, resolveRateLimitSpec } from "./rate-limit.js";
 import { generateCookieSecret, signCookieValue, verifySignedCookie } from "./signed-cookie.js";
@@ -204,7 +208,7 @@ describe("captcha (PoW)", () => {
       const candidate = i.toString(16);
       const digest = await crypto.subtle.digest(
         "SHA-256",
-        enc.encode(`${challenge.challenge}${candidate}`),
+        enc.encode(powPreimage(challenge.challenge, SCOPE, candidate)),
       );
       const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
       if (hex.startsWith(config.powTargetPrefix)) {
@@ -214,31 +218,42 @@ describe("captcha (PoW)", () => {
     }
     expect(nonce).not.toBe("");
 
-    const r1 = await verifyPowProof(adapter, { challenge: challenge.challenge, nonce });
+    const r1 = await verifyPowProof(adapter, { challenge: challenge.challenge, nonce }, SCOPE);
     expect(r1.ok).toBe(true);
 
     // Replay should fail.
-    const r2 = await verifyPowProof(adapter, { challenge: challenge.challenge, nonce });
+    const r2 = await verifyPowProof(adapter, { challenge: challenge.challenge, nonce }, SCOPE);
     expect(r2.ok).toBe(false);
   });
 
   it("rejects a wrong nonce without burning the challenge", async () => {
     const proof = await solved();
-    const bad = await verifyPowProof(adapter, {
-      challenge: proof.challenge,
-      nonce: unsolvedNonce(proof.challenge, config.powTargetPrefix),
+    const bad = await verifyPowProof(
+      adapter,
+      {
+        challenge: proof.challenge,
+        nonce: unsolvedNonce(proof.challenge, config.powTargetPrefix),
+      },
+      SCOPE,
+    );
+    expect(bad).toEqual({
+      ok: false,
+      reason: expect.stringContaining("proof does not satisfy the target"),
     });
-    expect(bad).toEqual({ ok: false, reason: "proof does not satisfy target prefix" });
     // The valid proof for the same challenge must still succeed afterwards.
-    const good = await verifyPowProof(adapter, proof);
+    const good = await verifyPowProof(adapter, proof, SCOPE);
     expect(good).toEqual({ ok: true });
   });
 
   it("rejects an unknown challenge", async () => {
-    const r = await verifyPowProof(adapter, {
-      challenge: "00000000",
-      nonce: "0",
-    });
+    const r = await verifyPowProof(
+      adapter,
+      {
+        challenge: "00000000",
+        nonce: "0",
+      },
+      SCOPE,
+    );
     expect(r).toEqual({ ok: false, reason: expect.stringContaining("unknown captcha challenge") });
   });
 
@@ -252,7 +267,9 @@ describe("captcha (PoW)", () => {
   function unsolvedNonce(challenge: string, target: string): string {
     for (let i = 0; ; i++) {
       const nonce = `wrong-${i}`;
-      const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
+      const hex = new Bun.CryptoHasher("sha256")
+        .update(powPreimage(challenge, SCOPE, nonce))
+        .digest("hex");
       if (!hex.startsWith(target)) return nonce;
     }
   }
@@ -261,7 +278,9 @@ describe("captcha (PoW)", () => {
   async function solved(): Promise<{ challenge: string; nonce: string }> {
     const { challenge, target } = await issuePowChallenge(adapter, { config });
     for (let nonce = 0; ; nonce++) {
-      const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
+      const hex = new Bun.CryptoHasher("sha256")
+        .update(powPreimage(challenge, SCOPE, String(nonce)))
+        .digest("hex");
       if (hex.startsWith(target)) return { challenge, nonce: String(nonce) };
     }
   }
@@ -270,9 +289,28 @@ describe("captcha (PoW)", () => {
     // No visitor binding (the cookie could be dropped at will, so it
     // protected nothing): the work and the single use are the protection.
     const proof = await solved();
-    expect(await verifyPowProof(adapter, proof)).toEqual({ ok: true });
-    const again = await verifyPowProof(adapter, proof);
+    expect(await verifyPowProof(adapter, proof, SCOPE)).toEqual({ ok: true });
+    const again = await verifyPowProof(adapter, proof, SCOPE);
     expect(again.ok === false && again.reason).toContain("already used");
+  });
+
+  it("binds a proof to its operation: work solved for one op pays for no other (#1332)", async () => {
+    const proof = await solved();
+    // Solved for probe.submit, presented with another operation's request.
+    // The test target is one hex char, so an arbitrary other scope would
+    // satisfy it by chance 1 time in 16: take one whose digest misses it.
+    let other = "";
+    for (let i = 0; ; i++) {
+      other = `probe.other_${i}`;
+      const hex = new Bun.CryptoHasher("sha256")
+        .update(powPreimage(proof.challenge, other, proof.nonce))
+        .digest("hex");
+      if (!hex.startsWith(config.powTargetPrefix)) break;
+    }
+    const elsewhere = await verifyPowProof(adapter, proof, other);
+    expect(elsewhere.ok).toBe(false);
+    // The refusal does not burn it: its own operation still claims it.
+    expect(await verifyPowProof(adapter, proof, SCOPE)).toEqual({ ok: true });
   });
 
   it("stores no visitor binding on the challenge row (cms_public 0361)", async () => {
@@ -289,8 +327,8 @@ describe("captcha (PoW)", () => {
 
   it("names a replay and an expiry as what they are", async () => {
     const used = await solved();
-    await verifyPowProof(adapter, used);
-    const replay = await verifyPowProof(adapter, used);
+    await verifyPowProof(adapter, used, SCOPE);
+    const replay = await verifyPowProof(adapter, used, SCOPE);
     expect(replay.ok === false && replay.reason).toContain("already used");
 
     const late = await solved();
@@ -302,7 +340,7 @@ describe("captcha (PoW)", () => {
            WHERE challenge = ${late.challenge}`);
       },
     );
-    const expired = await verifyPowProof(adapter, late);
+    const expired = await verifyPowProof(adapter, late, SCOPE);
     expect(expired.ok === false && expired.reason).toContain("expired");
   });
 });

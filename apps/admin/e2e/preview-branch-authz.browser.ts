@@ -20,15 +20,21 @@ test.beforeAll(clearLoginRateBucket);
 
 // fullyParallel runs this file's tests on different workers, each running
 // the beforeAll seed: a millisecond timestamp alone collided across two
-// workers that loaded the file in the same ms (users_email_unique).
-const TAG = `e2e569-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+// workers that loaded the file in the same ms (users_email_unique). A worker
+// can also run the seed twice for one load of the file (it re-runs beforeAll
+// when it picks a second test of this file up later), so the tag is minted
+// per seed, not per module load.
 const PASSWORD = "branch authz dev password";
-const EMAIL_A = `${TAG}-a@example.com`;
-const EMAIL_B = `${TAG}-b@example.com`;
+let TAG = "";
+let EMAIL_A = "";
+let EMAIL_B = "";
 
 let seed: { pageId: string; slug: string; experiment: string; draft: string };
 
 test.beforeAll(() => {
+  TAG = `e2e569-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  EMAIL_A = `${TAG}-a@example.com`;
+  EMAIL_B = `${TAG}-b@example.com`;
   const out = runBunInline(
     `
     import { SQL } from "bun";

@@ -65,6 +65,7 @@ afterAll(async () => {
 describe("#1146 — columns a new plugin version no longer declares", () => {
   it("cms_public: drops the column and audits the drop", async () => {
     const v1 = schemaFromSpec({
+      tableKinds: { log: "visitor-state" },
       pluginId: PLUGIN_ID,
       slug: SLUG,
       schema: { log: { consent_id: "uuid", visitor_id: "string", created_at: "timestamp" } },
@@ -74,6 +75,7 @@ describe("#1146 — columns a new plugin version no longer declares", () => {
     expect(await columns(PUBLIC_URL, "log")).toContain("visitor_id");
 
     const v2 = schemaFromSpec({
+      tableKinds: { log: "visitor-state" },
       pluginId: PLUGIN_ID,
       slug: SLUG,
       schema: { log: { consent_id: "uuid", created_at: "timestamp" } },

@@ -34,6 +34,7 @@ function manifest(indexes: unknown) {
     version: "1.0.0",
     tier: 1,
     schema: SCHEMA,
+    tableKinds: { entries: "inbox" },
     adminSchema: ADMIN_SCHEMA,
     requestedCapabilities: ["cms_admin_schema"],
     operations: ["noop"],
@@ -149,6 +150,7 @@ describe("manifestFromDefinition — indexes", () => {
       version: "1.0.0",
       tier: 1 as const,
       schema: SCHEMA,
+      tableKinds: { entries: "inbox" as const },
       operations: { noop: async () => null },
     };
     const indexes = { schema: { entries: [["status", "created_at"]] } };

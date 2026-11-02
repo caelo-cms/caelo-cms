@@ -33,6 +33,7 @@ import {
   definePlugin,
   type PluginContextTier1,
   type PluginQuery,
+  PublicOperationError,
   z,
 } from "@caelo-cms/plugin-sdk";
 
@@ -155,6 +156,20 @@ async function sweepByExpiry<Row extends { id: string; expires_at: string }>(
   }
 }
 
+/**
+ * #1332 — the visitor bodies, validated by the host before a handler
+ * runs. Bounds here are shape only (a string, not an object); the
+ * length rules the handlers enforce stay where they are (#1334 owns them).
+ */
+const credentialsInput = z
+  .object({ email: z.string().max(1024), password: z.string().max(4096) })
+  .strict();
+const sessionInput = z.object({ sessionToken: z.string().max(256).optional() }).strict();
+const emailInput = z.object({ email: z.string().max(1024) }).strict();
+const resetInput = z
+  .object({ token: z.string().max(256), newPassword: z.string().max(4096) })
+  .strict();
+
 interface SignupInput {
   email: string;
   password: string;
@@ -265,30 +280,97 @@ export default definePlugin<PluginContextTier1>({
   },
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
-  publicOperations: ["signup", "login", "logout", "me", "request_password_reset", "reset_password"],
+  //
+  // #1332 — the declarative contract only: shapes, captcha, rate limits
+  // and table access. The core logic below is unchanged; its hardening is
+  // #1334 (CLAUDE.md §2: the auth core is locked from AI regeneration).
+  publicOperations: [
+    {
+      name: "signup",
+      kind: "write",
+      input: credentialsInput,
+      rateLimit: { max: 5, windowSeconds: 60 },
+      reads: ["auth_config", "public_users"],
+      writes: ["public_users", "visitor_sessions"],
+    },
+    {
+      name: "login",
+      kind: "write",
+      input: credentialsInput,
+      rateLimit: { max: 10, windowSeconds: 60 },
+      reads: ["public_users"],
+      writes: ["public_users", "visitor_sessions"],
+    },
+    {
+      name: "logout",
+      kind: "write",
+      input: sessionInput,
+      // Ends only the caller's own session; the rate limit guards it.
+      captcha: "none",
+      rateLimit: { max: 30, windowSeconds: 60 },
+      reads: ["visitor_sessions"],
+      writes: ["visitor_sessions"],
+    },
+    {
+      name: "me",
+      kind: "read",
+      input: sessionInput,
+      captcha: "none",
+      rateLimit: { max: 60, windowSeconds: 60 },
+      reads: ["visitor_sessions", "public_users"],
+    },
+    {
+      name: "request_password_reset",
+      kind: "write",
+      input: emailInput,
+      rateLimit: { max: 3, windowSeconds: 60 },
+      reads: ["public_users"],
+      writes: ["password_reset_tokens"],
+    },
+    {
+      name: "reset_password",
+      kind: "write",
+      input: resetInput,
+      rateLimit: { max: 5, windowSeconds: 60 },
+      reads: ["auth_config", "password_reset_tokens", "visitor_sessions"],
+      writes: ["public_users", "password_reset_tokens", "visitor_sessions"],
+    },
+  ],
+  /**
+   * #1332 — accounts, sessions and reset tokens are visitor state; the
+   * config is the Owner's and visitors only read it; proposals never
+   * leave the admin.
+   */
+  tableKinds: {
+    public_users: "visitor-state",
+    visitor_sessions: "visitor-state",
+    password_reset_tokens: "visitor-state",
+    auth_config: "published",
+    auth_config_proposals: "private",
+  },
   operations: {
     signup: async (ctx, args) => {
       const input = args as SignupInput;
       // 254 is the longest address SMTP can deliver; the bound also keeps
       // the value inside one btree entry of the email index (#1292).
       if (!input.email.includes("@") || input.email.length > 254) {
-        throw new Error("signup: invalid email");
+        throw new PublicOperationError("signup: invalid email");
       }
       const cfg = await readAuthConfig(ctx.query, "signup");
       if (!cfg.signup_open) {
-        throw new Error("signup: registration is closed");
+        throw new PublicOperationError("signup: registration is closed");
       }
       if (input.password.length < cfg.password_min_length) {
-        throw new Error(`signup: password >= ${cfg.password_min_length} chars`);
+        throw new PublicOperationError(`signup: password >= ${cfg.password_min_length} chars`);
       }
       const ok = await ctx.captcha.requireProof(null);
-      if (!ok) throw new Error("signup: captcha verification failed");
+      if (!ok) throw new PublicOperationError("signup: captcha verification failed");
 
       const existing = await ctx.query.list<"public_users", { id: string }>("public_users", {
         email: input.email,
         limit: 1,
       });
-      if (existing[0]) throw new Error("signup: email already registered");
+      if (existing[0]) throw new PublicOperationError("signup: email already registered");
 
       const password_hash = await hashPassword(input.password);
       const r = await ctx.query.insert("public_users", {
@@ -326,10 +408,10 @@ export default definePlugin<PluginContextTier1>({
           input.password,
           "$argon2id$v=19$m=65536,t=2,p=1$Z2VuZXJpY2dlbmVyaWM$0YpuVZB+B3oAU6CWBe1uCC2YJ8YTJYjzCqj5VZmqDzg",
         );
-        throw new Error("login: invalid credentials");
+        throw new PublicOperationError("login: invalid credentials");
       }
       const ok = await verifyPassword(input.password, user.password_hash);
-      if (!ok) throw new Error("login: invalid credentials");
+      if (!ok) throw new PublicOperationError("login: invalid credentials");
 
       const token = makeSessionToken();
       const token_hash = await hashToken(token);
@@ -423,7 +505,9 @@ export default definePlugin<PluginContextTier1>({
       const input = args as { token: string; newPassword: string };
       const cfg = await readAuthConfig(ctx.query, "reset_password");
       if (input.newPassword.length < cfg.password_min_length) {
-        throw new Error(`reset_password: password >= ${cfg.password_min_length} chars`);
+        throw new PublicOperationError(
+          `reset_password: password >= ${cfg.password_min_length} chars`,
+        );
       }
       const tokenHash = await hashToken(input.token);
       const matches = await ctx.query.list<
@@ -431,9 +515,10 @@ export default definePlugin<PluginContextTier1>({
         { id: string; public_user_id: string; expires_at: string; used_at: string | null }
       >("password_reset_tokens", { token_hash: tokenHash, limit: 1 });
       const t = matches[0];
-      if (!t) throw new Error("reset_password: invalid token");
-      if (t.used_at) throw new Error("reset_password: token already used");
-      if (new Date(t.expires_at) < new Date()) throw new Error("reset_password: token expired");
+      if (!t) throw new PublicOperationError("reset_password: invalid token");
+      if (t.used_at) throw new PublicOperationError("reset_password: token already used");
+      if (new Date(t.expires_at) < new Date())
+        throw new PublicOperationError("reset_password: token expired");
       const password_hash = await hashPassword(input.newPassword);
       await ctx.query.update("public_users", t.public_user_id, { password_hash });
       await ctx.query.update("password_reset_tokens", t.id, {
@@ -672,7 +757,7 @@ export default definePlugin<PluginContextTier1>({
           ev.preventDefault();
           setStatus(status, "clear");
           const fd = new FormData(form);
-          const captcha = await attachCaptchaProof().catch(() => null);
+          const captcha = await attachCaptchaProof("auth", "login").catch(() => null);
           const r = await postPluginJson("auth", "login", {
             email: fd.get("email"),
             password: fd.get("password"),
@@ -704,7 +789,7 @@ export default definePlugin<PluginContextTier1>({
           ev.preventDefault();
           setStatus(status, "clear");
           const fd = new FormData(form);
-          const captcha = await attachCaptchaProof().catch(() => null);
+          const captcha = await attachCaptchaProof("auth", "signup").catch(() => null);
           const r = await postPluginJson("auth", "signup", {
             email: fd.get("email"),
             password: fd.get("password"),

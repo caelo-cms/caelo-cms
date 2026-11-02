@@ -93,6 +93,9 @@ const PUBLIC_TABLE = {
 describe("#1292 — emitted plugin indexes", () => {
   it("cms_public: creates the declared indexes, and a new version drops only what it stopped declaring", async () => {
     const v1 = schemaFromSpec({
+      tableKinds: Object.fromEntries(
+        Object.keys(PUBLIC_TABLE).map((t) => [t, "visitor-state" as const]),
+      ),
       pluginId: PLUGIN_ID,
       slug: SLUG,
       schema: PUBLIC_TABLE,
@@ -110,6 +113,9 @@ describe("#1292 — emitted plugin indexes", () => {
     const statusOid = await oidOf(PUBLIC_URL, statusIx);
 
     const v2 = schemaFromSpec({
+      tableKinds: Object.fromEntries(
+        Object.keys(PUBLIC_TABLE).map((t) => [t, "visitor-state" as const]),
+      ),
       pluginId: PLUGIN_ID,
       slug: SLUG,
       schema: PUBLIC_TABLE,
@@ -123,6 +129,9 @@ describe("#1292 — emitted plugin indexes", () => {
     expect(await oidOf(PUBLIC_URL, statusIx)).toBe(statusOid);
 
     const v3 = schemaFromSpec({
+      tableKinds: Object.fromEntries(
+        Object.keys(PUBLIC_TABLE).map((t) => [t, "visitor-state" as const]),
+      ),
       pluginId: PLUGIN_ID,
       slug: SLUG,
       schema: PUBLIC_TABLE,
@@ -194,6 +203,9 @@ describe("#1292 — the list operation refuses reads no index covers", () => {
     });
   const provision = async (indexes: Parameters<typeof schemaFromSpec>[0]["indexes"]) => {
     const emitted = schemaFromSpec({
+      tableKinds: Object.fromEntries(
+        Object.keys(PUBLIC_TABLE).map((t) => [t, "visitor-state" as const]),
+      ),
       pluginId: PLUGIN_ID,
       slug: SLUG,
       schema: PUBLIC_TABLE,

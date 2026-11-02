@@ -36,6 +36,7 @@ import { resolve as resolvePath } from "node:path";
 import {
   adminSchemaFromSpec,
   generateManifestKeyPair,
+  releaseManifestDigest,
   schemaFromSpec,
   signManifest,
   validateManifest,
@@ -50,7 +51,7 @@ import {
   type PluginManifest,
   pluginManifest,
 } from "@caelo-cms/plugin-sdk";
-import { execute } from "@caelo-cms/query-api";
+import { execute, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { runActivationSerialized } from "./activation-lock.js";
@@ -188,8 +189,40 @@ export function unapprovedCapabilities(
  */
 export function notLoadedReason(status: string): string {
   return status === AWAITING_CAPABILITY_APPROVAL
-    ? "it waits for the Owner to approve the new capabilities its release asks for (Settings → Plugins → Approve new permissions); a reload cannot start it"
+    ? "it waits for the Owner to approve its new release — new capabilities or a changed manifest (Settings → Plugins → Approve this release); a reload cannot start it"
     : `plugin is ${status}, not active`;
+}
+
+/** The `plugins` columns one load reads back. */
+interface LoadRow {
+  readonly id: string;
+  readonly status: string;
+  readonly approved_capabilities: string[] | null;
+  readonly approved_manifest_digest: string | null;
+}
+
+/**
+ * #1332 — the one-time backfill of migration 0510, done where the digest
+ * can be computed: a release-signed plugin that ran before approvals were
+ * bound to a manifest records the digest of the manifest it ran with,
+ * BEFORE the load below replaces it with this release's. A release that
+ * leaves the manifest unchanged then keeps running; one that changes it
+ * waits for the Owner. A plugin that never ran approved nothing.
+ */
+async function recordPriorManifestApproval(tx: TransactionRunner, slug: string): Promise<void> {
+  const prior = (
+    (await tx.execute(sql`
+      SELECT manifest_json FROM plugins
+       WHERE slug = ${slug} AND tier = 1 AND approved_manifest_digest IS NULL
+         AND status IN ('active', 'disabled')
+       FOR UPDATE
+    `)) as unknown as { manifest_json: unknown }[]
+  )[0];
+  if (!prior) return;
+  await tx.execute(sql`
+    UPDATE plugins SET approved_manifest_digest = ${releaseManifestDigest(prior.manifest_json)}
+     WHERE slug = ${slug} AND approved_manifest_digest IS NULL
+  `);
 }
 
 /** A plugin whose manifest, signature and source passed verification. */
@@ -476,6 +509,7 @@ async function loadTier2Row(
     slug: row.slug,
     schema: definition.schema,
     indexes: definition.indexes?.schema,
+    tableKinds: definition.tableKinds,
   });
   await inPhase("provision", async () => {
     await opts.infra.adapter.provisionPluginPublicSchema({
@@ -853,6 +887,7 @@ export async function activateApprovedExternalPlugin(
       slug: manifest.slug,
       schema: manifest.schema,
       indexes: manifest.indexes?.schema,
+      tableKinds: manifest.tableKinds,
     });
     await opts.infra.adapter.provisionPluginPublicSchema({
       pluginId: artifact.pluginId,
@@ -1028,7 +1063,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // reads as "this is exposed" while exposing nothing — and the reverse
   // typo (an intended-public op misspelled) silently 404s the visitor
   // surface. Both are caught here, at load, rather than in production.
-  for (const name of def.publicOperations ?? []) {
+  for (const { name } of def.publicOperations ?? []) {
     if (!def.operations[name]) {
       throw new Error(
         `plugin "${def.slug}" lists "${name}" in publicOperations, which is not one of its operations`,
@@ -1114,7 +1149,11 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // capability set; a discovered plugin has approved nothing yet.
   const requestedCaps = [...(def.requestedCapabilities ?? [])];
   const initialApproved = opts.activation === "explicit" ? requestedCaps : null;
-  const { pluginId, pluginActorId, persistedStatus, approvedCapabilities } =
+  // #1332 — what an Owner approves of a release-signed plugin is its whole
+  // manifest: an explicit hand-off approves this one.
+  const manifestDigest = releaseManifestDigest(opts.manifest);
+  const initialDigest = opts.activation === "explicit" ? manifestDigest : null;
+  const { pluginId, pluginActorId, persistedStatus, approvedCapabilities, approvedDigest } =
     await opts.infra.adapter.withAdminTransaction(
       {
         actorId: opts.systemActorId,
@@ -1122,10 +1161,12 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
         requestId: `plugin-load-${def.slug}`,
       },
       async (tx) => {
+        await recordPriorManifestApproval(tx, def.slug);
         const rows = (await tx.execute(sql`
         INSERT INTO plugins (
           slug, version, tier, status,
-          manifest_json, source_path, manifest_signature, submitted_by, approved_capabilities
+          manifest_json, source_path, manifest_signature, submitted_by, approved_capabilities,
+          approved_manifest_digest
         ) VALUES (
           ${def.slug}, ${def.version}, ${def.tier}, ${initialStatus},
           (${JSON.stringify(opts.manifest)}::text)::jsonb,
@@ -1134,7 +1175,8 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
           ${opts.systemActorId}::uuid,
           CASE WHEN ${initialApproved === null} THEN NULL
                ELSE ARRAY(SELECT jsonb_array_elements_text((${JSON.stringify(initialApproved ?? [])}::text)::jsonb))
-          END
+          END,
+          ${initialDigest}
         )
         ON CONFLICT (slug) DO UPDATE SET
           version = EXCLUDED.version,
@@ -1158,22 +1200,24 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
           IS DISTINCT FROM
           (EXCLUDED.version, EXCLUDED.manifest_json, EXCLUDED.source_path, EXCLUDED.manifest_signature)
           OR (plugins.tier = 1 AND plugins.validation_errors <> '[]'::jsonb)
-        RETURNING id::text AS id, status, approved_capabilities
-      `)) as unknown as { id: string; status: string; approved_capabilities: string[] | null }[];
+        RETURNING id::text AS id, status, approved_capabilities, approved_manifest_digest
+      `)) as unknown as LoadRow[];
         // An unchanged row is not returned by the upsert; read it instead.
         const row =
           rows[0] ??
           (
             (await tx.execute(sql`
-              SELECT id::text AS id, status, approved_capabilities FROM plugins WHERE slug = ${def.slug}
-            `)) as unknown as {
-              id: string;
-              status: string;
-              approved_capabilities: string[] | null;
-            }[]
+              SELECT id::text AS id, status, approved_capabilities, approved_manifest_digest
+                FROM plugins WHERE slug = ${def.slug}
+            `)) as unknown as LoadRow[]
           )[0];
         if (!row) throw new Error("plugins upsert returned no id");
-        const { id, status: persistedStatus, approved_capabilities: approvedCapabilities } = row;
+        const {
+          id,
+          status: persistedStatus,
+          approved_capabilities: approvedCapabilities,
+          approved_manifest_digest: approvedDigest,
+        } = row;
 
         const actorRows = (await tx.execute(sql`
         INSERT INTO actors (kind, display_name, plugin_id)
@@ -1184,7 +1228,13 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       `)) as unknown as { id: string }[];
         const actorId = actorRows[0]?.id;
         if (!actorId) throw new Error("actor upsert returned no id");
-        return { pluginId: id, pluginActorId: actorId, persistedStatus, approvedCapabilities };
+        return {
+          pluginId: id,
+          pluginActorId: actorId,
+          persistedStatus,
+          approvedCapabilities,
+          approvedDigest,
+        };
       },
     );
 
@@ -1212,6 +1262,15 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     if (unapproved.length > 0) {
       console.warn(
         `[plugin-host] ${def.slug} waits for the Owner to approve new capabilities (${unapproved.join(", ")}) at /settings/plugins`,
+      );
+      return { plugin: null, status: AWAITING_CAPABILITY_APPROVAL };
+    }
+    // #1332 — the same gate for the whole manifest: a release that changes
+    // what the plugin declares (its visitor operations, table kinds, tools)
+    // is a new artifact and waits for the Owner (CLAUDE.md §2).
+    if (approvedDigest !== manifestDigest) {
+      console.warn(
+        `[plugin-host] ${def.slug} ${def.version} changes what it declares; it waits for the Owner to approve this release at /settings/plugins`,
       );
       return { plugin: null, status: AWAITING_CAPABILITY_APPROVAL };
     }
@@ -1249,6 +1308,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       slug: def.slug,
       schema: def.schema,
       indexes: def.indexes?.schema,
+      tableKinds: def.tableKinds,
     });
     await inPhase("provision", () =>
       opts.infra.adapter.provisionPluginPublicSchema({ pluginId, sql: emitted.sql }),

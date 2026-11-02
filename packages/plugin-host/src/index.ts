@@ -10,7 +10,7 @@
  * P11 lifecycle (submit → activate → cms_public schema provisioned).
  */
 
-export { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
+export { externalArtifactDigest, releaseManifestDigest } from "@caelo-cms/plugin-sandbox";
 export type { ContentVariantPage, ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
 export { pluginManifest } from "@caelo-cms/plugin-sdk";
 export {
@@ -198,6 +198,12 @@ export {
   type PromptContextRenderer,
   pluginPromptContextRegistry,
 } from "./prompt-context-registry.js";
+export {
+  GENERIC_VISITOR_FAILURE,
+  refusePublicCall,
+  VISITOR_TRANSPORT_FIELDS,
+  visitorSafeResult,
+} from "./public-contract.js";
 export {
   type PublicUrlContext,
   type PublicUrlPage,

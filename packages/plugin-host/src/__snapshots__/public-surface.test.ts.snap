@@ -1,0 +1,722 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surface 1`] = `
+{
+  "publicOperations": [
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "maxLength": 1024,
+            "type": "string",
+          },
+          "password": {
+            "maxLength": 4096,
+            "type": "string",
+          },
+        },
+        "required": [
+          "email",
+          "password",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "signup",
+      "rateLimit": {
+        "max": 5,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "auth_config",
+        "public_users",
+      ],
+      "writes": [
+        "public_users",
+        "visitor_sessions",
+      ],
+    },
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "maxLength": 1024,
+            "type": "string",
+          },
+          "password": {
+            "maxLength": 4096,
+            "type": "string",
+          },
+        },
+        "required": [
+          "email",
+          "password",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "login",
+      "rateLimit": {
+        "max": 10,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "public_users",
+      ],
+      "writes": [
+        "public_users",
+        "visitor_sessions",
+      ],
+    },
+    {
+      "captcha": "none",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "sessionToken": {
+            "maxLength": 256,
+            "type": "string",
+          },
+        },
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "logout",
+      "rateLimit": {
+        "max": 30,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "visitor_sessions",
+      ],
+      "writes": [
+        "visitor_sessions",
+      ],
+    },
+    {
+      "captcha": "none",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "sessionToken": {
+            "maxLength": 256,
+            "type": "string",
+          },
+        },
+        "type": "object",
+      },
+      "kind": "read",
+      "name": "me",
+      "rateLimit": {
+        "max": 60,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "visitor_sessions",
+        "public_users",
+      ],
+      "writes": [],
+    },
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "maxLength": 1024,
+            "type": "string",
+          },
+        },
+        "required": [
+          "email",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "request_password_reset",
+      "rateLimit": {
+        "max": 3,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "public_users",
+      ],
+      "writes": [
+        "password_reset_tokens",
+      ],
+    },
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "newPassword": {
+            "maxLength": 4096,
+            "type": "string",
+          },
+          "token": {
+            "maxLength": 256,
+            "type": "string",
+          },
+        },
+        "required": [
+          "token",
+          "newPassword",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "reset_password",
+      "rateLimit": {
+        "max": 5,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "auth_config",
+        "password_reset_tokens",
+        "visitor_sessions",
+      ],
+      "writes": [
+        "public_users",
+        "password_reset_tokens",
+        "visitor_sessions",
+      ],
+    },
+  ],
+  "requires": [],
+  "tables": {
+    "auth_config": {
+      "kind": "published",
+      "visitorPrivileges": [
+        "SELECT",
+      ],
+    },
+    "auth_config_proposals": {
+      "kind": "private",
+      "visitorPrivileges": [],
+    },
+    "password_reset_tokens": {
+      "kind": "visitor-state",
+      "visitorPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+      ],
+    },
+    "public_users": {
+      "kind": "visitor-state",
+      "visitorPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+      ],
+    },
+    "visitor_sessions": {
+      "kind": "visitor-state",
+      "visitorPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+      ],
+    },
+  },
+}
+`;
+
+exports[`shipped plugins' public surface (#1332) comments: matches the reviewed surface 1`] = `
+{
+  "publicOperations": [
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "authorName": {
+            "maxLength": 200,
+            "type": "string",
+          },
+          "captchaToken": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string",
+              },
+              {
+                "type": "null",
+              },
+            ],
+          },
+          "content": {
+            "maxLength": 20000,
+            "type": "string",
+          },
+          "hp_address": {
+            "maxLength": 500,
+            "type": "string",
+          },
+          "pageId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string",
+          },
+          "parentId": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string",
+              },
+              {
+                "type": "null",
+              },
+            ],
+          },
+        },
+        "required": [
+          "pageId",
+          "authorName",
+          "content",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "submit",
+      "rateLimit": {
+        "max": 10,
+        "windowSeconds": 60,
+      },
+      "reads": [],
+      "writes": [
+        "comments",
+      ],
+    },
+    {
+      "captcha": "none",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "pageId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string",
+          },
+          "since": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+            "type": "string",
+          },
+        },
+        "required": [
+          "pageId",
+        ],
+        "type": "object",
+      },
+      "kind": "read",
+      "name": "list_approved",
+      "reads": [],
+      "writes": [],
+    },
+  ],
+  "requires": [],
+  "tables": {
+    "comment_meta": {
+      "kind": "private",
+      "visitorPrivileges": [],
+    },
+    "comments": {
+      "kind": "inbox",
+      "visitorPrivileges": [
+        "INSERT",
+      ],
+    },
+  },
+}
+`;
+
+exports[`shipped plugins' public surface (#1332) consent-manager: matches the reviewed surface 1`] = `
+{
+  "publicOperations": [
+    {
+      "captcha": "none",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "consentId": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string",
+          },
+          "granted": {
+            "items": {
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string",
+            },
+            "maxItems": 32,
+            "type": "array",
+          },
+          "policyVersion": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer",
+          },
+        },
+        "required": [
+          "consentId",
+          "granted",
+          "policyVersion",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "record_consent",
+      "rateLimit": {
+        "max": 20,
+        "windowSeconds": 60,
+      },
+      "reads": [],
+      "writes": [
+        "consent_log",
+      ],
+    },
+  ],
+  "requires": [],
+  "tables": {
+    "consent_log": {
+      "kind": "inbox",
+      "visitorPrivileges": [
+        "INSERT",
+      ],
+    },
+  },
+}
+`;
+
+exports[`shipped plugins' public surface (#1332) forms: matches the reviewed surface 1`] = `
+{
+  "publicOperations": [
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "captchaToken": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string",
+              },
+              {
+                "type": "null",
+              },
+            ],
+          },
+          "data": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "maxLength": 10000,
+                  "type": "string",
+                },
+                {
+                  "type": "number",
+                },
+                {
+                  "type": "boolean",
+                },
+                {
+                  "type": "null",
+                },
+              ],
+            },
+            "propertyNames": {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string",
+            },
+            "type": "object",
+          },
+          "formSlug": {
+            "maxLength": 120,
+            "minLength": 1,
+            "type": "string",
+          },
+          "honeypot": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string",
+              },
+              {
+                "type": "null",
+              },
+            ],
+          },
+          "pageId": {
+            "maxLength": 200,
+            "type": "string",
+          },
+        },
+        "required": [
+          "formSlug",
+          "data",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "submit",
+      "rateLimit": {
+        "max": 10,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "forms",
+      ],
+      "writes": [
+        "form_submissions",
+      ],
+    },
+  ],
+  "requires": [],
+  "tables": {
+    "form_submissions": {
+      "kind": "inbox",
+      "visitorPrivileges": [
+        "INSERT",
+      ],
+    },
+    "forms": {
+      "kind": "published",
+      "visitorPrivileges": [
+        "SELECT",
+      ],
+    },
+  },
+}
+`;
+
+exports[`shipped plugins' public surface (#1332) international-site: matches the reviewed surface 1`] = `
+{
+  "publicOperations": [],
+  "requires": [],
+  "tables": {},
+}
+`;
+
+exports[`shipped plugins' public surface (#1332) newsletter: matches the reviewed surface 1`] = `
+{
+  "publicOperations": [
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "maxLength": 254,
+            "pattern": "^[^\\s@]+@[^\\s@]+$",
+            "type": "string",
+          },
+          "hp_address": {
+            "maxLength": 500,
+            "type": "string",
+          },
+        },
+        "required": [
+          "email",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "subscribe",
+      "rateLimit": {
+        "max": 5,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "subscribers",
+      ],
+      "writes": [
+        "subscribers",
+      ],
+    },
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "maxLength": 128,
+            "type": "string",
+          },
+        },
+        "required": [
+          "token",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "confirm",
+      "rateLimit": {
+        "max": 10,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "subscribers",
+      ],
+      "writes": [
+        "subscribers",
+      ],
+    },
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "maxLength": 128,
+            "type": "string",
+          },
+        },
+        "required": [
+          "token",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "unsubscribe",
+      "rateLimit": {
+        "max": 10,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "subscribers",
+      ],
+      "writes": [
+        "subscribers",
+      ],
+    },
+  ],
+  "requires": [
+    "email",
+  ],
+  "tables": {
+    "campaigns": {
+      "kind": "private",
+      "visitorPrivileges": [],
+    },
+    "sends": {
+      "kind": "private",
+      "visitorPrivileges": [],
+    },
+    "subscribers": {
+      "kind": "visitor-state",
+      "visitorPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+      ],
+    },
+  },
+}
+`;
+
+exports[`shipped plugins' public surface (#1332) ratings: matches the reviewed surface 1`] = `
+{
+  "publicOperations": [
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "pageId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string",
+          },
+          "score": {
+            "maximum": 5,
+            "minimum": 1,
+            "type": "integer",
+          },
+        },
+        "required": [
+          "pageId",
+          "score",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "submit",
+      "rateLimit": {
+        "max": 20,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "ratings",
+      ],
+      "writes": [
+        "ratings",
+      ],
+    },
+    {
+      "captcha": "none",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "pageId": {
+            "maxLength": 200,
+            "type": "string",
+          },
+        },
+        "type": "object",
+      },
+      "kind": "read",
+      "name": "list_aggregates",
+      "reads": [
+        "rating_aggregates",
+      ],
+      "writes": [],
+    },
+  ],
+  "requires": [],
+  "tables": {
+    "rating_aggregates": {
+      "kind": "published",
+      "visitorPrivileges": [
+        "SELECT",
+      ],
+    },
+    "ratings": {
+      "kind": "visitor-state",
+      "visitorPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+      ],
+    },
+  },
+}
+`;

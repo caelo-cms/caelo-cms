@@ -15,6 +15,7 @@
 import {
   attachCaptchaProof,
   escapeHtml,
+  HONEYPOT_FIELD_NAME,
   honeypotBodyField,
   honeypotFieldHtml,
   isHoneypotArgTripped,
@@ -29,6 +30,7 @@ import {
   definePlugin,
   isAiDelegated,
   type PluginContextTier1,
+  PublicOperationError,
   z,
 } from "@caelo-cms/plugin-sdk";
 
@@ -82,12 +84,53 @@ function parseVerdict(raw: string): { verdict: string; decision: ModerationDecis
   return { verdict, decision: null };
 }
 
-interface SubmitInput {
-  pageId: string;
-  parentId?: string | null;
+/** A visitor's comment (#1332): validated by the host before `submit` runs. */
+const submitInput = z
+  .object({
+    pageId: z.string().min(1).max(200),
+    /** The approved comment this replies to (its id as `list_approved` returns it). */
+    parentId: z.string().max(200).nullable().optional(),
+    authorName: z.string().max(200),
+    content: z.string().max(20_000),
+    /** Ignored; the gateway verifies the proof-of-work itself. Kept so older pages still submit. */
+    captchaToken: z.string().max(200).nullable().optional(),
+    [HONEYPOT_FIELD_NAME]: z.string().max(500).optional(),
+  })
+  .strict();
+
+/** The page whose approved thread a visitor reads (#1332). */
+const listApprovedInput = z
+  .object({ pageId: z.string().min(1).max(200), since: z.string().datetime().optional() })
+  .strict();
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** One approved comment as `comment_archive.list_for_page` returns it. */
+interface ApprovedComment {
+  publicRowId: string;
+  parentId: string | null;
   authorName: string;
   content: string;
-  captchaToken?: string | null;
+  submittedAt: string;
+}
+
+/** The approved comments of a page (both the admin and the gateway serve the op). */
+async function approvedComments(
+  ctx: PluginContextTier1,
+  pageId: string,
+  since?: string,
+): Promise<ReadonlyArray<ApprovedComment>> {
+  if (!ctx.cms || !UUID_RE.test(pageId)) return [];
+  const r = await ctx.cms.call<
+    { pageId: string; status: "approved"; since?: string; limit: number },
+    { comments: ReadonlyArray<ApprovedComment> }
+  >("comment_archive.list_for_page", {
+    pageId,
+    status: "approved",
+    ...(since ? { since } : {}),
+    limit: 500,
+  });
+  return r.comments;
 }
 
 interface CommentRow {
@@ -200,7 +243,23 @@ export default definePlugin<PluginContextTier1>({
   requestedCapabilities: ["ai_provider", "chat_runner_tools", "cms_admin"],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
-  publicOperations: ["submit", "list_approved"],
+  publicOperations: [
+    {
+      name: "submit",
+      kind: "write",
+      input: submitInput,
+      rateLimit: { max: 10, windowSeconds: 60 },
+      writes: ["comments"],
+    },
+    // Reads the approved thread the admin publishes, no table of its own.
+    { name: "list_approved", kind: "read", captcha: "none", input: listApprovedInput },
+  ],
+  /**
+   * #1332 — new comments are an inbox: visitors post them and never read
+   * them back (the approved ones are published by the admin). The
+   * moderation counters are the admin's.
+   */
+  tableKinds: { comments: "inbox", comment_meta: "private" },
   /**
    * #1155 — an approval adds a comment to the page's baked thread. The
    * comment is live at once through `list_approved` (the delta feed); the
@@ -218,32 +277,35 @@ export default definePlugin<PluginContextTier1>({
   },
   operations: {
     submit: async (ctx, args) => {
-      const input = args as SubmitInput;
+      const input = submitInput.parse(args);
       // A filled honeypot gets the same answer as a real submission, so
       // the bot learns nothing — and nothing reaches the moderation inbox.
       if (isHoneypotArgTripped(args)) {
         return { commentId: "00000000-0000-0000-0000-000000000000", status: "pending" as const };
       }
-      if (!input.content.trim()) throw new Error("submit: content empty");
-      if (!input.authorName.trim()) throw new Error("submit: authorName required");
-      const ok = await ctx.captcha.requireProof(input.captchaToken ?? null);
-      if (!ok) throw new Error("submit: captcha verification failed");
+      if (!input.content.trim()) throw new PublicOperationError("submit: content empty");
+      if (!input.authorName.trim()) throw new PublicOperationError("submit: authorName required");
 
-      // Enforce thread depth.
+      // Enforce thread depth. A reply goes to an APPROVED comment of this
+      // page (#1332): the inbox is visitor-written and not readable on the
+      // public side, so the chain is walked through the published thread.
       if (input.parentId) {
+        const byId = new Map(
+          (await approvedComments(ctx, input.pageId)).map((c) => [c.publicRowId, c]),
+        );
+        if (!byId.has(input.parentId)) {
+          throw new PublicOperationError("submit: the comment you reply to is not on this page");
+        }
         let depth = 1;
         let cursor: string | null = input.parentId;
         while (cursor && depth <= MAX_THREAD_DEPTH) {
-          const parents: Array<{ parent_id: string | null }> = await ctx.query.list<
-            "comments",
-            { parent_id: string | null }
-          >("comments", { id: cursor, limit: 1 });
-          if (!parents[0]) break;
-          cursor = parents[0].parent_id;
+          const parent = byId.get(cursor);
+          if (!parent) break;
+          cursor = parent.parentId;
           depth += 1;
         }
         if (depth > MAX_THREAD_DEPTH) {
-          throw new Error(`submit: thread depth exceeds ${MAX_THREAD_DEPTH}`);
+          throw new PublicOperationError(`submit: thread depth exceeds ${MAX_THREAD_DEPTH}`);
         }
       }
 
@@ -262,28 +324,12 @@ export default definePlugin<PluginContextTier1>({
       // comment_archive after moderation. cms_public.plugin_comments
       // is now a write-only inbox; reads go through ctx.cms.call so a
       // public-DB compromise leaks at most pending submissions.
-      const input = args as { pageId: string; since?: string };
-      if (!("cms" in ctx) || !ctx.cms) return { comments: [] };
-      const r = await ctx.cms.call<
-        { pageId: string; status: "approved"; since?: string; limit: number },
-        {
-          comments: ReadonlyArray<{
-            publicRowId: string;
-            authorName: string;
-            content: string;
-            submittedAt: string;
-          }>;
-        }
-      >("comment_archive.list_for_page", {
-        pageId: input.pageId,
-        status: "approved",
-        ...(input.since ? { since: input.since } : {}),
-        limit: 200,
-      });
+      const input = listApprovedInput.parse(args);
+      const comments = await approvedComments(ctx, input.pageId, input.since);
       // Reshape to the legacy `CommentRow` shape so the Web Component +
       // tests don't need to know reads moved to cms_admin.
       return {
-        comments: r.comments.map((c) => ({
+        comments: comments.map((c) => ({
           id: c.publicRowId,
           page_id: input.pageId,
           parent_id: "",
@@ -765,14 +811,13 @@ export default definePlugin<PluginContextTier1>({
         const fd = new FormData(form);
         try {
           // P13 — solve PoW captcha (if enabled by /settings/gateway).
-          const captcha = await attachCaptchaProof().catch(() => null);
+          const captcha = await attachCaptchaProof("comments", "submit").catch(() => null);
           const json = await postPluginJson("comments", "submit", {
             pageId,
             authorName: fd.get("authorName"),
             content: fd.get("content"),
             // The honeypot rides along; `submit` judges it server-side.
             ...honeypotBodyField(fd),
-            captchaToken: "dev",
             ...(captcha ? { _caelo_captcha: captcha } : {}),
           });
           if (json.ok) {

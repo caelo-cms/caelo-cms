@@ -410,7 +410,9 @@ async function readSnapshot(
                    CASE WHEN p.tier = 2 THEN p.manifest_json END AS manifest_json,
                    CASE WHEN p.tier = 2 THEN p.source_code END AS source_code,
                    CASE WHEN p.tier = 1 THEN to_jsonb(p.approved_capabilities) END
-                     AS approved_capabilities
+                     AS approved_capabilities,
+                   CASE WHEN p.tier = 1 THEN p.approved_manifest_digest END
+                     AS approved_manifest_digest
             FROM plugins p LEFT JOIN actors a ON a.plugin_id = p.id
             WHERE p.status = 'active'`,
       ),
@@ -497,8 +499,8 @@ async function writeSnapshot(
     await replaceAll(
       tx,
       "published_plugins",
-      "id, slug, tier, version, actor_id, manifest_json, source_code, approved_capabilities",
-      "id uuid, slug text, tier smallint, version text, actor_id uuid, manifest_json jsonb, source_code text, approved_capabilities text[]",
+      "id, slug, tier, version, actor_id, manifest_json, source_code, approved_capabilities, approved_manifest_digest",
+      "id uuid, slug text, tier smallint, version text, actor_id uuid, manifest_json jsonb, source_code text, approved_capabilities text[], approved_manifest_digest text",
       snap.plugins.rows,
     );
     await replaceAll(

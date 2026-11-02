@@ -94,6 +94,7 @@ beforeAll(async () => {
     });
     if (!id) throw new Error(`no plugin row for ${p.slug}`);
     const emitted = schemaFromSpec({
+      tableKinds: p.tableKinds,
       pluginId: id,
       slug: p.slug,
       schema: p.schema,
@@ -325,7 +326,11 @@ describe("forms plugin: honeypot lands as spam", () => {
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "create_form",
-      args: { slug: "contact", displayName: "Contact us", schemaJson: {} },
+      args: {
+        slug: "contact",
+        displayName: "Contact us",
+        schemaJson: { fields: [{ name: "email", label: "Email", type: "email" }] },
+      },
     });
     expect(c.ok).toBe(true);
     const submit = await runPluginOperation({

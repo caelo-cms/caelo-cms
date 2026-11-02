@@ -175,7 +175,15 @@ interface ChallengeEnvelope {
   data?: { challenge: string; target: string; expiresAt: string };
 }
 
-export async function attachCaptchaProof(): Promise<CaptchaProof | null> {
+/**
+ * @param slug the plugin the proof is for
+ * @param operation the operation it is sent with: the gateway accepts a
+ *   proof only for the operation it was solved for (#1332)
+ */
+export async function attachCaptchaProof(
+  slug: string,
+  operation: string,
+): Promise<CaptchaProof | null> {
   // The challenge call resolves the visitor too: without the decision it
   // would drop a consented visitor's id.
   const res = await fetch("/api/captcha/challenge", {
@@ -187,17 +195,21 @@ export async function attachCaptchaProof(): Promise<CaptchaProof | null> {
   const env = (await res.json()) as ChallengeEnvelope;
   if (!env.ok || !env.data) throw new Error("captcha challenge envelope malformed");
   const { challenge, target } = env.data;
-  const nonce = await solvePow(challenge, target);
+  const nonce = await solvePow(challenge, `${slug}.${operation}`, target);
   return { challenge, nonce };
 }
 
-async function solvePow(challenge: string, target: string): Promise<string> {
+/** Mirrors the gateway's `powPreimage` (api-gateway middleware/captcha.ts). */
+async function solvePow(challenge: string, scope: string, target: string): Promise<string> {
   const enc = new TextEncoder();
   let counter = 0;
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const nonce = counter.toString(16);
-    const digest = await crypto.subtle.digest("SHA-256", enc.encode(`${challenge}${nonce}`));
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      enc.encode(`${challenge}|${scope}|${nonce}`),
+    );
     const hex = bufferToHex(digest);
     if (hex.startsWith(target)) return nonce;
     counter += 1;

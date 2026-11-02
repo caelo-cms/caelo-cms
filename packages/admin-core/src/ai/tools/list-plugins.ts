@@ -18,6 +18,7 @@
  */
 
 import { z } from "zod";
+import { awaitingApprovalReason } from "../../ops/plugins/health.js";
 import { makeListReadTool } from "./_make-read-tool.js";
 
 const listPluginsInput = z.object({}).strict();
@@ -57,7 +58,7 @@ export function describeDiscoveryFailures(
  */
 export function healthProblem(h: PluginListRow["health"]): string {
   if (h.state === "awaiting_approval") {
-    return `awaits Owner approval of ${h.awaitingCapabilities.join(", ")} at /settings/plugins`;
+    return `awaits Owner approval at /settings/plugins: ${awaitingApprovalReason(h)}`;
   }
   return h.problem?.message ?? "";
 }
@@ -71,6 +72,7 @@ interface PluginListRow {
   health: {
     state: string;
     awaitingCapabilities: string[];
+    awaitingRelease: boolean;
     problem: { message: string } | null;
   };
   requiresPlugins: string[];

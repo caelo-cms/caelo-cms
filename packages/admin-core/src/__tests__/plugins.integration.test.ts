@@ -50,6 +50,7 @@ const helloManifest = {
       created_at: "timestamp",
     },
   },
+  tableKinds: { greetings: "visitor-state" },
   operations: ["submit", "list"],
   hasStaticRender: true,
 };
@@ -69,6 +70,7 @@ export default definePlugin({
       created_at: "timestamp",
     },
   },
+  tableKinds: { greetings: "visitor-state" },
   operations: {
     submit: async ({ query }, data) => query.insert("greetings", data),
     list: async ({ query }, args) => query.list("greetings", args),
@@ -315,6 +317,9 @@ describe("plugins.activate", () => {
     if (!submit.ok) return;
     const pluginId = (submit.value as { pluginId: string }).pluginId;
     const emitted = schemaFromSpec({
+      tableKinds: Object.fromEntries(
+        Object.keys(helloManifest.schema).map((t) => [t, "visitor-state" as const]),
+      ),
       pluginId,
       slug: HELLO_SLUG,
       schema: helloManifest.schema,

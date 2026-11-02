@@ -131,7 +131,9 @@ async function expectStatus(r: Response, status: number): Promise<void> {
 }
 
 /** Fetch a challenge from the gateway and solve it, as the component kit does. */
-async function solvedProof(): Promise<{ challenge: string; nonce: string }> {
+async function solvedProof(
+  scope = "comments.submit",
+): Promise<{ challenge: string; nonce: string }> {
   const c = await handleRequest(
     new Request("http://localhost/api/captcha/challenge", {
       headers: { "X-Forwarded-For": "203.0.113.251" },
@@ -142,7 +144,9 @@ async function solvedProof(): Promise<{ challenge: string; nonce: string }> {
     (await c.json()) as { data: { challenge: string; target: string } }
   ).data;
   for (let nonce = 0; ; nonce++) {
-    const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
+    const hex = new Bun.CryptoHasher("sha256")
+      .update(`${challenge}|${scope}|${nonce}`)
+      .digest("hex");
     if (hex.startsWith(target)) return { challenge, nonce: String(nonce) };
   }
 }
@@ -309,8 +313,11 @@ describe("comments submit: ctx.captcha.requireProof follows the gateway's verdic
         }),
       ),
     );
-    expect(r.status).not.toBe(200);
-    expect(log).toContain("captcha verification failed");
+    // #1332 — dispatch refuses it before the plugin runs: comments.submit
+    // declares the default `captcha: "required"`; the reason is logged.
+    expect(r.status).toBe(403);
+    expect(((await r.json()) as { error: { kind: string } }).error.kind).toBe("CaptchaRequired");
+    expect(log).toContain("captcha proof");
   });
 
   it("refuses a forged proof at the gateway", async () => {

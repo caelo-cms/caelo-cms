@@ -12,6 +12,8 @@
  *   - id uuid primary key default gen_random_uuid() (if not declared)
  *   - FORCE ROW LEVEL SECURITY
  *   - A per-plugin policy matching current_setting('caelo.plugin_id')
+ *   - the visitor role's privileges its declared kind allows, and no more
+ *     (#1332, {@link publicTableGrants}); the admin role keeps all four
  *
  * Per-column types map to Postgres types:
  *   uuid       → uuid
@@ -33,6 +35,8 @@ import {
   type PluginIndexMap,
   type PluginSchemaMap,
   type PluginStorageZone,
+  type PluginTableKind,
+  type PluginTableKinds,
 } from "@caelo-cms/plugin-sdk";
 
 export interface EmittedSchema {
@@ -60,22 +64,37 @@ export function schemaFromSpec(opts: {
    * declares, so a caller that forgot it would drop the plugin's indexes.
    */
   indexes: PluginIndexMap | undefined;
+  /**
+   * #1332 — the manifest's `tableKinds`. Required (pass `undefined` only
+   * for a plugin without tables): every table's visitor GRANTs come from
+   * its kind, and a table without one is refused, never granted a default.
+   */
+  tableKinds: PluginTableKinds | undefined;
+  /** Which public database and roles the GRANTs are for; the live one
+   *  unless given. The staging database (#1329) passes its own. */
+  target?: PublicGrantTarget;
 }): EmittedSchema {
   assertValidPluginId(opts.pluginId, "schemaFromSpec");
   assertIndexedTablesDeclared(opts.indexes, opts.schema, "schema");
+  const target = opts.target ?? LIVE_PUBLIC_GRANT_TARGET;
   const schemaName = `plugin_${opts.slug.replace(/-/g, "_")}`;
   const stmts: string[] = [];
 
   stmts.push(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(schemaName)};`);
-  stmts.push(
-    grantStatement("cms_public", "USAGE", `SCHEMA ${quoteIdent(schemaName)}`, "public_role"),
-  );
-  stmts.push(
-    grantStatement("cms_public", "USAGE", `SCHEMA ${quoteIdent(schemaName)}`, "admin_role"),
-  );
+  for (const role of [target.visitorRole, target.adminRole]) {
+    stmts.push(grantStatement(target.database, "USAGE", `SCHEMA ${quoteIdent(schemaName)}`, role));
+  }
 
   for (const [tableName, columns] of Object.entries(opts.schema)) {
+    const kind = opts.tableKinds?.[tableName];
+    if (!kind) {
+      throw new Error(
+        `schemaFromSpec: table "${tableName}" of plugin "${opts.slug}" has no kind — declare it in tableKinds (published, inbox, visitor-state or private)`,
+      );
+    }
     stmts.push(emitCreateTable(schemaName, tableName, columns, opts.pluginId));
+    const fqTable = `${quoteIdent(schemaName)}.${quoteIdent(tableName)}`;
+    stmts.push(publicTableGrants(fqTable, kind, target).join("\n"));
     stmts.push(
       emitIndexes(schemaName, tableName, columns, "schema", opts.indexes?.[tableName] ?? []),
     );
@@ -116,9 +135,71 @@ function emitCreateTable(
     `ALTER TABLE ${fqTable} ENABLE ROW LEVEL SECURITY;`,
     `ALTER TABLE ${fqTable} FORCE  ROW LEVEL SECURITY;`,
     pluginScopePolicy(fqTable, policyName, pluginId),
-    grantStatement("cms_public", "SELECT, INSERT, UPDATE, DELETE", fqTable, "public_role"),
-    grantStatement("cms_public", "SELECT, INSERT, UPDATE, DELETE", fqTable, "admin_role"),
   ].join("\n");
+}
+
+/**
+ * #1332 — a public plugin database the visitor GRANTs are generated for:
+ * which database, the role visitors' requests run as there, and the
+ * admin's role. One generator for every such database, so the live and
+ * the staging database (#1329) cannot drift apart.
+ */
+export interface PublicGrantTarget {
+  readonly database: Exclude<PluginSchemaDatabase, "cms_admin">;
+  readonly visitorRole: string;
+  readonly adminRole: string;
+}
+
+/** The live public database: the gateway runs as `public_role`. */
+export const LIVE_PUBLIC_GRANT_TARGET: PublicGrantTarget = Object.freeze({
+  database: "cms_public",
+  visitorRole: "public_role",
+  adminRole: "admin_role",
+});
+
+/**
+ * #1332 (E10) — what the visitor role may do with a table of each kind.
+ * Enforced by Postgres, because the boundary assumes the gateway is
+ * compromised (docs/dev/public-admin-boundary.md): a host check alone
+ * would not hold against a gateway that runs other code.
+ */
+export const VISITOR_TABLE_PRIVILEGES: Readonly<Record<PluginTableKind, readonly string[]>> = {
+  published: ["SELECT"],
+  inbox: ["INSERT"],
+  "visitor-state": ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  private: [],
+};
+
+/**
+ * The privilege statements of one public plugin table. Everything the
+ * visitor role held is revoked first, so a kind that narrows (or a table
+ * provisioned before kinds existed, with all four) takes effect on the
+ * next load; then the kind's privileges are granted. The admin role keeps
+ * all four in every kind: it moderates the inbox and writes the published
+ * rows through the plugin's own operations.
+ *
+ * FIXME(issue #1333): `rating_aggregates` is published, but the ratings
+ * worker recomputes it in the admin and writes it straight into this one
+ * database with the admin role, instead of publishing it through the
+ * projection to every public database. That direct write is the reason
+ * the admin role keeps write privileges on published tables here; once
+ * #1333 moves the recompute to the projection, published tables drop it.
+ *
+ * @param fqTable the quoted `schema.table`
+ */
+export function publicTableGrants(
+  fqTable: string,
+  kind: PluginTableKind,
+  target: PublicGrantTarget,
+): string[] {
+  const visitor = VISITOR_TABLE_PRIVILEGES[kind];
+  return [
+    revokeStatement(target.database, fqTable, target.visitorRole),
+    ...(visitor.length > 0
+      ? [grantStatement(target.database, visitor.join(", "), fqTable, target.visitorRole)]
+      : []),
+    grantStatement(target.database, "SELECT, INSERT, UPDATE, DELETE", fqTable, target.adminRole),
+  ];
 }
 
 /**
@@ -375,6 +456,20 @@ function emitColumnDef(name: string, spec: string): string {
 
 /** The database a plugin schema's DDL runs in. */
 export type PluginSchemaDatabase = "cms_admin" | "cms_public";
+
+/**
+ * The revocation half of {@link publicTableGrants}, held to the same role
+ * set as {@link grantStatement}: the emitters never touch the privileges
+ * of a role they may not grant to.
+ */
+function revokeStatement(database: PluginSchemaDatabase, object: string, role: string): string {
+  if (!PLUGIN_SCHEMA_GRANTEES[database].has(role)) {
+    throw new Error(
+      `plugin schema: refusing to REVOKE ON ${object} FROM ${role} in ${database} — only ${[...PLUGIN_SCHEMA_GRANTEES[database]].join(", ")} hold plugin-schema privileges there`,
+    );
+  }
+  return `REVOKE ALL ON ${object} FROM ${role};`;
+}
 
 /**
  * Issue #635 — the roles plugin schema DDL may grant to, per database. The

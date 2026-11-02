@@ -26,6 +26,9 @@ beforeAll(async () => {
       tier: 1,
       version: "1.0.0",
       schema: slug.includes("public") ? schema : {},
+      tableKinds: slug.includes("public")
+        ? Object.fromEntries(Object.keys(schema).map((t) => [t, "visitor-state" as const]))
+        : {},
       ...(slug.includes("private")
         ? { adminSchema: schema, requestedCapabilities: ["cms_admin_schema" as const] }
         : {}),

@@ -32,6 +32,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
+import { releaseManifestDigest } from "@caelo-cms/plugin-sandbox";
 import type { PluginContext, PluginContextTier1, PluginDefinition } from "@caelo-cms/plugin-sdk";
 import { makePluginContext } from "./capabilities.js";
 import {
@@ -76,6 +77,39 @@ export interface DispatchOnlyBootstrapOpts {
 
 type Definition = PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
 
+/** A release-signed plugin this gateway verified, with its manifest's digest (#1332). */
+interface VerifiedRelease {
+  readonly definition: Definition;
+  readonly manifestDigest: string;
+}
+
+function verifiedRelease(v: { definition: Definition; manifest: unknown }): VerifiedRelease {
+  return { definition: v.definition, manifestDigest: releaseManifestDigest(v.manifest) };
+}
+
+/**
+ * Why the Owner's approval does not cover the release this gateway would
+ * run, or null when it does: a capability it asks for beyond the approved
+ * set (#1267), or a manifest other than the approved one (#1332).
+ */
+function releaseApprovalProblem(
+  row: Pick<RegistryRow, "approved_capabilities" | "approved_manifest_digest">,
+  release: VerifiedRelease | undefined,
+): string | null {
+  if (!release) return null;
+  const unapproved = unapprovedCapabilities(
+    release.definition.requestedCapabilities ?? [],
+    row.approved_capabilities,
+  );
+  if (unapproved.length > 0) {
+    return `it waits for the Owner to approve ${unapproved.join(", ")} at /settings/plugins`;
+  }
+  if (row.approved_manifest_digest !== release.manifestDigest) {
+    return "its release changes what it declares and waits for the Owner's approval at /settings/plugins";
+  }
+  return null;
+}
+
 interface RegistryRow {
   readonly id: string;
   readonly slug: string;
@@ -84,12 +118,13 @@ interface RegistryRow {
   readonly version: string;
   readonly actor_id: string | null;
   readonly approved_capabilities: readonly string[] | null;
+  readonly approved_manifest_digest: string | null;
 }
 
 let state: {
   readonly opts: DispatchOnlyBootstrapOpts;
   /** Release-signed definitions this gateway verified, by slug. */
-  readonly verified: Map<string, Definition>;
+  readonly verified: Map<string, VerifiedRelease>;
   syncedAt: number;
   inFlight: Promise<void> | null;
   lastError: string | null;
@@ -107,12 +142,12 @@ export async function bootstrapDispatchOnly(opts: DispatchOnlyBootstrapOpts): Pr
   setContextFactory(makePluginContext);
   loadedPlugins.reset();
 
-  const verified = new Map<string, Definition>();
+  const verified = new Map<string, VerifiedRelease>();
   const failed: Array<{ slug: string; reason: string }> = [];
   if (opts.testPlugins) {
     for (const tp of opts.testPlugins) {
       try {
-        verified.set(tp.definition.slug, (await verifyInMemoryPlugin(tp)).definition);
+        verified.set(tp.definition.slug, verifiedRelease(await verifyInMemoryPlugin(tp)));
       } catch (e) {
         failed.push({ slug: tp.definition.slug, reason: (e as Error).message });
       }
@@ -122,7 +157,7 @@ export async function bootstrapDispatchOnly(opts: DispatchOnlyBootstrapOpts): Pr
     for (const disk of diskPlugins(opts.pluginsRoot, failed)) {
       try {
         const v = await verifyDiskPlugin({ ...disk, publicKeyHex });
-        verified.set(v.definition.slug, v.definition);
+        verified.set(v.definition.slug, verifiedRelease(v));
       } catch (e) {
         failed.push({ slug: disk.slug, reason: (e as Error).message });
       }
@@ -209,7 +244,7 @@ async function readRegistry(opts: DispatchOnlyBootstrapOpts): Promise<RegistryRo
 
 async function reconcile(
   opts: DispatchOnlyBootstrapOpts,
-  verified: ReadonlyMap<string, Definition>,
+  verified: ReadonlyMap<string, VerifiedRelease>,
   rows: readonly RegistryRow[],
 ): Promise<void> {
   const active = new Map(rows.map((r) => [r.slug, r]));
@@ -224,10 +259,9 @@ async function reconcile(
       !row ||
       row.id !== p.pluginId ||
       (p.tier === 2 && row.version !== p.version) ||
-      // #1267 — an approval withdrawn or narrowed detaches it.
-      (p.tier === 1 &&
-        unapprovedCapabilities(p.definition.requestedCapabilities ?? [], row.approved_capabilities)
-          .length > 0);
+      // #1267 / #1332 — an approval withdrawn, narrowed or not given for
+      // this release's manifest detaches it.
+      (p.tier === 1 && releaseApprovalProblem(row, verified.get(p.slug)) !== null);
     if (stale) loadedPlugins.unload(p.slug);
   }
   for (const row of rows) {
@@ -255,20 +289,16 @@ async function reconcile(
  */
 function attachReleaseSigned(
   row: RegistryRow,
-  definition: Definition | undefined,
+  release: VerifiedRelease | undefined,
 ): LoadedPlugin | null {
-  if (!definition) return null; // active in the admin, not shipped in this image
-  // #1267 — the admin host's gate (loader.ts), applied to the definition
-  // this gateway runs: a plugin waiting for the Owner's approval of a
-  // capability runs no visitor-facing operation either.
-  const unapproved = unapprovedCapabilities(
-    definition.requestedCapabilities ?? [],
-    row.approved_capabilities,
-  );
-  if (unapproved.length > 0) {
-    console.warn(
-      `[plugin-host] ${row.slug} is not attached: it waits for the Owner to approve ${unapproved.join(", ")} at /settings/plugins`,
-    );
+  if (!release) return null; // active in the admin, not shipped in this image
+  const { definition } = release;
+  // #1267 / #1332 — the admin host's gate (loader.ts), applied to the
+  // release this gateway runs: a plugin waiting for the Owner's approval
+  // runs no visitor-facing operation either.
+  const problem = releaseApprovalProblem(row, release);
+  if (problem) {
+    console.warn(`[plugin-host] ${row.slug} is not attached: ${problem}`);
     return null;
   }
   return {

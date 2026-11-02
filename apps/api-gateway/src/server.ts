@@ -74,6 +74,7 @@ import {
   unpublishedRegistryError,
   VISITOR_ID_PURPOSE,
 } from "@caelo-cms/plugin-host";
+import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
 import { SESSION_ENTRY, STAGING_PLUGIN_STUB_BODY } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -715,7 +716,7 @@ async function servedToVisitors(
   if (!plugin) return unpublishedRegistryError() ? "unpublished" : "unknown";
   const served =
     Object.hasOwn(plugin.definition.operations, operation) &&
-    (plugin.definition.publicOperations ?? []).includes(operation);
+    publicOperationOf(plugin.definition.publicOperations, operation) !== undefined;
   return served ? "served" : "unknown";
 }
 
@@ -902,7 +903,8 @@ async function pluginOperation(
     const proof = (body as { _caelo_captcha?: { challenge: string; nonce: string } })
       ._caelo_captcha;
     if (proof) {
-      const verify = await verifyPowProof(adapter, proof);
+      // #1332 — a proof is valid only for the operation it was solved for.
+      const verify = await verifyPowProof(adapter, proof, `${slug}.${operationName}`);
       if (!verify.ok) {
         await logRow(
           {
@@ -975,7 +977,16 @@ async function pluginOperation(
               // that the operation exists.
               result.error.kind === "OperationNotPublic"
               ? 404
-              : 500;
+              : // #1332 — refused by the operation's declared contract, or
+                // by the plugin; the detail (Zod issues, the plugin's words)
+                // stays in the log like every other error (#1346).
+                result.error.kind === "InvalidInput"
+                ? 400
+                : result.error.kind === "CaptchaRequired"
+                  ? 403
+                  : result.error.kind === "Rejected"
+                    ? 422
+                    : 500;
     await logRow(
       {
         statusCode: status,

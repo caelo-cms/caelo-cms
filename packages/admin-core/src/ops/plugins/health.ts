@@ -30,8 +30,10 @@ import { z } from "zod";
  * - `running`: every live server that reported it has it loaded.
  * - `failing`: at least one live server failed to load it — `problem` says why.
  * - `awaiting_approval`: active, but its release asks for capabilities the
- *   Owner has not approved (#1267), so no server runs it until they are
- *   approved at /settings/plugins — `awaitingCapabilities` names them.
+ *   Owner has not approved (#1267) or changes its manifest (#1332), so no
+ *   server runs it until the release is approved at /settings/plugins —
+ *   `awaitingCapabilities` names new capabilities, `awaitingRelease` says
+ *   the manifest changed.
  * - `unreported`: active, but no live server has reported it yet (just
  *   activated, or every server is starting).
  * - `not_running`: not active, so no server runs it.
@@ -69,12 +71,37 @@ export const pluginHealth = z.object({
   servers: z.object({ loaded: z.number().int(), failing: z.number().int() }),
   /** The capabilities the Owner must approve before it runs, when `awaiting_approval`. */
   awaitingCapabilities: z.array(z.string()),
+  /** #1332 — when `awaiting_approval`: this release changes what the plugin
+   *  declares (visitor operations, table kinds, tools …) and needs the
+   *  Owner's approval even with no new capability. */
+  awaitingRelease: z.boolean(),
   /** Why a live server failed to load it (the most recent), when `failing`. */
   problem: pluginErrorSummary.nullable(),
   /** The latest problems of the last 7 days, newest first (at most 5). */
   recentErrors: z.array(pluginErrorSummary),
 });
 export type PluginHealth = z.infer<typeof pluginHealth>;
+
+/**
+ * What an `awaiting_approval` plugin waits for, as one clause ("its release
+ * asks for …"), for the AI tools that report it (#1267, #1332).
+ */
+export function awaitingApprovalReason(
+  h: Pick<PluginHealth, "awaitingCapabilities" | "awaitingRelease">,
+): string {
+  const parts: string[] = [];
+  if (h.awaitingCapabilities.length > 0) {
+    parts.push(
+      `asks for capabilities the Owner has not approved (${h.awaitingCapabilities.join(", ")})`,
+    );
+  }
+  if (h.awaitingRelease) {
+    parts.push(
+      "changes what it declares (its visitor operations, table permissions, tools or other manifest entries) since the Owner last approved it",
+    );
+  }
+  return `its release ${parts.join(" and ")}`;
+}
 
 /** A plugin found on disk that could not be verified, so it is not installed. */
 export const pluginDiscoveryFailure = pluginErrorSummary.extend({ slug: z.string() });
@@ -138,6 +165,8 @@ export async function readPluginHealth(
     slug: string;
     status: string;
     unapprovedCapabilities: readonly string[];
+    /** #1332 — the manifest is not the approved one. */
+    releaseUnapproved: boolean;
   }>,
 ): Promise<Map<string, PluginHealth>> {
   const out = new Map<string, PluginHealth>();
@@ -190,7 +219,7 @@ export async function readPluginHealth(
     const state: PluginHealth["state"] =
       p.status !== "active"
         ? "not_running"
-        : p.unapprovedCapabilities.length > 0
+        : p.unapprovedCapabilities.length > 0 || p.releaseUnapproved
           ? "awaiting_approval"
           : s.failing > 0
             ? "failing"
@@ -201,6 +230,7 @@ export async function readPluginHealth(
       state,
       servers: { loaded: s.loaded, failing: s.failing },
       awaitingCapabilities: state === "awaiting_approval" ? [...p.unapprovedCapabilities] : [],
+      awaitingRelease: state === "awaiting_approval" && p.releaseUnapproved,
       problem: state === "failing" && problem ? summary(problem) : null,
       recentErrors: recent.filter((r) => r.plugin_slug === p.slug).map(summary),
     });

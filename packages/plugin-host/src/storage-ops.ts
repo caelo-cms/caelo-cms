@@ -341,11 +341,22 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       if (zone === "private") {
         return settle(op, await privateInsert(tx, ctx, input, cols, values, locker, op));
       }
-      const rows = (await tx.execute(
-        sql`INSERT INTO ${table(input.schema, input.table)} (${sql.raw(cols.map((c) => `"${c}"`).join(", "))}) VALUES (${sql.join(values, sql`, `)}) RETURNING id::text AS id`,
-      )) as unknown as { id: string }[];
-      const id = rows[0]?.id;
-      if (!id) return fail(op, `${op}: no id returned`);
+      // #1332 — the id is chosen here, not read back: an inbox table grants
+      // visitors INSERT only, and `RETURNING` would need SELECT.
+      let id: string;
+      if ("id" in input.data) {
+        if (typeof input.data.id !== "string" || !UUID_RE.test(input.data.id)) {
+          return fail(op, `${op}: id must be a UUID`);
+        }
+        id = input.data.id;
+      } else {
+        id = crypto.randomUUID();
+        cols.push("id");
+        values.push(sql`${id}::uuid`);
+      }
+      await tx.execute(
+        sql`INSERT INTO ${table(input.schema, input.table)} (${sql.raw(cols.map((c) => `"${c}"`).join(", "))}) VALUES (${sql.join(values, sql`, `)})`,
+      );
       return ok({ id });
     },
   });

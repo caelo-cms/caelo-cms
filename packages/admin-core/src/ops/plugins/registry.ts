@@ -34,10 +34,11 @@ import {
 import {
   type EmittedSchema,
   externalArtifactDigest,
+  releaseManifestDigest,
   schemaFromSpec,
   validatePlugin,
 } from "@caelo-cms/plugin-sandbox";
-import type { PluginIndexes } from "@caelo-cms/plugin-sdk";
+import type { PluginIndexes, PluginTableKinds } from "@caelo-cms/plugin-sdk";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -105,6 +106,13 @@ const pluginRow = z.object({
    * grants are per artifact).
    */
   unapprovedCapabilities: z.array(z.string()),
+  /**
+   * #1332 — this release-signed plugin's manifest is not the one the Owner
+   * approved: while true an active plugin does not run (in the admin or the
+   * gateway), and Publish live refuses. `plugins.approve_capabilities`
+   * approves this release.
+   */
+  releaseUnapproved: z.boolean(),
 });
 
 interface PluginDb {
@@ -129,6 +137,7 @@ interface PluginDb {
   created_at: string | Date;
   updated_at: string | Date;
   approved_capabilities: string[] | null;
+  approved_manifest_digest: string | null;
 }
 
 /** Active plugin slug → the active plugins whose manifest requires it. */
@@ -160,12 +169,25 @@ function unapprovedOf(row: PluginDb): string[] {
     : [];
 }
 
+/**
+ * #1332 — whether an active or disabled release-signed plugin's manifest is
+ * another than the one the Owner approved (the loader's gate, loader.ts).
+ */
+function releaseUnapprovedOf(row: PluginDb): boolean {
+  return (
+    row.tier === 1 &&
+    (row.status === "active" || row.status === "disabled") &&
+    row.approved_manifest_digest !== releaseManifestDigest(row.manifest_json)
+  );
+}
+
 /** The rows `readPluginHealth` takes, with what each still waits to be approved for. */
 function healthInputs(rows: readonly PluginDb[]) {
   return rows.map((r) => ({
     slug: r.slug,
     status: r.status,
     unapprovedCapabilities: unapprovedOf(r),
+    releaseUnapproved: releaseUnapprovedOf(r),
   }));
 }
 
@@ -201,6 +223,7 @@ function rowToOut(
     requiresPlugins: requiredPluginsOf(row.manifest_json),
     requiredBy: requiredBy.get(row.slug) ?? [],
     unapprovedCapabilities: unapprovedOf(row),
+    releaseUnapproved: releaseUnapprovedOf(row),
   }));
 }
 
@@ -254,7 +277,7 @@ export const listPluginsOp = defineOperation({
              activated_by::text AS activated_by, activated_at,
              disabled_by::text AS disabled_by, disabled_at,
              rejected_by::text AS rejected_by, rejected_at, rejection_reason,
-             created_at, updated_at, approved_capabilities
+             created_at, updated_at, approved_capabilities, approved_manifest_digest
       FROM plugins
       ${where}
       ORDER BY tier ASC, slug ASC
@@ -284,7 +307,7 @@ export const getPluginOp = defineOperation({
              activated_by::text AS activated_by, activated_at,
              disabled_by::text AS disabled_by, disabled_at,
              rejected_by::text AS rejected_by, rejected_at, rejection_reason,
-             created_at, updated_at, approved_capabilities
+             created_at, updated_at, approved_capabilities, approved_manifest_digest
       FROM plugins WHERE slug = ${input.slug} LIMIT 1
     `)) as unknown as PluginDb[];
     const r = rows[0];
@@ -595,6 +618,9 @@ export const preparePluginActivationOp = defineOperation({
         message: requirementsMessage(input.slug, missing),
       });
     }
+    const unmet = await unmetHostRequirement(tx, input.slug, r.manifest_json);
+    if (unmet)
+      return err({ kind: "HandlerError", operation: "plugins.prepare_activation", message: unmet });
     const schemaName = `plugin_${input.slug.replace(/-/g, "_")}`;
     if (r.status === "disabled") {
       return ok({
@@ -626,6 +652,7 @@ export const preparePluginActivationOp = defineOperation({
     const manifest = r.manifest_json as {
       schema?: Record<string, Record<string, string>>;
       indexes?: PluginIndexes;
+      tableKinds?: PluginTableKinds;
     };
     if (!manifest?.schema || typeof manifest.schema !== "object") {
       return err({
@@ -641,6 +668,7 @@ export const preparePluginActivationOp = defineOperation({
         slug: input.slug,
         schema: manifest.schema,
         indexes: manifest.indexes?.schema,
+        tableKinds: manifest.tableKinds,
       });
     } catch (e) {
       return err({
@@ -761,6 +789,8 @@ export const activatePluginOp = defineOperation({
         message: requirementsMessage(input.slug, missing),
       });
     }
+    const unmet = await unmetHostRequirement(tx, input.slug, r.manifest_json);
+    if (unmet) return err({ kind: "HandlerError", operation: "plugins.activate", message: unmet });
 
     const schemaName = input.schemaName ?? `plugin_${input.slug.replace(/-/g, "_")}`;
 
@@ -779,6 +809,7 @@ export const activatePluginOp = defineOperation({
             disabled_by = NULL,
             disabled_at = NULL,
             approved_capabilities = ${APPROVE_REQUESTED},
+            approved_manifest_digest = ${approvedDigestOf(r)},
             updated_at = now()
         WHERE id = ${r.id}::uuid
       `);
@@ -826,6 +857,7 @@ export const activatePluginOp = defineOperation({
             activated_by = ${ctx.actorId}::uuid,
             activated_at = now(),
             approved_capabilities = ${APPROVE_REQUESTED},
+            approved_manifest_digest = ${approvedDigestOf(r)},
             updated_at = now()
         WHERE id = ${r.id}::uuid
       `);
@@ -930,6 +962,37 @@ const APPROVE_REQUESTED = sql`ARRAY(SELECT jsonb_array_elements_text(
   CASE WHEN jsonb_typeof(manifest_json -> 'requestedCapabilities') = 'array'
        THEN manifest_json -> 'requestedCapabilities' ELSE '[]'::jsonb END))`;
 
+/**
+ * #1332 (E12) — why a plugin whose manifest says `requires: ["email"]`
+ * cannot be activated yet, or null when every requirement is met. A
+ * plugin that needs mail would otherwise run half broken (a newsletter
+ * whose subscribers never get a confirmation), which §2 forbids; the
+ * message names the setup step instead.
+ */
+async function unmetHostRequirement(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  slug: string,
+  manifest: unknown,
+): Promise<string | null> {
+  const requires = (manifest as { requires?: unknown } | null)?.requires;
+  if (!Array.isArray(requires) || !requires.includes("email")) return null;
+  const rows = (await tx.execute(sql`
+    SELECT transport FROM email_config WHERE id = 1
+  `)) as unknown as { transport: string }[];
+  const transport = rows[0]?.transport ?? "none";
+  if (transport !== "none") return null;
+  return `plugin "${slug}" sends email, and no mail transport is set up: configure one first (Settings → Email, or ask the AI — it proposes the setup with propose_set_email_config and verifies it with send_test_email), then activate "${slug}" again`;
+}
+
+/**
+ * #1332 — the manifest digest an approval of this release-signed row
+ * records (null for runtime-installed plugins: their grants are per
+ * artifact, `plugin_capability_grants`).
+ */
+function approvedDigestOf(row: { manifest_json: unknown; tier?: number }): string | null {
+  return row.tier === 2 ? null : releaseManifestDigest(row.manifest_json);
+}
+
 function requestedCapabilitiesOf(manifest: unknown): string[] {
   const caps = (manifest as { requestedCapabilities?: unknown } | null)?.requestedCapabilities;
   return Array.isArray(caps) ? caps.filter((c): c is string => typeof c === "string") : [];
@@ -942,22 +1005,52 @@ export const approvePluginCapabilitiesOp = defineOperation({
   // one plugin model) — the same decision as activating the plugin.
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: z.object({ slug: z.string().min(1).max(120) }).strict(),
+  input: z
+    .object({
+      slug: z.string().min(1).max(120),
+      /** #1332 — the manifest digest the Owner was shown; a release that
+       *  replaced it since is refused instead of approved unseen. */
+      manifestDigest: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/)
+        .optional(),
+    })
+    .strict(),
   output: z.object({ approved: z.array(z.string()) }),
   handler: async (ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
-      UPDATE plugins SET approved_capabilities = ${APPROVE_REQUESTED}, updated_at = now()
-       WHERE slug = ${input.slug} AND tier = 1 AND status IN ('active', 'disabled')
-      RETURNING id::text AS id, approved_capabilities
-    `)) as unknown as { id: string; approved_capabilities: string[] }[];
-    const row = rows[0];
-    if (!row) {
+    const current = (
+      (await tx.execute(sql`
+        SELECT manifest_json FROM plugins
+         WHERE slug = ${input.slug} AND tier = 1 AND status IN ('active', 'disabled')
+         FOR UPDATE
+      `)) as unknown as { manifest_json: unknown }[]
+    )[0];
+    if (!current) {
       return err({
         kind: "HandlerError",
         operation: "plugins.approve_capabilities",
         message: `no active or disabled release-signed plugin "${input.slug}" — activate a new plugin with plugins.activate; an installed one approves its grants in the installation review`,
       });
     }
+    const digest = approvedDigestOf(current);
+    if (input.manifestDigest !== undefined && input.manifestDigest !== digest) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.approve_capabilities",
+        message: `plugin "${input.slug}" was replaced by another release since this page loaded — reload Settings → Plugins and review it again`,
+      });
+    }
+    // #1332 — the approval covers the whole manifest, not only its
+    // capability set: both are recorded together.
+    const rows = (await tx.execute(sql`
+      UPDATE plugins SET approved_capabilities = ${APPROVE_REQUESTED},
+                         approved_manifest_digest = ${digest},
+                         updated_at = now()
+       WHERE slug = ${input.slug} AND tier = 1
+      RETURNING id::text AS id, approved_capabilities
+    `)) as unknown as { id: string; approved_capabilities: string[] }[];
+    const row = rows[0];
+    if (!row) throw new Error("plugins.approve_capabilities: the locked row vanished");
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

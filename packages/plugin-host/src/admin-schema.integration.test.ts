@@ -9,7 +9,8 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { registerAdminOps } from "@caelo-cms/admin-core";
-import { definePlugin, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
+import { releaseManifestDigest } from "@caelo-cms/plugin-sandbox";
+import { definePlugin, manifestFromDefinition, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import {
@@ -286,11 +287,18 @@ describe("#389 — plugin-owned cms_admin schema", () => {
       testPlugins: [{ definition: makeNotesPlugin("t389-alpha") }],
     });
     resetPluginHost();
+    const evolved = makeNotesPlugin("t389-alpha", { rating: "int" });
+    // #1332 — a release with another manifest runs once the Owner approved it.
+    await withSystemSql(
+      (tx) =>
+        tx`UPDATE plugins SET approved_manifest_digest = ${releaseManifestDigest(manifestFromDefinition(evolved))}
+            WHERE slug = 't389-alpha'`,
+    );
     await bootstrap({
       infra,
       pluginsRoot: "/dev/null/unused",
       systemActorId: SYSTEM_ACTOR_ID,
-      testPlugins: [{ definition: makeNotesPlugin("t389-alpha", { rating: "int" }) }],
+      testPlugins: [{ definition: evolved }],
     });
     const cols = await withSystemSql(
       async (tx) =>
@@ -316,6 +324,7 @@ describe("#389 — plugin-owned cms_admin schema", () => {
       version: "0.1.0",
       tier: 1,
       schema: { rows: { page_id: "ref:pages:cascade" } },
+      tableKinds: { rows: "visitor-state" },
       operations: { noop: async () => ({}) },
     });
     const report = await bootstrap({

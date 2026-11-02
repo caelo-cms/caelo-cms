@@ -12,6 +12,7 @@ const manifest: PluginManifest = {
   version: "1.0.0",
   tier: 2,
   schema: { notes: { id: "uuid", body: "text" } },
+  tableKinds: { notes: "visitor-state" },
   operations: ["run"],
   hasStaticRender: false,
 };

@@ -8,8 +8,11 @@
  *           gateway_pow_challenges (cms_public, #635) so the verify side can
  *           reject replays.
  *
- * Verify:   client computes nonce s.t. sha256(challenge + nonce) starts with
- *           `target`. Submits {challenge, nonce} as `_caelo_captcha` field.
+ * Verify:   client computes nonce s.t. sha256(`<challenge>|<slug>.<op>|<nonce>`)
+ *           starts with `target` ({@link powPreimage}) and submits
+ *           {challenge, nonce} as the `_caelo_captcha` field of THAT
+ *           operation's request (#1332: a proof is bound to one operation,
+ *           so work done for a consent click cannot pay for a signup).
  *           Verifier marks the row `used_at = now()` atomically — replay is
  *           rejected loudly.
  *
@@ -20,8 +23,9 @@
  * Replay:   used_at flag prevents re-use; the gateway sweeps expired rows
  *           hourly itself (gc.ts).
  *
- * Binding:  none. A challenge is redeemable by whichever request presents
- *           it first, once. Binding it to the visitor cookie protected
+ * Binding:  to the operation (above), never to a visitor. A challenge is
+ *           redeemable by whichever request presents it first, once.
+ *           Binding it to the visitor cookie protected
  *           nothing — a bot that drops the cookie got unbound challenges —
  *           and made the captcha depend on a cookie the visitor may refuse.
  *           The protection is the work and the single use; the per-address
@@ -80,12 +84,30 @@ export type CaptchaVerifyResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string };
 
-/** Claim `proof`'s challenge (once) and check its work. */
+/**
+ * What the proof-of-work hashes: the challenge, the operation it is spent
+ * on (`<slug>.<operation>`) and the nonce. The component kit computes the
+ * same string (`attachCaptchaProof`); the two must not drift.
+ */
+export function powPreimage(challenge: string, scope: string, nonce: string): string {
+  return `${challenge}|${scope}|${nonce}`;
+}
+
+/**
+ * Claim `proof`'s challenge (once) and check its work for `scope`.
+ *
+ * @param scope `<slug>.<operation>` of the request the proof came with
+ */
 export async function verifyPowProof(
   adapter: DatabaseAdapter,
   proof: CaptchaProof,
+  scope: string,
 ): Promise<CaptchaVerifyResult> {
-  if (typeof proof.challenge !== "string" || typeof proof.nonce !== "string") {
+  if (
+    typeof proof?.challenge !== "string" ||
+    typeof proof.nonce !== "string" ||
+    proof.nonce.length > 64
+  ) {
     return { ok: false, reason: "malformed proof" };
   }
   const ctx = {
@@ -95,7 +117,7 @@ export async function verifyPowProof(
   };
   const digest = await crypto.subtle.digest(
     "SHA-256",
-    TEXT_ENCODER.encode(`${proof.challenge}${proof.nonce}`),
+    TEXT_ENCODER.encode(powPreimage(proof.challenge, scope, proof.nonce)),
   );
   const hex = bufferToHex(digest);
 
@@ -114,7 +136,10 @@ export async function verifyPowProof(
       return { ok: false, reason: claimRejectionReason(state) };
     }
     if (!hex.startsWith(state.target_hex)) {
-      return { ok: false, reason: "proof does not satisfy target prefix" };
+      return {
+        ok: false,
+        reason: `proof does not satisfy the target for "${scope}": solve the challenge for the operation it is sent with`,
+      };
     }
     const claimed = (await tx.execute(sql`
       UPDATE gateway_pow_challenges

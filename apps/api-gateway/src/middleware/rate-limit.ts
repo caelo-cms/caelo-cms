@@ -7,8 +7,8 @@
  * limits resolved from:
  *   1. `plugin_rate_limit_overrides` row (Owner-set or §11.A approved), as
  *      the admin publishes it into cms_public (`published_rate_limits`, #635)
- *   2. plugin manifest's `gateway.rateLimits[op]`
- *   3. default fallback (30 req / 60s)
+ *   2. the public operation's declared `rateLimit` (plugin SDK, #1332)
+ *   3. the gateway default (30 req / 60s)
  *
  * Key: `gateway-ip:${pluginSlug}:${operation}:${clientAddressHash}` —
  * never the visitor cookie, which a client sheds at will (see
@@ -20,6 +20,7 @@
  */
 
 import type { LoadedPlugin } from "@caelo-cms/plugin-host";
+import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import {
@@ -61,10 +62,6 @@ interface OverrideRow {
   window_seconds: number;
 }
 
-interface ManifestRateLimits {
-  readonly rateLimits?: Record<string, { perVisitor?: { max?: number; windowSec?: number } }>;
-}
-
 export async function resolveRateLimitSpec(
   adapter: DatabaseAdapter,
   pluginSlug: string,
@@ -97,15 +94,11 @@ export async function resolveRateLimitSpec(
   if (rows[0]) {
     resolved = { perVisitorMax: rows[0].per_visitor_max, windowSeconds: rows[0].window_seconds };
   } else {
-    // 2. Plugin manifest.
-    const manifestGateway = (
-      plugin?.definition as { manifest?: { gateway?: ManifestRateLimits } } | undefined
-    )?.manifest?.gateway;
-    const opSpec = manifestGateway?.rateLimits?.[operation]?.perVisitor;
-    resolved =
-      opSpec?.max && opSpec?.windowSec
-        ? { perVisitorMax: opSpec.max, windowSeconds: opSpec.windowSec }
-        : DEFAULT_SPEC;
+    // 2. The operation's declared `rateLimit` (#1332).
+    const declared = publicOperationOf(plugin?.definition.publicOperations, operation)?.rateLimit;
+    resolved = declared
+      ? { perVisitorMax: declared.max, windowSeconds: declared.windowSeconds }
+      : DEFAULT_SPEC;
   }
   if (mayCacheRead(startedAt)) specCache.set(cacheKey, resolved);
   return resolved;

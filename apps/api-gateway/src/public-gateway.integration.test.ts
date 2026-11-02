@@ -26,7 +26,7 @@ import {
   resetPluginHost,
   syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
-import { definePlugin, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
+import { definePlugin, type PluginAdminQuery, z } from "@caelo-cms/plugin-sdk";
 import {
   AdminDatabaseUnavailableError,
   DatabaseAdapter,
@@ -67,6 +67,7 @@ const fixture = definePlugin({
   version: "1.0.0",
   tier: 1,
   schema: { notes: { id: "uuid", visitor_id: "string", message: "string" } },
+  tableKinds: { notes: "visitor-state" },
   adminSchema: {
     settings: { label: "string", internal_note: "string" },
     drafts: { body: "string" },
@@ -74,7 +75,48 @@ const fixture = definePlugin({
   // Only `settings.label` crosses to the public side.
   visitorProjection: { settings: ["label"] },
   requestedCapabilities: ["cms_admin_schema"],
-  publicOperations: ["save", "read_setting", "read_internal", "write_setting", "vote"],
+  publicOperations: [
+    {
+      name: "save",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+    {
+      name: "read_setting",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+    {
+      name: "read_internal",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+    {
+      name: "write_setting",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+    {
+      name: "vote",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+  ],
   // #1155 — a visitor's vote changes what the plugin bakes into its page.
   staticRender: async () => "",
   bakedData: {
@@ -573,7 +615,9 @@ describe("/api/* served from cms_public alone (#635)", () => {
       expect(target).toBe("0");
       let nonce = 0;
       for (;;) {
-        const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
+        const hex = new Bun.CryptoHasher("sha256")
+          .update(`${challenge}|${SLUG}.save|${nonce}`)
+          .digest("hex");
         if (hex.startsWith(target)) break;
         nonce++;
       }

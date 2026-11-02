@@ -36,6 +36,7 @@ const manifest = {
   version: "1.0.0",
   tier: 2,
   schema: { items: { id: "uuid", title: "string", status: "enum:new,archived" } },
+  tableKinds: { items: "visitor-state" },
   operations: ["list", "add", "archive"],
   hasStaticRender: false,
   adminPanels: [
@@ -89,6 +90,7 @@ const source = `export default {
   version: "1.0.0",
   tier: 2,
   schema: { items: { id: "uuid", title: "string", status: "enum:new,archived" } },
+  tableKinds: { items: "visitor-state" },
   operations: {
     list: async (ctx) => ({ items: await ctx.query.list("items", { limit: 100 }) }),
     add: async (ctx, args) => {

@@ -42,6 +42,14 @@ if (!ADMIN_URL || !PUBLIC_URL || !PUBLIC_ROLE_URL) throw new Error("DB URLs requ
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const FORM_SLUG = "test-p12-contact";
+/** #1332 — a form definition the submissions below fit (each field optional). */
+const OPEN_FIELDS = {
+  fields: [
+    { name: "x", label: "X" },
+    { name: "n", label: "N" },
+    { name: "secret", label: "Secret" },
+  ],
+};
 
 let adapter: DatabaseAdapter;
 let gatewayAdapter: DatabaseAdapter;
@@ -90,7 +98,13 @@ async function provisionSchemaFor(
     },
   );
   if (!id) throw new Error(`provisionSchemaFor: no plugin row for ${slug}`);
-  const emitted = schemaFromSpec({ pluginId: id, slug, schema, indexes });
+  const emitted = schemaFromSpec({
+    tableKinds: Object.fromEntries(Object.keys(schema).map((t) => [t, "visitor-state" as const])),
+    pluginId: id,
+    slug,
+    schema,
+    indexes,
+  });
   await adapter.provisionPluginPublicSchema({ pluginId: id, sql: emitted.sql });
 }
 
@@ -134,7 +148,9 @@ async function captchaSettings(next?: {
  * plugin's captcha check follows the gateway's verification in every
  * environment, so a gateway submission without one is refused).
  */
-async function captchaProof(): Promise<{ _caelo_captcha: { challenge: string; nonce: string } }> {
+async function captchaProof(
+  scope = "forms.submit",
+): Promise<{ _caelo_captcha: { challenge: string; nonce: string } }> {
   const c = await handleRequest(
     new Request("http://localhost/api/captcha/challenge", { headers: BEHIND_CADDY }),
   );
@@ -142,7 +158,9 @@ async function captchaProof(): Promise<{ _caelo_captcha: { challenge: string; no
     (await c.json()) as { data: { challenge: string; target: string } }
   ).data;
   for (let nonce = 0; ; nonce++) {
-    const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
+    const hex = new Bun.CryptoHasher("sha256")
+      .update(`${challenge}|${scope}|${nonce}`)
+      .digest("hex");
     if (hex.startsWith(target)) return { _caelo_captcha: { challenge, nonce: String(nonce) } };
   }
 }
@@ -221,8 +239,8 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
         displayName: "Contact Us",
         schemaJson: {
           fields: [
-            { name: "email", type: "email" },
-            { name: "message", type: "text" },
+            { name: "email", label: "Email", type: "email" },
+            { name: "message", label: "Message", type: "text" },
           ],
         },
       },
@@ -281,7 +299,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "create_form",
-      args: { slug: FORM_SLUG, displayName: "C", schemaJson: {} },
+      args: { slug: FORM_SLUG, displayName: "C", schemaJson: OPEN_FIELDS },
     });
     const sub = await runPluginOperation({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
@@ -336,7 +354,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
       invocation: sys,
       pluginSlug: "forms",
       operationName: "create_form",
-      args: { slug: FORM_SLUG, displayName: "C", schemaJson: {} },
+      args: { slug: FORM_SLUG, displayName: "C", schemaJson: OPEN_FIELDS },
     });
     const ids: string[] = [];
     for (const n of [1, 2]) {
@@ -411,12 +429,17 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     } finally {
       console.error = original;
     }
-    expect(r.status).toBe(500); // OperationFailed surfaced as 500
-    // #1326 — the visitor gets the kind and the request id; the plugin's
-    // message is in the gateway log under that id.
+    // #1332 — the plugin refuses it in words for the visitor (422
+    // Rejected); #1326 — the response carries only the kind and the
+    // request id, the words are in the gateway log. P6 (#1336): they name
+    // no form slug.
+    expect(r.status).toBe(422);
     const body = (await r.json()) as { ok: boolean; error: { kind: string; requestId: string } };
+    expect(body.error.kind).toBe("Rejected");
     expect(Object.keys(body.error).sort()).toEqual(["kind", "requestId"]);
-    expect(logged.join("\n")).toContain("no form with slug");
+    const log = logged.join("\n");
+    expect(log).toContain("this form does not exist");
+    expect(log).not.toContain("no-such-form");
   });
 
   it("cross-plugin isolation: another plugin can't read forms data", async () => {
@@ -436,6 +459,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
           submitted_at: "timestamp",
         },
       },
+      tableKinds: { form_submissions: "visitor-state" },
       operations: {
         peek: async (ctx) => ctx.query.list("form_submissions", { limit: 100 }),
       },
@@ -454,7 +478,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "forms",
       operationName: "create_form",
-      args: { slug: FORM_SLUG, displayName: "C", schemaJson: {} },
+      args: { slug: FORM_SLUG, displayName: "C", schemaJson: OPEN_FIELDS },
     });
     await runPluginOperation({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },

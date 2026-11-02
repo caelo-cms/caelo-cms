@@ -51,6 +51,7 @@ describe("schemaFromSpec — indexes", () => {
 
   it("emits declared (and unique) indexes on the whole table, and no host index", () => {
     const { sql } = schemaFromSpec({
+      tableKinds: Object.fromEntries(Object.keys(schema).map((t) => [t, "visitor-state" as const])),
       pluginId: PID,
       slug: "probe",
       schema,
@@ -67,7 +68,13 @@ describe("schemaFromSpec — indexes", () => {
   });
 
   it("drops the table's caelo_ix_ indexes it does not emit — all of them when none is declared", () => {
-    const { sql } = schemaFromSpec({ pluginId: PID, slug: "probe", schema, indexes: undefined });
+    const { sql } = schemaFromSpec({
+      tableKinds: Object.fromEntries(Object.keys(schema).map((t) => [t, "visitor-state" as const])),
+      pluginId: PID,
+      slug: "probe",
+      schema,
+      indexes: undefined,
+    });
     expect(sql).toContain("starts_with(indexname, 'caelo_ix_')");
     expect(sql).toContain("indexname <> ALL (ARRAY[]::text[])");
     expect(sql).toContain("EXECUTE format('DROP INDEX %I.%I', 'plugin_probe', ix);");
@@ -76,6 +83,7 @@ describe("schemaFromSpec — indexes", () => {
   it("refuses indexes on an undeclared table or column, a jsonb or caelo_ column", () => {
     const emit = (indexes: Record<string, string[][]>) =>
       schemaFromSpec({
+        tableKinds: { entries: "visitor-state" },
         pluginId: PID,
         slug: "probe",
         schema: { entries: { status: "string", data: "jsonb" } },

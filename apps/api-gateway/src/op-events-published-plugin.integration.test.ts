@@ -32,7 +32,7 @@ import {
   resetPluginHost,
 } from "@caelo-cms/plugin-host";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
-import { definePlugin } from "@caelo-cms/plugin-sdk";
+import { definePlugin, z } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
@@ -68,7 +68,17 @@ const offFixture = definePlugin({
   version: "1.0.0",
   tier: 1,
   schema: { pings: { id: "uuid" } },
-  publicOperations: ["ping"],
+  tableKinds: { pings: "visitor-state" },
+  publicOperations: [
+    {
+      name: "ping",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["pings"],
+      writes: ["pings"],
+    },
+  ],
   operations: {
     ping: async () => ({ pong: true }),
   },

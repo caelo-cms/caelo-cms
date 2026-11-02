@@ -53,6 +53,8 @@ describe("comments submit honeypot", () => {
     const r = await submit(h.ctx, { ...COMMENT, [HONEYPOT_FIELD_NAME]: "" });
     expect(r).toEqual({ commentId: "c1", status: "pending" });
     expect(h.state.inserts).toBe(1);
-    expect(h.state.captchaCalls).toBe(1);
+    // #1332 — the captcha is the host's: dispatch refuses a visitor call
+    // without a proof bound to comments.submit before this handler runs.
+    expect(h.state.captchaCalls).toBe(0);
   });
 });

@@ -28,6 +28,7 @@
       state: "running" | "failing" | "awaiting_approval" | "unreported" | "not_running";
       servers: { loaded: number; failing: number };
       awaitingCapabilities: string[];
+      awaitingRelease: boolean;
       problem: PluginErrorSummary | null;
       recentErrors: PluginErrorSummary[];
     };
@@ -83,9 +84,13 @@
   {/if}
   {#if health.state === "awaiting_approval"}
     <p class="max-w-md text-xs" data-testid="plugin-health-awaiting-{slug}">
-      Not running: this version needs your approval for
-      <span class="font-mono">{health.awaitingCapabilities.join(", ")}</span>. Click
-      "Approve new permissions" to start it.
+      Not running: this version needs your approval
+      {#if health.awaitingCapabilities.length > 0}
+        for <span class="font-mono">{health.awaitingCapabilities.join(", ")}</span>
+      {/if}
+      {#if health.awaitingRelease}
+        {health.awaitingCapabilities.length > 0 ? "and" : "because"} it changes what the plugin declares
+      {/if}. Click "Approve this release" to start it.
     </p>
   {/if}
   {#if health.problem}

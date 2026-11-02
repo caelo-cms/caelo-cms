@@ -99,6 +99,7 @@ async function provisionAll(
     );
     if (!id) throw new Error(`provisionAll: no plugin row for ${p.slug}`);
     const emitted = schemaFromSpec({
+      tableKinds: p.tableKinds,
       pluginId: id,
       slug: p.slug,
       schema: p.schema,

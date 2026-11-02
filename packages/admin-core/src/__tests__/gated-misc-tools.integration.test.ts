@@ -78,6 +78,7 @@ const helloManifest = {
       created_at: "timestamp",
     },
   },
+  tableKinds: { greetings: "visitor-state" },
   operations: ["submit", "list"],
   hasStaticRender: true,
 };
@@ -96,6 +97,7 @@ export default definePlugin({
       created_at: "timestamp",
     },
   },
+  tableKinds: { greetings: "visitor-state" },
   operations: {
     submit: async ({ query }, data) => query.insert("greetings", data),
     list: async ({ query }, args) => query.list("greetings", args),
