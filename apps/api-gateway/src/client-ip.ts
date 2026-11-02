@@ -18,11 +18,13 @@
  *                   the gateway's ingress is internal-and-LB only → 2.
  *   - gcp-firebase: Cloud Run's front end appends the address it got the
  *                   connection from → 1. For /api/** behind the Firebase
- *                   Hosting rewrite that address is the Hosting CDN edge,
- *                   not the visitor: the gateway is publicly invokable on
- *                   *.run.app, so any entry before it can be forged and
- *                   none may be trusted. IP-scoped buckets there are per CDN
- *                   edge address — coarse, but not rotatable.
+ *                   Hosting rewrite that address is a Google front-end
+ *                   proxy, not the visitor, and it changes from request to
+ *                   request (measured, docs/dev/firebase-hosting-behaviour.md):
+ *                   the gateway is publicly invokable on *.run.app, so any
+ *                   entry before it can be forged and none may be trusted.
+ *                   IP-scoped buckets there bind almost nothing; the
+ *                   binding guard on gcp-firebase has to be per-operation.
  *   - self-hosted:  Caddy (no `trusted_proxies`) replaces the header with
  *                   the peer address; the gateway is reachable only on the
  *                   Compose network → 1.
