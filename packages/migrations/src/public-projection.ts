@@ -23,8 +23,9 @@
  * cms_admin migration 0281 puts triggers on every source table: each
  * committed write leaves a row in `public_projection_outbox` (same
  * transaction as the write). {@link drainPublicProjection} republishes the
- * sections named there and deletes the rows; the admin runs it on a short
- * poll (admin-core `startPublicProjectionPublisher`). The migration job and
+ * sections named there and deletes the rows; the admin runs it right after
+ * each of its own writes and as a backstop on every scheduler tick
+ * (admin-core `createPublicProjectionPublisher`, #1140). The migration job and
  * the admin's boot publish everything ({@link publishPublicProjection}),
  * so an install converges even when the outbox was written before the
  * triggers that a newer release adds.

@@ -86,6 +86,7 @@ describe("adminEnvContract", () => {
       MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
       CAELO_MCP_IAP_SERVICE_ACCOUNT: "caelo-mcp@acme.iam.gserviceaccount.com",
       CAELO_MEDIA_BUCKET: "acme-caelo-production-media",
+      CAELO_SCHEDULER_SERVICE_ACCOUNT: "caelo-production-scheduler@acme.iam.gserviceaccount.com",
       // #806 — where Settings → MCP → Remote writes the OAuth client.
       CAELO_OPERATOR_OAUTH_CLIENT_STORE:
         "projects/acme/secrets/caelo-production-operator-oauth-client",
@@ -126,6 +127,7 @@ describe("adminEnvContract", () => {
       MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
       CAELO_MCP_IAP_SERVICE_ACCOUNT: "caelo-mcp@acme.iam.gserviceaccount.com",
       CAELO_MEDIA_BUCKET: "acme-caelo-production-media",
+      CAELO_SCHEDULER_SERVICE_ACCOUNT: "caelo-production-scheduler@acme.iam.gserviceaccount.com",
       // #806 — where Settings → MCP → Remote writes the OAuth client.
       CAELO_OPERATOR_OAUTH_CLIENT_STORE:
         "projects/acme/secrets/caelo-production-operator-oauth-client",

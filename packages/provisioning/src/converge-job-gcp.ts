@@ -300,6 +300,9 @@ export function gcpConvergeDeps(
         domain: meta.domain,
         stagingHost: installStagingHost(meta),
         ownerEmail: meta.ownerEmail,
+        ...(meta.schedulerIntervalMinutes !== undefined
+          ? { schedulerIntervalMinutes: meta.schedulerIntervalMinutes }
+          : {}),
         targetTag: m.version,
         // This code is the target release's (stage 2), so its contract is it.
         infraContractVersion: INFRA_CONTRACT_VERSION,

@@ -32,9 +32,9 @@ import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publ
 import { applyPathMoveEffects } from "../ops/content/path-moves.js";
 import type { RedirectSyncTargetStatus } from "../ops/redirect_sync.js";
 import {
-  _redirectSyncPollOnceForTests,
-  startRedirectSyncWorker,
-  stopRedirectSyncWorker,
+  registerRedirectSyncRunner,
+  retryRedirectSync,
+  unregisterRedirectSyncRunner,
 } from "../redirect-sync-worker.js";
 import { registerAdminOps } from "../register.js";
 
@@ -152,8 +152,8 @@ beforeAll(async () => {
   await sys(
     (tx) => tx`UPDATE site_defaults SET site_base_url = 'https://www.example.test' WHERE id = 1`,
   );
-  // A huge interval: the tests drive the retry poll themselves.
-  startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+  // The tests drive the retry (the scheduler tick's task) themselves.
+  registerRedirectSyncRunner({ adapter, registry });
 });
 
 beforeEach(async () => {
@@ -170,7 +170,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
-  stopRedirectSyncWorker();
+  unregisterRedirectSyncRunner();
   await sys((tx) => tx`UPDATE site_defaults SET site_base_url = ${savedBaseUrl} WHERE id = 1`);
   await adapter.close();
   await rm(root, { recursive: true, force: true });
@@ -285,13 +285,13 @@ describe("redirect sync on save (#1157)", () => {
 
     // Not due yet: the poll leaves it alone.
     await serve("production", { "index.html": "home", "about/index.html": "about" });
-    await _redirectSyncPollOnceForTests({ adapter, registry });
+    await retryRedirectSync({ adapter, registry });
     expect((await status()).production?.inSync).toBe(false);
 
     await sys(
       (tx) => tx`UPDATE redirect_sync_state SET next_attempt_at = now() - interval '1 second'`,
     );
-    await _redirectSyncPollOnceForTests({ adapter, registry });
+    await retryRedirectSync({ adapter, registry });
     const live = await status();
     expect(live.production?.inSync).toBe(true);
     expect(live.production?.last).toMatchObject({ status: "applied", trigger: "retry" });
@@ -299,7 +299,7 @@ describe("redirect sync on save (#1157)", () => {
   });
 
   it("without the post-commit runner the target stays behind until the worker syncs it", async () => {
-    stopRedirectSyncWorker();
+    unregisterRedirectSyncRunner();
     try {
       const r = await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
       expect(r.ok).toBe(true);
@@ -307,16 +307,16 @@ describe("redirect sync on save (#1157)", () => {
       const s = await status();
       expect(s.production?.inSync).toBe(false);
       expect(s.production?.lastError).toBeNull();
-      await _redirectSyncPollOnceForTests({ adapter, registry });
+      await retryRedirectSync({ adapter, registry });
       expect((await status()).production?.inSync).toBe(true);
       expect(await snippet("production")).toContain("/old");
     } finally {
-      startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+      registerRedirectSyncRunner({ adapter, registry });
     }
   });
 
   it("a retry only touches targets whose backoff has elapsed", async () => {
-    stopRedirectSyncWorker();
+    unregisterRedirectSyncRunner();
     try {
       await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
       // Both targets failed earlier (the change is folded); production backs
@@ -332,13 +332,13 @@ describe("redirect sync on save (#1157)", () => {
             failed_attempts = 1, next_attempt_at = EXCLUDED.next_attempt_at
         `;
       });
-      await _redirectSyncPollOnceForTests({ adapter, registry });
+      await retryRedirectSync({ adapter, registry });
       const s = await status();
       expect(s.staging?.inSync).toBe(true);
       expect(s.production?.inSync).toBe(false);
       expect(s.production?.last).toBeNull();
     } finally {
-      startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+      registerRedirectSyncRunner({ adapter, registry });
     }
   });
 
@@ -607,7 +607,7 @@ describe("redirect sync off the write path (#1254)", () => {
   });
 
   it("a page move that creates a redirect commits while the sync state rows are locked", async () => {
-    stopRedirectSyncWorker();
+    unregisterRedirectSyncRunner();
     const holder = new SQL(ADMIN_URL!);
     let release: () => void = () => undefined;
     const released = new Promise<void>((r) => {
@@ -649,18 +649,18 @@ describe("redirect sync off the write path (#1254)", () => {
       // The change waits in the log; the worker pushes it.
       expect(await changeRows()).toBe(1);
       expect((await status()).production?.inSync).toBe(false);
-      await _redirectSyncPollOnceForTests({ adapter, registry });
+      await retryRedirectSync({ adapter, registry });
       expect((await status()).production?.inSync).toBe(true);
       expect(await snippet("production")).toContain("/team");
     } finally {
       release();
       await holder.end();
-      startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+      registerRedirectSyncRunner({ adapter, registry });
     }
   });
 
   it("several pending changes are pushed by one coalesced run", async () => {
-    stopRedirectSyncWorker();
+    unregisterRedirectSyncRunner();
     try {
       for (const n of [1, 2, 3]) {
         const r = await createRedirects([{ fromPath: `/old-${n}`, toPath: "/about" }]);
@@ -688,7 +688,7 @@ describe("redirect sync off the write path (#1254)", () => {
       await syncDetached({ trigger: "save", publisher: counting });
       expect(pushes).toBe(1);
     } finally {
-      startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+      registerRedirectSyncRunner({ adapter, registry });
     }
   });
 
@@ -803,7 +803,7 @@ describe("redirect sync off the write path (#1254)", () => {
         await tx`DELETE FROM deploy_runs WHERE id = ${run}::uuid`;
       });
     }
-    await _redirectSyncPollOnceForTests({ adapter, registry });
+    await retryRedirectSync({ adapter, registry });
     expect((await status()).production?.inSync).toBe(true);
     expect(await snippet("production")).toContain("/during-publish");
   });

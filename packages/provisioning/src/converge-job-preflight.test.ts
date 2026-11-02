@@ -43,6 +43,11 @@ const PREDEFINED: Record<string, readonly string[]> = {
     "cloudscheduler.jobs.get",
     "cloudscheduler.jobs.update",
   ],
+  "roles/workflows.editor": [
+    "workflows.workflows.create",
+    "workflows.workflows.get",
+    "workflows.workflows.update",
+  ],
   "roles/logging.logWriter": ["logging.logEntries.create"],
 };
 

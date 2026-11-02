@@ -33,6 +33,10 @@ pulumi stack output bootstrapUrl
 
 Open that URL once Caddy has issued the cert (~30 s).
 
+## Scheduler tick
+
+The Compose file runs a `caelo-scheduler` container (the admin image, no database access, only the internal secret it signs with) that POSTs the admin's `/api/internal/scheduler/tick` every `schedulerIntervalMinutes` (#1140; 1–15, default 5). The admin runs its periodic work and plugin workers on that tick. Change the interval with `pulumi config set caelo-self-hosted:schedulerIntervalMinutes 2` here, or `cms-provision init --scheduler-interval-minutes 2` (recorded in `.caelo/config.json`). An install from before the scheduler gets the container on its next `upgrade`, which rewrites the Compose file.
+
 ## Connection budget
 
 The generated Compose file starts Postgres with `max_connections=100` and sizes every pool from it (#1254, docs/dev/connection-budget.md): the admin gets a cms_admin pool of 77 and a cms_public pool of 4, the gateway a pool of 2, and static builds 2 per pool.

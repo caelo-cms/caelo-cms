@@ -68,7 +68,11 @@ import {
   REQUIRED_API_LIST,
   serviceAccountExists,
 } from "../gcloud.js";
-import { GCP_STACK_ENV, upgraderServiceAccountEmail } from "../gcp-names.js";
+import {
+  GCP_STACK_ENV,
+  schedulerServiceAccountEmail,
+  upgraderServiceAccountEmail,
+} from "../gcp-names.js";
 import { INFRA_CONTRACT_VERSION } from "../infra-contract.js";
 import {
   INSTALL_JOB_NAME,
@@ -116,10 +120,12 @@ import {
   resolveStackRemoteMcpIdentity,
 } from "../remote-mcp.js";
 import type { RunMode } from "../run-mode.js";
+import { ensureSchedulerTick } from "../scheduler-setup.js";
 import { selfCommand } from "../self-command.js";
 import {
   ABSENT_DEFAULT_FIREWALL_RULES,
   cloudSqlPrivateDnsName,
+  parseSchedulerIntervalMinutes,
   type RemoteMcpIdentity,
   sameRemoteMcpIdentity,
 } from "../stack-contract.js";
@@ -234,7 +240,15 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // drops the LB / Cloud CDN / Cloud Armor lines (saves ~$19/mo
   // vs gcp). Default 'gcp' for backwards compatibility with
   // installs that don't set the field.
-  const estimate = estimateGcpCost({ ...GCP_STACK_KNOB_DEFAULTS, provider, region });
+  const estimate = estimateGcpCost({
+    ...GCP_STACK_KNOB_DEFAULTS,
+    provider,
+    region,
+    // #1140 — the tick's line follows the knob the wizard recorded.
+    ...(meta?.schedulerIntervalMinutes !== undefined
+      ? { schedulerIntervalMinutes: meta.schedulerIntervalMinutes }
+      : {}),
+  });
   note(
     [
       bold(
@@ -523,6 +537,18 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // === 11.45. The converge job: releases that change the cloud setup (#819) ===
   const convergeReady = await stepConvergeJob(projectId, region, releaseVersion);
 
+  // === 11.47. The scheduler tick: periodic work + plugin workers (#1140) ===
+  // Before operator access, which keeps the scheduler's account on IAP.
+  const schedulerReady = await stepSchedulerTick(
+    projectId,
+    region,
+    provider,
+    ownerEmail,
+    identity?.identity.adminUrl ?? null,
+    meta.schedulerIntervalMinutes,
+  );
+  const keepScheduler = schedulerReady || (await schedulerExists(projectId));
+
   // === 11.5. Operator access: IAP follows the Caelo user list ===
   await stepOperatorAccessSync(
     projectId,
@@ -530,6 +556,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     provider,
     ownerEmail,
     keepSigner ? [`serviceAccount:${upgraderServiceAccountEmail(projectId, GCP_STACK_ENV)}`] : [],
+    keepScheduler ? [schedulerServiceAccountEmail(projectId, GCP_STACK_ENV)] : [],
   );
 
   // === 11.6. Remote MCP (#806): LB rules (gcp) + a check of the identity env ===
@@ -546,9 +573,10 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // A fresh install ran every converge step above, so it is at this CLI's
   // infrastructure contract — recorded only when the upgrader and the
   // converge job are in place (the steps contract bumps 2 and 9 added) and
-  // remote MCP's steps (#806, bump 10) succeeded. With the release version,
-  // the admin can install the next update itself.
-  if (upgraderReady && convergeReady && remoteMcpReady) {
+  // remote MCP's steps (#806, bump 10) and the scheduler tick (#1140, bump
+  // 17) succeeded. With the release version, the admin can install the next
+  // update itself.
+  if (upgraderReady && convergeReady && remoteMcpReady && schedulerReady) {
     const version = releaseVersion;
     // #1025 — the linux/amd64 forms Cloud Run reports, next to the indexes,
     // so the upgrader recognises what serves without a registry lookup.
@@ -1216,6 +1244,78 @@ async function upgraderExists(projectId: string): Promise<boolean> {
   return r.ok;
 }
 
+/** Whether the scheduler tick's account exists from an earlier run (it keeps its IAP access). */
+async function schedulerExists(projectId: string): Promise<boolean> {
+  const r = await gcloud([
+    "iam",
+    "service-accounts",
+    "describe",
+    schedulerServiceAccountEmail(projectId, GCP_STACK_ENV),
+    `--project=${projectId}`,
+    "--format=value(email)",
+  ]);
+  return r.ok;
+}
+
+/**
+ * #1140 — set up the scheduler tick (scheduler-setup.ts): the one Cloud
+ * Scheduler job that calls the admin's tick every `schedulerIntervalMinutes`
+ * through IAP. After migrations (the admin answers the tick once its tables
+ * exist) and before operator access. Not fatal: the site works without it,
+ * but plugin workers, update checks and clean-up do not run, so a failure
+ * warns loudly and the install is not recorded at this contract — the next
+ * wizard pass or `upgrade` retries. Idempotent.
+ *
+ * @returns whether the tick is in place
+ */
+async function stepSchedulerTick(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+  ownerEmail: string,
+  adminUrl: string | null,
+  recordedInterval: number | undefined,
+): Promise<boolean> {
+  const s = spinner();
+  s.start("Setting up the scheduler tick (periodic work and plugin workers)...");
+  const failed = (error: string) => {
+    s.stop(yellow(`Scheduler tick not set up: ${error}`));
+    log.warn(
+      `The install works, but plugin workers (newsletter sends, rating aggregates), update checks and clean-up do not run until this succeeds. Re-run the installer or ${bold(selfCommand("upgrade"))} once the cause is fixed.`,
+    );
+    return false;
+  };
+  let intervalMinutes: number;
+  try {
+    intervalMinutes = parseSchedulerIntervalMinutes(
+      recordedInterval,
+      "install.json schedulerIntervalMinutes",
+    );
+  } catch (e) {
+    return failed((e as Error).message);
+  }
+  if (!adminUrl) return failed("the admin's URL could not be read (see the remote-MCP step above)");
+  const resolved = await resolveOperatorAccessTarget({
+    provider,
+    projectId,
+    region,
+    env: GCP_STACK_ENV,
+    ownerEmail,
+  });
+  if (!resolved.ok) return failed(resolved.error);
+  const r = await ensureSchedulerTick({
+    projectId,
+    region,
+    env: GCP_STACK_ENV,
+    adminUrl,
+    resource: resolved.target.resource,
+    intervalMinutes,
+  });
+  if (!r.ok) return failed(r.error);
+  s.stop(green(`Scheduler tick ready (every ${intervalMinutes} min, ${r.done.length} steps)`));
+  return true;
+}
+
 /**
  * Set up the operator-access sync job (operator-access.ts): the only
  * principal that may change who passes IAP, run as the operator's gcloud
@@ -1228,6 +1328,7 @@ async function stepOperatorAccessSync(
   provider: "gcp" | "gcp-firebase",
   ownerEmail: string,
   mcpSigners: readonly string[],
+  iapServiceAccounts: readonly string[],
 ): Promise<void> {
   const s = spinner();
   s.start("Setting up the operator-access sync job (Google IAP follows the user list)...");
@@ -1239,7 +1340,7 @@ async function stepOperatorAccessSync(
     ownerEmail,
   });
   const r = resolved.ok
-    ? await ensureOperatorAccessSync({ ...resolved.target, mcpSigners })
+    ? await ensureOperatorAccessSync({ ...resolved.target, mcpSigners, iapServiceAccounts })
     : { ok: false as const, done: [], error: resolved.error };
   if (!r.ok) {
     s.stop(red(`Failed: ${r.error}`));

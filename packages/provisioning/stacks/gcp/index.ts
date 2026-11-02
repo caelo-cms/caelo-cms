@@ -1156,6 +1156,18 @@ new gcp.iap.WebBackendServiceIamMember(
 // the audit job above.
 
 // =========================================================================
+// Scheduler tick — deliberately NOT here
+// =========================================================================
+//
+// #1140 — one Cloud Scheduler job starts a Cloud Workflows execution every
+// `schedulerIntervalMinutes` (1–15, default 5); the workflow signs an IAP
+// credential as the scheduler's own service account and POSTs the admin's
+// /api/internal/scheduler/tick, where the admin runs its periodic work and
+// plugin workers from its due-table. The CLI owns the account, its grants,
+// the workflow and the job (packages/provisioning/src/scheduler-setup.ts),
+// for the same reason as the audit job above.
+
+// =========================================================================
 // Operator access — deliberately NOT here
 // =========================================================================
 //

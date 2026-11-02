@@ -44,6 +44,9 @@ const ownerEmail = cfg.require("ownerEmail");
 const caeloDir = cfg.get("caeloDir") ?? "./.caelo";
 // #553 — same knob as every adapter; undefined = stack-contract default.
 const adminMemory = cfg.get("adminMemory");
+// #1140 — how often the scheduler container calls the admin's tick (1–15
+// minutes, default 5); the generator refuses anything outside that.
+const schedulerIntervalMinutes = cfg.getNumber("schedulerIntervalMinutes");
 // #696 — the prebuilt, cosign-verified release images, pinned by digest
 // (`ghcr.io/caelo-cms/<svc>@sha256:…`; the generator refuses anything else).
 // `cms-provision init` resolves + verifies them and records them in
@@ -84,6 +87,7 @@ const composeYaml = pulumi
       resendApiKey: process.env.RESEND_API_KEY,
       diskSize: "20Gi",
       ...(adminMemory ? { adminMemory } : {}),
+      ...(schedulerIntervalMinutes !== undefined ? { schedulerIntervalMinutes } : {}),
       images: {
         mode: "release",
         admin: adminImage,

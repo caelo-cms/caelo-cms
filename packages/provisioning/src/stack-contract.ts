@@ -49,6 +49,7 @@ import {
   mcpIapServiceAccountEmail,
   operatorAccessJobResource,
   runServiceAccountEmail,
+  schedulerServiceAccountEmail,
   staticPublisherServiceAccountId,
   upgraderJobResource,
 } from "./gcp-names.js";
@@ -327,6 +328,54 @@ export const AUDIT_RESULTS_BUCKET_ENV_VAR = "CAELO_AUDIT_RESULTS_BUCKET";
 export const CAPTURE_JOB_ENV_VAR = "CAELO_CAPTURE_JOB";
 export const CAPTURE_BUCKET_ENV_VAR = "CAELO_CAPTURE_BUCKET";
 export const MEDIA_BUCKET_ENV_VAR = "CAELO_MEDIA_BUCKET";
+
+/**
+ * #1140 — the admin env var naming the service account of the scheduler
+ * tick (scheduler-setup.ts): the one IAP identity the admin's
+ * `/api/internal/scheduler/tick` accepts. `upgrade` leaves it untouched when
+ * it could not set the tick up.
+ */
+export const SCHEDULER_SERVICE_ACCOUNT_ENV_VAR = "CAELO_SCHEDULER_SERVICE_ACCOUNT";
+
+/**
+ * #1140 — how often the one scheduler job calls the admin's tick, in
+ * minutes (the `schedulerIntervalMinutes` install knob). Each task's own
+ * cadence lives in the admin's due-table; this only bounds how soon a due
+ * task runs. 1 is Cloud Scheduler's floor; above 15 Cloud Run has stopped
+ * the idle admin, so every tick would pay a cold start without saving
+ * anything (maintainer decision on #1140, 2026-10-26).
+ */
+export const SCHEDULER_INTERVAL_MINUTES = { default: 5, min: 1, max: 15 } as const;
+
+/**
+ * Parse the `schedulerIntervalMinutes` knob. Undefined (not configured) is
+ * the default; anything else must be an integer in the bounds — an
+ * out-of-range or non-numeric value throws (CLAUDE.md §2: no silent
+ * substitute).
+ *
+ * @param raw - the configured value (CLI flag, Pulumi config, install.json).
+ * @param source - names where the value came from, for the error.
+ */
+export function parseSchedulerIntervalMinutes(
+  raw: string | number | undefined,
+  source = "schedulerIntervalMinutes",
+): number {
+  if (raw === undefined || raw === "") return SCHEDULER_INTERVAL_MINUTES.default;
+  const n = typeof raw === "number" ? raw : /^\s*\d+\s*$/.test(raw) ? Number(raw) : Number.NaN;
+  const { min, max } = SCHEDULER_INTERVAL_MINUTES;
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new Error(
+      `${source} ${JSON.stringify(raw)} is not a whole number of minutes between ${min} and ${max} (default ${SCHEDULER_INTERVAL_MINUTES.default})`,
+    );
+  }
+  return n;
+}
+
+/** The Cloud Scheduler / cron expression of a tick every `minutes` minutes (UTC). */
+export function schedulerCron(minutes: number): string {
+  const m = parseSchedulerIntervalMinutes(minutes);
+  return m === 1 ? "* * * * *" : `*/${m} * * * *`;
+}
 
 /** Where the admin image ships the static-generator CLI. */
 const GENERATOR_CLI = "/app/apps/static-generator/src/cli.ts";
@@ -900,12 +949,14 @@ export const DEFAULT_MCP_AUTH_PROXY_MAX_INSTANCES = 10;
  * anyone choosing it — billed for every idle minute an instance stayed up.
  *
  * The gateway and the MCP-Auth-Proxy only do work inside requests. The
- * admin still runs its background work (Tier 5: audit worker, importer,
- * plugin cron, GC) on in-process timers that need CPU between requests.
+ * admin's periodic work and plugin workers run on the scheduler tick
+ * (#1140), but the quality audit and the site-import crawl still run on
+ * in-process timers that need CPU between requests (#1359, #1360), and the
+ * plugin runtime heartbeat would read an idling instance as down.
  */
 export const SERVICE_CPU_IDLE: Readonly<Record<CloudRunSlug, boolean>> = {
-  // FIXME(issue #1140): true once the admin's background work no longer
-  // depends on CPU between requests (jobs, scheduler, plugin host).
+  // FIXME(issue #1361): true once nothing in the admin depends on CPU
+  // between requests (the category-A jobs, the heartbeat at request start).
   admin: false,
   gateway: true,
   "mcp-auth-proxy": true,
@@ -1211,6 +1262,12 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     { name: CAPTURE_JOB_ENV_VAR, value: captureJobResource(projectId, inputs.region, env) },
     { name: CAPTURE_BUCKET_ENV_VAR, value: gcpBucketName(projectId, env, "capture") },
     { name: MEDIA_BUCKET_ENV_VAR, value: gcpBucketName(projectId, env, "media") },
+    // #1140 — the only IAP identity the admin's scheduler tick endpoint
+    // accepts (scheduler-setup.ts).
+    {
+      name: SCHEDULER_SERVICE_ACCOUNT_ENV_VAR,
+      value: schedulerServiceAccountEmail(projectId, env),
+    },
     // #914 — where Settings → Google sign-in writes the install's Google
     // sign-in client (add-version only, see the run SA's secretVersionAdder
     // invariant).

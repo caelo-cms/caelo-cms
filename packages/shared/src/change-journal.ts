@@ -292,6 +292,7 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   platform_update_policy: "the Owner's update policy, read by the update scheduler",
   platform_update_requests: "update requests, run by the upgrader job",
   platform_update_scheduler: RUNTIME,
+  scheduled_tasks: RUNTIME,
 
   import_runs: "site-import runs; reach editors as the op-classified `crawl` topic",
   import_pages: "crawled pages of a site import, before they become pages",

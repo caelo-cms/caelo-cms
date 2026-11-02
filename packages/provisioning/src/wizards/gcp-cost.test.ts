@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { type CostEstimateInputs, estimateGcpCost } from "./gcp-cost.js";
+import { type CostEstimateInputs, estimateGcpCost, schedulerTickMonthlyUsd } from "./gcp-cost.js";
 
 const inputs: CostEstimateInputs = {
   cloudSqlTier: "db-f1-micro",
@@ -46,5 +46,30 @@ describe("cost table: MCP-Auth-Proxy (#1328)", () => {
   it("names the gcp-firebase visitor gateway as the data gateway", () => {
     expect(names("gcp-firebase")).toContain("Cloud Run data gateway");
     expect(names("gcp")).toContain("Cloud Run gateway");
+  });
+});
+
+describe("cost table: scheduler tick (#1140)", () => {
+  it("lists the tick at the default 5 minutes: well under a dollar", () => {
+    const line = estimateGcpCost(inputs).lines.find((l) => l.name.startsWith("Scheduler tick"));
+    expect(line?.name).toBe("Scheduler tick (Cloud Scheduler + Workflows, every 5 min)");
+    // 8,640 ticks: 25,920 internal steps (20,920 billed) + 8,640 external
+    // (6,640 billed) + the scheduler job.
+    expect(line?.monthlyUsd).toBe(0.48);
+  });
+
+  it("follows the knob: one minute stays a few dollars, fifteen little more than the job", () => {
+    expect(schedulerTickMonthlyUsd(1)).toBe(2.38);
+    expect(schedulerTickMonthlyUsd(15)).toBe(0.16);
+    const fast = estimateGcpCost({ ...inputs, schedulerIntervalMinutes: 1 }).lines.find((l) =>
+      l.name.startsWith("Scheduler tick"),
+    );
+    expect(fast?.name).toContain("every 1 min");
+  });
+
+  it("refuses an interval outside 1-15 minutes", () => {
+    expect(() => estimateGcpCost({ ...inputs, schedulerIntervalMinutes: 20 })).toThrow(
+      "between 1 and 15",
+    );
   });
 });

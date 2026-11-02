@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The auto-update scheduler (epic #696 Phase 5) — a background loop inside
- * every admin instance (CLAUDE.md §11.B Tier 5), bootstrapped from
- * apps/admin/src/hooks.server.ts like the release check.
+ * The auto-update scheduler (epic #696 Phase 5) — a task on the admin's
+ * scheduler tick (#1140, scheduler/core-tasks.ts), every 15 minutes.
  *
- * Each tick:
+ * Each run:
  *   1. reads the newest release the release check cached;
  *   2. when it is newer, reads its manifest facts (network, outside any
  *      transaction; release-facts.ts);
@@ -45,7 +44,7 @@ import type { UpgraderTrigger } from "../security/upgrader/job-trigger.js";
 import { updateNotificationHtml } from "./notification-text.js";
 import { type ManifestReader, readReleaseFacts } from "./release-facts.js";
 
-/** How often a tick runs (per install, not per instance: the lease spreads it). */
+/** How often a run decides (per install, not per instance: the op's lease spreads it). */
 export const AUTO_UPDATE_TICK_MS = 15 * 60 * 1000;
 
 /** The upgrader this install has right now (resolved per tick: env can be fixed without a redeploy of this code). */
@@ -71,7 +70,6 @@ export interface AutoUpdateSchedulerOpts {
   readonly provider: string | undefined;
   /** Names this instance in the scheduler's status line. */
   readonly holder: string;
-  readonly intervalMs?: number;
   /** Logs (stderr by default). */
   readonly log?: (line: string) => void;
 }
@@ -83,7 +81,7 @@ const systemCtx = (): ExecutionContext => ({
   requestId: `auto-update-${Date.now()}-${n++}`,
 });
 
-/** One tick. Exported for tests; the loop calls it on a timer. */
+/** One run (the scheduler task's body). */
 export async function runAutoUpdateTick(opts: AutoUpdateSchedulerOpts): Promise<{
   readonly ran: boolean;
   readonly action: string | null;
@@ -146,7 +144,7 @@ export async function runAutoUpdateTick(opts: AutoUpdateSchedulerOpts): Promise<
     startRoute: PlatformUpdateRoute | null;
   }>("platform_updates.scheduler_tick", {
     holder: opts.holder,
-    intervalSeconds: Math.floor((opts.intervalMs ?? AUTO_UPDATE_TICK_MS) / 1000),
+    intervalSeconds: Math.floor(AUTO_UPDATE_TICK_MS / 1000),
     factsVersion,
     facts,
     upgraderAvailable: trigger !== null,
@@ -249,36 +247,4 @@ export async function deliverUpdateNotifications(
     if (!fin.ok) log(`[auto-update] could not record delivery: ${JSON.stringify(fin.error)}`);
   }
   return sent;
-}
-
-let handle: ReturnType<typeof setInterval> | null = null;
-let firstTick: ReturnType<typeof setTimeout> | null = null;
-
-/**
- * Start the loop. Idempotent. A tick that throws is logged and the next one
- * runs on schedule — the decision is recomputed from the database each time.
- */
-export function startAutoUpdateScheduler(opts: AutoUpdateSchedulerOpts): void {
-  if (handle) return;
-  const log = opts.log ?? ((line: string) => console.error(line));
-  const once = () =>
-    runAutoUpdateTick(opts).catch((e) => {
-      log(`[auto-update] tick failed: ${e instanceof Error ? e.message : String(e)}`);
-    });
-  // First tick shortly after boot (the release check's first poll is
-  // usually done by then), not inside the request that bootstrapped it.
-  firstTick = setTimeout(() => void once(), 60_000);
-  handle = setInterval(() => void once(), opts.intervalMs ?? AUTO_UPDATE_TICK_MS);
-}
-
-/** Test-only — stop the loop. */
-export function stopAutoUpdateScheduler(): void {
-  if (firstTick) {
-    clearTimeout(firstTick);
-    firstTick = null;
-  }
-  if (handle) {
-    clearInterval(handle);
-    handle = null;
-  }
 }

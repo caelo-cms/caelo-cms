@@ -73,6 +73,13 @@ export interface WizardOptions {
    */
   region?: string;
   /**
+   * #1140 — `--scheduler-interval-minutes` (1–15, already validated): how
+   * often the scheduler tick calls the admin. Recorded in install.json, so
+   * every later `upgrade` keeps it; omitted keeps what is recorded (or the
+   * default, 5).
+   */
+  schedulerIntervalMinutes?: number;
+  /**
    * #696 — where `pulumi up` and the rest of a GCP install run
    * (run-mode.ts): `job` (default in Cloud Shell) or `local`.
    */
@@ -188,6 +195,18 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         ownerEmail,
         region: null,
         createdAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  // #1140 — the scheduler knob, on a new install and on a resumed one alike
+  // (every later `upgrade` reads it from install.json).
+  if (opts.schedulerIntervalMinutes !== undefined) {
+    const recorded = readMetadata(installId);
+    if (recorded) {
+      writeMetadata(installId, {
+        ...recorded,
+        schedulerIntervalMinutes: opts.schedulerIntervalMinutes,
       });
     }
   }

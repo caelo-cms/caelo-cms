@@ -11,7 +11,11 @@
  * + AI calls + storage growth on top.
  */
 
-import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "../stack-contract.js";
+import {
+  ADMIN_MEMORY_DEFAULT,
+  memoryQuantityMiB,
+  parseSchedulerIntervalMinutes,
+} from "../stack-contract.js";
 
 export interface CostLine {
   name: string;
@@ -41,6 +45,54 @@ export interface CostEstimateInputs {
   provider?: "gcp" | "gcp-firebase";
   /** #607 — the install region; shown in the table (prices are {@link PRICED_REGION} rates). */
   region: string;
+  /** #1140 — the `schedulerIntervalMinutes` knob (1–15); undefined: the default. */
+  schedulerIntervalMinutes?: number;
+}
+
+/**
+ * #1140 — Workflows steps one scheduler tick costs (scheduler-setup.ts
+ * schedulerWorkflowSource): the claims `assign`, the signJwt call (a Google
+ * API, billed as an internal step), the `return` — and the POST to the
+ * admin, the one external HTTP step.
+ */
+export const SCHEDULER_TICK_STEPS = { internal: 3, external: 1 } as const;
+
+/**
+ * Workflows list prices (USD, cloud.google.com/workflows/pricing, as of
+ * 2026-11) and the monthly free tier per billing account.
+ */
+const WORKFLOWS_PRICE = {
+  internalPer1000: 0.01,
+  externalPer1000: 0.025,
+  freeInternal: 5_000,
+  freeExternal: 2_000,
+} as const;
+
+/** Cloud Scheduler: $0.10 per job a month; the first 3 per billing account are free. */
+const SCHEDULER_JOB_USD = 0.1;
+
+/**
+ * #1140 — what the scheduler tick costs a month at `minutes` between ticks:
+ * the Cloud Scheduler job (priced as paid — the 3 free jobs are shared
+ * with every other project on the billing account) plus the Workflows
+ * steps past the free tier. A tick with nothing due takes the admin well
+ * under a second of request-billed CPU, inside Cloud Run's free tier.
+ */
+export function schedulerTickMonthlyUsd(minutes: number): number {
+  const ticks = Math.ceil((30 * 24 * 60) / parseSchedulerIntervalMinutes(minutes));
+  const internal = Math.max(
+    0,
+    ticks * SCHEDULER_TICK_STEPS.internal - WORKFLOWS_PRICE.freeInternal,
+  );
+  const external = Math.max(
+    0,
+    ticks * SCHEDULER_TICK_STEPS.external - WORKFLOWS_PRICE.freeExternal,
+  );
+  const usd =
+    SCHEDULER_JOB_USD +
+    (internal / 1000) * WORKFLOWS_PRICE.internalPer1000 +
+    (external / 1000) * WORKFLOWS_PRICE.externalPer1000;
+  return Math.round(usd * 100) / 100;
 }
 
 /** The region the price table's list rates are for. */
@@ -71,6 +123,7 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
   const sqlMonthly = Math.round(sqlBase * sqlMultiplier);
 
   const provider = inputs.provider ?? "gcp";
+  const schedulerMinutes = parseSchedulerIntervalMinutes(inputs.schedulerIntervalMinutes);
   const adminMemory = inputs.adminMemory ?? ADMIN_MEMORY_DEFAULT;
   const adminMiB = memoryQuantityMiB(adminMemory);
   if (adminMiB === null) {
@@ -91,7 +144,7 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
     },
     {
       name: `Cloud Run admin (${adminMemory})`,
-      // FIXME(issue #1140): ~$1 once the admin runs request-billed CPU
+      // FIXME(issue #1361): ~$1 once the admin runs request-billed CPU
       // (SERVICE_CPU_IDLE). Until then each editing session is billed for
       // as long as the instance stays up, ~15 minutes past its last request.
       monthlyUsd:
@@ -210,6 +263,11 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       monthlyUsd: 0,
       notes:
         "Hourly ~20 s job keeps Google IAP in step with the user list; within the Cloud Run free tier, 1 of 3 free scheduler jobs",
+    },
+    {
+      name: `Scheduler tick (Cloud Scheduler + Workflows, every ${schedulerMinutes} min)`,
+      monthlyUsd: schedulerTickMonthlyUsd(schedulerMinutes),
+      notes: `one job starts a ${SCHEDULER_TICK_STEPS.internal + SCHEDULER_TICK_STEPS.external}-step workflow that calls the admin's periodic work and plugin workers; ~${Math.ceil((30 * 24 * 60) / schedulerMinutes)} ticks/mo, the admin's share inside the Cloud Run free tier`,
     },
   ];
 

@@ -115,6 +115,13 @@ export interface InstallMetadata {
    * run while it is lower than the release's (upgrade/converge.ts).
    */
   infraContractVersion?: number;
+  /**
+   * #1140 — the `schedulerIntervalMinutes` knob: how often the one Cloud
+   * Scheduler job calls the admin's tick (1–15 minutes; `--scheduler-
+   * interval-minutes` on the wizard). Absent: the default (5,
+   * stack-contract.ts SCHEDULER_INTERVAL_MINUTES).
+   */
+  schedulerIntervalMinutes?: number;
 }
 
 /** The install's staging host: its recorded setting, else the default. */

@@ -17,7 +17,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerAdminOps, startPublicProjectionPublisher } from "@caelo-cms/admin-core";
+import { createPublicProjectionPublisher, registerAdminOps } from "@caelo-cms/admin-core";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -416,8 +416,6 @@ describe("#1008 — loads of one plugin never overlap", () => {
     expect((await loadActivatedPlugin(WORKERED)).loaded).toBe(true);
     const after = pluginWorkerScheduler.list().filter((w) => w.pluginSlug === WORKERED);
     expect(after).toHaveLength(1);
-    // The first load's job was stopped, not orphaned.
-    expect(before[0]?.job.isStopped()).toBe(true);
   });
 });
 
@@ -465,7 +463,7 @@ describe("#1077 — a load publishes the plugin's visitor projection from this i
   it("publishes it on load, and again on a reload, without waiting for the plugin's next write", async () => {
     // The admin's own publisher, as hooks.server.ts wires it; the poll is
     // parked so only the publish right after a write can run.
-    const publisher = startPublicProjectionPublisher({ adapter, intervalMs: 3_600_000 });
+    const publisher = createPublicProjectionPublisher({ adapter });
     try {
       const report = await boot([projected]);
       expect(report.failed).toEqual([]);
