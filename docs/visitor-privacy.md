@@ -9,7 +9,7 @@ Firebase Hosting forwards exactly one cookie over its `/api/**` rewrite: `__sess
 1. **The `__session` cookie**, set by the gateway itself: HttpOnly, SameSite=Lax, Secure in production, Path=/.
 2. **The `x-caelo-consent` request header**, the visitor's consent decision.
 
-This holds on every provider (gcp, gcp-firebase, aws, azure, self-hosted), not only behind Firebase: one shape, no provider-specific path in the gateway (CLAUDE.md §11.B).
+This holds on every provider (gcp, gcp-firebase, aws, azure, self-hosted), not only behind Firebase: one shape, no provider-specific path in the gateway (CLAUDE.md §11.B). An adapter that puts a CDN or proxy in front of `/api/*` must forward exactly these two: the `__session` cookie and the `x-caelo-consent` header (a CloudFront cache behaviour, for example, forwards neither by default).
 
 ## `__session`: one cookie, several entries
 
