@@ -192,10 +192,16 @@ export async function runPluginRenderPass(args: {
   bakeTargets: ReadonlyMap<string, BakeTarget>;
   /** The target's page URL style, handed to every `staticRender`. */
   pageUrlStyle: PageUrlStyle;
+  /**
+   * #650 — the origin the build renders for, handed to every
+   * `staticRender`: a Stage with its own staging host links its pages
+   * there, so it is part of the bake key too.
+   */
+  siteBaseUrl: string;
   /** Where fresh bakes wait for the build-wide sorted upsert (#1271). */
   bakes: BakeStore;
 }): Promise<PluginPassResult> {
-  const { tx, plugins, pages, bakeTargets, pageUrlStyle } = args;
+  const { tx, plugins, pages, bakeTargets, pageUrlStyle, siteBaseUrl } = args;
 
   // #1155 — a bake marker in the page itself (module HTML anyone wrote)
   // must never open or close a region a plugin-data build rewrites.
@@ -269,9 +275,10 @@ export async function runPluginRenderPass(args: {
       const batched = batchedSigs.get(plugin.slug);
       const metaSig =
         batched?.get(target.pageId) ?? (await plugins.metaSignature(plugin.slug, target.pageId));
-      // The URL style is part of the key: a plugin linking to pages renders
-      // different hrefs per style (#590).
-      const cacheKey = `${plugin.version}:${pageUrlStyle}:${metaSig}`;
+      // The URL style and the origin are part of the key: a plugin linking
+      // to pages renders different hrefs per style (#590) and per host — a
+      // staging bake must never be reused by a live build (#650).
+      const cacheKey = `${plugin.version}:${pageUrlStyle}:${siteBaseUrl}:${metaSig}`;
 
       const cached = cache.get(bakeKey(plugin.id, target.pageId));
 
@@ -290,7 +297,10 @@ export async function runPluginRenderPass(args: {
         // A failing render stops the build (CLAUDE.md §2): the page would
         // otherwise ship an empty placeholder where the plugin belongs.
         try {
-          html = await plugins.staticRender(plugin.slug, target.pageId, pageUrlStyle);
+          html = await plugins.staticRender(plugin.slug, target.pageId, {
+            siteBaseUrl,
+            pageUrlStyle,
+          });
         } catch (e) {
           throw new Error(
             `static-generator: plugin "${plugin.slug}" staticRender failed for page ${target.pageId}: ${e instanceof Error ? e.message : String(e)}`,
