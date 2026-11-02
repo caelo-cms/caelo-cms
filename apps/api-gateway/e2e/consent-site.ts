@@ -10,19 +10,23 @@
  *   1. Admin side (admin_role): activate the consent-manager plugin as an
  *      explicit hand-off (`testPlugins`) — with `CONSENT_SITE_RATINGS=1`
  *      also the ratings plugin, which declares the `visitor_id` purpose
- *      (`functional`) and so is what makes the gateway set
- *      `caelo_visitor_id` at all — seed one published page whose
+ *      (`functional`) and so is what makes the gateway store a visitor
+ *      id at all — seed one published page whose
  *      module is a consent banner, and run the real static generator on it
  *      — the plugin's runtime is injected exactly as on a live build.
  *   2. Gateway side (public_role only, no cms_admin login, #635): the
  *      dispatch-only plugin host and `handleRequest`.
- *   3. Serve both on one port and print `READY <port> <pagePath>`.
+ *   3. Serve both on one port and print `READY <port> <pagePath>`. With
+ *      `CONSENT_SITE_FIREBASE_REWRITE=1` the `/api/*` route behaves like a
+ *      Firebase Hosting rewrite (#1343): it forwards no cookie but
+ *      `__session` to the gateway.
  *
  * SIGTERM restores what it changed: the plugins' previous status, the site
  * language, and the seeded page.
  *
  * Env: ADMIN_DATABASE_URL, PUBLIC_ADMIN_DATABASE_URL,
- * PUBLIC_DATABASE_URL, optional CONSENT_SITE_RATINGS=1.
+ * PUBLIC_DATABASE_URL, optional CONSENT_SITE_RATINGS=1,
+ * CONSENT_SITE_FIREBASE_REWRITE=1.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -40,7 +44,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, SESSION_COOKIE_NAME } from "@caelo-cms/shared";
 import { generateSite, pageOutputPath } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { trustedProxyHopsFromEnv } from "../src/client-ip.js";
@@ -331,14 +335,32 @@ async function serveStatic(pathname: string): Promise<Response> {
   });
 }
 
+const FIREBASE_REWRITE = process.env.CONSENT_SITE_FIREBASE_REWRITE === "1";
+
+/**
+ * What a Firebase Hosting `/api/**` rewrite does to the request: "Only the
+ * specially-named `__session` cookie is permitted to pass through"
+ * (docs/dev/firebase-hosting-behaviour.md, section 1). Headers pass.
+ */
+function asFirebaseRewrite(req: Request): Request {
+  const kept = (req.headers.get("cookie") ?? "")
+    .split(/;\s*/)
+    .filter((p) => p.slice(0, p.indexOf("=")).trim() === SESSION_COOKIE_NAME);
+  const headers = new Headers(req.headers);
+  if (kept.length > 0) headers.set("cookie", kept.join("; "));
+  else headers.delete("cookie");
+  return new Request(req, { headers });
+}
+
 const server = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
   fetch: (req, srv) => {
     const { pathname } = new URL(req.url);
-    return pathname.startsWith("/api/")
-      ? handleRequest(req, { peerAddress: srv.requestIP(req)?.address ?? null })
-      : serveStatic(pathname);
+    if (!pathname.startsWith("/api/")) return serveStatic(pathname);
+    return handleRequest(FIREBASE_REWRITE ? asFirebaseRewrite(req) : req, {
+      peerAddress: srv.requestIP(req)?.address ?? null,
+    });
   },
 });
 

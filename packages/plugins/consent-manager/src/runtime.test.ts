@@ -11,6 +11,32 @@ import { describe, expect, it } from "bun:test";
 import { buildRuntimeJs, RUNTIME_CSS } from "./runtime.js";
 import { buildTagInjector } from "./tags.js";
 
+const RECORD = "/api/plugin/consent-manager/record_consent";
+const CONSENT_HEADER = "x-caelo-consent";
+
+/** One `record_consent` call the runtime made: where, and the consent header it carried. */
+interface Recorded {
+  readonly url: string;
+  readonly consent: string | undefined;
+  readonly keepalive: boolean;
+}
+
+/** A `fetch` stand-in that records what the runtime posts. */
+function fakeFetch(): {
+  fetch: (url: string, init: RequestInit) => Promise<void>;
+  records: Recorded[];
+} {
+  const records: Recorded[] = [];
+  return {
+    records,
+    fetch: (url, init) => {
+      const headers = init.headers as Record<string, string>;
+      records.push({ url, consent: headers[CONSENT_HEADER], keepalive: init.keepalive === true });
+      return Promise.resolve();
+    },
+  };
+}
+
 describe("consent runtime source", () => {
   it("contains nothing that could end its inline <script>", () => {
     const js = buildRuntimeJs(
@@ -18,7 +44,8 @@ describe("consent runtime source", () => {
         slug: "consent-manager",
         categories: [{ key: "marketing", displayName: "Marketing", required: false }],
         policyVersion: 1,
-        recordEndpoint: "/api/plugin/consent-manager/record_consent",
+        recordEndpoint: RECORD,
+        consentHeader: CONSENT_HEADER,
       },
       buildTagInjector([]),
     );
@@ -37,7 +64,8 @@ describe("consent runtime in an opaque-origin sandbox (#946)", () => {
         slug: "consent-manager",
         categories: [{ key: "marketing", displayName: "Marketing", required: false }],
         policyVersion: 1,
-        recordEndpoint: "/api/plugin/consent-manager/record_consent",
+        recordEndpoint: RECORD,
+        consentHeader: CONSENT_HEADER,
       },
       buildTagInjector([]),
     );
@@ -57,21 +85,24 @@ describe("consent runtime in an opaque-origin sandbox (#946)", () => {
       querySelectorAll: () => [],
       addEventListener: () => undefined,
     };
-    const beacons: string[] = [];
+    const posted = fakeFetch();
     const win: {
       caeloConsent?: { grantAll: () => void; isGranted: (key: string) => boolean };
     } = {};
-    new Function("document", "window", "navigator", "console", "location", js)(
+    new Function("document", "window", "fetch", "console", "location", js)(
       doc,
       win,
-      { sendBeacon: (url: string) => beacons.push(url) },
+      posted.fetch,
       { warn: () => undefined },
       { protocol: "https:", reload: () => undefined },
     );
     expect(classes.has("caelo-consent-ask")).toBe(true);
     expect(win.caeloConsent?.isGranted("marketing")).toBe(false);
     win.caeloConsent?.grantAll();
-    expect(beacons).toEqual(["/api/plugin/consent-manager/record_consent"]);
+    // The in-memory decision reaches the server with its consent header.
+    expect(posted.records).toEqual([
+      { url: RECORD, consent: "v=1; granted=marketing", keepalive: true },
+    ]);
     expect(classes.has("caelo-consent-ask")).toBe(false);
     // The decision holds for the document's lifetime, so the operator sees
     // the accepted state (PR #957 review).
@@ -182,9 +213,15 @@ interface Harness {
   readonly jar: Map<string, string>;
   /** Every `domain=` a cookie was expired on, by name. */
   readonly expired: Map<string, string[]>;
-  readonly beacons: string[];
+  readonly records: Recorded[];
   readonly reloads: { count: number };
-  readonly win: { caeloConsent?: { open: () => void; isGranted: (k: string) => boolean } };
+  readonly win: {
+    caeloConsent?: {
+      open: () => void;
+      isGranted: (k: string) => boolean;
+      decisionHeader: () => string | null;
+    };
+  };
   keydown(key: string): void;
 }
 
@@ -239,7 +276,7 @@ function boot(opts: {
     createElement: (t: string) => new FakeEl(t),
   };
   focusDoc = doc;
-  const beacons: string[] = [];
+  const posted = fakeFetch();
   const reloads = { count: 0 };
   const win: Harness["win"] = {};
   const js = buildRuntimeJs(
@@ -247,14 +284,15 @@ function boot(opts: {
       slug: "consent-manager",
       categories: CATEGORIES,
       policyVersion: 1,
-      recordEndpoint: "/api/plugin/consent-manager/record_consent",
+      recordEndpoint: RECORD,
+      consentHeader: CONSENT_HEADER,
     },
     buildTagInjector(opts.tags ?? []),
   );
-  new Function("document", "window", "navigator", "console", "location", "Blob", js)(
+  new Function("document", "window", "fetch", "console", "location", "Blob", js)(
     doc,
     win,
-    { sendBeacon: (url: string) => beacons.push(url) },
+    posted.fetch,
     { warn: () => undefined },
     {
       protocol: "https:",
@@ -273,7 +311,7 @@ function boot(opts: {
     doc,
     jar,
     expired,
-    beacons,
+    records: posted.records,
     reloads,
     win,
     keydown: (key) => {
@@ -325,7 +363,7 @@ describe("reopening the banner (#1134, #1128)", () => {
     expect(h.doc.activeElement).toBe(analytics);
     h.keydown("Escape");
     expect(h.html.classes.has("caelo-consent-open")).toBe(false);
-    expect(h.beacons).toEqual([]);
+    expect(h.records).toEqual([]);
     expect(h.doc.activeElement).toBe(opener);
   });
 
@@ -345,7 +383,7 @@ describe("reopening the banner (#1134, #1128)", () => {
     });
     opener.click();
     accept.click();
-    expect(h.beacons).toHaveLength(1);
+    expect(h.records).toHaveLength(1);
     expect(h.html.classes.has("caelo-consent-open")).toBe(false);
     expect(h.doc.activeElement).toBe(opener);
     expect(h.win.caeloConsent?.isGranted("marketing")).toBe(true);
@@ -609,5 +647,37 @@ describe("saving ticked boxes", () => {
       granted: string[];
     };
     expect(state.granted).toEqual(["necessary"]);
+  });
+});
+
+describe("the decision for the API gateway (#1343)", () => {
+  // Behind Firebase Hosting the gateway receives no cookie but __session,
+  // so the decision travels in the consent header instead.
+  it("is null until the visitor decided, and under an older policy version", () => {
+    expect(boot({ body: [bannerWithOpener().banner] }).win.caeloConsent?.decisionHeader()).toBe(
+      null,
+    );
+    const old = encodeURIComponent(
+      JSON.stringify({ granted: ["necessary"], offered: ["necessary"], policyVersion: 0 }),
+    );
+    const h = boot({ body: [bannerWithOpener().banner], cookies: { caelo_consent: old } });
+    expect(h.win.caeloConsent?.decisionHeader()).toBeNull();
+  });
+
+  it("carries the current decision, and every record carries the new one", () => {
+    const { banner, opener } = bannerWithOpener();
+    const h = boot({
+      body: [banner, opener],
+      cookies: { caelo_consent: consentCookie(["necessary", "analytics"]) },
+    });
+    expect(h.win.caeloConsent?.decisionHeader()).toBe("v=1; granted=necessary,analytics");
+    opener.click();
+    banner.querySelector("[data-consent-reject-all]")?.click();
+    // The withdrawal reaches the gateway on the record call itself, so the
+    // visitor id it holds goes in that response.
+    expect(h.records).toEqual([
+      { url: RECORD, consent: "v=1; granted=necessary", keepalive: true },
+    ]);
+    expect(h.win.caeloConsent?.decisionHeader()).toBe("v=1; granted=necessary");
   });
 });

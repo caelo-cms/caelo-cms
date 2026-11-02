@@ -92,9 +92,37 @@ export function isHoneypotArgTripped(args: unknown): boolean {
 }
 
 /**
+ * The request header the API gateway reads the visitor's consent decision
+ * from (plugin SDK `VISITOR_CONSENT_HEADER`, #1343; `consent.test.ts`
+ * keeps the two equal). The kit has no runtime dependencies, so the name
+ * is spelled out here.
+ */
+export const CONSENT_HEADER = "x-caelo-consent";
+
+/** What the site's consent provider runtime exposes on `window`. */
+interface ConsentRuntime {
+  decisionHeader?: () => string | null;
+}
+
+/**
+ * The headers every gateway call carries: the visitor's consent decision,
+ * as the site's consent provider states it. The gateway sees no consent
+ * cookie (behind Firebase Hosting only `__session` reaches it), so a call
+ * without this header counts as "no decision" and the gateway drops the
+ * visitor id it held. No provider on the page, or no decision yet: no
+ * header — nobody has consented.
+ */
+export function consentHeaders(): Record<string, string> {
+  const runtime = (globalThis as { caeloConsent?: ConsentRuntime }).caeloConsent;
+  const value = typeof runtime?.decisionHeader === "function" ? runtime.decisionHeader() : null;
+  return typeof value === "string" && value !== "" ? { [CONSENT_HEADER]: value } : {};
+}
+
+/**
  * Tiny `fetch` wrapper for plugin POSTs. Always sends JSON, always
- * sends `credentials: same-origin` so the gateway's HttpOnly session
- * cookie travels along. Returns the parsed envelope as-is.
+ * sends `credentials: same-origin` so the gateway's HttpOnly `__session`
+ * cookie travels along, and the visitor's consent decision
+ * ({@link consentHeaders}). Returns the parsed envelope as-is.
  */
 export interface PluginEnvelope<T = unknown> {
   ok: boolean;
@@ -109,7 +137,7 @@ export async function postPluginJson<T = unknown>(
 ): Promise<PluginEnvelope<T>> {
   const res = await fetch(`/api/plugin/${pluginSlug}/${operation}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...consentHeaders() },
     credentials: "same-origin",
     body: JSON.stringify(body),
   });
@@ -148,7 +176,12 @@ interface ChallengeEnvelope {
 }
 
 export async function attachCaptchaProof(): Promise<CaptchaProof | null> {
-  const res = await fetch("/api/captcha/challenge", { credentials: "same-origin" });
+  // The challenge call resolves the visitor too: without the decision it
+  // would drop a consented visitor's id.
+  const res = await fetch("/api/captcha/challenge", {
+    credentials: "same-origin",
+    headers: consentHeaders(),
+  });
   if (res.status === 204) return null; // captcha disabled
   if (!res.ok) throw new Error(`captcha challenge fetch failed: ${res.status}`);
   const env = (await res.json()) as ChallengeEnvelope;

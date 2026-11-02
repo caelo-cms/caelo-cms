@@ -341,11 +341,11 @@ export async function runSandboxWithBundler(
       hasPrivateFiles: Boolean((context as PluginContextTier1).privateFiles),
       hasSiteMedia: Boolean((context as PluginContextTier1).siteMedia),
       hasConsentPurposes: Boolean((context as PluginContextTier1).consentPurposes),
-      // No sessionToken: it is the visitor's HttpOnly `caelo_session`
-      // bearer credential. Handing it to runtime-authored code would let
-      // a plugin collect tokens in its own schema and replay them to take
-      // over logged-in visitors' sessions. The opaque id is enough to key
-      // per-visitor state.
+      // No sessionToken: it is the visitor's login bearer credential (the
+      // `login` entry of the HttpOnly `__session` cookie). Handing it to
+      // runtime-authored code would let a plugin collect tokens in its own
+      // schema and replay them to take over logged-in visitors' sessions.
+      // The opaque id is enough to key per-visitor state.
       visitor: {
         id: context.visitor.id,
         publicUserId: context.visitor.publicUserId,

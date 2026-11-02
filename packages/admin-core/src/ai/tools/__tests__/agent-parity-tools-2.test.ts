@@ -203,7 +203,7 @@ describe("get_plugin", () => {
         {
           key: "visitor_id",
           category: "functional",
-          cookies: [{ name: "caelo_visitor_id" }],
+          cookies: [{ name: "__session" }],
         },
       ],
     },
@@ -253,7 +253,7 @@ describe("get_plugin", () => {
     // Dependencies both ways, and what it asks visitors to consent to.
     expect(r.content).toContain("requires plugins: consent-manager");
     expect(r.content).toContain("required by (active): newsletter");
-    expect(r.content).toContain("consent purposes: visitor_id (functional): caelo_visitor_id");
+    expect(r.content).toContain("consent purposes: visitor_id (functional): __session");
     expect(JSON.stringify(r)).not.toContain("SECRET_SOURCE_MARKER");
     expect(h.calls[1]?.input).toEqual({ pluginId: U1 });
   });

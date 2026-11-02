@@ -349,7 +349,8 @@ export default definePlugin<PluginContextTier1>({
 
     /**
      * Reads the session token from the HttpOnly cookie via
-     * ctx.visitor.sessionToken (set by the gateway from `caelo_session`).
+     * ctx.visitor.sessionToken (set by the gateway from the `login`
+     * entry of its `__session` cookie).
      * No token in the request body — there's nothing for client-side
      * JS to forge. Tests / internal calls may pass `sessionToken` as
      * an arg as a fallback, but production traffic never does.

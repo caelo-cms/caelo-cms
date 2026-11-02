@@ -229,7 +229,7 @@ describe("#451 — consent-manager", () => {
   it("classifies no purpose and names only its own cookie while no plugin declares one", async () => {
     const r = await call("visitor_consent_rule");
     if (!r.ok) throw new Error(JSON.stringify(r.error));
-    expect(r.value).toEqual({ cookie: "caelo_consent", policyVersion: 1, purposes: {} });
+    expect(r.value).toEqual({ policyVersion: 1, purposes: {} });
     const status = await call("consent_status");
     if (!status.ok) throw new Error(JSON.stringify(status.error));
     const cookies = (status.value as { siteCookies: Array<{ name: string; category: string }> })
@@ -262,17 +262,13 @@ describe("#451 — consent-manager", () => {
       key: "visitor_id",
       category,
       purpose: "Recognise the visitor.",
-      cookies: [{ name: "caelo_visitor_id", lifetime: "30 days", purpose: "Recognises them." }],
+      cookies: [{ name: "__session", lifetime: "30 days", purpose: "Recognises them." }],
     });
     declare("t677-rates", [visitorId("functional")]);
     try {
       const r = await call("visitor_consent_rule");
       if (!r.ok) throw new Error(JSON.stringify(r.error));
-      expect(r.value).toEqual({
-        cookie: "caelo_consent",
-        policyVersion: 1,
-        purposes: { visitor_id: "functional" },
-      });
+      expect(r.value).toEqual({ policyVersion: 1, purposes: { visitor_id: "functional" } });
       // The AI names the same cookie, in the same category, in the banner copy.
       const status = await call("consent_status");
       if (!status.ok) throw new Error(JSON.stringify(status.error));
@@ -283,7 +279,7 @@ describe("#451 — consent-manager", () => {
       ).siteCookies;
       expect(cookies.map((c) => [c.name, c.category, c.declaredBy])).toEqual([
         ["caelo_consent", "necessary", undefined],
-        ["caelo_visitor_id", "functional", "t677-rates"],
+        ["__session", "functional", "t677-rates"],
       ]);
 
       declare("t677-stats", [
