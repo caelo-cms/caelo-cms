@@ -16,7 +16,7 @@
     "lint:spdx": "bun run scripts/check-spdx-headers.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.93",
+    "@ai-sdk/anthropic": "^4.0.94",
     "@ai-sdk/google": "^4.0.109",
     "@ai-sdk/openai": "^4.0.106",
     "@caelo-cms/migrations": "workspace:*",
@@ -28,11 +28,11 @@
     "@caelo-cms/site-importer": "workspace:*",
     "@caelo-cms/static-generator": "workspace:*",
     "@google-cloud/storage": "^8.4.0",
-    "ai": "^7.0.158",
+    "ai": "^7.0.159",
     "drizzle-orm": "0.45.4",
     "google-auth-library": "^11.3.2",
     "htmlparser2": "^12.0.0",
-    "lighthouse": "13.5.0",
+    "lighthouse": "13.6.0",
     "oxc-parser": "0.156.0",
     "sharp": "^0.35",
     "zod": "4.6.7",
