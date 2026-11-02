@@ -29,11 +29,20 @@ import { z } from "zod";
 /**
  * - `running`: every live server that reported it has it loaded.
  * - `failing`: at least one live server failed to load it — `problem` says why.
+ * - `awaiting_approval`: active, but its release asks for capabilities the
+ *   Owner has not approved (#1267), so no server runs it until they are
+ *   approved at /settings/plugins — `awaitingCapabilities` names them.
  * - `unreported`: active, but no live server has reported it yet (just
  *   activated, or every server is starting).
  * - `not_running`: not active, so no server runs it.
  */
-export const pluginHealthState = z.enum(["running", "failing", "unreported", "not_running"]);
+export const pluginHealthState = z.enum([
+  "running",
+  "failing",
+  "awaiting_approval",
+  "unreported",
+  "not_running",
+]);
 
 const pluginErrorReport = z.enum(["none", "local", "queued", "sent", "failed"]);
 
@@ -58,6 +67,8 @@ const pluginErrorSummary = z.object({
 export const pluginHealth = z.object({
   state: pluginHealthState,
   servers: z.object({ loaded: z.number().int(), failing: z.number().int() }),
+  /** The capabilities the Owner must approve before it runs, when `awaiting_approval`. */
+  awaitingCapabilities: z.array(z.string()),
   /** Why a live server failed to load it (the most recent), when `failing`. */
   problem: pluginErrorSummary.nullable(),
   /** The latest problems of the last 7 days, newest first (at most 5). */
@@ -116,11 +127,18 @@ function summary(r: ErrorRow): z.infer<typeof pluginErrorSummary> {
 /**
  * Health of each plugin in `plugins`, keyed by slug.
  *
- * @param plugins the rows being returned: slug + status.
+ * @param plugins the rows being returned: slug, status and the capabilities
+ *   its release asks for that the Owner has not approved (#1306) — an active
+ *   plugin with any does not load, which the servers alone cannot tell
+ *   apart from "not reported yet".
  */
 export async function readPluginHealth(
   tx: TransactionRunner,
-  plugins: ReadonlyArray<{ slug: string; status: string }>,
+  plugins: ReadonlyArray<{
+    slug: string;
+    status: string;
+    unapprovedCapabilities: readonly string[];
+  }>,
 ): Promise<Map<string, PluginHealth>> {
   const out = new Map<string, PluginHealth>();
   if (plugins.length === 0) return out;
@@ -172,14 +190,17 @@ export async function readPluginHealth(
     const state: PluginHealth["state"] =
       p.status !== "active"
         ? "not_running"
-        : s.failing > 0
-          ? "failing"
-          : s.loaded > 0
-            ? "running"
-            : "unreported";
+        : p.unapprovedCapabilities.length > 0
+          ? "awaiting_approval"
+          : s.failing > 0
+            ? "failing"
+            : s.loaded > 0
+              ? "running"
+              : "unreported";
     out.set(p.slug, {
       state,
       servers: { loaded: s.loaded, failing: s.failing },
+      awaitingCapabilities: state === "awaiting_approval" ? [...p.unapprovedCapabilities] : [],
       problem: state === "failing" && problem ? summary(problem) : null,
       recentErrors: recent.filter((r) => r.plugin_slug === p.slug).map(summary),
     });

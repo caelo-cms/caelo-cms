@@ -3,7 +3,9 @@
 
   /**
    * #1008 — what the running servers make of a plugin's status: running,
-   * failing (with the reason), or not yet reported, plus its recent errors.
+   * failing (with the reason), waiting for the Owner to approve new
+   * capabilities (#1306, with their names), or not yet reported, plus its
+   * recent errors.
    * A failing plugin stays active — the Owner's decision is never undone by
    * a load error — so this is where the problem becomes visible instead.
    */
@@ -23,8 +25,9 @@
   interface Props {
     slug: string;
     health: {
-      state: "running" | "failing" | "unreported" | "not_running";
+      state: "running" | "failing" | "awaiting_approval" | "unreported" | "not_running";
       servers: { loaded: number; failing: number };
+      awaitingCapabilities: string[];
       problem: PluginErrorSummary | null;
       recentErrors: PluginErrorSummary[];
     };
@@ -36,6 +39,7 @@
     {
       running: "Running",
       failing: "Not loading",
+      awaiting_approval: "Waiting for your approval",
       unreported: "Starting",
       not_running: "Not running",
     }[health.state],
@@ -75,6 +79,13 @@
     <p class="text-xs text-muted-foreground">
       {health.servers.failing} of {health.servers.loaded + health.servers.failing} servers could not load it.
       It stays active; the rest of the site keeps working.
+    </p>
+  {/if}
+  {#if health.state === "awaiting_approval"}
+    <p class="max-w-md text-xs" data-testid="plugin-health-awaiting-{slug}">
+      Not running: this version needs your approval for
+      <span class="font-mono">{health.awaitingCapabilities.join(", ")}</span>. Click
+      "Approve new permissions" to start it.
     </p>
   {/if}
   {#if health.problem}

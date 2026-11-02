@@ -181,6 +181,17 @@ export function unapprovedCapabilities(
   return [...new Set(requested)].filter((c) => !ok.has(c)).sort();
 }
 
+/**
+ * #1306 — why a load returned no plugin, for the deploy gate, the Settings
+ * toast and reload_plugin: a plugin awaiting a capability approval is not
+ * "not active" (its status is), and only the Owner's approval starts it.
+ */
+export function notLoadedReason(status: string): string {
+  return status === AWAITING_CAPABILITY_APPROVAL
+    ? "it waits for the Owner to approve the new capabilities its release asks for (Settings → Plugins → Approve new permissions); a reload cannot start it"
+    : `plugin is ${status}, not active`;
+}
+
 /** A plugin whose manifest, signature and source passed verification. */
 export interface VerifiedPlugin {
   readonly definition: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
@@ -690,7 +701,7 @@ async function loadActivatedPluginOnce(
       );
       return outcome.plugin
         ? { loaded: true }
-        : { loaded: false, reason: `plugin is ${outcome.status}, not active` };
+        : { loaded: false, reason: notLoadedReason(outcome.status) };
     } catch (e) {
       return { loaded: false, reason: describeLoadError(e) };
     }
@@ -735,7 +746,7 @@ async function loadActivatedPluginOnce(
     );
     return outcome.plugin
       ? { loaded: true }
-      : { loaded: false, reason: `plugin is ${outcome.status}, not active` };
+      : { loaded: false, reason: notLoadedReason(outcome.status) };
   } catch (e) {
     return { loaded: false, reason: describeLoadError(e) };
   }
@@ -1131,14 +1142,22 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
           manifest_json = EXCLUDED.manifest_json,
           source_path = EXCLUDED.source_path,
           manifest_signature = EXCLUDED.manifest_signature,
+          -- #1306: validator findings describe a runtime-authored
+          -- submission. A release-signed plugin's load problems live in
+          -- plugin_errors (#1008); anything left here is from the old
+          -- loader and get_plugin would print it as current.
+          validation_errors = CASE WHEN plugins.tier = 1 THEN '[]'::jsonb
+                                   ELSE plugins.validation_errors END,
           updated_at = now()
         -- #1008: only a changed release writes the row. Every instance
         -- reconciles when the plugin rows change (reconcile.ts), and every
         -- load attempt runs this upsert, so an unconditional update would
         -- make instances retrying a failing plugin wake each other forever.
+        -- Stale tier-1 findings write it once, then never again.
         WHERE (plugins.version, plugins.manifest_json, plugins.source_path, plugins.manifest_signature)
           IS DISTINCT FROM
           (EXCLUDED.version, EXCLUDED.manifest_json, EXCLUDED.source_path, EXCLUDED.manifest_signature)
+          OR (plugins.tier = 1 AND plugins.validation_errors <> '[]'::jsonb)
         RETURNING id::text AS id, status, approved_capabilities
       `)) as unknown as { id: string; status: string; approved_capabilities: string[] | null }[];
         // An unchanged row is not returned by the upsert; read it instead.

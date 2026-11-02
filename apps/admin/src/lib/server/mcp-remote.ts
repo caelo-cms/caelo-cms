@@ -55,6 +55,7 @@ import {
   powerExecuteTool,
   powerGetContext,
   powerListTools,
+  powerNoWorkSessionMessage,
   powerOpenSession,
   type RemoteMcpRefusal,
   resolveRemoteMcpPrincipal,
@@ -236,7 +237,11 @@ function adminBackend(
         }),
       ),
     executeTool: async ({ rpcRequestId, chatSessionId, ...call }) => {
-      if (!chatSessionId && !transportSessionId) throw new NoWorkSessionError();
+      // #1306 — without either nothing names a session; the refusal says
+      // whether one was opened (and its id) so the agent stops reopening.
+      if (!chatSessionId && !transportSessionId) {
+        throw new NoWorkSessionError(await powerNoWorkSessionMessage(bridge, principal));
+      }
       return stepValue<ExecuteToolResponse>(
         await powerExecuteTool(bridge, principal, {
           ...call,

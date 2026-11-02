@@ -208,6 +208,7 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   mcp_remote_connections: SECURITY,
   mcp_remote_access_blocks: SECURITY,
   mcp_transport_sessions: SECURITY,
+  mcp_unbound_work_sessions: SECURITY,
   operator_oauth_client: SECURITY,
   credential_handoffs:
     "one-time credentials an approval left; delivered as the `credentials` topic",

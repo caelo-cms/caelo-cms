@@ -70,7 +70,12 @@ import { exactlyOneMcpCredential, mcpCredentialShape } from "./mcp_credential.js
 import { withUnavailableToolsNote } from "./mcp_power_prose.js";
 import { type McpPrincipal, mcpAgentRefOf } from "./mcp_principal.js";
 import { getMcpBridge, resolveMcpPrincipal, type SendChatBridgeOpts } from "./mcp_tokens.js";
-import { bindTransportSession, type mcpBeginToolCallOp } from "./mcp_tool_call.js";
+import {
+  bindTransportSession,
+  type mcpBeginToolCallOp,
+  readUnboundWorkSession,
+  rememberUnboundWorkSession,
+} from "./mcp_tool_call.js";
 
 /**
  * Tools that only work inside the chat-runner loop or the browser SSE
@@ -377,6 +382,13 @@ const openSessionOutput = z.object({
   chatBranchId: z.string(),
   title: z.string(),
   resumed: z.boolean(),
+  /**
+   * #1306 — false when a remote connection sends no `Mcp-Session-Id`: the
+   * session is not remembered between its calls, so every call must pass
+   * it as `workSessionId`. Absent where the client keeps it (a bound
+   * transport session, the stdio shim's process).
+   */
+  carriedByConnection: z.boolean().optional(),
 });
 
 /** What {@link powerOpenSession} takes. */
@@ -459,16 +471,49 @@ export async function powerOpenSession(
       resumed: false,
     };
   }
-  if (principal.via.kind === "remote" && input.transportSessionId !== undefined) {
+  if (principal.via.kind === "remote") {
     const connectionId = principal.via.connectionId;
     const transportSessionId = input.transportSessionId;
-    await adapter.withAdminTransaction(
-      humanCtx,
-      (tx) => bindTransportSession(tx, connectionId, transportSessionId, opened.chatSessionId),
-      { holder: "mcp.open_session.bind" },
-    );
+    if (transportSessionId !== undefined) {
+      await adapter.withAdminTransaction(
+        humanCtx,
+        (tx) => bindTransportSession(tx, connectionId, transportSessionId, opened.chatSessionId),
+        { holder: "mcp.open_session.bind" },
+      );
+    } else {
+      // #1306 — nothing carries the session to the next call; remember it
+      // so that call's refusal can name it instead of "open one first".
+      await adapter.withAdminTransaction(
+        humanCtx,
+        (tx) => rememberUnboundWorkSession(tx, connectionId, opened.chatSessionId),
+        { holder: "mcp.open_session.remember_unbound" },
+      );
+      opened = { ...opened, carriedByConnection: false };
+    }
   }
   return { ok: true, value: opened };
+}
+
+/**
+ * #1306 — why a remote call without `workSessionId` on a connection that
+ * sends no `Mcp-Session-Id` has no session: it never opened one, or it did
+ * but nothing carries the session to this call. The second is named with
+ * its id, so the agent passes it instead of opening session after session.
+ */
+export async function powerNoWorkSessionMessage(
+  bridge: SendChatBridgeOpts,
+  principal: McpPrincipal,
+): Promise<string> {
+  if (principal.via.kind !== "remote") return NO_WORK_SESSION;
+  const connectionId = principal.via.connectionId;
+  const opened = await bridge.adapter.withAdminTransaction(
+    { actorId: principal.actorId, actorKind: "human", requestId: crypto.randomUUID() },
+    (tx) => readUnboundWorkSession(tx, connectionId),
+    { holder: "mcp.no_work_session" },
+  );
+  return opened === null
+    ? "no_work_session: this connection has not opened a work session. Call caelo_open_session, then pass the id it returns as workSessionId on every call — this connection sends no Mcp-Session-Id, so Caelo cannot remember the session between calls."
+    : `no_work_session: work session ${opened} was the last one opened on this connection, but the connection sends no Mcp-Session-Id, so Caelo cannot tell which session this call belongs to. If you opened ${opened}, do not open another: repeat this call with workSessionId: "${opened}" and pass it on every call. If you did not (another agent shares this connection), call caelo_open_session and pass the id it returns as workSessionId on every call. Reconnecting the MCP server also works (a new connection gets a session id).`;
 }
 
 export const mcpOpenSessionOp = defineOperation({

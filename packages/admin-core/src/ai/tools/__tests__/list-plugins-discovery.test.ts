@@ -18,7 +18,7 @@ import {
 import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { z } from "zod";
 import type { ToolContext } from "../dispatch.js";
-import { describeDiscoveryFailures, listPluginsTool } from "../list-plugins.js";
+import { describeDiscoveryFailures, healthProblem, listPluginsTool } from "../list-plugins.js";
 
 const AI: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-0000000000a1",
@@ -82,7 +82,7 @@ describe("list_plugins — plugins found but not verified", () => {
   });
 
   it("shows which plugins a plugin requires and which active ones require it", async () => {
-    const health = { state: "running", problem: null };
+    const health = { state: "running", awaitingCapabilities: [], problem: null };
     const r = await listPluginsTool.handler(
       AI,
       {} as never,
@@ -115,6 +115,41 @@ describe("list_plugins — plugins found but not verified", () => {
     expect(r.content).toContain("required_by");
     expect(r.content).toMatch(/consent-manager.*ratings/);
     expect(r.content).toMatch(/ratings.*consent-manager/);
+  });
+
+  it("names the capabilities an active plugin waits for and where to approve them (#1306)", async () => {
+    expect(
+      healthProblem({
+        state: "awaiting_approval",
+        awaitingCapabilities: ["change_journal", "list_types"],
+        problem: null,
+      }),
+    ).toBe("awaits Owner approval of change_journal, list_types at /settings/plugins");
+    const r = await listPluginsTool.handler(
+      AI,
+      {} as never,
+      harness({
+        plugins: [
+          {
+            slug: "international-site",
+            version: "0.11.6",
+            status: "active",
+            tier: 1,
+            health: {
+              state: "awaiting_approval",
+              awaitingCapabilities: ["change_journal"],
+              problem: null,
+            },
+            requiresPlugins: [],
+            requiredBy: [],
+          },
+        ],
+        discoveryFailures: [],
+      }),
+    );
+    expect(r.content).toMatch(
+      /international-site.*awaiting_approval.*awaits Owner approval of change_journal at \/settings\/plugins/,
+    );
   });
 
   it("adds nothing when every plugin found verified", async () => {

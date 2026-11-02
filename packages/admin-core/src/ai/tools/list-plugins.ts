@@ -52,13 +52,27 @@ export function describeDiscoveryFailures(
   );
 }
 
+/**
+ * The `problem` cell: why the plugin does not run. Exported for its unit test.
+ */
+export function healthProblem(h: PluginListRow["health"]): string {
+  if (h.state === "awaiting_approval") {
+    return `awaits Owner approval of ${h.awaitingCapabilities.join(", ")} at /settings/plugins`;
+  }
+  return h.problem?.message ?? "";
+}
+
 /** What `plugins.list` hands back, narrowed to the fields worth spending tokens on. */
 interface PluginListRow {
   slug: string;
   version: string;
   status: string;
   tier: 1 | 2;
-  health: { state: string; problem: { message: string } | null };
+  health: {
+    state: string;
+    awaitingCapabilities: string[];
+    problem: { message: string } | null;
+  };
   requiresPlugins: string[];
   requiredBy: string[];
 }
@@ -68,7 +82,7 @@ export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>
   description:
     "Installed plugins with `status` (Owner's decision) and `health` (what running servers make of it).\n" +
     "- status: `active` = Owner wants it running | `awaiting_activation` = installed + verified, nothing loaded | `disabled` = Owner stopped it.\n" +
-    "- Availability ONLY from health: `running` = tools/skills usable now | `failing` = active but failed to load on a server (`problem` says why; NOT switched off -> tell the operator, details in `get_plugin`) | `unreported` = active, no server reported yet | `not_running` = not active. Never say a capability works while its plugin is failing.\n" +
+    "- Availability ONLY from health: `running` = tools/skills usable now | `failing` = active but failed to load on a server (`problem` says why; NOT switched off -> tell the operator, details in `get_plugin`) | `awaiting_approval` = active, but its release asks for capabilities the Owner has not approved, so it does not run (`problem` names them) -> tell the operator to approve them at /settings/plugins; reload_plugin cannot | `unreported` = active, no server reported yet | `not_running` = not active. Never say a capability works while its plugin is failing.\n" +
     "- `requires` = plugins that must be active first (activate those first, in that order) | `required_by` = active plugins needing this one (it cannot be disabled or uninstalled until they are).\n" +
     "USE FOR a capability you have no tool for (translation, forms, comments, newsletter, ratings): plugin installed-but-inactive -> TELL the operator it exists and one click at /settings/plugins turns it on. Plugins on disk that failed verification follow the table: NOT installed -> explain why + the fix.\n" +
     "DO NOT USE as a general capability check before routine work — your tool catalogue already reflects everything running.",
@@ -83,7 +97,7 @@ export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>
     { key: "health", value: (p) => p.health.state },
     { key: "requires", value: (p) => p.requiresPlugins.join(" ") },
     { key: "required_by", value: (p) => p.requiredBy.join(" ") },
-    { key: "problem", value: (p) => p.health.problem?.message ?? "" },
+    { key: "problem", value: (p) => healthProblem(p.health) },
   ],
   emptyMessage: "No plugins installed on this site.",
   appendix: (value) =>

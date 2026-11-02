@@ -191,6 +191,7 @@ export {
   powerExecuteTool,
   powerGetContext,
   powerListTools,
+  powerNoWorkSessionMessage,
   powerOpenSession,
 } from "./ops/security/mcp_power.js";
 export {

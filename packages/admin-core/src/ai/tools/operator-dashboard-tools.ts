@@ -207,6 +207,11 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
     lines.push(
       `health: ${h.state} (servers: ${h.servers.loaded} loaded, ${h.servers.failing} failing)`,
     );
+    if (h.state === "awaiting_approval") {
+      lines.push(
+        `not running: its release asks for capabilities the Owner has not approved (${h.awaitingCapabilities.join(", ")}). Tell the operator to approve them at /settings/plugins (Approve on the plugin); reload_plugin cannot approve them.`,
+      );
+    }
     if (h.problem) lines.push(`problem: ${formatPluginError(h.problem)}`);
     for (const e of h.recentErrors) lines.push(`recent error: ${formatPluginError(e)}`);
     if (plugin.rejectionReason) lines.push(`rejected: ${plugin.rejectionReason}`);

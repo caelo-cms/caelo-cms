@@ -491,3 +491,40 @@ export async function bindTransportSession(
 
 /** How long an unused transport-session mapping is kept. */
 export const TRANSPORT_SESSION_TTL_DAYS = 30;
+
+/**
+ * #1306 — remember the work session a remote connection opened without a
+ * transport session, so a later call that names no session can be told
+ * which one it opened (see {@link readUnboundWorkSession}). The newest open
+ * wins. Runs as the connection's user; RLS (0481) keeps it to their own
+ * connection.
+ */
+export async function rememberUnboundWorkSession(
+  tx: TransactionRunner,
+  connectionId: string,
+  chatSessionId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO mcp_unbound_work_sessions (connection_id, chat_session_id)
+    VALUES (${connectionId}::uuid, ${chatSessionId}::uuid)
+    ON CONFLICT (connection_id) DO UPDATE
+      SET chat_session_id = EXCLUDED.chat_session_id, opened_at = now()
+  `);
+}
+
+/**
+ * The work session the connection last opened without a transport session,
+ * or null when it never did (within {@link TRANSPORT_SESSION_TTL_DAYS} days).
+ */
+export async function readUnboundWorkSession(
+  tx: TransactionRunner,
+  connectionId: string,
+): Promise<string | null> {
+  const rows = (await tx.execute(sql`
+    SELECT chat_session_id::text AS chat_session_id
+    FROM mcp_unbound_work_sessions
+    WHERE connection_id = ${connectionId}::uuid
+      AND opened_at > now() - ${TRANSPORT_SESSION_TTL_DAYS}::int * interval '1 day'
+  `)) as unknown as { chat_session_id: string }[];
+  return rows[0]?.chat_session_id ?? null;
+}

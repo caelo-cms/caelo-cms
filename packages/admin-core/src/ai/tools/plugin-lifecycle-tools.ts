@@ -156,6 +156,7 @@ const reloadInput = z
 interface ReloadedHealth {
   state: string;
   servers: { loaded: number; failing: number };
+  awaitingCapabilities: string[];
   problem: { message: string } | null;
 }
 
@@ -163,7 +164,7 @@ export const reloadPluginTool: ToolDefinitionWithHandler<z.infer<typeof reloadIn
   name: "reload_plugin",
   description:
     "Retry loading an ACTIVE plugin on every server — the fix for health `failing` (servers don't retry on their own). Use after the cause was fixed, when transient, or when asked. Returns this server's result; others follow within seconds (`get_plugin`). " +
-    "Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`).",
+    "Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`), nor health `awaiting_approval` (the Owner approves its capabilities at /settings/plugins).",
   schema: reloadInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.reload", input);
@@ -177,7 +178,7 @@ export const reloadPluginTool: ToolDefinitionWithHandler<z.infer<typeof reloadIn
     }
     const h = (got.value as { plugin: { health: ReloadedHealth } | null }).plugin?.health;
     const now = h
-      ? `${h.state} (servers: ${h.servers.loaded} loaded, ${h.servers.failing} failing)${h.problem ? ` — ${h.problem.message}` : ""}`
+      ? `${h.state} (servers: ${h.servers.loaded} loaded, ${h.servers.failing} failing)${h.problem ? ` — ${h.problem.message}` : ""}${h.state === "awaiting_approval" ? ` — a reload cannot start it: the Owner must approve ${h.awaitingCapabilities.join(", ")} at /settings/plugins` : ""}`
       : "unknown";
     return {
       ok: true,
