@@ -41,7 +41,7 @@ import {
   syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
-import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { definePlugin, type PluginContextTier1, z } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
@@ -75,7 +75,16 @@ const echoPlugin = definePlugin<PluginContextTier1>({
   version: "0.0.1",
   tier: 1,
   schema: {},
-  publicOperations: ["whoami"],
+  publicOperations: [
+    {
+      name: "whoami",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: [],
+      writes: [],
+    },
+  ],
   operations: {
     whoami: async (ctx) => ({ visitorId: ctx.visitor.id }),
   },
@@ -222,14 +231,19 @@ function challengeReq(cookies: string[] = []): Request {
 }
 
 /** Fetch a challenge as `cookies`' visitor and solve it, as the component kit does. */
-async function solvedProof(cookies: string[]): Promise<{ challenge: string; nonce: string }> {
+async function solvedProof(
+  cookies: string[],
+  scope = "ratings.submit",
+): Promise<{ challenge: string; nonce: string }> {
   const c = await handleRequest(challengeReq(cookies));
   await expectStatus(c, 200);
   const { challenge, target } = (
     (await c.json()) as { data: { challenge: string; target: string } }
   ).data;
   for (let nonce = 0; ; nonce++) {
-    const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
+    const hex = new Bun.CryptoHasher("sha256")
+      .update(`${challenge}|${scope}|${nonce}`)
+      .digest("hex");
     if (hex.startsWith(target)) return { challenge, nonce: String(nonce) };
   }
 }

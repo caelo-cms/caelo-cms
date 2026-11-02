@@ -38,6 +38,16 @@ import {
   pluginEditorToolbarItem,
 } from "./editor-toolbar.js";
 import { checkPluginIndexes, type PluginIndexes, pluginIndexes } from "./indexes.js";
+import {
+  checkPublicSurface,
+  type PluginRequirement,
+  type PluginTableKinds,
+  type PublicOperationDef,
+  pluginRequirement,
+  pluginTableKinds,
+  publicOperationManifest,
+  publicOperationManifestOf,
+} from "./public-surface.js";
 
 /**
  * Epic #1107 — the list model a plugin plans with (`docs/lists.md`): the
@@ -61,6 +71,7 @@ export {
 export * from "./admin-panels.js";
 export * from "./editor-toolbar.js";
 export * from "./indexes.js";
+export * from "./public-surface.js";
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
  *  §4 "Zod at every boundary") without importing zod directly — the
  *  sandbox validator allowlists only the SDK + component-kit. */
@@ -1061,8 +1072,15 @@ export const pluginManifest = z
     operations: z.array(z.string().min(1).max(120)).min(1),
     component: pluginComponent.optional(),
     hasStaticRender: z.boolean().default(false),
-    /** See `PluginDefinition.publicOperations`. */
-    publicOperations: z.array(z.string().min(1).max(120)).optional(),
+    /** See `PluginDefinition.publicOperations` (#1332): each visitor
+     *  operation with its input JSON Schema, captcha, rate limit and the
+     *  tables it reads and writes. */
+    publicOperations: z.array(publicOperationManifest).max(32).optional(),
+    /** See `PluginDefinition.tableKinds` (#1332): one kind per `schema`
+     *  table; the database grants visitors exactly what it allows. */
+    tableKinds: pluginTableKinds.optional(),
+    /** See `PluginDefinition.requires` (#1332). */
+    requires: z.array(pluginRequirement).max(4).optional(),
     /** See `PluginDefinition.visitorProjection` (#635). Each table must be
      *  in `adminSchema` and each column declared on it. */
     visitorProjection: z
@@ -1177,6 +1195,7 @@ export const pluginManifest = z
     checkPluginIndexes(m, (path, message) =>
       ctx.addIssue({ code: "custom", path: ["indexes", ...path], message }),
     );
+    checkPublicSurface(m, (path, message) => ctx.addIssue({ code: "custom", path, message }));
     checkAdminPanels(m.adminPanels ?? [], m.operations, (path, message) =>
       ctx.addIssue({ code: "custom", path: ["adminPanels", ...path], message }),
     );
@@ -1613,6 +1632,10 @@ export interface PluginVisitor {
  * The `token` argument is ignored — no value a plugin passes can stand in
  * for a verified proof. Calls that did not come from a visitor resolve
  * true (there is no visitor to challenge).
+ *
+ * Since #1332 the host refuses a visitor call of an operation whose
+ * declared `captcha` is `"required"` (the default) before the handler runs,
+ * so an operation needs this only to re-check what dispatch already did.
  */
 export interface PluginCaptcha {
   requireProof(token: string | null): Promise<boolean>;
@@ -2234,8 +2257,40 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * with whatever capabilities the plugin was granted; the gateway
    * adds a body cap, a rate limit, a honeypot and CAPTCHA, but it
    * cannot know that an operation was meant for the Owner.
+   *
+   * Each entry is a declared contract (#1332, `./public-surface.ts`):
+   * the host validates the body against `input` before the handler
+   * runs, refuses a write without a proof-of-work bound to
+   * `<slug>.<name>` unless the entry says `captcha: "none"`, applies
+   * `rateLimit`, and lets `ctx.query` touch only the `reads` / `writes`
+   * tables. A handler that refuses the visitor throws a
+   * `PublicOperationError`; any other error reaches the visitor as a
+   * generic refusal.
+   *
+   * @example
+   *   publicOperations: [{
+   *     name: "submit", kind: "write", writes: ["comments"],
+   *     input: z.object({ pageId: z.string().uuid(), content: z.string().min(1).max(4000) }).strict(),
+   *     rateLimit: { max: 10, windowSeconds: 60 },
+   *   }]
    */
-  readonly publicOperations?: ReadonlyArray<string>;
+  readonly publicOperations?: ReadonlyArray<PublicOperationDef>;
+  /**
+   * #1332 — the kind of each `schema` table (published, inbox,
+   * visitor-state, private); required for every table. The visitor role's
+   * database grants are generated from it, so a compromised gateway can
+   * do no more than the kind allows. See `./public-surface.ts`.
+   *
+   * @example
+   *   tableKinds: { comments: "inbox", comment_settings: "published" }
+   */
+  readonly tableKinds?: PluginTableKinds;
+  /**
+   * #1332 — host services the plugin cannot work without. `"email"`: the
+   * plugin sends mail, so activating it without a configured mail
+   * transport fails with the setup step (CLAUDE.md §2, no fallbacks).
+   */
+  readonly requires?: ReadonlyArray<PluginRequirement>;
   /**
    * The visitor-readable projection of this plugin's private storage
    * (`adminSchema`): table → the columns the API gateway may read (`id`
@@ -2517,7 +2572,9 @@ export function manifestFromDefinition(def: {
   readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
   readonly tools?: ReadonlyArray<PluginToolSpec>;
-  readonly publicOperations?: ReadonlyArray<string>;
+  readonly publicOperations?: ReadonlyArray<PublicOperationDef>;
+  readonly tableKinds?: PluginTableKinds;
+  readonly requires?: ReadonlyArray<PluginRequirement>;
   readonly visitorProjection?: Readonly<Record<string, ReadonlyArray<string>>>;
   readonly adminPanels?: ReadonlyArray<PluginAdminPanel>;
   readonly editorToolbar?: ReadonlyArray<PluginEditorToolbarItem>;
@@ -2540,8 +2597,12 @@ export function manifestFromDefinition(def: {
       : undefined,
     hasStaticRender: Boolean(def.staticRender),
     ...(def.publicOperations && def.publicOperations.length > 0
-      ? { publicOperations: [...def.publicOperations] }
+      ? { publicOperations: def.publicOperations.map(publicOperationManifestOf) }
       : {}),
+    ...(def.tableKinds && Object.keys(def.tableKinds).length > 0
+      ? { tableKinds: { ...def.tableKinds } }
+      : {}),
+    ...(def.requires && def.requires.length > 0 ? { requires: [...def.requires] } : {}),
     ...(def.visitorProjection && Object.keys(def.visitorProjection).length > 0
       ? {
           visitorProjection: Object.fromEntries(

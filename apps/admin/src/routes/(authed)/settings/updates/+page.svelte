@@ -239,19 +239,25 @@
   </form>
 
   {#if data.pluginsAwaitingApproval.length > 0}
-    <!-- #1267 — the installed release asks for new plugin permissions. -->
+    <!-- #1267 / #1332 — the installed release changed shipped plugins. -->
     <Card data-testid="plugins-awaiting-approval">
       <CardHeader class="space-y-1">
         <CardTitle class="text-base">Plugins wait for your approval</CardTitle>
         <p class="text-sm text-muted-foreground">
-          This version of Caelo gives these plugins new permissions. Each one does not run until you
-          approve them at <a class="underline" href="/settings/plugins">Settings → Plugins</a>.
+          This version of Caelo changed these plugins. Each one does not run, and Publish live is
+          blocked, until you approve its release at
+          <a class="underline" href="/settings/plugins">Settings → Plugins</a>.
         </p>
         <ul class="text-sm">
           {#each data.pluginsAwaitingApproval as p (p.slug)}
             <li>
               <span class="font-mono">{p.slug}</span>:
-              <span class="font-mono">{p.capabilities.join(", ")}</span>
+              {#if p.capabilities.length > 0}
+                new permissions <span class="font-mono">{p.capabilities.join(", ")}</span>
+              {/if}
+              {#if p.releaseChanged}
+                {p.capabilities.length > 0 ? "; " : ""}changes what it declares
+              {/if}
             </li>
           {/each}
         </ul>

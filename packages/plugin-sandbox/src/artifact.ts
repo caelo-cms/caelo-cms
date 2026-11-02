@@ -14,6 +14,19 @@ function canonical(value: unknown): unknown {
   return value;
 }
 
+/**
+ * #1332 — what an Owner approves of a release-signed (shipped) plugin: the
+ * digest of its whole manifest, independent of JSON key order. A release
+ * that changes the manifest — its visitor operations, table kinds,
+ * capabilities, tools — is a new artifact and waits for a new approval
+ * (CLAUDE.md §2); one that leaves the manifest as it was keeps running.
+ */
+export function releaseManifestDigest(manifest: unknown): string {
+  return createHash("sha256")
+    .update(JSON.stringify(canonical(manifest)))
+    .digest("hex");
+}
+
 /** Identity includes the reviewed source and every manifest declaration, independent of JSON key order. */
 export function externalArtifactDigest(manifest: unknown, source: string): string {
   return createHash("sha256")

@@ -82,7 +82,12 @@ describe("list_plugins — plugins found but not verified", () => {
   });
 
   it("shows which plugins a plugin requires and which active ones require it", async () => {
-    const health = { state: "running", awaitingCapabilities: [], problem: null };
+    const health = {
+      state: "running",
+      awaitingCapabilities: [],
+      awaitingRelease: false,
+      problem: null,
+    };
     const r = await listPluginsTool.handler(
       AI,
       {} as never,
@@ -122,9 +127,21 @@ describe("list_plugins — plugins found but not verified", () => {
       healthProblem({
         state: "awaiting_approval",
         awaitingCapabilities: ["change_journal", "list_types"],
+        awaitingRelease: false,
         problem: null,
       }),
-    ).toBe("awaits Owner approval of change_journal, list_types at /settings/plugins");
+    ).toBe(
+      "awaits Owner approval at /settings/plugins: its release asks for capabilities the Owner has not approved (change_journal, list_types)",
+    );
+    // #1332 — a changed manifest waits the same way, with no new capability.
+    expect(
+      healthProblem({
+        state: "awaiting_approval",
+        awaitingCapabilities: [],
+        awaitingRelease: true,
+        problem: null,
+      }),
+    ).toContain("changes what it declares");
     const r = await listPluginsTool.handler(
       AI,
       {} as never,
@@ -138,6 +155,7 @@ describe("list_plugins — plugins found but not verified", () => {
             health: {
               state: "awaiting_approval",
               awaitingCapabilities: ["change_journal"],
+              awaitingRelease: false,
               problem: null,
             },
             requiresPlugins: [],
@@ -148,7 +166,7 @@ describe("list_plugins — plugins found but not verified", () => {
       }),
     );
     expect(r.content).toMatch(
-      /international-site.*awaiting_approval.*awaits Owner approval of change_journal at \/settings\/plugins/,
+      /international-site.*awaiting_approval.*awaits Owner approval at \/settings\/plugins: its release asks for capabilities the Owner has not approved \(change_journal\)/,
     );
   });
 

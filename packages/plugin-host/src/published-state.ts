@@ -110,7 +110,14 @@ export interface PublishedPluginRow {
    * always null for runtime-authored plugins (their grants are receipts).
    */
   readonly approved_capabilities: readonly string[] | null;
+  /** #1332 — the manifest digest the Owner approved (`plugins.approved_manifest_digest`). */
+  readonly approved_manifest_digest: string | null;
 }
+
+const approvedDigestSchema = z
+  .string()
+  .regex(/^[0-9a-f]{64}$/)
+  .nullable();
 
 const approvedCapabilitiesSchema = z.array(z.string().min(1).max(64)).max(64).nullable();
 
@@ -125,10 +132,14 @@ export async function readPublishedRegistry(
       await assertPublished(tx, "plugins");
       const rows = (await tx.execute(sql`
         SELECT id::text AS id, slug, tier, version, actor_id::text AS actor_id,
-               approved_capabilities
+               approved_capabilities, approved_manifest_digest
         FROM published_plugins
-      `)) as unknown as (Omit<PublishedPluginRow, "status" | "approved_capabilities"> & {
+      `)) as unknown as (Omit<
+        PublishedPluginRow,
+        "status" | "approved_capabilities" | "approved_manifest_digest"
+      > & {
         approved_capabilities: unknown;
+        approved_manifest_digest: unknown;
       })[];
       // cms_public is attacker-writable (#635): validate what the gate reads.
       return rows.map((r) => ({
@@ -136,6 +147,7 @@ export async function readPublishedRegistry(
         tier: Number(r.tier),
         status: "active" as const,
         approved_capabilities: approvedCapabilitiesSchema.parse(r.approved_capabilities ?? null),
+        approved_manifest_digest: approvedDigestSchema.parse(r.approved_manifest_digest ?? null),
       }));
     },
   );

@@ -34,8 +34,18 @@ const manifest = {
   version: "1.0.0",
   tier: 2,
   schema: { notes: { id: "uuid", body: "text" } },
+  tableKinds: { notes: "visitor-state" },
   operations: ["save", "read", "compare"],
-  publicOperations: ["read"],
+  publicOperations: [
+    {
+      name: "read",
+      kind: "write" as const,
+      captcha: "none" as const,
+      inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+  ],
   hasStaticRender: false,
 };
 const source = `import { definePlugin } from "@caelo-cms/plugin-sdk";

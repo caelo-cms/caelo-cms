@@ -28,6 +28,7 @@ import type {
   PluginSnapshots,
   PluginTheme,
   PluginVisitor,
+  PublicOperationDef,
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { makePluginConsentPurposes } from "./consent-purposes.js";
@@ -52,6 +53,9 @@ export interface MakePluginContextOpts {
   readonly infra: PluginHostInfra;
   readonly visitorContext?: VisitorContext;
   readonly invocation: PluginInvocation;
+  /** #1332 — the visitor operation being served, whose `reads` / `writes`
+   *  are the only public tables `ctx.query` may touch on that call. */
+  readonly publicOperation?: PublicOperationDef;
 }
 
 /**
@@ -83,9 +87,14 @@ export async function makePluginContext(
 ): Promise<PluginContext | PluginContextTier1> {
   const { plugin, infra, visitorContext, invocation } = opts;
   const requested = new Set<PluginCapability>(plugin.definition.requestedCapabilities ?? []);
+  if (invocation.origin === "visitor" && !opts.publicOperation) {
+    // Dispatch resolves the contract before it builds a visitor context;
+    // without one there is nothing to bound the call's table access by.
+    throw new Error("a visitor call needs its declared public operation");
+  }
 
   const baseCtx: PluginContext = {
-    query: makePluginQuery(plugin, infra, invocation),
+    query: makePluginQuery(plugin, infra, invocation, opts.publicOperation),
     api: makePluginApi(plugin, infra),
     theme: makePluginTheme(),
     visitor: makePluginVisitor(visitorContext),
@@ -262,6 +271,8 @@ interface QueryScope {
   readonly schemaLabel: "schema" | "adminSchema";
   readonly schemaMap: Readonly<Record<string, Readonly<Record<string, string>>>>;
   readonly pool: "public" | "admin";
+  /** #1332 — on a visitor call, the contract bounding which tables it reaches. */
+  readonly publicOperation?: PublicOperationDef;
 }
 
 /**
@@ -339,9 +350,29 @@ function makeScopedQuery(
     }
   }
 
+  /**
+   * #1332 — a visitor call reaches only the tables its operation declares:
+   * `reads` for `list`, `writes` for every write. The database grants by
+   * table kind are the boundary (the gateway is assumed compromised); this
+   * keeps an honest plugin's declaration exact, so the manifest the Owner
+   * reviewed says what the operation does.
+   */
+  function assertDeclaredAccess(method: string, table: string): void {
+    const op = scope.publicOperation;
+    if (!op || scope.pool !== "public") return;
+    const read = method === "list";
+    const declared = read ? op.reads : op.writes;
+    if (!(declared ?? []).includes(table)) {
+      throw new Error(
+        `${scope.label}.${method}: public operation "${op.name}" of plugin "${plugin.slug}" does not declare "${table}" in its ${read ? "reads" : "writes"}`,
+      );
+    }
+  }
+
   /** The table's declared column map, or a loud error naming the plugin. */
   function tableColumns(method: string, table: string): Record<string, string> {
     validateIdent(table, "table");
+    assertDeclaredAccess(method, table);
     const declared = declaredColumnsIn(scope.schemaMap, table);
     if (!declared) {
       throw new Error(
@@ -492,12 +523,14 @@ function makePluginQuery(
   plugin: LoadedPlugin,
   infra: PluginHostInfra,
   invocation: PluginInvocation,
+  publicOperation: PublicOperationDef | undefined,
 ): PluginQuery {
   return makeScopedQuery(plugin, infra, invocation, {
     label: "ctx.query",
     schemaLabel: "schema",
     schemaMap: plugin.definition.schema,
     pool: "public",
+    ...(publicOperation ? { publicOperation } : {}),
   });
 }
 

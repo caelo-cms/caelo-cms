@@ -53,7 +53,7 @@ A runnable example: a guestbook whose entries are approved in the admin and bake
 
 ```ts
 // SPDX-License-Identifier: MPL-2.0
-import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { definePlugin, type PluginContextTier1, z } from "@caelo-cms/plugin-sdk";
 
 export default definePlugin<PluginContextTier1>({
   slug: "guestbook",
@@ -62,7 +62,19 @@ export default definePlugin<PluginContextTier1>({
   schema: {
     entries: { id: "uuid", page_id: "string", text: "text", status: "enum:pending,approved" },
   },
-  publicOperations: ["sign", "list_approved"],
+  // Visitors only insert entries; the approved ones reach them baked and
+  // through the admin's published projection (docs/plugin-public-surface.md).
+  tableKinds: { entries: "inbox" },
+  publicOperations: [
+    {
+      name: "sign",
+      kind: "write",
+      input: z.object({ pageId: z.string().uuid(), text: z.string().min(1).max(2000) }).strict(),
+      rateLimit: { max: 5, windowSeconds: 60 },
+      writes: ["entries"],
+    },
+    { name: "list_approved", kind: "read", captcha: "none", input: z.object({ pageId: z.string().uuid() }).strict() },
+  ],
   operations: {
     // A visitor signs: pending, nothing baked changes. Not a trigger.
     sign: async (ctx, args) => {

@@ -11,7 +11,7 @@
  * The Deno subprocess and SDK broker live in @caelo-cms/plugin-host.
  */
 
-export { externalArtifactDigest } from "./artifact.js";
+export { externalArtifactDigest, releaseManifestDigest } from "./artifact.js";
 export {
   validateExternalToolSchema,
   validateInstallationPolicy,
@@ -29,11 +29,15 @@ export {
   ADMIN_REF_ALLOWLIST,
   adminSchemaFromSpec,
   type EmittedSchema,
+  LIVE_PUBLIC_GRANT_TARGET,
   PLUGIN_INDEX_PREFIX,
   PRIVATE_LIVE_ROW_PREDICATE,
+  type PublicGrantTarget,
   pluginIndexName,
   privateReadColumns,
+  publicTableGrants,
   schemaFromSpec,
+  VISITOR_TABLE_PRIVILEGES,
 } from "./schema.js";
 export {
   type ValidationFailure,

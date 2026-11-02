@@ -38,6 +38,7 @@ import {
   type ModuleDeferralSpec,
   type PluginAdminQuery,
   type PluginContextTier1,
+  PublicOperationError,
   z,
 } from "@caelo-cms/plugin-sdk";
 import { unreviewedEmbedFindings } from "./audit.js";
@@ -78,18 +79,20 @@ const SLUG = "consent-manager";
 const RECORD_ENDPOINT = `/api/plugin/${SLUG}/record_consent`;
 
 /** A visitor's decision as the runtime posts it through the gateway. */
-const recordConsentArgs = z.object({
-  consentId: z.string().uuid(),
-  granted: z
-    .array(
-      z
-        .string()
-        .max(64)
-        .regex(/^[a-z][a-z0-9_-]*$/),
-    )
-    .max(32),
-  policyVersion: z.number().int().positive(),
-});
+const recordConsentArgs = z
+  .object({
+    consentId: z.string().uuid(),
+    granted: z
+      .array(
+        z
+          .string()
+          .max(64)
+          .regex(/^[a-z][a-z0-9_-]*$/),
+      )
+      .max(32),
+    policyVersion: z.number().int().positive(),
+  })
+  .strict();
 
 /**
  * What the Owner may change in the consent panel. Retention has a floor
@@ -398,7 +401,22 @@ export default definePlugin<PluginContextTier1>({
   },
 
   /** Only the record itself. Everything else is the Owner's. */
-  publicOperations: ["record_consent"],
+  publicOperations: [
+    {
+      name: "record_consent",
+      kind: "write",
+      input: recordConsentArgs,
+      // E4 (#1332, P6): a consent click writes one row and is answered by
+      // the banner on every page; the rate limit alone guards it. Asking a
+      // proof-of-work first would delay the very decision the banner waits
+      // for, and a forged row proves nothing a visitor did not choose.
+      captcha: "none",
+      rateLimit: { max: 20, windowSeconds: 60 },
+      writes: ["consent_log"],
+    },
+  ],
+  /** #1332 — the proof of consent is an inbox: visitors write it, only the admin reads it. */
+  tableKinds: { consent_log: "inbox" },
 
   /**
    * What the API gateway may read of the private storage (#635): the
@@ -535,14 +553,16 @@ export default definePlugin<PluginContextTier1>({
       const q = adminQueryOf(ctx);
       const settings = await settingsOf(q);
       if (policyVersion !== settings.policy_version) {
-        throw new Error(
+        throw new PublicOperationError(
           `record_consent: policy version ${policyVersion} is not the current one (${settings.policy_version}); the visitor must be asked again`,
         );
       }
       const known = new Set((await categoriesOf(q)).map((c) => c.key));
       const unknown = granted.filter((k) => !known.has(k));
       if (unknown.length > 0) {
-        throw new Error(`record_consent: unknown consent categories: ${unknown.join(", ")}`);
+        throw new PublicOperationError(
+          `record_consent: unknown consent categories: ${unknown.join(", ")}`,
+        );
       }
       // The record holds the decision and the consent cookie's own random
       // id, nothing that identifies the visitor anywhere else: the visitor

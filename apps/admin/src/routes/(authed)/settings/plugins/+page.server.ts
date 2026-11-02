@@ -8,7 +8,11 @@
  * with a public-schema rollback on commit failure.
  */
 
-import { externalArtifactDigest, loadActivatedPlugin } from "@caelo-cms/plugin-host";
+import {
+  externalArtifactDigest,
+  loadActivatedPlugin,
+  releaseManifestDigest,
+} from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { error, fail } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
@@ -47,6 +51,7 @@ interface PluginRow {
     state: "running" | "failing" | "awaiting_approval" | "unreported" | "not_running";
     servers: { loaded: number; failing: number };
     awaitingCapabilities: string[];
+    awaitingRelease: boolean;
     problem: PluginErrorSummary | null;
     recentErrors: PluginErrorSummary[];
   };
@@ -56,6 +61,8 @@ interface PluginRow {
   requiredBy: string[];
   /** #1267 — what a release-signed plugin asks for beyond the Owner's approval; it does not run until approved. */
   unapprovedCapabilities: string[];
+  /** #1332 — this release's manifest is not the one the Owner approved; it does not run until approved. */
+  releaseUnapproved: boolean;
 }
 
 interface PluginErrorSummary {
@@ -86,6 +93,8 @@ export const load: PageServerLoad = async ({ locals }) => {
     ...p,
     artifactDigest:
       p.tier === 2 ? externalArtifactDigest(p.manifestJson, p.sourceCode ?? "") : undefined,
+    // #1332 — what an approval of a shipped plugin's release binds to.
+    manifestDigest: p.tier === 1 ? releaseManifestDigest(p.manifestJson) : undefined,
   }));
   const tier1 = plugins.filter((p) => p.tier === 1);
   const tier2Active = plugins.filter((p) => p.tier === 2 && p.status === "active");
@@ -221,8 +230,10 @@ export const actions: Actions = {
     const slug = form.get("slug");
     if (typeof slug !== "string" || !slug) return fail(400, { error: "slug required" });
     const { adapter, registry } = getQueryContext();
+    const manifestDigest = form.get("manifestDigest");
     const r = await execute(registry, adapter, locals.ctx, "plugins.approve_capabilities", {
       slug,
+      ...(typeof manifestDigest === "string" && manifestDigest ? { manifestDigest } : {}),
     });
     if (!r.ok) {
       return fail(400, {
@@ -233,10 +244,10 @@ export const actions: Actions = {
     if (!live.loaded) {
       return {
         ok: true,
-        message: `Approved the new permissions of ${slug}, but it could not be loaded on this server (${live.reason}). Its health below shows the error.`,
+        message: `Approved this release of ${slug}, but it could not be loaded on this server (${live.reason}). Its health below shows the error.`,
       };
     }
-    return { ok: true, message: `Approved the new permissions of ${slug}; it runs again.` };
+    return { ok: true, message: `Approved this release of ${slug}; it runs again.` };
   },
 
   // #1008 — retry an active plugin that failed to load, on every server.

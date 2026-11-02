@@ -16,17 +16,18 @@
  * rewrite what the admin published.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { drainProjectionOnce, publishProjectionOnce } from "@caelo-cms/admin-core";
 import {
   bootstrap,
   bootstrapDispatchOnly,
+  GENERIC_VISITOR_FAILURE,
   loadedPlugins,
   resetDispatchOnlyHost,
   resetPluginHost,
   syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
-import { definePlugin, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
+import { definePlugin, type PluginAdminQuery, z } from "@caelo-cms/plugin-sdk";
 import {
   AdminDatabaseUnavailableError,
   DatabaseAdapter,
@@ -66,6 +67,7 @@ const fixture = definePlugin({
   version: "1.0.0",
   tier: 1,
   schema: { notes: { id: "uuid", visitor_id: "string", message: "string" } },
+  tableKinds: { notes: "visitor-state" },
   adminSchema: {
     settings: { label: "string", internal_note: "string" },
     drafts: { body: "string" },
@@ -73,7 +75,48 @@ const fixture = definePlugin({
   // Only `settings.label` crosses to the public side.
   visitorProjection: { settings: ["label"] },
   requestedCapabilities: ["cms_admin_schema"],
-  publicOperations: ["save", "read_setting", "read_internal", "write_setting", "vote"],
+  publicOperations: [
+    {
+      name: "save",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+    {
+      name: "read_setting",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+    {
+      name: "read_internal",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+    {
+      name: "write_setting",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+    {
+      name: "vote",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+  ],
   // #1155 — a visitor's vote changes what the plugin bakes into its page.
   staticRender: async () => "",
   bakedData: {
@@ -398,12 +441,24 @@ describe("/api/* served from cms_public alone (#635)", () => {
   });
 
   it("an undeclared table is unreachable, and private storage is read-only", async () => {
-    const internal = await handleRequest(post(`/api/plugin/${SLUG}/read_internal`, {}));
-    expect(internal.status).toBe(500);
-    expect(await internal.text()).toContain("not in the plugin's visitorProjection");
-    const write = await handleRequest(post(`/api/plugin/${SLUG}/write_setting`, {}));
-    expect(write.status).toBe(500);
-    expect(await write.text()).toContain("cannot write private storage");
+    // #1332 — the visitor reads one generic sentence; the reason is in the
+    // gateway's log, never in the response.
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const internal = await handleRequest(post(`/api/plugin/${SLUG}/read_internal`, {}));
+      expect(internal.status).toBe(500);
+      const internalText = await internal.text();
+      expect(internalText).toContain(GENERIC_VISITOR_FAILURE);
+      expect(internalText).not.toContain("visitorProjection");
+      const write = await handleRequest(post(`/api/plugin/${SLUG}/write_setting`, {}));
+      expect(write.status).toBe(500);
+      expect(await write.text()).not.toContain("private storage");
+      const lines = logged.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(lines).toContain("not in the plugin's visitorProjection");
+      expect(lines).toContain("cannot write private storage");
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("follows an admin write through the outbox", async () => {
@@ -560,7 +615,9 @@ describe("/api/* served from cms_public alone (#635)", () => {
       expect(target).toBe("0");
       let nonce = 0;
       for (;;) {
-        const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
+        const hex = new Bun.CryptoHasher("sha256")
+          .update(`${challenge}|${SLUG}.save|${nonce}`)
+          .digest("hex");
         if (hex.startsWith(target)) break;
         nonce++;
       }

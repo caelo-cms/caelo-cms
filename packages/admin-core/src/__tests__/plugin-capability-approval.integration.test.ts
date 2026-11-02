@@ -143,7 +143,7 @@ describe("#1267 — a new release's capabilities wait for the Owner", () => {
     // A reload says what starts it, not "plugin is …, not active".
     const reloaded = await loadActivatedPlugin(SLUG);
     expect(reloaded.loaded).toBe(false);
-    expect(reloaded.reason).toContain("Approve new permissions");
+    expect(reloaded.reason).toContain("Approve this release");
 
     const approved = await execute(registry, adapter, OWNER, "plugins.approve_capabilities", {
       slug: SLUG,
@@ -160,6 +160,51 @@ describe("#1267 — a new release's capabilities wait for the Owner", () => {
     expect(afterRow.unapprovedCapabilities).toEqual([]);
     expect(afterRow.health.state).not.toBe("awaiting_approval");
     expect(afterRow.health.awaitingCapabilities).toEqual([]);
+  });
+
+  it("#1332 — holds a release whose manifest changed with the same capabilities, until approved", async () => {
+    await cleanup();
+    expect((await boot()).loaded.map((l) => l.slug)).toEqual([SLUG]);
+    // The Owner approved another manifest than the one this release ships
+    // (as after an upgrade that changed its public operations).
+    resetPluginHost();
+    await asSystem(
+      (tx) =>
+        tx`UPDATE plugins SET approved_manifest_digest = ${"0".repeat(64)} WHERE slug = ${SLUG}`,
+    );
+    const upgraded = await boot();
+    expect(upgraded.loaded).toEqual([]);
+    expect(upgraded.inactive).toEqual([
+      { slug: SLUG, version: "0.2.0", status: AWAITING_CAPABILITY_APPROVAL },
+    ]);
+    const got = await execute(registry, adapter, OWNER, "plugins.get", { slug: SLUG });
+    if (!got.ok) throw new Error(JSON.stringify(got.error));
+    const row = (
+      got.value as {
+        plugin: PluginOut & {
+          releaseUnapproved: boolean;
+          health: { awaitingRelease: boolean };
+        };
+      }
+    ).plugin;
+    expect(row.status).toBe("active");
+    expect(row.unapprovedCapabilities).toEqual([]);
+    expect(row.releaseUnapproved).toBe(true);
+    expect(row.health.state).toBe("awaiting_approval");
+    expect(row.health.awaitingRelease).toBe(true);
+
+    // An approval of a manifest the Owner was not shown is refused.
+    const stale = await execute(registry, adapter, OWNER, "plugins.approve_capabilities", {
+      slug: SLUG,
+      manifestDigest: "f".repeat(64),
+    });
+    expect(stale.ok).toBe(false);
+
+    const approved = await execute(registry, adapter, OWNER, "plugins.approve_capabilities", {
+      slug: SLUG,
+    });
+    if (!approved.ok) throw new Error(JSON.stringify(approved.error));
+    expect((await loadActivatedPlugin(SLUG)).loaded).toBe(true);
   });
 
   it("refuses an AI actor and a plugin that is not installed", async () => {

@@ -93,7 +93,7 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
     const subRes = await newsletterPlugin.operations.subscribe(ctx, {
       email: "reader@example.com",
     });
-    expect(subRes).toEqual({ id: "sub-1", awaitingConfirm: true });
+    expect(subRes).toEqual({ awaitingConfirm: true });
     expect(sentEmails.length).toBe(1);
     expect(sentEmails[0]?.html).toContain("11111111-2222-3333-4444-555555555555");
 

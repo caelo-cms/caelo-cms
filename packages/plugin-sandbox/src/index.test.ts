@@ -31,6 +31,7 @@ const helloWorldManifest = {
       created_at: "timestamp",
     },
   },
+  tableKinds: { greetings: "visitor-state" },
   operations: ["submit", "list"],
   hasStaticRender: true,
 };
@@ -51,6 +52,7 @@ export default definePlugin({
       created_at: "timestamp",
     },
   },
+  tableKinds: { greetings: "visitor-state" },
   operations: {
     submit: async ({ query }, data) => query.insert("greetings", data),
     list: async ({ query }, args) => query.list("greetings", args),
@@ -232,6 +234,7 @@ describe("validatePlugin", () => {
 describe("schemaFromSpec", () => {
   it("emits a schema name from the slug", () => {
     const out = schemaFromSpec({
+      tableKinds: { greetings: "visitor-state" },
       pluginId: "00000000-0000-0000-0000-000000000001",
       slug: "hello-world",
       schema: { greetings: { id: "uuid", page_id: "string", locale: "string", message: "string" } },
@@ -248,6 +251,7 @@ describe("schemaFromSpec", () => {
 
   it("emits enum CHECK constraints", () => {
     const out = schemaFromSpec({
+      tableKinds: { comments: "visitor-state" },
       pluginId: "00000000-0000-0000-0000-000000000002",
       slug: "comments",
       schema: { comments: { status: "enum:pending,approved,rejected" } },
@@ -258,6 +262,7 @@ describe("schemaFromSpec", () => {
 
   it("auto-adds an id column when not declared", () => {
     const out = schemaFromSpec({
+      tableKinds: { rows: "visitor-state" },
       pluginId: "00000000-0000-0000-0000-000000000003",
       slug: "empty",
       schema: { rows: { name: "string" } },
@@ -363,6 +368,7 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
 
   it("does not add them to public tables", () => {
     const { sql } = schemaFromSpec({
+      tableKinds: { signups: "visitor-state" },
       pluginId: PID,
       slug: "probe",
       schema: { signups: { id: "uuid", email: "string" } },
@@ -382,6 +388,7 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
     ).toThrow("reserved");
     expect(() =>
       schemaFromSpec({
+        tableKinds: { t: "visitor-state" },
         pluginId: PID,
         slug: "probe",
         schema: { t: { id: "uuid", caelo_x: "string" } },
@@ -504,6 +511,7 @@ describe("security hardening — AST escapes and schema pluginId validation", ()
   it("rejects non-UUID pluginId in schemaFromSpec and adminSchemaFromSpec", () => {
     expect(() =>
       schemaFromSpec({
+        tableKinds: { rows: "visitor-state" },
         pluginId: "not-a-uuid'); DROP TABLE users; --",
         slug: "probe",
         schema: { rows: { name: "string" } },

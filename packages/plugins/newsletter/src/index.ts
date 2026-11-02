@@ -27,6 +27,7 @@
 
 import {
   attachCaptchaProof,
+  HONEYPOT_FIELD_NAME,
   honeypotBodyField,
   honeypotFieldHtml,
   isHoneypotArgTripped,
@@ -40,6 +41,7 @@ import {
   definePlugin,
   isAiDelegated,
   type PluginContextTier1,
+  PublicOperationError,
   z,
 } from "@caelo-cms/plugin-sdk";
 import {
@@ -88,6 +90,32 @@ const sendCampaignArgs = z
   .strict();
 
 const getCampaignArgs = z.object({ campaignId: z.string().uuid() }).strict();
+
+/** A visitor's signup (#1332): validated by the host before `subscribe` runs. */
+const subscribeInput = z
+  .object({
+    // 254 is the longest address SMTP delivers.
+    email: z
+      .string()
+      .trim()
+      .max(254)
+      .regex(/^[^\s@]+@[^\s@]+$/, "an email address"),
+    [HONEYPOT_FIELD_NAME]: z.string().max(500).optional(),
+  })
+  .strict();
+
+/** A confirm or unsubscribe link's token (#1332). */
+const tokenInput = z
+  .object({
+    token: z
+      .string()
+      .refine((t) => t.trim().length >= 16, "too short")
+      .max(128),
+  })
+  .strict();
+
+/** `subscribe`'s one answer for every address (P6, #1336). */
+const SUBSCRIBE_ANSWER = Object.freeze({ awaitingConfirm: true as const });
 
 /** Most rows one `ctx.query.list` returns (the SDK's cap). */
 const SUBSCRIBER_LIST_CAP = 1000;
@@ -188,26 +216,67 @@ export default definePlugin<PluginContextTier1>({
     "chat_runner_tools",
     "cms_admin_schema",
   ],
+  /**
+   * #1332 (E12) — a newsletter without mail cannot confirm a single
+   * subscriber, so activation needs a configured mail transport first.
+   */
+  requires: ["email"],
+  /**
+   * #1332 — subscribers are visitor state: a visitor's own confirm and
+   * unsubscribe links find their row by token. Campaigns and the per-
+   * recipient send log are the admin's; no visitor reaches them.
+   */
+  tableKinds: { subscribers: "visitor-state", campaigns: "private", sends: "private" },
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
-  publicOperations: ["subscribe", "confirm", "unsubscribe"],
+  publicOperations: [
+    {
+      name: "subscribe",
+      kind: "write",
+      input: subscribeInput,
+      rateLimit: { max: 5, windowSeconds: 60 },
+      reads: ["subscribers"],
+      writes: ["subscribers"],
+    },
+    {
+      name: "confirm",
+      kind: "write",
+      input: tokenInput,
+      rateLimit: { max: 10, windowSeconds: 60 },
+      reads: ["subscribers"],
+      writes: ["subscribers"],
+    },
+    {
+      name: "unsubscribe",
+      kind: "write",
+      input: tokenInput,
+      rateLimit: { max: 10, windowSeconds: 60 },
+      reads: ["subscribers"],
+      writes: ["subscribers"],
+    },
+  ],
   operations: {
+    /**
+     * P6 (#1336, M5) — one answer for every address: new, waiting for
+     * confirmation, already confirmed, or a honeypot hit. No id and no
+     * status crosses back, so nobody can learn whether an address is on
+     * the list by subscribing it.
+     */
     subscribe: async (ctx, args) => {
-      const input = args as { email: string };
+      const parsed = subscribeInput.safeParse(args);
+      if (!parsed.success) throw new PublicOperationError("subscribe: invalid email");
+      const input = parsed.data;
       // A filled honeypot gets the same answer as a real signup, so the
       // bot learns nothing — and nothing is stored or mailed.
-      if (isHoneypotArgTripped(args)) {
-        return { id: "00000000-0000-0000-0000-000000000000", awaitingConfirm: true };
-      }
-      if (!input.email?.includes("@")) throw new Error("subscribe: invalid email");
+      if (isHoneypotArgTripped(args)) return SUBSCRIBE_ANSWER;
       const ok = await ctx.captcha.requireProof(null);
-      if (!ok) throw new Error("subscribe: captcha verification failed");
+      if (!ok) throw new PublicOperationError("subscribe: captcha verification failed");
       const hash = hashEmail(input.email);
       const existing = await ctx.query.list<
         "subscribers",
         { id: string; confirmed_at: string | null; confirm_token: string }
       >("subscribers", { email_hash: hash, limit: 1 });
-      if (existing[0]?.confirmed_at) return { alreadyConfirmed: true, id: existing[0].id };
+      if (existing[0]?.confirmed_at) return SUBSCRIBE_ANSWER;
       if (existing[0]) {
         if (ctx.email && typeof existing[0].confirm_token === "string") {
           await ctx.email.send({
@@ -216,11 +285,11 @@ export default definePlugin<PluginContextTier1>({
             html: `<p>Click <a href="/api/plugin/newsletter/confirm?token=${existing[0].confirm_token}">here</a> to confirm.</p>`,
           });
         }
-        return { id: existing[0].id, awaitingConfirm: true };
+        return SUBSCRIBE_ANSWER;
       }
       const confirmToken = crypto.randomUUID();
       const unsubToken = crypto.randomUUID();
-      const r = await ctx.query.insert("subscribers", {
+      await ctx.query.insert("subscribers", {
         email: input.email,
         email_hash: hash,
         confirm_token: confirmToken,
@@ -234,49 +303,38 @@ export default definePlugin<PluginContextTier1>({
           html: `<p>Click <a href="/api/plugin/newsletter/confirm?token=${confirmToken}">here</a> to confirm.</p>`,
         });
       }
-      return { id: r.id, awaitingConfirm: true };
+      return SUBSCRIBE_ANSWER;
     },
 
     confirm: async (ctx, args) => {
-      const input = args as { token: string };
-      if (
-        typeof input?.token !== "string" ||
-        input.token.trim().length < 16 ||
-        input.token.length > 128
-      ) {
-        throw new Error("confirm: invalid token");
-      }
+      const parsed = tokenInput.safeParse(args);
+      if (!parsed.success) throw new PublicOperationError("confirm: invalid token");
+      const input = parsed.data;
       const matches = await ctx.query.list<"subscribers", { id: string }>("subscribers", {
         confirm_token: input.token,
         limit: 1,
       });
-      if (!matches[0]) throw new Error("confirm: invalid token");
+      if (!matches[0]) throw new PublicOperationError("confirm: invalid token");
       await ctx.query.update("subscribers", matches[0].id, {
         confirmed_at: new Date().toISOString(),
       });
-      return { confirmed: matches[0].id };
+      return { confirmed: true };
     },
 
     unsubscribe: async (ctx, args) => {
-      const input = args as { token: string };
-      if (
-        typeof input?.token !== "string" ||
-        input.token.trim().length < 16 ||
-        input.token.length > 128
-      ) {
-        throw new Error("unsubscribe: invalid token");
-      }
+      const parsed = tokenInput.safeParse(args);
+      if (!parsed.success) throw new PublicOperationError("unsubscribe: invalid token");
+      const input = parsed.data;
       const matches = await ctx.query.list<"subscribers", { id: string }>("subscribers", {
         unsub_token: input.token,
         limit: 1,
       });
-      if (!matches[0]) throw new Error("unsubscribe: invalid token");
+      if (!matches[0]) throw new PublicOperationError("unsubscribe: invalid token");
       await ctx.query.update("subscribers", matches[0].id, {
         unsubscribed_at: new Date().toISOString(),
       });
-      return { unsubscribed: matches[0].id };
+      return { unsubscribed: true };
     },
-
     /**
      * Campaigns (newest first) + how many subscribers a send reaches. A
      * campaign's send state comes from the approved runs in private
@@ -700,7 +758,7 @@ export default definePlugin<PluginContextTier1>({
         setStatus(status, "clear");
         const fd = new FormData(form);
         try {
-          const captcha = await attachCaptchaProof().catch(() => null);
+          const captcha = await attachCaptchaProof("newsletter", "subscribe").catch(() => null);
           // The honeypot rides along; `subscribe` judges it server-side.
           const json = await postPluginJson("newsletter", "subscribe", {
             email: fd.get("email"),

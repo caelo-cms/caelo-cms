@@ -23,6 +23,7 @@
     "@caelo-cms/font-service": "workspace:*"
   },
   "devDependencies": {
-    "@caelo-cms/admin-core": "workspace:*"
+    "@caelo-cms/admin-core": "workspace:*",
+    "fast-check": "4.10.2"
   }
 }

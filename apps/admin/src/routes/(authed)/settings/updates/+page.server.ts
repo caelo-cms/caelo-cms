@@ -112,13 +112,20 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
   if (!pluginsResult.ok) {
     throw error(500, opErrorMessage(pluginsResult.error, "could not read the plugins"));
   }
-  // #1267 — a release whose shipped plugin asks for a new capability leaves
-  // that plugin waiting for the Owner's approval (one plugin model).
+  // #1267 / #1332 — a release whose shipped plugin asks for a new capability,
+  // or changes what it declares, leaves that plugin waiting for the Owner's
+  // approval (one plugin model); Publish live refuses until then.
   const pluginsAwaitingApproval = (
-    pluginsResult.value as { plugins: { slug: string; unapprovedCapabilities: string[] }[] }
+    pluginsResult.value as {
+      plugins: { slug: string; unapprovedCapabilities: string[]; releaseUnapproved: boolean }[];
+    }
   ).plugins
-    .filter((p) => p.unapprovedCapabilities.length > 0)
-    .map((p) => ({ slug: p.slug, capabilities: p.unapprovedCapabilities }));
+    .filter((p) => p.unapprovedCapabilities.length > 0 || p.releaseUnapproved)
+    .map((p) => ({
+      slug: p.slug,
+      capabilities: p.unapprovedCapabilities,
+      releaseChanged: p.releaseUnapproved,
+    }));
   const status = statusResult.value as PlatformUpdateStatus;
   const latest = latestResult.ok
     ? (latestResult.value as {

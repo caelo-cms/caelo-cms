@@ -30,7 +30,7 @@ import intlPlugin from "@caelo-cms/plugin-international-site";
 import newsletterPlugin from "@caelo-cms/plugin-newsletter";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
 import { adminSchemaFromSpec, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
-import type { PluginQueryFilter, PluginSchemaMap } from "@caelo-cms/plugin-sdk";
+import type { PluginQueryFilter, PluginSchemaMap, PluginTableKinds } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, type TransactionRunner } from "@caelo-cms/query-api";
 import { SQL as BunSQL } from "bun";
 import { sql } from "drizzle-orm";
@@ -52,6 +52,7 @@ const SYSTEM = {
 interface Shipped {
   readonly slug: string;
   readonly schema: PluginSchemaMap;
+  readonly tableKinds?: PluginTableKinds;
   readonly adminSchema?: PluginSchemaMap;
   readonly indexes?: {
     readonly schema?: Parameters<typeof schemaFromSpec>[0]["indexes"];
@@ -68,7 +69,7 @@ const PLUGINS: Record<string, Shipped> = {
   newsletter: newsletterPlugin,
   ratings: ratingsPlugin,
   // The control: auth's tables without its index declaration.
-  control: { slug: "control", schema: authPlugin.schema },
+  control: { slug: "control", schema: authPlugin.schema, tableKinds: authPlugin.tableKinds },
 };
 
 const U = "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b";
@@ -239,6 +240,7 @@ beforeAll(async () => {
     const pluginId = idOf(plugin);
     if (Object.keys(def.schema).length > 0) {
       const emitted = schemaFromSpec({
+        tableKinds: def.tableKinds,
         pluginId,
         slug: slugOf(plugin),
         schema: def.schema,

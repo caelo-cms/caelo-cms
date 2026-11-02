@@ -34,7 +34,7 @@ import {
   runPluginOperation,
   syncPluginHost,
 } from "@caelo-cms/plugin-host";
-import { definePlugin } from "@caelo-cms/plugin-sdk";
+import { definePlugin, z } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { CADDY_REDIRECTS_FILE, type ExecutionContext } from "@caelo-cms/shared";
 import {
@@ -80,7 +80,24 @@ const guestbook = definePlugin({
   version: "0.1.0",
   tier: 1,
   schema: {},
-  publicOperations: ["vote", "noop"],
+  publicOperations: [
+    {
+      name: "vote",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: [],
+      writes: [],
+    },
+    {
+      name: "noop",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: [],
+      writes: [],
+    },
+  ],
   operations: {
     approve: async (_ctx, args) => {
       const a = args as { pageId: string; text: string };

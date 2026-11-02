@@ -25,6 +25,7 @@ import type {
   listRateLimitProfilesOp,
 } from "../../ops/gateway.js";
 import type { mediaGetSettingsOp } from "../../ops/media.js";
+import { awaitingApprovalReason } from "../../ops/plugins/health.js";
 import type { getPluginOp } from "../../ops/plugins/registry.js";
 import type { aggregateAiCallsOp, aggregatePluginAiSpendOp } from "../../ops/security/ai_calls.js";
 import type { aggregateAuditByOpPrefixOp } from "../../ops/security/ai_calls_by_op.js";
@@ -209,7 +210,7 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
     );
     if (h.state === "awaiting_approval") {
       lines.push(
-        `not running: its release asks for capabilities the Owner has not approved (${h.awaitingCapabilities.join(", ")}). Tell the operator to approve them at /settings/plugins (Approve on the plugin); reload_plugin cannot approve them.`,
+        `not running: ${awaitingApprovalReason(h)}. Tell the operator to approve the release at /settings/plugins (Approve on the plugin); reload_plugin cannot approve it, and Publish live refuses until then.`,
       );
     }
     if (h.problem) lines.push(`problem: ${formatPluginError(h.problem)}`);

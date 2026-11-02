@@ -63,13 +63,17 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
   const operations = new Set(manifest.operations);
   if (operations.size !== manifest.operations.length) throw new Error("Duplicate operation name");
   for (const name of [
-    ...(manifest.publicOperations ?? []),
+    ...(manifest.publicOperations ?? []).map((op) => op.name),
     ...(manifest.tools ?? []).map((t) => t.operationName),
     ...(manifest.workers ?? []).map((w) => w.operationName),
   ]) {
     if (!operations.has(name)) throw new Error(`Undeclared operation: ${name}`);
   }
-  const publicOperations = new Set(manifest.publicOperations ?? []);
+  const publicOperations = new Set((manifest.publicOperations ?? []).map((op) => op.name));
+  // #1332 — the host validates every visitor body against this schema
+  // before the sandboxed handler runs, so it is held to the same bounded
+  // vocabulary as a tool's.
+  for (const op of manifest.publicOperations ?? []) validateExternalToolSchema(op.inputJsonSchema);
   const toolOperations = new Set<string>();
   const toolNames = new Set<string>();
   for (const tool of manifest.tools ?? []) {

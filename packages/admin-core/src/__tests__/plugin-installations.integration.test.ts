@@ -360,8 +360,18 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
     ...manifest,
     slug,
     schema: { signups: { email: "text" } },
+    tableKinds: { signups: "visitor-state" },
     operations: ["save", "read", "identity", "public_probe", "approved_save", "public_save"],
-    publicOperations: ["public_probe"],
+    publicOperations: [
+      {
+        name: "public_probe",
+        kind: "write" as const,
+        captcha: "none" as const,
+        inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
+        reads: ["signups"],
+        writes: ["signups"],
+      },
+    ],
     requestedCapabilities: ["cms_admin_schema", "chat_runner_tools"],
     capabilityReasons: {
       ...manifest.capabilityReasons,

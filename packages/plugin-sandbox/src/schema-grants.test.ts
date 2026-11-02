@@ -60,6 +60,7 @@ describe("plugin schema DDL grants (#635)", () => {
     [
       "cms_public",
       schemaFromSpec({
+        tableKinds: { comments: "visitor-state", votes: "visitor-state" },
         ...SPEC,
         schema: { comments: { body: "text" }, votes: { n: "int" } },
         indexes: undefined,

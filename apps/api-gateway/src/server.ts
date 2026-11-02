@@ -778,7 +778,8 @@ export async function handleRequest(
     const proof = (body as { _caelo_captcha?: { challenge: string; nonce: string } })
       ._caelo_captcha;
     if (proof) {
-      const verify = await verifyPowProof(cachedAdapter, proof);
+      // #1332 — a proof is valid only for the operation it was solved for.
+      const verify = await verifyPowProof(cachedAdapter, proof, `${slug}.${operationName}`);
       if (!verify.ok) {
         await recordRequest({
           pluginSlug: slug,
@@ -855,7 +856,15 @@ export async function handleRequest(
               // that the operation exists.
               result.error.kind === "OperationNotPublic"
               ? 404
-              : 500;
+              : // #1332 — refused by the operation's declared contract, or
+                // by the plugin in words meant for the visitor.
+                result.error.kind === "InvalidInput"
+                ? 400
+                : result.error.kind === "CaptchaRequired"
+                  ? 403
+                  : result.error.kind === "Rejected"
+                    ? 422
+                    : 500;
     await recordRequest({
       pluginSlug: slug,
       operation: operationName,

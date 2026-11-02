@@ -1,9 +1,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { externalArtifactDigest, validatePlugin } from "@caelo-cms/plugin-sandbox";
-import type { PluginContext, PluginDefinition } from "@caelo-cms/plugin-sdk";
+import type {
+  PluginContext,
+  PluginDefinition,
+  PublicOperationDef,
+  PublicOperationManifest,
+} from "@caelo-cms/plugin-sdk";
 /** Load external definitions as RPC proxies; source is never imported by the Bun host. */
 import { z } from "zod";
+
+/** A manifest's public operation as the definition dispatch enforces. */
+function publicOperationFromManifest(op: PublicOperationManifest): PublicOperationDef {
+  return {
+    name: op.name,
+    kind: op.kind,
+    captcha: op.captcha,
+    input: z.fromJSONSchema(op.inputJsonSchema),
+    ...(op.rateLimit ? { rateLimit: op.rateLimit } : {}),
+    reads: op.reads,
+    writes: op.writes,
+  };
+}
+
 import type { PluginHostInfra } from "./dispatch.js";
 import { assertExternalApproval, type ExternalApproval } from "./external-authorization.js";
 import { runSandbox } from "./sandbox-runtime.js";
@@ -73,7 +92,14 @@ export function externalPluginDefinition(opts: {
     operations: Object.freeze(
       Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
     ),
-    publicOperations: manifest.publicOperations,
+    // #1332 — the reviewed contract, with the input schema compiled from
+    // the manifest's JSON Schema: the host validates a visitor's body
+    // before the sandbox ever sees it.
+    ...(manifest.publicOperations
+      ? { publicOperations: manifest.publicOperations.map(publicOperationFromManifest) }
+      : {}),
+    ...(manifest.tableKinds ? { tableKinds: manifest.tableKinds } : {}),
+    ...(manifest.requires ? { requires: manifest.requires } : {}),
     // Admin panels are reviewed manifest data: an installed plugin gets
     // the same admin pages a shipped one declares (one plugin model).
     ...(manifest.adminPanels ? { adminPanels: manifest.adminPanels } : {}),

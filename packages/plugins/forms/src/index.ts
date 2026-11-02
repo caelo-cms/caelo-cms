@@ -50,18 +50,85 @@ import {
   definePlugin,
   isAiDelegated,
   type PluginContextTier1,
+  PublicOperationError,
   z,
 } from "@caelo-cms/plugin-sdk";
 
 const SLUG = "forms";
 
-interface SubmitInput {
-  formSlug: string;
-  pageId?: string;
-  data: Record<string, unknown>;
-  /** Honeypot — hidden field auto-injected by &lt;caelo-form&gt;. Bots fill this; humans don't. */
-  honeypot?: string | null;
-  captchaToken?: string | null;
+/** Longest value one form field takes. */
+const MAX_FIELD_VALUE = 10_000;
+/** Most fields one form declares (and one submission carries). */
+const MAX_FIELDS = 50;
+
+/**
+ * The visitor's submission (#1332): validated by the host before `submit`
+ * runs. The values are checked against the form's own fields afterwards
+ * (`checkSubmission`), because only the stored form knows them.
+ */
+const submitInput = z
+  .object({
+    formSlug: z.string().min(1).max(120),
+    pageId: z.string().max(200).optional(),
+    data: z
+      .record(
+        z.string().min(1).max(64),
+        z.union([z.string().max(MAX_FIELD_VALUE), z.number(), z.boolean(), z.null()]),
+      )
+      .refine((d) => Object.keys(d).length <= MAX_FIELDS, `at most ${MAX_FIELDS} fields`),
+    /** Honeypot — hidden field auto-injected by &lt;caelo-form&gt;. Bots fill this; humans don't. */
+    honeypot: z.string().max(500).nullable().optional(),
+    /** Ignored; the gateway verifies the proof-of-work itself. Kept so older pages still submit. */
+    captchaToken: z.string().max(200).nullable().optional(),
+  })
+  .strict();
+
+type SubmitInput = z.infer<typeof submitInput>;
+
+/** One field of a form definition, as `schema_json.fields` holds it. */
+const formField = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z][A-Za-z0-9_-]*$/),
+    label: z.string().min(1).max(200),
+    type: z.enum(["text", "email", "textarea", "tel", "url", "number", "checkbox"]).optional(),
+    required: z.boolean().optional(),
+  })
+  .strict();
+
+/** A form definition's `schema_json`: the fields a submission may carry. */
+const formSchemaJson = z.object({ fields: z.array(formField).min(1).max(MAX_FIELDS) }).strict();
+
+type FormSchemaJson = z.infer<typeof formSchemaJson>;
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * #1332 (M3) — a submission against the form's declared fields: no field
+ * the form does not have, every required one filled, an email field
+ * holding an address. Each refusal is worded for the visitor and names
+ * the field label, never the form's slug (P6).
+ */
+function checkSubmission(form: FormSchemaJson, data: SubmitInput["data"]): void {
+  const fields = new Map(form.fields.map((f) => [f.name, f]));
+  for (const name of Object.keys(data)) {
+    if (!fields.has(name)) {
+      throw new PublicOperationError(`submit: this form has no field "${name}"`);
+    }
+  }
+  for (const f of form.fields) {
+    const value = data[f.name];
+    const empty = value === undefined || value === null || String(value).trim() === "";
+    if (f.required && (empty || value === false)) {
+      throw new PublicOperationError(`submit: "${f.label}" is required`);
+    }
+    if (!empty && f.type === "email" && !EMAIL_RE.test(String(value))) {
+      throw new PublicOperationError(`submit: "${f.label}" must be an email address`);
+    }
+  }
 }
 
 interface ListSubmissionsInput {
@@ -130,38 +197,58 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   requestedCapabilities: ["cms_admin", "ai_provider", "chat_runner_tools", "email"],
+  /**
+   * #1332 — form definitions are the Owner's, visitors only read them;
+   * submissions are an inbox visitors write into and never read back.
+   */
+  tableKinds: { forms: "published", form_submissions: "inbox" },
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
-  publicOperations: ["submit"],
+  publicOperations: [
+    {
+      name: "submit",
+      kind: "write",
+      input: submitInput,
+      rateLimit: { max: 10, windowSeconds: 60 },
+      reads: ["forms"],
+      writes: ["form_submissions"],
+    },
+  ],
   operations: {
     /**
      * `submit` — PUBLIC visitor write. Routes through the gateway:
      *   POST /api/plugin/forms/submit
-     *   { formSlug, pageId?, data: {...}, captchaToken? }
+     *   { formSlug, pageId?, data: {...} }
      *
-     * 1. Captcha gate (P12 stub passes everything in dev; P13 hardens).
-     * 2. Verify the form definition exists.
-     * 3. Insert into form_submissions.
+     * The host has already checked the captcha bound to this operation and
+     * the body's shape (#1332). Here:
+     * 1. Look the form up and check the data against its fields.
+     * 2. Insert into form_submissions.
+     *
+     * No refusal names the form's slug (P6): a visitor learns nothing
+     * about which forms exist beyond the one on the page.
      */
     submit: async (ctx, args) => {
-      const input = args as SubmitInput;
-      if (!input.formSlug || !input.data) {
-        throw new Error("submit: formSlug, data are required");
-      }
+      const input = submitInput.parse(args);
       // Honeypot — bots fill the hidden field; mark spam silently and
       // return success so the bot doesn't retry. Real users never trip this.
       const honeypotTripped = (input.honeypot ?? "").trim() !== "";
-      const ok = await ctx.captcha.requireProof(input.captchaToken ?? null);
-      if (!ok) throw new Error("submit: captcha verification failed");
 
-      // Confirm the form exists. Cheap RLS-scoped read.
-      const forms = await ctx.query.list<"forms", { slug: string }>("forms", {
+      const forms = await ctx.query.list<"forms", { slug: string; schema_json: unknown }>("forms", {
         slug: input.formSlug,
         limit: 1,
       });
-      if (forms.length === 0) {
-        throw new Error(`submit: no form with slug "${input.formSlug}"`);
+      const form = forms[0];
+      if (!form) throw new PublicOperationError("submit: this form does not exist");
+      const schema = formSchemaJson.safeParse(form.schema_json);
+      if (!schema.success) {
+        // The Owner's definition is broken, not the visitor's input: a
+        // loud plugin error (the visitor gets the generic refusal).
+        throw new Error(
+          `submit: a stored form definition has no valid fields (${schema.error.issues[0]?.message ?? "invalid"}) — re-create it with create_form`,
+        );
       }
+      if (!honeypotTripped) checkSubmission(schema.data, input.data);
 
       const r = await ctx.query.insert("form_submissions", {
         form_slug: input.formSlug,
@@ -231,12 +318,20 @@ export default definePlugin<PluginContextTier1>({
       const input = args as {
         slug: string;
         displayName: string;
-        schemaJson: Record<string, unknown>;
+        schemaJson: unknown;
       };
+      // #1332 — every submission is checked against these fields, so a
+      // definition without valid ones would refuse every visitor.
+      const schemaJson = formSchemaJson.safeParse(input.schemaJson);
+      if (!schemaJson.success) {
+        throw new Error(
+          `create_form: schemaJson must be { fields: [{ name, label, type?, required? }] } with 1..${MAX_FIELDS} fields — ${schemaJson.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}`,
+        );
+      }
       const r = await ctx.query.insert("forms", {
         slug: input.slug,
         display_name: input.displayName,
-        schema_json: input.schemaJson,
+        schema_json: schemaJson.data,
       });
       return { formId: r.id };
     },
@@ -535,13 +630,12 @@ export default definePlugin<PluginContextTier1>({
         const data: Record<string, unknown> = {};
         for (const f of fields) data[f.name] = fd.get(f.name) ?? "";
         try {
-          const captcha = await attachCaptchaProof().catch(() => null);
+          const captcha = await attachCaptchaProof(SLUG, "submit").catch(() => null);
           const json = await postPluginJson(SLUG, "submit", {
             formSlug: slug,
             pageId: pageId || undefined,
             data,
             honeypot: (fd.get(HONEYPOT_FIELD_NAME) as string | null) ?? "",
-            captchaToken: "dev",
             ...(captcha ? { _caelo_captcha: captcha } : {}),
           });
           if (json.ok) {

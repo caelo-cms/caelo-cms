@@ -14,14 +14,17 @@
  */
 
 import { createHash } from "node:crypto";
-import type {
-  PageUrlStyle,
-  PluginContext,
-  PluginContextTier1,
-  PluginDefinition,
-  PluginImageCapabilities,
-  PluginInvocation,
-  PluginProvenance,
+import {
+  isPublicOperationError,
+  type PageUrlStyle,
+  type PluginContext,
+  type PluginContextTier1,
+  type PluginDefinition,
+  type PluginImageCapabilities,
+  type PluginInvocation,
+  type PluginProvenance,
+  type PublicOperationDef,
+  publicOperationOf,
 } from "@caelo-cms/plugin-sdk";
 import {
   type DatabaseAdapter,
@@ -35,6 +38,7 @@ import { bakedDataPageIds } from "./baked-data-pages.js";
 import { type ExternalApproval, operatorHasPermission } from "./external-authorization.js";
 import { previewContext } from "./preview-context.js";
 import type { PluginRowLocker } from "./private-storage.js";
+import { refusePublicCall, VISITOR_MESSAGE_MAX, visitorSafeResult } from "./public-contract.js";
 import {
   emitPublicPluginOpEvent,
   isProjectionNotPublished,
@@ -243,6 +247,9 @@ interface MakeContextOpts {
   readonly invocation: PluginInvocation;
   /** Visitor-facing context if dispatched from the API gateway. */
   readonly visitorContext?: VisitorDispatchContext;
+  /** #1332 — the declared contract of the visitor call being served; its
+   *  `reads` / `writes` bound what `ctx.query` may touch. */
+  readonly publicOperation?: PublicOperationDef;
 }
 
 /**
@@ -381,7 +388,15 @@ export type RunPluginOperationResult =
           | "OperationFailed"
           // #635 — the admin has not published what this call needs into
           // cms_public yet: a loud 503, never an empty or "not found" answer.
-          | "ProjectionNotPublished";
+          | "ProjectionNotPublished"
+          // #1332 — a visitor call refused by its declared contract before
+          // the handler ran: the body does not match `input`, or the
+          // operation needs a proof-of-work bound to it that was not given.
+          | "InvalidInput"
+          | "CaptchaRequired"
+          // #1332 — the handler refused the visitor with a
+          // `PublicOperationError`; its message is meant for them.
+          | "Rejected";
         readonly message: string;
       };
     };
@@ -477,8 +492,14 @@ export function renderInvocation(scope: RenderScope): PluginInvocation {
 export async function runPluginOperation(
   opts: RunPluginOperationOpts,
 ): Promise<RunPluginOperationResult> {
-  if (opts.invocation.origin !== "render") return runPluginOperationNow(opts);
-  return joinHeldTransaction(() => runPluginOperationNow(opts));
+  if (opts.invocation.origin === "render") {
+    return joinHeldTransaction(() => runPluginOperationNow(opts));
+  }
+  const result = await runPluginOperationNow(opts);
+  // #1332 — a visitor reads only what was worded for them.
+  return opts.visitorContext
+    ? visitorSafeResult(result, `${opts.pluginSlug}.${opts.operationName}`)
+    : result;
 }
 
 async function runPluginOperationNow(
@@ -551,9 +572,11 @@ async function runPluginOperationNow(
   // them runs with whatever capabilities the plugin was granted. The
   // check lives HERE rather than at the gateway route so a second entry
   // point cannot be added later without it.
+  let publicOperation: PublicOperationDef | undefined;
+  let args = opts.args;
   if (opts.visitorContext) {
-    const allowed = plugin.definition.publicOperations ?? [];
-    if (!allowed.includes(opts.operationName)) {
+    publicOperation = publicOperationOf(plugin.definition.publicOperations, opts.operationName);
+    if (!publicOperation) {
       return {
         ok: false,
         error: {
@@ -562,6 +585,11 @@ async function runPluginOperationNow(
         },
       };
     }
+    // #1332 — the declared contract runs before the handler: the captcha
+    // the operation requires, then the visitor's input against its schema.
+    const refused = refusePublicCall(publicOperation, opts.visitorContext.captcha, args);
+    if (!refused.ok) return { ok: false, error: refused.error };
+    args = refused.args;
   }
   if (!cachedInfra || !makeContext) {
     return {
@@ -665,6 +693,7 @@ async function runPluginOperationNow(
       infra: cachedInfra,
       visitorContext: opts.visitorContext,
       invocation: opts.invocation,
+      ...(publicOperation ? { publicOperation } : {}),
     });
   } catch (e) {
     if (isProjectionNotPublished(e)) {
@@ -684,7 +713,7 @@ async function runPluginOperationNow(
   try {
     const value = await handler(
       opts.readOnlyPreview ? previewContext(ctx) : (ctx as PluginContext),
-      opts.args,
+      args,
     );
     if (opts.readOnlyPreview) return { ok: true, value };
     // #1212 — a render call only reads (its storage writes are refused,
@@ -756,6 +785,15 @@ async function runPluginOperationNow(
       return {
         ok: false,
         error: { kind: "ProjectionNotPublished", message: (e as Error).message },
+      };
+    }
+    // #1332 — the plugin refusing a visitor ("invalid credentials") is an
+    // answer, not a fault: its own words go back, and it is not logged as
+    // a plugin error.
+    if (publicOperation && isPublicOperationError(e)) {
+      return {
+        ok: false,
+        error: { kind: "Rejected", message: e.message.slice(0, VISITOR_MESSAGE_MAX) },
       };
     }
     // #1008 — every throw lands in the plugin's error log, so the Owner

@@ -18,6 +18,7 @@
  * do not exist here.
  */
 
+import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import { bakedDataTrigger } from "./baked-data-pages.js";
 import { isPluginDisabled, loadedPlugins } from "./dispatch.js";
 
@@ -41,7 +42,7 @@ export function bakedDataVisitorTrigger(
   const lp = loadedPlugins.all().find((p) => p.pluginId === pluginId);
   if (!lp || isPluginDisabled(lp.slug)) return null;
   if (!bakedDataTrigger(lp.definition.bakedData, operationName)) return null;
-  if (!(lp.definition.publicOperations ?? []).includes(operationName)) return null;
+  if (!publicOperationOf(lp.definition.publicOperations, operationName)) return null;
   return { id: lp.pluginId, slug: lp.slug, version: lp.version };
 }
 

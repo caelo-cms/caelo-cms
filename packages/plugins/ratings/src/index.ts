@@ -32,12 +32,24 @@
  */
 
 import { attachCaptchaProof, KIT_CSS, postPluginJson } from "@caelo-cms/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import {
+  defineComponent,
+  definePlugin,
+  type PluginContextTier1,
+  PublicOperationError,
+  z,
+} from "@caelo-cms/plugin-sdk";
 
-interface SubmitInput {
-  pageId: string;
-  score: 1 | 2 | 3 | 4 | 5;
-}
+/** A visitor's vote (#1332): validated by the host before `submit` runs. */
+const submitInput = z
+  .object({
+    pageId: z.string().trim().min(1).max(200),
+    score: z.number().int().min(1).max(5),
+  })
+  .strict();
+
+/** Which page's aggregate a visitor reads; all pages without one. */
+const listAggregatesInput = z.object({ pageId: z.string().max(200).optional() }).strict();
 
 /** Most rows one `ctx.query.list` returns (the SDK's cap). */
 const QUERY_LIST_CAP = 1000;
@@ -99,27 +111,48 @@ export default definePlugin<PluginContextTier1>({
   ],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
-  publicOperations: ["submit", "list_aggregates"],
+  publicOperations: [
+    {
+      name: "submit",
+      kind: "write",
+      input: submitInput,
+      rateLimit: { max: 20, windowSeconds: 60 },
+      // The visitor's own earlier vote is found and replaced.
+      reads: ["ratings"],
+      writes: ["ratings"],
+    },
+    {
+      name: "list_aggregates",
+      kind: "read",
+      captcha: "none",
+      input: listAggregatesInput,
+      reads: ["rating_aggregates"],
+    },
+  ],
+  /**
+   * #1332 — a vote is the visitor's own state today: `submit` finds and
+   * replaces their earlier vote. The aggregates are what the admin
+   * recomputes and visitors only read.
+   *
+   * FIXME(issue #1333): votes become `inbox` and the recompute moves to the
+   * #1140 scheduler, publishing the aggregates through the projection; the
+   * worker's direct write of `rating_aggregates` is the exception the grant
+   * generator documents (plugin-sandbox `publicTableGrants`).
+   */
+  tableKinds: { ratings: "visitor-state", rating_aggregates: "published" },
   operations: {
     submit: async (ctx, args) => {
-      const input = args as SubmitInput;
-      if (
-        typeof input?.pageId !== "string" ||
-        input.pageId.trim().length === 0 ||
-        input.pageId.length > 200
-      ) {
-        throw new Error("submit: pageId must be a non-empty string up to 200 chars");
+      const parsed = submitInput.safeParse(args);
+      if (!parsed.success) {
+        // The host validates visitor calls first (#1332); this words a
+        // direct call's refusal the same way.
+        throw new PublicOperationError(
+          parsed.error.issues.some((i) => i.path[0] === "score")
+            ? "submit: score must be 1..5"
+            : "submit: pageId must be a non-empty string up to 200 chars",
+        );
       }
-      if (
-        typeof input.score !== "number" ||
-        !Number.isInteger(input.score) ||
-        input.score < 1 ||
-        input.score > 5
-      ) {
-        throw new Error("submit: score must be 1..5");
-      }
-      const ok = await ctx.captcha.requireProof(null);
-      if (!ok) throw new Error("submit: captcha verification failed");
+      const input = parsed.data;
       // A visitor who has not consented to the visitor-id cookie (#677)
       // cannot be recognised, so their vote is a new anonymous one: there
       // is no earlier vote to find. Repeat votes from one browser are then
@@ -159,7 +192,7 @@ export default definePlugin<PluginContextTier1>({
     },
 
     list_aggregates: async (ctx, args) => {
-      const input = (args ?? {}) as { pageId?: string };
+      const input = listAggregatesInput.parse(args ?? {});
       // Most-rated first: the admin panel lists them in this order.
       const filter: Record<string, unknown> = { limit: 200, orderBy: "count", orderDir: "desc" };
       if (input.pageId) filter.page_id = input.pageId;
@@ -359,7 +392,7 @@ export default definePlugin<PluginContextTier1>({
           const score = Number.parseInt(b.dataset.score ?? "0", 10);
           highlight(score);
           try {
-            const captcha = await attachCaptchaProof().catch(() => null);
+            const captcha = await attachCaptchaProof("ratings", "submit").catch(() => null);
             await postPluginJson("ratings", "submit", {
               pageId,
               score,

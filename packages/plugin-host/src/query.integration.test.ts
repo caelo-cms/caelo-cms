@@ -56,6 +56,7 @@ function makePlugin(slug: string) {
     version: "1.0.0",
     tier: 1,
     schema: greetingsSchema,
+    tableKinds: { greetings: "visitor-state" },
     // #1292 — the reads below filter by page and message and page by time.
     indexes: { schema: { greetings: [["page_id"], ["message", "id"], ["created_at"]] } },
     operations: {
@@ -166,6 +167,9 @@ async function provisionPluginSchema(plugin: { slug: string }): Promise<void> {
   );
   if (!r) throw new Error(`provisionPluginSchema: no plugin row for ${plugin.slug}`);
   const emitted = schemaFromSpec({
+    tableKinds: Object.fromEntries(
+      Object.keys(greetingsSchema).map((t) => [t, "visitor-state" as const]),
+    ),
     pluginId: r,
     slug: plugin.slug,
     schema: greetingsSchema,

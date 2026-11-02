@@ -58,7 +58,7 @@ describe("newsletter subscribe", () => {
   it("requires the proof on every legitimate subscribe", async () => {
     const h = harness(true);
     const r = await subscribe(h.ctx, { email: "a@example.com", [HONEYPOT_FIELD_NAME]: "" });
-    expect(r).toMatchObject({ id: "s1", awaitingConfirm: true });
+    expect(r).toEqual({ awaitingConfirm: true });
     expect(h.state.captchaCalls).toBe(1);
     expect(h.state.inserts).toBe(1);
   });
@@ -66,8 +66,45 @@ describe("newsletter subscribe", () => {
   it("fakes success for a filled honeypot without storing or mailing", async () => {
     const h = harness(true);
     const r = await subscribe(h.ctx, { email: "bot@example.com", [HONEYPOT_FIELD_NAME]: "x" });
-    expect(r).toEqual({ id: "00000000-0000-0000-0000-000000000000", awaitingConfirm: true });
+    expect(r).toEqual({ awaitingConfirm: true });
     expect(h.state.inserts).toBe(0);
     expect(h.state.mails).toBe(0);
+  });
+});
+
+/**
+ * P6 (#1336, M5) — subscribing tells nobody whether an address is already
+ * on the list: a new, an unconfirmed and a confirmed address get the same
+ * answer, with no subscriber id.
+ */
+describe("newsletter subscribe answers alike for every address", () => {
+  function withRow(row: Record<string, unknown> | null) {
+    const ctx = {
+      invocation: { origin: "visitor", actorId: "v" },
+      captcha: { requireProof: async () => true },
+      query: {
+        list: async () => (row ? [row] : []),
+        insert: async () => ({ id: "33333333-3333-4333-8333-333333333333" }),
+      },
+      email: { send: async () => ({ messageId: "m" }) },
+    } as unknown as PluginContextTier1;
+    return subscribe(ctx, { email: "known@example.com" });
+  }
+
+  it("is identical for unknown, unconfirmed and confirmed addresses and carries no id", async () => {
+    const unknown = await withRow(null);
+    const unconfirmed = await withRow({
+      id: "11111111-1111-4111-8111-111111111111",
+      confirmed_at: null,
+      confirm_token: "tok-unconfirmed-0000",
+    });
+    const confirmed = await withRow({
+      id: "22222222-2222-4222-8222-222222222222",
+      confirmed_at: "2026-11-01T00:00:00.000Z",
+      confirm_token: "tok-confirmed-00000",
+    });
+    expect(JSON.stringify(unconfirmed)).toBe(JSON.stringify(unknown));
+    expect(JSON.stringify(confirmed)).toBe(JSON.stringify(unknown));
+    expect(JSON.stringify(unknown)).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
   });
 });

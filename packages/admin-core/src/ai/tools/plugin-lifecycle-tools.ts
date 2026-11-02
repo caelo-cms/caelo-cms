@@ -20,6 +20,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { proposeRevokeCapabilityInput } from "../../ops/plugins/capability_proposals.js";
+import { awaitingApprovalReason } from "../../ops/plugins/health.js";
 import { describeError, toolError } from "./_describe-error.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 import { makeListReadTool } from "./_make-read-tool.js";
@@ -157,6 +158,7 @@ interface ReloadedHealth {
   state: string;
   servers: { loaded: number; failing: number };
   awaitingCapabilities: string[];
+  awaitingRelease: boolean;
   problem: { message: string } | null;
 }
 
@@ -178,7 +180,7 @@ export const reloadPluginTool: ToolDefinitionWithHandler<z.infer<typeof reloadIn
     }
     const h = (got.value as { plugin: { health: ReloadedHealth } | null }).plugin?.health;
     const now = h
-      ? `${h.state} (servers: ${h.servers.loaded} loaded, ${h.servers.failing} failing)${h.problem ? ` — ${h.problem.message}` : ""}${h.state === "awaiting_approval" ? ` — a reload cannot start it: the Owner must approve ${h.awaitingCapabilities.join(", ")} at /settings/plugins` : ""}`
+      ? `${h.state} (servers: ${h.servers.loaded} loaded, ${h.servers.failing} failing)${h.problem ? ` — ${h.problem.message}` : ""}${h.state === "awaiting_approval" ? ` — a reload cannot start it: ${awaitingApprovalReason(h)}; the Owner approves the release at /settings/plugins` : ""}`
       : "unknown";
     return {
       ok: true,

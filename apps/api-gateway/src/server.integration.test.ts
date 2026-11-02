@@ -19,7 +19,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { publishProjectionOnce } from "@caelo-cms/admin-core";
 import { applyPluginLifecycle, bootstrap, resetPluginHost } from "@caelo-cms/plugin-host";
 import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
-import { definePlugin } from "@caelo-cms/plugin-sdk";
+import { definePlugin, z } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { handleRequest, invalidateGatewaySettings, setGatewayAdapter } from "./server.js";
@@ -48,9 +48,19 @@ const fixturePlugin = definePlugin({
       created_at: "timestamp",
     },
   },
+  tableKinds: { notes: "visitor-state" },
   // Default deny at the visitor boundary: the fixture has to say
   // which of its operations the gateway may reach.
-  publicOperations: ["save"],
+  publicOperations: [
+    {
+      name: "save",
+      kind: "write" as const,
+      captcha: "none" as const,
+      input: z.looseObject({}),
+      reads: ["notes"],
+      writes: ["notes"],
+    },
+  ],
   operations: {
     admin_only: async () => ({ secret: "should never be reachable from the gateway" }),
     save: async (ctx, args) => {
@@ -103,6 +113,7 @@ async function provisionSchema(): Promise<void> {
   );
   if (!id) throw new Error("plugin row missing");
   const emitted = schemaFromSpec({
+    tableKinds: { notes: "visitor-state" },
     pluginId: id,
     slug: SLUG,
     schema: {
