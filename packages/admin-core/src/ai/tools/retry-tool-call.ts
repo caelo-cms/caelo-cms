@@ -85,6 +85,7 @@ export const retryToolCallTool: ToolDefinitionWithHandler<RetryToolCallInput> = 
     "Fix a failed write call with a small patch instead of resending it — only for a call whose result names `retry_tool_call`. " +
     'Paths are segment arrays exactly as the error names them (`["page","pageType"]`, `["modules",3,"html"]`). ' +
     "`set` writes a value, `remove` drops a key or array entry, `replace` swaps one exact text inside one string (must match once). " +
+    "The call stays kept while you make the calls its error asks for first (create the page type, then patch). " +
     "The patched call runs as a new call (permissions, validation, approval re-checked); if it fails again, patch the same toolCallId again.",
   schema: retryToolCallInput,
   inputSchema: {

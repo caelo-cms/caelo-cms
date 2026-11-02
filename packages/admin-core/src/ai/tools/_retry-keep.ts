@@ -68,7 +68,10 @@ export function keptCallArgs(
 
 /**
  * The line a kept failure ends with: how to fix it with a patch. A
- * version conflict first needs a fresh read.
+ * version conflict first needs a fresh read. Resending is named only for
+ * a change the errors do not cover: offered as an equal choice, the AI
+ * resent a whole page after first creating the page type the error asked
+ * for (release gate of v0.11.9, scenario-retry-tool-call).
  */
 export function keptCallNotice(toolCallId: string, result: ToolResult): string {
   const first = result.errors?.[0]?.path;
@@ -82,7 +85,7 @@ export function keptCallNotice(toolCallId: string, result: ToolResult): string {
       : result.failureKind === "Locked" || result.failureKind === "SiblingLeaseConflict"
         ? "Once the lock is released, fix"
         : "Fix";
-  return `${lead} with \`retry_tool_call({toolCallId:"${toolCallId}", ${example}})\` (patch only what the errors name; \`replace\` edits text inside one string) or resend.`;
+  return `${lead} with \`retry_tool_call({toolCallId:"${toolCallId}", ${example}})\` — also after the calls the error asks for first (the call stays kept). Patch only what the errors name (\`replace\` edits text inside one string); resend only when inputs the errors do not name must change.`;
 }
 
 /** `result` with the kept-call notice appended to its content. */

@@ -81,7 +81,7 @@ describe("keptCallArgs", () => {
 });
 
 describe("keptCallNotice", () => {
-  it("names the id and the first error path, and still offers the resend", () => {
+  it("names the id and the first error path, and keeps the resend for unnamed inputs", () => {
     const text = keptCallNotice(
       "call-1",
       failure({
@@ -90,7 +90,9 @@ describe("keptCallNotice", () => {
       }),
     );
     expect(text).toContain('retry_tool_call({toolCallId:"call-1", set:[{path:["page","pageType"]');
-    expect(text).toEndWith("or resend.");
+    expect(text).toContain("also after the calls the error asks for first");
+    expect(text).toEndWith("resend only when inputs the errors do not name must change.");
+    expect(text).not.toContain("or resend");
   });
 
   it("asks for a fresh read first on a version conflict", () => {
