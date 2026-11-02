@@ -47,8 +47,33 @@
  * the roles it created).
  */
 
-/** The public gateway's login, and its former cms_admin login (gone since #635). */
-export const GATEWAY_LOGIN_ROLES = ["public_role", "gateway_role"] as const;
+/**
+ * The public databases and the one gateway login each belongs to (#1329):
+ * the live gateway logs in as public_role on cms_public, the staging
+ * gateway as public_staging_role on cms_public_staging. Neither login may
+ * reach the other's database, and neither database may grant anything to
+ * the other's login, so a compromised staging gateway reaches no live data
+ * and the reverse.
+ */
+export const PUBLIC_DATABASE_LOGINS = {
+  cms_public: "public_role",
+  cms_public_staging: "public_staging_role",
+} as const;
+
+/** A public database (#1329). */
+export type PublicDatabase = keyof typeof PUBLIC_DATABASE_LOGINS;
+
+/** Every public database, live first. */
+export const PUBLIC_DATABASES = Object.keys(PUBLIC_DATABASE_LOGINS) as readonly PublicDatabase[];
+
+/** The visitor-facing logins: one per public database. */
+export const VISITOR_LOGIN_ROLES: readonly string[] = Object.values(PUBLIC_DATABASE_LOGINS);
+
+/**
+ * The public gateways' logins, and the live gateway's former cms_admin
+ * login (gone since #635).
+ */
+export const GATEWAY_LOGIN_ROLES: readonly string[] = [...VISITOR_LOGIN_ROLES, "gateway_role"];
 
 /** NOLOGIN roles whose members are the in-cloud jobs' logins. */
 export const JOB_ROLES = ["operator_access_reader", "platform_updater"] as const;
@@ -86,6 +111,8 @@ export interface AuditedRole {
   readonly memberOf: readonly string[];
   /** Whether it may connect to the database the audit runs in (cms_admin). */
   readonly canConnectHere: boolean;
+  /** #1329 — the public databases ({@link PUBLIC_DATABASES}) it may connect to. */
+  readonly publicDatabases: readonly string[];
   /** `pg_roles.rolconnlimit` (-1 = unlimited). */
   readonly connectionLimit: number;
   /** `pg_roles.rolconfig`: the role's own `name=value` settings. */
@@ -98,7 +125,8 @@ export interface AuditedRole {
  * else; the reasons live in that migration). The connection limit is the
  * gateway's share of the pool budget at the default scale-out
  * (`GATEWAY_ROLE_CONNECTION_LIMIT` in @caelo-cms/shared pool-budget.ts,
- * pinned to this value by a test).
+ * pinned to this value by a test). Since #1329 the staging gateway's
+ * public_staging_role must carry the same values (cms_admin migration 0530).
  */
 export const PUBLIC_ROLE_LIMITS = {
   connectionLimit: 30,
@@ -145,6 +173,13 @@ SELECT r.rolname::text AS rolname,
          ARRAY[]::text[]
        ) AS member_of,
        has_database_privilege(r.oid, current_database(), 'CONNECT') AS can_connect_here,
+       COALESCE(
+         (SELECT array_agg(d.datname::text ORDER BY d.datname::text)
+            FROM pg_database d
+           WHERE d.datname IN (${PUBLIC_DATABASES.map((d) => `'${d}'`).join(", ")})
+             AND has_database_privilege(r.oid, d.oid, 'CONNECT')),
+         ARRAY[]::text[]
+       ) AS public_databases,
        r.rolconnlimit AS connection_limit,
        COALESCE(r.rolconfig, ARRAY[]::text[]) AS settings
   FROM audited a JOIN pg_roles r ON r.oid = a.oid
@@ -162,6 +197,7 @@ export interface RoleAuditRow {
   readonly rolreplication: boolean;
   readonly member_of: readonly string[] | null;
   readonly can_connect_here: boolean;
+  readonly public_databases: readonly string[] | null;
   readonly connection_limit: number;
   readonly settings: readonly string[] | null;
 }
@@ -181,6 +217,7 @@ export function toAuditedRole(row: RoleAuditRow): AuditedRole {
     rolreplication: row.rolreplication,
     memberOf: row.member_of ?? [],
     canConnectHere: row.can_connect_here,
+    publicDatabases: row.public_databases ?? [],
     connectionLimit: row.connection_limit,
     settings: row.settings ?? [],
   };
@@ -217,6 +254,12 @@ function publicRoleLimitProblems(role: AuditedRole): string[] {
   return out;
 }
 
+/** The public database `role` is the gateway login of, or null (the former gateway_role). */
+function ownPublicDatabase(role: string): PublicDatabase | null {
+  for (const db of PUBLIC_DATABASES) if (PUBLIC_DATABASE_LOGINS[db] === role) return db;
+  return null;
+}
+
 export interface RoleAuditResult {
   /** Isolation breaches: the run must fail. */
   readonly violations: readonly string[];
@@ -244,7 +287,12 @@ export function evaluateRoleAudit(roles: readonly AuditedRole[]): RoleAuditResul
       if (role.canConnectHere) {
         violations.push(`${name} can connect to cms_admin`);
       }
-      if (name === "public_role") violations.push(...publicRoleLimitProblems(role));
+      // #1329 — each gateway login reaches its own public database only.
+      const own = ownPublicDatabase(name);
+      for (const db of role.publicDatabases) {
+        if (db !== own) violations.push(`${name} can connect to ${db}`);
+      }
+      if (own !== null) violations.push(...publicRoleLimitProblems(role));
     } else {
       const privileged = role.memberOf.filter((g) => PRIVILEGED_GROUPS.includes(g));
       if (privileged.length > 0) {
@@ -273,7 +321,7 @@ export function evaluateRoleAudit(roles: readonly AuditedRole[]): RoleAuditResul
  * single authoring object. `gateway_role` is the gateway's former cms_admin
  * login (#635): wherever it still exists, it must hold nothing.
  */
-export const PUBLIC_SIDE_ROLES = ["public_role", "gateway_role"] as const;
+export const PUBLIC_SIDE_ROLES: readonly string[] = [...VISITOR_LOGIN_ROLES, "gateway_role"];
 
 export const CROSS_DATABASE_GRANTS_SQL = `
 WITH grantees AS (
@@ -331,6 +379,27 @@ export interface CrossDatabaseGrantRow {
   readonly object: string;
 }
 
+/**
+ * Issue #1329 — the databases (cms_admin and the public ones) every login
+ * may CONNECT to through PUBLIC. Each must be closed: a PUBLIC CONNECT
+ * would hand every login, the other environment's gateway included, a way
+ * in. The database ACLs are cluster-wide, so it runs on any database.
+ */
+export const PUBLIC_CONNECT_SQL = `
+SELECT d.datname::text AS datname FROM pg_database d
+ WHERE d.datname IN ('cms_admin', ${PUBLIC_DATABASES.map((db) => `'${db}'`).join(", ")})
+   AND has_database_privilege('public', d.oid, 'CONNECT')
+ ORDER BY 1
+`;
+
+/** The violation text for each database PUBLIC may connect to. */
+export function publicConnectViolations(rows: readonly { datname: string }[]): string[] {
+  return rows.map(
+    (r) =>
+      `PUBLIC may connect to ${r.datname} (every login could open it, the other environment's gateway included; cms_admin migrations 0278 and 0530 revoke it)`,
+  );
+}
+
 /** The violation text for each grant the public side holds on cms_admin. */
 export function crossDatabaseGrantViolations(rows: readonly CrossDatabaseGrantRow[]): string[] {
   return rows.map(
@@ -340,7 +409,8 @@ export function crossDatabaseGrantViolations(rows: readonly CrossDatabaseGrantRo
 }
 
 /**
- * Issue #635 — run on cms_PUBLIC: nothing there may reach another database.
+ * Issue #635 — run on each public database (cms_public and, since #1329,
+ * cms_public_staging): nothing there may reach another database.
  * dblink or postgres_fdw, a foreign server, or a user mapping is a bridge a
  * compromised public side could use to reach cms_admin.
  */
@@ -357,12 +427,85 @@ ORDER BY 1
  * Fail (throw) when cms_public holds a bridge to another database. Run by
  * migrate.ts after every cms_public migration run.
  */
-export async function assertPublicDatabaseIsolated(sql: AuditQuery): Promise<void> {
+export async function assertPublicDatabaseIsolated(
+  sql: AuditQuery,
+  database: PublicDatabase,
+): Promise<void> {
   const rows = (await sql.unsafe(PUBLIC_DATABASE_BRIDGES_SQL)) as { bridge: string }[];
   if (rows.length === 0) return;
   throw new Error(
     roleAuditError({
-      violations: rows.map((r) => `cms_public has a ${r.bridge}, a bridge to other databases`),
+      violations: rows.map((r) => `${database} has a ${r.bridge}, a bridge to other databases`),
+      warnings: [],
+    }),
+  );
+}
+
+/**
+ * Issue #1329 — every privilege or row-level policy in the current public
+ * database that names the OTHER environment's gateway login: in cms_public
+ * nothing may name public_staging_role, in cms_public_staging nothing
+ * public_role. The cms_public migrations are written for public_role; the
+ * staging run retargets them (runner.ts `retargetVisitorRole`), and this
+ * proves that it held.
+ */
+export function foreignLoginGrantsSql(database: PublicDatabase): string {
+  const foreign = VISITOR_LOGIN_ROLES.filter((r) => r !== PUBLIC_DATABASE_LOGINS[database]);
+  const list = foreign.map((r) => `'${r}'`).join(", ");
+  return `
+WITH grantees AS (
+  SELECT oid, rolname::text AS rolname FROM pg_roles WHERE rolname IN (${list})
+)
+SELECT g.rolname, 'table ' || c.oid::regclass::text AS object
+  FROM pg_class c
+  CROSS JOIN LATERAL aclexplode(c.relacl) a
+  JOIN grantees g ON g.oid = a.grantee
+UNION
+SELECT g.rolname, 'column ' || c.oid::regclass::text || '.' || att.attname::text
+  FROM pg_attribute att
+  JOIN pg_class c ON c.oid = att.attrelid
+  CROSS JOIN LATERAL aclexplode(att.attacl) a
+  JOIN grantees g ON g.oid = a.grantee
+UNION
+SELECT g.rolname, 'schema ' || n.nspname::text
+  FROM pg_namespace n
+  CROSS JOIN LATERAL aclexplode(n.nspacl) a
+  JOIN grantees g ON g.oid = a.grantee
+UNION
+SELECT g.rolname, 'function ' || p.oid::regprocedure::text
+  FROM pg_proc p
+  CROSS JOIN LATERAL aclexplode(p.proacl) a
+  JOIN grantees g ON g.oid = a.grantee
+UNION
+SELECT g.rolname, 'policy ' || pol.polname::text || ' on ' || pol.polrelid::regclass::text
+  FROM pg_policy pol
+  JOIN grantees g ON g.oid = ANY(pol.polroles)
+UNION
+SELECT g.rolname, 'default privileges of ' || pg_get_userbyid(d.defaclrole)::text
+  FROM pg_default_acl d
+  CROSS JOIN LATERAL aclexplode(d.defaclacl) a
+  JOIN grantees g ON g.oid = a.grantee
+ORDER BY 1, 2
+`;
+}
+
+/**
+ * Fail (throw) when the public database `database` grants anything to the
+ * other environment's gateway login (#1329). Run by migrate.ts after every
+ * migration run of a public database, connected to that database.
+ */
+export async function assertPublicDatabaseOwnsItsLogin(
+  sql: AuditQuery,
+  database: PublicDatabase,
+): Promise<void> {
+  const rows = (await sql.unsafe(foreignLoginGrantsSql(database))) as CrossDatabaseGrantRow[];
+  if (rows.length === 0) return;
+  throw new Error(
+    roleAuditError({
+      violations: rows.map(
+        (r) =>
+          `${r.rolname} holds ${r.object} in ${database} (only ${PUBLIC_DATABASE_LOGINS[database]} may: the other environment's gateway must reach nothing here)`,
+      ),
       warnings: [],
     }),
   );
@@ -397,9 +540,14 @@ export interface AuditQuery {
 export async function assertRoleIsolation(sql: AuditQuery): Promise<RoleAuditResult> {
   const rows = (await sql.unsafe(ROLE_AUDIT_SQL)) as RoleAuditRow[];
   const grants = (await sql.unsafe(CROSS_DATABASE_GRANTS_SQL)) as CrossDatabaseGrantRow[];
+  const openDatabases = (await sql.unsafe(PUBLIC_CONNECT_SQL)) as { datname: string }[];
   const roles = evaluateRoleAudit(rows.map(toAuditedRole));
   const result: RoleAuditResult = {
-    violations: [...roles.violations, ...crossDatabaseGrantViolations(grants)],
+    violations: [
+      ...roles.violations,
+      ...crossDatabaseGrantViolations(grants),
+      ...publicConnectViolations(openDatabases),
+    ],
     warnings: roles.warnings,
   };
   if (result.violations.length > 0) throw new Error(roleAuditError(result));

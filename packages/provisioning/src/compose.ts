@@ -84,6 +84,8 @@ export const COMPOSE_POOL_BUDGET = stackPoolBudget("self-hosted", {
   maxConnections: DEFAULT_MAX_CONNECTIONS["self-hosted"],
   adminMaxInstances: 1,
   gatewayMaxInstances: 1,
+  // #1329 — one staging gateway container (P3b-2) next to the live one.
+  stagingGatewayMaxInstances: 1,
 });
 
 /** The budget's env as Compose `environment:` lines for `service`. */

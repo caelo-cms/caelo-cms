@@ -213,7 +213,10 @@ beforeAll(async () => {
   resetPluginHost();
 
   // --- Gateway side: its real identity, dispatch-only host. ---
-  const urls = gatewayDatabaseUrls({ PUBLIC_DATABASE_URL: PUBLIC_URL });
+  const urls = gatewayDatabaseUrls({
+    PUBLIC_DATABASE_URL: PUBLIC_URL,
+    CAELO_GATEWAY_ENVIRONMENT: "live",
+  });
   gatewayAdapter = new DatabaseAdapter({
     adminDatabaseUrl: null,
     publicDatabaseUrl: urls.public,

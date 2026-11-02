@@ -18,7 +18,8 @@
     "generate:public": "drizzle-kit generate --config=drizzle.config.cms-public.ts",
     "migrate:admin": "bun run src/migrate.ts admin",
     "migrate:public": "bun run src/migrate.ts public",
-    "migrate": "bun run migrate:admin && bun run migrate:public"
+    "migrate:public-staging": "bun run src/migrate.ts public-staging",
+    "migrate": "bun run migrate:admin && bun run migrate:public && bun run migrate:public-staging"
   },
   "dependencies": {
     "@caelo-cms/shared": "workspace:*",

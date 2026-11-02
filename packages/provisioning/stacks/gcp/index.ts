@@ -33,8 +33,10 @@ import {
 } from "../../dist/gcp-names.js";
 import { createSiteUrlMap } from "../../dist/gcp-url-map.js";
 import {
+  DEFAULT_ADMIN_MAX_INSTANCES,
   DEFAULT_GATEWAY_MAX_INSTANCES,
   DEFAULT_MAX_CONNECTIONS,
+  DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
   stackPoolBudget,
 } from "../../dist/pool-budget-stack.js";
 import {
@@ -119,7 +121,10 @@ const adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
 // against the original 25-slot Postgres default — connection exhaustion
 // took the admin offline. v0.2.49 bakes the post-incident shape so fresh
 // installs don't trip the same wall.
-const adminMaxInstances = Number.parseInt(cfg.get("adminMaxInstances") ?? "5", 10);
+const adminMaxInstances = Number.parseInt(
+  cfg.get("adminMaxInstances") ?? String(DEFAULT_ADMIN_MAX_INSTANCES),
+  10,
+);
 const gatewayMinInstances = Number.parseInt(cfg.get("gatewayMinInstances") ?? "0", 10);
 // #1254 — the gateway's scale-out is part of the connection budget: each
 // instance holds a cms_public pool.
@@ -137,6 +142,8 @@ const poolBudget = stackPoolBudget("gcp", {
   maxConnections,
   adminMaxInstances,
   gatewayMaxInstances,
+  // #1329 — the staging gateway (P3b-2) is budgeted from this release on.
+  stagingGatewayMaxInstances: DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
 });
 const wafAdaptiveProtection = cfg.getBoolean("wafAdaptiveProtection") ?? false;
 const backupRetentionDays = Number.parseInt(cfg.get("backupRetentionDays") ?? "7", 10);

@@ -28,7 +28,9 @@ export {
   LISTEN_CONNECTIONS_PER_INSTANCE,
   type ListenCallbacks,
   type ListenHandle,
+  type PluginSchemaProvisionOutcome,
   POOL_IDLE_TIMEOUT_SECONDS,
+  type PublicDatabaseName,
   type TransactionOptions,
   thrownToQueryError,
 } from "./adapter.js";

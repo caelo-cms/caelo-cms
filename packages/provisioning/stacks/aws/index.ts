@@ -44,8 +44,10 @@ import {
 } from "../../dist/aws-task-roles.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import {
+  DEFAULT_ADMIN_MAX_INSTANCES,
   DEFAULT_GATEWAY_MAX_INSTANCES,
   DEFAULT_MAX_CONNECTIONS,
+  DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
   stackPoolBudget,
 } from "../../dist/pool-budget-stack.js";
 import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "../../dist/stack-contract.js";
@@ -86,7 +88,10 @@ const maxConnections = Number.parseInt(
   cfg.get("maxConnections") ?? String(DEFAULT_MAX_CONNECTIONS.aws),
   10,
 );
-const adminMaxInstances = Number.parseInt(cfg.get("adminMaxInstances") ?? "5", 10);
+const adminMaxInstances = Number.parseInt(
+  cfg.get("adminMaxInstances") ?? String(DEFAULT_ADMIN_MAX_INSTANCES),
+  10,
+);
 const gatewayMaxInstances = Number.parseInt(
   cfg.get("gatewayMaxInstances") ?? String(DEFAULT_GATEWAY_MAX_INSTANCES),
   10,
@@ -95,6 +100,8 @@ const poolBudget = stackPoolBudget("aws", {
   maxConnections,
   adminMaxInstances,
   gatewayMaxInstances,
+  // #1329 — the staging gateway joins the budget with the staging database.
+  stagingGatewayMaxInstances: DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
 });
 if (_adminMemoryMiB === null) {
   throw new Error(`caelo-aws:adminMemory "${adminMemory}" is not a memory quantity (e.g. 2Gi)`);

@@ -41,7 +41,11 @@ import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { azureFrontDoorDnsRecords } from "../../dist/azure-front-door.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
-import { DEFAULT_MAX_CONNECTIONS, stackPoolBudget } from "../../dist/pool-budget-stack.js";
+import {
+  DEFAULT_MAX_CONNECTIONS,
+  DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
+  stackPoolBudget,
+} from "../../dist/pool-budget-stack.js";
 import {
   ADMIN_MEMORY_DEFAULT,
   azureContainerAppResources,
@@ -88,6 +92,8 @@ const poolBudget = stackPoolBudget("azure", {
   maxConnections,
   adminMaxInstances: ADMIN_SIDE_APPS * MAX_REPLICAS,
   gatewayMaxInstances: MAX_REPLICAS,
+  // #1329 — the staging gateway joins the budget with the staging database.
+  stagingGatewayMaxInstances: DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
 });
 // #553 — the admin runs the Lighthouse quality audit; same knob + default
 // as every adapter (stack-contract.ts). Container Apps only accepts fixed

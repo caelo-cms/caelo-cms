@@ -41,8 +41,10 @@ import {
   runServiceAccountId,
 } from "../../dist/gcp-names.js";
 import {
+  DEFAULT_ADMIN_MAX_INSTANCES,
   DEFAULT_GATEWAY_MAX_INSTANCES,
   DEFAULT_MAX_CONNECTIONS,
+  DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
   stackPoolBudget,
 } from "../../dist/pool-budget-stack.js";
 import {
@@ -109,7 +111,10 @@ const adminMinInstances = Number.parseInt(cfg.get("adminMinInstances") ?? "0", 1
 // #553 — the admin also runs the Lighthouse quality audit; same knob and
 // default on every adapter (stack-contract.ts ADMIN_MEMORY_DEFAULT).
 const adminMemory = cfg.get("adminMemory") ?? ADMIN_MEMORY_DEFAULT;
-const adminMaxInstances = Number.parseInt(cfg.get("adminMaxInstances") ?? "5", 10);
+const adminMaxInstances = Number.parseInt(
+  cfg.get("adminMaxInstances") ?? String(DEFAULT_ADMIN_MAX_INSTANCES),
+  10,
+);
 const gatewayMinInstances = Number.parseInt(cfg.get("gatewayMinInstances") ?? "0", 10);
 // #1254 — part of the connection budget (stacks/gcp has the long comment).
 const gatewayMaxInstances = Number.parseInt(
@@ -125,6 +130,8 @@ const poolBudget = stackPoolBudget("gcp-firebase", {
   maxConnections,
   adminMaxInstances,
   gatewayMaxInstances,
+  // #1329 — the staging gateway (P3b-2) is budgeted from this release on.
+  stagingGatewayMaxInstances: DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
 });
 const backupRetentionDays = Number.parseInt(cfg.get("backupRetentionDays") ?? "7", 10);
 const iapAllowlistRaw = cfg.get("iapAllowlist");

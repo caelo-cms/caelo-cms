@@ -284,7 +284,10 @@ beforeAll(async () => {
   resetPluginHost();
 
   // --- Gateway side: its real identity, dispatch-only host. ---
-  const urls = gatewayDatabaseUrls({ PUBLIC_DATABASE_URL: PUBLIC_URL });
+  const urls = gatewayDatabaseUrls({
+    PUBLIC_DATABASE_URL: PUBLIC_URL,
+    CAELO_GATEWAY_ENVIRONMENT: "live",
+  });
   gatewayAdapter = new DatabaseAdapter({
     adminDatabaseUrl: null,
     publicDatabaseUrl: urls.public,
@@ -322,6 +325,7 @@ describe("the gateway's database identity (#613, #635)", () => {
       expect(() =>
         gatewayDatabaseUrls({
           PUBLIC_DATABASE_URL: "postgres://public_role@h/cms_public",
+          CAELO_GATEWAY_ENVIRONMENT: "live",
           [name]: "x",
         }),
       ).toThrow(new RegExp(`must not hold any cms_admin credential[\\s\\S]*${name}`));
@@ -329,10 +333,13 @@ describe("the gateway's database identity (#613, #635)", () => {
   });
 
   it("needs only PUBLIC_DATABASE_URL, with its _PASSWORD companion", () => {
-    expect(() => gatewayDatabaseUrls({})).toThrow(/PUBLIC_DATABASE_URL/);
+    expect(() => gatewayDatabaseUrls({ CAELO_GATEWAY_ENVIRONMENT: "live" })).toThrow(
+      /PUBLIC_DATABASE_URL/,
+    );
     const urls = gatewayDatabaseUrls({
       PUBLIC_DATABASE_URL: "postgresql://public_role@h:5432/cms_public?sslmode=verify-full",
       PUBLIC_DATABASE_PASSWORD: "p",
+      CAELO_GATEWAY_ENVIRONMENT: "live",
     });
     expect(new URL(urls.public).password).toBe("p");
   });
@@ -349,12 +356,12 @@ describe("the gateway's database identity (#613, #635)", () => {
   });
 
   it("the boot-time isolation probe passes on the real login and fails on a bad grant", async () => {
-    expect(await databaseIsolationProblems(gatewayAdapter.rawPublic())).toEqual([]);
+    expect(await databaseIsolationProblems(gatewayAdapter.rawPublic(), "live")).toEqual([]);
     await asAdmin(async (tx) => {
       await tx.unsafe("GRANT CONNECT ON DATABASE cms_admin TO public_role");
     });
     try {
-      expect(await databaseIsolationProblems(gatewayAdapter.rawPublic())).toEqual([
+      expect(await databaseIsolationProblems(gatewayAdapter.rawPublic(), "live")).toEqual([
         "public_role may CONNECT to cms_admin",
       ]);
     } finally {

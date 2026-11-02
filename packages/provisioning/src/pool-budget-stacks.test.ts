@@ -12,8 +12,10 @@ import { resolve } from "node:path";
 import { COMPOSE_POOL_BUDGET } from "./compose.js";
 import {
   type BudgetProvider,
+  DEFAULT_ADMIN_MAX_INSTANCES,
   DEFAULT_GATEWAY_MAX_INSTANCES,
   DEFAULT_MAX_CONNECTIONS,
+  DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
   stackPoolBudget,
 } from "./pool-budget-stack.js";
 
@@ -21,22 +23,39 @@ const stackSource = (provider: string): string =>
   readFileSync(resolve(import.meta.dir, "..", "stacks", provider, "index.ts"), "utf8");
 
 /** Each stack's default scale-out, as its index.ts reads it. */
-const DEFAULT_SCALE: Record<BudgetProvider, { admin: number; gateway: number }> = {
-  gcp: { admin: 5, gateway: DEFAULT_GATEWAY_MAX_INSTANCES },
-  "gcp-firebase": { admin: 5, gateway: DEFAULT_GATEWAY_MAX_INSTANCES },
-  aws: { admin: 5, gateway: DEFAULT_GATEWAY_MAX_INSTANCES },
+const DEFAULT_SCALE: Record<BudgetProvider, { admin: number; gateway: number; staging: number }> = {
+  gcp: {
+    admin: DEFAULT_ADMIN_MAX_INSTANCES,
+    gateway: DEFAULT_GATEWAY_MAX_INSTANCES,
+    staging: DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
+  },
+  "gcp-firebase": {
+    admin: DEFAULT_ADMIN_MAX_INSTANCES,
+    gateway: DEFAULT_GATEWAY_MAX_INSTANCES,
+    staging: DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
+  },
+  aws: {
+    admin: DEFAULT_ADMIN_MAX_INSTANCES,
+    gateway: DEFAULT_GATEWAY_MAX_INSTANCES,
+    staging: DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
+  },
   // admin + orchestrator + runner apps, 10 replicas each.
-  azure: { admin: 30, gateway: 10 },
-  "self-hosted": { admin: 1, gateway: 1 },
+  azure: { admin: 30, gateway: 10, staging: DEFAULT_STAGING_GATEWAY_MAX_INSTANCES },
+  "self-hosted": { admin: 1, gateway: 1, staging: 1 },
 };
 
-/** [cms_admin pool per admin instance, connections left unassigned]. */
+/**
+ * [cms_admin pool per admin instance, connections left unassigned]. #1329
+ * added the staging gateway and the admin's cms_public_staging pool; the
+ * GCP and AWS stacks start four admin instances instead of five so the
+ * cms_admin pool stays at five (docs/dev/connection-budget.md).
+ */
 const EXPECTED: Record<BudgetProvider, [number, number]> = {
-  gcp: [5, 1],
-  "gcp-firebase": [5, 1],
-  aws: [5, 3],
-  azure: [7, 12],
-  "self-hosted": [77, 0],
+  gcp: [5, 0],
+  "gcp-firebase": [5, 0],
+  aws: [5, 2],
+  azure: [5, 9],
+  "self-hosted": [72, 0],
 };
 
 describe("stack pool budgets at the default config", () => {
@@ -46,7 +65,10 @@ describe("stack pool budgets at the default config", () => {
         maxConnections: DEFAULT_MAX_CONNECTIONS[provider],
         adminMaxInstances: DEFAULT_SCALE[provider].admin,
         gatewayMaxInstances: DEFAULT_SCALE[provider].gateway,
+        stagingGatewayMaxInstances: DEFAULT_SCALE[provider].staging,
       });
+      expect(budget.reserves.map((r) => r.name)).toContain("staging-gateway");
+      expect(budget.reserves.map((r) => r.name)).toContain("admin-public-staging");
       expect([budget.adminPoolMax, budget.unassigned]).toEqual(EXPECTED[provider]);
       expect(env.admin).toEqual([
         { name: "CAELO_DB_POOL_MAX", value: String(EXPECTED[provider][0]) },
@@ -60,8 +82,9 @@ describe("stack pool budgets at the default config", () => {
     expect(() =>
       stackPoolBudget("gcp", {
         maxConnections: 100,
-        adminMaxInstances: 5,
+        adminMaxInstances: 4,
         gatewayMaxInstances: 100,
+        stagingGatewayMaxInstances: 1,
       }),
     ).toThrow(/CONNECTION LIMIT, #1338/);
   });
@@ -75,6 +98,8 @@ describe("stacks set the budget on their services", () => {
       expect(src).toContain("...poolBudget.env.admin");
       expect(src).toContain("...poolBudget.env.gateway");
       expect(src).toContain("maxInstances: gatewayMaxInstances");
+      expect(src).toContain("stagingGatewayMaxInstances: DEFAULT_STAGING_GATEWAY_MAX_INSTANCES");
+      expect(src).toContain('cfg.get("adminMaxInstances") ?? String(DEFAULT_ADMIN_MAX_INSTANCES)');
       expect(src).not.toContain("maxInstances: 100");
     });
   }

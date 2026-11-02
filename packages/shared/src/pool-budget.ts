@@ -53,6 +53,14 @@ export const ADMIN_POOL_FLOOR = 4;
 /** The admin's cms_public pool: plugin-data reads and the gateway projection. */
 export const ADMIN_PUBLIC_POOL_MAX = 4;
 
+/**
+ * #1329 — the admin's cms_public_staging pool: the staging database's
+ * plugin schemas and its half of the two-target projection. Fixed at the
+ * minimum pool, set by the admin in code (no env var): its work is a few
+ * short DDL and publish transactions, one at a time per instance.
+ */
+export const ADMIN_PUBLIC_STAGING_POOL_MAX = MIN_POOL_MAX;
+
 /** The gateway's only pool (public_role on cms_public), per instance. */
 export const GATEWAY_POOL_MAX = 2;
 
@@ -89,6 +97,22 @@ export const LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE = 1;
  */
 export const GATEWAY_ROLE_CONNECTION_LIMIT = 30;
 
+/**
+ * #1329 — public_staging_role's `CONNECTION LIMIT` (cms_admin migration
+ * 0530, bootstrap.sh): the same bound as the live gateway's login. The
+ * database refuses the staging gateway's connections beyond it.
+ */
+export const STAGING_GATEWAY_ROLE_CONNECTION_LIMIT = GATEWAY_ROLE_CONNECTION_LIMIT;
+
+/**
+ * #1329 — staging gateway instances the stacks let start. Staging serves
+ * the team, the audit and the crawlers the Owner admits, never the public,
+ * so one instance (Cloud Run: 80 concurrent requests) carries it, and the
+ * budget leaves the admin its cms_admin pool on the default server
+ * (docs/dev/connection-budget.md has the numbers).
+ */
+export const DEFAULT_STAGING_GATEWAY_MAX_INSTANCES = 1;
+
 /** What the budget is computed from: the server and the scale-out limits. */
 export interface PoolBudgetInput {
   /** The server's `max_connections`, as provisioning sets it. */
@@ -97,6 +121,11 @@ export interface PoolBudgetInput {
   readonly adminMaxInstances: number;
   /** Most gateway instances that may run at once. */
   readonly gatewayMaxInstances: number;
+  /**
+   * #1329 — most staging gateway instances that may run at once (the same
+   * image on cms_public_staging, its own pool and LISTEN connection each).
+   */
+  readonly stagingGatewayMaxInstances: number;
   /**
    * Static-generator subprocesses that may run at once across the install
    * (a Stage, a Publish live and a plugin-data build can overlap).
@@ -128,7 +157,11 @@ export type PoolBudgetReserveName =
   | "listen"
   /** The gateway's settings LISTEN, one per gateway instance ({@link LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE}). */
   | "gateway-listen"
-  | "admin-public";
+  | "admin-public"
+  /** #1329 — the staging gateway's pool + LISTEN, per staging gateway instance. */
+  | "staging-gateway"
+  /** #1329 — the admin's cms_public_staging pool ({@link ADMIN_PUBLIC_STAGING_POOL_MAX}), per admin instance. */
+  | "admin-public-staging";
 
 /** One consumer of the server's connections the budget sets aside. */
 export interface PoolBudgetReserve {
@@ -144,6 +177,8 @@ export interface PoolBudget {
   readonly adminPublicPoolMax: number;
   /** The gateway's cms_public pool ({@link DB_PUBLIC_POOL_MAX_ENV} on the gateway). */
   readonly gatewayPoolMax: number;
+  /** #1329 — the admin's cms_public_staging pool (fixed, {@link ADMIN_PUBLIC_STAGING_POOL_MAX}). */
+  readonly adminPublicStagingPoolMax: number;
   /** Each pool of a generator subprocess (the admin sets it on the child). */
   readonly generatorPoolMax: number;
   readonly reserves: readonly PoolBudgetReserve[];
@@ -165,21 +200,25 @@ function positiveInteger(value: number, name: string, min: number): void {
  * `gateway = gatewayMaxInstances × GATEWAY_POOL_MAX`,
  * `generator = concurrentBuilds × 2 × GENERATOR_POOL_MAX`,
  * `listen = adminMaxInstances × LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE`,
- * `gateway-listen = gatewayMaxInstances × LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE` and
- * `admin-public = adminMaxInstances × ADMIN_PUBLIC_POOL_MAX`.
+ * `gateway-listen = gatewayMaxInstances × LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE`,
+ * `admin-public = adminMaxInstances × ADMIN_PUBLIC_POOL_MAX`,
+ * `staging-gateway = stagingGatewayMaxInstances × (GATEWAY_POOL_MAX +
+ * LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE)` and
+ * `admin-public-staging = adminMaxInstances × ADMIN_PUBLIC_STAGING_POOL_MAX` (#1329).
  *
  * @throws Error naming what to change when the server cannot give every
  *   admin instance at least {@link ADMIN_POOL_FLOOR} cms_admin connections.
  *
  * @example
- *   computePoolBudget({ maxConnections: 100, adminMaxInstances: 5,
- *     gatewayMaxInstances: 10, concurrentBuilds: 2, maintenanceReserve: 5,
- *     migrationsReserve: 2, jobsReserve: 4 }).adminPoolMax // → 7
+ *   computePoolBudget({ maxConnections: 100, adminMaxInstances: 4,
+ *     gatewayMaxInstances: 10, stagingGatewayMaxInstances: 1, concurrentBuilds: 2,
+ *     maintenanceReserve: 5, migrationsReserve: 2, jobsReserve: 4 }).adminPoolMax // → 5
  */
 export function computePoolBudget(input: PoolBudgetInput): PoolBudget {
   positiveInteger(input.maxConnections, "maxConnections", 1);
   positiveInteger(input.adminMaxInstances, "adminMaxInstances", 1);
   positiveInteger(input.gatewayMaxInstances, "gatewayMaxInstances", 0);
+  positiveInteger(input.stagingGatewayMaxInstances, "stagingGatewayMaxInstances", 0);
   positiveInteger(input.concurrentBuilds, "concurrentBuilds", 0);
   positiveInteger(input.maintenanceReserve, "maintenanceReserve", 0);
   positiveInteger(input.migrationsReserve, "migrationsReserve", 0);
@@ -190,6 +229,14 @@ export function computePoolBudget(input: PoolBudgetInput): PoolBudget {
     throw new Error(
       `pool budget: ${input.gatewayMaxInstances} gateway instances need ${gatewayConnections} connections, but the database lets the gateway's login (public_role) hold at most ${GATEWAY_ROLE_CONNECTION_LIMIT} (CONNECTION LIMIT, #1338). ` +
         `Lower gatewayMaxInstances to at most ${Math.floor(GATEWAY_ROLE_CONNECTION_LIMIT / (GATEWAY_POOL_MAX + LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE))}.`,
+    );
+  }
+  const stagingGatewayConnections =
+    input.stagingGatewayMaxInstances * (GATEWAY_POOL_MAX + LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE);
+  if (stagingGatewayConnections > STAGING_GATEWAY_ROLE_CONNECTION_LIMIT) {
+    throw new Error(
+      `pool budget: ${input.stagingGatewayMaxInstances} staging gateway instances need ${stagingGatewayConnections} connections, but the database lets the staging gateway's login (public_staging_role) hold at most ${STAGING_GATEWAY_ROLE_CONNECTION_LIMIT} (CONNECTION LIMIT, #1329). ` +
+        `Lower stagingGatewayMaxInstances to at most ${Math.floor(STAGING_GATEWAY_ROLE_CONNECTION_LIMIT / (GATEWAY_POOL_MAX + LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE))}.`,
     );
   }
 
@@ -208,6 +255,11 @@ export function computePoolBudget(input: PoolBudgetInput): PoolBudget {
       connections: input.gatewayMaxInstances * LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE,
     },
     { name: "admin-public", connections: input.adminMaxInstances * ADMIN_PUBLIC_POOL_MAX },
+    { name: "staging-gateway", connections: stagingGatewayConnections },
+    {
+      name: "admin-public-staging",
+      connections: input.adminMaxInstances * ADMIN_PUBLIC_STAGING_POOL_MAX,
+    },
   ];
   const reserved = reserves.reduce((sum, r) => sum + r.connections, 0);
   const forAdmin = input.maxConnections - reserved;
@@ -218,13 +270,14 @@ export function computePoolBudget(input: PoolBudgetInput): PoolBudget {
     throw new Error(
       `pool budget: max_connections ${input.maxConnections} cannot give each of ${input.adminMaxInstances} admin instances the minimum of ${ADMIN_POOL_FLOOR} cms_admin connections ` +
         `(reserved: ${breakdown}; ${needed} needed). Raise maxConnections to at least ${needed} (a larger database tier may be required), ` +
-        "or lower adminMaxInstances / gatewayMaxInstances.",
+        "or lower adminMaxInstances / gatewayMaxInstances / stagingGatewayMaxInstances.",
     );
   }
   return {
     adminPoolMax,
     adminPublicPoolMax: ADMIN_PUBLIC_POOL_MAX,
     gatewayPoolMax: GATEWAY_POOL_MAX,
+    adminPublicStagingPoolMax: ADMIN_PUBLIC_STAGING_POOL_MAX,
     generatorPoolMax: GENERATOR_POOL_MAX,
     reserves,
     unassigned: forAdmin - adminPoolMax * input.adminMaxInstances,
@@ -236,8 +289,9 @@ export type PoolBudgetService = "admin" | "gateway";
 
 /**
  * The env that sizes `service`'s pools from `budget`, for the stacks to set.
- * The admin gets both pools; the gateway, whose only pool is cms_public,
- * gets just that one.
+ * The admin gets both pools (its cms_public_staging pool is fixed in code,
+ * #1329); a gateway, live or staging, whose only pool is its public
+ * database's, gets just that one.
  */
 export function poolBudgetEnv(
   budget: PoolBudget,
