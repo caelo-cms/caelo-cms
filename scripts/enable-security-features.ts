@@ -10,7 +10,7 @@
  *
  *   bun run security:enable    # turn on any managed setting that is off
  *   bun run security:check     # exit 1 if any managed setting is off
- *   bun run security:check -- --report out.md   # also write a Markdown report
+ *   bun run security:check -- --github-output     # also write step outputs (CI)
  *
  * Idempotent: a setting already on is skipped, so re-runs are no-ops.
  *
@@ -19,6 +19,11 @@
  * `security_and_analysis` for a token without repo-admin read, and treating
  * the missing block as "disabled" would report false drift (and treating it as
  * "enabled" a false pass).
+ *
+ * `--github-output` appends `drift=<setting,...>` and `reason=<code>` to
+ * `$GITHUB_OUTPUT`. Both carry only names from `MANAGED_SETTINGS` and
+ * `UNREADABLE_REASONS`, never text from the API, so the issue step builds its
+ * body from fixed strings (`security-drift-issue.ts`).
  *
  * Auth: `SECURITY_SETTINGS_READ_TOKEN` when that variable is set (the
  * scheduled drift guard, `.github/workflows/security-drift.yml`), otherwise the
@@ -34,7 +39,7 @@
  * flags are applied secret-scanning-first.
  */
 
-import { writeFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
@@ -55,7 +60,19 @@ export const MANAGED_FLAGS = ["secret_scanning", "secret_scanning_push_protectio
  * (`/vulnerability-alerts`). Dependabot alerts require the dependency graph,
  * so "alerts on" also proves the graph is on.
  */
-export type ManagedSetting = (typeof MANAGED_FLAGS)[number] | "dependabot_alerts";
+export const MANAGED_SETTINGS = [...MANAGED_FLAGS, "dependabot_alerts"] as const;
+
+/** One managed setting. */
+export type ManagedSetting = (typeof MANAGED_SETTINGS)[number];
+
+/**
+ * Why the settings could not be read: the Actions secret is missing, or the
+ * token lacks repo-admin read.
+ */
+export const UNREADABLE_REASONS = ["missing-secret", "no-admin-read"] as const;
+
+/** One unreadable reason. */
+export type UnreadableReason = (typeof UNREADABLE_REASONS)[number];
 
 /** The `security_and_analysis` shape, with each flag carrying a `status`. */
 export type SecurityAnalysis = Partial<Record<string, { status?: string } | null>>;
@@ -70,7 +87,14 @@ export type LiveSettings = {
 };
 
 /** Thrown when the token cannot see the settings at all (exit code 2). */
-export class SettingsUnreadableError extends Error {}
+export class SettingsUnreadableError extends Error {
+  constructor(
+    readonly reason: UnreadableReason,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 /**
  * The desired end state: every managed setting `enabled`. Nothing outside this
@@ -98,6 +122,7 @@ export function computeDrift(live: LiveSettings): DriftEntry[] {
   const block = live.securityAndAnalysis;
   if (!block || typeof block !== "object") {
     throw new SettingsUnreadableError(
+      "no-admin-read",
       "GitHub returned no security_and_analysis block: the token lacks repo-admin read. " +
         "Use a fine-grained PAT of a repo admin, scoped to this repository, with " +
         "Administration: read-only (see docs/dev/codeql.md, 'Drift guard').",
@@ -114,43 +139,6 @@ export function computeDrift(live: LiveSettings): DriftEntry[] {
   return drift;
 }
 
-/** Human-readable names for the issue body and log lines. */
-const LABELS: Record<ManagedSetting, string> = {
-  secret_scanning: "Secret scanning",
-  secret_scanning_push_protection: "Push protection",
-  dependabot_alerts: "Dependabot alerts (and with them the dependency graph)",
-};
-
-/**
- * Render the drift (or the unreadable error) as the Markdown the drift guard
- * puts in its issue. `slug` is `owner/repo`.
- */
-export function renderReport(
-  slug: string,
-  result: { drift: DriftEntry[] } | { unreadable: string },
-): string {
-  if ("unreadable" in result) {
-    return [
-      `The weekly security-settings check could not read the settings of \`${slug}\`.`,
-      "",
-      result.unreadable,
-      "",
-      "Until this is fixed, nobody notices when secret scanning or push protection get switched off.",
-    ].join("\n");
-  }
-  const rows = result.drift.map(
-    (d) => `- **${LABELS[d.flag]}** is \`${d.from}\`, want \`enabled\``,
-  );
-  return [
-    `These security settings of \`${slug}\` are off:`,
-    "",
-    ...rows,
-    "",
-    "Turn them back on with `bun run security:enable` (repo admin), or in",
-    `https://github.com/${slug}/settings/security_analysis. The weekly check closes this issue once all are on.`,
-  ].join("\n");
-}
-
 function flagValue(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
   return idx >= 0 ? process.argv[idx + 1] : undefined;
@@ -161,6 +149,7 @@ async function resolveToken(): Promise<string> {
   if (fromEnv !== undefined) {
     if (fromEnv.trim() === "") {
       throw new SettingsUnreadableError(
+        "missing-secret",
         "SECURITY_SETTINGS_READ_TOKEN is empty: the Actions secret of that name is not set " +
           "(see docs/dev/codeql.md, 'Drift guard').",
       );
@@ -254,9 +243,10 @@ async function enable(token: string, slug: string, flag: ManagedSetting): Promis
 async function main(): Promise<void> {
   const { owner, repo } = originSlug();
   const slug = `${owner}/${repo}`;
-  const reportPath = flagValue("report");
-  const report = (text: string) => {
-    if (reportPath) writeFileSync(reportPath, `${text}\n`);
+  // Step outputs for the issue step: setting names and reason codes only.
+  const output = (key: "drift" | "reason", value: string) => {
+    const file = process.env.GITHUB_OUTPUT;
+    if (FLAGS.has("--github-output") && file) appendFileSync(file, `${key}=${value}\n`);
   };
 
   let drift: DriftEntry[];
@@ -275,7 +265,7 @@ async function main(): Promise<void> {
   } catch (e) {
     if (e instanceof SettingsUnreadableError) {
       console.error(`unreadable: ${e.message}`);
-      report(renderReport(slug, { unreadable: e.message }));
+      output("reason", e.reason);
       process.exit(2);
     }
     throw e;
@@ -288,7 +278,7 @@ async function main(): Promise<void> {
   for (const d of drift) {
     console.error(`drift: ${d.flag} is "${d.from}", want "enabled" on ${slug}`);
   }
-  report(renderReport(slug, { drift }));
+  output("drift", drift.map((d) => d.flag).join(","));
   process.exit(1);
 }
 

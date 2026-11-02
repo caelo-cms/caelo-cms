@@ -16,14 +16,25 @@
  * workflow's own GITHUB_TOKEN (`issues: write`) and never sees the admin-read
  * token of the check step.
  *
- *   bun run scripts/security-drift-issue.ts --status drift --report out.md
- *   bun run scripts/security-drift-issue.ts --status ok
+ * The check step hands over only setting names and a reason code (step
+ * outputs), and this script accepts nothing outside `MANAGED_SETTINGS` /
+ * `UNREADABLE_REASONS`. The issue body is assembled from fixed strings, so no
+ * text from the API or from a file reaches the issue.
  *
- * Env: GITHUB_TOKEN, GITHUB_REPOSITORY (`owner/repo`), GITHUB_SERVER_URL and
- * GITHUB_RUN_ID for the run link — all set by Actions.
+ *   STATUS=drift DRIFT=secret_scanning bun run scripts/security-drift-issue.ts
+ *   STATUS=unreadable REASON=missing-secret bun run scripts/security-drift-issue.ts
+ *   STATUS=ok bun run scripts/security-drift-issue.ts
+ *
+ * Env: STATUS, DRIFT, REASON (from the check step) and GITHUB_TOKEN,
+ * GITHUB_REPOSITORY, GITHUB_SERVER_URL, GITHUB_RUN_ID (set by Actions).
  */
 
-import { readFileSync } from "node:fs";
+import {
+  MANAGED_SETTINGS,
+  type ManagedSetting,
+  UNREADABLE_REASONS,
+  type UnreadableReason,
+} from "./enable-security-features.ts";
 
 /** The fixed title the guard's issue is recognised by. */
 export const DRIFT_ISSUE_TITLE =
@@ -32,8 +43,11 @@ export const DRIFT_ISSUE_TITLE =
 /** Author of the guard's issues when it runs with the workflow's GITHUB_TOKEN. */
 export const DRIFT_ISSUE_AUTHOR = "github-actions[bot]";
 
-/** The result of the check step, as reported by its exit code. */
-export type CheckStatus = "ok" | "drift" | "unreadable";
+/** The check result, validated: which settings are off, or why none could be read. */
+export type CheckResult =
+  | { status: "ok" }
+  | { status: "drift"; drift: ManagedSetting[] }
+  | { status: "unreadable"; reason: UnreadableReason };
 
 /** An open issue as the list endpoint returns it (only the fields used). */
 export type OpenIssue = {
@@ -50,6 +64,72 @@ export type IssueAction =
   | { kind: "update"; number: number; body: string; comment: string }
   | { kind: "close"; number: number; comment: string };
 
+/** Human-readable names for the issue body. */
+const LABELS: Record<ManagedSetting, string> = {
+  secret_scanning: "Secret scanning",
+  secret_scanning_push_protection: "Push protection",
+  dependabot_alerts: "Dependabot alerts (and with them the dependency graph)",
+};
+
+/** What to do about each unreadable reason. */
+const REASON_TEXT: Record<UnreadableReason, string> = {
+  "missing-secret":
+    "The Actions secret `SECURITY_SETTINGS_READ_TOKEN` is not set (or not available to this run).",
+  "no-admin-read":
+    "The token in `SECURITY_SETTINGS_READ_TOKEN` cannot see the settings: it lacks repo-admin read " +
+    "(fine-grained PAT of a repo admin, this repository only, Administration: read-only). " +
+    "An expired token ends up here too.",
+};
+
+/**
+ * Validate the check step's outputs into a `CheckResult`. Every value is
+ * matched against the fixed lists and replaced by the list's own constant, so
+ * the result holds no input text at all.
+ *
+ * @throws Error on an unknown status, setting or reason, or an empty drift list.
+ */
+export function parseCheckResult(status: string, drift: string, reason: string): CheckResult {
+  if (status === "ok") return { status: "ok" };
+  if (status === "drift") {
+    const names = drift.split(",").filter((n) => n !== "");
+    const settings = names.map((n) => {
+      const known = MANAGED_SETTINGS.find((m) => m === n);
+      if (!known) throw new Error(`unknown setting in DRIFT: ${JSON.stringify(n)}`);
+      return known;
+    });
+    if (settings.length === 0) throw new Error("STATUS=drift needs at least one setting in DRIFT");
+    return { status: "drift", drift: settings };
+  }
+  if (status === "unreadable") {
+    const known = UNREADABLE_REASONS.find((r) => r === reason);
+    if (!known) throw new Error(`unknown REASON: ${JSON.stringify(reason)}`);
+    return { status: "unreadable", reason: known };
+  }
+  throw new Error(`unknown STATUS: ${JSON.stringify(status)}`);
+}
+
+/** Render the issue body for a failing result. `slug` is `owner/repo`. */
+export function renderReport(slug: string, result: Exclude<CheckResult, { status: "ok" }>): string {
+  if (result.status === "unreadable") {
+    return [
+      `The weekly security-settings check could not read the settings of \`${slug}\`.`,
+      "",
+      REASON_TEXT[result.reason],
+      "",
+      "Until this is fixed, nobody notices when secret scanning or push protection get switched off.",
+      "Setup: docs/dev/codeql.md, section 'Drift guard'.",
+    ].join("\n");
+  }
+  return [
+    `These security settings of \`${slug}\` are off:`,
+    "",
+    ...result.drift.map((d) => `- **${LABELS[d]}**`),
+    "",
+    "Turn them back on with `bun run security:enable` (repo admin), or in",
+    `https://github.com/${slug}/settings/security_analysis. The weekly check closes this issue once all are on.`,
+  ].join("\n");
+}
+
 /** The guard's own open issue among `open`, or undefined. Pull requests never count. */
 export function findDriftIssue(open: OpenIssue[]): OpenIssue | undefined {
   return open.find(
@@ -61,16 +141,15 @@ export function findDriftIssue(open: OpenIssue[]): OpenIssue | undefined {
  * Decide the one issue action for this run. Pure, so the dedup contract is
  * unit-tested without the GitHub API.
  *
- * @param report Markdown from `security:check --report`; required unless ok.
  * @param runUrl Link to the workflow run, cited in every body and comment.
  */
 export function planIssueAction(
-  status: CheckStatus,
+  result: CheckResult,
   existing: OpenIssue | undefined,
-  report: string,
+  slug: string,
   runUrl: string,
 ): IssueAction {
-  if (status === "ok") {
+  if (result.status === "ok") {
     return existing
       ? {
           kind: "close",
@@ -79,14 +158,9 @@ export function planIssueAction(
         }
       : { kind: "none" };
   }
-  const body = `${report.trim()}\n\nLast checked: ${runUrl}\n\nOpened and closed by \`.github/workflows/security-drift.yml\` (#105).`;
+  const body = `${renderReport(slug, result)}\n\nLast checked: ${runUrl}\n\nOpened and closed by \`.github/workflows/security-drift.yml\` (#105).`;
   if (!existing) return { kind: "open", body };
   return { kind: "update", number: existing.number, body, comment: `Still off as of ${runUrl}.` };
-}
-
-function arg(name: string): string | undefined {
-  const idx = process.argv.indexOf(`--${name}`);
-  return idx >= 0 ? process.argv[idx + 1] : undefined;
 }
 
 function requireEnv(name: string): string {
@@ -96,18 +170,18 @@ function requireEnv(name: string): string {
 }
 
 async function main(): Promise<void> {
-  const status = arg("status");
-  if (status !== "ok" && status !== "drift" && status !== "unreadable") {
-    throw new Error("--status must be ok, drift or unreadable");
-  }
-  const reportPath = arg("report");
-  if (status !== "ok" && !reportPath)
-    throw new Error(`--report is required for --status ${status}`);
-  const report = reportPath ? readFileSync(reportPath, "utf8") : "";
-
+  const result = parseCheckResult(
+    process.env.STATUS ?? "",
+    process.env.DRIFT ?? "",
+    process.env.REASON ?? "",
+  );
   const token = requireEnv("GITHUB_TOKEN");
   const slug = requireEnv("GITHUB_REPOSITORY");
-  const runUrl = `${requireEnv("GITHUB_SERVER_URL")}/${slug}/actions/runs/${requireEnv("GITHUB_RUN_ID")}`;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(slug))
+    throw new Error(`GITHUB_REPOSITORY is not owner/repo: ${slug}`);
+  const runId = requireEnv("GITHUB_RUN_ID");
+  if (!/^\d+$/.test(runId)) throw new Error(`GITHUB_RUN_ID is not numeric: ${runId}`);
+  const runUrl = `${requireEnv("GITHUB_SERVER_URL")}/${slug}/actions/runs/${runId}`;
 
   const api = async (method: string, path: string, body?: unknown): Promise<unknown> => {
     const res = await fetch(`https://api.github.com/repos/${slug}${path}`, {
@@ -134,7 +208,7 @@ async function main(): Promise<void> {
     if (batch.length < 100) break;
   }
 
-  const action = planIssueAction(status, findDriftIssue(open), report, runUrl);
+  const action = planIssueAction(result, findDriftIssue(open), slug, runUrl);
   switch (action.kind) {
     case "none":
       console.log("no drift issue to open or close");
@@ -143,9 +217,7 @@ async function main(): Promise<void> {
       const created = (await api("POST", "/issues", {
         title: DRIFT_ISSUE_TITLE,
         body: action.body,
-      })) as {
-        number: number;
-      };
+      })) as { number: number };
       console.log(`opened #${created.number}`);
       return;
     }

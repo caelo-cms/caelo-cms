@@ -19,8 +19,12 @@
  *   uses: ./local/path                                         (repo-local)
  *   uses: docker://image@sha256:<64-hex>                       (digest only)
  *
- * Pure-string checks, no YAML parser (same convention as the other
- * workflow-contract tests in `scripts/`).
+ * Two readers, cross-checked. The line reader sees the trailing comment (a YAML
+ * parser drops comments) and reads plain, "double"- and 'single'-quoted
+ * scalars. Bun's built-in YAML parser (`Bun.YAML`, no dependency) finds every
+ * `uses` node however it is written, flow mappings included. Every file must
+ * yield the same refs from both, so a form the line reader misses fails the
+ * test instead of slipping past it.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -72,18 +76,40 @@ function actionFiles(): string[] {
 /** One `uses:` occurrence in YAML key position, with the rest of its line. */
 type UsesRef = { file: string; line: number; ref: string; comment: string };
 
+/** A `uses:` line: optional `- `, optionally quoted key, plain or quoted value, comment. */
+const USES_LINE =
+  /^\s*(?:-\s+)?(["']?)uses\1:\s*(?:"([^"]*)"|'([^']*)'|([^\s#"']+))\s*(?:#\s*(.*))?$/;
+
 /**
- * Every `uses:` in YAML key position (step `- uses:` and job-level `uses:`).
- * Comment lines are skipped so prose that mentions `uses:` is never mistaken
- * for a reference.
+ * Every `uses:` in YAML block position (step `- uses:` and job-level `uses:`),
+ * with its trailing comment. Comment lines never match, so prose that mentions
+ * `uses:` is not mistaken for a reference.
  */
 function extractUses(body: string, file: string): UsesRef[] {
   const out: UsesRef[] = [];
   body.split("\n").forEach((text, i) => {
-    const m = /^\s*(?:-\s+)?uses:\s*([^\s#]+)\s*(?:#\s*(.*))?$/.exec(text);
+    const m = USES_LINE.exec(text);
     if (!m) return;
-    out.push({ file, line: i + 1, ref: m[1] ?? "", comment: (m[2] ?? "").trim() });
+    const ref = m[2] ?? m[3] ?? m[4] ?? "";
+    out.push({ file, line: i + 1, ref, comment: (m[5] ?? "").trim() });
   });
+  return out;
+}
+
+/** Every string value of a `uses` key anywhere in the parsed YAML document. */
+function yamlUses(body: string): string[] {
+  const out: string[] = [];
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+    } else if (node && typeof node === "object") {
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "uses" && typeof value === "string") out.push(value);
+        else walk(value);
+      }
+    }
+  };
+  walk(Bun.YAML.parse(body));
   return out;
 }
 
@@ -118,14 +144,29 @@ function pinViolation(u: UsesRef): string | null {
     : "needs a trailing `# vX.Y.Z` comment naming the exact release tag";
 }
 
-const ALL_USES = actionFiles().flatMap((f) =>
-  extractUses(readFileSync(f, "utf8"), relative(REPO_ROOT, f)),
-);
+const FILES = actionFiles().map((f) => ({
+  name: relative(REPO_ROOT, f),
+  body: readFileSync(f, "utf8"),
+}));
+const ALL_USES = FILES.flatMap((f) => extractUses(f.body, f.name));
 
 describe("GitHub Actions pinning (issue #104)", () => {
   it("finds the repo's action references (guards a silent zero-match)", () => {
     expect(ALL_USES.length).toBeGreaterThanOrEqual(100);
     expect(ALL_USES.some((u) => u.file.startsWith(".github/actions/"))).toBe(true);
+  });
+
+  it("the line reader finds exactly the uses nodes the YAML parser finds, per file", () => {
+    const mismatches = FILES.flatMap((f) => {
+      const byLine = extractUses(f.body, f.name)
+        .map((u) => u.ref)
+        .sort();
+      const byYaml = yamlUses(f.body).sort();
+      return JSON.stringify(byLine) === JSON.stringify(byYaml)
+        ? []
+        : [`${f.name}: line reader ${JSON.stringify(byLine)} vs YAML ${JSON.stringify(byYaml)}`];
+    });
+    expect(mismatches).toEqual([]);
   });
 
   it("every uses: is pinned to a commit SHA with an exact version comment", () => {
@@ -189,6 +230,27 @@ describe("pinViolation rule", () => {
     expect(pinViolation(at("./.github/workflows/release-images.yml"))).toBeNull();
     expect(pinViolation(at(`docker://alpine@sha256:${"a".repeat(64)}`))).toBeNull();
     expect(pinViolation(at("docker://alpine:3.22"))).not.toBeNull();
+  });
+
+  it("extractUses reads double- and single-quoted refs and quoted keys", () => {
+    const body = [
+      '      - uses: "evil/action@main"',
+      `      - uses: 'actions/checkout@${sha}' # v7.0.1`,
+      `      - "uses": "actions/checkout@${sha}" # v7.0.1`,
+    ].join("\n");
+    const refs = extractUses(body, "x.yml");
+    expect(refs.map((u) => [u.ref, u.comment])).toEqual([
+      ["evil/action@main", ""],
+      [`actions/checkout@${sha}`, "v7.0.1"],
+      [`actions/checkout@${sha}`, "v7.0.1"],
+    ]);
+    expect(pinViolation(refs[0]!)).not.toBeNull();
+  });
+
+  it("the YAML cross-check catches a uses the line reader cannot see", () => {
+    const body = "jobs:\n  a:\n    steps:\n      - { uses: evil/action@main }\n";
+    expect(extractUses(body, "x.yml")).toEqual([]);
+    expect(yamlUses(body)).toEqual(["evil/action@main"]);
   });
 
   it("extractUses ignores comment lines and reads the trailing comment", () => {

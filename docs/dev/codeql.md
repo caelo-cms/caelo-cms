@@ -225,7 +225,7 @@ decision.
 a missing block as "off" or "on": it exits 2 (*unreadable*), and the issue says
 the guard is blind.
 
-**The token: `SECURITY_SETTINGS_READ_TOKEN`.** An Actions secret holding a
+**The token: `SECURITY_SETTINGS_READ_TOKEN`.** An environment secret (see below) holding a
 fine-grained personal access token:
 
 - Resource owner `caelo-cms`; repository access *Only select repositories* →
@@ -239,11 +239,33 @@ fine-grained personal access token:
 - Expiry: at most a year; set a reminder. An expired token turns the run into
   *unreadable*, so it fails loudly instead of passing.
 
-Store it with `gh secret set SECURITY_SETTINGS_READ_TOKEN -R caelo-cms/caelo-cms`
-and start one run by hand to confirm it reads the settings. A GitHub App
-installation token with *Administration: read* would work the same way; the
-PAT is the smaller setup for one repository.
+**Store it as an environment secret, never a repository secret.** A
+repository secret is readable by a workflow on any branch, and a manual
+dispatch runs the chosen branch's copy of the workflow and scripts, so a
+branch could print it. An environment secret is handed out only to jobs whose
+ref the environment's deployment branch policy admits, and GitHub enforces
+that even when a branch rewrites the workflow. Create the environment with a
+main-only policy first (a job referencing a missing environment creates it
+without any policy), then store the secret in it:
 
-Only the check step gets the secret. The issue step uses the workflow's own
-`GITHUB_TOKEN` with `issues: write`, and the workflow never runs on
-`pull_request`, so no PR code can reach the PAT.
+```bash
+gh api -X PUT repos/caelo-cms/caelo-cms/environments/security-drift \
+  -F 'deployment_branch_policy[protected_branches]=false' \
+  -F 'deployment_branch_policy[custom_branch_policies]=true'
+gh api -X POST repos/caelo-cms/caelo-cms/environments/security-drift/deployment-branch-policies \
+  -f name=main -f type=branch
+gh secret set SECURITY_SETTINGS_READ_TOKEN --env security-drift -R caelo-cms/caelo-cms
+```
+
+Then start one run by hand on `main` to confirm it reads the settings. A
+GitHub App installation token with *Administration: read* would work the same
+way; the PAT is the smaller setup for one repository.
+
+On top of the environment, the job runs only when the run's ref is
+`refs/heads/main` and checks out `ref: main`, so a dispatch on another branch
+neither runs nor runs that branch's scripts. Only the check step gets the
+secret. The issue step uses the workflow's own `GITHUB_TOKEN` with
+`issues: write`, and the workflow never runs on `pull_request`. The check step
+hands the issue step only setting names and a reason code as step outputs;
+the issue body is built from fixed strings, so no API text reaches the issue.
+`scripts/security-drift.test.ts` pins all of this.
