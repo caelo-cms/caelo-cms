@@ -343,9 +343,10 @@ describe("the gateway image", () => {
         .filter((f) => f.endsWith(".js"))
         .map((f) => readFileSync(join(out, f), "utf8"))
         .join("\n");
-      // apps/api-gateway/src/server.ts sessionCookieHeader.
+      // apps/api-gateway/src/gateway-cookies.ts secure(): the Secure flag
+      // of the visitor cookies.
       expect(code).toContain(
-        'if (process.env.NODE_ENV === "production")\n    flags.push("Secure")',
+        'function secure() {\n  return process.env.NODE_ENV === "production";',
       );
       expect(code).not.toContain('"development" === "production"');
       const sbom = JSON.parse(readFileSync(join(out, BUNDLE_SBOM), "utf8")) as {

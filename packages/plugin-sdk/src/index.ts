@@ -928,8 +928,29 @@ export const consentCategory = z.enum(["necessary", "functional", "analytics", "
 
 export type ConsentCategory = z.infer<typeof consentCategory>;
 
-/** The cookie the API gateway sets for the `visitor_id` purpose. Host-owned. */
-export const VISITOR_ID_COOKIE = "caelo_visitor_id";
+/**
+ * The cookie the API gateway keeps the `visitor_id` purpose's id in.
+ * Host-owned. It is `__session`, the one cookie Firebase Hosting forwards
+ * to the gateway, on every provider (#1343): a container of the gateway's
+ * entries — the visitor id only with consent, the visitor's login session
+ * once they log in (`@caelo-cms/shared` session-cookie.ts).
+ */
+export const VISITOR_ID_COOKIE = "__session";
+
+/**
+ * The request header that carries the visitor's consent decision to the
+ * API gateway (#1343). The gateway reads no consent cookie: the consent
+ * provider's own cookie never reaches it behind Firebase Hosting, which
+ * forwards nothing but `__session`.
+ *
+ * The site's consent provider produces the value from the decision its
+ * banner recorded (`window.caeloConsent.decisionHeader()`), and the
+ * component kit's `postPluginJson` / `attachCaptchaProof` send it with
+ * every gateway call. Format: `v=<policyVersion>; granted=<key>,<key>`,
+ * e.g. `v=3; granted=necessary,functional`. A call without it counts as
+ * "no decision": the visitor id is neither used nor kept.
+ */
+export const VISITOR_CONSENT_HEADER = "x-caelo-consent";
 
 /** The purpose key that makes the gateway set {@link VISITOR_ID_COOKIE}. */
 export const VISITOR_ID_PURPOSE_KEY = "visitor_id";
@@ -1211,18 +1232,19 @@ export const pluginManifest = z
         });
       }
       purposeKeys.add(p.key);
-      // `caelo_` cookies are the host's: a plugin names one only to say it
-      // relies on it, and the one it can rely on is the visitor id.
+      // `caelo_` cookies and `__session` are the host's: a plugin names one
+      // only to say it relies on it, and the one it can rely on is the
+      // visitor id.
       const names = p.cookies.map((c) => c.name);
       for (const [j, name] of names.entries()) {
         if (
-          name.startsWith("caelo_") &&
+          (name.startsWith("caelo_") || name === VISITOR_ID_COOKIE) &&
           !(name === VISITOR_ID_COOKIE && p.key === VISITOR_ID_PURPOSE_KEY)
         ) {
           ctx.addIssue({
             code: "custom",
             path: ["consentPurposes", i, "cookies", j, "name"],
-            message: `"caelo_" cookies are host-owned; only the "${VISITOR_ID_PURPOSE_KEY}" purpose may name ${VISITOR_ID_COOKIE}`,
+            message: `"caelo_" cookies and ${VISITOR_ID_COOKIE} are host-owned; only the "${VISITOR_ID_PURPOSE_KEY}" purpose may name ${VISITOR_ID_COOKIE}`,
           });
         }
       }
@@ -1564,20 +1586,23 @@ export interface PluginTheme {
 }
 
 /**
- * Visitor-side identity. Both tiers. Set by the gateway from the
- * `caelo_visitor_id` HttpOnly cookie + (when authenticated by the auth
- * plugin) the resolved public_user_id. Operations dispatched outside
- * the gateway (e.g. internal Tier-1 calls) get a system visitor id.
+ * Visitor-side identity. Both tiers. Set by the gateway from its HttpOnly
+ * `__session` cookie ({@link VISITOR_ID_COOKIE}) + (when authenticated by
+ * the auth plugin) the resolved public_user_id. Operations dispatched
+ * outside the gateway (e.g. internal Tier-1 calls) get a system visitor id.
  */
 export interface PluginVisitor {
-  /** Opaque identifier, stable across requests from one browser for as
-   *  long as the `caelo_visitor_id` cookie lives (30 days).
+  /** Opaque identifier, stable across requests from one browser for 30
+   *  days from when the gateway first set it.
    *
    *  NULL unless some active plugin declares the `visitor_id` consent
    *  purpose (`PluginDefinition.consentPurposes`) AND the visitor granted
    *  the category it sits under — no decision yet, "reject all", no
    *  consent provider on the site or no declaring plugin all mean null
-   *  (#677). Many visitors will arrive without one. An operation must work without it:
+   *  (#677). The decision reaches the gateway in the
+   *  {@link VISITOR_CONSENT_HEADER} the component kit sends, so a component
+   *  that calls the gateway with its own `fetch` instead of `postPluginJson`
+   *  always sees null. Many visitors will arrive without one. An operation must work without it:
    *  store null, and skip whatever only makes sense for a recognised
    *  visitor (e.g. updating their earlier vote instead of adding one).
    *  Never substitute a value of your own — that would recreate the
@@ -2144,16 +2169,16 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * provider lists the declarations of every active plugin
    * (`ctx.consentPurposes`), classifies each under its category and names
    * the cookies on the banner and in the privacy policy. Declaring the
-   * `visitor_id` purpose is what makes the API gateway set the
-   * `caelo_visitor_id` cookie at all — and only for visitors who granted
-   * its category.
+   * `visitor_id` purpose is what makes the API gateway store a visitor id
+   * in its `__session` cookie ({@link VISITOR_ID_COOKIE}) at all — and only
+   * for visitors who granted its category.
    *
    * @example
    *   consentPurposes: [{
    *     key: "visitor_id",
    *     category: "functional",
    *     purpose: "Keeps one rating per visitor and page.",
-   *     cookies: [{ name: "caelo_visitor_id", lifetime: "30 days", purpose: "…" }],
+   *     cookies: [{ name: "__session", lifetime: "30 days", purpose: "…" }],
    *   }]
    */
   readonly consentPurposes?: ReadonlyArray<PluginConsentPurpose>;

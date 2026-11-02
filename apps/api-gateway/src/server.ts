@@ -16,11 +16,14 @@
  *
  * Each public-write request flows through (in order):
  *   1. Body-size cap (default 64 KB; 1 MB hard ceiling).
- *   2. Resolve signed visitor cookie + signed session cookie (HMAC-SHA256).
- *      The visitor id exists only when an active plugin declares the
- *      `visitor_id` consent purpose and the visitor granted its category
- *      (#677, visitor.ts): otherwise no id, no Set-Cookie, and any id the
- *      browser still holds is expired. Tampered → a fresh id (consented).
+ *   2. Resolve the signed visitor id + signed login session (HMAC-SHA256),
+ *      both entries of the one `__session` cookie — the only cookie
+ *      Firebase Hosting forwards, used on every provider (#1343,
+ *      gateway-cookies.ts). The visitor id exists only when an active
+ *      plugin declares the `visitor_id` consent purpose and the decision
+ *      in the request's `x-caelo-consent` header grants its category
+ *      (#677, visitor.ts): otherwise no id, and any id the browser still
+ *      holds is removed. Tampered → a fresh id (consented).
  *   3. Honeypot edge-evict — bot-filled `hp_address` returns {ok:true}
  *      immediately, no DB writes, no audit, only an IP-scoped rate-limit
  *      token.
@@ -65,6 +68,7 @@ import {
   VISITOR_ID_PURPOSE,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
+import { SESSION_ENTRY } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import {
   ClientAddressError,
@@ -110,7 +114,6 @@ import {
   loadVisitorConsentRule,
   type ResolvedVisitor,
   resolveVisitor,
-  SESSION_COOKIE,
   visitorIdDeclared,
 } from "./visitor.js";
 
@@ -119,7 +122,7 @@ export {
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
 } from "./database-env.js";
-export { parseCookies, VISITOR_COOKIE } from "./visitor.js";
+export { parseCookies } from "./visitor.js";
 
 const SYSTEM_ACTOR_ID = process.env.CAELO_SYSTEM_ACTOR_ID ?? "00000000-0000-0000-0000-00000000ffff";
 // Cloud Run sets PORT=8080 on every container; read that first so a
@@ -133,28 +136,6 @@ const SYSTEM_CTX = {
   actorKind: "system" as const,
   requestId: "gateway",
 };
-
-// ---------------------------------------------------------------------------
-// Cookie helpers (signed via HMAC-SHA256).
-// ---------------------------------------------------------------------------
-
-export function sessionCookieHeader(args: { value: string; maxAge: number }): string {
-  const flags = [
-    `${SESSION_COOKIE}=${encodeURIComponent(args.value)}`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    `Max-Age=${args.maxAge}`,
-  ];
-  if (process.env.NODE_ENV === "production") flags.push("Secure");
-  return flags.join("; ");
-}
-
-export function clearSessionCookieHeader(): string {
-  const flags = [`${SESSION_COOKIE}=`, "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"];
-  if (process.env.NODE_ENV === "production") flags.push("Secure");
-  return flags.join("; ");
-}
 
 // ---------------------------------------------------------------------------
 // Settings cache — gateway secret + body cap + captcha provider, as the
@@ -620,13 +601,16 @@ export async function handleRequest(
         },
         {
           status: 429,
-          setCookies: [...visitor.setCookies],
+          setCookies: visitor.cookies.setCookieHeaders(),
           retryAfterSec: challengeRl.retryAfterSec,
         },
       );
     }
     const challenge = await issuePowChallenge(cachedAdapter, { config: settings.captcha });
-    return jsonResponse({ ok: true, data: challenge }, { setCookies: [...visitor.setCookies] });
+    return jsonResponse(
+      { ok: true, data: challenge },
+      { setCookies: visitor.cookies.setCookieHeaders() },
+    );
   }
 
   // ---- Plugin dispatch ----
@@ -702,7 +686,8 @@ export async function handleRequest(
   const resolved = await resolveConsentedVisitor(req, settings);
   if (!resolved.ok) return resolved.response;
   const { visitor } = resolved;
-  const cookies: string[] = [...visitor.setCookies];
+  // The `__session` container; each response below stores what changed.
+  const { cookies } = visitor;
 
   // Every rate limit is keyed by the client address the deployment's
   // proxies vouch for (client-ip.ts), never by an entry the client wrote
@@ -716,8 +701,8 @@ export async function handleRequest(
 
   // 3. Honeypot edge-evict — lie to the bot, never touch the DB.
   // P13 audit fix #5 — DO NOT mint a fresh visitor cookie for caught
-  // bots: nothing a bot does should hand it a stable identity. Drop the
-  // cookies array on this branch.
+  // bots: nothing a bot does should hand it a stable identity. This
+  // branch answers without any Set-Cookie.
   // P13 audit re-pass — also consume an IP-scoped rate-limit token so
   // sustained spam from a single IP eventually gets throttled.
   const hp = checkHoneypot(body);
@@ -769,7 +754,7 @@ export async function handleRequest(
           message: `rate limit exceeded (${spec.perVisitorMax} per ${spec.windowSeconds}s)`,
         },
       },
-      { status: 429, setCookies: cookies, retryAfterSec: rl.retryAfterSec },
+      { status: 429, setCookies: cookies.setCookieHeaders(), retryAfterSec: rl.retryAfterSec },
     );
   }
 
@@ -794,7 +779,7 @@ export async function handleRequest(
         });
         return jsonResponse(
           { ok: false, error: { kind: "CaptchaFailed", message: verify.reason } },
-          { status: 403, setCookies: cookies },
+          { status: 403, setCookies: cookies.setCookieHeaders() },
         );
       }
       captchaPassed = true;
@@ -830,17 +815,14 @@ export async function handleRequest(
   });
 
   if (sessionMutation.current.kind === "set") {
-    const expiresMs = Math.max(
-      1,
-      Math.floor((new Date(sessionMutation.current.expiresAt).getTime() - Date.now()) / 1000),
-    );
+    const expiresAt = new Date(sessionMutation.current.expiresAt).getTime() / 1000;
     const signed = await signCookieValue({
       value: sessionMutation.current.sessionToken,
       secret: settings.cookieSecret,
     });
-    cookies.push(sessionCookieHeader({ value: signed, maxAge: expiresMs }));
+    cookies.setLogin(signed, expiresAt);
   } else if (sessionMutation.current.kind === "clear") {
-    cookies.push(clearSessionCookieHeader());
+    cookies.remove(SESSION_ENTRY.login);
   }
 
   if (!result.ok) {
@@ -868,7 +850,10 @@ export async function handleRequest(
       captchaPassed,
       errorKind: result.error.kind,
     });
-    return jsonResponse({ ok: false, error: result.error }, { status, setCookies: cookies });
+    return jsonResponse(
+      { ok: false, error: result.error },
+      { status, setCookies: cookies.setCookieHeaders() },
+    );
   }
   await recordRequest({
     pluginSlug: slug,
@@ -880,7 +865,7 @@ export async function handleRequest(
     wasHoneypotCaught: false,
     captchaPassed,
   });
-  return jsonResponse({ ok: true, data: result.value }, { setCookies: cookies });
+  return jsonResponse({ ok: true, data: result.value }, { setCookies: cookies.setCookieHeaders() });
 }
 
 // ---------------------------------------------------------------------------

@@ -217,6 +217,9 @@
     "packages/plugin-component-kit": {
       "name": "@caelo-cms/plugin-component-kit",
       "version": "0.0.0",
+      "devDependencies": {
+        "@caelo-cms/plugin-sdk": "workspace:*",
+      },
     },
     "packages/plugin-host": {
       "name": "@caelo-cms/plugin-host",

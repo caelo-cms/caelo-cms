@@ -347,7 +347,7 @@ describe("ctx.consentPurposes through the broker (consent_provider)", () => {
       key: "visitor_id",
       category: "functional",
       purpose: "One rating per visitor and page.",
-      cookies: [{ name: "caelo_visitor_id", lifetime: "30 days", purpose: "Remembers it." }],
+      cookies: [{ name: "__session", lifetime: "30 days", purpose: "Remembers it." }],
     },
   ];
   const granted = {

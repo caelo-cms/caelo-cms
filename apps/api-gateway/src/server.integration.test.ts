@@ -8,9 +8,11 @@
  * synthetic Request objects (no live socket needed). Asserts:
  *   - POST /api/plugin/<slug>/<op> dispatches via runPluginOperation.
  *   - With no consent provider running nobody can have consented to the
- *     visitor-id cookie (#677): none is set, a held one is expired, and
- *     the plugin sees `ctx.visitor.id === null`. The consented paths are
- *     in visitor-consent.integration.test.ts.
+ *     visitor id (#677): none is set, a held one is removed, and the
+ *     plugin sees `ctx.visitor.id === null`. The consented paths are in
+ *     visitor-consent.integration.test.ts.
+ *   - A visitor login lives in the `__session` cookie and survives a
+ *     proxy that forwards nothing else (Firebase Hosting, #1343).
  *   - 404 / 400 / 503 status codes for missing plugin / bad route / disabled.
  *   - JSON body parsing errors return 400.
  */
@@ -21,6 +23,7 @@ import { applyPluginLifecycle, bootstrap, resetPluginHost } from "@caelo-cms/plu
 import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { sessionCookieValue } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { handleRequest, invalidateGatewaySettings, setGatewayAdapter } from "./server.js";
 
@@ -31,6 +34,7 @@ if (!ADMIN_URL || !PUBLIC_URL || !PUBLIC_ROLE_URL) throw new Error("DB URLs requ
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SLUG = "test-p12-gw";
+const SESSION_TOKEN = "d".repeat(64);
 
 let adapter: DatabaseAdapter;
 let gatewayAdapter: DatabaseAdapter;
@@ -50,9 +54,23 @@ const fixturePlugin = definePlugin({
   },
   // Default deny at the visitor boundary: the fixture has to say
   // which of its operations the gateway may reach.
-  publicOperations: ["save"],
+  publicOperations: ["save", "login", "whoami", "logout"],
   operations: {
     admin_only: async () => ({ secret: "should never be reachable from the gateway" }),
+    // A visitor login as the auth plugin does it (#1343: it must survive
+    // a proxy that forwards no cookie but __session).
+    login: async (ctx) => {
+      ctx.visitor.setSession?.({
+        sessionToken: SESSION_TOKEN,
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      });
+      return { ok: true };
+    },
+    whoami: async (ctx) => ({ sessionToken: ctx.visitor.sessionToken }),
+    logout: async (ctx) => {
+      ctx.visitor.setSession?.(null);
+      return { ok: true };
+    },
     save: async (ctx, args) => {
       const a = args as { message: string };
       const r = await ctx.query.insert("notes", {
@@ -198,20 +216,52 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
     expect(body.ok).toBe(false);
   });
 
-  it("expires a visitor cookie the browser still holds and ignores it (#677)", async () => {
+  it("removes a visitor id the browser still holds and ignores it (#677)", async () => {
     await bootstrapAndProvision();
-    // Shaped like a signed cookie; whether its signature is valid does not
+    // Shaped like a signed id; whether its signature is valid does not
     // matter — without consent the gateway never reads the id.
     const held = `11111111-1111-4111-8111-111111111111.${Math.floor(Date.now() / 1000)}.${"0".repeat(64)}`;
+    const container = sessionCookieValue(
+      new Map([["vid", { value: held, expiresAt: Math.floor(Date.now() / 1000) + 60 }]]),
+    );
     const r = await handleRequest(
-      postReq(`/api/plugin/${SLUG}/save`, { message: "x" }, `caelo_visitor_id=${held}`),
+      postReq(`/api/plugin/${SLUG}/save`, { message: "x" }, `__session=${container}`),
     );
     expect(r.status).toBe(200);
     const setCookie = r.headers.get("set-cookie") ?? "";
-    expect(setCookie).toStartWith("caelo_visitor_id=;");
+    expect(setCookie).toStartWith("__session=;");
     expect(setCookie).toContain("Max-Age=0");
     const body = (await r.json()) as { data: { visitorSeen: string | null } };
     expect(body.data.visitorSeen).toBeNull();
+  });
+
+  it("keeps a visitor logged in behind a proxy that forwards only __session (#1343)", async () => {
+    await bootstrapAndProvision();
+    // Firebase Hosting strips every cookie but __session on its way to the
+    // gateway; the browser still holds the others.
+    const jar = new Map<string, string>([
+      ["caelo_consent", "x"],
+      ["other", "1"],
+    ]);
+    const call = async (op: string) => {
+      const forwarded = jar.has("__session") ? `__session=${jar.get("__session")}` : undefined;
+      const r = await handleRequest(postReq(`/api/plugin/${SLUG}/${op}`, {}, forwarded));
+      for (const c of r.headers.getSetCookie()) {
+        const [pair = "", ...flags] = c.split("; ");
+        const eq = pair.indexOf("=");
+        if (flags.includes("Max-Age=0")) jar.delete(pair.slice(0, eq));
+        else jar.set(pair.slice(0, eq), pair.slice(eq + 1));
+      }
+      return (await r.json()) as { data: { sessionToken?: string | null } };
+    };
+    expect((await call("whoami")).data.sessionToken).toBeNull();
+    await call("login");
+    expect(jar.has("__session")).toBe(true);
+    expect((await call("whoami")).data.sessionToken).toBe(SESSION_TOKEN);
+    expect((await call("whoami")).data.sessionToken).toBe(SESSION_TOKEN);
+    await call("logout");
+    expect(jar.has("__session")).toBe(false);
+    expect((await call("whoami")).data.sessionToken).toBeNull();
   });
 
   it("does not fail on a malformed cookie header", async () => {

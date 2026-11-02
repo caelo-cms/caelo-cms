@@ -57,7 +57,7 @@ const needPlugin = definePlugin({
       key: "visitor_id",
       category: "functional",
       purpose: "Test purpose.",
-      cookies: [{ name: "caelo_visitor_id", lifetime: "30 days", purpose: "Test cookie." }],
+      cookies: [{ name: "__session", lifetime: "30 days", purpose: "Test cookie." }],
     },
   ],
 });

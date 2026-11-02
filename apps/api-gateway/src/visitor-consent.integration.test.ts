@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #677 — the gateway sets `caelo_visitor_id` only for a plugin that
+ * Issue #677 — the gateway stores a visitor id only for a plugin that
  * declares the `visitor_id` consent purpose (ratings, under `functional`)
  * and only with the visitor's consent to that category, read the way the
  * consent-manager plugin defines it.
+ *
+ * #1343 — the id is an entry of the `__session` cookie and the decision
+ * arrives in the `x-caelo-consent` header: the only cookie and the header
+ * that cross a Firebase Hosting rewrite. "behind Firebase Hosting" below
+ * replays the whole lifecycle through a proxy that drops every other cookie.
  *
  * Production wiring: the real consent-manager and ratings plugins are
  * registered + provisioned by an admin-side host, then served by the
@@ -41,8 +46,18 @@ import {
   syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
-import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import {
+  definePlugin,
+  type PluginContextTier1,
+  VISITOR_CONSENT_HEADER,
+} from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  readSessionCookie,
+  SESSION_COOKIE_NAME,
+  SESSION_ENTRY,
+  type SessionEntries,
+} from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
 import {
@@ -175,50 +190,58 @@ async function setPolicyVersion(version: number): Promise<void> {
   await publish();
 }
 
-/** The `caelo_consent` cookie exactly as the consent runtime writes it. */
-function consentCookie(granted: string[], policyVersion = 1): string {
-  return `caelo_consent=${encodeURIComponent(
-    JSON.stringify({ granted, policyVersion, at: new Date().toISOString() }),
-  )}`;
+/** Marks a visitor-state part as the consent header rather than a cookie. */
+const DECISION_PREFIX = `${VISITOR_CONSENT_HEADER}: `;
+
+/**
+ * The decision exactly as the consent runtime sends it: the
+ * `x-caelo-consent` header (#1343), which the component kit forwards on
+ * every gateway call. The gateway reads no consent cookie.
+ */
+function decision(granted: string[], policyVersion = 1): string {
+  return `${DECISION_PREFIX}v=${policyVersion}; granted=${granted.join(",")}`;
+}
+
+/**
+ * The request headers for one visitor state: each part is either a
+ * {@link decision} (the consent header) or a cookie.
+ */
+function visitorHeaders(parts: string[]): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const cookies = parts.filter((p) => !p.startsWith(DECISION_PREFIX));
+  const header = parts.find((p) => p.startsWith(DECISION_PREFIX));
+  if (header) headers[VISITOR_CONSENT_HEADER] = header.slice(DECISION_PREFIX.length);
+  if (cookies.length > 0) headers.cookie = cookies.join("; ");
+  return headers;
 }
 
 let clientIp = 0;
 
-/** A visitor POST from its own client IP, carrying `cookies`. */
-function post(path: string, body: unknown, cookies: string[] = []): Request {
+/** A visitor POST from its own client IP, in visitor state `parts`. */
+function post(path: string, body: unknown, parts: string[] = []): Request {
   clientIp++;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "X-Forwarded-For": `192.0.2.${clientIp % 250}`,
-  };
-  if (cookies.length > 0) headers.cookie = cookies.join("; ");
+  return postFrom(`192.0.2.${clientIp % 250}`, path, body, parts);
+}
+
+/** A visitor POST from a fixed client address, in visitor state `parts`. */
+function postFrom(ip: string, path: string, body: unknown, parts: string[] = []): Request {
   return new Request(`http://localhost${path}`, {
     method: "POST",
-    headers,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Forwarded-For": ip,
+      ...visitorHeaders(parts),
+    },
     body: JSON.stringify(body),
   });
 }
 
-/** A visitor POST from a fixed client address, carrying `cookies`. */
-function postFrom(ip: string, path: string, body: unknown, cookies: string[] = []): Request {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "X-Forwarded-For": ip,
-  };
-  if (cookies.length > 0) headers.cookie = cookies.join("; ");
-  return new Request(`http://localhost${path}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
-}
-
-/** A captcha challenge request from its own client IP, carrying `cookies`. */
-function challengeReq(cookies: string[] = []): Request {
+/** A captcha challenge request from its own client IP, in visitor state `parts`. */
+function challengeReq(parts: string[] = []): Request {
   clientIp++;
-  const headers: Record<string, string> = { "X-Forwarded-For": `192.0.2.${clientIp % 250}` };
-  if (cookies.length > 0) headers.cookie = cookies.join("; ");
-  return new Request("http://localhost/api/captcha/challenge", { headers });
+  return new Request("http://localhost/api/captcha/challenge", {
+    headers: { "X-Forwarded-For": `192.0.2.${clientIp % 250}`, ...visitorHeaders(parts) },
+  });
 }
 
 /** Fetch a challenge as `cookies`' visitor and solve it, as the component kit does. */
@@ -240,29 +263,46 @@ async function expectStatus(r: Response, status: number): Promise<void> {
   }
 }
 
-/** The signed visitor cookie a response set, or null. */
+/** The `__session` Set-Cookie a response carries, or undefined. */
+function sessionSetCookie(r: Response): string | undefined {
+  const all = r.headers.getSetCookie().filter((c) => c.startsWith(`${SESSION_COOKIE_NAME}=`));
+  expect(all.length).toBeLessThanOrEqual(1);
+  return all[0];
+}
+
+/** The entries a response stores in `__session`, or null when it leaves the cookie alone. */
+function storedEntries(r: Response): SessionEntries | null {
+  const set = sessionSetCookie(r);
+  if (set === undefined) return null;
+  return readSessionCookie(set.split(";")[0] ?? null, Math.floor(Date.now() / 1000));
+}
+
+/** The `__session` cookie value a response set when it holds a visitor id, or null. */
 function mintedVisitorCookie(r: Response): string | null {
-  for (const c of r.headers.getSetCookie()) {
-    const value = parseCookies(c.split(";")[0] ?? null).caelo_visitor_id;
-    if (value) return value;
-  }
-  return null;
+  const set = sessionSetCookie(r);
+  if (!storedEntries(r)?.has(SESSION_ENTRY.visitorId) || !set) return null;
+  return parseCookies(set.split(";")[0] ?? null)[SESSION_COOKIE_NAME] ?? null;
 }
 
 function expectsNoVisitorCookie(r: Response): void {
-  for (const c of r.headers.getSetCookie()) {
-    expect(c.startsWith("caelo_visitor_id=") && !c.startsWith("caelo_visitor_id=;")).toBe(false);
-  }
+  expect(storedEntries(r)?.has(SESSION_ENTRY.visitorId) ?? false).toBe(false);
 }
 
 function expectsVisitorCookieExpired(r: Response): void {
-  const cleared = r.headers.getSetCookie().filter((c) => c.startsWith("caelo_visitor_id=;"));
-  expect(cleared).toHaveLength(1);
-  expect(cleared[0]).toContain("Max-Age=0");
+  const stored = storedEntries(r);
+  expect(stored).not.toBeNull();
+  expect(stored?.has(SESSION_ENTRY.visitorId)).toBe(false);
+  // Nothing else is in this test's container, so the cookie goes entirely.
+  expect(sessionSetCookie(r)).toContain("Max-Age=0");
 }
 
-const DECLINED = consentCookie(["necessary"]);
-const ACCEPTED = consentCookie(["necessary", "functional", "analytics", "marketing"]);
+/** The cookie a browser sends back for a `__session` value. */
+function sessionCookie(value: string): string {
+  return `${SESSION_COOKIE_NAME}=${encodeURIComponent(value)}`;
+}
+
+const DECLINED = decision(["necessary"]);
+const ACCEPTED = decision(["necessary", "functional", "analytics", "marketing"]);
 
 beforeAll(async () => {
   // Behind one proxy (self-hosted Caddy sets X-Forwarded-For to its peer).
@@ -415,7 +455,7 @@ describe("accepted, then withdrawn (#677)", () => {
     await expectStatus(r, 200);
     visitorCookie = mintedVisitorCookie(r) ?? "";
     expect(visitorCookie).not.toBe("");
-    const set = r.headers.getSetCookie().find((c) => c.startsWith("caelo_visitor_id="));
+    const set = sessionSetCookie(r);
     expect(set).toContain("HttpOnly");
     expect(set).toContain("Max-Age=2592000");
     // The visitor id is ratings' purpose, not proof of consent: the record
@@ -425,7 +465,7 @@ describe("accepted, then withdrawn (#677)", () => {
   });
 
   it("recognises the visitor afterwards: no new cookie, their vote is updated", async () => {
-    const cookies = [ACCEPTED, `caelo_visitor_id=${visitorCookie}`];
+    const cookies = [ACCEPTED, sessionCookie(visitorCookie)];
     const first = await handleRequest(post(RATE, { pageId: "p-accepted", score: 3 }, cookies));
     await expectStatus(first, 200);
     expect(first.headers.getSetCookie()).toEqual([]);
@@ -437,7 +477,7 @@ describe("accepted, then withdrawn (#677)", () => {
 
   it("hands the id only to the plugin that declared it, not to every plugin", async () => {
     const r = await handleRequest(
-      post("/api/plugin/visitor-echo/whoami", {}, [ACCEPTED, `caelo_visitor_id=${visitorCookie}`]),
+      post("/api/plugin/visitor-echo/whoami", {}, [ACCEPTED, sessionCookie(visitorCookie)]),
     );
     await expectStatus(r, 200);
     expect(((await r.json()) as { data: { visitorId: string | null } }).data.visitorId).toBeNull();
@@ -445,11 +485,12 @@ describe("accepted, then withdrawn (#677)", () => {
 
   it("expires the cookie when the visitor withdraws, and stops reading it", async () => {
     // The banner rewrote caelo_consent; the HttpOnly id is still in the
-    // browser until the gateway expires it — on the record_consent beacon.
+    // browser until the gateway removes it — on the record_consent call,
+    // which carries the new decision in its header.
     const r = await handleRequest(
       post(RECORD, { consentId: CONSENT_ID, granted: ["necessary"], policyVersion: 1 }, [
         DECLINED,
-        `caelo_visitor_id=${visitorCookie}`,
+        sessionCookie(visitorCookie),
       ]),
     );
     await expectStatus(r, 200);
@@ -460,10 +501,7 @@ describe("accepted, then withdrawn (#677)", () => {
     // A browser that still sends it (the expiry not applied yet) is not
     // recognised: the earlier vote is not found and updated.
     const vote = await handleRequest(
-      post(RATE, { pageId: "p-accepted", score: 5 }, [
-        DECLINED,
-        `caelo_visitor_id=${visitorCookie}`,
-      ]),
+      post(RATE, { pageId: "p-accepted", score: 5 }, [DECLINED, sessionCookie(visitorCookie)]),
     );
     await expectStatus(vote, 200);
     expectsVisitorCookieExpired(vote);
@@ -475,7 +513,7 @@ describe("a decision without the declared category", () => {
   it("sets no visitor cookie when the visitor granted analytics and marketing but not functional", async () => {
     const r = await handleRequest(
       post(RATE, { pageId: "p-analytics", score: 4 }, [
-        consentCookie(["necessary", "analytics", "marketing"]),
+        decision(["necessary", "analytics", "marketing"]),
       ]),
     );
     await expectStatus(r, 200);
@@ -495,13 +533,13 @@ describe("a decision under an outdated policy version (#677)", () => {
       await expectStatus(fresh, 200);
       expectsNoVisitorCookie(fresh);
       const held = await handleRequest(
-        post(RATE, { pageId: "p-policy", score: 4 }, [ACCEPTED, `caelo_visitor_id=${minted}`]),
+        post(RATE, { pageId: "p-policy", score: 4 }, [ACCEPTED, sessionCookie(minted ?? "")]),
       );
       await expectStatus(held, 200);
       expectsVisitorCookieExpired(held);
       // Re-consenting under the current version counts again.
       const renewed = await handleRequest(
-        post(RATE, { pageId: "p-policy", score: 4 }, [consentCookie(["functional"], 2)]),
+        post(RATE, { pageId: "p-policy", score: 4 }, [decision(["functional"], 2)]),
       );
       expect(mintedVisitorCookie(renewed)).not.toBeNull();
     } finally {
@@ -563,7 +601,7 @@ async function consentedVisitor(): Promise<string> {
   await expectStatus(r, 200);
   const cookie = mintedVisitorCookie(r);
   if (!cookie) throw new Error("no visitor cookie minted");
-  return `caelo_visitor_id=${cookie}`;
+  return sessionCookie(cookie);
 }
 
 describe("a captcha challenge is bound to nobody", () => {
@@ -686,6 +724,61 @@ describe("no active plugin declares the visitor-id purpose", () => {
       await syncDispatchPlugins({ force: true });
     }
     // Back on: the declaration returns and with it the cookie.
-    expect(await consentedVisitor()).toStartWith("caelo_visitor_id=");
+    expect(await consentedVisitor()).toStartWith(`${SESSION_COOKIE_NAME}=`);
+  });
+});
+
+/**
+ * A browser behind a Firebase Hosting `/api/**` rewrite: it keeps every
+ * cookie the gateway (or the banner) sets, but the rewrite forwards only
+ * `__session` (docs/dev/firebase-hosting-behaviour.md, section 1).
+ */
+function firebaseBrowser(ip: string) {
+  const jar = new Map<string, string>();
+  return {
+    jar,
+    async send(path: string, body: unknown, consent: string | null): Promise<Response> {
+      const forwarded = jar.has(SESSION_COOKIE_NAME)
+        ? [`${SESSION_COOKIE_NAME}=${jar.get(SESSION_COOKIE_NAME)}`]
+        : [];
+      const r = await handleRequest(
+        postFrom(ip, path, body, consent ? [consent, ...forwarded] : forwarded),
+      );
+      for (const c of r.headers.getSetCookie()) {
+        const [pair = "", ...flags] = c.split("; ");
+        const eq = pair.indexOf("=");
+        if (flags.includes("Max-Age=0")) jar.delete(pair.slice(0, eq));
+        else jar.set(pair.slice(0, eq), pair.slice(eq + 1));
+      }
+      return r;
+    },
+  };
+}
+
+describe("behind Firebase Hosting, which forwards only __session (#1343)", () => {
+  it("keeps a consented visitor's id stable, and withdrawing consent removes it", async () => {
+    const browser = firebaseBrowser("198.51.100.90");
+    // The banner's own cookie lives in the jar too; the rewrite drops it.
+    browser.jar.set("caelo_consent", "banner-state");
+    const record = (granted: string[], consent: string) =>
+      browser.send(RECORD, { consentId: CONSENT_ID, granted, policyVersion: 1 }, consent);
+
+    await expectStatus(await record(["necessary", "functional"], ACCEPTED), 200);
+    const minted = browser.jar.get(SESSION_COOKIE_NAME);
+    expect(minted).toBeDefined();
+
+    // The same id on every later call: the vote is found and updated.
+    const first = await browser.send(RATE, { pageId: "p-firebase", score: 2 }, ACCEPTED);
+    await expectStatus(first, 200);
+    expect(((await first.json()) as { data: { mode: string } }).data.mode).toBe("inserted");
+    const second = await browser.send(RATE, { pageId: "p-firebase", score: 4 }, ACCEPTED);
+    expect(((await second.json()) as { data: { mode: string } }).data.mode).toBe("updated");
+    expect(browser.jar.get(SESSION_COOKIE_NAME)).toBe(minted);
+
+    // Withdrawn in the banner: the record call carries the new decision.
+    await expectStatus(await record(["necessary"], DECLINED), 200);
+    expect(browser.jar.has(SESSION_COOKIE_NAME)).toBe(false);
+    const after = await browser.send(RATE, { pageId: "p-firebase", score: 5 }, DECLINED);
+    expect(((await after.json()) as { data: { mode: string } }).data.mode).toBe("inserted");
   });
 });

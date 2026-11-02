@@ -12,7 +12,8 @@
  *                       for visitors who consented to the visitor-id cookie;
  *                       visitor_id NULL (never de-duplicated) for the rest.
  *
- * Consent: ratings is the plugin the `caelo_visitor_id` cookie exists for.
+ * Consent: ratings is the plugin the gateway's visitor id (an entry of its
+ * `__session` cookie) exists for.
  * It declares the `visitor_id` purpose (`functional`: it serves the
  * visitor's own rating action — a second vote replaces the first — and
  * measures nothing) and requires the consent-manager plugin, which asks
@@ -32,7 +33,12 @@
  */
 
 import { attachCaptchaProof, KIT_CSS, postPluginJson } from "@caelo-cms/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import {
+  defineComponent,
+  definePlugin,
+  type PluginContextTier1,
+  VISITOR_ID_COOKIE,
+} from "@caelo-cms/plugin-sdk";
 
 interface SubmitInput {
   pageId: string;
@@ -89,10 +95,10 @@ export default definePlugin<PluginContextTier1>({
         "Recognises the visitor's browser so a second rating of the same page replaces their first instead of counting twice.",
       cookies: [
         {
-          name: "caelo_visitor_id",
+          name: VISITOR_ID_COOKIE,
           lifetime: "30 days",
           purpose:
-            "Remembers which ratings this browser gave, so the visitor can change their rating. Set only after the visitor allows functional cookies; deleted when they withdraw.",
+            "Holds an anonymous id that remembers which ratings this browser gave, so the visitor can change their rating. The id is stored only after the visitor allows functional cookies and removed when they withdraw.",
         },
       ],
     },

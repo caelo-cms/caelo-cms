@@ -13,7 +13,7 @@ const VISITOR_ID: PluginConsentPurpose = {
   key: "visitor_id",
   category: "functional",
   purpose: "One rating per visitor and page.",
-  cookies: [{ name: "caelo_visitor_id", lifetime: "30 days", purpose: "Remembers the rating." }],
+  cookies: [{ name: "__session", lifetime: "30 days", purpose: "Remembers the rating." }],
 };
 
 function manifest(extra: Record<string, unknown>) {
@@ -93,7 +93,7 @@ describe("pluginManifest — consentPurposes", () => {
     );
   });
 
-  it("keeps caelo_ cookies host-owned", () => {
+  it("keeps caelo_ cookies and __session host-owned", () => {
     const other = {
       key: "session_hint",
       category: "functional",
@@ -103,12 +103,12 @@ describe("pluginManifest — consentPurposes", () => {
     expect(messages(manifest({ consentPurposes: [other] }))).toContain("host-owned");
     const borrowed = {
       ...other,
-      cookies: [{ name: "caelo_visitor_id", lifetime: "1d", purpose: "x" }],
+      cookies: [{ name: "__session", lifetime: "1d", purpose: "x" }],
     };
     expect(messages(manifest({ consentPurposes: [borrowed] }))).toContain("host-owned");
   });
 
-  it("makes the visitor-id purpose name caelo_visitor_id", () => {
+  it("makes the visitor-id purpose name __session", () => {
     const r = manifest({
       consentPurposes: [
         { ...VISITOR_ID, cookies: [{ name: "my_id", lifetime: "1d", purpose: "x" }] },
