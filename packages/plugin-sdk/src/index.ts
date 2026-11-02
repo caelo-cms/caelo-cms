@@ -2273,8 +2273,8 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * `<slug>.<name>` unless the entry says `captcha: "none"`, applies
    * `rateLimit`, and lets `ctx.query` touch only the `reads` / `writes`
    * tables. A handler that refuses the visitor throws a
-   * `PublicOperationError`; any other error reaches the visitor as a
-   * generic refusal.
+   * `PublicOperationError` (answered `Rejected`); any other error is a
+   * failure. Visitors get only the error kind and a request id.
    *
    * @example
    *   publicOperations: [{

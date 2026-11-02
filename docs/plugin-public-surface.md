@@ -19,11 +19,11 @@ Before the handler runs, dispatch (`runPluginOperation`, so no entry point can s
 
 1. removes the gateway's proof field `_caelo_captcha` from the body;
 2. refuses an operation whose captcha is `required` unless the gateway verified, for this request, a proof-of-work solved for exactly this operation, or the Owner turned the captcha off site-wide (`CaptchaRequired`, 403);
-3. parses the body with `input` and refuses it on any mismatch (`InvalidInput`, 400, listing paths and Zod's messages, never the values). The handler receives the parsed value.
+3. parses the body with `input` and refuses it on any mismatch (`InvalidInput`, 400; the logged detail lists paths and Zod's messages, never the values). The handler receives the parsed value.
 
 While it runs, `ctx.query` reaches only the declared `reads` and `writes`.
 
-After it, a visitor reads a failure's text only when the handler meant it for them: a `PublicOperationError` comes back as `Rejected` (422) with its message. Anything else (a TypeError, a database error, a host error) is logged with its detail and answered with one generic sentence, because its text can carry internals.
+After it, a refusal and a failure are told apart: a `PublicOperationError` is a refusal (`Rejected`, 422) and is not recorded as a plugin error; anything else (a TypeError, a database error, a host error) is a failure (`OperationFailed`, 500). No error text reaches a visitor: the gateway answers every error with only `{ kind, requestId }` (#1326) and writes the detail, including a refusal's words and the validation issues, to its log under that id. Inside the host, `visitorSafeResult` also replaces a failure's text with one generic sentence, so no other entry point can leak it either.
 
 `captcha: "none"` is a reviewed declaration in the signed manifest, not a runtime switch. Use it for reads and for writes a rate limit alone may guard, such as a consent click (`record_consent`) or a logout.
 

@@ -250,12 +250,13 @@ export function checkPublicSurface(
 }
 
 /**
- * Throw this from a public operation to tell the VISITOR why their
- * request was refused ("this form is closed", "invalid credentials").
- * Its message reaches the visitor as written; any other error reaches
- * them as a generic refusal, because its text can carry internals (a
- * TypeError, a database message). Keep the message short and free of
- * anything the visitor did not send.
+ * Throw this from a public operation when it refuses the visitor's
+ * request ("this form is closed", "invalid credentials"), as opposed to
+ * failing. The host answers it as `Rejected` (422) instead of a failure
+ * (500), and does not record it as a plugin error. The API gateway's
+ * responses carry only the error kind and a request id (#1326); the
+ * message is written to the gateway log under that id, never sent. Keep
+ * it short and free of anything the visitor did not send.
  */
 export class PublicOperationError extends Error {
   override readonly name = "PublicOperationError";
