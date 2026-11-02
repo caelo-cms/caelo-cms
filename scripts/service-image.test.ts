@@ -21,6 +21,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import gatewaySpec from "../apps/api-gateway/image.ts";
+import proxySpec from "../apps/mcp-auth-proxy/image.ts";
 import {
   allowedPatterns,
   BUNDLE_LICENSES,
@@ -354,6 +355,63 @@ describe("the gateway image", () => {
       expect(sbom.components.map((c) => c.name)).toContain("drizzle-orm");
       expect(sbom.components.map((c) => c.name)).toContain("deno");
       expect(readFileSync(join(out, BUNDLE_LICENSES), "utf8")).toContain("drizzle-orm@");
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the MCP-Auth-Proxy image (#1328)", () => {
+  const dockerfile = readFileSync(resolve(REPO_ROOT, proxySpec.dockerfile), "utf8");
+
+  it("pins every base image by digest, on the gateway's distroless base", () => {
+    const froms = [...dockerfile.matchAll(/^FROM\s+(\S+)/gm)].map((m) => m[1]);
+    for (const ref of froms) expect(ref).toMatch(/@sha256:[0-9a-f]{64}$/);
+    const gateway = readFileSync(resolve(REPO_ROOT, gatewaySpec.dockerfile), "utf8");
+    expect(runtimeBase(dockerfile)).toBe(runtimeBase(gateway));
+  });
+
+  it("runs as the distroless non-root user, with an exec-form entrypoint", () => {
+    const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
+    expect(runtime).toContain("\nUSER 65532:65532\n");
+    expect(runtime).toContain('\nENTRYPOINT ["/usr/local/bin/bun"]\n');
+    expect(runtime).not.toMatch(/^RUN /m);
+  });
+
+  it("carries one bundle and the Bun binary: no packages on disk, no Deno, no database CA", () => {
+    expect(proxySpec.runtimePackages).toEqual([]);
+    expect(proxySpec.nodeModules).toEqual([]);
+    expect(proxySpec.copy).toEqual([]);
+    expect(proxySpec.extraFiles).toEqual([]);
+    expect(proxySpec.binaries.map((b) => b.path)).toEqual(["usr/local/bin/bun"]);
+  });
+
+  it("is gated in release-images.yml before anything is pushed", () => {
+    const workflow = readFileSync(
+      resolve(REPO_ROOT, ".github/workflows/release-images.yml"),
+      "utf8",
+    );
+    expect(workflow).toContain("spec: apps/mcp-auth-proxy/image.ts");
+    expect(workflow).toContain(
+      `sbom: ${proxySpec.appRoot}/${proxySpec.bundle.outdir}/${BUNDLE_SBOM}`,
+    );
+    const smoke = workflow.indexOf("MCP-Auth-Proxy boot smoke");
+    expect(smoke).toBeGreaterThan(-1);
+    expect(smoke).toBeLessThan(workflow.indexOf("- name: Build + push"));
+  });
+
+  it("bundles no database or admin package", async () => {
+    const out = mkdtempSync(join(tmpdir(), "service-image-proxy-"));
+    try {
+      await bundleService(REPO_ROOT, proxySpec, out);
+      const sbom = JSON.parse(readFileSync(join(out, BUNDLE_SBOM), "utf8")) as {
+        components: Array<{ name: string }>;
+      };
+      const names = sbom.components.map((c) => c.name);
+      expect(names).toContain("zod");
+      for (const banned of ["drizzle-orm", "postgres", "pg", "sharp", "deno"]) {
+        expect(names).not.toContain(banned);
+      }
     } finally {
       rmSync(out, { recursive: true, force: true });
     }

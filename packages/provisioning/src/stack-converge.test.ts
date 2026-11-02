@@ -426,6 +426,8 @@ describe("planContractEnv", () => {
         serviceName: "gw",
         liveEnv: liveContainerEnv(serviceJson(onIp(CONVERGED_GATEWAY_DB) as never)),
       },
+      // #1328 — no database URL, so the TLS step has nothing to move on it.
+      "mcp-auth-proxy": { serviceName: "px", liveEnv: new Map() },
     };
     const install = {
       provider: "gcp" as const,

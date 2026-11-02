@@ -11,7 +11,7 @@
  *
  * Each request, in order:
  *
- *   1. `/healthz`, `/api/mcp/health` → `{ ok, version }` (upgrade health check).
+ *   1. `/healthz`, `/api/mcp/health` → `{ ok }` (upgrade health check; no version since #1326).
  *   2. FIXME(issue #1331) — the interim forwarder ({@link INTERIM_FORWARD_ORIGIN_ENV},
  *      gcp-firebase only): every request that is not remote MCP on this
  *      service's own host is streamed unchanged to the visitor data gateway.
@@ -32,7 +32,6 @@
  */
 
 import {
-  CAELO_VERSION,
   ClientAddressError,
   clientAddress,
   INTERIM_FORWARDED_HOST_HEADER,
@@ -213,7 +212,8 @@ async function interimForward(
 }
 
 function health(): Response {
-  return new Response(JSON.stringify({ ok: true, version: CAELO_VERSION }), {
+  // #1326 — no release version on a public service: it names the flaws to try.
+  return new Response(JSON.stringify({ ok: true }), {
     status: 200,
     headers: { "content-type": "application/json", "cache-control": "no-store" },
   });

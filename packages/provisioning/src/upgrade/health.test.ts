@@ -81,9 +81,13 @@ describe("evaluatePublicServiceDeepHealth", () => {
   });
 
   it("ignores a version an older gateway still reports", () => {
-    expect(evaluatePublicServiceDeepHealth("gateway", 200, JSON.stringify({ ok: true, version: "0.10.0" })).ok).toBe(
-      true,
-    );
+    expect(
+      evaluatePublicServiceDeepHealth(
+        "gateway",
+        200,
+        JSON.stringify({ ok: true, version: "0.10.0" }),
+      ).ok,
+    ).toBe(true);
   });
 
   it("refuses a gateway that can't reach its database", () => {
@@ -196,7 +200,7 @@ describe("createIapHealthProbe", () => {
     expect(proxy?.headers.Authorization).toBeUndefined();
   });
 
-  it("#1328 — fails the deep check while the MCP-Auth-Proxy runs another release or does not answer", async () => {
+  it("#1328 — fails the deep check while the MCP-Auth-Proxy is unhealthy or does not answer", async () => {
     const deepWith = (proxy: () => [number, string]) =>
       createIapHealthProbe(FIREBASE, {
         run: gcloudOk,
@@ -209,9 +213,9 @@ describe("createIapHealthProbe", () => {
         accessJustChanged: false,
         attempts: 1,
       }).deep({ version: "0.11.0" });
-    expect(await deepWith(() => [200, JSON.stringify({ ok: true, version: "0.10.99" })])).toEqual({
+    expect(await deepWith(() => [503, JSON.stringify({ ok: false })])).toEqual({
       ok: false,
-      error: "MCP-Auth-Proxy runs 0.10.99, the admin runs 0.11.0",
+      error: "MCP-Auth-Proxy reports unhealthy (HTTP 503, no reason)",
     });
     expect(await deepWith(() => [404, "<html>Not Found</html>"])).toEqual({
       ok: false,

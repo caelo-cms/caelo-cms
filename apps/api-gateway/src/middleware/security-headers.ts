@@ -10,7 +10,6 @@
 
 export {
   addJsonSecurityHeaders,
-  isJsonResponse,
   JSON_SECURITY_HEADERS,
   withJsonSecurityHeaders,
 } from "@caelo-cms/shared";

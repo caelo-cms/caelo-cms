@@ -12,7 +12,6 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CAELO_VERSION,
   INTERIM_FORWARDED_HOST_HEADER,
   JSON_SECURITY_HEADERS,
   TRUSTED_PROXY_HOPS_ENV,
@@ -69,7 +68,7 @@ describe("request order", () => {
     for (const path of ["/healthz", "/api/mcp/health"]) {
       const res = await handler(new Request(`${PUBLIC}${path}`), PEER);
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true, version: CAELO_VERSION });
+      expect(await res.json()).toEqual({ ok: true });
     }
   });
 

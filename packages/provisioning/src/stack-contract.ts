@@ -240,6 +240,10 @@ export function cloudSqlPrivateDnsName(
 export const DATABASE_URL_VARS = {
   admin: ["ADMIN_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL"],
   gateway: ["PUBLIC_DATABASE_URL"],
+  // #1328 — no database login at all. On gcp-firebase the service still
+  // carries the gateway's URL until its roll removes it with the rest of
+  // the gateway env (RETIRED_SERVICE_ENV), so the TLS step leaves it alone.
+  "mcp-auth-proxy": [],
 } as const;
 
 /** What a running service's env derives from: install metadata + the database. */

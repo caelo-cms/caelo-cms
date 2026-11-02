@@ -6,4 +6,4 @@
  * importing it from here.
  */
 
-export { readBodyWithCap } from "@caelo-cms/shared";
+export { HARD_MAX_BODY_BYTES, readBodyWithCap } from "@caelo-cms/shared";

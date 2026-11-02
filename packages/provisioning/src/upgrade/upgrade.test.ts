@@ -123,7 +123,8 @@ const GATEWAY_JSON = serviceJson("registry/gateway@sha256:old", [
 const PROXY_JSON = serviceJson("registry/gateway@sha256:old", [
   {
     name: "PUBLIC_DATABASE_URL",
-    value: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
+    value:
+      "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
   },
   secretRef("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
   secretRef("CAELO_STAGING_GATE_SECRET", "staging-gate-secret"),

@@ -523,7 +523,6 @@ ${serviceRuntime(images, "mcp-auth-proxy", "bun run apps/mcp-auth-proxy/src/serv
 `;
 }
 
-
 /**
  * A compose-network database URL, password URL-encoded and YAML-escaped.
  * #1338 — verify-full against the install's own CA (self-hosted-db-tls.ts),
