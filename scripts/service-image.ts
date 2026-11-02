@@ -35,11 +35,14 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 /** What one service image is made of. Paths are relative to the repo root unless noted. */
@@ -490,13 +493,20 @@ export function allowedPatterns(spec: ServiceImageSpec): string[] {
 export type ContentProblem = string;
 
 /**
- * Check an image's files against its spec. `files` and `baseFiles` are the
- * non-directory entries of `docker export` (no leading slash).
+ * Check an image's files against its spec.
+ *
+ * @param args.files Every non-directory path of the flattened image.
+ * @param args.baseFiles The same for the runtime base.
+ * @param args.added Every non-directory entry of the layers the image adds on
+ *   top of its base, whiteouts included: what the Dockerfile wrote. Checking
+ *   these, not just the paths missing from the base, is what catches a build
+ *   that overwrites or deletes a base file (`etc/passwd`).
  */
 export function contentProblems(args: {
   readonly spec: ServiceImageSpec;
   readonly files: readonly string[];
   readonly baseFiles: readonly string[];
+  readonly added: readonly string[];
 }): ContentProblem[] {
   const problems: ContentProblem[] = [];
   const base = new Set(args.baseFiles);
@@ -505,8 +515,16 @@ export function contentProblems(args: {
     const name = file.slice(file.lastIndexOf("/") + 1);
     if (FORBIDDEN_BASENAMES.has(name))
       problems.push(`${file}: no shell or tool of this kind may be in the image`);
-    if (base.has(file)) continue;
-    if (!allow.some((g) => g.match(file))) problems.push(`${file}: not in the allowlist`);
+  }
+  for (const entry of new Set(args.added)) {
+    const name = entry.slice(entry.lastIndexOf("/") + 1);
+    if (name.startsWith(".wh.")) {
+      problems.push(`${entry}: the image deletes a file of its base`);
+    } else if (base.has(entry)) {
+      problems.push(`${entry}: the image replaces a file of its base`);
+    } else if (!allow.some((g) => g.match(entry))) {
+      problems.push(`${entry}: not in the allowlist`);
+    }
   }
   for (const pattern of args.spec.require) {
     const glob = new Bun.Glob(pattern);
@@ -537,13 +555,19 @@ export function configProblems(config: ImageConfig): ContentProblem[] {
   return problems;
 }
 
-/** The runtime base of a Dockerfile: the image of its last `FROM`, which must be digest-pinned. */
+/**
+ * The runtime base of a Dockerfile: the image of its last `FROM`. Every
+ * `FROM` must be pinned by digest: a builder stage on a moving tag puts
+ * whatever it copies into the image just as much as the base does.
+ */
 export function runtimeBase(dockerfile: string): string {
-  const froms = [...dockerfile.matchAll(/^FROM\s+(?:--platform=\S+\s+)?(\S+)/gm)].map((m) => m[1]);
+  const froms = [...dockerfile.matchAll(/^FROM\s+(?:--platform=\S+\s+)?(\S+)/gim)].map(
+    (m) => m[1] as string,
+  );
   const last = froms.at(-1);
   if (!last) throw new Error("the Dockerfile has no FROM");
-  if (!/@sha256:[0-9a-f]{64}$/.test(last))
-    throw new Error(`runtime base ${last} is not pinned by digest`);
+  const unpinned = froms.filter((ref) => !/@sha256:[0-9a-f]{64}$/.test(ref));
+  if (unpinned.length > 0) throw new Error(`not pinned by digest: ${unpinned.join(", ")}`);
   return last;
 }
 
@@ -558,6 +582,21 @@ async function run(cmd: string[]): Promise<string> {
   return out;
 }
 
+/** Non-directory entries of a tar stream (no leading `./` or `/`). */
+async function tarEntries(stream: ReadableStream<Uint8Array>, what: string): Promise<string[]> {
+  const tar = Bun.spawn(["tar", "-t"], { stdin: stream, stdout: "pipe", stderr: "pipe" });
+  const [listing, err, code] = await Promise.all([
+    new Response(tar.stdout).text(),
+    new Response(tar.stderr).text(),
+    tar.exited,
+  ]);
+  if (code !== 0) throw new Error(`listing ${what} failed: ${err.trim()}`);
+  return listing
+    .split("\n")
+    .filter((l) => l !== "" && !l.endsWith("/"))
+    .map((l) => l.replace(/^\.?\//, ""));
+}
+
 /** Non-directory entries of an image's flattened filesystem. */
 async function imageFiles(image: string): Promise<string[]> {
   // `docker create` never starts the container; the command only satisfies
@@ -565,25 +604,53 @@ async function imageFiles(image: string): Promise<string[]> {
   const id = (await run(["docker", "create", image, "/service-image-listing"])).trim();
   try {
     const exported = Bun.spawn(["docker", "export", id], { stdout: "pipe", stderr: "pipe" });
-    const tar = Bun.spawn(["tar", "-t"], {
-      stdin: exported.stdout,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [listing, exportCode, tarCode] = await Promise.all([
-      new Response(tar.stdout).text(),
+    const [entries, code] = await Promise.all([
+      tarEntries(exported.stdout, `${image} (docker export)`),
       exported.exited,
-      tar.exited,
     ]);
-    if (exportCode !== 0 || tarCode !== 0) {
-      throw new Error(`listing ${image} failed: docker export ${exportCode}, tar ${tarCode}`);
-    }
-    return listing
-      .split("\n")
-      .filter((l) => l !== "" && !l.endsWith("/"))
-      .map((l) => l.replace(/^\.?\//, ""));
+    if (code !== 0) throw new Error(`docker export of ${image} exited ${code}`);
+    return entries;
   } finally {
     await run(["docker", "rm", id]);
+  }
+}
+
+async function rootfsLayers(image: string): Promise<string[]> {
+  return JSON.parse(
+    await run(["docker", "image", "inspect", "--format", "{{json .RootFS.Layers}}", image]),
+  ) as string[];
+}
+
+/**
+ * Entries of the layers `image` adds on top of `base`, whiteouts included.
+ * Refuses an image whose first layers are not exactly the base's.
+ */
+async function addedLayerEntries(image: string, base: string): Promise<string[]> {
+  const [layers, baseLayers] = await Promise.all([rootfsLayers(image), rootfsLayers(base)]);
+  if (baseLayers.some((l, i) => layers[i] !== l)) {
+    throw new Error(`${image} is not built on ${base}: its first layers differ`);
+  }
+  const dir = mkdtempSync(join(tmpdir(), "service-image-layers-"));
+  try {
+    const saved = join(dir, "image.tar");
+    await run(["docker", "save", "--output", saved, image]);
+    await run(["tar", "-xf", saved, "-C", dir]);
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as Array<{
+      Layers: string[];
+    }>;
+    const paths = manifest[0]?.Layers ?? [];
+    if (paths.length !== layers.length) {
+      throw new Error(
+        `docker save of ${image} lists ${paths.length} layers, docker inspect ${layers.length}`,
+      );
+    }
+    const entries: string[] = [];
+    for (const layer of paths.slice(baseLayers.length)) {
+      entries.push(...(await tarEntries(Bun.file(join(dir, layer)).stream(), `layer ${layer}`)));
+    }
+    return entries;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -594,14 +661,15 @@ async function verify(
 ): Promise<ContentProblem[]> {
   const base = runtimeBase(readFileSync(join(repoRoot, spec.dockerfile), "utf8"));
   await run(["docker", "pull", "--quiet", base]);
-  const [files, baseFiles, inspect] = await Promise.all([
+  const [files, baseFiles, added, inspect] = await Promise.all([
     imageFiles(image),
     imageFiles(base),
+    addedLayerEntries(image, base),
     run(["docker", "image", "inspect", "--format", "{{json .Config}}", image]),
   ]);
   return [
     ...configProblems(JSON.parse(inspect) as ImageConfig),
-    ...contentProblems({ spec, files, baseFiles }),
+    ...contentProblems({ spec, files, baseFiles, added }),
   ];
 }
 

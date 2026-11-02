@@ -60,6 +60,14 @@ describe("checkPluginRuntime", () => {
     expect(report.failures[0]?.reason).toMatch(/signature verification failed|manifest invalid/);
   });
 
+  it("checks a manifest-bearing directory even without package.json (boot loads it)", async () => {
+    const report = await checkPluginRuntime({
+      pluginsRoot: pluginsRoot({ forms: { "manifest.json": "{}", "manifest.sig": "00" } }),
+    });
+    expect(report.ok).toBe(false);
+    expect(report.failures[0]?.slug).toBe("forms");
+  });
+
   it("fails an image that ships no plugins at all", async () => {
     const empty = await checkPluginRuntime({ pluginsRoot: pluginsRoot({}) });
     expect(empty.failures).toEqual([

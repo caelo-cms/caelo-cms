@@ -142,29 +142,38 @@ const SPEC: ServiceImageSpec = {
 
 describe("contentProblems", () => {
   const base = ["etc/passwd", "usr/lib/libc.so.6"];
-  const good = [
-    ...base,
+  const added = [
     "usr/local/bin/bun",
     "app/apps/svc/dist/server.js",
     "app/node_modules/zod/package.json",
     "app/packages/plugins/forms/manifest.json",
   ];
+  const good = [...base, ...added];
+  const check = (over: { files?: string[]; baseFiles?: string[]; added?: string[] }) =>
+    contentProblems({ spec: SPEC, files: good, baseFiles: base, added, ...over });
 
   it("accepts an image of base files and allowlisted files", () => {
-    expect(contentProblems({ spec: SPEC, files: good, baseFiles: base })).toEqual([]);
+    expect(check({})).toEqual([]);
   });
 
   it("fails on any added file outside the allowlist", () => {
-    const files = [...good, "app/packages/admin-core/src/index.ts", "app/node_modules/sharp/x.js"];
-    expect(contentProblems({ spec: SPEC, files, baseFiles: base })).toEqual([
+    const extra = ["app/packages/admin-core/src/index.ts", "app/node_modules/sharp/x.js"];
+    expect(check({ files: [...good, ...extra], added: [...added, ...extra] })).toEqual([
       "app/packages/admin-core/src/index.ts: not in the allowlist",
       "app/node_modules/sharp/x.js: not in the allowlist",
     ]);
   });
 
+  it("fails when the image overwrites or deletes a file of its base", () => {
+    expect(check({ added: [...added, "etc/passwd", "usr/lib/.wh.libc.so.6"] })).toEqual([
+      "etc/passwd: the image replaces a file of its base",
+      "usr/lib/.wh.libc.so.6: the image deletes a file of its base",
+    ]);
+  });
+
   it("fails on a shell even when the base image carries it", () => {
     const files = [...good, "bin/sh", "usr/bin/busybox"];
-    const problems = contentProblems({ spec: SPEC, files, baseFiles: [...base, "bin/sh"] });
+    const problems = check({ files, baseFiles: [...base, "bin/sh"] });
     expect(problems).toContain("bin/sh: no shell or tool of this kind may be in the image");
     expect(problems).toContain(
       "usr/bin/busybox: no shell or tool of this kind may be in the image",
@@ -173,9 +182,7 @@ describe("contentProblems", () => {
 
   it("fails when a required file is missing", () => {
     const files = good.filter((f) => !f.endsWith("server.js"));
-    expect(contentProblems({ spec: SPEC, files, baseFiles: base })).toEqual([
-      "app/apps/svc/dist/server.js: required, but missing",
-    ]);
+    expect(check({ files })).toEqual(["app/apps/svc/dist/server.js: required, but missing"]);
   });
 });
 
@@ -204,6 +211,11 @@ describe("runtimeBase", () => {
   it("refuses a tag-only base", () => {
     expect(() => runtimeBase("FROM gcr.io/distroless/cc:nonroot AS runtime\n")).toThrow(
       /not pinned/,
+    );
+  });
+  it("refuses a tag-only builder stage too", () => {
+    expect(() => runtimeBase(`FROM oven/bun:1.4.4 AS builder\nFROM c@${DIGEST}\n`)).toThrow(
+      "not pinned by digest: oven/bun:1.4.4",
     );
   });
 });

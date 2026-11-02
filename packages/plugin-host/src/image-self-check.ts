@@ -74,8 +74,9 @@ const PROBE_CONTEXT: PluginContext = {
  * Verify every shipped plugin and run one sandbox probe.
  *
  * @param opts.pluginsRoot Absolute path to the image's `packages/plugins`.
- *   Every directory in it with a `package.json` is a shipped plugin and must
- *   verify; one without `manifest.json` is a plugin whose signing step failed.
+ *   Every directory in it with a `manifest.json` (what boot loads) or a
+ *   `package.json` is a shipped plugin and must verify; one without
+ *   `manifest.json` is a plugin whose signing step failed.
  */
 export async function checkPluginRuntime(opts: {
   readonly pluginsRoot: string;
@@ -92,8 +93,13 @@ export async function checkPluginRuntime(opts: {
   }
   const pluginDirs = entries
     .map((entry) => ({ entry, dir: resolvePath(opts.pluginsRoot, entry) }))
+    // A manifest is what the boot loader picks up (gateway-attach.ts); a
+    // package.json without one is a plugin whose signing step failed.
     .filter(
-      ({ dir }) => statSync(dir).isDirectory() && existsSync(resolvePath(dir, "package.json")),
+      ({ dir }) =>
+        statSync(dir).isDirectory() &&
+        (existsSync(resolvePath(dir, "manifest.json")) ||
+          existsSync(resolvePath(dir, "package.json"))),
     );
   if (failures.length === 0 && pluginDirs.length === 0) {
     failures.push({ slug: "<root>", reason: `no plugin directories under ${opts.pluginsRoot}` });

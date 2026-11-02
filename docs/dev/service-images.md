@@ -33,7 +33,7 @@ A service that takes untrusted traffic gets a minimal image: the API gateway tod
 
 ## CI gates
 
-1. `bun scripts/service-image.ts verify <spec> <image>`: every added file must be allowlisted and every required path must exist. No shell (`sh`, `bash`, `busybox`, …) may exist anywhere, not even in the base. The image needs a numeric non-root `USER` and an exec-form `ENTRYPOINT`.
+1. `bun scripts/service-image.ts verify <spec> <image>`: every entry of the layers the image adds to its base must be allowlisted, and none may replace or delete (whiteout) a base file; every required path must exist; every `FROM` of the Dockerfile must be pinned by digest. No shell (`sh`, `bash`, `busybox`, …) may exist anywhere, not even in the base. The image needs a numeric non-root `USER` and an exec-form `ENTRYPOINT`.
 2. Trivy (`aquasec/trivy`, pinned by digest, run as an image rather than through trivy-action). It scans the image and the bundle SBOM for high and critical findings with `--ignore-unfixed`: a finding without a fixed version leaves a PR nothing to do.
 3. A boot smoke, per service. For the gateway:
    - `image-self-check.js` verifies every shipped plugin against the trust root and runs a probe through the Deno sandbox (`checkPluginRuntime`, plugin-host);
@@ -42,7 +42,7 @@ A service that takes untrusted traffic gets a minimal image: the API gateway tod
 
 ## Adding a minimal image (for example the MCP auth proxy)
 
-1. Write `apps/<service>/image.ts`. Start with an empty `nodeModules`. `stage` prints the closure it found; review it and list it.
+1. Write `apps/<service>/image.ts`. Start with an empty `nodeModules`. `stage` then fails with one line per package of the closure (`node_modules/<pkg> is in the run-time closure but not in the spec's nodeModules`); review those packages and list them.
 2. Write the Dockerfile from the gateway's pattern: digest-pinned `FROM`s, a builder that runs `stage`, a distroless runtime with `USER 65532:65532` and an exec-form `ENTRYPOINT`.
 3. Add a matrix entry with `spec` and `sbom` to `release-images.yml`, and a boot smoke step for the service.
 4. Add the spec to knip's entry list.
