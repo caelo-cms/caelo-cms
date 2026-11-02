@@ -34,6 +34,7 @@ import {
   generateDockerCompose,
   SITE_OUTPUT_ROOT,
 } from "../../dist/compose.js";
+import { MIGRATION_TARGETS } from "../../dist/migration-targets.js";
 import { selfHostedBootstrapScript } from "../../dist/self-hosted-roles.js";
 
 const cfg = new pulumi.Config();
@@ -69,16 +70,24 @@ const postgresPassword = pulumi.secret(randomHex(32));
 // public_role one (#635: no cms_admin login).
 const adminRolePassword = pulumi.secret(randomHex(32));
 const publicRolePassword = pulumi.secret(randomHex(32));
+// #1329 — the staging gateway's own login on cms_public_staging.
+const publicStagingRolePassword = pulumi.secret(randomHex(32));
 // P18 — the KEK that encrypts stored provider keys.
 const caeloSecretKek = pulumi.secret(randomHex(32));
 
 const composeYaml = pulumi
-  .all([postgresPassword, adminRolePassword, publicRolePassword, caeloSecretKek])
-  .apply(([pgPw, adminPw, publicPw, kek]) =>
+  .all([
+    postgresPassword,
+    adminRolePassword,
+    publicRolePassword,
+    publicStagingRolePassword,
+    caeloSecretKek,
+  ])
+  .apply(([pgPw, adminPw, publicPw, publicStagingPw, kek]) =>
     generateDockerCompose({
       domain,
       postgresPassword: pgPw,
-      rolePasswords: { admin: adminPw, public: publicPw },
+      rolePasswords: { admin: adminPw, public: publicPw, publicStaging: publicStagingPw },
       caeloSecretKek: kek,
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,
       resendApiKey: process.env.RESEND_API_KEY,
@@ -144,7 +153,7 @@ const composeUp = new local.Command(
     // install's admin image, then everything else.
     create: pulumi.interpolate`set -e
 docker compose -f ${composePath} up -d --wait postgres
-for target in admin public; do
+for target in ${MIGRATION_TARGETS.join(" ")}; do
   docker compose -f ${composePath} run --rm --no-deps -T caelo-admin bun --bun /app/packages/migrations/src/migrate.ts "$target"
 done
 docker compose -f ${composePath} up -d --remove-orphans`,

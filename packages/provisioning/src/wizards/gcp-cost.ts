@@ -192,7 +192,7 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       name: "Secret Manager (runtime secrets)",
       monthlyUsd: 0.2,
       notes:
-        "6 active versions free, then ~$0.06 each; the Google sign-in client (#914) and the remote-MCP seal key (#806)",
+        "6 active versions free, then ~$0.06 each; the Google sign-in client (#914), the remote-MCP seal key (#806) and the staging database login's password (#1329; the staging database itself shares the Cloud SQL instance at no extra cost)",
     },
     {
       name: "BigQuery edge log sink",

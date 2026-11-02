@@ -62,6 +62,19 @@ The database bucket keys are `HMAC-SHA256(key, address)`, never a plain SHA-256 
 
 Cloud SQL gets them from cms_admin migration 0500 (the migration role may alter `public_role` there); local, CI and self-hosted databases from `packages/migrations/src/bootstrap.sh`, which the self-hosted upgrade re-runs. The role audit (`packages/migrations/src/role-audit.ts`, `PUBLIC_ROLE_LIMITS`) fails the migration run while one is missing.
 
+The staging gateway's `public_staging_role` carries the same four values (#1329, cms_admin migration 0530 on Cloud SQL, bootstrap.sh and `self-hosted-roles.ts` elsewhere), and the role audit checks both logins.
+
+## The staging database (#1329)
+
+Staging has data of its own: `cms_public_staging`, on the same server as the other two databases, reached by the staging gateway as `public_staging_role` (epic #763 E10; the staging gateway is served from #1330). Converge release 1 of the hardening only adds it; nothing is served from it yet, so a rollback stays harmless.
+
+- **One schema, two databases.** `migrate.ts public-staging` runs the cms_public migration files on it, with every whole-word `public_role` retargeted to `public_staging_role` (runner.ts `retargetVisitorRole`): GRANTs, `TO public_role` policies and role checks alike. After each run the role audit proves neither public database grants anything to the other environment's login (`assertPublicDatabaseOwnsItsLogin`).
+- **Crosswise isolation, enforced by Postgres.** `public_role` has no CONNECT on cms_public_staging, `public_staging_role` none on cms_public or cms_admin, and PUBLIC none on any of the three (cms_admin migration 0530, bootstrap.sh, `self-hosted-roles.ts`; the role audit refuses anything else). `staging-isolation.integration.test.ts` connects as each login and tries.
+- **Each gateway knows which one it is.** `CAELO_GATEWAY_ENVIRONMENT=live|staging` is required: the gateway refuses to boot without it, with a URL for the other environment's database or role, or with any env value or secret file naming them (`database-env.ts`). Every adapter sets `live` on today's gateway.
+- **Plugin tables in both.** Every load of a plugin provisions its public tables in cms_public, then in cms_public_staging (plugin-host `public-schemas.ts`), each with the GRANTs of its kind for that database's own login. The two databases share no transaction; because every load re-provisions idempotently, the admin's boot is the repair: it backfills every active plugin's staging tables on an install from before #1329, and finishes a load that stopped between the two. Uninstall drops both.
+- **Own credentials.** The staging login's password is its own CLI-generated secret (`public-staging-role-password`), never shared with the live login's; no running service reads it until the staging gateway exists (`SECRETS_SET_UP_AHEAD_OF_THEIR_READER`). The admin reaches the staging database as admin_role (`PUBLIC_STAGING_ADMIN_DATABASE_URL`, a public-only adapter with a fixed pool of 2) and refuses to start without it.
+- **Existing installs, no terminal.** The GCP converge (`cms-provision upgrade`, or Install update in Settings → Updates) creates the database and the Admin API user before the migrations (`staging-database.ts`) and revokes the user's Cloud SQL memberships with public_role's (contract 17). Self-hosted upgrades create both as the Postgres superuser before the migrations (`preMigrationRolesScript`), with a password `cms-provision` back-fills into `.caelo/config.json`.
+
 ## Fewer writes per request
 
 - Op events (`gateway_plugin_op_events`) are written only for a declared baked-data trigger (`bakedData`, #1155), the one thing the admin reads them for.

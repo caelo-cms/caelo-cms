@@ -32,10 +32,12 @@ export {
   LIVE_PUBLIC_GRANT_TARGET,
   PLUGIN_INDEX_PREFIX,
   PRIVATE_LIVE_ROW_PREDICATE,
+  PUBLIC_GRANT_TARGETS,
   type PublicGrantTarget,
   pluginIndexName,
   privateReadColumns,
   publicTableGrants,
+  STAGING_PUBLIC_GRANT_TARGET,
   schemaFromSpec,
   VISITOR_TABLE_PRIVILEGES,
 } from "./schema.js";

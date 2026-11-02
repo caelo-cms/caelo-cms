@@ -572,6 +572,12 @@ async function setSqlUserPassword(
   http: HttpFetch,
   sleep: Sleep,
   user: { projectId: string; instance: string; role: string; password: string },
+  /**
+   * `update` sets an existing user's password (`users.update`); `create`
+   * adds the user with it (`users.insert`, #1329: the staging gateway's
+   * login on an install from before it).
+   */
+  mode: "update" | "create",
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const token = await run(["auth", "print-access-token"]);
   const bearer = token.ok ? token.stdout.trim() : "";
@@ -587,11 +593,17 @@ async function setSqlUserPassword(
     ok: false as const,
     error: `${what}: HTTP ${res.status} ${(await res.text()).slice(0, 500)}`,
   });
-  const put = await http(
-    `${project}/instances/${encodeURIComponent(user.instance)}/users?name=${encodeURIComponent(user.role)}`,
-    { method: "PUT", headers, body: JSON.stringify({ name: user.role, password: user.password }) },
-  );
-  if (!put.ok) return failed("update the user", put);
+  const users = `${project}/instances/${encodeURIComponent(user.instance)}/users`;
+  const body = JSON.stringify({ name: user.role, password: user.password });
+  const put =
+    mode === "update"
+      ? await http(`${users}?name=${encodeURIComponent(user.role)}`, {
+          method: "PUT",
+          headers,
+          body,
+        })
+      : await http(users, { method: "POST", headers, body });
+  if (!put.ok) return failed(mode === "update" ? "update the user" : "create the user", put);
   type Operation = {
     name?: string;
     status?: string;
@@ -693,12 +705,13 @@ export async function rotateRuntimeSecret(
     }
     const previous = current.stdout;
     const setPassword = (role: string, password: string) =>
-      setSqlUserPassword(run, http, sleep, {
-        projectId: target.projectId,
-        instance,
-        role,
-        password,
-      });
+      setSqlUserPassword(
+        run,
+        http,
+        sleep,
+        { projectId: target.projectId, instance, role, password },
+        "update",
+      );
     const changed: string[] = [];
     const restore = async (): Promise<string> => {
       const failed: string[] = [];
@@ -807,7 +820,12 @@ export async function readSecretValue(
 export async function ensureDatabaseRolePassword(
   target: DatabaseRoleTarget,
   role: DatabaseRole,
-  deps: RuntimeDeps & { readonly http?: HttpFetch; readonly password?: string } = {},
+  deps: RuntimeDeps & {
+    readonly http?: HttpFetch;
+    readonly password?: string;
+    /** Create the Cloud SQL user with the password instead (it does not exist yet, #1329). */
+    readonly create?: boolean;
+  } = {},
 ): Promise<EnsureOutcome> {
   const run = deps.run ?? defaultGcloud;
   const sleep = deps.sleep ?? realSleep;
@@ -819,11 +837,12 @@ export async function ensureDatabaseRolePassword(
     if (!value.ok) return { id, status: "failed", error: value.error };
     password = value.value;
   }
-  const set = await setSqlUserPassword(run, http, sleep, {
-    projectId: target.projectId,
-    instance: target.sqlInstance,
-    role,
-    password,
-  });
+  const set = await setSqlUserPassword(
+    run,
+    http,
+    sleep,
+    { projectId: target.projectId, instance: target.sqlInstance, role, password },
+    deps.create === true ? "create" : "update",
+  );
   return set.ok ? { id, status: "applied" } : { id, status: "failed", error: set.error };
 }

@@ -57,6 +57,8 @@ export default defineConfig({
       ADMIN_DATABASE_URL: process.env.ADMIN_DATABASE_URL ?? "",
       PUBLIC_ADMIN_DATABASE_URL: process.env.PUBLIC_ADMIN_DATABASE_URL ?? "",
       PUBLIC_DATABASE_URL: process.env.PUBLIC_DATABASE_URL ?? "",
+      // #1329 — the admin refuses to start without the staging database.
+      PUBLIC_STAGING_ADMIN_DATABASE_URL: process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "",
       ORIGIN: origin,
       // #551 — the admin seeds site_defaults.site_base_url from this on a
       // fresh database (provisioning sets it on real installs); specs that

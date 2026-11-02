@@ -5,7 +5,8 @@
  * service accounts, secrets or other cloud resources so the install matches
  * what the release's stacks declare — the gateway's run SA and the
  * CLI-generated runtime secrets, the stack's IAM/CDN/firewall invariants,
- * MCP access through IAP, public_role's Cloud SQL role memberships (#633),
+ * MCP access through IAP, the staging database and its gateway login
+ * (#1329), the gateway logins' Cloud SQL role memberships (#633),
  * the gateway's and public_role's database logins, the operator-access sync
  * job, the quality-audit job (#875), the remote-MCP load-balancer rules and
  * identity env (#806), and dropping bindings nothing reads any more.
@@ -73,6 +74,7 @@ import {
   liveEnvHasInlinePassword,
   removeRetiredIamBindings,
 } from "../stack-converge.js";
+import { ensureStagingDatabase } from "../staging-database.js";
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import type { AppRollHooks, AppRollPlan, RollPlan, RollSlug } from "./app-roll.js";
@@ -234,22 +236,48 @@ export function startConverge(
     return true;
   }
 
+  async function stagingDatabase(): Promise<boolean> {
+    // #1329 — staging's own database and its gateway login, on an install
+    // from before them. Before migrations: the cms_public_staging run and
+    // migration 0530 need both, and the membership revoke below needs the
+    // user. A failure aborts — the new admin refuses to start without the
+    // staging database.
+    const s = r.step("Ensuring the staging database (cms_public_staging) and its gateway login...");
+    const outcomes = await ensureStagingDatabase(
+      { projectId: install.projectId, env: install.env, credentials: install.credentials },
+      { ...runDeps, ...(deps.http ? { http: deps.http } : {}) },
+    );
+    const failed = outcomes.filter((o) => o.status === "failed");
+    if (failed.length > 0) {
+      s.failed("The staging database could not be set up. Aborting upgrade.");
+      for (const o of failed) r.error(`  FAILED: ${o.id}\n    ${o.error ?? ""}`);
+      r.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
+      return false;
+    }
+    s.done("Staging database and its gateway login ready");
+    for (const o of outcomes.filter((o) => o.status === "applied")) {
+      r.info(`  ${o.id}: ${o.detail ?? "created"}`);
+    }
+    return true;
+  }
+
   async function publicRoleIsolation(): Promise<boolean> {
-    // #633 — the Admin API made public_role a member of cloudsqlsuperuser.
-    // Revoked here, before migrations, because the migration job's role
-    // audit is what verifies it and fails the upgrade while it remains.
-    const s = r.step("Removing public_role from the Cloud SQL superuser group...");
+    // #633 — the Admin API made public_role (and, #1329, public_staging_role)
+    // a member of cloudsqlsuperuser. Revoked here, before migrations,
+    // because the migration job's role audit is what verifies it and fails
+    // the upgrade while it remains.
+    const s = r.step("Removing the gateway logins from the Cloud SQL superuser group...");
     const outcome = await revokePublicRoleMemberships(
       { projectId: install.projectId, env: install.env, credentials: install.credentials },
       runDeps,
     );
     if (outcome.status === "failed") {
-      s.failed("public_role's role memberships could not be revoked. Aborting upgrade.");
+      s.failed("The gateway logins' role memberships could not be revoked. Aborting upgrade.");
       r.error(`  ${outcome.error ?? ""}`);
       r.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
       return false;
     }
-    s.done(`public_role holds no database roles (${outcome.detail ?? "revoked"})`);
+    s.done(`The gateway logins hold no database roles (${outcome.detail ?? "revoked"})`);
     return true;
   }
 
@@ -721,6 +749,7 @@ export function startConverge(
       if (deps.provisionerIdentity && !(await deps.provisionerIdentity())) return false;
       if (!(await runtimeIdentities())) return false;
       if (!(await stackInvariants())) return false;
+      if (!(await stagingDatabase())) return false;
       if (!(await publicRoleIsolation())) return false;
       if (!(await databaseTls())) return false;
       await mcpAccess();

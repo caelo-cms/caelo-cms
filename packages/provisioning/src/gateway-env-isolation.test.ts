@@ -16,6 +16,12 @@
  *   self-hosted        the generated compose gateway service: env, secrets,
  *                      mounts
  *
+ * Issue #1329 — the same crosswise between the two public databases: the
+ * live gateway's env names nothing of the staging database
+ * (cms_public_staging, public_staging_role, its password secret), and its
+ * identity cannot read the staging login's password, on every adapter. The
+ * staging gateway (#1330) gets the mirror-image checks with its service.
+ *
  * The gateway itself refuses to boot on such an env
  * (apps/api-gateway `adminDatabaseAccessInEnv`); this catches it at review
  * time, before a release can ship it.
@@ -41,6 +47,12 @@ const ADMIN_ACCESS = /cms_admin|admin_role|gateway_role|ADMIN_DATABASE|GATEWAY_D
 
 /** Secrets that unlock a cms_admin login. */
 const ADMIN_SECRETS = ["postgres-password", "gateway-role-password"];
+
+/** #1329 — anything in the live gateway's env that reaches the staging database. */
+const STAGING_ACCESS = /cms_public_staging|public_staging_role|PUBLIC_STAGING/;
+
+/** #1329 — the secret that unlocks the staging gateway's login. */
+const STAGING_SECRETS = ["public-staging-role-password"];
 
 /** The secrets the gateway reads on GCP: its own login and the staging gate key. */
 const GCP_GATEWAY_SECRETS = [
@@ -68,11 +80,19 @@ describe("gcp + gcp-firebase: the gateway env contract (#635)", () => {
     databaseUrls: databaseUrls("db1.p-label.europe-west1.sql-psa.goog"),
   });
 
-  it("carries no cms_admin URL, role or credential name", () => {
+  it("carries no cms_admin URL, role or credential name, and nothing of the staging database (#1329)", () => {
     for (const v of env) {
       expect(v.name).not.toMatch(ADMIN_ACCESS);
-      if ("value" in v && typeof v.value === "string") expect(v.value).not.toMatch(ADMIN_ACCESS);
+      expect(v.name).not.toMatch(STAGING_ACCESS);
+      if ("value" in v && typeof v.value === "string") {
+        expect(v.value).not.toMatch(ADMIN_ACCESS);
+        expect(v.value).not.toMatch(STAGING_ACCESS);
+      }
     }
+    expect(env.find((v) => v.name === "CAELO_GATEWAY_ENVIRONMENT")).toEqual({
+      name: "CAELO_GATEWAY_ENVIRONMENT",
+      value: "live",
+    });
     expect(env.find((v) => v.name === "PUBLIC_DATABASE_URL")).toEqual({
       name: "PUBLIC_DATABASE_URL",
       value:
@@ -80,12 +100,16 @@ describe("gcp + gcp-firebase: the gateway env contract (#635)", () => {
     });
   });
 
-  it("references no secret that unlocks a cms_admin login", () => {
+  it("references no secret that unlocks a cms_admin or the staging login", () => {
     for (const secret of Object.values(SERVICE_SECRET_ENV.gateway)) {
       expect(ADMIN_SECRETS).not.toContain(secret);
+      expect(STAGING_SECRETS).not.toContain(secret);
     }
     const gatewayBindings = runtimeSecretBindings().filter((b) => b.service === "gateway");
-    for (const b of gatewayBindings) expect(ADMIN_SECRETS).not.toContain(b.secret);
+    for (const b of gatewayBindings) {
+      expect(ADMIN_SECRETS).not.toContain(b.secret);
+      expect(STAGING_SECRETS).not.toContain(b.secret);
+    }
   });
 
   for (const provider of ["gcp", "gcp-firebase"] as const) {
@@ -134,7 +158,7 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
     const out = generateDockerCompose({
       domain: "example.com",
       postgresPassword: "superpw",
-      rolePasswords: { admin: "adminpw", public: "publicpw" },
+      rolePasswords: { admin: "adminpw", public: "publicpw", publicStaging: "stagingpw" },
       caeloSecretKek: "0".repeat(64),
       dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
@@ -152,7 +176,9 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
     const gateway = out.slice(start, end === -1 ? undefined : end);
     expect(gateway).toContain("PUBLIC_DATABASE_URL:");
     expect(gateway).not.toMatch(ADMIN_ACCESS);
-    expect(gateway).not.toMatch(/superpw|adminpw|gatewaypw/);
+    expect(gateway).not.toMatch(STAGING_ACCESS);
+    expect(gateway).not.toMatch(/superpw|adminpw|gatewaypw|stagingpw/);
+    expect(gateway).toContain('CAELO_GATEWAY_ENVIRONMENT: "live"');
     // No other way in: no Compose secrets, no env file, and exactly one
     // mount — the database CA certificate (#1338), public, no credential.
     expect(gateway).not.toMatch(/^ {4}(secrets|env_file):/m);
@@ -164,6 +190,8 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
     expect(keys.sort()).toEqual([
       // #1254 — its cms_public pool size (pool-budget-stack.ts).
       "CAELO_DB_PUBLIC_POOL_MAX",
+      // #1329 — the live site's gateway.
+      "CAELO_GATEWAY_ENVIRONMENT",
       "CAELO_TRUSTED_PROXY_HOPS",
       "GATEWAY_PORT",
       "NODE_ENV",
@@ -181,6 +209,9 @@ describe("azure: the gateway container app (#635)", () => {
     const block = src.slice(start, src.indexOf("});", start));
     expect(block).toContain('{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }');
     expect(block).not.toMatch(/adminDatabase|gatewayDatabase|ADMIN_DATABASE|GATEWAY_DATABASE/);
+    // #1329 — nothing of the staging database, and it says it is the live one.
+    expect(block).not.toMatch(/publicStaging|PUBLIC_STAGING/);
+    expect(block).toContain('{ name: GATEWAY_ENVIRONMENT_ENV, value: "live" }');
   });
 
   it("builds no cms_admin URL for any role but the admin's", () => {
@@ -206,7 +237,9 @@ describe("aws: the stack (#635)", () => {
 
   it("the gateway's task role reads only the public_role password (review finding)", () => {
     expect(AWS_SERVICE_SECRETS.gateway).toEqual(["public-role-password"]);
-    for (const secret of ADMIN_SECRETS) expect(AWS_SERVICE_SECRETS.gateway).not.toContain(secret);
+    for (const secret of [...ADMIN_SECRETS, ...STAGING_SECRETS]) {
+      expect(AWS_SERVICE_SECRETS.gateway).not.toContain(secret);
+    }
   });
 
   it("each service gets its own task role whose policy is built from that table", () => {

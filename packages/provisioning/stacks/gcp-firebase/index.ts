@@ -269,6 +269,8 @@ const runtimeSecretIds: Record<RuntimeSecret, pulumi.Input<string>> = {
   "tool-approval-secret": gcpSecretId(env, "tool-approval-secret"),
   "staging-gate-secret": gcpSecretId(env, "staging-gate-secret"),
   "public-role-password": gcpSecretId(env, "public-role-password"),
+  // #1329 — the staging gateway's login, never the live one's.
+  "public-staging-role-password": gcpSecretId(env, "public-staging-role-password"),
   // #914 / #806 — the Owner-set Google sign-in client (a placeholder until
   // then; IAP login, IAP programmatic access and the remote-MCP broker) and
   // the broker's seal key, both CLI-generated.
@@ -282,6 +284,14 @@ const runtimeSecretIds: Record<RuntimeSecret, pulumi.Input<string>> = {
 const publicRolePassword = pulumi.secret(
   gcp.secretmanager.getSecretVersionOutput(
     { project, secret: gcpSecretId(env, "public-role-password") },
+    { provider: gcpProvider },
+  ).secretData,
+);
+// #1329 — public_staging_role's own password (CLI-generated like the one
+// above): the staging gateway's only login, on cms_public_staging only.
+const publicStagingRolePassword = pulumi.secret(
+  gcp.secretmanager.getSecretVersionOutput(
+    { project, secret: gcpSecretId(env, "public-staging-role-password") },
     { provider: gcpProvider },
   ).secretData,
 );
@@ -341,6 +351,13 @@ const cmsPublicDb = new gcp.sql.Database(
   { instance: sqlInstance.name, name: "cms_public" },
   opts,
 );
+// #1329 — staging's own data: the twin of cms_public on the same instance
+// (no extra cost), reached by the staging gateway only.
+const cmsPublicStagingDb = new gcp.sql.Database(
+  `${namePrefix}-cms-public-staging`,
+  { instance: sqlInstance.name, name: "cms_public_staging" },
+  opts,
+);
 
 const pgAdminUser = new gcp.sql.User(
   `${namePrefix}-admin-user`,
@@ -357,6 +374,14 @@ const pgAdminUser = new gcp.sql.User(
 new gcp.sql.User(
   `${namePrefix}-public-user`,
   { instance: sqlInstance.name, name: "public_role", password: publicRolePassword },
+  opts,
+);
+// #1329 — the staging gateway's login: an Admin API user like public_role,
+// so the same membership revoke (public-role-isolation.ts) and the same
+// audit apply; migration 0530 gives it CONNECT on cms_public_staging only.
+new gcp.sql.User(
+  `${namePrefix}-public-staging-user`,
+  { instance: sqlInstance.name, name: "public_staging_role", password: publicStagingRolePassword },
   opts,
 );
 
@@ -736,6 +761,7 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
         pgAdminUser,
         cmsAdminDb,
         cmsPublicDb,
+        cmsPublicStagingDb,
         // The env contract names the media bucket as a string; keep it
         // ordered before the services that use it.
         mediaBucket,
@@ -763,6 +789,8 @@ const envContractInputs = {
     admin: dbUrls.admin,
     publicAdmin: dbUrls.publicAdmin,
     public: dbUrls.public,
+    publicStagingAdmin: dbUrls.publicStagingAdmin,
+    publicStaging: dbUrls.publicStaging,
   },
 } as const;
 
@@ -1220,6 +1248,7 @@ const out: CloudAdapterOutputs = {
   // Password-less — the password lives only in Secret Manager.
   adminDatabaseUrl: dbUrls.admin as unknown as string,
   publicDatabaseUrl: dbUrls.public as unknown as string,
+  publicStagingDatabaseUrl: dbUrls.publicStaging as unknown as string,
   mediaStorageUrl: pulumi.interpolate`gs://${mediaBucket.name}` as unknown as string,
   // Firebase Hosting serves media via its own CDN; we proxy through
   // the Firebase site's apex domain for canonical URLs.
@@ -1236,6 +1265,7 @@ const out: CloudAdapterOutputs = {
 
 export const adminDatabaseUrlOut = out.adminDatabaseUrl;
 export const publicDatabaseUrlOut = out.publicDatabaseUrl;
+export const publicStagingDatabaseUrlOut = out.publicStagingDatabaseUrl;
 export const mediaStorageUrlOut = out.mediaStorageUrl;
 export const mediaCdnBaseUrlOut = out.mediaCdnBaseUrl;
 export const bootstrapUrlOut = out.bootstrapUrl;

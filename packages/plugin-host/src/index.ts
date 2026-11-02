@@ -205,6 +205,11 @@ export {
   visitorSafeResult,
 } from "./public-contract.js";
 export {
+  dropPluginPublicSchemas,
+  type PluginPublicSchemaSpec,
+  provisionPluginPublicSchemas,
+} from "./public-schemas.js";
+export {
   type PublicUrlContext,
   type PublicUrlPage,
   resolvePublicPageUrls,

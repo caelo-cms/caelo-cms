@@ -28,7 +28,7 @@ describe("database URL builders (#1338)", () => {
     const yaml = generateDockerCompose({
       domain: "example.com",
       postgresPassword: "superpw",
-      rolePasswords: { admin: "adminpw", public: "publicpw" },
+      rolePasswords: { admin: "adminpw", public: "publicpw", publicStaging: "ps" },
       caeloSecretKek: "0".repeat(64),
       dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
@@ -42,7 +42,8 @@ describe("database URL builders (#1338)", () => {
       project: "caelo-example-com",
     });
     const urls = [...yaml.matchAll(/_DATABASE_URL: "([^"]+)"/g)].map((m) => m[1] as string);
-    expect(urls).toHaveLength(3);
+    // admin: cms_admin, cms_public, cms_public_staging (#1329); gateway: cms_public.
+    expect(urls).toHaveLength(4);
     for (const url of urls) expect(databaseTlsProblem(url)).toBeNull();
   });
 

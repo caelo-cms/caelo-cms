@@ -28,6 +28,9 @@
  * `public_role` is still a member of any role. This step therefore runs
  * BEFORE migrations, on every install pass and every `upgrade`. Idempotent:
  * revoking from a role that has none changes nothing.
+ *
+ * Since #1329 the staging gateway's login `public_staging_role` is an
+ * Admin API user too and gets the same revoke.
  */
 
 import { findSqlInstance } from "./gateway-credentials.js";
@@ -36,16 +39,20 @@ import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud
 import type { EnsureOutcome } from "./runtime-secrets.js";
 import { type GcloudCredentials, lookupFailure } from "./upgrade/gcp-lookup.js";
 
-/** The gcloud call that leaves `public_role` with no database roles. */
+/** The gateway logins the Admin API created, which must hold no database role (#633, #1329). */
+export const GATEWAY_DATABASE_LOGINS = ["public_role", "public_staging_role"] as const;
+
+/** The gcloud call that leaves a gateway login with no database roles. */
 export function revokePublicRoleMembershipsArgs(target: {
   readonly projectId: string;
   readonly sqlInstance: string;
+  readonly role: (typeof GATEWAY_DATABASE_LOGINS)[number];
 }): string[] {
   return [
     "sql",
     "users",
     "assign-roles",
-    "public_role",
+    target.role,
     `--instance=${target.sqlInstance}`,
     "--type=BUILT_IN",
     "--revoke-existing-roles",
@@ -55,8 +62,9 @@ export function revokePublicRoleMembershipsArgs(target: {
 }
 
 /**
- * Revoke every database role the Admin API gave `public_role`. Reports
- * instead of throwing; `failed` names the next step.
+ * Revoke every database role the Admin API gave the gateway logins
+ * ({@link GATEWAY_DATABASE_LOGINS}). Reports instead of throwing; `failed`
+ * names the next step.
  */
 export async function revokePublicRoleMemberships(
   install: {
@@ -67,7 +75,7 @@ export async function revokePublicRoleMemberships(
   deps: { readonly run?: GcloudRunner; readonly sleep?: Sleep } = {},
 ): Promise<EnsureOutcome> {
   const run = deps.run ?? defaultGcloud;
-  const id = "public_role database role memberships";
+  const id = "gateway logins' database role memberships";
   const lookup = await findSqlInstance(install, { run });
   if (lookup.status !== "found") {
     return {
@@ -77,17 +85,23 @@ export async function revokePublicRoleMemberships(
     };
   }
   const sqlInstance = lookup.name;
-  const r = await runWithRetry(
-    run,
-    deps.sleep ?? realSleep,
-    revokePublicRoleMembershipsArgs({ projectId: install.projectId, sqlInstance }),
-  );
-  if (!r.ok) {
-    return {
-      id,
-      status: "failed",
-      error: `gcloud sql users assign-roles public_role --revoke-existing-roles on ${sqlInstance}: ${r.stderr.trim()}. The account running this needs cloudsql.users.update on the project; re-run once it has.`,
-    };
+  for (const role of GATEWAY_DATABASE_LOGINS) {
+    const r = await runWithRetry(
+      run,
+      deps.sleep ?? realSleep,
+      revokePublicRoleMembershipsArgs({ projectId: install.projectId, sqlInstance, role }),
+    );
+    if (!r.ok) {
+      return {
+        id,
+        status: "failed",
+        error: `gcloud sql users assign-roles ${role} --revoke-existing-roles on ${sqlInstance}: ${r.stderr.trim()}. The account running this needs cloudsql.users.update on the project; re-run once it has.`,
+      };
+    }
   }
-  return { id, status: "applied", detail: `no database roles left on ${sqlInstance}` };
+  return {
+    id,
+    status: "applied",
+    detail: `${GATEWAY_DATABASE_LOGINS.join(" and ")} hold no database roles on ${sqlInstance}`,
+  };
 }
