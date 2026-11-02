@@ -24,7 +24,7 @@ pulumi config set caelo-self-hosted:mcpAuthProxyImage ghcr.io/caelo-cms/mcp-auth
 pulumi up
 ```
 
-Pulumi mints the postgres and role passwords and the KEK, generates `docker-compose.yml` + `Caddyfile` + `bootstrap.sh` + `pending-token.json` under `.caelo/`, starts Postgres, runs the migrations and runs `docker compose up -d`. Point DNS for `<domain>`, `admin.<domain>` and `staging.<domain>` at the host (`mcp.<domain>`, the MCP sign-in service's own host, is optional until remote MCP is available on self-hosted installs; it answers 404 until then). After the run:
+Pulumi mints the postgres and role passwords and the KEK, generates `docker-compose.yml` + `Caddyfile` + `bootstrap.sh` + `pending-token.json` under `.caelo/`, starts Postgres, runs the migrations and runs `docker compose up -d`. Point DNS for `<domain>`, `admin.<domain>` and `staging.<domain>` at the host. The MCP sign-in service (`caelo-mcp-auth-proxy`) runs without a public host: remote MCP needs an identity proxy in front of the admin, which self-hosted installs do not have yet, so it only answers 404 and Caddy does not expose it. After the run:
 
 ```bash
 pulumi stack output bootstrapUrl

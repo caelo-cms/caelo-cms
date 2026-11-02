@@ -7,14 +7,18 @@ import { startSelfHosted } from "./self-hosted-start.js";
 const DIR = "/srv/install/.caelo";
 
 /** A runner that records every command (minus the `docker compose -f <file>` prefix). */
-function fakeRunner(fail?: (cmd: string) => boolean): HostRunner & { calls: string[] } {
+function fakeRunner(
+  fail?: (cmd: string) => boolean,
+  services = "postgres\ncaddy\ncaelo-admin\ncaelo-gateway\n",
+): HostRunner & { calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
     async run(argv): Promise<CommandResult> {
       const cmd = argv.join(" ").replace(`docker compose -f ${DIR}/docker-compose.yml `, "");
       calls.push(cmd);
-      return { exitCode: fail?.(cmd) ? 1 : 0, stdout: "", stderr: fail?.(cmd) ? "boom" : "" };
+      const stdout = cmd === "config --services" ? services : "";
+      return { exitCode: fail?.(cmd) ? 1 : 0, stdout, stderr: fail?.(cmd) ? "boom" : "" };
     },
   };
 }
@@ -33,10 +37,38 @@ describe("startSelfHosted (#707 — one command ends with a serving install)", (
       `${MIGRATE} admin`,
       `${MIGRATE} public`,
       "up -d --remove-orphans",
+      "config --services",
       "exec -T caelo-admin bun -e <probe>",
       "exec -T caelo-gateway bun -e <probe>",
       "exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile",
     ]);
+  });
+
+  it("#1328 — health-checks the MCP-Auth-Proxy too when the release runs one", async () => {
+    const runner = fakeRunner(undefined, "caelo-admin\ncaelo-gateway\ncaelo-mcp-auth-proxy\n");
+    const r = await startSelfHosted({ caeloDir: DIR, runner, log: () => {} });
+    expect(r).toEqual({ ok: true });
+    const probe = runner.calls.find((c) => c.startsWith("exec -T caelo-mcp-auth-proxy bun -e "));
+    expect(probe).toContain("/api/mcp/health");
+  });
+
+  it("#1328 — reports an unhealthy MCP-Auth-Proxy with where to look", async () => {
+    const runner = fakeRunner(
+      (c) => c.startsWith("exec -T caelo-mcp-auth-proxy"),
+      "caelo-admin\ncaelo-gateway\ncaelo-mcp-auth-proxy\n",
+    );
+    const r = await startSelfHosted({
+      caeloDir: DIR,
+      runner,
+      log: () => {},
+      healthAttempts: 1,
+      sleep: async () => {},
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.stage).toBe("health");
+      expect(r.error).toContain("logs caelo-mcp-auth-proxy");
+    }
   });
 
   it("stops at a failed migration — nothing else is started", async () => {

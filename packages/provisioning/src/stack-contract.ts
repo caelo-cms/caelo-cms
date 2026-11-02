@@ -1485,8 +1485,9 @@ const GCP_FIREBASE_ONLY: readonly IamInvariant[] = [
   },
   {
     // #1328 — the service that was the gateway (E13 a); MCP clients call
-    // its run.app URL without a Google identity of their own.
-    stackResource: "mcp-auth-proxy-public-invoker",
+    // its run.app URL without a Google identity of their own. The stack
+    // keeps the binding's old logical name, like the service's.
+    stackResource: "gateway-public-invoker",
     role: "roles/run.invoker",
     member: "allUsers",
     target: { kind: "run-service", service: "mcp-auth-proxy" },

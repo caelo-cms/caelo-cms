@@ -55,7 +55,6 @@ import {
   caddyTokenProblem,
   generateCaddyfile,
   selfHostedAdminHost,
-  selfHostedMcpHost,
   selfHostedSeedDomains,
 } from "./caddy.js";
 import { redactCredentials } from "./checkpoint-secrets.js";
@@ -705,12 +704,6 @@ async function init(): Promise<void> {
   for (const host of [adminHost, domain, cfg.stagingDomain ?? defaultStagingHost(domain)]) {
     console.log(`  ${host}`);
   }
-  // #1328 — the MCP-Auth-Proxy's own host. Nothing needs it yet: remote MCP
-  // rides Google IAP, which a self-hosted install does not have, so the
-  // proxy answers a fixed 404 there.
-  console.log(
-    `  ${selfHostedMcpHost(domain)}  (optional for now: only needed once remote MCP is available on self-hosted installs; until then it answers 404)`,
-  );
   console.log(
     tls === "acme"
       ? "Caddy fetches the certificates once they resolve (ports 80 + 443 must be reachable)."
@@ -1081,10 +1074,6 @@ async function upgradeSelfHostedCommand(opts: {
       cfg.imageMode = "release";
       saveConfig(cfg);
     }
-    // #1328 — the Caddyfile now carries the MCP-Auth-Proxy's own host.
-    console.log(
-      `\nThe MCP sign-in service answers on ${selfHostedMcpHost(cfg.domain)}. Its DNS record (A/AAAA to this host) is optional for now: remote MCP is not available on self-hosted installs yet, so it only answers 404.`,
-    );
     // #696 Phase 4c — set up the update agent, or re-pin it to this release.
     const { reportAgentSetup, setUpAgent } = await import("./agent/command.js");
     console.log("");
