@@ -113,6 +113,13 @@
               <Button type="submit" size="sm" variant="outline">Try again now</Button>
             </form>
           {/if}
+          {#if t.inSync && t.last && t.goneAnswer === 404 && (t.last.goneCount ?? 0) > 0}
+            <!-- #1357 — this host cannot send a bare 410; a gone path gets its 404. -->
+            <p class="text-muted-foreground" data-testid="redirect-sync-gone-as-404">
+              {t.last.goneCount === 1 ? "1 rule" : `${t.last.goneCount} rules`} with 410 Gone answer 404
+              on this hosting: it cannot send a 410.
+            </p>
+          {/if}
           {#if t.inSync && t.last && t.last.unservedTargets.length > 0}
             <p class="text-muted-foreground">
               Waiting for Publish live:

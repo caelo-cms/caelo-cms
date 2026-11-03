@@ -25,18 +25,22 @@ import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { rotateStagingCredentialsOp } from "../ops/staging_access.js";
 import {
+  createPublicProjectionPublisher,
   drainProjectionOnce,
   projectionDatabases,
   publishProjectionOnce,
-  startPublicProjectionPublisher,
+  releaseProjectionForTests,
+  stagingPublicAdapter,
 } from "../public-projection.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
-if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
+const STAGING_URL = process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL;
+if (!ADMIN_URL || !PUBLIC_URL || !STAGING_URL) throw new Error("DB URLs required");
 
 const P = "t635proj";
 let adapter: DatabaseAdapter;
+let staging: DatabaseAdapter;
 
 async function onDb<T>(url: string, fn: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(url);
@@ -63,6 +67,7 @@ let pageId = "";
 
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  staging = stagingPublicAdapter(STAGING_URL);
   pageId = await admin(async (tx) => {
     // A seeded template exactly one page type lists, so the page-type
     // trigger can default it. "LIMIT 1" alone picked whatever template the
@@ -82,7 +87,7 @@ beforeAll(async () => {
     }[];
     return page?.id ?? "";
   });
-  await publishProjectionOnce(adapter, { declarations: new Map() });
+  await publishProjectionOnce(adapter, staging, { declarations: new Map() });
 });
 
 afterAll(async () => {
@@ -92,11 +97,12 @@ afterAll(async () => {
     await tx`DELETE FROM plugin_rate_limit_overrides WHERE plugin_slug = ${P}`;
   });
   await adapter.close();
+  await staging.close();
 });
 
 describe("the outbox (cms_admin migration 0281)", () => {
   it("a source write marks its section stale in the same transaction", async () => {
-    await drainProjectionOnce(adapter, new Map());
+    await drainProjectionOnce(adapter, staging);
     expect(await outboxSections()).toEqual([]);
     await admin(async (tx) => {
       await tx`INSERT INTO plugin_rate_limit_overrides (plugin_slug, operation, per_visitor_max, window_seconds)
@@ -107,7 +113,7 @@ describe("the outbox (cms_admin migration 0281)", () => {
   });
 
   it("a rolled-back write leaves nothing behind", async () => {
-    await drainProjectionOnce(adapter, new Map());
+    await drainProjectionOnce(adapter, staging);
     await admin(async (tx) => {
       await tx`UPDATE staging_access SET cookie_enabled = cookie_enabled WHERE id = 1`;
       throw new Error("rollback");
@@ -121,8 +127,8 @@ describe("drain (#635)", () => {
     await admin(async (tx) => {
       await tx`UPDATE plugin_rate_limit_overrides SET per_visitor_max = 9 WHERE plugin_slug = ${P}`;
     });
-    const report = await drainProjectionOnce(adapter, new Map());
-    expect(report.sections).toEqual(["rate_limits"]);
+    const report = await drainProjectionOnce(adapter, staging);
+    expect(report.sections).toEqual({ live: ["rate_limits"], staging: ["rate_limits"] });
     expect(await outboxSections()).toEqual([]);
     const rows = (await pub(
       async (tx) =>
@@ -138,7 +144,7 @@ describe("drain (#635)", () => {
         VALUES (gen_random_uuid(), ${pageId}::uuid, 'Ada', 'yes', 'approved', now()),
                (gen_random_uuid(), ${pageId}::uuid, 'Spam', 'no', 'spam', now())`;
     });
-    const report = await drainProjectionOnce(adapter, new Map());
+    const report = await drainProjectionOnce(adapter, staging);
     expect(report.comments).toBe(2);
     const published = (await pub(
       async (tx) =>
@@ -149,7 +155,7 @@ describe("drain (#635)", () => {
     await admin(async (tx) => {
       await tx`UPDATE comment_archive SET status = 'rejected' WHERE page_id = ${pageId}::uuid AND author_name = 'Ada'`;
     });
-    await drainProjectionOnce(adapter, new Map());
+    await drainProjectionOnce(adapter, staging);
     const after = (await pub(
       async (tx) => await tx`SELECT 1 FROM published_comments WHERE page_id = ${pageId}::uuid`,
     )) as unknown[];
@@ -180,7 +186,7 @@ describe("one way only (#635, adversarial)", () => {
     await pub(async (tx) => {
       await tx`INSERT INTO published_rate_limits VALUES ('forged', 'op', 100000, 1)`;
     });
-    await publishProjectionOnce(adapter, { declarations: new Map(), comments: false });
+    await publishProjectionOnce(adapter, staging, { declarations: new Map(), comments: false });
     const forged = (await pub(
       async (tx) => await tx`SELECT 1 FROM published_rate_limits WHERE plugin_slug = 'forged'`,
     )) as unknown[];
@@ -190,7 +196,7 @@ describe("one way only (#635, adversarial)", () => {
 
 describe("consuming the outbox (#635 review)", () => {
   it("never deletes a row it did not read: a lower id committed mid-drain survives", async () => {
-    await drainProjectionOnce(adapter, new Map());
+    await drainProjectionOnce(adapter, staging);
     // A long transaction takes an outbox id first and commits last.
     const raw = new SQL(ADMIN_URL as string);
     const slow = await raw.reserve();
@@ -202,22 +208,19 @@ describe("consuming the outbox (#635 review)", () => {
       await admin(async (tx) => {
         await tx`UPDATE plugin_rate_limit_overrides SET per_visitor_max = 8 WHERE plugin_slug = ${P}`;
       });
-      const dbs = projectionDatabases(adapter);
-      const report = await drainPublicProjection(
-        {
-          readAdmin: dbs.readAdmin,
-          writePublic: async (fn) => {
-            // The slow transaction commits while the drain is publishing.
-            await slow`COMMIT`;
-            await dbs.writePublic(fn);
-          },
+      const dbs = projectionDatabases(adapter, staging);
+      const report = await drainPublicProjection({
+        readAdmin: dbs.readAdmin,
+        writePublic: async (target, fn) => {
+          // The slow transaction commits while the drain is publishing.
+          if (target === "live") await slow`COMMIT`;
+          await dbs.writePublic(target, fn);
         },
-        new Map(),
-      );
-      expect(report.sections).toEqual(["rate_limits"]);
+      });
+      expect(report.sections.live).toEqual(["rate_limits"]);
       // Its row is still there, so the staging section is republished next.
       expect(await outboxSections()).toEqual(["staging"]);
-      expect((await drainProjectionOnce(adapter, new Map())).sections).toEqual(["staging"]);
+      expect((await drainProjectionOnce(adapter, staging)).sections.live).toEqual(["staging"]);
       expect(await outboxSections()).toEqual([]);
     } finally {
       slow.release();
@@ -234,14 +237,13 @@ describe("publishing before the admin call returns (#635 review)", () => {
   };
 
   it("an op that changes published state is live on the public side when it returns", async () => {
-    // No poll in this test: the interval never fires.
-    const publisher = startPublicProjectionPublisher({
+    const publisher = createPublicProjectionPublisher({
       adapter,
+      stagingAdapter: staging,
       declarations: () => new Map(),
-      intervalMs: 3_600_000,
     });
     try {
-      await drainProjectionOnce(adapter, new Map());
+      await drainProjectionOnce(adapter, staging);
       const result = await adapter.runOperation(rotateStagingCredentialsOp, SYSTEM, {
         which: "both",
       });
@@ -305,7 +307,7 @@ describe("publishing before the admin call returns (#635 review)", () => {
       expect(await outboxSections()).toEqual(["staging"]);
     } finally {
       adapter.setProjectionPublisher(null);
-      await drainProjectionOnce(adapter, new Map());
+      await drainProjectionOnce(adapter, staging);
     }
   });
 });
@@ -334,7 +336,8 @@ describe("the plugins section (#635 review)", () => {
       return id;
     });
     try {
-      await publishProjectionOnce(adapter, { declarations: new Map(), comments: false });
+      // #1329 — the registry follows the release: published once released.
+      await releaseProjectionForTests(adapter, staging, new Map([[`${P}-grants`, null]]));
       const grants = (await pub(
         async (tx) =>
           await tx`SELECT capability FROM published_plugin_grants
@@ -345,7 +348,7 @@ describe("the plugins section (#635 review)", () => {
       await admin(async (tx) => {
         await tx`DELETE FROM plugins WHERE id = ${pluginId}::uuid`;
       });
-      await publishProjectionOnce(adapter, { declarations: new Map(), comments: false });
+      await publishProjectionOnce(adapter, staging, { declarations: new Map(), comments: false });
     }
   });
 });
@@ -384,7 +387,7 @@ describe("the projection lock never holds a waiting connection (2026-11-02 incid
     });
     const holder = await holdLock();
     let settled = false;
-    const drain = drainPublicProjection(projectionDatabases(adapter), new Map(), {
+    const drain = drainPublicProjection(projectionDatabases(adapter, staging), {
       lockWait: { waitMs: 10_000, retryMs: 100 },
     }).finally(() => {
       settled = true;
@@ -397,7 +400,7 @@ describe("the projection lock never holds a waiting connection (2026-11-02 incid
       await holder.release();
     }
     const report = await drain;
-    expect(report.sections).toContain("rate_limits");
+    expect(report.sections.live).toContain("rate_limits");
     const rows = (await pub(
       async (tx) =>
         await tx`SELECT per_visitor_max FROM published_rate_limits WHERE plugin_slug = ${P}`,
@@ -412,7 +415,7 @@ describe("the projection lock never holds a waiting connection (2026-11-02 incid
     const holder = await holdLock();
     try {
       await expect(
-        drainPublicProjection(projectionDatabases(adapter), new Map(), {
+        drainPublicProjection(projectionDatabases(adapter, staging), {
           lockWait: { waitMs: 700, retryMs: 100 },
         }),
       ).rejects.toBeInstanceOf(ProjectionBusyError);
@@ -420,15 +423,15 @@ describe("the projection lock never holds a waiting connection (2026-11-02 incid
     } finally {
       await holder.release();
     }
-    await drainProjectionOnce(adapter, new Map());
+    await drainProjectionOnce(adapter, staging);
     expect(await outboxSections()).toEqual([]);
   });
 
   it("drains asked for while one waits to start join it instead of queueing one each", async () => {
-    const publisher = startPublicProjectionPublisher({
+    const publisher = createPublicProjectionPublisher({
       adapter,
+      stagingAdapter: staging,
       declarations: () => new Map(),
-      intervalMs: 3_600_000,
     });
     const holder = await holdLock();
     let released = false;
@@ -449,11 +452,11 @@ describe("the projection lock never holds a waiting connection (2026-11-02 incid
       publisher.stop();
     }
   });
-  it("full publishes asked for while one waits to start join it (the timer's retries stay bounded)", async () => {
-    const publisher = startPublicProjectionPublisher({
+  it("full publishes asked for while one waits to start join it (the backstop's retries stay bounded)", async () => {
+    const publisher = createPublicProjectionPublisher({
       adapter,
+      stagingAdapter: staging,
       declarations: () => new Map(),
-      intervalMs: 3_600_000,
     });
     const holder = await holdLock();
     let released = false;
@@ -468,6 +471,35 @@ describe("the projection lock never holds a waiting connection (2026-11-02 incid
       await Promise.all([running, ...retries]);
     } finally {
       if (!released) await holder.release();
+      publisher.stop();
+    }
+  });
+
+  it("the scheduler tick's backstop drains what another process left in the outbox (#1140)", async () => {
+    const publisher = createPublicProjectionPublisher({
+      adapter,
+      stagingAdapter: staging,
+      declarations: () => new Map(),
+    });
+    try {
+      await drainProjectionOnce(adapter, staging);
+      // A write whose own drain never ran (another process, a migration):
+      // the post-write drain is unregistered.
+      publisher.stop();
+      const result = await adapter.runOperation(
+        rotateStagingCredentialsOp,
+        {
+          actorId: "00000000-0000-0000-0000-00000000ffff",
+          actorKind: "system",
+          requestId: "t1140",
+        },
+        { which: "both" },
+      );
+      expect(result.ok).toBe(true);
+      expect((await outboxSections()).length).toBeGreaterThan(0);
+      await publisher.backstop();
+      expect(await outboxSections()).toEqual([]);
+    } finally {
       publisher.stop();
     }
   });

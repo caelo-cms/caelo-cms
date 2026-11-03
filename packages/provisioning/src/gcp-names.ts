@@ -222,6 +222,31 @@ export function captureServiceAccountEmail(projectId: string, env: string): stri
 }
 
 /**
+ * #1140 — account id of the scheduler tick's service account: signs its own
+ * IAP credential and calls the admin's tick endpoint, nothing else
+ * (scheduler-setup.ts). `caelo-production-scheduler` is 26 of the 30
+ * characters an account id may have.
+ */
+export function schedulerServiceAccountId(env: string): string {
+  return `${gcpNamePrefix(env)}-scheduler`;
+}
+
+/** Email of the scheduler tick's service account. */
+export function schedulerServiceAccountEmail(projectId: string, env: string): string {
+  return `${schedulerServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+}
+
+/** #1140 — the Cloud Workflows workflow one scheduler tick runs (scheduler-setup.ts). */
+export function schedulerWorkflowName(env: string): string {
+  return `${gcpNamePrefix(env)}-scheduler-tick`;
+}
+
+/** #1140 — the Cloud Scheduler job that starts the tick workflow every N minutes. */
+export function schedulerJobName(env: string): string {
+  return `${gcpNamePrefix(env)}-scheduler-tick`;
+}
+
+/**
  * Account id of the upgrader job's own service account: may roll the two
  * Cloud Run services, run the migration job and back up Cloud SQL, never
  * change IAM, service accounts or secrets (upgrader-setup.ts).

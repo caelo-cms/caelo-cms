@@ -9,9 +9,10 @@ import {
   registerAdminOps,
   setDeployBridge,
   setMediaStorage,
+  stagingPublicAdapter,
 } from "@caelo-cms/admin-core";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
-import { ADMIN_PUBLIC_STAGING_POOL_MAX, databaseUrlFromEnv } from "@caelo-cms/shared";
+import { databaseUrlFromEnv } from "@caelo-cms/shared";
 
 /**
  * Explicit, lazy query context. Server modules call `getQueryContext()` and
@@ -100,14 +101,7 @@ export function getQueryContext(): QueryContext {
       "PUBLIC_STAGING_ADMIN_DATABASE_URL is required (admin_role on cms_public_staging, #1329). Cloud installs get it in the converge (`cms-provision upgrade`, or Install update in Settings → Updates); self-hosted: `cms-provision up`; local dev: add it to the root .env (.env.example) and run packages/migrations/src/bootstrap.sh + `bun run db:migrate`.",
     );
   }
-  const stagingAdapter = new DatabaseAdapter({
-    adminDatabaseUrl: null,
-    publicDatabaseUrl: stagingUrl,
-    publicDatabase: "cms_public_staging",
-    expectedRoles: { admin: null, public: ["admin_role"] },
-    // Fixed, not from the budget env: pool-budget.ts reserves exactly this.
-    publicPoolMax: ADMIN_PUBLIC_STAGING_POOL_MAX,
-  });
+  const stagingAdapter = stagingPublicAdapter(stagingUrl);
   const registry = new OperationRegistry();
   registerAdminOps(registry);
 

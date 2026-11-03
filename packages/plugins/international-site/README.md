@@ -134,10 +134,22 @@ The translation is written into the VARIANT's own values: a default
 becomes the variant's stored value, a list takes the source's entries
 with the variant's text, and nested content is written to the variant's
 own instance. `create_variant` copies nested content (pages.duplicate
-deep-copies it), so a new variant always owns it. Nested content another
-page renders too (variants created before that) is left as it is and
-named in `sharedNested`, with `fork_placement_content` as the next step:
-writing it would change the other page.
+deep-copies it), so a new variant always owns it. A write never changes
+what another page renders (#1309): when an answered slot's content is
+not the variant's alone — a placement synced to the source's instance,
+or a variant whose nested references predate the deep copy, at any depth
+— the placement is forked first (`placement.fork_content` deep-copies
+its nested content) and the text lands on the copy. Core decides "alone"
+transitively (`page_module_content.list_for_page`'s `exclusive`): an
+instance is shared when another page places it or anything above it, or
+an instance outside the page lists it.
+Nested content another page still renders after the fork is left as it
+is and named in `sharedNested`.
+
+Slots pair by identity, not position: a placement is the k-th placement
+of its module in its block, nested content its placement plus its path
+and module. A variant whose sections are in another order gets each
+text in its own section.
 
 ## Checks of the staged build
 

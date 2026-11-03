@@ -452,6 +452,10 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/snapshot_pending.ts`,
   `${A}/ops/cancel_proposal.ts`,
   `${A}/*-gc-worker.ts`,
+  // The scheduler tick (#1140): a system-only endpoint the chat never
+  // reaches; it runs the background work above on its cadences.
+  `${A}/scheduler/**`,
+  `${A}/ops/scheduled_tasks.ts`,
   // Owner-only and install-time surfaces.
   `${A}/platform-updates/**`,
   `${A}/ops/platform-update*.ts`,
@@ -485,6 +489,8 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/staging_access.ts`,
   `${A}/ops/owner_settings_*.ts`,
   `${A}/ops/mcp_*.ts`,
+  // #1375 — the MCP back-pressure gate answers HTTP before any AI turn runs.
+  `${A}/mcp-back-pressure.ts`,
   `${A}/ops/credential_handoffs.ts`,
   `${SHARED}/cloud-shell-install.ts`,
   `${SHARED}/auto-update.ts`,

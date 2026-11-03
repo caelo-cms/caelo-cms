@@ -435,6 +435,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       "prepare",
       "generator",
       "lock-wait",
+      "clear-staging-inbox",
       "publish",
       "parity",
       "select-preview",

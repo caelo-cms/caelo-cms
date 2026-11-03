@@ -29,3 +29,6 @@ config:
     type: string
     default: "2Gi"
     description: Memory reserved for the admin container (it runs the Lighthouse quality audit).
+  caelo-self-hosted:schedulerIntervalMinutes:
+    type: integer
+    description: Minutes between scheduler ticks (1-15, default 5; #1140). On an install `cms-provision init` set up, `.caelo/config.json` records it and this key must match.

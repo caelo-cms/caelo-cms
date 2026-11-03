@@ -116,8 +116,22 @@ export type ConvergeUpgradeOutcome =
       readonly unrecorded: boolean;
     };
 
+/** How {@link ConvergeJobDeps.secureDatabase} ended. */
+export type SecureDatabaseResult =
+  | { readonly ok: true; readonly host: string }
+  | { readonly ok: false; readonly error: string };
+
 export interface ConvergeJobDeps {
   readonly queue: ConvergeQueue;
+  /**
+   * #1373 — the install's database TLS step (#1338, cloudsql-tls.ts), and
+   * then {@link queue} moved onto the database's DNS name with verify-full.
+   * Null when the queue already dials that name. Until it ran the queue
+   * dials the instance's IP (converge-db-trust.ts), so a failure of the
+   * step reaches the timeline and the request's end like any other step;
+   * when it fails the queue is reopened on whatever the install dials then.
+   */
+  readonly secureDatabase: (() => Promise<SecureDatabaseResult>) | null;
   /** From the metadata server — never from env or argv. */
   readonly projectId: string;
   /** The region this job runs in (metadata server). */
@@ -463,6 +477,24 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     save({});
 
     r.phase("converge");
+    // #1373 — stage 2 only, under the lock and after every check: it
+    // changes the database instance, its DNS and the services' URLs.
+    if (deps.secureDatabase) {
+      r.info(
+        "Setting up verified encryption for the database connection (the database's certificate and its private DNS name).",
+      );
+      await r.flush();
+      const secured = await deps.secureDatabase();
+      if (!secured.ok) {
+        save({ state: "failed", phase: "stopped" });
+        return stopWith(
+          "failed",
+          ["database-tls"],
+          `The update to ${m.version} stopped at the database's TLS step, before it rolled anything: ${secured.error}. The previous release keeps serving. Fix what it names and start the update again; it continues where it stopped.`,
+        );
+      }
+      r.success(`The database connection is verified (${secured.host}).`);
+    }
     const outcome = await deps.upgrade({
       manifest: m,
       reporter: r,

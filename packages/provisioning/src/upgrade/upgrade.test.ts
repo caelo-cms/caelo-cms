@@ -423,6 +423,66 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     ).toBe(false);
   });
 
+  it("#1140 — sets up the scheduler tick before operator access keeps its account on IAP, and tells the admin whom to trust", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall({ ...TARGET, schedulerIntervalMinutes: 2 }, deps)).toBe(true);
+    const workflow = indexOf(events, /^gcloud workflows deploy caelo-production-scheduler-tick /);
+    const schedule = indexOf(
+      events,
+      /^gcloud scheduler jobs (create|update) http caelo-production-scheduler-tick /,
+    );
+    const opAccess = indexOf(
+      events,
+      /^gcloud run jobs deploy caelo-production-operator-access-sync /,
+    );
+    const adminRoll = indexOf(events, new RegExp(`^gcloud run services update ${ADMIN} `));
+    expect(workflow < schedule && schedule < opAccess && opAccess < adminRoll).toBe(true);
+    expect(events[schedule]).toContain("--schedule=*/2 * * * *");
+    expect(events[schedule]).toContain(
+      "--oauth-service-account-email=caelo-production-scheduler@acme.iam.gserviceaccount.com",
+    );
+    expect(events[opAccess]).toContain(
+      "CAELO_OPERATOR_ACCESS_IAP_SERVICE_ACCOUNTS=caelo-production-scheduler@acme.iam.gserviceaccount.com",
+    );
+    expect(events[adminRoll]).toContain(
+      "CAELO_SCHEDULER_SERVICE_ACCOUNT=caelo-production-scheduler@acme.iam.gserviceaccount.com",
+    );
+    expect(lines).toContain("done: Scheduler tick ready (every 2 min)");
+  });
+
+  it("#1140 — a failed scheduler setup leaves the converge incomplete and the admin's trust env untouched", async () => {
+    const events: string[] = [];
+    const { deps, recorded, lines } = upgradeDeps(events, {
+      overrides: [
+        [/^workflows deploy caelo-production-scheduler-tick/, fail("PERMISSION_DENIED")],
+        [/^iam service-accounts describe caelo-production-scheduler@/, fail("NOT_FOUND")],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(recorded.contract).toEqual([]);
+    expect(lines.some((l) => l.includes("Scheduler tick not set up"))).toBe(true);
+    expect(
+      events.some((e) =>
+        /services update caelo-production-admin.*CAELO_SCHEDULER_SERVICE_ACCOUNT=/.test(e),
+      ),
+    ).toBe(false);
+    expect(
+      events.some((e) =>
+        /^gcloud scheduler jobs (create|update) http caelo-production-scheduler-tick/.test(e),
+      ),
+    ).toBe(false);
+  });
+
+  it("#1140 — refuses an out-of-range interval in install.json without touching the scheduler", async () => {
+    const events: string[] = [];
+    const { deps, recorded, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall({ ...TARGET, schedulerIntervalMinutes: 60 }, deps)).toBe(true);
+    expect(recorded.contract).toEqual([]);
+    expect(lines.some((l) => l.includes("between 1 and 15"))).toBe(true);
+    expect(events.some((e) => /^gcloud workflows deploy/.test(e))).toBe(false);
+  });
+
   it("an unreadable audit job is reported as an error, not as a missing job, and is not moved", async () => {
     const events: string[] = [];
     const { deps, lines } = upgradeDeps(events, {

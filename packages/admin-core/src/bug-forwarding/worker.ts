@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Bug-forwarding worker (epic #901). Runs in every admin process; the claim
- * lease in `bug_forwarding.claim_due` keeps instances off each other's rows.
+ * Bug forwarding (epic #901): two tasks on the scheduler tick (#1140,
+ * scheduler/core-tasks.ts). The claim lease in `bug_forwarding.claim_due`
+ * keeps concurrent ticks off each other's rows.
  *
- * Every tick (1 min): when the Owner opted in, claim due reports, make sure
- * the intake knows this install's key, send each report and record the
- * answer. Every few hours it also refreshes the upstream status of the
- * clusters this install reported into, so /settings/bugs can say "fixed in
- * vX" without anyone polling GitHub.
+ * Every tick: when the Owner opted in, claim due reports, make sure the
+ * intake knows this install's key, send each report and record the answer
+ * ({@link forwardDueReports}). Every six hours it also refreshes the
+ * upstream status of the clusters this install reported into
+ * ({@link refreshClusterStatus}), so /settings/bugs can say "fixed in vX"
+ * without anyone polling GitHub.
  *
  * All network calls run between transactions. Failures are recorded on the
  * rows (forward_error) and retried with backoff; nothing is swallowed.
- *
- * Bootstrapped once per process from apps/admin/src/hooks.server.ts.
  */
 
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
@@ -21,16 +21,14 @@ import type { BugIntakeReport, ExecutionContext } from "@caelo-cms/shared";
 import { SYSTEM_ACTOR_ID } from "../audit.js";
 import type { BugIntakeClient, IntakeIdentity, IntakeOutcome } from "./client.js";
 
-const SEND_INTERVAL_MS = 60_000;
-const STATUS_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/** How often cluster status is refreshed (the status task's cadence). */
+export const BUG_STATUS_REFRESH_SECONDS = 6 * 60 * 60;
 const CLAIM_BATCH = 20;
 
 export interface BugForwardingWorkerOpts {
   adapter: DatabaseAdapter;
   registry: OperationRegistry;
   client: BugIntakeClient;
-  intervalMs?: number;
-  statusIntervalMs?: number;
 }
 
 let ticks = 0;
@@ -67,7 +65,7 @@ async function ensureRegistered(
   return { identity };
 }
 
-/** Send every due report once. Exported for tests. */
+/** Send every due report once (the send task's body). */
 export async function forwardDueReports(opts: BugForwardingWorkerOpts): Promise<number> {
   const state = await run<{ enabled: boolean }>(opts, "bug_forwarding.get", {});
   if (!state.enabled) return 0;
@@ -95,7 +93,7 @@ export async function forwardDueReports(opts: BugForwardingWorkerOpts): Promise<
   return reports.length;
 }
 
-/** Refresh upstream status of stale clusters once. Exported for tests. */
+/** Refresh upstream status of stale clusters once (the status task's body). */
 export async function refreshClusterStatus(opts: BugForwardingWorkerOpts): Promise<number> {
   const state = await run<{ enabled: boolean }>(opts, "bug_forwarding.get", {});
   if (!state.enabled) return 0;
@@ -103,7 +101,7 @@ export async function refreshClusterStatus(opts: BugForwardingWorkerOpts): Promi
     opts,
     "bug_forwarding.clusters_to_refresh",
     {
-      staleAfterSeconds: Math.floor((opts.statusIntervalMs ?? STATUS_INTERVAL_MS) / 1000),
+      staleAfterSeconds: BUG_STATUS_REFRESH_SECONDS,
       limit: 100,
     },
   );
@@ -114,32 +112,4 @@ export async function refreshClusterStatus(opts: BugForwardingWorkerOpts): Promi
   if (res.kind !== "ok") throw new Error(res.error);
   await run(opts, "bug_forwarding.record_cluster_status", { clusters: res.value });
   return res.value.length;
-}
-
-let sendHandle: ReturnType<typeof setInterval> | null = null;
-let statusHandle: ReturnType<typeof setInterval> | null = null;
-
-/** Start both loops. Idempotent. */
-export function startBugForwardingWorker(opts: BugForwardingWorkerOpts): void {
-  if (sendHandle) return;
-  const send = () =>
-    void forwardDueReports(opts).catch((e) => {
-      console.error("[bug-forwarding] send tick failed:", (e as Error).message);
-    });
-  const status = () =>
-    void refreshClusterStatus(opts).catch((e) => {
-      console.error("[bug-forwarding] status refresh failed:", (e as Error).message);
-    });
-  send();
-  status();
-  sendHandle = setInterval(send, opts.intervalMs ?? SEND_INTERVAL_MS);
-  statusHandle = setInterval(status, opts.statusIntervalMs ?? STATUS_INTERVAL_MS);
-}
-
-/** Test-only. */
-export function stopBugForwardingWorker(): void {
-  if (sendHandle) clearInterval(sendHandle);
-  if (statusHandle) clearInterval(statusHandle);
-  sendHandle = null;
-  statusHandle = null;
 }

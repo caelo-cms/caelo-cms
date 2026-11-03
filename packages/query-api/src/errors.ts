@@ -50,6 +50,14 @@ export type QueryError =
        */
       readonly conflict?: true;
       /**
+       * #1375 — the call did not run because the database pool was
+       * exhausted (`PoolAcquireTimeoutError`): a load condition, not a
+       * defect and not the caller's mistake. The same call, sent again
+       * unchanged after `retryAfterMs`, may succeed. Surfaces that speak
+       * HTTP answer it as 429 with `Retry-After`.
+       */
+      readonly busy?: { readonly retryAfterMs: number };
+      /**
        * v0.5.17 — when the throw originated from a SQL driver (Bun.SQL,
        * drizzle, pg-postgres), the adapter walks `.cause` and lifts the
        * Postgres-specific fields here so downstream consumers (AI tool

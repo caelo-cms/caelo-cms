@@ -152,11 +152,18 @@ export const rotateCookieSecretOp = defineOperation({
   input: z.object({}).strict(),
   output: z.object({}),
   handler: async (ctx, _input, tx) => {
-    const bytes = new Uint8Array(64);
-    crypto.getRandomValues(bytes);
-    const secret = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const fresh = (): string => {
+      const bytes = new Uint8Array(64);
+      crypto.getRandomValues(bytes);
+      return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+    };
+    // #1329 — each environment has its own secret; a rotation replaces
+    // both (a leak of either is a reason to rotate), never to one value.
     await tx.execute(sql`
-      UPDATE site_settings SET gateway_cookie_secret = ${secret}, updated_at = now() WHERE id = 1
+      UPDATE site_settings
+         SET gateway_cookie_secret = ${fresh()}, gateway_staging_cookie_secret = ${fresh()},
+             updated_at = now()
+       WHERE id = 1
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,

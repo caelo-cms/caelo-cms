@@ -153,16 +153,11 @@ async function audit(runJob: (job: AuditJob) => Promise<AuditJobResult>): Promis
   });
 }
 
-/** Stage outside a chat (as Ops does) + queue its check. */
+/** Stage outside a chat (as Ops does); the build queues its check (#1319). */
 async function stage(): Promise<string> {
   const built = await op<{ runId: string }>(SYS, "deploy.trigger", {
     targetName: "staging",
     repoRoot: testRoot,
-  });
-  await op(SYS, "quality_audits.enqueue", {
-    deployRunId: built.runId,
-    chatSessionId: null,
-    branch: null,
   });
   return built.runId;
 }
@@ -508,11 +503,11 @@ describe("the fix-quality-findings skill", () => {
     expect(body).toContain("`bug_report`");
     expect(body).toContain("`image-delivery-insight`");
     expect(body).not.toContain("propose an acceptance with `accept_quality_findings`");
-    // #874 (0302): the metrics are the best run's, the run the Performance
-    // score comes from; "median" would send the AI hunting noise.
+    // #1370 (0590, after #874's 0302): the metrics are the scoring run's —
+    // the best of runs that agree, the median of five when they disagree.
     expect(body).toContain(
-      "the best of the staged build's runs, the one the Performance score comes from,",
+      "the run the Performance score comes from: the best of the staged build's runs when they agree, the median of five when they disagree, as the metrics line says,",
     );
-    expect(body).not.toContain("median");
+    expect(body).not.toContain("the one the Performance score comes from");
   });
 });

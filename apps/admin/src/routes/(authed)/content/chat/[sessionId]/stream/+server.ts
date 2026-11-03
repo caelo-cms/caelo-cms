@@ -112,8 +112,12 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   const { CHAT_MAX_ATTACHMENTS, CHAT_MAX_CHIPS, chatAttachmentSchema, chatChipSchema } =
     await import("@caelo-cms/shared");
   const { z } = await import("zod");
+  // Operator uploads only (`assetId`), as on the MCP chat route: a
+  // `storageKey` names a chat image the AI produced, and accepting one from
+  // the client would let a caller attach (and so read) another chat's
+  // capture by its content hash (#359).
   const attachmentsParse = z
-    .array(chatAttachmentSchema)
+    .array(chatAttachmentSchema.refine((a) => a.assetId !== undefined, "Use uploaded media assets"))
     .max(CHAT_MAX_ATTACHMENTS)
     .default([])
     .safeParse(body.attachments ?? []);

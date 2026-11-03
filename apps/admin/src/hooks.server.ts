@@ -15,8 +15,8 @@ process.on("uncaughtException", (e) => {
 // adapter-node answers SIGTERM/SIGINT by closing the HTTP server, letting
 // in-flight requests finish, then emitting `sveltekit:shutdown` and waiting
 // for the event loop to drain. Ours never drains: the bootstrapped workers
-// below (GC sweeps, release check, plugin host) poll on timers and
-// hold pg pools. Without this exit, Cloud Run and `docker stop` fall back to
+// below (quality audit, site import, plugin host) hold timers and pg
+// pools. Without this exit, Cloud Run and `docker stop` fall back to
 // SIGKILL after their grace period. The workers keep no in-memory state the
 // database does not already hold, so exiting once requests are done is safe.
 process.on("sveltekit:shutdown", (reason: string) => {
@@ -25,16 +25,14 @@ process.on("sveltekit:shutdown", (reason: string) => {
 });
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { hostname } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
   assertDurableMediaRoot,
-  BugIntakeClient,
-  bugIntakeUrl,
   buildEmailTransport,
   configureMcpBridge,
   configurePluginUninstallFinalizer,
   configureProviderResolver,
+  createPublicProjectionPublisher,
   type EmailConfigRow,
   emitSnapshot,
   generateKekHex,
@@ -43,20 +41,11 @@ import {
   lockPluginRow,
   makePluginImageProvider,
   makePluginTextProvider,
-  startAutoUpdateScheduler,
-  startBugForwardingWorker,
-  startChangeJournalGcWorker,
-  startChatImageGcWorker,
+  mcpBackPressureResponse,
+  registerRedirectSyncRunner,
   startLiveFanOut,
-  startPluginDataBuildWorker,
-  startProposalGcWorker,
-  startPublicProjectionPublisher,
   startQualityAuditWorker,
-  startRateLimitGcWorker,
-  startRedirectSyncWorker,
-  startReleaseCheckWorker,
   startSiteImportWorker,
-  startStagingPreviewKeepAliveWorker,
   transformPluginImage,
 } from "@caelo-cms/admin-core";
 import {
@@ -71,19 +60,13 @@ import {
   syncPluginHost,
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
-import {
-  type ExecutionContext,
-  type PlatformUpdateAgentStatus,
-  redirectTargetIssue,
-} from "@caelo-cms/shared";
+import { type ExecutionContext, redirectTargetIssue } from "@caelo-cms/shared";
 import type { Handle, ServerInit } from "@sveltejs/kit/hooks";
 import { legacySecurityRedirect } from "#lib/legacy-security-redirect.js";
 import { bootstrapE2eOperatorAccess } from "#lib/server/google-iap.js";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
 import { getQueryContext, mediaStorageSetup } from "#lib/server/query.js";
-import { releaseManifestReader } from "#lib/server/release-check.js";
-import { convergeTrigger, upgraderTrigger } from "#lib/server/upgrader.js";
-import { updatesProvider } from "#lib/upgrade-path.js";
+import { runAdminSchedulerTick, setSchedulerProjectionPublisher } from "#lib/server/scheduler.js";
 
 // Dev-mode KEK auto-gen. secret-box reads CAELO_SECRET_KEK lazily
 // (only at first encrypt/decrypt), so populating it before any DB
@@ -251,14 +234,16 @@ async function bootPluginHost(): Promise<void> {
   // #635 — the gateway has no cms_admin login: publish what it serves from
   // into cms_public now that the plugins (and their projection triggers)
   // are in place, then keep it current from the outbox.
-  const publisher = startPublicProjectionPublisher({ adapter });
+  const publisher = createPublicProjectionPublisher({ adapter, stagingAdapter });
+  // #1140 — the scheduler tick's projection backstop drains through it.
+  setSchedulerProjectionPublisher(publisher);
   // A failed boot publish (another publisher held the lock throughout, the
   // database was overloaded) must not fail the plugin-host boot, which is
-  // memoised for the process: the publisher's poll retries the full
-  // publish until it succeeds.
+  // memoised for the process: the scheduler tick's backstop retries the
+  // full publish until it succeeds.
   await publisher.publishAll().catch((e: unknown) => {
     console.error(
-      `[public-projection] boot publish failed; retried on the next poll: ${e instanceof Error ? e.message : String(e)}`,
+      `[public-projection] boot publish failed; retried on the next scheduler tick: ${e instanceof Error ? e.message : String(e)}`,
     );
   });
   // #1267 — plugins' change consumers, woken by the change journal on any
@@ -444,93 +429,17 @@ function bootstrapQualityAudits(): void {
   startQualityAuditWorker({ adapter, registry });
 }
 
-// Epic #901 — sends AI bug reports to the Caelo bug intake once the Owner
-// opted in on /settings/bugs. Idle (one cheap read per minute) while off.
-// CAELO_BUG_INTAKE_URL points a fork or a test run at another intake.
-let bugForwardingBootstrapped = false;
-function bootstrapBugForwarding(): void {
-  if (bugForwardingBootstrapped) return;
-  bugForwardingBootstrapped = true;
+// #1360 — the site-import crawl worker (P14) still polls in-process until
+// it moves into a container job of its own (#1140 category A). Every other
+// maintenance loop runs on the scheduler tick (lib/server/scheduler.ts).
+let siteImportBootstrapped = false;
+function bootstrapSiteImport(): void {
+  if (siteImportBootstrapped) return;
+  siteImportBootstrapped = true;
   const { adapter, registry } = getQueryContext();
-  startBugForwardingWorker({
-    adapter,
-    registry,
-    client: new BugIntakeClient({ baseUrl: bugIntakeUrl(process.env) }),
-  });
-}
-
-// Maintenance loops that lived in the redeploy orchestrator until the
-// automatic redeploy was removed (#1154): the hourly login rate-limit GC,
-// the six-hourly staging-preview keep-alive (#969) and the site-import
-// crawl worker (P14). None of them builds or publishes production. The
-// plugin-data tick (#1155) republishes the LIVE build with fresher plugin
-// data in plugin-owned regions only — nothing a human did not publish; its
-// cadence moves to the scheduler tick with #1140.
-let maintenanceBootstrapped = false;
-function bootstrapMaintenanceWorkers(): void {
-  if (maintenanceBootstrapped) return;
-  maintenanceBootstrapped = true;
-  const { adapter, registry } = getQueryContext();
-  startRateLimitGcWorker({ adapter });
-  startStagingPreviewKeepAliveWorker({ adapter, registry });
   // issue #198 — hand the importer worker the media storage so crawl
   // screenshots persist (review side-by-sides + parity references).
   startSiteImportWorker({ adapter, registry, screenshotStorage: getMediaStorage() });
-  startPluginDataBuildWorker({ adapter, registry });
-}
-
-// P21 ship 5 — release-check sidecar. Polls GitHub Releases once
-// per hour and writes to release_check_cache; notifications.aggregate
-// reads the cached row instead of doing the network call inside its
-// own transaction.
-let releaseCheckBootstrapped = false;
-function bootstrapReleaseCheck(): void {
-  if (releaseCheckBootstrapped) return;
-  releaseCheckBootstrapped = true;
-  // #696 — `off` for test runs: the Playwright suite seeds
-  // release_check_cache itself, and a poll racing it would overwrite the
-  // seeded release with whatever GitHub says (and spend the CI runner's
-  // unauthenticated GitHub API quota).
-  if (process.env.CAELO_RELEASE_CHECK === "off") return;
-  const { adapter } = getQueryContext();
-  // The worker also reads the release's manifest for its route (#817).
-  startReleaseCheckWorker({
-    adapter,
-    readManifest: releaseManifestReader(),
-    provider: updatesProvider(process.env),
-  });
-}
-
-// #696 Phase 5 — automatic Caelo updates. Every admin instance runs the
-// loop; a lease in the database makes one decision per interval, and the
-// request it queues is the same row "Install update" writes (the upgrader
-// job / self-hosted agent pick it up and verify the signed manifest).
-// `off` for test runs: the Playwright suite seeds release_check_cache and
-// drives the page itself; a live tick would read the real registry and
-// write emails into the suite's database.
-let autoUpdateBootstrapped = false;
-function bootstrapAutoUpdates(): void {
-  if (autoUpdateBootstrapped) return;
-  autoUpdateBootstrapped = true;
-  if (process.env.CAELO_UPDATE_SCHEDULER === "off") return;
-  const { adapter, registry } = getQueryContext();
-  // Same upgrader the Owner's "Install update" uses: the Cloud Run job, or
-  // on self-hosted the update agent (read through its heartbeat op).
-  const readAgent = async (): Promise<PlatformUpdateAgentStatus | null> => {
-    const r = await execute(registry, adapter, SYSTEM_CTX, "platform_updates.agent_status", {});
-    if (!r.ok) throw new Error(`platform_updates.agent_status: ${JSON.stringify(r.error)}`);
-    return (r.value as { agent: PlatformUpdateAgentStatus | null }).agent;
-  };
-  startAutoUpdateScheduler({
-    adapter,
-    registry,
-    upgrader: () => upgraderTrigger(process.env, readAgent),
-    // #819 — releases that change the cloud setup, when autoConverge allows.
-    converge: () => convergeTrigger(process.env),
-    readManifest: releaseManifestReader(),
-    provider: updatesProvider(process.env),
-    holder: `${process.env.K_REVISION ?? hostname()}/${process.pid}`,
-  });
 }
 
 // #817 — once per process: an upgrade the Owner ran from Cloud Shell never
@@ -558,51 +467,48 @@ function bootstrapSupersedeUpdateRequests(): void {
     .catch((e) => console.error("[bootstrap.update_requests] supersede failed", e));
 }
 
-// v0.2.37 — proposal GC sidecar. Sweeps pending rows older than 30
-// days → 'superseded' once per day across all *_pending_actions
-// tables. Keeps the bell badge meaningful.
-let proposalGcBootstrapped = false;
-function bootstrapChangeJournal(): void {
-  if (changeJournalBootstrapped) return;
-  changeJournalBootstrapped = true;
-  const { adapter, registry } = getQueryContext();
-  startChangeJournalGcWorker({ adapter, registry });
-  // #1267 — live topics across admin instances: every committing op's
-  // topics and every journaled change reach editors on every instance.
+// #1267 — live topics across admin instances: every committing op's topics
+// and every journaled change reach editors on every instance (a LISTEN
+// connection; the journal's GC runs on the scheduler tick).
+function bootstrapLiveFanOut(): void {
+  if (liveFanOutBootstrapped) return;
+  liveFanOutBootstrapped = true;
+  const { adapter } = getQueryContext();
   startLiveFanOut({ adapter, instanceId: hostInstanceId() }).catch((e) =>
     console.error("[bootstrap.live_fan_out] failed", e),
   );
 }
-let changeJournalBootstrapped = false;
+let liveFanOutBootstrapped = false;
 
-// #1157 — redirects sync to the hosting provider on save, no build. The
-// worker registers the post-commit push every redirects write runs and
-// retries targets whose provider is behind (Settings → Redirects shows it).
-let redirectSyncBootstrapped = false;
+// #1157 — redirects sync to the hosting provider on save, no build: the
+// post-commit push every redirects write runs (idempotent). Targets whose
+// provider is behind are retried on the scheduler tick (Settings →
+// Redirects shows it).
 function bootstrapRedirectSync(): void {
-  if (redirectSyncBootstrapped) return;
-  redirectSyncBootstrapped = true;
   const { adapter, registry } = getQueryContext();
-  startRedirectSyncWorker({ adapter, registry });
+  registerRedirectSyncRunner({ adapter, registry });
 }
 
-function bootstrapProposalGc(): void {
-  if (proposalGcBootstrapped) return;
-  proposalGcBootstrapped = true;
-  const { adapter } = getQueryContext();
-  startProposalGcWorker({ adapter });
-}
-
-// issue #356 — chat-image sweep. Images the AI produced live on their message
-// like any other content, so they accumulate; unlike operator uploads nobody
-// curates or browses them. Removes objects under `chat-images/` whose messages
-// are older than 7 days, skipping any key a surviving message still shares.
-let chatImageGcBootstrapped = false;
-function bootstrapChatImageGc(): void {
-  if (chatImageGcBootstrapped) return;
-  chatImageGcBootstrapped = true;
-  const { adapter } = getQueryContext();
-  startChatImageGcWorker({ adapter });
+// #1140 — dev and test runs have no scheduler: no Cloud Scheduler, no
+// `caelo-scheduler` Compose service. There the admin ticks itself, calling
+// the same tick the endpoint runs. Never in production (NODE_ENV=production
+// on every install): there the scheduler calls the endpoint, and no
+// in-process timer does the work (scripts/no-background-timers.test.ts).
+// `CAELO_SCHEDULER_CLOCK=off` turns it off for a run that drives ticks itself.
+const DEV_CLOCK_INTERVAL_MS = 5 * 60 * 1000;
+let devClockBootstrapped = false;
+function bootstrapDevSchedulerClock(): void {
+  if (devClockBootstrapped) return;
+  devClockBootstrapped = true;
+  if (process.env.NODE_ENV === "production" || process.env.CAELO_SCHEDULER_CLOCK === "off") return;
+  const tick = () =>
+    void runAdminSchedulerTick().catch((e: unknown) => {
+      console.error(
+        `[scheduler] dev clock tick failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
+  setTimeout(tick, 60_000).unref?.();
+  setInterval(tick, DEV_CLOCK_INTERVAL_MS).unref?.();
 }
 
 // P17 PR4 + P18 — wire the MCP bridge to the ProviderResolver so
@@ -657,23 +563,26 @@ export const handle: Handle = async ({ event, resolve }) => {
   // resolution: the target page runs its own auth guard.
   const moved = legacySecurityRedirect(event.url);
   if (moved) return new Response(null, { status: 308, headers: { Location: moved } });
+  // #1375 — an MCP call to a saturated admin gets 429 + Retry-After before
+  // it touches the database (the plugin-host sync below reads it too).
+  const busy = mcpBackPressureResponse(
+    event.url.pathname,
+    getQueryContext().adapter.poolPressure("admin"),
+  );
+  if (busy) return busy;
   ensureProviderResolverConfigured();
   // v0.5.9 — fire-and-forget bootstraps had `void` prefixes that
   // swallowed their rejections. Replace with .catch() so background
   // task failures (plugin manifest invalid, bootstrap token DB write)
   // land in Cloud Run stderr instead of disappearing into the void.
   bootstrapE2eOperatorAccess();
-  bootstrapMaintenanceWorkers();
-  bootstrapReleaseCheck();
-  bootstrapAutoUpdates();
+  bootstrapSiteImport();
   bootstrapSupersedeUpdateRequests();
-  bootstrapProposalGc();
-  bootstrapChatImageGc();
   bootstrapMcpBridge();
-  bootstrapChangeJournal();
+  bootstrapLiveFanOut();
   bootstrapRedirectSync();
   bootstrapQualityAudits();
-  bootstrapBugForwarding();
+  bootstrapDevSchedulerClock();
   // #1008 — wait for the shared plugin-host boot, then follow plugin
   // decisions made through any instance (throttled state check; reconciles
   // only when the plugin rows changed), so this request renders and

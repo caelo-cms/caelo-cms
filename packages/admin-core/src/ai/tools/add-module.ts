@@ -513,6 +513,7 @@ async function placeOnTemplate(
   if (targetPages.length > PLACE_MODULE_MAX_PAGES) {
     return {
       ok: false,
+      refusal: true,
       content: `this template has ${targetPages.length} pages; add_module places on at most ${PLACE_MODULE_MAX_PAGES} in one transaction, so nothing was written. Chrome that belongs on every page goes on the layout (target='layout', one placement every page renders); otherwise place it per page (target='page').`,
     };
   }

@@ -18,7 +18,9 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TARGET_BENCHMARK_INDEX } from "../src/quality/cpu-calibration.js";
 import { runAuditJob } from "../src/quality/lighthouse-runner.js";
+import { MEDIAN_RUNS } from "../src/quality/run-selection.js";
 import { localBuildSource, serveStagedBuild } from "../src/quality/staged-origin.js";
 
 const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -61,16 +63,23 @@ if (!findings.includes("image-alt")) {
   console.error("[lighthouse-smoke] expected the image-alt finding, got", findings);
   process.exit(1);
 }
-// The Performance metrics: every one measured in all three runs (the value
-// shown is the best run's, #874, so a run that measured nothing would
-// otherwise go unnoticed), and the LCP element named — a Lighthouse upgrade
-// that renames the audits fails here.
+// The Performance metrics: every one measured in every run (the value
+// shown is the scoring run's, #874/#1370, so a run that measured nothing
+// would otherwise go unnoticed), and the LCP element named — a Lighthouse
+// upgrade that renames the audits fails here. Three runs, or MEDIAN_RUNS
+// scored by their median when the first three disagreed on this runner.
 const metrics = page.measurement.metrics;
 const unmeasured = metrics.metrics.filter(
   (m) => m.numericValue === null || m.runValues.some((v) => v === null),
 );
-if (metrics.runs !== 3 || unmeasured.length > 0 || !metrics.lcpElement) {
-  console.error("[lighthouse-smoke] expected every Performance metric over 3 runs", metrics);
+const runsAsPlanned =
+  (metrics.runs === 3 && metrics.scoredBy === "best") ||
+  (metrics.runs === MEDIAN_RUNS && metrics.scoredBy === "median");
+if (!runsAsPlanned || unmeasured.length > 0 || !metrics.lcpElement) {
+  console.error(
+    `[lighthouse-smoke] expected every Performance metric over 3 runs (or ${MEDIAN_RUNS} by their median)`,
+    metrics,
+  );
   process.exit(1);
 }
 // The CPU calibration ran: a Lighthouse upgrade that moves
@@ -81,13 +90,20 @@ if (metrics.runs !== 3 || unmeasured.length > 0 || !metrics.lcpElement) {
 // and the page-error check above fails) — so a Lighthouse that ignores the
 // throttling override fails this smoke instead of silently auditing at the
 // fixed 4x again.
-if (!metrics.cpuCalibration || metrics.cpuCalibration.cpuSlowdownMultiplier <= 0) {
-  console.error("[lighthouse-smoke] expected a CPU calibration on the metrics", metrics);
+if (
+  !metrics.cpuCalibration ||
+  metrics.cpuCalibration.cpuSlowdownMultiplier < 1 ||
+  metrics.cpuCalibration.targetBenchmarkIndex !== TARGET_BENCHMARK_INDEX
+) {
+  console.error(
+    `[lighthouse-smoke] expected a CPU calibration to the target device (benchmark index ${TARGET_BENCHMARK_INDEX}) on the metrics`,
+    metrics,
+  );
   process.exit(1);
 }
 const shown = metrics.metrics.map((m) => `${m.label}=${m.displayValue}`).join(" ");
 console.log(
-  `[lighthouse-smoke] metrics ${shown}; LCP element ${metrics.lcpElement.selector ?? metrics.lcpElement.label}; CPU ${metrics.cpuCalibration.cpuSlowdownMultiplier}x at benchmark index ${metrics.cpuCalibration.benchmarkIndex}`,
+  `[lighthouse-smoke] metrics ${shown}; LCP element ${metrics.lcpElement.selector ?? metrics.lcpElement.label}; CPU ${metrics.cpuCalibration.cpuSlowdownMultiplier}x at benchmark index ${metrics.cpuCalibration.benchmarkIndex}; ${metrics.runs} run(s) scored by the ${metrics.scoredBy}`,
 );
 console.log(
   `[lighthouse-smoke] OK in ${Date.now() - started} ms: scores=${JSON.stringify(page.measurement.scores)} performanceRuns=${JSON.stringify(page.performanceRuns)} findings=${findings.join(",")}`,

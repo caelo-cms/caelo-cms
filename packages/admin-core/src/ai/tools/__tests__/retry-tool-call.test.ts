@@ -7,10 +7,12 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { keptCallArgs, keptCallNotice } from "../_retry-keep.js";
+import { shouldAutoCaptureToolFailure } from "../../chat-runner/tool-dispatch.js";
+import { keptCallArgs, keptCallNotice, withKeptCallNotice } from "../_retry-keep.js";
 import { applyRetryPatch } from "../_retry-patch.js";
 import type { ToolResult } from "../dispatch.js";
 import { createDefaultToolRegistry } from "../index.js";
+import { retryToolCallTool } from "../retry-tool-call.js";
 
 const tools = createDefaultToolRegistry();
 const ARGS = { page: { slug: "a", pageType: "nope" }, modules: [{ html: "<p>x</p>" }] };
@@ -156,5 +158,68 @@ describe("applyRetryPatch", () => {
     const r = applyRetryPatch({}, { set: [{ path: ["__proto__", "polluted"], value: true }] });
     expect(r.ok).toBe(false);
     expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+  });
+});
+
+describe("kept failures are not auto-filed as bugs (#1364)", () => {
+  it("marks a kept failure retryable, and the capture skips it", () => {
+    const kept = withKeptCallNotice(
+      "call-1",
+      failure({ failureKind: "HandlerError", errors: [{ path: ["page", "terms"], message: "x" }] }),
+    );
+    expect(kept.retryable).toBe(true);
+    expect(shouldAutoCaptureToolFailure("build_page", kept)).toBe(false);
+  });
+
+  it("still files a failure that is not kept", () => {
+    const notKept = failure({ failureKind: "internal" });
+    expect(keptCallArgs(notKept, tools)).toBeNull();
+    expect(shouldAutoCaptureToolFailure("build_page", notKept)).toBe(true);
+  });
+});
+
+describe("retry_tool_call arguments (#1321)", () => {
+  const parse = (input: unknown) => retryToolCallTool.schema.safeParse(input);
+
+  it("accepts a list of paths", () => {
+    const r = parse({
+      toolCallId: "c",
+      remove: [
+        ["page", "terms"],
+        ["modules", 1],
+      ],
+    });
+    expect(r.success).toBe(true);
+    if (r.success)
+      expect(r.data.remove).toEqual([
+        ["page", "terms"],
+        ["modules", 1],
+      ]);
+  });
+
+  it("reads one path on its own as a one-entry list", () => {
+    const r = parse({ toolCallId: "c", remove: ["page", "terms"] });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.remove).toEqual([["page", "terms"]]);
+    const numeric = parse({ toolCallId: "c", remove: ["modules", 3] });
+    expect(numeric.success && numeric.data.remove).toEqual([["modules", 3]]);
+  });
+
+  it("still refuses a mix of paths and segments, and an empty path", () => {
+    expect(parse({ toolCallId: "c", remove: [["page"], "terms"] }).success).toBe(false);
+    expect(parse({ toolCallId: "c", remove: [[]] }).success).toBe(false);
+  });
+
+  it("shows the expected shape in the description and in an argument error", async () => {
+    expect(retryToolCallTool.description).toContain('remove: [["page","terms"]]');
+    const res = await tools.dispatch(
+      "retry_tool_call",
+      { toolCallId: "c", remove: [["page"], "terms"] },
+      { actorId: "00000000-0000-0000-0000-000000000a1a", actorKind: "ai", requestId: "t1321" },
+      {},
+    );
+    expect(res.ok).toBe(false);
+    expect(res.content).toContain("`remove` (array of array of (string | integer), optional)");
+    expect(res.content).toContain('[["page","terms"]]');
   });
 });

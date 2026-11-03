@@ -113,11 +113,12 @@ const EXACT: Readonly<Record<string, readonly LiveTopic[]>> = {
   "imports.create_run": ["crawl"],
   "imports.update_run_status": ["crawl"],
   "imports.write_extracted_pages": ["crawl"],
-  "deploy.trigger": ["deploys"],
+  "deploy.trigger": ["deploys", "quality"],
   // #1211 — the Stage's steps: its run appears, ends failed, ends recorded.
   "deploy.start_trigger": ["deploys"],
   "deploy.fail_run": ["deploys"],
-  "deploy.finish_trigger": ["deploys"],
+  // #1319 — a staging build's audit row is queued in this step.
+  "deploy.finish_trigger": ["deploys", "quality"],
   "deploy.update_progress": ["deploys"],
   "deploy.promote": ["deploys"],
   // #1225 — Publish live's steps, and an approved card's claim and record.
@@ -126,7 +127,9 @@ const EXACT: Readonly<Record<string, readonly LiveTopic[]>> = {
   "deploy.begin_execute_proposal": ["pending", "deploys"],
   "deploy.end_execute_proposal": ["pending", "deploys"],
   "deploy.rollback": ["deploys"],
-  "deploy.release_rollback": ["deploys"],
+  // #1250 — the rollback's steps: its run appears, ends recorded.
+  "deploy.start_rollback": ["deploys"],
+  "deploy.finish_rollback": ["deploys"],
   "deploy.build_plugin_data": ["deploys"],
   // #1220 — the plugin-data build's steps that start and record a run.
   "deploy.begin_plugin_data_run": ["deploys"],

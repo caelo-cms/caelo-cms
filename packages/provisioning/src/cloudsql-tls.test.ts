@@ -94,6 +94,36 @@ describe("ensureCloudSqlVerifyFull", () => {
     ]);
   });
 
+  it("reads the DNS name after the move when the shared CA's certificate is active at once", async () => {
+    // searchviu-website, v0.11.10: the patch made the shared CA's certificate
+    // the active one, so no rotation re-read the instance, and the
+    // description from before the patch named no DNS host.
+    let described = 0;
+    const g = fake((a) => {
+      const line = a.join(" ");
+      if (line.startsWith("sql instances describe")) {
+        described += 1;
+        return ok(
+          instance(
+            described === 1
+              ? { caMode: "GOOGLE_MANAGED_INTERNAL_CA", sslMode: "ENCRYPTED_ONLY", dns: false }
+              : { caMode: "GOOGLE_MANAGED_CAS_CA", sslMode: "ENCRYPTED_ONLY", dns: true },
+          ),
+        );
+      }
+      if (line.startsWith("auth print-access-token")) return ok("token");
+      if (line.includes(" describe ")) return notFound();
+      return ok();
+    });
+    const r = await ensureCloudSqlVerifyFull(TARGET, {
+      run: g.run,
+      http: certs({ activeVersion: "f1", serverCerts: [{ sha1Fingerprint: "f1" }] }),
+      sleep: async () => {},
+    });
+    expect(r).toMatchObject({ ok: true, host: DNS });
+    expect(g.calls.filter((c) => c.startsWith("sql ssl"))).toEqual([]);
+  });
+
   it("changes nothing on an instance already in shape", async () => {
     const g = fake((a) => {
       const line = a.join(" ");

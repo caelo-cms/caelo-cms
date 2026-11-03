@@ -46,6 +46,7 @@ export async function postAdmin<T>(opts: AdminPostOpts): Promise<T> {
       body: JSON.stringify(opts.body),
       signal: controller.signal,
     });
+    if (res.status === 429) throw new Error(await busyMessage(res));
     if (!res.ok) {
       const body = await safeText(res);
       throw new Error(
@@ -63,6 +64,25 @@ export async function postAdmin<T>(opts: AdminPostOpts): Promise<T> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * #1375 — the admin is at capacity and did not run the call. Its body says
+ * so for the agent (wait, then send the same call again unchanged); the
+ * `Retry-After` header carries the wait when the body is not ours (a proxy
+ * in front of the admin answered).
+ */
+async function busyMessage(res: Response): Promise<string> {
+  const retryAfter = res.headers.get("retry-after");
+  const text = await safeText(res);
+  try {
+    const parsed = JSON.parse(text) as { message?: unknown };
+    if (typeof parsed.message === "string" && parsed.message.length > 0) return parsed.message;
+  } catch {
+    // Not the admin's JSON body: fall through to the header.
+  }
+  const wait = retryAfter && /^\d+$/.test(retryAfter) ? `${retryAfter} s` : "a few seconds";
+  return `Caelo is at capacity right now (HTTP 429), so this call was not run. Wait ${wait}, then send the same call again unchanged.`;
 }
 
 async function safeText(res: Response): Promise<string> {

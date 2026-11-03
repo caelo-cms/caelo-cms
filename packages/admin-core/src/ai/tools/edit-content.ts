@@ -106,6 +106,7 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
     if (input.expectedSha !== undefined && contentSha(body) !== input.expectedSha) {
       return {
         ok: false,
+        refusal: true,
         content:
           `content changed since your read (${input.field} sha is now ${contentSha(body)}, you passed ${input.expectedSha}). ` +
           "Re-read with read_content and re-issue the edit against the current text.",

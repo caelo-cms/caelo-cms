@@ -126,7 +126,10 @@ describe("#399 — plugin-shipped i18n skills", () => {
     // nothing short of a clean report is the stopping point.
     expect(qa?.body).toContain("{{#language_links}}");
     expect(qa?.body).toContain("never 'good enough'");
-    expect(qa?.body).toContain("fork_placement_content");
+    // #1309 — the translation forks shared nested content itself; what it
+    // still cannot write comes back with a next step to follow.
+    expect(qa?.body).toContain("follow its next step");
+    expect(qa?.body).not.toContain("fork_placement_content on that placement first");
 
     const slugs = skills.get("localize-slugs");
     expect(slugs?.body).toContain("NEVER derived from matching slugs");

@@ -62,6 +62,14 @@ export const INSTALL_ROLE_USES: Record<
       "cloudscheduler.jobs.update",
     ],
   },
+  "roles/workflows.editor": {
+    need: "deploy and update the workflow the scheduler tick runs (#1140)",
+    permissions: [
+      "workflows.workflows.create",
+      "workflows.workflows.get",
+      "workflows.workflows.update",
+    ],
+  },
   "roles/logging.logWriter": {
     need: "write the update's progress to Cloud Logging",
     permissions: ["logging.logEntries.create"],

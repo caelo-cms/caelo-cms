@@ -91,6 +91,7 @@ import {
   decideUp,
   selfHostedBootstrapScript,
 } from "./self-hosted-roles.js";
+import { parseSchedulerIntervalMinutes } from "./stack-contract.js";
 
 interface CaeloConfig {
   domain: string;
@@ -153,6 +154,12 @@ interface CaeloConfig {
    * carry it).
    */
   composeProject?: string;
+  /**
+   * #1140 — the `schedulerIntervalMinutes` knob (`init
+   * --scheduler-interval-minutes`, 1–15): how often the scheduler container
+   * calls the admin's tick. Absent: the default (5).
+   */
+  schedulerIntervalMinutes?: number;
 }
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
@@ -378,6 +385,9 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
     images,
     ports: cfg.ports,
     project: cfg.composeProject,
+    ...(cfg.schedulerIntervalMinutes !== undefined
+      ? { schedulerIntervalMinutes: cfg.schedulerIntervalMinutes }
+      : {}),
     ...(activeAgent(cfg) ? { agent: activeAgent(cfg) } : {}),
   });
 }
@@ -583,7 +593,7 @@ async function init(): Promise<void> {
   }
   if (!domain || !ownerEmail) {
     console.error(
-      "Usage: cms-provision init [--provider self-hosted] --domain example.com [--staging-domain staging.example.com] --owner-email me@example.com [--version x.y.z] [--skip-verify] [--dev] [--tls acme|internal] [--http-port 80] [--https-port 443]\n" +
+      "Usage: cms-provision init [--provider self-hosted] --domain example.com [--staging-domain staging.example.com] --owner-email me@example.com [--version x.y.z] [--skip-verify] [--dev] [--tls acme|internal] [--http-port 80] [--https-port 443] [--scheduler-interval-minutes 5]\n" +
         "Cloud providers (gcp | gcp-firebase | aws | azure) run the wizard: cms-provision --provider <name>",
     );
     process.exit(2);
@@ -596,6 +606,17 @@ async function init(): Promise<void> {
   const ports = portsArg();
   if (ports.http === ports.https) {
     console.error("--http-port and --https-port must differ");
+    process.exit(2);
+  }
+  const schedulerArg = arg("scheduler-interval-minutes");
+  let schedulerIntervalMinutes: number | undefined;
+  try {
+    schedulerIntervalMinutes =
+      schedulerArg === undefined
+        ? undefined
+        : parseSchedulerIntervalMinutes(schedulerArg, "--scheduler-interval-minutes");
+  } catch (e) {
+    console.error((e as Error).message);
     process.exit(2);
   }
   const stagingArg = arg("staging-domain");
@@ -666,6 +687,7 @@ async function init(): Promise<void> {
     tls,
     ports,
     composeProject: composeProjectName(domain),
+    ...(schedulerIntervalMinutes !== undefined ? { schedulerIntervalMinutes } : {}),
   };
   saveConfig(cfg);
   // P15.1 — the shared HMAC secret for /api/internal/* endpoints, read by
@@ -1646,13 +1668,25 @@ async function waitForDomainMappingCert(target: {
  * §11.C — interactive wizard. Loaded lazily so the bare-CLI startup
  * cost stays small (clack + kleur are pulled in only when needed).
  * Reads `--provider`, `--domain`, `--owner-email`, `--project-id`, `--region`,
- * `--non-interactive` and the run mode (`--local` / `--install-job`, default:
+ * `--scheduler-interval-minutes` (#1140), `--non-interactive` and the run mode (`--local` / `--install-job`, default:
  * the install job in Cloud Shell, local elsewhere — run-mode.ts) from argv.
  */
 async function wizardCommand(): Promise<void> {
   const { runWizard } = await import("./wizard.js");
   const { chooseRunMode } = await import("./run-mode.js");
+  const schedulerArg = arg("scheduler-interval-minutes");
+  let schedulerIntervalMinutes: number | undefined;
+  try {
+    schedulerIntervalMinutes =
+      schedulerArg === undefined
+        ? undefined
+        : parseSchedulerIntervalMinutes(schedulerArg, "--scheduler-interval-minutes");
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exit(2);
+  }
   await runWizard({
+    ...(schedulerIntervalMinutes !== undefined ? { schedulerIntervalMinutes } : {}),
     runMode: chooseRunMode(process.argv, process.env),
     nonInteractive: process.argv.includes("--non-interactive"),
     provider: arg("provider") as Provider | undefined,

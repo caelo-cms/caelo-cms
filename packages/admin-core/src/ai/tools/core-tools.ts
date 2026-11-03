@@ -81,11 +81,19 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "list_page_types",
   // Epic #1107 — "add Careers to the menu" / "fix the footer link" is an
   // everyday edit: find the shared list, read its entry ids, patch it.
-  // Creating lists stays deferred (the manage-menu and manage-page-types
-  // skills name those tools when loaded).
   "list_lists",
   "get_list",
   "patch_list_items_many",
+  // Creating a shared list is part of an ordinary build, not long tail:
+  // site navigation is a shared list (CLAUDE.md §1A), so a site's first
+  // pages create one. Deferred, it was the tool page-building chats searched
+  // for most — homepage, footer, blog and mega-menu scenarios in all four
+  // release gates of 2026-11-01..02 (runs 41295531984, 41334439233,
+  // 41412625443, 41542062215) — and the skills a homepage build loads do not
+  // name it. A search is one more model pass over the whole context (56–190k
+  // input tokens per search there); the definition costs ~450 tokens of
+  // cached prefix.
+  "upsert_lists_many",
   // A custom list type is part of an ordinary build: feature cards with an
   // icon, a heading and a text are entries of their own type. Deferred, the
   // homepage loaded it by tool search mid-build, and that one search cost

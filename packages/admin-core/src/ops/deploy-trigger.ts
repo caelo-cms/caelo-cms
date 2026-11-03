@@ -18,7 +18,11 @@
  *   deploy.acquire_staging_publication  (a Stage with its own staging host)
  *   (publisher upload)     no transaction
  *   deploy.finish_trigger  record the origin + the run, release the lease,
- *                          mark the target's redirects behind
+ *                          mark the target's redirects behind; a staging
+ *                          build writes the quality audit row
+ *                          deploy.start_trigger planned (#1319) in this
+ *                          same transaction, so no succeeded Stage is ever
+ *                          left without its audit
  *   redirects.sync_provider push the redirects (provider I/O, after the
  *                          run is recorded; a failure is retried)
  *   deploy.fail_run        on every failure or abort: record it, release
@@ -37,6 +41,13 @@
 
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import {
+  freezeRelease,
+  pointLiveRelease,
+  pointStagingRelease,
+  ReleaseFreezeError,
+} from "@caelo-cms/migrations/public-projection";
+import { pluginHostBootstrapped } from "@caelo-cms/plugin-host";
 import {
   defineOperation,
   defineStepwiseOperation,
@@ -103,7 +114,10 @@ import {
 import { truncatedListSchema } from "../deploy/truncated-lists.js";
 import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
+import { loadedVisitorProjections } from "../public-projection.js";
+import { kickQualityAuditWorker } from "../quality/audit-worker.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { clearStagingInbox, loadedInboxTables } from "../stage/staging-inbox.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
 import {
   effectiveOutDir,
@@ -119,6 +133,13 @@ import {
 import { acquireLeaseStep, fenceRunLeases } from "./deploy-lease-steps.js";
 import { beginRunInTx } from "./deploy-run-lifecycle.js";
 import { digestUndigestedMedia } from "./media_digests.js";
+import {
+  insertPlannedAudit,
+  plannedAuditSchema,
+  planStagingAudit,
+  type StagingAuditRequest,
+  stagingAuditRequestSchema,
+} from "./quality/lifecycle.js";
 import {
   checkProductionBuildGate,
   type ProductionOverride,
@@ -157,7 +178,25 @@ const triggerInput = z.object({
    * when the build outlasts its wait). Default: a fresh id.
    */
   runId: z.string().uuid().optional(),
+  /**
+   * #1319 — the Stage this staging build's quality audit belongs to (the
+   * chat, its pre-merge classification, who staged it, or the pages a
+   * Stage outside a chat staged on purpose). Omitted = a staging build
+   * outside a chat with no particular pages (Ops → Deploy,
+   * deploy_staging). Every staging build is audited; the audit row is
+   * written in the transaction that records the build as succeeded.
+   * Only for staging targets.
+   */
+  qualityAudit: stagingAuditRequestSchema.optional(),
 });
+
+/** The audit request a staging build without an explicit one records. */
+const OUTSIDE_CHAT_AUDIT: StagingAuditRequest = {
+  chatSessionId: null,
+  branch: null,
+  pageIds: [],
+  stagedBy: null,
+};
 
 const triggerOutput = z.object({
   runId: z.string(),
@@ -260,6 +299,13 @@ export const startTriggerOp = defineOperation({
           : "no default target configured",
       });
     }
+    if (input.qualityAudit !== undefined && target.env !== "staging") {
+      return err({
+        kind: "HandlerError",
+        operation: "deploy.trigger",
+        message: `target "${target.name}" is a ${target.env} target — only staging builds are quality-audited, so qualityAudit applies to staging builds only. Drop it, or build the staging target.`,
+      });
+    }
     // Production reaches visitors, so it ships only through the §11.A
     // gate (deploy.propose_promote → Owner Approve), never through a
     // direct AI trigger. Dev/staging rebuilds stay AI-callable — staging
@@ -346,6 +392,24 @@ export const startTriggerOp = defineOperation({
       }
     }
 
+    // #1319 — a staging build's audit is planned now, before anything is
+    // built: once the build is visible on staging, writing its audit row
+    // must not be able to fail. What the plan needs is checked first.
+    const auditRequest =
+      target.env === "staging" ? (input.qualityAudit ?? OUTSIDE_CHAT_AUDIT) : null;
+    if (auditRequest?.chatSessionId) {
+      const chat = (await tx.execute(sql`
+        SELECT 1 AS found FROM chat_sessions WHERE id = ${auditRequest.chatSessionId}::uuid
+      `)) as unknown as { found: number }[];
+      if (chat.length === 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message: `chat ${auditRequest.chatSessionId} does not exist, so this Stage's quality check has no chat to report to — nothing was built. Stage from an open chat (or without qualityAudit, outside a chat).`,
+        });
+      }
+    }
+
     // #553 — a staging build records main's render fingerprint as it
     // starts, so a later direct production build can tell whether main
     // still renders what this Stage's quality check saw (taken before the
@@ -370,6 +434,37 @@ export const startTriggerOp = defineOperation({
       baseRunId: null,
       leaseTtlMs: input.leaseTtlMs,
     });
+    if (auditRequest !== null) {
+      const planned = await planStagingAudit(tx, { deployRunId: input.runId, ...auditRequest });
+      await tx.execute(sql`
+        UPDATE deploy_runs SET planned_audit = ${jsonbParam(planned)}
+        WHERE id = ${input.runId}::uuid
+      `);
+    }
+    // #1329 — the projection's release sections (the plugin registry and
+    // each plugin's published rows) are frozen with the build, as the
+    // build reads the site: a Stage shows exactly this state on staging and
+    // Publish live releases exactly it; an Owner's production build
+    // releases it at once.
+    if (target.env === "staging" || target.env === "production") {
+      try {
+        await freezeRelease(tx, {
+          runId: input.runId,
+          reason: target.env === "staging" ? "stage" : "production-build",
+          declarations: loadedVisitorProjections(),
+          // A plugin not running here is recorded with the run (#1008) and
+          // Publish live refuses the Stage; staging shows it unpublished.
+          completeness: "as-loaded",
+        });
+      } catch (e) {
+        if (!(e instanceof ReleaseFreezeError)) throw e;
+        throw new OperationAbortError({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message: e.message,
+        });
+      }
+    }
     return ok({
       runId: input.runId,
       target: rowToTarget(target),
@@ -403,6 +498,8 @@ export const finishTriggerOp = defineOperation({
       parityManifest: z.record(z.string(), z.string()).nullable(),
       override: z.object({ auditRunId: z.string(), reason: z.string() }).nullable(),
       phaseTimings: z.array(phaseTimingSchema),
+      /** #1319 — what the audit log records as the Stage's audit request. */
+      qualityAudit: stagingAuditRequestSchema.nullable(),
     })
     .strict(),
   output: z.object({ draftPages: draftPagesSummary }),
@@ -417,13 +514,23 @@ export const finishTriggerOp = defineOperation({
       });
     };
     const running = (await tx.execute(sql`
-      SELECT 1 AS running FROM deploy_runs
+      SELECT planned_audit FROM deploy_runs
       WHERE id = ${input.runId}::uuid AND status = 'running'
       FOR UPDATE
-    `)) as unknown as { running: number }[];
-    if (running.length === 0) {
+    `)) as unknown as { planned_audit: unknown }[];
+    const runRow = running[0];
+    if (!runRow) {
       refuse(
         `build ${input.runId} was marked failed while it ran (its heartbeat stopped for longer than the lease); nothing it built is recorded. Stage again.`,
+      );
+    }
+    // deploy.start_trigger planned every staging build's audit; a staging
+    // run without one is a bug in this op, never a state to accept.
+    const planned =
+      input.env === "staging" ? plannedAuditSchema.safeParse(runRow?.planned_audit) : null;
+    if (planned && !planned.success) {
+      refuse(
+        `staging build ${input.runId} has no planned quality check (deploy_runs.planned_audit: ${planned.error.message}), so it is not recorded as staged. Stage again.`,
       );
     }
     if (input.stagingOrigin) {
@@ -452,6 +559,17 @@ export const finishTriggerOp = defineOperation({
     // Epic #1107 — a production build is a Publish live: pages it ships
     // for the first time get their first_published_at.
     if (input.env === "production") await stampFirstPublished(tx, input.runId);
+    // #1329 — the environment now serves the projection state this run
+    // froze (deploy.start_trigger); the drain after this commit publishes
+    // it. Staging moves with every Stage; live only with an Owner's
+    // production build, which is a human's release like Publish live.
+    if (input.env === "staging") await pointStagingRelease(tx, input.runId);
+    if (input.env === "production") {
+      await pointLiveRelease(tx, input.runId);
+      await tx.execute(sql`
+        UPDATE deploy_runs SET projection_run_id = ${input.runId}::uuid WHERE id = ${input.runId}::uuid
+      `);
+    }
     await tx.execute(sql`
       UPDATE deploy_runs
       SET status = 'succeeded', finished_at = clock_timestamp(),
@@ -462,9 +580,23 @@ export const finishTriggerOp = defineOperation({
           publish_summary = ${jsonbParam(input.publishSummary)},
           site_url = ${input.stagingOrigin},
           parity_manifest = ${input.parityManifest === null ? null : jsonbParam(input.parityManifest)},
-          lease_expires_at = NULL
+          lease_expires_at = NULL, planned_audit = NULL
       WHERE id = ${input.runId}::uuid
     `);
+    // #1319 — the audit row commits with the build: before, the Stage
+    // queued it in a separate call after this commit, and a lost call (pool
+    // exhaustion, an admin timeout, a process that died between the two)
+    // left a succeeded Stage with no audit and Publish live blocked with
+    // nothing to retry. The row was decided before the build
+    // (deploy.start_trigger), so this is a plain insert of checked values.
+    if (planned?.success) {
+      const queued = await insertPlannedAudit(tx, ctx, {
+        deployRunId: input.runId,
+        planned: planned.data,
+        input: { deployRunId: input.runId, ...(input.qualityAudit ?? {}) },
+      });
+      if (!queued.ok) refuse(describeError(queued.error));
+    }
     // #1157 — the build read the redirects table when it started; a
     // redirect saved since then was pushed to what the target served before
     // this build. The target is behind until the table as saved now is put
@@ -638,6 +770,29 @@ async function runTrigger(
     }
     if (stop.aborted && !servedByGenerator) return await fail(abortMessage(stop));
 
+    // #1329 — staging starts from what this Stage publishes: the test
+    // inbox (comments, votes, form submissions sent on staging) goes. Part
+    // of the Stage's success, and before the build is published: a Stage
+    // reported done serves its build from a cleared inbox, and a failure
+    // here leaves staging on the previous build.
+    if (plan.target.env === "staging") {
+      const inbox = loadedInboxTables();
+      const stagingDb = pluginHostBootstrapped()?.infra.stagingAdapter;
+      if (inbox.length > 0 && !stagingDb) {
+        return await fail(
+          "the plugin host has no staging database adapter, so the staging inbox could not be cleared and this build was not published. Check PUBLIC_STAGING_ADMIN_DATABASE_URL and the admin's boot log, then Stage again.",
+        );
+      }
+      try {
+        if (stagingDb) await clearStagingInbox(stagingDb, inbox);
+      } catch (e) {
+        return await fail(
+          `the staging inbox could not be cleared, so this build was not published: ${e instanceof Error ? e.message : String(e)}. Stage again.`,
+        );
+      }
+      timer.lap("clear-staging-inbox");
+    }
+
     // v0.2.78 — hand off to the per-provider StaticPublisher. Self-hosted
     // is a no-op (the generator already synced into current/); cloud
     // uploads to the staging bucket / preview channel.
@@ -724,7 +879,7 @@ async function runTrigger(
       } catch (e) {
         timer.lap("select-preview");
         return await fail(
-          `staging build ${runId} was published but could not be made the build staging serves: ${e instanceof Error ? e.message : String(e)}. Staging still serves the previous build; Stage again.`,
+          `staging build ${runId} was published but could not be made the build staging serves: ${e instanceof Error ? e.message : String(e)}. Stage again.`,
         );
       }
       timer.lap("select-preview");
@@ -744,8 +899,13 @@ async function runTrigger(
       parityManifest,
       override: plan.override,
       phaseTimings: timer.phases(),
+      qualityAudit:
+        plan.target.env === "staging" ? (input.qualityAudit ?? OUTSIDE_CHAT_AUDIT) : null,
     });
     if (!finished.ok) return await fail(describeError(finished.error));
+    // The audit row committed with the run; wake this instance's worker
+    // instead of waiting for its next pass.
+    if (plan.target.env === "staging") kickQualityAuditWorker();
     // The run is recorded; now put the redirects table on the build the
     // target serves, in a transaction of its own. A failure is recorded and
     // retried by the redirect-sync worker (the target stays behind); it

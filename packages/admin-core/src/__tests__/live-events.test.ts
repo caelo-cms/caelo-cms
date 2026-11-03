@@ -72,6 +72,8 @@ describe("liveTopicsOfOperation over the real op catalogue", () => {
       "quality_audits.begin_execute_proposal",
       "quality_audits.end_execute_proposal",
       "deploy.rollback",
+      "deploy.start_rollback",
+      "deploy.finish_rollback",
       "deploy.build_plugin_data",
       "deploy.begin_plugin_data_run",
       "deploy.finish_plugin_data_run",

@@ -103,7 +103,7 @@ function statusLine(run: AuditRun): string {
 export const AUDIT_FIX_LOOP_NEXT_STEP =
   "NEXT STEP — do not report these problems to the operator as a result; fix them now. " +
   "First every category marked DROPPED since the page's previous audit (look at the changes since then first), then every other PROBLEM: fix it in the module, page or theme the flagged elements and metrics name, call stage_changes, read get_quality_audit again, and repeat until the audit passes. " +
-  "Performance is already the best of several runs (host noise only ever slows a run down, so the best run is the page itself): a score below 100 is not measurement noise — fix what the metrics name. " +
+  "Performance is already de-noised (the best of several runs that agree, or the median of five when they disagree): a score below 100 is not measurement noise — fix what the metrics name. " +
   "Go to the operator only with what you proved cannot be fixed in the site (a CAELO PLATFORM finding: bug_report; a fix that would break what the operator asked for), as one accept_quality_findings decision per group, with the reason why.";
 
 /** Whether an audit result still has a problem no editor accepted. */
@@ -253,7 +253,7 @@ const readQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   name: "get_quality_audit",
   description:
     "Read the staged site's quality check: plugin page checks (when an active plugin adds any, e.g. SEO) reading EVERY page on every Stage, plus a mobile Lighthouse audit (Performance, Accessibility, Best Practices, SEO) when the Stage changed how pages render. No args = newest audit of THIS chat's Stages.\n" +
-    "Returns per page: scores; Performance metrics (FCP, LCP, TBT, CLS, Speed Index: best run + Lighthouse rating; LCP element + breakdown; shifted elements + causes); each problem's Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `render-blocking-insight`) + flagged elements (selector, HTML snippet, why, e.g. measured contrast); each page-check problem's rule id `<check>/<rule>` (contains a slash, e.g. `seo-check/title-missing`) + fix hint naming the tool. Plus site-wide findings, non-blocking warnings/hints, infrastructure errors.\n" +
+    "Returns per page: scores; Performance metrics (FCP, LCP, TBT, CLS, Speed Index: scoring run + Lighthouse rating; LCP element + breakdown; shifted elements + causes); each problem's Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `render-blocking-insight`) + flagged elements (selector, HTML snippet, why, e.g. measured contrast); each page-check problem's rule id `<check>/<rule>` (contains a slash, e.g. `seo-check/title-missing`) + fix hint naming the tool. Plus site-wide findings, non-blocking warnings/hints, infrastructure errors.\n" +
     "USE FOR: after a Stage, what to fix. Already accepted -> `list_quality_acceptances`. Never run Lighthouse yourself: the audit runs on the real staged build (no other URL serves it).\n" +
     "CORE RULES:\n" +
     "- TARGET 100 IN EVERY CATEGORY + ZERO FINDINGS: every category <100, every scored Lighthouse audit below perfect, every page-check error BLOCKS Publish live. 90 is NOT acceptable — fix until 100 wherever achievable. ACCEPTED problems don't block (a worse value than accepted blocks again). Warnings/hints never block.\n" +
@@ -328,7 +328,7 @@ export const getQualityAuditTool: typeof readQualityAuditTool = {
     };
     if (!input.deployRunId) return readUntilSettled(read, opts);
     // #1211 — a Stage that outlasted stage_changes' wait is still building:
-    // wait for its build (and its audit to be queued) first.
+    // wait for its build first (its audit is queued with it, #1319).
     const runId = input.deployRunId;
     return readStageAudit(
       {
@@ -392,6 +392,7 @@ export async function readStageAudit<R extends { ok: boolean; value?: unknown }>
 
 /** What get_quality_audit reads of a Stage's deploy run (deploy.get_run). */
 export interface StageRun {
+  readonly env: "dev" | "staging" | "production";
   readonly status: "pending" | "running" | "succeeded" | "failed";
   readonly errorMessage: string | null;
   readonly progress: { pagesDone: number; pagesTotal: number } | null;
@@ -402,13 +403,17 @@ type StageBuildState =
   | { readonly kind: "missing" }
   | { readonly kind: "running"; readonly run: StageRun }
   | { readonly kind: "failed"; readonly run: StageRun }
-  | { readonly kind: "audit-pending" }
+  | { readonly kind: "not-staging"; readonly run: StageRun }
+  | { readonly kind: "audit-missing" }
   | { readonly kind: "ready" };
 
 /**
- * Wait while a Stage's build runs, and after it succeeded until its audit
- * is queued (stage_changes queues it right after the build), within the
- * same bounded wait as a running audit.
+ * Wait while a Stage's build runs, within the same bounded wait as a
+ * running audit. #1319 — a staging build's audit row commits with the
+ * build's success (deploy.finish_trigger), so the run is read FIRST: a
+ * succeeded run whose audit is then still absent has none (a build staged
+ * before #1319, whose audit was lost), and waiting would not change that.
+ * Before, this answered "is being queued" for such a run forever.
  */
 export async function waitForStageBuild(
   readRun: () => Promise<StageRun | null>,
@@ -425,13 +430,14 @@ export async function waitForStageBuild(
   const now = opts.now ?? Date.now;
   const deadline = now() + opts.waitMs;
   for (;;) {
-    if (await auditExists()) return { kind: "ready" };
     const run = await readRun();
     let state: StageBuildState;
     if (run === null) state = { kind: "missing" };
     else if (run.status === "failed") return { kind: "failed", run };
-    else if (run.status === "succeeded") state = { kind: "audit-pending" };
-    else state = { kind: "running", run };
+    else if (run.env !== "staging") return { kind: "not-staging", run };
+    else if (run.status === "succeeded") {
+      return (await auditExists()) ? { kind: "ready" } : { kind: "audit-missing" };
+    } else state = { kind: "running", run };
     if (now() >= deadline || opts.signal?.aborted) return state;
     await sleep(opts.intervalMs);
   }
@@ -457,10 +463,16 @@ async function describeStageBuild(
       };
     case "running":
       return { ok: true, content: stillRunningStageText(runId, await readStatus()) };
-    case "audit-pending":
+    case "not-staging":
       return {
-        ok: true,
-        content: `The Stage's build (run ${runId}) succeeded; its quality check is being queued. Call get_quality_audit with deployRunId "${runId}" again.`,
+        ok: false,
+        content: `Run ${runId} is a ${state.run.env} build, not a Stage: only staging builds have a quality check. Call get_quality_audit without deployRunId for this chat's newest audit, or get_publish_gate for the staged build's.`,
+      };
+    case "audit-missing":
+      // #1319 — a Publish-live blocker with a one-call fix: say both.
+      return {
+        ok: false,
+        content: `The Stage's build (run ${runId}) succeeded, but it has NO quality check (none was ever queued for it), so Publish live stays blocked. Call retry_quality_audit with deployRunId "${runId}" now: it queues the check of that build (if it answers that a newer Stage replaced it, check that one instead). Do not Stage again only for this.`,
       };
     case "missing":
       return { ok: true, content: stillRunningStageText(runId, null) };

@@ -30,6 +30,7 @@ import type { CredentialKind } from "../../ops/credential_handoffs.js";
 import type { Permission } from "../../permissions.js";
 import { toolNamesIn } from "../op-tool-names.js";
 import type { AIProvider } from "../provider.js";
+import { type DraftRead, recordDraftReads } from "./_draft-reads.js";
 import { compactInputSchema } from "./compact-input-schema.js";
 import { generateInputSchema } from "./generate-input-schema.js";
 import { normalizeToolArgs } from "./normalize-args.js";
@@ -153,13 +154,17 @@ export interface ToolContext {
    */
   readonly operatorBrowserAttached?: boolean;
   /**
-   * The tools whose full definition ships in this turn's request (the core
-   * set, `CORE_TOOL_NAMES`); every other catalogue tool
-   * may sit behind the provider's tool search. Set by the chat-runner only —
-   * surfaces that list every tool (Power-MCP) leave it undefined. load_skill
-   * reads it so it never claims a deferred tool is callable as-is.
+   * This turn's tool catalogue as the provider sends it: every tool name,
+   * and the ones it defers behind its tool search (`AIProvider.
+   * deferredToolNames`). Set by the chat-runner only — surfaces that list
+   * every tool with its schema (Power-MCP) leave it undefined. load_skill
+   * loads a skill's deferred tools from it (`ToolResult.toolReferences`)
+   * and names the ones this chat does not have.
    */
-  readonly preloadedToolNames?: ReadonlySet<string>;
+  readonly turnTools?: {
+    readonly names: ReadonlySet<string>;
+    readonly deferred: ReadonlySet<string>;
+  };
   /**
    * Issue #664 — the running turn's stop signal (the operator's Stop, a
    * lost turn lease, a closed request). A tool that runs long work of its
@@ -258,6 +263,16 @@ export interface ToolResult {
    */
   readonly value?: unknown;
   /**
+   * #991 — deferred tools this result loads into the conversation. The
+   * chat-runner sends them as `tool_reference` blocks inside the tool
+   * result (the SDK's custom content part), and the provider expands each
+   * into its full definition from the next step on — the same mechanism
+   * the provider's own tool search uses, without the extra search pass.
+   * Only names in `ToolContext.turnTools.deferred`: any other reference
+   * fails the request. Set by `load_skill` for the tools a skill uses.
+   */
+  readonly toolReferences?: readonly string[];
+  /**
    * #1091 — the call failed because the tool refused it as designed: an
    * operation guard said no (`HandlerError.refusal` — still placed, still
    * referenced, type not allowed) and `content` names the fix. The
@@ -267,6 +282,13 @@ export interface ToolResult {
    * CLAUDE.md §4), so those stay captured.
    */
   readonly refusal?: true;
+  /**
+   * #1364 — the failure is kept for `retry_tool_call` (`_retry-keep.ts`):
+   * an input error the AI fixes with a patch, and its content says how.
+   * Not filed as a bug while it can still be patched — the call that ends
+   * the attempt (a retry failing beyond a patch, or a resend) is.
+   */
+  readonly retryable?: true;
   /**
    * #1277 — what kind of failure this is (only on `ok: false`): a
    * `QueryError` kind, `InvalidArguments` (the tool's schema refused the
@@ -438,6 +460,15 @@ export interface ToolDefinitionWithHandler<I> {
    */
   readonly inputSchema?: ToolInputSchema;
   readonly handler: (ctx: ExecutionContext, input: I, toolCtx: ToolContext) => Promise<ToolResult>;
+  /**
+   * Issue #1260 — for a READ tool: the draft entities a successful call
+   * showed the AI in full (from the input and the result's `value`). The
+   * dispatcher records them as seen by the caller's chat, which is what
+   * clears a draft conflict naming this tool (`locks.ts` draftRereadHint).
+   * Only declare what the result really shows: a recorded read lets the
+   * next write of the entity overwrite another chat's change.
+   */
+  readonly draftReads?: (input: I, value: unknown, ctx: ExecutionContext) => readonly DraftRead[];
 }
 
 /**
@@ -637,6 +668,31 @@ function nestingIntentHint(
  */
 const FULL_SCHEMA_MAX_CHARS = 6000;
 
+/**
+ * A JSON Schema node's type as one phrase. An array names its entries'
+ * type too (#1321: `remove` read as a bare "array", and the model sent one
+ * path where a list of paths was expected); a nested array reads
+ * "array of array of (string | integer)".
+ */
+function describeSchemaType(raw: unknown, depth = 0): string {
+  const def = (raw ?? {}) as { type?: unknown; items?: unknown };
+  // A nullable field's type is a list (`["integer", "null"]`) after the
+  // model-facing compaction.
+  const type =
+    typeof def.type === "string"
+      ? def.type
+      : Array.isArray(def.type)
+        ? def.type.join(" | ")
+        : "any";
+  if (type !== "array" || depth >= 2 || def.items === undefined || Array.isArray(def.items)) {
+    return type;
+  }
+  const inner = describeSchemaType(def.items, depth + 1);
+  if (inner === "any") return type;
+  const union = inner.includes(" | ") && !inner.startsWith("array of ");
+  return `array of ${union ? `(${inner})` : inner}`;
+}
+
 /** One line per argument: name, type, required, and the schema's own blurb. */
 function describeProperties(inputSchema: ToolInputSchema): string[] {
   const props = (inputSchema.properties ?? {}) as Record<string, unknown>;
@@ -644,15 +700,9 @@ function describeProperties(inputSchema: ToolInputSchema): string[] {
     Array.isArray(inputSchema.required) ? (inputSchema.required as string[]) : [],
   );
   return Object.entries(props).map(([key, raw]) => {
-    const def = (raw ?? {}) as { type?: unknown; description?: unknown; enum?: unknown };
-    // A nullable field's type is a list (`["integer", "null"]`) after the
-    // model-facing compaction, and its enum then carries `null`.
-    const type =
-      typeof def.type === "string"
-        ? def.type
-        : Array.isArray(def.type)
-          ? def.type.join(" | ")
-          : "any";
+    const def = (raw ?? {}) as { description?: unknown; enum?: unknown };
+    // A nullable field's enum carries `null` after the compaction.
+    const type = describeSchemaType(raw);
     const enums = Array.isArray(def.enum) ? ` (one of: ${def.enum.map(String).join(" | ")})` : "";
     const blurb =
       typeof def.description === "string" && def.description.length > 0
@@ -1007,7 +1057,17 @@ export class ToolRegistry {
         }
       }
     }
+    const readStartedAt = new Date().toISOString();
     const result = await tool.handler(ctx, parsed.data, toolCtx);
+    if (result.ok && tool.draftReads) {
+      const note = await recordDraftReads(
+        ctx,
+        toolCtx,
+        tool.draftReads(parsed.data, result.value, ctx),
+        readStartedAt,
+      );
+      return note === null ? result : { ...result, content: result.content + note };
+    }
     if (result.ok) return result;
     // #1264 — the one place every tool's failure passes: op names a hint
     // carries become the tools the AI can call. Successful results stay

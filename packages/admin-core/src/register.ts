@@ -60,7 +60,9 @@ import {
   mergeDraftToMainOp,
   undoChatChangesOp,
 } from "./ops/chat/draft-ops.js";
+import { observeDraftReadsOp } from "./ops/chat/draft-reads.js";
 import { listForeignLocksOp } from "./ops/chat/foreign-locks.js";
+import { getChatMessageImageOp } from "./ops/chat/images.js";
 import {
   appendChatMessageOp,
   cacheToolResultOp,
@@ -218,8 +220,6 @@ import {
   listDeployTargetsOp,
   promoteDeployOp,
   refreshStagingPreviewOp,
-  releaseRollbackOp,
-  rollbackDeployOp,
   updateDeployProgressOp,
 } from "./ops/deploy.js";
 import {
@@ -232,6 +232,7 @@ import {
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
 import { finishPromoteOp, recheckPublishAnywayOp, startPromoteOp } from "./ops/deploy-promote.js";
+import { finishRollbackOp, rollbackDeployOp, startRollbackOp } from "./ops/deploy-rollback.js";
 import {
   acquireLiveReleaseOp,
   acquireStagingPublicationOp,
@@ -421,7 +422,7 @@ import {
   listPluginCapabilityGrantsOp,
   proposeRevokePluginCapabilityOp,
 } from "./ops/plugins/capability_proposals.js";
-import { commentArchiveInsertOp } from "./ops/plugins/comment_archive.js";
+import { commentArchiveInsertOp, commentArchivePostTeamOp } from "./ops/plugins/comment_archive.js";
 import {
   approvePluginInstallationOp,
   finalizePluginInstallationOp,
@@ -492,6 +493,7 @@ import {
   rejectRoleProposalOp,
 } from "./ops/role_pending.js";
 import { createRoleOp, deleteRoleOp, listRolesOp, updateRolePermissionsOp } from "./ops/roles.js";
+import { scheduledTasksClaimOp, scheduledTasksFinishOp } from "./ops/scheduled_tasks.js";
 import { aiBudgetsStatusOp, listAiBudgetsOp, setAiBudgetOp } from "./ops/security/ai_budgets.js";
 import {
   aggregateAiCallsOp,
@@ -900,6 +902,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createChatSessionOp);
   registry.register(getChatSessionOp);
   registry.register(resolveChatSessionOp);
+  registry.register(getChatMessageImageOp);
   registry.register(pinSkillsIndexOp);
   registry.register(getChatBranchIdOp);
   registry.register(renameChatSessionOp);
@@ -938,6 +941,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(finalizeStageOp);
   // issue #262 — pre-run foreign-lock visibility for the chat runner.
   registry.register(listForeignLocksOp);
+  registry.register(observeDraftReadsOp);
   // issue #620 — Open changes overview + lock-takeover notices.
   registry.register(listOpenChangesOp);
   registry.register(drainTakeoverNoticesOp);
@@ -1062,7 +1066,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(recheckPublishAnywayOp);
   registry.register(acquireLiveReleaseOp);
   registry.register(rollbackDeployOp);
-  registry.register(releaseRollbackOp);
+  registry.register(startRollbackOp);
+  registry.register(finishRollbackOp);
   registry.register(updateDeployProgressOp);
   // #969 — the keep-alive worker's refresh of the served staging preview.
   registry.register(refreshStagingPreviewOp);
@@ -1323,6 +1328,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(platformUpdatesSchedulerStatusOp);
   // #868 — "Skip this time" for a scheduled automatic install (Owner, step-up).
   registry.register(platformUpdatesSkipScheduledOp);
+  // #1140 — the scheduler tick's due-table (system only).
+  registry.register(scheduledTasksClaimOp);
+  registry.register(scheduledTasksFinishOp);
   // #757 — the step-up for the actions above: the Owner's password, re-entered.
   registry.register(stepUpConfirmPasswordOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the
@@ -1437,5 +1445,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // v0.2.18 — comments long-term archive (cms_public is now ephemeral
   // after moderation; long-term store + static-render reads land here).
   registry.register(commentArchiveInsertOp);
+  registry.register(commentArchivePostTeamOp);
   registry.register(commentArchiveListForPageOp);
 }

@@ -107,6 +107,13 @@ error asked for (v0.11.9 release gate, `scenario-retry-tool-call`).
   Success clears `args`; a failure that is still kept stores the patched
   call (the same id stays retryable). Only the actor the call was kept for
   reads it (restrictive RLS on `args_actor_id`), in its own session.
+- **Not a bug report** (#1364): a kept result carries `retryable: true`
+  and the chat's automatic bug capture (`shouldAutoCaptureToolFailure`)
+  skips it, as it skips a designed `refusal` (#1091: a guard, a gate such
+  as the cold-start brand-palette gate, a budget or cap). A failure the
+  patch cannot fix any more is filed. `remove` takes a list of paths
+  (`remove: [["page","terms"]]`); one path on its own is read as a
+  one-entry list (#1321).
 - **Power-MCP** keeps calls the same way (also under a generated
   `toolCallId`, which the result returns); its cost cap follows the kept
   call's tool, not `retry_tool_call`.

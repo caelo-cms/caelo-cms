@@ -14,7 +14,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { publishProjectionOnce, registerAdminOps } from "@caelo-cms/admin-core";
+import {
+  publishProjectionOnce,
+  registerAdminOps,
+  releaseProjectionForTests,
+  stagingPublicAdapter,
+} from "@caelo-cms/admin-core";
 import {
   bootstrap,
   bootstrapDispatchOnly,
@@ -35,6 +40,9 @@ import {
   setGatewayAdapter,
 } from "./server.js";
 import { registerTestLiveOrigin, TEST_LIVE_ORIGIN } from "./test-support.js";
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -154,7 +162,8 @@ beforeAll(async () => {
     await tx`UPDATE site_settings SET captcha_provider = 'off' WHERE id = 1`;
   });
   await registerTestLiveOrigin(ADMIN_URL as string);
-  await publishProjectionOnce(adminAdapter, { declarations: new Map() });
+  // #1329 — the registry follows the release: published once released.
+  await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER);
   resetPluginHost();
 
   const urls = gatewayDatabaseUrls({
@@ -187,7 +196,7 @@ afterAll(async () => {
              captcha_pow_target_prefix = ${savedCaptcha?.prefix ?? "000fff"} WHERE id = 1`;
   });
   await cleanup();
-  await publishProjectionOnce(adminAdapter, { declarations: new Map() });
+  await publishProjectionOnce(adminAdapter, STAGING_ADAPTER, { declarations: new Map() });
   await gatewayAdapter.close();
   await adminAdapter.close();
 });
@@ -217,7 +226,8 @@ describe("#1267 — the gateway honours the capability approval gate", () => {
       (tx) =>
         tx`UPDATE plugins SET approved_capabilities = ARRAY['snapshots'] WHERE slug = ${SLUG}`,
     );
-    await publishProjectionOnce(adminAdapter, { declarations: new Map() });
+    // #1329 — a widened approval follows the release (Publish live).
+    await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, new Map([[SLUG, null]]));
     await syncDispatchPlugins({ force: true });
     const r = await ping();
     if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${await r.text()}`);
@@ -228,7 +238,8 @@ describe("#1267 — the gateway honours the capability approval gate", () => {
     await asAdmin(
       (tx) => tx`UPDATE plugins SET approved_capabilities = '{}'::text[] WHERE slug = ${SLUG}`,
     );
-    await publishProjectionOnce(adminAdapter, { declarations: new Map() });
+    // #1329 — a narrowed approval reaches the live database at once.
+    await publishProjectionOnce(adminAdapter, STAGING_ADAPTER, { declarations: new Map() });
     await syncDispatchPlugins({ force: true });
     const r = await ping();
     expect(r.status).not.toBe(200);

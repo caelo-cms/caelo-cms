@@ -18,15 +18,25 @@
  *                                   @caelo-cms/plugin-host (gateway-ops.ts)
  *                                   because the API gateway runs it too.
  *
- * Both ops run as the comments plugin's actor (or any system context).
+ *   comment_archive.post_team     — #1329: an admin user's own comment or
+ *                                   reply, written straight as approved
+ *                                   with the user as author. It never
+ *                                   passes the public inbox, so no visitor
+ *                                   can forge a post that looks like the
+ *                                   team's; the projection publishes it to
+ *                                   both public databases like a moderated
+ *                                   comment.
+ *
+ * The first two run as the comments plugin's actor (or any system context).
  * Tier-1 plugin handlers reach them via `ctx.cms.call("comment_archive.*",
  * input)`.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { ok } from "@caelo-cms/shared";
+import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { recordAudit } from "../../audit.js";
 
 const insertInput = z
   .object({
@@ -77,5 +87,77 @@ export const commentArchiveInsertOp = defineOperation({
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     return ok({ archiveId: rows[0]?.id ?? null });
+  },
+});
+
+const postTeamInput = z
+  .object({
+    pageId: z.string().uuid(),
+    /** The archived comment this replies to, or null for a top-level post. */
+    parentId: z.string().uuid().nullable(),
+    content: z.string().trim().min(1).max(50_000),
+  })
+  .strict();
+
+export const commentArchivePostTeamOp = defineOperation({
+  name: "comment_archive.post_team",
+  readScope: "request",
+  // Why human-only: the post is published under the signed-in user's own
+  // name, as the team's words. An AI drafting a reply hands the text to
+  // the human, who posts it.
+  actorScope: ["human"],
+  database: "cms_admin",
+  input: postTeamInput,
+  output: z.object({ archiveId: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const op = "comment_archive.post_team";
+    const author = (await tx.execute(sql`
+      SELECT display_name FROM actors WHERE id = ${ctx.actorId}::uuid AND kind = 'human'
+    `)) as unknown as { display_name: string }[];
+    const name = author[0]?.display_name;
+    if (!name) {
+      return err({
+        kind: "HandlerError",
+        operation: op,
+        message: "only a signed-in team member can post as the team",
+      });
+    }
+    if (input.parentId !== null) {
+      const parent = (await tx.execute(sql`
+        SELECT page_id::text AS page_id FROM comment_archive
+        WHERE id = ${input.parentId}::uuid AND status = 'approved'
+      `)) as unknown as { page_id: string }[];
+      if (parent[0]?.page_id !== input.pageId) {
+        return err({
+          kind: "HandlerError",
+          operation: op,
+          message: `comment ${input.parentId} is not a published comment on page ${input.pageId}; reply to a published comment of the same page`,
+        });
+      }
+    }
+    // A team post has no row in the public inbox; its public_row_id is its
+    // own fresh id, so the archive's uniqueness still holds.
+    const rows = (await tx.execute(sql`
+      INSERT INTO comment_archive (
+        public_row_id, page_id, parent_id, author_name, content, status, submitted_at, posted_by
+      ) VALUES (
+        gen_random_uuid(), ${input.pageId}::uuid,
+        ${input.parentId === null ? null : sql`${input.parentId}::uuid`},
+        ${name}, ${input.content}, 'approved', now(), ${ctx.actorId}::uuid
+      )
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const archiveId = rows[0]?.id;
+    if (!archiveId) throw new Error("comment_archive.post_team: insert returned no id");
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: op,
+      input: { pageId: input.pageId, parentId: input.parentId },
+      succeeded: true,
+      entityId: archiveId,
+      resultSummary: `team post on page ${input.pageId}`,
+    });
+    return ok({ archiveId });
   },
 });

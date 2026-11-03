@@ -47,24 +47,42 @@ export const getPublishGateTool = makeReadTool<Record<string, never>>({
   },
 });
 
-export const retryQualityAuditTool: ToolDefinitionWithHandler<Record<string, never>> = {
+const retryInput = z
+  .object({
+    deployRunId: z
+      .string()
+      .uuid()
+      .optional()
+      .describe(
+        "The Stage's build run (from `stage_changes` / `get_quality_audit`). Omit = the build staging serves now.",
+      ),
+  })
+  .strict();
+
+export const retryQualityAuditTool: ToolDefinitionWithHandler<z.infer<typeof retryInput>> = {
   name: "retry_quality_audit",
   description:
-    "Re-run the staged build's quality check when it FAILED (browser, timeout, staging unreachable) or never ran; changes nothing. Not for re-checking fixes — those need a new Stage, which audits itself.",
-  schema: noInput,
-  inputSchema: z.toJSONSchema(noInput) as Record<string, unknown>,
-  handler: async (ctx, _input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "quality_audits.retry", {});
+    "Run the staged build's quality check when it FAILED (browser, timeout, staging unreachable) or has none (`get_quality_audit` / `get_publish_gate` say so); changes nothing. Not for re-checking fixes — those need a new Stage, which audits itself.",
+  schema: retryInput,
+  inputSchema: z.toJSONSchema(retryInput) as Record<string, unknown>,
+  handler: async (ctx, input, toolCtx) => {
+    const r = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      ctx,
+      "quality_audits.retry",
+      input.deployRunId ? { deployRunId: input.deployRunId } : {},
+    );
     if (!r.ok) {
       return toolError(r.error, `quality_audits.retry failed: ${describeError(r.error)}`);
     }
-    const v = r.value as { auditRunId: string; status: string };
+    const v = r.value as { auditRunId: string; deployRunId: string; status: string };
     return {
       ok: true,
       content:
         v.status === "queued"
-          ? `Quality check ${v.auditRunId} queued; it takes 2–4 minutes. Read the result with get_quality_audit.`
-          : `No quality check needed for the staged build (audit ${v.auditRunId} skipped).`,
+          ? `Quality check ${v.auditRunId} of build run ${v.deployRunId} queued; it takes 2–4 minutes. ${AUDIT_PENDING_NEXT_STEP}`
+          : `No quality check needed for the staged build (audit ${v.auditRunId} of run ${v.deployRunId} skipped).`,
       value: v,
     };
   },

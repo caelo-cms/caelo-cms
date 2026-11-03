@@ -201,9 +201,27 @@ export async function buildProviderHistory(
   // inventory and never strips a passthrough row), so it runs over a mixed
   // history and heals reconstruction-row orphans (e.g. an aborted turn's
   // unanswered tool_use) even when passthrough rows coexist.
+  // #991 — the text of a tool-loading result (a passthrough tool row's user
+  // message, see `toolReferenceMessages`) goes after the whole run of tool
+  // rows it sits in, exactly where the live turn put it: a user text block
+  // ahead of another tool result of the same step breaks the pairing.
+  let followUps: ChatMessageInput[] = [];
+  const flushFollowUps = (): void => {
+    out.push(...followUps);
+    followUps = [];
+  };
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
     if (!m) continue;
+    if (m.role !== "tool") flushFollowUps();
+    if (m.role === "tool" && Array.isArray(m.responseMessages) && m.responseMessages.length > 0) {
+      const split = splitToolFollowUps(m.responseMessages);
+      if (split.followUps.length > 0) {
+        out.push({ role: m.role, content: m.content, sdkMessages: split.inPlace });
+        followUps.push(...split.followUps);
+        continue;
+      }
+    }
     // Any row carrying an SDK-canonical assembly replays it verbatim — an
     // assistant turn's response.messages (Option C) OR a persisted
     // tool-approval-response (Plan B production resume: the Owner's in-chat
@@ -261,6 +279,7 @@ export async function buildProviderHistory(
       ...(parts.length > 0 ? { additionalContent: parts } : {}),
     });
   }
+  flushFollowUps();
   // Run #10 D1 — tool_use/tool_result pairing repair. Heals sessions
   // already poisoned by orphan tool_results (the `approval-<uuid>` ack
   // class), unanswered tool_uses, or issue #442's dangling providerExecuted
@@ -292,4 +311,27 @@ export async function buildProviderHistory(
     console.error("[chat-runner] history-retired-tool-references", { rewrites });
   }
   return replayable;
+}
+
+/**
+ * #991 — a tool row's stored SDK messages, split into the ones that stay in
+ * place (the tool message) and its text follow-ups (user messages with
+ * string content), which replay as plain user rows after the tool-row run —
+ * the same row the live turn appended, so the replayed bytes match.
+ */
+function splitToolFollowUps(responseMessages: readonly unknown[]): {
+  inPlace: unknown[];
+  followUps: ChatMessageInput[];
+} {
+  const inPlace: unknown[] = [];
+  const followUps: ChatMessageInput[] = [];
+  for (const message of responseMessages) {
+    const msg = message as { role?: unknown; content?: unknown } | null;
+    if (msg?.role === "user" && typeof msg.content === "string") {
+      followUps.push({ role: "user", content: msg.content });
+    } else {
+      inPlace.push(message);
+    }
+  }
+  return { inPlace, followUps };
 }

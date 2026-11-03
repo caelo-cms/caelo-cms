@@ -97,6 +97,12 @@ export interface SyncJobConfig {
    */
   readonly mcpSigners: string;
   /**
+   * #1140 — comma-separated service-account emails that keep IAP access to
+   * the admin besides caelo-mcp (the scheduler tick's account); empty on
+   * installs without one.
+   */
+  readonly iapServiceAccounts: string;
+  /**
    * #914 — `projects/<p>/secrets/<id>` of the Google sign-in client
    * (`caelo-<env>-operator-oauth-client`); the job may read only this secret.
    */
@@ -127,6 +133,8 @@ export function configFromEnv(env: Record<string, string | undefined>): SyncJobC
     oauthClientSecret: get(required.oauthClientSecret),
     // Optional: jobs set up before the upgrader existed do not carry it.
     mcpSigners: get("CAELO_OPERATOR_ACCESS_MCP_SIGNERS"),
+    // Optional: jobs set up before the scheduler tick (#1140) do not carry it.
+    iapServiceAccounts: get("CAELO_OPERATOR_ACCESS_IAP_SERVICE_ACCOUNTS"),
   };
 }
 
@@ -189,7 +197,16 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
     config.staticMembers,
   );
   const { members: mcpSigners, rejected: rejectedSigners } = parseStaticMembers(config.mcpSigners);
-  const rejected = [...rejectedStatic, ...rejectedSigners];
+  // Emails only: each one can become a `serviceAccount:` member and nothing else.
+  const { members: iapServiceAccounts, rejected: rejectedIapAccounts } = parseStaticMembers(
+    config.iapServiceAccounts
+      .split(",")
+      .map((e) => e.trim())
+      .filter(Boolean)
+      .map((e) => `serviceAccount:${e}`)
+      .join(","),
+  );
+  const rejected = [...rejectedStatic, ...rejectedSigners, ...rejectedIapAccounts];
   for (const entry of rejected) {
     errorCount += 1;
     deps.log({
@@ -287,7 +304,7 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
     "the admin's IAP resource",
     iapResourceUrl,
     IAP_ACCESSOR_ROLE,
-    new Set([...members, `serviceAccount:${config.mcpServiceAccount}`]),
+    new Set([...members, `serviceAccount:${config.mcpServiceAccount}`, ...iapServiceAccounts]),
     { body: { options: { requestedPolicyVersion: 3 } } },
   );
   const mcp = await apply(
