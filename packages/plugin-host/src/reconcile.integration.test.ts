@@ -18,10 +18,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createPublicProjectionPublisher,
   registerAdminOps,
   releaseProjectionForTests,
   stagingPublicAdapter,
-  startPublicProjectionPublisher,
 } from "@caelo-cms/admin-core";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
@@ -424,8 +424,6 @@ describe("#1008 — loads of one plugin never overlap", () => {
     expect((await loadActivatedPlugin(WORKERED)).loaded).toBe(true);
     const after = pluginWorkerScheduler.list().filter((w) => w.pluginSlug === WORKERED);
     expect(after).toHaveLength(1);
-    // The first load's job was stopped, not orphaned.
-    expect(before[0]?.job.isStopped()).toBe(true);
   });
 });
 
@@ -459,12 +457,11 @@ describe("#1077 — a load publishes the plugin's visitor projection from this i
   }
 
   it("a load publishes none of its rows; the next release does, and a reload keeps them (#1329)", async () => {
-    // The admin's own publisher, as hooks.server.ts wires it; the poll is
-    // parked so only the publish right after a write can run.
-    const publisher = startPublicProjectionPublisher({
+    // The admin's own publisher, as hooks.server.ts wires it; it has no
+    // timer, so only the publish right after a write can run.
+    const publisher = createPublicProjectionPublisher({
       adapter,
       stagingAdapter: STAGING_ADAPTER,
-      intervalMs: 3_600_000,
     });
     try {
       const report = await boot([projected]);

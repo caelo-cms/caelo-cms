@@ -199,15 +199,52 @@ export async function verifyAdvisoriesPublished(
   return errors;
 }
 
-function git(args: readonly string[], cwd: string): { ok: boolean; out: string } {
-  const proc = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-  return { ok: proc.exitCode === 0, out: new TextDecoder().decode(proc.stdout) };
+/** How long one read-only git command of the release checks may take. */
+export const RELEASE_GIT_TIMEOUT_MS = 60_000;
+
+/**
+ * A read-only git command; never waits for a prompt (#814). `ok: false` is
+ * git's own nonzero exit (e.g. `git show` of a file the ref does not
+ * have), which callers may read as "absent". A command that did not end
+ * in time throws: a release check must never take a hung git for an
+ * answer.
+ */
+function git(
+  args: readonly string[],
+  cwd: string,
+  timeoutMs: number = RELEASE_GIT_TIMEOUT_MS,
+): { ok: boolean; out: string; err: string } {
+  const proc = Bun.spawnSync(["git", ...args], {
+    cwd,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: timeoutMs,
+  });
+  if (proc.exitCode === null) {
+    throw new Error(
+      `git ${args.join(" ")} did not finish within ${timeoutMs} ms (${proc.signalCode ?? "killed"}); the release checks stop rather than skip what it would have told them`,
+    );
+  }
+  return {
+    ok: proc.exitCode === 0,
+    out: new TextDecoder().decode(proc.stdout),
+    err: new TextDecoder().decode(proc.stderr).trim(),
+  };
 }
 
-/** Every `vX.Y.Z[-pre]` tag in the repo, without the `v`. */
-export function readTags(repoRoot: string): string[] {
-  return git(["tag", "--list", "v*"], repoRoot)
-    .out.split("\n")
+/**
+ * Every `vX.Y.Z[-pre]` tag in the repo, without the `v`.
+ *
+ * @throws when `git tag` fails or times out: an empty list would read as
+ *   "no previous release" and skip every comparison against it
+ */
+export function readTags(repoRoot: string, timeoutMs: number = RELEASE_GIT_TIMEOUT_MS): string[] {
+  const tags = git(["tag", "--list", "v*"], repoRoot, timeoutMs);
+  if (!tags.ok) throw new Error(`git tag --list failed in ${repoRoot}: ${tags.err}`);
+  return tags.out
+    .split("\n")
     .map((t) => t.trim())
     .filter((t) => /^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(t))
     .map((t) => t.slice(1));

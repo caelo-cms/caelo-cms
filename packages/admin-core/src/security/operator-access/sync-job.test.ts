@@ -39,6 +39,7 @@ const config: SyncJobConfig = {
   staticMembers: "user:owner@x.com",
   databaseHost: "10.0.0.3",
   mcpSigners: "",
+  iapServiceAccounts: "",
   oauthClientSecret: "projects/p/secrets/caelo-production-operator-oauth-client",
 };
 
@@ -200,6 +201,53 @@ describe("runSync", () => {
     expect(membersOf(policies[IAP], IAP_ACCESSOR_ROLE)).not.toContain(UPGRADER);
   });
 
+  it("keeps the scheduler tick's account on IAP, and only there (#1140)", async () => {
+    const SCHEDULER = "caelo-production-scheduler@p.iam.gserviceaccount.com";
+    const { deps, policies } = fakeGoogle({
+      [IAP]: { bindings: [{ role: IAP_ACCESSOR_ROLE, members: ["user:owner@x.com", MCP] }] },
+      [SA]: { bindings: [{ role: TOKEN_CREATOR_ROLE, members: ["user:owner@x.com"] }] },
+    });
+    const { log } = collect();
+    const r = await runSync(
+      { ...config, iapServiceAccounts: SCHEDULER },
+      {
+        google: deps,
+        oauthProbe: OAUTH_OK,
+        readOAuthClientId: async () => null,
+        readOAuthClientFile: async () => ({}),
+        readEmails: async () => [],
+        log,
+      },
+    );
+    expect(r.ok).toBe(true);
+    expect(membersOf(policies[IAP], IAP_ACCESSOR_ROLE)).toContain(`serviceAccount:${SCHEDULER}`);
+    expect(membersOf(policies[SA], TOKEN_CREATOR_ROLE)).not.toContain(
+      `serviceAccount:${SCHEDULER}`,
+    );
+  });
+
+  it("refuses an IAP service-account entry that is not an email (#1140)", async () => {
+    const { deps, policies } = fakeGoogle({
+      [IAP]: { bindings: [{ role: IAP_ACCESSOR_ROLE, members: ["user:owner@x.com", MCP] }] },
+      [SA]: { bindings: [{ role: TOKEN_CREATOR_ROLE, members: ["user:owner@x.com"] }] },
+    });
+    const { log, logs } = collect();
+    const r = await runSync(
+      { ...config, iapServiceAccounts: "user:evil@x.com,allUsers" },
+      {
+        google: deps,
+        oauthProbe: OAUTH_OK,
+        readOAuthClientId: async () => null,
+        readOAuthClientFile: async () => ({}),
+        readEmails: async () => [],
+        log,
+      },
+    );
+    expect(r.ok).toBe(false);
+    expect(membersOf(policies[IAP], IAP_ACCESSOR_ROLE)).toEqual(["user:owner@x.com", MCP]);
+    expect(logs.filter((l) => l.severity === "ERROR").length).toBe(2);
+  });
+
   it("writes nothing when the policies already match (self-healing run on a clean install)", async () => {
     const { deps, sets } = fakeGoogle({
       [IAP]: { bindings: [{ role: IAP_ACCESSOR_ROLE, members: ["user:owner@x.com", MCP] }] },
@@ -354,6 +402,23 @@ describe("recordRunReport", () => {
 });
 
 describe("configFromEnv", () => {
+  it("reads the IAP service accounts, empty on a job from before the scheduler tick (#1140)", () => {
+    const env = {
+      CAELO_OPERATOR_ACCESS_IAP_WEB: "w",
+      CAELO_MCP_IAP_SERVICE_ACCOUNT: "m",
+      CAELO_OPERATOR_ACCESS_STATIC_MEMBERS: "user:o@x.com",
+      CAELO_OPERATOR_ACCESS_DB_HOST: "10.0.0.3",
+      CAELO_OPERATOR_OAUTH_CLIENT_SECRET: "projects/p/secrets/s",
+    };
+    expect(configFromEnv(env).iapServiceAccounts).toBe("");
+    expect(
+      configFromEnv({
+        ...env,
+        CAELO_OPERATOR_ACCESS_IAP_SERVICE_ACCOUNTS: " a@p.iam.gserviceaccount.com ",
+      }).iapServiceAccounts,
+    ).toBe("a@p.iam.gserviceaccount.com");
+  });
+
   it("names every missing variable", () => {
     expect(() => configFromEnv({ CAELO_MCP_IAP_SERVICE_ACCOUNT: "x" })).toThrow(
       "missing env CAELO_OPERATOR_ACCESS_IAP_WEB, CAELO_OPERATOR_ACCESS_STATIC_MEMBERS, CAELO_OPERATOR_ACCESS_DB_HOST, CAELO_OPERATOR_OAUTH_CLIENT_SECRET",

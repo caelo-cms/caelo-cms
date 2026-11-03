@@ -371,6 +371,9 @@ export interface ToolDispatchResult {
   // #1091 — propagated from ToolResult.refusal: a guard refusal the
   // automatic bug capture skips.
   refusal?: true;
+  // #1364 — propagated from ToolResult.retryable: kept for
+  // `retry_tool_call`, so the automatic bug capture skips it.
+  retryable?: true;
   // #1277 / #1275 — propagated from ToolResult: the failure's kind, its
   // error paths and the call as dispatched decide whether the call is
   // kept for `retry_tool_call` (`_retry-keep.ts`).

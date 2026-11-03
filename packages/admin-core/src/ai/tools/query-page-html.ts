@@ -94,7 +94,9 @@ export function keywordWindows(
 async function resolveHtml(
   toolInput: Input,
   sessionId: string,
-): Promise<{ ok: true; url: string; html: string } | { ok: false; content: string }> {
+): Promise<
+  { ok: true; url: string; html: string } | { ok: false; content: string; refusal?: true }
+> {
   if (toolInput.pageRef) {
     const cached = getPageInspection(toolInput.pageRef);
     if (cached) {
@@ -116,6 +118,7 @@ async function resolveHtml(
   if (!budget.ok) {
     return {
       ok: false,
+      refusal: true,
       content: `${describeFetchBudgetDenied(budget)} Reuse a \`pageRef\` from a prior inspect_external_page instead of re-fetching.`,
     };
   }

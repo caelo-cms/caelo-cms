@@ -24,6 +24,7 @@ export {
   type AdapterConfig,
   AdminDatabaseUnavailableError,
   DatabaseAdapter,
+  type DatabaseTlsOptions,
   DatabaseUnresponsiveError,
   LISTEN_CONNECTIONS_PER_INSTANCE,
   type ListenCallbacks,

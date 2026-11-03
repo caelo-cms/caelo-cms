@@ -9,7 +9,7 @@
  * calls it makes — no network, no credentials.
  */
 
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { RedirectTableRow } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import {
@@ -134,8 +134,14 @@ const ROWS: RedirectTableRow[] = [
 ];
 
 let fake: FakeHosting;
+const GATEWAY_ENV = ["CAELO_GATEWAY_SERVICE", "CAELO_GATEWAY_REGION"] as const;
+const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
+  // The gateway LIVE_CONFIG's rewrite names is the current one.
+  for (const k of GATEWAY_ENV) savedEnv[k] = process.env[k];
+  process.env.CAELO_GATEWAY_SERVICE = "gw";
+  process.env.CAELO_GATEWAY_REGION = "europe-west1";
   _clearFirebaseFileListCache();
   fake = new FakeHosting();
   fake.seed("live", {
@@ -143,6 +149,13 @@ beforeEach(() => {
     files: { "/index.html": "h1", "/about/index.html": "h2" },
     status: "FINALIZED",
   });
+});
+
+afterEach(() => {
+  for (const k of GATEWAY_ENV) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
 });
 
 const sync = (rows = ROWS, channelId = "live") =>
@@ -176,6 +189,29 @@ describe("syncFirebaseRedirects (#1157)", () => {
     // Only the seeded version was listed (two pages); the version the first
     // sync released has the same files, so the second sync lists nothing.
     expect(fake.fileListCalls).toBe(2);
+  });
+
+  it("#1328 a served version naming an old gateway is re-released with the current one", async () => {
+    await sync();
+    // The converge moved the gateway: the admin's env names a new service.
+    process.env.CAELO_GATEWAY_SERVICE = "data-gw";
+    const result = await sync();
+    // Same redirects, but the stale rewrite alone is a change.
+    expect(result.outcome).toBe("applied");
+    const live = fake.served("live");
+    expect(live.config.rewrites).toEqual([
+      { glob: "/api/**", run: { serviceId: "data-gw", region: "europe-west1" } },
+    ]);
+    expect(live.config.headers).toEqual(LIVE_CONFIG.headers);
+    // And once current, nothing more to release.
+    expect((await sync()).outcome).toBe("unchanged");
+  });
+
+  it("#1328 fails loudly, releasing nothing, without the gateway env", async () => {
+    delete process.env.CAELO_GATEWAY_SERVICE;
+    const before = fake.releases.get("live")?.[0];
+    await expect(sync()).rejects.toThrow(/CAELO_GATEWAY_SERVICE/);
+    expect(fake.releases.get("live")?.[0]).toBe(before);
   });
 
   it("names redirects to pages the served version does not have", async () => {

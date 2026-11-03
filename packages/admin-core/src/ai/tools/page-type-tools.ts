@@ -18,6 +18,7 @@ import type { FieldDef, PageTypeDef } from "@caelo-cms/shared";
 import { z } from "zod";
 import { deletePageTypesManyOp, upsertPageTypesManyOp } from "../../ops/lists/page-types.js";
 import { describeError, toolError } from "./_describe-error.js";
+import { idOf, idsOf } from "./_draft-reads.js";
 import { makeOpTool } from "./_list-tool-kit.js";
 import { UPSERT_PAGE_TYPES_JSON_SCHEMA } from "./_list-tool-schemas.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -63,6 +64,11 @@ export const listPageTypesTool: ToolDefinitionWithHandler<ListPageTypesInput> = 
     "The site's page types, what each page IS (`content`, `news`, `product`): purpose, page count, allowed + default template ids, properties (`*` = required), vocabularies (categories/tags lists whose terms its pages carry). " +
     'Read before `build_page` / `update_pages_many` (a new article gets `pageType:"news"` + its properties and terms) and before a page query (`page_type` filters on the slug). New KIND of content (blog, job board) -> `upsert_page_types_many`.',
   schema: listPageTypesInput,
+  // #1260 — the re-read a draft conflict on a page type names: each type
+  // shown with its properties and vocabularies.
+  draftReads: (_input, value) => [
+    { kind: "pageType", ids: [...idOf(value, "pageType"), ...idsOf(value, "pageTypes")] },
+  ],
   handler: async (ctx, input, toolCtx) => {
     if (input.slug !== undefined) {
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "page_types.get", {

@@ -57,6 +57,12 @@ export interface GcpUpgradeTarget {
   readonly domain: string;
   readonly stagingHost: string;
   readonly ownerEmail: string;
+  /**
+   * #1140 — install.json's `schedulerIntervalMinutes` (absent: the default).
+   * Bounded to 1–15 by the converge, so a tampered record can change only
+   * how soon due work runs.
+   */
+  readonly schedulerIntervalMinutes?: number;
   /** The tag rolled to: a version (`0.11.0`) or a channel tag (`latest`, `rc`). */
   readonly targetTag: string;
   /** The infrastructure contract version this CLI converges to (infra-contract.ts). */
@@ -276,6 +282,9 @@ export async function upgradeGcpInstallOutcome(
   const opsImageRef = await verifiedOpsImage(target, deps);
   const converge = startConverge(plan, target.ownerEmail, {
     opsImageRef,
+    ...(target.schedulerIntervalMinutes !== undefined
+      ? { schedulerIntervalMinutes: target.schedulerIntervalMinutes }
+      : {}),
     run,
     reporter: r,
     ...(deps.sleep ? { sleep: deps.sleep } : {}),

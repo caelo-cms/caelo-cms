@@ -17,6 +17,7 @@ interface PoolOptions {
   /** Omitted only for the LISTEN connection, which must never idle out. */
   readonly idleTimeout?: number /** The LISTEN connection only: tells its subscribers the stream had a gap (#1267). */;
   readonly onclose?: (cause: Error | null) => void;
+  readonly tls?: DatabaseTlsOptions;
 }
 const SQL = (globalThis as { Bun?: { SQL: new (url: string, options?: PoolOptions) => SQLType } })
   .Bun?.SQL as unknown as new (
@@ -74,6 +75,24 @@ import { transactionTag } from "./statement-tag.js";
  * swaps the two URLs) fails loudly rather than allowing the RLS model to
  * silently misbehave.
  */
+/**
+ * TLS checks a connection makes instead of the URL's `sslrootcert` and the
+ * host-name check of `sslmode=verify-full` (Bun.SQL's `tls` option).
+ */
+export interface DatabaseTlsOptions {
+  /** The trust anchor(s), PEM: the server's chain must end in one of them. */
+  readonly ca: string;
+  /**
+   * Called once per connection after the chain verified and before the
+   * password is sent; an `Error` (returned) fails the connection. Must be
+   * synchronous.
+   */
+  readonly checkServerIdentity: (
+    hostname: string,
+    cert: { readonly fingerprint: string },
+  ) => Error | undefined;
+}
+
 export interface AdapterConfig {
   /**
    * The cms_admin URL, or `null` for a public-side process (the API
@@ -127,6 +146,15 @@ export interface AdapterConfig {
    * as its own read-only Cloud SQL IAM user — so a misrouted URL still fails
    * loudly instead of silently running as someone else.
    */
+  /**
+   * #1373 — replaces the URLs' certificate checks with {@link DatabaseTlsOptions}.
+   * Only the converge job sets it: it reaches the database on the
+   * instance's IP before the install's TLS step has given it a DNS name,
+   * and verifies the server against what the Cloud SQL Admin API lists for
+   * the instance (provisioning converge-db-trust.ts). Every other process
+   * relies on the URL's `sslmode=verify-full`.
+   */
+  readonly tls?: DatabaseTlsOptions;
   readonly expectedRoles?: {
     /** The admin pool's role; `null` exactly when `adminDatabaseUrl` is `null`. */
     readonly admin: string | null;
@@ -353,6 +381,7 @@ export class DatabaseAdapter {
   readonly #adminRaw: SQL | null;
   readonly #publicRaw: SQL;
   readonly #adminUrl: string | null;
+  readonly #tls: DatabaseTlsOptions | null;
   readonly #publicUrl: string;
   /** Issue #1267 — the dedicated LISTEN connection per pool, opened lazily. */
   readonly #listeners = new Map<PoolName, SQL>();
@@ -384,8 +413,10 @@ export class DatabaseAdapter {
     const poolMax = resolvePoolMax(config.poolMax);
     const publicPoolMax = resolvePublicPoolMax(config.publicPoolMax, config.poolMax);
     const idleTimeout = config.poolIdleTimeoutSeconds ?? POOL_IDLE_TIMEOUT_SECONDS;
+    this.#tls = config.tls ?? null;
+    const tls = this.#tls ? { tls: this.#tls } : {};
     const open = (url: string, max: number | undefined): SQL =>
-      new SQL(url, max === undefined ? { idleTimeout } : { max, idleTimeout });
+      new SQL(url, max === undefined ? { idleTimeout, ...tls } : { max, idleTimeout, ...tls });
     this.#adminRaw =
       config.adminDatabaseUrl === null ? null : open(config.adminDatabaseUrl, poolMax);
     this.#publicRaw = open(config.publicDatabaseUrl, publicPoolMax);
@@ -926,6 +957,7 @@ export class DatabaseAdapter {
     if (!conn) {
       conn = new SQL(url, {
         max: LISTEN_CONNECTIONS_PER_INSTANCE,
+        ...(this.#tls ? { tls: this.#tls } : {}),
         // Bun reconnects and re-subscribes on its own; the subscribers
         // only learn that the stream had a gap.
         onclose: (cause: Error | null) => {

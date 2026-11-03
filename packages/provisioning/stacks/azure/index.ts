@@ -441,6 +441,15 @@ const logWorkspace = new azure.operationalinsights.Workspace(`${namePrefix}-logs
 // refuses every server-side render with that gap
 // (capture/capture-backend.ts) instead of running a browser in its own app.
 //
+// FIXME(issue #750): no scheduler tick yet (#1140). On GCP one Cloud
+// Scheduler job calls the admin's /api/internal/scheduler/tick every
+// `schedulerIntervalMinutes` (src/scheduler-setup.ts), and the admin runs
+// its periodic work and plugin workers only on that tick; self-hosted has a
+// scheduler container. The Azure equivalent is a scheduled Container Apps
+// job (or Logic App recurrence) POSTing the same endpoint behind Easy Auth,
+// with the same 1–15 minute knob. Nothing calls the tick here because no
+// admin app exists on Azure yet; it lands with the admin in #750.
+//
 // FIXME(issue #696): no in-cloud upgrader or converge job (#819) yet. On
 // GCP Settings → Updates hands app-roll releases to the upgrader job and
 // cloud-setup releases to the converge job; on Azure the admin refuses a

@@ -589,12 +589,17 @@ export async function dispatchToolCall(
 
 /**
  * #1091 — whether a tool result is filed as an automatic bug report: every
- * final failure except the bug channel itself and a deliberate guard
- * refusal (`ToolResult.refusal`, set from `HandlerError.refusal`).
+ * final failure except the bug channel itself, a deliberate guard refusal
+ * (`ToolResult.refusal`, set from `HandlerError.refusal` or by a tool-level
+ * gate) and — #1364 — a failure kept for `retry_tool_call`
+ * (`ToolResult.retryable`): the AI patches it next, and a patch that
+ * cannot fix it ends in a failure that is filed.
  */
 export function shouldAutoCaptureToolFailure(
   toolName: string,
-  result: Pick<ToolDispatchResult, "ok" | "refusal">,
+  result: Pick<ToolDispatchResult, "ok" | "refusal" | "retryable">,
 ): boolean {
-  return !result.ok && toolName !== "bug_report" && result.refusal !== true;
+  return (
+    !result.ok && toolName !== "bug_report" && result.refusal !== true && result.retryable !== true
+  );
 }

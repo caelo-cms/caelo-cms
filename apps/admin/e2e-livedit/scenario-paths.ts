@@ -452,6 +452,10 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/snapshot_pending.ts`,
   `${A}/ops/cancel_proposal.ts`,
   `${A}/*-gc-worker.ts`,
+  // The scheduler tick (#1140): a system-only endpoint the chat never
+  // reaches; it runs the background work above on its cadences.
+  `${A}/scheduler/**`,
+  `${A}/ops/scheduled_tasks.ts`,
   // Owner-only and install-time surfaces.
   `${A}/platform-updates/**`,
   `${A}/ops/platform-update*.ts`,

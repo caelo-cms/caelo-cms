@@ -328,6 +328,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     if (!budget.ok) {
       return {
         ok: false,
+        refusal: true,
         content: `${describeFetchBudgetDenied(budget)} This tool is for a one-page glance — if you need many pages, propose the crawl via \`propose_site_import\` instead.`,
       };
     }

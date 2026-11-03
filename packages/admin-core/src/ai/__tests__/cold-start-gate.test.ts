@@ -22,6 +22,7 @@ import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { registerAdminOps } from "../../register.js";
+import { shouldAutoCaptureToolFailure } from "../chat-runner/tool-dispatch.js";
 import { TYPOGRAPHY_COMPOSITION_HINTS } from "../theme-guidance.js";
 import { checkColdStartGate } from "../tools/_cold-start-gate.js";
 import type { ToolContext } from "../tools/dispatch.js";
@@ -135,6 +136,13 @@ describe("checkColdStartGate (issue #106)", () => {
     const human: ExecutionContext = { ...AI, actorKind: "human" };
     const res = await checkColdStartGate(human, toolCtxWith(null, null), "add_module_to_page");
     expect(res.blocked).toBe(false);
+  });
+
+  it("issue #1364 — a block is a designed refusal, never auto-filed as a bug", async () => {
+    const res = await checkColdStartGate(AI, toolCtxWith(null, null), "add_module");
+    expect(res.gateResult?.ok).toBe(false);
+    expect(res.gateResult?.refusal).toBe(true);
+    expect(shouldAutoCaptureToolFailure("add_module", res.gateResult ?? { ok: false })).toBe(false);
   });
 
   it("always ends with a numbered 'Retry' step naming the tool", async () => {

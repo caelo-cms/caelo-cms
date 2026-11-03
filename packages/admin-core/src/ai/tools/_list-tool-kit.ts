@@ -38,6 +38,8 @@ export interface MakeOpToolArgs<I> {
    * generated schema is large — see `_list-tool-schemas.ts`.
    */
   readonly inputSchema?: Record<string, unknown>;
+  /** #1260 — what a successful call showed of the draft (`ToolDefinitionWithHandler.draftReads`). */
+  readonly draftReads?: ToolDefinitionWithHandler<I>["draftReads"];
 }
 
 /**
@@ -50,6 +52,7 @@ export function makeOpTool<I>(args: MakeOpToolArgs<I>): ToolDefinitionWithHandle
     description: args.description,
     schema: args.input,
     ...(args.inputSchema ? { inputSchema: args.inputSchema } : {}),
+    ...(args.draftReads ? { draftReads: args.draftReads } : {}),
     handler: async (ctx, input, toolCtx) => {
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, args.opName, input);
       if (!r.ok) {

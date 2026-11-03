@@ -21,7 +21,11 @@
 import { describe, expect, it } from "bun:test";
 import type { SpawnSubagentToolInput } from "@caelo-cms/shared";
 
-import { parsePositiveIntEnv, runSubagentBatch } from "../tools/spawn-subagent.js";
+import {
+  isBudgetStopOnly,
+  parsePositiveIntEnv,
+  runSubagentBatch,
+} from "../tools/spawn-subagent.js";
 
 /** Minimal valid-enough spec; runSubagentBatch only reads `.role`. */
 function spec(role: string): SpawnSubagentToolInput {
@@ -252,5 +256,41 @@ describe("runSubagentBatch — progress (issue #268)", () => {
     expect(ticks.every((t) => t.total === 4)).toBe(true);
     // Running cost accumulates monotonically to the batch total.
     expect(ticks[ticks.length - 1]?.cost).toBe(100);
+  });
+});
+
+describe("isBudgetStopOnly (#1364)", () => {
+  const stop = { budgetStopped: true, fallbackOverBudget: false };
+  it("is a refusal when only a budget stopped specs", () => {
+    expect(
+      isBudgetStopOnly({
+        ...stop,
+        results: [
+          { status: "completed" },
+          { status: "partial" },
+          { status: "errored", errorKind: "run-budget-paused" },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      isBudgetStopOnly({
+        budgetStopped: false,
+        fallbackOverBudget: true,
+        results: [{ status: "completed" }, { status: "errored", errorKind: "batch-aborted" }],
+      }),
+    ).toBe(true);
+  });
+  it("stays filed when a child errored, timed out, or no budget stopped the batch", () => {
+    expect(
+      isBudgetStopOnly({ ...stop, results: [{ status: "errored", errorKind: "child-error" }] }),
+    ).toBe(false);
+    expect(isBudgetStopOnly({ ...stop, results: [{ status: "timed_out" }] })).toBe(false);
+    expect(
+      isBudgetStopOnly({
+        budgetStopped: false,
+        fallbackOverBudget: false,
+        results: [{ status: "errored", errorKind: "no-progress" }],
+      }),
+    ).toBe(false);
   });
 });

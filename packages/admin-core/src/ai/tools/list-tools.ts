@@ -23,6 +23,7 @@ import {
 } from "../../ops/lists/lists.js";
 import { previewListSourceOp } from "../../ops/lists/preview-source.js";
 import { promoteLocalListOp } from "../../ops/lists/promote-local.js";
+import { idOf } from "./_draft-reads.js";
 import { makeOpTool } from "./_list-tool-kit.js";
 import {
   PATCH_LIST_ITEMS_JSON_SCHEMA,
@@ -122,6 +123,8 @@ export const getListTool = makeOpTool({
     "One shared list (by `slug` or `id`): entry tree (ids, node kinds, values, links as paths), `version`, usage. Read before `patch_list_items_many`: patches address entries by id (Careers under Company -> `parentId` = Company's id); pass `version` as `expectedVersion`.",
   opName: "lists.get",
   input: getListOp.input,
+  // #1260 — the re-read a draft conflict on a shared list names.
+  draftReads: (_input, value) => [{ kind: "list", ids: idOf(value, "list") }],
   format: (value) => {
     const l = (value as { list: ListSummaryRow & { items: ListItemInput[] } }).list;
     const lines = [

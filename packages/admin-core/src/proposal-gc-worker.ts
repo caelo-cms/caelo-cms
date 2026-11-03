@@ -12,8 +12,8 @@
  * One UPDATE per table, all in one tx. Postgres uses each table's
  * status partial index so this is cheap even on a large queue.
  *
- * Cadence: every 24h. Same bootstrap pattern as
- * release-check-worker.ts; called from hooks.server.ts.
+ * Cadence: every 24h, on the scheduler tick (#1140,
+ * scheduler/core-tasks.ts).
  *
  * Idempotent: re-marking already-superseded rows is a no-op (the
  * WHERE clause filters status='pending' only).
@@ -21,13 +21,10 @@
 
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 
-const POLL_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 interface ProposalGcWorkerOpts {
   readonly adapter: DatabaseAdapter;
-  /** Override poll interval (ms). Tests pass smaller values. */
-  readonly intervalMs?: number;
   /** Pending rows older than this are superseded. */
   readonly staleAfterMs?: number;
 }
@@ -66,8 +63,6 @@ const CLAIMED_TABLES: ReadonlySet<string> = new Set([
   "deploy_pending_actions",
   "quality_pending_actions",
 ]);
-
-let workerHandle: ReturnType<typeof setInterval> | null = null;
 
 async function gcOnce(opts: ProposalGcWorkerOpts): Promise<{ totalMarked: number }> {
   const staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
@@ -113,8 +108,8 @@ async function gcOnce(opts: ProposalGcWorkerOpts): Promise<{ totalMarked: number
  * checked — once a build is promoted, its objects already live in
  * the static bucket; the staging copy is ephemeral by design.
  *
- * GCP only — self-hosted has no staging bucket. Failures are logged
- * to stderr; the next sweep retries.
+ * GCP only — self-hosted has no staging bucket. An object that cannot
+ * be deleted is logged to stderr; the next sweep retries it.
  */
 async function gcStaleStagingPrefixes(opts: {
   staleAfterMs: number;
@@ -152,40 +147,16 @@ async function gcStaleStagingPrefixes(opts: {
 const DEFAULT_STAGING_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
- * Start the periodic GC. Idempotent — second call is a no-op.
+ * One GC pass: supersede stale pending proposals, then (GCP) delete stale
+ * staging-bucket objects. Throws when either sweep fails; the next pass
+ * retries.
  */
-export function startProposalGcWorker(opts: ProposalGcWorkerOpts): void {
-  if (workerHandle) return;
-  const stagingOpts = { staleAfterMs: DEFAULT_STAGING_STALE_AFTER_MS };
-  // Initial sweep immediately so a fresh boot picks up any old
-  // pending rows accumulated during downtime.
-  void gcOnce(opts).catch((e) => {
-    process.stderr.write(`[proposal-gc-worker] initial sweep failed: ${(e as Error).message}\n`);
+export async function sweepStaleProposals(
+  opts: ProposalGcWorkerOpts,
+): Promise<{ totalMarked: number; deletedObjects: number }> {
+  const { totalMarked } = await gcOnce(opts);
+  const { deletedObjects } = await gcStaleStagingPrefixes({
+    staleAfterMs: DEFAULT_STAGING_STALE_AFTER_MS,
   });
-  void gcStaleStagingPrefixes(stagingOpts).catch((e) => {
-    process.stderr.write(
-      `[proposal-gc-worker] initial staging-bucket sweep failed: ${(e as Error).message}\n`,
-    );
-  });
-  workerHandle = setInterval(() => {
-    void gcOnce(opts).catch((e) => {
-      process.stderr.write(`[proposal-gc-worker] sweep failed: ${(e as Error).message}\n`);
-    });
-    void gcStaleStagingPrefixes(stagingOpts).catch((e) => {
-      process.stderr.write(
-        `[proposal-gc-worker] staging-bucket sweep failed: ${(e as Error).message}\n`,
-      );
-    });
-  }, opts.intervalMs ?? POLL_INTERVAL_MS);
+  return { totalMarked, deletedObjects };
 }
-
-/** Test-only — stops the worker so a fresh start call isn't a no-op. */
-export function stopProposalGcWorker(): void {
-  if (workerHandle) {
-    clearInterval(workerHandle);
-    workerHandle = null;
-  }
-}
-
-/** Test-only — runs one sweep synchronously for assertions. */
-export const _gcOnceForTests = gcOnce;

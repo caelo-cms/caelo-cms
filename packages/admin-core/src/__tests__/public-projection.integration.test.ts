@@ -25,12 +25,12 @@ import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { rotateStagingCredentialsOp } from "../ops/staging_access.js";
 import {
+  createPublicProjectionPublisher,
   drainProjectionOnce,
   projectionDatabases,
   publishProjectionOnce,
   releaseProjectionForTests,
   stagingPublicAdapter,
-  startPublicProjectionPublisher,
 } from "../public-projection.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -237,12 +237,10 @@ describe("publishing before the admin call returns (#635 review)", () => {
   };
 
   it("an op that changes published state is live on the public side when it returns", async () => {
-    // No poll in this test: the interval never fires.
-    const publisher = startPublicProjectionPublisher({
+    const publisher = createPublicProjectionPublisher({
       adapter,
       stagingAdapter: staging,
       declarations: () => new Map(),
-      intervalMs: 3_600_000,
     });
     try {
       await drainProjectionOnce(adapter, staging);
@@ -430,11 +428,10 @@ describe("the projection lock never holds a waiting connection (2026-11-02 incid
   });
 
   it("drains asked for while one waits to start join it instead of queueing one each", async () => {
-    const publisher = startPublicProjectionPublisher({
+    const publisher = createPublicProjectionPublisher({
       adapter,
       stagingAdapter: staging,
       declarations: () => new Map(),
-      intervalMs: 3_600_000,
     });
     const holder = await holdLock();
     let released = false;
@@ -455,12 +452,11 @@ describe("the projection lock never holds a waiting connection (2026-11-02 incid
       publisher.stop();
     }
   });
-  it("full publishes asked for while one waits to start join it (the timer's retries stay bounded)", async () => {
-    const publisher = startPublicProjectionPublisher({
+  it("full publishes asked for while one waits to start join it (the backstop's retries stay bounded)", async () => {
+    const publisher = createPublicProjectionPublisher({
       adapter,
       stagingAdapter: staging,
       declarations: () => new Map(),
-      intervalMs: 3_600_000,
     });
     const holder = await holdLock();
     let released = false;
@@ -475,6 +471,35 @@ describe("the projection lock never holds a waiting connection (2026-11-02 incid
       await Promise.all([running, ...retries]);
     } finally {
       if (!released) await holder.release();
+      publisher.stop();
+    }
+  });
+
+  it("the scheduler tick's backstop drains what another process left in the outbox (#1140)", async () => {
+    const publisher = createPublicProjectionPublisher({
+      adapter,
+      stagingAdapter: staging,
+      declarations: () => new Map(),
+    });
+    try {
+      await drainProjectionOnce(adapter, staging);
+      // A write whose own drain never ran (another process, a migration):
+      // the post-write drain is unregistered.
+      publisher.stop();
+      const result = await adapter.runOperation(
+        rotateStagingCredentialsOp,
+        {
+          actorId: "00000000-0000-0000-0000-00000000ffff",
+          actorKind: "system",
+          requestId: "t1140",
+        },
+        { which: "both" },
+      );
+      expect(result.ok).toBe(true);
+      expect((await outboxSections()).length).toBeGreaterThan(0);
+      await publisher.backstop();
+      expect(await outboxSections()).toEqual([]);
+    } finally {
       publisher.stop();
     }
   });

@@ -201,6 +201,9 @@ export async function checkColdStartGate(
     blocked: true,
     gateResult: {
       ok: false,
+      // #1364 — the gate working as designed (setup comes first), not a
+      // defect: never auto-filed as a bug (#1091).
+      refusal: true,
       content:
         `${toolName}: blocked until the site has a brand palette — ${describeBlockedState({
           noIdentity,
