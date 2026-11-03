@@ -37,6 +37,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
+import { stagingPublicAdapter } from "../public-projection.js";
 import { registerAdminOps } from "../register.js";
 import { openQualityGate } from "./fixtures/quality-gate.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
@@ -44,7 +45,8 @@ import { pinSiteLanguage } from "./fixtures/site-language.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
-if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
+const STAGING_URL = process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL;
+if (!ADMIN_URL || !PUBLIC_URL || !STAGING_URL) throw new Error("DB URLs required");
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SYS: ExecutionContext = { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t605" };
@@ -54,6 +56,7 @@ const BASE = "https://example.com";
 const PFX = "t605-";
 
 let adapter: DatabaseAdapter;
+let stagingAdapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let testRoot = "";
 let restoreBase: (() => Promise<void>) | null = null;
@@ -117,11 +120,13 @@ async function cleanup(): Promise<void> {
     await tx.unsafe(`DELETE FROM user_roles WHERE user_id = '${OWNER_ID}'::uuid`);
     await tx.unsafe(`DELETE FROM users WHERE id = '${OWNER_ID}'::uuid`);
   });
-  await sqlSystem(async (tx) => {
-    for (const slug of ["international_site", "consent_manager"]) {
-      await tx.unsafe(`DROP SCHEMA IF EXISTS "plugin_${slug}" CASCADE`);
-    }
-  }, PUBLIC_URL as string);
+  for (const url of [PUBLIC_URL, STAGING_URL] as string[]) {
+    await sqlSystem(async (tx) => {
+      for (const slug of ["international_site", "consent_manager"]) {
+        await tx.unsafe(`DROP SCHEMA IF EXISTS "plugin_${slug}" CASCADE`);
+      }
+    }, url);
+  }
 }
 
 async function op<T>(ctx: ExecutionContext, name: string, input: unknown): Promise<T> {
@@ -166,6 +171,7 @@ function published(rel: string): string {
 
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  stagingAdapter = stagingPublicAdapter(STAGING_URL);
   registry = new OperationRegistry();
   registerAdminOps(registry);
   setDeployBridge({ registry, adapter });
@@ -197,7 +203,9 @@ beforeAll(async () => {
   });
 
   const report = await bootstrap({
-    infra: { adapter, registry },
+    // A Stage clears the plugins' staging inbox, so the host needs the
+    // staging database like the admin's (#1329).
+    infra: { adapter, registry, stagingAdapter },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [{ definition: intlPlugin }, { definition: consentPlugin }],
@@ -322,6 +330,7 @@ afterAll(async () => {
   await restoreLanguage?.();
   await rm(testRoot, { recursive: true, force: true });
   await adapter.close();
+  await stagingAdapter.close();
 });
 
 describe("#605 — the published site carries every plugin's output", () => {

@@ -22,7 +22,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { publishProjectionOnce, registerAdminOps } from "@caelo-cms/admin-core";
+import {
+  loadedVisitorProjections,
+  registerAdminOps,
+  releaseProjectionForTests,
+  stagingPublicAdapter,
+} from "@caelo-cms/admin-core";
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
@@ -44,6 +49,9 @@ import {
   setGatewayAdapter,
 } from "./server.js";
 import { registerTestLiveOrigin, TEST_LIVE_ORIGIN } from "./test-support.js";
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -84,8 +92,12 @@ const offFixture = definePlugin({
   },
 });
 
-/** Consent-manager's declared projection, which the gateway's consent rule reads. */
-const DECLARATIONS = new Map([["consent-manager", consentPlugin.visitorProjection ?? {}]]);
+/**
+ * Every loaded plugin's declared projection (#1329: a release freezes all
+ * of them, consent-manager's included, which the gateway's consent rule
+ * reads), captured right after the admin side's boot.
+ */
+let LOADED: ReturnType<typeof loadedVisitorProjections> = new Map();
 
 let adminAdapter: DatabaseAdapter;
 let gatewayAdapter: DatabaseAdapter;
@@ -209,7 +221,10 @@ beforeAll(async () => {
     return Object.fromEntries(rows.map((r) => [r.slug, r.id]));
   });
   await registerTestLiveOrigin(ADMIN_URL as string);
-  await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
+  // #1329 — plugin data follows the release: everything loaded here is
+  // released at once, and again after each change (`publish`).
+  LOADED = loadedVisitorProjections();
+  await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, LOADED);
   resetPluginHost();
 
   // --- Gateway side: its real identity, dispatch-only host. ---
@@ -249,7 +264,7 @@ afterAll(async () => {
              captcha_pow_target_prefix = ${savedCaptcha?.prefix ?? "000fff"} WHERE id = 1`;
   });
   await cleanup();
-  await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
+  await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, LOADED);
   await gatewayAdapter.close();
   await adminAdapter.close();
 });

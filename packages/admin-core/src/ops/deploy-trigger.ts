@@ -38,6 +38,13 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
+  freezeRelease,
+  pointLiveRelease,
+  pointStagingRelease,
+  ReleaseFreezeError,
+} from "@caelo-cms/migrations/public-projection";
+import { pluginHostBootstrapped } from "@caelo-cms/plugin-host";
+import {
   defineOperation,
   defineStepwiseOperation,
   execute,
@@ -103,7 +110,9 @@ import {
 import { truncatedListSchema } from "../deploy/truncated-lists.js";
 import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
+import { loadedVisitorProjections } from "../public-projection.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { clearStagingInbox, loadedInboxTables } from "../stage/staging-inbox.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
 import {
   effectiveOutDir,
@@ -370,6 +379,30 @@ export const startTriggerOp = defineOperation({
       baseRunId: null,
       leaseTtlMs: input.leaseTtlMs,
     });
+    // #1329 — the projection's release sections (the plugin registry and
+    // each plugin's published rows) are frozen with the build, as the
+    // build reads the site: a Stage shows exactly this state on staging and
+    // Publish live releases exactly it; an Owner's production build
+    // releases it at once.
+    if (target.env === "staging" || target.env === "production") {
+      try {
+        await freezeRelease(tx, {
+          runId: input.runId,
+          reason: target.env === "staging" ? "stage" : "production-build",
+          declarations: loadedVisitorProjections(),
+          // A plugin not running here is recorded with the run (#1008) and
+          // Publish live refuses the Stage; staging shows it unpublished.
+          completeness: "as-loaded",
+        });
+      } catch (e) {
+        if (!(e instanceof ReleaseFreezeError)) throw e;
+        throw new OperationAbortError({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message: e.message,
+        });
+      }
+    }
     return ok({
       runId: input.runId,
       target: rowToTarget(target),
@@ -452,6 +485,17 @@ export const finishTriggerOp = defineOperation({
     // Epic #1107 — a production build is a Publish live: pages it ships
     // for the first time get their first_published_at.
     if (input.env === "production") await stampFirstPublished(tx, input.runId);
+    // #1329 — the environment now serves the projection state this run
+    // froze (deploy.start_trigger); the drain after this commit publishes
+    // it. Staging moves with every Stage; live only with an Owner's
+    // production build, which is a human's release like Publish live.
+    if (input.env === "staging") await pointStagingRelease(tx, input.runId);
+    if (input.env === "production") {
+      await pointLiveRelease(tx, input.runId);
+      await tx.execute(sql`
+        UPDATE deploy_runs SET projection_run_id = ${input.runId}::uuid WHERE id = ${input.runId}::uuid
+      `);
+    }
     await tx.execute(sql`
       UPDATE deploy_runs
       SET status = 'succeeded', finished_at = clock_timestamp(),
@@ -638,6 +682,29 @@ async function runTrigger(
     }
     if (stop.aborted && !servedByGenerator) return await fail(abortMessage(stop));
 
+    // #1329 — staging starts from what this Stage publishes: the test
+    // inbox (comments, votes, form submissions sent on staging) goes. Part
+    // of the Stage's success, and before the build is published: a Stage
+    // reported done serves its build from a cleared inbox, and a failure
+    // here leaves staging on the previous build.
+    if (plan.target.env === "staging") {
+      const inbox = loadedInboxTables();
+      const stagingDb = pluginHostBootstrapped()?.infra.stagingAdapter;
+      if (inbox.length > 0 && !stagingDb) {
+        return await fail(
+          "the plugin host has no staging database adapter, so the staging inbox could not be cleared and this build was not published. Check PUBLIC_STAGING_ADMIN_DATABASE_URL and the admin's boot log, then Stage again.",
+        );
+      }
+      try {
+        if (stagingDb) await clearStagingInbox(stagingDb, inbox);
+      } catch (e) {
+        return await fail(
+          `the staging inbox could not be cleared, so this build was not published: ${e instanceof Error ? e.message : String(e)}. Stage again.`,
+        );
+      }
+      timer.lap("clear-staging-inbox");
+    }
+
     // v0.2.78 — hand off to the per-provider StaticPublisher. Self-hosted
     // is a no-op (the generator already synced into current/); cloud
     // uploads to the staging bucket / preview channel.
@@ -724,7 +791,7 @@ async function runTrigger(
       } catch (e) {
         timer.lap("select-preview");
         return await fail(
-          `staging build ${runId} was published but could not be made the build staging serves: ${e instanceof Error ? e.message : String(e)}. Staging still serves the previous build; Stage again.`,
+          `staging build ${runId} was published but could not be made the build staging serves: ${e instanceof Error ? e.message : String(e)}. Stage again.`,
         );
       }
       timer.lap("select-preview");

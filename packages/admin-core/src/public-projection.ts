@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The admin's publisher of the gateway projection (issue #635).
+ * The admin's publisher of the gateway projection (issues #635, #1329).
  *
- * The public API gateway has no cms_admin login; it serves from what the
- * admin publishes into cms_public (`@caelo-cms/migrations/public-projection`
- * says what and how). This module runs that publisher inside the admin
- * process:
+ * The public API gateways have no cms_admin login; they serve from what the
+ * admin publishes into cms_public and its staging twin cms_public_staging
+ * (`@caelo-cms/migrations/public-projection` says what and how: immediate
+ * sections from the current state, release sections from each
+ * environment's frozen state). This module runs that publisher inside the
+ * admin process:
  *
  *   - {@link PublicProjectionPublisher.publishAll} after the plugin host
  *     booted — every section, so a release that adds a projected column or
@@ -23,18 +25,22 @@
  * The gateway hears a NOTIFY on cms_public and drops its caches.
  *
  * Declarations come from the plugins this admin actually loaded (their
- * verified definitions), never from a manifest in the database.
+ * verified definitions), never from a manifest in the database. They are
+ * needed only to freeze a release state (a Stage, the bootstrap).
  */
 
 import {
   drainPublicProjection,
+  type FreezeCompleteness,
   type ProjectionDatabases,
   type PublishReport,
   publishPublicProjection,
+  releaseMainLineForTests,
   type VisitorProjectionDeclarations,
 } from "@caelo-cms/migrations/public-projection";
 import { loadedPlugins } from "@caelo-cms/plugin-host";
-import type { DatabaseAdapter } from "@caelo-cms/query-api";
+import { DatabaseAdapter } from "@caelo-cms/query-api";
+import { ADMIN_PUBLIC_STAGING_POOL_MAX } from "@caelo-cms/shared";
 
 /** How often the outbox is drained. */
 export const DRAIN_INTERVAL_MS = 2_000;
@@ -46,10 +52,26 @@ const SYSTEM_CTX = {
 };
 
 /**
+ * #1329 — the admin's adapter on the staging site's database
+ * (cms_public_staging), as admin_role. Public-only, so nothing reaches
+ * cms_admin through it, with the fixed pool the connection budget
+ * reserves (`ADMIN_PUBLIC_STAGING_POOL_MAX`).
+ */
+export function stagingPublicAdapter(url: string): DatabaseAdapter {
+  return new DatabaseAdapter({
+    adminDatabaseUrl: null,
+    publicDatabaseUrl: url,
+    publicDatabase: "cms_public_staging",
+    expectedRoles: { admin: null, public: ["admin_role"] },
+    publicPoolMax: ADMIN_PUBLIC_STAGING_POOL_MAX,
+  });
+}
+
+/**
  * The visitorProjection declaration of every plugin this host loaded —
  * `null` for one that declares none. A plugin not loaded here has no entry,
- * so this instance's publishes leave its section to an instance that runs
- * it (#1077).
+ * so this instance cannot freeze a release state (#1329,
+ * `freezeRelease`).
  */
 export function loadedVisitorProjections(): VisitorProjectionDeclarations {
   const out = new Map<string, Readonly<Record<string, ReadonlyArray<string>>> | null>();
@@ -60,11 +82,19 @@ export function loadedVisitorProjections(): VisitorProjectionDeclarations {
   return out;
 }
 
-/** The publisher's two transactions, both as the `system` actor. */
-export function projectionDatabases(adapter: DatabaseAdapter): ProjectionDatabases {
+/**
+ * The publisher's transactions, all as the `system` actor: cms_admin and
+ * cms_public through `adapter`, cms_public_staging through `stagingAdapter`
+ * (the admin's public-only adapter on the staging database, #1329).
+ */
+export function projectionDatabases(
+  adapter: DatabaseAdapter,
+  stagingAdapter: DatabaseAdapter,
+): ProjectionDatabases {
   return {
     readAdmin: (fn) => adapter.withAdminTransaction(SYSTEM_CTX, fn),
-    writePublic: (fn) => adapter.withPublicTransaction(SYSTEM_CTX, fn),
+    writePublic: (target, fn) =>
+      (target === "live" ? adapter : stagingAdapter).withPublicTransaction(SYSTEM_CTX, fn),
   };
 }
 
@@ -75,24 +105,44 @@ export function projectionDatabases(adapter: DatabaseAdapter): ProjectionDatabas
  */
 export function publishProjectionOnce(
   adapter: DatabaseAdapter,
+  stagingAdapter: DatabaseAdapter,
   opts: {
     readonly declarations?: VisitorProjectionDeclarations;
     readonly comments?: boolean;
   } = {},
 ): Promise<PublishReport> {
   return publishPublicProjection(
-    projectionDatabases(adapter),
+    projectionDatabases(adapter, stagingAdapter),
     opts.declarations ?? loadedVisitorProjections(),
     { comments: opts.comments ?? true },
+  );
+}
+
+/**
+ * Tests and test fixtures only (pinned by
+ * scripts/no-automatic-production-deploy.test.ts): freeze the main line and
+ * release it to both public databases at once, as a Stage plus Publish live
+ * would, so a test sees plugin data it just wrote on the public side.
+ */
+export function releaseProjectionForTests(
+  adapter: DatabaseAdapter,
+  stagingAdapter: DatabaseAdapter,
+  declarations: VisitorProjectionDeclarations = loadedVisitorProjections(),
+  completeness: FreezeCompleteness = "required",
+): Promise<PublishReport> {
+  return releaseMainLineForTests(
+    projectionDatabases(adapter, stagingAdapter),
+    declarations,
+    completeness,
   );
 }
 
 /** Republish what the outbox marks stale, once (tooling, tests). */
 export function drainProjectionOnce(
   adapter: DatabaseAdapter,
-  declarations: VisitorProjectionDeclarations = loadedVisitorProjections(),
+  stagingAdapter: DatabaseAdapter,
 ): Promise<PublishReport> {
-  return drainPublicProjection(projectionDatabases(adapter), declarations);
+  return drainPublicProjection(projectionDatabases(adapter, stagingAdapter));
 }
 
 export interface PublicProjectionPublisher {
@@ -121,10 +171,12 @@ export interface PublicProjectionPublisher {
  */
 export function startPublicProjectionPublisher(opts: {
   readonly adapter: DatabaseAdapter;
+  /** #1329 — the admin's adapter on cms_public_staging. */
+  readonly stagingAdapter: DatabaseAdapter;
   readonly declarations?: () => VisitorProjectionDeclarations;
   readonly intervalMs?: number;
 }): PublicProjectionPublisher {
-  const dbs = projectionDatabases(opts.adapter);
+  const dbs = projectionDatabases(opts.adapter, opts.stagingAdapter);
   const declarations = opts.declarations ?? loadedVisitorProjections;
   let tail: Promise<unknown> = Promise.resolve();
   let waitingDrain: Promise<PublishReport> | null = null;
@@ -151,9 +203,9 @@ export function startPublicProjectionPublisher(opts: {
           throw e;
         }
         fullPublishDue = false;
-        for (const slug of report.pendingPlugins) {
+        for (const target of report.unreleased) {
           console.error(
-            `[public-projection] ${slug}: declared tables are not provisioned; its visitor operations will answer "not published" until the plugin loads`,
+            `[public-projection] ${target}: no frozen release state yet — an active plugin is not loaded here, so the plugin registry stays as published until an instance that runs every active plugin boots, or the next Stage`,
           );
         }
         return report;
@@ -165,7 +217,7 @@ export function startPublicProjectionPublisher(opts: {
       if (waitingDrain !== null) return waitingDrain;
       const drain = enqueue(() => {
         waitingDrain = null;
-        return drainPublicProjection(dbs, declarations());
+        return drainPublicProjection(dbs);
       });
       waitingDrain = drain;
       return drain;

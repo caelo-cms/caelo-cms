@@ -421,7 +421,7 @@ import {
   listPluginCapabilityGrantsOp,
   proposeRevokePluginCapabilityOp,
 } from "./ops/plugins/capability_proposals.js";
-import { commentArchiveInsertOp } from "./ops/plugins/comment_archive.js";
+import { commentArchiveInsertOp, commentArchivePostTeamOp } from "./ops/plugins/comment_archive.js";
 import {
   approvePluginInstallationOp,
   finalizePluginInstallationOp,
@@ -1437,5 +1437,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // v0.2.18 — comments long-term archive (cms_public is now ephemeral
   // after moderation; long-term store + static-render reads land here).
   registry.register(commentArchiveInsertOp);
+  registry.register(commentArchivePostTeamOp);
   registry.register(commentArchiveListForPageOp);
 }
