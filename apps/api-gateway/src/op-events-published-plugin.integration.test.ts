@@ -24,7 +24,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   loadedVisitorProjections,
-  publishProjectionOnce,
   registerAdminOps,
   releaseProjectionForTests,
   stagingPublicAdapter,

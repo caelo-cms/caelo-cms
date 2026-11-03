@@ -24,7 +24,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   drainProjectionOnce,
-  publishProjectionOnce,
   releaseProjectionForTests,
   stagingPublicAdapter,
 } from "@caelo-cms/admin-core";
