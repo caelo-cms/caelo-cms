@@ -170,6 +170,10 @@ export async function ensureCloudSqlVerifyFull(
     const r = await run(["sql", "instances", "patch", t.sqlInstance, project, ...patch, "--quiet"]);
     if (!r.ok) return fail(`patch ${t.sqlInstance} (${patch.join(" ")}): ${r.stderr.trim()}`);
     done.push(`Cloud SQL ${t.sqlInstance}: ${patch.join(" ")}`);
+    // The instance reports its DNS name only once it uses the shared CA, so
+    // the description from before the patch cannot name the host.
+    described = await describeInstance(t, run);
+    if (!described.ok) return fail(described.error);
   }
 
   // The active server certificate must come from the shared CA. Before the
