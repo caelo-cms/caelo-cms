@@ -349,7 +349,12 @@ export async function syncRedirects(
   // The operator asked about these targets: another target the widened
   // retry pushed along records its own result on its own row, and its
   // failure (staging with no build to serve) must not answer this retry.
-  const asked = requested.targetIds === undefined ? null : new Set(requested.targetIds);
+  // Lower-cased like the `id::text` the outcomes carry: the database
+  // matched an upper-case spelling of the same uuid.
+  const asked =
+    requested.targetIds === undefined
+      ? null
+      : new Set(requested.targetIds.map((id) => id.toLowerCase()));
   // Production first: it is what visitors see.
   return [...outcomes.values()]
     .filter((o) => asked === null || asked.has(o.targetId))

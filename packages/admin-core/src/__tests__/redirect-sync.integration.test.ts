@@ -333,7 +333,8 @@ describe("redirect sync on save (#1157)", () => {
     // the operator's click on production.
     const r = await execute(registry, adapter, SYSTEM, "redirects.sync_provider", {
       trigger: "manual",
-      targetIds: [targets.production.id],
+      // An upper-case spelling is the same target (the Settings form accepts it).
+      targetIds: [targets.production.id.toUpperCase()],
     });
     expect(r.ok).toBe(true);
     const outcomes = (r.ok ? r.value : { targets: [] }) as {
