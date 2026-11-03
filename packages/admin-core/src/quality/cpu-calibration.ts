@@ -34,12 +34,10 @@
 
 import { LighthouseRunError } from "./lighthouse-extract.js";
 
-/** The benchmark index of the device every run emulates: a mid-tier phone. */
+/** The benchmark index of the device every run emulates: a mid-tier phone.
+ *  It is also the slowest host the audit accepts: Lighthouse only slows a
+ *  CPU down, so a slower host (multiplier below 1) cannot emulate it. */
 export const TARGET_BENCHMARK_INDEX = 433;
-
-/** A host slower than the target cannot emulate it: Lighthouse only slows
- *  a CPU down (a multiplier below 1 would emulate a faster device). */
-export const MIN_BENCHMARK_INDEX = TARGET_BENCHMARK_INDEX;
 
 /** Above this the benchmark is implausible, not a fast host: the fastest
  *  hosts seen measure ~3700 (#1370), so 8000 is twice that. It caps the
@@ -79,12 +77,12 @@ export function calibrateCpuSlowdown(benchmarkIndex: number): CpuCalibration {
     };
   }
   const bi = Math.round(benchmarkIndex);
-  if (benchmarkIndex < MIN_BENCHMARK_INDEX) {
+  if (benchmarkIndex < TARGET_BENCHMARK_INDEX) {
     return {
       ok: false,
       code: "host-too-slow",
       benchmarkIndex: bi,
-      message: `The audit host is too slow to emulate Lighthouse's target device (benchmark index ${bi}, needs at least ${MIN_BENCHMARK_INDEX}). Give the audit more CPU and run the check again.`,
+      message: `The audit host is too slow to emulate Lighthouse's target device (benchmark index ${bi}, needs at least ${TARGET_BENCHMARK_INDEX}). Give the audit more CPU and run the check again.`,
     };
   }
   if (benchmarkIndex > MAX_BENCHMARK_INDEX) {

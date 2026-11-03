@@ -15,7 +15,6 @@ import {
   effectiveBenchmarkIndex,
   fastestBenchmarkIndex,
   MAX_BENCHMARK_INDEX,
-  MIN_BENCHMARK_INDEX,
   TARGET_BENCHMARK_INDEX,
 } from "../cpu-calibration.js";
 import { LighthouseRunError } from "../lighthouse-extract.js";
@@ -55,12 +54,11 @@ describe("calibrateCpuSlowdown (constant target device, #1370)", () => {
   });
 
   it("refuses a host slower than the target device, with a next step", () => {
-    expect(MIN_BENCHMARK_INDEX).toBe(TARGET_BENCHMARK_INDEX);
-    const c = calibrateCpuSlowdown(MIN_BENCHMARK_INDEX - 1);
+    const c = calibrateCpuSlowdown(TARGET_BENCHMARK_INDEX - 1);
     expect(c.ok).toBe(false);
     if (!c.ok) {
       expect(c.code).toBe("host-too-slow");
-      expect(c.benchmarkIndex).toBe(MIN_BENCHMARK_INDEX - 1);
+      expect(c.benchmarkIndex).toBe(TARGET_BENCHMARK_INDEX - 1);
       expect(c.message).toContain("too slow");
       expect(c.message).toContain("more CPU");
     }
@@ -86,7 +84,7 @@ describe("calibrateCpuSlowdown (constant target device, #1370)", () => {
   );
 
   it("keeps the multiplier between 1x and the docs' 20x ceiling", () => {
-    const low = calibrateCpuSlowdown(MIN_BENCHMARK_INDEX);
+    const low = calibrateCpuSlowdown(TARGET_BENCHMARK_INDEX);
     const high = calibrateCpuSlowdown(MAX_BENCHMARK_INDEX);
     if (!low.ok || !high.ok) throw new Error("bounds must calibrate");
     expect(low.cpuSlowdownMultiplier).toBe(1);
