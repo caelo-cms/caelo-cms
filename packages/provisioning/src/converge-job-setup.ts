@@ -41,7 +41,10 @@
  *   - {@link INSTALL_JOB_ROLES} (the operator-access step of a converge
  *     creates a custom role and a Cloud Scheduler job, and the job's lines
  *     must reach Cloud Logging) — what an install-job install already
- *     grants; not an escalation, the provisioner holds projectIamAdmin;
+ *     grants; not an escalation, the provisioner holds projectIamAdmin. The
+ *     converge job of a release that adds a role here grants it itself when
+ *     it finds it missing (converge-job-preflight.ts, the self-grant), so
+ *     the role reaches an older install without a terminal run;
  *   - a Cloud SQL IAM database login that is a member of `platform_updater`
  *     only (migration 0267): it reads its request and writes the timeline,
  *     nothing else in the database.

@@ -92,9 +92,9 @@ export interface AccessCheck {
   readonly permissions: readonly string[];
 }
 
-/** A check with the permissions it lacks. */
-export interface MissingAccess {
-  readonly check: AccessCheck;
+/** A check with the permissions it lacks (`C`: the caller's own check type, handed back as given). */
+export interface MissingAccess<C extends AccessCheck = AccessCheck> {
+  readonly check: C;
   readonly missing: readonly string[];
   /**
    * Permissions that could not be judged because another one is missing
@@ -114,9 +114,9 @@ export interface IamTester {
 }
 
 /** How the self-check came out. */
-export type PreflightOutcome =
+export type PreflightOutcome<C extends AccessCheck = AccessCheck> =
   | { readonly kind: "ok" }
-  | { readonly kind: "missing"; readonly missing: readonly MissingAccess[] }
+  | { readonly kind: "missing"; readonly missing: readonly MissingAccess<C>[] }
   /** IAM could not be asked about at least one resource; nothing was judged missing. */
   | { readonly kind: "error"; readonly errors: readonly string[] };
 
@@ -250,10 +250,10 @@ export function upgraderAccessChecks(target: {
 }
 
 /** Ask IAM about every check (one call per resource); never throws. */
-export async function runIamPreflight(
-  checks: readonly AccessCheck[],
+export async function runIamPreflight<C extends AccessCheck>(
+  checks: readonly C[],
   tester: IamTester,
-): Promise<PreflightOutcome> {
+): Promise<PreflightOutcome<C>> {
   // One question per resource: the project alone carries four checks.
   const byResource = new Map<string, { resource: IamResource; permissions: Set<string> }>();
   for (const c of checks) {
@@ -300,7 +300,7 @@ export async function runIamPreflight(
       }),
   );
   if (errors.length > 0) return { kind: "error", errors: errors.sort() };
-  const missing: MissingAccess[] = [];
+  const missing: MissingAccess<C>[] = [];
   for (const check of checks) {
     const key = resourceName(check.resource);
     const held = granted.get(key) ?? new Set<string>();
@@ -343,6 +343,11 @@ export function preflightMissingReason(
   missing: readonly MissingAccess[],
   voice: PreflightVoice,
 ): string {
+  return `Nothing was changed: ${voice.subject} checked its access before starting and is missing permissions this update needs — ${missingAccessText(missing)}. ${voice.repair}`;
+}
+
+/** Every missing permission with what it is for, as one clause list ("it cannot …; it cannot …"). */
+export function missingAccessText(missing: readonly MissingAccess[]): string {
   const lines = missing.map((m) => {
     const where = resourceName(m.check.resource);
     const parts = [
@@ -355,7 +360,7 @@ export function preflightMissingReason(
     ];
     return `it ${m.missing.length > 0 ? "cannot" : "may not be able to"} ${m.check.need} (${parts.join("; ")})`;
   });
-  return `Nothing was changed: ${voice.subject} checked its access before starting and is missing permissions this update needs — ${lines.join("; ")}. ${voice.repair}`;
+  return lines.join("; ");
 }
 
 /** The request's end reason when IAM could not be asked. */
