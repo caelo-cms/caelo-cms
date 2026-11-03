@@ -15,11 +15,21 @@
  *    big site than on a small one: the hooks read the rendered page's own
  *    rows (and its variant group), not the site, and the composition
  *    points of one pass share what they read (`renderId`). Counted as the
- *    Query API operations the adapter runs during the preview's plugin
+ *    Query API operations the adapter runs for the preview's plugin
  *    calls — every plugin store read and every core call is one.
+ *
+ * Only the preview's own operations count. The plugin host keeps running
+ * while a preview renders: international-site's `locale-cache-refresh`
+ * worker ticks at every full minute (two store reads) and its
+ * `source-hash-backfill` worker at second 30. A counter that took every
+ * operation in a time window charged a tick to whichever preview it
+ * overlapped (CI run 41608208651: 16 calls instead of 14). The count
+ * follows the preview's async context instead, so background work is
+ * neither counted nor stopped.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   bootstrap,
   collectContributions,
@@ -61,9 +71,17 @@ let pageTypeId = "";
 let pluginId = "";
 let seoBaseBefore: string | null = null;
 
-/** Operations the adapter ran while `counting` is on. */
-const ran: string[] = [];
-let counting = false;
+/**
+ * The operations of the preview being counted. An operation is counted
+ * when it runs in the preview's async context, i.e. on behalf of one of
+ * its plugin calls; a worker tick started by the host's scheduler runs
+ * outside it.
+ */
+const previewCalls = new AsyncLocalStorage<string[]>();
+/** Previews rendering right now. */
+let previewsRunning = 0;
+/** Operations that ran during a preview but not for it (background work). */
+const outsidePreview: string[] = [];
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -159,41 +177,46 @@ async function preview(
   chatBranchId: string | null = null,
 ): Promise<PreviewResult> {
   const scope: RenderScope = { chatBranchId, renderId: crypto.randomUUID() };
-  ran.length = 0;
-  counting = true;
-  try {
-    const annotated = await runPluginOperation({
-      invocation: renderInvocation(scope),
-      pluginSlug: "international-site",
-      operationName: "url_annotations",
-      args: { pageIds: [pageId] },
+  const calls: string[] = [];
+  previewsRunning += 1;
+  return previewCalls
+    .run(calls, async () => {
+      const annotated = await runPluginOperation({
+        invocation: renderInvocation(scope),
+        pluginSlug: "international-site",
+        operationName: "url_annotations",
+        args: { pageIds: [pageId] },
+      });
+      if (!annotated.ok) throw new Error(annotated.error.message);
+      const sources = await resolveListSources([pageId], scope, "directory");
+      await resolveContentVariants([{ pageId, placements: [] }], scope);
+      await resolveLinkVariants([pageId, ...referenced], scope);
+      const contributed = await collectContributions([pageId], {
+        ...scope,
+        siteBaseUrl: BASE,
+        pageUrlStyle: "directory",
+      });
+      return {
+        calls: [...calls],
+        hreflang: (contributed.head.get(pageId) ?? []).map((e) =>
+          e.kind === "link" ? `${e.hreflang} ${e.href}` : JSON.stringify(e),
+        ),
+        switcher: (sources.get(pageId)?.language_links ?? []).map((i) => String(i.values.locale)),
+      };
+    })
+    .finally(() => {
+      previewsRunning -= 1;
     });
-    if (!annotated.ok) throw new Error(annotated.error.message);
-    const sources = await resolveListSources([pageId], scope, "directory");
-    await resolveContentVariants([{ pageId, placements: [] }], scope);
-    await resolveLinkVariants([pageId, ...referenced], scope);
-    const contributed = await collectContributions([pageId], {
-      ...scope,
-      siteBaseUrl: BASE,
-      pageUrlStyle: "directory",
-    });
-    return {
-      calls: [...ran],
-      hreflang: (contributed.head.get(pageId) ?? []).map((e) =>
-        e.kind === "link" ? `${e.hreflang} ${e.href}` : JSON.stringify(e),
-      ),
-      switcher: (sources.get(pageId)?.language_links ?? []).map((i) => String(i.values.locale)),
-    };
-  } finally {
-    counting = false;
-  }
 }
 
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   const runOperation = adapter.runOperation.bind(adapter);
   adapter.runOperation = ((op, ctx, input) => {
-    if (counting) ran.push(`${ctx.actorKind}:${op.name}`);
+    const name = `${ctx.actorKind}:${op.name}`;
+    const calls = previewCalls.getStore();
+    if (calls) calls.push(name);
+    else if (previewsRunning > 0) outsidePreview.push(name);
     return runOperation(op, ctx, input);
   }) as typeof adapter.runOperation;
   registry = new OperationRegistry();
@@ -277,6 +300,25 @@ describe("#1213 — international-site render hooks at scale", () => {
     expect(big.switcher).toEqual(smallPreview.switcher);
     expect(big.calls.length).toBe(smallPreview.calls.length);
     expect([...big.calls].sort()).toEqual([...smallPreview.calls].sort());
+  });
+
+  it("a worker tick while a preview renders is not the preview's cost", async () => {
+    const target = small[0];
+    if (!target || !smallPreview) throw new Error("previous test did not run");
+    // What the scheduler runs at every full minute, started the way its
+    // cron job starts it: outside any render pass, during this one.
+    outsidePreview.length = 0;
+    const tick = runPluginOperation({
+      invocation: { origin: "worker", actorId: SYSTEM_ACTOR_ID },
+      pluginSlug: "international-site",
+      operationName: "refresh_locales",
+      args: { _trigger: "worker", workerName: "locale-cache-refresh" },
+    });
+    const during = await preview(target.de, [small[1]?.en ?? "", small[2]?.de ?? ""]);
+    const ticked = await tick;
+    if (!ticked.ok) throw new Error(ticked.error.message);
+    expect(outsidePreview).toContain("plugin:plugin_storage.list");
+    expect([...during.calls].sort()).toEqual([...smallPreview.calls].sort());
   });
 
   it("a later pass reads again: an unpublished variant drops out of hreflang", async () => {
