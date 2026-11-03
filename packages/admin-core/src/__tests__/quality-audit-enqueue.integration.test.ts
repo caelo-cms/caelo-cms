@@ -9,8 +9,11 @@
  * was recorded; when that call was lost (pool exhaustion, an admin
  * timeout) the run was `succeeded` with no audit row, get_quality_audit
  * answered "is being queued" forever and Publish live stayed blocked.
- * Now deploy.finish_trigger writes the audit row in the transaction that
- * marks the run succeeded: both commit, or neither.
+ * Now deploy.start_trigger plans the audit row on the run before anything
+ * is built (where a refusal is still harmless), and deploy.finish_trigger
+ * writes exactly that row in the transaction that marks the run
+ * succeeded: both commit, or neither, and the write cannot be refused
+ * after the build is already visible on staging.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -119,6 +122,25 @@ async function lastStagingRun(): Promise<{ id: string; status: string; error_mes
   });
 }
 
+async function plannedAuditOf(runId: string): Promise<Record<string, unknown> | null> {
+  return withSql(async (tx) => {
+    const rows = (await tx`
+      SELECT planned_audit FROM deploy_runs WHERE id = ${runId}::uuid`) as unknown as {
+      planned_audit: Record<string, unknown> | null;
+    }[];
+    return rows[0]?.planned_audit ?? null;
+  });
+}
+
+async function stagingRunCount(): Promise<number> {
+  return withSql(async (tx) => {
+    const rows = (await tx`
+      SELECT count(*)::int AS n FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+      WHERE t.name = 'staging'`) as unknown as { n: number }[];
+    return rows[0]?.n ?? 0;
+  });
+}
+
 async function stage(qualityAudit?: unknown): Promise<string> {
   const built = await op<{ runId: string }>(SYS, "deploy.trigger", {
     targetName: "staging",
@@ -222,9 +244,8 @@ describe("a succeeded staging build always has its audit (#1319)", () => {
     });
   });
 
-  it("a build that cannot queue its audit is not recorded as staged", async () => {
-    // A chat id that does not exist: the audit row's foreign key refuses
-    // it, inside the transaction that would mark the run succeeded.
+  it("an audit request that cannot be planned is refused before anything is built", async () => {
+    const before = await stagingRunCount();
     const msg = await opErr(SYS, "deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
@@ -236,9 +257,83 @@ describe("a succeeded staging build always has its audit (#1319)", () => {
         },
       },
     });
-    expect(msg).toContain("a referenced row does not exist");
+    expect(msg).toContain("nothing was built");
+    expect(await stagingRunCount()).toBe(before);
+  });
+
+  it("the audit is planned on the run before the build and only written when it succeeds", async () => {
+    // The run's first step alone: the build would run next.
+    const chatSessionId = await newChat("planned");
+    const runId = crypto.randomUUID();
+    const plan = await op<{ target: { id: string } }>(SYS, "deploy.start_trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+      runId,
+      leaseTtlMs: 60_000,
+      qualityAudit: {
+        chatSessionId,
+        branch: {
+          classification: { auditNeeded: false, reasons: [], skipped: ["field values: x"] },
+          touchedPageIds: [homeId],
+        },
+        stagedBy: "operator",
+      },
+    });
+    expect(await plannedAuditOf(runId)).toMatchObject({
+      chatSessionId,
+      status: "queued",
+      stagedBy: "operator",
+    });
+    expect(await auditsOf(runId)).toEqual([]);
+
+    // The build is now visible on staging; the chat goes away meanwhile.
+    // Recording the run still cannot fail on its audit row.
+    await withSql((tx) => tx`DELETE FROM chat_sessions WHERE id = ${chatSessionId}::uuid`);
+    await op(SYS, "deploy.finish_trigger", {
+      runId,
+      targetId: plan.target.id,
+      env: "staging",
+      pageCount: 1,
+      fileCount: 1,
+      publishSummary: {},
+      stagingOrigin: null,
+      parityManifest: null,
+      override: null,
+      phaseTimings: [],
+      qualityAudit: null,
+    });
+    expect(await plannedAuditOf(runId)).toBeNull();
+    const written = await auditsOf(runId);
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({
+      status: "queued",
+      chat_session_id: null,
+      staged_by: "operator",
+    });
+  });
+
+  it("a failed build drops its planned audit and has no audit row", async () => {
+    const runId = crypto.randomUUID();
+    await op(SYS, "deploy.start_trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+      runId,
+      leaseTtlMs: 60_000,
+    });
+    expect(await plannedAuditOf(runId)).not.toBeNull();
+    await op(SYS, "deploy.fail_run", { runId, message: "generator failed", phaseTimings: [] });
+    expect(await plannedAuditOf(runId)).toBeNull();
+    expect(await auditsOf(runId)).toEqual([]);
+
+    // A real build that fails (its output root cannot be written) ends the
+    // same way.
+    await opErr(SYS, "deploy.trigger", {
+      targetName: "staging",
+      repoRoot: "/dev/null/caelo-cannot-write-here",
+    });
     const run = await lastStagingRun();
     expect(run.status).toBe("failed");
+    expect(await plannedAuditOf(run.id)).toBeNull();
     expect(await auditsOf(run.id)).toEqual([]);
   });
 

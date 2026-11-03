@@ -19,9 +19,10 @@
  *   (publisher upload)     no transaction
  *   deploy.finish_trigger  record the origin + the run, release the lease,
  *                          mark the target's redirects behind; a staging
- *                          build's quality audit is queued in this same
- *                          transaction (#1319), so no succeeded Stage is
- *                          ever left without its audit
+ *                          build writes the quality audit row
+ *                          deploy.start_trigger planned (#1319) in this
+ *                          same transaction, so no succeeded Stage is ever
+ *                          left without its audit
  *   redirects.sync_provider push the redirects (provider I/O, after the
  *                          run is recorded; a failure is retried)
  *   deploy.fail_run        on every failure or abort: record it, release
@@ -133,7 +134,9 @@ import { acquireLeaseStep, fenceRunLeases } from "./deploy-lease-steps.js";
 import { beginRunInTx } from "./deploy-run-lifecycle.js";
 import { digestUndigestedMedia } from "./media_digests.js";
 import {
-  enqueueAuditOp,
+  insertPlannedAudit,
+  plannedAuditSchema,
+  planStagingAudit,
   type StagingAuditRequest,
   stagingAuditRequestSchema,
 } from "./quality/lifecycle.js";
@@ -389,6 +392,24 @@ export const startTriggerOp = defineOperation({
       }
     }
 
+    // #1319 — a staging build's audit is planned now, before anything is
+    // built: once the build is visible on staging, writing its audit row
+    // must not be able to fail. What the plan needs is checked first.
+    const auditRequest =
+      target.env === "staging" ? (input.qualityAudit ?? OUTSIDE_CHAT_AUDIT) : null;
+    if (auditRequest?.chatSessionId) {
+      const chat = (await tx.execute(sql`
+        SELECT 1 AS found FROM chat_sessions WHERE id = ${auditRequest.chatSessionId}::uuid
+      `)) as unknown as { found: number }[];
+      if (chat.length === 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message: `chat ${auditRequest.chatSessionId} does not exist, so this Stage's quality check has no chat to report to — nothing was built. Stage from an open chat (or without qualityAudit, outside a chat).`,
+        });
+      }
+    }
+
     // #553 — a staging build records main's render fingerprint as it
     // starts, so a later direct production build can tell whether main
     // still renders what this Stage's quality check saw (taken before the
@@ -413,6 +434,13 @@ export const startTriggerOp = defineOperation({
       baseRunId: null,
       leaseTtlMs: input.leaseTtlMs,
     });
+    if (auditRequest !== null) {
+      const planned = await planStagingAudit(tx, { deployRunId: input.runId, ...auditRequest });
+      await tx.execute(sql`
+        UPDATE deploy_runs SET planned_audit = ${jsonbParam(planned)}
+        WHERE id = ${input.runId}::uuid
+      `);
+    }
     // #1329 — the projection's release sections (the plugin registry and
     // each plugin's published rows) are frozen with the build, as the
     // build reads the site: a Stage shows exactly this state on staging and
@@ -470,13 +498,10 @@ export const finishTriggerOp = defineOperation({
       parityManifest: z.record(z.string(), z.string()).nullable(),
       override: z.object({ auditRunId: z.string(), reason: z.string() }).nullable(),
       phaseTimings: z.array(phaseTimingSchema),
-      /** #1319 — a staging build's audit request; null for other targets. */
+      /** #1319 — what the audit log records as the Stage's audit request. */
       qualityAudit: stagingAuditRequestSchema.nullable(),
     })
-    .strict()
-    .refine((v) => (v.env === "staging") === (v.qualityAudit !== null), {
-      message: "a staging build carries its audit request, other builds none",
-    }),
+    .strict(),
   output: z.object({ draftPages: draftPagesSummary }),
   handler: async (ctx, input, tx) => {
     // Refusals throw OperationAbortError: nothing of this step may commit,
@@ -489,13 +514,23 @@ export const finishTriggerOp = defineOperation({
       });
     };
     const running = (await tx.execute(sql`
-      SELECT 1 AS running FROM deploy_runs
+      SELECT planned_audit FROM deploy_runs
       WHERE id = ${input.runId}::uuid AND status = 'running'
       FOR UPDATE
-    `)) as unknown as { running: number }[];
-    if (running.length === 0) {
+    `)) as unknown as { planned_audit: unknown }[];
+    const runRow = running[0];
+    if (!runRow) {
       refuse(
         `build ${input.runId} was marked failed while it ran (its heartbeat stopped for longer than the lease); nothing it built is recorded. Stage again.`,
+      );
+    }
+    // deploy.start_trigger planned every staging build's audit; a staging
+    // run without one is a bug in this op, never a state to accept.
+    const planned =
+      input.env === "staging" ? plannedAuditSchema.safeParse(runRow?.planned_audit) : null;
+    if (planned && !planned.success) {
+      refuse(
+        `staging build ${input.runId} has no planned quality check (deploy_runs.planned_audit: ${planned.error.message}), so it is not recorded as staged. Stage again.`,
       );
     }
     if (input.stagingOrigin) {
@@ -545,27 +580,22 @@ export const finishTriggerOp = defineOperation({
           publish_summary = ${jsonbParam(input.publishSummary)},
           site_url = ${input.stagingOrigin},
           parity_manifest = ${input.parityManifest === null ? null : jsonbParam(input.parityManifest)},
-          lease_expires_at = NULL
+          lease_expires_at = NULL, planned_audit = NULL
       WHERE id = ${input.runId}::uuid
     `);
-    // #1319 — the audit is queued with the build, in this transaction:
-    // before, the Stage queued it in a separate call after this commit, and
-    // a lost call (pool exhaustion, an admin timeout, a process that died
-    // between the two) left a succeeded Stage with no audit and Publish
-    // live blocked with nothing to retry. Now a build that cannot record its
-    // audit does not count as staged either (the run ends failed; Stage
-    // again).
-    if (input.qualityAudit !== null) {
-      const queued = await enqueueAuditOp.handler(
-        ctx,
-        { deployRunId: input.runId, ...input.qualityAudit },
-        tx,
-      );
-      if (!queued.ok) {
-        refuse(
-          `staging build ${input.runId} could not queue its quality check, so it is not recorded as staged: ${describeError(queued.error)}. Stage again.`,
-        );
-      }
+    // #1319 — the audit row commits with the build: before, the Stage
+    // queued it in a separate call after this commit, and a lost call (pool
+    // exhaustion, an admin timeout, a process that died between the two)
+    // left a succeeded Stage with no audit and Publish live blocked with
+    // nothing to retry. The row was decided before the build
+    // (deploy.start_trigger), so this is a plain insert of checked values.
+    if (planned?.success) {
+      const queued = await insertPlannedAudit(tx, ctx, {
+        deployRunId: input.runId,
+        planned: planned.data,
+        input: { deployRunId: input.runId, ...(input.qualityAudit ?? {}) },
+      });
+      if (!queued.ok) refuse(describeError(queued.error));
     }
     // #1157 — the build read the redirects table when it started; a
     // redirect saved since then was pushed to what the target served before
