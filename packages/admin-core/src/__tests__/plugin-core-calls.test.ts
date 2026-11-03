@@ -132,7 +132,8 @@ function pluginCoreCalls(): Map<string, Set<string>> {
     }
     const called = new Set<string>();
     for (const file of sources(src)) {
-      for (const m of readFileSync(file, "utf8").matchAll(/"([a-z_]+\.[a-z_]+)"/g)) {
+      // Every string-literal form: "op", 'op' and `op`.
+      for (const m of readFileSync(file, "utf8").matchAll(/["'`]([a-z_]+\.[a-z_]+)["'`]/g)) {
         const name = m[1] ?? "";
         if (ops.has(name)) called.add(name);
       }

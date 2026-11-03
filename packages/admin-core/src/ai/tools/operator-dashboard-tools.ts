@@ -177,12 +177,13 @@ function consentPurposesLine(raw: unknown): string {
 
 /**
  * #1390 — the plugin's background cost lines: its change consumer's failure
- * backoff, and the time of the core operations it called. Facts for the
+ * backoff, and the time of the calls it made through its broker (core
+ * operations and its own storage, pool wait included). Facts for the
  * operator; nothing here switches the plugin off or slows it down.
  */
 export function pluginBackgroundLines(h: {
   consumerBackoff: { consecutiveFailures: number; nextRetryAt: string; lastError: string } | null;
-  coreOpCost: {
+  callCost: {
     since: string | null;
     calls: number;
     totalMs: number;
@@ -196,15 +197,15 @@ export function pluginBackgroundLines(h: {
       `change consumer backing off: failed ${b.consecutiveFailures}x in a row, retried at ${b.nextRetryAt} (other plugins unaffected): ${b.lastError}`,
     );
   }
-  const c = h.coreOpCost;
+  const c = h.callCost;
   if (c.calls === 0) {
-    lines.push("core operation time: none recorded on the live servers");
+    lines.push("broker call time: none recorded on the live servers");
   } else {
     const ops = c.ops
       .map((o) => `${o.op} ${o.calls}x ${o.totalMs} ms (max ${o.maxMs} ms)`)
       .join("; ");
     lines.push(
-      `core operation time since ${c.since ?? "server start"}: ${c.calls} calls, ${c.totalMs} ms — ${ops}`,
+      `broker call time (core ops + own storage, incl. pool wait) since ${c.since ?? "server start"}: ${c.calls} calls, ${c.totalMs} ms — ${ops}`,
     );
   }
   return lines;
@@ -214,7 +215,7 @@ export function pluginBackgroundLines(h: {
 export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
   name: "get_plugin",
   description:
-    "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, change-consumer backoff, DB time of the core ops it calls, validator findings, declared tools/skills/capabilities, required plugins + active plugins requiring it, what it asks visitors to consent to (purpose, category, cookies), AI spend last 24h vs its cap. Never returns source.\n" +
+    "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, change-consumer backoff, time of its broker calls (core ops + own storage), validator findings, declared tools/skills/capabilities, required plugins + active plugins requiring it, what it asks visitors to consent to (purpose, category, cookies), AI spend last 24h vs its cap. Never returns source.\n" +
     "USE FOR: when `list_plugins`' summary isn't enough: why it fails or a submission was rejected, what an inactive plugin adds before `activate_plugin`, whether it nears its AI cap.\n" +
     "Errors: `core` = Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team -> repeat exactly, never say the team knows unless it says sent | `plugin` = the plugin's own code | `transient` = retried. Errors never switch a plugin off.",
   schema: getPluginInput,

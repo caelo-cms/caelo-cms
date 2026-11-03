@@ -77,8 +77,12 @@ const consumerBackoff = z.object({
   lastError: z.string(),
 });
 
-/** #1390 — one core operation the plugin called: calls, total and longest ms. */
-const coreOpCost = z.object({
+/**
+ * #1390 — one call the plugin made through its broker — a core operation
+ * (`pages.list`) or its own storage (`plugin_storage.list`): calls, total
+ * and longest ms.
+ */
+const callCost = z.object({
   op: z.string(),
   calls: z.number().int(),
   totalMs: z.number().int(),
@@ -86,16 +90,18 @@ const coreOpCost = z.object({
 });
 
 /**
- * #1390 — what the plugin's work costs the database: the core operations it
- * called through its broker on the live servers since `since` (the oldest
- * live server's start), costliest first. Reported, never acted on (#1008).
+ * #1390 — what the plugin's work costs: the calls it made through its
+ * broker on the live servers since `since` (the oldest live server's
+ * start), costliest first. Wall time of each call — the database work plus
+ * the wait for a pool connection — not database CPU. Reported, never acted
+ * on (#1008).
  */
-const coreOpCostSummary = z.object({
+const callCostSummary = z.object({
   since: z.string().nullable(),
   calls: z.number().int(),
   totalMs: z.number().int(),
   /** The costliest operations by total time (at most 10). */
-  ops: z.array(coreOpCost),
+  ops: z.array(callCost),
 });
 
 export const pluginHealth = z.object({
@@ -114,7 +120,7 @@ export const pluginHealth = z.object({
   /** Its change consumer's failure backoff, when one is waiting (#1390). */
   consumerBackoff: consumerBackoff.nullable(),
   /** The core operations it called and their time (#1390). */
-  coreOpCost: coreOpCostSummary,
+  callCost: callCostSummary,
 });
 export type PluginHealth = z.infer<typeof pluginHealth>;
 
@@ -196,7 +202,7 @@ function costSummary(
     max_ms: number;
     since: string | Date | null;
   }>,
-): z.infer<typeof coreOpCostSummary> {
+): z.infer<typeof callCostSummary> {
   const ops = rows
     .map((r) => ({
       op: r.op,
@@ -332,7 +338,7 @@ export async function readPluginHealth(
       problem: state === "failing" && problem ? summary(problem) : null,
       recentErrors: recent.filter((r) => r.plugin_slug === p.slug).map(summary),
       consumerBackoff: backoffBySlug.get(p.slug) ?? null,
-      coreOpCost: costSummary(costs.filter((c) => c.plugin_slug === p.slug)),
+      callCost: costSummary(costs.filter((c) => c.plugin_slug === p.slug)),
     });
   }
   return out;

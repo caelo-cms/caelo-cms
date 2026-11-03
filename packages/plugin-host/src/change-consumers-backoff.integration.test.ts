@@ -150,7 +150,7 @@ interface HealthOut {
         nextRetryAt: string;
         lastError: string;
       } | null;
-      coreOpCost: {
+      callCost: {
         since: string | null;
         calls: number;
         totalMs: number;
@@ -223,10 +223,10 @@ describe("#1390 — a failing change consumer backs off against NOTIFY wake-ups"
       expect(backingOff.consumerBackoff?.lastError).toContain("statement timeout");
       const retryAt = Date.parse(backingOff.consumerBackoff?.nextRetryAt ?? "");
       expect(retryAt - failedAt).toBeGreaterThanOrEqual(BACKOFF_MS - 100);
-      const list = backingOff.coreOpCost.ops.find((o) => o.op === "modules.list");
+      const list = backingOff.callCost.ops.find((o) => o.op === "modules.list");
       expect(list?.calls).toBe(1);
-      expect(backingOff.coreOpCost.calls).toBeGreaterThanOrEqual(1);
-      expect(backingOff.coreOpCost.since).not.toBeNull();
+      expect(backingOff.callCost.calls).toBeGreaterThanOrEqual(1);
+      expect(backingOff.callCost.since).not.toBeNull();
       // The healthy neighbour has no backoff.
       expect((await healthOf("t1390b-healthy")).consumerBackoff).toBeNull();
 
@@ -249,7 +249,7 @@ describe("#1390 — a failing change consumer backs off against NOTIFY wake-ups"
       expect(Date.now() - writtenAt).toBeLessThan(BACKOFF_MS);
       const recovered = await healthOf("t1390b-failing");
       expect(recovered.consumerBackoff).toBeNull();
-      expect(recovered.coreOpCost.ops.find((o) => o.op === "modules.list")?.calls).toBe(3);
+      expect(recovered.callCost.ops.find((o) => o.op === "modules.list")?.calls).toBe(3);
     } finally {
       await loop.stop();
     }

@@ -55,7 +55,7 @@ interface PluginRow {
     problem: PluginErrorSummary | null;
     recentErrors: PluginErrorSummary[];
     consumerBackoff: { consecutiveFailures: number; nextRetryAt: string; lastError: string } | null;
-    coreOpCost: {
+    callCost: {
       since: string | null;
       calls: number;
       totalMs: number;

@@ -231,7 +231,7 @@ describe("get_plugin", () => {
         nextRetryAt: "2026-11-03T10:00:08.000Z",
         lastError: "HandlerError: canceling statement due to statement timeout",
       },
-      coreOpCost: {
+      callCost: {
         since: "2026-11-03T09:00:00.000Z",
         calls: 12,
         totalMs: 240_500,
@@ -261,12 +261,12 @@ describe("get_plugin", () => {
     expect(r.content).toContain("health: failing (servers: 1 loaded, 1 failing)");
     expect(r.content).toContain("problem: [activate, plugin] 2x");
     expect(r.content).toContain("SMTP host refused");
-    // #1390 — the consumer's backoff and the core operations' time.
+    // #1390 — the consumer's backoff and the broker call time.
     expect(r.content).toContain(
       "change consumer backing off: failed 4x in a row, retried at 2026-11-03T10:00:08.000Z",
     );
     expect(r.content).toContain(
-      "core operation time since 2026-11-03T09:00:00.000Z: 12 calls, 240500 ms — content_instances.list 4x 240000 ms (max 60000 ms)",
+      "broker call time (core ops + own storage, incl. pool wait) since 2026-11-03T09:00:00.000Z: 12 calls, 240500 ms — content_instances.list 4x 240000 ms (max 60000 ms)",
     );
     // Dependencies both ways, and what it asks visitors to consent to.
     expect(r.content).toContain("requires plugins: consent-manager");
@@ -289,7 +289,7 @@ describe("get_plugin", () => {
             problem: null,
             recentErrors: [],
             consumerBackoff: null,
-            coreOpCost: { since: null, calls: 0, totalMs: 0, ops: [] },
+            callCost: { since: null, calls: 0, totalMs: 0, ops: [] },
           },
         },
       }),
@@ -307,7 +307,7 @@ describe("get_plugin", () => {
     expect(r.content).toContain("Owner has not approved (change_journal)");
     expect(r.content).toContain("/settings/plugins");
     expect(r.content).toContain("reload_plugin cannot approve");
-    expect(r.content).toContain("core operation time: none recorded");
+    expect(r.content).toContain("broker call time: none recorded");
     expect(r.content).not.toContain("backing off");
   });
 
