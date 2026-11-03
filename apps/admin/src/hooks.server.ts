@@ -41,6 +41,7 @@ import {
   lockPluginRow,
   makePluginImageProvider,
   makePluginTextProvider,
+  mcpBackPressureResponse,
   registerRedirectSyncRunner,
   startLiveFanOut,
   startQualityAuditWorker,
@@ -575,6 +576,13 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapRedirectSync();
   bootstrapQualityAudits();
   bootstrapDevSchedulerClock();
+  // #1375 — an MCP call to a saturated admin gets 429 + Retry-After before
+  // it touches the database (the plugin-host sync below reads it too).
+  const busy = mcpBackPressureResponse(
+    event.url.pathname,
+    getQueryContext().adapter.poolPressure("admin"),
+  );
+  if (busy) return busy;
   // #1008 — wait for the shared plugin-host boot, then follow plugin
   // decisions made through any instance (throttled state check; reconciles
   // only when the plugin rows changed), so this request renders and
