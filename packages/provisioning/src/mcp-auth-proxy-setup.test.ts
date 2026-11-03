@@ -190,7 +190,10 @@ describe("ensureReleaseServices", () => {
     let cleaned = false;
     const { run, calls } = fakeGcloud({
       ...accountAndGrants,
-      "run services describe caelo-production-data-gateway": fail("NOT_FOUND: could not be found"),
+      // gcloud's real wording: no NOT_FOUND code (searchVIU, 2026-11-03).
+      "run services describe caelo-production-data-gateway": fail(
+        "ERROR: (gcloud.run.services.describe) Cannot find service [caelo-production-data-gateway]",
+      ),
       "run services list": ok("caelo-production-gateway-bbb\n"),
       "run services describe caelo-production-gateway-bbb": ok(JSON.stringify(OLD_GATEWAY)),
       "run services replace": ok(),
@@ -291,6 +294,35 @@ describe("ensureReleaseServices", () => {
     const outcomes = await ensureReleaseServices(gcp, { run });
     expect(outcomes.map((o) => o.status)).toEqual(["applied", "present", "failed"]);
     expect(calls.some((c) => c.startsWith("run "))).toBe(false);
+  });
+
+  it("retries a grant while the account it just created has not propagated", async () => {
+    const { run: base, calls } = fakeGcloud({
+      ...accountAndGrants,
+      "run services describe caelo-production-mcp-auth-proxy": ok(
+        "caelo-production-mcp-auth-proxy\n",
+      ),
+    });
+    let refusals = 2;
+    const run: GcloudRunner = async (args, opts) => {
+      if (args[0] === "secrets" && refusals > 0) {
+        refusals -= 1;
+        return fail(
+          `ERROR: (gcloud.secrets.add-iam-policy-binding) Status code: 400. Service account ${PROXY_SA} does not exist..`,
+        );
+      }
+      return base(args, opts);
+    };
+    const pauses: number[] = [];
+    const outcomes = await ensureReleaseServices(gcp, {
+      run,
+      sleep: async (ms) => {
+        pauses.push(ms);
+      },
+    });
+    expect(outcomes.map((o) => o.status)).toEqual(["applied", "present", "present", "present"]);
+    expect(pauses.length).toBe(2);
+    expect(calls.filter((c) => c.startsWith("secrets add-iam-policy-binding"))).toHaveLength(2);
   });
 
   it("stops at once when the account cannot be read", async () => {
