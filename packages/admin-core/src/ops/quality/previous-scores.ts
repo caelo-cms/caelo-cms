@@ -11,11 +11,15 @@
  *   changes, so a drop against it says nothing about this chat's work. The
  *   lineage is the chat's `chat_branch_id` (subagents share their parent's
  *   branch); staging deploys outside any chat form the main lineage.
- * - Same CPU calibration, for Performance. Performance depends on the CPU
- *   slowdown Lighthouse applied (cpu-calibration.ts, recorded in
- *   `metrics.cpuCalibration`); a score measured at another multiplier — or
+ * - Same emulated device, for Performance. Performance depends on the
+ *   device Lighthouse emulated (cpu-calibration.ts, recorded in
+ *   `metrics.cpuCalibration`); a score measured on another device — or
  *   before calibration existed — is a different measurement, and a drop
- *   against it would be a spurious regression. The other categories do
+ *   against it would be a spurious regression. Since #1370 every run
+ *   emulates `targetBenchmarkIndex`, whatever multiplier its host needed,
+ *   so two such audits compare by target. Before #1370 the device followed
+ *   the host's multiplier, so two of those compare by multiplier, and an
+ *   older audit never compares with a newer one. The other categories do
  *   not depend on CPU speed and compare regardless.
  */
 
@@ -25,23 +29,39 @@ import type { QualityCategory } from "../../quality/ratchet.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
+/** What an audit recorded about its emulated device; nulls = not recorded. */
+export interface RecordedCalibration {
+  readonly multiplier: number | null;
+  /** `targetBenchmarkIndex`, recorded since #1370. */
+  readonly target: number | null;
+}
+
+/** Whether two audits emulated the same device (see the file comment). */
+function sameDevice(a: RecordedCalibration, b: RecordedCalibration): boolean {
+  if (a.target !== null || b.target !== null) return a.target === b.target;
+  return a.multiplier === b.multiplier;
+}
+
 /**
  * The previous scores a page's current scores may be compared with: all
- * of them, minus Performance when the two audits ran at a different CPU
- * calibration (null = no calibration recorded; two nulls are the same).
+ * of them, minus Performance when the two audits emulated a different
+ * device (two audits without any calibration recorded are the same).
  */
 export function comparablePreviousScores(
   previous: Readonly<Record<QualityCategory, number>>,
-  previousCpuMultiplier: number | null,
-  currentCpuMultiplier: number | null,
+  previousCalibration: RecordedCalibration,
+  currentCalibration: RecordedCalibration,
 ): Partial<Record<QualityCategory, number>> {
-  if (previousCpuMultiplier === currentCpuMultiplier) return { ...previous };
-  const { performance: _differentCalibration, ...rest } = previous;
+  if (sameDevice(previousCalibration, currentCalibration)) return { ...previous };
+  const { performance: _differentDevice, ...rest } = previous;
   return rest;
 }
 
-function cpuMultiplier(v: string | number | null): number | null {
-  return v === null ? null : Number(v);
+function recorded(multiplier: string | null, target: string | null): RecordedCalibration {
+  return {
+    multiplier: multiplier === null ? null : Number(multiplier),
+    target: target === null ? null : Number(target),
+  };
 }
 
 /**
@@ -68,7 +88,9 @@ export async function loadPreviousScores(
            prev.page_id::text AS page_id,
            prev.scores,
            prev.metrics -> 'cpuCalibration' ->> 'cpuSlowdownMultiplier' AS previous_cpu,
-           now_page.metrics -> 'cpuCalibration' ->> 'cpuSlowdownMultiplier' AS current_cpu
+           prev.metrics -> 'cpuCalibration' ->> 'targetBenchmarkIndex' AS previous_target,
+           now_page.metrics -> 'cpuCalibration' ->> 'cpuSlowdownMultiplier' AS current_cpu,
+           now_page.metrics -> 'cpuCalibration' ->> 'targetBenchmarkIndex' AS current_target
     FROM cur
     JOIN quality_audit_pages now_page ON now_page.audit_run_id = ${runId}::uuid
     JOIN quality_audit_pages prev ON prev.page_id = now_page.page_id
@@ -83,15 +105,17 @@ export async function loadPreviousScores(
     page_id: string;
     scores: unknown;
     previous_cpu: string | null;
+    previous_target: string | null;
     current_cpu: string | null;
+    current_target: string | null;
   }[];
   return new Map(
     rows.map((r) => [
       r.page_id,
       comparablePreviousScores(
         r.scores as Record<QualityCategory, number>,
-        cpuMultiplier(r.previous_cpu),
-        cpuMultiplier(r.current_cpu),
+        recorded(r.previous_cpu, r.previous_target),
+        recorded(r.current_cpu, r.current_target),
       ),
     ]),
   );

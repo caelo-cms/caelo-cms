@@ -2,79 +2,120 @@
 
 /**
  * Calibrate Lighthouse's simulated CPU slowdown to the machine the audit
- * runs on.
+ * runs on, so every run emulates the SAME device (#1370).
  *
  * Lighthouse's default `cpuSlowdownMultiplier` is a constant 4x, which
- * emulates a mid-tier phone only when the host is a high-end desktop. The
- * audit runs inside the admin's container (one shared vCPU on Cloud Run),
- * so a fixed 4x over-penalises a slow host and turns its noise into score
- * swings: an unchanged static page measured Total Blocking Time of 0, 110
- * and 226 ms in one audit and flipped between Performance 99 and 100 from
- * Stage to Stage. Calibrating to the host's `benchmarkIndex` makes every
- * install measure against the same target device, whatever it runs on.
+ * emulates a mid-tier phone only when the host is a high-end desktop
+ * (#773: a fixed 4x on a slow host turned its noise into score swings). The
+ * host's speed is Lighthouse's own `benchmarkIndex`, and the simulated
+ * device is the host slowed down by the multiplier, so the device's
+ * effective benchmark index is `benchmarkIndex / multiplier`. Holding that
+ * quotient constant is what "the same target device on every host" means:
  *
- * The formula is the one of Lighthouse's own CPU slowdown calculator,
- * which Lighthouse's docs/throttling.md ("Calibrating the CPU slowdown")
- * names as the way to pick the multiplier from a benchmark index, and which
- * Lighthouse's own lr-mobile-config.js cites for its 1.2x. The calculator
- * (https://lighthouse-cpu-throttling-calculator.vercel.app) has no
- * published source repository; its deployed page bundle
- * (`/_next/static/chunks/pages/index-aa3a827a64f39d8cb4a3.js`, checked
- * 2026-10-15) computes, for benchmark index `e`:
+ *   cpuSlowdownMultiplier = benchmarkIndex / TARGET_BENCHMARK_INDEX
  *
- *   e >= 1300: 3 + (e - 1300) / 233
- *   e >=  800: 2 + (e -  800) / 500
- *   e >=  150: 1 + (e -  150) / 650
- *   else:      "This device is too slow to accurately emulate the target
- *               Lighthouse device."
+ * Why not Lighthouse's CPU throttling calculator (used until #1370): its
+ * piecewise curve (>= 1300: 3 + (e - 1300) / 233, deployed bundle checked
+ * 2026-10-15) is not proportional, so its effective device drifts with the
+ * host: 1300 -> 3.0x (433), 1533 -> 4.0x (383), 2313 -> 7.3x (317). Every
+ * parallel audit task (#875) runs on its own Cloud Run host, so one audit
+ * emulated a ~25% slower phone for one page than for the next, and that
+ * page scored 99/99/99 next to identical pages at 100 (#1370).
  *
- * and shows the multiplier with `toFixed(1)`. This file reproduces exactly
- * that. Its target device is the mid-tier mobile that Lighthouse's mobile
- * defaults emulate (docs/throttling.md: the default 4x moves a high-end
- * desktop into the mid-tier mobile bracket — 1533 maps to 4.0 here).
+ * The target, 433, is the device that calculator's own anchor describes
+ * (benchmark index 1300 -> 3x: 1300 / 3 = 433) and the one Lighthouse's
+ * docs/throttling.md describes for its default: "a constant 4x CPU
+ * multiplier [...] moves a typical run in the high-end desktop bracket
+ * [benchmark index 1500-2000] somewhere into the mid-tier mobile bracket
+ * [125-800]" — the middle of the desktop bracket, 1750, at 4x is 437. It is
+ * also what the #1370 reproduction measured (8.6x on a ~3700 host, ~430).
+ * https://github.com/GoogleChrome/lighthouse/blob/main/docs/throttling.md
  */
 
 import { LighthouseRunError } from "./lighthouse-extract.js";
 
-/** Below this benchmark index the calculator refuses: the host is too slow
- *  to emulate the target device at all. */
-export const MIN_BENCHMARK_INDEX = 150;
+/** The benchmark index of the device every run emulates: a mid-tier phone. */
+export const TARGET_BENCHMARK_INDEX = 433;
+
+/** A host slower than the target cannot emulate it: Lighthouse only slows
+ *  a CPU down (a multiplier below 1 would emulate a faster device). */
+export const MIN_BENCHMARK_INDEX = TARGET_BENCHMARK_INDEX;
+
+/** Above this the benchmark is implausible, not a fast host: the fastest
+ *  hosts seen measure ~3700 (#1370), so 8000 is twice that. It caps the
+ *  multiplier at ~18.5x, inside the 5-20x Lighthouse's docs give for
+ *  emulating a low-end phone on a high-end desktop. */
+export const MAX_BENCHMARK_INDEX = 8000;
 
 export type CpuCalibration =
   | { readonly ok: true; readonly benchmarkIndex: number; readonly cpuSlowdownMultiplier: number }
-  | { readonly ok: false; readonly benchmarkIndex: number; readonly message: string };
+  | {
+      readonly ok: false;
+      /** `host-too-slow`: below the target; `benchmark-implausible`: no
+       *  number, or one no real host measures. */
+      readonly code: "host-too-slow" | "benchmark-implausible";
+      readonly benchmarkIndex: number;
+      readonly message: string;
+    };
 
 /**
  * The `cpuSlowdownMultiplier` for a host with the given benchmark index.
  *
  * @param benchmarkIndex - Lighthouse's `computeBenchmarkIndex()` result for
  *   the host (the fastest of several samples, see `fastestBenchmarkIndex`).
- * @returns the multiplier rounded to one decimal, or `ok: false` when the
- *   host is too slow to measure reliably — never a silent default.
+ * @returns `benchmarkIndex / TARGET_BENCHMARK_INDEX` rounded to two
+ *   decimals (the rounding moves the emulated device by under 0.5%), or
+ *   `ok: false` when the benchmark is missing, too slow or implausible —
+ *   never a silent default.
  */
 export function calibrateCpuSlowdown(benchmarkIndex: number): CpuCalibration {
-  const bi = Math.round(benchmarkIndex);
-  if (!Number.isFinite(benchmarkIndex) || benchmarkIndex < MIN_BENCHMARK_INDEX) {
+  if (!Number.isFinite(benchmarkIndex)) {
     return {
       ok: false,
-      benchmarkIndex: Number.isFinite(benchmarkIndex) ? bi : 0,
-      message: `The audit host is too slow to emulate Lighthouse's target device (benchmark index ${Number.isFinite(benchmarkIndex) ? bi : "unmeasurable"}, needs at least ${MIN_BENCHMARK_INDEX}). Give the admin more CPU and run the check again.`,
+      code: "benchmark-implausible",
+      benchmarkIndex: 0,
+      message:
+        "Lighthouse's CPU benchmark returned no number on the audit host, so the run cannot be calibrated to the target device. Run the check again; if it repeats, a Lighthouse upgrade changed `computeBenchmarkIndex`.",
     };
   }
-  let multiplier: number;
-  if (benchmarkIndex >= 1300) multiplier = 3 + (benchmarkIndex - 1300) / 233;
-  else if (benchmarkIndex >= 800) multiplier = 2 + (benchmarkIndex - 800) / 500;
-  else multiplier = 1 + (benchmarkIndex - 150) / 650;
-  return { ok: true, benchmarkIndex: bi, cpuSlowdownMultiplier: Math.round(multiplier * 10) / 10 };
+  const bi = Math.round(benchmarkIndex);
+  if (benchmarkIndex < MIN_BENCHMARK_INDEX) {
+    return {
+      ok: false,
+      code: "host-too-slow",
+      benchmarkIndex: bi,
+      message: `The audit host is too slow to emulate Lighthouse's target device (benchmark index ${bi}, needs at least ${MIN_BENCHMARK_INDEX}). Give the audit more CPU and run the check again.`,
+    };
+  }
+  if (benchmarkIndex > MAX_BENCHMARK_INDEX) {
+    return {
+      ok: false,
+      code: "benchmark-implausible",
+      benchmarkIndex: bi,
+      message: `Lighthouse's CPU benchmark measured an implausible ${bi} on the audit host (above ${MAX_BENCHMARK_INDEX}), so the run cannot be calibrated to the target device. Run the check again; if it repeats, a Lighthouse upgrade changed \`computeBenchmarkIndex\`.`,
+    };
+  }
+  const multiplier = benchmarkIndex / TARGET_BENCHMARK_INDEX;
+  return {
+    ok: true,
+    benchmarkIndex: bi,
+    cpuSlowdownMultiplier: Math.round(multiplier * 100) / 100,
+  };
+}
+
+/** The benchmark index of the device a calibrated run emulated. */
+export function effectiveBenchmarkIndex(c: {
+  readonly benchmarkIndex: number;
+  readonly cpuSlowdownMultiplier: number;
+}): number {
+  return Math.round(c.benchmarkIndex / c.cpuSlowdownMultiplier);
 }
 
 /**
  * The fastest of several benchmark samples. Interference on a shared vCPU
  * only ever lowers a sample, never raises it, so the highest one is the
- * host's own speed. That is the same reasoning as scoring a page by its
- * best run (#874, `bestRunIndex` in lighthouse-extract.ts): the slowdown is
- * calibrated to the undisturbed host, and the run it is applied to is the
- * undisturbed one. A low sample would under-throttle every run.
+ * host's own speed: the slowdown is calibrated to the undisturbed host. A
+ * low sample would under-throttle every run.
  *
  * @throws when `samples` is empty (a caller bug, not a measurement).
  */
