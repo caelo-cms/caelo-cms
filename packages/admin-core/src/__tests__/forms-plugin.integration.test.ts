@@ -33,7 +33,10 @@ import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
-import { publishProjectionOnce } from "../public-projection.js";
+import { publishProjectionOnce, stagingPublicAdapter } from "../public-projection.js";
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -200,7 +203,10 @@ beforeAll(async () => {
   } finally {
     await admin.end();
   }
-  await publishProjectionOnce(adapter, { declarations: new Map(), comments: false });
+  await publishProjectionOnce(adapter, STAGING_ADAPTER, {
+    declarations: new Map(),
+    comments: false,
+  });
   invalidateGatewaySettings();
 });
 

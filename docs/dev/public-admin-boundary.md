@@ -24,16 +24,29 @@ The gateway still needs some authoring state:
 - the visitor-readable parts of plugin private storage;
 - approved comments.
 
-The admin **publishes** exactly that into `cms_public`. Data flows one way, admin to public:
+The admin **publishes** exactly that into `cms_public` and, since #1329, into its staging twin `cms_public_staging`. Data flows one way, admin to public, and every publish writes both databases from the same read of `cms_admin`:
 
-| Section | Source (`cms_admin`) | Published to (`cms_public`) |
-|---|---|---|
-| `settings` | `site_settings` (4 gateway columns) | `published_gateway_settings` |
-| `staging` | `staging_access` | `published_staging_access` |
-| `rate_limits` | `plugin_rate_limit_overrides`, `rate_limit_profiles` | `published_rate_limits` (profile already resolved) |
-| `plugins` | `plugins`, `actors`, `plugin_capability_grants`, `plugin_installation_versions` | `published_plugins`, `published_plugin_grants` |
-| `plugin:<id>` | the plugin's `visitorProjection` tables (main line only) | `published_plugin_rows` (readable only under that plugin's id) |
-| `comments` | `comment_archive`, approved rows | `published_comments` |
+| Section | Source (`cms_admin`) | Published to | Kind |
+|---|---|---|---|
+| `settings` | `site_settings` (gateway columns; each environment its own cookie secret) | `published_gateway_settings` | immediate |
+| `staging` | `staging_access` | `published_staging_access` | immediate |
+| `rate_limits` | `plugin_rate_limit_overrides`, `rate_limit_profiles` | `published_rate_limits` (profile already resolved) | immediate |
+| `comments` | `comment_archive`, approved rows (moderated comments and team posts) | `published_comments` | immediate |
+| `redirects` | `redirects` | `published_redirects`, staging database only (#1157: live redirects reach the provider at save) | immediate |
+| `plugins` | `plugins`, `actors`, `plugin_capability_grants`, `plugin_installation_versions` | `published_plugins`, `published_plugin_grants` | release |
+| `plugin:<id>` | the plugin's `visitorProjection` tables (main line only) | `published_plugin_rows` (readable only under that plugin's id) | release |
+
+### Release sections are frozen per Stage (#1329, epic #763 E10)
+
+An **immediate** section is published from the current state, to both databases, right after the write. A **release** section follows the release instead:
+
+- **Stage** freezes it with the build (`deploy.start_trigger`, `freezeRelease` → `projection_releases`, keyed by the deploy run id) and points the staging database at it when the build finishes (`projection_release_pointers`). It is never read back from the staging database, which is no more trusted than the live one.
+- **Publish live** points the live database at exactly the state the Stage froze (`deploy.finish_promote`); an Owner's production build at the state it froze; a **rollback** at the state of the build it puts back (`deploy_runs.projection_run_id`). These are the only writers of the live pointer, pinned in `scripts/no-automatic-production-deploy.test.ts`.
+- The boot publish and the drain publish each environment's **pointed** state, never the main line. So a staged plugin change (a consent policy version, new plugin settings) cannot reach live visitors before Publish live (#763 N6). Activations, upgrades, a widened approval and plugin content follow the release.
+- **Narrowing** reaches both databases at once (`narrowRelease`): a plugin deactivated or uninstalled, a grant revoked, a capability taken out of a release-signed plugin's approval leave the published state on the next publish, whatever was frozen.
+- An install from before #1329 freezes its current state once as the first release of both environments (the bootstrap, in the admin's boot or the migration job, when it can read every active plugin's rows).
+- At every Stage the staging inbox (plugin tables of kind `inbox`) is cleared (`stage/staging-inbox.ts`); visitor-state tables are kept.
+- The staging database gets its own cookie secret (`site_settings.gateway_staging_cookie_secret`), so the `settings` section never copies the live one there (staging is same-site with live); `projection-releases.integration.test.ts` asserts the two databases share none. A rotation replaces both.
 
 Where each piece lives:
 
@@ -42,7 +55,7 @@ Where each piece lives:
   - **Before the admin call returns.** When a transaction of the admin's `DatabaseAdapter` (an op, or a worker's `withAdminTransaction`) commits with that flag, the adapter publishes the stale sections and waits for it before returning. A revoked grant, a deactivated plugin, an unapproved comment, a rotated cookie secret or a closed staging gate is live on the public side when the admin call returns. If that publish fails, the op reports "saved, but not live yet" instead of success.
   - **Backstop.** The admin also drains the outbox on every scheduler tick (admin-core `createPublicProjectionPublisher`'s `backstop`, the `core:projection-backstop` task of #1140), for writes from anywhere else and for publishes that failed. Until the boot publish succeeded, the backstop retries that instead. Two more paths publish everything: the migration job, after migrating `cms_public`, so a freshly rolled gateway finds its data; and the admin, when it boots.
   - **Exactly what was read.** A drain deletes the outbox rows it read, by id, never a range: ids are taken at insert but become visible at commit, so a lower id can commit while a drain runs. Such a row stays for the next drain.
-  - **Only plugins the publisher has.** A publisher republishes or withdraws a `plugin:<id>` section only for a plugin whose definition it holds: one loaded in that admin instance, or shipped in the image for the migration job. It leaves every other plugin's section exactly as published and does not read its outbox rows, which stay for an instance that runs the plugin. Every load of a plugin marks its section stale, so the loading instance publishes it from the definition it just verified (#1077: an instance that had not loaded a plugin yet withdrew the section another one had just published, and the gateway answered 503).
+  - **Plugin rows follow the release.** A `plugin:<id>` outbox row (the plugin's own rows changed in the admin) is consumed without a publish: its content reaches a public database with the next frozen release. A publisher therefore needs no plugin definition to publish; only freezing does, and a freeze that cannot read an active plugin's rows leaves them out for a Stage (which then records the plugin as not running, and Publish live refuses it) or refuses for the bootstrap (#1077 is gone with it: no instance can withdraw what another published).
 - **Notification.** After each publish the admin sends `NOTIFY caelo_gateway_settings` on `cms_public`, and the gateway drops its caches.
 - **Not published yet is loud.** A section that was never published makes the gateway answer `503` with `ProjectionNotPublished`. That holds for the plugin registry too: while it is unpublished, a request for any plugin is a 503, not a 404 `PluginNotFound`. The gateway never serves an empty answer, so "nothing is active" and "nobody told us" cannot look the same.
 

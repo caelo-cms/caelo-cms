@@ -287,6 +287,10 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   plugin_private_file_chunks:
     "the bytes of plugin_private_files rows, journaled through the file row",
   public_projection_outbox: "the outbox of the cms_public projection, drained by its publisher",
+  projection_releases:
+    "#1329: the frozen release state of a deploy run, written once by the deploy ops and read only by the projection publisher",
+  projection_release_pointers:
+    "#1329: which frozen release each public database serves, moved by the deploy ops; a move marks the projection's outbox",
   platform_update_agent: RUNTIME,
   platform_update_notifications: RUNTIME,
   platform_update_policy: "the Owner's update policy, read by the update scheduler",

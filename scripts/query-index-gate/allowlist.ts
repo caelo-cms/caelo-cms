@@ -88,16 +88,6 @@ export const ALLOWED: readonly AllowedRule[] = [
     reason: FIXED_SIZE("One row per submitted plugin version."),
   },
   {
-    table: "public.public_projection_outbox",
-    reason:
-      "The projection outbox (#635) is drained after every commit; the publisher reads the whole pending queue by design, which holds only what the last commits enqueued.",
-  },
-  {
-    table: "public.published_plugin_rows",
-    reason:
-      "cms_public side of the projection: the publisher replaces the published set wholesale, deleting every row not in the new set — a whole-table pass by design.",
-  },
-  {
     table: "public.published_projection_sections",
     reason:
       "cms_public side of the projection: one row per published section (tens); the publisher replaces the plugin sections wholesale.",

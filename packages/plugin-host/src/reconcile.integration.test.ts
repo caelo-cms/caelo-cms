@@ -17,7 +17,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPublicProjectionPublisher, registerAdminOps } from "@caelo-cms/admin-core";
+import {
+  createPublicProjectionPublisher,
+  registerAdminOps,
+  releaseProjectionForTests,
+  stagingPublicAdapter,
+} from "@caelo-cms/admin-core";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -35,6 +40,9 @@ import {
   resetPluginHostSync,
   syncPluginHost,
 } from "./index.js";
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -448,32 +456,24 @@ describe("#1077 — a load publishes the plugin's visitor projection from this i
     }
   }
 
-  async function withdraw(section: string): Promise<void> {
-    const pub = new SQL(PUBLIC_URL as string);
-    try {
-      await pub.begin(async (tx) => {
-        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-        await tx`DELETE FROM published_projection_sections WHERE section = ${section}`;
-      });
-    } finally {
-      await pub.end();
-    }
-  }
-
-  it("publishes it on load, and again on a reload, without waiting for the plugin's next write", async () => {
-    // The admin's own publisher, as hooks.server.ts wires it; the poll is
-    // parked so only the publish right after a write can run.
-    const publisher = createPublicProjectionPublisher({ adapter });
+  it("a load publishes none of its rows; the next release does, and a reload keeps them (#1329)", async () => {
+    // The admin's own publisher, as hooks.server.ts wires it; it has no
+    // timer, so only the publish right after a write can run.
+    const publisher = createPublicProjectionPublisher({
+      adapter,
+      stagingAdapter: STAGING_ADAPTER,
+    });
     try {
       const report = await boot([projected]);
       expect(report.failed).toEqual([]);
       const section = `plugin:${loadedPlugins.bySlug(PROJECTED)?.pluginId}`;
+      // Plugin data follows the release (a Stage, then Publish live): a
+      // load alone publishes nothing of it, on any instance.
+      expect(await publishedSections()).not.toContain(section);
+      await releaseProjectionForTests(adapter, STAGING_ADAPTER);
       expect(await publishedSections()).toContain(section);
-
-      // Gone from the public side (a publisher that misread "not loaded
-      // here" as "declares nothing" did this, #1077). Loading the plugin
-      // again republishes it from this instance's definition.
-      await withdraw(section);
+      // A reload changes nothing the release published (#1077: an instance
+      // that had not loaded the plugin once withdrew its section).
       expect((await loadActivatedPlugin(PROJECTED)).loaded).toBe(true);
       expect(await publishedSections()).toContain(section);
     } finally {

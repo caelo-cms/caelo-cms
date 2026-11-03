@@ -85,23 +85,33 @@ const migrationsDir = resolve(
 );
 
 /**
- * Issue #635 — after cms_public is migrated, publish the projection the
- * API gateway reads (it has no cms_admin login), so a gateway rolled right
- * after this job finds everything it serves from. Needs both URLs: every
- * runner (the Cloud Run migration job, the self-hosted admin container,
- * CI, `bun run db:migrate`) carries them.
+ * Issue #635 — once both public databases are migrated (the last target,
+ * `public-staging`, #1329), publish the projection the gateways read (they
+ * have no cms_admin login), so a gateway rolled right after this job finds
+ * everything it serves from. Needs every URL: every runner (the Cloud Run
+ * migration job, the self-hosted admin container, CI, `bun run db:migrate`)
+ * carries them. The shipped plugins' declarations let an install from
+ * before #1329 freeze its first release state here; with a runtime-installed
+ * plugin active, the admin's boot does it instead.
  */
-async function publishProjection(publicUrl: string): Promise<void> {
-  const adminUrl = databaseUrlFromEnv(["ADMIN_DATABASE_URL"]);
-  if (!adminUrl) {
+async function publishProjection(): Promise<void> {
+  const urls = {
+    admin: databaseUrlFromEnv(["ADMIN_DATABASE_URL"]),
+    live: databaseUrlFromEnv(["PUBLIC_ADMIN_DATABASE_URL"]),
+    staging: databaseUrlFromEnv(["PUBLIC_STAGING_ADMIN_DATABASE_URL"]),
+  };
+  if (!urls.admin || !urls.live || !urls.staging) {
     throw new Error(
-      "migrate public: ADMIN_DATABASE_URL is required to publish the gateway's projection (issue #635); the migration job carries both database URLs",
+      "migrate public-staging: ADMIN_DATABASE_URL, PUBLIC_ADMIN_DATABASE_URL and PUBLIC_STAGING_ADMIN_DATABASE_URL are required to publish the gateways' projection (issues #635, #1329); the migration job carries all three",
     );
   }
-  const adminClient = new SQL(adminUrl);
-  const publicClient = new SQL(publicUrl);
-  const admin = drizzle(adminClient);
-  const pub = drizzle(publicClient);
+  const clients = {
+    admin: new SQL(urls.admin),
+    live: new SQL(urls.live),
+    staging: new SQL(urls.staging),
+  };
+  const admin = drizzle(clients.admin);
+  const pub = { live: drizzle(clients.live), staging: drizzle(clients.staging) };
   const asSystem = dsql`SELECT set_config('caelo.actor_kind', 'system', true)`;
   const dbs: ProjectionDatabases = {
     readAdmin: (fn) =>
@@ -109,8 +119,8 @@ async function publishProjection(publicUrl: string): Promise<void> {
         await tx.execute(asSystem);
         return fn(tx);
       }),
-    writePublic: (fn) =>
-      pub.transaction(async (tx) => {
+    writePublic: (target, fn) =>
+      pub[target].transaction(async (tx) => {
         await tx.execute(asSystem);
         await fn(tx);
       }),
@@ -118,15 +128,18 @@ async function publishProjection(publicUrl: string): Promise<void> {
   try {
     const declarations = readShippedVisitorProjections(resolve(here, "..", "..", "plugins"));
     const report = await publishPublicProjection(dbs, declarations, { comments: true });
-    console.log(`cms_public: gateway projection published (${report.sections.join(", ")})`);
-    for (const slug of report.pendingPlugins) {
+    console.log(
+      `gateway projection published — cms_public: ${report.sections.live.join(", ")}; cms_public_staging: ${report.sections.staging.join(", ")}`,
+    );
+    for (const target of report.unreleased) {
       console.warn(
-        `cms_public: ${slug}'s declared tables are not provisioned yet; the admin publishes them when it boots`,
+        `${target}: no frozen release state yet (an active plugin is not shipped in this image); the admin freezes it when it boots`,
       );
     }
   } finally {
-    await adminClient.end();
-    await publicClient.end();
+    await clients.admin.end();
+    await clients.live.end();
+    await clients.staging.end();
   }
 }
 
@@ -155,7 +168,7 @@ try {
     // Issue #1329 — nor grant anything to the other environment's gateway.
     await assertPublicDatabaseOwnsItsLogin(sql, spec.database);
     console.log(`${spec.database}: only ${spec.visitorRole} holds visitor privileges`);
-    if (spec.database === "cms_public") await publishProjection(url);
+    if (spec.database === "cms_public_staging") await publishProjection();
   }
 } finally {
   await sql.end();

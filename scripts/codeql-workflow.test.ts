@@ -125,12 +125,14 @@ describe("main.json ruleset — CodeQL required status check", () => {
   const ruleset = JSON.parse(rulesetRaw) as {
     rules: {
       type: string;
-      parameters?: { required_status_checks?: { context: string }[] };
+      parameters?: {
+        required_status_checks?: { context: string }[];
+        strict_required_status_checks_policy?: boolean;
+      };
     }[];
   };
-  const requiredChecks =
-    ruleset.rules.find((r) => r.type === "required_status_checks")?.parameters
-      ?.required_status_checks ?? [];
+  const statusRule = ruleset.rules.find((r) => r.type === "required_status_checks");
+  const requiredChecks = statusRule?.parameters?.required_status_checks ?? [];
   const contexts = requiredChecks.map((c) => c.context);
 
   it("RS1: ruleset is valid JSON", () => {
@@ -148,9 +150,14 @@ describe("main.json ruleset — CodeQL required status check", () => {
       "build + push (admin)",
       "build + push (gateway)",
       "Admin production image — boot smoke",
+      "Real-AI live-edit scenario",
     ]) {
       expect(contexts).toContain(ctx);
     }
+  });
+
+  it("RS4: branches need not be up to date with main (back-to-back merges, main's CI after each)", () => {
+    expect(statusRule?.parameters?.strict_required_status_checks_policy).toBe(false);
   });
 });
 

@@ -95,7 +95,14 @@ export function coreScheduledTasks(deps: CoreTaskDeps): ScheduledTask[] {
           "the projection publisher did not start (see [hooks] plugin host boot errors)",
         );
       const report = await publisher.backstop();
-      return report.drained > 0 ? `published ${report.sections.join(", ")}` : undefined;
+      if (report.drained === 0) return undefined;
+      // #1329 — per public database. The backstop republishes what the
+      // outbox marks; it never freezes or points a release (only a Stage or
+      // Publish live does, scripts/no-automatic-production-deploy.test.ts).
+      const parts = Object.entries(report.sections)
+        .filter(([, sections]) => sections.length > 0)
+        .map(([target, sections]) => `${target}: ${sections.join(", ")}`);
+      return `published ${parts.length > 0 ? parts.join("; ") : "nothing"}`;
     }),
     task("redirect-sync-retry", 0, async () => {
       const behind = await retryRedirectSync({ adapter, registry });
