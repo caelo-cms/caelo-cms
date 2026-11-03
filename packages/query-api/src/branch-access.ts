@@ -127,6 +127,11 @@ export class BranchVisibilityMemo {
     }
   }
 
+  /** Forget every verdict (tests that count statements per call). */
+  clear(): void {
+    this.#entries.clear();
+  }
+
   /**
    * The verdict for `branches` from memory alone: the first invisible
    * branch, null when all are known visible, or undefined when any is

@@ -398,6 +398,15 @@ export class DatabaseAdapter {
   readonly #skipVerify: boolean;
   /** #1392 — branch-visibility verdicts per request (see BranchVisibilityMemo). */
   readonly #branchVisibility = new BranchVisibilityMemo();
+
+  /**
+   * #1392 — forget the remembered branch-visibility verdicts, so the next
+   * call asks the database again. For tests that count the statements of
+   * one call (the preview cost benchmark), like `clearSiteViewCache`.
+   */
+  clearBranchVisibilityMemo(): void {
+    this.#branchVisibility.clear();
+  }
   readonly #roles: { readonly admin: string | null; readonly public: readonly string[] };
   readonly #publicDatabase: PublicDatabaseName;
   readonly #acquireTimeoutMs: number;

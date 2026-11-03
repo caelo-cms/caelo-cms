@@ -207,6 +207,11 @@ export async function setupCostSite(opts: {
   const count = async (input: Record<string, unknown>): Promise<number> => {
     statements = [];
     counting = true;
+    // Each counted render starts without remembered branch-visibility
+    // verdicts (#1392), like it starts without a cached site view: plugin
+    // calls share one requestId per plugin, so a verdict would otherwise
+    // carry from one counted render into the next.
+    adapter.clearBranchVisibilityMemo();
     const r = await execute(registry, adapter, COST_SYSTEM, "pages.render_preview", input);
     counting = false;
     if (!r.ok) throw new Error(`render failed: ${JSON.stringify(r.error)}`);
