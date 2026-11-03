@@ -24,8 +24,9 @@ import { buildChatImageKey, untrustedToolResult } from "@caelo-cms/shared";
 import { getMediaStorage } from "../../media/storage.js";
 import { tryAutoRecover } from "../auto-recovery.js";
 import { chatPluginInvocation } from "../plugin-invocation.js";
-import type { AIProvider, ChatMessageInput } from "../provider.js";
+import type { AIProvider, ChatMessageInput, ProviderResponseMessage } from "../provider.js";
 import { keptCallArgs, withKeptCallNotice } from "../tools/_retry-keep.js";
+import type { ToolContext } from "../tools/dispatch.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { isE2eAutoApproveEnabled } from "./e2e-auto-approve.js";
 import { shrinkToolImage } from "./tool-image.js";
@@ -167,8 +168,8 @@ export interface DispatchDeps {
   chatBranchId: string;
   options: ChatRunnerOptions;
   runChatTurn: RunChatTurnFn;
-  /** This turn's always-loaded tool names (see ToolContext.preloadedToolNames). */
-  preloadedToolNames?: ReadonlySet<string>;
+  /** This turn's catalogue and deferred tools (see ToolContext.turnTools). */
+  turnTools?: ToolContext["turnTools"];
 }
 
 /**
@@ -357,7 +358,7 @@ export async function dispatchToolCall(
           // issue #412 — only the SSE route sets this; screenshot_page
           // picks its backend (operator browser vs server render) from it.
           ...(options.operatorBrowserAttached ? { operatorBrowserAttached: true } : {}),
-          ...(deps.preloadedToolNames ? { preloadedToolNames: deps.preloadedToolNames } : {}),
+          ...(deps.turnTools ? { turnTools: deps.turnTools } : {}),
           // issue #664 — Stop reaches the work a tool starts (subagents).
           ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
           ...(options.agentRunId ? { agentRunId: options.agentRunId } : {}),
@@ -557,16 +558,26 @@ export async function dispatchToolCall(
   // writes the same key, which leaves the message history byte-identical and
   // keeps the provider's prompt cache intact.
   const attachments = await persistToolImage(call.name, result.image);
+  // #991 — a result that loads deferred tools is stored and replayed as the
+  // SDK's own tool message: its `tool_reference` parts have no place in a
+  // text-only tool row, and the same message serves this turn's next step
+  // and every later turn.
+  const referencing = toolReferenceMessage(call, result, deps.turnTools);
   await execute(registry, adapter, humanCtx, "chat.append_message", {
     chatSessionId: deps.chatSessionId,
     role: "tool",
     content: result.content,
     toolCallId: call.id,
     ...(attachments ? { attachments } : {}),
+    ...(referencing ? { responseMessages: [referencing] } : {}),
     // issue #303 — producer hint for the empty-content diagnostics.
     source: `tool result (${call.name})`,
   });
-  stepToolRows.push({ role: "tool", content: result.content, toolCallId: call.id });
+  stepToolRows.push(
+    referencing
+      ? { role: "tool", content: result.content, sdkMessages: [referencing] }
+      : { role: "tool", content: result.content, toolCallId: call.id },
+  );
   // v0.3.0 — when the tool returned an image (screenshot_page is
   // the only producer today), build a multimodal user message so the
   // AI sees the image alongside the text result on its next provider
@@ -602,4 +613,42 @@ export function shouldAutoCaptureToolFailure(
   return (
     !result.ok && toolName !== "bug_report" && result.refusal !== true && result.retryable !== true
   );
+}
+
+/**
+ * #991 — the SDK tool message for a result that loads deferred tools
+ * (`ToolResult.toolReferences`): its text plus one `tool_reference` per
+ * tool, in the AI SDK's shape for it (a `custom` content part the Anthropic
+ * provider sends as `{type: "tool_reference", tool_name}`, CLAUDE.md §12).
+ * Only names this request defers are referenced — a reference to a tool
+ * the request does not carry fails it, and one to a tool that ships in
+ * full adds nothing. Undefined when nothing is left to load.
+ */
+export function toolReferenceMessage(
+  call: { readonly id: string; readonly name: string },
+  result: { readonly content: string; readonly toolReferences?: readonly string[] },
+  turnTools: ToolContext["turnTools"],
+): ProviderResponseMessage | undefined {
+  const names = (result.toolReferences ?? []).filter((n) => turnTools?.deferred.has(n) === true);
+  if (names.length === 0) return undefined;
+  return {
+    role: "tool",
+    content: [
+      {
+        type: "tool-result",
+        toolCallId: call.id,
+        toolName: call.name,
+        output: {
+          type: "content",
+          value: [
+            { type: "text", text: result.content },
+            ...names.map((toolName) => ({
+              type: "custom",
+              providerOptions: { anthropic: { type: "tool-reference", toolName } },
+            })),
+          ],
+        },
+      },
+    ],
+  };
 }

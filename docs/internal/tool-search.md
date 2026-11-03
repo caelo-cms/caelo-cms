@@ -10,7 +10,7 @@ Search and keeps only the everyday workflow tools fully loaded.
 Three pieces cooperate; keep them in sync when touching any one:
 
 1. **Core set** — `packages/admin-core/src/ai/tools/core-tools.ts` names
-   the ~33 always-loaded workflow tools (`build_page`, `add_module`,
+   the ~39 always-loaded workflow tools (`build_page`, `add_module`,
    `update_modules_many`, `set_page_module_content_many`, …). `buildToolCatalogue`
    tags them `alwaysLoaded: true` on the provider-neutral
    `ToolDefinition`.
@@ -30,6 +30,32 @@ Three pieces cooperate; keep them in sync when touching any one:
    for without blind discovery. Every tool the playbook presents as a
    default path must be in the core set — `tool-catalogue.test.ts` guards
    the core list against registry drift.
+
+## Skills load their tools (#991)
+
+A skill names the tools it uses (`skills.allowlisted_tools`). Most of them
+are deferred, and the tool list cannot change mid-chat without re-caching
+the whole history, so `load_skill` loads them the way the search tool does:
+its tool result carries one `tool_reference` per deferred tool of the
+loaded skills, and the API expands each into its full definition in place.
+
+- `AIProvider.deferredToolNames(tools)` is the one owner of "which tools
+  does this request defer" — the Anthropic transform uses it, and the
+  chat-runner hands it to tools as `ToolContext.turnTools`. Only those names
+  are referenced: a reference to a tool the request does not carry is a 400.
+- The handler returns `ToolResult.toolReferences`; the chat-runner stores
+  the result as the AI SDK's own tool message (`toolReferenceMessage` in
+  `chat-runner/tool-dispatch.ts`: a text part plus `custom` parts with
+  `providerOptions.anthropic.type = "tool-reference"`) in the row's
+  `response_messages`, so the next step and every later turn replay the
+  same bytes.
+- Replay rewrites references to retired tools in this shape too
+  (`retired-tool-references.ts`).
+
+Why: without it, the model either paid a search pass per tool — one more
+model pass over the whole context, 56–190k input tokens per search in the
+homepage scenario (#809) — or skipped the search and called a loaded tool
+in its place (`bug_report` filled with "placeholder", #991).
 
 ## Configuration
 

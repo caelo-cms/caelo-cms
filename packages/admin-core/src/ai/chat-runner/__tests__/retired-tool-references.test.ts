@@ -17,6 +17,7 @@ import type { ToolDefinition } from "../../provider.js";
 import { AnthropicProvider } from "../../providers/anthropic.js";
 import { buildProviderHistory, type HistoryMessage } from "../attachments.js";
 import { rewriteRetiredToolReferences } from "../retired-tool-references.js";
+import { toolReferenceMessage } from "../tool-dispatch.js";
 
 let savedThreshold: string | undefined;
 beforeAll(() => {
@@ -190,5 +191,58 @@ describe("retired tool references in replayed tool-search results", () => {
     const { messages, rewrites } = rewriteRetiredToolReferences([live] as never);
     expect(rewrites).toEqual([]);
     expect(messages[0]).toBe(live as never);
+  });
+
+  it("rewrites load_skill's references (the SDK custom part) too (#991)", async () => {
+    const stored = toolReferenceMessage(
+      { id: "toolu_skill", name: "load_skill" },
+      { content: "Loaded skill.", toolReferences: ["set_media_alt"] },
+      { names: new Set(), deferred: new Set(["set_media_alt"]) },
+    );
+    const rows = await buildProviderHistory(
+      [
+        {
+          role: "user",
+          content: "alt texts",
+          toolCalls: null,
+          toolCallId: null,
+          thinkingBlocks: null,
+        },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: null,
+          toolCallId: null,
+          thinkingBlocks: null,
+          responseMessages: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool-call",
+                  toolCallId: "toolu_skill",
+                  toolName: "load_skill",
+                  input: { slugs: ["manage-media"] },
+                },
+              ],
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: "Loaded skill.",
+          toolCalls: null,
+          toolCallId: "toolu_skill",
+          thinkingBlocks: null,
+          responseMessages: [stored],
+        },
+      ],
+      noImages,
+    );
+    // The passthrough tool row answers the passthrough call: nothing stripped.
+    expect(rows).toHaveLength(3);
+    const replayed = JSON.stringify(rows[2]?.sdkMessages);
+    expect(replayed).toContain('"toolName":"set_media_alt_many"');
+    expect(replayed).not.toContain('"toolName":"set_media_alt"}');
   });
 });
