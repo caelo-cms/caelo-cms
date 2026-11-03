@@ -74,6 +74,12 @@ updates:
       # crashes. Lift once that toolchain supports TS7.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
+      # lighthouse 13.6.0 pulls in `sentry` (via @sentry/bundler-plugins),
+      # licensed FSL-1.1-Apache-2.0, which the licence gate refuses
+      # (CLAUDE.md §3). Grouped with the other bumps it fails the whole
+      # minor-and-patch PR. Lift once #1355 is resolved.
+      - dependency-name: "lighthouse"
+        versions: [">=13.6.0"]
     groups:
       minor-and-patch:
         update-types:
