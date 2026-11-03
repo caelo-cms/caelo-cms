@@ -42,6 +42,10 @@ class ObjectFixtureProvider implements AIProvider {
     throw new Error("moduleize should call generateObject, not generate");
   }
 
+  deferredToolNames(): ReadonlySet<string> {
+    return new Set();
+  }
+
   async generateObject(_input: GenerateObjectInput): Promise<GenerateObjectResult> {
     const outcome = this.outcomes[this.#idx] ?? undefined;
     this.#idx += 1;

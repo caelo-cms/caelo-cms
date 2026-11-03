@@ -18,6 +18,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { buildProviderHistory } from "../chat-runner/attachments.js";
 import { toolReferenceMessages } from "../chat-runner/tool-dispatch.js";
 import type { ToolDefinition } from "../provider.js";
+import { pruneToolReferences } from "../providers/_sdk-shared.js";
 import { AnthropicProvider } from "../providers/anthropic.js";
 
 function recordingFetch(): { fetch: typeof fetch; body: () => Record<string, unknown> } {
@@ -123,5 +124,70 @@ describe("load_skill tool references on the Anthropic wire (#991)", () => {
       { type: "tool_reference", tool_name: "set_theme_tokens" },
     ]);
     expect(last.content[2]?.text).toBe("Loaded skill.");
+  });
+
+  test("a reference to a tool the request no longer has is pruned, never sent (no 400 wedge)", () => {
+    const ref = (toolName: string) => ({
+      type: "custom",
+      providerOptions: { anthropic: { type: "tool-reference", toolName } },
+    });
+    const messages = [
+      { role: "user", content: "hi" },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "a",
+            toolName: "load_skill",
+            output: { type: "content", value: [ref("kept_tool"), ref("plugin_tool")] },
+          },
+          {
+            type: "tool-result",
+            toolCallId: "b",
+            toolName: "load_skill",
+            output: { type: "content", value: [ref("plugin_tool")] },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "srv",
+            toolName: "tool_search_tool_bm25",
+            output: {
+              type: "json",
+              value: [
+                { type: "tool_reference", toolName: "kept_tool" },
+                { type: "tool_reference", toolName: "plugin_tool" },
+              ],
+            },
+          },
+        ],
+      },
+    ] as never;
+    const loadable = { deferred: new Set(["kept_tool"]), names: new Set(["kept_tool"]) };
+    const out = pruneToolReferences(messages, loadable) as unknown as {
+      content: { output: { type: string; value: unknown } }[];
+    }[];
+    expect(out[0]).toBe((messages as unknown[])[0] as never);
+    expect(out[1]?.content[0]?.output.value).toEqual([ref("kept_tool")]);
+    expect(out[1]?.content[1]?.output).toEqual({
+      type: "text",
+      value:
+        "Tools loaded here earlier: plugin_tool. Call only tools that are in your tool list now.",
+    });
+    expect(out[2]?.content[0]?.output.value).toEqual([
+      { type: "tool_reference", toolName: "kept_tool" },
+    ]);
+    // Nothing stale: the very same array, so the request bytes stay put.
+    expect(
+      pruneToolReferences(messages, {
+        deferred: new Set(["kept_tool", "plugin_tool"]),
+        names: new Set(["kept_tool", "plugin_tool"]),
+      }),
+    ).toBe(messages);
   });
 });

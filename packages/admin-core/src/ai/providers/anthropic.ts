@@ -642,6 +642,7 @@ export class AnthropicProvider implements AIProvider {
       // the initial request (system chunks + rolling conversation cache
       // breakpoint), so an overridden step's bytes match a fresh call's.
       loopMessages: encodeConversation,
+      deferredToolNames: deferredNames,
     });
     const wire = wirePath();
     if (!wire) {
@@ -918,6 +919,7 @@ export class FixtureProvider implements AIProvider {
       model: model as unknown as import("ai").LanguageModel,
       input,
       systemAndMessages: { system, messages: toSDKMessages(input.messages) },
+      deferredToolNames: this.deferred,
     });
   }
 

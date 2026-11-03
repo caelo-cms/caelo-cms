@@ -56,6 +56,13 @@ loaded skills, and the API expands each into its full definition in place.
   same place the live turn put it.
 - Replay rewrites references to retired tools in this shape too
   (`retired-tool-references.ts`).
+- Every request prunes replayed references it cannot honour
+  (`pruneToolReferences` in `providers/_sdk-shared.ts`): a load_skill
+  reference stays only while its tool is deferred in that request, a
+  tool-search reference only while its tool is in `tools`. A chat whose
+  plugin was switched off since would otherwise 400 on every turn.
+- A tool-loading result is not put in the dedup cache (it keeps text only);
+  load_skill is a read, so a replayed call simply runs again.
 
 Why: without it, the model either paid a search pass per tool — one more
 model pass over the whole context, 56–190k input tokens per search in the

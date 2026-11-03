@@ -71,8 +71,10 @@ function fixtureQueryApi(): {
   registry: OperationRegistry;
   adapter: DatabaseAdapter;
   appended: Appended[];
+  cached: string[];
 } {
   const appended: Appended[] = [];
+  const cached: string[] = [];
   const registry = new OperationRegistry();
   const stub = (name: string, value: unknown) =>
     defineOperation({
@@ -105,7 +107,20 @@ function fixtureQueryApi(): {
   );
   registry.register(stub("chat.set_response_messages", { updated: true }));
   registry.register(stub("chat.lookup_tool_result", { cached: null }));
-  registry.register(stub("chat.cache_tool_result", {}));
+  registry.register(
+    defineOperation({
+      name: "chat.cache_tool_result",
+      readScope: "request",
+      actorScope: ["human", "ai", "system"],
+      database: "cms_admin",
+      input: z.looseObject({ toolCallId: z.string() }),
+      output: z.looseObject({}),
+      handler: async (_ctx, input) => {
+        cached.push(input.toolCallId);
+        return ok({});
+      },
+    }),
+  );
   const adapter = {
     runOperation: (
       op: { handler: (ctx: ExecutionContext, input: unknown, tx: TransactionRunner) => unknown },
@@ -113,7 +128,7 @@ function fixtureQueryApi(): {
       input: unknown,
     ) => op.handler(ctx, input, {} as TransactionRunner),
   } as unknown as DatabaseAdapter;
-  return { registry, adapter, appended };
+  return { registry, adapter, appended, cached };
 }
 
 async function runTurn(provider: FixtureProvider, result: ToolResult) {
@@ -160,7 +175,9 @@ async function runTurn(provider: FixtureProvider, result: ToolResult) {
   const events: ClientEvent[] = [];
   for (;;) {
     const step = await gen.next();
-    if (step.done) return { events, loop: step.value, appended: fixture.appended };
+    if (step.done) {
+      return { events, loop: step.value, appended: fixture.appended, cached: fixture.cached };
+    }
     events.push(step.value);
   }
 }
@@ -205,7 +222,7 @@ function lastUserText(prompt: readonly unknown[] | undefined): string | undefine
 describe("runToolLoop — tool references from load_skill (#991)", () => {
   it("sends the deferred tools as a references-only tool result, the text after it", async () => {
     const provider = new SkillLoadingProvider(new Set(["set_theme_tokens"]));
-    const { loop, appended } = await runTurn(provider, {
+    const { loop, appended, cached } = await runTurn(provider, {
       ok: true,
       content: SKILL_TEXT,
       // build_page is not deferred in this request: referencing it would add
@@ -232,6 +249,9 @@ describe("runToolLoop — tool references from load_skill (#991)", () => {
       { names: new Set(), deferred: new Set(["set_theme_tokens"]) },
     );
     expect(row?.responseMessages).toEqual([stored?.toolMessage, stored?.followUp]);
+    // The dedup cache keeps text only; a cached replay would lose the
+    // references, so this read-only result is not cached.
+    expect(cached).not.toContain("t-skill");
   });
 
   it("puts the text after EVERY tool result of the step, not between them", async () => {

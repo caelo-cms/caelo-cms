@@ -482,14 +482,20 @@ export async function dispatchToolCall(
     const keptArgs = keptCallArgs(result, tools);
     if (keptArgs) result = withKeptCallNotice(call.id, result);
     result = await withTakeoverNotices(registry, adapter, humanCtx, deps.chatSessionId, result);
-    await execute(registry, adapter, humanCtx, "chat.cache_tool_result", {
-      chatSessionId: deps.chatSessionId,
-      toolCallId: call.id,
-      toolName: call.name,
-      ok: result.ok,
-      content: result.content,
-      ...(keptArgs ? { args: keptArgs } : {}),
-    });
+    // #991 — the cache keeps ok + content only, so a cached replay of a
+    // tool-loading result would drop its references while its text says the
+    // tools are callable. Such results (load_skill) are reads: re-running
+    // one on a replayed call is safe, so they are not cached.
+    if (!result.toolReferences?.length) {
+      await execute(registry, adapter, humanCtx, "chat.cache_tool_result", {
+        chatSessionId: deps.chatSessionId,
+        toolCallId: call.id,
+        toolName: call.name,
+        ok: result.ok,
+        content: result.content,
+        ...(keptArgs ? { args: keptArgs } : {}),
+      });
+    }
   }
 
   // Auto-capture EVERY failed tool result into ai_bug_reports (source 'auto'),
