@@ -218,8 +218,6 @@ import {
   listDeployTargetsOp,
   promoteDeployOp,
   refreshStagingPreviewOp,
-  releaseRollbackOp,
-  rollbackDeployOp,
   updateDeployProgressOp,
 } from "./ops/deploy.js";
 import {
@@ -232,6 +230,7 @@ import {
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
 import { finishPromoteOp, recheckPublishAnywayOp, startPromoteOp } from "./ops/deploy-promote.js";
+import { finishRollbackOp, rollbackDeployOp, startRollbackOp } from "./ops/deploy-rollback.js";
 import {
   acquireLiveReleaseOp,
   acquireStagingPublicationOp,
@@ -1063,7 +1062,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(recheckPublishAnywayOp);
   registry.register(acquireLiveReleaseOp);
   registry.register(rollbackDeployOp);
-  registry.register(releaseRollbackOp);
+  registry.register(startRollbackOp);
+  registry.register(finishRollbackOp);
   registry.register(updateDeployProgressOp);
   // #969 — the keep-alive worker's refresh of the served staging preview.
   registry.register(refreshStagingPreviewOp);

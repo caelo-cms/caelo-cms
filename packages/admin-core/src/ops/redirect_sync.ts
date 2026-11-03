@@ -18,6 +18,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { resolveOutputRoot } from "../deploy/output-root.js";
 import { syncRedirects } from "../deploy/redirect-sync.js";
+import { goneStatusOnProvider } from "../deploy/static-publisher.js";
 
 const unservedTarget = z.object({ fromPath: z.string(), location: z.string() });
 
@@ -84,12 +85,20 @@ const targetStatusSchema = z.object({
   failedAttempts: z.number().int(),
   nextAttemptAt: z.string().nullable(),
   lastError: z.string().nullable(),
+  /**
+   * #1357 — what a 410 row answers on this hosting: 410, or the 404 of a
+   * path without a file where the host cannot answer a bare status
+   * (Firebase Hosting, the GCP load balancer, Front Door).
+   */
+  goneAnswer: z.union([z.literal(410), z.literal(404)]),
   last: z
     .object({
       status: syncStatus,
       trigger: z.string(),
       finishedAt: z.string(),
       redirectCount: z.number().int().nullable(),
+      /** The 410 rows the push put live (null: a push that did not reach the host). */
+      goneCount: z.number().int().nullable(),
       unservedTargets: z.array(unservedTarget),
       location: z.string().nullable(),
       error: z.string().nullable(),
@@ -115,7 +124,8 @@ export const redirectSyncStatusOp = defineOperation({
              COALESCE(s.failed_attempts, 0) AS failed_attempts,
              s.next_attempt_at, s.last_error,
              l.status AS last_status, l.trigger AS last_trigger, l.finished_at AS last_finished_at,
-             l.redirect_count AS last_redirect_count, l.unserved_targets AS last_unserved,
+             l.redirect_count AS last_redirect_count, l.gone_count AS last_gone_count,
+             l.unserved_targets AS last_unserved,
              l.location AS last_location, l.error_message AS last_error_message
       FROM deploy_targets t
       LEFT JOIN redirect_sync_state s ON s.target_id = t.id
@@ -139,10 +149,12 @@ export const redirectSyncStatusOp = defineOperation({
       last_trigger: string | null;
       last_finished_at: Date | string | null;
       last_redirect_count: number | null;
+      last_gone_count: number | null;
       last_unserved: unknown;
       last_location: string | null;
       last_error_message: string | null;
     }[];
+    const goneAnswer = goneStatusOnProvider(process.env.CAELO_PROVIDER);
     const iso = (v: Date | string | null): string | null =>
       v === null ? null : v instanceof Date ? v.toISOString() : String(v);
     return ok({
@@ -155,6 +167,7 @@ export const redirectSyncStatusOp = defineOperation({
         failedAttempts: r.failed_attempts,
         nextAttemptAt: iso(r.next_attempt_at),
         lastError: r.last_error,
+        goneAnswer,
         last:
           r.last_status === null
             ? null
@@ -163,6 +176,7 @@ export const redirectSyncStatusOp = defineOperation({
                 trigger: r.last_trigger ?? "",
                 finishedAt: iso(r.last_finished_at) ?? "",
                 redirectCount: r.last_redirect_count,
+                goneCount: r.last_gone_count,
                 unservedTargets: z.array(unservedTarget).parse(r.last_unserved),
                 location: r.last_location,
                 error: r.last_error_message,

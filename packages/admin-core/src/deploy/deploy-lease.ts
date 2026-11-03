@@ -9,12 +9,12 @@
  * Two kinds of holder share one row:
  *
  *   - a deploy run that holds NO transaction while it builds and uploads
- *     (Stage, Publish live, the plugin-data build) CLAIMS the lease: its
+ *     (Stage, Publish live, rollback, the plugin-data build) CLAIMS the lease: its
  *     run id is committed into the row, renewed by the run's heartbeat and
  *     released by the step that records the run (or by deploy.fail_run).
  *     A run that finds the lease held polls outside any transaction;
- *   - a short transaction (rollback, the preview keep-alive, the CDN
- *     purge) LOCKS the row while no run holds the lease, until it ends.
+ *   - a short transaction (the preview keep-alive, the CDN purge) LOCKS
+ *     the row while no run holds the lease, until it ends.
  *   - #1254 — the redirect sync CLAIMS the lease by its own id
  *     (`holder_sync_id`) in a short transaction, pushes to the provider
  *     with no transaction open and releases it: it holds the lease for
