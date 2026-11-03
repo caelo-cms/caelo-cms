@@ -313,6 +313,44 @@ describe("redirect sync on save (#1157)", () => {
     expect(after.staging?.inSync).toBe(true);
   });
 
+  it("Try again now on production answers for production, not for a staging that fails alongside", async () => {
+    // Staging serves a run whose files are gone: every push to it fails.
+    await sys(
+      (tx) => tx`
+        INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id)
+        VALUES (${targets.staging.id}::uuid, ${SYSTEM.actorId}::uuid, 'succeeded', now(), now(),
+                '22222222-2222-4222-8222-222222222222')
+      `,
+    );
+    await sys(
+      (tx) => tx`
+        INSERT INTO redirects (from_path, to_path, status_code, created_by)
+        VALUES ('/unfolded', '/about', 301, ${SYSTEM.actorId}::uuid)
+      `,
+    );
+    // The pending change widens the retry to staging too (the fold restarts
+    // its backoff); Settings' action reads the op's result as the answer to
+    // the operator's click on production.
+    const r = await execute(registry, adapter, SYSTEM, "redirects.sync_provider", {
+      trigger: "manual",
+      // An upper-case spelling is the same target (the Settings form accepts it).
+      targetIds: [targets.production.id.toUpperCase()],
+    });
+    expect(r.ok).toBe(true);
+    const outcomes = (r.ok ? r.value : { targets: [] }) as {
+      targets: { env: string; status: string }[];
+    };
+    expect(outcomes.targets).toEqual([
+      expect.objectContaining({ env: "production", status: "applied" }),
+    ]);
+    const after = await status();
+    expect(after.production?.inSync).toBe(true);
+    expect(await snippet("production")).toContain("/unfolded");
+    // Staging's own failure is still recorded and shown on its own row.
+    expect(after.staging?.inSync).toBe(false);
+    expect(after.staging?.lastError).toContain("serves no files");
+  });
+
   it("a failed push is loud, keeps the redirect, is shown and retried until live", async () => {
     await rm(currentDir("production"), { recursive: true, force: true });
     // The write is saved and answers ok; the AI tool result says why it is not live.

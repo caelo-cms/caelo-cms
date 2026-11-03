@@ -304,7 +304,9 @@ export interface SyncRedirectsArgs {
  * behind: that holder — a Publish live, a Stage, a rollback or another sync
  * — syncs it when it finishes, and the worker retries.
  *
- * @returns one outcome per pushed target (the last round's, per target).
+ * @returns one outcome per pushed target (the last round's, per target);
+ *   for a manual retry of given targets, only theirs — also when the retry
+ *   widened to every target (see {@link widenManualRetry}).
  */
 export async function syncRedirects(
   tx: TransactionRunner,
@@ -344,10 +346,19 @@ export async function syncRedirects(
     if (args.targetIds !== undefined) break;
     if (!(await tx.transaction((t) => moreDue(t)))) break;
   }
+  // The operator asked about these targets: another target the widened
+  // retry pushed along records its own result on its own row, and its
+  // failure (staging with no build to serve) must not answer this retry.
+  // Lower-cased like the `id::text` the outcomes carry: the database
+  // matched an upper-case spelling of the same uuid.
+  const asked =
+    requested.targetIds === undefined
+      ? null
+      : new Set(requested.targetIds.map((id) => id.toLowerCase()));
   // Production first: it is what visitors see.
-  return [...outcomes.values()].sort(
-    (a, b) => Number(b.env === "production") - Number(a.env === "production"),
-  );
+  return [...outcomes.values()]
+    .filter((o) => asked === null || asked.has(o.targetId))
+    .sort((a, b) => Number(b.env === "production") - Number(a.env === "production"));
 }
 
 /**
@@ -358,7 +369,9 @@ export async function syncRedirects(
  * concerns — none of them is backing off any more. Without this the retry
  * pushed the old table and left the target "Going live…" until the next
  * scheduler tick folded the change (#1157, #1140). A publish's targeted
- * sync stays targeted: it never takes the other targets' push.
+ * sync stays targeted: it never takes the other targets' push. The widened
+ * sync still answers only for the targets the operator retried
+ * ({@link syncRedirects}).
  */
 async function widenManualRetry(
   tx: TransactionRunner,
