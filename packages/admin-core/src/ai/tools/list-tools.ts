@@ -208,7 +208,7 @@ export const deleteListsManyTool = makeOpTool({
 export const promoteLocalListTool = makeOpTool({
   name: "promote_local_list",
   description:
-    "Turn a module's LOCAL list into a SHARED list and bind the field to it, in one call — when a second place needs the same entries ('footer links in the mobile menu too', 'editors maintain these links without opening the module'). `field` = the module's `list` field. " +
+    "Turn a module's LOCAL list into a SHARED list and bind the field to it, in one call — when another module needs the same entries ('the sidebar shows these links too', 'editors maintain these links without opening the module'). Never for a mobile copy: one <nav> serves every width. `field` = the module's `list` field. " +
     "Refused when placements show different entries (names them) -> pick the entries to keep, use `upsert_lists_many` + `update_modules_many`. Returns list id + ref `caelo:list/<id>` for binding other modules.",
   opName: "lists.promote_local",
   input: promoteLocalListOp.input,

@@ -86,6 +86,11 @@ export interface StructurePageIndex {
    * partition is all it reads.
    */
   readonly variantGroups: ReadonlyMap<string, string>;
+  /**
+   * #1371 — page id → the layout its template binds: which layout's CSS
+   * the page downloads (page-specific layout CSS).
+   */
+  readonly pageLayouts: ReadonlyMap<string, string>;
 }
 
 /** One listing seen on one or more pages (the same module, type and gap). */
