@@ -182,7 +182,10 @@
                       </strong>
                     </span>
                   {/each}
-                  <span class="text-muted-foreground">best of {m.runs} run(s)</span>
+                  <!-- Audits before #1370 carry no scoredBy; they were scored by their best run. -->
+                  <span class="text-muted-foreground"
+                    >{m.scoredBy === "median" ? "median" : "best"} of {m.runs} run(s)</span
+                  >
                 </div>
                 {#if m.lcpElement}
                   <div class="text-muted-foreground">

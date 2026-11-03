@@ -171,10 +171,19 @@ export class PoolAcquireTimeoutError extends Error {
   ) {
     super(
       `the ${pool} database pool had no free connection for ${requester} within ${timeoutMs} ms: every connection is busy. ` +
-        "Nothing was changed. Retry in a few seconds; if it keeps happening the admin is overloaded or a request holds its connections — the server log names it.",
+        `Nothing was changed. Retry in a few seconds (wait about ${Math.round(POOL_BUSY_RETRY_AFTER_MS / 1000)} s, then send the same call again unchanged); ` +
+        "if it keeps happening the admin is overloaded or a request holds its connections — the server log names it.",
     );
   }
 }
+
+/**
+ * Issue #1375 — how long a caller refused for a busy pool should wait
+ * before it tries again. Long enough for the transactions holding the pool
+ * to finish (a healthy one takes milliseconds, a slow one seconds), short
+ * enough that an agent does not stall its work.
+ */
+export const POOL_BUSY_RETRY_AFTER_MS = 5_000;
 
 /**
  * Call chains that join the transaction their caller holds (see

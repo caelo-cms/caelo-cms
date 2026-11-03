@@ -15,6 +15,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { type AuditJob, childEventSchema } from "./lighthouse-protocol.js";
 import type { PageMeasurement } from "./ratchet.js";
+import { MEDIAN_RUNS } from "./run-selection.js";
 
 export interface AuditedPage {
   readonly pageId: string;
@@ -45,10 +46,11 @@ export type AuditJobResult =
   | { readonly ok: false; readonly failure: AuditInfraFailure };
 
 /** Per-page budget: 1 full + (n-1) Performance runs at up to ~45 s each
- *  (Lighthouse's own page-load ceiling), plus browser start and the
- *  few-second CPU benchmark (cpu-calibration.ts). */
+ *  (Lighthouse's own page-load ceiling), counted at `MEDIAN_RUNS` because
+ *  any page may need confirmation runs (run-selection.ts), plus browser
+ *  start and the few-second CPU benchmark (cpu-calibration.ts). */
 export function auditTimeoutMs(job: AuditJob): number {
-  return 30_000 + job.pages.length * job.performanceRuns * 60_000;
+  return 30_000 + job.pages.length * Math.max(job.performanceRuns, MEDIAN_RUNS) * 60_000;
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   QUALITY_CATEGORIES,
   type QualityCategory,
 } from "./ratchet.js";
+import { scoringRun } from "./run-selection.js";
 
 /** The subset of a Lighthouse result this module reads. */
 export interface LhrLike {
@@ -307,46 +308,6 @@ export function failingAudits(lhr: LhrLike): FailingAudit[] {
 }
 
 /**
- * The index of a page's best Performance run: the highest Performance
- * score, then the fewest failing Performance-only audits, then the
- * earliest run.
- *
- * Why the best run and not the median (#874): Lighthouse simulates the CPU
- * slowdown by multiplying every observed task by the calibrated factor, so
- * a few ms of interference on the audit host become tens of ms on the
- * target device, and Total Blocking Time (only the part of a task above
- * 50 ms counts) turns that into 0 ms in one run and 400 ms in the next.
- * Interference only ever slows a run down, never speeds it up, so the
- * fastest run is the closest measurement of the page itself. The median of
- * such a bimodal set lands on either side at random (#837: byte-identical
- * pages moved 100 → 99 and 99 → 89 between two audits).
- *
- * @param performanceScores - each run's 0..100 Performance score, in run order.
- * @param perfOnlyFailures - each run's count of failing Performance-only audits.
- * @throws when there is no run (an infrastructure failure, never a score)
- *   or the two lists do not describe the same runs.
- */
-export function bestRunIndex(
-  performanceScores: readonly number[],
-  perfOnlyFailures: readonly number[],
-): number {
-  if (performanceScores.length === 0) throw new Error("bestRunIndex: no Performance runs");
-  if (perfOnlyFailures.length !== performanceScores.length) {
-    throw new Error(
-      `bestRunIndex: ${performanceScores.length} Performance score(s) but ${perfOnlyFailures.length} finding count(s); both must list every run`,
-    );
-  }
-  let best = 0;
-  for (let i = 1; i < performanceScores.length; i += 1) {
-    const score = performanceScores[i] as number;
-    const bestScore = performanceScores[best] as number;
-    const fewerFindings = (perfOnlyFailures[i] as number) < (perfOnlyFailures[best] as number);
-    if (score > bestScore || (score === bestScore && fewerFindings)) best = i;
-  }
-  return best;
-}
-
-/**
  * One Lighthouse run reduced to what the page's measurement needs. The audit
  * child (or a parallel audit task, #875) reduces each run where it ran, so
  * the multi-megabyte LHR never crosses a process or machine boundary.
@@ -372,6 +333,7 @@ export interface RunMeasurement {
   readonly cpuCalibration?: {
     readonly benchmarkIndex: number;
     readonly cpuSlowdownMultiplier: number;
+    readonly targetBenchmarkIndex: number;
   };
 }
 
@@ -404,21 +366,39 @@ export function reduceRun(
 }
 
 /**
+ * Each run's Performance score, in run order — what `confirmationRunsNeeded`
+ * (run-selection.ts) and `combineRuns` decide on.
+ *
+ * @throws when a run has no Performance score (a reduction bug, never a
+ *   measurement).
+ */
+export function performanceScoresOf(runs: readonly RunMeasurement[]): number[] {
+  return runs.map((r, i) => {
+    const score = r.scores.performance;
+    if (score === undefined) throw new Error(`run ${i + 1} has no Performance score`);
+    return score;
+  });
+}
+
+/**
  * Combine the reduced runs of one page into its measurement. `runs[0]` is
  * the full run (all four categories), the rest are Performance runs.
  *
  * - Performance score, Performance-only findings and Performance metrics
- *   (FCP, LCP, TBT, CLS, SI) all come from the best run (`bestRunIndex`),
- *   so the score, its findings and its metrics describe the same run, and
- *   the CPU calibration shown is that run's host. Metrics stay data next
- *   to the scores, never findings (lighthouse-metrics.ts); each metric
- *   keeps every run's value.
+ *   (FCP, LCP, TBT, CLS, SI) all come from one scoring run (`scoringRun`,
+ *   run-selection.ts: the best run when the runs agree, the median run of
+ *   `MEDIAN_RUNS` when they do not), so the score, its findings and its
+ *   metrics describe the same run, and the CPU calibration shown is that
+ *   run's host. Metrics stay data next to the scores, never findings
+ *   (lighthouse-metrics.ts); each metric keeps every run's value.
  * - Accessibility, Best Practices, SEO and every finding that belongs to
  *   one of them: the full run (deterministic).
  *
  * @returns the measurement plus every Performance score, for the record.
  * @throws when the full run lacks a category score or any run lacks its
- *   Performance score (a reduction bug, never a measurement).
+ *   Performance score (a reduction bug, never a measurement), or when the
+ *   runs disagree and the caller took no confirmation runs
+ *   (`confirmationRunsNeeded`).
  */
 export function combineRuns(runs: readonly RunMeasurement[]): {
   measurement: PageMeasurement;
@@ -432,11 +412,7 @@ export function combineRuns(runs: readonly RunMeasurement[]): {
     if (score === undefined) throw new Error(`combineRuns: the full run has no ${c} score`);
     scores[c] = score;
   }
-  const performanceRuns = runs.map((r, i) => {
-    const score = r.scores.performance;
-    if (score === undefined) throw new Error(`combineRuns: run ${i + 1} has no Performance score`);
-    return score;
-  });
+  const performanceRuns = performanceScoresOf(runs);
   // Which audits belong only to Performance is read from the full run
   // (`otherCategoryAuditIds`): an audit shared with another category would
   // otherwise look Performance-only in an extra run and be listed twice, or
@@ -445,7 +421,7 @@ export function combineRuns(runs: readonly RunMeasurement[]): {
   const isPerformanceOnly = (f: FailingAudit) =>
     !sharedWithOtherCategories.has(f.id) && f.categories.every((c) => c === "performance");
   const perfOnlyByRun = runs.map((r) => r.failingAudits.filter(isPerformanceOnly));
-  const best = bestRunIndex(
+  const { index: best, scoredBy } = scoringRun(
     performanceRuns,
     perfOnlyByRun.map((f) => f.length),
   );
@@ -462,6 +438,7 @@ export function combineRuns(runs: readonly RunMeasurement[]): {
         ...combineRunMetrics(
           runs.map((r) => r.metrics),
           best,
+          scoredBy,
         ),
         ...(calibration ? { cpuCalibration: calibration } : {}),
       },

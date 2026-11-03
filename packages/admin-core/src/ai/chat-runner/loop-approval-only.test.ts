@@ -32,6 +32,9 @@ class ApprovalOnlyProvider implements AIProvider {
   readonly name = "anthropic" as const;
   readonly model = "fixture-approval-only";
   calls = 0;
+  deferredToolNames(): ReadonlySet<string> {
+    return new Set();
+  }
 
   async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
     this.calls += 1;

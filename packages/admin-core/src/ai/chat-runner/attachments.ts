@@ -279,22 +279,34 @@ export async function buildProviderHistory(
   // history and heals reconstruction-row orphans (e.g. an aborted turn's
   // unanswered tool_use) even when passthrough rows coexist.
   const callNames = toolNamesByCallId(messages);
-  // #1396 — tool-image follow-ups of the current run of tool rows. The live
-  // turn appends them after ALL of its step's tool results (a user message
-  // between two results of one step is rejected by the provider SDK), so they
-  // are held until the run ends.
-  let toolImages: ChatMessageInput[] = [];
-  const flushToolImages = (): void => {
-    if (toolImages.length === 0) return;
-    out.push(...toolImages);
-    toolImages = [];
+  // Follow-ups of tool rows — #991's text of a tool-loading result and
+  // #1396's tool images — are messages the live turn appended AFTER all of
+  // its step's tool results (a user message between two results of one step
+  // breaks the pairing). They are tied to the tool row they belong to and
+  // placed only after the pairing repair, so a row the repair drops (a
+  // repeated result) takes its follow-ups with it and a row it relocates
+  // brings them along (see placeToolFollowUps).
+  const followUpsOf = new Map<ChatMessageInput, ChatMessageInput[]>();
+  const pushRow = (row: ChatMessageInput, followUps: readonly ChatMessageInput[]): void => {
+    out.push(row);
+    if (followUps.length > 0) followUpsOf.set(row, [...followUps]);
   };
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
     if (!m) continue;
-    if (m.role !== "tool") flushToolImages();
+    const rowFollowUps: ChatMessageInput[] = [];
+    if (m.role === "tool" && Array.isArray(m.responseMessages) && m.responseMessages.length > 0) {
+      const split = splitToolFollowUps(m.responseMessages);
+      if (split.followUps.length > 0) {
+        // Live order per call: the tool-loading text, then the image.
+        rowFollowUps.push(...split.followUps);
+        rowFollowUps.push(...(await replayToolImages(m, callNames, loadImage)));
+        pushRow({ role: m.role, content: m.content, sdkMessages: split.inPlace }, rowFollowUps);
+        continue;
+      }
+    }
     if (m.role === "tool" && m.attachments && m.attachments.length > 0) {
-      toolImages.push(...(await replayToolImages(m, callNames, loadImage)));
+      rowFollowUps.push(...(await replayToolImages(m, callNames, loadImage)));
     }
     // Any row carrying an SDK-canonical assembly replays it verbatim — an
     // assistant turn's response.messages (Option C) OR a persisted
@@ -303,7 +315,7 @@ export async function buildProviderHistory(
     // SDK tool-approval-response ModelMessage, replayed to resume the paused
     // gated turn).
     if (Array.isArray(m.responseMessages) && m.responseMessages.length > 0) {
-      out.push({ role: m.role, content: m.content, sdkMessages: m.responseMessages });
+      pushRow({ role: m.role, content: m.content, sdkMessages: m.responseMessages }, rowFollowUps);
       continue;
     }
     // Split the persisted tool_calls jsonb: serverExecuted-tagged rows
@@ -333,7 +345,7 @@ export async function buildProviderHistory(
     };
     const atts = m.role === "user" && m.attachments ? m.attachments : [];
     if (atts.length === 0) {
-      out.push(base);
+      pushRow(base, rowFollowUps);
       continue;
     }
     const parts: ContentPart[] = [];
@@ -353,7 +365,6 @@ export async function buildProviderHistory(
       ...(parts.length > 0 ? { additionalContent: parts } : {}),
     });
   }
-  flushToolImages();
   // Run #10 D1 — tool_use/tool_result pairing repair. Heals sessions
   // already poisoned by orphan tool_results (the `approval-<uuid>` ack
   // class), unanswered tool_uses, or issue #442's dangling providerExecuted
@@ -380,7 +391,8 @@ export async function buildProviderHistory(
   }
   // A tool-search result naming a since-retired tool 400s every replay;
   // point it at the live replacement (retired-tool-references.ts).
-  const { messages: replayable, rewrites } = rewriteRetiredToolReferences(repaired.messages);
+  const placed = placeToolFollowUps(repaired.messages, followUpsOf);
+  const { messages: replayable, rewrites } = rewriteRetiredToolReferences(placed);
   if (rewrites.length > 0) {
     console.error("[chat-runner] history-retired-tool-references", { rewrites });
   }
@@ -419,4 +431,82 @@ async function replayToolImages(
     );
   }
   return followUps;
+}
+
+/**
+ * #991 — a tool row's stored SDK messages, split into the ones that stay in
+ * place (the tool message) and its text follow-ups (user messages with
+ * string content), which replay as plain user rows after the tool-row run —
+ * the same row the live turn appended, so the replayed bytes match.
+ */
+function splitToolFollowUps(responseMessages: readonly unknown[]): {
+  inPlace: unknown[];
+  followUps: ChatMessageInput[];
+} {
+  const inPlace: unknown[] = [];
+  const followUps: ChatMessageInput[] = [];
+  for (const message of responseMessages) {
+    const msg = message as { role?: unknown; content?: unknown } | null;
+    if (msg?.role === "user" && typeof msg.content === "string") {
+      followUps.push({ role: "user", content: msg.content });
+    } else {
+      inPlace.push(message);
+    }
+  }
+  return { inPlace, followUps };
+}
+
+/** Result ids a tool row answers: its own id, or those inside its SDK messages. */
+function toolResultIdsOf(row: ChatMessageInput): string[] {
+  if (row.toolCallId) return [row.toolCallId];
+  const ids: string[] = [];
+  for (const message of (row.sdkMessages ?? []) as { role?: string; content?: unknown }[]) {
+    if (message?.role !== "tool" || !Array.isArray(message.content)) continue;
+    for (const part of message.content as { type?: string; toolCallId?: string }[]) {
+      if (part?.type === "tool-result" && part.toolCallId) ids.push(part.toolCallId);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Put every surviving tool row's follow-ups after the run of tool rows it
+ * ends up in — where the live turn put them. A row the pairing repair
+ * dropped (a repeated or orphaned result) has no follow-up in the output;
+ * a relocated row brings its own. A passthrough row the repair rewrote is a
+ * new object, so it is matched to its original by the result ids it still
+ * answers.
+ */
+function placeToolFollowUps(
+  messages: readonly ChatMessageInput[],
+  followUpsOf: ReadonlyMap<ChatMessageInput, ChatMessageInput[]>,
+): ChatMessageInput[] {
+  if (followUpsOf.size === 0) return [...messages];
+  const byResultId = new Map<string, ChatMessageInput>();
+  for (const row of followUpsOf.keys()) {
+    if (!row.sdkMessages) continue;
+    for (const id of toolResultIdsOf(row)) if (!byResultId.has(id)) byResultId.set(id, row);
+  }
+  const placedFor = new Set<ChatMessageInput>();
+  const out: ChatMessageInput[] = [];
+  let pending: ChatMessageInput[] = [];
+  for (const m of messages) {
+    if (m.role !== "tool") {
+      out.push(...pending);
+      pending = [];
+    }
+    out.push(m);
+    if (m.role !== "tool") continue;
+    let original: ChatMessageInput | undefined = followUpsOf.has(m) ? m : undefined;
+    if (!original && m.sdkMessages) {
+      original = toolResultIdsOf(m)
+        .map((id) => byResultId.get(id))
+        .find((row) => row !== undefined);
+    }
+    if (!original || placedFor.has(original)) continue;
+    placedFor.add(original);
+    pending.push(...(followUpsOf.get(original) ?? []));
+  }
+  out.push(...pending);
+  return out;
 }

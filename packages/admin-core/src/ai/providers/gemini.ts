@@ -80,6 +80,11 @@ export class GeminiProvider implements AIProvider {
     });
   }
 
+  /** No tool search here: every definition ships in full. */
+  deferredToolNames(): ReadonlySet<string> {
+    return new Set();
+  }
+
   async generateObject(input: GenerateObjectInput): Promise<GenerateObjectResult> {
     return runSDKGenerateObject({
       model: this.#model,

@@ -31,7 +31,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { LOAD_SKILL_MAX_SLUGS, loadSkillToolInput } from "@caelo-cms/shared";
 import { describeError, toolError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface SkillRow {
   slug: string;
@@ -41,37 +41,55 @@ interface SkillRow {
   status: "awaiting_activation" | "active" | "archived";
 }
 
+/** What load_skill tells the model about a skill's tools, and what it loads. */
+export interface SkillToolsLoad {
+  /** The closing note appended to the skill body ("" for a skill without tools). */
+  readonly note: string;
+  /** The skill's deferred tools, loaded into the conversation with this result. */
+  readonly references: readonly string[];
+}
+
 /**
- * The closing note naming a skill's tools. It must not claim more than is
- * true: loading a skill does NOT load its tools into the running turn — the
- * tool list is the same on every turn of a chat (a changed one would make
- * the provider re-cache the whole history), and only the core set ships in
- * full; the rest sit behind tool search. The note used to say "now available to you" for all of them,
- * and the model then called a deferred tool (bootstrap_site_scaffold) it
- * could not emit — what came out instead was a `bug_report` with the
- * literal values "placeholder" (two e2e-livedit runs, 2026-10), after which
- * the model searched the tool and called it properly.
+ * The tools a skill uses, loaded so the model can call every one of them
+ * without a search (#991).
  *
- * @param preloaded - this turn's always-loaded tool names; undefined on
- *   surfaces that list every tool with its schema (Power-MCP).
+ * Most of a skill's tools sit behind the provider's tool search: only the
+ * core set ships in full, and the tool list is the same on every step of a
+ * chat (a changed one would make the provider re-cache the whole history).
+ * Loading a skill used to load none of them. The model then either paid a
+ * search pass per tool — a whole extra model pass over the context, 50–190k
+ * input tokens per search in the homepage scenario (#809) — or, when it
+ * skipped the search, called a loaded tool in place of the one it meant:
+ * `bug_report` with the literal values "placeholder", or
+ * `set_content_instance_values_many` with a page id right before it searched
+ * and called `set_page_seo` (e2e-livedit 2026-10). The result therefore
+ * carries the skill's deferred tools as `tool_reference` blocks, which the
+ * provider expands into full definitions in place, exactly as its own
+ * search does, and the note says they are callable.
+ *
+ * @param turnTools - this turn's catalogue and the tools it defers;
+ *   undefined on surfaces that list every tool with its schema (Power-MCP).
  */
-export function skillToolsNote(
+export function skillToolsLoad(
   tools: readonly string[],
-  preloaded: ReadonlySet<string> | undefined,
-): string {
-  if (tools.length === 0) return "";
-  if (preloaded === undefined) return `\n\nTools this skill uses: ${tools.join(", ")}.`;
-  const loaded = tools.filter((t) => preloaded.has(t));
-  const deferred = tools.filter((t) => !preloaded.has(t));
+  turnTools: ToolContext["turnTools"],
+): SkillToolsLoad {
+  if (tools.length === 0) return { note: "", references: [] };
+  if (turnTools === undefined) {
+    return { note: `\n\nTools this skill uses: ${tools.join(", ")}.`, references: [] };
+  }
+  const references = tools.filter((t) => turnTools.deferred.has(t));
+  const missing = tools.filter((t) => !turnTools.names.has(t));
   const parts = [`\n\nTools this skill uses: ${tools.join(", ")}.`];
-  if (loaded.length > 0) parts.push(` Already in your tool list: ${loaded.join(", ")}.`);
-  if (deferred.length > 0) {
+  if (references.length > 0) {
+    parts.push(` Loaded with this skill, callable from your next step: ${references.join(", ")}.`);
+  }
+  if (missing.length > 0) {
     parts.push(
-      ` Possibly NOT loaded yet: ${deferred.join(", ")} — loading this skill does not load them. ` +
-        "Before calling one that is not in your tool list, load it with the tool-search tool (search its exact name); never call a different tool in its place.",
+      ` Not available in this chat: ${missing.join(", ")} — skip the steps that need them, or tell the operator; never call a different tool in their place.`,
     );
   }
-  return parts.join("");
+  return { note: parts.join(""), references };
 }
 
 export const loadSkillTool: ToolDefinitionWithHandler<
@@ -105,6 +123,8 @@ export const loadSkillTool: ToolDefinitionWithHandler<
     const missing: string[] = [];
     const notRunning: string[] = [];
     const sections: string[] = [];
+    // One reference per tool, however many of the loaded skills use it.
+    const references = new Set<string>();
 
     for (const slug of wanted) {
       const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "skills.get", { slug });
@@ -128,9 +148,10 @@ export const loadSkillTool: ToolDefinitionWithHandler<
         continue;
       }
       loaded.push(skill.slug);
-      const toolsNote = skillToolsNote(skill.allowlistedTools, toolCtx.preloadedToolNames);
+      const tools = skillToolsLoad(skill.allowlistedTools, toolCtx.turnTools);
+      for (const name of tools.references) references.add(name);
       sections.push(
-        `Loaded skill "${skill.slug}" — ${skill.displayName}. Follow these instructions for the rest of this chat:\n\n${skill.body}${toolsNote}`,
+        `Loaded skill "${skill.slug}" — ${skill.displayName}. Follow these instructions for the rest of this chat:\n\n${skill.body}${tools.note}`,
       );
     }
 
@@ -159,6 +180,7 @@ export const loadSkillTool: ToolDefinitionWithHandler<
     return {
       ok: true,
       content: notes ? `${sections.join("\n\n---\n\n")}\n\n${notes}` : sections.join("\n\n---\n\n"),
+      ...(references.size > 0 ? { toolReferences: [...references] } : {}),
     };
   },
 };

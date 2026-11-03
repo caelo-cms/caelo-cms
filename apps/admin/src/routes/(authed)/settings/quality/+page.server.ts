@@ -163,6 +163,8 @@ interface CheckFinding {
 /** `quality_audits.get` page metrics (admin-core lighthouse-metrics.ts). */
 interface PerformanceMetrics {
   runs: number;
+  /** How the scoring run was chosen (#1370); absent on older audits. */
+  scoredBy?: "best" | "median";
   metrics: {
     id: string;
     label: string;

@@ -464,4 +464,13 @@ export interface AIProvider {
    * implementation would silently degrade moduleize's structured path.
    */
   generateObject(input: GenerateObjectInput): Promise<GenerateObjectResult>;
+  /**
+   * The tools of `tools` this provider ships by name only, behind its tool
+   * search (Anthropic Tool Search: every tool without `alwaysLoaded`, once
+   * the catalogue is large enough). Empty for a provider that ships every
+   * definition in full. `load_skill` loads exactly these into the
+   * conversation as `tool_reference` blocks, so the decision has one owner:
+   * a reference to a tool the request does not carry fails the request.
+   */
+  deferredToolNames(tools: readonly ToolDefinition[]): ReadonlySet<string>;
 }

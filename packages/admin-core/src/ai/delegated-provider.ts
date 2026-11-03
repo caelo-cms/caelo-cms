@@ -37,5 +37,7 @@ export function delegatedProvider(provider: AIProvider): AIProvider {
     async generateObject() {
       throw refusal("a structured generation");
     },
+    // Never generates, so it never sends a tool to defer.
+    deferredToolNames: () => new Set<string>(),
   };
 }

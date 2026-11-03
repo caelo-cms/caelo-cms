@@ -41,6 +41,7 @@ import {
   lockPluginRow,
   makePluginImageProvider,
   makePluginTextProvider,
+  mcpBackPressureResponse,
   registerRedirectSyncRunner,
   startLiveFanOut,
   startQualityAuditWorker,
@@ -562,6 +563,13 @@ export const handle: Handle = async ({ event, resolve }) => {
   // resolution: the target page runs its own auth guard.
   const moved = legacySecurityRedirect(event.url);
   if (moved) return new Response(null, { status: 308, headers: { Location: moved } });
+  // #1375 — an MCP call to a saturated admin gets 429 + Retry-After before
+  // it touches the database (the plugin-host sync below reads it too).
+  const busy = mcpBackPressureResponse(
+    event.url.pathname,
+    getQueryContext().adapter.poolPressure("admin"),
+  );
+  if (busy) return busy;
   ensureProviderResolverConfigured();
   // v0.5.9 — fire-and-forget bootstraps had `void` prefixes that
   // swallowed their rejections. Replace with .catch() so background

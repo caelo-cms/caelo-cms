@@ -201,6 +201,40 @@ describe("buildProviderHistory — tool images (#1396)", () => {
     expect(part?.type === "text" ? part.text : "").toContain("is gone from storage");
   });
 
+  it("a repeated tool result the repair drops takes its image with it", async () => {
+    const out = await buildProviderHistory(
+      [
+        msg("user", "shoot"),
+        assistantCalling("c1"),
+        toolRow("c1", [shot(1)]),
+        toolRow("c1", [shot(2)]),
+        msg("assistant", "done"),
+      ],
+      keyLoader,
+    );
+    expect(out.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user", "assistant"]);
+    expect(out[3]?.additionalContent).toEqual([
+      { type: "image", base64: `b64:${shot(1).storageKey}`, mediaType: "image/webp" },
+    ]);
+  });
+
+  it("a relocated tool result brings its image back next to it", async () => {
+    // A second turn's user message landed while the first turn's tool still
+    // ran (#628): the repair moves the result back after its call.
+    const out = await buildProviderHistory(
+      [
+        msg("user", "shoot"),
+        assistantCalling("c1"),
+        msg("user", "also this"),
+        toolRow("c1", [shot(1)]),
+      ],
+      keyLoader,
+    );
+    expect(out.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user", "user"]);
+    expect(out[3]?.content).toBe(followUpText);
+    expect(out[4]?.content).toBe("also this");
+  });
+
   it("a row the image sweep cleared, and an orphan tool row, get no follow-up", async () => {
     const out = await buildProviderHistory(
       [
