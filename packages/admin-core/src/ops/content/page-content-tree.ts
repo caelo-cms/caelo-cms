@@ -25,6 +25,7 @@ import {
   loadBranchedModuleStates,
   loadContentInstanceBranchStates,
 } from "../../snapshots/index.js";
+import { listPlacementsInView } from "./content-instance-reach.js";
 import { findContentInstancesContaining, idNeedles } from "./content-instance-refs.js";
 
 /** A module field as readers of the page's text need it. */
@@ -49,7 +50,11 @@ export interface NestedContent {
   readonly moduleSlug: string;
   readonly fields: readonly PlacementField[];
   readonly values: Readonly<Record<string, unknown>>;
-  /** Only this page renders it (no other placement, no parent elsewhere). */
+  /**
+   * Only this page renders it: nothing outside the page's tree lists it,
+   * and no placement on another page binds it or any instance above it
+   * (the placement's own instance included).
+   */
   readonly exclusive: boolean;
 }
 
@@ -131,12 +136,15 @@ export function nestedRefPaths(values: Readonly<Record<string, unknown>>): Ref[]
 /**
  * The nested content of each root placement, keyed like `roots`.
  *
+ * @param pageId the page the roots are placed on: `exclusive` says
+ *   whether a nested instance renders on this page alone.
  * @param roots the page's placements: their key, bound content instance
  *   and its values (as the caller sees them).
  */
 export async function loadNestedContent(
   tx: TransactionRunner,
   chatBranchId: string | null,
+  pageId: string,
   roots: readonly {
     readonly key: string;
     readonly contentInstanceId: string;
@@ -203,9 +211,10 @@ export async function loadNestedContent(
     }
   }
 
-  const exclusive = await exclusiveToTree(
+  const exclusive = await exclusiveToPage(
     tx,
     chatBranchId,
+    pageId,
     new Set([...roots.map((r) => r.contentInstanceId), ...found.map((f) => f.contentInstanceId)]),
     found.map((f) => f.contentInstanceId),
   );
@@ -225,36 +234,67 @@ export async function loadNestedContent(
 }
 
 /**
- * The nested instances of `nestedIds` that only this page's tree renders:
- * no placement binds them directly, and every instance referencing them
- * is itself in `tree`.
+ * The nested instances of `nestedIds` that only page `pageId` renders —
+ * the ones a write bound to that page may change without changing
+ * another page (#1309).
+ *
+ * Exclusivity is transitive. A nested instance whose parents all sit in
+ * the page's tree is still shared when the placement above it is: a
+ * placement bound to the same instance as the source page of a
+ * translation (synced, or a variant whose nested references predate the
+ * deep copy) renders every instance below it on both pages, at every
+ * depth. So an instance of the tree is the page's own when
+ *
+ * - every placement binding it (as the caller's branch sees the site) is
+ *   on `pageId`, and
+ * - every instance listing it is in the page's tree and is itself the
+ *   page's own. A parent outside the tree that renders nowhere today (a
+ *   content-library instance) can be placed tomorrow, so it counts as
+ *   sharing.
+ *
+ * Only the page's own tree is read (its instances' parents through the
+ * reference index, their placements by instance id), never the whole
+ * site: `list_for_page` runs once per translated page.
  */
-async function exclusiveToTree(
+async function exclusiveToPage(
   tx: TransactionRunner,
   chatBranchId: string | null,
+  pageId: string,
   tree: ReadonlySet<string>,
   nestedIds: readonly string[],
 ): Promise<Set<string>> {
-  const ids = [...new Set(nestedIds)];
-  const bound = (await tx.execute(sql`
-    SELECT DISTINCT content_instance_id::text AS id FROM page_modules
-    WHERE content_instance_id = ANY(${uuidArray(ids)})
-  `)) as unknown as { id: string }[];
-  const placed = new Set(bound.map((b) => b.id));
-  const parents = new Map<string, Set<string>>();
-  for (const c of await findContentInstancesContaining(tx, chatBranchId, idNeedles(ids))) {
+  const treeIds = [...tree];
+  const placedElsewhere = new Set(
+    (await listPlacementsInView(tx, treeIds, chatBranchId))
+      .filter((p) => p.pageId !== pageId)
+      .map((p) => p.contentInstanceId),
+  );
+  // Children of each tree instance, and the instances shared at the
+  // source: placed on another page, or listed by an instance outside the
+  // tree. Sharing then flows down to everything below them.
+  const children = new Map<string, Set<string>>();
+  const shared = new Set(placedElsewhere);
+  for (const c of await findContentInstancesContaining(tx, chatBranchId, idNeedles(treeIds))) {
     const parsed = JSON.parse(c.valuesText) as Record<string, unknown>;
     for (const ref of nestedRefPaths(parsed)) {
-      if (ref.contentInstanceId === c.contentInstanceId) continue;
-      const set = parents.get(ref.contentInstanceId) ?? new Set<string>();
-      set.add(c.contentInstanceId);
-      parents.set(ref.contentInstanceId, set);
+      const child = ref.contentInstanceId;
+      if (child === c.contentInstanceId || !tree.has(child)) continue;
+      if (!tree.has(c.contentInstanceId)) {
+        shared.add(child);
+        continue;
+      }
+      const set = children.get(c.contentInstanceId) ?? new Set<string>();
+      set.add(child);
+      children.set(c.contentInstanceId, set);
     }
   }
-  const out = new Set<string>();
-  for (const id of ids) {
-    if (placed.has(id)) continue;
-    if ([...(parents.get(id) ?? [])].every((p) => tree.has(p))) out.add(id);
+  const stack = [...shared];
+  while (stack.length > 0) {
+    for (const child of children.get(stack.pop() as string) ?? []) {
+      if (shared.has(child)) continue;
+      shared.add(child);
+      stack.push(child);
+    }
   }
-  return out;
+  return new Set([...new Set(nestedIds)].filter((id) => !shared.has(id)));
 }

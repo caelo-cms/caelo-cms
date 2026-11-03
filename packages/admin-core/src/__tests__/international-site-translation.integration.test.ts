@@ -1324,4 +1324,213 @@ describe("#397 — context-aware translation", () => {
     const s = await values(sourceId);
     expect(s[1]?.values).toEqual({ heading: "Try it" });
   }, 60_000);
+  it("#1309 — a translation never writes content the source page renders: shared nested content is forked to the variant first, at every depth", async () => {
+    const sourceId = await seedSourcePage("-shared");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    // A tile grid (a root holding nothing but references) whose tiles hold
+    // cards — two levels of nested content — and a second grid of cards.
+    const ids = await sqlSystem(async (tx) => {
+      const one = async (q: string) => ((await tx.unsafe(q)) as { id: string }[])[0]?.id as string;
+      const card = await one(
+        `INSERT INTO modules (slug, display_name, type, kind, html, fields)
+         VALUES ('t397-shared-card', 'Card', 't397-shared-card', 'content', '<h3>{{card_title}}</h3>',
+                 '[{"name":"card_title","kind":"text"}]'::jsonb) RETURNING id::text AS id`,
+      );
+      const tile = await one(
+        `INSERT INTO modules (slug, display_name, type, kind, html, fields)
+         VALUES ('t397-shared-tile', 'Tile', 't397-shared-tile', 'content',
+                 '<div><h2>{{tile_title}}</h2>{{#items}}{{/items}}</div>',
+                 '[{"name":"tile_title","kind":"text"},{"name":"items","kind":"module-list"}]'::jsonb)
+         RETURNING id::text AS id`,
+      );
+      const grid = await one(
+        `INSERT INTO modules (slug, display_name, type, kind, html, fields)
+         VALUES ('t397-shared-grid', 'Grid', 't397-shared-grid', 'content', '<div>{{#items}}{{/items}}</div>',
+                 '[{"name":"items","kind":"module-list"}]'::jsonb) RETURNING id::text AS id`,
+      );
+      const leaf = await one(
+        `INSERT INTO content_instances (module_id, "values") VALUES ('${card}', '{"card_title":"Fast setup"}') RETURNING id::text AS id`,
+      );
+      const tileCi = await one(
+        `INSERT INTO content_instances (module_id, "values")
+         VALUES ('${tile}', '{"tile_title":"Features","items":[{"moduleId":"${card}","contentInstanceId":"${leaf}"}]}')
+         RETURNING id::text AS id`,
+      );
+      const gridCi = await one(
+        `INSERT INTO content_instances (module_id, "values")
+         VALUES ('${grid}', '{"items":[{"moduleId":"${tile}","contentInstanceId":"${tileCi}"}]}') RETURNING id::text AS id`,
+      );
+      const card2 = await one(
+        `INSERT INTO content_instances (module_id, "values") VALUES ('${card}', '{"card_title":"Open source"}') RETURNING id::text AS id`,
+      );
+      const grid2Ci = await one(
+        `INSERT INTO content_instances (module_id, "values")
+         VALUES ('${grid}', '{"items":[{"moduleId":"${card}","contentInstanceId":"${card2}"}]}') RETURNING id::text AS id`,
+      );
+      await tx.unsafe(
+        `INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode) VALUES
+           ('${sourceId}', 'main', 1, '${grid}', '${gridCi}', 'unsynced'),
+           ('${sourceId}', 'main', 2, '${grid}', '${grid2Ci}', 'synced')`,
+      );
+      return { tile, leaf, tileCi, card2, grid2Ci };
+    });
+
+    const variant = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-shared-preise",
+    });
+    // The report's shapes: the first grid is the variant's own row but
+    // still lists the source's tile (a copy made before nested content was
+    // deep-copied); the second is bound to the source's very instance.
+    await sqlSystem(async (tx) => {
+      await tx.unsafe(
+        `UPDATE content_instances SET "values" = jsonb_build_object('items', jsonb_build_array(
+            jsonb_build_object('moduleId', '${ids.tile}', 'contentInstanceId', '${ids.tileCi}')))
+          WHERE id = (SELECT content_instance_id FROM page_modules
+                       WHERE page_id = '${variant.pageId}' AND block_name = 'main' AND position = 1)`,
+      );
+      await tx.unsafe(
+        `UPDATE page_modules SET content_instance_id = '${ids.grid2Ci}', sync_mode = 'synced'
+          WHERE page_id = '${variant.pageId}' AND block_name = 'main' AND position = 2`,
+      );
+    });
+
+    aiScript.push(() => ({
+      title: "Preise",
+      shortTitle: "Preise",
+      slots: [
+        { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo Welt</p>" }) },
+        { slot: "s1", values: [] },
+        { slot: "s2", values: fields({ tile_title: "Funktionen" }) },
+        { slot: "s3", values: fields({ card_title: "Schnell eingerichtet" }) },
+        { slot: "s4", values: [] },
+        { slot: "s5", values: fields({ card_title: "Quelloffen" }) },
+      ],
+    }));
+    const result = await op<{ slotsApplied: number; sharedNested?: string[] }>(
+      "translate_variant",
+      { variantPageId: variant.pageId },
+    );
+    expect(result.sharedNested).toBeUndefined();
+    const prompt = aiCalls.at(-1);
+    expect(prompt?.user).toContain("nested at items[0]>items[0]");
+
+    // The source page renders exactly what it did.
+    const stored = async (id: string) =>
+      sqlSystem(async (tx) => {
+        const rows = (await tx.unsafe(
+          `SELECT "values" AS values FROM content_instances WHERE id = '${id}'`,
+        )) as { values: Record<string, unknown> }[];
+        return rows[0]?.values;
+      });
+    expect(await stored(ids.leaf)).toEqual({ card_title: "Fast setup" });
+    expect((await stored(ids.tileCi))?.tile_title).toBe("Features");
+    expect(await stored(ids.card2)).toEqual({ card_title: "Open source" });
+
+    // The variant renders its own translated copies, at every depth.
+    const listed = await execute(registry, adapter, SYS_CTX, "page_module_content.list_for_page", {
+      pageId: variant.pageId,
+    });
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const placements = (
+      listed.value as {
+        placements: {
+          position: number;
+          contentInstanceId: string;
+          nested: {
+            path: string;
+            contentInstanceId: string;
+            values: Record<string, unknown>;
+            exclusive: boolean;
+          }[];
+        }[];
+      }
+    ).placements;
+    const nested = placements.flatMap((p) => p.nested.map((n) => ({ position: p.position, ...n })));
+    expect(nested.map((n) => [n.position, n.path, n.exclusive])).toEqual([
+      [1, "items[0]", true],
+      [1, "items[0]>items[0]", true],
+      [2, "items[0]", true],
+    ]);
+    expect(nested.map((n) => n.values.tile_title ?? n.values.card_title)).toEqual([
+      "Funktionen",
+      "Schnell eingerichtet",
+      "Quelloffen",
+    ]);
+    expect(placements.find((p) => p.position === 2)?.contentInstanceId).not.toBe(ids.grid2Ci);
+    const rows = await sqlAsPlugin(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT translation_status FROM plugin_international_site.page_variants WHERE page_id = '${variant.pageId}'`,
+        )) as { translation_status: string }[],
+    );
+    expect(rows[0]?.translation_status).toBe("up_to_date");
+  }, 60_000);
+
+  it("#1309 — a variant whose sections are in another order gets each text in its own section", async () => {
+    const sourceId = await seedSourcePage("-order");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    await sqlSystem(async (tx) => {
+      const faq = (await tx.unsafe(
+        `INSERT INTO modules (slug, display_name, type, kind, html, fields)
+         VALUES ('t397-order-faq', 'FAQ', 't397-order-faq', 'content', '<dl><dt>{{question}}</dt></dl>',
+                 '[{"name":"question","kind":"text"}]'::jsonb) RETURNING id::text AS id`,
+      )) as { id: string }[];
+      const ci = (await tx.unsafe(
+        `INSERT INTO content_instances (module_id, "values") VALUES ('${faq[0]?.id}', '{"question":"Why?"}')
+         RETURNING id::text AS id`,
+      )) as { id: string }[];
+      await tx.unsafe(
+        `INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+         VALUES ('${sourceId}', 'main', 1, '${faq[0]?.id}', '${ci[0]?.id}', 'unsynced')`,
+      );
+    });
+    const variant = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-order-preise",
+    });
+    // The variant shows the FAQ first, the hero second.
+    await sqlSystem(async (tx) => {
+      const where = `page_id = '${variant.pageId}' AND block_name = 'main'`;
+      await tx.unsafe(`UPDATE page_modules SET position = 9 WHERE ${where} AND position = 0`);
+      await tx.unsafe(`UPDATE page_modules SET position = 0 WHERE ${where} AND position = 1`);
+      await tx.unsafe(`UPDATE page_modules SET position = 1 WHERE ${where} AND position = 9`);
+    });
+    aiScript.push(() => ({
+      title: "Preise",
+      shortTitle: "Preise",
+      slots: [
+        { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo</p>" }) },
+        { slot: "s1", values: fields({ question: "Warum?" }) },
+      ],
+    }));
+    const result = await op<{ slotsApplied: number }>("translate_variant", {
+      variantPageId: variant.pageId,
+    });
+    expect(result.slotsApplied).toBe(2);
+    const v = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT pm.position, ci."values" AS values FROM page_modules pm
+             JOIN content_instances ci ON ci.id = pm.content_instance_id
+            WHERE pm.page_id = '${variant.pageId}' ORDER BY pm.position`,
+        )) as { position: number; values: Record<string, unknown> }[],
+    );
+    expect(v.map((r) => r.values)).toEqual([
+      { question: "Warum?" },
+      { headline: "Willkommen", body_html: "<p>Hallo</p>" },
+    ]);
+  }, 60_000);
 });

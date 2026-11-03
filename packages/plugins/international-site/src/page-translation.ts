@@ -36,6 +36,7 @@ import {
   type TranslationResultPayload,
   validateMetaDescription,
   validateStructuralLock,
+  variantSlotsBySource,
 } from "./translation.js";
 import {
   type TranslationContract,
@@ -83,7 +84,7 @@ export function outcomeNextStep(o: PageTranslationOutcome): string | undefined {
   const steps = [
     ...(o.seo === "marked_stale" ? [SEO_STALE_NEXT_STEP] : []),
     ...(o.sharedNested && o.sharedNested.length > 0
-      ? [`${SHARED_NESTED_NEXT_STEP} Placements: ${o.sharedNested.join("; ")}.`]
+      ? [`${SHARED_NESTED_NEXT_STEP} Nested content: ${o.sharedNested.join("; ")}.`]
       : []),
   ];
   return steps.length > 0 ? steps.join(" ") : undefined;
@@ -120,17 +121,17 @@ export interface PageTranslationOutcome {
   titleApplied: boolean;
   seo: TranslatedSeoOutcome;
   /**
-   * Nested content left untranslated because another page renders the
-   * same content instance (a variant created before nested content was
-   * copied): writing it would change that page too. Labels like
-   * `main #1 > cards[2]`.
+   * Nested content left untranslated because another page still renders
+   * it after its placement was forked (the fork deep-copies nested
+   * content, so this is the exception): writing it would change that page
+   * too. Labels like `main #1 > cards[2] (content instance <id>)`.
    */
   sharedNested?: string[];
 }
 
 /** Told to the AI when nested content could not be translated in place. */
 export const SHARED_NESTED_NEXT_STEP =
-  "Some nested content of this page is still shared with another page (the source page), so it was not translated — writing it would change that page too. Give the page its own copy with fork_placement_content on each listed placement (it copies the nested content), then run translate_variant again.";
+  "Some nested content of this page still renders on another page after its placement got its own copy, so it was not translated — writing it would change that page too. get_content_instance on each listed instance shows where it renders; give this page its own instance there (create_content_instances, then set_page_module_content_many on the placement's field) and run translate_variant again.";
 
 /** A module field as `page_module_content.list_for_page` returns it. */
 interface PageField extends ChromeField {
@@ -667,9 +668,19 @@ export function pageTranslationContract(p: PreparedPageTranslation): Translation
 
 /**
  * Write a validated answer onto the DRAFT variant: merge translated
- * strings over the variant's current values (forking synced placements
- * first), update the title, apply the meta description through core's
- * fill-once rule, and mark the variant up to date.
+ * strings over the variant's current values, update the title, apply the
+ * meta description through core's fill-once rule, and mark the variant up
+ * to date.
+ *
+ * Every slot is written where its ALIGNED variant slot sits (identity,
+ * not position: a variant with its sections in another order gets each
+ * text in its own section). A translation is by definition page-private,
+ * so a placement whose content another page renders too is forked first:
+ * a synced placement the answer writes, and every placement with answered
+ * nested content that is not this page's alone — the content below a
+ * placement shared with the source page renders on the source page, at
+ * every depth (#1309). The fork deep-copies the nested content, so the
+ * nested writes then land on the variant's own copies.
  */
 export async function writePageTranslation(
   deps: TranslationDeps,
@@ -678,58 +689,98 @@ export async function writePageTranslation(
 ): Promise<PageTranslationOutcome> {
   const { q, cms } = deps;
   const slotIndex = buildSlotIndex(p.sourceSlots);
+  const variantOf = variantSlotsBySource(p.alignment);
   let slotsApplied = 0;
   const answered = payload.slots.flatMap((entry) => {
     const target = slotIndex.get(entry.slot);
     // validateStructuralLock already refused unknown ids.
-    return target ? [{ key: slotKeyOf(target), target, strings: entry.values }] : [];
+    if (!target) return [];
+    const key = slotKeyOf(target);
+    // Full-mode 'added' slots have no variant counterpart: nothing to write.
+    const variant = variantOf.get(key);
+    if (!variant) return [];
+    return [{ sourceKey: key, variant, variantKey: slotKeyOf(variant), strings: entry.values }];
   });
-  // Placements first: a synced placement is forked, and the fork copies
-  // its nested content — whose new instances the nested writes need.
-  let forked = false;
-  for (const a of answered.filter((x) => x.target.nestedPath === undefined)) {
-    const current = p.variantBases.get(a.key);
-    const source = p.sourceBases.get(a.key);
-    if (!current || !source) continue; // full-mode 'added' slots have no variant placement — skip
-    const contentValues = translatedValues(current, source, a.strings);
-    const at = {
-      pageId: p.variantPageId,
-      blockName: a.target.blockName,
-      position: a.target.position,
+  const placementOf = (v: ContentSlot) => ({
+    pageId: p.variantPageId,
+    blockName: v.blockName,
+    position: v.position,
+  });
+  // What the writes merge into. A fork rebinds the placement to fresh
+  // copies whose nested references differ from the prepared values, so
+  // after one the bases are read back BEFORE anything is written over
+  // them: writing the prepared root values onto the fork would point it
+  // back at the shared nested content it was forked to leave.
+  let bases = p.variantBases;
+  const forked = new Set<string>();
+  const fork = async (v: ContentSlot): Promise<void> => {
+    const at = placementOf(v);
+    if (forked.has(slotKeyOf(at))) return;
+    await cms.call("placement.fork_content", at);
+    forked.add(slotKeyOf(at));
+    bases = (await loadPageSlots(deps, p.variantPageId, await loadListTypes(deps))).bases;
+  };
+  const isSyncedRefusal = (e: unknown, v: ContentSlot): boolean =>
+    /synced/i.test((e as Error).message) && !forked.has(slotKeyOf(placementOf(v)));
+  for (const a of answered) {
+    if (a.variant.nestedPath === undefined) continue;
+    if (bases.get(a.variantKey)?.nested?.exclusive === false) await fork(a.variant);
+  }
+  for (const a of answered.filter((x) => x.variant.nestedPath === undefined)) {
+    const source = p.sourceBases.get(a.sourceKey);
+    if (!bases.get(a.variantKey) || !source) continue;
+    const write = async () => {
+      const current = bases.get(a.variantKey);
+      if (!current) throw new Error(`placement ${a.variantKey} vanished from the variant`);
+      await cms.call("page_module_content.set", {
+        ...placementOf(a.variant),
+        contentValues: translatedValues(current, source, a.strings),
+      });
     };
     try {
-      await cms.call("page_module_content.set", { ...at, contentValues });
+      await write();
     } catch (e) {
-      const msg = (e as Error).message;
-      if (!/synced/i.test(msg)) throw e;
-      // A synced placement is shared with other pages — a translation
-      // is by definition page-private, so fork first, then write.
-      await cms.call("placement.fork_content", at);
-      await cms.call("page_module_content.set", { ...at, contentValues });
-      forked = true;
+      if (!isSyncedRefusal(e, a.variant)) throw e;
+      // A synced placement is shared with other pages — fork, then write.
+      await fork(a.variant);
+      await write();
     }
     slotsApplied += 1;
   }
-  const nestedBases = forked
-    ? (await loadPageSlots(deps, p.variantPageId, await loadListTypes(deps))).bases
-    : p.variantBases;
   const sharedNested: string[] = [];
-  for (const a of answered.filter((x) => x.target.nestedPath !== undefined)) {
-    const current = nestedBases.get(a.key);
-    const source = p.sourceBases.get(a.key);
-    if (!current?.nested || !source) continue;
-    if (!current.nested.exclusive) {
-      sharedNested.push(`${a.target.blockName} #${a.target.position} > ${a.target.nestedPath}`);
+  for (const a of answered.filter((x) => x.variant.nestedPath !== undefined)) {
+    const source = p.sourceBases.get(a.sourceKey);
+    if (!bases.get(a.variantKey)?.nested || !source) continue;
+    const at = placementOf(a.variant);
+    const writeIfOwn = async (): Promise<boolean> => {
+      const current = bases.get(a.variantKey);
+      if (!current?.nested?.exclusive) return false;
+      await cms.call("page_module_content.set", {
+        ...at,
+        nestedPath: a.variant.nestedPath,
+        contentValues: translatedValues(current, source, a.strings),
+      });
+      return true;
+    };
+    let written: boolean;
+    try {
+      written = await writeIfOwn();
+    } catch (e) {
+      // Content only this page renders, below a placement marked synced:
+      // the write is refused until the placement is forked.
+      if (!isSyncedRefusal(e, a.variant)) throw e;
+      await fork(a.variant);
+      written = await writeIfOwn();
+    }
+    if (written) {
+      slotsApplied += 1;
       continue;
     }
-    await cms.call("page_module_content.set", {
-      pageId: p.variantPageId,
-      blockName: a.target.blockName,
-      position: a.target.position,
-      nestedPath: a.target.nestedPath,
-      contentValues: translatedValues(current, source, a.strings),
-    });
-    slotsApplied += 1;
+    // Still shared after the fork: writing it would change another page.
+    const instance = bases.get(a.variantKey)?.nested?.contentInstanceId;
+    sharedNested.push(
+      `${at.blockName} #${at.position} > ${a.variant.nestedPath}${instance ? ` (content instance ${instance})` : ""}`,
+    );
   }
   let titleApplied = false;
   const title = payload.title && payload.title !== p.variantTitle ? payload.title : undefined;

@@ -36,6 +36,80 @@ describe("alignSlots", () => {
   });
 });
 
+describe("alignSlots by identity (#1309)", () => {
+  const at = (blockName: string, position: number, moduleSlug: string, nestedPath?: string) => ({
+    blockName,
+    position,
+    moduleSlug,
+    values: {},
+    ...(nestedPath === undefined ? {} : { nestedPath }),
+  });
+
+  it("pairs each section with the same section of a reordered variant", () => {
+    const source = [at("main", 0, "hero"), at("main", 1, "faq"), at("main", 2, "faq")];
+    const variant = [at("main", 0, "faq"), at("main", 1, "hero"), at("main", 2, "faq")];
+    const pairs = alignSlots(source, variant).map((a) =>
+      a.kind === "aligned" ? [a.position, a.variant.position] : a.kind,
+    );
+    // The hero meets the hero, the n-th FAQ the n-th FAQ.
+    expect(pairs).toEqual([
+      [0, 1],
+      [1, 0],
+      [2, 2],
+    ]);
+  });
+
+  it("pairs nested content through its placement, and only with the same module", () => {
+    const source = [
+      at("main", 0, "cards"),
+      at("main", 0, "card", "cards[0]"),
+      at("main", 1, "cta"),
+    ];
+    const variant = [
+      at("main", 0, "cta"),
+      at("main", 1, "cards"),
+      at("main", 1, "tile", "cards[0]"),
+    ];
+    const alignment = alignSlots(source, variant);
+    expect(alignment.map((a) => [a.kind, a.position, a.nestedPath ?? null])).toEqual([
+      ["aligned", 0, null],
+      ["added", 0, "cards[0]"],
+      ["aligned", 1, null],
+      ["removed", 1, "cards[0]"],
+    ]);
+  });
+
+  it("update mode lists the existing translation under its source slot's id", () => {
+    const sourceSlots = [
+      slot("main", 0, { h: "Hi" }),
+      { ...slot("main", 1, { q: "Why?" }), moduleSlug: "faq" },
+    ];
+    const variantSlots = [
+      { ...slot("main", 0, { q: "Warum?" }), moduleSlug: "faq" },
+      slot("main", 1, { h: "Hallo" }),
+    ];
+    const { user } = buildUpdateTranslationPrompt({
+      sourceLocale: "en",
+      targetLocale: "de",
+      sourceTitle: "T",
+      sourceShortTitle: "T",
+      sourceMetaDescription: "",
+      sourceSlots,
+      variantTitle: "T",
+      variantShortTitle: "T",
+      variantMetaDescription: "",
+      variantSlots,
+      alignment: alignSlots(sourceSlots, variantSlots),
+      glossary: [],
+      styleGuide: null,
+    });
+    const existing = user.slice(user.indexOf("## Existing translation"));
+    expect(existing.indexOf("### Slot s1 (module faq")).toBeLessThan(existing.indexOf("Warum?"));
+    expect(existing).toContain("### Slot s0 (module m-main");
+    expect(existing.indexOf("Warum?")).toBeLessThan(existing.indexOf("### Slot s0"));
+  });
+});
+
 describe("prompt construction", () => {
   const base = {
     sourceLocale: "en",

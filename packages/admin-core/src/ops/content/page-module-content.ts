@@ -118,6 +118,7 @@ export const getPageModuleContentOp = withHumanisedLinks(
 async function resolveNestedTarget(
   tx: TransactionRunner,
   chatBranchId: string | null,
+  pageId: string,
   rootId: string,
   path: string,
 ): Promise<
@@ -137,7 +138,7 @@ async function resolveNestedTarget(
   if (values === undefined) {
     return { ok: false, message: `content instance ${rootId} does not exist`, fork: false };
   }
-  const tree = await loadNestedContent(tx, chatBranchId, [
+  const tree = await loadNestedContent(tx, chatBranchId, pageId, [
     { key: "root", contentInstanceId: rootId, values },
   ]);
   const hit = tree.get("root")?.find((n) => n.path === path);
@@ -264,6 +265,7 @@ export const setPageModuleContentOp = defineOperation({
       const nested = await resolveNestedTarget(
         tx,
         ctx.chatBranchId ?? null,
+        input.pageId,
         placement.contentInstanceId,
         input.nestedPath,
       );
@@ -487,6 +489,7 @@ export const listPageModuleContentOp = withHumanisedLinks(
       const nested = await loadNestedContent(
         tx,
         branchId,
+        input.pageId,
         live.map((l) => ({ key: l.key, contentInstanceId: l.p.contentInstanceId, values: l.v })),
       );
       return ok({
