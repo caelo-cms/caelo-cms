@@ -288,14 +288,20 @@ describe("the immediate sections (#1329)", () => {
       await admin(async (tx) => {
         await tx`UPDATE site_settings SET gateway_staging_cookie_secret = NULL WHERE id = 1`;
       });
-      await publishProjectionOnce(adapter, staging, { declarations: DECLARATIONS, comments: false });
+      await publishProjectionOnce(adapter, staging, {
+        declarations: DECLARATIONS,
+        comments: false,
+      });
       expect(await settingsOf(stagingDb)).toEqual({ rows: 0, marked: 0 });
       expect(await settingsOf(live)).toEqual({ rows: 1, marked: 1 });
     } finally {
       await admin(async (tx) => {
         await tx`UPDATE site_settings SET gateway_staging_cookie_secret = ${before} WHERE id = 1`;
       });
-      await publishProjectionOnce(adapter, staging, { declarations: DECLARATIONS, comments: false });
+      await publishProjectionOnce(adapter, staging, {
+        declarations: DECLARATIONS,
+        comments: false,
+      });
     }
     expect(await settingsOf(stagingDb)).toEqual({ rows: 1, marked: 1 });
   });
