@@ -365,7 +365,6 @@ export { emitSnapshot } from "./snapshots/emit.js";
 // issue #620 — the Stage flow for one chat or a selection of chats (/edit's
 // Stage button, the Open changes overview).
 export {
-  enqueueStagingAudit,
   type StagedChats,
   type StageFailure,
   stageChatSessions,

@@ -153,16 +153,11 @@ async function audit(runJob: (job: AuditJob) => Promise<AuditJobResult>): Promis
   });
 }
 
-/** Stage outside a chat (as Ops does) + queue its check. */
+/** Stage outside a chat (as Ops does); the build queues its check (#1319). */
 async function stage(): Promise<string> {
   const built = await op<{ runId: string }>(SYS, "deploy.trigger", {
     targetName: "staging",
     repoRoot: testRoot,
-  });
-  await op(SYS, "quality_audits.enqueue", {
-    deployRunId: built.runId,
-    chatSessionId: null,
-    branch: null,
   });
   return built.runId;
 }

@@ -6,7 +6,9 @@
  *   quality_audits.gate_status               may the staged build go live, and
  *                                            if not, why and what next.
  *   quality_audits.retry                     re-run a failed (or missing)
- *                                            audit of the staged build.
+ *                                            audit of the staged build —
+ *                                            the newest, or the Stage run
+ *                                            named by its deployRunId.
  *   quality_audits.chat_status               the newest audit of a chat plus
  *                                            the message the chat should get
  *                                            (#685: problems are an offer the
@@ -126,8 +128,23 @@ export const retryAuditOp = defineOperation({
   // changes nothing on the site, so the AI may run it too (§11 default).
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ fromTarget: z.string().min(1).default("staging") }).strict(),
-  output: z.object({ auditRunId: z.string(), status: z.enum(["queued", "skipped"]) }),
+  input: z
+    .object({
+      fromTarget: z.string().min(1).default("staging"),
+      /**
+       * #1319 — the Stage's build run whose check to (re)run, as
+       * stage_changes / get_quality_audit name it. It must be the build
+       * the target serves now: an older build is no longer what Publish
+       * live would ship. Omitted = that build.
+       */
+      deployRunId: z.string().uuid().optional(),
+    })
+    .strict(),
+  output: z.object({
+    auditRunId: z.string(),
+    deployRunId: z.string(),
+    status: z.enum(["queued", "skipped"]),
+  }),
   handler: async (ctx, input, tx) => {
     const run = await latestSucceededRun(tx, input.fromTarget);
     if (run?.env !== "staging") {
@@ -135,6 +152,13 @@ export const retryAuditOp = defineOperation({
         kind: "HandlerError",
         operation: "quality_audits.retry",
         message: `nothing staged on '${input.fromTarget}' to audit — Stage first`,
+      });
+    }
+    if (input.deployRunId !== undefined && input.deployRunId !== run.id) {
+      return err({
+        kind: "HandlerError",
+        operation: "quality_audits.retry",
+        message: await notServedMessage(tx, input.deployRunId, run.id, input.fromTarget),
       });
     }
     const latest = (await tx.execute(sql`
@@ -182,7 +206,7 @@ export const retryAuditOp = defineOperation({
         tx,
       );
       if (!r.ok) return r;
-      return ok({ auditRunId: r.value.auditRunId, status: r.value.status });
+      return ok({ auditRunId: r.value.auditRunId, deployRunId: run.id, status: r.value.status });
     }
     if (prev.status !== "errored") {
       return err({
@@ -220,9 +244,37 @@ export const retryAuditOp = defineOperation({
       entityId: auditRunId,
       resultSummary: `retry of failed audit ${prev.id}`,
     });
-    return ok({ auditRunId, status: "queued" as const });
+    return ok({ auditRunId, deployRunId: run.id, status: "queued" as const });
   },
 });
+
+/**
+ * Why a named run cannot be retried: it is not the build `fromTarget`
+ * serves. Names what the run is and the call that works instead.
+ */
+async function notServedMessage(
+  tx: Tx,
+  deployRunId: string,
+  servedRunId: string,
+  fromTarget: string,
+): Promise<string> {
+  const rows = (await tx.execute(sql`
+    SELECT r.status, t.name AS target_name, t.env
+    FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+    WHERE r.id = ${deployRunId}::uuid
+  `)) as unknown as { status: string; target_name: string; env: string }[];
+  const named = rows[0];
+  if (!named) {
+    return `no build run ${deployRunId} exists — call retry_quality_audit without deployRunId to check the build '${fromTarget}' serves now (run ${servedRunId})`;
+  }
+  if (named.env !== "staging") {
+    return `run ${deployRunId} is a ${named.env} build; only staging builds have a quality check — the staged build is run ${servedRunId}`;
+  }
+  if (named.status !== "succeeded") {
+    return `build run ${deployRunId} is ${named.status}, so nothing of it was staged to check — get_stage_status says why; Stage again if it failed`;
+  }
+  return `build run ${deployRunId} is no longer what '${fromTarget}' serves (a newer Stage, run ${servedRunId}, replaced it), so its check would not decide Publish live — call retry_quality_audit with deployRunId "${servedRunId}" (or without one)`;
+}
 
 /** #727 — one group of open problems on the chat's card. */
 const problemGroupSchema = z.object({

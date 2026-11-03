@@ -16,12 +16,13 @@
  *      …") and that unit is classified and merged again.
  *   3. deploy.trigger(staging) ONCE — a full-site rebuild of the merged
  *      main state (one build for the whole selection, not one per chat).
+ *      It queues the build's quality audit — one audit, with the chats'
+ *      classifications combined — in the transaction that records the
+ *      build as succeeded (#1319), so a staged build always has one.
  *   4. chat.finalize_draft_stage / chat.finalize_stage per unit — only
  *      after the build succeeded: marks exactly the merged headers staged
  *      and releases locks. A failed build consumes nothing, so every chat
  *      stays pending and Stage stays retryable (run #8 R6).
- *   5. quality_audits.enqueue — one audit for the build, with the chats'
- *      classifications combined.
  *
  * A merge that fails midway leaves the chats merged before it in main but
  * unconsumed; a retry re-merges them (merge is idempotent) and then the
@@ -39,7 +40,6 @@ import type { TruncatedListReport } from "../deploy/truncated-lists.js";
 import type { UnpublishedLinkTarget } from "../deploy/unpublished-links.js";
 import type { AffectedChat } from "../draft.js";
 import { STAGE_CHANGED_PREFIX } from "../ops/chat/publish.js";
-import { kickQualityAuditWorker } from "../quality/audit-worker.js";
 import type { StagedBy } from "../quality/chat-feedback.js";
 
 /** Registry + adapter the flow executes ops through. */
@@ -51,7 +51,7 @@ export interface StageFlowDeps {
 /** How often a unit is classified again when its changes moved on mid-Stage. */
 const MAX_STAGE_ATTEMPTS = 3;
 
-/** `quality_audits.classify_stage` output, carried to the enqueue. */
+/** `quality_audits.classify_stage` output, carried to the build's audit. */
 export interface ChatStageClassification {
   readonly classification: {
     readonly auditNeeded: boolean;
@@ -135,64 +135,6 @@ export function combineStageClassifications(
     },
     touchedPageIds: pages,
   };
-}
-
-/**
- * Record the quality audit decision for a succeeded deploy run and wake the
- * worker. Deploy runs on non-staging targets are ignored (only staging is
- * audited). Never throws: a failed enqueue never undoes the staging deploy
- * (the build is real and previewable), but it is logged loudly and the run
- * then visibly has no audit record in the quality read surfaces.
- *
- * @param args.chatSessionId - the chat the audit's findings go to, with the
- *   pre-merge classification; both null for staging deploys outside a chat.
- */
-export async function enqueueStagingAudit(
-  deps: StageFlowDeps,
-  ctx: ExecutionContext,
-  args: {
-    readonly deployRunId: string;
-    readonly targetName: string;
-    readonly chatSessionId: string | null;
-    readonly branch: ChatStageClassification | null;
-    /** Pages staged on purpose outside a chat (audited after the homepage). */
-    readonly pageIds?: readonly string[];
-    /** #685 — who staged a chat's build; omitted outside a chat. */
-    readonly stagedBy?: StagedBy;
-  },
-): Promise<void> {
-  const { adapter, registry } = deps;
-  try {
-    const targets = await execute(registry, adapter, ctx, "deploy.list_targets", {});
-    if (!targets.ok) {
-      console.error("[quality-audit] could not read deploy targets", targets.error);
-      return;
-    }
-    const env = (targets.value as { targets: { name: string; env: string }[] }).targets.find(
-      (t) => t.name === args.targetName,
-    )?.env;
-    if (env !== "staging") return;
-    const r = await execute(registry, adapter, ctx, "quality_audits.enqueue", {
-      deployRunId: args.deployRunId,
-      chatSessionId: args.chatSessionId,
-      branch: args.branch,
-      pageIds: args.pageIds ?? [],
-      stagedBy: args.chatSessionId !== null ? (args.stagedBy ?? null) : null,
-    });
-    if (!r.ok) {
-      console.error("[quality-audit] enqueue failed — this staging run has no audit", {
-        deployRunId: args.deployRunId,
-        error: r.error,
-      });
-      return;
-    }
-    kickQualityAuditWorker();
-  } catch (e) {
-    console.error("[quality-audit] enqueue threw — this staging run has no audit", {
-      deployRunId: args.deployRunId,
-      error: e,
-    });
-  }
 }
 
 /**
@@ -402,6 +344,13 @@ export async function stageChatSessions(
       },
     };
   }
+  // The audit's findings go to one chat: the first selected chat whose
+  // changes need an audit (else the first chat) — its fix-round counter
+  // (#553 2-round cap) is the one this build advances.
+  const feedbackChat =
+    classified.find((c) => c.value.classification.auditNeeded)?.chatSessionId ??
+    classified[0]?.chatSessionId ??
+    null;
   // #1211 — deploy.trigger holds no transaction while it builds; the
   // signal reaches its generator.
   const deployed = await execute(
@@ -412,6 +361,14 @@ export async function stageChatSessions(
     {
       targetName: "staging",
       ...(options.deployRunId ? { runId: options.deployRunId } : {}),
+      qualityAudit:
+        feedbackChat === null
+          ? { chatSessionId: null, branch: null }
+          : {
+              chatSessionId: feedbackChat,
+              branch: combineStageClassifications(classified.map((c) => c.value)),
+              stagedBy,
+            },
     },
     options.abortSignal ? { signal: options.abortSignal } : {},
   );
@@ -478,21 +435,6 @@ export async function stageChatSessions(
     truncatedLists: TruncatedListReport[];
     pluginProblems: DeployPluginProblem[];
   };
-  // The audit's findings go to one chat: the first selected chat whose
-  // changes need an audit (else the first chat) — its fix-round counter
-  // (#553 2-round cap) is the one this build advances.
-  const feedbackChat =
-    classified.find((c) => c.value.classification.auditNeeded)?.chatSessionId ??
-    classified[0]?.chatSessionId ??
-    null;
-  await enqueueStagingAudit(deps, ctx, {
-    deployRunId: summary.runId,
-    targetName: summary.targetName,
-    chatSessionId: feedbackChat,
-    branch: combineStageClassifications(classified.map((c) => c.value)),
-    stagedBy,
-  });
-  timer.lap("enqueue-audit");
   // The whole wait behind the Stage button, step by step; the deploy.*
   // breakdown is also stored on the run (deploy_runs.phase_timings).
   console.info(

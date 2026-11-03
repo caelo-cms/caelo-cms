@@ -143,6 +143,51 @@ async function nextFixRound(tx: Tx, chatSessionId: string | null): Promise<numbe
   return prev.fix_round;
 }
 
+/**
+ * What a staging build's quality audit needs to know about the Stage that
+ * made it, besides the run itself. #1319 — deploy.trigger takes it as
+ * input and records the audit in the transaction that records the build
+ * as succeeded, so a succeeded staging build always has its audit row.
+ */
+const auditRequestFields = z.object({
+  /** The chat whose Stage produced the deploy; null outside a chat. */
+  chatSessionId: z.string().uuid().nullable(),
+  /** `quality_audits.classify_stage` output, taken BEFORE the merge.
+   *  Required with a chat, null without one. */
+  branch: z
+    .object({
+      classification: stageClassificationSchema,
+      touchedPageIds: z.array(z.string().uuid()),
+    })
+    .strict()
+    .nullable(),
+  /** Pages the caller staged on purpose outside a chat (the pages
+   *  list's Stage of one page); audited after the homepage. */
+  pageIds: z.array(z.string().uuid()).max(50).default([]),
+  /** #685 — who staged the build of a chat Stage; the chat's fix
+   *  request tells the AI. Chat Stages only. */
+  stagedBy: stagedBySchema.nullable().default(null),
+});
+
+/** The consistency rules every audit request obeys (one place for both schemas). */
+function withAuditRequestRules<T extends z.ZodType<z.infer<typeof auditRequestFields>>>(
+  schema: T,
+): T {
+  return schema
+    .refine((v) => (v.chatSessionId === null) === (v.branch === null), {
+      message: "pass the pre-merge classification exactly when a chatSessionId is given",
+    })
+    .refine((v) => v.stagedBy === null || v.chatSessionId !== null, {
+      message: "stagedBy describes a chat Stage — pass it only with a chatSessionId",
+    });
+}
+
+/** deploy.trigger's `qualityAudit` input (#1319): the audit request without the run id. */
+export const stagingAuditRequestSchema = withAuditRequestRules(auditRequestFields.strict());
+
+/** A parsed {@link stagingAuditRequestSchema}. */
+export type StagingAuditRequest = z.infer<typeof stagingAuditRequestSchema>;
+
 export const enqueueAuditOp = defineOperation({
   name: "quality_audits.enqueue",
   readScope: "request",
@@ -154,34 +199,9 @@ export const enqueueAuditOp = defineOperation({
   // as covered by stage_changes).
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z
-    .object({
-      deployRunId: z.string().uuid(),
-      /** The chat whose Stage produced the deploy; null outside a chat. */
-      chatSessionId: z.string().uuid().nullable(),
-      /** `quality_audits.classify_stage` output, taken BEFORE the merge.
-       *  Required with a chat, null without one. */
-      branch: z
-        .object({
-          classification: stageClassificationSchema,
-          touchedPageIds: z.array(z.string().uuid()),
-        })
-        .strict()
-        .nullable(),
-      /** Pages the caller staged on purpose outside a chat (the pages
-       *  list's Stage of one page); audited after the homepage. */
-      pageIds: z.array(z.string().uuid()).max(50).default([]),
-      /** #685 — who staged the build of a chat Stage; the chat's fix
-       *  request tells the AI. Chat Stages only. */
-      stagedBy: stagedBySchema.nullable().default(null),
-    })
-    .strict()
-    .refine((v) => (v.chatSessionId === null) === (v.branch === null), {
-      message: "pass the pre-merge classification exactly when a chatSessionId is given",
-    })
-    .refine((v) => v.stagedBy === null || v.chatSessionId !== null, {
-      message: "stagedBy describes a chat Stage — pass it only with a chatSessionId",
-    }),
+  input: withAuditRequestRules(
+    auditRequestFields.extend({ deployRunId: z.string().uuid() }).strict(),
+  ),
   output: z.object({
     auditRunId: z.string(),
     status: z.enum(["queued", "skipped"]),
