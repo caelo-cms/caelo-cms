@@ -562,8 +562,7 @@ async function describePolicyRules(
   return { ok: true, rules: described.rules ?? [] };
 }
 
-// gcloud words some missing resources "Cannot find <kind> [<name>]." with no NOT_FOUND code.
-const NOT_FOUND = /NOT_FOUND|not found|cannot find|was not found|does not exist/i;
+const NOT_FOUND = /NOT_FOUND|not found|was not found|does not exist/i;
 
 /**
  * #1328 — the MCP-Auth-Proxy's own Cloud Armor policy with the `/api/mcp/*`
