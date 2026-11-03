@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { gitFixture } from "./git-fixture.test-helpers.ts";
 import {
   lintMigrationSql,
   lintMigrationsSince,
@@ -118,18 +118,12 @@ describe("migrationHead", () => {
 });
 
 describe("lintMigrationsSince (git)", () => {
-  const repo = mkdtempSync(join(tmpdir(), "caelo-migration-lint-"));
-  afterAll(() => rmSync(repo, { recursive: true, force: true }));
-  const git = (...args: string[]) => {
-    const p = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
-    if (p.exitCode !== 0) throw new Error(new TextDecoder().decode(p.stderr));
-  };
+  const fixture = gitFixture("caelo-migration-lint-");
+  afterAll(() => fixture.remove());
+  const { repo, git } = fixture;
   const dir = join(repo, "packages/migrations/migrations/cms_admin");
 
   it("lints only migrations added after the tag", () => {
-    git("init", "-q");
-    git("config", "user.email", "t@example.com");
-    git("config", "user.name", "t");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "0001_old.sql"), "DROP TABLE shipped_long_ago;");
     git("add", ".");
@@ -162,16 +156,10 @@ describe("outOfOrderMigrations (#635: 0282 arriving after a shipped 0283)", () =
   });
 
   it("reads the previous release from git", () => {
-    const repo = mkdtempSync(join(tmpdir(), "caelo-migration-order-"));
+    const fixture = gitFixture("caelo-migration-order-");
+    const { repo, git } = fixture;
     try {
-      const git = (...args: string[]) => {
-        const p = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
-        if (p.exitCode !== 0) throw new Error(new TextDecoder().decode(p.stderr));
-      };
       const dir = join(repo, "packages/migrations/migrations/cms_admin");
-      git("init", "-q");
-      git("config", "user.email", "t@example.com");
-      git("config", "user.name", "t");
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "0281_a.sql"), "SELECT 1;");
       writeFileSync(join(dir, "0283_b.sql"), "SELECT 1;");
@@ -187,7 +175,7 @@ describe("outOfOrderMigrations (#635: 0282 arriving after a shipped 0283)", () =
       ]);
       expect(outOfOrderMigrationsSince(null, repo)).toEqual([]);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      fixture.remove();
     }
   });
 });

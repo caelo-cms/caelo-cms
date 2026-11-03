@@ -24,8 +24,8 @@
  * run — never as a silent pass, never as an unexplained block.
  */
 
-import { defineOperation, uuidArray } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { defineOperation, type QueryError, uuidArray } from "@caelo-cms/query-api";
+import { err, ok, type Result } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
@@ -44,9 +44,9 @@ type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
  *  regardless. */
 export const QUALITY_AUDIT_PAGE_CAP = 5;
 
-/** Performance runs per page; the best one scores the page (#874,
- *  `bestRunIndex` in lighthouse-extract.ts). Host interference only slows
- *  a run down, so three runs are enough for one of them to be clean. */
+/** First Performance runs per page. When they agree the best one scores
+ *  the page (#874); when they disagree the runner adds confirmation runs
+ *  and the median of `MEDIAN_RUNS` scores it (#1370, run-selection.ts). */
 const PERFORMANCE_RUNS = 3;
 
 /** A `running` audit older than this belongs to a process that died. */
@@ -143,6 +143,249 @@ async function nextFixRound(tx: Tx, chatSessionId: string | null): Promise<numbe
   return prev.fix_round;
 }
 
+/**
+ * What a staging build's quality audit needs to know about the Stage that
+ * made it, besides the run itself. #1319 — deploy.trigger takes it as
+ * input and records the audit in the transaction that records the build
+ * as succeeded, so a succeeded staging build always has its audit row.
+ */
+const auditRequestFields = z.object({
+  /** The chat whose Stage produced the deploy; null outside a chat. */
+  chatSessionId: z.string().uuid().nullable(),
+  /** `quality_audits.classify_stage` output, taken BEFORE the merge.
+   *  Required with a chat, null without one. */
+  branch: z
+    .object({
+      classification: stageClassificationSchema,
+      touchedPageIds: z.array(z.string().uuid()),
+    })
+    .strict()
+    .nullable(),
+  /** Pages the caller staged on purpose outside a chat (the pages
+   *  list's Stage of one page); audited after the homepage. */
+  pageIds: z.array(z.string().uuid()).max(50).default([]),
+  /** #685 — who staged the build of a chat Stage; the chat's fix
+   *  request tells the AI. Chat Stages only. */
+  stagedBy: stagedBySchema.nullable().default(null),
+});
+
+/** The consistency rules every audit request obeys (one place for both schemas). */
+function withAuditRequestRules<T extends z.ZodType<z.infer<typeof auditRequestFields>>>(
+  schema: T,
+): T {
+  return schema
+    .refine((v) => (v.chatSessionId === null) === (v.branch === null), {
+      message: "pass the pre-merge classification exactly when a chatSessionId is given",
+    })
+    .refine((v) => v.stagedBy === null || v.chatSessionId !== null, {
+      message: "stagedBy describes a chat Stage — pass it only with a chatSessionId",
+    });
+}
+
+/** deploy.trigger's `qualityAudit` input (#1319): the audit request without the run id. */
+export const stagingAuditRequestSchema = withAuditRequestRules(auditRequestFields.strict());
+
+/** A parsed {@link stagingAuditRequestSchema}. */
+export type StagingAuditRequest = z.infer<typeof stagingAuditRequestSchema>;
+
+/** A staging build's audit row, decided before the build (#1319, deploy_runs.planned_audit). */
+export const plannedAuditSchema = z
+  .object({
+    chatSessionId: z.string().uuid().nullable(),
+    status: z.enum(["queued", "skipped"]),
+    classification: stageClassificationSchema,
+    targetPageIds: z.array(z.string().uuid()),
+    performanceRuns: z.number().int().positive(),
+    fixRound: z.number().int().nonnegative(),
+    stagedBy: stagedBySchema.nullable(),
+  })
+  .strict();
+
+/** A parsed {@link plannedAuditSchema}. */
+export type PlannedAudit = z.infer<typeof plannedAuditSchema>;
+
+/**
+ * The audit row a staging build gets (#1319): the classification with the
+ * install-wide rules, Lighthouse's target pages, the fix round. Decided
+ * from the site as it is now, so deploy.start_trigger calls it before the
+ * build (the build reads the same state) and stores the result on the run;
+ * deploy.finish_trigger then only writes it ({@link insertPlannedAudit}).
+ * The run row must exist (its `started_at` orders the Stages).
+ */
+export async function planStagingAudit(
+  tx: Tx,
+  input: z.infer<typeof stagingAuditRequestSchema> & { readonly deployRunId: string },
+): Promise<PlannedAudit> {
+  const firstRows = (await tx.execute(sql`
+      SELECT NOT EXISTS (
+        SELECT 1 FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+        WHERE t.env = 'staging' AND r.status = 'succeeded' AND r.id <> ${input.deployRunId}::uuid
+          AND r.started_at < (SELECT started_at FROM deploy_runs WHERE id = ${input.deployRunId}::uuid)
+      ) AS first_stage,
+      (
+        SELECT max(r.started_at) FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+        WHERE t.env = 'staging' AND r.status = 'succeeded' AND r.id <> ${input.deployRunId}::uuid
+          AND r.started_at < (SELECT started_at FROM deploy_runs WHERE id = ${input.deployRunId}::uuid)
+      ) AS previous_stage_at
+    `)) as unknown as { first_stage: boolean; previous_stage_at: string | Date | null }[];
+  const firstStage = firstRows[0]?.first_stage ?? true;
+  const previousStageAt = firstRows[0]?.previous_stage_at ?? null;
+
+  const activatedPlugins =
+    previousStageAt === null
+      ? []
+      : ((await tx.execute(sql`
+            SELECT id::text AS id, slug FROM plugins
+            WHERE status = 'active' AND activated_at > ${iso(previousStageAt)}::timestamptz
+            ORDER BY slug
+          `)) as unknown as { id: string; slug: string }[]);
+
+  const previous = await previousStagingAudit(tx, input.deployRunId);
+  const classification = withInstallRules(input.branch?.classification ?? null, {
+    firstStage,
+    activatedPlugins,
+    previousNotClean:
+      previous && previousNotCleanForLighthouse(previous)
+        ? { auditRunId: previous.id, status: previous.status }
+        : null,
+  });
+
+  // Lighthouse's target pages: homepage first, then the Stage's pages,
+  // then pages an unclean previous audit covered — live (merged,
+  // published) only.
+  const candidates = new Set([
+    ...(input.branch?.touchedPageIds ?? []),
+    ...input.pageIds,
+    ...(classification.reasons.some((r) => r.rule === "previous_not_clean")
+      ? (previous?.target_page_ids ?? [])
+      : []),
+  ]);
+  const targetRows = (await tx.execute(sql`
+      WITH cand AS (
+        SELECT c.id, c.ord FROM unnest(${uuidArray([...candidates])}) WITH ORDINALITY AS c(id, ord)
+      )
+      SELECT p.id::text AS id
+      FROM pages p
+      LEFT JOIN cand ON cand.id = p.id
+      WHERE p.status = 'published' AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
+        AND (p.current_path = '/' OR cand.id IS NOT NULL)
+      ORDER BY (p.current_path = '/') DESC, cand.ord NULLS LAST, p.current_path
+    `)) as unknown as { id: string }[];
+  const targetPageIds = classification.auditNeeded
+    ? targetRows.map((r) => r.id).slice(0, QUALITY_AUDIT_PAGE_CAP)
+    : [];
+
+  // The findings checks read every published page; with none there is
+  // nothing to audit at all.
+  const publishedRows = (await tx.execute(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM pages
+        WHERE status = 'published' AND deleted_at IS NULL AND chat_branch_id IS NULL
+      ) AS any_published
+    `)) as unknown as { any_published: boolean }[];
+  const anyPublished = publishedRows[0]?.any_published === true;
+  const noLighthousePages = classification.auditNeeded && targetPageIds.length === 0;
+  const status = anyPublished ? "queued" : "skipped";
+  const finalClassification = noLighthousePages
+    ? {
+        ...classification,
+        auditNeeded: false,
+        skipped: [
+          ...classification.skipped,
+          anyPublished
+            ? "no homepage or changed page is published for Lighthouse to audit"
+            : "no published pages on staging to audit",
+        ],
+      }
+    : classification;
+
+  return {
+    chatSessionId: input.chatSessionId,
+    status,
+    // Stored as JSON on the run: plain arrays.
+    classification: {
+      auditNeeded: finalClassification.auditNeeded,
+      reasons: [...finalClassification.reasons],
+      skipped: [...finalClassification.skipped],
+    },
+    targetPageIds,
+    performanceRuns: PERFORMANCE_RUNS,
+    fixRound: await nextFixRound(tx, input.chatSessionId),
+    stagedBy: input.stagedBy,
+  };
+}
+
+/**
+ * Write a planned audit row for its deploy run and record it in the audit
+ * log. Nothing is decided here: it cannot refuse what was planned.
+ *
+ * @param args.input - what the audit log records as the request.
+ */
+export async function insertPlannedAudit(
+  tx: Tx,
+  ctx: { readonly actorId: string; readonly requestId: string },
+  args: { readonly deployRunId: string; readonly planned: PlannedAudit; readonly input: unknown },
+): Promise<
+  Result<
+    {
+      auditRunId: string;
+      status: "queued" | "skipped";
+      classification: PlannedAudit["classification"];
+      targetPageIds: string[];
+    },
+    QueryError
+  >
+> {
+  const p = args.planned;
+  const inserted = (await tx.execute(sql`
+    INSERT INTO quality_audit_runs
+      (deploy_run_id, chat_session_id, requested_by, status, classification,
+       target_page_ids, performance_runs, finished_at, fix_round, staged_by)
+    VALUES (
+      ${args.deployRunId}::uuid,
+      -- A chat deleted while its Stage built leaves the audit without a
+      -- chat (the column's ON DELETE SET NULL), never a failed insert.
+      (SELECT id FROM chat_sessions WHERE id = ${p.chatSessionId}::uuid),
+      ${ctx.actorId}::uuid,
+      ${p.status},
+      ${jsonbParam(p.classification)},
+      ${uuidArray(p.targetPageIds)},
+      ${p.performanceRuns},
+      ${p.status === "skipped" ? sql`now()` : sql`NULL`},
+      ${p.fixRound},
+      ${p.stagedBy}
+    )
+    RETURNING id::text AS id
+  `)) as unknown as { id: string }[];
+  const auditRunId = inserted[0]?.id;
+  if (!auditRunId) {
+    return err({
+      kind: "HandlerError",
+      operation: "quality_audits.enqueue",
+      message: "could not create the audit run",
+    });
+  }
+  await recordAudit(tx, {
+    actorId: ctx.actorId,
+    requestId: ctx.requestId,
+    operation: "quality_audits.enqueue",
+    input: args.input,
+    succeeded: true,
+    entityId: auditRunId,
+    resultSummary: `${p.status}: ${
+      p.classification.auditNeeded
+        ? `lighthouse (${p.classification.reasons.map((r) => r.rule).join(",")})`
+        : "page checks only"
+    }`,
+  });
+  return ok({
+    auditRunId,
+    status: p.status,
+    classification: p.classification,
+    targetPageIds: [...p.targetPageIds],
+  });
+}
+
 export const enqueueAuditOp = defineOperation({
   name: "quality_audits.enqueue",
   readScope: "request",
@@ -154,34 +397,9 @@ export const enqueueAuditOp = defineOperation({
   // as covered by stage_changes).
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z
-    .object({
-      deployRunId: z.string().uuid(),
-      /** The chat whose Stage produced the deploy; null outside a chat. */
-      chatSessionId: z.string().uuid().nullable(),
-      /** `quality_audits.classify_stage` output, taken BEFORE the merge.
-       *  Required with a chat, null without one. */
-      branch: z
-        .object({
-          classification: stageClassificationSchema,
-          touchedPageIds: z.array(z.string().uuid()),
-        })
-        .strict()
-        .nullable(),
-      /** Pages the caller staged on purpose outside a chat (the pages
-       *  list's Stage of one page); audited after the homepage. */
-      pageIds: z.array(z.string().uuid()).max(50).default([]),
-      /** #685 — who staged the build of a chat Stage; the chat's fix
-       *  request tells the AI. Chat Stages only. */
-      stagedBy: stagedBySchema.nullable().default(null),
-    })
-    .strict()
-    .refine((v) => (v.chatSessionId === null) === (v.branch === null), {
-      message: "pass the pre-merge classification exactly when a chatSessionId is given",
-    })
-    .refine((v) => v.stagedBy === null || v.chatSessionId !== null, {
-      message: "stagedBy describes a chat Stage — pass it only with a chatSessionId",
-    }),
+  input: withAuditRequestRules(
+    auditRequestFields.extend({ deployRunId: z.string().uuid() }).strict(),
+  ),
   output: z.object({
     auditRunId: z.string(),
     status: z.enum(["queued", "skipped"]),
@@ -205,135 +423,8 @@ export const enqueueAuditOp = defineOperation({
       });
     }
 
-    const firstRows = (await tx.execute(sql`
-      SELECT NOT EXISTS (
-        SELECT 1 FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
-        WHERE t.env = 'staging' AND r.status = 'succeeded' AND r.id <> ${input.deployRunId}::uuid
-          AND r.started_at < (SELECT started_at FROM deploy_runs WHERE id = ${input.deployRunId}::uuid)
-      ) AS first_stage,
-      (
-        SELECT max(r.started_at) FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
-        WHERE t.env = 'staging' AND r.status = 'succeeded' AND r.id <> ${input.deployRunId}::uuid
-          AND r.started_at < (SELECT started_at FROM deploy_runs WHERE id = ${input.deployRunId}::uuid)
-      ) AS previous_stage_at
-    `)) as unknown as { first_stage: boolean; previous_stage_at: string | Date | null }[];
-    const firstStage = firstRows[0]?.first_stage ?? true;
-    const previousStageAt = firstRows[0]?.previous_stage_at ?? null;
-
-    const activatedPlugins =
-      previousStageAt === null
-        ? []
-        : ((await tx.execute(sql`
-            SELECT id::text AS id, slug FROM plugins
-            WHERE status = 'active' AND activated_at > ${iso(previousStageAt)}::timestamptz
-            ORDER BY slug
-          `)) as unknown as { id: string; slug: string }[]);
-
-    const previous = await previousStagingAudit(tx, input.deployRunId);
-    const classification = withInstallRules(input.branch?.classification ?? null, {
-      firstStage,
-      activatedPlugins,
-      previousNotClean:
-        previous && previousNotCleanForLighthouse(previous)
-          ? { auditRunId: previous.id, status: previous.status }
-          : null,
-    });
-
-    // Lighthouse's target pages: homepage first, then the Stage's pages,
-    // then pages an unclean previous audit covered — live (merged,
-    // published) only.
-    const candidates = new Set([
-      ...(input.branch?.touchedPageIds ?? []),
-      ...input.pageIds,
-      ...(classification.reasons.some((r) => r.rule === "previous_not_clean")
-        ? (previous?.target_page_ids ?? [])
-        : []),
-    ]);
-    const targetRows = (await tx.execute(sql`
-      WITH cand AS (
-        SELECT c.id, c.ord FROM unnest(${uuidArray([...candidates])}) WITH ORDINALITY AS c(id, ord)
-      )
-      SELECT p.id::text AS id
-      FROM pages p
-      LEFT JOIN cand ON cand.id = p.id
-      WHERE p.status = 'published' AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
-        AND (p.current_path = '/' OR cand.id IS NOT NULL)
-      ORDER BY (p.current_path = '/') DESC, cand.ord NULLS LAST, p.current_path
-    `)) as unknown as { id: string }[];
-    const targetPageIds = classification.auditNeeded
-      ? targetRows.map((r) => r.id).slice(0, QUALITY_AUDIT_PAGE_CAP)
-      : [];
-
-    // The findings checks read every published page; with none there is
-    // nothing to audit at all.
-    const publishedRows = (await tx.execute(sql`
-      SELECT EXISTS (
-        SELECT 1 FROM pages
-        WHERE status = 'published' AND deleted_at IS NULL AND chat_branch_id IS NULL
-      ) AS any_published
-    `)) as unknown as { any_published: boolean }[];
-    const anyPublished = publishedRows[0]?.any_published === true;
-    const noLighthousePages = classification.auditNeeded && targetPageIds.length === 0;
-    const status = anyPublished ? "queued" : "skipped";
-    const finalClassification = noLighthousePages
-      ? {
-          ...classification,
-          auditNeeded: false,
-          skipped: [
-            ...classification.skipped,
-            anyPublished
-              ? "no homepage or changed page is published for Lighthouse to audit"
-              : "no published pages on staging to audit",
-          ],
-        }
-      : classification;
-
-    const fixRound = await nextFixRound(tx, input.chatSessionId);
-    const inserted = (await tx.execute(sql`
-      INSERT INTO quality_audit_runs
-        (deploy_run_id, chat_session_id, requested_by, status, classification,
-         target_page_ids, performance_runs, finished_at, fix_round, staged_by)
-      VALUES (
-        ${input.deployRunId}::uuid,
-        ${input.chatSessionId}::uuid,
-        ${ctx.actorId}::uuid,
-        ${status},
-        ${jsonbParam(finalClassification)},
-        ${uuidArray(targetPageIds)},
-        ${PERFORMANCE_RUNS},
-        ${status === "skipped" ? sql`now()` : sql`NULL`},
-        ${fixRound},
-        ${input.stagedBy}
-      )
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
-    const auditRunId = inserted[0]?.id;
-    if (!auditRunId) {
-      return err({
-        kind: "HandlerError",
-        operation: "quality_audits.enqueue",
-        message: "could not create the audit run",
-      });
-    }
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "quality_audits.enqueue",
-      input,
-      succeeded: true,
-      entityId: auditRunId,
-      resultSummary: `${status}: ${
-        finalClassification.auditNeeded
-          ? `lighthouse (${finalClassification.reasons.map((r) => r.rule).join(",")})`
-          : "page checks only"
-      }`,
-    });
-    return ok({
-      auditRunId,
-      status,
-      classification: finalClassification,
-      targetPageIds,
-    });
+    const planned = await planStagingAudit(tx, input);
+    return insertPlannedAudit(tx, ctx, { deployRunId: input.deployRunId, planned, input });
   },
 });
 

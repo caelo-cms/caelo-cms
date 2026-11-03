@@ -32,7 +32,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, sep } from "node:path";
-import { publishProjectionOnce, registerAdminOps } from "@caelo-cms/admin-core";
+import {
+  publishProjectionOnce,
+  registerAdminOps,
+  releaseProjectionForTests,
+  stagingPublicAdapter,
+} from "@caelo-cms/admin-core";
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
@@ -61,6 +66,9 @@ function required(name: string): string {
   if (!v) throw new Error(`${name} is required`);
   return v;
 }
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(required("PUBLIC_STAGING_ADMIN_DATABASE_URL"));
 
 const ADMIN_URL = required("ADMIN_DATABASE_URL");
 const PUBLIC_ADMIN_URL = required("PUBLIC_ADMIN_DATABASE_URL");
@@ -269,8 +277,13 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
       { holder: "static-generator.build" },
     )
     .finally(() => buildAdapter.close());
-  // The admin publishes what the gateway serves from (#635).
-  await publishProjectionOnce(adminAdapter, { comments: true });
+  // The admin publishes what the gateway serves from (#635). The plugin
+  // registry is a release section (#1329): the live gateway attaches the
+  // plugins of the state the live pointer names, which the admin's boot
+  // froze before this fixture activated anything. So release the main line
+  // as a Stage plus Publish live does. `as-loaded`, as a Stage freezes:
+  // parallel specs may have activated plugins this process does not load.
+  await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, undefined, "as-loaded");
   resetPluginHost();
   await adminAdapter.close();
 
@@ -377,7 +390,9 @@ try {
     adminDatabaseUrl: ADMIN_URL,
     publicDatabaseUrl: PUBLIC_ADMIN_URL,
   });
-  await publishProjectionOnce(publisher, { comments: false }).finally(() => publisher.close());
+  await publishProjectionOnce(publisher, STAGING_ADAPTER, { comments: false }).finally(() =>
+    publisher.close(),
+  );
   invalidateGatewaySettings();
 } catch (e) {
   server.stop(true);

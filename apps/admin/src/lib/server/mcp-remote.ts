@@ -48,6 +48,7 @@ import {
   type McpPrincipal,
   type McpRemoteCredential,
   type McpRemoteSurface,
+  mcpBusyResponse,
   mcpClientKey,
   type PowerResult,
   powerApprovalOutcome,
@@ -78,7 +79,7 @@ import {
   type SendChatResult,
   uploadImagesWith,
 } from "@caelo-cms/mcp-server/surfaces";
-import { execute } from "@caelo-cms/query-api";
+import { execute, POOL_BUSY_RETRY_AFTER_MS, PoolAcquireTimeoutError } from "@caelo-cms/query-api";
 import { CAELO_VERSION } from "@caelo-cms/shared";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { isHttpError } from "@sveltejs/kit";
@@ -297,11 +298,24 @@ export async function handleRemoteMcpRequest(
   };
   const { adapter } = getQueryContext();
   const clientLabel = clientLabelOf(parsedBody);
-  const resolved = await resolveRemoteMcpPrincipal(
-    adapter,
-    credential,
-    clientLabel ? { clientLabel } : {},
-  );
+  let resolved: Awaited<ReturnType<typeof resolveRemoteMcpPrincipal>>;
+  try {
+    resolved = await resolveRemoteMcpPrincipal(
+      adapter,
+      credential,
+      clientLabel ? { clientLabel } : {},
+    );
+  } catch (thrown) {
+    // #1375 — the pool filled up between the gate in hooks.server.ts and
+    // this checkout: the same 429 the gate answers, not a 500.
+    if (thrown instanceof PoolAcquireTimeoutError) {
+      return mcpBusyResponse(
+        new URL(request.url).pathname,
+        Math.ceil(POOL_BUSY_RETRY_AFTER_MS / 1000),
+      );
+    }
+    throw thrown;
+  }
   if (!resolved.ok) return remoteRefusalResponse(resolved.error);
 
   if (malformedBody) {

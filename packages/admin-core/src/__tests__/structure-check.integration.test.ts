@@ -135,22 +135,22 @@ const cleanLighthouse = async (job: AuditJob): Promise<AuditJobResult> => ({
 
 /** Build staging, queue a findings-only audit for it, run the real worker. */
 async function stageAndAudit(title: string): Promise<string> {
-  const built = await op<{ runId: string }>(SYS, "deploy.trigger", {
-    targetName: "staging",
-    repoRoot: testRoot,
-  });
   const chatSessionId = (
     await op<{ chatSessionId: string }>(HUMAN, "chat.create_session", {
       isolation: "experiment",
       title: `${PFX}${title}`,
     })
   ).chatSessionId;
-  await op(HUMAN, "quality_audits.enqueue", {
-    deployRunId: built.runId,
-    chatSessionId,
-    branch: {
-      classification: { auditNeeded: false, reasons: [], skipped: ["field values: body"] },
-      touchedPageIds: [],
+  // #1319 — the build queues its audit in the transaction that records it.
+  const built = await op<{ runId: string }>(SYS, "deploy.trigger", {
+    targetName: "staging",
+    repoRoot: testRoot,
+    qualityAudit: {
+      chatSessionId,
+      branch: {
+        classification: { auditNeeded: false, reasons: [], skipped: ["field values: body"] },
+        touchedPageIds: [],
+      },
     },
   });
   await drainAuditQueue({

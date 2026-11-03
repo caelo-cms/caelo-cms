@@ -18,7 +18,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { publishProjectionOnce } from "@caelo-cms/admin-core";
+import { publishProjectionOnce, stagingPublicAdapter } from "@caelo-cms/admin-core";
 import { applyPluginLifecycle, bootstrap, resetPluginHost } from "@caelo-cms/plugin-host";
 import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { definePlugin, z } from "@caelo-cms/plugin-sdk";
@@ -27,6 +27,9 @@ import { sessionCookieValue } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { handleRequest, invalidateGatewaySettings, setGatewayAdapter } from "./server.js";
 import { registerTestLiveOrigin, TEST_LIVE_ORIGIN } from "./test-support.js";
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -192,7 +195,7 @@ beforeAll(async () => {
   });
   setGatewayAdapter(gatewayAdapter);
   await registerTestLiveOrigin(ADMIN_URL);
-  await publishProjectionOnce(adapter, { declarations: new Map() });
+  await publishProjectionOnce(adapter, STAGING_ADAPTER, { declarations: new Map() });
   invalidateGatewaySettings();
 });
 
@@ -378,7 +381,7 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
     await asSystem(
       (tx) => tx`UPDATE staging_access SET staging_host = 'staging.localhost' WHERE id = 1`,
     );
-    await publishProjectionOnce(adapter, { declarations: new Map() });
+    await publishProjectionOnce(adapter, STAGING_ADAPTER, { declarations: new Map() });
     invalidateGatewaySettings();
     try {
       const req = postReq(`/api/plugin/${SLUG}/save`, { message: "from staging" });
@@ -396,7 +399,7 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
       expect(live[0]?.live_origins).not.toContain("https://staging.localhost");
     } finally {
       await asSystem((tx) => tx`UPDATE staging_access SET staging_host = NULL WHERE id = 1`);
-      await publishProjectionOnce(adapter, { declarations: new Map() });
+      await publishProjectionOnce(adapter, STAGING_ADAPTER, { declarations: new Map() });
       invalidateGatewaySettings();
     }
   });

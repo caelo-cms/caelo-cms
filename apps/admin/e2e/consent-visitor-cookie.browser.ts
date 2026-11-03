@@ -47,7 +47,12 @@ async function startFixture(opts: {
   withRatings: boolean;
   firebaseRewrite: boolean;
 }): Promise<{ proc: ChildProcess; url: string }> {
-  for (const name of ["ADMIN_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL", "PUBLIC_DATABASE_URL"]) {
+  for (const name of [
+    "ADMIN_DATABASE_URL",
+    "PUBLIC_ADMIN_DATABASE_URL",
+    "PUBLIC_DATABASE_URL",
+    "PUBLIC_STAGING_ADMIN_DATABASE_URL",
+  ]) {
     if (!process.env[name]) throw new Error(`${name} is required (see ci.yml e2e)`);
   }
   const proc = spawn("bun", ["--no-env-file", "apps/api-gateway/e2e/consent-site.ts"], {
@@ -59,6 +64,7 @@ async function startFixture(opts: {
       ADMIN_DATABASE_URL: process.env.ADMIN_DATABASE_URL,
       PUBLIC_ADMIN_DATABASE_URL: process.env.PUBLIC_ADMIN_DATABASE_URL,
       PUBLIC_DATABASE_URL: process.env.PUBLIC_DATABASE_URL,
+      PUBLIC_STAGING_ADMIN_DATABASE_URL: process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL,
       // The browser talks to the fixture directly: no proxy in front.
       CAELO_TRUSTED_PROXY_HOPS: "0",
       CONSENT_SITE_RATINGS: opts.withRatings ? "1" : "0",

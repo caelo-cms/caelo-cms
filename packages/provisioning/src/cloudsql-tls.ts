@@ -72,8 +72,10 @@ export type CloudSqlTlsResult =
   | { readonly ok: true; readonly host: string; readonly done: string[] }
   | { readonly ok: false; readonly error: string; readonly done: string[] };
 
-/** The parts of `gcloud sql instances describe --format=json` this reads. */
-interface InstanceDescription {
+/** The parts of `gcloud sql instances describe --format=json` this module and converge-db-trust.ts read. */
+export interface InstanceDescription {
+  /** The CA of the instance's current server certificate (PEM in `cert`). */
+  readonly serverCaCert?: { readonly cert?: string };
   readonly settings?: {
     readonly ipConfiguration?: {
       readonly serverCaMode?: string;
@@ -88,7 +90,8 @@ interface InstanceDescription {
 const NOT_FOUND = /NOT_FOUND|not found|does not exist|404/i;
 const SQL_ADMIN = "https://sqladmin.googleapis.com/v1";
 
-async function describeInstance(
+/** `gcloud sql instances describe` of the install's instance, parsed. */
+export async function describeInstance(
   t: CloudSqlTlsTarget,
   run: GcloudRunner,
 ): Promise<{ ok: true; d: InstanceDescription } | { ok: false; error: string }> {

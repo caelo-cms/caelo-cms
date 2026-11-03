@@ -488,6 +488,24 @@ describe("Lighthouse metrics per audited page", () => {
     await calibrate(droppedRunId, 3.9);
     expect(await previousOf(mainRun)).toEqual({ ...ALL_100, performance: 92 });
 
+    // #1370: two audits that emulated the same target device compare,
+    // whatever multiplier each host needed; one before the target was
+    // recorded (calculator curve, a device per host) does not.
+    const target = (auditRunId: string, multiplier: number) =>
+      withSql(
+        (tx) => tx`
+          UPDATE quality_audit_pages
+          SET metrics = jsonb_set(metrics, '{cpuCalibration}',
+                jsonb_build_object('benchmarkIndex', 2313, 'cpuSlowdownMultiplier', ${multiplier}::numeric,
+                                   'targetBenchmarkIndex', 433))
+          WHERE audit_run_id = ${auditRunId}::uuid AND page_id = ${homeId}::uuid
+        `,
+      );
+    await target(mainRun, 5.34);
+    expect(await previousOf(mainRun)).toEqual(cpuIndependent);
+    await target(droppedRunId, 3.06);
+    expect(await previousOf(mainRun)).toEqual({ ...ALL_100, performance: 92 });
+
     const r = await getQualityAuditTool.handler(AI, { auditRunId: mainRun }, {
       adapter,
       registry,

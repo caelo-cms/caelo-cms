@@ -17,7 +17,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { drainProjectionOnce, publishProjectionOnce } from "@caelo-cms/admin-core";
+import {
+  drainProjectionOnce,
+  publishProjectionOnce,
+  releaseProjectionForTests,
+  stagingPublicAdapter,
+} from "@caelo-cms/admin-core";
 import {
   bootstrap,
   bootstrapDispatchOnly,
@@ -46,6 +51,9 @@ import {
   setGatewayAdapter,
 } from "./server.js";
 import { registerTestLiveOrigin, TEST_LIVE_ORIGIN, withErrorLog } from "./test-support.js";
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -187,7 +195,7 @@ async function asPublicAdmin<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
 
 /** The admin publishes (the outbox drain the admin process runs every 2s). */
 async function publish(): Promise<void> {
-  await drainProjectionOnce(adminAdapter, DECLARATIONS);
+  await drainProjectionOnce(adminAdapter, STAGING_ADAPTER);
   invalidateGatewaySettings();
   invalidateRateLimitSpecCache();
 }
@@ -279,7 +287,8 @@ beforeAll(async () => {
     await tx.unsafe(`INSERT INTO ${SCHEMA}.drafts (body) VALUES ('unpublished')`);
   }, pluginId);
   await registerTestLiveOrigin(ADMIN_URL as string);
-  await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
+  // #1329 — plugin data follows the release (a Stage, then Publish live).
+  await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, DECLARATIONS);
   // The admin process goes away; only the gateway's view remains.
   resetPluginHost();
 
@@ -464,53 +473,46 @@ describe("/api/* served from cms_public alone (#635)", () => {
     expect(write.log).toContain("cannot write private storage");
   });
 
-  it("follows an admin write through the outbox", async () => {
+  it("serves an admin write only once it is released, never from the outbox (#1329, N6)", async () => {
     await asAdmin(async (tx) => {
       await tx.unsafe(`UPDATE ${SCHEMA}.settings SET label = 'changed-by-the-owner'`);
     }, pluginId);
+    // The drain (any admin instance, with or without the plugin loaded)
+    // publishes nothing of the plugin's rows: a staged change must not
+    // reach live visitors before Publish live.
     await publish();
+    const before = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
+    await expectStatus(before, 200);
+    expect(((await before.json()) as { data: { label: string } }).data.label).toBe(
+      "from-the-admin",
+    );
+    await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, DECLARATIONS);
+    invalidateGatewaySettings();
     const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
     expect(((await r.json()) as { data: { label: string } }).data.label).toBe(
       "changed-by-the-owner",
     );
   });
 
-  it("a publisher that does not have the plugin leaves its projection to one that does (#1077)", async () => {
-    // An admin instance that has not loaded the plugin yet (or whose load
-    // failed) drains a change to the plugin registry — here a write to
-    // `plugins` that touches no row, which still marks the section — and a
-    // change to the plugin's own projected rows. It used to read "not
-    // loaded here" as "declares nothing" and withdraw the section another
-    // instance had just published: the gateway then answered 503.
-    await asAdmin(async (tx) => {
-      await tx.unsafe(`UPDATE ${SCHEMA}.settings SET label = 'while-not-loaded-there'`);
-    }, pluginId);
+  it("a registry change drained where the plugin is not loaded leaves its rows published (#1077)", async () => {
+    // An instance that has not loaded the plugin drains a change to the
+    // registry; it used to withdraw the plugin's section (503).
     await asAdmin(async (tx) => {
       await tx`UPDATE plugins SET status = status WHERE false`;
     });
-    const elsewhere = await drainProjectionOnce(adminAdapter, new Map());
+    const elsewhere = await drainProjectionOnce(adminAdapter, STAGING_ADAPTER);
     invalidateGatewaySettings();
-    expect(elsewhere.sections).toContain("plugins");
-    expect(elsewhere.sections).not.toContain(`plugin:${pluginId}`);
+    expect(elsewhere.sections.live).toContain("plugins");
+    expect(elsewhere.sections.live).toContain(`plugin:${pluginId}`);
     const kept = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
     await expectStatus(kept, 200);
-    // What was published stays published, untouched...
     expect(((await kept.json()) as { data: { label: string } }).data.label).toBe(
       "changed-by-the-owner",
     );
-    // ...and the change stays in the outbox for the instance that runs it.
-    await publish();
-    const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
-    expect(((await r.json()) as { data: { label: string } }).data.label).toBe(
-      "while-not-loaded-there",
-    );
   });
 
-  it("a version that drops its declaration withdraws what was published", async () => {
-    await publishProjectionOnce(adminAdapter, {
-      declarations: new Map([[SLUG, null]]),
-      comments: false,
-    });
+  it("a released version that drops its declaration withdraws what was published", async () => {
+    await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, new Map([[SLUG, null]]));
     try {
       const { value: r, log } = await withErrorLog(() =>
         handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {})),
@@ -525,7 +527,7 @@ describe("/api/* served from cms_public alone (#635)", () => {
       );
       expect(left).toEqual([]);
     } finally {
-      await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS, comments: false });
+      await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, DECLARATIONS);
     }
   });
 
@@ -551,7 +553,10 @@ describe("/api/* served from cms_public alone (#635)", () => {
       expect(body.error.kind).toBe("ProjectionNotPublished");
       expect(log).toContain('"plugins"');
     } finally {
-      await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS, comments: false });
+      await publishProjectionOnce(adminAdapter, STAGING_ADAPTER, {
+        declarations: DECLARATIONS,
+        comments: false,
+      });
       resetDispatchOnlyHost();
       const report = await bootstrapDispatchOnly({
         infra: { adapter: gatewayAdapter, registry: new OperationRegistry() },
@@ -742,7 +747,10 @@ describe("the public side cannot rewrite what the admin published (#635, adversa
       expect(await r.text()).not.toContain("published");
       expect(log).toContain("has not published the gateway settings");
     } finally {
-      await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS, comments: false });
+      await publishProjectionOnce(adminAdapter, STAGING_ADAPTER, {
+        declarations: DECLARATIONS,
+        comments: false,
+      });
       invalidateGatewaySettings();
     }
   });

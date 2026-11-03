@@ -243,3 +243,49 @@ describe("tokenRefreshingConvergeQueue (#819)", () => {
     await q.close();
   });
 });
+
+describe("tokenRefreshingConvergeQueue — reopen (#1373)", () => {
+  it("opens a new pool with the same token and closes the old one once its call settled", async () => {
+    const opened: { n: number; closed: boolean }[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const q = tokenRefreshingConvergeQueue({
+      fetchToken: async () => ({ token: "t1", expiresAt: 60 * MIN }),
+      open: () => {
+        const entry = { n: opened.length, closed: false };
+        opened.push(entry);
+        const queue: ConvergeQueue = {
+          claimConverge: async () => null,
+          handover: async () => true,
+          event: async (_id, _phase, _level, message) => {
+            if (entry.closed) throw new Error(`pool ${entry.n} is closed`);
+            if (message === "slow") await gate;
+          },
+          record: async () => {},
+          finish: async () => true,
+        };
+        return {
+          queue,
+          close: async () => {
+            entry.closed = true;
+          },
+        };
+      },
+      now: () => 0,
+    });
+    const slow = q.queue.event("r", "converge", "info", "slow");
+    await Bun.sleep(0);
+    await q.reopen();
+    // Still in flight: the old pool stays open under it.
+    expect(opened[0]?.closed).toBe(false);
+    await q.queue.event("r", "converge", "info", "fast");
+    expect(opened).toHaveLength(2);
+    release();
+    await slow;
+    expect(opened[0]?.closed).toBe(true);
+    expect(opened[1]?.closed).toBe(false);
+    await q.close();
+  });
+});

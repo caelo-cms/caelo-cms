@@ -79,27 +79,63 @@ function nestedOf(s: ContentSlot): { nestedPath?: string } {
 }
 
 /**
- * Align source and variant slots by (blockName, position) — the §7.5
- * contract: translations share STRUCTURE, differ only in content.
- * `added`/`removed` mark structural drift the translator refuses to
- * apply (the structural lock); realignment is a create_variant re-run.
+ * The identity of each slot across languages (#1309): a placement is the
+ * k-th placement of its module in its block, nested content is its
+ * placement's identity plus its path and module. Positions are no
+ * identity — a variant whose sections were reordered still has the same
+ * sections, and pairing by position wrote the hero's text into the FAQ.
+ */
+function slotIdentities(slots: readonly ContentSlot[]): string[] {
+  const placementIdentity = new Map<string, string>();
+  const occurrences = new Map<string, number>();
+  const placements = slots
+    .filter((s) => s.nestedPath === undefined)
+    .sort((a, b) => a.blockName.localeCompare(b.blockName) || a.position - b.position);
+  for (const p of placements) {
+    const group = `${p.blockName}|${p.moduleSlug}`;
+    const k = occurrences.get(group) ?? 0;
+    occurrences.set(group, k + 1);
+    placementIdentity.set(slotKeyOf(p), `${group}#${k}`);
+  }
+  return slots.map((s) => {
+    const placement =
+      placementIdentity.get(slotKeyOf({ blockName: s.blockName, position: s.position })) ??
+      // Nested content whose placement has no slot of its own (a caller
+      // passing nested slots alone): its position is all there is.
+      `${s.blockName}|@${s.position}`;
+    return s.nestedPath === undefined ? placement : `${placement}|${s.nestedPath}|${s.moduleSlug}`;
+  });
+}
+
+/**
+ * Align source and variant slots by identity ({@link slotIdentities}) —
+ * the §7.5 contract: translations share STRUCTURE, differ only in
+ * content. An aligned entry carries the source's address (what the
+ * translator's slot ids name) and the variant slot (where the write
+ * lands), which differ when the variant's sections are in another order.
+ * `added`/`removed` mark structural drift the translator refuses to apply
+ * (the structural lock); realignment is a create_variant re-run.
  */
 export function alignSlots(
   source: readonly ContentSlot[],
   variant: readonly ContentSlot[],
 ): SlotAlignment[] {
   const out: SlotAlignment[] = [];
+  const sourceIds = slotIdentities(source);
+  const variantIds = slotIdentities(variant);
   const variantBy = new Map<string, ContentSlot>();
-  for (const v of variant) variantBy.set(slotKeyOf(v), v);
-  const sourceKeys = new Set(source.map(slotKeyOf));
-  for (const s of source) {
-    const v = variantBy.get(slotKeyOf(s));
+  variant.forEach((v, i) => {
+    variantBy.set(variantIds[i] as string, v);
+  });
+  const sourceIdSet = new Set(sourceIds);
+  source.forEach((s, i) => {
+    const v = variantBy.get(sourceIds[i] as string);
     const where = { blockName: s.blockName, position: s.position, ...nestedOf(s) };
     if (v) out.push({ kind: "aligned", ...where, source: s, variant: v });
     else out.push({ kind: "added", ...where, source: s });
-  }
-  for (const v of variant) {
-    if (!sourceKeys.has(slotKeyOf(v))) {
+  });
+  variant.forEach((v, i) => {
+    if (!sourceIdSet.has(variantIds[i] as string)) {
       out.push({
         kind: "removed",
         blockName: v.blockName,
@@ -108,7 +144,19 @@ export function alignSlots(
         variant: v,
       });
     }
-  }
+  });
+  return out;
+}
+
+/**
+ * The aligned variant slot of each source slot, keyed by the source's
+ * {@link slotKeyOf}: where a translation of that slot is written.
+ */
+export function variantSlotsBySource(
+  alignment: readonly SlotAlignment[],
+): Map<string, ContentSlot> {
+  const out = new Map<string, ContentSlot>();
+  for (const a of alignment) if (a.kind === "aligned") out.set(slotKeyOf(a), a.variant);
   return out;
 }
 
@@ -293,6 +341,12 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     .filter((s) => s.length > 0)
     .join("\n");
 
+  // The existing translation is listed under the id of the source slot
+  // it translates, which sits elsewhere when the sections were reordered.
+  const sourceKeyOfVariant = new Map<string, string>();
+  for (const a of input.alignment) {
+    if (a.kind === "aligned") sourceKeyOfVariant.set(slotKeyOf(a.variant), slotKeyOf(a));
+  }
   const userLines: string[] = [
     `# Update translation: ${input.sourceLocale} → ${input.targetLocale}`,
     "",
@@ -313,7 +367,9 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
       : metaDescriptionLines(input.variantMetaDescription)),
     "",
     renderSlots(input.variantSlots, (slot) => {
-      const i = input.sourceSlots.findIndex((src) => slotKeyOf(src) === slotKeyOf(slot));
+      const source = sourceKeyOfVariant.get(slotKeyOf(slot));
+      const i =
+        source === undefined ? -1 : input.sourceSlots.findIndex((src) => slotKeyOf(src) === source);
       return i === -1 ? null : slotIdOf(i);
     }),
     "",

@@ -62,6 +62,7 @@ import {
 } from "@caelo-cms/static-generator";
 import { CPU_PARALLELISM, readBuildFiles, uniqueAssets } from "./build-files.js";
 import { readFirebaseBuiltFile } from "./firebase-channel-file.js";
+import { currentGatewayRewrite, withCurrentGatewayRewrite } from "./firebase-gateway-rewrite.js";
 import { syncFirebaseRedirects } from "./firebase-redirect-sync.js";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
 import type {
@@ -479,8 +480,10 @@ async function liveChannelVersion(site: string, token: string): Promise<string |
 
 /**
  * #1155 — release `liveVersionName` again with `files` replaced: same
- * config (headers, redirects, rewrites) verbatim, same files by hash
- * except the replaced ones, which are the only uploads.
+ * config (headers, redirects, rewrites) verbatim except the `/api/**`
+ * rewrite, which names the current gateway (withCurrentGatewayRewrite,
+ * #1328), same files by hash except the replaced ones, which are the only
+ * uploads.
  */
 async function releasePluginDataVersion(args: {
   site: string;
@@ -509,7 +512,9 @@ async function releasePluginDataVersion(args: {
   }
   const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
     method: "POST",
-    body: JSON.stringify({ config: await versionConfig(site, args.liveVersionName, token) }),
+    body: JSON.stringify({
+      config: withCurrentGatewayRewrite(await versionConfig(site, args.liveVersionName, token)),
+    }),
     token,
   });
   const versionName = created.name;
@@ -547,7 +552,10 @@ async function releasePluginDataVersion(args: {
  * the `Sitemap:` line when the version carries a sitemap.xml), same
  * config except the env-level robots header (see
  * withTargetRobotsHeader) and the current security headers (see
- * withSecurityHeaders — a version from before #891 lacks the SVG CSP). Page HTML + sitemap.xml are reused by hash —
+ * withSecurityHeaders — a version from before #891 lacks the SVG CSP) and
+ * the `/api/**` rewrite to the current gateway (withCurrentGatewayRewrite —
+ * a version from before #1328 names the service that is now the
+ * MCP-Auth-Proxy). Page HTML + sitemap.xml are reused by hash —
  * the generator renders them env-independently.
  */
 async function releaseAsTarget(args: {
@@ -583,8 +591,8 @@ async function releaseAsTarget(args: {
   const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
     method: "POST",
     body: JSON.stringify({
-      config: withSecurityHeaders(
-        withTargetRobotsHeader(args.sourceConfig, args.target.robotsDefault),
+      config: withCurrentGatewayRewrite(
+        withSecurityHeaders(withTargetRobotsHeader(args.sourceConfig, args.target.robotsDefault)),
       ),
     }),
     token,
@@ -863,25 +871,15 @@ class FirebaseBuildUpload implements BuildUpload {
  * rewrite to the gateway, the cache headers and the env-level robots header.
  *
  * Gateway service name + region come from env vars set by the gcp-firebase
- * Pulumi stack on the admin Cloud Run service. No fallback per CLAUDE.md §2
- * — failing to set these env vars means the stack is misconfigured. Without
- * the rewrites `/api/**` (visitor forms, comments, ratings) would 404
- * against the static site (the v0.3.0 launch blocker the v0.3.1 audit found).
+ * Pulumi stack on the admin Cloud Run service (currentGatewayRewrite). No
+ * fallback per CLAUDE.md §2 — failing to set these env vars means the stack
+ * is misconfigured. Without the rewrites `/api/**` (visitor forms,
+ * comments, ratings) would 404 against the static site (the v0.3.0 launch
+ * blocker the v0.3.1 audit found).
  */
 function siteConfig(target: DeployTarget, redirects: unknown): FirebaseVersionConfig {
-  const gatewayService = process.env.CAELO_GATEWAY_SERVICE;
-  const gatewayRegion = process.env.CAELO_GATEWAY_REGION;
-  if (!gatewayService || !gatewayRegion) {
-    throw new Error(
-      "static-publisher-firebase: CAELO_GATEWAY_SERVICE / CAELO_GATEWAY_REGION not set. The gcp-firebase Pulumi stack must set these env vars on the admin Cloud Run service.",
-    );
-  }
   return withTargetRobotsHeader(
-    {
-      redirects,
-      rewrites: [{ glob: "/api/**", run: { serviceId: gatewayService, region: gatewayRegion } }],
-      headers: VERSION_CONFIG_HEADERS,
-    },
+    { redirects, rewrites: [currentGatewayRewrite()], headers: VERSION_CONFIG_HEADERS },
     target.robotsDefault,
   );
 }

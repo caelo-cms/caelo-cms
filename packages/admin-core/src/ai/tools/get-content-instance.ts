@@ -21,6 +21,8 @@ export const getContentInstanceTool: ToolDefinitionWithHandler<
     "Fetch one content_instance, as this chat's draft sees it: values, placements (page path, block, position, sync_mode), parents showing it (instances' `module`/`module-list` fields, module defaults, shared lists) and every page it renders on. Check that blast radius before `set_content_instance_values_many` and before deleting (orphan = no placements AND no parents).",
   schema: getContentInstanceToolInput,
   inputSchema: z.toJSONSchema(getContentInstanceToolInput) as Record<string, unknown>,
+  // #1260 — the re-read a draft conflict on a content instance names.
+  draftReads: (input) => [{ kind: "contentInstance", ids: [input.id] }],
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "content_instances.get", input);
     if (!r.ok) {

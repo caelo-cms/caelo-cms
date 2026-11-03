@@ -2,13 +2,14 @@
 
 /**
  * How `get_quality_audit` and `check_stage_audit` show a page's Lighthouse
- * Performance metrics to the AI: each metric's value in the best run with
- * Lighthouse's rating, every run's value, the LCP element and breakdown, and the
+ * Performance metrics to the AI: each metric's value in the scoring run
+ * (best run, or median run when the runs disagreed) with Lighthouse's rating, every run's value, the LCP element and breakdown, and the
  * layout shifts with their causes — enough to pick the module to fix
  * without running Lighthouse again.
  */
 
 import type { z } from "zod";
+import { effectiveBenchmarkIndex } from "../../quality/cpu-calibration.js";
 import type { performanceMetricsSchema } from "../../quality/lighthouse-protocol.js";
 
 type Metrics = z.infer<typeof performanceMetricsSchema>;
@@ -41,6 +42,14 @@ function element(el: Element): string {
   return `${parts || "(no selector)"}${label}`;
 }
 
+/** Which run the values are from. Audits recorded before #1370 carry no
+ *  `scoredBy`; they were all scored by their best run. */
+function scoredByText(m: Metrics): string {
+  return m.scoredBy === "median"
+    ? `median of ${m.runs} Lighthouse runs`
+    : `best of ${m.runs} Lighthouse run(s)`;
+}
+
 /**
  * The metric lines of one page.
  *
@@ -48,11 +57,22 @@ function element(el: Element): string {
  */
 export function formatMetrics(m: Metrics): string[] {
   const lines = [
-    `Performance metrics (best of ${m.runs} Lighthouse run(s) on the staged build; data behind the Performance score, not problems):`,
+    `Performance metrics (${scoredByText(m)} on the staged build; data behind the Performance score, not problems):`,
+    ...(m.scoredBy === "median"
+      ? [
+          "- the first runs disagreed by more than measurement noise, so the page got confirmation runs and the median run is shown",
+        ]
+      : []),
   ];
   if (m.cpuCalibration) {
+    const c = m.cpuCalibration;
+    const host = `- CPU throttling ${c.cpuSlowdownMultiplier}x on an audit host of benchmark index ${c.benchmarkIndex}`;
+    // Only audits since #1370 record their target; older ones followed
+    // Lighthouse's calculator curve, whose emulated phone moved with the host.
     lines.push(
-      `- CPU throttling ${m.cpuCalibration.cpuSlowdownMultiplier}x, calibrated to the audit host (benchmark index ${m.cpuCalibration.benchmarkIndex}) so every run emulates the same mid-tier phone`,
+      c.targetBenchmarkIndex === undefined
+        ? `${host}: emulated a phone of benchmark index ~${effectiveBenchmarkIndex(c)} (recorded before #1370, when the emulated phone depended on the host)`
+        : `${host}: emulates a phone of benchmark index ${c.targetBenchmarkIndex}, the same mid-tier phone on every host`,
     );
   }
   for (const metric of m.metrics) {

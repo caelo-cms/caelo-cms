@@ -107,6 +107,15 @@ describe("get_quality_audit page formatting", () => {
 });
 
 describe("get_quality_audit Performance metrics", () => {
+  it("says when the page was scored by the median of its confirmation runs (#1370)", () => {
+    const metrics = { ...sampleMetrics(), runs: 5, scoredBy: "median" as const };
+    const lines = formatPage({ ...page([]), status: "clean", metrics });
+    expect(lines).toContain(
+      "Performance metrics (median of 5 Lighthouse runs on the staged build; data behind the Performance score, not problems):",
+    );
+    expect(lines.some((l) => l.includes("got confirmation runs"))).toBe(true);
+  });
+
   it("shows each metric with its rating, the LCP element and the layout shifts", () => {
     const lines = formatPage({ ...page([]), status: "clean", metrics: sampleMetrics() });
     expect(lines).toContain(
@@ -312,6 +321,7 @@ describe("readStageAudit", () => {
         runId: "00000000-0000-0000-0000-000000001211",
         // The build is done after 30 s; its audit then keeps running.
         readRun: async () => ({
+          env: "staging",
           status: clock >= 30_000 ? "succeeded" : "running",
           errorMessage: null,
           progress: null,
@@ -331,5 +341,53 @@ describe("readStageAudit", () => {
     expect(r).toBe(running);
     // Not 30 s for the build plus a fresh 50 s for the audit.
     expect(clock).toBeLessThanOrEqual(50_000);
+  });
+
+  it("names the missing audit and its retry at once, never 'being queued' (#1319)", async () => {
+    let reads = 0;
+    const r = (await readStageAudit(
+      {
+        runId: "00000000-0000-0000-0000-000000001319",
+        readRun: async () => ({
+          env: "staging",
+          status: "succeeded",
+          errorMessage: null,
+          progress: null,
+        }),
+        readStatus: async () => null,
+        read: async () => {
+          reads += 1;
+          return noAudit;
+        },
+      },
+      { waitMs: 50_000, intervalMs: 5_000, sleep: async () => {} },
+    )) as { ok: boolean; content: string };
+    // The audit row commits with the build: no row now means none, so the
+    // read does not wait for one.
+    expect(reads).toBe(1);
+    expect(r.ok).toBe(false);
+    expect(r.content).not.toContain("being queued");
+    expect(r.content).toContain(
+      'retry_quality_audit with deployRunId "00000000-0000-0000-0000-000000001319"',
+    );
+  });
+
+  it("says a non-staging run has no quality check instead of waiting", async () => {
+    const r = (await readStageAudit(
+      {
+        runId: "00000000-0000-0000-0000-000000001320",
+        readRun: async () => ({
+          env: "production",
+          status: "succeeded",
+          errorMessage: null,
+          progress: null,
+        }),
+        readStatus: async () => null,
+        read: async () => noAudit,
+      },
+      { waitMs: 50_000, intervalMs: 5_000, sleep: async () => {} },
+    )) as { ok: boolean; content: string };
+    expect(r.ok).toBe(false);
+    expect(r.content).toContain("only staging builds have a quality check");
   });
 });

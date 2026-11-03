@@ -2069,7 +2069,7 @@ export default definePlugin<PluginContextTier1>({
         remaining: stale.length - translated.length - failed.length,
         /** Live variants whose SEO was kept and flagged stale (#591). */
         seoStale,
-        /** Nested content left untranslated because another page shares it. */
+        /** Nested content left untranslated because another page still renders it. */
         sharedNested,
         ...(paused
           ? {
@@ -2081,7 +2081,7 @@ export default definePlugin<PluginContextTier1>({
                 nextStep: [
                   ...(seoStale.length > 0 ? [SEO_STALE_NEXT_STEP] : []),
                   ...(sharedNested.length > 0
-                    ? [`${SHARED_NESTED_NEXT_STEP} Placements: ${sharedNested.join("; ")}.`]
+                    ? [`${SHARED_NESTED_NEXT_STEP} Nested content: ${sharedNested.join("; ")}.`]
                     : []),
                 ].join(" "),
               }
@@ -2743,7 +2743,7 @@ export default definePlugin<PluginContextTier1>({
         "Flow:",
         "1. Call intl_status FIRST. It answers every 'is X translated / what is missing' question.",
         "2. If the target-language counterpart does not exist yet: create_variant with a LOCALIZED slug ('preise' for 'pricing', not 'pricing-de'). For the site's HOME page (intl_status marks it `isSiteHome: true`) omit the slug entirely — its counterpart is the locale root ('/de') and has no URL segment; every other page needs a slug. The draft still carries the source language.",
-        "3. Call translate_variant on the counterpart. It translates the WHOLE page in one context-aware pass — title, every content field, the texts modules show from their field defaults (buttons, form labels, menu entries), the page's own lists and nested content — honouring the site glossary and style guide. Never translate field-by-field yourself, and never edit shared module HTML to translate it: module code is shared across pages, content lives in per-page values. If the result names nested content shared with another page, fork_placement_content on that placement and translate again.",
+        "3. Call translate_variant on the counterpart. It translates the WHOLE page in one context-aware pass — title, every content field, the texts modules show from their field defaults (buttons, form labels, menu entries), the page's own lists and nested content — honouring the site glossary and style guide. Never translate field-by-field yourself, and never edit shared module HTML to translate it: module code is shared across pages, content lives in per-page values. If the result names nested content another page still renders, follow its next step.",
         "4. The result stays a DRAFT. Summarise what was translated and let the operator review before publishing.",
         "5. When intl_status shows stale variants (source pages changed after translation), prefer ONE translate_all_stale call over repeated translate_variant calls.",
         "",
@@ -2804,7 +2804,7 @@ export default definePlugin<PluginContextTier1>({
         "",
         "Page language and text:",
         "- html-lang-mismatch: the page is in the wrong language group, or not in one; fix the group (link_page_variants).",
-        "- content-wrong-language / content-mixed-language / alt-untranslated / seo-untranslated: run translate_variant on the version. It translates every placement, the texts modules show from their field defaults (buttons, form labels, menu entries) and nested content. If its result says nested content is shared with another page, fork_placement_content on that placement first, then translate again. A brand or product name that is the same in every language belongs in the glossary with itself as the translation (set_glossary_term) — then it is no finding.",
+        "- content-wrong-language / content-mixed-language / alt-untranslated / seo-untranslated: run translate_variant on the version. It translates every placement, the texts modules show from their field defaults (buttons, form labels, menu entries) and nested content. If its result names nested content another page still renders, follow its next step. A brand or product name that is the same in every language belongs in the glossary with itself as the translation (set_glossary_term) — then it is no finding.",
         "- chrome-untranslated / chrome-translation-stale: translate_chrome for that language.",
         "- translation-stale: one translate_all_stale call.",
         "- glossary-violation: translate_variant again (the glossary is part of every call).",

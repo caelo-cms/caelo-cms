@@ -12,6 +12,7 @@ Pulumi stack provisioning Caelo on GCP managed services. Implements the shared `
 | Container runtime | Four Cloud Run services (admin / gateway / orchestrator / runner) |
 | Secret store | Secret Manager: postgres-password (admin_role) + secret-kek (Pulumi); internal-secret, tool-approval-secret and public-role-password (created by the CLI before `pulumi up`, see `src/runtime-secrets.ts`). Cloud Run reads each as a `secretKeyRef`; database URLs carry no password. The gateway's service account reads only `public-role-password` (#613, #635: the gateway has no cms_admin login). |
 | Edge-log sink | Cloud Logging project sink → BigQuery dataset `<env>_edge_logs` (queryable by P12A analytics plugin) |
+| Scheduler tick (CLI-owned, #1140) | One Cloud Scheduler job `caelo-<env>-scheduler-tick` starts the Workflows workflow of the same name every `schedulerIntervalMinutes` (1–15, default 5; `--scheduler-interval-minutes` on the installer, recorded in install.json). The workflow signs an IAP credential as `caelo-<env>-scheduler` and POSTs the admin's `/api/internal/scheduler/tick`, which runs the due periodic work and plugin workers. Set up by the installer and `upgrade` (`src/scheduler-setup.ts`), not by this stack. |
 
 The Caelo runtime never knows it's on GCP — every Cloud Run service consumes plain `DATABASE_URL` / `MEDIA_STORAGE_URL` / `SECRETS_PROVIDER` env vars.
 

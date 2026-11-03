@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
+
+import { mcpBusyFailureResponse } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { error, json } from "@sveltejs/kit";
 import { z } from "zod";
@@ -24,6 +26,8 @@ export const POST: RequestHandler = async ({ request, url }) => {
     { plaintextToken: token },
   );
   if (!auth.ok) {
+    const busy = mcpBusyFailureResponse(auth.error, url.pathname);
+    if (busy) return busy;
     const message = "message" in auth.error ? String(auth.error.message) : auth.error.kind;
     throw error(message.startsWith("permission_denied:") ? 403 : 401, message);
   }

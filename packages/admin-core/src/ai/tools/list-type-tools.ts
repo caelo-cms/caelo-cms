@@ -14,6 +14,7 @@ import { LIST_TYPE_ROLES } from "@caelo-cms/shared";
 import { z } from "zod";
 import { deleteListTypesManyOp, upsertListTypesManyOp } from "../../ops/lists/list-types.js";
 import { describeError } from "./_describe-error.js";
+import { idOf, idsOf } from "./_draft-reads.js";
 import { describeListType, makeOpTool } from "./_list-tool-kit.js";
 import { UPSERT_LIST_TYPES_JSON_SCHEMA } from "./_list-tool-schemas.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -60,6 +61,11 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
     "- 'ships with plugin' = read-only definition (fill its lists). 'Inert plugin settings' = extensions of an inactive plugin, kept, not applied.\n" +
     "- No type fits (mega menu with columns + latest news, team list with photo + role) -> `upsert_list_types_many`; don't bend `links`.",
   schema: listListTypesInput,
+  // #1260 — the re-read a draft conflict on a list type names: each type
+  // shown with its full definition.
+  draftReads: (_input, value) => [
+    { kind: "listType", ids: [...idOf(value, "listType"), ...idsOf(value, "listTypes")] },
+  ],
   handler: async (ctx, input, toolCtx) => {
     if (input.slug !== undefined) {
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "list_types.get", {

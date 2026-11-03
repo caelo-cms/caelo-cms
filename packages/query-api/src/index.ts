@@ -24,6 +24,7 @@ export {
   type AdapterConfig,
   AdminDatabaseUnavailableError,
   DatabaseAdapter,
+  type DatabaseTlsOptions,
   DatabaseUnresponsiveError,
   LISTEN_CONNECTIONS_PER_INSTANCE,
   type ListenCallbacks,
@@ -114,8 +115,15 @@ export {
   LONG_TRANSACTION_ALLOWLIST,
   NestedPoolCheckoutError,
   POOL_ACQUIRE_TIMEOUT_MS,
+  POOL_BUSY_RETRY_AFTER_MS,
   PoolAcquireTimeoutError,
+  type PoolName,
 } from "./pool-guard.js";
+export {
+  BUN_DEFAULT_POOL_MAX,
+  type PoolHolding,
+  type PoolPressure,
+} from "./pool-pressure.js";
 export {
   afterCommit,
   type CommitNotice,
