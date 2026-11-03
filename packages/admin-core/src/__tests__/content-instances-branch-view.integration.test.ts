@@ -297,7 +297,7 @@ describe("#1067 — placements and nested parents as the caller sees them", () =
     const listed = await op<{ instances: { id: string; placementCount: number }[] }>(
       chat,
       "content_instances.list",
-      {},
+      { usage: true },
     );
     expect(listed.instances.find((i) => i.id === shared.contentInstanceId)?.placementCount).toBe(1);
     const written = await op<{ placementCount: number }>(chat, "content_instances.set_values", {
@@ -336,7 +336,7 @@ describe("#1067 — placements and nested parents as the caller sees them", () =
     const listed = await op<{ instances: { id: string; nestedParentCount: number }[] }>(
       SYS,
       "content_instances.list",
-      { moduleId: cardId },
+      { moduleId: cardId, usage: true },
     );
     expect(listed.instances.find((i) => i.id === child.contentInstanceId)?.nestedParentCount).toBe(
       1,

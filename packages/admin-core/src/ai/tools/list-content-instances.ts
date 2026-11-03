@@ -49,6 +49,11 @@ export const listContentInstancesTool = makeListReadTool<
   ].join("\n"),
   opName: "content_instances.list",
   input: listContentInstancesInput,
+  // The reuse decision rests on usage: ask the op for it.
+  buildOpInput: (input) => {
+    const { filter: _f, limit: _l, offset: _o, full: _fu, ...domain } = input;
+    return { ...domain, usage: true };
+  },
   label: "content_instances",
   // Widest reach first: the shared rows that matter for a reuse decision stay
   // on the first page instead of behind older single-placement rows (the op

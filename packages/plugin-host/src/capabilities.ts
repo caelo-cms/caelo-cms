@@ -42,6 +42,7 @@ import { operatorCanAuthor } from "./external-authorization.js";
 import { makePluginFonts } from "./fonts.js";
 import { makePluginImages } from "./images.js";
 import { makePluginAi } from "./plugin-ai.js";
+import { timedPluginOpCall } from "./plugin-runtime-stats.js";
 import { makePluginPrivateFiles } from "./private-files.js";
 import { validatePublicRows } from "./public-row-schema.js";
 import { isPublicSideHost, makeProjectedAdminQuery } from "./published-state.js";
@@ -402,7 +403,9 @@ function makeScopedQuery(
     // Registered on first use, not at construction: building a context
     // must not touch the registry (the handles are lazy by design).
     registerPluginStorageOps(infra.registry, { lockPluginRow: infra.lockPluginRow });
-    const r = await execute(infra.registry, infra.adapter, ctx, opName, input);
+    const r = await timedPluginOpCall(plugin.slug, opName, () =>
+      execute(infra.registry, infra.adapter, ctx, opName, input),
+    );
     if (!r.ok) {
       throw new Error("message" in r.error ? String(r.error.message) : r.error.kind);
     }
@@ -682,21 +685,24 @@ function makePluginCms(
     : {};
   return {
     call: async <Input, Output>(opName: string, input: Input): Promise<Output> => {
-      const r = await execute(
-        infra.registry,
-        infra.adapter,
-        {
-          actorId: plugin.pluginActorId,
-          actorKind: "plugin",
-          requestId: `plugin-${plugin.slug}`,
-          pluginId: plugin.pluginId,
-          ...branch,
-          ...(invocation.origin === "render" && invocation.siteBaseUrl
-            ? { renderSiteBaseUrl: invocation.siteBaseUrl }
-            : {}),
-        },
-        opName,
-        input as unknown,
+      // #1390 — counted per plugin and operation for plugin health; never acted on.
+      const r = await timedPluginOpCall(plugin.slug, opName, () =>
+        execute(
+          infra.registry,
+          infra.adapter,
+          {
+            actorId: plugin.pluginActorId,
+            actorKind: "plugin",
+            requestId: `plugin-${plugin.slug}`,
+            pluginId: plugin.pluginId,
+            ...branch,
+            ...(invocation.origin === "render" && invocation.siteBaseUrl
+              ? { renderSiteBaseUrl: invocation.siteBaseUrl }
+              : {}),
+          },
+          opName,
+          input as unknown,
+        ),
       );
       if (!r.ok) {
         throw new Error(

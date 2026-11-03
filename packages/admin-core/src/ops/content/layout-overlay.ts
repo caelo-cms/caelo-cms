@@ -12,11 +12,13 @@
  *
  * {@link effectiveLayoutModulesSql} is the one read every branch-aware
  * caller uses: live rows, with each block a pending branch state exists
- * for replaced by that state's list.
+ * for replaced by that state's list. The pending states come from the
+ * draft head (one row per pending block), not from the branch's whole
+ * pending history.
  */
 
 import { type SQL, sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../../draft.js";
+import { headOverlaySql } from "../../draft.js";
 
 /**
  * A row source `(layout_id, block_name, position, module_id)` of the
@@ -29,11 +31,13 @@ export function effectiveLayoutModulesSql(branchId: string | null | undefined): 
   }
   return sql`
     WITH overlay AS (
-      SELECT DISTINCT ON (lms.layout_id, lms.block_name) lms.layout_id, lms.block_name, lms.state
-      FROM layout_module_snapshots lms
-      JOIN site_snapshots ss ON ss.id = lms.site_snapshot_id
-      WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-      ORDER BY lms.layout_id, lms.block_name, ss.created_at DESC, lms.created_at DESC
+      SELECT h.entity_id::uuid AS layout_id, h.block_name, h.state
+      FROM (${headOverlaySql({
+        kind: "layoutBlock",
+        table: "layout_module_snapshots",
+        branchId,
+        columns: sql`d.entity_sub AS block_name, es.state`,
+      })}) h
     )
     SELECT live.layout_id, live.block_name, live.position, live.module_id
     FROM layout_modules live

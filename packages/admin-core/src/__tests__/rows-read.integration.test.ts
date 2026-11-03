@@ -36,29 +36,13 @@ import { clearSiteFontUsageCache } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { clearSiteViewCache } from "../site-view.js";
+import { ALLOWLIST } from "./rows-read/allowlist.js";
 import { type FixtureRefs, growFixture, LARGE, SMALL } from "./rows-read/fixture.js";
-import { ROWS_READ_INPUTS } from "./rows-read/inputs.js";
+import { inputKey, ROWS_READ_INPUTS } from "./rows-read/inputs.js";
 
 const ENABLED = process.env.CAELO_ROWS_READ === "1";
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL ?? "";
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL ?? "";
-
-/**
- * Ops that do not stay O(request) yet, and the issue that fixes each
- * (`FIXME(#n)`). Shrinks to empty; never grows without a tracked issue.
- */
-const ALLOWLIST: Readonly<Record<string, string>> = {
-  // Reads the whole site: link humanising, page tree, unbounded lists.
-  "pages.list": "FIXME(#1269) unbounded, one bind parameter per page",
-  "content_instances.list": "FIXME(#1269) unbounded",
-  "lists.list": "FIXME(#1269) usage of every list over every module and instance",
-  "lists.get": "FIXME(#1269) link humanising reads every page and medium",
-  "list_types.list": "FIXME(#1269) usage counts over every list",
-  "page_types.list": "FIXME(#1269) page counts over every page",
-  "site_defaults.get": "FIXME(#1269) reads every page to describe the defaults",
-  "content_instances.get": "FIXME(#1269) reach and link humanising read the whole site",
-  "content_instances.set_values": "FIXME(#1269) reach and link canonicalising read the whole site",
-};
 
 interface Cost {
   readonly statements: number;
@@ -117,8 +101,12 @@ async function measureAll(refs: FixtureRefs, size: "small" | "large", into: Map<
     // process's first call verifies the database roles — one-time costs
     // that are not what grows with the site.
     await execute(registry, adapter, ctx, entry.op, entry.input(refs, `${size}-warm`));
-    into.set(entry.op, await measure(ctx, entry.op, entry.input(refs, size)));
+    into.set(inputKey(entry), await measure(ctx, entry.op, entry.input(refs, size)));
   }
+}
+
+function costLine(a: Cost, b: Cost): string {
+  return `statements ${a.statements}/${b.statements}, rows ${a.rows}/${b.rows}, buffers ${a.blocks}/${b.blocks}`;
 }
 
 /** Why `big` is not within the bar of `base`, or null when it is. */
@@ -173,10 +161,12 @@ describe.skipIf(!ENABLED)("#1267 — request-scoped ops do not read more on a la
           scope: "request",
         });
     }
-    const measured = new Set(ROWS_READ_INPUTS.map((e) => e.op));
+    const keys = ROWS_READ_INPUTS.map(inputKey);
+    expect(keys.filter((k, i) => keys.indexOf(k) !== i)).toEqual([]);
+    const measured = new Set(keys);
     expect(Object.keys(ALLOWLIST).filter((op) => !measured.has(op))).toEqual([]);
     for (const reason of Object.values(ALLOWLIST))
-      expect(reason).toMatch(/^FIXME\(#(1268|1269|1270)\) /);
+      expect(reason).toMatch(/^FIXME\(#(1268|1269|1270|1391)\) /);
   });
 
   it("stays within the bar, or is on the allowlist — and the allowlist only shrinks", () => {
@@ -184,15 +174,14 @@ describe.skipIf(!ENABLED)("#1267 — request-scoped ops do not read more on a la
     const failures: string[] = [];
     const nowCompliant: string[] = [];
     for (const entry of ROWS_READ_INPUTS) {
-      const base = small.get(entry.op);
-      const big = large.get(entry.op);
-      if (!base || !big) throw new Error(`${entry.op}: not measured`);
+      const key = inputKey(entry);
+      const base = small.get(key);
+      const big = large.get(key);
+      if (!base || !big) throw new Error(`${key}: not measured`);
       const why = exceedsBar(base, big);
-      report.push(
-        `${entry.op}: statements ${base.statements}/${big.statements}, rows ${base.rows}/${big.rows}, buffers ${base.blocks}/${big.blocks}${why ? ` — ${why}` : ""}`,
-      );
-      if (why && !(entry.op in ALLOWLIST)) failures.push(`${entry.op}: ${why}`);
-      if (!why && entry.op in ALLOWLIST) nowCompliant.push(entry.op);
+      report.push(`${key}: ${costLine(base, big)}${why ? ` — ${why}` : ""}`);
+      if (why && !(key in ALLOWLIST)) failures.push(`${key}: ${why}`);
+      if (!why && key in ALLOWLIST) nowCompliant.push(key);
     }
     console.log(`[rows-read] small/large per op:\n${report.join("\n")}`);
     expect(failures).toEqual([]);

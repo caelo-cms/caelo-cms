@@ -37,7 +37,7 @@ import {
   type ModuleFieldKind,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { headOverlaySql, pendingSnapshotSql } from "../draft.js";
+import { headOverlaySql } from "../draft.js";
 import { loadPagesInView } from "../lists/pages-view.js";
 import { loadListEntities } from "../lists/store.js";
 import { effectiveLayoutModulesSql } from "../ops/content/layout-overlay.js";
@@ -179,21 +179,25 @@ function visible(alias: "p" | "m" | "ci" | "t" | "l", branchId: string | null) {
     : sql`${a}.chat_branch_id IS NULL`;
 }
 
-/** The draft-head kind of each snapshot table an overlay reads. */
-const OVERLAY_KINDS = {
+type OverlayTable =
+  | "module_snapshots"
+  | "template_snapshots"
+  | "content_instance_snapshots"
+  | "page_snapshots"
+  | "page_layout_snapshots";
+
+/** The draft-head kind of each overlaid snapshot table. */
+const OVERLAY_KIND = {
   module_snapshots: "module",
   template_snapshots: "template",
   content_instance_snapshots: "contentInstance",
   page_snapshots: "page",
   page_layout_snapshots: "pageLayout",
-} as const;
-
-type OverlayTable = keyof typeof OVERLAY_KINDS;
+} as const satisfies Record<OverlayTable, string>;
 
 /**
- * Latest pending snapshot state per entity of one snapshot table, read
- * through the draft head: one row per pending entity, not the branch's
- * whole pending history (#1375).
+ * Latest pending snapshot state per entity of one snapshot table, through
+ * the draft head (one row per pending entity, not the branch's history).
  */
 async function overlay(
   tx: TransactionRunner,
@@ -201,7 +205,7 @@ async function overlay(
   table: OverlayTable,
 ): Promise<Map<string, unknown>> {
   const rows = (await tx.execute(
-    headOverlaySql({ kind: OVERLAY_KINDS[table], table, branchId }),
+    headOverlaySql({ kind: OVERLAY_KIND[table], table, branchId }),
   )) as unknown as { entity_id: string; state: unknown }[];
   return new Map(rows.map((r) => [r.entity_id, r.state]));
 }
@@ -490,14 +494,15 @@ async function loadPluginValues(
     for (const loc of set.locations) {
       const value = await withPluginScope(tx, set.pluginId, async () => {
         if (branchId) {
-          const pending = (await tx.execute(sql`
-            SELECT prs.state FROM plugin_row_snapshots prs
-            JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
-            WHERE prs.plugin_id = ${set.pluginId}::uuid AND prs.table_name = ${loc.table}
-              AND prs.row_id = ${loc.rowId}::uuid
-              AND ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-            ORDER BY ss.created_at DESC, prs.created_at DESC LIMIT 1
-          `)) as unknown as { state: unknown }[];
+          const pending = (await tx.execute(
+            headOverlaySql({
+              kind: "pluginRow",
+              table: "plugin_row_snapshots",
+              branchId,
+              ids: [loc.rowId],
+              where: sql`d.plugin_id = ${set.pluginId}::uuid AND d.table_name = ${loc.table}`,
+            }),
+          )) as unknown as { state: unknown }[];
           const state = pending[0]
             ? (pending[0].state as {
                 values: Record<string, unknown>;

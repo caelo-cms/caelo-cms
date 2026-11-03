@@ -27,12 +27,15 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
+import { observeDraftReads } from "../locks.js";
 import {
   type ContentInstanceNeedle,
   contentInstanceRefsDrift,
   findContentInstancesContaining,
+  idNeedles,
   liveInstancesSql,
   needleFilterSql,
+  pendingNeedleCandidatesSql,
 } from "../ops/content/content-instance-refs.js";
 import { registerAdminOps } from "../register.js";
 
@@ -289,6 +292,47 @@ describe("#1287 — the lookup is served by the index", () => {
   });
 });
 
+describe("#1391 — pending states are found through the index", () => {
+  it("scans no snapshot table for a needle on a few thousand pending states", async () => {
+    const chat = await op<{ chatBranchId: string; chatSessionId: string }>("chat.create_session", {
+      title: `cirefs-plan-${TS}`,
+    });
+    // A shared draft between two Stages: thousands of pending instance
+    // states, none of them naming the needle.
+    await asSystem(async (tx) => {
+      await tx.unsafe(`
+        WITH h AS (
+          INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id)
+          VALUES ('${ACTOR}', 'content_instances.set_values', 'cirefs-plan', '${chat.chatSessionId}',
+                  '${chat.chatBranchId}')
+          RETURNING id)
+        INSERT INTO content_instance_snapshots (site_snapshot_id, content_instance_id, state)
+        SELECT h.id, ci.id,
+               jsonb_build_object('schemaVersion', 1, 'moduleId', ci.module_id::text, 'slug', null,
+                                  'displayName', null, 'version', 2, 'deletedAt', null,
+                                  'values', ci."values")
+          FROM h, (SELECT id, module_id, "values" FROM content_instances LIMIT 4000) ci`);
+      await tx.unsafe("ANALYZE content_instance_snapshots");
+      await tx.unsafe("ANALYZE content_instance_snapshot_refs");
+      await tx.unsafe("ANALYZE draft_pending_entities");
+    });
+    const plan = await adapter.withAdminTransaction(SYS, async (tx) => {
+      const rows = (await tx.execute(
+        sql`EXPLAIN (FORMAT JSON) ${pendingNeedleCandidatesSql(chat.chatBranchId, [
+          { kind: "id", id: crypto.randomUUID() },
+        ])}`,
+      )) as unknown as Record<string, unknown>[];
+      return JSON.stringify(rows);
+    });
+    expect(plan).toContain("content_instance_snapshot_refs_ref_idx");
+    const seqScans = [...plan.matchAll(/"Node Type":"Seq Scan"[^}]*?"Relation Name":"(\w+)"/g)].map(
+      (m) => m[1],
+    );
+    expect(seqScans).not.toContain("content_instance_snapshots");
+    expect(seqScans).not.toContain("draft_pending_entities");
+  });
+});
+
 describe("#1287 — list_for_page reads its nested tree through the index", () => {
   it("tells a child only this page renders from one shared with another parent", async () => {
     const own = await instance(cardId, { title: "Only here" });
@@ -320,5 +364,64 @@ describe("#1287 — list_for_page reads its nested tree through the index", () =
     );
     expect(nested.get(own)).toBe(true);
     expect(nested.get(shared)).toBe(false);
+  });
+});
+
+describe("#1390 — a branch's pending states come from the draft head", () => {
+  async function draftChat(title: string): Promise<ExecutionContext> {
+    const v = await op<{ chatSessionId: string; chatBranchId: string }>("chat.create_session", {
+      title: `cirefs-${title}-${TS}`,
+    });
+    return {
+      actorId: ACTOR,
+      actorKind: "ai",
+      requestId: `cirefs-${title}`,
+      chatBranchId: v.chatBranchId,
+      chatTaskId: v.chatSessionId,
+    };
+  }
+  async function foundIn(ctx: ExecutionContext, needles: ContentInstanceNeedle[]) {
+    const refs = await adapter.withAdminTransaction(ctx, (tx) =>
+      findContentInstancesContaining(tx, ctx.chatBranchId ?? null, needles),
+    );
+    return refs.map((r) => r.contentInstanceId).sort();
+  }
+  async function setValues(ctx: ExecutionContext, id: string, values: unknown): Promise<void> {
+    const r = await execute(registry, adapter, ctx, "content_instances.set_values", { id, values });
+    if (!r.ok) throw new Error(`set_values: ${JSON.stringify(r.error)}`);
+  }
+
+  it("the newest pending state decides, even when an older one matched", async () => {
+    const child = await instance(cardId, { title: "Head child" });
+    const other = await instance(cardId, { title: "Head other" });
+    const parent = await instance(listModuleId, { items: [ref(other)] });
+    const chat = await draftChat("head");
+
+    // Pending: first the parent lists the child, then no longer.
+    await setValues(chat, parent, { items: [ref(child)] });
+    expect(await foundIn(chat, idNeedles([child]))).toEqual([parent]);
+    await setValues(chat, parent, { items: [ref(other)] });
+    expect(await foundIn(chat, idNeedles([child]))).toEqual([]);
+    // The live row never listed the child; main does not see the pending edit.
+    expect(await found(idNeedles([child]))).toEqual([]);
+    expect(await found(idNeedles([other]))).toContain(parent);
+  });
+
+  it("a newer pending state of another chat supersedes this chat's older one", async () => {
+    const child = await instance(cardId, { title: "Owners child" });
+    const parent = await instance(listModuleId, { items: [] });
+    const first = await draftChat("owner-a");
+    const second = await draftChat("owner-b");
+
+    await setValues(first, parent, { items: [ref(child)] });
+    expect(await foundIn(second, idNeedles([child]))).toEqual([parent]);
+    // Both chats share the draft: the newest pending state is the view.
+    // The second chat has seen the first chat's change before building on it.
+    await adapter.withAdminTransaction(second, (tx) =>
+      observeDraftReads(tx, second, "contentInstance", [parent]),
+    );
+    await setValues(second, parent, { items: [] });
+    expect(await foundIn(first, idNeedles([child]))).toEqual([]);
+    expect(await foundIn(second, idNeedles([child]))).toEqual([]);
   });
 });

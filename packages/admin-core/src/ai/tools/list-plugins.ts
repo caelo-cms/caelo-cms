@@ -60,7 +60,14 @@ export function healthProblem(h: PluginListRow["health"]): string {
   if (h.state === "awaiting_approval") {
     return `awaits Owner approval at /settings/plugins: ${awaitingApprovalReason(h)}`;
   }
-  return h.problem?.message ?? "";
+  const parts = h.problem ? [h.problem.message] : [];
+  const b = h.consumerBackoff;
+  if (b) {
+    parts.push(
+      `change consumer failed ${b.consecutiveFailures}x, retried at ${b.nextRetryAt} (get_plugin)`,
+    );
+  }
+  return parts.join("; ");
 }
 
 /** What `plugins.list` hands back, narrowed to the fields worth spending tokens on. */
@@ -74,6 +81,7 @@ interface PluginListRow {
     awaitingCapabilities: string[];
     awaitingRelease: boolean;
     problem: { message: string } | null;
+    consumerBackoff: { consecutiveFailures: number; nextRetryAt: string } | null;
   };
   requiresPlugins: string[];
   requiredBy: string[];

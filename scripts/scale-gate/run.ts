@@ -21,10 +21,32 @@
  * Every call has a timeout, so a run against a slow build still finishes
  * and records numbers: a timed-out call counts as a sample at the timeout
  * and is counted separately.
+ *
+ * #1390 — beside the timings the run watches the cause of the 2026-11-03
+ * production stall (observe.ts): the database container's CPU against its
+ * share (`--pg-container`), every shipped plugin running before the load
+ * starts (`list_plugins`), their change consumers past their first rebuild
+ * (`--settle-consumers`, reads ADMIN_DATABASE_URL), the scheduler tick
+ * driven like the install's scheduler at its shortest interval
+ * (`--tick-every`, signs with CAELO_INTERNAL_SECRET) so every plugin
+ * worker runs during the load, and every plugin failure in the admin log.
+ * A plugin failure, a failed worker run or a failed tick fails the gate.
  */
 
 import { readFileSync, statSync } from "node:fs";
+import { SQL } from "bun";
+import { mintTickToken } from "../../packages/admin-core/src/scheduler/clock.ts";
 import type { ScaleGateFixture } from "./fixture.ts";
+import {
+  addTick,
+  countPluginFailures,
+  type DbCpuSummary,
+  samplePluginFailures,
+  startCpuSampler,
+  type TickSummary,
+  type TickTaskRun,
+} from "./observe.ts";
+import { CHANGE_CONSUMER_SLUGS, SHIPPED_PLUGIN_SLUGS } from "./plugins.ts";
 
 /** The measurement classes and their p95 targets (ms), issue #1267. */
 export const SLO_P95_MS = {
@@ -62,6 +84,21 @@ export interface ScaleGateReport {
   readonly variantsCreated: number;
   readonly poolAcquireTimeouts: number;
   readonly lockWaitsOver100ms: number;
+  /** #1390 — the database container's CPU during the load; null without `--pg-container`. */
+  readonly dbCpu: DbCpuSummary | null;
+  /** #1390 — the shipped plugins and what went wrong in their background work. */
+  readonly plugins: {
+    readonly expected: readonly string[];
+    /** Seconds waited for the change consumers' first rebuild; null = not waited for. */
+    readonly settleSeconds: number | null;
+    /** Whether they finished it within `--settle-timeout` (false fails the gate). */
+    readonly settled: boolean | null;
+    /** Failure lines in the admin log during the load, per plugin slug. */
+    readonly failures: Record<string, number>;
+    readonly sampleFailures: readonly string[];
+    /** Scheduler ticks made during the load and the plugin worker runs they reported. */
+    readonly ticks: TickSummary | null;
+  };
   readonly pass: boolean;
   /** First few distinct error messages, for diagnosis. */
   readonly sampleErrors: readonly string[];
@@ -159,15 +196,226 @@ export function reportTable(r: ScaleGateReport): string {
     const s = r.measurements[m];
     return `| ${m} | ${s.count} | ${s.p50} | ${s.p95} | ${s.max} | ${s.errors} | ${s.timeouts} | < ${s.targetP95} | ${s.pass ? "pass" : "FAIL"} |`;
   });
+  const cpu = r.dbCpu;
+  const cpuLines = cpu
+    ? [
+        "",
+        "| DB CPU | share | mean | p95 | max | samples at ≥ 95 % of share | throttled periods |",
+        "|---|---|---|---|---|---|---|",
+        `| ${cpu.container} (${cpu.samples} × ${cpu.intervalSeconds} s) | ${cpu.share ?? "unlimited"} | ${cpu.meanCpus} | ${cpu.p95Cpus} | ${cpu.maxCpus} | ${cpu.saturatedSamplesPct} % | ${cpu.meanThrottledPeriodsPct} % |`,
+      ]
+    : ["", "DB CPU: not sampled (no --pg-container)."];
+  const workers = Object.entries(r.plugins.ticks?.workers ?? {});
+  const pluginLines = [
+    "",
+    `Plugins active: ${r.plugins.expected.join(", ")}. Change consumers: ${r.plugins.settleSeconds === null ? "not waited for" : `${r.plugins.settled ? "settled" : "NOT settled"} after ${r.plugins.settleSeconds} s`}.`,
+    `Plugin failures in the admin log: ${pluginFailureTotal(r.plugins.failures) === 0 ? "none" : JSON.stringify(r.plugins.failures)}.`,
+    ...(r.plugins.ticks
+      ? [
+          `Scheduler ticks: ${r.plugins.ticks.ticks} (${r.plugins.ticks.tickErrors} failed). Worker runs: ${
+            workers.length === 0
+              ? "none"
+              : workers
+                  .map(
+                    ([k, w]) =>
+                      `${k} ${w.runs}×${w.failed > 0 ? ` (${w.failed} failed)` : ""} max ${w.maxMs} ms`,
+                  )
+                  .join("; ")
+          }.`,
+        ]
+      : ["Scheduler ticks: not driven (no --tick-every)."]),
+  ];
   return [
     `Fixture: ${r.pages} pages, ${r.agents} agents, ${r.editors} editors, ${r.durationSeconds} s, call timeout ${r.callTimeoutMs} ms`,
     "",
     "| measurement | n | p50 ms | p95 ms | max ms | errors | timeouts | target p95 | |",
     "|---|---|---|---|---|---|---|---|---|",
     ...rows,
+    ...cpuLines,
+    ...pluginLines,
     "",
     `Variants created: ${r.variantsCreated}. Pool-acquire timeouts: ${r.poolAcquireTimeouts}. Lock waits > 100 ms: ${r.lockWaitsOver100ms}. Overall: ${r.pass ? "pass" : "FAIL"}.`,
   ].join("\n");
+}
+
+/** All plugin failure lines of a run. */
+export function pluginFailureTotal(failures: Record<string, number>): number {
+  return Object.values(failures).reduce((s, n) => s + n, 0);
+}
+
+/**
+ * Whether the plugins' background work held: no failure line in the admin
+ * log, no failed tick, no failed worker run.
+ */
+export function pluginsPass(failures: Record<string, number>, ticks: TickSummary | null): boolean {
+  if (pluginFailureTotal(failures) > 0) return false;
+  if (!ticks) return true;
+  return ticks.tickErrors === 0 && Object.values(ticks.workers).every((w) => w.failed === 0);
+}
+
+/**
+ * The slugs `list_plugins` does not report as `running`. The tool answers
+ * one comma-separated row per plugin (`slug,status,version,health,…`); a
+ * row counts when one cell is the slug and one is `running`.
+ */
+export function notRunning(listPluginsContent: string, slugs: readonly string[]): string[] {
+  const running = new Set<string>();
+  for (const line of listPluginsContent.split("\n")) {
+    const cells = line.split(",").map((c) => c.trim());
+    if (!cells.includes("running")) continue;
+    for (const slug of slugs) if (cells.includes(slug)) running.add(slug);
+  }
+  return slugs.filter((s) => !running.has(s));
+}
+
+/**
+ * Refuse to start the load until `list_plugins` reports every shipped
+ * plugin `running` (the heartbeat may take a moment after boot). A gate
+ * run with a plugin missing would measure less than production runs.
+ */
+async function assertPluginsRunning(
+  baseUrl: string,
+  fixture: ScaleGateFixture,
+  timeoutMs: number,
+): Promise<void> {
+  const token = fixture.mcpTokens[0];
+  if (!token) throw new Error("fixture has no MCP token");
+  const headers = { "content-type": "application/json", "x-caelo-mcp-token": token };
+  const opened = await fetch(`${baseUrl}/api/mcp/session`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ newSession: true, title: "Scale-gate preflight" }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!opened.ok)
+    throw new Error(`preflight: open session ${opened.status} ${await opened.text()}`);
+  const chatSessionId = ((await opened.json()) as { chatSessionId: string }).chatSessionId;
+  const until = Date.now() + 120_000;
+  let content = "";
+  for (;;) {
+    const res = await fetch(`${baseUrl}/api/mcp/tool`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ toolName: "list_plugins", args: {}, chatSessionId }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`preflight: list_plugins HTTP ${res.status} ${text}`);
+    content = (JSON.parse(text) as { content: string }).content;
+    const missing = notRunning(content, SHIPPED_PLUGIN_SLUGS);
+    if (missing.length === 0) return;
+    if (Date.now() > until) {
+      throw new Error(
+        `preflight: shipped plugins not running after 120 s: ${missing.join(", ")}\n${content}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+/**
+ * Wait until the change consumer of every plugin that declares one has
+ * finished its first rebuild and has no paged read in progress.
+ *
+ * @returns seconds waited and whether they settled within `timeoutS`
+ */
+async function settle(
+  adminDbUrl: string,
+  timeoutS: number,
+): Promise<{ seconds: number; settled: boolean; state: string }> {
+  const sql = new SQL(adminDbUrl, { max: 1 });
+  const started = Date.now();
+  let state = "";
+  try {
+    for (;;) {
+      // change_consumers is system-scoped (RLS, migration 0430).
+      const rows = (await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return tx`
+          SELECT p.slug, c.name IS NOT NULL AS registered,
+                 coalesce(c.rebuild_pending, true) AS rebuild_pending,
+                 c.page_target IS NOT NULL AS paging
+          FROM plugins p LEFT JOIN change_consumers c ON c.plugin_id = p.id
+          WHERE p.slug IN ${tx(CHANGE_CONSUMER_SLUGS as string[])}`;
+      })) as unknown as {
+        slug: string;
+        registered: boolean;
+        rebuild_pending: boolean;
+        paging: boolean;
+      }[];
+      state = rows
+        .map(
+          (r) =>
+            `${r.slug}: ${!r.registered ? "not registered" : r.rebuild_pending ? "rebuilding" : r.paging ? "reading" : "settled"}`,
+        )
+        .join(", ");
+      const seconds = Math.round((Date.now() - started) / 1000);
+      if (
+        rows.length === CHANGE_CONSUMER_SLUGS.length &&
+        rows.every((r) => r.registered && !r.rebuild_pending && !r.paging)
+      ) {
+        return { seconds, settled: true, state };
+      }
+      if (seconds > timeoutS) return { seconds, settled: false, state };
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * Call the scheduler tick every `everyS` seconds while `running()`, like
+ * the install's scheduler (the self-hosted clock's own call). The first
+ * tick comes at once: a worker the due-table has never seen is due then.
+ * The tick in flight when the load ends is awaited, so its worker runs
+ * are counted.
+ */
+/** A tick's budget (4 min, tick.ts) plus one worker's lease (5 min). */
+const TICK_TIMEOUT_MS = 9 * 60 * 1000;
+
+async function driveTicks(
+  baseUrl: string,
+  secret: string,
+  everyS: number,
+  running: () => boolean,
+): Promise<{ summary: TickSummary; errorSamples: string[] }> {
+  const summary = { ticks: 0, tickErrors: 0, workers: {}, coreFailures: [] as string[] };
+  const errorSamples: string[] = [];
+  while (running()) {
+    const started = Date.now();
+    try {
+      // The self-hosted clock's call (clock.ts), reading the whole answer:
+      // the per-task outcomes are what the gate counts.
+      const res = await fetch(`${baseUrl}/api/internal/scheduler/tick`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await mintTickToken(secret)}`,
+          "content-type": "application/json",
+        },
+        body: "{}",
+        signal: AbortSignal.timeout(TICK_TIMEOUT_MS),
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(`tick answered HTTP ${res.status}: ${text.slice(0, 300)}`);
+      const body = JSON.parse(text) as { ran?: TickTaskRun[] };
+      const ran = body.ran ?? [];
+      addTick(summary, ran);
+      for (const r of ran) {
+        if (r.key.startsWith("plugin:") && r.outcome !== "ok" && errorSamples.length < 8) {
+          errorSamples.push(`${r.key} ${r.outcome}: ${(r.detail ?? "").slice(0, 300)}`);
+        }
+      }
+    } catch (e) {
+      summary.ticks += 1;
+      summary.tickErrors += 1;
+      if (errorSamples.length < 8) errorSamples.push((e as Error).message.slice(0, 300));
+    }
+    while (running() && Date.now() - started < everyS * 1000) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  return { summary, errorSamples };
 }
 
 async function main(): Promise<void> {
@@ -182,6 +430,21 @@ async function main(): Promise<void> {
   const pgLog = arg("--pg-log");
   const reportPath = arg("--report") ?? "scale-gate-report.json";
   const baseline = process.argv.includes("--baseline");
+  const pgContainer = arg("--pg-container");
+  const cpuIntervalS = Number.parseInt(arg("--cpu-interval") ?? "5", 10);
+  const tickEveryS = Number.parseInt(arg("--tick-every") ?? "0", 10);
+  const settleConsumers = process.argv.includes("--settle-consumers");
+  const settleTimeoutS = Number.parseInt(arg("--settle-timeout") ?? "900", 10);
+  const internalSecret = process.env.CAELO_INTERNAL_SECRET ?? "";
+  if (tickEveryS > 0 && internalSecret.length < 32) {
+    throw new Error(
+      "--tick-every signs the scheduler tick with CAELO_INTERNAL_SECRET (the admin's, ≥ 32 characters)",
+    );
+  }
+  const adminDbUrl = process.env.ADMIN_DATABASE_URL ?? "";
+  if (settleConsumers && !adminDbUrl) {
+    throw new Error("--settle-consumers reads the change consumers through ADMIN_DATABASE_URL");
+  }
   const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as ScaleGateFixture;
 
   const samples: Record<Measurement, number[]> = {
@@ -240,7 +503,20 @@ async function main(): Promise<void> {
     }
   }
 
-  const deadline = Date.now() + durationS * 1000;
+  // --- Before the load (#1390): every shipped plugin runs, and its change
+  // consumer is past the first rebuild a fresh activation starts with
+  // (a one-off over the whole site; the gate measures the steady state).
+  // A plugin failure while the consumers settle counts too.
+  const pluginLogStart = sizeOf(adminLog);
+  await assertPluginsRunning(baseUrl, fixture, timeoutMs);
+  const settled = settleConsumers ? await settle(adminDbUrl, settleTimeoutS) : null;
+  if (settled) {
+    console.log(
+      `[scale-gate] change consumers ${settled.settled ? "settled" : "NOT settled"} after ${settled.seconds} s (${settled.state})`,
+    );
+  }
+
+  let deadline = 0;
   const adminLogStart = sizeOf(adminLog);
   const pgLogStart = sizeOf(pgLog);
   const startedAt = new Date().toISOString();
@@ -344,14 +620,29 @@ async function main(): Promise<void> {
   console.log(
     `[scale-gate] ${agents} agents + ${editors} editors against ${baseUrl} for ${durationS} s (${fixture.pages} pages)`,
   );
+  const sampler = pgContainer ? await startCpuSampler(pgContainer, cpuIntervalS) : null;
+  deadline = Date.now() + durationS * 1000;
+  const ticks =
+    tickEveryS > 0
+      ? driveTicks(baseUrl, internalSecret, tickEveryS, () => Date.now() < deadline)
+      : null;
   const results = await Promise.allSettled([
     ...Array.from({ length: agents }, (_, i) => agent(i)),
     ...Array.from({ length: editors }, (_, i) => editor(i)),
   ]);
+  const dbCpu = sampler ? await sampler.stop() : null;
+  const tickSummary = ticks ? await ticks : null;
   for (const r of results) {
     if (r.status === "rejected") {
       throw new Error(`a load loop could not start: ${(r.reason as Error).message}`);
     }
+  }
+  const pluginLog = adminLog
+    ? readFileSync(adminLog).subarray(pluginLogStart).toString("utf8")
+    : "";
+  const pluginFailures = countPluginFailures(pluginLog);
+  for (const line of tickSummary?.errorSamples ?? []) {
+    if (sampleErrors.size < 16) sampleErrors.add(`tick: ${line}`);
   }
 
   const measurements = Object.fromEntries(
@@ -377,16 +668,32 @@ async function main(): Promise<void> {
     variantsCreated,
     poolAcquireTimeouts,
     lockWaitsOver100ms,
+    dbCpu,
+    plugins: {
+      expected: SHIPPED_PLUGIN_SLUGS,
+      settleSeconds: settled?.seconds ?? null,
+      settled: settled ? settled.settled : null,
+      failures: pluginFailures,
+      sampleFailures: samplePluginFailures(pluginLog, 12),
+      ticks: tickSummary ? tickSummary.summary : null,
+    },
     pass:
       Object.values(measurements).every((s) => s.pass) &&
       poolAcquireTimeouts === 0 &&
-      lockWaitsOver100ms === 0,
+      lockWaitsOver100ms === 0 &&
+      settled?.settled !== false &&
+      pluginsPass(pluginFailures, tickSummary ? tickSummary.summary : null),
     sampleErrors: [...sampleErrors],
   };
   await Bun.write(reportPath, JSON.stringify(report, null, 2));
   console.log(reportTable(report));
   if (report.sampleErrors.length > 0) {
     console.log(`\nSample errors:\n${report.sampleErrors.map((s) => `- ${s}`).join("\n")}`);
+  }
+  if (report.plugins.sampleFailures.length > 0) {
+    console.log(
+      `\nPlugin failures:\n${report.plugins.sampleFailures.map((s) => `- ${s}`).join("\n")}`,
+    );
   }
   if (!report.pass && !baseline) process.exit(1);
 }

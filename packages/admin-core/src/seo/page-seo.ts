@@ -30,7 +30,7 @@
 
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../draft.js";
+import { headOverlaySql } from "../draft.js";
 import type { PageSeoState } from "../snapshots/state.js";
 
 /**
@@ -164,11 +164,13 @@ export function pageSeoViewSql(
       CASE WHEN o.seo IS NULL THEN s.updated_at ELSE o.changed_at END AS updated_at
     FROM (SELECT ${liveColumns} FROM pages_seo s WHERE true${idFilter("s.page_id", pageIds)}) s
     FULL JOIN (
-      SELECT DISTINCT ON (ps.page_id) ps.page_id, ps.state->'seo' AS seo, ss.created_at AS changed_at
-      FROM page_snapshots ps
-      JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-      WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}${idFilter("ps.page_id", pageIds)}
-      ORDER BY ps.page_id, ss.created_at DESC, ps.id DESC
+      SELECT h.entity_id::uuid AS page_id, h.seo, h.changed_at FROM (${headOverlaySql({
+        kind: "page",
+        table: "page_snapshots",
+        branchId: chatBranchId,
+        ...(pageIds ? { ids: pageIds } : {}),
+        columns: sql`es.state->'seo' AS seo, d.header_created_at AS changed_at`,
+      })}) h
     ) o ON o.page_id = s.page_id
     WHERE s.page_id IS NOT NULL OR o.seo IS NOT NULL
   )`;

@@ -245,7 +245,9 @@ async function loadInstances(
   ctx: ExecutionContext,
   toolCtx: ToolContext,
 ): Promise<IndexedInstance[] | null> {
-  const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "content_instances.list", {});
+  const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "content_instances.list", {
+    usage: true,
+  });
   // A failed read only loses the hint; the write it comments on succeeded.
   return res.ok ? ((res.value as { instances?: IndexedInstance[] }).instances ?? []) : null;
 }

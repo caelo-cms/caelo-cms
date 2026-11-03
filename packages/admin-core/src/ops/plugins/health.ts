@@ -66,6 +66,44 @@ const pluginErrorSummary = z.object({
   report: pluginErrorReport,
 });
 
+/**
+ * #1390 — the plugin's change consumer is waiting out a failure backoff on
+ * a live server: its failed batch is retried at `nextRetryAt`. The worst of
+ * the live servers (most consecutive failures).
+ */
+const consumerBackoff = z.object({
+  consecutiveFailures: z.number().int(),
+  nextRetryAt: z.string(),
+  lastError: z.string(),
+});
+
+/**
+ * #1390 — one call the plugin made through its broker — a core operation
+ * (`pages.list`) or its own storage (`plugin_storage.list`): calls, total
+ * and longest ms.
+ */
+const callCost = z.object({
+  op: z.string(),
+  calls: z.number().int(),
+  totalMs: z.number().int(),
+  maxMs: z.number().int(),
+});
+
+/**
+ * #1390 — what the plugin's work costs: the calls it made through its
+ * broker on the live servers since `since` (the oldest live server's
+ * start), costliest first. Wall time of each call — the database work plus
+ * the wait for a pool connection — not database CPU. Reported, never acted
+ * on (#1008).
+ */
+const callCostSummary = z.object({
+  since: z.string().nullable(),
+  calls: z.number().int(),
+  totalMs: z.number().int(),
+  /** The costliest operations by total time (at most 10). */
+  ops: z.array(callCost),
+});
+
 export const pluginHealth = z.object({
   state: pluginHealthState,
   servers: z.object({ loaded: z.number().int(), failing: z.number().int() }),
@@ -79,6 +117,10 @@ export const pluginHealth = z.object({
   problem: pluginErrorSummary.nullable(),
   /** The latest problems of the last 7 days, newest first (at most 5). */
   recentErrors: z.array(pluginErrorSummary),
+  /** Its change consumer's failure backoff, when one is waiting (#1390). */
+  consumerBackoff: consumerBackoff.nullable(),
+  /** The core operations it called and their time (#1390). */
+  callCost: callCostSummary,
 });
 export type PluginHealth = z.infer<typeof pluginHealth>;
 
@@ -111,6 +153,7 @@ type PluginDiscoveryFailure = z.infer<typeof pluginDiscoveryFailure>;
 const LIVE_WINDOW = "2 minutes";
 const RECENT_WINDOW = "7 days";
 const RECENT_LIMIT = 5;
+const COST_OPS_LIMIT = 10;
 
 interface ErrorRow {
   plugin_slug: string;
@@ -148,6 +191,32 @@ function summary(r: ErrorRow): z.infer<typeof pluginErrorSummary> {
     firstSeenAt: iso(r.first_seen_at),
     lastSeenAt: iso(r.last_seen_at),
     report: r.report,
+  };
+}
+
+function costSummary(
+  rows: ReadonlyArray<{
+    op: string;
+    calls: number;
+    total_ms: number;
+    max_ms: number;
+    since: string | Date | null;
+  }>,
+): z.infer<typeof callCostSummary> {
+  const ops = rows
+    .map((r) => ({
+      op: r.op,
+      calls: Math.round(r.calls),
+      totalMs: Math.round(r.total_ms),
+      maxMs: Math.round(r.max_ms),
+    }))
+    .sort((a, b) => b.totalMs - a.totalMs || b.calls - a.calls);
+  const sinces = rows.flatMap((r) => (r.since === null ? [] : [iso(r.since)])).sort();
+  return {
+    since: sinces[0] ?? null,
+    calls: ops.reduce((n, o) => n + o.calls, 0),
+    totalMs: ops.reduce((n, o) => n + o.totalMs, 0),
+    ops: ops.slice(0, COST_OPS_LIMIT),
   };
 }
 
@@ -211,7 +280,42 @@ export async function readPluginHealth(
     ORDER BY plugin_slug, last_seen_at DESC
   `)) as unknown as ErrorRow[];
 
+  const backoffs = (await tx.execute(sql`
+    SELECT DISTINCT ON (plugin_slug) plugin_slug, consumer_backoff
+    FROM plugin_runtime
+    WHERE plugin_slug = ANY(${slugArray})
+      AND consumer_backoff IS NOT NULL
+      AND heartbeat_at > now() - ${LIVE_WINDOW}::interval
+    ORDER BY plugin_slug, (consumer_backoff->>'consecutiveFailures')::int DESC NULLS LAST
+  `)) as unknown as { plugin_slug: string; consumer_backoff: unknown }[];
+
+  // Summed over the live servers; each row is that server's total since it started.
+  const costs = (await tx.execute(sql`
+    SELECT r.plugin_slug, c.key AS op,
+           sum((c.value->>'calls')::bigint)::float8 AS calls,
+           sum((c.value->>'totalMs')::bigint)::float8 AS total_ms,
+           max((c.value->>'maxMs')::bigint)::float8 AS max_ms,
+           min(r.op_cost_since) AS since
+    FROM plugin_runtime r, jsonb_each(r.op_cost) c
+    WHERE r.plugin_slug = ANY(${slugArray})
+      AND r.heartbeat_at > now() - ${LIVE_WINDOW}::interval
+    GROUP BY r.plugin_slug, c.key
+  `)) as unknown as {
+    plugin_slug: string;
+    op: string;
+    calls: number;
+    total_ms: number;
+    max_ms: number;
+    since: string | Date | null;
+  }[];
+
   const serversBySlug = new Map(servers.map((s) => [s.plugin_slug, s]));
+  const backoffBySlug = new Map(
+    backoffs.flatMap((b) => {
+      const parsed = consumerBackoff.safeParse(b.consumer_backoff);
+      return parsed.success ? [[b.plugin_slug, parsed.data] as const] : [];
+    }),
+  );
   const problemBySlug = new Map(problems.map((p) => [p.plugin_slug, p]));
   for (const p of plugins) {
     const s = serversBySlug.get(p.slug) ?? { loaded: 0, failing: 0 };
@@ -233,6 +337,8 @@ export async function readPluginHealth(
       awaitingRelease: state === "awaiting_approval" && p.releaseUnapproved,
       problem: state === "failing" && problem ? summary(problem) : null,
       recentErrors: recent.filter((r) => r.plugin_slug === p.slug).map(summary),
+      consumerBackoff: backoffBySlug.get(p.slug) ?? null,
+      callCost: costSummary(costs.filter((c) => c.plugin_slug === p.slug)),
     });
   }
   return out;

@@ -264,6 +264,42 @@ export function headOverlaySql(spec: {
               d.header_created_at DESC, d.row_created_at DESC, d.snapshot_row_id DESC`;
 }
 
+/** The snapshot reference tables of migration 0533, per draft-head kind. */
+const SNAPSHOT_REFS_TABLE = {
+  contentInstance: "content_instance_snapshot_refs",
+  pageLayout: "page_layout_snapshot_refs",
+} as const;
+
+/**
+ * The entities of `kind` whose pending state on `branchId` references any
+ * of `refs` (ids anywhere in the state, media slugs) — looked up in the
+ * snapshot reference tables of migration 0533 (the extraction of
+ * `content_instance_refs`), kept only when the snapshot row is a head row
+ * of the branch. A superset (another owner's newer state may not match):
+ * confirm on the newest state ({@link headOverlaySql}). Empty `refs` select nothing.
+ */
+export function pendingRefCandidatesSql(spec: {
+  readonly kind: keyof typeof SNAPSHOT_REFS_TABLE;
+  readonly branchId: string;
+  readonly ids?: readonly string[];
+  readonly mediaSlugs?: readonly string[];
+}): SQL {
+  const ids = [...new Set((spec.ids ?? []).map((id) => id.toLowerCase()))];
+  const slugs = [...new Set(spec.mediaSlugs ?? [])];
+  const terms: SQL[] = [];
+  if (ids.length > 0) terms.push(sql`(r.ref_kind = 'id' AND r.ref = ANY(${textArray(ids)}))`);
+  if (slugs.length > 0) {
+    terms.push(sql`(r.ref_kind = 'media_slug' AND r.ref = ANY(${textArray(slugs)}))`);
+  }
+  const anyRef = terms.length > 0 ? sql.join(terms, sql` OR `) : sql`false`;
+  return sql`
+    SELECT DISTINCT d.entity_id::text AS entity_id
+      FROM ${sql.raw(SNAPSHOT_REFS_TABLE[spec.kind])} r
+      JOIN draft_pending_entities d ON d.snapshot_row_id = r.snapshot_row_id
+     WHERE (${anyRef})
+       AND d.chat_branch_id = ${spec.branchId}::uuid AND d.entity_kind = ${spec.kind}`;
+}
+
 /** The fields of a chat a head read needs (a {@link ChatBinding} has them). */
 export interface HeadChat {
   readonly chatSessionId: string;

@@ -14,7 +14,18 @@ import type { FixtureRefs } from "./fixture.js";
 
 /** One measured call. */
 export interface RowsReadInput {
+  /**
+   * Names the call when one op is measured in more than one shape (the
+   * allowlists key on it); defaults to `op`.
+   */
+  readonly label?: string;
   readonly op: string;
+  /**
+   * Shipped plugins whose background paths (change consumer, cron, render
+   * hook) make exactly this call — the plugin core-call guard (#1390)
+   * holds them to this measurement.
+   */
+  readonly plugins?: readonly string[];
   readonly ctx: "system" | "chat";
   /**
    * The call's input. `tag` differs on every call, so a write changes
@@ -24,11 +35,21 @@ export interface RowsReadInput {
   readonly input: (refs: FixtureRefs, tag: string) => unknown;
 }
 
+/** The key an input is measured and allowlisted under. */
+export function inputKey(entry: RowsReadInput): string {
+  return entry.label ?? entry.op;
+}
+
 export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
   // Single-entity reads: the editor and the AI read these on every turn.
   { op: "pages.get", ctx: "chat", input: (r) => ({ pageId: r.pageId }) },
   { op: "pages.get_with_modules", ctx: "chat", input: (r) => ({ pageId: r.pageId }) },
-  { op: "pages_seo.get", ctx: "chat", input: (r) => ({ pageId: r.pageId }) },
+  {
+    op: "pages_seo.get",
+    ctx: "chat",
+    plugins: ["international-site"],
+    input: (r) => ({ pageId: r.pageId }),
+  },
   { op: "modules.get", ctx: "chat", input: (r) => ({ moduleId: r.moduleId }) },
   { op: "content_instances.get", ctx: "chat", input: (r) => ({ id: r.instanceId }) },
   // #1287 — international-site's translator reads every page through it;
@@ -64,6 +85,31 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
   { op: "pages.list", ctx: "chat", input: () => ({}) },
   { op: "modules.list", ctx: "chat", input: () => ({}) },
   { op: "content_instances.list", ctx: "chat", input: () => ({}) },
+  // The shapes plugins call in the background, after every write: the
+  // consent-manager's change consumer re-reads the instances of what a
+  // write touched (2026-11-03: these read the draft's whole pending
+  // history and passed the statement timeout on production).
+  {
+    label: "content_instances.list {ids}",
+    op: "content_instances.list",
+    ctx: "chat",
+    plugins: ["consent-manager"],
+    input: (r) => ({ ids: [r.instanceId] }),
+  },
+  {
+    label: "modules.list {moduleIds}",
+    op: "modules.list",
+    ctx: "chat",
+    plugins: ["consent-manager"],
+    input: (r) => ({ moduleIds: [r.write.moduleId] }),
+  },
+  {
+    label: "content_instances.list {moduleIds}",
+    op: "content_instances.list",
+    ctx: "chat",
+    plugins: ["consent-manager"],
+    input: (r) => ({ moduleIds: [r.write.moduleId] }),
+  },
   { op: "lists.list", ctx: "chat", input: () => ({}) },
   { op: "list_types.list", ctx: "chat", input: () => ({}) },
   { op: "page_types.list", ctx: "chat", input: () => ({}) },

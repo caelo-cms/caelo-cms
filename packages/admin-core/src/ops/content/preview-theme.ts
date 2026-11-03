@@ -15,7 +15,7 @@ import {
   themeFaviconRendition,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../../draft.js";
+import { headOverlaySql } from "../../draft.js";
 
 /**
  * v0.11.0 — load the currently-active themes row + apply chat-branch
@@ -77,15 +77,14 @@ export async function loadActiveThemeForCompose(
   // Branch overlay — most-recent theme_snapshots row for this branch
   // replaces live tokens.
   if (chatBranchId) {
-    const branchRows = (await tx.execute(sql`
-      SELECT state
-      FROM theme_snapshots ts
-      JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-      WHERE ts.theme_id = ${row.id}::uuid
-        AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-      ORDER BY ss.created_at DESC
-      LIMIT 1
-    `)) as unknown as Array<{ state: unknown }>;
+    const branchRows = (await tx.execute(
+      headOverlaySql({
+        kind: "theme",
+        table: "theme_snapshots",
+        branchId: chatBranchId,
+        ids: [row.id],
+      }),
+    )) as unknown as Array<{ state: unknown }>;
     const raw = branchRows[0]?.state;
     if (raw) {
       const parsed = raw as {

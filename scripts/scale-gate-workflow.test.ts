@@ -11,16 +11,31 @@
  * W4: no `run:` interpolates a `${{ … }}` expression (values come through
  *     `env:`), and the token can only read the repository.
  * W5: the load step fails the job on an SLO miss (pipefail through tee).
+ * W6 (#1390): Postgres runs under the db-f1-micro CPU share (0.2 vCPU)
+ *     before the admin starts, and the load samples its CPU, drives the
+ *     scheduler tick and waits for the plugins' change consumers.
+ * W7 (#1390): the fixture activates every plugin in packages/plugins/.
  */
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import * as yaml from "js-yaml";
 import {
+  addTick,
+  countPluginFailures,
+  cpuSampleBetween,
+  parseCpuMax,
+  parseCpuStat,
+  summariseCpu,
+} from "./scale-gate/observe.ts";
+import { SHIPPED_PLUGIN_SLUGS } from "./scale-gate/plugins.ts";
+import {
   countNewMatches,
+  notRunning,
   POOL_EXHAUSTED,
   percentile,
+  pluginsPass,
   readFirstPaint,
   summarise,
 } from "./scale-gate/run.ts";
@@ -79,6 +94,103 @@ describe("scale-gate.yml", () => {
     const load = job?.steps.find((s) => s.name === "Run the load")?.run ?? "";
     expect(load).toContain("set -o pipefail");
     expect(load).not.toContain("--baseline");
+  });
+
+  it("W6: Postgres gets the db-f1-micro CPU share before the admin starts", () => {
+    const steps = job?.steps ?? [];
+    const cap = steps.findIndex((s) =>
+      (s.run ?? "").includes("docker update --cpus=0.2 scale-gate-pg"),
+    );
+    const admin = steps.findIndex((s) => s.name === "Start the admin (1 vCPU, 2 GiB)");
+    expect(cap).toBeGreaterThan(-1);
+    expect(cap).toBeLessThan(admin);
+    expect(steps[cap]?.run).toContain('= "20000 100000"');
+    const load = steps.find((s) => s.name === "Run the load")?.run ?? "";
+    for (const flag of ["--pg-container scale-gate-pg", "--tick-every 60", "--settle-consumers"]) {
+      expect(load).toContain(flag);
+    }
+    // The load drives the tick; the admin's own dev clock would double it.
+    expect(steps[admin]?.run).toContain("CAELO_SCHEDULER_CLOCK=off");
+    expect(steps[admin]?.run).toContain("-e CAELO_INTERNAL_SECRET");
+  });
+
+  it("W7: the fixture activates every shipped plugin", () => {
+    const dirs = readdirSync(resolve(REPO_ROOT, "packages/plugins"), { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort();
+    expect([...SHIPPED_PLUGIN_SLUGS].sort()).toEqual(dirs);
+    const fixture = readFileSync(resolve(REPO_ROOT, "scripts/scale-gate/fixture.ts"), "utf8");
+    expect(fixture).toContain("testPlugins: SHIPPED_PLUGINS.map(");
+    // ratings requires consent-manager: dependencies first.
+    expect(SHIPPED_PLUGIN_SLUGS.indexOf("consent-manager")).toBeLessThan(
+      SHIPPED_PLUGIN_SLUGS.indexOf("ratings"),
+    );
+  });
+});
+
+describe("scale-gate observation (#1390)", () => {
+  it("reads a cgroup's CPU counters and quota", () => {
+    expect(
+      parseCpuStat(
+        "usage_usec 1500000\nuser_usec 1\nnr_periods 10\nnr_throttled 4\nthrottled_usec 900\n",
+      ),
+    ).toEqual({ usageUsec: 1_500_000, nrThrottled: 4, throttledUsec: 900 });
+    expect(() => parseCpuStat("nr_periods 1\n")).toThrow("usage_usec");
+    expect(parseCpuMax("20000 100000\n")).toBe(0.2);
+    expect(parseCpuMax("max 100000")).toBeNull();
+  });
+
+  it("turns two reads into CPUs used and throttled periods", () => {
+    const a = { usageUsec: 0, nrThrottled: 0, throttledUsec: 0, atMs: 0 };
+    const b = { usageUsec: 1_000_000, nrThrottled: 50, throttledUsec: 0, atMs: 5000 };
+    const s = cpuSampleBetween(a, b, 100_000);
+    expect(s.cpus).toBe(0.2);
+    expect(s.throttledPeriods).toBe(1);
+    const sum = summariseCpu("pg", 0.2, 5, [s, { atMs: 10_000, cpus: 0.05, throttledPeriods: 0 }]);
+    expect(sum.meanCpus).toBe(0.125);
+    expect(sum.p95Cpus).toBe(0.2);
+    expect(sum.saturatedSamplesPct).toBe(50);
+    expect(sum.meanThrottledPeriodsPct).toBe(50);
+  });
+
+  it("counts plugin failures per plugin from the admin log", () => {
+    const log = [
+      "[plugin-host] consent-manager operation failed (timeout) on local/1: statement timeout",
+      '[plugin-host] change consumer of "consent-manager" stopped: canceling statement',
+      "[plugin-host] international-site render failed (plugin) on local/1: x",
+      "[plugin-host] draining the change consumers failed",
+      "[plugin-host] could not record the forms operation failure: x",
+      "[hooks] plugin host: 7 loaded",
+    ].join("\n");
+    expect(countPluginFailures(log)).toEqual({
+      "consent-manager": 2,
+      "international-site": 1,
+      "(host)": 1,
+    });
+  });
+
+  it("fails on a failed worker run or tick, and finds plugins list_plugins does not run", () => {
+    const ticks = { ticks: 0, tickErrors: 0, workers: {}, coreFailures: [] as string[] };
+    addTick(ticks, [
+      { key: "plugin:ratings/refresh_aggregates", outcome: "ok", durationMs: 12, detail: null },
+      { key: "core:proposal-gc", outcome: "failed", durationMs: 1, detail: "x" },
+    ]);
+    expect(pluginsPass({}, ticks)).toBe(true);
+    expect(ticks.coreFailures).toHaveLength(1);
+    addTick(ticks, [
+      {
+        key: "plugin:ratings/refresh_aggregates",
+        outcome: "timed_out",
+        durationMs: 9,
+        detail: null,
+      },
+    ]);
+    expect(pluginsPass({}, ticks)).toBe(false);
+    expect(pluginsPass({ forms: 1 }, null)).toBe(false);
+    const listed =
+      "plugins[2]{slug,status,version,health,requires,required_by,problem}:\n  forms,active,1.0.0,running,,,\n  ratings,active,1.0.0,failing,consent-manager,,boom";
+    expect(notRunning(listed, ["forms", "ratings", "auth"])).toEqual(["ratings", "auth"]);
   });
 });
 

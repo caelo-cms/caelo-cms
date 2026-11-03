@@ -226,6 +226,17 @@ describe("get_plugin", () => {
         report: "none",
       },
       recentErrors: [],
+      consumerBackoff: {
+        consecutiveFailures: 4,
+        nextRetryAt: "2026-11-03T10:00:08.000Z",
+        lastError: "HandlerError: canceling statement due to statement timeout",
+      },
+      callCost: {
+        since: "2026-11-03T09:00:00.000Z",
+        calls: 12,
+        totalMs: 240_500,
+        ops: [{ op: "content_instances.list", calls: 4, totalMs: 240_000, maxMs: 60_000 }],
+      },
     },
   };
 
@@ -250,6 +261,13 @@ describe("get_plugin", () => {
     expect(r.content).toContain("health: failing (servers: 1 loaded, 1 failing)");
     expect(r.content).toContain("problem: [activate, plugin] 2x");
     expect(r.content).toContain("SMTP host refused");
+    // #1390 — the consumer's backoff and the broker call time.
+    expect(r.content).toContain(
+      "change consumer backing off: failed 4x in a row, retried at 2026-11-03T10:00:08.000Z",
+    );
+    expect(r.content).toContain(
+      "broker call time (core ops + own storage, incl. pool wait) since 2026-11-03T09:00:00.000Z: 12 calls, 240500 ms — content_instances.list 4x 240000 ms (max 60000 ms)",
+    );
     // Dependencies both ways, and what it asks visitors to consent to.
     expect(r.content).toContain("requires plugins: consent-manager");
     expect(r.content).toContain("required by (active): newsletter");
@@ -270,6 +288,8 @@ describe("get_plugin", () => {
             awaitingCapabilities: ["change_journal"],
             problem: null,
             recentErrors: [],
+            consumerBackoff: null,
+            callCost: { since: null, calls: 0, totalMs: 0, ops: [] },
           },
         },
       }),
@@ -287,6 +307,8 @@ describe("get_plugin", () => {
     expect(r.content).toContain("Owner has not approved (change_journal)");
     expect(r.content).toContain("/settings/plugins");
     expect(r.content).toContain("reload_plugin cannot approve");
+    expect(r.content).toContain("broker call time: none recorded");
+    expect(r.content).not.toContain("backing off");
   });
 
   it("names list_plugins when the slug is unknown", async () => {

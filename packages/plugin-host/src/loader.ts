@@ -76,6 +76,7 @@ import { describeLoadError } from "./load-error.js";
 import { loadReported, reportLoadFailure } from "./load-outcome.js";
 import { resetLocalLoadOutcomes } from "./local-availability.js";
 import { inactiveRequiredPlugins, requirementsMessage } from "./plugin-dependencies.js";
+import { resetPluginRuntimeStats } from "./plugin-runtime-stats.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { provisionPluginPublicSchemas } from "./public-schemas.js";
 import {
@@ -1552,6 +1553,7 @@ export function resetPluginHost(): void {
   resetDisabledSet();
   resetLocalLoadOutcomes();
   stopRuntimeHeartbeat();
+  resetPluginRuntimeStats();
 }
 
 // Silence the "execute is unused" warning when only used in capabilities.

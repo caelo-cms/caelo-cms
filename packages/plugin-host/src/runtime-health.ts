@@ -26,10 +26,11 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { execute } from "@caelo-cms/query-api";
+import { execute, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import type { PluginHostInfra } from "./dispatch.js";
 import { describeLoadError } from "./load-error.js";
+import { pluginRuntimeStats } from "./plugin-runtime-stats.js";
 
 /** Where in a plugin's life a problem happened. */
 export type PluginPhase =
@@ -609,6 +610,32 @@ export function stopRuntimeHeartbeat(): void {
   unsavedOutcomes.clear();
 }
 
+/**
+ * #1390 — the in-process cost and backoff aggregate (plugin-runtime-stats.ts)
+ * rides the heartbeat: one statement for every plugin, no write per call.
+ * Only rows this instance already has are updated; a plugin that is not
+ * loaded here has no row and nothing to report.
+ */
+async function writeRuntimeStats(tx: TransactionRunner): Promise<void> {
+  const stats = pluginRuntimeStats();
+  if (stats.length === 0) return;
+  const rows = JSON.stringify(
+    stats.map((s) => ({
+      slug: s.slug,
+      op_cost: s.opCost,
+      op_cost_since: s.opCostSince,
+      consumer_backoff: s.consumerBackoff,
+    })),
+  );
+  await tx.execute(sql`
+    UPDATE plugin_runtime r
+    SET op_cost = v.op_cost, op_cost_since = v.op_cost_since, consumer_backoff = v.consumer_backoff
+    FROM jsonb_to_recordset((${rows}::text)::jsonb)
+      AS v(slug text, op_cost jsonb, op_cost_since timestamptz, consumer_backoff jsonb)
+    WHERE r.instance_id = ${INSTANCE_ID} AND r.plugin_slug = v.slug
+  `);
+}
+
 /** One heartbeat; exported so tests need not wait {@link HEARTBEAT_MS}. */
 export async function runtimeHeartbeatOnce(
   infra: PluginHostInfra,
@@ -624,6 +651,7 @@ export async function runtimeHeartbeatOnce(
         await tx.execute(sql`
           UPDATE plugin_runtime SET heartbeat_at = now() WHERE instance_id = ${INSTANCE_ID}
         `);
+        await writeRuntimeStats(tx);
         await tx.execute(sql`
           DELETE FROM plugin_runtime
           WHERE heartbeat_at < now() - ${STALE_ROW_RETENTION}::interval

@@ -87,6 +87,49 @@ async function asSystem<T>(url: string, fn: (tx: SQL) => Promise<T>): Promise<T>
   }
 }
 
+/** The snapshot tables the fixture bulk-loads (journal trigger off while it does). */
+const HISTORY_TABLES = [
+  "site_snapshots",
+  "page_snapshots",
+  "content_instance_snapshots",
+  "page_layout_snapshots",
+  "plugin_row_snapshots",
+] as const;
+
+/**
+ * A pending page change on the draft rewrites the page's content too, as
+ * an agent's edit does: every pending header gets a content-instance
+ * snapshot of the page's own instance (with a body the size of a real
+ * article, so a read that sorts states pays for them) and a page-layout
+ * snapshot placing it. Headers that have them already are skipped.
+ */
+async function pendingContentHistory(tx: SQL, moduleId: string): Promise<void> {
+  await tx.unsafe(`
+    WITH hp AS (
+      SELECT ss.id AS header, ps.page_id, pm.content_instance_id AS ci
+        FROM site_snapshots ss
+        JOIN page_snapshots ps ON ps.site_snapshot_id = ss.id
+        JOIN page_modules pm ON pm.page_id = ps.page_id
+       WHERE ss.description LIKE '${RR_PREFIX}pending%'
+         AND NOT EXISTS (SELECT 1 FROM content_instance_snapshots c WHERE c.site_snapshot_id = ss.id)),
+    c AS (
+      INSERT INTO content_instance_snapshots (site_snapshot_id, content_instance_id, state)
+      SELECT header, ci,
+             jsonb_build_object('schemaVersion', 1, 'moduleId', '${moduleId}', 'slug', null,
+                                'displayName', null, 'version', 2, 'deletedAt', null,
+                                'values', jsonb_build_object('heading', 'Rewritten ' || header::text,
+                                                             'body', repeat('<p>Body text.</p>', 120)))
+        FROM hp
+      RETURNING 1)
+    INSERT INTO page_layout_snapshots (site_snapshot_id, page_id, state)
+    SELECT header, page_id,
+           jsonb_build_object('schemaVersion', 1, 'blocks', jsonb_build_array(jsonb_build_object(
+             'blockName', 'content', 'moduleIds', jsonb_build_array('${moduleId}'),
+             'placements', jsonb_build_array(jsonb_build_object(
+               'moduleId', '${moduleId}', 'contentInstanceId', ci::text, 'syncMode', 'unsynced')))))
+      FROM hp`);
+}
+
 async function count(url: string, query: string): Promise<number> {
   const rows = await asSystem(url, (tx) => tx.unsafe(query) as Promise<{ n: number }[]>);
   return rows[0]?.n ?? 0;
@@ -269,11 +312,12 @@ export async function growFixture(
     // at the ALTER TABLE below ("pending trigger events"). Firing it per
     // statement in this transaction keeps it running, just not deferred.
     await tx.unsafe("SET CONSTRAINTS ALL IMMEDIATE");
-    for (const t of ["site_snapshots", "page_snapshots", "plugin_row_snapshots"]) {
+    for (const t of HISTORY_TABLES) {
       await tx.unsafe(`ALTER TABLE ${t} DISABLE TRIGGER caelo_journal_insert`);
     }
     await snapshotsOf("staged", size.staged);
     await snapshotsOf("pending", size.pending);
+    await pendingContentHistory(tx, moduleId);
     // Plugin row snapshots of a plugin that is not installed: history any
     // per-plugin read must not scan.
     const rowsNow =
@@ -297,7 +341,7 @@ export async function growFixture(
         SELECT h.id, '00000000-0000-4000-8000-000000001267', 'plugin_rr', 'rr_rows', gen_random_uuid(), '{}'::jsonb
           FROM h, generate_series(${rowsNow + 1}, ${size.pluginRows})`);
     }
-    for (const t of ["site_snapshots", "page_snapshots", "plugin_row_snapshots"]) {
+    for (const t of HISTORY_TABLES) {
       await tx.unsafe(`ALTER TABLE ${t} ENABLE TRIGGER caelo_journal_insert`);
     }
   });
@@ -309,6 +353,8 @@ export async function growFixture(
       "content_instances",
       "site_snapshots",
       "page_snapshots",
+      "content_instance_snapshots",
+      "page_layout_snapshots",
       "lists",
       "media_assets",
       "plugin_row_snapshots",

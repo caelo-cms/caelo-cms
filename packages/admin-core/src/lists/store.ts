@@ -15,7 +15,7 @@
  *     the live row and snapshots it, so it is revertable.
  *
  * A read in a chat is the live rows the branch can see, each superseded by
- * the branch's newest PENDING snapshot of it (`pendingSnapshotSql`, the
+ * the branch's newest PENDING snapshot of it (the draft head, the
  * boundary every overlay read uses). Every read goes through
  * {@link loadListEntities}, so no read inside a chat sees the live row
  * where the chat has changed it (the bug class of the predecessor of
@@ -25,7 +25,7 @@
 import { type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
 import type { ListItem, ListTypeDef, PageTypeDef } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../draft.js";
+import { headOverlaySql } from "../draft.js";
 import type { SnapshotEntity } from "../snapshots/emit.js";
 import type { ListState, ListTypeState, PageTypeState } from "../snapshots/state.js";
 import {
@@ -188,18 +188,18 @@ export async function loadListEntities<K extends ListEntityKind>(
 
   const overlay = new Map<string, { state: StateOf<K>; at: string }>();
   if (branchId) {
-    const snap = (await tx.execute(sql`
-      SELECT DISTINCT ON (es.${sql.raw(spec.idColumn)})
-             es.${sql.raw(spec.idColumn)}::text AS id, es.state,
-             to_char(ss.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS at
-        FROM ${sql.raw(spec.snapshotTable)} es
-        JOIN site_snapshots ss ON ss.id = es.site_snapshot_id
-       WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-         AND es.${sql.raw(spec.idColumn)} = ANY(${uuidArray(rows.map((r) => r.id))})
-       ORDER BY es.${sql.raw(spec.idColumn)}, ss.created_at DESC
-    `)) as unknown as { id: string; state: unknown; at: string }[];
+    const snap = (await tx.execute(
+      headOverlaySql({
+        kind,
+        table: spec.snapshotTable,
+        branchId,
+        ids: rows.map((r) => r.id),
+        columns: sql`es.state,
+          to_char(d.header_created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS at`,
+      }),
+    )) as unknown as { entity_id: string; state: unknown; at: string }[];
     for (const s of snap) {
-      overlay.set(s.id, { state: parseState(kind, s.state), at: s.at });
+      overlay.set(s.entity_id, { state: parseState(kind, s.state), at: s.at });
     }
   }
 
