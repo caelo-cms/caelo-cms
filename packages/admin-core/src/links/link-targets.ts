@@ -88,6 +88,18 @@ export async function loadLinkTargets(
   tx: TransactionRunner,
   chatBranchId: string | null,
 ): Promise<LinkTargets> {
+  const pages = await loadLinkTargetPages(tx, chatBranchId);
+  const media = (await tx.execute(sql`
+    SELECT id::text AS id, slug FROM media_assets WHERE deleted_at IS NULL
+  `)) as unknown as LinkIndexMedia[];
+  return { pages, media };
+}
+
+/** The page half of {@link loadLinkTargets}: every page the scope can link to. */
+async function loadLinkTargetPages(
+  tx: TransactionRunner,
+  chatBranchId: string | null,
+): Promise<LinkTargetPage[]> {
   const pageRows = await loadPageRows(tx, chatBranchId);
   let driftPaths: ReadonlyMap<string, string> = new Map();
   if (chatBranchId && pageRows.pending.size > 0) {
@@ -98,10 +110,7 @@ export async function loadLinkTargets(
     const drifted = driftIdsBetween(tree, pageTreeOf(live, new Map()));
     if (drifted.length > 0) driftPaths = await composePaths(tx, tree, drifted, { chatBranchId });
   }
-  const media = (await tx.execute(sql`
-    SELECT id::text AS id, slug FROM media_assets WHERE deleted_at IS NULL
-  `)) as unknown as LinkIndexMedia[];
-  return { pages: linkTargetPagesOf(pageRows, driftPaths), media };
+  return linkTargetPagesOf(pageRows, driftPaths);
 }
 
 /**
@@ -134,10 +143,12 @@ export async function loadHumaniseLookup(
   if (pageIds.length > 0) {
     if (chatBranchId && (await chainHasPendingMove(tx, chatBranchId, pageIds))) {
       // A pending rename or move above a named page changes its path:
-      // compose it the one way every branch view does.
-      const targets = await loadLinkTargets(tx, chatBranchId);
+      // compose it the one way every branch view does (pages only — the
+      // media stay limited to the ids the result names).
       const wanted = new Set(pageIds);
-      for (const p of targets.pages) if (wanted.has(p.id)) paths.set(p.id, p.path);
+      for (const p of await loadLinkTargetPages(tx, chatBranchId)) {
+        if (wanted.has(p.id)) paths.set(p.id, p.path);
+      }
     } else {
       const visible = chatBranchId
         ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${chatBranchId}::uuid)`

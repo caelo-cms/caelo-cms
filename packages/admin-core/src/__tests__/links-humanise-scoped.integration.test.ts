@@ -13,7 +13,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { SQL } from "bun";
 import { humaniseForRead } from "../links/humanise.js";
 import { loadLinkTargets } from "../links/link-targets.js";
 import { registerAdminOps } from "../register.js";
