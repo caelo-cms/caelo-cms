@@ -36,7 +36,7 @@
   "devDependencies": {
     "@anthropic-ai/sdk": "1.3.0",
     "@biomejs/biome": "2.6.4",
-    "@playwright/mcp": "0.0.83",
+    "@playwright/mcp": "0.0.84",
     "@types/bun": "1.4.4",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
