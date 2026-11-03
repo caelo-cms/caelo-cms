@@ -305,9 +305,12 @@ jobs:
           POSTGRES_DB: postgres
           ADMIN_ROLE_PASSWORD: caelo_admin_ci
           PUBLIC_ROLE_PASSWORD: caelo_public_ci
+          PUBLIC_STAGING_ROLE_PASSWORD: caelo_public_staging_ci
           ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_admin
           PUBLIC_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_public
           PUBLIC_DATABASE_URL: postgres://public_role:caelo_public_ci@localhost:5432/cms_public
+          PUBLIC_STAGING_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_public_staging
+          PUBLIC_STAGING_DATABASE_URL: postgres://public_staging_role:caelo_public_staging_ci@localhost:5432/cms_public_staging
         run: |
           set -euo pipefail
           # 1. Plugins: every shipped plugin verifies and the Deno sandbox
@@ -343,7 +346,7 @@ jobs:
           packages/migrations/src/bootstrap.sh
           bun run db:migrate
           docker run -d --name gw-smoke --network gw-smoke -p 8090:8080 \
-            -e PORT=8080 -e CAELO_TRUSTED_PROXY_HOPS=0 \
+            -e PORT=8080 -e CAELO_TRUSTED_PROXY_HOPS=0 -e CAELO_GATEWAY_ENVIRONMENT=live \
             -v "${TLS_DIR}/postgres-tls/ca.crt:/etc/caelo/smoke-db-ca.crt:ro" \
             -e "PUBLIC_DATABASE_URL=postgres://public_role:caelo_public_ci@postgres:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/smoke-db-ca.crt" \
             "${IMAGE}"

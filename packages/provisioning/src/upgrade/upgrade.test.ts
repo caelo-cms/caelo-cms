@@ -748,8 +748,31 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(indexOf(events, /^gcloud sql backups create/)).toBeLessThan(revoke);
     expect(revoke).toBeLessThan(indexOf(events, /^migrate /));
     expect(lines).toContain(
-      "done: public_role holds no database roles (no database roles left on caelo-production-pg-abc)",
+      "done: The gateway logins hold no database roles (public_role and public_staging_role hold no database roles on caelo-production-pg-abc)",
     );
+  });
+
+  it("creates the staging database and its login before the revoke and the migrations (#1329)", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const created = indexOf(events, /^gcloud sql databases (list|create)/);
+    const revoke = indexOf(events, /^gcloud sql users assign-roles public_staging_role/);
+    expect(created).toBeGreaterThan(-1);
+    expect(created).toBeLessThan(revoke);
+    expect(revoke).toBeLessThan(indexOf(events, /^migrate /));
+    expect(lines).toContain("done: Staging database and its gateway login ready");
+  });
+
+  it("a staging database that cannot be created stops the upgrade before migrations and any roll (#1329)", async () => {
+    const events: string[] = [];
+    const { deps, calls, lines } = upgradeDeps(events, {
+      overrides: [[/^sql databases list/, fail("PERMISSION_DENIED: no")]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(false);
+    expect(events.some((e) => e.startsWith("migrate"))).toBe(false);
+    expect(calls.filter((c) => APP_ROLL_WRITE.test(c))).toEqual([]);
+    expect(lines).toContain("failed: The staging database could not be set up. Aborting upgrade.");
   });
 
   it("a refused public_role revoke stops the upgrade before migrations and any roll (#633)", async () => {
@@ -761,7 +784,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(events.some((e) => e.startsWith("migrate"))).toBe(false);
     expect(calls.filter((c) => APP_ROLL_WRITE.test(c))).toEqual([]);
     expect(lines).toContain(
-      "failed: public_role's role memberships could not be revoked. Aborting upgrade.",
+      "failed: The gateway logins' role memberships could not be revoked. Aborting upgrade.",
     );
   });
 

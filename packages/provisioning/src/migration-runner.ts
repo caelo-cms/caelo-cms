@@ -24,6 +24,7 @@ import { green, red } from "kleur/colors";
 import { gcloud as defaultGcloud } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import { GCP_STACK_ENV, gcpSecretId, runServiceAccountEmail } from "./gcp-names.js";
+import { MIGRATION_TARGETS } from "./migration-targets.js";
 import { databaseUrls, SERVICE_SECRET_ENV } from "./stack-contract.js";
 import { liveContainerEnv, liveDatabaseHost } from "./stack-converge.js";
 
@@ -58,15 +59,19 @@ const NEEDS_UPGRADE =
  */
 export function migrationJobEnvArgs(databaseHost: string, env = GCP_STACK_ENV): string[] {
   const urls = databaseUrls(databaseHost);
-  const passwords = (["ADMIN_DATABASE_PASSWORD", "PUBLIC_ADMIN_DATABASE_PASSWORD"] as const).map(
-    (name) => {
-      const secret = SERVICE_SECRET_ENV.admin[name];
-      if (!secret) throw new Error(`the admin env contract has no ${name}`);
-      return `${name}=${gcpSecretId(env, secret)}:latest`;
-    },
-  );
+  const passwords = (
+    [
+      "ADMIN_DATABASE_PASSWORD",
+      "PUBLIC_ADMIN_DATABASE_PASSWORD",
+      "PUBLIC_STAGING_ADMIN_DATABASE_PASSWORD",
+    ] as const
+  ).map((name) => {
+    const secret = SERVICE_SECRET_ENV.admin[name];
+    if (!secret) throw new Error(`the admin env contract has no ${name}`);
+    return `${name}=${gcpSecretId(env, secret)}:latest`;
+  });
   return [
-    `--set-env-vars=ADMIN_DATABASE_URL=${urls.admin},PUBLIC_ADMIN_DATABASE_URL=${urls.publicAdmin}`,
+    `--set-env-vars=ADMIN_DATABASE_URL=${urls.admin},PUBLIC_ADMIN_DATABASE_URL=${urls.publicAdmin},PUBLIC_STAGING_ADMIN_DATABASE_URL=${urls.publicStagingAdmin}`,
     `--set-secrets=${passwords.join(",")}`,
   ];
 }
@@ -300,7 +305,7 @@ export async function runMigrationsViaCloudRunJob(
     sAdmin.stop(green(`Admin config resolved (${migrationImage.slice(-19)})`));
   }
 
-  for (const target of ["admin", "public"] as const) {
+  for (const target of MIGRATION_TARGETS) {
     const s = spinner();
     s.start(`Applying ${target} migrations via one-shot Cloud Run Job...`);
     // Delete-then-create so each invocation runs with the freshest

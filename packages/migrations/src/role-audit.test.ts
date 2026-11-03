@@ -8,7 +8,9 @@ import {
   assertRoleIsolation,
   type CrossDatabaseGrantRow,
   evaluateRoleAudit,
+  PUBLIC_CONNECT_SQL,
   PUBLIC_ROLE_LIMITS,
+  publicConnectViolations,
   ROLE_AUDIT_NEXT_STEP,
   ROLE_AUDIT_SQL,
   type RoleAuditRow,
@@ -31,8 +33,18 @@ const clean = (rolname: string, kind: AuditedRole["kind"]): AuditedRole => ({
   rolreplication: false,
   memberOf: [],
   canConnectHere: false,
-  // #1338 — public_role as bootstrap.sh / migration 0500 leave it.
-  ...(rolname === "public_role" ? PUBLIC_ROLE_SET : { connectionLimit: -1, settings: [] }),
+  // #1329 — each gateway login reaches its own public database.
+  publicDatabases:
+    rolname === "public_role"
+      ? ["cms_public"]
+      : rolname === "public_staging_role"
+        ? ["cms_public_staging"]
+        : [],
+  // #1338 — public_role as bootstrap.sh / migration 0500 leave it (#1329:
+  // public_staging_role as bootstrap.sh / migration 0530 leave it).
+  ...(rolname === "public_role" || rolname === "public_staging_role"
+    ? PUBLIC_ROLE_SET
+    : { connectionLimit: -1, settings: [] }),
 });
 
 /** public_role exactly as the Cloud SQL Admin API leaves it (#633). */
@@ -48,6 +60,7 @@ describe("evaluateRoleAudit (#633)", () => {
   it("passes the roles as bootstrap.sh and the migrations create them", () => {
     const r = evaluateRoleAudit([
       clean("public_role", "gateway-login"),
+      clean("public_staging_role", "gateway-login"),
       // #635 — a former gateway_role the migration role could not drop.
       clean("gateway_role", "gateway-login"),
       { ...clean("operator_access_reader", "job-role"), canConnectHere: true },
@@ -124,6 +137,72 @@ describe("evaluateRoleAudit (#633)", () => {
   });
 });
 
+describe("the staging gateway's login (#1329)", () => {
+  it("refuses either gateway login on the other environment's database", () => {
+    const r = evaluateRoleAudit([
+      {
+        ...clean("public_role", "gateway-login"),
+        publicDatabases: ["cms_public", "cms_public_staging"],
+      },
+      {
+        ...clean("public_staging_role", "gateway-login"),
+        publicDatabases: ["cms_public", "cms_public_staging"],
+      },
+      { ...clean("gateway_role", "gateway-login"), publicDatabases: ["cms_public_staging"] },
+    ]);
+    expect(r.violations).toEqual([
+      "public_role can connect to cms_public_staging",
+      "public_staging_role can connect to cms_public",
+      "gateway_role can connect to cms_public_staging",
+    ]);
+  });
+
+  it("refuses the staging login in a group, on cms_admin, or without its limits", () => {
+    const r = evaluateRoleAudit([
+      {
+        ...clean("public_staging_role", "gateway-login"),
+        memberOf: ["cloudsqlsuperuser"],
+        canConnectHere: true,
+        connectionLimit: -1,
+      },
+    ]);
+    expect(r.violations.map((v) => v.split(" (")[0])).toEqual([
+      "public_staging_role is a member of cloudsqlsuperuser",
+      "public_staging_role can connect to cms_admin",
+      "public_staging_role has CONNECTION LIMIT -1",
+    ]);
+  });
+
+  it("asks which public databases each login may open, and whether PUBLIC may", () => {
+    expect(ROLE_AUDIT_SQL).toContain("'public_staging_role'");
+    expect(ROLE_AUDIT_SQL).toContain("d.datname IN ('cms_public', 'cms_public_staging')");
+    expect(PUBLIC_CONNECT_SQL).toContain(
+      "d.datname IN ('cms_admin', 'cms_public', 'cms_public_staging')",
+    );
+    expect(PUBLIC_CONNECT_SQL).toContain("has_database_privilege('public', d.oid, 'CONNECT')");
+    expect(publicConnectViolations([{ datname: "cms_public_staging" }])[0]).toStartWith(
+      "PUBLIC may connect to cms_public_staging",
+    );
+  });
+
+  it("bootstrap.sh and migration 0530 set the staging login's limits", async () => {
+    const root = new URL("../", import.meta.url);
+    const texts = await Promise.all(
+      ["src/bootstrap.sh", "migrations/cms_admin/0530_public_staging_database.sql"].map((p) =>
+        Bun.file(new URL(p, root)).text(),
+      ),
+    );
+    for (const text of texts) {
+      expect(text).toContain(
+        `ALTER ROLE public_staging_role CONNECTION LIMIT ${PUBLIC_ROLE_LIMITS.connectionLimit};`,
+      );
+      for (const [k, v] of Object.entries(PUBLIC_ROLE_LIMITS.settings)) {
+        expect(text).toContain(`ALTER ROLE public_staging_role SET ${k} = '${v}';`);
+      }
+    }
+  });
+});
+
 describe("public_role database limits (#1338)", () => {
   it("refuses public_role without its connection limit and settings", () => {
     const r = evaluateRoleAudit([
@@ -193,6 +272,7 @@ describe("toAuditedRole", () => {
     rolreplication: false,
     member_of: null,
     can_connect_here: false,
+    public_databases: ["cms_public"],
     connection_limit: PUBLIC_ROLE_SET.connectionLimit,
     settings: PUBLIC_ROLE_SET.settings,
   };
@@ -225,8 +305,13 @@ describe("ROLE_AUDIT_SQL", () => {
 });
 
 describe("assertRoleIsolation", () => {
-  const rows = (r: RoleAuditRow[], grants: CrossDatabaseGrantRow[] = []) => ({
-    unsafe: async (q: string) => (q === ROLE_AUDIT_SQL ? r : grants),
+  const rows = (
+    r: RoleAuditRow[],
+    grants: CrossDatabaseGrantRow[] = [],
+    openDatabases: { datname: string }[] = [],
+  ) => ({
+    unsafe: async (q: string) =>
+      q === ROLE_AUDIT_SQL ? r : q === PUBLIC_CONNECT_SQL ? openDatabases : grants,
   });
   const asRow = (a: AuditedRole): RoleAuditRow => ({
     rolname: a.rolname,
@@ -238,6 +323,7 @@ describe("assertRoleIsolation", () => {
     rolreplication: a.rolreplication,
     member_of: [...a.memberOf],
     can_connect_here: a.canConnectHere,
+    public_databases: [...a.publicDatabases],
     connection_limit: a.connectionLimit,
     settings: [...a.settings],
   });
@@ -253,6 +339,11 @@ describe("assertRoleIsolation", () => {
     await expect(run).rejects.toThrow(
       "public_role holds a privilege on cms_admin table pages (the public side must reach no authoring object)",
     );
+  });
+
+  it("fails while PUBLIC may connect to a public database (#1329)", async () => {
+    const run = assertRoleIsolation(rows([], [], [{ datname: "cms_public_staging" }]));
+    await expect(run).rejects.toThrow("PUBLIC may connect to cms_public_staging");
   });
 
   it("returns warnings when nothing breaches isolation", async () => {

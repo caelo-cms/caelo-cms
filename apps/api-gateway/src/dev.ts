@@ -16,21 +16,26 @@
 
 import { resolve } from "node:path";
 import { TRUSTED_PROXY_HOPS_ENV } from "./client-ip.js";
-import { adminDatabaseAccessInEnv } from "./database-env.js";
+import { adminDatabaseAccessInEnv, GATEWAY_ENVIRONMENT_ENV } from "./database-env.js";
 
 /**
  * `env` without anything the gateway's guard refuses (every cms_admin
- * credential, by name or by value) and without unset entries, for the
- * gateway's process.
+ * credential and every way to the staging data, by name or by value) and
+ * without unset entries, plus the environment it serves: the live one, as
+ * the root `.env`'s PUBLIC_DATABASE_URL (public_role on cms_public) is the
+ * live gateway's login (#1329).
  */
 export function gatewayDevEnv(
   env: Readonly<Record<string, string | undefined>>,
 ): Record<string, string> {
-  const drop = new Set(adminDatabaseAccessInEnv(env).map((l) => l.slice(0, l.indexOf(":"))));
+  const drop = new Set(
+    adminDatabaseAccessInEnv(env, "live").map((l) => l.slice(0, l.indexOf(":"))),
+  );
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
     if (value !== undefined && !drop.has(name)) out[name] = value;
   }
+  out[GATEWAY_ENVIRONMENT_ENV] = "live";
   return out;
 }
 

@@ -65,6 +65,50 @@ async function applyOutsideTransaction(
   }
 }
 
+/**
+ * Issue #1329 — the role the cms_public migrations name for the gateway's
+ * visitor-facing login. The staging database `cms_public_staging` is the
+ * same schema with its own login (`public_staging_role`), so its run takes
+ * the same files with that one name swapped ({@link retargetVisitorRole}).
+ */
+export const LIVE_VISITOR_ROLE = "public_role";
+
+/** The staging gateway's login in `cms_public_staging` (#1329). */
+export const STAGING_VISITOR_ROLE = "public_staging_role";
+
+const LIVE_VISITOR_ROLE_TOKEN = /(?<![A-Za-z0-9_$])public_role(?![A-Za-z0-9_$])/g;
+
+/**
+ * A cms_public migration with every whole-word `public_role` replaced by
+ * `role`: its GRANTs, its `TO public_role` policies and its role checks
+ * then target the staging gateway's login. One set of files, so the two
+ * public databases cannot drift apart; whole words only, so a longer
+ * identifier that merely contains the name stays as it is. The role audit
+ * proves the outcome: in cms_public_staging nothing is granted to
+ * public_role, in cms_public nothing to public_staging_role
+ * (role-audit.ts `assertPublicDatabaseOwnsItsRole`).
+ *
+ * @example retargetVisitorRole("GRANT SELECT ON t TO public_role;", "public_staging_role")
+ *   // → "GRANT SELECT ON t TO public_staging_role;"
+ */
+export function retargetVisitorRole(body: string, role: string): string {
+  if (role === LIVE_VISITOR_ROLE) return body;
+  if (!/^[a-z_][a-z0-9_]*$/.test(role)) {
+    throw new Error(`retargetVisitorRole: "${role}" is not a role name`);
+  }
+  return body.replace(LIVE_VISITOR_ROLE_TOKEN, role);
+}
+
+/** Options of {@link runMigrations}. */
+export interface RunMigrationsOptions {
+  /**
+   * The visitor role this database's migrations grant to; `public_role`
+   * unless given. The cms_public_staging run passes
+   * {@link STAGING_VISITOR_ROLE}.
+   */
+  readonly visitorRole?: string;
+}
+
 /** The file name a migration is recorded under. */
 function migrationName(file: string): string {
   return file.split("/").at(-1) ?? file;
@@ -75,7 +119,12 @@ function migrationName(file: string): string {
  * before applying anything when the release ordering is violated
  * ({@link runOrderViolations}).
  */
-export async function runMigrations(sql: SQL, dir: string): Promise<string[]> {
+export async function runMigrations(
+  sql: SQL,
+  dir: string,
+  options: RunMigrationsOptions = {},
+): Promise<string[]> {
+  const visitorRole = options.visitorRole ?? LIVE_VISITOR_ROLE;
   const { Glob } = await import("bun");
   const glob = new Glob("*.sql");
   const files = (await Array.fromAsync(glob.scan({ cwd: dir, absolute: true }))).sort();
@@ -105,7 +154,7 @@ export async function runMigrations(sql: SQL, dir: string): Promise<string[]> {
   for (const file of files) {
     const name = migrationName(file);
     if (appliedBefore.has(name)) continue;
-    pending.push({ name, body: await readFile(file, "utf8") });
+    pending.push({ name, body: retargetVisitorRole(await readFile(file, "utf8"), visitorRole) });
   }
   const violations = runOrderViolations({
     pending,

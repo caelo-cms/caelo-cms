@@ -26,6 +26,7 @@ const required = [
   "POSTGRES_PORT",
   "ADMIN_ROLE_PASSWORD",
   "PUBLIC_ROLE_PASSWORD",
+  "PUBLIC_STAGING_ROLE_PASSWORD",
   "ADMIN_DATABASE_URL",
   "PUBLIC_DATABASE_URL",
 ] as const;
@@ -63,6 +64,7 @@ const psql: SuperuserPsql = async (script) => {
 const passwords = {
   admin: env.ADMIN_ROLE_PASSWORD as string,
   public: env.PUBLIC_ROLE_PASSWORD as string,
+  publicStaging: env.PUBLIC_STAGING_ROLE_PASSWORD as string,
 };
 
 describe("self-hosted role convergence against Postgres (#613 review, #635)", () => {

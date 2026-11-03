@@ -158,6 +158,22 @@ export const LIVE_PUBLIC_GRANT_TARGET: PublicGrantTarget = Object.freeze({
 });
 
 /**
+ * #1329 — the staging site's twin of cms_public: the staging gateway runs
+ * as `public_staging_role`, which reaches nothing of the live database.
+ */
+export const STAGING_PUBLIC_GRANT_TARGET: PublicGrantTarget = Object.freeze({
+  database: "cms_public_staging",
+  visitorRole: "public_staging_role",
+  adminRole: "admin_role",
+});
+
+/** Every public database a plugin's tables are provisioned in, live first (#1329). */
+export const PUBLIC_GRANT_TARGETS: readonly PublicGrantTarget[] = Object.freeze([
+  LIVE_PUBLIC_GRANT_TARGET,
+  STAGING_PUBLIC_GRANT_TARGET,
+]);
+
+/**
  * #1332 (E10) — what the visitor role may do with a table of each kind.
  * Enforced by Postgres, because the boundary assumes the gateway is
  * compromised (docs/dev/public-admin-boundary.md): a host check alone
@@ -455,7 +471,7 @@ function emitColumnDef(name: string, spec: string): string {
 }
 
 /** The database a plugin schema's DDL runs in. */
-export type PluginSchemaDatabase = "cms_admin" | "cms_public";
+export type PluginSchemaDatabase = "cms_admin" | "cms_public" | "cms_public_staging";
 
 /**
  * The revocation half of {@link publicTableGrants}, held to the same role
@@ -476,11 +492,15 @@ function revokeStatement(database: PluginSchemaDatabase, object: string, role: s
  * admin runs this DDL at every boot, so this is the runtime twin of the
  * migration grant lint: cms_admin grants go to admin_role (the public side
  * has no path to cms_admin, CLAUDE.md §2); cms_public grants go to
- * public_role (the gateway and the Tier 2 sandbox) and admin_role.
+ * public_role (the gateway and the Tier 2 sandbox) and admin_role; and
+ * (#1329) cms_public_staging grants go to the staging gateway's
+ * public_staging_role and admin_role — never one gateway's login in the
+ * other's database.
  */
 export const PLUGIN_SCHEMA_GRANTEES: Readonly<Record<PluginSchemaDatabase, ReadonlySet<string>>> = {
   cms_admin: new Set(["admin_role"]),
   cms_public: new Set(["public_role", "admin_role"]),
+  cms_public_staging: new Set(["public_staging_role", "admin_role"]),
 };
 
 /**

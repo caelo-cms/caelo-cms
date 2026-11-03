@@ -115,7 +115,7 @@ describe("ensureGeneratedSecrets", () => {
       { ...secretsInstall, replication: regional },
       { run },
     );
-    expect(outcomes.map((o) => o.status)).toEqual(Array(6).fill("present"));
+    expect(outcomes.map((o) => o.status)).toEqual(Array(7).fill("present"));
     expect(lines().some((l) => l.includes(" create ") || l.includes(" add "))).toBe(false);
   });
 
@@ -126,7 +126,7 @@ describe("ensureGeneratedSecrets", () => {
       { ...secretsInstall, replication: regional },
       { run, generate: () => `generated-value-${++n}` },
     );
-    expect(outcomes.map((o) => o.status)).toEqual(Array(6).fill("applied"));
+    expect(outcomes.map((o) => o.status)).toEqual(Array(7).fill("applied"));
     const creates = calls.filter((c) => c.line.startsWith("secrets create"));
     // #806 — the seal key is 32 random bytes in base64 (not the injected hex generator).
     const sealKey = creates.find((c) => c.line.includes("mcp-oauth-seal-key"))?.stdin ?? "";
@@ -145,10 +145,15 @@ describe("ensureGeneratedSecrets", () => {
         line: "secrets create caelo-production-public-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
         stdin: "generated-value-3",
       },
+      // #1329 — the staging gateway's role password: its own, never the live one's.
+      {
+        line: "secrets create caelo-production-public-staging-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+        stdin: "generated-value-4",
+      },
       // #650 — the staging access gate's key.
       {
         line: "secrets create caelo-production-staging-gate-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
-        stdin: "generated-value-4",
+        stdin: "generated-value-5",
       },
       // #806 — remote MCP's OAuth client starts as the "not configured"
       // placeholder; the Owner writes the real one from Settings → MCP.
@@ -178,8 +183,9 @@ describe("ensureGeneratedSecrets", () => {
       { run, generate: () => "generated" },
     );
     const creates = calls.filter((c) => c.line.startsWith("secrets create"));
-    expect(creates.map((c) => c.stdin).slice(0, 5)).toEqual([
+    expect(creates.map((c) => c.stdin).slice(0, 6)).toEqual([
       "operator-set",
+      "generated",
       "generated",
       "generated",
       "generated",
@@ -194,6 +200,7 @@ describe("ensureGeneratedSecrets", () => {
       "secrets versions list caelo-production-internal-secret": [ok("")],
       "secrets versions list caelo-production-tool-approval-secret": [ok("v/1")],
       "secrets versions list caelo-production-public-role-password": [ok("v/1")],
+      "secrets versions list caelo-production-public-staging-role-password": [ok("v/1")],
       "secrets versions list caelo-production-staging-gate-secret": [ok("v/1")],
       "secrets versions list caelo-production-operator-oauth-client": [ok("v/1")],
       "secrets versions list caelo-production-mcp-oauth-seal-key": [ok("v/1")],
@@ -204,6 +211,7 @@ describe("ensureGeneratedSecrets", () => {
     );
     expect(outcomes.map((o) => o.status)).toEqual([
       "applied",
+      "present",
       "present",
       "present",
       "present",
@@ -243,7 +251,7 @@ describe("ensureGeneratedSecrets", () => {
       { ...secretsInstall, replication: { kind: "automatic" } },
       { run, generate: () => "v" },
     );
-    expect(outcomes.map((o) => o.status)).toEqual(Array(6).fill("applied"));
+    expect(outcomes.map((o) => o.status)).toEqual(Array(7).fill("applied"));
     expect(outcomes.every((o) => o.detail?.includes("gcp.resourceLocations"))).toBe(true);
     const creates = lines().filter((l) => l.startsWith("secrets create"));
     // One refused automatic attempt; then every secret — the refused one
@@ -253,6 +261,7 @@ describe("ensureGeneratedSecrets", () => {
       "secrets create caelo-production-internal-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
       "secrets create caelo-production-tool-approval-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
       "secrets create caelo-production-public-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+      "secrets create caelo-production-public-staging-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
       // #652 — the staging gate's key follows the same path.
       "secrets create caelo-production-staging-gate-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
       "secrets create caelo-production-operator-oauth-client --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
@@ -284,7 +293,7 @@ describe("ensureGeneratedSecrets", () => {
       { run, generate: () => "v" },
     );
     expect(outcomes.every((o) => o.status === "failed")).toBe(true);
-    expect(lines().filter((l) => l.startsWith("secrets create"))).toHaveLength(6);
+    expect(lines().filter((l) => l.startsWith("secrets create"))).toHaveLength(7);
   });
 });
 
@@ -329,6 +338,7 @@ describe("rotateRuntimeSecret", () => {
       service([
         ref("ADMIN_DATABASE_PASSWORD", "postgres-password"),
         ref("PUBLIC_ADMIN_DATABASE_PASSWORD", "postgres-password"),
+        ref("PUBLIC_STAGING_ADMIN_DATABASE_PASSWORD", "postgres-password"),
         ref("CAELO_SECRET_KEK", "secret-kek"),
         ref("CAELO_INTERNAL_SECRET", "internal-secret"),
         ref("CAELO_TOOL_APPROVAL_SECRET", "tool-approval-secret"),
@@ -574,8 +584,8 @@ describe("migrationJobEnvArgs", () => {
   it("gives the job password-less URLs and the password as a secret reference", () => {
     const args = migrationJobEnvArgs("db1.p-label.europe-west1.sql-psa.goog");
     expect(args).toEqual([
-      "--set-env-vars=ADMIN_DATABASE_URL=postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem,PUBLIC_ADMIN_DATABASE_URL=postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
-      "--set-secrets=ADMIN_DATABASE_PASSWORD=caelo-production-postgres-password:latest,PUBLIC_ADMIN_DATABASE_PASSWORD=caelo-production-postgres-password:latest",
+      "--set-env-vars=ADMIN_DATABASE_URL=postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem,PUBLIC_ADMIN_DATABASE_URL=postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem,PUBLIC_STAGING_ADMIN_DATABASE_URL=postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      "--set-secrets=ADMIN_DATABASE_PASSWORD=caelo-production-postgres-password:latest,PUBLIC_ADMIN_DATABASE_PASSWORD=caelo-production-postgres-password:latest,PUBLIC_STAGING_ADMIN_DATABASE_PASSWORD=caelo-production-postgres-password:latest",
     ]);
   });
 });

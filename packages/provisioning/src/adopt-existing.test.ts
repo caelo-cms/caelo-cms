@@ -380,6 +380,52 @@ describe("adoptionCandidates — only declared creates of an adoptable kind", ()
       "--format=value(metadata.name)",
     ]);
   });
+
+  it("#1329 — names the staging database and its login the converge creates, and nothing else of Cloud SQL", () => {
+    const instance = "caelo-production-pg-1a2b3c";
+    const candidates = adoptionCandidates(
+      [
+        step({
+          type: "gcp:sql/database:Database",
+          name: "caelo-production-cms-public-staging",
+          inputs: { instance, name: "cms_public_staging" },
+        }),
+        step({
+          type: "gcp:sql/user:User",
+          name: "caelo-production-public-staging-user",
+          inputs: { instance, name: "public_staging_role", password: "[secret]" },
+        }),
+        // Pulumi's own: never adopted.
+        step({
+          type: "gcp:sql/database:Database",
+          name: "caelo-production-cms-public",
+          inputs: { instance, name: "cms_public" },
+        }),
+        step({
+          type: "gcp:sql/user:User",
+          name: "caelo-production-public-user",
+          inputs: { instance, name: "public_role" },
+        }),
+      ],
+      PROJECT,
+    );
+    expect(candidates.map((c) => [c.label, c.importId])).toEqual([
+      [
+        "Cloud SQL database",
+        `projects/${PROJECT}/instances/${instance}/databases/cms_public_staging`,
+      ],
+      ["Cloud SQL user", `${PROJECT}/${instance}/public_staging_role`],
+    ]);
+    expect(candidates[1]?.describeArgs).toEqual([
+      "sql",
+      "users",
+      "describe",
+      "public_staging_role",
+      `--instance=${instance}`,
+      `--project=${PROJECT}`,
+      "--format=value(name)",
+    ]);
+  });
 });
 
 describe("preview steps carry a create's inputs for adoption", () => {

@@ -161,6 +161,16 @@ export interface DatabaseUrls<V = string> {
    * state the admin publishes into cms_public.
    */
   readonly public: V;
+  /**
+   * #1329 — admin_role on cms_public_staging: the admin's third pool, for
+   * the staging database's plugin schemas and its half of the projection.
+   */
+  readonly publicStagingAdmin: V;
+  /**
+   * #1329 — public_staging_role on cms_public_staging, the staging
+   * gateway's only pool (served from P3b-2 on). It reaches no live data.
+   */
+  readonly publicStaging: V;
 }
 
 /** Port Cloud SQL Postgres listens on (private IP). */
@@ -191,6 +201,8 @@ export function databaseUrls(host: string): DatabaseUrls {
     admin: url("admin_role", "cms_admin"),
     publicAdmin: url("admin_role", "cms_public"),
     public: url("public_role", "cms_public"),
+    publicStagingAdmin: url("admin_role", "cms_public_staging"),
+    publicStaging: url("public_staging_role", "cms_public_staging"),
   };
 }
 
@@ -238,7 +250,7 @@ export function cloudSqlPrivateDnsName(
 
 /** The database URL vars each service carries (the env contract below sets them). */
 export const DATABASE_URL_VARS = {
-  admin: ["ADMIN_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL"],
+  admin: ["ADMIN_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL", "PUBLIC_STAGING_ADMIN_DATABASE_URL"],
   gateway: ["PUBLIC_DATABASE_URL"],
   // #1328 — no database login at all. On gcp-firebase the service still
   // carries the gateway's URL until its roll removes it with the rest of
@@ -397,6 +409,8 @@ export function adminMediaVolumeTemplate(volume: MediaVolumeContract) {
 export type RuntimeSecret =
   | "postgres-password"
   | "public-role-password"
+  /** #1329 — public_staging_role's password, the staging gateway's login. */
+  | "public-staging-role-password"
   | "secret-kek"
   | "internal-secret"
   | "tool-approval-secret"
@@ -418,7 +432,7 @@ export type RuntimeSecret =
   | "mcp-oauth-seal-key";
 
 /** The Postgres roles Caelo's services log in as, with their passwords. */
-export type DatabaseRole = "admin_role" | "public_role";
+export type DatabaseRole = "admin_role" | "public_role" | "public_staging_role";
 
 /**
  * Each database role's password secret — one per role (#613), so the
@@ -430,6 +444,8 @@ export type DatabaseRole = "admin_role" | "public_role";
 export const DATABASE_ROLE_SECRET: Readonly<Record<DatabaseRole, RuntimeSecret>> = {
   admin_role: "postgres-password",
   public_role: "public-role-password",
+  // #1329 — its own, so neither gateway can ever log in as the other.
+  public_staging_role: "public-staging-role-password",
 };
 
 /**
@@ -445,6 +461,9 @@ export const CLI_GENERATED_SECRETS = [
   // #613 — the gateway's own role password. Generated (never seeded from
   // `postgres-password`), so the gateway never learns admin_role's.
   "public-role-password",
+  // #1329 — the staging gateway's role password, never shared with the
+  // live gateway's (a test asserts the two public logins share no secret).
+  "public-staging-role-password",
   // #650 — the staging access gate's key: signs "Open staging" links and
   // session cookies, derives the crawler credentials. Read by the admin
   // (issues) and the gateway (verifies).
@@ -456,6 +475,19 @@ export const CLI_GENERATED_SECRETS = [
   "operator-oauth-client",
   "mcp-oauth-seal-key",
 ] as const satisfies readonly RuntimeSecret[];
+
+/**
+ * CLI-generated secrets no running service reads yet, each with what reads
+ * it until then. Everything else in {@link CLI_GENERATED_SECRETS} must be
+ * read by a service (stack-contract.test.ts), so an orphaned secret cannot
+ * ship by accident.
+ */
+export const SECRETS_SET_UP_AHEAD_OF_THEIR_READER: Readonly<
+  Partial<Record<(typeof CLI_GENERATED_SECRETS)[number], string>>
+> = {
+  "public-staging-role-password":
+    "#1329 — public_staging_role's password. The stacks (gcp.sql.User) and the converge (staging-database.ts) set the role's password from it; the staging gateway service (#1330) is its first runtime reader.",
+};
 
 /** A CLI-generated secret's first value: random hex, random base64, or a fixed placeholder. */
 export type GeneratedSecretFormat =
@@ -473,6 +505,7 @@ export const GENERATED_SECRET_FORMAT: Readonly<
   "internal-secret": { kind: "hex32" },
   "tool-approval-secret": { kind: "hex32" },
   "public-role-password": { kind: "hex32" },
+  "public-staging-role-password": { kind: "hex32" },
   "staging-gate-secret": { kind: "hex32" },
   // The gateway's seal key contract (#806): base64 of exactly 32 bytes.
   "mcp-oauth-seal-key": { kind: "base64-32" },
@@ -510,6 +543,8 @@ export const SERVICE_SECRET_ENV: Readonly<
   admin: {
     ADMIN_DATABASE_PASSWORD: "postgres-password",
     PUBLIC_ADMIN_DATABASE_PASSWORD: "postgres-password",
+    // #1329 — admin_role on the staging database.
+    PUBLIC_STAGING_ADMIN_DATABASE_PASSWORD: "postgres-password",
     // P18 — encrypts AI provider keys and other at-rest secrets in cms_admin.
     CAELO_SECRET_KEK: "secret-kek",
     // P15.1 — HMAC key of the /api/internal/* bearer tokens (internal-jwt.ts).
@@ -748,6 +783,15 @@ function commonEnv(inputs: ServiceEnvInputs): CloudRunEnvVar[] {
 export const TRUSTED_PROXY_HOPS_ENV = "CAELO_TRUSTED_PROXY_HOPS";
 
 /**
+ * #1329 — the env var naming which environment a gateway serves, `live` or
+ * `staging` (apps/api-gateway database-env.ts): its database and login
+ * follow from it, and it refuses anything of the other environment's. The
+ * gateway refuses to boot without it. Every adapter sets `live` on the
+ * gateway it runs today; the staging gateway (P3b-2) gets `staging`.
+ */
+export const GATEWAY_ENVIRONMENT_ENV = "CAELO_GATEWAY_ENVIRONMENT";
+
+/**
  * {@link TRUSTED_PROXY_HOPS_ENV} per provider — a property of each
  * adapter's topology (CLAUDE.md §11.B), so it is declared here once and every
  * adapter sets it on its gateway. The gateway refuses to boot without it.
@@ -785,6 +829,9 @@ export const GATEWAY_TRUSTED_PROXY_HOPS: Readonly<Record<SupportedProvider, numb
 export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvVar<V | string>[] {
   return [
     ...commonEnv(inputs),
+    // #1329 — this service is the live site's gateway: it may reach
+    // cms_public as public_role and refuses anything of the staging data.
+    { name: GATEWAY_ENVIRONMENT_ENV, value: "live" },
     { name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS[inputs.provider]) },
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
     ...secretEnv("gateway", inputs.env),
@@ -1180,6 +1227,9 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     // admin_role on cms_public: cross-DB reads, plugin DDL, migrations.
     // Not public_role (write-limited).
     { name: "PUBLIC_ADMIN_DATABASE_URL", value: inputs.databaseUrls.publicAdmin },
+    // #1329 — admin_role on cms_public_staging: the staging database's
+    // plugin schemas and its half of the projection.
+    { name: "PUBLIC_STAGING_ADMIN_DATABASE_URL", value: inputs.databaseUrls.publicStagingAdmin },
     // #551 — the admin seeds site_defaults.site_base_url from it (canonical,
     // og:url, sitemap) when it is not configured yet.
     { name: "CAELO_SITE_URL", value: publicSiteUrl(domain) },

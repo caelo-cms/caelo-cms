@@ -128,6 +128,9 @@ describe("checkDeployedRuntimeEnv", () => {
   const adminOk = svc([
     secret("ADMIN_DATABASE_PASSWORD"),
     secret("PUBLIC_ADMIN_DATABASE_PASSWORD"),
+    // #1329 — the staging database's pool: a release from before it is
+    // refused here too and goes through `upgrade` first.
+    secret("PUBLIC_STAGING_ADMIN_DATABASE_PASSWORD"),
   ]);
   const gatewayOk = svc([secret("PUBLIC_DATABASE_PASSWORD", "public-role-password")]);
   const proxyOk = svc([secret("CAELO_MCP_OAUTH_SEAL_KEY", "mcp-oauth-seal-key")]);

@@ -151,7 +151,7 @@ function deps(
       runner.calls.push("converge roles");
       return roles;
     },
-    applyPublicRoleLimits: async () => {
+    applyPreMigrationRoles: async () => {
       runner.calls.push("public role limits");
       return { ok: true } as const;
     },
@@ -187,6 +187,7 @@ describe("upgradeSelfHosted", () => {
       "public role limits",
       "migrate admin",
       "migrate public",
+      "migrate public-staging",
       "converge roles",
       "up caelo-admin",
       "health admin",

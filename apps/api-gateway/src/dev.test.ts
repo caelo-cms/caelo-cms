@@ -9,19 +9,31 @@ const ROOT_ENV = {
   ADMIN_DATABASE_URL: "postgres://admin_role:a@localhost:5432/cms_admin",
   PUBLIC_ADMIN_DATABASE_URL: "postgres://admin_role:a@localhost:5432/cms_public",
   PUBLIC_DATABASE_URL: "postgres://public_role:p@localhost:5432/cms_public",
+  PUBLIC_STAGING_ADMIN_DATABASE_URL: "postgres://admin_role:a@localhost:5432/cms_public_staging",
+  PUBLIC_STAGING_DATABASE_URL: "postgres://public_staging_role:s@localhost:5432/cms_public_staging",
   GATEWAY_DATABASE_URL: "postgres://gateway_role:g@localhost:5432/cms_admin",
   CAELO_SITE_URL: "http://localhost:8082",
 };
 
 describe("gateway dev launcher (#613 review, #635)", () => {
   it("the strict guard refuses the shared root .env as is", () => {
-    expect(() => gatewayDatabaseUrls(ROOT_ENV)).toThrow(/must not hold any cms_admin credential/);
+    expect(() => gatewayDatabaseUrls({ ...ROOT_ENV, CAELO_GATEWAY_ENVIRONMENT: "live" })).toThrow(
+      /must not hold any cms_admin credential/,
+    );
   });
 
-  it("starts the gateway from it with the admin credentials left out", () => {
+  it("starts the live gateway from it with the admin and staging credentials left out", () => {
     const env = gatewayDevEnv({ ...ROOT_ENV, ADMIN_DATABASE_PASSWORD: "x", UNSET: undefined });
     // #635 — the gateway_role URL goes too: no cms_admin login at all.
-    expect(Object.keys(env).sort()).toEqual(["CAELO_SITE_URL", "PUBLIC_DATABASE_URL"]);
-    expect(gatewayDatabaseUrls(env)).toEqual({ public: ROOT_ENV.PUBLIC_DATABASE_URL });
+    // #1329 — and neither staging URL: the live gateway reaches no staging data.
+    expect(Object.keys(env).sort()).toEqual([
+      "CAELO_GATEWAY_ENVIRONMENT",
+      "CAELO_SITE_URL",
+      "PUBLIC_DATABASE_URL",
+    ]);
+    expect(gatewayDatabaseUrls(env)).toEqual({
+      environment: "live",
+      public: ROOT_ENV.PUBLIC_DATABASE_URL,
+    });
   });
 });

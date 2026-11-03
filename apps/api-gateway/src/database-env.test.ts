@@ -5,6 +5,8 @@
  * offers database access beyond its own login — by variable name, by value
  * (cms_admin names, Postgres URLs, libpq keyword strings), and through
  * file-mounted secrets. The error names variables and files, never values.
+ * Since #1329 the same holds crosswise between the two environments: the
+ * live gateway refuses the staging database and login, and the reverse.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -13,7 +15,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   adminDatabaseAccessInEnv,
+  type GatewayEnvironment,
   gatewayDatabaseUrls,
+  gatewayEnvironmentFromEnv,
   nodeSecretFiles,
   type SecretFileReader,
 } from "./database-env.js";
@@ -31,9 +35,18 @@ function fakeFiles(files: Record<string, string> = {}): SecretFileReader {
 }
 const NO_FILES = fakeFiles();
 
-function check(env: Record<string, string | undefined>, files = NO_FILES): string[] {
-  return adminDatabaseAccessInEnv(env, files);
+function check(
+  env: Record<string, string | undefined>,
+  files = NO_FILES,
+  environment: GatewayEnvironment = "live",
+): string[] {
+  return adminDatabaseAccessInEnv(env, environment, files);
 }
+
+const STAGING_OWN = {
+  PUBLIC_DATABASE_URL:
+    "postgres://public_staging_role:p@db:5432/cms_public_staging?sslmode=verify-full",
+};
 
 describe("adminDatabaseAccessInEnv (#635)", () => {
   it("accepts the gateway's own login and the env the adapters and platforms set", () => {
@@ -172,6 +185,58 @@ describe("adminDatabaseAccessInEnv (#635)", () => {
   });
 });
 
+describe("the two environments, crosswise (#1329)", () => {
+  it("accepts the staging gateway's own login", () => {
+    expect(check({ ...STAGING_OWN, PUBLIC_DATABASE_PASSWORD: "p" }, NO_FILES, "staging")).toEqual(
+      [],
+    );
+  });
+
+  it("the live gateway refuses the staging database and login, by URL and by name", () => {
+    expect(check(STAGING_OWN)).toEqual([
+      expect.stringContaining('PUBLIC_DATABASE_URL: a URL for database "cms_public_staging"'),
+    ]);
+    for (const value of ["cms_public_staging", "login as public_staging_role"]) {
+      expect(check({ ...OWN, NOTE: value })).toEqual([
+        expect.stringContaining("NOTE: names the staging environment's database or login"),
+      ]);
+    }
+    expect(check({ ...OWN, X_FILE: "/s/x" }, fakeFiles({ "/s/x": "public_staging_role" }))).toEqual(
+      [expect.stringContaining("X_FILE: its file names the staging environment's")],
+    );
+  });
+
+  it("the staging gateway refuses the live database and login, by URL and by name", () => {
+    expect(check(OWN, NO_FILES, "staging")).toEqual([
+      expect.stringContaining('PUBLIC_DATABASE_URL: a URL for database "cms_public"'),
+    ]);
+    expect(
+      check(
+        { PUBLIC_DATABASE_URL: "postgres://public_role@db/cms_public_staging" },
+        NO_FILES,
+        "staging",
+      ),
+    ).toEqual([expect.stringContaining('a URL that logs in as "public_role"')]);
+    for (const value of ["cms_public", "use public_role"]) {
+      expect(check({ ...STAGING_OWN, NOTE: value }, NO_FILES, "staging")).toEqual([
+        expect.stringContaining("NOTE: names the live environment's database or login"),
+      ]);
+    }
+    // The staging names do not count as the live ones.
+    expect(check({ ...STAGING_OWN, NOTE: "cms_public_staging" }, NO_FILES, "staging")).toEqual([]);
+  });
+
+  it("needs the environment named, and nothing else", () => {
+    expect(gatewayEnvironmentFromEnv({ CAELO_GATEWAY_ENVIRONMENT: "staging" })).toBe("staging");
+    for (const value of [undefined, "", "production", "LIVE"]) {
+      expect(() => gatewayEnvironmentFromEnv({ CAELO_GATEWAY_ENVIRONMENT: value })).toThrow(
+        "CAELO_GATEWAY_ENVIRONMENT=live or =staging",
+      );
+    }
+    expect(() => gatewayDatabaseUrls(OWN, NO_FILES)).toThrow("CAELO_GATEWAY_ENVIRONMENT");
+  });
+});
+
 describe("nodeSecretFiles (#635)", () => {
   it("reads small regular files and nothing else", () => {
     const dir = mkdtempSync(join(tmpdir(), "caelo-secrets-"));
@@ -200,6 +265,7 @@ describe("gatewayDatabaseUrls (#635)", () => {
       gatewayDatabaseUrls(
         {
           ...OWN,
+          CAELO_GATEWAY_ENVIRONMENT: "live",
           LEGACY: "postgres://gateway_role:hunter2@10.0.0.3/cms_admin",
           DB_ADMIN_PASS: "sw0rdfish",
         },
@@ -217,7 +283,13 @@ describe("gatewayDatabaseUrls (#635)", () => {
     }
   });
 
-  it("returns only the public URL", () => {
-    expect(gatewayDatabaseUrls(OWN, NO_FILES)).toEqual({ public: OWN.PUBLIC_DATABASE_URL });
+  it("returns the environment and its public URL", () => {
+    expect(gatewayDatabaseUrls({ ...OWN, CAELO_GATEWAY_ENVIRONMENT: "live" }, NO_FILES)).toEqual({
+      environment: "live",
+      public: OWN.PUBLIC_DATABASE_URL,
+    });
+    expect(
+      gatewayDatabaseUrls({ ...STAGING_OWN, CAELO_GATEWAY_ENVIRONMENT: "staging" }, NO_FILES),
+    ).toEqual({ environment: "staging", public: STAGING_OWN.PUBLIC_DATABASE_URL });
   });
 });

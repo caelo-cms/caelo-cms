@@ -86,7 +86,7 @@ import {
   resolveVerifiedRelease,
 } from "./self-hosted-release.js";
 import {
-  applyPublicRoleLimits,
+  applyPreMigrationRoles,
   convergeSelfHostedRoles,
   decideUp,
   selfHostedBootstrapScript,
@@ -255,6 +255,15 @@ function loadConfig(): CaeloConfig | null {
     cfg.composeProject ??= "caelo";
     saveConfig(cfg);
   }
+  // #1329 — the staging gateway's login came with the staging database. An
+  // install from before gets its own password now; the next `up` or
+  // upgrade creates the role with it (self-hosted-roles.ts) before anything
+  // uses it, so the roles count as not converged until then.
+  if (cfg.rolePasswords && !cfg.rolePasswords.publicStaging) {
+    cfg.rolePasswords = { ...cfg.rolePasswords, publicStaging: randomSecret(32) };
+    cfg.rolesConverged = false;
+    saveConfig(cfg);
+  }
   return cfg;
 }
 
@@ -269,9 +278,9 @@ function arg(name: string): string | undefined {
   return process.argv[idx + 1];
 }
 
-/** Fresh passwords for the two application roles. */
+/** Fresh passwords for the application roles. */
 function newRolePasswords(): RolePasswords {
-  return { admin: randomSecret(32), public: randomSecret(32) };
+  return { admin: randomSecret(32), public: randomSecret(32), publicStaging: randomSecret(32) };
 }
 
 function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): void {
@@ -405,8 +414,20 @@ function agentContext(cfg: CaeloConfig): AgentCliContext {
         ...(activeAgent(cfg) ? { agentPassword: activeAgent(cfg)?.dbPassword } : {}),
       });
     },
-    applyPublicRoleLimits: () =>
-      applyPublicRoleLimits({ probe: postgresIsUp, psql: superuserPsql }),
+    applyPreMigrationRoles: () => {
+      if (!cfg.rolePasswords) {
+        return Promise.resolve({
+          ok: false as const,
+          reachable: true,
+          error: "config.json has no role passwords — run `cms-provision up` first",
+        });
+      }
+      return applyPreMigrationRoles({
+        probe: postgresIsUp,
+        psql: superuserPsql,
+        stagingPassword: cfg.rolePasswords.publicStaging,
+      });
+    },
     renderCompose: (images) => renderCompose(cfg, images),
     refreshCaddy: () => refreshCaddyfile(cfg),
     randomSecret: () => randomSecret(32),
@@ -1057,7 +1078,7 @@ async function upgradeSelfHostedCommand(opts: {
       runner: bunHostRunner,
       renderCompose: (images) => renderCompose(cfg, images),
       convergeRoles: agentContext(cfg).convergeRoles,
-      applyPublicRoleLimits: agentContext(cfg).applyPublicRoleLimits,
+      applyPreMigrationRoles: agentContext(cfg).applyPreMigrationRoles,
       refreshCaddy: () => refreshCaddyfile(cfg),
       log: {
         step: (m) => console.log(`\n==> ${m}`),

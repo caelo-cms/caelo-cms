@@ -24,6 +24,8 @@ adminPoolMax = floor((maxConnections − Σ reserves) / adminMaxInstances)
 | `listen` | `adminMaxInstances` × 1 | the change journal's `LISTEN` connection, one per admin instance (#1267, `LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE`). A LISTEN connection stays open for the instance's lifetime and never serves a pool query, so it is budgeted outside the pools |
 | `gateway-listen` | `gatewayMaxInstances` × 1 | the gateway's `LISTEN caelo_gateway_settings` connection on `cms_public` (`LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE`), held outside its pool |
 | `admin-public` | `adminMaxInstances` × `ADMIN_PUBLIC_POOL_MAX` (4) | the admin's `cms_public` pool: plugin-data reads and the gateway projection |
+| `staging-gateway` | `stagingGatewayMaxInstances` (1) × (`GATEWAY_POOL_MAX` + 1 LISTEN) | the staging gateway (#1329, served from #1330): the same image on `cms_public_staging` as `public_staging_role`, capped by that role's `CONNECTION LIMIT` of 30 like the live one (`STAGING_GATEWAY_ROLE_CONNECTION_LIMIT`) |
+| `admin-public-staging` | `adminMaxInstances` × `ADMIN_PUBLIC_STAGING_POOL_MAX` (2) | the admin's `cms_public_staging` pool (#1329): the staging database's plugin tables and its half of the projection. Fixed in code at the minimum pool, no env var |
 
 If the remainder cannot give every admin instance at least `ADMIN_POOL_FLOOR` (4) connections, the formula throws. The message names the breakdown and the `max_connections` that would be needed, so a stack fails at `pulumi preview`, never under load.
 
@@ -42,10 +44,19 @@ Each adapter computes the budget from its own inputs (provisioning `src/pool-bud
 
 | Adapter | `max_connections` | Admin-side instances | Gateway instances | cms_admin pool per admin instance |
 |---|---|---|---|---|
-| `gcp`, `gcp-firebase` | 100 (`maxConnections`, Cloud SQL flag) | 5 (`adminMaxInstances`) | 10 (`gatewayMaxInstances`, was a fixed 100) | 5 |
-| `aws` | 100 (`maxConnections`, RDS parameter group) | 5 | 10 | 5, exported as `poolBudgetEnvOut` until the task definitions exist (#749) |
-| `azure` | 429 (`maxConnections`, server parameter; the Standard_B2s limit) | 30 (admin, orchestrator and runner apps, 10 replicas each) | 10 | 7 |
-| `self-hosted` | 100 (Compose `command`) | 1 | 1 | 77 |
+| `gcp`, `gcp-firebase` | 100 (`maxConnections`, Cloud SQL flag) | 4 (`adminMaxInstances`, 5 before #1329) | 10 (`gatewayMaxInstances`, was a fixed 100), staging 1 | 5 |
+| `aws` | 100 (`maxConnections`, RDS parameter group) | 4 (5 before #1329) | 10, staging 1 | 5, exported as `poolBudgetEnvOut` until the task definitions exist (#749) |
+| `azure` | 429 (`maxConnections`, server parameter; the Standard_B2s limit) | 30 (admin, orchestrator and runner apps, 10 replicas each) | 10, staging 1 | 5 (7 before #1329) |
+| `self-hosted` | 100 (Compose `command`) | 1 | 1, staging 1 | 72 (77 before #1329) |
+
+### #1329: the staging database, and why `max_connections` stayed at 100
+
+The staging database added two reserves: the staging gateway (3 connections at one instance) and the admin's `cms_public_staging` pool (2 per admin instance). On the default GCP server the five admin instances before then no longer got the minimum `cms_admin` pool (5 × 2 + 3 more reserved leaves 10 for 5 instances, below `ADMIN_POOL_FLOOR`). Two ways out were weighed:
+
+- **Raise `max_connections` to about 150.** Not taken for the default `db-f1-micro` (shared core, 614 MB). Cloud SQL's own default for that memory is 25 connections, and the stack already runs it at 100. Each Postgres backend takes a few MB of private memory before any query (more under `work_mem`), next to the shared buffers, so 150 backends at full scale-out leave a 614 MB instance no headroom; the risk is the server being OOM-killed under load, which takes every environment down at once. A larger tier can take a larger `maxConnections` together with more instances; the formula checks any combination at `pulumi preview`.
+- **Lower the instance counts.** Taken: the GCP and AWS stacks start at most four admin instances (`DEFAULT_ADMIN_MAX_INSTANCES`), and the staging gateway at most one (`DEFAULT_STAGING_GATEWAY_MAX_INSTANCES`, staging serves the team, the audit and admitted crawlers, never the public). Each admin instance keeps its five `cms_admin` connections; the default server is fully assigned (0 left over).
+
+An install whose operator set `adminMaxInstances` to 5 explicitly gets the formula's refusal at the next `pulumi preview`, naming the connections it needs.
 
 On the GCP stacks the pool env sits next to the env contract, like the remote-MCP identity env. It is derived from stack config that an upgrade roll cannot see, so `upgrade` never sets it. A roll never removes a var the contract does not own, so an install keeps its pool sizes across app releases. A new budget reaches an existing install with the next converge (`pulumi up`).
 

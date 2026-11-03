@@ -83,6 +83,14 @@ export interface AdapterConfig {
    */
   readonly adminDatabaseUrl: string | null;
   readonly publicDatabaseUrl: string;
+  /**
+   * #1329 — which public database the public pool must reach:
+   * `cms_public` (the live site's, the default) or `cms_public_staging`
+   * (the staging site's twin). Checked by {@link DatabaseAdapter.verifyRoles}
+   * like the role, so a URL pointing at the other environment's database
+   * fails loudly.
+   */
+  readonly publicDatabase?: PublicDatabaseName;
   /** Disable the startup self-check. Only for tests that deliberately assert it triggers. */
   readonly skipRoleVerification?: boolean;
   /**
@@ -134,6 +142,9 @@ export interface AdapterConfig {
 }
 
 const DEFAULT_ROLES = { admin: "admin_role", public: ["admin_role", "public_role"] } as const;
+
+/** The public databases a public pool may reach (#1329). */
+export type PublicDatabaseName = "cms_public" | "cms_public_staging";
 
 /** Options of {@link DatabaseAdapter.withAdminTransaction} / `withPublicTransaction`. */
 export interface TransactionOptions {
@@ -328,6 +339,14 @@ export interface ListenCallbacks {
   readonly onLost: (cause: unknown) => void;
 }
 
+/** What provisioning a plugin's public schema did, in which database (#1146, #1329). */
+export interface PluginSchemaProvisionOutcome {
+  readonly database: PublicDatabaseName;
+  readonly schemaName: string;
+  /** `<table>.<column>` entries the plugin no longer declares, dropped with their data. */
+  readonly droppedColumns: readonly string[];
+}
+
 export class DatabaseAdapter {
   readonly #admin: BunSQLDatabase | null;
   readonly #public: BunSQLDatabase;
@@ -342,6 +361,7 @@ export class DatabaseAdapter {
   #listenersClosing = false;
   readonly #skipVerify: boolean;
   readonly #roles: { readonly admin: string | null; readonly public: readonly string[] };
+  readonly #publicDatabase: PublicDatabaseName;
   readonly #acquireTimeoutMs: number;
   /** Issue #1210 — which call chains hold a transaction of which pool. */
   readonly #guard = new PoolGuard();
@@ -353,6 +373,7 @@ export class DatabaseAdapter {
 
   constructor(config: AdapterConfig) {
     this.#roles = config.expectedRoles ?? DEFAULT_ROLES;
+    this.#publicDatabase = config.publicDatabase ?? "cms_public";
     if ((config.adminDatabaseUrl === null) !== (this.#roles.admin === null)) {
       throw new Error(
         "DatabaseAdapter: a public-only adapter (adminDatabaseUrl: null) must expect no admin role, and an adapter with an admin URL must expect one",
@@ -603,9 +624,9 @@ export class DatabaseAdapter {
       }
       return;
     }
-    if (id.database !== "cms_public") {
+    if (id.database !== this.#publicDatabase) {
       throw new Error(
-        `DatabaseAdapter public pool expected database cms_public but connected to ${id.database}. Check PUBLIC_DATABASE_URL / PUBLIC_ADMIN_DATABASE_URL.`,
+        `DatabaseAdapter public pool expected database ${this.#publicDatabase} but connected to ${id.database}. Check ${this.#publicDatabase === "cms_public" ? "PUBLIC_DATABASE_URL / PUBLIC_ADMIN_DATABASE_URL" : "PUBLIC_DATABASE_URL / PUBLIC_STAGING_ADMIN_DATABASE_URL"}.`,
       );
     }
     if (!this.#roles.public.includes(id.user)) {
@@ -1151,7 +1172,10 @@ export class DatabaseAdapter {
    * Safe to call from several instances at once — see
    * {@link provisionPluginSchemaInTx}.
    */
-  async provisionPluginPublicSchema(opts: { pluginId: string; sql: string }): Promise<void> {
+  async provisionPluginPublicSchema(opts: {
+    pluginId: string;
+    sql: string;
+  }): Promise<PluginSchemaProvisionOutcome> {
     if (!/^[0-9a-f-]{36}$/i.test(opts.pluginId)) {
       throw new Error(`provisionPluginPublicSchema: pluginId "${opts.pluginId}" is not a UUID`);
     }
@@ -1164,13 +1188,35 @@ export class DatabaseAdapter {
       // identifier that doesn't match the safe pattern.
       return provisionPluginSchemaInTx(tx, "provisionPluginPublicSchema", opts);
     });
-    if (outcome.droppedColumns.length > 0) {
-      // cms_public has no audit log; the drop is recorded on the admin side.
-      await this.#transaction("admin", "provisionPluginPublicSchema", async (tx) => {
-        await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
-        await auditDroppedColumns(tx, "cms_public", opts.pluginId, outcome);
-      });
+    const result = {
+      database: this.#publicDatabase,
+      schemaName: outcome.schemaName,
+      droppedColumns: outcome.droppedColumns,
+    };
+    // cms_public has no audit log; the drop is recorded on the admin side.
+    // A public-only adapter (the staging database's, #1329) has no admin
+    // side: its caller records the drop (auditPluginSchemaDrop).
+    if (outcome.droppedColumns.length > 0 && this.#adminRaw !== null) {
+      await this.auditPluginSchemaDrop(opts.pluginId, result);
     }
+    return result;
+  }
+
+  /**
+   * #1146 / #1329 — record in cms_admin's audit log that provisioning a
+   * plugin's public schema dropped columns. {@link provisionPluginPublicSchema}
+   * does it for its own database; the admin calls this for the drop the
+   * staging database's public-only adapter handed back.
+   */
+  async auditPluginSchemaDrop(
+    pluginId: string,
+    outcome: PluginSchemaProvisionOutcome,
+  ): Promise<void> {
+    if (outcome.droppedColumns.length === 0) return;
+    await this.#transaction("admin", "provisionPluginPublicSchema", async (tx) => {
+      await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
+      await auditDroppedColumns(tx, outcome.database, pluginId, outcome);
+    });
   }
 
   /**
@@ -1265,9 +1311,9 @@ export class DatabaseAdapter {
  */
 async function auditDroppedColumns(
   tx: TransactionRunner,
-  database: "cms_admin" | "cms_public",
+  database: "cms_admin" | PublicDatabaseName,
   pluginId: string,
-  outcome: ProvisionOutcome,
+  outcome: Pick<ProvisionOutcome, "schemaName" | "droppedColumns">,
 ): Promise<void> {
   await recordAudit(tx, {
     actorId: SYSTEM_ACTOR_ID,

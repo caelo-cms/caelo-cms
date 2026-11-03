@@ -14,10 +14,13 @@
 
 import {
   computePoolBudget,
+  DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
   type PoolBudget,
   type PoolBudgetInput,
   poolBudgetEnv,
 } from "@caelo-cms/shared";
+
+export { DEFAULT_STAGING_GATEWAY_MAX_INSTANCES };
 
 /** The adapters that provision a Postgres server. */
 export type BudgetProvider = "gcp" | "gcp-firebase" | "aws" | "azure" | "self-hosted";
@@ -84,12 +87,24 @@ export const DEFAULT_MAX_CONNECTIONS: Readonly<Record<BudgetProvider, number>> =
  */
 export const DEFAULT_GATEWAY_MAX_INSTANCES = 10;
 
+/**
+ * Admin instances a GCP or AWS stack lets start (`adminMaxInstances` knob).
+ * Five before #1329; the staging database added the admin's
+ * cms_public_staging pool and the staging gateway to the budget, and on the
+ * default server (100 connections) five instances no longer get the
+ * minimum cms_admin pool. Raising `max_connections` instead was ruled out
+ * for db-f1-micro (docs/dev/connection-budget.md, "#1329").
+ */
+export const DEFAULT_ADMIN_MAX_INSTANCES = 4;
+
 /** The server and scale-out a stack sizes its pools for. */
 export interface StackScale {
   readonly maxConnections: number;
   /** Every instance that opens the admin's pools (admin-side services included). */
   readonly adminMaxInstances: number;
   readonly gatewayMaxInstances: number;
+  /** #1329 — the staging gateway's scale-out ({@link DEFAULT_STAGING_GATEWAY_MAX_INSTANCES}). */
+  readonly stagingGatewayMaxInstances: number;
 }
 
 /** A stack's budget plus the env each service sets from it. */

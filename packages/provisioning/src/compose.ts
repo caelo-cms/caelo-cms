@@ -37,6 +37,7 @@ import {
 } from "./self-hosted-db-tls.js";
 import {
   ADMIN_MEMORY_DEFAULT,
+  GATEWAY_ENVIRONMENT_ENV,
   GATEWAY_TRUSTED_PROXY_HOPS,
   MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS,
   memoryQuantityMiB,
@@ -84,6 +85,8 @@ export const COMPOSE_POOL_BUDGET = stackPoolBudget("self-hosted", {
   maxConnections: DEFAULT_MAX_CONNECTIONS["self-hosted"],
   adminMaxInstances: 1,
   gatewayMaxInstances: 1,
+  // #1329 — one staging gateway container (P3b-2) next to the live one.
+  stagingGatewayMaxInstances: 1,
 });
 
 /** The budget's env as Compose `environment:` lines for `service`. */
@@ -216,6 +219,8 @@ export function ghcrImageDigest(service: ReleaseService, ref: string): string | 
 export interface RolePasswords {
   readonly admin: string;
   readonly public: string;
+  /** #1329 — public_staging_role's, the staging gateway's login on cms_public_staging. */
+  readonly publicStaging: string;
 }
 
 export interface ComposeSpec {
@@ -336,6 +341,7 @@ services:
       POSTGRES_DB: caelo
       ADMIN_ROLE_PASSWORD: "${escapeYaml(spec.rolePasswords.admin)}"
       PUBLIC_ROLE_PASSWORD: "${escapeYaml(spec.rolePasswords.public)}"
+      PUBLIC_STAGING_ROLE_PASSWORD: "${escapeYaml(spec.rolePasswords.publicStaging)}"
       # Recreates Postgres when its certificate is renewed (see the spec).
       CAELO_DB_TLS_SERVER_CERT_SHA256: "${spec.dbTlsServerCertSha256}"
 ${postgresAgent(spec.agent)}    volumes:
@@ -457,6 +463,8 @@ ${serviceRuntime(
     environment:
       ADMIN_DATABASE_URL: "${dbUrl("admin_role", spec.rolePasswords.admin, "cms_admin")}"
       PUBLIC_ADMIN_DATABASE_URL: "${dbUrl("admin_role", spec.rolePasswords.admin, "cms_public")}"
+      # #1329 — the staging database's plugin schemas and projection.
+      PUBLIC_STAGING_ADMIN_DATABASE_URL: "${dbUrl("admin_role", spec.rolePasswords.admin, "cms_public_staging")}"
       CAELO_SECRET_KEK: "${escapeYaml(spec.caeloSecretKek)}"
       CAELO_INTERNAL_SECRET: "${escapeYaml(spec.internalSecret)}"
       CAELO_SITE_URL: "${escapeYaml(selfHostedSiteUrl(spec.domain, spec.ports.https))}"
@@ -480,6 +488,8 @@ ${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts
       # public_role on cms_public is its only database login (#613, #635,
       # CLAUDE.md §2: the public side has no path to the authoring database).
       PUBLIC_DATABASE_URL: "${dbUrl("public_role", spec.rolePasswords.public, "cms_public")}"
+      # #1329 — the live site's gateway: it refuses anything of the staging data.
+      ${GATEWAY_ENVIRONMENT_ENV}: "live"
       GATEWAY_PORT: "${COMPOSE_GATEWAY_PORT}"
       # Caddy is the one proxy in front (client-ip.ts in the gateway).
       ${TRUSTED_PROXY_HOPS_ENV}: "${GATEWAY_TRUSTED_PROXY_HOPS["self-hosted"]}"

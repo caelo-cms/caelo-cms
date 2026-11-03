@@ -12,7 +12,9 @@
  *   3b. #1338 — recreate Postgres when the Compose file changed it (TLS with
  *      the install's own certificate, self-hosted-db-tls.ts: the new images
  *      connect with verify-full only; the old containers keep connecting,
- *      Postgres still accepts them) and apply public_role's limits as the
+ *      Postgres still accepts them) and, as the superuser, create the
+ *      staging database with its gateway login (#1329) and apply both gateway
+ *      logins' limits as the
  *      superuser (the migrations' role audit refuses public_role without
  *      them, and the self-hosted admin_role cannot set them);
  *   4. run the migrations from the NEW admin image (`docker compose run`,
@@ -65,6 +67,7 @@ import {
   MEDIA_DIR,
   type ReleaseImages,
 } from "./compose.js";
+import { MIGRATION_TARGETS } from "./migration-targets.js";
 import { selfCommand } from "./self-command.js";
 import {
   type HostRunner,
@@ -125,11 +128,13 @@ export interface SelfHostedUpgradeDeps {
    */
   readonly convergeRoles: () => Promise<ConvergeOutcome>;
   /**
-   * #1338 — applies public_role's limits as the Postgres superuser
-   * (`applyPublicRoleLimits`), before the migrations whose role audit
+   * #1338 / #1329 — as the Postgres superuser (`applyPreMigrationRoles`):
+   * creates the staging database and its gateway login on an install from
+   * before them, and applies both gateway logins' limits, before the
+   * migrations that run on that database and whose role audit
    * checks them.
    */
-  readonly applyPublicRoleLimits: () => Promise<ConvergeOutcome>;
+  readonly applyPreMigrationRoles: () => Promise<ConvergeOutcome>;
   /**
    * Re-writes the Caddyfile from the install's config + domains table and
    * reloads Caddy (#891): the edge headers (the SVG CSP, nosniff) live in
@@ -401,12 +406,12 @@ export async function upgradeSelfHosted(
       back.exitCode === 0,
     );
   }
-  const limits = await deps.applyPublicRoleLimits();
+  const limits = await deps.applyPreMigrationRoles();
   if (!limits.ok) {
     restoreCompose(file, previousCompose);
     return fail(
       "roles",
-      `Could not apply public_role's connection and statement limits: ${limits.error}\nThe previous release keeps running; no migration ran. Database backup: ${backup.dir}`,
+      `Could not prepare the database roles for the migrations (the staging database cms_public_staging and the gateway logins' connection and statement limits): ${limits.error}\nThe previous release keeps running; no migration ran. Database backup: ${backup.dir}`,
       true,
     );
   }
@@ -600,7 +605,8 @@ export async function dumpDatabases(
 }
 
 /**
- * Apply the committed migrations (cms_admin, then cms_public) with the
+ * Apply the committed migrations (cms_admin, then cms_public and its staging
+ * twin cms_public_staging, #1329) with the
  * admin image the Compose file names, as a one-off container — the
  * self-hosted equivalent of the GCP `caelo-migrate-<target>` Cloud Run job.
  * drizzle's bookkeeping makes re-runs apply only new migrations.
@@ -609,7 +615,7 @@ export async function runMigrations(
   caeloDir: string,
   runner: HostRunner,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  for (const target of ["admin", "public"] as const) {
+  for (const target of MIGRATION_TARGETS) {
     const r = await runner.run(
       compose(
         caeloDir,

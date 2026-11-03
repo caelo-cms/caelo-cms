@@ -23,6 +23,7 @@ import {
   RETIRED_SECRET_FILES,
   RETIRED_SERVICE_ENV,
   runtimeSecretBindings,
+  SECRETS_SET_UP_AHEAD_OF_THEIR_READER,
   SERVICE_SECRET_ENV,
   SERVICE_SECRET_FILES,
   SERVICE_VPC_EGRESS,
@@ -52,6 +53,7 @@ const asRecord = (vars: CloudRunEnvVar[]) =>
 const ADMIN_SECRETS = {
   ADMIN_DATABASE_PASSWORD: "secret:caelo-production-postgres-password:latest",
   PUBLIC_ADMIN_DATABASE_PASSWORD: "secret:caelo-production-postgres-password:latest",
+  PUBLIC_STAGING_ADMIN_DATABASE_PASSWORD: "secret:caelo-production-postgres-password:latest",
   CAELO_SECRET_KEK: "secret:caelo-production-secret-kek:latest",
   CAELO_INTERNAL_SECRET: "secret:caelo-production-internal-secret:latest",
   CAELO_TOOL_APPROVAL_SECRET: "secret:caelo-production-tool-approval-secret:latest",
@@ -67,6 +69,10 @@ describe("databaseUrls", () => {
         "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       public:
         "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      publicStagingAdmin:
+        "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      publicStaging:
+        "postgresql://public_staging_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
     });
   });
 });
@@ -81,6 +87,8 @@ describe("adminEnvContract", () => {
         "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       PUBLIC_ADMIN_DATABASE_URL:
         "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      PUBLIC_STAGING_ADMIN_DATABASE_URL:
+        "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       CAELO_SITE_URL: "https://acme.com",
       CAELO_GENERATOR_CLI: "/app/apps/static-generator/src/cli.ts",
       MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
@@ -121,6 +129,8 @@ describe("adminEnvContract", () => {
         "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_admin?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       PUBLIC_ADMIN_DATABASE_URL:
         "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      PUBLIC_STAGING_ADMIN_DATABASE_URL:
+        "postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       CAELO_SITE_URL: "https://acme.com",
       CAELO_GENERATOR_CLI: "/app/apps/static-generator/src/cli.ts",
       MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
@@ -191,6 +201,8 @@ describe("gatewayEnvContract", () => {
       CAELO_PROVIDER: "gcp",
       CAELO_ENV: "production",
       MEDIA_STORAGE_URL: "gs://acme-caelo-production-media",
+      // #1329 — the live site's gateway.
+      CAELO_GATEWAY_ENVIRONMENT: "live",
       // #845 — gcp: the LB appends <client>,<LB IP>.
       CAELO_TRUSTED_PROXY_HOPS: "2",
       PUBLIC_DATABASE_URL:
@@ -267,6 +279,7 @@ describe("database role secrets (#613)", () => {
     expect(DATABASE_ROLE_SECRET).toEqual({
       admin_role: "postgres-password",
       public_role: "public-role-password",
+      public_staging_role: "public-staging-role-password",
     });
   });
 
@@ -341,10 +354,23 @@ describe("runtime secrets", () => {
     ]);
   });
 
-  it("every CLI-generated secret is read by some service", () => {
+  it("every CLI-generated secret is read by some service, or says what reads it until one does", () => {
+    const read = CLOUD_RUN_SLUGS.flatMap((slug) => serviceSecrets(slug));
     for (const s of CLI_GENERATED_SECRETS) {
-      expect(CLOUD_RUN_SLUGS.flatMap((slug) => serviceSecrets(slug))).toContain(s);
+      if (SECRETS_SET_UP_AHEAD_OF_THEIR_READER[s]) {
+        // Set up ahead: no service may read it yet, or the entry is stale.
+        expect(read).not.toContain(s);
+        continue;
+      }
+      expect(read).toContain(s);
     }
+  });
+
+  it("the two gateway logins share no password secret, and no service reads the staging one yet (#1329)", () => {
+    expect(DATABASE_ROLE_SECRET.public_staging_role).not.toBe(DATABASE_ROLE_SECRET.public_role);
+    expect(CLI_GENERATED_SECRETS).toContain("public-staging-role-password");
+    expect(serviceSecrets("gateway")).not.toContain("public-staging-role-password");
+    expect(serviceSecrets("admin")).not.toContain("public-staging-role-password");
   });
 });
 
@@ -353,7 +379,7 @@ describe("self-hosted compose", () => {
     const yaml = generateDockerCompose({
       domain: "acme.com",
       postgresPassword: "p",
-      rolePasswords: { admin: "a", public: "b" },
+      rolePasswords: { admin: "a", public: "b", publicStaging: "ps" },
       caeloSecretKek: "k",
       dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),

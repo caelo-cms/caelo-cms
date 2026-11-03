@@ -187,6 +187,14 @@ export interface PluginHostInfra {
     }>;
   };
   readonly adapter: DatabaseAdapter;
+  /**
+   * #1329 — the staging site's public database (cms_public_staging) as a
+   * public-only adapter connected as admin_role: every load provisions a
+   * plugin's public tables there too (public-schemas.ts). The admin process
+   * always has one (apps/admin query.ts refuses to start without it);
+   * tests and tooling that never touch the staging database leave it out.
+   */
+  readonly stagingAdapter?: DatabaseAdapter;
   readonly registry: OperationRegistry;
   /** Optional — only required if any active plugin requested `ai_provider`. */
   readonly aiProvider?: AIProvider;

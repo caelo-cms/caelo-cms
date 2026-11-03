@@ -74,7 +74,7 @@ describe("self-hosted compose", () => {
   const base = {
     domain: "acme.com",
     postgresPassword: "pw",
-    rolePasswords: { admin: "a", public: "b" },
+    rolePasswords: { admin: "a", public: "b", publicStaging: "ps" },
     caeloSecretKek: "0".repeat(64),
     dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
     internalSecret: "i".repeat(48),

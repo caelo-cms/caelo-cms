@@ -15,6 +15,7 @@ import {
   grantStatement,
   PLUGIN_SCHEMA_GRANTEES,
   type PluginSchemaDatabase,
+  STAGING_PUBLIC_GRANT_TARGET,
   schemaFromSpec,
 } from "./schema.js";
 
@@ -47,11 +48,22 @@ describe("grantStatement (#635)", () => {
   });
 
   it("refuses roles outside the cms_public set", () => {
-    for (const grantee of ["gateway_role", "PUBLIC", "pg_read_all_data"]) {
+    for (const grantee of ["gateway_role", "PUBLIC", "pg_read_all_data", "public_staging_role"]) {
       expect(() => grantStatement("cms_public", "SELECT (id)", TABLE, grantee)).toThrow(
         /refusing to GRANT/,
       );
     }
+  });
+
+  it("refuses the live gateway's login, and everyone but the staging one and the admin, in cms_public_staging (#1329)", () => {
+    for (const grantee of ["public_role", "gateway_role", "PUBLIC", "pg_read_all_data"]) {
+      expect(() => grantStatement("cms_public_staging", "SELECT (id)", TABLE, grantee)).toThrow(
+        /refusing to GRANT/,
+      );
+    }
+    expect(grantStatement("cms_public_staging", "SELECT", TABLE, "public_staging_role")).toBe(
+      `GRANT SELECT ON ${TABLE} TO public_staging_role;`,
+    );
   });
 });
 
@@ -64,6 +76,16 @@ describe("plugin schema DDL grants (#635)", () => {
         ...SPEC,
         schema: { comments: { body: "text" }, votes: { n: "int" } },
         indexes: undefined,
+      }).sql,
+    ],
+    [
+      "cms_public_staging",
+      schemaFromSpec({
+        tableKinds: { comments: "inbox", votes: "visitor-state" },
+        ...SPEC,
+        schema: { comments: { body: "text" }, votes: { n: "int" } },
+        indexes: undefined,
+        target: STAGING_PUBLIC_GRANT_TARGET,
       }).sql,
     ],
     [

@@ -41,10 +41,15 @@ import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { azureFrontDoorDnsRecords } from "../../dist/azure-front-door.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
-import { DEFAULT_MAX_CONNECTIONS, stackPoolBudget } from "../../dist/pool-budget-stack.js";
+import {
+  DEFAULT_MAX_CONNECTIONS,
+  DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
+  stackPoolBudget,
+} from "../../dist/pool-budget-stack.js";
 import {
   ADMIN_MEMORY_DEFAULT,
   azureContainerAppResources,
+  GATEWAY_ENVIRONMENT_ENV,
   GATEWAY_TRUSTED_PROXY_HOPS,
   MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS,
   REMOTE_MCP_MODE,
@@ -88,6 +93,8 @@ const poolBudget = stackPoolBudget("azure", {
   maxConnections,
   adminMaxInstances: ADMIN_SIDE_APPS * MAX_REPLICAS,
   gatewayMaxInstances: MAX_REPLICAS,
+  // #1329 — the staging gateway joins the budget with the staging database.
+  stagingGatewayMaxInstances: DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
 });
 // #553 — the admin runs the Lighthouse quality audit; same knob + default
 // as every adapter (stack-contract.ts). Container Apps only accepts fixed
@@ -116,6 +123,9 @@ const postgresPassword = pulumi.secret(randomHex(32));
 // #635) never holds admin_role's. bootstrap.sh creates the roles with these
 // (ADMIN_ROLE_PASSWORD / PUBLIC_ROLE_PASSWORD).
 const publicRolePassword = pulumi.secret(randomHex(32));
+// #1329 — the staging gateway's own login on cms_public_staging (created
+// with the database by bootstrap.sh, PUBLIC_STAGING_ROLE_PASSWORD).
+const publicStagingRolePassword = pulumi.secret(randomHex(32));
 const csrfSecret = pulumi.secret(randomHex(32));
 const cookieSecret = pulumi.secret(randomHex(32));
 const anthropicApiKey = pulumi.secret(process.env.ANTHROPIC_API_KEY ?? "");
@@ -145,6 +155,8 @@ function keyVaultSecret(shortName: string, value: pulumi.Output<string>): azure.
 
 const _pgSecret = keyVaultSecret("pg-password", postgresPassword);
 keyVaultSecret("public-role-password", publicRolePassword);
+// #1329 — read by nothing yet: the staging gateway's app (#750) will.
+keyVaultSecret("public-staging-role-password", publicStagingRolePassword);
 keyVaultSecret("csrf-secret", csrfSecret);
 keyVaultSecret("cookie-secret", cookieSecret);
 keyVaultSecret("anthropic-api-key", anthropicApiKey);
@@ -195,6 +207,13 @@ const _pgPublic = new azure.dbforpostgresql.Database(`${namePrefix}-cms-public-d
   databaseName: "cms_public",
   charset: "UTF8",
 });
+// #1329 — staging's own data, the twin of cms_public on the same server.
+const _pgPublicStaging = new azure.dbforpostgresql.Database(`${namePrefix}-cms-public-staging-db`, {
+  resourceGroupName: rg.name,
+  serverName: pgServer.name,
+  databaseName: "cms_public_staging",
+  charset: "UTF8",
+});
 
 // #1338 — verify-full to the server's FQDN. Flexible Server's certificate chains
 // to public roots (DigiCert Global Root G2, Microsoft RSA Root CA 2017) that
@@ -213,6 +232,19 @@ const publicAdminDatabaseUrl = pulumi
 const publicDatabaseUrl = pulumi
   .all([pgServer.fullyQualifiedDomainName, publicRolePassword])
   .apply(([host, pw]) => `postgresql://public_role:${pw}@${host}:5432/cms_public?${AZURE_TLS}`);
+// #1329 — the admin's pool on the staging database (plugin schemas, the
+// staging half of the projection), and the staging gateway's only login.
+const publicStagingAdminDatabaseUrl = pulumi
+  .all([pgServer.fullyQualifiedDomainName, postgresPassword])
+  .apply(
+    ([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_public_staging?${AZURE_TLS}`,
+  );
+const publicStagingDatabaseUrl = pulumi
+  .all([pgServer.fullyQualifiedDomainName, publicStagingRolePassword])
+  .apply(
+    ([host, pw]) =>
+      `postgresql://public_staging_role:${pw}@${host}:5432/cms_public_staging?${AZURE_TLS}`,
+  );
 
 // === 4. Storage account + containers ===
 const storage = new azure.storage.StorageAccount(`${namePrefix}-st`, {
@@ -503,6 +535,7 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
 const adminDatabaseEnv = [
   { name: "ADMIN_DATABASE_URL", value: adminDatabaseUrl },
   { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl },
+  { name: "PUBLIC_STAGING_ADMIN_DATABASE_URL", value: publicStagingAdminDatabaseUrl },
   ...poolBudget.env.admin,
 ];
 const adminApp = containerApp({
@@ -519,8 +552,12 @@ const _gatewayApp = containerApp({
     { name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl },
     ...poolBudget.env.gateway,
   ],
-  // Which X-Forwarded-For entry is the visitor (api-gateway client-ip.ts).
-  extraEnv: [{ name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS.azure) }],
+  // Which X-Forwarded-For entry is the visitor (api-gateway client-ip.ts),
+  // and (#1329) that this is the live site's gateway.
+  extraEnv: [
+    { name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS.azure) },
+    { name: GATEWAY_ENVIRONMENT_ENV, value: "live" },
+  ],
 });
 // #1328 — the MCP-Auth-Proxy, its own Container App and so its own FQDN:
 // remote MCP's sign-in pages never share an origin with the site's module
@@ -565,6 +602,7 @@ const dnsRecordsRequired = pulumi
 const out: CloudAdapterOutputs = {
   adminDatabaseUrl: adminDatabaseUrl as unknown as string,
   publicDatabaseUrl: publicDatabaseUrl as unknown as string,
+  publicStagingDatabaseUrl: publicStagingDatabaseUrl as unknown as string,
   mediaStorageUrl:
     pulumi.interpolate`https://${storage.name}.blob.core.windows.net/media` as unknown as string,
   mediaCdnBaseUrl: pulumi.interpolate`https://${domain}/media` as unknown as string,
@@ -578,6 +616,7 @@ const out: CloudAdapterOutputs = {
 
 export const adminDatabaseUrlOut = out.adminDatabaseUrl;
 export const publicDatabaseUrlOut = out.publicDatabaseUrl;
+export const publicStagingDatabaseUrlOut = out.publicStagingDatabaseUrl;
 export const mediaStorageUrlOut = out.mediaStorageUrl;
 export const mediaCdnBaseUrlOut = out.mediaCdnBaseUrl;
 export const bootstrapUrlOut = out.bootstrapUrl;

@@ -208,7 +208,10 @@ beforeAll(async () => {
   await publishProjectionOnce(adminAdapter, { declarations: new Map(), comments: true });
 
   // --- Gateway side: production wiring. ---
-  const urls = gatewayDatabaseUrls({ PUBLIC_DATABASE_URL: PUBLIC_URL });
+  const urls = gatewayDatabaseUrls({
+    PUBLIC_DATABASE_URL: PUBLIC_URL,
+    CAELO_GATEWAY_ENVIRONMENT: "live",
+  });
   gatewayAdapter = new DatabaseAdapter({
     adminDatabaseUrl: null,
     publicDatabaseUrl: urls.public,

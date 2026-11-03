@@ -87,7 +87,8 @@ import {
 } from "./client-ip.js";
 import {
   databaseIsolationProblems,
-  GATEWAY_DATABASE_ROLES,
+  GATEWAY_ENVIRONMENTS,
+  gatewayDatabaseRoles,
   gatewayDatabaseUrls,
 } from "./database-env.js";
 import { gatewayStateGc } from "./gc.js";
@@ -1022,18 +1023,22 @@ if (import.meta.main) {
     `[api-gateway] client address: ${hops === 0 ? "the TCP peer (no proxy in front)" : `X-Forwarded-For entry ${hops} from the end`}`,
   );
   const urls = gatewayDatabaseUrls(process.env);
+  console.log(`[api-gateway] environment: ${urls.environment}`);
   // No cms_admin pool at all (#635): every path that would reach the
   // authoring database throws AdminDatabaseUnavailableError. verifyRoles
-  // fails loudly if the URL resolves to anything but public_role.
+  // fails loudly if the URL resolves to anything but the environment's own
+  // login on its own database (#1329).
   const adapter = new DatabaseAdapter({
     adminDatabaseUrl: null,
     publicDatabaseUrl: urls.public,
-    expectedRoles: GATEWAY_DATABASE_ROLES,
+    publicDatabase: GATEWAY_ENVIRONMENTS[urls.environment].database,
+    expectedRoles: gatewayDatabaseRoles(urls.environment),
   });
-  // Ask the database too (#635): a login that can reach cms_admin, or a
-  // bridge out of cms_public, is refused before the first request.
+  // Ask the database too (#635, #1329): a login that can reach cms_admin or
+  // the other environment's database, or a bridge out of its own, is
+  // refused before the first request.
   await adapter.verifyRoles();
-  const isolation = await databaseIsolationProblems(adapter.rawPublic());
+  const isolation = await databaseIsolationProblems(adapter.rawPublic(), urls.environment);
   if (isolation.length > 0) {
     const lines = isolation.map((p) => `  - ${p}`).join("\n");
     throw new Error(

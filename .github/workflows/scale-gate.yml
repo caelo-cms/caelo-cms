@@ -36,9 +36,12 @@ jobs:
       POSTGRES_DB: postgres
       ADMIN_ROLE_PASSWORD: caelo_admin_scale_gate
       PUBLIC_ROLE_PASSWORD: caelo_public_scale_gate
+      PUBLIC_STAGING_ROLE_PASSWORD: caelo_public_staging_scale_gate
       ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_scale_gate@localhost:5432/cms_admin
       PUBLIC_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_scale_gate@localhost:5432/cms_public
       PUBLIC_DATABASE_URL: postgres://public_role:caelo_public_scale_gate@localhost:5432/cms_public
+      PUBLIC_STAGING_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_scale_gate@localhost:5432/cms_public_staging
+      PUBLIC_STAGING_DATABASE_URL: postgres://public_staging_role:caelo_public_staging_scale_gate@localhost:5432/cms_public_staging
       # A throwaway KEK for this run's throwaway database only.
       CAELO_SECRET_KEK: "0000000000000000000000000000000000000000000000000000000000000001"
       SCALE_GATE_PAGES: "50000"
