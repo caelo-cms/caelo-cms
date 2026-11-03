@@ -19,11 +19,12 @@
  *   ratchets up), except where noise makes "better" meaningless (below).
  *
  * Measurement noise, handled explicitly and nowhere else:
- * - Performance is the page's best of several runs (`bestRunIndex`,
- *   lighthouse-extract.ts, #874), and its Performance-only findings are the
- *   ones that fail in that run. Nothing else is smoothed: no "good enough"
- *   bar, no consecutive-audit guard.
- * - Even the best run moves by a point or two between audits of an
+ * - Performance is the page's scoring run (`scoringRun`, run-selection.ts:
+ *   the best of several runs that agree, #874, or the median of five when
+ *   they disagree, #1370), and its Performance-only findings are the ones
+ *   that fail in that run. Nothing else is smoothed: no "good enough" bar,
+ *   no consecutive-audit guard.
+ * - Even the scoring run moves by a point or two between audits of an
  *   unchanged page. So when — and ONLY when — a Performance value is
  *   compared with an editor's acceptance, it may be up to
  *   ACCEPTED_PERFORMANCE_TOLERANCE points below the accepted value before

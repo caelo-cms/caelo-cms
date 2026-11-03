@@ -9,6 +9,7 @@ import {
   type AuditTaskLauncher,
   createParallelAuditRunner,
   planAuditTasks,
+  planConfirmationTasks,
 } from "../parallel-runner.js";
 import { QUALITY_CATEGORIES } from "../ratchet.js";
 import { recordedRuns } from "./fixtures/sample-metrics.js";
@@ -36,27 +37,29 @@ function wire(
   return JSON.parse(JSON.stringify({ ...run, scores: { ...run.scores, performance } }));
 }
 
-/** A launcher whose batch finishes after `ticks` progress polls, each task with `answer(order)`. */
+/** A launcher whose batches each finish after `ticks` progress polls, each task with `answer(order)`. */
 function fakeLauncher(
   answer: (order: AuditTaskOrder) => AuditTaskResult | "crash" | "hang",
   ticks = 1,
 ): AuditTaskLauncher & { batches: AuditTaskBatch[] } {
   const batches: AuditTaskBatch[] = [];
   const store = new Map<string, string>();
-  let polls = 0;
+  const polls = new Map<string, number>();
   return {
     label: "fake launcher",
     batches,
     async start(batch) {
       batches.push(batch);
-      return "execution-1";
+      return `execution-${batches.length}`;
     },
-    async progress() {
-      polls += 1;
-      if (polls < ticks) return { failed: 0, finished: false };
+    async progress(handle) {
+      const n = (polls.get(handle) ?? 0) + 1;
+      polls.set(handle, n);
+      if (n < ticks) return { failed: 0, finished: false };
       let failed = 0;
       let hanging = 0;
-      for (const order of batches[0]?.orders ?? []) {
+      const batch = batches[Number(handle.slice("execution-".length)) - 1];
+      for (const order of batch?.orders ?? []) {
         const a = answer(order);
         if (a === "crash") failed += 1;
         else if (a === "hang") hanging += 1;
@@ -113,12 +116,49 @@ describe("planAuditTasks", () => {
   });
 });
 
+describe("planConfirmationTasks", () => {
+  const tasks = planAuditTasks(job, JOB_ID);
+  const answered = (score: (taskId: string) => number | "error") =>
+    new Map<number, AuditTaskResult>(
+      tasks.map((t, i) => {
+        const s = score(t.order.taskId);
+        return [
+          i,
+          s === "error"
+            ? { kind: "run-error", taskId: t.order.taskId, code: "X", message: "404" }
+            : { kind: "run", taskId: t.order.taskId, run: wire(t.runIndex === 0, s) },
+        ];
+      }),
+    );
+
+  it("plans the runs up to five for a disagreeing page only", () => {
+    const extra = planConfirmationTasks(
+      job,
+      tasks,
+      answered((id) => (id === "p1-r1" ? 90 : 100)),
+    );
+    expect(extra.map((t) => [t.order.taskId, t.pageIndex, t.runIndex])).toEqual([
+      ["p1-r3", 1, 3],
+      ["p1-r4", 1, 4],
+    ]);
+  });
+
+  it("plans nothing for a page with a run error: it is reported as it is", () => {
+    const extra = planConfirmationTasks(
+      job,
+      tasks,
+      answered((id) => (id === "p0-r1" ? "error" : id === "p0-r2" ? 50 : 100)),
+    );
+    expect(extra).toEqual([]);
+  });
+});
+
 describe("createParallelAuditRunner", () => {
-  it("starts every task at once and combines each page's runs by its best run", async () => {
+  it("starts every task at once and combines each page's agreeing runs by its best run", async () => {
     const scores: Record<string, number> = {
-      "p0-r0": 89,
+      "p0-r0": 99,
       "p0-r1": 100,
-      "p0-r2": 87,
+      "p0-r2": 98,
       "p1-r0": 95,
       "p1-r1": 94,
       "p1-r2": 93,
@@ -138,8 +178,72 @@ describe("createParallelAuditRunner", () => {
       [PAGE_A, 100],
       [PAGE_B, 95],
     ]);
-    expect(result.pages[0]?.performanceRuns).toEqual([89, 100, 87]);
-    expect(result.pages[0]?.measurement.metrics.runs).toBe(3);
+    expect(result.pages[0]?.performanceRuns).toEqual([99, 100, 98]);
+    expect(result.pages[0]?.measurement.metrics).toMatchObject({ runs: 3, scoredBy: "best" });
+  });
+
+  it("confirms a page whose runs disagree in a second batch and scores it by the median of five (#1370)", async () => {
+    // Page A: 100/100/91 (#1370's host contention) -> 2 more runs; page B agrees.
+    const scores: Record<string, number> = {
+      "p0-r0": 100,
+      "p0-r1": 100,
+      "p0-r2": 91,
+      "p0-r3": 92,
+      "p0-r4": 93,
+      "p1-r0": 100,
+      "p1-r1": 99,
+      "p1-r2": 100,
+    };
+    const launcher = fakeLauncher((o) => ({
+      kind: "run",
+      taskId: o.taskId,
+      run: wire(o.categories === "all", scores[o.taskId] as number),
+    }));
+    const result = await runner(launcher)(job);
+    expect(launcher.batches).toHaveLength(2);
+    expect(launcher.batches[1]?.orders.map((o) => [o.taskId, o.categories, o.pageId])).toEqual([
+      ["p0-r3", "performance", PAGE_A],
+      ["p0-r4", "performance", PAGE_A],
+    ]);
+    expect(launcher.batches[1]?.orders[0]?.resultKey).toBe(`${JOB_ID}/p0-r3.json`);
+    if (!result.ok) throw new Error(result.failure.message);
+    const [a, b] = result.pages;
+    expect(a?.performanceRuns).toEqual([100, 100, 91, 92, 93]);
+    // ranked 100, 100, 93, 92, 91: the median is 93, not the best run's 100.
+    expect(a?.measurement.scores.performance).toBe(93);
+    expect(a?.measurement.metrics).toMatchObject({ runs: 5, scoredBy: "median" });
+    expect(b?.measurement.scores.performance).toBe(100);
+    expect(b?.measurement.metrics).toMatchObject({ runs: 3, scoredBy: "best" });
+  });
+
+  it("starts no confirmation batch when every page's runs agree", async () => {
+    const launcher = fakeLauncher((o) => ({
+      kind: "run",
+      taskId: o.taskId,
+      run: wire(o.categories === "all", 100),
+    }));
+    const result = await runner(launcher)(job);
+    expect(result.ok).toBe(true);
+    expect(launcher.batches).toHaveLength(1);
+  });
+
+  it("fails the audit loudly when a confirmation task stops without a result", async () => {
+    const scores: Record<string, number> = { "p0-r0": 100, "p0-r1": 80, "p0-r2": 100 };
+    const launcher = fakeLauncher((o) =>
+      o.taskId === "p0-r4"
+        ? "crash"
+        : {
+            kind: "run",
+            taskId: o.taskId,
+            run: wire(o.categories === "all", scores[o.taskId] ?? 100),
+          },
+    );
+    const result = await runner(launcher)(job);
+    expect(launcher.batches).toHaveLength(2);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.failure.code).toBe("child-failed");
+    expect(result.failure.message).toContain("p0-r4");
   });
 
   it("reports a page Lighthouse could not measure as a page error, not the whole audit", async () => {

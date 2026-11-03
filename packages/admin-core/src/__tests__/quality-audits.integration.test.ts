@@ -27,12 +27,15 @@ import {
   listQualityAcceptancesTool,
   listQualityAuditsTool,
 } from "../ai/tools/quality-audit-tools.js";
-import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
+import { recordedRuns, sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
+import type { AuditTaskBatch, AuditTaskResult } from "../quality/audit-task-protocol.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
 import { testCheckRegistry } from "../quality/checks/__tests__/fixtures/test-checks.js";
+import { reduceRun } from "../quality/lighthouse-extract.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
 import type { AuditJobResult } from "../quality/lighthouse-runner.js";
-import type { FailingAudit, QualityCategory } from "../quality/ratchet.js";
+import { type AuditTaskLauncher, createParallelAuditRunner } from "../quality/parallel-runner.js";
+import { type FailingAudit, QUALITY_CATEGORIES, type QualityCategory } from "../quality/ratchet.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -200,6 +203,13 @@ async function record(auditRunId: string, pages: ReturnType<typeof pageResult>[]
 
 /** A staged origin serving the routing manifest of `runId` and, for every
  *  other path, a page with a meta description (the page checks pass). */
+/** The calibration of a 2313 host aimed at the target device (#1370). */
+const CALIBRATION = {
+  benchmarkIndex: 2313,
+  cpuSlowdownMultiplier: 5.34,
+  targetBenchmarkIndex: 433,
+};
+
 function stagedServer(runId: string) {
   return Bun.serve({
     hostname: "127.0.0.1",
@@ -723,6 +733,87 @@ describe("worker drain", () => {
     expect(got.run.status).toBe("passed");
     // #727 — the page checks read every published page.
     expect(got.run.checkSummary).toMatchObject({ pagesChecked: 2, checkIds: ["test-meta"] });
+  });
+
+  it("aggregates disagreeing parallel runs by their median of five and records them (#1370)", async () => {
+    const deployRunId = await deployRun("staging", 95);
+    await op(SYS, "quality_audits.enqueue", { deployRunId, chatSessionId: null, branch: null });
+    const server = stagedServer(deployRunId);
+    // The homepage's first runs disagree (100/100/91, #1370's host
+    // contention); its confirmation runs score 92 and 93.
+    const scores: Record<string, number> = {
+      "p0-r0": 100,
+      "p0-r1": 100,
+      "p0-r2": 91,
+      "p0-r3": 92,
+      "p0-r4": 93,
+    };
+    const [full, perfOnly] = recordedRuns();
+    const batches: AuditTaskBatch[] = [];
+    const store = new Map<string, string>();
+    const launcher: AuditTaskLauncher = {
+      label: "test launcher",
+      async start(batch) {
+        batches.push(batch);
+        for (const o of batch.orders) {
+          const reduced =
+            o.categories === "all"
+              ? reduceRun(full, QUALITY_CATEGORIES, CALIBRATION)
+              : reduceRun(perfOnly, ["performance"], CALIBRATION);
+          const result: AuditTaskResult = {
+            kind: "run",
+            taskId: o.taskId,
+            run: JSON.parse(
+              JSON.stringify({
+                ...reduced,
+                scores: { ...reduced.scores, performance: scores[o.taskId] },
+              }),
+            ),
+          };
+          store.set(o.resultKey, JSON.stringify(result));
+        }
+        return `batch-${batches.length}`;
+      },
+      progress: async () => ({ failed: 0, finished: true }),
+      readResult: async (key) => store.get(key) ?? null,
+    };
+    try {
+      await drainAuditQueue({
+        adapter,
+        registry,
+        env: { provider: "self-hosted", stagingBaseUrl: `http://127.0.0.1:${server.port}` },
+        runJob: createParallelAuditRunner({ launcher, sleep: async () => {} }),
+      });
+    } finally {
+      server.stop(true);
+    }
+    expect(batches.map((b) => b.orders.map((o) => o.taskId))).toEqual([
+      ["p0-r0", "p0-r1", "p0-r2"],
+      ["p0-r3", "p0-r4"],
+    ]);
+    const got = await op<{
+      run: { status: string };
+      pages: {
+        pageId: string;
+        scores: Record<string, number> | null;
+        performanceRuns: number[];
+        metrics: { runs: number; scoredBy?: string; cpuCalibration?: unknown } | null;
+      }[];
+    }>(SYS, "quality_audits.get", { deployRunId });
+    const home = got.pages.find((p) => p.pageId === homeId);
+    expect([...(home?.performanceRuns ?? [])]).toEqual([100, 100, 91, 92, 93]);
+    // ranked 100, 100, 93, 92, 91: the median run, not the best one.
+    expect(home?.scores?.performance).toBe(93);
+    expect(home?.metrics).toMatchObject({
+      runs: 5,
+      scoredBy: "median",
+      cpuCalibration: CALIBRATION,
+    });
+    expect(got.run.status).toBe("problems");
+    // The read-surface tests below read the newest problems audit.
+    await withSql(async (tx) => {
+      await tx`DELETE FROM quality_audit_runs WHERE deploy_run_id = ${deployRunId}::uuid`;
+    });
   });
 
   it("records an unreachable staging origin as a failed audit", async () => {

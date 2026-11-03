@@ -192,7 +192,7 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       name: "Quality checks (Cloud Run audit job)",
       monthlyUsd: 2,
       notes:
-        "one container per Lighthouse run, all in parallel (up to 5 pages x 3 runs, ~90 s at 2 vCPU each): ~$0.05 per audited Stage, partly in the free tier; results bucket ~$0",
+        "one container per Lighthouse run, all in parallel (up to 5 pages x 3 runs, ~90 s at 2 vCPU each; a page whose runs disagree gets 2 more): ~$0.05 per audited Stage, at most ~$0.08, partly in the free tier; results bucket ~$0",
     },
     {
       name: "Screenshots (Cloud Run capture job)",
