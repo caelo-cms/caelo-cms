@@ -22,9 +22,10 @@ import { join } from "node:path";
 import { CAELO_VERSION } from "@caelo-cms/shared";
 import { readConvergeCheckpoint, writeConvergeCheckpoint } from "./converge-checkpoint.js";
 import type { ConvergeJobDeps, ConvergeQueue, ConvergeUpgradeOutcome } from "./converge-job.js";
+import { isSelfGrantableRole } from "./converge-job-preflight.js";
 import { CONVERGE_TASK_TIMEOUT_MINUTES } from "./converge-job-setup.js";
 import { gcloud } from "./gcloud.js";
-import { type GcloudRunner, realSleep } from "./gcloud-retry.js";
+import { type GcloudRunner, realSleep, runWithRetry } from "./gcloud-retry.js";
 import {
   convergeJobName,
   GCP_STACK_ENV,
@@ -42,6 +43,7 @@ import {
 } from "./install-state.js";
 import { runMigrationsViaCloudRunJob } from "./migration-runner.js";
 import { installIapAllowlist } from "./operator-access.js";
+import { provisionerServiceAccountEmail } from "./provisioner-identity.js";
 import { fetchVerifiedReleaseManifest, manifestServiceImages } from "./release-manifest.js";
 import type { HttpFetch } from "./runtime-secrets.js";
 import { publicSiteUrl, STAGING_HOST_ENV } from "./stack-contract.js";
@@ -201,6 +203,26 @@ export function convergeExecutionNameError(execution: string | null): string | n
 export function startedExecutionName(stdout: string, stderr: string): string | null {
   const name = stdout.trim().split(/\s+/)[0] || /Execution \[([^\]]+)\]/.exec(stderr)?.[1] || "";
   return /^[a-z0-9-]+$/.test(name) ? name : null;
+}
+
+/**
+ * The `gcloud` argv that grants the install's provisioner — this job's
+ * own identity, never another principal — `role` on the project, or null
+ * when `role` is not on the self-grant allowlist (converge-job-preflight.ts).
+ * Exported for the tests that pin the boundary.
+ */
+export function selfGrantArgs(projectId: string, role: string): string[] | null {
+  if (!isSelfGrantableRole(role)) return null;
+  return [
+    "projects",
+    "add-iam-policy-binding",
+    projectId,
+    `--member=serviceAccount:${provisionerServiceAccountEmail(projectId)}`,
+    `--role=${role}`,
+    "--condition=None",
+    "--quiet",
+    "--format=none",
+  ];
 }
 
 /**
@@ -366,6 +388,16 @@ export function gcpConvergeDeps(
     projectId,
     region,
     iam: gcloudIamTester(run, http),
+    grantOwnRole: async (role) => {
+      const args = selfGrantArgs(projectId, role);
+      if (!args)
+        return { ok: false, error: `${role} is not a role the converge job may grant itself` };
+      const r = await runWithRetry(run, realSleep, args);
+      return r.ok
+        ? { ok: true }
+        : { ok: false, error: r.stderr.trim() || `gcloud exited ${r.exitCode}` };
+    },
+    sleep: realSleep,
     execution: placement.execution,
     ownVersion: CAELO_VERSION,
     // The default deps: the fixed registry and signer, never overridden.

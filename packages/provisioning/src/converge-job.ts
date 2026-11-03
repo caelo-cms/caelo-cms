@@ -16,7 +16,9 @@
  *     verifies its signature (release-manifest.ts), and decides
  *     (upgrader-assess.ts, `route: "converge"`): no downgrade, nothing
  *     below minFromVersion, no automatic converge unless the policy allows
- *     it; then it checks its own IAM access (converge-job-preflight.ts).
+ *     it; then it checks its own IAM access (converge-job-preflight.ts) and
+ *     stops on anything missing — except a role of the self-grant
+ *     allowlist, which it leaves to stage 2.
  *     Then it verifies the target's ops image, points this job at it BY DIGEST and starts a new
  *     execution, handing the request over to it. It changes nothing else:
  *     the converge logic always comes from the release it installs.
@@ -25,7 +27,9 @@
  *     version is the request's). It verifies the manifest again, checks
  *     that the image it runs is the one the manifest signs, takes the
  *     install's state lock (#815; the upgrader job and the terminal
- *     `upgrade` take the same one, so they exclude each other), and runs
+ *     `upgrade` take the same one, so they exclude each other), grants its
+ *     own account the allowlisted roles the self-check found missing (each
+ *     a timeline event; IAM is asked again before it goes on), and runs
  *     the very upgrade the terminal runs (upgrade/upgrade.ts): backup →
  *     converge + app-roll → deep health check, rollback on failure →
  *     install.json + the infrastructure contract → the request's end.
@@ -46,10 +50,16 @@
  */
 
 import type { ConvergeCheckpoint } from "./converge-checkpoint.js";
-import { CONVERGE_PREFLIGHT_VOICE, convergeAccessChecks } from "./converge-job-preflight.js";
+import {
+  CONVERGE_PREFLIGHT_VOICE,
+  convergeAccessChecks,
+  INSTALL_ROLE_USES,
+  selfGrantPlan,
+} from "./converge-job-preflight.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
-import { decideInstallJob, type ExecutionState } from "./install-job.js";
+import { decideInstallJob, type ExecutionState, type InstallJobRole } from "./install-job.js";
 import type { InstallMetadata } from "./install-state.js";
+import { provisionerServiceAccountEmail } from "./provisioner-identity.js";
 import {
   compareSemver,
   type ReleaseManifest,
@@ -60,6 +70,7 @@ import type { UpgradeCheckpoint } from "./upgrade/upgrade.js";
 import { assessUpgradeRequest } from "./upgrader-assess.js";
 import {
   type IamTester,
+  missingAccessText,
   preflightErrorReason,
   preflightMissingReason,
   runIamPreflight,
@@ -116,6 +127,14 @@ export type ConvergeUpgradeOutcome =
       readonly unrecorded: boolean;
     };
 
+/**
+ * How long stage 2 waits for IAM to confirm the roles it granted itself:
+ * Google documents that a policy change usually applies within two minutes
+ * and can take seven (cloud.google.com/iam/docs/access-change-propagation).
+ */
+export const SELF_GRANT_RECHECK_INTERVAL_MS = 15_000;
+export const SELF_GRANT_RECHECK_ATTEMPTS = 32;
+
 /** How {@link ConvergeJobDeps.secureDatabase} ended. */
 export type SecureDatabaseResult =
   | { readonly ok: true; readonly host: string }
@@ -138,6 +157,16 @@ export interface ConvergeJobDeps {
   readonly region: string;
   /** Asks IAM as this job's own identity (the IAM self-check, #884). */
   readonly iam: IamTester;
+  /**
+   * Grant this job's own account (the install's provisioner) `role` on the
+   * project. Stage 2 only, and only for roles of the self-grant allowlist
+   * (converge-job-preflight.ts); the real one refuses any other role.
+   */
+  readonly grantOwnRole: (
+    role: InstallJobRole,
+  ) => Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }>;
+  /** Waits between the IAM re-checks after a self-grant. */
+  readonly sleep: (ms: number) => Promise<void>;
   /** This Cloud Run execution; null outside Cloud Run. */
   readonly execution: string | null;
   /** The Caelo release this code belongs to (CAELO_VERSION of the image). */
@@ -326,18 +355,11 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
 
     // #884 — decided to run: ask IAM for what the rest needs before the
     // lock, the hand-over or the backup (converge-job-preflight.ts). Both
-    // stages ask; stage 2's list is the target release's own.
-    const access = await runIamPreflight(
-      convergeAccessChecks({ projectId: deps.projectId, region: deps.region, env: GCP_STACK_ENV }),
-      deps.iam,
-    );
-    if (access.kind === "missing") {
-      return stopWith(
-        "needs_cloud_shell",
-        ["iam-preflight"],
-        preflightMissingReason(access.missing, CONVERGE_PREFLIGHT_VOICE),
-      );
-    }
+    // stages ask; stage 2's list is the target release's own. A missing
+    // role of the self-grant allowlist does not stop the run: stage 2
+    // grants it once it has verified its own image and holds the lock.
+    const stage1 = compareSemver(deps.ownVersion, m.version) !== 0;
+    const access = await askIam();
     if (access.kind === "error") {
       return stopWith(
         "failed",
@@ -345,12 +367,36 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
         preflightErrorReason(access.errors, CONVERGE_PREFLIGHT_VOICE),
       );
     }
-    r.info("The converge job has every permission this update needs.");
+    let toGrant: readonly InstallJobRole[] = [];
+    if (access.kind === "missing") {
+      const plan = selfGrantPlan(access.missing);
+      if (plan.blocking.length > 0) {
+        return stopWith(
+          "needs_cloud_shell",
+          ["iam-preflight"],
+          preflightMissingReason(access.missing, CONVERGE_PREFLIGHT_VOICE),
+        );
+      }
+      toGrant = plan.grant;
+    }
+    if (toGrant.length === 0) {
+      r.info("The converge job has every permission this update needs.");
+    } else {
+      r.info(
+        `The converge job's account lacks ${toGrant.join(", ")}, which this update needs. ${stage1 ? `The installer of ${m.version} grants them to it` : "It grants them to itself"} before it changes anything, once its own installer image is verified.`,
+      );
+    }
 
-    if (compareSemver(deps.ownVersion, m.version) !== 0) {
+    if (stage1) {
       return await handOver(m);
     }
-    return await convergeHere(m, fromVersion ?? (meta.releaseVersion as string), checkpoint, meta);
+    return await convergeHere(
+      m,
+      fromVersion ?? (meta.releaseVersion as string),
+      checkpoint,
+      meta,
+      toGrant,
+    );
   } catch (e) {
     return stopWith(
       "failed",
@@ -414,6 +460,7 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     fromVersion: string,
     checkpoint: ConvergeCheckpoint | null,
     judged: InstallMetadata,
+    toGrant: readonly InstallJobRole[],
   ): Promise<UpgraderRunResult> {
     const installId = judged.installId;
     const own = await deps.ownImageDigest();
@@ -452,6 +499,13 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     // upgrade) may have changed it since. Never converge on a stale view.
     const stale = recordsChangedSince(judged, changed);
     if (stale) return stopWith(stale.status, stale.codes, stale.reason);
+
+    // After the image check and under the lock: only the target release's
+    // verified installer grants, and only roles of its own allowlist.
+    if (toGrant.length > 0) {
+      const granted = await grantOwnRoles(m, toGrant, changed);
+      if (granted) return stopWith(granted.status, granted.codes, granted.reason);
+    }
 
     const startedAt = deps.now().toISOString();
     let current: ConvergeCheckpoint = {
@@ -548,6 +602,76 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
       ["converge"],
       `The update to ${m.version} stopped before it finished (see the timeline above); the previous release keeps serving. Fix what it names and start the update again; it continues where it stopped.`,
     );
+  }
+
+  /** The converge self-check against IAM, as this job's identity. */
+  function askIam() {
+    return runIamPreflight(
+      convergeAccessChecks({ projectId: deps.projectId, region: deps.region, env: GCP_STACK_ENV }),
+      deps.iam,
+    );
+  }
+
+  /**
+   * Stage 2: grant this job's account each role in `roles` (the self-check
+   * found them missing; all are on the allowlist), then wait until IAM
+   * confirms the whole self-check. Null when it does; how the request ends
+   * otherwise.
+   */
+  async function grantOwnRoles(
+    m: ReleaseManifest,
+    roles: readonly InstallJobRole[],
+    changed: boolean,
+  ): Promise<{ status: UpdateEndStatus; codes: string[]; reason: string } | null> {
+    const account = provisionerServiceAccountEmail(deps.projectId);
+    const granted: InstallJobRole[] = [];
+    const before = () =>
+      changed
+        ? "This update already started changing the site; "
+        : granted.length > 0
+          ? `Nothing on the site was changed (the converge job's account got ${granted.join(", ")}): `
+          : "Nothing was changed: ";
+    for (const role of roles) {
+      const result = await deps.grantOwnRole(role);
+      if (!result.ok) {
+        return {
+          status: "needs_cloud_shell",
+          codes: ["iam-self-grant"],
+          reason: `${before()}the converge job could not grant its own account (${account}) ${role}, which Caelo ${m.version} needs to ${INSTALL_ROLE_USES[role].need} (${result.error}). ${CONVERGE_PREFLIGHT_VOICE.repair}`,
+        };
+      }
+      granted.push(role);
+      r.success(
+        `Granted ${role} to the converge job's account (${account}), needed by Caelo ${m.version} to ${INSTALL_ROLE_USES[role].need}.`,
+      );
+    }
+    await r.flush();
+    let last = await askIam();
+    for (let attempt = 1; last.kind !== "ok" && attempt < SELF_GRANT_RECHECK_ATTEMPTS; attempt++) {
+      await deps.sleep(SELF_GRANT_RECHECK_INTERVAL_MS);
+      last = await askIam();
+    }
+    if (last.kind === "ok") {
+      r.info(
+        "IAM confirms the granted roles; the converge job has every permission this update needs.",
+      );
+      return null;
+    }
+    const minutes = Math.round(
+      (SELF_GRANT_RECHECK_INTERVAL_MS * (SELF_GRANT_RECHECK_ATTEMPTS - 1)) / 60_000,
+    );
+    if (last.kind === "error") {
+      return {
+        status: "failed",
+        codes: ["iam-self-grant"],
+        reason: `${before()}after granting its own account ${granted.join(", ")}, the converge job could not check its access again (${last.errors.join("; ")}). Start the update again from Settings → Updates in a few minutes.`,
+      };
+    }
+    return {
+      status: "needs_cloud_shell",
+      codes: ["iam-self-grant"],
+      reason: `${before()}the converge job granted its own account ${granted.join(", ")}, but ${minutes} minutes later Google Cloud still reports permissions missing — ${missingAccessText(last.missing)}. ${CONVERGE_PREFLIGHT_VOICE.repair}`,
+    };
   }
 
   /**

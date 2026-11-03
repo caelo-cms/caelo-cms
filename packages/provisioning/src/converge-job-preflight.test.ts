@@ -7,10 +7,15 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { selfGrantArgs } from "./converge-job-gcp.js";
 import {
   CONVERGE_PREFLIGHT_VOICE,
+  CONVERGE_SELF_GRANTABLE_ROLES,
   convergeAccessChecks,
   INSTALL_ROLE_USES,
+  isSelfGrantableRole,
+  SELF_GRANT_FORBIDDEN_ROLES,
+  selfGrantPlan,
 } from "./converge-job-preflight.js";
 import { PROVISIONER_ROLE_LIST } from "./gcloud.js";
 import { INSTALL_JOB_ROLES } from "./install-job.js";
@@ -79,6 +84,7 @@ describe("convergeAccessChecks", () => {
     for (const role of INSTALL_JOB_ROLES) {
       expect(checks).toContainEqual({
         resource: { kind: "project", projectId: "acme" },
+        role,
         ...INSTALL_ROLE_USES[role],
       });
     }
@@ -109,5 +115,100 @@ describe("convergeAccessChecks", () => {
     const reason = preflightMissingReason(r.missing, CONVERGE_PREFLIGHT_VOICE);
     expect(reason).toContain("keeps the admin's access list in sync");
     expect(reason).toContain("Cloud Shell or the computer you installed from");
+  });
+});
+
+describe("the converge job's self-grant allowlist (2026-11-03)", () => {
+  it("is exactly the roles converge-job-setup.ts grants the provisioner", () => {
+    expect([...CONVERGE_SELF_GRANTABLE_ROLES]).toEqual([...INSTALL_JOB_ROLES]);
+    expect(CONVERGE_SELF_GRANTABLE_ROLES).toContain("roles/workflows.editor");
+  });
+
+  it("names no ownership or IAM-policy role", () => {
+    for (const role of CONVERGE_SELF_GRANTABLE_ROLES) {
+      for (const f of SELF_GRANT_FORBIDDEN_ROLES) {
+        expect(role === f || (f.endsWith(".") && role.startsWith(f))).toBe(false);
+      }
+    }
+  });
+
+  it("refuses every role outside the list, escalations first", () => {
+    for (const role of [
+      "roles/owner",
+      "roles/editor",
+      "roles/resourcemanager.projectIamAdmin",
+      "roles/iam.securityAdmin",
+      "roles/iam.serviceAccountKeyAdmin",
+      "roles/run.admin",
+      "roles/workflows.admin",
+      "roles/workflows.editor ",
+      "",
+    ]) {
+      expect(isSelfGrantableRole(role)).toBe(false);
+    }
+    for (const role of INSTALL_JOB_ROLES) expect(isSelfGrantableRole(role)).toBe(true);
+  });
+
+  it("the grant names the project and the provisioner only, and refuses other roles", () => {
+    expect(selfGrantArgs("acme", "roles/workflows.editor")).toEqual([
+      "projects",
+      "add-iam-policy-binding",
+      "acme",
+      "--member=serviceAccount:caelo-provisioner@acme.iam.gserviceaccount.com",
+      "--role=roles/workflows.editor",
+      "--condition=None",
+      "--quiet",
+      "--format=none",
+    ]);
+    for (const role of [
+      "roles/owner",
+      "roles/resourcemanager.projectIamAdmin",
+      "roles/run.admin",
+    ]) {
+      expect(selfGrantArgs("acme", role)).toBeNull();
+    }
+  });
+});
+
+describe("selfGrantPlan", () => {
+  it("an install from before 0.11.11 (no workflows.editor) needs one grant and nothing blocks", async () => {
+    const r = await runIamPreflight(
+      convergeAccessChecks(TARGET),
+      provisioner([
+        ...PROVISIONER_ROLE_LIST,
+        ...INSTALL_JOB_ROLES.filter((role) => role !== "roles/workflows.editor"),
+      ]),
+    );
+    expect(r.kind).toBe("missing");
+    if (r.kind !== "missing") return;
+    expect(selfGrantPlan(r.missing)).toEqual({ grant: ["roles/workflows.editor"], blocking: [] });
+  });
+
+  it("every install-job role missing: all of them, in list order", async () => {
+    const r = await runIamPreflight(
+      convergeAccessChecks(TARGET),
+      provisioner(PROVISIONER_ROLE_LIST),
+    );
+    if (r.kind !== "missing") throw new Error("expected missing");
+    const plan = selfGrantPlan([...r.missing].reverse());
+    expect(plan.grant).toEqual([...INSTALL_JOB_ROLES]);
+    expect(plan.blocking).toEqual([]);
+  });
+
+  it("a check without a role, or with a role off the list, blocks", () => {
+    const actAs = convergeAccessChecks(TARGET).find((c) =>
+      c.permissions.includes("iam.serviceAccounts.actAs"),
+    );
+    if (!actAs) throw new Error("no actAs check");
+    const forged = {
+      ...actAs,
+      role: "roles/owner" as unknown as (typeof INSTALL_JOB_ROLES)[number],
+    };
+    const plan = selfGrantPlan([
+      { check: actAs, missing: ["iam.serviceAccounts.actAs"] },
+      { check: forged, missing: ["iam.serviceAccounts.actAs"] },
+    ]);
+    expect(plan.grant).toEqual([]);
+    expect(plan.blocking).toHaveLength(2);
   });
 });

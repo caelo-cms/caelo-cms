@@ -193,7 +193,9 @@ page. The usual suspects:
   the converge job instead, whose self-check
   (`packages/provisioning/src/converge-job-preflight.ts`) uses the same
   code `iam-preflight` for the provisioner's grants; fix those in
-  `converge-job-setup.ts`.
+  `converge-job-setup.ts`. A missing role of `INSTALL_JOB_ROLES` does not
+  stop it: the release's own installer grants it (code `iam-self-grant`
+  when that fails), see [converge-job-self-grant.md](./converge-job-self-grant.md).
 - Migration job errors mentioning `compute.subnetworks` would mean Direct
   VPC egress needs more than Google documents (only the Cloud Run service
   agent needs compute permissions); see the note in `upgrader-setup.ts`.

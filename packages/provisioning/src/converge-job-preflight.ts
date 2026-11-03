@@ -26,6 +26,23 @@
  *   - the Cloud SQL IAM login `ensureConvergeJob` creates (member of
  *     {@link UPGRADER_DB_ROLE}): the request row and the timeline.
  *
+ * Self-grant (maintainer decision 2026-11-03). A release may add a role to
+ * {@link INSTALL_JOB_ROLES} (0.11.11 added roles/workflows.editor for the
+ * scheduler tick, #1140); an install set up before it lacks that role until
+ * a converge's `ensureConvergeJob` grants it, and the converge job used to
+ * stop here and send the Owner to Cloud Shell for exactly that grant. Now a
+ * missing role of {@link CONVERGE_SELF_GRANTABLE_ROLES} — this release's own
+ * compiled-in list, nothing a request, a record or the environment names —
+ * is not a reason to stop: stage 1 leaves it to stage 2, and stage 2 (the
+ * target release's verified ops image, under the state lock) grants it to
+ * the provisioner at project level, records each grant on the timeline and
+ * asks IAM again (converge-job.ts). Not an escalation: the provisioner holds
+ * roles/resourcemanager.projectIamAdmin since install, so it could grant
+ * itself any role already; the allowlist only narrows what the job does
+ * with that. {@link SELF_GRANT_FORBIDDEN_ROLES} pins that the list never
+ * names an ownership or IAM-policy role, and the upgrader job — which holds
+ * no IAM rights at all — has no grant step.
+ *
  * Not checked: the permissions `pulumi up` needs for the stack. They are the
  * provisioner's PROVISIONER_ROLE_LIST (gcloud.ts), granted at install by the
  * Owner's own account; a converge cannot repair them and Pulumi names what
@@ -37,7 +54,7 @@ import { convergeJobName } from "./gcp-names.js";
 import { INSTALL_JOB_ROLES, type InstallJobRole } from "./install-job.js";
 import { provisionerServiceAccountEmail } from "./provisioner-identity.js";
 import { OPS_INSTALL_PREFIX, opsBucketName } from "./state-backend.js";
-import type { AccessCheck, PreflightVoice } from "./upgrader-iam-preflight.js";
+import type { AccessCheck, MissingAccess, PreflightVoice } from "./upgrader-iam-preflight.js";
 import { UPGRADER_DB_ROLE } from "./upgrader-setup.js";
 
 /**
@@ -83,17 +100,86 @@ export const CONVERGE_PREFLIGHT_VOICE: PreflightVoice = {
     "Run the update once from Cloud Shell or the computer you installed from (Settings → Updates shows the command); it repairs the converge job's access.",
 };
 
+/**
+ * The roles the converge job may grant its own account when the self-check
+ * finds them missing: exactly the roles `ensureConvergeJob` grants it, as
+ * compiled into this release (see the file comment).
+ */
+export const CONVERGE_SELF_GRANTABLE_ROLES: readonly InstallJobRole[] = INSTALL_JOB_ROLES;
+
+/**
+ * Roles the converge job must never grant itself, whatever a release's list
+ * says — ownership and IAM-policy roles (prefix matches). The tests assert
+ * {@link CONVERGE_SELF_GRANTABLE_ROLES} names none of them, and the grant
+ * step refuses them again at run time.
+ */
+export const SELF_GRANT_FORBIDDEN_ROLES = [
+  "roles/owner",
+  "roles/editor",
+  "roles/resourcemanager.",
+  "roles/iam.securityAdmin",
+  "roles/iam.organizationRoleAdmin",
+  "roles/iam.serviceAccountKeyAdmin",
+  "roles/iam.workloadIdentityPoolAdmin",
+  "roles/orgpolicy.",
+  "roles/billing.",
+] as const;
+
+/** Whether the converge job may grant `role` to its own account (see the file comment). */
+export function isSelfGrantableRole(role: string): role is InstallJobRole {
+  return (
+    (CONVERGE_SELF_GRANTABLE_ROLES as readonly string[]).includes(role) &&
+    !SELF_GRANT_FORBIDDEN_ROLES.some((f) => role === f || (f.endsWith(".") && role.startsWith(f)))
+  );
+}
+
+/** A converge self-check; `role` marks a check that granting that role repairs. */
+export interface ConvergeAccessCheck extends AccessCheck {
+  readonly role?: InstallJobRole;
+}
+
+/** What the converge job does about the self-check's missing permissions. */
+export interface SelfGrantPlan {
+  /** Allowlisted roles to grant the provisioner, in list order. */
+  readonly grant: readonly InstallJobRole[];
+  /** What no grant of the job repairs: the run stops on any of these. */
+  readonly blocking: readonly MissingAccess<ConvergeAccessCheck>[];
+}
+
+/**
+ * Split the self-check's missing permissions into roles the job grants
+ * itself and the rest. A check counts as repairable only when its whole
+ * shortfall is permissions of an allowlisted role it is marked with.
+ */
+export function selfGrantPlan(
+  missing: readonly MissingAccess<ConvergeAccessCheck>[],
+): SelfGrantPlan {
+  const grant: InstallJobRole[] = [];
+  const blocking: MissingAccess<ConvergeAccessCheck>[] = [];
+  for (const m of missing) {
+    const role = m.check.role;
+    if (role && isSelfGrantableRole(role) && !(m.unchecked && m.unchecked.length > 0)) {
+      if (!grant.includes(role)) grant.push(role);
+    } else {
+      blocking.push(m);
+    }
+  }
+  const order = CONVERGE_SELF_GRANTABLE_ROLES as readonly string[];
+  grant.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  return { grant, blocking };
+}
+
 /** Every permission a converge run relies on after its decision (see the file comment). */
 export function convergeAccessChecks(target: {
   readonly projectId: string;
   readonly region: string;
   readonly env: string;
-}): AccessCheck[] {
+}): ConvergeAccessCheck[] {
   const { projectId, region, env } = target;
   const project = { kind: "project", projectId } as const;
   const bucket = opsBucketName(projectId);
   return [
-    ...INSTALL_JOB_ROLES.map((role) => ({ resource: project, ...INSTALL_ROLE_USES[role] })),
+    ...INSTALL_JOB_ROLES.map((role) => ({ resource: project, role, ...INSTALL_ROLE_USES[role] })),
     {
       need: `read and write the install's records and state lock (${OPS_INSTALL_PREFIX}/) and the update's checkpoint (${CONVERGE_STATE_PREFIX}/) in the ops bucket`,
       resource: { kind: "bucket", bucket },
