@@ -34,7 +34,12 @@ import {
   generateDockerCompose,
   SITE_OUTPUT_ROOT,
 } from "../../dist/compose.js";
+import { MIGRATION_TARGETS } from "../../dist/migration-targets.js";
 import { selfHostedBootstrapScript } from "../../dist/self-hosted-roles.js";
+import {
+  recordedSchedulerIntervalMinutes,
+  selfHostedSchedulerIntervalMinutes,
+} from "../../dist/self-hosted-scheduler-interval.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -45,8 +50,16 @@ const caeloDir = cfg.get("caeloDir") ?? "./.caelo";
 // #553 — same knob as every adapter; undefined = stack-contract default.
 const adminMemory = cfg.get("adminMemory");
 // #1140 — how often the scheduler container calls the admin's tick (1–15
-// minutes, default 5); the generator refuses anything outside that.
-const schedulerIntervalMinutes = cfg.getNumber("schedulerIntervalMinutes");
+// minutes, default 5). `init --scheduler-interval-minutes` records it in
+// <caeloDir>/config.json, which the CLI renders from; the stack reads the
+// same record so a `pulumi up` does not put it back to the default, and
+// refuses a Pulumi key that disagrees with it.
+const caeloConfigPath = resolve(caeloDir, "config.json");
+const schedulerIntervalMinutes = selfHostedSchedulerIntervalMinutes(
+  cfg.getNumber("schedulerIntervalMinutes"),
+  recordedSchedulerIntervalMinutes(caeloConfigPath),
+  caeloConfigPath,
+);
 // #696 — the prebuilt, cosign-verified release images, pinned by digest
 // (`ghcr.io/caelo-cms/<svc>@sha256:…`; the generator refuses anything else).
 // `cms-provision init` resolves + verifies them and records them in
@@ -72,16 +85,24 @@ const postgresPassword = pulumi.secret(randomHex(32));
 // public_role one (#635: no cms_admin login).
 const adminRolePassword = pulumi.secret(randomHex(32));
 const publicRolePassword = pulumi.secret(randomHex(32));
+// #1329 — the staging gateway's own login on cms_public_staging.
+const publicStagingRolePassword = pulumi.secret(randomHex(32));
 // P18 — the KEK that encrypts stored provider keys.
 const caeloSecretKek = pulumi.secret(randomHex(32));
 
 const composeYaml = pulumi
-  .all([postgresPassword, adminRolePassword, publicRolePassword, caeloSecretKek])
-  .apply(([pgPw, adminPw, publicPw, kek]) =>
+  .all([
+    postgresPassword,
+    adminRolePassword,
+    publicRolePassword,
+    publicStagingRolePassword,
+    caeloSecretKek,
+  ])
+  .apply(([pgPw, adminPw, publicPw, publicStagingPw, kek]) =>
     generateDockerCompose({
       domain,
       postgresPassword: pgPw,
-      rolePasswords: { admin: adminPw, public: publicPw },
+      rolePasswords: { admin: adminPw, public: publicPw, publicStaging: publicStagingPw },
       caeloSecretKek: kek,
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,
       resendApiKey: process.env.RESEND_API_KEY,
@@ -148,7 +169,7 @@ const composeUp = new local.Command(
     // install's admin image, then everything else.
     create: pulumi.interpolate`set -e
 docker compose -f ${composePath} up -d --wait postgres
-for target in admin public; do
+for target in ${MIGRATION_TARGETS.join(" ")}; do
   docker compose -f ${composePath} run --rm --no-deps -T caelo-admin bun --bun /app/packages/migrations/src/migrate.ts "$target"
 done
 docker compose -f ${composePath} up -d --remove-orphans`,

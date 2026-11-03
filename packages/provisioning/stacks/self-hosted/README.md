@@ -35,7 +35,7 @@ Open that URL once Caddy has issued the cert (~30 s).
 
 ## Scheduler tick
 
-The Compose file runs a `caelo-scheduler` container (the admin image, no database access, only the internal secret it signs with) that POSTs the admin's `/api/internal/scheduler/tick` every `schedulerIntervalMinutes` (#1140; 1–15, default 5). The admin runs its periodic work and plugin workers on that tick. Change the interval with `pulumi config set caelo-self-hosted:schedulerIntervalMinutes 2` here, or `cms-provision init --scheduler-interval-minutes 2` (recorded in `.caelo/config.json`). An install from before the scheduler gets the container on its next `upgrade`, which rewrites the Compose file.
+The Compose file runs a `caelo-scheduler` container (the admin image, no database access, only the internal secret it signs with) that POSTs the admin's `/api/internal/scheduler/tick` every `schedulerIntervalMinutes` (#1140; 1–15, default 5). The admin runs its periodic work and plugin workers on that tick. Set the interval with `cms-provision init --scheduler-interval-minutes 2` (recorded in `.caelo/config.json`, which every CLI render reads) or, on an install without a `config.json`, with `pulumi config set caelo-self-hosted:schedulerIntervalMinutes 2`. The stack reads `.caelo/config.json` too, so a `pulumi up` keeps the recorded interval; a Pulumi key that disagrees with it is refused. An install from before the scheduler gets the container on its next `upgrade`, which rewrites the Compose file.
 
 ## Connection budget
 
