@@ -235,6 +235,13 @@ describe("#1260 — a draft conflict clears with the re-read it names", () => {
     // A changes it again; this time B reads it with the named tool first,
     // so its write builds on what it read and goes through without a
     // conflict of its own having recorded anything.
+    // One field shows too little to edit the rest from: no observation.
+    await op(a, "modules.update", { moduleId, html: "<p>from A, second</p>" });
+    await tool(b, "read_content", { entityKind: "module", entityId: moduleId, field: "css" });
+    expect(await refusal(b, "modules.update", { moduleId, html: "<p>B stale</p>" })).toContain(
+      "Conflict: module",
+    );
+
     await op(a, "modules.update", { moduleId, html: "<p>from A, again</p>" });
     await tool(b, "read_content", { entityKind: "module", entityId: moduleId });
     await op(b, "modules.update", { moduleId, html: "<p>from A, again, then B</p>" });

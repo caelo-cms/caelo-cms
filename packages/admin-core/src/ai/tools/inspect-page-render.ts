@@ -73,9 +73,12 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
   schema: inspectInput,
   // #1260 — the re-read a draft conflict on a page names: the page's
   // modules and placements as this chat's draft has them. A look at
-  // another branch shows this chat nothing of its own draft.
+  // another branch shows this chat nothing of its own draft, and a `target`
+  // or `search` shows one layer or slice, not the page.
   draftReads: (input, _value, ctx) =>
-    input.chatBranchId === undefined || input.chatBranchId === ctx.chatBranchId
+    input.target === undefined &&
+    input.search === undefined &&
+    (input.chatBranchId === undefined || input.chatBranchId === ctx.chatBranchId)
       ? [{ kind: "page", ids: [input.pageId] }]
       : [],
   inputSchema: {

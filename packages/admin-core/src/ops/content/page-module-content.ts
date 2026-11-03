@@ -421,6 +421,10 @@ export const listPageModuleContentOp = withHumanisedLinks(
       // placements and pre-edit values, so a translation (or any reader)
       // built on it overwrote the draft with stale content.
       const branchId = ctx.chatBranchId ?? null;
+      // #1260 — the read a plugin's translation flow writes from counts as
+      // the caller having seen the page's draft state. `now()` is this
+      // transaction's start, before any of the reads below.
+      await observeDraftReads(tx, ctx, "page", [input.pageId]);
       const layout = await loadPageLayoutStateWithBranchOverlay(tx, input.pageId, branchId);
       const placed = layout.blocks
         .flatMap((b) => {
@@ -490,9 +494,8 @@ export const listPageModuleContentOp = withHumanisedLinks(
         branchId,
         live.map((l) => ({ key: l.key, contentInstanceId: l.p.contentInstanceId, values: l.v })),
       );
-      // #1260 — the caller now holds this draft state of the page and every
-      // instance on it: the read a plugin's translation flow writes from.
-      await observeDraftReads(tx, ctx, "page", [input.pageId]);
+      // #1260 — the caller now holds this draft state of every instance on
+      // the page (the page itself is recorded above, empty pages included).
       await observeDraftReads(tx, ctx, "contentInstance", [
         ...live.map((l) => l.p.contentInstanceId),
         ...[...nested.values()].flat().map((n) => n.contentInstanceId),
