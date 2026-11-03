@@ -33,7 +33,6 @@ import { expect, test } from "./fixtures.js";
 import {
   attachChatSessionTracker,
   loginAsDevOwner,
-  primePostOnboarding,
   resetLiveditFixtures,
   seedLayoutBlocks,
   seedMinimalSite,
@@ -64,11 +63,6 @@ test("issue #106 / #1107: AI adds a footer nav to the layout as a shared list (n
   await resetLiveditFixtures();
   seedMinimalSite();
   seedLayoutBlocks(["footer"]);
-  // The footer scenario runs first alphabetically (before scenario-homepage's
-  // cold-start onboarding) and resetLiveditFixtures does NOT reset
-  // site_defaults/themes — so prime the post-onboarding state explicitly,
-  // otherwise the cold-start gate eats the turn and no footer is built.
-  primePostOnboarding();
   attachChatSessionTracker(page);
   await loginAsDevOwner(page);
   // ChatPanel only mounts on /edit.

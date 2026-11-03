@@ -210,6 +210,15 @@ export function resetLiveditFixtures(): void {
  *
  * The page is `home` on `home-template`, which joins the site's default
  * page type (epic #1107: a page's template must belong to its page type).
+ *
+ * The seeded site stands in for an onboarded one, so it is also moved
+ * past cold-start ({@link primePostOnboarding}). `resetLiveditFixtures`
+ * leaves site identity and the theme alone, so without this a scenario
+ * only cleared the cold-start gate when an earlier scenario had primed or
+ * onboarded the site: the v0.11.10 release gate ran the consent scenario
+ * first, the gate refused its add_module, the AI asked for the brand and
+ * the turn changed nothing, so there was no Stage to click. The
+ * cold-start path itself is scenario-homepage's, which skips this helper.
  */
 export function seedMinimalSite(): { pageId: string; templateId: string } {
   const out = runBunInline(`
@@ -311,6 +320,7 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
     console.log(JSON.stringify(result));
     await sql.end();
   `);
+  primePostOnboarding();
   return JSON.parse(out) as { pageId: string; templateId: string };
 }
 
@@ -627,6 +637,28 @@ async function stagePending(page: Page): Promise<boolean> {
   return (await control.getAttribute("data-mode").catch(() => null)) === "pending";
 }
 
+/**
+ * What the Staging control shows when a Stage was expected but is not
+ * offered: its mode and the menu's own text ("No changes in this chat …"
+ * means the turn changed nothing on the site), so the failure names the
+ * state instead of a bare locator timeout. The turn itself is in the
+ * pre-reset transcripts dump.
+ */
+async function stagingMenuDiagnosis(page: Page): Promise<string> {
+  const mode = await page
+    .getByTestId("stage-deploy")
+    .getAttribute("data-mode", { timeout: 5_000 })
+    .catch(() => null);
+  const menu = await page
+    .getByTestId("staging-menu-content")
+    .textContent({ timeout: 5_000 })
+    .catch(() => null);
+  return (
+    `Toolbar mode: ${mode ?? "(unreadable)"}; menu: "${(menu ?? "(menu not open)").replace(/\s+/g, " ").trim()}". ` +
+    "When the menu says the chat has no changes, the AI turn changed nothing on the site: read its reply in test-results/livedit/transcripts/."
+  );
+}
+
 /** Opens the toolbar's Staging menu (Stage, Stage again, the quality gate) unless open. */
 async function openStagingMenu(page: Page): Promise<void> {
   if (await page.getByTestId("staging-menu-content").isVisible()) return;
@@ -658,7 +690,15 @@ export async function awaitStageComplete(page: Page): Promise<void> {
   // Bounded: the AI can stage between the check and the click (Stage then
   // leaves the Staging menu) — fail in 30s, not at test timeout.
   await openStagingMenu(page);
-  await page.getByTestId("stage-btn").click({ timeout: 30_000 });
+  await page
+    .getByTestId("stage-btn")
+    .click({ timeout: 30_000 })
+    .catch(async (cause: unknown) => {
+      throw new Error(
+        `awaitStageComplete: the Staging menu offers no Stage. ${await stagingMenuDiagnosis(page)}`,
+        { cause },
+      );
+    });
   await page.getByTestId("stage-submit-btn").click({ timeout: 30_000 });
   const res = await responsePromise;
   const body = await res.text();
@@ -1312,12 +1352,13 @@ export function seedLayoutBlocks(names: readonly string[]): void {
  * turn on theme setup instead of the requested chrome. Issue #735: the
  * prime used to stop at the origin flip, so the gate fired on EVERY run
  * (seed primary #171717) and the footer scenario silently tested gate
- * recovery instead of the footer path. Scenarios that test chrome / lists
- * on a real (post-onboarding) site call this; the cold-start onboarding
- * path is covered by scenario-homepage. Mirrors apps/admin/e2e/_seed.ts's
- * POST_CHAT_SEED_SCRIPT (indigo primary) plus a violet accent. Idempotent.
+ * recovery instead of the footer path. {@link seedMinimalSite} runs it, so
+ * every scenario on the seeded site starts post-onboarding; the cold-start
+ * onboarding path is covered by scenario-homepage. Mirrors
+ * apps/admin/e2e/_seed.ts's POST_CHAT_SEED_SCRIPT (indigo primary) plus a
+ * violet accent. Idempotent.
  */
-export function primePostOnboarding(): void {
+function primePostOnboarding(): void {
   runBunInline(`
     import { SQL } from "bun";
     const sql = new SQL(process.env.ADMIN_DATABASE_URL);

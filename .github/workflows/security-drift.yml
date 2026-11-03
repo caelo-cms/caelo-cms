@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Caelo CMS — security-settings drift guard (issue #105).
+#
+# Secret scanning, push protection and Dependabot alerts are repo settings,
+# managed as config-as-code by `bun run security:enable`. Nothing stops a
+# maintainer from switching one off in the GitHub UI, and nothing would
+# notice. This workflow reads them weekly; if one is off — or the token
+# cannot read them — the run fails and one issue is opened (or updated, never
+# duplicated). It closes that issue once everything is on again. Alert only:
+# it never switches a setting back on (auto-remediation is out of scope).
+#
+# Tokens — why there are two:
+#   GitHub returns `security_and_analysis` (GET /repos/{owner}/{repo}) and
+#   GET /vulnerability-alerts only to repo admins. GITHUB_TOKEN cannot be
+#   given admin rights (there is no `administration` key in `permissions:`),
+#   so with it the block is simply missing. The check step therefore uses
+#   the SECURITY_SETTINGS_READ_TOKEN environment secret: a fine-grained PAT of a repo admin, scoped
+#   to this repository only, with Administration: read-only (Metadata:
+#   read-only comes with it). Read-only, so a leaked token can change
+#   nothing. A missing secret or a token that cannot see the settings is
+#   reported as such (exit 2), never as drift and never as a pass.
+#   The issue step uses only the workflow's GITHUB_TOKEN with `issues: write`
+#   and never sees the PAT.
+#
+# Where the PAT may run — only main's code:
+#   A manual dispatch can pick any branch, and it runs that branch's copy of
+#   this file and of the scripts, so a branch could print the token. Three
+#   layers keep the PAT to main's code:
+#   1. The PAT is an ENVIRONMENT secret of the `security-drift` environment,
+#      whose deployment branch policy admits only `main`. GitHub enforces
+#      that server-side: a job on any other ref gets no secret, even when a
+#      branch rewrites this file. (A repository secret would be readable by
+#      any branch's workflow; never store the PAT as one.)
+#   2. The job runs only when the run's ref is `refs/heads/main`.
+#   3. The checkout pins `ref: main`, so the scripts are main's whatever
+#      the run was started with.
+#
+# Setup and rotation: docs/dev/codeql.md, "Drift guard".
+
+name: security-drift
+
+on:
+  schedule:
+    # Weekly, Monday 06:23 UTC — the CodeQL / Dependabot cadence, offbeat minute.
+    - cron: "23 6 * * 1"
+  # Manual runs: start them on `main` (anything else is skipped, see above).
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: security-drift
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Security settings drift
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: security-drift
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      # Both scripts use only node: built-ins and fetch, so no `bun install`.
+      # The step outputs carry setting names and a reason code only, never
+      # text from the API (see enable-security-features.ts).
+      - name: Read the security settings
+        id: check
+        env:
+          SECURITY_SETTINGS_READ_TOKEN: ${{ secrets.SECURITY_SETTINGS_READ_TOKEN }}
+        run: |
+          set +e
+          bun run scripts/enable-security-features.ts --check --github-output \
+            --owner "${GITHUB_REPOSITORY%%/*}" --repo "${GITHUB_REPOSITORY##*/}"
+          code=$?
+          case "$code" in
+            0) status=ok ;;
+            1) status=drift ;;
+            2) status=unreadable ;;
+            *) status=error ;;
+          esac
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      # A transient API failure (status=error) leaves the issue alone: the
+      # failed run already notifies, and an issue per GitHub hiccup is noise.
+      - name: Open, update or close the drift issue
+        if: steps.check.outputs.status != 'error'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STATUS: ${{ steps.check.outputs.status }}
+          DRIFT: ${{ steps.check.outputs.drift }}
+          REASON: ${{ steps.check.outputs.reason }}
+        run: bun run scripts/security-drift-issue.ts
+
+      - name: Fail unless every setting is on
+        if: steps.check.outputs.status != 'ok'
+        env:
+          STATUS: ${{ steps.check.outputs.status }}
+        run: |
+          echo "::error::security settings check: $STATUS (see the step above and docs/dev/codeql.md, Drift guard)"
+          exit 1

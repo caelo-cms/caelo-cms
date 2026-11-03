@@ -28,7 +28,6 @@ import {
   assertNoChatRunnerDiagWarnings,
   attachChatSessionTracker,
   loginAsDevOwner,
-  primePostOnboarding,
   resetLiveditFixtures,
   seedLayoutBlocks,
   seedMinimalSite,
@@ -63,7 +62,6 @@ test("#1107: mega menu with three columns + latest news, shared by header and fo
   await resetLiveditFixtures();
   seedMinimalSite();
   seedLayoutBlocks(["header", "footer"]);
-  primePostOnboarding();
   seedNewsArticles(3);
   attachChatSessionTracker(page);
   await loginAsDevOwner(page);
