@@ -712,20 +712,36 @@ export async function writePageTranslation(
   // them: writing the prepared root values onto the fork would point it
   // back at the shared nested content it was forked to leave.
   let bases = p.variantBases;
+  // List types do not change during the write: read them once, on the
+  // first re-read.
+  let listTypes: Map<string, ListTypeDef> | undefined;
+  const reread = async () => {
+    listTypes ??= await loadListTypes(deps);
+    bases = (await loadPageSlots(deps, p.variantPageId, listTypes)).bases;
+  };
   const forked = new Set<string>();
-  const fork = async (v: ContentSlot): Promise<void> => {
+  const forkOnly = async (v: ContentSlot): Promise<boolean> => {
     const at = placementOf(v);
-    if (forked.has(slotKeyOf(at))) return;
+    if (forked.has(slotKeyOf(at))) return false;
     await cms.call("placement.fork_content", at);
     forked.add(slotKeyOf(at));
-    bases = (await loadPageSlots(deps, p.variantPageId, await loadListTypes(deps))).bases;
+    return true;
+  };
+  const fork = async (v: ContentSlot): Promise<void> => {
+    if (await forkOnly(v)) await reread();
   };
   const isSyncedRefusal = (e: unknown, v: ContentSlot): boolean =>
     /synced/i.test((e as Error).message) && !forked.has(slotKeyOf(placementOf(v)));
+  // Every placement with shared answered nested content is forked up
+  // front, and the bases are re-read once for all of them.
+  let preForked = false;
   for (const a of answered) {
     if (a.variant.nestedPath === undefined) continue;
-    if (bases.get(a.variantKey)?.nested?.exclusive === false) await fork(a.variant);
+    if (bases.get(a.variantKey)?.nested?.exclusive === false && (await forkOnly(a.variant))) {
+      preForked = true;
+    }
   }
+  if (preForked) await reread();
   for (const a of answered.filter((x) => x.variant.nestedPath === undefined)) {
     const source = p.sourceBases.get(a.sourceKey);
     if (!bases.get(a.variantKey) || !source) continue;
