@@ -21,6 +21,7 @@ import {
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { LEGACY_LIVE_RELEASE_LOCK_KEY, LIVE_RELEASE_LEASE } from "../deploy/live-release-lock.js";
+import { selfHostedStaticPublisher } from "../deploy/static-publisher-self-hosted.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { openQualityGate } from "./fixtures/quality-gate.js";
@@ -327,5 +328,74 @@ describe("deploy.rollback", () => {
       repoRoot: testRoot,
     });
     expect(again.ok).toBe(true);
+
+    // #1250 — the provider release runs with no transaction open: while it
+    // runs, no admin connection is idle in a transaction, and the rollback
+    // holds the live-release lease as its own running run.
+    const realRollback = selfHostedStaticPublisher.rollback;
+    const probe = new SQL(ADMIN_URL!);
+    const seen: { openTx: number; holder: string | null; status: string | null }[] = [];
+    try {
+      const look = async (): Promise<void> => {
+        const open = (await probe`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = 'cms_admin' AND state LIKE 'idle in transaction%'
+            AND pid <> pg_backend_pid()`) as { n: number }[];
+        const lease = (await probe.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          return await tx`
+            SELECT l.holder_run_id::text AS holder, r.status
+            FROM deploy_leases l LEFT JOIN deploy_runs r ON r.id = l.holder_run_id
+            WHERE l.name = ${LIVE_RELEASE_LEASE}`;
+        })) as { holder: string | null; status: string | null }[];
+        seen.push({
+          openTx: open[0]?.n ?? -1,
+          holder: lease[0]?.holder ?? null,
+          status: lease[0]?.status ?? null,
+        });
+      };
+      selfHostedStaticPublisher.rollback = async (args) => {
+        await look();
+        return realRollback(args);
+      };
+      const viaProbe = await execute(registry, adapter, HUMAN, "deploy.rollback", {
+        targetName: "production",
+        runId: b2RunId,
+        repoRoot: testRoot,
+      });
+      expect(viaProbe.ok).toBe(true);
+      if (!viaProbe.ok) return;
+      const probedRunId = (viaProbe.value as { newRunId: string }).newRunId;
+      expect(seen).toEqual([{ openTx: 0, holder: probedRunId, status: "running" }]);
+      expect(await readFile(pageFile, "utf8")).toContain("VERSION_TWO");
+
+      // A provider failure records the run failed, frees the lease and
+      // leaves what is live alone.
+      selfHostedStaticPublisher.rollback = async () => {
+        throw new Error("provider said no");
+      };
+      const failed = await execute(registry, adapter, HUMAN, "deploy.rollback", {
+        targetName: "production",
+        runId: b1RunId,
+        repoRoot: testRoot,
+      });
+      expect(failed.ok).toBe(false);
+      if (failed.ok) return;
+      expect(JSON.stringify(failed.error)).toContain("rollback failed: provider said no");
+      const after = (await probe.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return await tx`
+          SELECT r.status, r.error_message, l.holder_run_id::text AS holder
+          FROM deploy_runs r, deploy_leases l
+          WHERE l.name = ${LIVE_RELEASE_LEASE} AND r.target_id = (SELECT id FROM deploy_targets WHERE name = 'production')
+          ORDER BY r.started_at DESC LIMIT 1`;
+      })) as { status: string; error_message: string | null; holder: string | null }[];
+      expect(after[0]).toMatchObject({ status: "failed", holder: null });
+      expect(after[0]?.error_message).toContain("provider said no");
+      expect(await readFile(pageFile, "utf8")).toContain("VERSION_TWO");
+    } finally {
+      selfHostedStaticPublisher.rollback = realRollback;
+      await probe.end();
+    }
   });
 });

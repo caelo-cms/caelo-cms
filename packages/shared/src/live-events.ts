@@ -126,7 +126,9 @@ const EXACT: Readonly<Record<string, readonly LiveTopic[]>> = {
   "deploy.begin_execute_proposal": ["pending", "deploys"],
   "deploy.end_execute_proposal": ["pending", "deploys"],
   "deploy.rollback": ["deploys"],
-  "deploy.release_rollback": ["deploys"],
+  // #1250 — the rollback's steps: its run appears, ends recorded.
+  "deploy.start_rollback": ["deploys"],
+  "deploy.finish_rollback": ["deploys"],
   "deploy.build_plugin_data": ["deploys"],
   // #1220 — the plugin-data build's steps that start and record a run.
   "deploy.begin_plugin_data_run": ["deploys"],

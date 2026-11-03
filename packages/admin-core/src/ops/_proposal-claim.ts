@@ -12,7 +12,7 @@
 
 import { type SQL, sql } from "drizzle-orm";
 
-/** How long a claim whose run has not started yet (or a rollback, which has no running row) counts as live. */
+/** How long a claim whose run has not started yet counts as live. */
 export const CLAIM_WITHOUT_RUN_MS = 15 * 60_000;
 
 /**

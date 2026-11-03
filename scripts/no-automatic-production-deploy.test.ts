@@ -170,8 +170,8 @@ describe("no automatic caller starts a production build (#1154)", () => {
       .sort();
     expect(movers).toEqual([
       "packages/admin-core/src/ops/deploy-promote.ts",
+      "packages/admin-core/src/ops/deploy-rollback.ts",
       "packages/admin-core/src/ops/deploy-trigger.ts",
-      "packages/admin-core/src/ops/deploy.ts",
     ]);
     // The state is frozen only when a build reads the site (the Stage or
     // production build's first step); the drain and the boot publish never
