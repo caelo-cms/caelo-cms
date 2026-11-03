@@ -265,9 +265,17 @@ describe("#1390 — a failing change consumer backs off against NOTIFY wake-ups"
     try {
       await loop.drain();
       await writeModule();
-      await until("two failed attempts", () => failingAttempts.length >= 2, 10_000);
-      const health = await healthOf("t1390b-failing");
+      // An attempt is counted when the operation starts; its failure is
+      // recorded after it throws — wait for the second recorded failure.
+      let health = await healthOf("t1390b-failing");
+      const deadline = Date.now() + 10_000;
+      while ((health.consumerBackoff?.consecutiveFailures ?? 0) < 2) {
+        if (Date.now() > deadline) throw new Error("timed out waiting for two recorded failures");
+        await Bun.sleep(50);
+        health = await healthOf("t1390b-failing");
+      }
       expect(health.consumerBackoff?.consecutiveFailures).toBe(2);
+      expect(failingAttempts.length).toBe(2);
       const [a, b] = failingAttempts;
       // 1 s after the first failure; the next waits 2 s.
       expect((b ?? 0) - (a ?? 0)).toBeGreaterThanOrEqual(900);
