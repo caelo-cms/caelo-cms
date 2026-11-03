@@ -4,18 +4,19 @@
  * #1157 — runs the redirect sync after redirects writes and retries the
  * targets whose provider is behind.
  *
- * Starting the worker registers the post-commit runner every redirects write
- * uses (deploy/redirect-sync.ts `setRedirectSyncRunner`), so a save pushes
- * the table to the hosting provider before its request answers. A push that
- * failed leaves its target behind (`redirect_sync_state.wanted_revision >
- * synced_revision`) with a `next_attempt_at` that backs off from 1 minute to
- * an hour; this worker's poll retries every target that is due, and pushes
- * a change whose own save could not (#1254: its row in `redirect_changes`
- * is still unfolded). The poll is two indexed reads while everything is in
- * sync.
+ * {@link registerRedirectSyncRunner} registers the post-commit runner every
+ * redirects write uses (deploy/redirect-sync.ts `setRedirectSyncRunner`), so
+ * a save pushes the table to the hosting provider before its request
+ * answers. A push that failed leaves its target behind
+ * (`redirect_sync_state.wanted_revision > synced_revision`) with a
+ * `next_attempt_at` that backs off from 1 minute to an hour;
+ * {@link retryRedirectSync} retries every target that is due, and pushes a
+ * change whose own save could not (#1254: its row in `redirect_changes` is
+ * still unfolded). It is two indexed reads while everything is in sync.
  *
- * Bootstrapped once per admin process from apps/admin/src/hooks.server.ts,
- * same pattern as release-check-worker.ts.
+ * The runner is registered once per admin process from
+ * apps/admin/src/hooks.server.ts; the retry runs on the scheduler tick
+ * (#1140, scheduler/core-tasks.ts), every tick.
  */
 
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
@@ -29,16 +30,12 @@ import {
   setRedirectSyncRunner,
 } from "./deploy/redirect-sync.js";
 
-const POLL_INTERVAL_MS = 60 * 1000;
-
 interface RedirectSyncWorkerOpts {
   readonly adapter: DatabaseAdapter;
   readonly registry: OperationRegistry;
-  /** Override the poll interval (ms). */
-  readonly intervalMs?: number;
 }
 
-let workerHandle: ReturnType<typeof setInterval> | null = null;
+let registered = false;
 let runs = 0;
 
 /** Run `redirects.sync_provider` as the system actor; throws when the op itself fails. */
@@ -86,11 +83,13 @@ function coalescedSave(opts: RedirectSyncWorkerOpts): Promise<RedirectSyncOutcom
 }
 
 /**
- * One poll: push changes nobody pushed yet (their save's sync was skipped
+ * One retry: push changes nobody pushed yet (their save's sync was skipped
  * or never ran) and retry the targets that are behind and whose backoff
- * has elapsed.
+ * has elapsed. Throws when the sync op itself fails.
+ *
+ * @returns how many targets are still not live after it
  */
-async function pollOnce(opts: RedirectSyncWorkerOpts): Promise<void> {
+export async function retryRedirectSync(opts: RedirectSyncWorkerOpts): Promise<number> {
   const { pending, due } = await opts.adapter.withAdminTransaction(
     { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: `redirect-sync-poll-${runs++}` },
     async (tx) => ({
@@ -102,44 +101,34 @@ async function pollOnce(opts: RedirectSyncWorkerOpts): Promise<void> {
       `)) as unknown as { target_id: string }[],
     }),
   );
-  if (!pending && due.length === 0) return;
+  if (!pending && due.length === 0) return 0;
   // A pending change concerns every target (and restarts their backoff when
   // folded); otherwise only the due ones: another may still be backing off.
   const outcomes = await runSync(opts, "retry", pending ? undefined : due.map((d) => d.target_id));
-  for (const o of outcomes.filter((x) => x.status === "failed")) {
+  const failed = outcomes.filter((x) => x.status === "failed");
+  for (const o of failed) {
     console.error("[redirect-sync-worker] the redirects are still not live", {
       target: o.targetName,
       error: o.error,
     });
   }
+  return failed.length;
 }
 
 /**
- * Register the post-commit runner and start the retry poll. Idempotent —
+ * Register the post-commit runner every redirects write uses. Idempotent —
  * a second call is a no-op.
  */
-export function startRedirectSyncWorker(opts: RedirectSyncWorkerOpts): void {
-  if (workerHandle) return;
+export function registerRedirectSyncRunner(opts: RedirectSyncWorkerOpts): void {
+  if (registered) return;
+  registered = true;
   setRedirectSyncRunner((trigger) =>
     trigger === "save" ? coalescedSave(opts) : runSync(opts, trigger),
   );
-  const tick = () => {
-    void pollOnce(opts).catch((e) => {
-      console.error("[redirect-sync-worker] retry poll failed:", (e as Error).message);
-    });
-  };
-  tick();
-  workerHandle = setInterval(tick, opts.intervalMs ?? POLL_INTERVAL_MS);
 }
 
-/** Test-only — stop the poll and unregister the runner. */
-export function stopRedirectSyncWorker(): void {
-  if (workerHandle) {
-    clearInterval(workerHandle);
-    workerHandle = null;
-  }
+/** Test-only — unregister the runner. */
+export function unregisterRedirectSyncRunner(): void {
+  registered = false;
   setRedirectSyncRunner(null);
 }
-
-/** Test-only — one retry poll, awaited. */
-export const _redirectSyncPollOnceForTests = pollOnce;

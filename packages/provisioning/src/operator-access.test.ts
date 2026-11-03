@@ -205,6 +205,21 @@ describe("ensureOperatorAccessSync", () => {
     );
   });
 
+  it("#1140 — tells the job which service accounts keep IAP access (the scheduler tick)", async () => {
+    const { run, calls } = freshInstall();
+    await ensureOperatorAccessSync(
+      { ...target, iapServiceAccounts: ["caelo-production-scheduler@p.iam.gserviceaccount.com"] },
+      { run, sleep: async () => {} },
+    );
+    const deploy = calls.find((c) => c.slice(0, 3).join(" ") === "run jobs deploy") ?? [];
+    const env = deploy.find((a) => a.startsWith("--set-env-vars=")) ?? "";
+    expect(env).toContain(
+      "|CAELO_OPERATOR_ACCESS_IAP_SERVICE_ACCOUNTS=caelo-production-scheduler@p.iam.gserviceaccount.com",
+    );
+    // The static members stay the install's allowlist (converge-job-gcp.ts compares them).
+    expect(env).toContain("|CAELO_OPERATOR_ACCESS_STATIC_MEMBERS=user:owner@x.com|");
+  });
+
   it("#914 — lets the job read exactly the Google sign-in client's secret, nothing else", async () => {
     const { run, lines } = freshInstall();
     await ensureOperatorAccessSync(target, { run, sleep: async () => {} });

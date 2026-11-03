@@ -178,6 +178,7 @@ function runSync(force: boolean): Promise<unknown | null> {
 
 function armTimer(): void {
   if (timer) return;
+  // FIXME(issue #1361): an instance without requests follows the plugin rows from request start and the tick.
   timer = setInterval(() => {
     void syncPluginHost();
   }, TIMER_INTERVAL_MS);

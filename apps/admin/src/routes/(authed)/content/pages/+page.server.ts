@@ -5,7 +5,6 @@ import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
-import { enqueueStagingAudit } from "#lib/server/quality-audit.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { openStagingHref, stagingOriginForAdmin } from "#lib/server/staging-link.js";
 import { stagingPreviewPath } from "#lib/server/staging-preview-path.js";
@@ -119,8 +118,11 @@ export const actions: Actions = {
     });
     if (!updateResult.ok) return fail(400, { error: "Could not mark page as published." });
 
+    // #553 / #1319 — a Stage outside a chat has no branch to classify; its
+    // audit (this page after the homepage) is queued with the build.
     const stagingDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
       targetName: "staging",
+      qualityAudit: { chatSessionId: null, branch: null, pageIds: [pageId] },
     });
     if (!stagingDeploy.ok) {
       // v0.2.77 — surface the underlying error so the operator
@@ -137,14 +139,6 @@ export const actions: Actions = {
       targetName: string;
       previewUrl?: string;
     };
-    // #553 — a Stage outside a chat has no branch to classify; it audits.
-    await enqueueStagingAudit(locals.ctx, {
-      deployRunId: summary.runId,
-      targetName: summary.targetName,
-      chatSessionId: null,
-      branch: null,
-      pageIds: [pageId],
-    });
 
     let previewUrl: string;
     let previewLabel: string | null = null;

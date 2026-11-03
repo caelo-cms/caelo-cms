@@ -25,6 +25,7 @@ import {
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql as drizzleSql } from "drizzle-orm";
+import { redirectSyncNote } from "../ai/tools/_redirect-sync-note.js";
 import { bulkCreateRedirectsTool } from "../ai/tools/bulk-create-redirects.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { type SyncRedirectsArgs, syncRedirects } from "../deploy/redirect-sync.js";
@@ -32,9 +33,9 @@ import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publ
 import { applyPathMoveEffects } from "../ops/content/path-moves.js";
 import type { RedirectSyncTargetStatus } from "../ops/redirect_sync.js";
 import {
-  _redirectSyncPollOnceForTests,
-  startRedirectSyncWorker,
-  stopRedirectSyncWorker,
+  registerRedirectSyncRunner,
+  retryRedirectSync,
+  unregisterRedirectSyncRunner,
 } from "../redirect-sync-worker.js";
 import { registerAdminOps } from "../register.js";
 
@@ -152,8 +153,8 @@ beforeAll(async () => {
   await sys(
     (tx) => tx`UPDATE site_defaults SET site_base_url = 'https://www.example.test' WHERE id = 1`,
   );
-  // A huge interval: the tests drive the retry poll themselves.
-  startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+  // The tests drive the retry (the scheduler tick's task) themselves.
+  registerRedirectSyncRunner({ adapter, registry });
 });
 
 beforeEach(async () => {
@@ -170,7 +171,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
-  stopRedirectSyncWorker();
+  unregisterRedirectSyncRunner();
   await sys((tx) => tx`UPDATE site_defaults SET site_base_url = ${savedBaseUrl} WHERE id = 1`);
   await adapter.close();
   await rm(root, { recursive: true, force: true });
@@ -242,6 +243,38 @@ describe("redirect sync on save (#1157)", () => {
     ]);
   });
 
+  it("#1357 reports the 410 rules, and that they answer 404 where the host cannot send 410", async () => {
+    const r = await bulkCreateRedirectsTool.handler(
+      SYSTEM,
+      {
+        items: [
+          { fromPath: "/retired", toPath: "/", statusCode: 410 },
+          { fromPath: "/old", toPath: "/about", statusCode: 301 },
+        ],
+        upsert: false,
+      },
+      { adapter, registry } as ToolContext,
+    );
+    expect(r.ok).toBe(true);
+    // Caddy (self-hosted) answers the bare 410: nothing to warn about.
+    expect(r.content).toContain("live now");
+    expect(r.content).not.toContain("404 on this hosting");
+    expect(await snippet("production")).toContain("respond 410");
+    const s = await status();
+    expect(s.production?.goneAnswer).toBe(410);
+    expect(s.production?.last).toMatchObject({ redirectCount: 1, goneCount: 1 });
+    // The same recorded push read on Firebase Hosting, which serves no 410.
+    process.env.CAELO_PROVIDER = "gcp-firebase";
+    try {
+      expect((await status()).production?.goneAnswer).toBe(404);
+      const note = await redirectSyncNote(SYSTEM, { adapter, registry } as ToolContext);
+      expect(note).toContain("production (production): live now");
+      expect(note).toContain("1 410 rule answers 404 on this hosting, not 410 Gone");
+    } finally {
+      delete process.env.CAELO_PROVIDER;
+    }
+  });
+
   it("an unchanged table writes nothing", async () => {
     await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
     await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
@@ -257,6 +290,65 @@ describe("redirect sync on save (#1157)", () => {
     // An explicit push of the same table changes nothing at the provider.
     await syncDetached({ trigger: "manual", targetIds: [targets.production.id] });
     expect((await status()).production?.last?.status).toBe("unchanged");
+  });
+
+  it("Try again now on one target folds a change nobody pushed yet and puts it live (#1140)", async () => {
+    // A change whose own save never synced (another process, a seed): its
+    // row waits in redirect_changes, and the target reads behind.
+    await sys(
+      (tx) => tx`
+        INSERT INTO redirects (from_path, to_path, status_code, created_by)
+        VALUES ('/unfolded', '/about', 301, ${SYSTEM.actorId}::uuid)
+      `,
+    );
+    expect((await status()).production?.inSync).toBe(false);
+    // The operator's retry of production alone: before, it pushed the old
+    // table and left the target "Going live…" until a scheduler tick
+    // folded the change.
+    await syncDetached({ trigger: "manual", targetIds: [targets.production.id] });
+    const after = await status();
+    expect(after.production?.inSync).toBe(true);
+    expect(await snippet("production")).toContain("/unfolded");
+    // The fold restarted every target's backoff; the change reaches staging too.
+    expect(after.staging?.inSync).toBe(true);
+  });
+
+  it("Try again now on production answers for production, not for a staging that fails alongside", async () => {
+    // Staging serves a run whose files are gone: every push to it fails.
+    await sys(
+      (tx) => tx`
+        INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id)
+        VALUES (${targets.staging.id}::uuid, ${SYSTEM.actorId}::uuid, 'succeeded', now(), now(),
+                '22222222-2222-4222-8222-222222222222')
+      `,
+    );
+    await sys(
+      (tx) => tx`
+        INSERT INTO redirects (from_path, to_path, status_code, created_by)
+        VALUES ('/unfolded', '/about', 301, ${SYSTEM.actorId}::uuid)
+      `,
+    );
+    // The pending change widens the retry to staging too (the fold restarts
+    // its backoff); Settings' action reads the op's result as the answer to
+    // the operator's click on production.
+    const r = await execute(registry, adapter, SYSTEM, "redirects.sync_provider", {
+      trigger: "manual",
+      // An upper-case spelling is the same target (the Settings form accepts it).
+      targetIds: [targets.production.id.toUpperCase()],
+    });
+    expect(r.ok).toBe(true);
+    const outcomes = (r.ok ? r.value : { targets: [] }) as {
+      targets: { env: string; status: string }[];
+    };
+    expect(outcomes.targets).toEqual([
+      expect.objectContaining({ env: "production", status: "applied" }),
+    ]);
+    const after = await status();
+    expect(after.production?.inSync).toBe(true);
+    expect(await snippet("production")).toContain("/unfolded");
+    // Staging's own failure is still recorded and shown on its own row.
+    expect(after.staging?.inSync).toBe(false);
+    expect(after.staging?.lastError).toContain("serves no files");
   });
 
   it("a failed push is loud, keeps the redirect, is shown and retried until live", async () => {
@@ -285,13 +377,13 @@ describe("redirect sync on save (#1157)", () => {
 
     // Not due yet: the poll leaves it alone.
     await serve("production", { "index.html": "home", "about/index.html": "about" });
-    await _redirectSyncPollOnceForTests({ adapter, registry });
+    await retryRedirectSync({ adapter, registry });
     expect((await status()).production?.inSync).toBe(false);
 
     await sys(
       (tx) => tx`UPDATE redirect_sync_state SET next_attempt_at = now() - interval '1 second'`,
     );
-    await _redirectSyncPollOnceForTests({ adapter, registry });
+    await retryRedirectSync({ adapter, registry });
     const live = await status();
     expect(live.production?.inSync).toBe(true);
     expect(live.production?.last).toMatchObject({ status: "applied", trigger: "retry" });
@@ -299,7 +391,7 @@ describe("redirect sync on save (#1157)", () => {
   });
 
   it("without the post-commit runner the target stays behind until the worker syncs it", async () => {
-    stopRedirectSyncWorker();
+    unregisterRedirectSyncRunner();
     try {
       const r = await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
       expect(r.ok).toBe(true);
@@ -307,16 +399,16 @@ describe("redirect sync on save (#1157)", () => {
       const s = await status();
       expect(s.production?.inSync).toBe(false);
       expect(s.production?.lastError).toBeNull();
-      await _redirectSyncPollOnceForTests({ adapter, registry });
+      await retryRedirectSync({ adapter, registry });
       expect((await status()).production?.inSync).toBe(true);
       expect(await snippet("production")).toContain("/old");
     } finally {
-      startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+      registerRedirectSyncRunner({ adapter, registry });
     }
   });
 
   it("a retry only touches targets whose backoff has elapsed", async () => {
-    stopRedirectSyncWorker();
+    unregisterRedirectSyncRunner();
     try {
       await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
       // Both targets failed earlier (the change is folded); production backs
@@ -332,13 +424,13 @@ describe("redirect sync on save (#1157)", () => {
             failed_attempts = 1, next_attempt_at = EXCLUDED.next_attempt_at
         `;
       });
-      await _redirectSyncPollOnceForTests({ adapter, registry });
+      await retryRedirectSync({ adapter, registry });
       const s = await status();
       expect(s.staging?.inSync).toBe(true);
       expect(s.production?.inSync).toBe(false);
       expect(s.production?.last).toBeNull();
     } finally {
-      startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+      registerRedirectSyncRunner({ adapter, registry });
     }
   });
 
@@ -607,7 +699,7 @@ describe("redirect sync off the write path (#1254)", () => {
   });
 
   it("a page move that creates a redirect commits while the sync state rows are locked", async () => {
-    stopRedirectSyncWorker();
+    unregisterRedirectSyncRunner();
     const holder = new SQL(ADMIN_URL!);
     let release: () => void = () => undefined;
     const released = new Promise<void>((r) => {
@@ -649,18 +741,18 @@ describe("redirect sync off the write path (#1254)", () => {
       // The change waits in the log; the worker pushes it.
       expect(await changeRows()).toBe(1);
       expect((await status()).production?.inSync).toBe(false);
-      await _redirectSyncPollOnceForTests({ adapter, registry });
+      await retryRedirectSync({ adapter, registry });
       expect((await status()).production?.inSync).toBe(true);
       expect(await snippet("production")).toContain("/team");
     } finally {
       release();
       await holder.end();
-      startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+      registerRedirectSyncRunner({ adapter, registry });
     }
   });
 
   it("several pending changes are pushed by one coalesced run", async () => {
-    stopRedirectSyncWorker();
+    unregisterRedirectSyncRunner();
     try {
       for (const n of [1, 2, 3]) {
         const r = await createRedirects([{ fromPath: `/old-${n}`, toPath: "/about" }]);
@@ -688,7 +780,7 @@ describe("redirect sync off the write path (#1254)", () => {
       await syncDetached({ trigger: "save", publisher: counting });
       expect(pushes).toBe(1);
     } finally {
-      startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+      registerRedirectSyncRunner({ adapter, registry });
     }
   });
 
@@ -803,7 +895,7 @@ describe("redirect sync off the write path (#1254)", () => {
         await tx`DELETE FROM deploy_runs WHERE id = ${run}::uuid`;
       });
     }
-    await _redirectSyncPollOnceForTests({ adapter, registry });
+    await retryRedirectSync({ adapter, registry });
     expect((await status()).production?.inSync).toBe(true);
     expect(await snippet("production")).toContain("/during-publish");
   });

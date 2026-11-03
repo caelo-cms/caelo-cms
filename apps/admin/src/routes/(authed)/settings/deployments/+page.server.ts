@@ -5,7 +5,6 @@ import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
-import { enqueueStagingAudit } from "#lib/server/quality-audit.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { stageStatusOf } from "#lib/server/stage-status.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -83,6 +82,8 @@ export const actions: Actions = {
     // #553 — only sent for production while the staged build's quality
     // check failed; deploy.trigger records it as a publish-anyway decision.
     const publishAnywayReason = String(form.get("publishAnywayReason") ?? "").trim();
+    // #553 / #1319 — a staging rebuild from Ops is audited like any Stage
+    // outside a chat; deploy.trigger queues the audit with the build.
     const result = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
       targetName,
       ...(publishAnywayReason ? { publishAnyway: { reason: publishAnywayReason } } : {}),
@@ -90,14 +91,6 @@ export const actions: Actions = {
     if (!result.ok) {
       return fail(409, { error: `Build ${targetName} refused: ${describeError(result.error)}` });
     }
-    // #553 — a staging rebuild from Ops is audited like any Stage outside
-    // a chat (no-op for other targets).
-    await enqueueStagingAudit(locals.ctx, {
-      deployRunId: (result.value as { runId: string }).runId,
-      targetName,
-      chatSessionId: null,
-      branch: null,
-    });
     throw redirect(303, "/settings/deployments");
   },
   promote: async ({ request, locals }) => {

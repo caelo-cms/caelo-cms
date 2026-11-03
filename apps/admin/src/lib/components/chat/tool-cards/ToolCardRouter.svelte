@@ -47,11 +47,12 @@ import ChoiceCard from "./ChoiceCard.svelte";
     /** offer_choices → the clicked option posts back as the operator's message. */
     onChoose?: (answer: string) => void;
     /**
-     * Part 2 — live screenshot bytes for the image-returning tools. Present
-     * only for the session that captured it (never persisted); ScreenshotCard
-     * renders the preview when set and falls back to text-only when absent.
+     * The screenshot of an image-returning tool: a data URL for a capture
+     * streamed in this tab, or the chat's images route for the copy stored
+     * on the tool row (#359). ScreenshotCard falls back to text-only when
+     * absent (an older row, or one the weekly sweep cleared).
      */
-    image?: { base64: string; mediaType: string };
+    image?: { src: string; mediaType: string };
   }
   let {
     name,

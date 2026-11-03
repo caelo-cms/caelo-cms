@@ -26,10 +26,11 @@ export async function redirectSyncNote(
   const targets = (r.value as { targets: RedirectSyncTargetStatus[] }).targets;
   if (targets.length === 0)
     return "No staging or production target exists, so nothing serves redirects yet.";
-  return targets.map(describeTarget).join("\n");
+  return targets.map(describeRedirectSyncTarget).join("\n");
 }
 
-function describeTarget(t: RedirectSyncTargetStatus): string {
+/** One target's line of {@link redirectSyncNote}. Exported for the unit tests. */
+export function describeRedirectSyncTarget(t: RedirectSyncTargetStatus): string {
   const name = `${t.targetName} (${t.env})`;
   if (!t.inSync) {
     return t.lastError
@@ -51,5 +52,16 @@ function describeTarget(t: RedirectSyncTargetStatus): string {
           .slice(0, UNSERVED_SHOWN)
           .map((u) => `${u.fromPath} -> ${u.location}`)
           .join(", ")}${unserved.length > UNSERVED_SHOWN ? ", …" : ""}.`;
-  return `${name}: live now (no build or Publish live needed).${pending}`;
+  return `${name}: live now (no build or Publish live needed).${pending}${goneNote(t)}`;
+}
+
+/**
+ * #1357 — a 410 rule on a host that cannot send 410 answers 404: say so, so
+ * the AI tells the operator instead of reporting the rule live as stored.
+ */
+function goneNote(t: RedirectSyncTargetStatus): string {
+  const gone = t.last?.goneCount ?? 0;
+  if (gone === 0 || t.goneAnswer === 410) return "";
+  const rules = gone === 1 ? "1 410 rule answers" : `${gone} 410 rules answer`;
+  return ` ${rules} 404 on this hosting, not 410 Gone: it cannot send a bare 410. Search engines drop a 404 too, only more slowly; tell the operator if they asked for 410.`;
 }

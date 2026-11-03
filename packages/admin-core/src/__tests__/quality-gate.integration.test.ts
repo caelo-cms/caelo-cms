@@ -127,7 +127,7 @@ async function opErr(ctx: ExecutionContext, name: string, input: unknown): Promi
   return JSON.stringify(r.error);
 }
 
-/** The /edit Stage flow, op for op (classify → merge → build → finalize → enqueue). */
+/** The /edit Stage flow, op for op (classify → merge → build + its audit → finalize). */
 async function stage(
   chatSessionId: string,
   stagedBy: "operator" | "live_edit_ai" = "operator",
@@ -142,22 +142,25 @@ async function stage(
     "chat.merge_to_main",
     { chatSessionId, deferConsume: true, headerIds },
   );
+  // #1319 — the build queues its audit in the transaction that records it.
   const built = await op<{ runId: string }>(HUMAN, "deploy.trigger", {
     targetName: "staging",
     repoRoot: testRoot,
+    qualityAudit: { chatSessionId, branch, stagedBy },
   });
   await op(HUMAN, "chat.finalize_stage", {
     chatSessionId,
     stagedAt: merged.mergedAt,
     headerIds: merged.mergedHeaderIds,
   });
-  const q = await op<{ status: string }>(HUMAN, "quality_audits.enqueue", {
-    deployRunId: built.runId,
-    chatSessionId,
-    branch,
-    stagedBy,
-  });
-  return { runId: built.runId, status: q.status };
+  const q = await withSql(
+    (tx) =>
+      tx`SELECT status FROM quality_audit_runs WHERE deploy_run_id = ${built.runId}::uuid` as Promise<
+        { status: string }[]
+      >,
+  );
+  expect(q).toHaveLength(1);
+  return { runId: built.runId, status: (q[0] as { status: string }).status };
 }
 
 const ALL_100: Record<QualityCategory, number> = {
@@ -1242,11 +1245,20 @@ describe("bulk decisions (#727 'optimum, not good enough')", () => {
 
 describe("a staged build that was never audited", () => {
   it("is blocked as missing until the check runs", async () => {
-    await op(HUMAN, "deploy.trigger", { targetName: "staging", repoRoot: testRoot });
+    const { runId } = await op<{ runId: string }>(HUMAN, "deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    // #1319 — a build queues its audit with it now; an install still holds
+    // builds staged before that whose audit was lost (or never existed).
+    await withSql((tx) => tx`DELETE FROM quality_audit_runs WHERE deploy_run_id = ${runId}::uuid`);
     expect(await gate()).toMatchObject({ open: false, state: "missing" });
     expect((await promote()).message).toContain("has not been quality-checked");
-    const r = await op<{ status: string }>(AI, "quality_audits.retry", {});
-    expect(r.status).toBe("queued");
+    // Retried by the Stage's run id, as get_quality_audit names it.
+    const r = await op<{ status: string; deployRunId: string }>(AI, "quality_audits.retry", {
+      deployRunId: runId,
+    });
+    expect(r).toMatchObject({ status: "queued", deployRunId: runId });
     await audit(fakeLighthouse(() => ({})));
     expect(await gate()).toMatchObject({ open: true, state: "clean" });
   });

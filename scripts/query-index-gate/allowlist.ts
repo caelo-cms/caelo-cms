@@ -94,7 +94,7 @@ export const ALLOWED: readonly AllowedRule[] = [
   },
   {
     table: "public.plugin_data_stale_pages",
-    op: "deploy.release_rollback",
+    op: "deploy.finish_rollback",
     reason:
       "A rollback resets the bake mark of every stale page (#1155): a whole-table update by design, run once per rollback.",
   },

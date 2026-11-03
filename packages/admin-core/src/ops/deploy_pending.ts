@@ -360,14 +360,14 @@ export const beginExecuteDeployProposalOp = requiresApproverPermission(
       // An earlier click's Publish live or rollback went live, but its
       // approval was never marked applied (the apply died between the two):
       // record it now instead of releasing a second time. A rollback's run
-      // carries the claimed id and is committed with the rollback itself.
+      // carries the claimed id, like Publish live's (#1250).
       if (row.claimed_by_run_id !== null && row.run_status === "succeeded") {
         await markApplied(tx, ctx, input.proposalId, row.claimed_by_run_id);
         return ok({ kind: "applied" as const, runId: row.claimed_by_run_id });
       }
       // A second click (another tab, a retried request) while the first one
-      // still applies: the Publish live it started is running, or it is
-      // between the claim and its run's start, or a rollback is waiting.
+      // still applies: the Publish live or rollback it started is running,
+      // or it is between the claim and its run's start.
       const claimLive =
         row.run_status === "running"
           ? row.run_live === true

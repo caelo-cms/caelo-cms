@@ -70,6 +70,7 @@ export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = 
       if (named?.env !== "staging") {
         return {
           ok: false,
+          refusal: true,
           content:
             `"${input.targetName}" is not a staging target — deploy_staging rebuilds staging only. ` +
             `Staging targets: ${stagingNames}. To go live, call propose_deploy_promote instead.`,
@@ -81,12 +82,14 @@ export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = 
     } else if (staging.length === 0) {
       return {
         ok: false,
+        refusal: true,
         content:
           "This site has no staging deploy target configured, so there is nothing to rebuild. Tell the operator staging is not set up (Ops → Deployments); do not deploy anywhere else.",
       };
     } else {
       return {
         ok: false,
+        refusal: true,
         content: `Several staging targets exist (${stagingNames}) — call deploy_staging again with targetName set to one of them.`,
       };
     }

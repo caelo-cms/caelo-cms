@@ -313,6 +313,7 @@ describe("runSync — oauthSettings step", () => {
     staticMembers: "user:owner@x.com",
     databaseHost: "10.0.0.3",
     mcpSigners: "",
+    iapServiceAccounts: "",
     oauthClientSecret: "projects/p/secrets/caelo-production-operator-oauth-client",
   };
   const file = async () => ({ client_id: CLIENT, client_secret: SECRET });

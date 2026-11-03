@@ -67,19 +67,8 @@ export {
   bugIntakeUrl,
   DEFAULT_BUG_INTAKE_URL,
 } from "./bug-forwarding/client.js";
-export { startBugForwardingWorker, stopBugForwardingWorker } from "./bug-forwarding/worker.js";
 // P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
-// #1267 — the change journal's retention GC (replaced the #392 outbox GC).
-export {
-  startChangeJournalGcWorker,
-  stopChangeJournalGcWorker,
-} from "./change-journal-gc-worker.js";
-// v0.2.37 — proposal GC sidecar (sweeps stale pending rows daily).
-export {
-  startChatImageGcWorker,
-  stopChatImageGcWorker,
-  sweepChatImagesOnce,
-} from "./chat-image-gc-worker.js";
+export { sweepChatImagesOnce } from "./chat-image-gc-worker.js";
 export * from "./csrf.js";
 // #1008 — the Stage warning for a build made while active plugins did not run.
 export {
@@ -217,9 +206,7 @@ export {
 export * from "./ops/users.js";
 export * from "./password.js";
 export * from "./permissions.js";
-// P21 ship 5 — release-check sidecar worker (replaces the in-handler
-// GitHub fetch; bootstrap from hooks.server.ts).
-// #696 Phase 5 — the auto-update scheduler (bootstrapped from hooks.server.ts).
+// #696 Phase 5 — the auto-update scheduler (a task on the #1140 scheduler tick).
 export {
   type CheckReleasesNowResult,
   checkReleasesNow,
@@ -232,9 +219,8 @@ export {
   registryManifestReader,
 } from "./platform-updates/release-facts.js";
 export {
+  type AutoUpdateSchedulerOpts,
   runAutoUpdateTick,
-  startAutoUpdateScheduler,
-  stopAutoUpdateScheduler,
   type UpgraderResolver,
 } from "./platform-updates/scheduler.js";
 // #819 — which job installs a release (upgrader or converge job).
@@ -244,12 +230,8 @@ export {
   type UpdateRoute,
   type UpdateRouteInput,
 } from "./platform-updates/update-route.js";
-// #1154 — the admin's login rate-limit GC (formerly in the redeploy orchestrator).
-export {
-  type PluginDataTickResult,
-  runPluginDataBuildIfDue,
-  startPluginDataBuildWorker,
-} from "./plugin-data/worker.js";
+// #1155 — the plugin-data build, a task on the #1140 scheduler tick.
+export { type PluginDataTickResult, runPluginDataBuildIfDue } from "./plugin-data/worker.js";
 // issue #946 / #1217 — the preview document's shape (CSP sandbox, inlined
 // fonts), shared by the admin's preview routes and the capture job.
 export {
@@ -258,16 +240,25 @@ export {
   PREVIEW_DOCUMENT_CSP,
   previewDocumentHeaders,
 } from "./preview-document.js";
-export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
 export * from "./public-projection.js";
 // #553 — quality-audit worker (Lighthouse after a substantial Stage).
 export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit-worker.js";
 export * from "./rate-limit.js";
-// #1154 — the admin's login rate-limit GC (formerly in the redeploy orchestrator).
-export { startRateLimitGcWorker } from "./rate-limit-gc-worker.js";
-export { startRedirectSyncWorker, stopRedirectSyncWorker } from "./redirect-sync-worker.js";
+// #1157 — the post-commit redirect sync every redirects write runs.
+export { registerRedirectSyncRunner } from "./redirect-sync-worker.js";
 export * from "./register.js";
-export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check-worker.js";
+export type { ReleaseCheckOpts } from "./release-check-worker.js";
+// #1140 — the scheduler tick: the core maintenance tasks, the plugin
+// workers, and the tick that runs what is due.
+export { mintTickToken } from "./scheduler/clock.js";
+export { type CoreTaskDeps, coreScheduledTasks } from "./scheduler/core-tasks.js";
+export { pluginWorkerTasks } from "./scheduler/plugin-workers.js";
+export type { ScheduledTask, TaskCadence } from "./scheduler/task.js";
+export {
+  runSchedulerTick,
+  type SchedulerTickReport,
+  type TaskRunReport,
+} from "./scheduler/tick.js";
 // #914 — Settings → Google sign-in: the install's one Google OAuth client
 // (IAP browser login, IAP programmatic access, remote-MCP broker).
 export {
@@ -302,6 +293,7 @@ export {
   IAP_ASSERTION_HEADER,
   type IapKeyProvider,
   type IapVerifier,
+  iapVerifier,
   setIapVerifierForTests,
 } from "./security/iap-assertion.js";
 export {
@@ -365,12 +357,9 @@ export { emitSnapshot } from "./snapshots/emit.js";
 // issue #620 — the Stage flow for one chat or a selection of chats (/edit's
 // Stage button, the Open changes overview).
 export {
-  enqueueStagingAudit,
   type StagedChats,
   type StageFailure,
   stageChatSessions,
 } from "./stage/stage-chats.js";
-// #969 — staging-preview keep-alive (formerly in the redeploy orchestrator).
-export { startStagingPreviewKeepAliveWorker } from "./staging-preview-keepalive-worker.js";
 export * from "./tokens.js";
 export * from "./untrusted/public-data.js";

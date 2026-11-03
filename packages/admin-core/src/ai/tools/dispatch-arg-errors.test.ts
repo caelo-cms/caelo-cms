@@ -81,7 +81,7 @@ describe("tool argument rejection", () => {
 
     expect(res.ok).toBe(false);
     expect(res.content).toContain("`question` (string, required)");
-    expect(res.content).toContain("`options` (array, required)");
+    expect(res.content).toContain("`options` (array of object, required)");
     // The schema's own blurb rides along — it is the best description we have.
     expect(res.content).toContain("the question to put to the operator");
   });

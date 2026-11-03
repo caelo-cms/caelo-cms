@@ -570,9 +570,9 @@ export async function dispatchToolCall(
   // v0.3.0 — when the tool returned an image (screenshot_page is
   // the only producer today), build a multimodal user message so the
   // AI sees the image alongside the text result on its next provider
-  // call. Image content is NOT persisted to chat_messages — it's
-  // runtime-only. After publish, the chat history shows only the text
-  // result; the image was consumed by the AI for that turn. Deferred
+  // call. This follow-up message is runtime-only; what persists is the
+  // attachment on the tool row above (#356), which a reloaded transcript
+  // shows through the chat's images route (#359). Deferred
   // (not pushed inline) so parallel image-returning calls keep every
   // tool result ahead of the first user message — see the parameter
   // doc above.
@@ -589,12 +589,17 @@ export async function dispatchToolCall(
 
 /**
  * #1091 — whether a tool result is filed as an automatic bug report: every
- * final failure except the bug channel itself and a deliberate guard
- * refusal (`ToolResult.refusal`, set from `HandlerError.refusal`).
+ * final failure except the bug channel itself, a deliberate guard refusal
+ * (`ToolResult.refusal`, set from `HandlerError.refusal` or by a tool-level
+ * gate) and — #1364 — a failure kept for `retry_tool_call`
+ * (`ToolResult.retryable`): the AI patches it next, and a patch that
+ * cannot fix it ends in a failure that is filed.
  */
 export function shouldAutoCaptureToolFailure(
   toolName: string,
-  result: Pick<ToolDispatchResult, "ok" | "refusal">,
+  result: Pick<ToolDispatchResult, "ok" | "refusal" | "retryable">,
 ): boolean {
-  return !result.ok && toolName !== "bug_report" && result.refusal !== true;
+  return (
+    !result.ok && toolName !== "bug_report" && result.refusal !== true && result.retryable !== true
+  );
 }

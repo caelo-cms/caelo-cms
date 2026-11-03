@@ -20,17 +20,16 @@
  * minutes, the deadlock class of #1209). Two kinds of holder now share one
  * row:
  *
- *   - Publish live and the plugin-data build hold no transaction while they
- *     build and upload. They ACQUIRE the lease (`deploy.acquire_live_release`)
- *     as their run: Publish live polls outside any transaction while it is
- *     held, the plugin-data tick skips (its marks stay pending for the next
- *     tick).
- *   - Rollback and the CDN purge run inside one short transaction. They
- *     LOCK the row ({@link tryLockLiveRelease}) only while no run holds the
- *     lease and keep it until their transaction ends. Rollback waits for a
- *     free lease OUTSIDE its transaction and then tries again; the purge
- *     skips (the publish's own release purges the CDN, and the purge
- *     retries on the next status read).
+ *   - Publish live, rollback (#1250) and the plugin-data build hold no
+ *     transaction while they build, upload or release. They ACQUIRE the
+ *     lease (`deploy.acquire_live_release`) as their run: Publish live and
+ *     rollback poll outside any transaction while it is held, the
+ *     plugin-data tick skips (its marks stay pending for the next tick).
+ *   - The CDN purge runs inside one short transaction. It LOCKS the row
+ *     ({@link tryLockLiveRelease}) only while no run holds the lease and
+ *     keeps it until its transaction ends; busy, it skips (the publish's
+ *     own release purges the CDN, and the purge retries on the next status
+ *     read).
  *   - #1254 — the redirect sync CLAIMS the lease for the seconds of its
  *     push ({@link claimLiveReleaseForSync}) and holds no transaction while
  *     the provider answers. Busy: it leaves production behind (the holder's
@@ -95,7 +94,7 @@ export const LIVE_RELEASE_WAIT_MS = 10 * 60_000;
 /**
  * Inside a transaction: lock the lease row while no run holds the lease,
  * for the rest of this transaction. Never waits for a run — it reports that
- * run instead. `skipLocked` (rollback, the purge): also never wait for
+ * run instead. `skipLocked` (the purge): also never wait for
  * another transaction that locked the row; otherwise (the redirect sync)
  * wait for it, like the advisory lock did.
  */

@@ -334,6 +334,7 @@ async function crawlNextImportRun(cfg: SiteImportWorkerConfig): Promise<void> {
  * runs it for its lifetime).
  */
 export function startSiteImportWorker(cfg: SiteImportWorkerConfig): { stop(): void } {
+  // FIXME(issue #1360): the crawl moves into a container job that reports back (#1140 category A).
   const handle = setInterval(() => {
     void crawlNextImportRun(cfg);
   }, CRAWL_INTERVAL_MS);

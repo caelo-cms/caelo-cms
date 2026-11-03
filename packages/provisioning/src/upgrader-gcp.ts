@@ -73,11 +73,12 @@ export async function upgraderDatabaseHost(
 
 /**
  * #1338 — the database host for the converge job (#819), after making sure
- * a verify-full connection to it can work. The job opens its database
- * queue before it converges anything, with this release's code, which
- * connects with verify-full only; on an install whose services still dial
- * the instance's IP it first runs the converge's database TLS step
+ * a verify-full connection to it can work. On an install whose services
+ * still dial the instance's IP it runs the converge's database TLS step
  * (cloudsql-tls.ts: shared CA, private DNS name, services moved onto it).
+ * Stage 2 of the job runs it as a timeline step, over a queue opened on
+ * the IP (converge-db-trust.ts, #1373), then reconnects on the host this
+ * returns.
  * The job runs as the install's `caelo-provisioner`, which holds
  * `roles/cloudsql.admin` and `roles/dns.admin` (gcloud.ts PROVISIONER_ROLES).
  * Idempotent: the converge's own step finds everything in shape.

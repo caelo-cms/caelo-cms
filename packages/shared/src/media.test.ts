@@ -2,9 +2,11 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  buildChatImageKey,
   buildMediaUrl,
   buildStorageKey,
   extractMediaRefs,
+  isWellFormedChatImageKey,
   MEDIA_ALLOWED_MIMES,
   MEDIA_HARD_LIMIT_BYTES,
   MEDIA_SIZE_CAPS,
@@ -195,5 +197,30 @@ describe("media schemas", () => {
 
   it("mediaSetCdnInputSchema rejects threshold below 1", () => {
     expect(mediaSetCdnInputSchema.safeParse({ enabled: true, threshold: 0 }).success).toBe(false);
+  });
+});
+
+describe("chat image keys (#359)", () => {
+  const sha = "a".repeat(64);
+
+  it("accepts every key buildChatImageKey writes for a raster image", () => {
+    for (const ext of ["png", "jpeg", "webp", "gif"]) {
+      expect(isWellFormedChatImageKey(buildChatImageKey("2026-11-03", sha, ext))).toBe(true);
+    }
+  });
+
+  it("rejects traversal, foreign prefixes and non-image objects", () => {
+    for (const key of [
+      `chat-images/../${sha}.png`,
+      `chat-images/2026-11-03/../../secrets/${sha}.png`,
+      `${sha}/orig.png`,
+      `chat-images/2026-11-03/${sha}.svg`,
+      `chat-images/2026-11-03/${sha}.png/x`,
+      `chat-images/2026-11-03/${"A".repeat(64)}.png`,
+      `/chat-images/2026-11-03/${sha}.png`,
+      `chat-images/2026-11-03/${sha}.png\n`,
+    ]) {
+      expect(isWellFormedChatImageKey(key)).toBe(false);
+    }
   });
 });

@@ -41,6 +41,7 @@ import {
   GATEWAY_TRUSTED_PROXY_HOPS,
   MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS,
   memoryQuantityMiB,
+  parseSchedulerIntervalMinutes,
   publicSiteUrl,
   REMOTE_MCP_MODE,
   REMOTE_MCP_MODE_ENV,
@@ -264,6 +265,12 @@ export interface ComposeSpec {
   /** Which Caelo images run (see {@link ComposeImages}). */
   readonly images: ComposeImages;
   /**
+   * #1140 — the `schedulerIntervalMinutes` knob: how often the scheduler
+   * container calls the admin's tick (1–15, default 5; stack-contract.ts
+   * SCHEDULER_INTERVAL_MINUTES).
+   */
+  readonly schedulerIntervalMinutes?: number;
+  /**
    * The host ports Caddy listens on (`80` / `443` for a public install —
    * ACME's HTTP and TLS-ALPN challenges need exactly those).
    */
@@ -372,6 +379,7 @@ ${adminService(spec, adminMemoryMiB, env)}
 
 ${gatewayService(spec)}
 ${mcpAuthProxyService(spec.images)}
+${schedulerService(spec)}
 volumes:
   caelo-pg:
   caelo-caddy-data:
@@ -529,6 +537,56 @@ ${serviceRuntime(images, "mcp-auth-proxy", "bun run apps/mcp-auth-proxy/src/serv
       MCP_AUTH_PROXY_PORT: "${COMPOSE_MCP_AUTH_PROXY_PORT}"
       # Caddy is the one proxy in front (@caelo-cms/shared client-address.ts).
       ${TRUSTED_PROXY_HOPS_ENV}: "${MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS["self-hosted"]}"
+      NODE_ENV: production
+`;
+}
+
+/** #1140 — the Compose service that calls the admin's scheduler tick. */
+export const COMPOSE_SCHEDULER_SERVICE = "caelo-scheduler";
+
+/** Where the admin image (and the dev checkout) ships the scheduler clock. */
+export const SCHEDULER_CLOCK_SCRIPT = "packages/admin-core/src/scheduler/clock.ts";
+
+/** The admin's tick endpoint on the Compose network. */
+export const COMPOSE_SCHEDULER_TICK_URL = `http://${COMPOSE_ADMIN_UPSTREAM}/api/internal/scheduler/tick`;
+
+/**
+ * #1140 — the scheduler: the self-hosted counterpart of the Cloud Scheduler
+ * job on Google Cloud. Every `schedulerIntervalMinutes` it POSTs the admin's
+ * `/api/internal/scheduler/tick` with an internal token (scope
+ * `scheduler.tick`); the admin runs whatever its due-table says is due. The
+ * clock only calls, it does no work itself, so the admin's background work
+ * runs inside a request on every provider.
+ *
+ * It runs the admin image with another entry point (dependency-free, node
+ * built-ins only) and holds only the internal secret it signs with: no
+ * database URL, no KEK, no mount, read-only root filesystem, every
+ * capability dropped. A rollback to a release from before #1140 renders it
+ * too; that admin image has no clock script, so the container exits and
+ * Docker restarts it with back-off — that release runs its work in-process.
+ */
+function schedulerService(spec: ComposeSpec): string {
+  const minutes = parseSchedulerIntervalMinutes(spec.schedulerIntervalMinutes);
+  const runtime =
+    spec.images.mode === "dev"
+      ? serviceRuntime(spec.images, "admin", `bun run ${SCHEDULER_CLOCK_SCRIPT}`)
+      : [
+          serviceRuntime(spec.images, "admin", ""),
+          `    command: ["bun", "--bun", "/app/${SCHEDULER_CLOCK_SCRIPT}"]`,
+        ].join("\n");
+  return `
+  ${COMPOSE_SCHEDULER_SERVICE}:
+${runtime}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    depends_on: [caelo-admin]
+    environment:
+      CAELO_INTERNAL_SECRET: "${escapeYaml(spec.internalSecret)}"
+      CAELO_SCHEDULER_TICK_URL: "${COMPOSE_SCHEDULER_TICK_URL}"
+      CAELO_SCHEDULER_INTERVAL_MINUTES: "${minutes}"
       NODE_ENV: production
 `;
 }

@@ -502,6 +502,19 @@ export function isChatImageKey(key: string): boolean {
   return key.startsWith(`${CHAT_IMAGE_PREFIX}/`);
 }
 
+const CHAT_IMAGE_KEY_SHAPE = /^chat-images\/\d{4}-\d{2}-\d{2}\/[0-9a-f]{64}\.(png|jpeg|webp|gif)$/;
+
+/**
+ * True only for a key with exactly the shape {@link buildChatImageKey} writes
+ * for a raster image. The chat-image route serves a key read from a message
+ * row; checking the full shape (not just the prefix) means a tampered or
+ * legacy row can never point the route at `..`, another prefix, or a
+ * non-image object.
+ */
+export function isWellFormedChatImageKey(key: string): boolean {
+  return CHAT_IMAGE_KEY_SHAPE.test(key);
+}
+
 /** Build the canonical storage key for a given asset variant. */
 export function buildStorageKey(
   sha256: string,

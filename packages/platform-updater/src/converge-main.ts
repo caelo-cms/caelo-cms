@@ -18,49 +18,54 @@
  * The database connection uses Cloud SQL IAM authentication as the
  * provisioner, whose database login is a member of `platform_updater`
  * only (migration 0267); the token-refreshing pool (token-queue.ts) keeps
- * it usable through a long converge.
+ * it usable through a long converge. It opens on the host the install
+ * dials today and moves to the DNS name once stage 2 ran the database TLS
+ * step (converge-db.ts, #1373), so a failure of that step reaches the
+ * update timeline.
  */
 
 import {
   convergeDatabaseHost,
+  convergeDatabaseTarget,
   convergeExecutionNameError,
   gcpConvergeDeps,
   runConvergeJob,
 } from "@caelo-cms/provisioning";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
-import { cloudSqlIamDatabaseUrls } from "@caelo-cms/shared";
+import { cloudSqlIamDatabaseUrls, cloudSqlIamIpDatabaseUrls } from "@caelo-cms/shared";
+import { convergeDatabase, ipTargetTls } from "./converge-db.js";
 import { createDbConvergeQueue } from "./db-queue.js";
 import { accessToken, jobPlacement, log } from "./main.js";
-import { tokenRefreshingConvergeQueue } from "./token-queue.js";
 
 async function main(): Promise<void> {
   const { projectId, region, email, execution } = await jobPlacement();
   const badExecution = convergeExecutionNameError(execution);
   if (badExecution) throw new Error(`refused to run: ${badExecution}`);
-  // #1338 — verify-full needs the instance's DNS name: on an install that
-  // still dials its IP this sets it up first (provisioning upgrader-gcp.ts).
-  const host = await convergeDatabaseHost({ projectId, region });
-  const db = tokenRefreshingConvergeQueue({
-    fetchToken: accessToken,
-    open: (token) => {
-      const urls = cloudSqlIamDatabaseUrls(host, email, token);
+  const placement = { projectId, region };
+  const db = await convergeDatabase({
+    resolveTarget: () => convergeDatabaseTarget(placement),
+    // #1338 — run by the job as a step of stage 2 (converge-job.ts).
+    runTlsStep: () => convergeDatabaseHost(placement),
+    open: (target, token) => {
+      const urls =
+        target.kind === "dns"
+          ? cloudSqlIamDatabaseUrls(target.host, email, token)
+          : cloudSqlIamIpDatabaseUrls(target.host, email, token);
       const adapter = new DatabaseAdapter({
         adminDatabaseUrl: urls.admin,
         publicDatabaseUrl: urls.public,
         expectedRoles: { admin: urls.user, public: [urls.user] },
+        ...(target.kind === "ip" ? { tls: ipTargetTls(target) } : {}),
       });
       return { queue: createDbConvergeQueue(adapter), close: () => adapter.close() };
     },
+    fetchToken: accessToken,
     now: Date.now,
-    onCloseError: (e) =>
-      log({
-        severity: "WARNING",
-        message: `could not close a database pool: ${e instanceof Error ? e.message : String(e)}`,
-      }),
+    warn: (message) => log({ severity: "WARNING", message }),
   });
   try {
     const result = await runConvergeJob(
-      gcpConvergeDeps({ projectId, region, execution }, db.queue, log),
+      gcpConvergeDeps({ projectId, region, execution }, db.queue, db.secureDatabase, log),
     );
     process.exitCode = result.exitCode;
   } finally {

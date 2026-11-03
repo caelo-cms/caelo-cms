@@ -766,6 +766,104 @@ describe("withSecurityHeaders", () => {
   });
 });
 
+describe("firebaseHostingPublisher — clones name the current gateway (#1328)", () => {
+  // A version released before the converge moved the gateway: its rewrite
+  // names the service that is now the MCP-Auth-Proxy, which the admin may
+  // no longer read, so Hosting would refuse a verbatim copy.
+  const OLD_REWRITE = {
+    glob: "/api/**",
+    run: { serviceId: "old-gateway", region: "europe-west1" },
+  };
+  const CURRENT_REWRITE = {
+    glob: "/api/**",
+    run: { serviceId: "gateway", region: "europe-west1" },
+  };
+
+  it("Publish live of a version staged before the move rewrites /api/** to the current gateway", async () => {
+    fake.seedVersion(
+      "runid-pre-1328",
+      {
+        headers: [{ glob: "**", headers: { "X-Robots-Tag": "noindex" } }],
+        rewrites: [OLD_REWRITE],
+      },
+      { "/index.html": "abc" },
+    );
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.promoteToProduction({
+      sourceRunId: "pre-1328",
+      sourceBuildDir: buildDir,
+      fromTarget: STAGING,
+      toTarget: PRODUCTION,
+      siteBaseUrl: SITE_BASE_URL,
+    });
+    expect(fake.liveVersion().config.rewrites).toEqual([CURRENT_REWRITE]);
+  });
+
+  it("rollback to a version released before the move rewrites /api/** to the current gateway", async () => {
+    fake.seedVersion(
+      "runid-old",
+      { headers: [], rewrites: [OLD_REWRITE] },
+      { "/index.html": "abc" },
+    );
+    const sourceLocation = fake.channels.get("runid-old")?.[0];
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.rollback({
+      targetBuildId: "old",
+      sourceBuildDir: buildDir,
+      target: PRODUCTION,
+      siteBaseUrl: SITE_BASE_URL,
+      ...(sourceLocation ? { sourceLocation } : {}),
+    });
+    expect(fake.liveVersion().config.rewrites).toEqual([CURRENT_REWRITE]);
+  });
+
+  it("the plugin-data release of a live version from before the move rewrites /api/** to the current gateway", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-1", target: STAGING });
+    const promoted = await firebaseHostingPublisher.promoteToProduction({
+      sourceRunId: "run-1",
+      sourceBuildDir: buildDir,
+      fromTarget: STAGING,
+      toTarget: PRODUCTION,
+      siteBaseUrl: SITE_BASE_URL,
+    });
+    // The live version as an earlier gateway left it.
+    const before = fake.liveVersion();
+    before.config = { ...before.config, rewrites: [OLD_REWRITE] };
+    await firebaseHostingPublisher.publishPluginData({
+      target: PRODUCTION,
+      live: { runId: "p1", buildId: "run-1", location: promoted.location, localBuildDir: "" },
+      runId: "pd-1",
+      files: new Map([["about/index.html", Buffer.from("<html>baked</html>")]]),
+    });
+    const after = fake.liveVersion();
+    expect(after.config.rewrites).toEqual([CURRENT_REWRITE]);
+    // Only the rewrite changed.
+    expect({ ...after.config, rewrites: [] }).toEqual({ ...before.config, rewrites: [] });
+  });
+
+  it("a clone fails loudly, releasing nothing, when the gateway env is missing", async () => {
+    fake.seedVersion(
+      "runid-noenv",
+      { headers: [], rewrites: [OLD_REWRITE] },
+      { "/index.html": "abc" },
+    );
+    const sourceLocation = fake.channels.get("runid-noenv")?.[0];
+    delete process.env.CAELO_GATEWAY_SERVICE;
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await expect(
+      firebaseHostingPublisher.rollback({
+        targetBuildId: "noenv",
+        sourceBuildDir: buildDir,
+        target: PRODUCTION,
+        siteBaseUrl: SITE_BASE_URL,
+        ...(sourceLocation ? { sourceLocation } : {}),
+      }),
+    ).rejects.toThrow(/CAELO_GATEWAY_SERVICE/);
+    expect(fake.live).toEqual([]);
+  });
+});
+
 describe("firebaseHostingPublisher — plugin-data release (#1155)", () => {
   async function publishLive() {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");

@@ -24,6 +24,7 @@ import {
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError, toolError } from "./_describe-error.js";
+import { idOf } from "./_draft-reads.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const AS_VALUES = ["dtcg", "css-vars", "tailwind", "summary", "font-delivery"] as const;
@@ -76,6 +77,11 @@ export const getThemeTool: ToolDefinitionWithHandler<GetThemeToolInput> = {
   description: "Read a theme; omit `slug` for the ACTIVE theme (routine case).",
   schema: getThemeToolInput,
   inputSchema: z.toJSONSchema(getThemeToolInput) as Record<string, unknown>,
+  // #1260 — the re-read a draft conflict on a theme names (default `dtcg`,
+  // the full document). A `summary` shows a few tokens, not the theme the
+  // AI would edit from; font-delivery reads no theme (no value).
+  draftReads: (input, value) =>
+    input.as === "summary" ? [] : [{ kind: "theme", ids: idOf(value, "theme") }],
   handler: async (ctx, input, toolCtx) => {
     if (input.as === "font-delivery") {
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.font_delivery", {
@@ -116,13 +122,15 @@ export const getThemeTool: ToolDefinitionWithHandler<GetThemeToolInput> = {
       }
     }
     const as: Exclude<AsFormat, "font-delivery"> = input.as;
+    // #1260 — which theme was read, for `draftReads`.
+    const value = { theme: { id: theme.id, slug: theme.slug } };
     switch (as) {
       case "dtcg":
-        return { ok: true, content: JSON.stringify(theme, null, 2) + fallbackNote };
+        return { ok: true, content: JSON.stringify(theme, null, 2) + fallbackNote, value };
       case "css-vars":
-        return { ok: true, content: formatThemeAsCssVars(theme.tokens) + fallbackNote };
+        return { ok: true, content: formatThemeAsCssVars(theme.tokens) + fallbackNote, value };
       case "tailwind":
-        return { ok: true, content: formatThemeAsTailwind(theme.tokens) + fallbackNote };
+        return { ok: true, content: formatThemeAsTailwind(theme.tokens) + fallbackNote, value };
       case "summary":
         return {
           ok: true,

@@ -19,6 +19,7 @@ import {
   type ConvergeQueue,
   type ConvergeUpgradeOutcome,
   runConvergeJob,
+  type SecureDatabaseResult,
 } from "./converge-job.js";
 import type { ExecutionState } from "./install-job.js";
 import type { InstallMetadata } from "./install-state.js";
@@ -147,6 +148,8 @@ function harness(
     imageSigned?: boolean;
     /** What IAM answers the self-check; every permission asked for by default. */
     iam?: IamTester;
+    /** #1373 — the database TLS step's answer; null: the queue dials the DNS name already. */
+    secureDatabase?: SecureDatabaseResult | null;
   } = {},
 ): Harness {
   const calls: string[] = [];
@@ -156,6 +159,13 @@ function harness(
   let stored = opts.checkpoint ?? null;
   const deps: ConvergeJobDeps = {
     queue: q.queue,
+    secureDatabase:
+      opts.secureDatabase === undefined || opts.secureDatabase === null
+        ? null
+        : async () => {
+            calls.push("secure database");
+            return opts.secureDatabase as SecureDatabaseResult;
+          },
     projectId: "acme",
     region: "europe-west1",
     iam: opts.iam ?? {
@@ -553,6 +563,66 @@ describe("runConvergeJob — resume after a killed run", () => {
     const r = await runConvergeJob(h.deps);
     expect(r.status).toBe("failed");
     expect(h.q.ends[0]?.reason).toStartWith("This update already started changing the site");
+  });
+});
+
+describe("runConvergeJob — the database TLS step (#1373)", () => {
+  const DNS = "abc.p-label.europe-west1.sql-psa.goog";
+
+  it("a failed TLS step reaches the timeline and ends the request, before any roll", async () => {
+    const h = harness({
+      secureDatabase: {
+        ok: false,
+        error:
+          "database TLS could not be set up: caelo-production-pg-1 reports no PRIVATE_SERVICES_ACCESS DNS name",
+      },
+    });
+    const r = await runConvergeJob(h.deps);
+    expect(r.exitCode).toBe(1);
+    expect(r.status).toBe("failed");
+    expect(h.upgrades).toEqual([]);
+    // Under the lock, after the resumable checkpoint, released at the end.
+    expect(h.calls).toEqual([
+      "manifest 0.11.0",
+      "lock",
+      "checkpoint running",
+      "secure database",
+      "checkpoint failed",
+      "unlock",
+    ]);
+    const end = h.q.ends[0];
+    expect(end?.codes).toEqual(["database-tls"]);
+    expect(end?.reason).toContain("reports no PRIVATE_SERVICES_ACCESS DNS name");
+    // The step's start and its error are timeline events of the request.
+    const converge = h.q.events.filter((e) => e.phase === "converge");
+    expect(converge[0]?.message).toStartWith("Setting up verified encryption");
+    const error = h.q.events.find((e) => e.level === "error");
+    expect(error?.message).toContain("reports no PRIVATE_SERVICES_ACCESS DNS name");
+  });
+
+  it("a successful TLS step runs right before the upgrade and names the verified host", async () => {
+    const h = harness({ secureDatabase: { ok: true, host: DNS } });
+    const r = await runConvergeJob(h.deps);
+    expect(r.status).toBe("succeeded");
+    const at = h.calls.indexOf("secure database");
+    expect(at).toBeGreaterThan(h.calls.indexOf("lock"));
+    expect(h.calls[at + 1]).toBe("upgrade");
+    expect(h.q.events.some((e) => e.level === "success" && e.message.includes(DNS))).toBe(true);
+  });
+
+  it("stage 1 never runs it: the release's own installer changes the database", async () => {
+    const h = harness({ ownVersion: "0.10.53", secureDatabase: { ok: true, host: DNS } });
+    await runConvergeJob(h.deps);
+    expect(h.calls.includes("secure database")).toBe(false);
+  });
+
+  it("a stop before the lock leaves the database alone", async () => {
+    const h = harness({
+      secureDatabase: { ok: true, host: DNS },
+      manifest: { ok: false, error: { code: "signature", message: "no valid signature" } },
+    });
+    await runConvergeJob(h.deps);
+    expect(h.calls.includes("secure database")).toBe(false);
   });
 });
 

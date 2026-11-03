@@ -50,12 +50,15 @@
  * cms_admin migration 0281 puts triggers on every source table: each
  * committed write leaves a row in `public_projection_outbox` (same
  * transaction as the write). {@link drainPublicProjection} republishes the
- * sections named there and deletes the rows; the admin runs it on a short
- * poll (admin-core `startPublicProjectionPublisher`). A pointer move marks
+ * sections named there and deletes the rows; the admin runs it right after
+ * each of its own writes and as a backstop on every scheduler tick
+ * (admin-core `createPublicProjectionPublisher`, #1140). A pointer move marks
  * `plugins` (0531). The migration job and the admin's boot publish
- * everything ({@link publishPublicProjection}). A `plugin:<id>` outbox row
- * (the plugin's admin-side rows changed) is consumed without a publish:
- * its content reaches a public database with the next frozen release.
+ * everything ({@link publishPublicProjection}), so an install converges even
+ * when the outbox was written before the triggers that a newer release adds.
+ * A `plugin:<id>` outbox row (the plugin's admin-side rows changed) is
+ * consumed without a publish: its content reaches a public database with
+ * the next frozen release.
  *
  * Publishers serialise on a cms_admin advisory lock held across the read
  * and the public writes, so an older read can never overwrite a newer

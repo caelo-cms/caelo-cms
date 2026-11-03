@@ -18,9 +18,11 @@
  *     `DatabaseAdapter.setProjectionPublisher`): a security-relevant change
  *     is live on the public side when the admin call returns, even on a
  *     host that throttles CPU between requests;
- *   - a drain of `public_projection_outbox` every {@link DRAIN_INTERVAL_MS}
- *     as the backstop: writes from elsewhere (another process, a
- *     migration) and publishes that failed still converge within seconds.
+ *   - {@link PublicProjectionPublisher.backstop} on every scheduler tick
+ *     (#1140, scheduler/core-tasks.ts): writes from elsewhere (a migration,
+ *     a process that died before its drain) and publishes that failed
+ *     still converge within one tick. Until the boot publish succeeded,
+ *     the backstop retries it instead of a plain drain.
  *
  * The gateway hears a NOTIFY on cms_public and drops its caches.
  *
@@ -41,9 +43,6 @@ import {
 import { loadedPlugins } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { ADMIN_PUBLIC_STAGING_POOL_MAX } from "@caelo-cms/shared";
-
-/** How often the outbox is drained. */
-export const DRAIN_INTERVAL_MS = 2_000;
 
 const SYSTEM_CTX = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -101,7 +100,7 @@ export function projectionDatabases(
 /**
  * Publish every section once — including, with `comments: true`, the full
  * approved-comment set — and consume the outbox. For one-shot callers
- * (tooling, tests); the admin process uses {@link startPublicProjectionPublisher}.
+ * (tooling, tests); the admin process uses {@link createPublicProjectionPublisher}.
  */
 export function publishProjectionOnce(
   adapter: DatabaseAdapter,
@@ -148,18 +147,22 @@ export function drainProjectionOnce(
 export interface PublicProjectionPublisher {
   /**
    * Publish every section (not the full comment set; the outbox carries
-   * comment changes). Until one succeeds, the poll retries it instead of a
-   * plain drain, so a failed boot publish converges without a restart.
+   * comment changes). Until one succeeds, the backstop retries it instead
+   * of a plain drain, so a failed boot publish converges without a restart.
    */
   publishAll(): Promise<PublishReport>;
   /** Republish whatever the outbox marks stale. */
   drain(): Promise<PublishReport>;
+  /** The scheduler tick's backstop: the full publish while one is due, else a drain. */
+  backstop(): Promise<PublishReport>;
+  /** Unregister the post-write drain (tests). */
   stop(): void;
 }
 
 /**
- * Start draining the outbox on an interval. The caller runs
- * {@link PublicProjectionPublisher.publishAll} once its plugin host booted.
+ * Create the process's publisher and register its post-write drain. The
+ * caller runs {@link PublicProjectionPublisher.publishAll} once its plugin
+ * host booted; the scheduler tick runs its backstop.
  *
  * Per process, publishes run one at a time, and drains coalesce: a drain
  * asked for while another drain is still WAITING to start joins that one —
@@ -169,12 +172,11 @@ export interface PublicProjectionPublisher {
  * writes costs at most two drains, not one per write; across processes
  * the advisory lock serialises (`withProjectionLock`).
  */
-export function startPublicProjectionPublisher(opts: {
+export function createPublicProjectionPublisher(opts: {
   readonly adapter: DatabaseAdapter;
   /** #1329 — the admin's adapter on cms_public_staging. */
   readonly stagingAdapter: DatabaseAdapter;
   readonly declarations?: () => VisitorProjectionDeclarations;
-  readonly intervalMs?: number;
 }): PublicProjectionPublisher {
   const dbs = projectionDatabases(opts.adapter, opts.stagingAdapter);
   const declarations = opts.declarations ?? loadedVisitorProjections;
@@ -222,21 +224,13 @@ export function startPublicProjectionPublisher(opts: {
       waitingDrain = drain;
       return drain;
     },
+    backstop: () => (fullPublishDue ? publisher.publishAll() : publisher.drain()),
     stop: () => {
-      clearInterval(timer);
       opts.adapter.setProjectionPublisher(null);
     },
   };
   // The drain is queued behind any publish already running, so it starts
   // after the caller's commit and therefore sees that commit's outbox rows.
   opts.adapter.setProjectionPublisher(() => publisher.drain());
-  const timer = setInterval(() => {
-    const full = fullPublishDue;
-    (full ? publisher.publishAll() : publisher.drain()).catch((e: unknown) => {
-      console.error(
-        `[public-projection] ${full ? "full publish" : "drain"} failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    });
-  }, opts.intervalMs ?? DRAIN_INTERVAL_MS);
   return publisher;
 }
