@@ -35,6 +35,7 @@ import { extname, join, normalize, sep } from "node:path";
 import {
   publishProjectionOnce,
   registerAdminOps,
+  releaseProjectionForTests,
   stagingPublicAdapter,
 } from "@caelo-cms/admin-core";
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
@@ -276,8 +277,13 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
       { holder: "static-generator.build" },
     )
     .finally(() => buildAdapter.close());
-  // The admin publishes what the gateway serves from (#635).
-  await publishProjectionOnce(adminAdapter, STAGING_ADAPTER, { comments: true });
+  // The admin publishes what the gateway serves from (#635). The plugin
+  // registry is a release section (#1329): the live gateway attaches the
+  // plugins of the state the live pointer names, which the admin's boot
+  // froze before this fixture activated anything. So release the main line
+  // as a Stage plus Publish live does. `as-loaded`, as a Stage freezes:
+  // parallel specs may have activated plugins this process does not load.
+  await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, undefined, "as-loaded");
   resetPluginHost();
   await adminAdapter.close();
 

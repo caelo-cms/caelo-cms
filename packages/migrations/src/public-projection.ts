@@ -1070,14 +1070,19 @@ async function consumeOutbox(tx: ProjectionTx, ids: readonly string[]): Promise<
  * environments at it, then publish everything, as a Stage followed by
  * Publish live would. Lets a test that changes plugin data see it on the
  * public side without running a build.
+ *
+ * `completeness` defaults to `required`; a fixture that shares its
+ * database with suites activating other plugins passes `as-loaded`, which
+ * is what a Stage freezes ({@link FreezeCompleteness}).
  */
 export async function releaseMainLineForTests(
   dbs: ProjectionDatabases,
   declarations: VisitorProjectionDeclarations,
+  completeness: FreezeCompleteness = "required",
 ): Promise<PublishReport> {
   return withProjectionLock(dbs, {}, async (tx) => {
     const runId = crypto.randomUUID();
-    await freezeRelease(tx, { runId, reason: "bootstrap", declarations, completeness: "required" });
+    await freezeRelease(tx, { runId, reason: "bootstrap", declarations, completeness });
     for (const env of PUBLIC_TARGETS) await pointRelease(tx, env, runId);
     const outbox = await readOutbox(tx);
     const snap = await readSnapshot(tx, new Set(ALL_SECTIONS), true, new Set());

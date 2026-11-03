@@ -31,6 +31,7 @@
 
 import {
   drainPublicProjection,
+  type FreezeCompleteness,
   type ProjectionDatabases,
   type PublishReport,
   publishPublicProjection,
@@ -127,8 +128,13 @@ export function releaseProjectionForTests(
   adapter: DatabaseAdapter,
   stagingAdapter: DatabaseAdapter,
   declarations: VisitorProjectionDeclarations = loadedVisitorProjections(),
+  completeness: FreezeCompleteness = "required",
 ): Promise<PublishReport> {
-  return releaseMainLineForTests(projectionDatabases(adapter, stagingAdapter), declarations);
+  return releaseMainLineForTests(
+    projectionDatabases(adapter, stagingAdapter),
+    declarations,
+    completeness,
+  );
 }
 
 /** Republish what the outbox marks stale, once (tooling, tests). */
