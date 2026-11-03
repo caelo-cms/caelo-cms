@@ -203,6 +203,7 @@ describe("restoreSelfHosted", () => {
       "<converge roles>",
       `${MIGRATE} admin`,
       `${MIGRATE} public`,
+      `${MIGRATE} public-staging`,
       "run --rm --no-deps -T --entrypoint sh caelo-admin -c set -e; find /srv/caelo /data/media -mindepth 1 -delete; tar -C / -xf -",
       "up -d --remove-orphans",
       "exec -T caelo-admin bun -e <probe>",

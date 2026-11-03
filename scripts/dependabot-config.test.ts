@@ -249,8 +249,12 @@ describe("docker block covers the right paths", () => {
   });
 });
 
-describe("github-actions block points at repo root", () => {
-  it("directory is /", () => {
-    expect(actionsEntry?.directory).toBe("/");
+describe("github-actions block covers workflows and composite actions", () => {
+  // "/" makes Dependabot read .github/workflows only; the composite actions
+  // under .github/actions/ hold SHA pins too (#104) and would go stale
+  // without their own directory entry.
+  it("directories are / and /.github/actions/*", () => {
+    expect(actionsEntry?.directory).toBeUndefined();
+    expect(new Set(actionsEntry?.directories ?? [])).toEqual(new Set(["/", "/.github/actions/*"]));
   });
 });

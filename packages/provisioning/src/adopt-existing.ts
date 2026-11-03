@@ -49,12 +49,17 @@
  *     Their create is a read-modify-write that merges the member into the
  *     policy and succeeds when it is there already, so a planned create of
  *     one is an adoption already.
- *   - Cloud SQL users: the CLI's are IAM users named after service accounts,
- *     the stack's are the built-in `admin_role` / `public_role`.
+ *   - Cloud SQL databases and users: only the staging database
+ *     `cms_public_staging` and its login `public_staging_role` (#1329), which
+ *     the converge creates on installs from before them (staging-database.ts).
+ *     Every other one is Pulumi's alone: the CLI's other users are IAM users
+ *     named after service accounts, the stack's the built-in `admin_role` /
+ *     `public_role`.
  */
 
 import type { GcloudRunner } from "./gcloud-retry.js";
 import type { PlannedStep } from "./preview-plan.js";
+import { STAGING_DATABASE, STAGING_DATABASE_ROLE } from "./staging-database.js";
 
 /** The cloud identity of a resource a planned create would make. */
 export interface AdoptionTarget {
@@ -76,6 +81,9 @@ export interface AdoptableKind {
    */
   target(inputs: Readonly<Record<string, unknown>>, projectId: string): AdoptionTarget | null;
 }
+
+/** The Cloud SQL objects the converge creates that the stack declares too (#1329). */
+const CONVERGE_CREATED_SQL = { database: STAGING_DATABASE, user: STAGING_DATABASE_ROLE } as const;
 
 /** Kinds adopted before `up`, by Pulumi type token. See the file comment for the rest. */
 export const ADOPTABLE_KINDS: Readonly<Record<string, AdoptableKind>> = {
@@ -181,6 +189,54 @@ export const ADOPTABLE_KINDS: Readonly<Record<string, AdoptableKind>> = {
           "--format=value(metadata.name)",
         ],
         importId: `projects/${projectId}/locations/${location}/services/${name}`,
+      };
+    },
+  },
+  // #1329 — the staging database and its login: created by the converge on
+  // an install whose stack predates them (staging-database.ts), declared by
+  // the stack with literal names. Only those two names are candidates.
+  "gcp:sql/database:Database": {
+    label: "Cloud SQL database",
+    target(inputs, projectId) {
+      const { instance, name } = inputs;
+      if (name !== CONVERGE_CREATED_SQL.database) return null;
+      if (typeof instance !== "string" || !/^[a-z][a-z0-9-]{0,97}$/.test(instance)) return null;
+      if ((inputs.project ?? projectId) !== projectId) return null;
+      return {
+        display: `${name} (${instance})`,
+        describeArgs: [
+          "sql",
+          "databases",
+          "describe",
+          name,
+          `--instance=${instance}`,
+          `--project=${projectId}`,
+          "--format=value(name)",
+        ],
+        importId: `projects/${projectId}/instances/${instance}/databases/${name}`,
+      };
+    },
+  },
+  "gcp:sql/user:User": {
+    label: "Cloud SQL user",
+    target(inputs, projectId) {
+      const { instance, name } = inputs;
+      if (name !== CONVERGE_CREATED_SQL.user) return null;
+      if (typeof instance !== "string" || !/^[a-z][a-z0-9-]{0,97}$/.test(instance)) return null;
+      if ((inputs.project ?? projectId) !== projectId) return null;
+      return {
+        display: `${name} (${instance})`,
+        describeArgs: [
+          "sql",
+          "users",
+          "describe",
+          name,
+          `--instance=${instance}`,
+          `--project=${projectId}`,
+          "--format=value(name)",
+        ],
+        // The provider's import id for a Postgres built-in user.
+        importId: `${projectId}/${instance}/${name}`,
       };
     },
   },

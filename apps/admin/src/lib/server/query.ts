@@ -11,7 +11,7 @@ import {
   setMediaStorage,
 } from "@caelo-cms/admin-core";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
-import { databaseUrlFromEnv } from "@caelo-cms/shared";
+import { ADMIN_PUBLIC_STAGING_POOL_MAX, databaseUrlFromEnv } from "@caelo-cms/shared";
 
 /**
  * Explicit, lazy query context. Server modules call `getQueryContext()` and
@@ -25,6 +25,12 @@ import { databaseUrlFromEnv } from "@caelo-cms/shared";
 
 interface QueryContext {
   readonly adapter: DatabaseAdapter;
+  /**
+   * #1329 — the staging site's public database (cms_public_staging), as
+   * admin_role: a public-only adapter, so nothing can reach cms_admin
+   * through it. Plugin tables are provisioned there on every load.
+   */
+  readonly stagingAdapter: DatabaseAdapter;
   readonly registry: OperationRegistry;
   readonly loginLimiter: PostgresRateLimiter;
 }
@@ -86,6 +92,22 @@ export function getQueryContext(): QueryContext {
     adminDatabaseUrl: adminUrl,
     publicDatabaseUrl: publicUrl,
   });
+  // #1329 — required, no fallback: an admin without the staging database
+  // would load plugins whose staging tables never exist.
+  const stagingUrl = databaseUrlFromEnv(["PUBLIC_STAGING_ADMIN_DATABASE_URL"]);
+  if (!stagingUrl) {
+    throw new Error(
+      "PUBLIC_STAGING_ADMIN_DATABASE_URL is required (admin_role on cms_public_staging, #1329). Cloud installs get it in the converge (`cms-provision upgrade`, or Install update in Settings → Updates); self-hosted: `cms-provision up`; local dev: add it to the root .env (.env.example) and run packages/migrations/src/bootstrap.sh + `bun run db:migrate`.",
+    );
+  }
+  const stagingAdapter = new DatabaseAdapter({
+    adminDatabaseUrl: null,
+    publicDatabaseUrl: stagingUrl,
+    publicDatabase: "cms_public_staging",
+    expectedRoles: { admin: null, public: ["admin_role"] },
+    // Fixed, not from the budget env: pool-budget.ts reserves exactly this.
+    publicPoolMax: ADMIN_PUBLIC_STAGING_POOL_MAX,
+  });
   const registry = new OperationRegistry();
   registerAdminOps(registry);
 
@@ -119,12 +141,16 @@ export function getQueryContext(): QueryContext {
     setMediaStorage(factory(process.env), media.storageProvider);
   }
 
-  slot.ctx = { adapter, registry, loginLimiter };
+  slot.ctx = { adapter, stagingAdapter, registry, loginLimiter };
   return slot.ctx;
 }
 
 export function verifyQueryContextRoles(): Promise<void> {
   if (slot.verifyPromise) return slot.verifyPromise;
-  slot.verifyPromise = getQueryContext().adapter.verifyRoles();
+  const ctx = getQueryContext();
+  slot.verifyPromise = Promise.all([
+    ctx.adapter.verifyRoles(),
+    ctx.stagingAdapter.verifyRoles(),
+  ]).then(() => undefined);
   return slot.verifyPromise;
 }

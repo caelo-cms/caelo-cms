@@ -360,6 +360,8 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
     expect(plan.ok && plan.services.gateway.changes.map((c) => c.name).sort()).toEqual([
       "ADMIN_DATABASE_PASSWORD",
       "ADMIN_DATABASE_URL",
+      // #1329 — the gateway says it is the live site's.
+      "CAELO_GATEWAY_ENVIRONMENT",
       // No remote-MCP env: the broker is the MCP-Auth-Proxy's (#1328).
       // #650 — the staging gate key arrives in the same roll.
       "CAELO_STAGING_GATE_SECRET",

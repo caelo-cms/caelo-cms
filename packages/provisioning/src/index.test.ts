@@ -152,7 +152,7 @@ describe("docker-compose generator", () => {
     const out = generateDockerCompose({
       domain: "example.com",
       postgresPassword: "supersecret",
-      rolePasswords: { admin: "adminpw", public: "publicpw" },
+      rolePasswords: { admin: "adminpw", public: "publicpw", publicStaging: "ps" },
       caeloSecretKek: "0".repeat(64),
       dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
@@ -175,7 +175,7 @@ describe("docker-compose generator", () => {
     const out = generateDockerCompose({
       domain: "example.com",
       postgresPassword: "supersecret",
-      rolePasswords: { admin: "adminpw", public: "publicpw" },
+      rolePasswords: { admin: "adminpw", public: "publicpw", publicStaging: "ps" },
       caeloSecretKek: "0".repeat(64),
       dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
@@ -201,7 +201,7 @@ describe("docker-compose generator", () => {
     const out = generateDockerCompose({
       domain: "example.com",
       postgresPassword: 'pa"ss',
-      rolePasswords: { admin: "a", public: "b" },
+      rolePasswords: { admin: "a", public: "b", publicStaging: "ps" },
       caeloSecretKek: "0".repeat(64),
       dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),

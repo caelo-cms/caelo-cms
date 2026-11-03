@@ -44,8 +44,10 @@ import {
 } from "../../dist/aws-task-roles.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import {
+  DEFAULT_ADMIN_MAX_INSTANCES,
   DEFAULT_GATEWAY_MAX_INSTANCES,
   DEFAULT_MAX_CONNECTIONS,
+  DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
   stackPoolBudget,
 } from "../../dist/pool-budget-stack.js";
 import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "../../dist/stack-contract.js";
@@ -86,7 +88,10 @@ const maxConnections = Number.parseInt(
   cfg.get("maxConnections") ?? String(DEFAULT_MAX_CONNECTIONS.aws),
   10,
 );
-const adminMaxInstances = Number.parseInt(cfg.get("adminMaxInstances") ?? "5", 10);
+const adminMaxInstances = Number.parseInt(
+  cfg.get("adminMaxInstances") ?? String(DEFAULT_ADMIN_MAX_INSTANCES),
+  10,
+);
 const gatewayMaxInstances = Number.parseInt(
   cfg.get("gatewayMaxInstances") ?? String(DEFAULT_GATEWAY_MAX_INSTANCES),
   10,
@@ -95,6 +100,8 @@ const poolBudget = stackPoolBudget("aws", {
   maxConnections,
   adminMaxInstances,
   gatewayMaxInstances,
+  // #1329 — the staging gateway joins the budget with the staging database.
+  stagingGatewayMaxInstances: DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
 });
 if (_adminMemoryMiB === null) {
   throw new Error(`caelo-aws:adminMemory "${adminMemory}" is not a memory quantity (e.g. 2Gi)`);
@@ -131,6 +138,9 @@ const postgresPassword = pulumi.secret(randomHex(32));
 // #635) never holds admin_role's. bootstrap.sh creates the roles with these
 // (ADMIN_ROLE_PASSWORD / PUBLIC_ROLE_PASSWORD).
 const publicRolePassword = pulumi.secret(randomHex(32));
+// #1329 — the staging gateway's own login on cms_public_staging (created
+// with the database by bootstrap.sh, PUBLIC_STAGING_ROLE_PASSWORD).
+const publicStagingRolePassword = pulumi.secret(randomHex(32));
 const csrfSecret = pulumi.secret(randomHex(32));
 const cookieSecret = pulumi.secret(randomHex(32));
 const anthropicApiKey = pulumi.secret(process.env.ANTHROPIC_API_KEY ?? "");
@@ -151,6 +161,8 @@ function secret(name: string, value: pulumi.Output<string>): aws.secretsmanager.
 
 const pgSecret = secret("postgres-password", postgresPassword);
 const publicRoleSecret = secret("public-role-password", publicRolePassword);
+// #1329 — read by nothing yet: the staging gateway's task (#749) will.
+const _publicStagingRoleSecret = secret("public-staging-role-password", publicStagingRolePassword);
 const csrfSecretRes = secret("csrf-secret", csrfSecret);
 const cookieSecretRes = secret("cookie-secret", cookieSecret);
 const anthropicSecretRes = secret("anthropic-api-key", anthropicApiKey);
@@ -212,6 +224,20 @@ const publicDatabaseUrl = pulumi
   .all([db.address, db.port, publicRolePassword])
   .apply(
     ([host, port, pw]) => `postgresql://public_role:${pw}@${host}:${port}/cms_public?${RDS_TLS}`,
+  );
+// #1329 — the admin's pool on the staging database, and the staging
+// gateway's only login (no task definition reads them before #749).
+const publicStagingAdminDatabaseUrl = pulumi
+  .all([db.address, db.port, postgresPassword])
+  .apply(
+    ([host, port, pw]) =>
+      `postgresql://caelo_admin:${pw}@${host}:${port}/cms_public_staging?${RDS_TLS}`,
+  );
+const publicStagingDatabaseUrl = pulumi
+  .all([db.address, db.port, publicStagingRolePassword])
+  .apply(
+    ([host, port, pw]) =>
+      `postgresql://public_staging_role:${pw}@${host}:${port}/cms_public_staging?${RDS_TLS}`,
   );
 
 // === 4. S3 buckets ===
@@ -561,6 +587,7 @@ const dnsRecordsRequired: DnsRecord[] = [
 const out: CloudAdapterOutputs = {
   adminDatabaseUrl: adminDatabaseUrl as unknown as string,
   publicDatabaseUrl: publicDatabaseUrl as unknown as string,
+  publicStagingDatabaseUrl: publicStagingDatabaseUrl as unknown as string,
   mediaStorageUrl: pulumi.interpolate`s3://${mediaBucket.bucket}` as unknown as string,
   mediaCdnBaseUrl:
     pulumi.interpolate`https://${distribution.domainName}/media` as unknown as string,
@@ -575,6 +602,9 @@ const out: CloudAdapterOutputs = {
 
 export const adminDatabaseUrlOut = out.adminDatabaseUrl;
 export const publicDatabaseUrlOut = out.publicDatabaseUrl;
+export const publicStagingDatabaseUrlOut = out.publicStagingDatabaseUrl;
+// #1329 — what the admin task definition (#749) sets as PUBLIC_STAGING_ADMIN_DATABASE_URL.
+export const publicStagingAdminDatabaseUrlOut = publicStagingAdminDatabaseUrl;
 export const mediaStorageUrlOut = out.mediaStorageUrl;
 export const mediaCdnBaseUrlOut = out.mediaCdnBaseUrl;
 export const bootstrapUrlOut = out.bootstrapUrl;

@@ -57,8 +57,11 @@ export interface AgentCliContext {
   emitConfig(): void;
   /** The role convergence as the superuser, including the agent's login. */
   convergeRoles(): Promise<ConvergeOutcome>;
-  /** #1338 — public_role's limits as the superuser, before an upgrade's migrations. */
-  applyPublicRoleLimits(): Promise<ConvergeOutcome>;
+  /**
+   * #1338 / #1329 — as the superuser, before an upgrade's migrations: the
+   * staging database with its gateway login, and both gateway logins' limits.
+   */
+  applyPreMigrationRoles(): Promise<ConvergeOutcome>;
   /** The Compose file for `images` from config.json. */
   renderCompose(images: ReleaseImages): string;
   /** Re-write the Caddyfile (config + domains table) and reload Caddy (#891). */
@@ -572,7 +575,7 @@ async function agentApply(argv: readonly string[], ctx: AgentCliContext): Promis
             runner: bunHostRunner,
             renderCompose: (images) => ctx.renderCompose(images),
             convergeRoles: () => ctx.convergeRoles(),
-            applyPublicRoleLimits: () => ctx.applyPublicRoleLimits(),
+            applyPreMigrationRoles: () => ctx.applyPreMigrationRoles(),
             refreshCaddy: () => ctx.refreshCaddy(),
             log,
           },

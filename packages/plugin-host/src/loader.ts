@@ -37,7 +37,6 @@ import {
   adminSchemaFromSpec,
   generateManifestKeyPair,
   releaseManifestDigest,
-  schemaFromSpec,
   signManifest,
   validateManifest,
   validateSource,
@@ -78,6 +77,7 @@ import { loadReported, reportLoadFailure } from "./load-outcome.js";
 import { resetLocalLoadOutcomes } from "./local-availability.js";
 import { inactiveRequiredPlugins, requirementsMessage } from "./plugin-dependencies.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
+import { provisionPluginPublicSchemas } from "./public-schemas.js";
 import {
   inPhase,
   PluginLoadError,
@@ -503,18 +503,15 @@ async function loadTier2Row(
     return { approval, definition };
   });
   await assertRequiredPluginsActive(opts.infra, opts.systemActorId, definition);
-  // Both the registry and in-chat activation paths use this idempotent provisioning.
-  const emitted = schemaFromSpec({
-    pluginId: row.id,
-    slug: row.slug,
-    schema: definition.schema,
-    indexes: definition.indexes?.schema,
-    tableKinds: definition.tableKinds,
-  });
-  await inPhase("provision", async () => {
-    await opts.infra.adapter.provisionPluginPublicSchema({
+  // Both the registry and in-chat activation paths use this idempotent
+  // provisioning, in both public databases (#1329).
+  const emitted = await inPhase("provision", async () => {
+    const live = await provisionPluginPublicSchemas(opts.infra, {
       pluginId: row.id,
-      sql: emitted.sql,
+      slug: row.slug,
+      schema: definition.schema,
+      indexes: definition.indexes?.schema,
+      tableKinds: definition.tableKinds,
     });
     if (definition.adminSchema && Object.keys(definition.adminSchema).length) {
       const privateSchema = adminSchemaFromSpec({
@@ -528,6 +525,7 @@ async function loadTier2Row(
         sql: privateSchema.sql,
       });
     }
+    return live;
   });
   const actorId = await opts.infra.adapter.withAdminTransaction(
     {
@@ -882,16 +880,12 @@ export async function activateApprovedExternalPlugin(
       authorize: async () => {},
       denySdkCalls: true,
     });
-    const publicSchema = schemaFromSpec({
+    await provisionPluginPublicSchemas(opts.infra, {
       pluginId: artifact.pluginId,
       slug: manifest.slug,
       schema: manifest.schema,
       indexes: manifest.indexes?.schema,
       tableKinds: manifest.tableKinds,
-    });
-    await opts.infra.adapter.provisionPluginPublicSchema({
-      pluginId: artifact.pluginId,
-      sql: publicSchema.sql,
     });
     if (manifest.adminSchema) {
       const privateSchema = adminSchemaFromSpec({
@@ -1301,17 +1295,18 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // at tables that did not exist ("relation does not exist" on first
   // use, i.e. a fresh-install break). The emitted DDL is fully
   // IF-NOT-EXISTS guarded, so re-provisioning on every boot is an
-  // idempotent no-op for an already-provisioned schema.
+  // idempotent no-op for an already-provisioned schema. #1329: in both
+  // public databases — the first boot after the upgrade that brings the
+  // staging database backfills every active plugin's tables there.
   if (Object.keys(def.schema).length > 0) {
-    const emitted = schemaFromSpec({
-      pluginId,
-      slug: def.slug,
-      schema: def.schema,
-      indexes: def.indexes?.schema,
-      tableKinds: def.tableKinds,
-    });
     await inPhase("provision", () =>
-      opts.infra.adapter.provisionPluginPublicSchema({ pluginId, sql: emitted.sql }),
+      provisionPluginPublicSchemas(opts.infra, {
+        pluginId,
+        slug: def.slug,
+        schema: def.schema,
+        indexes: def.indexes?.schema,
+        tableKinds: def.tableKinds,
+      }),
     );
   }
 

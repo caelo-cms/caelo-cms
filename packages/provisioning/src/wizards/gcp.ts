@@ -574,7 +574,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // infrastructure contract — recorded only when the upgrader and the
   // converge job are in place (the steps contract bumps 2 and 9 added) and
   // remote MCP's steps (#806, bump 10) and the scheduler tick (#1140, bump
-  // 17) succeeded. With the release version, the admin can install the next
+  // 18) succeeded. With the release version, the admin can install the next
   // update itself.
   if (upgraderReady && convergeReady && remoteMcpReady && schedulerReady) {
     const version = releaseVersion;
@@ -1026,7 +1026,7 @@ async function stepGrantBaseRoles(
  */
 async function stepPublicRoleIsolation(projectId: string): Promise<void> {
   const s = spinner();
-  s.start("Removing public_role from the Cloud SQL superuser group...");
+  s.start("Removing the gateway logins from the Cloud SQL superuser group...");
   const r = await revokePublicRoleMemberships({
     projectId,
     env: GCP_STACK_ENV,
@@ -1038,7 +1038,7 @@ async function stepPublicRoleIsolation(projectId: string): Promise<void> {
     cancel("Aborted.");
     process.exit(1);
   }
-  s.stop(green("public_role holds no database roles"));
+  s.stop(green("The gateway logins (public_role, public_staging_role) hold no database roles"));
 }
 
 /**

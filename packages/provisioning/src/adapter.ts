@@ -61,6 +61,12 @@ export interface CloudAdapterOutputs {
    * role (CLAUDE.md §2, #635).
    */
   readonly publicDatabaseUrl: string;
+  /**
+   * #1329 — DSN for public_staging_role on cms_public_staging (encrypted in
+   * Pulumi state): the staging gateway's only login. It reaches no live
+   * data, and the live gateway never gets it.
+   */
+  readonly publicStagingDatabaseUrl: string;
   /** Provider-native blob URL (s3://, gs://, https://<account>.blob.core.windows.net/<container>). */
   readonly mediaStorageUrl: string;
   /** Public-facing URL the admin reaches for media reads. */

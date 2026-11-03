@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 17;
+export const INFRA_CONTRACT_VERSION = 18;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -131,7 +131,16 @@ export const INFRA_CONTRACT_VERSION = 17;
 //       services, accounts, IAM and load-balancer resources — none of which
 //       the in-cloud upgrader may create, and the app-roll rolls three
 //       services from now on.
-//  17 — #1140: the scheduler tick (scheduler-setup.ts). Its service account
+//  17 — #1329: staging's own database. The Cloud SQL database
+//       `cms_public_staging`, the Admin API user `public_staging_role` (its
+//       password the new CLI-generated secret `public-staging-role-password`)
+//       and its membership revoke; the admin's PUBLIC_STAGING_ADMIN_DATABASE_URL
+//       and the gateway's CAELO_GATEWAY_ENVIRONMENT. The in-cloud upgrader
+//       may create no database, user or secret, and the new admin and
+//       gateway refuse to start without them. Additive only (converge
+//       release 1 of the gateway hardening): nothing is served from the
+//       staging database yet, so rolling back stays harmless.
+//  18 — #1140: the scheduler tick (scheduler-setup.ts). Its service account
 //       (token creator on itself, workflows.invoker, logWriter, IAP access to
 //       the admin), the Cloud Workflows workflow that signs its IAP JWT and
 //       calls the admin's /api/internal/scheduler/tick, the one Cloud
@@ -164,7 +173,8 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   14: "the capture job that takes server-side screenshots outside the admin, its service account, bucket and grants (#1217)",
   15: "verified TLS to the database: Cloud SQL's shared server CA, encrypted connections only, and a private DNS name the services dial (#1338)",
   16: "the MCP sign-in service as its own Cloud Run service with its own account (no database access), the visitor gateway as its own service on Firebase installs, and on Google Cloud load-balancer installs the sign-in service's backend and Cloud Armor rule (#1328)",
-  17: "the scheduler tick that runs the admin's periodic work and plugin workers every few minutes: its service account, workflow and Cloud Scheduler job, and its IAP access (#1140)",
+  17: "the staging site's own database and its gateway login, kept apart from the live data (#1329)",
+  18: "the scheduler tick that runs the admin's periodic work and plugin workers every few minutes: its service account, workflow and Cloud Scheduler job, and its IAP access (#1140)",
 };
 
 /**

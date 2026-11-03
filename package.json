@@ -21,7 +21,7 @@
     "format": "biome format --write .",
     "license:check": "bun scripts/license-check.ts",
     "db:generate": "bun run --filter=@caelo-cms/migrations generate:admin && bun run --filter=@caelo-cms/migrations generate:public",
-    "db:migrate": "bun run packages/migrations/src/migrate.ts admin && bun run packages/migrations/src/migrate.ts public",
+    "db:migrate": "bun run packages/migrations/src/migrate.ts admin && bun run packages/migrations/src/migrate.ts public && bun run packages/migrations/src/migrate.ts public-staging",
     "plugins:sign": "bun run apps/admin/scripts/sign-tier1-manifest.ts",
     "rulesets:apply": "bun run scripts/apply-rulesets.ts",
     "rulesets:check": "bun run scripts/apply-rulesets.ts --check",

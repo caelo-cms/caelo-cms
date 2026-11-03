@@ -36,6 +36,7 @@ describe("startSelfHosted (#707 — one command ends with a serving install)", (
       "up -d --wait postgres",
       `${MIGRATE} admin`,
       `${MIGRATE} public`,
+      `${MIGRATE} public-staging`,
       "up -d --remove-orphans",
       "config --services",
       "exec -T caelo-admin bun -e <probe>",

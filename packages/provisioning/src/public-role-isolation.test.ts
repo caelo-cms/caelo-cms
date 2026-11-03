@@ -25,7 +25,11 @@ function fake(answers: (line: string) => GcloudResult) {
 describe("revokePublicRoleMembershipsArgs (#633)", () => {
   it("revokes every database role of the built-in public_role user", () => {
     expect(
-      revokePublicRoleMembershipsArgs({ projectId: "acme", sqlInstance: "caelo-production-pg-1" }),
+      revokePublicRoleMembershipsArgs({
+        projectId: "acme",
+        sqlInstance: "caelo-production-pg-1",
+        role: "public_role",
+      }),
     ).toEqual([
       "sql",
       "users",
@@ -40,7 +44,12 @@ describe("revokePublicRoleMembershipsArgs (#633)", () => {
   });
 
   it("grants nothing in exchange (no --database-roles)", () => {
-    const args = revokePublicRoleMembershipsArgs({ projectId: "p", sqlInstance: "i" });
+    const args = revokePublicRoleMembershipsArgs({
+      projectId: "p",
+      sqlInstance: "i",
+      role: "public_staging_role",
+    });
+    expect(args[3]).toBe("public_staging_role");
     expect(args.some((a) => a.startsWith("--database-roles"))).toBe(false);
   });
 });
@@ -48,17 +57,18 @@ describe("revokePublicRoleMembershipsArgs (#633)", () => {
 describe("revokePublicRoleMemberships", () => {
   const install = { projectId: "acme", env: "production", credentials: "operator" } as const;
 
-  it("finds the instance, then revokes", async () => {
+  it("finds the instance, then revokes for both gateway logins (#1329)", async () => {
     const { run, calls } = fake((l) => (l.startsWith("sql instances list") ? ok("pg-1\n") : ok()));
     const r = await revokePublicRoleMemberships(install, { run, sleep: noSleep });
     expect(r).toEqual({
-      id: "public_role database role memberships",
+      id: "gateway logins' database role memberships",
       status: "applied",
-      detail: "no database roles left on pg-1",
+      detail: "public_role and public_staging_role hold no database roles on pg-1",
     });
-    expect(calls[1]).toBe(
+    expect(calls.slice(1)).toEqual([
       "sql users assign-roles public_role --instance=pg-1 --type=BUILT_IN --revoke-existing-roles --project=acme --quiet",
-    );
+      "sql users assign-roles public_staging_role --instance=pg-1 --type=BUILT_IN --revoke-existing-roles --project=acme --quiet",
+    ]);
   });
 
   it("is idempotent: a second run issues the same revoke and succeeds", async () => {
@@ -66,7 +76,7 @@ describe("revokePublicRoleMemberships", () => {
     await revokePublicRoleMemberships(install, { run, sleep: noSleep });
     const again = await revokePublicRoleMemberships(install, { run, sleep: noSleep });
     expect(again.status).toBe("applied");
-    expect(calls[1]).toBe(calls[3] as string);
+    expect(calls.slice(4)).toEqual(calls.slice(1, 3));
   });
 
   it("fails without an instance and never calls the revoke", async () => {

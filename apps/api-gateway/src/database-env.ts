@@ -1,26 +1,62 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The API gateway's database identity (issues #613, #635; CLAUDE.md §2
- * "the public side has no path to cms_admin"): which env var it connects
+ * The API gateway's database identity (issues #613, #635, #1329; CLAUDE.md
+ * §2 "the public side has no path to cms_admin"): which env var it connects
  * with, which role that must resolve to, and the guard that refuses to boot
  * when the env offers database access beyond that one login (exactly what
  * it checks, and what it cannot see, is listed at
  * {@link adminDatabaseAccessInEnv}). Kept apart from server.ts so
  * the dev launcher (dev.ts) can use it without loading the server.
  *
- * The gateway connects to cms_public ONLY, as public_role. What it needs
- * from authoring state the admin publishes into cms_public
- * (`@caelo-cms/migrations/public-projection`).
+ * One image serves two environments (#763 E10), named by
+ * `CAELO_GATEWAY_ENVIRONMENT`: the live gateway connects to cms_public ONLY,
+ * as public_role; the staging gateway to cms_public_staging ONLY, as
+ * public_staging_role. Each refuses to boot when its env names the other
+ * environment's database or login, so neither can hold a way to the
+ * other's data. What a gateway needs from authoring state the admin
+ * publishes into its database (`@caelo-cms/migrations/public-projection`).
  */
 
 import { closeSync, constants, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { databaseUrlFromEnv } from "@caelo-cms/shared";
 
-/** The only database the gateway may name, and the only role it may log in as. */
-const PUBLIC_DATABASE = "cms_public";
-const PUBLIC_ROLE = "public_role";
+/** The env var that names which environment this gateway serves. */
+export const GATEWAY_ENVIRONMENT_ENV = "CAELO_GATEWAY_ENVIRONMENT";
+
+/**
+ * Per environment, the only database the gateway may name and the only
+ * role it may log in as (#1329).
+ */
+export const GATEWAY_ENVIRONMENTS = {
+  live: { database: "cms_public", role: "public_role" },
+  staging: { database: "cms_public_staging", role: "public_staging_role" },
+} as const;
+
+/** The environment a gateway serves. */
+export type GatewayEnvironment = keyof typeof GATEWAY_ENVIRONMENTS;
+
+/**
+ * The environment `env` names in {@link GATEWAY_ENVIRONMENT_ENV}.
+ *
+ * @throws when it is missing or names no environment: a gateway that does
+ *   not know which data it may reach must not guess (no default pre-1.0).
+ */
+export function gatewayEnvironmentFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): GatewayEnvironment {
+  const value = env[GATEWAY_ENVIRONMENT_ENV];
+  if (value === "live" || value === "staging") return value;
+  throw new Error(
+    `the API gateway needs ${GATEWAY_ENVIRONMENT_ENV}=live or =staging (got ${value === undefined || value === "" ? "nothing" : JSON.stringify(value)}): it decides which database the gateway may reach (#1329). Cloud installs set it in the converge (\`cms-provision upgrade\`); self-hosted: \`cms-provision up\`.`,
+  );
+}
+
+/** The other environment's database and login, which this gateway must never name. */
+function foreignEnvironment(environment: GatewayEnvironment) {
+  return GATEWAY_ENVIRONMENTS[environment === "live" ? "staging" : "live"];
+}
 
 /**
  * The ONLY env vars that may carry anything database-related: the gateway's
@@ -31,13 +67,15 @@ export const GATEWAY_DATABASE_ENV = ["PUBLIC_DATABASE_URL", "PUBLIC_DATABASE_PAS
 const OWN_LOGIN_ENV = new Set<string>(GATEWAY_DATABASE_ENV);
 
 /**
- * The roles the gateway's adapter must connect as: no cms_admin pool at
- * all, public_role on cms_public.
+ * The roles a gateway's adapter must connect as: no cms_admin pool at all,
+ * and the environment's own login on its public database.
  */
-export const GATEWAY_DATABASE_ROLES = {
-  admin: null,
-  public: [PUBLIC_ROLE],
-} as const;
+export function gatewayDatabaseRoles(environment: GatewayEnvironment) {
+  return { admin: null, public: [GATEWAY_ENVIRONMENTS[environment].role] } as const;
+}
+
+/** {@link gatewayDatabaseRoles} of the live gateway: public_role on cms_public. */
+export const GATEWAY_DATABASE_ROLES = gatewayDatabaseRoles("live");
 
 /**
  * A database-ish variable or secret-file name: any `_`-separated token that
@@ -67,6 +105,12 @@ function isDatabaseIshName(name: string): boolean {
 /** A value naming the authoring database or one of its roles, in any form. */
 const ADMIN_NAME = /(?<![a-z0-9_])(?:cms_admin|admin_role|gateway_role)(?![a-z0-9_])/i;
 
+/** A value naming the other environment's database or login (#1329). */
+function foreignNamePattern(environment: GatewayEnvironment): RegExp {
+  const other = foreignEnvironment(environment);
+  return new RegExp(`(?<![a-z0-9_])(?:${other.database}|${other.role})(?![a-z0-9_])`, "i");
+}
+
 const POSTGRES_URL = /postgres(?:ql)?:\/\/[^\s"'`,;]{1,2048}/gi;
 
 /**
@@ -79,8 +123,9 @@ function isKeywordDsn(value: string): boolean {
   return (value.match(DSN_KEYWORD) ?? []).length >= 2;
 }
 
-/** Why the gateway's own URL is not public_role on cms_public, or null when it is. */
-function foreignOwnUrl(raw: string): string | null {
+/** Why the gateway's own URL is not its environment's login and database, or null when it is. */
+function foreignOwnUrl(raw: string, environment: GatewayEnvironment): string | null {
+  const own = GATEWAY_ENVIRONMENTS[environment];
   let url: URL;
   try {
     url = new URL(raw);
@@ -98,20 +143,23 @@ function foreignOwnUrl(raw: string): string | null {
   const user = decodeURIComponent(url.username);
   const dbParam = params.get("dbname") ?? params.get("database");
   const userParam = params.get("user");
-  if ((dbParam ?? database) !== PUBLIC_DATABASE) {
-    return `a URL for database "${dbParam ?? (database || "<default>")}"`;
+  if ((dbParam ?? database) !== own.database) {
+    return `a URL for database "${dbParam ?? (database || "<default>")}" (the ${environment} gateway's is ${own.database})`;
   }
-  if ((userParam ?? user) !== PUBLIC_ROLE) {
-    return `a URL that logs in as "${userParam ?? (user || "<default>")}"`;
+  if ((userParam ?? user) !== own.role) {
+    return `a URL that logs in as "${userParam ?? (user || "<default>")}" (the ${environment} gateway's login is ${own.role})`;
   }
   return null;
 }
 
 /** Why a value outside the gateway's own login is a way to a database, or null. */
-function databaseAccessInValue(value: string): string | null {
+function databaseAccessInValue(value: string, environment: GatewayEnvironment): string | null {
   if (value.search(POSTGRES_URL) !== -1) return "holds a database URL";
   if (isKeywordDsn(value)) return "holds a libpq keyword connection string";
   if (ADMIN_NAME.test(value)) return "names cms_admin or one of its roles";
+  if (foreignNamePattern(environment).test(value)) {
+    return `names the ${environment === "live" ? "staging" : "live"} environment's database or login`;
+  }
   return null;
 }
 
@@ -175,10 +223,15 @@ export const nodeSecretFiles: SecretFileReader = {
  *   password token (`DATABASE_URL`, `PGPASSWORD`, `DB_ADMIN_PASS`, …) is
  *   refused, whatever it holds.
  * - **Values** of every other variable: one naming `cms_admin`,
- *   `admin_role` or `gateway_role`, holding a Postgres URL, or holding a
- *   libpq keyword connection string (`host=… dbname=… user=…`).
+ *   `admin_role` or `gateway_role`, or (#1329) the other environment's
+ *   database or login (the live gateway: `cms_public_staging`,
+ *   `public_staging_role`; the staging gateway: `cms_public`,
+ *   `public_role`), holding a Postgres URL, or holding a libpq keyword
+ *   connection string (`host=… dbname=… user=…`).
  * - **The own login.** `PUBLIC_DATABASE_URL` must be a postgres:// URL for
- *   public_role on cms_public, without `service`/`passfile`/`options`.
+ *   the environment's own login on its own database (public_role on
+ *   cms_public, or public_staging_role on cms_public_staging), without
+ *   `service`/`passfile`/`options`.
  * - **File-mounted secrets.** A `*_FILE` variable's file, and every regular
  *   file directly in {@link SECRET_MOUNT_DIRS}: a database-ish file name is
  *   refused, the contents get the value checks.
@@ -191,13 +244,14 @@ export const nodeSecretFiles: SecretFileReader = {
  */
 export function adminDatabaseAccessInEnv(
   env: Readonly<Record<string, string | undefined>>,
+  environment: GatewayEnvironment,
   files: SecretFileReader = nodeSecretFiles,
 ): string[] {
   const found: string[] = [];
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined || value === "") continue;
     if (name === "PUBLIC_DATABASE_URL") {
-      const why = foreignOwnUrl(value);
+      const why = foreignOwnUrl(value, environment);
       if (why) found.push(`${name}: ${why}`);
       continue;
     }
@@ -208,14 +262,14 @@ export function adminDatabaseAccessInEnv(
       );
       continue;
     }
-    const why = databaseAccessInValue(value);
+    const why = databaseAccessInValue(value, environment);
     if (why) {
       found.push(`${name}: ${why}`);
       continue;
     }
     if (/_FILE$/i.test(name)) {
       const contents = files.read(value);
-      const fileWhy = contents === null ? null : databaseAccessInValue(contents);
+      const fileWhy = contents === null ? null : databaseAccessInValue(contents, environment);
       if (fileWhy) found.push(`${name}: its file ${fileWhy}`);
     }
   }
@@ -227,7 +281,7 @@ export function adminDatabaseAccessInEnv(
         continue;
       }
       const contents = files.read(path);
-      const why = contents === null ? null : databaseAccessInValue(contents);
+      const why = contents === null ? null : databaseAccessInValue(contents, environment);
       if (why) found.push(`${path}: a secret file that ${why}`);
     }
   }
@@ -235,10 +289,12 @@ export function adminDatabaseAccessInEnv(
 }
 
 /**
- * The gateway's connection URL: `PUBLIC_DATABASE_URL` (public_role on
- * cms_public) with its `_PASSWORD` companion applied.
+ * The gateway's environment and connection URL: `PUBLIC_DATABASE_URL` (the
+ * environment's login on its database) with its `_PASSWORD` companion
+ * applied.
  *
- * @throws naming every offending variable or file (never its value) when
+ * @throws when {@link GATEWAY_ENVIRONMENT_ENV} names no environment; naming
+ *   every offending variable or file (never its value) when
  *   {@link adminDatabaseAccessInEnv} finds anything — an install whose env
  *   still carries such access has not converged, and running anyway would
  *   hide that — or when the URL is missing.
@@ -247,19 +303,22 @@ export function gatewayDatabaseUrls(
   env: Readonly<Record<string, string | undefined>>,
   files: SecretFileReader = nodeSecretFiles,
 ): {
+  readonly environment: GatewayEnvironment;
   readonly public: string;
 } {
-  const leaked = adminDatabaseAccessInEnv(env, files);
+  const environment = gatewayEnvironmentFromEnv(env);
+  const own = GATEWAY_ENVIRONMENTS[environment];
+  const leaked = adminDatabaseAccessInEnv(env, environment, files);
   if (leaked.length > 0) {
     throw new Error(
-      `the API gateway must not hold any cms_admin credential (CLAUDE.md §2: the public side has no path to cms_admin), and its only database access is PUBLIC_DATABASE_URL, but its environment offers more:\n${leaked.map((l) => `  - ${l}`).join("\n")}\nRemove them; the gateway connects to cms_public only, as public_role (PUBLIC_DATABASE_URL). Cloud installs: run \`cms-provision upgrade\`. Local dev with the shared root .env: start it with \`bun run --filter @caelo-cms/api-gateway dev\`, which leaves them out.`,
+      `the API gateway must not hold any cms_admin credential (CLAUDE.md §2: the public side has no path to cms_admin) nor any way to the other environment's data (#1329), and its only database access is PUBLIC_DATABASE_URL, but its environment offers more:\n${leaked.map((l) => `  - ${l}`).join("\n")}\nRemove them; the ${environment} gateway connects to ${own.database} only, as ${own.role} (PUBLIC_DATABASE_URL). Cloud installs: run \`cms-provision upgrade\`. Local dev with the shared root .env: start it with \`bun run --filter @caelo-cms/api-gateway dev\`, which leaves them out.`,
     );
   }
   const pub = databaseUrlFromEnv(["PUBLIC_DATABASE_URL"], env);
   if (!pub) {
-    throw new Error("the API gateway needs PUBLIC_DATABASE_URL (public_role on cms_public)");
+    throw new Error(`the API gateway needs PUBLIC_DATABASE_URL (${own.role} on ${own.database})`);
   }
-  return { public: pub };
+  return { environment, public: pub };
 }
 
 /** What the boot-time database check needs (a Bun SQL client fits). */
@@ -268,17 +327,25 @@ export interface IsolationQuery {
 }
 
 /**
- * Ask the database itself (#635): may the gateway's login reach cms_admin,
- * or does cms_public carry an extension that can (dblink, postgres_fdw, any
- * foreign server)? Run on the gateway's own connection at boot.
+ * Ask the database itself (#635, #1329): may the gateway's login reach
+ * cms_admin or the other environment's public database, or does its own
+ * database carry an extension that can (dblink, postgres_fdw, any foreign
+ * server)? Run on the gateway's own connection at boot.
  *
  * @returns the reasons the login is not isolated; empty when it is.
  */
-export async function databaseIsolationProblems(sql: IsolationQuery): Promise<string[]> {
+export async function databaseIsolationProblems(
+  sql: IsolationQuery,
+  environment: GatewayEnvironment,
+): Promise<string[]> {
+  const own = GATEWAY_ENVIRONMENTS[environment];
+  const other = foreignEnvironment(environment);
   const [row] = (await sql.unsafe(`
     SELECT current_user::text AS who,
            current_database()::text AS db,
            has_database_privilege(current_user, 'cms_admin', 'CONNECT') AS admin_connect,
+           (SELECT has_database_privilege(current_user, d.oid, 'CONNECT')
+              FROM pg_database d WHERE d.datname = '${other.database}') AS other_connect,
            (SELECT coalesce(array_agg(extname::text ORDER BY extname), ARRAY[]::text[])
               FROM pg_extension WHERE extname IN ('dblink', 'postgres_fdw')) AS bridges,
            (SELECT count(*)::int FROM pg_foreign_server) AS foreign_servers
@@ -286,22 +353,22 @@ export async function databaseIsolationProblems(sql: IsolationQuery): Promise<st
     who: string;
     db: string;
     admin_connect: boolean;
+    other_connect: boolean | null;
     bridges: string[];
     foreign_servers: number;
   }[];
   if (!row) return ["the isolation probe returned no row"];
   const problems: string[] = [];
-  if (row.who !== PUBLIC_ROLE || row.db !== PUBLIC_DATABASE) {
-    problems.push(`connected as ${row.who} on ${row.db}, not ${PUBLIC_ROLE} on ${PUBLIC_DATABASE}`);
+  if (row.who !== own.role || row.db !== own.database) {
+    problems.push(`connected as ${row.who} on ${row.db}, not ${own.role} on ${own.database}`);
   }
   if (row.admin_connect) problems.push(`${row.who} may CONNECT to cms_admin`);
+  if (row.other_connect) problems.push(`${row.who} may CONNECT to ${other.database}`);
   if (row.bridges.length > 0) {
-    problems.push(
-      `cms_public has ${row.bridges.join(", ")} installed, a bridge to other databases`,
-    );
+    problems.push(`${row.db} has ${row.bridges.join(", ")} installed, a bridge to other databases`);
   }
   if (row.foreign_servers > 0) {
-    problems.push(`cms_public defines ${row.foreign_servers} foreign server(s)`);
+    problems.push(`${row.db} defines ${row.foreign_servers} foreign server(s)`);
   }
   return problems;
 }

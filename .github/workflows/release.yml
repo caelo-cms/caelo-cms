@@ -100,25 +100,28 @@ jobs:
       POSTGRES_PORT: 5432
       ADMIN_ROLE_PASSWORD: caelo_admin_dev
       PUBLIC_ROLE_PASSWORD: caelo_public_dev
+      PUBLIC_STAGING_ROLE_PASSWORD: caelo_public_staging_dev
       ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_dev@localhost:5432/cms_admin
       PUBLIC_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_dev@localhost:5432/cms_public
       PUBLIC_DATABASE_URL: postgres://public_role:caelo_public_dev@localhost:5432/cms_public
+      PUBLIC_STAGING_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_dev@localhost:5432/cms_public_staging
+      PUBLIC_STAGING_DATABASE_URL: postgres://public_staging_role:caelo_public_staging_dev@localhost:5432/cms_public_staging
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The parent too: the gate scope compares the tag with it.
           fetch-depth: 2
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
 
       # The test suite runs plugins in the Deno sandbox (#473); same pinned
       # version as ci.yml and the admin/gateway images.
       - name: Setup Deno for external plugin tests
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.9.6
 
@@ -255,7 +258,7 @@ jobs:
       MANIFEST_IMAGE: ghcr.io/caelo-cms/release-manifest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The migration lint + infra-contract check diff against the
           # previous stable tag.
@@ -277,7 +280,7 @@ jobs:
           fi
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
 
@@ -354,7 +357,7 @@ jobs:
 
       - name: Authenticate to GCP via Workload Identity Federation
         if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_PUBLIC_REGISTRY_SA_EMAIL }}
@@ -383,7 +386,7 @@ jobs:
             --repository "${AR_PROJECT}/${AR_REPO}/release-manifest" ${FLAGS}
 
       - name: Hand the manifest to the GitHub Release job
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-manifest
           path: |
@@ -445,10 +448,10 @@ jobs:
           - provisioning
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
 
@@ -459,7 +462,7 @@ jobs:
         run: bun run --filter=@caelo-cms/${{ matrix.package }} build
 
       - name: Setup Node (for npm publish)
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Node 26 ships with npm 11.x natively → no manual upgrade
           # step (which would break npm's in-place self-upgrade by
@@ -561,7 +564,7 @@ jobs:
           echo "version=${REF#v}" >> "${GITHUB_OUTPUT}"
 
       - name: Setup Bun (cms-provision binary's shebang is #!/usr/bin/env bun)
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
 
@@ -652,12 +655,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # need full history for the changelog query
 
       - name: Fetch the signed release manifest
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-manifest
 
@@ -696,7 +699,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: ${{ github.event.inputs.tag || github.ref_name }}
@@ -728,7 +731,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Move release-latest to the tag
         env:
@@ -790,7 +793,7 @@ jobs:
       MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # This job runs a downloaded third-party binary; nothing here
           # pushes, so the checkout token must not sit in .git/config.

@@ -5,7 +5,7 @@
 # Ships per CLAUDE.md §3 "Dependabot/renovate on; security advisories
 # block merges". Three ecosystem entries:
 #   - bun            workspace JS (one root entry covers every workspace)
-#   - github-actions .github/workflows/*
+#   - github-actions .github/workflows/* + .github/actions/*/action.yml
 #   - docker         apps/{admin,api-gateway}/Dockerfile + root docker-compose.yml
 #
 # Notes for future contributors:
@@ -81,10 +81,19 @@ updates:
           - "patch"
 
   # ────────────────────────────────────────────────────────────────────
-  # 2. GitHub Actions used in .github/workflows/*.yml
+  # 2. GitHub Actions used in .github/workflows/*.yml and the composite
+  #    actions under .github/actions/.
+  #
+  # Every `uses:` is pinned to a full commit SHA with a trailing
+  # `# vX.Y.Z` comment (#104, enforced by scripts/action-pins.test.ts).
+  # Dependabot reads that comment as the current version and bumps the
+  # SHA and the comment together. "/" alone scans only
+  # .github/workflows, so the composite actions need their own entry.
   # ────────────────────────────────────────────────────────────────────
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
       day: "monday"

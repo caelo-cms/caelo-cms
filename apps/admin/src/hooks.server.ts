@@ -49,6 +49,7 @@ import {
 } from "@caelo-cms/admin-core";
 import {
   bootstrap as bootstrapPluginHost,
+  dropPluginPublicSchemas,
   ensureDevSignedManifests,
   hostInstanceId,
   loadedPlugins,
@@ -138,7 +139,7 @@ function bootstrapPlugins(): Promise<void> {
 }
 
 async function bootPluginHost(): Promise<void> {
-  const { adapter, registry } = getQueryContext();
+  const { adapter, stagingAdapter, registry } = getQueryContext();
   // P11.5 audit fix #3 — wire emitSnapshot + aiProvider so plugins that
   // declare those capabilities get working handles. Plugin's
   // requestedCapabilities still gates which handles are actually attached
@@ -188,12 +189,16 @@ async function bootPluginHost(): Promise<void> {
   // #393 — the uninstall op's schema drops run through these hooks
   // (DDL on both pools lives with the adapter, not the ops layer).
   configurePluginUninstallFinalizer({
-    dropPublicSchema: (schemaName) => adapter.dropPluginPublicSchema({ schemaName }),
+    // #1329 — in both public databases.
+    dropPublicSchema: (schemaName) =>
+      dropPluginPublicSchemas({ adapter, stagingAdapter }, schemaName),
     dropAdminSchema: (schemaName) => adapter.dropPluginAdminSchema({ schemaName }),
   });
   const report = await bootstrapPluginHost({
     infra: {
       adapter,
+      // #1329 — every load provisions the plugin's tables in the staging database too.
+      stagingAdapter,
       registry,
       aiProvider,
       imageTransform: transformPluginImage,

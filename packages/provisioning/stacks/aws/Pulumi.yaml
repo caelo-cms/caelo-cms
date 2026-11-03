@@ -34,7 +34,7 @@ config:
     description: RDS max_connections (parameter group); every service's pool size is computed from it (docs/dev/connection-budget.md).
   caelo-aws:adminMaxInstances:
     type: string
-    default: "5"
+    default: "4"
     description: Most admin tasks at once; part of the connection budget.
   caelo-aws:gatewayMaxInstances:
     type: string

@@ -6,6 +6,7 @@ import { describe, expect, it } from "bun:test";
 import {
   ADMIN_POOL_FLOOR,
   ADMIN_PUBLIC_POOL_MAX,
+  ADMIN_PUBLIC_STAGING_POOL_MAX,
   computePoolBudget,
   DB_POOL_MAX_ENV,
   DB_PUBLIC_POOL_MAX_ENV,
@@ -14,14 +15,17 @@ import {
   GENERATOR_POOL_MAX,
   LISTEN_CONNECTIONS_PER_ADMIN_INSTANCE,
   LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE,
+  MIN_POOL_MAX,
   type PoolBudgetInput,
   poolBudgetEnv,
+  STAGING_GATEWAY_ROLE_CONNECTION_LIMIT,
 } from "./pool-budget.js";
 
 const GCP_DEFAULT: PoolBudgetInput = {
   maxConnections: 100,
-  adminMaxInstances: 5,
+  adminMaxInstances: 4,
   gatewayMaxInstances: 10,
+  stagingGatewayMaxInstances: 1,
   concurrentBuilds: 2,
   maintenanceReserve: 5,
   migrationsReserve: 2,
@@ -31,9 +35,10 @@ const GCP_DEFAULT: PoolBudgetInput = {
 describe("computePoolBudget", () => {
   it("splits what the reserves leave across the admin instances", () => {
     const b = computePoolBudget(GCP_DEFAULT);
-    // 100 - (5 + 2 + 4 + 8 + 20 + 5 + 10 + 20) = 26 → floor(26 / 5) = 5, 1 left.
+    // 100 - (5 + 2 + 4 + 8 + 20 + 4 + 10 + 16 + 3 + 8) = 20 → floor(20 / 4) = 5, 0 left.
     expect(b.adminPoolMax).toBe(5);
-    expect(b.unassigned).toBe(1);
+    expect(b.unassigned).toBe(0);
+    expect(b.adminPublicStagingPoolMax).toBe(ADMIN_PUBLIC_STAGING_POOL_MAX);
     expect(b.adminPublicPoolMax).toBe(ADMIN_PUBLIC_POOL_MAX);
     expect(b.gatewayPoolMax).toBe(GATEWAY_POOL_MAX);
     expect(b.generatorPoolMax).toBe(GENERATOR_POOL_MAX);
@@ -65,13 +70,36 @@ describe("computePoolBudget", () => {
     const r = new Map(computePoolBudget(GCP_DEFAULT).reserves.map((x) => [x.name, x.connections]));
     expect(r.get("gateway")).toBe(10 * GATEWAY_POOL_MAX);
     expect(r.get("generator")).toBe(2 * 2 * GENERATOR_POOL_MAX);
-    expect(r.get("admin-public")).toBe(5 * ADMIN_PUBLIC_POOL_MAX);
+    expect(r.get("admin-public")).toBe(4 * ADMIN_PUBLIC_POOL_MAX);
+  });
+
+  it("budgets the staging gateway and the admin's staging pool (#1329)", () => {
+    const r = new Map(computePoolBudget(GCP_DEFAULT).reserves.map((x) => [x.name, x.connections]));
+    expect(r.get("staging-gateway")).toBe(
+      1 * (GATEWAY_POOL_MAX + LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE),
+    );
+    expect(ADMIN_PUBLIC_STAGING_POOL_MAX).toBe(MIN_POOL_MAX);
+    expect(r.get("admin-public-staging")).toBe(4 * ADMIN_PUBLIC_STAGING_POOL_MAX);
+    // On today's default the five admin instances before #1329 no longer
+    // fit: the stacks lower their default to four (connection-budget.md).
+    expect(() => computePoolBudget({ ...GCP_DEFAULT, adminMaxInstances: 5 })).toThrow(
+      /minimum of 4 cms_admin connections/,
+    );
+  });
+
+  it("refuses a staging scale-out beyond public_staging_role's CONNECTION LIMIT (#1329)", () => {
+    expect(STAGING_GATEWAY_ROLE_CONNECTION_LIMIT).toBe(GATEWAY_ROLE_CONNECTION_LIMIT);
+    expect(() =>
+      computePoolBudget({ ...GCP_DEFAULT, maxConnections: 1000, stagingGatewayMaxInstances: 11 }),
+    ).toThrow(
+      "11 staging gateway instances need 33 connections, but the database lets the staging gateway's login (public_staging_role) hold at most 30",
+    );
   });
 
   it("refuses a budget below the admin floor, naming the connections needed", () => {
     // Ten gateway instances on 60 slots: 30 for the gateway leave too little.
     expect(() => computePoolBudget({ ...GCP_DEFAULT, maxConnections: 60 })).toThrow(
-      /Raise maxConnections to at least 94/,
+      /Raise maxConnections to at least 96/,
     );
     expect(() => computePoolBudget({ ...GCP_DEFAULT, maxConnections: 50 })).toThrow(
       new RegExp(`minimum of ${ADMIN_POOL_FLOOR}`),
@@ -91,9 +119,9 @@ describe("computePoolBudget", () => {
   });
 
   it("accepts exactly the floor", () => {
-    // reserves 74 + 5 × 4 = 94.
-    expect(computePoolBudget({ ...GCP_DEFAULT, maxConnections: 94 }).adminPoolMax).toBe(4);
-    expect(() => computePoolBudget({ ...GCP_DEFAULT, maxConnections: 93 })).toThrow();
+    // reserves 80 + 4 × 4 = 96.
+    expect(computePoolBudget({ ...GCP_DEFAULT, maxConnections: 96 }).adminPoolMax).toBe(4);
+    expect(() => computePoolBudget({ ...GCP_DEFAULT, maxConnections: 95 })).toThrow();
   });
 
   it("rejects malformed input instead of guessing", () => {

@@ -157,7 +157,10 @@ beforeAll(async () => {
   await publishProjectionOnce(adminAdapter, { declarations: new Map() });
   resetPluginHost();
 
-  const urls = gatewayDatabaseUrls({ PUBLIC_DATABASE_URL: PUBLIC_URL });
+  const urls = gatewayDatabaseUrls({
+    PUBLIC_DATABASE_URL: PUBLIC_URL,
+    CAELO_GATEWAY_ENVIRONMENT: "live",
+  });
   gatewayAdapter = new DatabaseAdapter({
     adminDatabaseUrl: null,
     publicDatabaseUrl: urls.public,

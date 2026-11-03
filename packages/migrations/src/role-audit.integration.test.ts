@@ -249,10 +249,10 @@ describe("the public side reaches no cms_admin object (#635)", () => {
   it("fails when cms_public holds a bridge to other databases", async () => {
     const pub = new SQL(superuserUrl("cms_public"), { max: 1 });
     try {
-      await assertPublicDatabaseIsolated(pub);
+      await assertPublicDatabaseIsolated(pub, "cms_public");
       await pub.unsafe("CREATE FOREIGN DATA WRAPPER caelo_t635_fdw");
       try {
-        await expect(assertPublicDatabaseIsolated(pub)).rejects.toThrow(
+        await expect(assertPublicDatabaseIsolated(pub, "cms_public")).rejects.toThrow(
           "cms_public has a foreign data wrapper caelo_t635_fdw",
         );
       } finally {

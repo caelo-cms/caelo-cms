@@ -279,6 +279,7 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
     // Only the gateway's own login: it refuses an environment holding
     // admin_role credentials, which this process also has for step 1.
     PUBLIC_DATABASE_URL: required("PUBLIC_DATABASE_URL"),
+    CAELO_GATEWAY_ENVIRONMENT: "live",
   });
   const gatewayAdapter = new DatabaseAdapter({
     adminDatabaseUrl: null,
