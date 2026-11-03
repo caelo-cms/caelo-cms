@@ -47,6 +47,11 @@
  * S13: negative assertions — no `registries`, no `allow`, no
  *     `reviewers`, no `assignees`. These are deliberately deferred
  *     until the conventions form on real Dependabot PR traffic.
+ * S14: the bun block ignores lighthouse >=13.6.0. That release pulls
+ *     the FSL-licensed `sentry` CLI, which the licence gate refuses
+ *     (CLAUDE.md §3, #1355); a mistyped entry would let it back into
+ *     the grouped PR and fail the whole group every week. Drop this
+ *     assertion together with the entry once #1355 is resolved.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -78,6 +83,12 @@ type CooldownBlock = {
   "default-days"?: number;
 };
 
+type IgnoreEntry = {
+  "dependency-name"?: string;
+  versions?: ReadonlyArray<string>;
+  "update-types"?: ReadonlyArray<string>;
+};
+
 type UpdateEntry = {
   "package-ecosystem"?: string;
   directory?: string;
@@ -90,6 +101,7 @@ type UpdateEntry = {
   "open-pull-requests-limit"?: number;
   cooldown?: CooldownBlock;
   groups?: Record<string, GroupBlock>;
+  ignore?: ReadonlyArray<IgnoreEntry>;
   registries?: unknown;
   allow?: unknown;
   reviewers?: unknown;
@@ -256,5 +268,12 @@ describe("github-actions block covers workflows and composite actions", () => {
   it("directories are / and /.github/actions/*", () => {
     expect(actionsEntry?.directory).toBeUndefined();
     expect(new Set(actionsEntry?.directories ?? [])).toEqual(new Set(["/", "/.github/actions/*"]));
+  });
+});
+
+describe("S14: lighthouse held below 13.6.0 until #1355", () => {
+  it("bun block ignores lighthouse >=13.6.0", () => {
+    const entry = bunEntry?.ignore?.find((i) => i["dependency-name"] === "lighthouse");
+    expect(entry?.versions).toEqual([">=13.6.0"]);
   });
 });
