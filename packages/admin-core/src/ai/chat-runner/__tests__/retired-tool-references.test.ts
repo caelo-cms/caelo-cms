@@ -17,7 +17,7 @@ import type { ToolDefinition } from "../../provider.js";
 import { AnthropicProvider } from "../../providers/anthropic.js";
 import { buildProviderHistory, type HistoryMessage } from "../attachments.js";
 import { rewriteRetiredToolReferences } from "../retired-tool-references.js";
-import { toolReferenceMessage } from "../tool-dispatch.js";
+import { toolReferenceMessages } from "../tool-dispatch.js";
 
 let savedThreshold: string | undefined;
 beforeAll(() => {
@@ -194,7 +194,7 @@ describe("retired tool references in replayed tool-search results", () => {
   });
 
   it("rewrites load_skill's references (the SDK custom part) too (#991)", async () => {
-    const stored = toolReferenceMessage(
+    const stored = toolReferenceMessages(
       { id: "toolu_skill", name: "load_skill" },
       { content: "Loaded skill.", toolReferences: ["set_media_alt"] },
       { names: new Set(), deferred: new Set(["set_media_alt"]) },
@@ -234,13 +234,15 @@ describe("retired tool references in replayed tool-search results", () => {
           toolCalls: null,
           toolCallId: "toolu_skill",
           thinkingBlocks: null,
-          responseMessages: [stored],
+          responseMessages: [stored?.toolMessage, stored?.followUp],
         },
       ],
       noImages,
     );
-    // The passthrough tool row answers the passthrough call: nothing stripped.
-    expect(rows).toHaveLength(3);
+    // The passthrough tool row answers the passthrough call: nothing stripped;
+    // its text follows as a plain user row.
+    expect(rows.map((r) => r.role)).toEqual(["user", "assistant", "tool", "user"]);
+    expect(rows[3]?.content).toBe("Loaded skill.");
     const replayed = JSON.stringify(rows[2]?.sdkMessages);
     expect(replayed).toContain('"toolName":"set_media_alt_many"');
     expect(replayed).not.toContain('"toolName":"set_media_alt"}');

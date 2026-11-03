@@ -43,12 +43,17 @@ loaded skills, and the API expands each into its full definition in place.
   does this request defer" — the Anthropic transform uses it, and the
   chat-runner hands it to tools as `ToolContext.turnTools`. Only those names
   are referenced: a reference to a tool the request does not carry is a 400.
-- The handler returns `ToolResult.toolReferences`; the chat-runner stores
-  the result as the AI SDK's own tool message (`toolReferenceMessage` in
-  `chat-runner/tool-dispatch.ts`: a text part plus `custom` parts with
-  `providerOptions.anthropic.type = "tool-reference"`) in the row's
-  `response_messages`, so the next step and every later turn replay the
-  same bytes.
+- The handler returns `ToolResult.toolReferences`; the chat-runner sends
+  the result as two AI SDK messages (`toolReferenceMessages` in
+  `chat-runner/tool-dispatch.ts`): a tool result holding ONLY the
+  references (`custom` parts with `providerOptions.anthropic.type =
+  "tool-reference"`) and the result text as a user text block after every
+  tool result of the step. The API refuses text next to tool references in
+  one tool result ("Tool definitions/code execution functions cannot be
+  mixed with other content"), and a text block ahead of another tool result
+  breaks the pairing. Both are stored in the row's `response_messages`;
+  `buildProviderHistory` replays the text after the run of tool rows, the
+  same place the live turn put it.
 - Replay rewrites references to retired tools in this shape too
   (`retired-tool-references.ts`).
 

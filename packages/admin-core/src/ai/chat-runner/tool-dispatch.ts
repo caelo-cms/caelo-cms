@@ -260,7 +260,8 @@ export async function dispatchToolCall(
      * user(image A), tool B, …] and the provider SDK rejected the history
      * with AI_MissingToolResultsError: a user message may not appear before
      * every tool call of the turn has its result. The step-finish handler
-     * appends this array AFTER all of the step's tool rows.
+     * appends this array AFTER all of the step's tool rows. A result that
+     * loads tools (#991) puts its text here for the same reason.
      */
     deferredImageMessages: ChatMessageInput[];
     /**
@@ -559,25 +560,40 @@ export async function dispatchToolCall(
   // keeps the provider's prompt cache intact.
   const attachments = await persistToolImage(call.name, result.image);
   // #991 — a result that loads deferred tools is stored and replayed as the
-  // SDK's own tool message: its `tool_reference` parts have no place in a
-  // text-only tool row, and the same message serves this turn's next step
-  // and every later turn.
-  const referencing = toolReferenceMessage(call, result, deps.turnTools);
+  // SDK's own messages: the tool result carries only the `tool_reference`
+  // parts (the API refuses a tool result that mixes them with text: "Tool
+  // definitions/code execution functions cannot be mixed with other
+  // content", e2e-livedit run 41651726318), and the result text follows as
+  // a user text block after ALL of the step's tool results — a text block
+  // ahead of another tool result would break the pairing, the same reason
+  // image follow-ups are deferred below.
+  const referencing = toolReferenceMessages(call, result, deps.turnTools);
   await execute(registry, adapter, humanCtx, "chat.append_message", {
     chatSessionId: deps.chatSessionId,
     role: "tool",
     content: result.content,
     toolCallId: call.id,
     ...(attachments ? { attachments } : {}),
-    ...(referencing ? { responseMessages: [referencing] } : {}),
+    ...(referencing
+      ? {
+          responseMessages: referencing.followUp
+            ? [referencing.toolMessage, referencing.followUp]
+            : [referencing.toolMessage],
+        }
+      : {}),
     // issue #303 — producer hint for the empty-content diagnostics.
     source: `tool result (${call.name})`,
   });
-  stepToolRows.push(
-    referencing
-      ? { role: "tool", content: result.content, sdkMessages: [referencing] }
-      : { role: "tool", content: result.content, toolCallId: call.id },
-  );
+  if (referencing) {
+    stepToolRows.push({
+      role: "tool",
+      content: result.content,
+      sdkMessages: [referencing.toolMessage],
+    });
+    if (referencing.followUp) deferredImageMessages.push({ role: "user", content: result.content });
+  } else {
+    stepToolRows.push({ role: "tool", content: result.content, toolCallId: call.id });
+  }
   // v0.3.0 — when the tool returned an image (screenshot_page is
   // the only producer today), build a multimodal user message so the
   // AI sees the image alongside the text result on its next provider
@@ -616,39 +632,45 @@ export function shouldAutoCaptureToolFailure(
 }
 
 /**
- * #991 — the SDK tool message for a result that loads deferred tools
- * (`ToolResult.toolReferences`): its text plus one `tool_reference` per
- * tool, in the AI SDK's shape for it (a `custom` content part the Anthropic
- * provider sends as `{type: "tool_reference", tool_name}`, CLAUDE.md §12).
- * Only names this request defers are referenced — a reference to a tool
- * the request does not carry fails it, and one to a tool that ships in
- * full adds nothing. Undefined when nothing is left to load.
+ * #991 — the SDK messages for a result that loads deferred tools
+ * (`ToolResult.toolReferences`): a tool message whose result is one
+ * `tool_reference` per tool, in the AI SDK's shape for it (a `custom`
+ * content part the Anthropic provider sends as `{type: "tool_reference",
+ * tool_name}`, CLAUDE.md §12), and the result text as a user message that
+ * goes after every tool result of the step (`followUp`; the API refuses
+ * text in a tool result next to tool references). Only names this request
+ * defers are referenced — a reference to a tool the request does not carry
+ * fails it, and one to a tool that ships in full adds nothing. Undefined
+ * when nothing is left to load: the result stays a plain text result.
  */
-export function toolReferenceMessage(
+export function toolReferenceMessages(
   call: { readonly id: string; readonly name: string },
   result: { readonly content: string; readonly toolReferences?: readonly string[] },
   turnTools: ToolContext["turnTools"],
-): ProviderResponseMessage | undefined {
+): { toolMessage: ProviderResponseMessage; followUp?: ProviderResponseMessage } | undefined {
   const names = (result.toolReferences ?? []).filter((n) => turnTools?.deferred.has(n) === true);
   if (names.length === 0) return undefined;
   return {
-    role: "tool",
-    content: [
-      {
-        type: "tool-result",
-        toolCallId: call.id,
-        toolName: call.name,
-        output: {
-          type: "content",
-          value: [
-            { type: "text", text: result.content },
-            ...names.map((toolName) => ({
+    toolMessage: {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: call.id,
+          toolName: call.name,
+          output: {
+            type: "content",
+            value: names.map((toolName) => ({
               type: "custom",
               providerOptions: { anthropic: { type: "tool-reference", toolName } },
             })),
-          ],
+          },
         },
-      },
-    ],
+      ],
+    },
+    // An empty user message is itself a provider rejection.
+    ...(result.content.trim().length > 0
+      ? { followUp: { role: "user", content: result.content } }
+      : {}),
   };
 }

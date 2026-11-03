@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #991 — what load_skill's tool references look like on the Anthropic wire.
- * The chat-runner stores them as the AI SDK's custom content part
- * (`toolReferenceMessage`); the request must carry them as
- * `{type: "tool_reference", tool_name}` blocks inside the tool_result, next
- * to the result text, and every referenced tool must be in `tools` with
- * `defer_loading` — a reference to a tool the request lacks is a 400
- * ("Tool reference '…' not found in available tools"). The SDK request
- * builder runs for real; the fetch is stubbed, nothing leaves the process.
+ * #991 — what load_skill's tool references look like on the Anthropic wire,
+ * replayed from the stored rows (`buildProviderHistory`) as a later turn
+ * sends them. The tool_result must carry ONLY `{type: "tool_reference",
+ * tool_name}` blocks — the API refuses text next to them ("Tool
+ * definitions/code execution functions cannot be mixed with other
+ * content", e2e-livedit run 41651726318) — and the result text must follow
+ * every tool_result of the step as a text block. Every referenced tool must
+ * be in `tools` with `defer_loading` — a reference to a tool the request
+ * lacks is a 400. The SDK request builder runs for real; the fetch is
+ * stubbed, nothing leaves the process.
  */
 
 import { describe, expect, test } from "bun:test";
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { toolReferenceMessage } from "../chat-runner/tool-dispatch.js";
+import { buildProviderHistory } from "../chat-runner/attachments.js";
+import { toolReferenceMessages } from "../chat-runner/tool-dispatch.js";
 import type { ToolDefinition } from "../provider.js";
 import { AnthropicProvider } from "../providers/anthropic.js";
 
@@ -63,23 +66,25 @@ describe("load_skill tool references on the Anthropic wire (#991)", () => {
     expect(p.deferredToolNames(tools.slice(0, 5)).size).toBe(0);
   });
 
-  test("a referencing tool result reaches the API as text + tool_reference blocks", async () => {
+  test("a stored referencing result replays as references-only, its text after the step", async () => {
     const wire = recordingFetch();
     const p = provider(wire.fetch);
-    const message = toolReferenceMessage(
+    const stored = toolReferenceMessages(
       { id: "toolu_skill", name: "load_skill" },
       { content: "Loaded skill.", toolReferences: ["set_theme_tokens"] },
       { names: new Set(tools.map((t) => t.name)), deferred: p.deferredToolNames(tools) },
     );
-    expect(message).toBeDefined();
-    for await (const _ of p.generate({
-      systemPrompt: "Build the site",
-      messages: [
-        { role: "user", content: "Build the homepage" },
+    expect(stored?.followUp).toBeDefined();
+    const row = { toolCalls: null, thinkingBlocks: null };
+    const history = await buildProviderHistory(
+      [
+        { role: "user", content: "Build the homepage", toolCallId: null, ...row },
         {
           role: "assistant",
           content: "",
-          sdkMessages: [
+          toolCallId: null,
+          ...row,
+          responseMessages: [
             {
               role: "assistant",
               content: [
@@ -89,28 +94,34 @@ describe("load_skill tool references on the Anthropic wire (#991)", () => {
                   toolName: "load_skill",
                   input: { slugs: ["theme-branding"] },
                 },
+                { type: "tool-call", toolCallId: "toolu_pages", toolName: "build_page", input: {} },
               ],
             },
           ],
         },
-        { role: "tool", content: "Loaded skill.", sdkMessages: [message] },
+        {
+          role: "tool",
+          content: "Loaded skill.",
+          toolCallId: "toolu_skill",
+          ...row,
+          responseMessages: [stored?.toolMessage, stored?.followUp],
+        },
+        { role: "tool", content: "built", toolCallId: "toolu_pages", ...row },
       ],
-      tools,
-    }));
+      async () => ({ failed: "no images in this test" }) as const,
+    );
+    for await (const _ of p.generate({ systemPrompt: "Build the site", messages: history, tools }));
     const body = wire.body();
     const sentTools = body.tools as { name: string; defer_loading?: boolean }[];
     expect(sentTools.find((t) => t.name === "set_theme_tokens")?.defer_loading).toBe(true);
     const messages = body.messages as { role: string; content: unknown }[];
-    const results = messages
-      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
-      .filter((b) => (b as { type?: string }).type === "tool_result") as {
-      tool_use_id: string;
-      content: unknown;
-    }[];
-    expect(results).toHaveLength(1);
-    expect(results[0]?.tool_use_id).toBe("toolu_skill");
-    const blocks = results[0]?.content as { type: string }[];
-    expect(blocks.map((b) => b.type)).toEqual(["text", "tool_reference"]);
-    expect(blocks[1]).toEqual({ type: "tool_reference", tool_name: "set_theme_tokens" });
+    const last = messages.at(-1) as { role: string; content: Record<string, unknown>[] };
+    expect(last.role).toBe("user");
+    expect(last.content.map((b) => b.type)).toEqual(["tool_result", "tool_result", "text"]);
+    expect(last.content[0]?.tool_use_id).toBe("toolu_skill");
+    expect(last.content[0]?.content).toEqual([
+      { type: "tool_reference", tool_name: "set_theme_tokens" },
+    ]);
+    expect(last.content[2]?.text).toBe("Loaded skill.");
   });
 });
