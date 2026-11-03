@@ -19,6 +19,7 @@ import {
   type ConvergeQueue,
   type ConvergeUpgradeOutcome,
   runConvergeJob,
+  SELF_GRANT_RECHECK_ATTEMPTS,
   type SecureDatabaseResult,
 } from "./converge-job.js";
 import type { ExecutionState } from "./install-job.js";
@@ -150,6 +151,8 @@ function harness(
     iam?: IamTester;
     /** #1373 — the database TLS step's answer; null: the queue dials the DNS name already. */
     secureDatabase?: SecureDatabaseResult | null;
+    /** What a self-grant answers; ok by default. */
+    grant?: (role: string) => { ok: true } | { ok: false; error: string };
   } = {},
 ): Harness {
   const calls: string[] = [];
@@ -170,6 +173,13 @@ function harness(
     region: "europe-west1",
     iam: opts.iam ?? {
       granted: async (_resource, permissions) => ({ ok: true, granted: permissions }),
+    },
+    grantOwnRole: async (role) => {
+      calls.push(`grant ${role}`);
+      return opts.grant ? opts.grant(role) : { ok: true };
+    },
+    sleep: async () => {
+      calls.push("sleep");
     },
     execution: "caelo-production-converge-run1",
     ownVersion: opts.ownVersion ?? "0.11.0",
@@ -462,6 +472,139 @@ describe("runConvergeJob — stage 2 (the target release's own installer)", () =
     const r = await runConvergeJob(h.deps);
     expect(r.status).toBe("failed");
     expect(h.q.ends[0]?.codes).toEqual(["record"]);
+  });
+});
+
+/**
+ * An IAM that lacks the workflows.* permissions (an install set up before
+ * 0.11.11 added roles/workflows.editor, the searchviu-website case) until
+ * the job granted the role, and confirms it `lag` asks later.
+ */
+function lacksWorkflows(lag = 0, extraMissing: (p: string) => boolean = () => false) {
+  const state = { granted: false, asksSinceGrant: 0 };
+  const iam: IamTester = {
+    granted: async (_resource, permissions) => {
+      if (state.granted) state.asksSinceGrant += 1;
+      const workflowsHeld = state.granted && state.asksSinceGrant > lag;
+      return {
+        ok: true,
+        granted: permissions.filter(
+          (p) => !extraMissing(p) && (workflowsHeld || !p.startsWith("workflows.")),
+        ),
+      };
+    },
+  };
+  const grant = (role: string) => {
+    if (role === "roles/workflows.editor") state.granted = true;
+    return { ok: true } as const;
+  };
+  return { iam, grant };
+}
+
+describe("runConvergeJob — the job grants itself the roles its release names (2026-11-03)", () => {
+  it("stage 1 leaves a missing allowlisted role to stage 2 and hands over without granting", async () => {
+    const { iam, grant } = lacksWorkflows();
+    const h = harness({ ownVersion: "0.10.53", iam, grant });
+    const r = await runConvergeJob(h.deps);
+    expect(r.status).toBeNull();
+    expect(h.calls.some((c) => c.startsWith("grant"))).toBe(false);
+    expect(h.calls).toContain("start");
+    expect(h.q.ends).toEqual([]);
+    expect(
+      h.q.events.some(
+        (e) =>
+          e.message.includes("lacks roles/workflows.editor") &&
+          e.message.includes("The installer of 0.11.0 grants them"),
+      ),
+    ).toBe(true);
+  });
+
+  it("stage 2 grants the role after the image check and under the lock, records it, re-checks, converges", async () => {
+    const { iam, grant } = lacksWorkflows();
+    const h = harness({ iam, grant });
+    const r = await runConvergeJob(h.deps);
+    expect(r.status).toBe("succeeded");
+    const g = h.calls.indexOf("grant roles/workflows.editor");
+    expect(g).toBeGreaterThan(h.calls.indexOf("lock"));
+    expect(g).toBeLessThan(h.calls.indexOf("checkpoint running"));
+    expect(g).toBeLessThan(h.calls.indexOf("upgrade"));
+    // Only the missing role, nothing else of the list.
+    expect(h.calls.filter((c) => c.startsWith("grant"))).toEqual(["grant roles/workflows.editor"]);
+    const event = h.q.events.find((e) => e.message.startsWith("Granted roles/workflows.editor"));
+    expect(event?.level).toBe("success");
+    expect(event?.message).toBe(
+      "Granted roles/workflows.editor to the converge job's account (caelo-provisioner@acme.iam.gserviceaccount.com), needed by Caelo 0.11.0 to deploy and update the workflow the scheduler tick runs (#1140).",
+    );
+    expect(h.q.events.some((e) => e.message.startsWith("IAM confirms the granted roles"))).toBe(
+      true,
+    );
+  });
+
+  it("waits for IAM to confirm a fresh grant (propagation) before it goes on", async () => {
+    const { iam, grant } = lacksWorkflows(3);
+    const h = harness({ iam, grant });
+    const r = await runConvergeJob(h.deps);
+    expect(r.status).toBe("succeeded");
+    const sleeps = h.calls.filter((c) => c === "sleep").length;
+    expect(sleeps).toBeGreaterThan(0);
+    expect(h.calls.lastIndexOf("sleep")).toBeLessThan(h.calls.indexOf("upgrade"));
+  });
+
+  it("a grant that fails (org policy) ends the request with the Cloud Shell step, before any change", async () => {
+    const { iam } = lacksWorkflows();
+    const h = harness({
+      iam,
+      grant: () => ({
+        ok: false,
+        error: "ERROR: (gcloud.projects.add-iam-policy-binding) FAILED_PRECONDITION: org policy",
+      }),
+    });
+    const r = await runConvergeJob(h.deps);
+    expect(r.status).toBe("needs_cloud_shell");
+    expect(h.q.ends[0]?.codes).toEqual(["iam-self-grant"]);
+    const reason = h.q.ends[0]?.reason ?? "";
+    expect(reason).toStartWith(
+      "Nothing was changed: the converge job could not grant its own account",
+    );
+    expect(reason).toContain("roles/workflows.editor");
+    expect(reason).toContain("org policy");
+    expect(reason).toContain("Run the update once from Cloud Shell");
+    expect(h.upgrades).toEqual([]);
+    expect(h.calls.some((c) => c.startsWith("checkpoint"))).toBe(false);
+    expect(h.calls.at(-1)).toBe("unlock");
+  });
+
+  it("a grant IAM never confirms ends with the Cloud Shell step after the wait", async () => {
+    const { iam, grant } = lacksWorkflows(10_000);
+    const h = harness({ iam, grant });
+    const r = await runConvergeJob(h.deps);
+    expect(r.status).toBe("needs_cloud_shell");
+    expect(h.q.ends[0]?.codes).toEqual(["iam-self-grant"]);
+    expect(h.q.ends[0]?.reason).toContain("workflows.workflows.create");
+    expect(h.calls.filter((c) => c === "sleep").length).toBe(SELF_GRANT_RECHECK_ATTEMPTS - 1);
+    expect(h.upgrades).toEqual([]);
+  });
+
+  it("a missing permission no allowlisted role carries stops either stage without granting anything", async () => {
+    // workflows.* is repairable, actAs on its own account is not.
+    const { iam, grant } = lacksWorkflows(0, (p) => p === "iam.serviceAccounts.actAs");
+    for (const stage of ["0.10.53", "0.11.0"]) {
+      const h = harness({ ownVersion: stage, iam, grant });
+      const r = await runConvergeJob(h.deps);
+      expect(r.status).toBe("needs_cloud_shell");
+      expect(h.q.ends[0]?.codes).toEqual(["iam-preflight"]);
+      expect(h.calls.some((c) => /^(grant|lock|point|start|upgrade)/.test(c))).toBe(false);
+      expect(h.q.ends[0]?.reason).toContain("workflows.workflows.create");
+      expect(h.q.ends[0]?.reason).toContain("iam.serviceAccounts.actAs");
+    }
+  });
+
+  it("stage 2 refuses an image the manifest does not sign before it grants anything", async () => {
+    const { iam, grant } = lacksWorkflows();
+    const h = harness({ iam, grant, ownDigest: D("9") });
+    const r = await runConvergeJob(h.deps);
+    expect(r.status).toBe("refused");
+    expect(h.calls.some((c) => c.startsWith("grant"))).toBe(false);
   });
 });
 

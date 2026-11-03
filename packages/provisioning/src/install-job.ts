@@ -70,6 +70,12 @@ export const OPS_IMAGE_REPOSITORY =
  * the job's own output has to reach Cloud Logging so the terminal can
  * tail it. Granted only to installs that use the job. Not an escalation: the
  * provisioner already holds `resourcemanager.projectIamAdmin`.
+ *
+ * This list is also the converge job's self-grant allowlist
+ * (converge-job-preflight.ts `CONVERGE_SELF_GRANTABLE_ROLES`): a role added
+ * here is granted by the converge job of the release that adds it to an
+ * install that lacks it, with no terminal run. Never add an ownership or
+ * IAM-policy role (the tests refuse `SELF_GRANT_FORBIDDEN_ROLES`).
  */
 export const INSTALL_JOB_ROLES = [
   "roles/iam.roleAdmin",
