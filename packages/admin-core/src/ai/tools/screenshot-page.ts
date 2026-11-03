@@ -124,6 +124,7 @@ async function captureServerSide(
   if (!budget.ok) {
     return {
       ok: false,
+      refusal: true,
       content:
         "screenshot_page budget exhausted for this session (24 server-side captures per 10 minutes). " +
         "Do NOT retry now — continue the work and verify layout/CSS questions with `inspect_page_render` instead; " +

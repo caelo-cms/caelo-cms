@@ -83,6 +83,7 @@ export const screenshotExternalPageTool: ToolDefinitionWithHandler<Input> = {
     if (!budget.ok) {
       return {
         ok: false,
+        refusal: true,
         content: `${describeFetchBudgetDenied(budget)} For whole-site visual review, propose the crawl via \`propose_site_import\` — it captures screenshots per page.`,
       };
     }

@@ -35,6 +35,22 @@ import { liveToolNameFor } from "./retired-tools.js";
 
 const pathSchema = z.array(z.union([z.string().min(1), z.number().int().nonnegative()])).min(1);
 
+/**
+ * #1321 — `remove` is a list of paths, but one path on its own
+ * (`["page","terms"]`) is accepted too and read as a one-entry list. The
+ * two shapes cannot be confused: a path's segments are strings and
+ * numbers, a list's entries are arrays. A mix of both stays an error.
+ */
+const removeSchema = z.preprocess(
+  (value) =>
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((v) => typeof v === "string" || typeof v === "number")
+      ? [value]
+      : value,
+  z.array(pathSchema).max(100),
+);
+
 const retryToolCallInput = z
   .object({
     toolCallId: z.string().min(1).max(200),
@@ -42,7 +58,7 @@ const retryToolCallInput = z
       .array(z.object({ path: pathSchema, value: z.unknown() }).strict())
       .max(100)
       .optional(),
-    remove: z.array(pathSchema).max(100).optional(),
+    remove: removeSchema.optional(),
     replace: z
       .array(z.object({ path: pathSchema, old: z.string().min(1), new: z.string() }).strict())
       .max(100)
@@ -70,12 +86,25 @@ const CLAIM_REFUSAL: Record<string, string> = {
     "this call is already being retried — wait for that result instead of retrying it twice",
 };
 
-function failed(content: string, errors?: readonly ErrorDetail[]): ToolResult {
+/**
+ * Claim outcomes that are this tool working as designed (#1364): the call
+ * is done, being retried, or was never patchable. Not filed as bugs; an
+ * unknown id stays filed — it can be our defect (an id the AI was shown
+ * that no row matches).
+ */
+const DESIGNED_CLAIM_REFUSALS: ReadonlySet<string> = new Set([
+  "succeeded",
+  "not-kept",
+  "in-progress",
+]);
+
+function failed(content: string, errors?: readonly ErrorDetail[], refusal?: boolean): ToolResult {
   return {
     ok: false,
     content,
     failureKind: "InvalidArguments",
     ...(errors && errors.length > 0 ? { errors } : {}),
+    ...(refusal ? { refusal: true as const } : {}),
   };
 }
 
@@ -85,6 +114,7 @@ export const retryToolCallTool: ToolDefinitionWithHandler<RetryToolCallInput> = 
     "Fix a failed write call with a small patch instead of resending it — only for a call whose result names `retry_tool_call`. " +
     'Paths are segment arrays exactly as the error names them (`["page","pageType"]`, `["modules",3,"html"]`). ' +
     "`set` writes a value, `remove` drops a key or array entry, `replace` swaps one exact text inside one string (must match once). " +
+    '`remove` takes a list of paths: `remove: [["page","terms"]]`. ' +
     "The call stays kept while you make the calls its error asks for first (create the page type, then patch). " +
     "The patched call runs as a new call (permissions, validation, approval re-checked); if it fails again, patch the same toolCallId again.",
   schema: retryToolCallInput,
@@ -96,6 +126,7 @@ export const retryToolCallTool: ToolDefinitionWithHandler<RetryToolCallInput> = 
       toolCallId: { type: "string", description: "The failed call's id, from its result." },
       set: {
         type: "array",
+        description: 'List of {path, value}, e.g. [{"path":["page","pageType"],"value":"post"}].',
         items: {
           type: "object",
           additionalProperties: false,
@@ -103,9 +134,14 @@ export const retryToolCallTool: ToolDefinitionWithHandler<RetryToolCallInput> = 
           properties: { path: PATH_JSON_SCHEMA, value: {} },
         },
       },
-      remove: { type: "array", items: PATH_JSON_SCHEMA },
+      remove: {
+        type: "array",
+        items: PATH_JSON_SCHEMA,
+        description: 'List of paths, e.g. [["page","terms"]].',
+      },
       replace: {
         type: "array",
+        description: "List of {path, old, new}.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -145,7 +181,11 @@ export const retryToolCallTool: ToolDefinitionWithHandler<RetryToolCallInput> = 
           message: CLAIM_REFUSAL[claimed.reason ?? "unknown"] ?? CLAIM_REFUSAL.unknown ?? "",
         },
       ];
-      return failed(formatErrorDetails(refused), refused);
+      return failed(
+        formatErrorDetails(refused),
+        refused,
+        DESIGNED_CLAIM_REFUSALS.has(claimed.reason ?? "unknown"),
+      );
     }
     const release = () => execute(registry, adapter, ownerCtx, "chat.finish_tool_call_retry", ids);
 
