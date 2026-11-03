@@ -49,12 +49,7 @@ import { tryLockStagingPublication } from "../deploy/staging-publication-lock.js
 import { loadStaticPublisher, type PublishSummary } from "../deploy/static-publisher.js";
 import { forgetAllBakes } from "../plugin-data/stale-pages.js";
 import { jsonbParam } from "../sql-helpers.js";
-import {
-  rowToTarget,
-  runStartedAt,
-  type TargetDbRow,
-  targetRow,
-} from "./deploy-common.js";
+import { rowToTarget, runStartedAt, type TargetDbRow, targetRow } from "./deploy-common.js";
 import { abortableSleep } from "./deploy-lease-steps.js";
 import { settleOrphanedRuns } from "./deploy-run-lifecycle.js";
 
