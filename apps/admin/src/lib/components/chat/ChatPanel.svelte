@@ -46,6 +46,7 @@
   import DebugPanel from "./DebugPanel.svelte";
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
   import CredentialHandoffs from "../CredentialHandoffs.svelte";
+  import { chatImageUrl, storedToolImage } from "./chat-image-url.js";
   import InlineDiff from "./InlineDiff.svelte";
   import { moduleHtmlEdits } from "./module-edits.js";
   import QualityFixOfferCard from "./QualityFixOfferCard.svelte";
@@ -1338,11 +1339,20 @@
 
   /** Part 2 — screenshots captured by image-returning tools ride on the
    *  `tool-result` SSE event's `image` field. Bridge them to the tool card
-   *  by toolCallId so ScreenshotCard can render a live preview. LIVE for the
-   *  session only — never persisted, so a reloaded transcript has no entry
-   *  here and the card falls back to text-only. Reassigned (not mutated) so
-   *  Svelte picks up the change in the transcript render. */
+   *  by toolCallId so ScreenshotCard can render a live preview. Only for the
+   *  turns streamed in this tab; a reloaded transcript has no entry here and
+   *  the card loads the stored copy instead (`storedToolImage`, #359).
+   *  Reassigned (not mutated) so Svelte picks up the change in the
+   *  transcript render. */
   let toolImages = $state<Map<string, { base64: string; mediaType: string }>>(new Map());
+
+  /** The screenshot a tool card shows: this tab's live capture, else the copy
+   *  stored on the persisted tool row (#359), else none. */
+  function toolCardImage(m: ChatMessage): { src: string; mediaType: string } | undefined {
+    const live = m.toolCallId ? toolImages.get(m.toolCallId) : undefined;
+    if (live) return { src: `data:${live.mediaType};base64,${live.base64}`, mediaType: live.mediaType };
+    return storedToolImage(session.id, m);
+  }
 
   // v0.2.46 — debug state captured from the SSE stream when `debug=true`.
   // Populated alongside the regular event handling; the panel reads it.
@@ -2407,7 +2417,7 @@
                     content={m.content}
                     ok={!isFailedToolMessage(m.content)}
                     args={m.toolArgs ?? {}}
-                    image={m.toolCallId ? toolImages.get(m.toolCallId) : undefined}
+                    image={toolCardImage(m)}
                     {csrfToken}
                     onDecisionStart={() => stopGeneration}
                     onDecided={(info) =>
@@ -2502,9 +2512,11 @@
                     {#if m.attachments && m.attachments.length > 0}
                       <!-- issue #190 — persisted attachment thumbnails. -->
                       <div class="mt-2 flex flex-wrap gap-2" data-testid="chat-message-attachments">
-                        {#each m.attachments as att (att.assetId)}
+                        {#each m.attachments as att, i (att.assetId ?? att.storageKey ?? i)}
                           <img
-                            src={`/_caelo/media/${att.assetId}/orig`}
+                            src={att.assetId
+                              ? `/_caelo/media/${att.assetId}/orig`
+                              : chatImageUrl({ chatSessionId: session.id, messageId: m.id, index: i })}
                             alt={att.alt ?? "attached image"}
                             class="h-20 w-20 rounded-md border border-border object-cover"
                             loading="lazy"

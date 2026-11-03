@@ -61,6 +61,7 @@ import {
   undoChatChangesOp,
 } from "./ops/chat/draft-ops.js";
 import { listForeignLocksOp } from "./ops/chat/foreign-locks.js";
+import { getChatMessageImageOp } from "./ops/chat/images.js";
 import {
   appendChatMessageOp,
   cacheToolResultOp,
@@ -900,6 +901,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createChatSessionOp);
   registry.register(getChatSessionOp);
   registry.register(resolveChatSessionOp);
+  registry.register(getChatMessageImageOp);
   registry.register(pinSkillsIndexOp);
   registry.register(getChatBranchIdOp);
   registry.register(renameChatSessionOp);
