@@ -109,8 +109,10 @@ export interface ListRender {
   readonly list: string;
   /** Renders on the page: the per-module counts summed. */
   readonly renders: number;
-  /** Module id → its renders of the list within one of its roots (the highest). */
+  /** Module id → its renders of the list on the page (see {@link repeatedListRenders}). */
   readonly byModule: ReadonlyMap<string, number>;
+  /** Module id → the most renders of the list inside ONE of its roots (a desktop + mobile copy = 2). */
+  readonly inOneRoot: ReadonlyMap<string, number>;
 }
 
 // `<listId>/<itemId>` — a shared list's entry stamp (docs/lists.md §13).
@@ -135,25 +137,41 @@ function stampList(stamp: string, moduleId: string): string | null {
  * Per module root (nested roots are their own), a list's render count is
  * the highest count of any one entry stamp in it: a mega menu's child
  * entries appear once per render like its top entries, so the maximum is
- * the number of copies, whatever the list's depth. A module counts with
- * its highest root, not the sum of its roots: one card module repeated as
- * ten entries of a module-list is one design shown ten times, not one
- * list copied ten times (and local default entries share their stamps
- * across those cards). Only lists rendered twice or more are returned.
+ * the number of copies, whatever the list's depth.
+ *
+ * Per module, OUTERMOST roots add up (a module placed twice on a page
+ * writes the list twice), while NESTED roots of one module count with
+ * their highest: one card module repeated as ten entries of a module-list
+ * is one design shown ten times, not one list copied ten times (and local
+ * default entries share their stamps across those cards). Only lists
+ * rendered twice or more are returned.
  */
 export function repeatedListRenders(
   pageId: string,
   path: string,
   roots: readonly MarkupNode[],
 ): ListRender[] {
-  // list → module → highest per-entry count inside one of its roots.
-  const perList = new Map<string, Map<string, number>>();
-  const visitRoot = (root: MarkupNode) => {
+  // list → module → renders summed over outermost roots / highest over nested roots / highest in one root.
+  const outer = new Map<string, Map<string, number>>();
+  const nested = new Map<string, Map<string, number>>();
+  const single = new Map<string, Map<string, number>>();
+  const bump = (
+    target: Map<string, Map<string, number>>,
+    list: string,
+    moduleId: string,
+    count: number,
+    combine: (a: number, b: number) => number,
+  ) => {
+    const byModule = target.get(list) ?? new Map<string, number>();
+    byModule.set(moduleId, combine(byModule.get(moduleId) ?? 0, count));
+    target.set(list, byModule);
+  };
+  const visitRoot = (root: MarkupNode, isNested: boolean) => {
     const moduleId = root.moduleId as string;
     const counts = new Map<string, number>();
     const walk = (n: MarkupNode) => {
       if (n !== root && n.moduleId !== null) {
-        visitRoot(n);
+        visitRoot(n, true);
         return;
       }
       if (n.listItem !== null) counts.set(n.listItem, (counts.get(n.listItem) ?? 0) + 1);
@@ -166,20 +184,23 @@ export function repeatedListRenders(
       if (list !== null) inRoot.set(list, Math.max(inRoot.get(list) ?? 0, count));
     }
     for (const [list, count] of inRoot) {
-      const byModule = perList.get(list) ?? new Map<string, number>();
-      byModule.set(moduleId, Math.max(byModule.get(moduleId) ?? 0, count));
-      perList.set(list, byModule);
+      if (isNested) bump(nested, list, moduleId, count, Math.max);
+      else bump(outer, list, moduleId, count, (a, b) => a + b);
+      bump(single, list, moduleId, count, Math.max);
     }
   };
   const findRoots = (n: MarkupNode) => {
-    if (n.moduleId !== null) visitRoot(n);
+    if (n.moduleId !== null) visitRoot(n, false);
     else for (const c of n.children) findRoots(c);
   };
   for (const r of roots) findRoots(r);
   const out: ListRender[] = [];
-  for (const [list, byModule] of perList) {
+  for (const [list, inOneRoot] of single) {
+    const byModule = new Map<string, number>();
+    for (const id of inOneRoot.keys())
+      byModule.set(id, (outer.get(list)?.get(id) ?? 0) + (nested.get(list)?.get(id) ?? 0));
     const renders = [...byModule.values()].reduce((a, b) => a + b, 0);
-    if (renders >= 2) out.push({ pageId, path, list, renders, byModule });
+    if (renders >= 2) out.push({ pageId, path, list, renders, byModule, inOneRoot });
   }
   return out;
 }

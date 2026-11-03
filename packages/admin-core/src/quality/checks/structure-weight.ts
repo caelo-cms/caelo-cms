@@ -59,6 +59,22 @@ export function frameModuleIds(
       pageCount >= FRAME_MIN_PAGES && onPages >= Math.ceil(pageCount * FRAME_PAGE_SHARE);
     if (m.kind === "chrome" || layoutChromeSlugs.has(m.slug) || nearlyEverywhere) out.add(m.id);
   }
+  // The sub-modules a frame module's field defaults embed are frame too,
+  // at any depth. Weights count per outermost root, and a frame module
+  // whose FIRST element is a sub-module has no root of its own
+  // (tagModuleId keeps the sub-module's stamp), so its sub-module's root
+  // is the outermost one; without this its elements would read as page
+  // content. Chrome content lives in field defaults (docs/lists.md §7).
+  const byId = new Map(modules.map((m) => [m.id, m]));
+  const queue = [...out];
+  while (queue.length > 0) {
+    const id = queue.pop() as string;
+    for (const inner of byId.get(id)?.defaultModuleIds ?? []) {
+      if (out.has(inner)) continue;
+      out.add(inner);
+      queue.push(inner);
+    }
+  }
   return out;
 }
 
@@ -148,7 +164,7 @@ export function repeatedRenderFindings(
   for (const [listKey, onPages] of byList) {
     const most = Math.max(...onPages.map((r) => r.renders));
     const twiceInOne = new Set(
-      onPages.flatMap((r) => [...r.byModule].filter(([, n]) => n >= 2).map(([id]) => id)),
+      onPages.flatMap((r) => [...r.inOneRoot].filter(([, n]) => n >= 2).map(([id]) => id)),
     );
     const modules = new Set(onPages.flatMap((r) => [...r.byModule.keys()]));
     const error = twiceInOne.size > 0 || most >= REPEATED_RENDER_ERROR;

@@ -57,6 +57,7 @@ function mod(n: number, displayName: string, html: string, js = ""): StructureMo
     entryKeys: {},
     css: "",
     kind: "content" as const,
+    defaultModuleIds: [],
   };
 }
 

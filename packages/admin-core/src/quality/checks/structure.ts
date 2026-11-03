@@ -89,7 +89,7 @@ import {
   createRenderedFold,
   duplicateCssFindings,
   pageSpecificLayoutCssFindings,
-  scriptTokens,
+  scriptClassNames,
   unusedCssFindings,
 } from "./structure-css.js";
 import { moduleJsFindings } from "./structure-js.js";
@@ -208,7 +208,7 @@ function weightFindings(
   return [
     ...heavyChromeFindings(weights, frame, byId),
     ...repeatedRenderFindings(analysis.listRenders, byId),
-    ...unusedCssFindings(layouts, placed, rendered, scriptTokens(modules.map((m) => m.js))),
+    ...unusedCssFindings(layouts, placed, rendered, scriptClassNames(modules.map((m) => m.js))),
     ...pageSpecificLayoutCssFindings(layouts, rendered, analysis.classUse, typeNames),
     ...duplicateCssFindings(placed),
   ];

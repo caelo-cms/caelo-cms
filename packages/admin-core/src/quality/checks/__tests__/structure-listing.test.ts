@@ -95,6 +95,7 @@ const LINK_LIST: StructureModule = {
   entryKeys: { links: ["label", "link"] },
   css: "",
   kind: "content" as const,
+  defaultModuleIds: [],
 };
 /** The hub holding cards in a `module-list`. */
 const CARD_GRID: StructureModule = {
@@ -109,6 +110,7 @@ const CARD_GRID: StructureModule = {
   entryKeys: {},
   css: "",
   kind: "content" as const,
+  defaultModuleIds: [],
 };
 const CARD: StructureModule = {
   id: id(12),
@@ -122,6 +124,7 @@ const CARD: StructureModule = {
   entryKeys: {},
   css: "",
   kind: "content" as const,
+  defaultModuleIds: [],
 };
 /** Numbered scalar fields — the template owns every link. */
 const SCALAR_CARDS: StructureModule = {
@@ -141,6 +144,7 @@ const SCALAR_CARDS: StructureModule = {
   entryKeys: {},
   css: "",
   kind: "content" as const,
+  defaultModuleIds: [],
 };
 /** The right way: a list field bound to a page query (entries unstamped). */
 const QUERY_LIST: StructureModule = {
@@ -155,6 +159,7 @@ const QUERY_LIST: StructureModule = {
   entryKeys: {},
   css: "",
   kind: "content" as const,
+  defaultModuleIds: [],
 };
 /** A local menu whose entry is a source node generating `items`. */
 const MEGA: StructureModule = {
@@ -169,6 +174,7 @@ const MEGA: StructureModule = {
   entryKeys: { menu: ["label", "link"] },
   css: "",
   kind: "content" as const,
+  defaultModuleIds: [],
 };
 const MODULES = [LINK_LIST, CARD_GRID, CARD, SCALAR_CARDS, QUERY_LIST, MEGA];
 
@@ -352,6 +358,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       entryKeys: {},
       css: "",
       kind: "content" as const,
+      defaultModuleIds: [],
     };
     const body = GUIDES.slice(0, 6)
       .map((p) => `<p><a href="${p.path}">${p.title}</a></p>`)
@@ -449,6 +456,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       entryKeys: {},
       css: "",
       kind: "content" as const,
+      defaultModuleIds: [],
     };
     const nav = `<nav class="langs" data-caelo-module-id="${SWITCHER.id}">${GUIDES.map(
       (p) => `<a class="lang" href="${p.path}">x</a>`,
@@ -472,6 +480,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       entryKeys: {},
       css: "",
       kind: "content" as const,
+      defaultModuleIds: [],
     };
     const html = `<ul class="il" data-caelo-module-id="${ITEMS.id}">${GUIDES.slice(0, 7)
       .map(
@@ -496,6 +505,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       entryKeys: { menu: ["label", "link"] },
       css: "",
       kind: "content" as const,
+      defaultModuleIds: [],
     };
     const generated = GUIDES.slice(0, 7)
       .map((p) => `<a class="g" href="${p.path}">${p.title}</a>`)
@@ -553,6 +563,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       entryKeys: { menu: ["label", "link"] },
       css: "",
       kind: "content" as const,
+      defaultModuleIds: [],
     };
     const langs = GUIDES.slice(0, 7)
       .map((p) => `<a class="lang" href="${p.path}">x</a>`)
@@ -594,6 +605,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       entryKeys: {},
       css: "",
       kind: "content" as const,
+      defaultModuleIds: [],
     };
     const html = `<section class="fl" data-caelo-module-id="${FLAGGED.id}">${GUIDES.slice(0, 7)
       .map((p) => `<a class="g" href="${p.path}">x</a>`)
@@ -646,6 +658,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       entryKeys: { menu: ["label", "link", "children"], links: ["label", "link"] },
       css: "",
       kind: "content" as const,
+      defaultModuleIds: [],
     };
     const generated = GUIDES.slice(0, 7)
       .map((p) => `<a class="c" href="${p.path}">${p.title}</a>`)
@@ -682,6 +695,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       entryKeys: { links: ["label", "link", "badge", "badge_new"] },
       css: "",
       kind: "content" as const,
+      defaultModuleIds: [],
     };
     const html = linkList(GUIDES.slice(0, 7), (n) => local("links", n)).replace(
       LINK_LIST.id,
@@ -722,6 +736,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       entryKeys: {},
       css: "",
       kind: "content" as const,
+      defaultModuleIds: [],
     };
     const cards = GUIDES.slice(0, 7)
       .map(
@@ -853,6 +868,7 @@ describe("structure/manual-page-listing (#1256)", () => {
       entryKeys: { menu: ["label", "link", "children"] },
       css: "",
       kind: "content" as const,
+      defaultModuleIds: [],
     };
     const generated = GUIDES.slice(0, 7)
       .map((p) => `<a class="c" href="${p.path}">${p.title}</a>`)

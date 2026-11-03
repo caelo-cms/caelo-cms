@@ -56,6 +56,7 @@ const TEXT: StructureModule = {
   entryKeys: {},
   css: "",
   kind: "content" as const,
+  defaultModuleIds: [],
 };
 const DIFF_TEMPLATE =
   '<div class="split"><div class="copy"><h2>{{title}}</h2><p>{{lead}}</p></div>' +
@@ -72,6 +73,7 @@ const DIFF: StructureModule = {
   entryKeys: {},
   css: "",
   kind: "content" as const,
+  defaultModuleIds: [],
 };
 const DIFF_COPY: StructureModule = {
   id: id(103),
@@ -85,6 +87,7 @@ const DIFF_COPY: StructureModule = {
   entryKeys: {},
   css: "",
   kind: "content" as const,
+  defaultModuleIds: [],
 };
 const NAV: StructureModule = {
   id: id(104),
@@ -98,6 +101,7 @@ const NAV: StructureModule = {
   entryKeys: {},
   css: "",
   kind: "content" as const,
+  defaultModuleIds: [],
 };
 const MODULES = [TEXT, DIFF, DIFF_COPY, NAV];
 
@@ -309,6 +313,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     entryKeys: {},
     css: "",
     kind: "content" as const,
+    defaultModuleIds: [],
     fields: [
       { name: "title", kind: "text" as const },
       { name: "items", kind: "module-list" as const },
@@ -343,6 +348,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     entryKeys: {},
     css: "",
     kind: "content" as const,
+    defaultModuleIds: [],
     fields: [
       { name: "title", kind: "text" as const },
       { name: "karten", kind: "module-list" as const },
@@ -362,6 +368,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     entryKeys: {},
     css: "",
     kind: "content" as const,
+    defaultModuleIds: [],
   });
   const nestedModules = [asStructure(FAQ_ENTRY), asStructure(TOOL_CARD)];
 
@@ -668,6 +675,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     entryKeys: {},
     css: "",
     kind: "content" as const,
+    defaultModuleIds: [],
   };
   const FOOTER: StructureModule = {
     id: id(111),
@@ -681,6 +689,7 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     entryKeys: {},
     css: "",
     kind: "content" as const,
+    defaultModuleIds: [],
   };
   const NAV_MODULES = [...MODULES, HEADER, FOOTER];
   const SHARED = "00000000-0000-4000-8000-000000000900";

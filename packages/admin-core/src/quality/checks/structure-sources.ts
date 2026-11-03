@@ -86,9 +86,13 @@ export function structureSourcesFromOps(
               v as {
                 modules: (Omit<
                   StructureModule,
-                  "listFields" | "moduleListFields" | "fieldNames" | "entryKeys"
+                  | "listFields"
+                  | "moduleListFields"
+                  | "fieldNames"
+                  | "entryKeys"
+                  | "defaultModuleIds"
                 > & {
-                  fields: { name: string; kind: string; listType?: string }[];
+                  fields: { name: string; kind: string; listType?: string; default?: unknown }[];
                 })[];
               }
             ).modules,
@@ -106,6 +110,7 @@ export function structureSourcesFromOps(
         listFields: m.fields.filter((f) => LIST_KINDS.has(f.kind)).map((f) => f.name),
         moduleListFields: m.fields.filter((f) => f.kind === "module-list").map((f) => f.name),
         fieldNames: m.fields.map((f) => f.name),
+        defaultModuleIds: embeddedModuleIds(m.fields.map((f) => f.default)),
         entryKeys: Object.fromEntries(
           m.fields.flatMap((f) =>
             f.kind === "list" && f.listType ? [[f.name, entryKeysOf.get(f.listType) ?? []]] : [],
@@ -199,6 +204,25 @@ export function structureSourcesFromOps(
       };
     },
   };
+}
+
+/**
+ * #1371 — the module ids a set of field defaults embeds: every object
+ * with a string `moduleId` (a `module` / `module-list` value), at any
+ * depth (a list entry's `module` field included).
+ */
+export function embeddedModuleIds(values: readonly unknown[]): string[] {
+  const out = new Set<string>();
+  const walk = (v: unknown) => {
+    if (Array.isArray(v)) for (const x of v) walk(x);
+    else if (v !== null && typeof v === "object") {
+      const id = (v as { moduleId?: unknown }).moduleId;
+      if (typeof id === "string") out.add(id);
+      for (const x of Object.values(v)) walk(x);
+    }
+  };
+  walk(values);
+  return [...out];
 }
 
 /**

@@ -64,6 +64,12 @@ export interface StructureModule {
   /** What the module is for (#1371: `chrome` modules are the frame every page carries). */
   readonly kind: "chrome" | "hero" | "content" | "cta" | "utility";
   /**
+   * Modules its field defaults embed (`{moduleId, …}` in a `module` /
+   * `module-list` default, at any depth) — #1371: a frame module's
+   * sub-modules are frame too.
+   */
+  readonly defaultModuleIds: readonly string[];
+  /**
    * Names of its `list` and `module-list` fields (#1256): a section over
    * one of them renders entries, any other section is a condition.
    */

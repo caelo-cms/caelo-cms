@@ -31,6 +31,7 @@ function mod(n: number, slug: string, over: Partial<StructureModule> = {}): Stru
     js: "",
     css: "",
     kind: "content",
+    defaultModuleIds: [],
     listFields: [],
     moduleListFields: [],
     fieldNames: [],
@@ -155,6 +156,16 @@ describe("repeatedListRenders", () => {
     expect(renders[0]?.byModule.get(card.id)).toBe(1);
   });
 
+  it("one module placed twice writes the list twice, but not twice in one root", () => {
+    const html = root(TEXT, menu()) + root(TEXT, menu());
+    const renders = repeatedListRenders("p", "/", parseMarkup(html));
+    expect(renders[0]?.byModule.get(TEXT.id)).toBe(2);
+    expect(renders[0]?.inOneRoot.get(TEXT.id)).toBe(1);
+    const f = only("repeated-render", findings([page(1, "/", html)], [TEXT]));
+    expect(f.map((x) => x.severity)).toEqual(["warning"]);
+    expect(f[0]?.message).not.toContain("on its own");
+  });
+
   it("local lists count inside one module only", () => {
     const local = (n: number) =>
       `<li data-caelo-list-item="local/links/${stamp(n).slice(37)}"></li>`;
@@ -237,6 +248,17 @@ describe("structure/heavy-chrome", () => {
     expect(only("heavy-chrome", findings(pages.slice(0, 1), [banner]))).toEqual([]);
   });
 
+  it("a frame module that renders a sub-module as its first element still counts it", () => {
+    // tagModuleId keeps the sub-module's stamp on the shared first element,
+    // so the header has no root of its own; its field defaults name the nav.
+    const nav = mod(9, "mega-nav");
+    const header = { ...HEADER, defaultModuleIds: [nav.id] };
+    const html = root(nav, filler(CHROME_ERROR_ELEMENTS), "nav") + root(TEXT, "<p></p>");
+    const f = only("heavy-chrome", findings([page(1, "/", html)], [header, nav, TEXT]));
+    expect(f.map((x) => x.severity)).toEqual(["error"]);
+    expect(f[0]?.message).toContain(`"mega-nav" (${nav.id})`);
+  });
+
   it("reports the inline SVG share", () => {
     const icons = '<svg><path d="a"/><path d="b"/><path d="c"/></svg>'.repeat(70);
     const f = only(
@@ -251,8 +273,8 @@ describe("structure/unused-css", () => {
   it("names layout and module classes nothing renders", () => {
     const text = mod(3, "text", {
       html: '<section class="text {{#dark}}is-dark{{/dark}}"><p>{{body}}</p></section>',
-      css: ".text{margin:0}.is-dark{color:#fff}.text .legacy-quote{font-style:italic}.is-open{display:block}.caelo-hidden{display:none}",
-      js: "el.classList.toggle('is-open')",
+      css: ".text{margin:0}.is-dark{color:#fff}.text .legacy-quote{font-style:italic}.is-open{display:block}.is-ready{opacity:1}.caelo-hidden{display:none}",
+      js: "el.classList.toggle('is-open'); el.className = 'is-ready'; var legacyQuote = 'legacy-quote'; console.log(legacyQuote);",
     });
     const pages = [page(1, "/", root(text, "<p>Hi</p>"))];
     const f = only(
@@ -262,9 +284,10 @@ describe("structure/unused-css", () => {
     expect(f.map((x) => x.fix?.tool)).toEqual(["propose_update_layout", "update_modules_many"]);
     expect(f[0]?.message).toContain(".old-hero");
     expect(f[0]?.message).not.toContain(".shell");
-    // Optional template class, script-toggled class and platform class are used.
+    // Optional template class, script-set classes and platform class are used;
+    // an unrelated string that happens to spell a class name is not.
     expect(f[1]?.message).toContain(".legacy-quote");
-    expect(f[1]?.message).not.toMatch(/is-dark|is-open|caelo-hidden/);
+    expect(f[1]?.message).not.toMatch(/is-dark|is-open|is-ready|caelo-hidden/);
   });
 
   it("unplaced modules ship no CSS and are not reported", () => {

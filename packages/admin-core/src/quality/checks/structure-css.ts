@@ -12,8 +12,8 @@
  * - `structure/unused-css` (warning): layout or placed-module CSS for
  *   classes no staged page renders. A class still counts as used when the
  *   stylesheet owner's template CAN render it (an optional variant class,
- *   `{{#dark}}is-dark{{/dark}}`) or any module script names it (a class a
- *   script toggles). Platform classes (`caelo-*`) never count.
+ *   `{{#dark}}is-dark{{/dark}}`) or a module script adds or selects it
+ *   ({@link scriptClassNames}). Platform classes (`caelo-*`) never count.
  * - `structure/page-specific-layout-css` (warning): layout CSS for classes
  *   several modules use but that appear on fewer than
  *   {@link PAGE_SPECIFIC_SHARE} of the layout's pages — product-page rules
@@ -29,7 +29,10 @@
  */
 
 import { parseMarkup, stripMustache, truncateKeepingIds } from "@caelo-cms/shared";
+import { parseSync } from "oxc-parser";
 import type { Finding } from "./findings.js";
+import { analyseModuleJs } from "./module-js-analysis.js";
+import { isNode, type Node, nodes } from "./module-js-ast.js";
 import type { ClassUse, StructureModule } from "./structure-analysis.js";
 import { selectorClasses } from "./structure-analysis.js";
 
@@ -108,11 +111,66 @@ export function templateClasses(html: string): Set<string> {
   return out;
 }
 
-/** Word tokens of scripts: any class a script names (a toggled state class) counts as used. */
-export function scriptTokens(scripts: readonly string[]): Set<string> {
+/** Class-list methods whose string arguments are class names. */
+const CLASS_LIST_METHODS = new Set(["add", "remove", "toggle", "replace", "contains"]);
+
+/**
+ * The class names module scripts reference, so a class a script adds or
+ * selects is not reported as unused: classes in selector strings (the
+ * module-JS analysis' hooks, `getElementsByClassName` included), string
+ * arguments of `classList.add/remove/toggle/replace/contains`, strings
+ * assigned to `className` and the value of `setAttribute("class", …)`.
+ * Only literal strings count — a name a script assembles at runtime is
+ * unknowable, and an unrelated identifier must not hide dead CSS.
+ */
+export function scriptClassNames(scripts: readonly string[]): Set<string> {
   const out = new Set<string>();
-  for (const js of scripts) for (const m of js.matchAll(/[A-Za-z_][\w-]*/g)) out.add(m[0]);
+  const addWords = (text: string | null) => {
+    for (const w of (text ?? "").split(/\s+/)) if (/^-?[_a-zA-Z][\w-]*$/.test(w)) out.add(w);
+  };
+  for (const js of scripts) {
+    if (js.trim().length === 0) continue;
+    for (const hook of analyseModuleJs(js).hooks) if (hook.startsWith(".")) out.add(hook.slice(1));
+    const parsed = parseSync("module.js", js, { sourceType: "script" });
+    if (parsed.errors.some((e) => e.severity === "Error")) continue;
+    for (const n of nodes(parsed.program)) {
+      if (n.type === "CallExpression") {
+        const callee = n.callee as Node;
+        const args = n.arguments as unknown[];
+        const method = propertyName(callee);
+        if (
+          method !== null &&
+          CLASS_LIST_METHODS.has(method) &&
+          propertyName(callee.object) === "classList"
+        )
+          for (const a of args) addWords(literalText(a));
+        if (method === "setAttribute" && literalText(args[0]) === "class")
+          addWords(literalText(args[1]));
+      }
+      if (n.type === "AssignmentExpression" && propertyName(n.left) === "className")
+        addWords(literalText(n.right));
+    }
+  }
   return out;
+}
+
+/** `x.name` / `x["name"]` → name; null for anything else. */
+function propertyName(v: unknown): string | null {
+  if (!isNode(v) || v.type !== "MemberExpression") return null;
+  const p = v.property as Node;
+  if (!v.computed && p.type === "Identifier") return p.name as string;
+  return literalText(p);
+}
+
+/** A string literal's value or a template literal's static text (no expressions); null otherwise. */
+function literalText(v: unknown): string | null {
+  if (!isNode(v)) return null;
+  if (v.type === "Literal" && typeof v.value === "string") return v.value;
+  if (v.type === "TemplateLiteral" && (v.expressions as unknown[]).length === 0)
+    return (v.quasis as { value: { cooked: string | null } }[])
+      .map((q) => q.value.cooked ?? "")
+      .join("");
+  return null;
 }
 
 /** `structure/unused-css` findings: one per stylesheet owner with dead classes. */
