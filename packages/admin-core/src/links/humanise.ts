@@ -21,23 +21,13 @@
 
 import type { OperationDefinition, TransactionRunner } from "@caelo-cms/query-api";
 import {
+  collectLinkRefsDeep,
   type ExecutionContext,
   humaniseLinkRefs,
-  type LinkHumaniseLookup,
   mayContainLinkRef,
   ok,
 } from "@caelo-cms/shared";
-import { type LinkTargets, loadLinkTargets } from "./link-targets.js";
-
-/** The id → path / slug lookup reads use to humanise references. */
-export function humaniseLookupFrom(targets: LinkTargets): LinkHumaniseLookup {
-  const paths = new Map(targets.pages.map((p) => [p.id, p.path]));
-  const slugs = new Map(targets.media.map((m) => [m.id, m.slug]));
-  return {
-    pagePath: (id) => paths.get(id) ?? null,
-    mediaSlug: (id) => slugs.get(id) ?? null,
-  };
-}
+import { loadHumaniseLookup } from "./link-targets.js";
 
 /**
  * Wrap a read op so its successful result is humanised — one line at
@@ -58,7 +48,9 @@ export function withHumanisedLinks<I, O>(
 
 /**
  * Humanise every reference anywhere in a read op's result. Free when the
- * result carries none (one serialisation, no query).
+ * result carries none (one serialisation, no query); otherwise it resolves
+ * only the pages and media the result names (#1269) — never every page
+ * and medium of the site, which every content read paid before.
  */
 export async function humaniseForRead<T>(
   tx: TransactionRunner,
@@ -66,6 +58,10 @@ export async function humaniseForRead<T>(
   result: T,
 ): Promise<T> {
   if (!mayContainLinkRef(JSON.stringify(result ?? null))) return result;
-  const targets = await loadLinkTargets(tx, ctx.chatBranchId ?? null);
-  return humaniseLinkRefs(result, humaniseLookupFrom(targets));
+  const lookup = await loadHumaniseLookup(
+    tx,
+    ctx.chatBranchId ?? null,
+    collectLinkRefsDeep(result),
+  );
+  return humaniseLinkRefs(result, lookup);
 }
