@@ -147,11 +147,27 @@ describe("the calibration on the recorded metrics", () => {
   it("is shown to the AI next to the metrics", () => {
     const lines = formatMetrics({
       ...metrics,
-      cpuCalibration: { benchmarkIndex: 2313, cpuSlowdownMultiplier: 5.34 },
+      cpuCalibration: {
+        benchmarkIndex: 2313,
+        cpuSlowdownMultiplier: 5.34,
+        targetBenchmarkIndex: TARGET_BENCHMARK_INDEX,
+      },
     });
     expect(lines).toContain(
       "- CPU throttling 5.34x on an audit host of benchmark index 2313: emulates a phone of benchmark index 433, the same mid-tier phone on every host",
     );
+  });
+
+  it("never claims the same phone for an audit recorded before #1370", () => {
+    // The calculator curve: 7.3x on a 2313 host emulated ~317.
+    const lines = formatMetrics({
+      ...metrics,
+      cpuCalibration: { benchmarkIndex: 2313, cpuSlowdownMultiplier: 7.3 },
+    });
+    expect(lines).toContain(
+      "- CPU throttling 7.3x on an audit host of benchmark index 2313: emulated a phone of benchmark index ~317 (recorded before #1370, when the emulated phone depended on the host)",
+    );
+    expect(lines.some((l) => l.includes("same mid-tier phone"))).toBe(false);
   });
 
   it("adds no line for an audit recorded before calibration", () => {

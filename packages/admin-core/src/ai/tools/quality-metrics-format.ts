@@ -65,8 +65,14 @@ export function formatMetrics(m: Metrics): string[] {
       : []),
   ];
   if (m.cpuCalibration) {
+    const c = m.cpuCalibration;
+    const host = `- CPU throttling ${c.cpuSlowdownMultiplier}x on an audit host of benchmark index ${c.benchmarkIndex}`;
+    // Only audits since #1370 record their target; older ones followed
+    // Lighthouse's calculator curve, whose emulated phone moved with the host.
     lines.push(
-      `- CPU throttling ${m.cpuCalibration.cpuSlowdownMultiplier}x on an audit host of benchmark index ${m.cpuCalibration.benchmarkIndex}: emulates a phone of benchmark index ${effectiveBenchmarkIndex(m.cpuCalibration)}, the same mid-tier phone on every host`,
+      c.targetBenchmarkIndex === undefined
+        ? `${host}: emulated a phone of benchmark index ~${effectiveBenchmarkIndex(c)} (recorded before #1370, when the emulated phone depended on the host)`
+        : `${host}: emulates a phone of benchmark index ${c.targetBenchmarkIndex}, the same mid-tier phone on every host`,
     );
   }
   for (const metric of m.metrics) {
