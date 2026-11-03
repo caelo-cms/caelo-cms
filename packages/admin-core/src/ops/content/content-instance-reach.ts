@@ -26,7 +26,7 @@
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { collectNestedRefs, rendersFieldDefault, type TemplateField } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../../draft.js";
+import { headOverlaySql, stateNamesAnySql } from "../../draft.js";
 import { loadListEntities } from "../../lists/store.js";
 import { loadBranchedModuleStates } from "../../snapshots/index.js";
 import type { PageLayoutState } from "../../snapshots/state.js";
@@ -105,16 +105,20 @@ export async function listPlacementsInView(
   if (branchId === null) return sortByPath(placements);
 
   // The newest pending layout per page the branch reshaped — the same row
-  // `loadPageLayoutStateWithBranchOverlay` picks, in one query.
+  // `loadPageLayoutStateWithBranchOverlay` picks, read through the draft
+  // head (one row per pending page, not the branch's whole pending
+  // history). Every reshaped page supersedes its live placements; only
+  // the layouts that name a wanted instance are read out.
   const overlaid = (await tx.execute(sql`
-    SELECT DISTINCT ON (pls.page_id)
-           pls.page_id::text AS page_id, p.current_path AS path, p.slug AS page_slug,
-           p.title AS page_title, (p.deleted_at IS NOT NULL) AS page_deleted, pls.state
-    FROM page_layout_snapshots pls
-    JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-    JOIN pages p ON p.id = pls.page_id
-    WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-    ORDER BY pls.page_id, ss.created_at DESC
+    SELECT h.entity_id AS page_id, p.current_path AS path, p.slug AS page_slug,
+           p.title AS page_title, (p.deleted_at IS NOT NULL) AS page_deleted, h.state
+      FROM (${headOverlaySql({
+        kind: "pageLayout",
+        table: "page_layout_snapshots",
+        branchId,
+        columns: sql`CASE WHEN ${stateNamesAnySql(contentInstanceIds)} THEN es.state END AS state`,
+      })}) h
+      JOIN pages p ON p.id = h.entity_id::uuid
   `)) as unknown as {
     page_id: string;
     path: string;
@@ -127,6 +131,7 @@ export async function listPlacementsInView(
   const overlaidIds = new Set(overlaid.map((r) => r.page_id));
   const inView = placements.filter((p) => !overlaidIds.has(p.pageId));
   for (const page of overlaid) {
+    if (page.state === null) continue; // names no wanted instance
     const layout = page.state as PageLayoutState;
     for (const block of layout.blocks) {
       if (!block.placements) {

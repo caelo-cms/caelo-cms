@@ -26,7 +26,7 @@ import {
   templateFieldsFromJson,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../../draft.js";
+import { headOverlaySql } from "../../draft.js";
 import { pageSeoViewSql } from "../../seo/page-seo.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 import { loadActiveThemeForCompose } from "./preview-theme.js";
@@ -147,13 +147,14 @@ export async function loadPreviewPage(
   // (which would cascade through template / layout) is out of scope until
   // pages.change_template branches.
   if (chatBranchId) {
-    const snap = (await tx.execute(sql`
-      SELECT state FROM page_snapshots ps
-      JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-      WHERE ps.page_id = ${pageId}::uuid
-        AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-      ORDER BY ss.created_at DESC LIMIT 1
-    `)) as unknown as { state: unknown }[];
+    const snap = (await tx.execute(
+      headOverlaySql({
+        kind: "page",
+        table: "page_snapshots",
+        branchId: chatBranchId,
+        ids: [pageId],
+      }),
+    )) as unknown as { state: unknown }[];
     if (snap[0]?.state) {
       const s = snap[0].state as { slug?: string; title?: string };
       if (s.slug) pageRow.slug = s.slug;
@@ -215,14 +216,14 @@ export async function loadPreviewPage(
     // v0.5.3 — the chat's branched page_layout_snapshot replaces the live
     // page_modules ordering (blocks/moduleIds) AND the live bindings
     // (placement.set_content / fork_placement_content). Read once for both.
-    const layoutSnap = (await tx.execute(sql`
-      SELECT state FROM page_layout_snapshots pls
-      JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-      WHERE pls.page_id = ${pageId}::uuid
-        AND ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-      ORDER BY ss.created_at DESC
-      LIMIT 1
-    `)) as unknown as { state: unknown }[];
+    const layoutSnap = (await tx.execute(
+      headOverlaySql({
+        kind: "pageLayout",
+        table: "page_layout_snapshots",
+        branchId: chatBranchId,
+        ids: [pageId],
+      }),
+    )) as unknown as { state: unknown }[];
     if (layoutSnap[0]?.state) {
       const parsed = layoutSnap[0].state as {
         blocks?: {
@@ -525,15 +526,16 @@ async function branchModuleStates(
   moduleIds: readonly string[],
   chatBranchId: string,
 ): Promise<Map<string, Record<string, unknown>>> {
-  const rows = (await tx.execute(sql`
-    SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
-    FROM module_snapshots ms
-    JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-    WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-      AND ms.module_id = ANY(${uuidArray(moduleIds)})
-    ORDER BY ms.module_id, ss.created_at DESC
-  `)) as unknown as { module_id: string; state: unknown }[];
-  return new Map(rows.map((r) => [r.module_id, r.state as Record<string, unknown>]));
+  if (moduleIds.length === 0) return new Map();
+  const rows = (await tx.execute(
+    headOverlaySql({
+      kind: "module",
+      table: "module_snapshots",
+      branchId: chatBranchId,
+      ids: moduleIds,
+    }),
+  )) as unknown as { entity_id: string; state: unknown }[];
+  return new Map(rows.map((r) => [r.entity_id, r.state as Record<string, unknown>]));
 }
 
 /** The branch's pending values per instance (deleted ones left out). */
@@ -542,14 +544,14 @@ async function branchInstanceValues(
   instanceIds: readonly string[],
   chatBranchId: string,
 ): Promise<Map<string, Record<string, unknown>>> {
+  if (instanceIds.length === 0) return new Map();
   const rows = (await tx.execute(sql`
-    SELECT DISTINCT ON (cis.content_instance_id)
-           cis.content_instance_id::text AS id, cis.state AS state
-    FROM content_instance_snapshots cis
-    JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-    WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-      AND cis.content_instance_id = ANY(${uuidArray(instanceIds)})
-    ORDER BY cis.content_instance_id, ss.created_at DESC
+    SELECT h.entity_id AS id, h.state FROM (${headOverlaySql({
+      kind: "contentInstance",
+      table: "content_instance_snapshots",
+      branchId: chatBranchId,
+      ids: instanceIds,
+    })}) h
   `)) as unknown as { id: string; state: unknown }[];
   const out = new Map<string, Record<string, unknown>>();
   for (const r of rows) {

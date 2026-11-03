@@ -21,7 +21,7 @@ import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { pendingSnapshotSql } from "../../draft.js";
+import { headOverlaySql } from "../../draft.js";
 
 /** One read's id ceiling, the same as `pages.resolve_public_urls`. */
 const MAX_PAGE_IDS = 1000;
@@ -60,12 +60,12 @@ export const listPageStatusesOp = defineOperation({
       // A branched status change or delete lives in the chat's pending
       // snapshots until publish (pages.list applies the same overlay).
       const overlay = (await tx.execute(sql`
-        SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
-          FROM page_snapshots ps
-          JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-         WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
-           AND ps.page_id = ANY(${ids})
-         ORDER BY ps.page_id, ss.created_at DESC
+        SELECT h.entity_id AS page_id, h.state FROM (${headOverlaySql({
+          kind: "page",
+          table: "page_snapshots",
+          branchId: ctx.chatBranchId,
+          ids: rows.map((r) => r.id),
+        })}) h
       `)) as unknown as { page_id: string; state: unknown }[];
       for (const o of overlay) {
         if (!(o.page_id in statuses)) continue;

@@ -36,7 +36,7 @@ import {
   renderModuleWithContent,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../../draft.js";
+import { headOverlaySql } from "../../draft.js";
 import {
   loadBranchedModuleStates,
   loadContentInstanceBranchStates,
@@ -125,12 +125,12 @@ async function loadPageRows(
   const byId = new Map(rows.map((r) => [r.id, r]));
   if (chatBranchId && rows.length > 0) {
     const snaps = (await tx.execute(sql`
-      SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
-        FROM page_snapshots ps
-        JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-       WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-         AND ps.page_id = ANY(${uuidArray([...byId.keys()])})
-       ORDER BY ps.page_id, ss.created_at DESC
+      SELECT h.entity_id AS page_id, h.state FROM (${headOverlaySql({
+        kind: "page",
+        table: "page_snapshots",
+        branchId: chatBranchId,
+        ids: [...byId.keys()],
+      })}) h
     `)) as unknown as { page_id: string; state: unknown }[];
     for (const s of snaps) {
       const state = s.state as { title?: string; deletedAt?: string | null };

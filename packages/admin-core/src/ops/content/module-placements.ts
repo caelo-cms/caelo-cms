@@ -36,9 +36,9 @@
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../../draft.js";
+import { headOverlaySql, stateNamesAnySql } from "../../draft.js";
 import { loadBranchedModuleStates } from "../../snapshots/load.js";
-import type { PageLayoutState, PageState } from "../../snapshots/state.js";
+import type { PageLayoutState } from "../../snapshots/state.js";
 import { findContentInstancesContaining, idNeedles } from "./content-instance-refs.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 
@@ -75,30 +75,35 @@ export async function findModulePagePlacements(
   for (const id of moduleIds) pagesByModule.set(id, new Map());
   if (moduleIds.length === 0) return new Map();
 
-  // Branched page layouts + page states: latest snapshot per page on this
-  // branch. Empty for callers without a branch.
-  const branchedLayouts = new Map<string, PageLayoutState>();
+  // Branched page layouts + page states: the newest pending snapshot per
+  // page on this branch, through the draft head (one row per pending page,
+  // not the branch's whole pending history). Every reshaped page
+  // supersedes its live rows; only layouts naming a requested module are
+  // read out (null otherwise). Empty for callers without a branch.
+  const branchedLayouts = new Map<string, PageLayoutState | null>();
   const branchedDeletedPages = new Set<string>();
   if (branchId) {
-    const layoutRows = (await tx.execute(sql`
-      SELECT DISTINCT ON (pls.page_id) pls.page_id::text AS page_id, pls.state
-        FROM page_layout_snapshots pls
-        JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-       WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-       ORDER BY pls.page_id, ss.created_at DESC
-    `)) as unknown as { page_id: string; state: unknown }[];
+    const layoutRows = (await tx.execute(
+      headOverlaySql({
+        kind: "pageLayout",
+        table: "page_layout_snapshots",
+        branchId,
+        columns: sql`CASE WHEN ${stateNamesAnySql(moduleIds)} THEN es.state END AS state`,
+      }),
+    )) as unknown as { entity_id: string; state: unknown }[];
     for (const r of layoutRows) {
-      branchedLayouts.set(r.page_id, r.state as PageLayoutState);
+      branchedLayouts.set(r.entity_id, r.state as PageLayoutState | null);
     }
-    const pageRows = (await tx.execute(sql`
-      SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
-        FROM page_snapshots ps
-        JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-       WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-       ORDER BY ps.page_id, ss.created_at DESC
-    `)) as unknown as { page_id: string; state: unknown }[];
+    const pageRows = (await tx.execute(
+      headOverlaySql({
+        kind: "page",
+        table: "page_snapshots",
+        branchId,
+        columns: sql`(es.state->>'deletedAt') IS NOT NULL AS deleted`,
+      }),
+    )) as unknown as { entity_id: string; deleted: boolean }[];
     for (const r of pageRows) {
-      if ((r.state as PageState).deletedAt) branchedDeletedPages.add(r.page_id);
+      if (r.deleted) branchedDeletedPages.add(r.entity_id);
     }
   }
 
@@ -126,7 +131,7 @@ export async function findModulePagePlacements(
   const wanted = new Set(moduleIds);
   const branchedHits: { moduleId: string; pageId: string }[] = [];
   for (const [pageId, layout] of branchedLayouts) {
-    if (branchedDeletedPages.has(pageId)) continue;
+    if (layout === null || branchedDeletedPages.has(pageId)) continue;
     for (const block of layout.blocks) {
       for (const moduleId of block.moduleIds) {
         if (wanted.has(moduleId)) branchedHits.push({ moduleId, pageId });

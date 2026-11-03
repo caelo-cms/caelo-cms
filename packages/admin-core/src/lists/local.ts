@@ -16,7 +16,7 @@
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ListPaginationSettings, SourceDef } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../draft.js";
+import { headOverlaySql } from "../draft.js";
 import { loadBranchedModuleStates, loadContentInstanceBranchStates } from "../snapshots/index.js";
 
 /** A module field of kind `list` (shape owned by the module field schema, docs §7). */
@@ -252,12 +252,15 @@ export async function pageTermsOfList(
   `)) as unknown as { page_id: string; ref: string }[];
   for (const r of live) out.set(r.page_id, [...(out.get(r.page_id) ?? []), r.ref]);
   if (!branchId) return out;
-  const branched = (await tx.execute(sql`
-    SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
-      FROM page_snapshots ps JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-     WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-     ORDER BY ps.page_id, ss.created_at DESC
-  `)) as unknown as { page_id: string; state: unknown }[];
+  // The branch's pending pages through the draft head (one row per page).
+  const branched = (await tx.execute(
+    headOverlaySql({
+      kind: "page",
+      table: "page_snapshots",
+      branchId,
+      columns: sql`jsonb_build_object('terms', es.state->'terms', 'deletedAt', es.state->'deletedAt') AS state`,
+    }),
+  )) as unknown as { entity_id: string; state: unknown }[];
   for (const b of branched) {
     const state = b.state as {
       terms?: unknown;
@@ -266,8 +269,8 @@ export async function pageTermsOfList(
     const terms = Array.isArray(state.terms)
       ? state.terms.filter((t): t is string => typeof t === "string" && t.startsWith(prefix))
       : [];
-    if (state.deletedAt || terms.length === 0) out.delete(b.page_id);
-    else out.set(b.page_id, terms);
+    if (state.deletedAt || terms.length === 0) out.delete(b.entity_id);
+    else out.set(b.entity_id, terms);
   }
   return out;
 }

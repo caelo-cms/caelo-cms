@@ -32,7 +32,7 @@ import {
 import { extractMediaRefs, ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
-import { pendingSnapshotSql } from "../../draft.js";
+import { headOverlaySql } from "../../draft.js";
 import type { ContentInstanceState } from "../../snapshots/state.js";
 
 /** One content instance whose values matched, with its values as JSON text. */
@@ -90,6 +90,7 @@ export async function findContentInstancesContaining(
     tx,
     chatBranchId ?? null,
     needleFilterSql(needles),
+    branchedNeedleSql(needles),
     (_moduleId, valuesText) => needles.some((n) => holdsNeedle(n, valuesText)),
   );
 }
@@ -138,19 +139,54 @@ export async function findContentInstancesOfModules(
     tx,
     chatBranchId ?? null,
     sql`ci.module_id = ANY(${uuidArray(moduleIds)})`,
+    sql`es.state->>'moduleId' = ANY(${textArray(moduleIds)})`,
     (moduleId) => wanted.has(moduleId),
   );
+}
+
+/**
+ * The branch-state prefilter of `needles` (non-empty): a pending state
+ * whose values text holds one of them. A superset of {@link holdsNeedle},
+ * which confirms; `es` is the snapshot row of {@link headOverlaySql}.
+ */
+function branchedNeedleSql(needles: readonly ContentInstanceNeedle[]): SQL {
+  const ids = needles.flatMap((n) => (n.kind === "id" ? [n.id.toLowerCase()] : []));
+  const slugs = needles.flatMap((n) => (n.kind === "media_slug" ? [n.slug] : []));
+  const values = sql`(es.state->'values')::text`;
+  const terms: SQL[] = [];
+  if (ids.length > 0) {
+    terms.push(
+      sql`EXISTS (SELECT 1 FROM unnest(${textArray(ids)}) n WHERE strpos(lower(${values}), n) > 0)`,
+    );
+  }
+  if (slugs.length > 0) {
+    terms.push(
+      sql`EXISTS (SELECT 1 FROM unnest(${textArray(slugs)}) n WHERE strpos(${values}, n) > 0)`,
+    );
+  }
+  return sql`(${sql.join(terms, sql` OR `)})`;
 }
 
 /**
  * The live rows matching `liveFilter`, with the branch's pending states
  * superseding them (kept when `matchesBranched` accepts the branched
  * values) and instances the branch deleted dropped.
+ *
+ * The pending states come from the draft head (one row per pending
+ * instance, `headOverlaySql`), never from the branch's whole pending
+ * history: on the shared draft that history grows with every write of
+ * every chat until the next Stage, and sorting all of it — states
+ * included — for one lookup passed the 60 s statement timeout on
+ * production (2026-11-03, a plugin's change consumer calling
+ * `content_instances.list({ ids })` after each agent write). Only the
+ * states `branchedFilter` (a superset of `matchesBranched`, over `es`)
+ * keeps are read out; the rest only supersede their live row.
  */
 async function loadInstancesInView(
   tx: TransactionRunner,
   branchId: string | null,
   liveFilter: SQL,
+  branchedFilter: SQL,
   matchesBranched: (moduleId: string, valuesText: string) => boolean,
 ): Promise<ContentInstanceRef[]> {
   const out = new Map<string, ContentInstanceRef>();
@@ -158,21 +194,26 @@ async function loadInstancesInView(
   // Branched states first: they supersede the live row for this caller.
   const branched = new Set<string>();
   if (branchId) {
-    const rows = (await tx.execute(sql`
-      SELECT DISTINCT ON (cis.content_instance_id)
-             cis.content_instance_id::text AS id, cis.state
-        FROM content_instance_snapshots cis
-        JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-       WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-       ORDER BY cis.content_instance_id, ss.created_at DESC
-    `)) as unknown as { id: string; state: unknown }[];
+    const rows = (await tx.execute(
+      headOverlaySql({
+        kind: "contentInstance",
+        table: "content_instance_snapshots",
+        branchId,
+        columns: sql`CASE WHEN ${branchedFilter} THEN es.state END AS state`,
+      }),
+    )) as unknown as { entity_id: string; state: unknown }[];
     for (const r of rows) {
+      branched.add(r.entity_id);
+      if (r.state === null) continue; // superseded, and cannot match
       const state = r.state as ContentInstanceState;
-      branched.add(r.id);
       if (state.deletedAt) continue;
       const valuesText = JSON.stringify(state.values ?? {});
       if (matchesBranched(state.moduleId, valuesText)) {
-        out.set(r.id, { contentInstanceId: r.id, moduleId: state.moduleId, valuesText });
+        out.set(r.entity_id, {
+          contentInstanceId: r.entity_id,
+          moduleId: state.moduleId,
+          valuesText,
+        });
       }
     }
   }

@@ -27,10 +27,12 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
+import { observeDraftReads } from "../locks.js";
 import {
   type ContentInstanceNeedle,
   contentInstanceRefsDrift,
   findContentInstancesContaining,
+  idNeedles,
   liveInstancesSql,
   needleFilterSql,
 } from "../ops/content/content-instance-refs.js";
@@ -320,5 +322,64 @@ describe("#1287 — list_for_page reads its nested tree through the index", () =
     );
     expect(nested.get(own)).toBe(true);
     expect(nested.get(shared)).toBe(false);
+  });
+});
+
+describe("#1390 — a branch's pending states come from the draft head", () => {
+  async function draftChat(title: string): Promise<ExecutionContext> {
+    const v = await op<{ chatSessionId: string; chatBranchId: string }>("chat.create_session", {
+      title: `cirefs-${title}-${TS}`,
+    });
+    return {
+      actorId: ACTOR,
+      actorKind: "ai",
+      requestId: `cirefs-${title}`,
+      chatBranchId: v.chatBranchId,
+      chatTaskId: v.chatSessionId,
+    };
+  }
+  async function foundIn(ctx: ExecutionContext, needles: ContentInstanceNeedle[]) {
+    const refs = await adapter.withAdminTransaction(ctx, (tx) =>
+      findContentInstancesContaining(tx, ctx.chatBranchId ?? null, needles),
+    );
+    return refs.map((r) => r.contentInstanceId).sort();
+  }
+  async function setValues(ctx: ExecutionContext, id: string, values: unknown): Promise<void> {
+    const r = await execute(registry, adapter, ctx, "content_instances.set_values", { id, values });
+    if (!r.ok) throw new Error(`set_values: ${JSON.stringify(r.error)}`);
+  }
+
+  it("the newest pending state decides, even when an older one matched", async () => {
+    const child = await instance(cardId, { title: "Head child" });
+    const other = await instance(cardId, { title: "Head other" });
+    const parent = await instance(listModuleId, { items: [ref(other)] });
+    const chat = await draftChat("head");
+
+    // Pending: first the parent lists the child, then no longer.
+    await setValues(chat, parent, { items: [ref(child)] });
+    expect(await foundIn(chat, idNeedles([child]))).toEqual([parent]);
+    await setValues(chat, parent, { items: [ref(other)] });
+    expect(await foundIn(chat, idNeedles([child]))).toEqual([]);
+    // The live row never listed the child; main does not see the pending edit.
+    expect(await found(idNeedles([child]))).toEqual([]);
+    expect(await found(idNeedles([other]))).toContain(parent);
+  });
+
+  it("a newer pending state of another chat supersedes this chat's older one", async () => {
+    const child = await instance(cardId, { title: "Owners child" });
+    const parent = await instance(listModuleId, { items: [] });
+    const first = await draftChat("owner-a");
+    const second = await draftChat("owner-b");
+
+    await setValues(first, parent, { items: [ref(child)] });
+    expect(await foundIn(second, idNeedles([child]))).toEqual([parent]);
+    // Both chats share the draft: the newest pending state is the view.
+    // The second chat has seen the first chat's change before building on it.
+    await adapter.withAdminTransaction(second, (tx) =>
+      observeDraftReads(tx, second, "contentInstance", [parent]),
+    );
+    await setValues(second, parent, { items: [] });
+    expect(await foundIn(first, idNeedles([child]))).toEqual([]);
+    expect(await foundIn(second, idNeedles([child]))).toEqual([]);
   });
 });

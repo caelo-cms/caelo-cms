@@ -264,6 +264,21 @@ export function headOverlaySql(spec: {
               d.header_created_at DESC, d.row_created_at DESC, d.snapshot_row_id DESC`;
 }
 
+/**
+ * SQL predicate over the snapshot row `es` of {@link headOverlaySql}: its
+ * state names any of `ids` (non-empty) somewhere in its text. A superset —
+ * callers confirm on the parsed state. Meant for the `columns` of a head
+ * read (`CASE WHEN … THEN es.state END`), so every pending entity still
+ * supersedes its live row while only the states a caller can use are
+ * read out. Never as its `where`: that would let an older row of another
+ * owner stand in for the newest one.
+ */
+export function stateNamesAnySql(ids: readonly string[]): SQL {
+  const needles = [...new Set(ids.map((id) => id.toLowerCase()))];
+  return sql`EXISTS (SELECT 1 FROM unnest(${textArray(needles)}) n
+                      WHERE strpos(lower(es.state::text), n) > 0)`;
+}
+
 /** The fields of a chat a head read needs (a {@link ChatBinding} has them). */
 export interface HeadChat {
   readonly chatSessionId: string;
