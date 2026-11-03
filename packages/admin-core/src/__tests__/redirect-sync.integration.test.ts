@@ -259,6 +259,27 @@ describe("redirect sync on save (#1157)", () => {
     expect((await status()).production?.last?.status).toBe("unchanged");
   });
 
+  it("Try again now on one target folds a change nobody pushed yet and puts it live (#1140)", async () => {
+    // A change whose own save never synced (another process, a seed): its
+    // row waits in redirect_changes, and the target reads behind.
+    await sys(
+      (tx) => tx`
+        INSERT INTO redirects (from_path, to_path, status_code, created_by)
+        VALUES ('/unfolded', '/about', 301, ${SYSTEM.actorId}::uuid)
+      `,
+    );
+    expect((await status()).production?.inSync).toBe(false);
+    // The operator's retry of production alone: before, it pushed the old
+    // table and left the target "Going live…" until a scheduler tick
+    // folded the change.
+    await syncDetached({ trigger: "manual", targetIds: [targets.production.id] });
+    const after = await status();
+    expect(after.production?.inSync).toBe(true);
+    expect(await snippet("production")).toContain("/unfolded");
+    // The fold restarted every target's backoff; the change reaches staging too.
+    expect(after.staging?.inSync).toBe(true);
+  });
+
   it("a failed push is loud, keeps the redirect, is shown and retried until live", async () => {
     await rm(currentDir("production"), { recursive: true, force: true });
     // The write is saved and answers ok; the AI tool result says why it is not live.
