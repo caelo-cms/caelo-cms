@@ -21,6 +21,16 @@
  * created), with the branch's latest PENDING content-instance snapshot
  * (the same boundary `loadBranchedModuleStates` uses) superseding the
  * live values. A content instance the branch deleted does not count.
+ *
+ * #1375 — that latest pending state comes from the draft head
+ * (`draft_pending_entities`, #1268): one row per pending instance. The
+ * earlier read walked every pending content-instance snapshot of the
+ * branch, with its full state, and sorted them; on the shared draft of a
+ * site with several agents at work that is the whole day's edit history,
+ * and it ran on every `content_instances.get` / `.list` / `set_values_many`
+ * and `lists.list` (through the reach). Each took the 60 s statement
+ * timeout on the production database, held a pooled connection for it,
+ * and the admin answered nothing for half an hour.
  */
 
 import {
@@ -32,7 +42,7 @@ import {
 import { extractMediaRefs, ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
-import { headOverlaySql, pendingCandidatesSql, pendingRefCandidatesSql } from "../../draft.js";
+import { headOverlaySql, pendingRefCandidatesSql } from "../../draft.js";
 import type { ContentInstanceState } from "../../snapshots/state.js";
 
 /** One content instance whose values matched, with its values as JSON text. */
@@ -90,7 +100,7 @@ export async function findContentInstancesContaining(
     tx,
     chatBranchId ?? null,
     needleFilterSql(needles),
-    (branchId) => pendingNeedleCandidatesSql(branchId, needles),
+    { candidates: (branchId) => pendingNeedleCandidatesSql(branchId, needles) },
     (_moduleId, valuesText) => needles.some((n) => holdsNeedle(n, valuesText)),
   );
 }
@@ -139,13 +149,10 @@ export async function findContentInstancesOfModules(
     tx,
     chatBranchId ?? null,
     sql`ci.module_id = ANY(${uuidArray(moduleIds)})`,
-    (branchId) =>
-      pendingCandidatesSql({
-        kind: "contentInstance",
-        table: "content_instance_snapshots",
-        branchId,
-        match: sql`(es.state ->> 'moduleId') = ANY(${textArray(moduleIds)})`,
-      }),
+    // An instance never changes its module, so filtering the head rows by
+    // module drops whole instances, never an owner's newer state: one head
+    // read, one snapshot row per pending instance of these modules.
+    { headWhere: sql`(es.state ->> 'moduleId') = ANY(${textArray(moduleIds)})` },
     (moduleId) => wanted.has(moduleId),
   );
 }
@@ -181,18 +188,18 @@ export function pendingNeedleCandidatesSql(
  * consumer paid it after every agent write until the db-f1-micro was
  * saturated. Now:
  *   1. the live matches (`liveFilter`, an indexed predicate on `ci`);
- *   2. the pending candidates (`pendingCandidates`, an indexed lookup of
- *      head rows of the branch: `pendingRefCandidatesSql` /
- *      `pendingCandidatesSql`);
- *   3. the newest pending state of exactly those instances
- *      (`headOverlaySql`), which supersedes the live row: it is kept when
- *      `matchesBranched` accepts it, and a deleted one drops the instance.
+ *   2. the newest pending state of the instances that may match, which
+ *      supersedes the live row (kept when `matchesBranched` accepts it; a
+ *      deleted one drops the instance): either the candidates an index
+ *      names (`pendingRefCandidatesSql`) plus the live matches, read by id,
+ *      or — for a filter that holds for an instance's every state, like
+ *      its module — the head rows filtered in one read (`headWhere`).
  */
 async function loadInstancesInView(
   tx: TransactionRunner,
   branchId: string | null,
   liveFilter: SQL,
-  pendingCandidates: (branchId: string) => SQL,
+  pending: { readonly candidates: (branchId: string) => SQL } | { readonly headWhere: SQL },
   matchesBranched: (moduleId: string, valuesText: string) => boolean,
 ): Promise<ContentInstanceRef[]> {
   const liveRows = (await tx.execute(liveInstancesSql(branchId, liveFilter))) as unknown as {
@@ -206,14 +213,31 @@ async function loadInstancesInView(
   }
   if (!branchId) return [...out.values()];
 
-  const candidates = (await tx.execute(pendingCandidates(branchId))) as unknown as {
-    entity_id: string;
-  }[];
-  const ids = [...new Set([...out.keys(), ...candidates.map((c) => c.entity_id)])];
-  if (ids.length === 0) return [];
-  const heads = (await tx.execute(
-    headOverlaySql({ kind: "contentInstance", table: "content_instance_snapshots", branchId, ids }),
-  )) as unknown as { entity_id: string; state: unknown }[];
+  let heads: { entity_id: string; state: unknown }[];
+  if ("headWhere" in pending) {
+    heads = (await tx.execute(
+      headOverlaySql({
+        kind: "contentInstance",
+        table: "content_instance_snapshots",
+        branchId,
+        where: pending.headWhere,
+      }),
+    )) as unknown as { entity_id: string; state: unknown }[];
+  } else {
+    const candidates = (await tx.execute(pending.candidates(branchId))) as unknown as {
+      entity_id: string;
+    }[];
+    const ids = [...new Set([...out.keys(), ...candidates.map((c) => c.entity_id)])];
+    if (ids.length === 0) return [];
+    heads = (await tx.execute(
+      headOverlaySql({
+        kind: "contentInstance",
+        table: "content_instance_snapshots",
+        branchId,
+        ids,
+      }),
+    )) as unknown as { entity_id: string; state: unknown }[];
+  }
   for (const h of heads) {
     // The branch's own state decides for this caller, match or not.
     out.delete(h.entity_id);

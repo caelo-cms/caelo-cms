@@ -154,13 +154,17 @@ export interface ToolContext {
    */
   readonly operatorBrowserAttached?: boolean;
   /**
-   * The tools whose full definition ships in this turn's request (the core
-   * set, `CORE_TOOL_NAMES`); every other catalogue tool
-   * may sit behind the provider's tool search. Set by the chat-runner only —
-   * surfaces that list every tool (Power-MCP) leave it undefined. load_skill
-   * reads it so it never claims a deferred tool is callable as-is.
+   * This turn's tool catalogue as the provider sends it: every tool name,
+   * and the ones it defers behind its tool search (`AIProvider.
+   * deferredToolNames`). Set by the chat-runner only — surfaces that list
+   * every tool with its schema (Power-MCP) leave it undefined. load_skill
+   * loads a skill's deferred tools from it (`ToolResult.toolReferences`)
+   * and names the ones this chat does not have.
    */
-  readonly preloadedToolNames?: ReadonlySet<string>;
+  readonly turnTools?: {
+    readonly names: ReadonlySet<string>;
+    readonly deferred: ReadonlySet<string>;
+  };
   /**
    * Issue #664 — the running turn's stop signal (the operator's Stop, a
    * lost turn lease, a closed request). A tool that runs long work of its
@@ -258,6 +262,16 @@ export interface ToolResult {
    * leave this undefined; list_* / *.get tools should populate it.
    */
   readonly value?: unknown;
+  /**
+   * #991 — deferred tools this result loads into the conversation. The
+   * chat-runner sends them as `tool_reference` blocks inside the tool
+   * result (the SDK's custom content part), and the provider expands each
+   * into its full definition from the next step on — the same mechanism
+   * the provider's own tool search uses, without the extra search pass.
+   * Only names in `ToolContext.turnTools.deferred`: any other reference
+   * fails the request. Set by `load_skill` for the tools a skill uses.
+   */
+  readonly toolReferences?: readonly string[];
   /**
    * #1091 — the call failed because the tool refused it as designed: an
    * operation guard said no (`HandlerError.refusal` — still placed, still

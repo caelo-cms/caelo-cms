@@ -55,6 +55,9 @@ class CapturingProvider implements AIProvider {
   readonly name: ProviderName = "anthropic";
   readonly model = "claude-test-1";
   capturedTools: CapturedTool[] | null = null;
+  deferredToolNames(): ReadonlySet<string> {
+    return new Set();
+  }
   async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
     this.capturedTools = input.tools as unknown as CapturedTool[];
     yield { kind: "text-delta", text: "ok" };

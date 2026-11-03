@@ -657,10 +657,26 @@ export async function* runSDKStream(args: {
    * parity); simpler providers default to a bare `toSDKMessages`.
    */
   loopMessages?: (msgs: readonly ChatMessageInput[]) => ModelMessage[];
+  /**
+   * #991 — the tools this request defers (`AIProvider.deferredToolNames`);
+   * replayed tool references to anything else are pruned before sending
+   * (`pruneToolReferences`). Empty for providers without tool search.
+   */
+  deferredToolNames?: ReadonlySet<string>;
 }): AsyncIterable<ProviderEvent> {
-  const { model, input, systemAndMessages, extraOptions, toolsTransform } = args;
+  const { model, input, extraOptions, toolsTransform } = args;
   const loop = input.loop;
-  const encodeLoopMessages = args.loopMessages ?? ((msgs) => toSDKMessages(msgs));
+  const loadable = {
+    deferred: args.deferredToolNames ?? new Set<string>(),
+    names: new Set(input.tools.map((t) => t.name)),
+  };
+  const systemAndMessages = {
+    ...args.systemAndMessages,
+    messages: pruneToolReferences(args.systemAndMessages.messages, loadable),
+  };
+  const encode = args.loopMessages ?? ((msgs) => toSDKMessages(msgs));
+  const encodeLoopMessages = (msgs: readonly ChatMessageInput[]): ModelMessage[] =>
+    pruneToolReferences(encode(msgs), loadable);
   const builtTools = buildSDKTools(input.tools) as Record<string, unknown>;
   const sdkTools = toolsTransform ? toolsTransform(builtTools) : builtTools;
   // Slice 1 (SDK approval gate) — derive the toolApproval map from the tools
@@ -884,4 +900,87 @@ export async function runSDKGenerateObject(args: {
     }
     throw e;
   }
+}
+
+/** One `tool-reference` custom part's tool name, or undefined for any other part. */
+function customReferenceName(part: unknown): string | undefined {
+  const p = part as { type?: unknown; providerOptions?: { anthropic?: Record<string, unknown> } };
+  const anthropic = p?.providerOptions?.anthropic;
+  if (p?.type !== "custom" || anthropic?.type !== "tool-reference") return undefined;
+  return typeof anthropic.toolName === "string" ? anthropic.toolName : undefined;
+}
+
+/**
+ * #991 — drop replayed tool references this request cannot honour. A stored
+ * reference names a tool of the catalogue it was made in; the API rejects a
+ * request whose reference names a tool missing from `tools` ("Tool reference
+ * '…' not found in available tools"), so a chat whose plugin was switched
+ * off since would 400 on every later turn — the permanent-wedge class
+ * history-repair.ts heals. Pruned per request, deterministically: the bytes
+ * only change when the catalogue does, which re-caches the tool prefix
+ * anyway.
+ *
+ * - load_skill's references (`custom` tool-reference parts) stay only while
+ *   the tool is deferred in this request; a result left with none becomes a
+ *   short text naming them (an empty tool result is itself a rejection).
+ *   Providers without tool search pass an empty set, so they never receive
+ *   a part they cannot send.
+ * - Tool-search results (`[{type: "tool_reference", toolName}]`) keep the
+ *   references whose tool is still in the request; an empty list is a valid
+ *   search result.
+ *
+ * Messages without a stale reference are returned by identity.
+ */
+export function pruneToolReferences(
+  messages: ModelMessage[],
+  loadable: { readonly deferred: ReadonlySet<string>; readonly names: ReadonlySet<string> },
+): ModelMessage[] {
+  let changedAny = false;
+  const out = messages.map((message) => {
+    if (!Array.isArray(message.content)) return message;
+    let changed = false;
+    const content = (message.content as unknown[]).map((part) => {
+      const p = part as { type?: unknown; output?: { type?: unknown; value?: unknown } };
+      if (p?.type !== "tool-result" || !p.output || !Array.isArray(p.output.value)) return part;
+      const value = p.output.value as unknown[];
+      if (p.output.type === "content") {
+        const stale = value.map(customReferenceName).filter((n): n is string => n !== undefined);
+        const gone = stale.filter((n) => !loadable.deferred.has(n));
+        if (gone.length === 0) return part;
+        changed = true;
+        const kept = value.filter((v) => {
+          const name = customReferenceName(v);
+          return name === undefined || loadable.deferred.has(name);
+        });
+        return {
+          ...p,
+          output:
+            kept.length > 0
+              ? { ...p.output, value: kept }
+              : {
+                  type: "text",
+                  value: `Tools loaded here earlier: ${gone.join(", ")}. Call only tools that are in your tool list now.`,
+                },
+        };
+      }
+      if (p.output.type === "json") {
+        const kept = value.filter((v) => {
+          const ref = v as { type?: unknown; toolName?: unknown };
+          return (
+            ref?.type !== "tool_reference" ||
+            typeof ref.toolName !== "string" ||
+            loadable.names.has(ref.toolName)
+          );
+        });
+        if (kept.length === value.length) return part;
+        changed = true;
+        return { ...p, output: { ...p.output, value: kept } };
+      }
+      return part;
+    });
+    if (!changed) return message;
+    changedAny = true;
+    return { ...message, content } as ModelMessage;
+  });
+  return changedAny ? out : messages;
 }

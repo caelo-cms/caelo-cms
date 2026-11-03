@@ -30,10 +30,12 @@
 -- Snapshot rows are inserted once; the link migration may rewrite a
 -- pending state in place, so an UPDATE of `state` re-indexes the row. A
 -- deleted snapshot row takes its references with it (ON DELETE CASCADE).
--- The module of a pending instance state gets a plain expression index for
--- "the instances of these modules".
+-- "The pending instances of these modules" needs no index of its own: it
+-- starts from the branch's head rows (one per pending instance) — an index
+-- on the module of a snapshot state would start from the module's whole
+-- history instead (#1375's contention test counts exactly that).
 --
--- Expand-only: new tables, functions, triggers and an index. The previous
+-- Expand-only: new tables, functions and triggers. The previous
 -- image never reads them; its snapshot writes fire the triggers.
 
 BEGIN;
@@ -69,10 +71,6 @@ ALTER TABLE page_layout_snapshot_refs FORCE ROW LEVEL SECURITY;
 CREATE POLICY page_layout_snapshot_refs_authenticated_scope ON page_layout_snapshot_refs
   USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL)
   WITH CHECK (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
-
--- A pending content-instance state: the module it fills.
-CREATE INDEX content_instance_snapshots_module_idx
-  ON content_instance_snapshots ((state ->> 'moduleId'));
 
 /** Trigger: index the values of inserted content-instance snapshots. */
 CREATE FUNCTION caelo_content_instance_snapshot_refs_on_insert() RETURNS trigger

@@ -107,6 +107,15 @@ describe("get_quality_audit page formatting", () => {
 });
 
 describe("get_quality_audit Performance metrics", () => {
+  it("says when the page was scored by the median of its confirmation runs (#1370)", () => {
+    const metrics = { ...sampleMetrics(), runs: 5, scoredBy: "median" as const };
+    const lines = formatPage({ ...page([]), status: "clean", metrics });
+    expect(lines).toContain(
+      "Performance metrics (median of 5 Lighthouse runs on the staged build; data behind the Performance score, not problems):",
+    );
+    expect(lines.some((l) => l.includes("got confirmation runs"))).toBe(true);
+  });
+
   it("shows each metric with its rating, the LCP element and the layout shifts", () => {
     const lines = formatPage({ ...page([]), status: "clean", metrics: sampleMetrics() });
     expect(lines).toContain(

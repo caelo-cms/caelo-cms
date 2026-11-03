@@ -44,9 +44,9 @@ type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
  *  regardless. */
 export const QUALITY_AUDIT_PAGE_CAP = 5;
 
-/** Performance runs per page; the best one scores the page (#874,
- *  `bestRunIndex` in lighthouse-extract.ts). Host interference only slows
- *  a run down, so three runs are enough for one of them to be clean. */
+/** First Performance runs per page. When they agree the best one scores
+ *  the page (#874); when they disagree the runner adds confirmation runs
+ *  and the median of `MEDIAN_RUNS` scores it (#1370, run-selection.ts). */
 const PERFORMANCE_RUNS = 3;
 
 /** A `running` audit older than this belongs to a process that died. */

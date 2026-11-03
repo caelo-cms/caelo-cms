@@ -2,7 +2,6 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-  bestRunIndex,
   categoryScores,
   failingAudits,
   type LhrLike,
@@ -12,6 +11,7 @@ import {
 } from "../lighthouse-extract.js";
 import { pageMeasurementSchema } from "../lighthouse-protocol.js";
 import { QUALITY_CATEGORIES } from "../ratchet.js";
+import { bestRunIndex } from "../run-selection.js";
 
 type Audit = LhrLike["audits"][string];
 
@@ -392,26 +392,27 @@ describe("staging-exempt audits", () => {
 });
 
 describe("measurementFromRuns", () => {
-  it("scores Performance by the best run and takes its Performance-only findings", () => {
+  it("scores Performance by the best of runs that agree and takes its Performance-only findings", () => {
     const full = lhr({
-      performance: 80,
+      performance: 98,
       accessibility: 92,
       audits: [audit("image-alt", 0), audit("unused-javascript", 0.4, "metricSavings")],
     });
     const second = lhr({
-      performance: 95,
+      performance: 100,
       perfOnly: true,
       audits: [audit("unused-javascript", 1, "metricSavings")],
     });
     const third = lhr({
-      performance: 90,
+      performance: 99,
       perfOnly: true,
       audits: [audit("unused-javascript", 0.5, "metricSavings")],
     });
     const { measurement, performanceRuns } = measurementFromRuns(full, [second, third]);
-    expect(performanceRuns).toEqual([80, 95, 90]);
+    expect(performanceRuns).toEqual([98, 100, 99]);
+    expect(measurement.metrics.scoredBy).toBe("best");
     expect(measurement.scores).toEqual({
-      performance: 95,
+      performance: 100,
       accessibility: 92,
       "best-practices": 100,
       seo: 100,
@@ -421,28 +422,40 @@ describe("measurementFromRuns", () => {
     expect(measurement.failingAudits.map((f) => f.id)).toEqual(["image-alt"]);
   });
 
-  it("is stable on the bimodal runs of an unchanged page (#837)", () => {
-    // /migrate on caelo-cms.com, byte-identical between two audits: TBT
-    // 0 / 451 / 258 ms in one, 0 / 600 / 516 ms in the next. The median
-    // moved the score 99 → 89; the best run scores 100 both times.
+  it("refuses to score runs that disagree before the confirmation runs (#1370)", () => {
+    // The best of 100/100/91 is one run, and whether it or the 91 is the
+    // page is what the runs disagree on: the caller must add runs first.
     const tbt = audit("total-blocking-time", 0.4, "numeric");
-    const audits = [
-      lhr({ performance: 100, audits: [] }),
+    expect(() =>
+      measurementFromRuns(lhr({ performance: 100, audits: [] }), [
+        lhr({ performance: 100, perfOnly: true, audits: [] }),
+        lhr({ performance: 91, perfOnly: true, audits: [tbt] }),
+      ]),
+    ).toThrow(/disagree \(100\/100\/91\) but only 3 of the 5 runs/);
+  });
+
+  it("scores runs that disagree by their median of five, with that run's findings (#1370)", () => {
+    const tbt = audit("unused-javascript", 0.4, "metricSavings");
+    // One disturbed host among five: the median is the page (100).
+    const lucky = measurementFromRuns(lhr({ performance: 100, audits: [] }), [
+      lhr({ performance: 100, perfOnly: true, audits: [] }),
+      lhr({ performance: 91, perfOnly: true, audits: [tbt] }),
+      lhr({ performance: 100, perfOnly: true, audits: [] }),
+      lhr({ performance: 99, perfOnly: true, audits: [] }),
+    ]);
+    expect(lucky.measurement.scores.performance).toBe(100);
+    expect(lucky.measurement.metrics).toMatchObject({ runs: 5, scoredBy: "median" });
+    expect(lucky.measurement.failingAudits).toEqual([]);
+    // Slow in three of five: one lucky host no longer passes the page.
+    const slow = measurementFromRuns(lhr({ performance: 100, audits: [] }), [
       lhr({ performance: 91, perfOnly: true, audits: [tbt] }),
       lhr({ performance: 94, perfOnly: true, audits: [tbt] }),
-    ];
-    const next = [
-      lhr({ performance: 89, audits: [tbt] }),
+      lhr({ performance: 92, perfOnly: true, audits: [tbt] }),
       lhr({ performance: 100, perfOnly: true, audits: [] }),
-      lhr({ performance: 87, perfOnly: true, audits: [tbt] }),
-    ];
-    const [a0, ...aRest] = audits;
-    const [n0, ...nRest] = next;
-    const first = measurementFromRuns(a0 as LhrLike, aRest);
-    const second = measurementFromRuns(n0 as LhrLike, nRest);
-    expect(first.measurement.scores.performance).toBe(100);
-    expect(second.measurement.scores.performance).toBe(100);
-    expect(first.measurement.failingAudits).toEqual(second.measurement.failingAudits);
+    ]);
+    expect(slow.performanceRuns).toEqual([100, 91, 94, 92, 100]);
+    expect(slow.measurement.scores.performance).toBe(94);
+    expect(slow.measurement.failingAudits.map((f) => f.id)).toEqual(["unused-javascript"]);
   });
 
   it("breaks a tie by the fewest Performance-only findings, then the earliest run", () => {
@@ -499,7 +512,7 @@ describe("measurementFromRuns", () => {
       return { ...run, categories };
     };
     const shared = audit("shared-audit", 0);
-    const full = withShared(lhr({ performance: 90, bestPractices: 92, audits: [shared] }));
+    const full = withShared(lhr({ performance: 99, bestPractices: 92, audits: [shared] }));
     const best = withShared(lhr({ performance: 100, perfOnly: true, audits: [shared] }));
     const { measurement } = measurementFromRuns(full, [best]);
     expect(measurement.scores.performance).toBe(100);
@@ -522,7 +535,7 @@ describe("measurementFromRuns", () => {
       return { ...run, categories };
     };
     const full = withShared(
-      lhr({ performance: 90, bestPractices: 92, audits: [audit("shared-audit", 1)] }),
+      lhr({ performance: 99, bestPractices: 92, audits: [audit("shared-audit", 1)] }),
     );
     const best = withShared(
       lhr({ performance: 100, perfOnly: true, audits: [audit("shared-audit", 0)] }),
