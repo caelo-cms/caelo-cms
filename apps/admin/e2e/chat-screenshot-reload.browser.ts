@@ -8,7 +8,8 @@
  * the media store, an assistant row calling `screenshot_page`, the tool row
  * with the attachment — then opens the chat twice (load + reload) and
  * checks the card renders the stored bytes both times. It also checks the
- * route answers only for the chat that owns the message.
+ * route answers only for the chat that owns the message, and that a client
+ * cannot attach a stored chat image to its own message by key.
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -114,11 +115,23 @@ test("a screenshot card shows its stored image after a reload", async ({ page })
   const served = await page.request.get(imageUrl);
   expect(served.status()).toBe(200);
   expect(served.headers()["content-type"]).toBe("image/png");
-  expect(served.headers()["cache-control"]).toContain("private");
+  expect(served.headers()["cache-control"]).toBe("private, no-store");
   expect(Buffer.from(await served.body()).equals(png)).toBe(true);
 
   // The same message addressed through another chat is not found.
   const otherChat = openOwnerChat(`e2e-screenshot-reload-other-${Date.now()}`);
   const foreign = await page.request.get(`/content/chat/${otherChat}/images/${messageId}/0`);
   expect(foreign.status()).toBe(404);
+
+  // A client cannot attach a chat image by key to its own message: only
+  // operator uploads (assetId) pass the stream boundary.
+  const { token } = (await (await page.request.get("/_caelo/csrf-token")).json()) as {
+    token: string;
+  };
+  const smuggled = await page.request.post(`/content/chat/${otherChat}/stream`, {
+    headers: { "content-type": "application/json", "x-csrf-token": token },
+    data: { content: "look", attachments: [{ storageKey, mime: "image/png" }] },
+  });
+  expect(smuggled.status()).toBe(400);
+  expect(await smuggled.text()).toContain("Use uploaded media assets");
 });

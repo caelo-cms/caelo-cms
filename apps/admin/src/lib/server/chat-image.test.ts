@@ -3,7 +3,7 @@
 /**
  * Issue #359 — the chat-image response: only a validated address reaches
  * the Query API, every miss is the same 404, and a served image carries its
- * stored type, nosniff and a private cache policy.
+ * stored type, nosniff and no caching.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -31,13 +31,13 @@ function deps(over: Partial<ChatImageDeps> = {}): ChatImageDeps & { asked: unkno
 }
 
 describe("chat image route (#359)", () => {
-  it("streams the stored image with its type, nosniff and private caching", async () => {
+  it("streams the stored image with its type, nosniff and no caching", async () => {
     const d = deps();
     const res = await chatImageResponse(d, { sessionId: SESSION, messageId: MESSAGE, index: "0" });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/webp");
     expect(res.headers.get("content-length")).toBe("3");
-    expect(res.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
     expect(d.asked).toEqual([{ chatSessionId: SESSION, messageId: MESSAGE, index: 0 }]);

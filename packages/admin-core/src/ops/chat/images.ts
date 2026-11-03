@@ -15,6 +15,12 @@
  * (session, message, attachment index) — never a storage key — so a URL
  * cannot be bent into a path, and the owner filter is the same one every
  * session read applies: another user's chat reads as not found.
+ *
+ * Only TOOL rows answer. The chat runner writes them, server-side, with the
+ * key of the image the tool returned; a user row is written from client
+ * input, so a key on one would let a caller who knows (or guesses) another
+ * chat's content hash read that chat's capture through their own chat. The
+ * stream endpoint refuses such user attachments at the boundary as well.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -34,9 +40,12 @@ const NOT_FOUND =
 export const getChatMessageImageOp = defineOperation({
   name: "chat.get_message_image",
   readScope: "request",
-  // Read surface, open to every actor kind (§11); the owner filter below is
-  // the access rule, exactly as for chat.get_session.
-  actorScope: ["human", "ai", "system"],
+  // Why human-only: it serves the operator's browser (the transcript's
+  // images route) and nothing else. The AI already receives every image a
+  // tool returns as part of that tool's result, so an AI tool for this op
+  // would add a second, redundant path to the same bytes. The owner filter
+  // below is the access rule, exactly as for chat.get_session.
+  actorScope: ["human"],
   database: "cms_admin",
   input: z
     .object({
@@ -60,6 +69,7 @@ export const getChatMessageImageOp = defineOperation({
       JOIN chat_sessions s ON s.id = m.chat_session_id
       WHERE m.id = ${input.messageId}::uuid
         AND m.chat_session_id = ${input.chatSessionId}::uuid
+        AND m.role = 'tool'
         AND s.created_by = ${ctx.actorId}::uuid
       LIMIT 1
     `)) as unknown as { attachments: unknown }[];

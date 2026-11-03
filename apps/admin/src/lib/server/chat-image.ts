@@ -51,10 +51,11 @@ function notFound(): Response {
 /**
  * Stream the image or answer 404.
  *
- * Cache: `private` (per-user content, never in a shared cache) and
- * immutable — a message's attachment at an index is written once, and the
- * key is content-addressed; the weekly sweep can only remove it, and a
- * transcript loaded after the sweep no longer links it.
+ * Cache: `private, no-store`. The owner check runs in this route, so a
+ * browser-cached copy would be served to whoever signs in next on the same
+ * browser profile without passing it (the cache key does not vary on the
+ * session cookie). A transcript requests each image once per render, so
+ * the cost is one request per card per page load.
  */
 export async function chatImageResponse(
   deps: ChatImageDeps,
@@ -75,7 +76,7 @@ export async function chatImageResponse(
     headers: {
       "content-type": image.mime,
       "content-length": String(file.sizeBytes),
-      "cache-control": "private, max-age=31536000, immutable",
+      "cache-control": "private, no-store",
       ...mediaSecurityHeaders(image.mime),
     },
   });

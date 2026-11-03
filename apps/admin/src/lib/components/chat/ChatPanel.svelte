@@ -46,7 +46,7 @@
   import DebugPanel from "./DebugPanel.svelte";
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
   import CredentialHandoffs from "../CredentialHandoffs.svelte";
-  import { chatImageUrl, storedToolImage } from "./chat-image-url.js";
+  import { storedToolImage } from "./chat-image-url.js";
   import InlineDiff from "./InlineDiff.svelte";
   import { moduleHtmlEdits } from "./module-edits.js";
   import QualityFixOfferCard from "./QualityFixOfferCard.svelte";
@@ -2512,11 +2512,9 @@
                     {#if m.attachments && m.attachments.length > 0}
                       <!-- issue #190 — persisted attachment thumbnails. -->
                       <div class="mt-2 flex flex-wrap gap-2" data-testid="chat-message-attachments">
-                        {#each m.attachments as att, i (att.assetId ?? att.storageKey ?? i)}
+                        {#each m.attachments.filter((a) => a.assetId) as att (att.assetId)}
                           <img
-                            src={att.assetId
-                              ? `/_caelo/media/${att.assetId}/orig`
-                              : chatImageUrl({ chatSessionId: session.id, messageId: m.id, index: i })}
+                            src={`/_caelo/media/${att.assetId}/orig`}
                             alt={att.alt ?? "attached image"}
                             class="h-20 w-20 rounded-md border border-border object-cover"
                             loading="lazy"

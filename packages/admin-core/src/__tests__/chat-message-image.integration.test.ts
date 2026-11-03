@@ -60,13 +60,17 @@ async function newSession(ctx: ExecutionContext): Promise<string> {
   return (r.value as { chatSessionId: string }).chatSessionId;
 }
 
-/** Append a tool row carrying `attachments` and return its message id. */
-async function toolRow(chatSessionId: string, attachments: ChatAttachment[]): Promise<string> {
+/** Append a row (a tool row by default) carrying `attachments`; returns its id. */
+async function toolRow(
+  chatSessionId: string,
+  attachments: ChatAttachment[],
+  role: "tool" | "user" = "tool",
+): Promise<string> {
   const r = await execute(registry, adapter, owner, "chat.append_message", {
     chatSessionId,
-    role: "tool",
+    role,
     content: "Screenshot captured.",
-    toolCallId: `tc-${crypto.randomUUID()}`,
+    ...(role === "tool" ? { toolCallId: `tc-${crypto.randomUUID()}` } : {}),
     attachments,
   });
   if (!r.ok) throw new Error(`append_message: ${JSON.stringify(r.error)}`);
@@ -130,6 +134,12 @@ describe("chat.get_message_image (#359)", () => {
       const r = await resolve(owner, chat, tampered);
       expect(r.ok).toBe(false);
     }
+  });
+
+  it("never answers for a user row, whose attachments come from the client", async () => {
+    const chat = await newSession(owner);
+    const userRow = await toolRow(chat, [{ storageKey: KEY, mime: "image/webp" }], "user");
+    expect((await resolve(owner, chat, userRow)).ok).toBe(false);
   });
 
   it("rejects an index beyond the attachment cap at the boundary", async () => {
