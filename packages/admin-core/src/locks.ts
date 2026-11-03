@@ -26,7 +26,7 @@
  */
 
 import type { PluginRowLocker } from "@caelo-cms/plugin-host";
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql, releaseIdleDraftLocks } from "./draft.js";
 import { lockedEntityLabel } from "./entity-labels.js";
@@ -315,8 +315,10 @@ export async function checkAndAcquireEntityLock(
  * read `FOR UPDATE` above, so the check sees committed state.
  *
  * A conflict records the observation (the AI is now told about the change
- * and re-reads), so the retry with the fresh state passes. A permitted
- * write records it too.
+ * and re-reads), so the retry with the fresh state passes — when the
+ * refused op commits. A bulk op that aborts rolls it back; the re-read the
+ * conflict message names records it then (issue #1260,
+ * {@link observeDraftReads}). A permitted write records it too.
  *
  * @returns the newer change by another chat, or null when the write may go.
  */
@@ -363,18 +365,54 @@ async function draftConflict(
 }
 
 /**
+ * Lock kinds a draft conflict can name: the kinds whose writes land in a
+ * snapshot table ({@link snapshotTablesForLockKind}). Every other kind
+ * writes live and can never be stale. `pluginRow` is left out: a plugin
+ * row is read through the plugin's own tools, which record no reads yet.
+ */
+export const DRAFT_READ_KINDS = [
+  "module",
+  "template",
+  "layout",
+  "page",
+  "pageLayout",
+  "contentInstance",
+  "theme",
+  "list",
+  "listType",
+  "pageType",
+] as const satisfies readonly LockedEntityKind[];
+
+/** A lock kind a draft read can record ({@link DRAFT_READ_KINDS}). */
+export type DraftReadKind = (typeof DRAFT_READ_KINDS)[number];
+
+/**
  * Record that a draft chat READ these entities' current draft state, so its
  * next write of them is not a draft conflict over a change it has now seen.
- * The conflict message tells the AI to "read it again"; a read that records
- * nothing would leave a write refused inside an aborted batch (the abort
- * rolls back the observation `draftConflict` wrote) conflicting forever.
- * Only for the caller's own draft chat (`chatTaskId`); a no-op elsewhere.
+ *
+ * Issue #1260 — this is the commit-safe half of the conflict contract. The
+ * conflict message tells the AI to read the entity again with a named tool
+ * ({@link draftRereadHint}); that read runs in a transaction of its own and
+ * commits, so the observation survives. The observation `draftConflict`
+ * writes does not: a bulk write (`content_instances.set_values_many`, a
+ * plugin's `apply_translations`) aborts as a whole on the first conflict,
+ * and the abort rolls it back, so a chat whose re-read recorded nothing
+ * conflicted forever.
+ *
+ * Only for the caller's own draft chat (`chatTaskId`; a subagent counts as
+ * its parent chat); a no-op elsewhere. An observation never moves back in
+ * time.
+ *
+ * @param seenAt when the read started — the read op's own transaction time
+ *   when omitted. A tool that records after its read passes the time the
+ *   read began, so a change committed in between still counts as unseen.
  */
 export async function observeDraftReads(
   tx: TransactionRunner,
   ctx: { readonly chatBranchId?: string | null; readonly chatTaskId?: string | null },
   kind: LockedEntityKind,
   entityIds: readonly string[],
+  seenAt?: string,
 ): Promise<void> {
   if (!ctx.chatBranchId || !ctx.chatTaskId || entityIds.length === 0) return;
   const rows = (await tx.execute(sql`
@@ -385,7 +423,14 @@ export async function observeDraftReads(
   `)) as unknown as { owner: string }[];
   const owner = rows[0]?.owner;
   if (!owner) return;
-  for (const id of new Set(entityIds)) await observeDraftEntity(tx, owner, kind, id);
+  const at = seenAt === undefined ? sql`now()` : sql`LEAST(${seenAt}::timestamptz, now())`;
+  await tx.execute(sql`
+    INSERT INTO draft_entity_observations (chat_session_id, entity_kind, entity_id, seen_at)
+    SELECT ${owner}::uuid, ${kind}, id, ${at}
+    FROM unnest(${uuidArray([...new Set(entityIds)])}) AS id
+    ON CONFLICT (chat_session_id, entity_kind, entity_id)
+      DO UPDATE SET seen_at = GREATEST(draft_entity_observations.seen_at, EXCLUDED.seen_at)
+  `);
 }
 
 /** Record that a draft chat has now seen the entity's current draft state. */
@@ -398,8 +443,60 @@ async function observeDraftEntity(
   await tx.execute(sql`
     INSERT INTO draft_entity_observations (chat_session_id, entity_kind, entity_id, seen_at)
     VALUES (${chatSessionId}::uuid, ${kind}, ${entityId}::uuid, now())
-    ON CONFLICT (chat_session_id, entity_kind, entity_id) DO UPDATE SET seen_at = now()
+    ON CONFLICT (chat_session_id, entity_kind, entity_id)
+      DO UPDATE SET seen_at = GREATEST(draft_entity_observations.seen_at, EXCLUDED.seen_at)
   `);
+}
+
+/**
+ * Issue #1260 — the exact tool call that re-reads an entity a draft
+ * conflict names. Each of these reads records the observation
+ * ({@link observeDraftReads}), so the redone write goes through. Naming
+ * "read it again" without the tool sent the AI to reads that recorded
+ * nothing, and the conflict never cleared.
+ */
+async function draftRereadHint(
+  tx: TransactionRunner,
+  kind: LockedEntityKind,
+  entityId: string,
+): Promise<string> {
+  const slugOf = async (table: "themes" | "list_types" | "page_types"): Promise<string> => {
+    const rows = (await tx.execute(
+      sql`SELECT slug FROM ${sql.raw(table)} WHERE id = ${entityId}::uuid`,
+    )) as unknown as { slug: string }[];
+    const slug = rows[0]?.slug;
+    if (!slug) throw new Error(`draft conflict on ${kind} ${entityId}: no ${table} row with it`);
+    return JSON.stringify(slug);
+  };
+  switch (kind) {
+    case "module":
+    case "template":
+    case "layout":
+      return `read_content({entityKind:"${kind}", entityId:"${entityId}"})`;
+    case "page":
+    case "pageLayout":
+      return (
+        `inspect_page_render({pageId:"${entityId}"}) (its modules and placements; their content with get_content_instance) ` +
+        `or get_page_seo({pageIds:["${entityId}"]}) (title, SEO fields and text)`
+      );
+    case "contentInstance":
+      return `get_content_instance({id:"${entityId}"})`;
+    case "theme":
+      return `get_theme({slug:${await slugOf("themes")}})`;
+    case "list":
+      return `get_list({id:"${entityId}"})`;
+    case "listType":
+      return `list_list_types({slug:${await slugOf("list_types")}})`;
+    case "pageType":
+      return `list_page_types({slug:${await slugOf("page_types")}})`;
+    case "pluginRow":
+      return "the plugin tool that shows this record";
+    case "redirect":
+    case "siteSettings":
+    case "siteDefaults":
+      // Live writes: no draft state to be stale against (draftConflict).
+      throw new Error(`draft conflict on ${kind} ${entityId}: ${kind} has no draft state`);
+  }
 }
 
 /**
@@ -482,7 +579,11 @@ export async function entityWriteBlockedError(
       operation,
       message:
         `Conflict: ${kind} '${label}' was changed in the shared draft by chat '${result.staleDraft.chatTitle}' (${result.staleDraft.changedAt}) after this chat last looked at it, so this write was NOT applied. ` +
-        "Read it again to get the current version, then redo your edit on top of it (do not resend the old content).",
+        `Read it again with ${await draftRereadHint(tx, kind, entityId)} to get the current version, then redo your edit on top of it (do not resend the old content). ` +
+        // A plugin's own read tools record no reads (DRAFT_READ_KINDS).
+        (kind === "pluginRow"
+          ? ""
+          : "That read counts as having seen the change, so the redone write goes through."),
       conflict: true,
     };
   }

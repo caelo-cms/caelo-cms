@@ -60,6 +60,7 @@ import {
   mergeDraftToMainOp,
   undoChatChangesOp,
 } from "./ops/chat/draft-ops.js";
+import { observeDraftReadsOp } from "./ops/chat/draft-reads.js";
 import { listForeignLocksOp } from "./ops/chat/foreign-locks.js";
 import {
   appendChatMessageOp,
@@ -938,6 +939,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(finalizeStageOp);
   // issue #262 — pre-run foreign-lock visibility for the chat runner.
   registry.register(listForeignLocksOp);
+  registry.register(observeDraftReadsOp);
   // issue #620 — Open changes overview + lock-takeover notices.
   registry.register(listOpenChangesOp);
   registry.register(drainTakeoverNoticesOp);
