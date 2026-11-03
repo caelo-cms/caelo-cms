@@ -235,7 +235,11 @@ describe("writePageTranslation", () => {
     };
   }
 
-  function deps() {
+  /**
+   * A recording `cms`. `relisted` is what `list_for_page` returns after a
+   * fork (the variant's placements, bound to the fork's copies).
+   */
+  function deps(relisted?: ReturnType<typeof placements>) {
     const calls: [string, unknown][] = [];
     const statuses: unknown[] = [];
     return {
@@ -250,6 +254,14 @@ describe("writePageTranslation", () => {
         cms: {
           call: async <O>(op: string, input: unknown): Promise<O> => {
             calls.push([op, input]);
+            if (op === "page_module_content.list_for_page") {
+              return { placements: relisted ?? [] } as O;
+            }
+            if (op === "list_types.list") {
+              return {
+                listTypes: [...LIST_TYPES].map(([slug, definition]) => ({ slug, definition })),
+              } as O;
+            }
             return {} as O;
           },
         },
@@ -314,17 +326,118 @@ describe("writePageTranslation", () => {
     ]);
   });
 
-  it("leaves nested content another page shares untouched, and says what to do", async () => {
+  it("#1309 — forks a placement whose nested content the source page renders, then writes the copy", async () => {
     const p = prepared(false);
     const [, , , card] = ids(p);
-    const d = deps();
+    const d = deps(placements({ nestedExclusive: true, nestedTitle: "Karte" }));
     const out = await writePageTranslation(d.deps, p, {
       slots: [{ slot: card as string, values: { card_title: "Card" } }],
     });
-    expect(d.calls).toEqual([]);
-    expect(out.sharedNested).toEqual(["main #2 > cards[0]"]);
+    const at = { pageId: "page-en", blockName: "main", position: 2 };
+    expect(d.calls.filter(([op]) => op !== "list_types.list")).toEqual([
+      ["placement.fork_content", at],
+      ["page_module_content.list_for_page", { pageId: "page-en" }],
+      [
+        "page_module_content.set",
+        { ...at, nestedPath: "cards[0]", contentValues: { card_title: "Card" } },
+      ],
+    ]);
+    expect(out.sharedNested).toBeUndefined();
+    expect(d.statuses).toHaveLength(1);
+  });
+
+  it("#1309 — a nested write refused as synced forks the placement and retries", async () => {
+    const p = prepared(true);
+    const [, , , card] = ids(p);
+    const d = deps(placements({ nestedExclusive: true, nestedTitle: "Karte" }));
+    let refused = false;
+    const call = d.deps.cms.call;
+    d.deps.cms.call = async <O>(op: string, input: unknown): Promise<O> => {
+      if (op === "page_module_content.set" && !refused) {
+        refused = true;
+        d.calls.push([op, input]);
+        throw new Error("placement at (main, 2) on page page-en is SYNCED to content_instance x");
+      }
+      return call<O>(op, input);
+    };
+    const out = await writePageTranslation(d.deps, p, {
+      slots: [{ slot: card as string, values: { card_title: "Card" } }],
+    });
+    expect(d.calls.map(([op]) => op)).toEqual([
+      "page_module_content.set",
+      "placement.fork_content",
+      "list_types.list",
+      "page_module_content.list_for_page",
+      "page_module_content.set",
+    ]);
+    expect(out.slotsApplied).toBe(1);
+  });
+
+  it("leaves nested content that renders elsewhere even after the fork untouched, and says what to do", async () => {
+    const p = prepared(false);
+    const [, , , card] = ids(p);
+    // After the fork the instance is still shared (another page places it).
+    const d = deps(placements({ nestedExclusive: false, nestedTitle: "Karte" }));
+    const out = await writePageTranslation(d.deps, p, {
+      slots: [{ slot: card as string, values: { card_title: "Card" } }],
+    });
+    expect(d.calls.some(([op]) => op === "page_module_content.set")).toBe(false);
+    expect(out.sharedNested).toEqual(["main #2 > cards[0] (content instance ci-card-1)"]);
     // Not up to date: part of the page is still in the source language.
     expect(d.statuses).toEqual([]);
-    expect(outcomeNextStep(out)).toContain("fork_placement_content");
+    expect(outcomeNextStep(out)).toContain("create_content_instances");
+  });
+
+  it("#1309 — writes each slot into its own section when the variant's sections are reordered", async () => {
+    const source = pageSlotsOf(
+      placements({ nestedExclusive: true, nestedTitle: "Karte" }),
+      LIST_TYPES,
+    );
+    // The variant has the cards first and the form last.
+    const reordered = placements({ nestedExclusive: true, nestedTitle: "Karte" });
+    const [form, menu, cards] = reordered;
+    if (!form || !menu || !cards) throw new Error("fixture");
+    const variantPlacements = [
+      { ...cards, position: 0 },
+      { ...menu, position: 1 },
+      { ...form, position: 2 },
+    ];
+    const variant = pageSlotsOf(variantPlacements, LIST_TYPES);
+    const p: PreparedPageTranslation = {
+      ...prepared(true),
+      variantSlots: variant.slots,
+      variantBases: variant.bases,
+      alignment: alignSlots(source.slots, variant.slots),
+    };
+    expect(p.alignment.every((a) => a.kind === "aligned")).toBe(true);
+    const [formSlot, , , card] = ids(p);
+    const d = deps();
+    await writePageTranslation(d.deps, p, {
+      slots: [
+        { slot: formSlot as string, values: { submit_label: "Request a demo" } },
+        { slot: card as string, values: { card_title: "Card" } },
+      ],
+    });
+    expect(d.calls).toEqual([
+      [
+        "page_module_content.set",
+        {
+          pageId: "page-en",
+          blockName: "main",
+          position: 2,
+          contentValues: { heading: "Jetzt testen", submit_label: "Request a demo" },
+        },
+      ],
+      [
+        "page_module_content.set",
+        {
+          pageId: "page-en",
+          blockName: "main",
+          position: 0,
+          nestedPath: "cards[0]",
+          contentValues: { card_title: "Card" },
+        },
+      ],
+    ]);
   });
 });
