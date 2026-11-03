@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { afterAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { gitFixture } from "./git-fixture.test-helpers.ts";
 import {
   BREAKING_SUBJECT,
   breakingCommitsSince,
@@ -186,23 +186,13 @@ describe("expectedLastContractVersion", () => {
 });
 
 describe("infra contract against a real previous tag (git)", () => {
-  const repo = mkdtempSync(join(tmpdir(), "caelo-infra-contract-"));
-  afterAll(() => rmSync(repo, { recursive: true, force: true }));
-  const git = (...args: string[]) => {
-    const p = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
-    if (p.exitCode !== 0) throw new Error(new TextDecoder().decode(p.stderr));
-  };
-  const write = (rel: string, body: string) => {
-    mkdirSync(join(repo, rel, ".."), { recursive: true });
-    writeFileSync(join(repo, rel), body);
-  };
+  const fixture = gitFixture("caelo-infra-contract-");
+  afterAll(() => fixture.remove());
+  const { repo, git, write } = fixture;
   const contract = "packages/provisioning/src/infra-contract.ts";
   const stack = "packages/provisioning/stacks/gcp/index.ts";
 
   it("detects a stack change since the tag that did not bump the constant", () => {
-    git("init", "-q");
-    git("config", "user.email", "t@example.com");
-    git("config", "user.name", "t");
     write(contract, "export const INFRA_CONTRACT_VERSION = 4;\n");
     write(stack, "// v1\n");
     git("add", ".");
@@ -262,15 +252,9 @@ describe("ownerAction rule (#868)", () => {
   });
 
   it("finds the breaking commits since a tag (git)", () => {
-    const repo = mkdtempSync(join(tmpdir(), "caelo-owner-action-"));
+    const fixture = gitFixture("caelo-owner-action-");
+    const { repo, git } = fixture;
     try {
-      const git = (...args: string[]) => {
-        const p = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
-        if (p.exitCode !== 0) throw new Error(new TextDecoder().decode(p.stderr));
-      };
-      git("init", "-q");
-      git("config", "user.email", "t@example.com");
-      git("config", "user.name", "t");
       git("commit", "-q", "--allow-empty", "-m", "feat!: before the tag");
       git("tag", "v0.1.0");
       git("commit", "-q", "--allow-empty", "-m", "fix: harmless");
@@ -278,7 +262,7 @@ describe("ownerAction rule (#868)", () => {
       expect(breakingCommitsSince("v0.1.0", repo)).toEqual(["feat(updates)!: breaks something"]);
       expect(breakingCommitsSince(null, repo)).toHaveLength(2);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      fixture.remove();
     }
   });
 });

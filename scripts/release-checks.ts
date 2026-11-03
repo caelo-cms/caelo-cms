@@ -199,8 +199,16 @@ export async function verifyAdvisoriesPublished(
   return errors;
 }
 
+/** A read-only git command; never waits for a prompt, gives up after a minute (#814). */
 function git(args: readonly string[], cwd: string): { ok: boolean; out: string } {
-  const proc = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawnSync(["git", ...args], {
+    cwd,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 60_000,
+  });
   return { ok: proc.exitCode === 0, out: new TextDecoder().decode(proc.stdout) };
 }
 
