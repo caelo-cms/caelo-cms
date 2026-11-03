@@ -33,7 +33,7 @@
       recentErrors: PluginErrorSummary[];
       /** #1390 — its change consumer waits out a failure backoff. */
       consumerBackoff: { consecutiveFailures: number; nextRetryAt: string; lastError: string } | null;
-      coreOpCost: {
+      callCost: {
         since: string | null;
         calls: number;
         totalMs: number;
@@ -120,18 +120,18 @@
       running. Last error: <code class="break-all">{health.consumerBackoff.lastError}</code>
     </p>
   {/if}
-  {#if health.coreOpCost.calls > 0}
+  {#if health.callCost.calls > 0}
     <details class="text-xs" data-testid="plugin-health-cost-{slug}">
       <summary class="cursor-pointer text-muted-foreground">
-        Database time: {duration(health.coreOpCost.totalMs)} over {health.coreOpCost.calls} calls
-        {#if health.coreOpCost.since}since {new Date(health.coreOpCost.since).toLocaleString()}{/if}
+        Time in calls to Caelo and its own storage: {duration(health.callCost.totalMs)} over {health.callCost.calls} calls (including the wait for a database connection)
+        {#if health.callCost.since}since {new Date(health.callCost.since).toLocaleString()}{/if}
       </summary>
       <table class="mt-1 max-w-md">
         <thead class="text-muted-foreground">
           <tr><th class="pr-3 text-left font-normal">Operation</th><th class="pr-3 text-right font-normal">Calls</th><th class="pr-3 text-right font-normal">Total</th><th class="text-right font-normal">Longest</th></tr>
         </thead>
         <tbody>
-          {#each health.coreOpCost.ops as o (o.op)}
+          {#each health.callCost.ops as o (o.op)}
             <tr>
               <td class="pr-3 font-mono">{o.op}</td>
               <td class="pr-3 text-right">{o.calls}</td>

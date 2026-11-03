@@ -4,8 +4,8 @@
  * Issue #1390 — every plugin shipped in `packages/plugins/`, in the order
  * the fixture activates them (a plugin after the ones it `requiresPlugins`).
  * The gate runs with all of them active: their change consumers, workers
- * and render hooks are load, and a plugin left out is load the gate cannot
- * see. `scripts/scale-gate-workflow.test.ts` fails when a directory under
+ * and render hooks add load, and a plugin left out adds load the gate
+ * cannot see. `scripts/scale-gate-workflow.test.ts` fails when a directory under
  * `packages/plugins/` is missing here.
  */
 

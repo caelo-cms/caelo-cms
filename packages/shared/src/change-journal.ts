@@ -279,6 +279,10 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   static_bakes: "derived build output of plugin-baked regions",
   content_instance_refs:
     "derived (synchronous, #1287): the ids and media slugs each content instance's values reference, maintained by triggers on the journaled content_instances; rebuilt by content_instances.rebuild_refs",
+  content_instance_snapshot_refs:
+    "derived (synchronous, #1391): the ids and media slugs each content-instance snapshot state references, maintained by triggers on the journaled content_instance_snapshots; rebuilt by content_instances.rebuild_refs",
+  page_layout_snapshot_refs:
+    "derived (synchronous, #1391): the ids each page-layout snapshot state references, maintained by triggers on the journaled page_layout_snapshots; rebuilt by content_instances.rebuild_refs",
   plugin_data_build_state: RUNTIME,
   plugin_data_stale_pages: "derived: which pages' baked plugin regions are stale",
   plugin_runtime: RUNTIME,
