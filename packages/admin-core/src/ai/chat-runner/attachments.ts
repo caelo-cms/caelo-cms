@@ -32,6 +32,18 @@
  * Failed or missing loads still become explicit text notes — the model must
  * never silently believe it saw an image it didn't (same rule as
  * screenshot_external_page's loud UNAVAILABLE).
+ *
+ * #1396 — tool images replay exactly as they were sent. A tool that returns
+ * an image (screenshot_page, screenshot_external_page, generate_image, …)
+ * reaches the model through a follow-up `user` message placed after every
+ * tool result of its step ({@link toolImageMessage}, built by
+ * tool-dispatch.ts). The image itself persists as an attachment on the tool
+ * row. The replay rebuilds that same message from the tool row — same text,
+ * same image part, same position after the step's tool rows — so the history
+ * of the next turn is byte-identical to the request the live turn sent.
+ * Replaying images from user rows only left those messages out, and every
+ * turn after a screenshot re-read the whole history past that point instead
+ * of hitting the prompt cache.
  */
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
@@ -161,6 +173,70 @@ async function loadMediaAsset(
   }
 }
 
+/**
+ * #1396 — the follow-up user message that delivers a tool's image to the
+ * model. The live turn (tool-dispatch.ts) and the replay
+ * ({@link buildProviderHistory}) both build it here, so the two cannot
+ * drift apart by a byte: a different text or shape on replay would
+ * invalidate the provider's prompt cache from this message on.
+ *
+ * @param image the image part, or — on replay only — the text note that
+ *   takes its place when the stored image can no longer be read.
+ */
+export function toolImageMessage(toolName: string, image: ContentPart): ChatMessageInput {
+  return {
+    role: "user",
+    content: `[Screenshot returned by ${toolName}; analyse it for the operator's request.]`,
+    additionalContent: [image],
+  };
+}
+
+/**
+ * Text that takes the place of a tool image whose stored copy is gone. Same
+ * position and shape as compaction's IMAGE_REMOVED_NOTE: the message stays,
+ * only its image part becomes a text part.
+ */
+function toolImageUnavailableNote(reason: string): string {
+  return (
+    `[NOTE: this image could NOT be loaded (${reason}). You can no longer see it — ` +
+    "do not describe it from memory; take a new screenshot if you need it again.]"
+  );
+}
+
+/**
+ * Tool call id → tool name, from every assistant row of the history (the
+ * SDK's assembly when present, else the reconstruction-lane `toolCalls`).
+ * The follow-up text names the tool, and a tool row stores only the call id.
+ */
+function toolNamesByCallId(messages: readonly HistoryMessage[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    if (Array.isArray(m.responseMessages) && m.responseMessages.length > 0) {
+      for (const message of m.responseMessages as { role?: string; content?: unknown }[]) {
+        if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+        for (const part of message.content as {
+          type?: string;
+          toolCallId?: string;
+          toolName?: string;
+        }[]) {
+          if (part?.type === "tool-call" && part.toolCallId && part.toolName) {
+            names.set(part.toolCallId, part.toolName);
+          }
+        }
+      }
+      continue;
+    }
+    if (!Array.isArray(m.toolCalls)) continue;
+    for (const call of m.toolCalls as { id?: unknown; name?: unknown }[]) {
+      if (typeof call?.id === "string" && typeof call.name === "string") {
+        names.set(call.id, call.name);
+      }
+    }
+  }
+  return names;
+}
+
 export interface HistoryMessage {
   role: "user" | "assistant" | "tool";
   content: string;
@@ -178,9 +254,10 @@ export interface HistoryMessage {
 }
 
 /**
- * Map persisted chat history into provider messages, inlining the most
- * recent user message's attachments as image parts (see file header
- * for the inline-vs-marker policy).
+ * Map persisted chat history into provider messages: every user row's
+ * attachments become image parts on that message, and every tool row's image
+ * becomes the follow-up user message the live turn sent, after the step's
+ * last tool row (see the file header).
  *
  * `onRepair` (issue #442) fires when the pairing repair changed anything —
  * in particular when it healed a dangling providerExecuted tool-search call
@@ -201,9 +278,24 @@ export async function buildProviderHistory(
   // inventory and never strips a passthrough row), so it runs over a mixed
   // history and heals reconstruction-row orphans (e.g. an aborted turn's
   // unanswered tool_use) even when passthrough rows coexist.
+  const callNames = toolNamesByCallId(messages);
+  // #1396 — tool-image follow-ups of the current run of tool rows. The live
+  // turn appends them after ALL of its step's tool results (a user message
+  // between two results of one step is rejected by the provider SDK), so they
+  // are held until the run ends.
+  let toolImages: ChatMessageInput[] = [];
+  const flushToolImages = (): void => {
+    if (toolImages.length === 0) return;
+    out.push(...toolImages);
+    toolImages = [];
+  };
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
     if (!m) continue;
+    if (m.role !== "tool") flushToolImages();
+    if (m.role === "tool" && m.attachments && m.attachments.length > 0) {
+      toolImages.push(...(await replayToolImages(m, callNames, loadImage)));
+    }
     // Any row carrying an SDK-canonical assembly replays it verbatim — an
     // assistant turn's response.messages (Option C) OR a persisted
     // tool-approval-response (Plan B production resume: the Owner's in-chat
@@ -261,6 +353,7 @@ export async function buildProviderHistory(
       ...(parts.length > 0 ? { additionalContent: parts } : {}),
     });
   }
+  flushToolImages();
   // Run #10 D1 — tool_use/tool_result pairing repair. Heals sessions
   // already poisoned by orphan tool_results (the `approval-<uuid>` ack
   // class), unanswered tool_uses, or issue #442's dangling providerExecuted
@@ -292,4 +385,38 @@ export async function buildProviderHistory(
     console.error("[chat-runner] history-retired-tool-references", { rewrites });
   }
   return replayable;
+}
+
+/**
+ * #1396 — the follow-up message(s) a tool row's image(s) rode in the live
+ * turn: one message per image, exactly as tool-dispatch.ts built it.
+ *
+ * A stored image that cannot be read any more keeps its message and gets a
+ * text note in place of the image part. That keeps the history's shape (the
+ * same messages in the same order) and tells the model the image is gone,
+ * instead of letting it believe it still sees it; the prompt cache for that
+ * old prefix is long expired by the time an image disappears. A tool row
+ * whose call is in no assistant row is an orphan the pairing repair drops,
+ * so it gets no follow-up either.
+ */
+async function replayToolImages(
+  m: HistoryMessage,
+  callNames: ReadonlyMap<string, string>,
+  loadImage: AttachmentImageLoader,
+): Promise<ChatMessageInput[]> {
+  const toolName = m.toolCallId ? callNames.get(m.toolCallId) : undefined;
+  if (toolName === undefined) return [];
+  const followUps: ChatMessageInput[] = [];
+  for (const att of m.attachments ?? []) {
+    const loaded = await loadImage(att);
+    followUps.push(
+      toolImageMessage(
+        toolName,
+        "failed" in loaded
+          ? { type: "text", text: toolImageUnavailableNote(loaded.failed) }
+          : loaded,
+      ),
+    );
+  }
+  return followUps;
 }

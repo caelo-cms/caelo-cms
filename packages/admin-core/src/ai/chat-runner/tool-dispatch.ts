@@ -27,6 +27,7 @@ import { chatPluginInvocation } from "../plugin-invocation.js";
 import type { AIProvider, ChatMessageInput } from "../provider.js";
 import { keptCallArgs, withKeptCallNotice } from "../tools/_retry-keep.js";
 import type { ToolRegistry } from "../tools/index.js";
+import { toolImageMessage } from "./attachments.js";
 import { isE2eAutoApproveEnabled } from "./e2e-auto-approve.js";
 import { shrinkToolImage } from "./tool-image.js";
 import type {
@@ -567,23 +568,23 @@ export async function dispatchToolCall(
     source: `tool result (${call.name})`,
   });
   stepToolRows.push({ role: "tool", content: result.content, toolCallId: call.id });
-  // v0.3.0 — when the tool returned an image (screenshot_page is
-  // the only producer today), build a multimodal user message so the
-  // AI sees the image alongside the text result on its next provider
-  // call. This follow-up message is runtime-only; what persists is the
-  // attachment on the tool row above (#356), which a reloaded transcript
-  // shows through the chat's images route (#359). Deferred
-  // (not pushed inline) so parallel image-returning calls keep every
-  // tool result ahead of the first user message — see the parameter
+  // v0.3.0 — when the tool returned an image, build a multimodal user
+  // message so the AI sees the image alongside the text result on its next
+  // provider call. The message itself is not stored: what persists is the
+  // attachment on the tool row above (#356), and the replay rebuilds this
+  // message from it with the same function (#1396), so the next turn's
+  // history carries it byte for byte and the prompt cache stays valid.
+  // Deferred (not pushed inline) so parallel image-returning calls keep
+  // every tool result ahead of the first user message — see the parameter
   // doc above.
   if (result.image) {
-    deferredImageMessages.push({
-      role: "user",
-      content: `[Screenshot returned by ${call.name}; analyse it for the operator's request.]`,
-      additionalContent: [
-        { type: "image", base64: result.image.base64, mediaType: result.image.mediaType },
-      ],
-    });
+    deferredImageMessages.push(
+      toolImageMessage(call.name, {
+        type: "image",
+        base64: result.image.base64,
+        mediaType: result.image.mediaType,
+      }),
+    );
   }
 }
 
