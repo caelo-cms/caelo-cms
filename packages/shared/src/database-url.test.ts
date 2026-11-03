@@ -3,6 +3,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   cloudSqlIamDatabaseUrls,
+  cloudSqlIamIpDatabaseUrls,
   databasePasswordVar,
   databaseUrlFromEnv,
   withDatabasePassword,
@@ -142,6 +143,20 @@ describe("cloudSqlIamDatabaseUrls", () => {
     expect(() => cloudSqlIamDatabaseUrls("10.0.0.3", "job@p.iam.gserviceaccount.com", "t")).toThrow(
       /names only its DNS name.*cms-provision upgrade/,
     );
+  });
+});
+
+describe("cloudSqlIamIpDatabaseUrls (#1373)", () => {
+  it("dials the IP with verify-full and no trust anchor: the caller passes the server checks", () => {
+    expect(cloudSqlIamIpDatabaseUrls("10.0.0.3", "job@p.iam.gserviceaccount.com", "t").admin).toBe(
+      "postgresql://job%40p.iam:t@10.0.0.3:5432/cms_admin?sslmode=verify-full",
+    );
+  });
+
+  it("refuses a host name, which takes the plain verify-full URLs", () => {
+    expect(() =>
+      cloudSqlIamIpDatabaseUrls("i1.p.europe-west1.sql-psa.goog", "job@p.iam", "t"),
+    ).toThrow(/cloudSqlIamDatabaseUrls/);
   });
 });
 

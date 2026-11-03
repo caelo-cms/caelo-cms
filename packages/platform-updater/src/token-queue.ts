@@ -80,6 +80,7 @@ export function parseMetadataToken(text: string, fetchedAt: number): AccessToken
  */
 function refreshingPools<Q>(deps: TokenQueueDeps<Q>): {
   call<T>(use: (q: Q) => Promise<T>): Promise<T>;
+  reopen(): Promise<void>;
   close(): Promise<void>;
 } {
   let current: Pool<Q> | null = null;
@@ -139,6 +140,16 @@ function refreshingPools<Q>(deps: TokenQueueDeps<Q>): {
 
   return {
     call,
+    // The next call opens a new pool even though the token is still good;
+    // the old one closes once its in-flight calls settled.
+    reopen: async () => {
+      if (opening) await opening.catch(() => {});
+      const old = current;
+      current = null;
+      if (!old) return;
+      old.retired = true;
+      if (old.inFlight === 0) await closePool(old);
+    },
     close: async () => {
       await Promise.all([...pools].map(closePool));
       current = null;
@@ -171,12 +182,18 @@ export function tokenRefreshingQueue(deps: TokenQueueDeps<UpdateQueue>): {
   };
 }
 
-/** {@link tokenRefreshingQueue} for the converge job's queue (#819). */
+/**
+ * {@link tokenRefreshingQueue} for the converge job's queue (#819).
+ * `reopen` makes the next call open a new pool through `deps.open`: the
+ * job calls it once its database TLS step changed where and how the
+ * database is reached (#1373).
+ */
 export function tokenRefreshingConvergeQueue(deps: TokenQueueDeps<ConvergeQueue>): {
   readonly queue: ConvergeQueue;
+  reopen(): Promise<void>;
   close(): Promise<void>;
 } {
-  const { call, close } = refreshingPools(deps);
+  const { call, reopen, close } = refreshingPools(deps);
   return {
     queue: {
       claimConverge: (execution) => call((q) => q.claimConverge(execution)),
@@ -185,6 +202,7 @@ export function tokenRefreshingConvergeQueue(deps: TokenQueueDeps<ConvergeQueue>
       record: (id, facts) => call((q) => q.record(id, facts)),
       finish: (id, end) => call((q) => q.finish(id, end)),
     },
+    reopen,
     close,
   };
 }

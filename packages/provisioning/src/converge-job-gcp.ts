@@ -203,10 +203,14 @@ export function startedExecutionName(stdout: string, stderr: string): string | n
   return /^[a-z0-9-]+$/.test(name) ? name : null;
 }
 
-/** Every dependency of {@link runConvergeJob} except the database and the log. */
+/**
+ * Every dependency of {@link runConvergeJob} except the database (the queue
+ * and how it is secured, #1373) and the log.
+ */
 export function gcpConvergeDeps(
   placement: UpgraderPlacement,
   queue: ConvergeQueue,
+  secureDatabase: ConvergeJobDeps["secureDatabase"],
   log: JobLog,
 ): ConvergeJobDeps {
   const run: GcloudRunner = gcloud;
@@ -355,6 +359,7 @@ export function gcpConvergeDeps(
 
   return {
     queue,
+    secureDatabase,
     projectId,
     region,
     iam: gcloudIamTester(run, http),
