@@ -218,10 +218,21 @@ export interface OperatorAccessSyncTarget {
    * The job reconciles that binding, so anyone missing here loses it.
    */
   readonly mcpSigners?: readonly string[];
+  /**
+   * #1140 — service accounts (besides caelo-mcp) that keep
+   * `roles/iap.httpsResourceAccessor` on the admin: the scheduler tick's
+   * account (scheduler-setup.ts) calls the admin through IAP. The job
+   * reconciles that binding to exactly its members, so anyone missing here
+   * loses it on the next run. Emails, not `serviceAccount:` members.
+   */
+  readonly iapServiceAccounts?: readonly string[];
 }
 
 /** Env var of the sync job listing {@link OperatorAccessSyncTarget.mcpSigners}. */
 export const MCP_SIGNERS_ENV = "CAELO_OPERATOR_ACCESS_MCP_SIGNERS";
+
+/** #1140 — env var of the sync job listing {@link OperatorAccessSyncTarget.iapServiceAccounts}. */
+export const IAP_SERVICE_ACCOUNTS_ENV = "CAELO_OPERATOR_ACCESS_IAP_SERVICE_ACCOUNTS";
 
 /** #914 — env var of the sync job naming the Google sign-in client's secret. */
 export const OPERATOR_OAUTH_CLIENT_SECRET_ENV = "CAELO_OPERATOR_OAUTH_CLIENT_SECRET";
@@ -423,6 +434,9 @@ export async function ensureOperatorAccessSync(
     `${OPERATOR_OAUTH_CLIENT_SECRET_ENV}=${operatorOAuthClientSecretResource(projectId, env)}`,
     ...(target.mcpSigners && target.mcpSigners.length > 0
       ? [`${MCP_SIGNERS_ENV}=${target.mcpSigners.join(",")}`]
+      : []),
+    ...(target.iapServiceAccounts && target.iapServiceAccounts.length > 0
+      ? [`${IAP_SERVICE_ACCOUNTS_ENV}=${target.iapServiceAccounts.join(",")}`]
       : []),
   ];
   const deploy = await run([

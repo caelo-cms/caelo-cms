@@ -36,6 +36,10 @@ import {
 } from "../../dist/compose.js";
 import { MIGRATION_TARGETS } from "../../dist/migration-targets.js";
 import { selfHostedBootstrapScript } from "../../dist/self-hosted-roles.js";
+import {
+  recordedSchedulerIntervalMinutes,
+  selfHostedSchedulerIntervalMinutes,
+} from "../../dist/self-hosted-scheduler-interval.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -45,6 +49,17 @@ const ownerEmail = cfg.require("ownerEmail");
 const caeloDir = cfg.get("caeloDir") ?? "./.caelo";
 // #553 — same knob as every adapter; undefined = stack-contract default.
 const adminMemory = cfg.get("adminMemory");
+// #1140 — how often the scheduler container calls the admin's tick (1–15
+// minutes, default 5). `init --scheduler-interval-minutes` records it in
+// <caeloDir>/config.json, which the CLI renders from; the stack reads the
+// same record so a `pulumi up` does not put it back to the default, and
+// refuses a Pulumi key that disagrees with it.
+const caeloConfigPath = resolve(caeloDir, "config.json");
+const schedulerIntervalMinutes = selfHostedSchedulerIntervalMinutes(
+  cfg.getNumber("schedulerIntervalMinutes"),
+  recordedSchedulerIntervalMinutes(caeloConfigPath),
+  caeloConfigPath,
+);
 // #696 — the prebuilt, cosign-verified release images, pinned by digest
 // (`ghcr.io/caelo-cms/<svc>@sha256:…`; the generator refuses anything else).
 // `cms-provision init` resolves + verifies them and records them in
@@ -93,6 +108,7 @@ const composeYaml = pulumi
       resendApiKey: process.env.RESEND_API_KEY,
       diskSize: "20Gi",
       ...(adminMemory ? { adminMemory } : {}),
+      ...(schedulerIntervalMinutes !== undefined ? { schedulerIntervalMinutes } : {}),
       images: {
         mode: "release",
         admin: adminImage,

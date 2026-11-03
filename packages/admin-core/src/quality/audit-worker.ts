@@ -521,6 +521,7 @@ function tick(): void {
 export function startQualityAuditWorker(deps: WorkerDeps & { readonly intervalMs?: number }): void {
   if (timer) return;
   workerDeps = deps;
+  // FIXME(issue #1359): the audit moves into a container job that reports back (#1140 category A).
   timer = setInterval(tick, deps.intervalMs ?? DEFAULT_INTERVAL_MS);
   timer.unref?.();
   tick();

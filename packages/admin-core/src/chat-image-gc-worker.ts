@@ -28,8 +28,8 @@
  * The aged rows also lose their attachment reference, so a replayed old
  * transcript shows the text result without attempting a read that would fail.
  *
- * Cadence: every 24h, sweeping images older than 7 days. Same bootstrap shape
- * as proposal-gc-worker.ts; called from hooks.server.ts.
+ * Cadence: every 24h on the scheduler tick (#1140, scheduler/core-tasks.ts),
+ * sweeping images older than 7 days.
  */
 
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
@@ -37,18 +37,13 @@ import { isChatImageKey } from "@caelo-cms/shared";
 
 import { getMediaStorage } from "./media/storage.js";
 
-const POLL_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export interface ChatImageGcOpts {
   readonly adapter: DatabaseAdapter;
-  /** Override poll interval (ms). Tests pass smaller values. */
-  readonly intervalMs?: number;
   /** Chat images on messages older than this are swept. Default 7 days. */
   readonly staleAfterMs?: number;
 }
-
-let workerHandle: ReturnType<typeof setInterval> | null = null;
 
 export interface ChatImageGcResult {
   /** Objects actually removed from storage. */
@@ -59,10 +54,7 @@ export interface ChatImageGcResult {
   readonly clearedRows: number;
 }
 
-/**
- * One sweep. Exported so a test can drive it directly instead of waiting a
- * day, and so an operator tool can trigger it on demand later.
- */
+/** One sweep (the scheduler task's body; tests drive it directly). */
 export async function sweepChatImagesOnce(opts: ChatImageGcOpts): Promise<ChatImageGcResult> {
   const cutoffSeconds = Math.floor((opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS) / 1000);
   let deletedObjects = 0;
@@ -132,35 +124,4 @@ export async function sweepChatImagesOnce(opts: ChatImageGcOpts): Promise<ChatIm
   }
 
   return { deletedObjects, keptShared, clearedRows };
-}
-
-/** Start the daily sweep. Idempotent — a second call is a no-op. */
-export function startChatImageGcWorker(opts: ChatImageGcOpts): void {
-  if (workerHandle !== null) return;
-  const intervalMs = opts.intervalMs ?? POLL_INTERVAL_MS;
-  const run = (): void => {
-    void sweepChatImagesOnce(opts)
-      .then((r) => {
-        if (r.deletedObjects > 0 || r.clearedRows > 0) {
-          console.error("[chat-image-gc] swept", r);
-        }
-      })
-      .catch((e: unknown) => {
-        console.error("[chat-image-gc] sweep failed", {
-          message: e instanceof Error ? e.message : String(e),
-        });
-      });
-  };
-  workerHandle = setInterval(run, intervalMs);
-  // Node keeps the process alive for a pending timer; a housekeeping sweep
-  // must never be the reason a container refuses to exit.
-  workerHandle.unref?.();
-  run();
-}
-
-/** Stop the sweep (tests, graceful shutdown). */
-export function stopChatImageGcWorker(): void {
-  if (workerHandle === null) return;
-  clearInterval(workerHandle);
-  workerHandle = null;
 }

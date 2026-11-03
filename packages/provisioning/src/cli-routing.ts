@@ -174,7 +174,7 @@ export const CLI_COMMANDS: readonly CliCommandDoc[] = [
 /** The text `cms-provision --help` prints, built from {@link CLI_COMMANDS}. */
 export function cliUsage(): string {
   return (
-    `Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r>] [--local|--install-job] | <${CLI_COMMANDS.map((c) => c.name).join("|")}> [options]\n` +
+    `Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r> [--scheduler-interval-minutes 1-15]] [--local|--install-job] | <${CLI_COMMANDS.map((c) => c.name).join("|")}> [options]\n` +
     "With several installs on this machine, pick one with --install <install-id or domain> (status, upgrade and backup also take --install all); in a terminal you are asked otherwise.\n" +
     "Pass --no-wizard with no sub-command to print this usage instead of the wizard."
   );

@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 17;
+export const INFRA_CONTRACT_VERSION = 18;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -140,6 +140,16 @@ export const INFRA_CONTRACT_VERSION = 17;
 //       gateway refuse to start without them. Additive only (converge
 //       release 1 of the gateway hardening): nothing is served from the
 //       staging database yet, so rolling back stays harmless.
+//  18 — #1140: the scheduler tick (scheduler-setup.ts). Its service account
+//       (token creator on itself, workflows.invoker, logWriter, IAP access to
+//       the admin), the Cloud Workflows workflow that signs its IAP JWT and
+//       calls the admin's /api/internal/scheduler/tick, the one Cloud
+//       Scheduler job that starts it every schedulerIntervalMinutes, the
+//       operator-access job's CAELO_OPERATOR_ACCESS_IAP_SERVICE_ACCOUNTS (so
+//       its sync keeps the account on IAP) and CAELO_SCHEDULER_SERVICE_ACCOUNT
+//       on the admin. The new admin runs its periodic work and plugin workers
+//       only on that tick, so an in-cloud upgrader must not roll an install
+//       onto it before the tick exists.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -164,6 +174,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   15: "verified TLS to the database: Cloud SQL's shared server CA, encrypted connections only, and a private DNS name the services dial (#1338)",
   16: "the MCP sign-in service as its own Cloud Run service with its own account (no database access), the visitor gateway as its own service on Firebase installs, and on Google Cloud load-balancer installs the sign-in service's backend and Cloud Armor rule (#1328)",
   17: "the staging site's own database and its gateway login, kept apart from the live data (#1329)",
+  18: "the scheduler tick that runs the admin's periodic work and plugin workers every few minutes: its service account, workflow and Cloud Scheduler job, and its IAP access (#1140)",
 };
 
 /**

@@ -55,6 +55,9 @@ export const INFRA_CONTRACT_PATHS: readonly string[] = [
   "packages/provisioning/src/audit-job-setup.ts",
   // #1217 — the capture job, its service account, bucket and grants.
   "packages/provisioning/src/capture-job-setup.ts",
+  // #1140 — the scheduler tick: its service account, workflow, Cloud
+  // Scheduler job and grants.
+  "packages/provisioning/src/scheduler-setup.ts",
   // #819 — the converge job, its database login and the admin's grant on it.
   "packages/provisioning/src/converge-job-setup.ts",
   // #891 — the edge security headers the stacks attach, and the converge's

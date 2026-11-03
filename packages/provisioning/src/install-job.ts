@@ -65,13 +65,16 @@ export const OPS_IMAGE_REPOSITORY =
  * Roles the provisioner needs on top of {@link PROVISIONER_ROLE_LIST} when it
  * runs the install job instead of the operator: the operator-access sync job
  * creates a project custom role and a Cloud Scheduler job (operator-access.ts),
- * and the job's own output has to reach Cloud Logging so the terminal can
+ * the scheduler tick deploys a Cloud Workflows workflow (scheduler-setup.ts,
+ * #1140; the converge job gets the same roles, converge-job-setup.ts), and
+ * the job's own output has to reach Cloud Logging so the terminal can
  * tail it. Granted only to installs that use the job. Not an escalation: the
  * provisioner already holds `resourcemanager.projectIamAdmin`.
  */
 export const INSTALL_JOB_ROLES = [
   "roles/iam.roleAdmin",
   "roles/cloudscheduler.admin",
+  "roles/workflows.editor",
   "roles/logging.logWriter",
 ] as const;
 

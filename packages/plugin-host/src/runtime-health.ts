@@ -595,6 +595,7 @@ let heartbeat: ReturnType<typeof setInterval> | null = null;
  */
 export function startRuntimeHeartbeat(infra: PluginHostInfra, systemActorId: string): void {
   if (heartbeat) return;
+  // FIXME(issue #1361): refreshed at request start instead, so an idle instance never reads as down.
   heartbeat = setInterval(() => {
     void runtimeHeartbeatOnce(infra, systemActorId);
   }, HEARTBEAT_MS);

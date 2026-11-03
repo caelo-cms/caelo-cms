@@ -40,7 +40,7 @@ import {
 import { ensureConvergeJob } from "../converge-job-setup.js";
 import { findSqlInstance, planPublicRoleSwitch } from "../gateway-credentials.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
-import { upgraderServiceAccountEmail } from "../gcp-names.js";
+import { schedulerServiceAccountEmail, upgraderServiceAccountEmail } from "../gcp-names.js";
 import type { InstallMetadata } from "../install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "../mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "../operator-access.js";
@@ -53,6 +53,7 @@ import {
   plainGeneratedSecretSeed,
   readSecretReplication,
 } from "../runtime-secrets.js";
+import { ensureSchedulerTick } from "../scheduler-setup.js";
 import { selfCommand } from "../self-command.js";
 import {
   AUDIT_JOB_ENV_VAR,
@@ -65,7 +66,9 @@ import {
   INTERIM_FORWARD_ORIGIN_ENV,
   MCP_ENV_VAR,
   OPERATOR_ACCESS_JOB_ENV_VAR,
+  parseSchedulerIntervalMinutes,
   remoteMcpIdentityEnv,
+  SCHEDULER_SERVICE_ACCOUNT_ENV_VAR,
   UPGRADER_JOB_ENV_VAR,
 } from "../stack-contract.js";
 import {
@@ -112,6 +115,11 @@ export interface ConvergeDeps {
    * then fails and the converge stays incomplete.
    */
   readonly opsImageRef?: string | null;
+  /**
+   * #1140 — the install's `schedulerIntervalMinutes` knob (install.json);
+   * absent: the default. The scheduler step refuses an out-of-range value.
+   */
+  readonly schedulerIntervalMinutes?: number;
 }
 
 export interface ConvergeSession {
@@ -455,6 +463,9 @@ export function startConverge(
     return [{ name: INTERIM_FORWARD_ORIGIN_ENV, value: new URL(url).origin }];
   }
 
+  /** The admin's origin behind IAP, once {@link remoteMcpIdentity} read it. */
+  let resolvedAdminUrl: string | null = null;
+
   async function remoteMcpIdentity(): Promise<Record<RollSlug, CloudRunEnvVar[]> | null> {
     // #806 — CAELO_ADMIN_URL / CAELO_MCP_PUBLIC_URL / CAELO_IAP_AUDIENCE
     // name identities the env contract cannot (stack-contract.ts
@@ -477,6 +488,7 @@ export function startConverge(
       runDeps,
     );
     if (resolved.ok) {
+      resolvedAdminUrl = resolved.identity.adminUrl;
       s.done(
         `Google sign-in and remote MCP can be set up under Settings → Google sign-in (${resolved.identity.mcpPublicUrl})`,
       );
@@ -700,6 +712,77 @@ export function startConverge(
     leaveUntouched.push(CONVERGE_JOB_ENV_VAR);
   }
 
+  let schedulerReady = false;
+  /** The scheduler's SA exists from an earlier run though this one failed. */
+  let schedulerAccountExists = false;
+
+  async function setUpSchedulerTick(): Promise<
+    | { ok: true; done: string[]; intervalMinutes: number }
+    | { ok: false; done: string[]; error: string }
+  > {
+    let intervalMinutes: number;
+    try {
+      intervalMinutes = parseSchedulerIntervalMinutes(
+        deps.schedulerIntervalMinutes,
+        "install.json schedulerIntervalMinutes",
+      );
+    } catch (e) {
+      return { ok: false, done: [], error: (e as Error).message };
+    }
+    const resource = await adminIapResource();
+    if (!resource) return { ok: false, done: [], error: "the admin's IAP resource was not found" };
+    if (!resolvedAdminUrl)
+      return { ok: false, done: [], error: "the admin's URL could not be read" };
+    const st = await ensureSchedulerTick(
+      {
+        projectId: install.projectId,
+        region: install.region,
+        env: install.env,
+        adminUrl: resolvedAdminUrl,
+        resource,
+        intervalMinutes,
+      },
+      runDeps,
+    );
+    return st.ok ? { ok: true, done: st.done, intervalMinutes } : st;
+  }
+
+  async function schedulerTick(): Promise<void> {
+    // #1140 — the one Cloud Scheduler job that calls the admin's tick
+    // (scheduler-setup.ts). After migrations and before the operator-access
+    // step, which must keep the scheduler's account on IAP. The schedule
+    // starts right away: until the roll below finishes, a tick reaches the
+    // previous admin, which has no such endpoint (404) — that execution
+    // fails and nothing runs; the first tick after the roll does the work.
+    // A failure costs the periodic work (plugin workers, GC, release check),
+    // not the site, so it warns and the admin keeps its current env.
+    const s = r.step("Ensuring the scheduler tick (periodic work and plugin workers)...");
+    const st = await setUpSchedulerTick();
+    for (const step of st.done) r.info(`  ${step}`);
+    if (st.ok) {
+      schedulerReady = true;
+      s.done(`Scheduler tick ready (every ${st.intervalMinutes} min)`);
+      return;
+    }
+    s.warned(`Scheduler tick not set up: ${st.error}`);
+    // An account set up by an earlier run keeps its IAP access, or the next
+    // sync would cut off a tick that still works.
+    const exists = await run([
+      "iam",
+      "service-accounts",
+      "describe",
+      schedulerServiceAccountEmail(install.projectId, install.env),
+      `--project=${install.projectId}`,
+      "--format=value(email)",
+    ]);
+    schedulerAccountExists = exists.ok;
+    r.warn(
+      "The upgrade continues; plugin workers, update checks and clean-up run late or not at all until this succeeds. Re-run upgrade once the cause is fixed.",
+    );
+    incomplete = true;
+    leaveUntouched.push(SCHEDULER_SERVICE_ACCOUNT_ENV_VAR);
+  }
+
   async function operatorAccess(): Promise<void> {
     // The job that keeps IAP in step with the user list (operator-access.ts).
     // After migrations: its database user gets the role migration 0239
@@ -724,6 +807,13 @@ export function startConverge(
               ? {
                   mcpSigners: [
                     `serviceAccount:${upgraderServiceAccountEmail(install.projectId, install.env)}`,
+                  ],
+                }
+              : {}),
+            ...(schedulerReady || schedulerAccountExists
+              ? {
+                  iapServiceAccounts: [
+                    schedulerServiceAccountEmail(install.projectId, install.env),
                   ],
                 }
               : {}),
@@ -763,10 +853,12 @@ export function startConverge(
     hooks: {
       async afterMigrations() {
         if (!(await databaseLogins())) return { ok: false };
+        // Read-only, first: the scheduler tick needs the admin's URL.
+        const identity = await remoteMcpIdentity();
         await upgraderJob();
         await convergeJob();
+        await schedulerTick();
         await operatorAccess();
-        const identity = await remoteMcpIdentity();
         let forward: CloudRunEnvVar[];
         try {
           forward = await interimForwardEnv();

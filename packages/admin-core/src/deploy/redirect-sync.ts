@@ -309,8 +309,9 @@ export interface SyncRedirectsArgs {
 export async function syncRedirects(
   tx: TransactionRunner,
   ctx: ExecutionContext,
-  args: SyncRedirectsArgs,
+  requested: SyncRedirectsArgs,
 ): Promise<RedirectSyncOutcome[]> {
+  const args = await widenManualRetry(tx, requested);
   const syncId = randomUUID();
   const outputRoot = resolveOutputRoot(args.outputRoot);
   let publisher = args.publisher ?? null;
@@ -347,6 +348,29 @@ export async function syncRedirects(
   return [...outcomes.values()].sort(
     (a, b) => Number(b.env === "production") - Number(a.env === "production"),
   );
+}
+
+/**
+ * An operator's "Try again now" on one target while a saved change is not
+ * folded yet: the target cannot get in sync without that change, and only
+ * an unrestricted sync folds it (changes are site-wide). Folding restarts
+ * every target's backoff, so the retry pushes every target the change
+ * concerns — none of them is backing off any more. Without this the retry
+ * pushed the old table and left the target "Going live…" until the next
+ * scheduler tick folded the change (#1157, #1140). A publish's targeted
+ * sync stays targeted: it never takes the other targets' push.
+ */
+async function widenManualRetry(
+  tx: TransactionRunner,
+  args: SyncRedirectsArgs,
+): Promise<SyncRedirectsArgs> {
+  if (args.trigger !== "manual" || args.targetIds === undefined) return args;
+  if (!(await tx.transaction((t) => redirectChangesPending(t)))) return args;
+  return {
+    trigger: args.trigger,
+    ...(args.outputRoot !== undefined ? { outputRoot: args.outputRoot } : {}),
+    ...(args.publisher !== undefined ? { publisher: args.publisher } : {}),
+  };
 }
 
 /**

@@ -492,6 +492,7 @@ import {
   rejectRoleProposalOp,
 } from "./ops/role_pending.js";
 import { createRoleOp, deleteRoleOp, listRolesOp, updateRolePermissionsOp } from "./ops/roles.js";
+import { scheduledTasksClaimOp, scheduledTasksFinishOp } from "./ops/scheduled_tasks.js";
 import { aiBudgetsStatusOp, listAiBudgetsOp, setAiBudgetOp } from "./ops/security/ai_budgets.js";
 import {
   aggregateAiCallsOp,
@@ -1323,6 +1324,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(platformUpdatesSchedulerStatusOp);
   // #868 — "Skip this time" for a scheduled automatic install (Owner, step-up).
   registry.register(platformUpdatesSkipScheduledOp);
+  // #1140 — the scheduler tick's due-table (system only).
+  registry.register(scheduledTasksClaimOp);
+  registry.register(scheduledTasksFinishOp);
   // #757 — the step-up for the actions above: the Owner's password, re-entered.
   registry.register(stepUpConfirmPasswordOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the

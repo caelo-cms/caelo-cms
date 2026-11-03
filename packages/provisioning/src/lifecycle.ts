@@ -641,6 +641,9 @@ async function upgradeLockedInstall(
       domain: meta.domain,
       stagingHost,
       ownerEmail: meta.ownerEmail,
+      ...(meta.schedulerIntervalMinutes !== undefined
+        ? { schedulerIntervalMinutes: meta.schedulerIntervalMinutes }
+        : {}),
       targetTag,
       infraContractVersion: INFRA_CONTRACT_VERSION,
       skipVerify: opts.skipVerify === true,

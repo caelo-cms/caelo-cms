@@ -9,6 +9,8 @@ import {
   COMPOSE_MCP_AUTH_PROXY_SERVICE,
   COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   COMPOSE_POOL_BUDGET,
+  COMPOSE_SCHEDULER_SERVICE,
+  COMPOSE_SCHEDULER_TICK_URL,
   type ComposeSpec,
   composeProjectName,
   generateDockerCompose,
@@ -408,5 +410,74 @@ describe("self-hosted Compose — the MCP-Auth-Proxy (#1328)", () => {
         },
       }),
     ).toThrow(/mcp-auth-proxy image/);
+  });
+});
+
+describe("self-hosted Compose — the scheduler tick (#1140)", () => {
+  const yaml = generateDockerCompose({
+    ...base,
+    images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+  });
+  const scheduler = service(yaml, COMPOSE_SCHEDULER_SERVICE);
+
+  it("runs the admin image's clock against the admin's tick endpoint", () => {
+    expect(scheduler).toContain(`image: ${ADMIN}`);
+    expect(scheduler).toContain(
+      'command: ["bun", "--bun", "/app/packages/admin-core/src/scheduler/clock.ts"]',
+    );
+    expect(COMPOSE_SCHEDULER_TICK_URL).toBe("http://caelo-admin:5173/api/internal/scheduler/tick");
+    expect(scheduler).toContain(`CAELO_SCHEDULER_TICK_URL: "${COMPOSE_SCHEDULER_TICK_URL}"`);
+    expect(scheduler).toContain("depends_on: [caelo-admin]");
+  });
+
+  it("ticks every 5 minutes by default and follows the knob", () => {
+    expect(scheduler).toContain('CAELO_SCHEDULER_INTERVAL_MINUTES: "5"');
+    const fast = generateDockerCompose({
+      ...base,
+      schedulerIntervalMinutes: 1,
+      images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+    });
+    expect(service(fast, COMPOSE_SCHEDULER_SERVICE)).toContain(
+      'CAELO_SCHEDULER_INTERVAL_MINUTES: "1"',
+    );
+  });
+
+  it("refuses an interval outside 1-15 minutes", () => {
+    for (const bad of [0, 16, 2.5]) {
+      expect(() =>
+        generateDockerCompose({
+          ...base,
+          schedulerIntervalMinutes: bad,
+          images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+        }),
+      ).toThrow("schedulerIntervalMinutes");
+    }
+  });
+
+  it("holds only the internal secret it signs with: no database, no KEK, no mount", () => {
+    expect(scheduler).toContain(`CAELO_INTERNAL_SECRET: "${"i".repeat(48)}"`);
+    expect(scheduler).not.toMatch(/DATABASE|PASSWORD|KEK|postgres:\/\/|volumes:/);
+    expect(scheduler).not.toContain("adminpw");
+    expect(scheduler).not.toContain("0".repeat(64));
+  });
+
+  it("runs locked down: read-only root, no capabilities, no privilege escalation", () => {
+    expect(scheduler).toContain("read_only: true");
+    expect(scheduler).toContain('cap_drop: ["ALL"]');
+    expect(scheduler).toContain('security_opt: ["no-new-privileges:true"]');
+  });
+
+  it("runs the checkout's clock in dev mode", () => {
+    const dev = generateDockerCompose({ ...base, images: { mode: "dev" } });
+    expect(service(dev, COMPOSE_SCHEDULER_SERVICE)).toContain(
+      "command: bun run packages/admin-core/src/scheduler/clock.ts",
+    );
+  });
+
+  it("is part of every rendered Compose file, so an upgrade of an older install adds it", () => {
+    // self-hosted-upgrade.ts rolls onto renderCompose(<new images>), which is
+    // this generator: the next upgrade of an install without the service
+    // writes a Compose file that has it, and `docker compose up -d` starts it.
+    expect(yaml).toContain(`\n  ${COMPOSE_SCHEDULER_SERVICE}:\n`);
   });
 });

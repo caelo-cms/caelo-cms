@@ -17,9 +17,9 @@
  * And the automatic redeploy's trigger does not come back: no admin source
  * polls `audit_events` on a timer.
  *
- * The one thing a timer may publish is plugin data (#1155): the plugin-data
- * build republishes the LIVE build with fresher plugin-owned bake regions
- * and nothing else. It never starts the generator over cms_admin, never
+ * The one thing the scheduler tick may publish is plugin data (#1155, #1140):
+ * the plugin-data build republishes the LIVE build with fresher plugin-owned
+ * bake regions and nothing else. It never starts the generator over cms_admin, never
  * calls the deploy ops above, and is the only caller of the publisher's
  * `publishPluginData` — pinned below.
  *
@@ -155,6 +155,23 @@ describe("no automatic caller starts a production build (#1154)", () => {
     );
     expect(worker?.text).toContain('"deploy.build_plugin_data"');
     expect(DEPLOY_CALL.test(worker?.text ?? "")).toBe(false);
+  });
+
+  it("the scheduler tick (#1140) starts no build or publish; its plugin-data task is the build's one caller", () => {
+    const tick = ALL_SOURCES.filter(
+      (s) =>
+        s.path.startsWith("packages/admin-core/src/scheduler/") ||
+        s.path === "apps/admin/src/lib/server/scheduler.ts" ||
+        s.path === "apps/admin/src/routes/api/internal/scheduler/tick/+server.ts",
+    );
+    expect(tick.map((s) => s.path)).toContain("packages/admin-core/src/scheduler/core-tasks.ts");
+    expect(tick.filter((s) => DEPLOY_CALL.test(s.text)).map((s) => s.path)).toEqual([]);
+    const callers = ALL_SOURCES.filter(
+      (s) =>
+        /\brunPluginDataBuildIfDue\s*\(/.test(s.text) &&
+        s.path !== "packages/admin-core/src/plugin-data/worker.ts",
+    ).map((s) => s.path);
+    expect(callers).toEqual(["packages/admin-core/src/scheduler/core-tasks.ts"]);
   });
 
   it("only a human's release moves what live visitors are served of the plugin data (#1329)", () => {
