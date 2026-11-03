@@ -798,6 +798,11 @@ async function writeSnapshot(
       settings,
     );
     sections.push("settings");
+  } else if (settings) {
+    // The secret is gone: the old row must not keep the gateway accepting
+    // cookies signed with it, so the section becomes unpublished again.
+    await tx.execute(sql`DELETE FROM published_gateway_settings`);
+    await tx.execute(sql`DELETE FROM published_projection_sections WHERE section = 'settings'`);
   }
   if (snap.staging) {
     await replaceAll(

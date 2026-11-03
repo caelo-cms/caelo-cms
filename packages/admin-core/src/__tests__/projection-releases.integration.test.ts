@@ -268,6 +268,38 @@ describe("the immediate sections (#1329)", () => {
     expect(l).not.toBe(s);
   });
 
+  it("a cleared cookie secret unpublishes that environment's settings, never keeps the old one", async () => {
+    const before = await admin(
+      async (tx) =>
+        (
+          (await tx`SELECT gateway_staging_cookie_secret AS s FROM site_settings WHERE id = 1`) as {
+            s: string | null;
+          }[]
+        )[0]?.s ?? null,
+    );
+    const settingsOf = async (db: typeof live) =>
+      await db(async (tx) => ({
+        rows: ((await tx`SELECT 1 FROM published_gateway_settings`) as unknown[]).length,
+        marked: (
+          (await tx`SELECT 1 FROM published_projection_sections WHERE section = 'settings'`) as unknown[]
+        ).length,
+      }));
+    try {
+      await admin(async (tx) => {
+        await tx`UPDATE site_settings SET gateway_staging_cookie_secret = NULL WHERE id = 1`;
+      });
+      await publishProjectionOnce(adapter, staging, { declarations: DECLARATIONS, comments: false });
+      expect(await settingsOf(stagingDb)).toEqual({ rows: 0, marked: 0 });
+      expect(await settingsOf(live)).toEqual({ rows: 1, marked: 1 });
+    } finally {
+      await admin(async (tx) => {
+        await tx`UPDATE site_settings SET gateway_staging_cookie_secret = ${before} WHERE id = 1`;
+      });
+      await publishProjectionOnce(adapter, staging, { declarations: DECLARATIONS, comments: false });
+    }
+    expect(await settingsOf(stagingDb)).toEqual({ rows: 1, marked: 1 });
+  });
+
   it("redirects reach the staging database through the projection, the live one not", async () => {
     await admin(async (tx) => {
       await tx`INSERT INTO redirects (from_path, to_path, status_code, created_by)

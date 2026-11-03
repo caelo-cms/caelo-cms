@@ -112,7 +112,7 @@ import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { loadedVisitorProjections } from "../public-projection.js";
 import { jsonbParam } from "../sql-helpers.js";
-import { clearStagingInbox } from "../stage/staging-inbox.js";
+import { clearStagingInbox, loadedInboxTables } from "../stage/staging-inbox.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
 import {
   effectiveOutDir,
@@ -682,6 +682,29 @@ async function runTrigger(
     }
     if (stop.aborted && !servedByGenerator) return await fail(abortMessage(stop));
 
+    // #1329 — staging starts from what this Stage publishes: the test
+    // inbox (comments, votes, form submissions sent on staging) goes. Part
+    // of the Stage's success, and before the build is published: a Stage
+    // reported done serves its build from a cleared inbox, and a failure
+    // here leaves staging on the previous build.
+    if (plan.target.env === "staging") {
+      const inbox = loadedInboxTables();
+      const stagingDb = pluginHostBootstrapped()?.infra.stagingAdapter;
+      if (inbox.length > 0 && !stagingDb) {
+        return await fail(
+          "the plugin host has no staging database adapter, so the staging inbox could not be cleared and this build was not published. Check PUBLIC_STAGING_ADMIN_DATABASE_URL and the admin's boot log, then Stage again.",
+        );
+      }
+      try {
+        if (stagingDb) await clearStagingInbox(stagingDb, inbox);
+      } catch (e) {
+        return await fail(
+          `the staging inbox could not be cleared, so this build was not published: ${e instanceof Error ? e.message : String(e)}. Stage again.`,
+        );
+      }
+      timer.lap("clear-staging-inbox");
+    }
+
     // v0.2.78 — hand off to the per-provider StaticPublisher. Self-hosted
     // is a no-op (the generator already synced into current/); cloud
     // uploads to the staging bucket / preview channel.
@@ -768,7 +791,7 @@ async function runTrigger(
       } catch (e) {
         timer.lap("select-preview");
         return await fail(
-          `staging build ${runId} was published but could not be made the build staging serves: ${e instanceof Error ? e.message : String(e)}. Staging still serves the previous build; Stage again.`,
+          `staging build ${runId} was published but could not be made the build staging serves: ${e instanceof Error ? e.message : String(e)}. Stage again.`,
         );
       }
       timer.lap("select-preview");
@@ -790,25 +813,6 @@ async function runTrigger(
       phaseTimings: timer.phases(),
     });
     if (!finished.ok) return await fail(describeError(finished.error));
-    // #1329 — staging starts from what this Stage publishes: the test
-    // inbox (comments, votes, form submissions sent on staging) goes.
-    // Outside any transaction; a failure is logged and the next Stage
-    // clears again — it never undoes the Stage.
-    if (plan.target.env === "staging") {
-      const staging = pluginHostBootstrapped()?.infra.stagingAdapter;
-      if (!staging) {
-        console.error(
-          "[deploy] the plugin host has no staging database adapter; the staging inbox was not cleared",
-        );
-      } else {
-        await clearStagingInbox(staging).catch((e: unknown) => {
-          console.error("[deploy] the staging inbox was not cleared; the next Stage tries again", {
-            runId,
-            error: e instanceof Error ? e.message : String(e),
-          });
-        });
-      }
-    }
     // The run is recorded; now put the redirects table on the build the
     // target serves, in a transaction of its own. A failure is recorded and
     // retried by the redirect-sync worker (the target stays behind); it
