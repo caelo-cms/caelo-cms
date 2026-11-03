@@ -20,6 +20,7 @@
  * reads the same `caelo.*` session vars they do.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import type { QueryError } from "./errors.js";
@@ -65,22 +66,125 @@ export function firstMalformedBranch(branches: readonly string[]): string | null
 }
 
 /**
+ * Issue #1392 — the visibility verdicts of one request, so a request that
+ * runs many ops on the same branch asks the database once per branch.
+ *
+ * One MCP tool call or one preview runs dozens of ops (36 in one
+ * `inspect_page_render`), each in its own short transaction, and each
+ * asked `caelo_branch_visible` again — the most frequent statement under
+ * load on a db-f1-micro (2026-11-03 measurements). The verdict depends on
+ * the caller (actor kind, actor, chat task) and the branch, so within one
+ * request it is asked once: the first lookup's promise is shared by every
+ * concurrent op of the request (a `Promise.all` of reads asks once too).
+ *
+ * The memory lives only inside {@link withBranchVisibilityScope} — the
+ * admin opens one scope per HTTP request — and dies with it, so a verdict
+ * never reaches another request (a requestId would not do: callers reuse
+ * one per chat session or plugin, and a client may send its own). Inside a
+ * long request (a chat turn, a stream) a verdict is asked again after
+ * {@link VERDICT_MAX_AGE_MS}. Outside a scope nothing is remembered. The
+ * rule itself stays in SQL (migration 0249).
+ */
+const VERDICT_MAX_AGE_MS = 30_000;
+
+interface VisibilityScope {
+  readonly verdicts: Map<string, { readonly visible: Promise<boolean>; readonly at: number }>;
+}
+
+const visibilityScope = new AsyncLocalStorage<VisibilityScope>();
+
+/**
+ * Run `fn` with a branch-visibility memory of its own (one per HTTP
+ * request in the admin). Nested scopes keep the outer one.
+ */
+export function withBranchVisibilityScope<T>(fn: () => T): T {
+  if (visibilityScope.getStore()) return fn();
+  return visibilityScope.run({ verdicts: new Map() }, fn);
+}
+
+function verdictKey(ctx: ExecutionContext, branch: string): string {
+  return `${ctx.actorKind}|${ctx.actorId}|${ctx.chatTaskId ?? ""}|${branch}`;
+}
+
+/** The scope's fresh verdict promise for `branch`, or undefined. */
+function rememberedVerdict(ctx: ExecutionContext, branch: string): Promise<boolean> | undefined {
+  const scope = visibilityScope.getStore();
+  if (!scope) return undefined;
+  const key = verdictKey(ctx, branch);
+  const hit = scope.verdicts.get(key);
+  if (!hit) return undefined;
+  if (Date.now() - hit.at > VERDICT_MAX_AGE_MS) {
+    scope.verdicts.delete(key);
+    return undefined;
+  }
+  return hit.visible;
+}
+
+/** Share `visible` with the rest of the scope; a failed ask is forgotten. */
+function rememberVerdict(ctx: ExecutionContext, branch: string, visible: Promise<boolean>): void {
+  const scope = visibilityScope.getStore();
+  if (!scope) return;
+  const key = verdictKey(ctx, branch);
+  const entry = { visible, at: Date.now() };
+  scope.verdicts.set(key, entry);
+  visible.catch(() => {
+    if (scope.verdicts.get(key) === entry) scope.verdicts.delete(key);
+  });
+}
+
+/**
+ * The verdict for `branches` from the request's memory alone: the first
+ * invisible branch, null when all are visible, or undefined when any is
+ * not remembered (the database must be asked). No transaction needed.
+ */
+export async function rememberedFirstInvisible(
+  ctx: ExecutionContext,
+  branches: readonly string[],
+): Promise<string | null | undefined> {
+  const pending: { branch: string; visible: Promise<boolean> }[] = [];
+  for (const branch of branches) {
+    if (!UUID_RE.test(branch)) return branch;
+    const visible = rememberedVerdict(ctx, branch);
+    if (!visible) return undefined;
+    pending.push({ branch, visible });
+  }
+  for (const p of pending) {
+    try {
+      if (!(await p.visible)) return p.branch;
+    } catch {
+      return undefined; // the ask that was shared failed: ask again
+    }
+  }
+  return null;
+}
+
+/**
  * Check the branches a call names against the caller, inside the call's
  * transaction (the `caelo.*` session vars are already set). Returns the
  * first branch the caller may not see, or null when all are visible.
+ * With the caller's `ctx`, a verdict the request already has (or is
+ * asking for) is reused, and a new one is shared with the request.
  */
 export async function firstInvisibleBranch(
   tx: TransactionRunner,
   branches: readonly string[],
+  ctx?: ExecutionContext,
 ): Promise<string | null> {
   for (const branch of branches) {
     // A malformed id names no branch; refusing it here also keeps the
     // uuid cast below from turning into a HandlerError.
     if (!UUID_RE.test(branch)) return branch;
-    const rows = (await tx.execute(
-      sql`SELECT caelo_branch_visible(${branch}::uuid) AS visible`,
-    )) as unknown as { visible: boolean }[];
-    if (rows[0]?.visible !== true) return branch;
+    let visible = ctx ? rememberedVerdict(ctx, branch) : undefined;
+    if (!visible) {
+      visible = (async () => {
+        const rows = (await tx.execute(
+          sql`SELECT caelo_branch_visible(${branch}::uuid) AS visible`,
+        )) as unknown as { visible: boolean }[];
+        return rows[0]?.visible === true;
+      })();
+      if (ctx) rememberVerdict(ctx, branch, visible);
+    }
+    if (!(await visible)) return branch;
   }
   return null;
 }

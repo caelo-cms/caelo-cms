@@ -28,7 +28,12 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string, options?: PoolOption
 import { sql } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
 import { recordAudit, SYSTEM_ACTOR_ID } from "./audit.js";
-import { branchNotFound, firstInvisibleBranch, namedBranches } from "./branch-access.js";
+import {
+  branchNotFound,
+  firstInvisibleBranch,
+  namedBranches,
+  rememberedFirstInvisible,
+} from "./branch-access.js";
 import { extractPgFields, isRlsDenial, OperationAbortError, type QueryError } from "./errors.js";
 import {
   type AnyOperationDefinition,
@@ -776,7 +781,7 @@ export class DatabaseAdapter {
         // another editor's unpublished work by naming its branch. Branches
         // (and the visibility rule) live in cms_admin only.
         if (op.database === "cms_admin") {
-          const denied = await firstInvisibleBranch(tx, namedBranches(ctx, validatedInput));
+          const denied = await firstInvisibleBranch(tx, namedBranches(ctx, validatedInput), ctx);
           if (denied !== null) return err(branchNotFound(op.name, denied));
         }
 
@@ -862,10 +867,14 @@ export class DatabaseAdapter {
     try {
       const branches = op.database === "cms_admin" ? namedBranches(ctx, validatedInput) : [];
       if (branches.length > 0) {
-        const denied = await this.#transaction("admin", op.name, async (tx) => {
-          await this.#setIdentity(tx, ctx);
-          return firstInvisibleBranch(tx, branches);
-        });
+        const remembered = await rememberedFirstInvisible(ctx, branches);
+        const denied =
+          remembered !== undefined
+            ? remembered
+            : await this.#transaction("admin", op.name, async (tx) => {
+                await this.#setIdentity(tx, ctx);
+                return firstInvisibleBranch(tx, branches, ctx);
+              });
         if (denied !== null) return err(branchNotFound(op.name, denied));
       }
       const options = { holder: op.name };
@@ -1027,9 +1036,12 @@ export class DatabaseAdapter {
     try {
       const branches = namedBranches(ctx, validatedInput);
       if (branches.length > 0) {
-        const denied = await this.#shortRead(ctx, op.name, (tx) =>
-          firstInvisibleBranch(tx, branches),
-        );
+        // A verdict this request already has opens no transaction at all.
+        const remembered = await rememberedFirstInvisible(ctx, branches);
+        const denied =
+          remembered !== undefined
+            ? remembered
+            : await this.#shortRead(ctx, op.name, (tx) => firstInvisibleBranch(tx, branches, ctx));
         if (denied !== null) return err(branchNotFound(op.name, denied));
       }
       return await op.handler(ctx, validatedInput, this.readScope(ctx, op.name));
@@ -1153,7 +1165,7 @@ export class DatabaseAdapter {
       if (!joined) postCommit = collectPostCommitEffects(tx);
       await this.#setIdentity(tx, ctx, options.holder ?? null);
       // Issue #569 — same branch-visibility gate as runOperation.
-      const denied = await firstInvisibleBranch(tx, namedBranches(ctx, undefined));
+      const denied = await firstInvisibleBranch(tx, namedBranches(ctx, undefined), ctx);
       if (denied !== null) {
         throw new OperationAbortError(branchNotFound("withAdminTransaction", denied));
       }

@@ -18,7 +18,12 @@ import {
   stopRuntimeHeartbeat,
 } from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  DatabaseAdapter,
+  execute,
+  OperationRegistry,
+  withBranchVisibilityScope,
+} from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
@@ -207,7 +212,12 @@ export async function setupCostSite(opts: {
   const count = async (input: Record<string, unknown>): Promise<number> => {
     statements = [];
     counting = true;
-    const r = await execute(registry, adapter, COST_SYSTEM, "pages.render_preview", input);
+    // One render is one request, as in the admin: its own branch-
+    // visibility scope (#1392), so a verdict never carries from one counted
+    // render into the next.
+    const r = await withBranchVisibilityScope(() =>
+      execute(registry, adapter, COST_SYSTEM, "pages.render_preview", input),
+    );
     counting = false;
     if (!r.ok) throw new Error(`render failed: ${JSON.stringify(r.error)}`);
     return statements.length;
