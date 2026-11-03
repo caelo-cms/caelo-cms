@@ -25,6 +25,7 @@ import {
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql as drizzleSql } from "drizzle-orm";
+import { redirectSyncNote } from "../ai/tools/_redirect-sync-note.js";
 import { bulkCreateRedirectsTool } from "../ai/tools/bulk-create-redirects.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { type SyncRedirectsArgs, syncRedirects } from "../deploy/redirect-sync.js";
@@ -240,6 +241,38 @@ describe("redirect sync on save (#1157)", () => {
     expect(s.production?.last?.unservedTargets).toEqual([
       { fromPath: "/promo", location: "/draft-page/" },
     ]);
+  });
+
+  it("#1357 reports the 410 rules, and that they answer 404 where the host cannot send 410", async () => {
+    const r = await bulkCreateRedirectsTool.handler(
+      SYSTEM,
+      {
+        items: [
+          { fromPath: "/retired", toPath: "/", statusCode: 410 },
+          { fromPath: "/old", toPath: "/about", statusCode: 301 },
+        ],
+        upsert: false,
+      },
+      { adapter, registry } as ToolContext,
+    );
+    expect(r.ok).toBe(true);
+    // Caddy (self-hosted) answers the bare 410: nothing to warn about.
+    expect(r.content).toContain("live now");
+    expect(r.content).not.toContain("404 on this hosting");
+    expect(await snippet("production")).toContain("respond 410");
+    const s = await status();
+    expect(s.production?.goneAnswer).toBe(410);
+    expect(s.production?.last).toMatchObject({ redirectCount: 1, goneCount: 1 });
+    // The same recorded push read on Firebase Hosting, which serves no 410.
+    process.env.CAELO_PROVIDER = "gcp-firebase";
+    try {
+      expect((await status()).production?.goneAnswer).toBe(404);
+      const note = await redirectSyncNote(SYSTEM, { adapter, registry } as ToolContext);
+      expect(note).toContain("production (production): live now");
+      expect(note).toContain("1 410 rule answers 404 on this hosting, not 410 Gone");
+    } finally {
+      delete process.env.CAELO_PROVIDER;
+    }
   });
 
   it("an unchanged table writes nothing", async () => {
