@@ -15,6 +15,7 @@ import {
   ADMIN_MEMORY_DEFAULT,
   memoryQuantityMiB,
   parseSchedulerIntervalMinutes,
+  SERVICE_CPU_IDLE,
 } from "../stack-contract.js";
 
 export interface CostLine {
@@ -75,8 +76,8 @@ const SCHEDULER_JOB_USD = 0.1;
  * #1140 — what the scheduler tick costs a month at `minutes` between ticks:
  * the Cloud Scheduler job (priced as paid — the 3 free jobs are shared
  * with every other project on the billing account) plus the Workflows
- * steps past the free tier. A tick with nothing due takes the admin well
- * under a second of request-billed CPU, inside Cloud Run's free tier.
+ * steps past the free tier. What the tick costs on the admin's side is
+ * priced on the admin's own line ({@link adminKeptWarmByTicks}).
  */
 export function schedulerTickMonthlyUsd(minutes: number): number {
   const ticks = Math.ceil((30 * 24 * 60) / parseSchedulerIntervalMinutes(minutes));
@@ -93,6 +94,34 @@ export function schedulerTickMonthlyUsd(minutes: number): number {
     (internal / 1000) * WORKFLOWS_PRICE.internalPer1000 +
     (external / 1000) * WORKFLOWS_PRICE.externalPer1000;
   return Math.round(usd * 100) / 100;
+}
+
+/**
+ * Cloud Run instance-based billing (CPU always allocated) list rates, USD,
+ * tier-1 region, cloud.google.com/run/pricing as of 2026-11. The free tier
+ * is left out: it is shared by every service on the billing account.
+ */
+const CLOUD_RUN_INSTANCE_PRICE = { vcpuSecond: 0.000018, gibSecond: 0.000002 } as const;
+
+/** Seconds in the 30-day month the table prices. */
+const MONTH_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * #1140 — whether the scheduler tick keeps a scale-to-zero admin instance
+ * up around the clock. Cloud Run keeps an idle instance for up to 15
+ * minutes after its last request, and the tick comes at most every 15
+ * minutes, so with CPU always allocated (`SERVICE_CPU_IDLE.admin` false
+ * until #1361) the instance never stops and is billed every second. With
+ * request-billed CPU an idle instance costs nothing between ticks.
+ */
+export function adminKeptWarmByTicks(adminMinInstances: number): boolean {
+  return adminMinInstances === 0 && !SERVICE_CPU_IDLE.admin;
+}
+
+/** One always-on admin instance (1 vCPU, `gib` memory) a month at instance-based list rates. */
+export function alwaysOnAdminInstanceUsd(gib: number): number {
+  const perSecond = CLOUD_RUN_INSTANCE_PRICE.vcpuSecond + gib * CLOUD_RUN_INSTANCE_PRICE.gibSecond;
+  return Math.round(perSecond * MONTH_SECONDS);
 }
 
 /** The region the price table's list rates are for. */
@@ -144,17 +173,20 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
     },
     {
       name: `Cloud Run admin (${adminMemory})`,
-      // FIXME(issue #1361): ~$1 once the admin runs request-billed CPU
-      // (SERVICE_CPU_IDLE). Until then each editing session is billed for
-      // as long as the instance stays up, ~15 minutes past its last request.
-      monthlyUsd:
-        inputs.adminMinInstances === 0
+      // FIXME(issue #1361): with request-billed CPU (SERVICE_CPU_IDLE) the
+      // ticks stop keeping the instance up and this line drops to ~$7 of
+      // editing sessions. Until then the scheduler tick (#1140) keeps one
+      // instance up around the clock, billed at the always-on rate.
+      monthlyUsd: adminKeptWarmByTicks(inputs.adminMinInstances)
+        ? alwaysOnAdminInstanceUsd(adminGiB)
+        : inputs.adminMinInstances === 0
           ? 7
           : Math.round(1 + inputs.adminMinInstances * perMinInstanceUsd),
-      notes:
-        inputs.adminMinInstances === 0
-          ? "scale-to-zero, CPU always allocated while running; ~$7/mo light editorial use"
-          : `${inputs.adminMinInstances} min-instance${inputs.adminMinInstances > 1 ? "s" : ""} (no cold start)`,
+      notes: adminKeptWarmByTicks(inputs.adminMinInstances)
+        ? `scale-to-zero, but CPU is always allocated and the scheduler tick (every ${schedulerMinutes} min) comes before Cloud Run's 15-minute idle shutdown, so one instance (1 vCPU, ${adminMemory}) runs around the clock until request-billed CPU lands (#1361)`
+        : inputs.adminMinInstances === 0
+          ? "scale-to-zero, request-billed CPU; ~$7/mo light editorial use, ticks inside the free tier"
+          : `${inputs.adminMinInstances} min-instance${inputs.adminMinInstances > 1 ? "s" : ""} (no cold start); the scheduler tick adds nothing, the instance is up anyway`,
     },
     {
       name: "Quality checks (Cloud Run audit job)",
@@ -245,7 +277,7 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       name: "Secret Manager (runtime secrets)",
       monthlyUsd: 0.2,
       notes:
-        "6 active versions free, then ~$0.06 each; the Google sign-in client (#914) and the remote-MCP seal key (#806)",
+        "6 active versions free, then ~$0.06 each; the Google sign-in client (#914), the remote-MCP seal key (#806) and the staging database login's password (#1329; the staging database itself shares the Cloud SQL instance at no extra cost)",
     },
     {
       name: "BigQuery edge log sink",
@@ -267,7 +299,7 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
     {
       name: `Scheduler tick (Cloud Scheduler + Workflows, every ${schedulerMinutes} min)`,
       monthlyUsd: schedulerTickMonthlyUsd(schedulerMinutes),
-      notes: `one job starts a ${SCHEDULER_TICK_STEPS.internal + SCHEDULER_TICK_STEPS.external}-step workflow that calls the admin's periodic work and plugin workers; ~${Math.ceil((30 * 24 * 60) / schedulerMinutes)} ticks/mo, the admin's share inside the Cloud Run free tier`,
+      notes: `one job starts a ${SCHEDULER_TICK_STEPS.internal + SCHEDULER_TICK_STEPS.external}-step workflow that calls the admin's periodic work and plugin workers; ~${Math.ceil((30 * 24 * 60) / schedulerMinutes)} ticks/mo; what the ticks cost on the admin is on the admin line`,
     },
   ];
 

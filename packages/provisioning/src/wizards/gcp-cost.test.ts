@@ -7,7 +7,14 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { type CostEstimateInputs, estimateGcpCost, schedulerTickMonthlyUsd } from "./gcp-cost.js";
+import { SERVICE_CPU_IDLE } from "../stack-contract.js";
+import {
+  adminKeptWarmByTicks,
+  alwaysOnAdminInstanceUsd,
+  type CostEstimateInputs,
+  estimateGcpCost,
+  schedulerTickMonthlyUsd,
+} from "./gcp-cost.js";
 
 const inputs: CostEstimateInputs = {
   cloudSqlTier: "db-f1-micro",
@@ -65,6 +72,27 @@ describe("cost table: scheduler tick (#1140)", () => {
       l.name.startsWith("Scheduler tick"),
     );
     expect(fast?.name).toContain("every 1 min");
+  });
+
+  it("prices the admin kept up around the clock while its CPU is always allocated (#1361)", () => {
+    // The tick (at most every 15 minutes) beats Cloud Run's 15-minute idle
+    // shutdown, so a scale-to-zero admin never stops.
+    expect(SERVICE_CPU_IDLE.admin).toBe(false);
+    expect(adminKeptWarmByTicks(0)).toBe(true);
+    // 2,592,000 s x (1 vCPU x $0.000018 + 2 GiB x $0.000002).
+    expect(alwaysOnAdminInstanceUsd(2)).toBe(57);
+    const admin = estimateGcpCost(inputs).lines.find((l) => l.name.startsWith("Cloud Run admin"));
+    expect(admin?.monthlyUsd).toBe(57);
+    expect(admin?.notes).toContain("around the clock");
+    expect(admin?.notes).toContain("#1361");
+  });
+
+  it("adds nothing on the admin with a min instance, which is up anyway", () => {
+    expect(adminKeptWarmByTicks(1)).toBe(false);
+    const admin = estimateGcpCost({ ...inputs, adminMinInstances: 1 }).lines.find((l) =>
+      l.name.startsWith("Cloud Run admin"),
+    );
+    expect(admin?.notes).toContain("the scheduler tick adds nothing");
   });
 
   it("refuses an interval outside 1-15 minutes", () => {
