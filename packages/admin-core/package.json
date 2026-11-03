@@ -5,10 +5,16 @@
   "license": "MPL-2.0",
   "type": "module",
   "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./model-catalog": "./src/ai/model-catalog.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./src/index.ts"
+    },
+    "./model-catalog": {
+      "types": "./dist/ai/model-catalog.d.ts",
+      "default": "./src/ai/model-catalog.ts"
+    }
   },
   "scripts": {
     "typecheck": "tsc -b",
