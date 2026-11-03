@@ -14,7 +14,6 @@ export const ALLOWLIST: Readonly<Record<string, string>> = {
   // Reads the whole site: link humanising, page tree, unbounded lists.
   "pages.list": "FIXME(#1269) unbounded, one bind parameter per page",
   "content_instances.list": "FIXME(#1269) unbounded",
-  "modules.list": "FIXME(#1269) unbounded: returns every module",
   // Visible since the fixture writes pending content history (#1390): the
   // open-chats summary counts every open chat's pending entities.
   "chat.list_open_with_pending": "FIXME(#1269) counts every open chat's pending entities",

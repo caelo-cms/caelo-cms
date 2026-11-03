@@ -36,6 +36,8 @@ export {
   thrownToQueryError,
 } from "./adapter.js";
 export { recordAudit, recordAuditFromCtx, SYSTEM_ACTOR_ID } from "./audit.js";
+/** #1392 — one branch-visibility memory per HTTP request (the admin opens it). */
+export { withBranchVisibilityScope } from "./branch-access.js";
 export {
   beginConsumerRebuild,
   type ChangeBatch,
