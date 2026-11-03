@@ -393,6 +393,35 @@ describe("deploy.rollback", () => {
       expect(after[0]).toMatchObject({ status: "failed", holder: null });
       expect(after[0]?.error_message).toContain("provider said no");
       expect(await readFile(pageFile, "utf8")).toContain("VERSION_TWO");
+
+      // Review on #1383 — the lease lapses while the provider releases
+      // (another release could have come in between): the run is recorded
+      // failed with "roll back again", never as the live build.
+      selfHostedStaticPublisher.rollback = async (args) => {
+        await probe.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          await tx`UPDATE deploy_leases SET expires_at = clock_timestamp() - interval '1 second'
+                   WHERE name = ${LIVE_RELEASE_LEASE}`;
+        });
+        return realRollback(args);
+      };
+      const lapsed = await execute(registry, adapter, HUMAN, "deploy.rollback", {
+        targetName: "production",
+        runId: b1RunId,
+        repoRoot: testRoot,
+      });
+      expect(lapsed.ok).toBe(false);
+      if (lapsed.ok) return;
+      expect(JSON.stringify(lapsed.error)).toContain("lost its place in the live release order");
+      const lapsedRow = (await probe.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return await tx`
+          SELECT r.status, l.holder_run_id::text AS holder
+          FROM deploy_runs r, deploy_leases l
+          WHERE l.name = ${LIVE_RELEASE_LEASE} AND r.target_id = (SELECT id FROM deploy_targets WHERE name = 'production')
+          ORDER BY r.started_at DESC LIMIT 1`;
+      })) as { status: string; holder: string | null }[];
+      expect(lapsedRow[0]).toMatchObject({ status: "failed", holder: null });
     } finally {
       selfHostedStaticPublisher.rollback = realRollback;
       await probe.end();

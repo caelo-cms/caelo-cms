@@ -28,12 +28,18 @@
  * After the record, `redirects.sync_provider` puts the redirects table as
  * saved now on the restored build (its own short steps, #1254).
  *
- * Atomicity: what the run records is exactly what happened. A failure up to
- * the provider call records the run failed and nothing changed live; once
- * the provider released, the run is recorded succeeded (finish_rollback
- * corrects a row the orphan sweep ended meanwhile). A process that dies
- * between the release and the record leaves the run to the sweep — the
- * same window Publish live has.
+ * Atomicity: what the run records is what is known to have happened. A
+ * failure up to the provider call records the run failed and nothing changed
+ * live. Once the provider released, the run is recorded succeeded only while
+ * it still holds the live-release lease — then no other release can have
+ * come in between. If the lease lapsed meanwhile (the heartbeat missed three
+ * beats), another release may be live, so the run is recorded failed with
+ * "roll back again" instead of claiming its build is what visitors get. A
+ * process that dies between the release and the record leaves the run to
+ * the sweep — the same window Publish live has. The publisher's rollback
+ * takes no `beforeRelease` fence like Publish live's release does; the fence
+ * runs right before the call, which holds the lease for at least half a TTL
+ * (60 s), longer than a Hosting release takes.
  */
 
 import { randomUUID } from "node:crypto";
@@ -185,7 +191,11 @@ export const finishRollbackOp = defineOperation({
       publishSummary: z.record(z.string(), z.unknown()),
     })
     .strict(),
-  output: z.object({}),
+  output: z.discriminatedUnion("recorded", [
+    z.object({ recorded: z.literal(true) }),
+    /** The lease lapsed while the provider released: the run is recorded failed with `message`. */
+    z.object({ recorded: z.literal(false), message: z.string() }),
+  ]),
   handler: async (ctx, input, tx) => {
     // The run row first, then the lease: the same order as the heartbeat
     // (deploy.renew_run_lease), so the two cannot deadlock.
@@ -206,14 +216,31 @@ export const finishRollbackOp = defineOperation({
       return refuse(`run ${input.runId} is not a rollback of this caller to this target.`);
     }
     if (run.status === "succeeded") return refuse(`run ${input.runId} is already recorded.`);
-    // The provider released the old build: the target serves it, whatever
-    // the row says. A row the sweep ended meanwhile is corrected rather
-    // than left claiming the previous build is live.
-    if (run.status !== "running") {
-      console.error("[deploy] rollback released after its run was marked failed; recording it", {
+    // Released before the run is recorded: this transaction keeps the lease
+    // row locked until it commits, so nobody else releases in between.
+    const held = await releaseLiveRelease(tx, input.runId);
+    if (held !== true) {
+      // Review on #1383 — the lease lapsed while the provider released (the
+      // heartbeat missed three beats; a row the sweep ended lost it too), so
+      // another Publish live, rollback or plugin-data build may have released
+      // in between and be what visitors get. Recording this run succeeded
+      // would make it the live build in every reader (servedRun, liveRunOf)
+      // and move the plugin data and bakes back on a guess. It is recorded
+      // failed instead, with what to do; the redirects are re-pushed to what
+      // the target serves either way.
+      const message = `the rollback released build ${input.buildId}, but lost its place in the live release order while it ran, so another release may have replaced it. Settings → Deployments may not match what visitors get; roll back (or Publish live) again to put a known build live.`;
+      console.error("[deploy] rollback released after losing the live-release lease", {
         runId: input.runId,
         status: run.status,
       });
+      await tx.execute(sql`
+        UPDATE deploy_runs
+        SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
+            lease_expires_at = NULL
+        WHERE id = ${input.runId}::uuid
+      `);
+      await markRedirectsBehind(tx, [input.targetId]);
+      return ok({ recorded: false as const, message });
     }
     const restored = (await tx.execute(sql`
       SELECT projection_run_id::text AS projection_run_id FROM deploy_runs
@@ -221,9 +248,6 @@ export const finishRollbackOp = defineOperation({
     `)) as unknown as { projection_run_id: string | null }[];
     const projectionRunId =
       run.env === "production" ? (restored[0]?.projection_run_id ?? null) : null;
-    // Released before the run is recorded: this transaction keeps the lease
-    // row locked until it commits, so nobody else releases in between.
-    await releaseLiveRelease(tx, input.runId);
     // The summary names where the rolled-back release now lives (Firebase:
     // the Hosting version the rollback created). Recording it makes this
     // run itself a valid rollback source later — without it the Firebase
@@ -245,7 +269,7 @@ export const finishRollbackOp = defineOperation({
     await markRedirectsBehind(tx, [input.targetId]);
     // #1155 — the build put back may lack any bake made since it ran.
     if (run.env === "production") await forgetAllBakes(tx);
-    return ok({});
+    return ok({ recorded: true as const });
   },
 });
 
@@ -292,6 +316,8 @@ async function runRollback(
     return refused(message);
   };
 
+  /** Set when the run released but lost its lease first (deploy.finish_rollback). */
+  let lostMessage: string | null = null;
   try {
     // A CDN purge, Publish live, plugin-data build or redirect push must not
     // release another version mid-rollback; it waits outside any transaction.
@@ -345,6 +371,8 @@ async function runRollback(
         `the old build is live, but recording the rollback failed: ${describeError(finished.error)}. Settings → Deployments may not show it as live; roll back again to record it.`,
       );
     }
+    const record = finished.value as { recorded: true } | { recorded: false; message: string };
+    if (!record.recorded) lostMessage = record.message;
   } catch (e) {
     // A throw past the steps above is a bug; the run still ends failed and
     // releases its lease instead of waiting for it to lapse.
@@ -355,9 +383,9 @@ async function runRollback(
     await heartbeat.stop();
   }
 
-  // The build is back; now the redirects as saved now, in a sync of their
-  // own. A failure is recorded and retried by the redirect-sync worker (the
-  // target stays behind); the rollback itself succeeded.
+  // The build is back (or, lease lost, some build is); now the redirects as
+  // saved now, in a sync of their own. A failure is recorded and retried by
+  // the redirect-sync worker (the target stays behind).
   const synced = await execute(registry, adapter, ctx, "redirects.sync_provider", {
     trigger: "rollback",
     targetIds: [plan.target.id],
@@ -369,6 +397,7 @@ async function runRollback(
       error: describeError(synced.error),
     });
   }
+  if (lostMessage !== null) return refused(lostMessage);
   return ok({ buildId: plan.buildId, newRunId: runId });
 }
 
