@@ -5,9 +5,9 @@
  * target with a long history, seeded into a THROWAWAY database.
  *
  * Structure goes through the real Query API operations (users' logins, MCP
- * tokens, templates, modules, page types, lists, chats, the
- * international-site plugin and its locales), so what the gate measures is
- * reached the way the product reaches it. Volume (pages, placements,
+ * tokens, templates, modules, page types, lists, chats, EVERY shipped
+ * plugin — #1390 — and the international-site locales), so what the gate
+ * measures is reached the way the product reaches it. Volume (pages, placements,
  * terms, SEO rows, variant groups, snapshot history) is bulk SQL with
  * `generate_series`, like the scale integration tests do: creating 50,000
  * pages through `pages.create` would measure `pages.create`.
@@ -22,15 +22,24 @@
  * category term per page, an SEO row per page; ≈4·N staged snapshots of
  * history and ≈0.4·N pending ones spread over 20 open chats on the shared
  * draft; an owner and five editors with sessions; twenty admin MCP tokens.
+ *
+ * #1390 — every shipped plugin is active, with the site data its
+ * background work and render hooks need: a video module embedding a
+ * third-party player on every 20th page (the consent-manager's scans and
+ * change consumer judge it), the placeholders of every plugin component
+ * (auth, comments, forms, newsletter, ratings) on pages the editors open,
+ * one form, ratings on a tenth of the English pages (the ratings worker
+ * aggregates them) and a mail transport (newsletter cannot be activated
+ * without one, #1332).
  */
 
 import { hashPassword } from "@caelo-cms/admin-core";
 import { bootstrap, runPluginOperation } from "@caelo-cms/plugin-host";
-import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../../packages/admin-core/src/register.ts";
+import { COMPONENT_PLUGIN_SLUGS, SHIPPED_PLUGINS } from "./plugins.ts";
 
 /** What the runner needs to drive the seeded site. */
 export interface ScaleGateFixture {
@@ -62,6 +71,10 @@ const AGENTS = 20;
 const EDITORS = 5;
 const OPEN_CHATS = 20;
 const CATEGORIES = 10;
+/** About one page in this many embeds the third-party video player. */
+const VIDEO_EVERY = 20;
+/** Pages (of the ones editors open) that carry each plugin component. */
+const COMPONENT_PAGES_PER_PLUGIN = 20;
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -96,6 +109,7 @@ async function main(): Promise<void> {
   const registry = new OperationRegistry();
   registerAdminOps(registry);
   const raw = new SQL(adminUrl, { max: 2 });
+  const rawPublic = new SQL(publicUrl, { max: 1 });
 
   /** One transaction as `system`, for the bulk part. */
   const asSystem = <T>(fn: (tx: SQL) => Promise<T>): Promise<T> =>
@@ -157,15 +171,22 @@ async function main(): Promise<void> {
     });
     step("people + AI provider");
 
-    // --- The international-site plugin, active, with two locales.
+    // --- Every shipped plugin, active (#1390). Newsletter sends mail, so
+    // its activation needs a configured transport first (#1332). Nothing
+    // listens on the port: the load subscribes nobody, so nothing is sent.
+    await op(SYS, "email_config.set", {
+      transport: "smtp",
+      fromAddress: "news@scale-gate.example",
+      config: { host: "127.0.0.1", port: 2525 },
+    });
     const report = await bootstrap({
       infra: { adapter, registry },
       pluginsRoot: "/dev/null/unused",
       systemActorId: SYSTEM_ACTOR_ID,
-      testPlugins: [{ definition: intlPlugin }],
+      testPlugins: SHIPPED_PLUGINS.map((definition) => ({ definition })),
     });
-    if (report.failed.length > 0)
-      throw new Error(`plugin bootstrap: ${JSON.stringify(report.failed)}`);
+    if (report.failed.length > 0 || report.loaded.length !== SHIPPED_PLUGINS.length)
+      throw new Error(`plugin bootstrap: ${JSON.stringify(report)}`);
     const locales = await runPluginOperation({
       invocation: { origin: "system", actorId: SYSTEM_ACTOR_ID },
       pluginSlug: "international-site",
@@ -178,7 +199,23 @@ async function main(): Promise<void> {
       },
     });
     if (!locales.ok) throw new Error(`set_locales: ${locales.error.message}`);
-    step("plugin + locales");
+    const form = await runPluginOperation({
+      invocation: { origin: "system", actorId: SYSTEM_ACTOR_ID },
+      pluginSlug: "forms",
+      operationName: "create_form",
+      args: {
+        slug: "sg-contact",
+        displayName: "Contact",
+        schemaJson: {
+          fields: [
+            { name: "email", label: "Your email", type: "email", required: true },
+            { name: "message", label: "Message", type: "textarea", required: true },
+          ],
+        },
+      },
+    });
+    if (!form.ok) throw new Error(`create_form: ${form.error.message}`);
+    step(`plugins (${report.loaded.map((p) => p.slug).join(", ")}) + locales + form`);
 
     // --- Structure: categories, a news page type, modules, a mega menu.
     const vocab = await op<{ lists: { id: string }[] }>(SYS, "lists.upsert_many", {
@@ -242,6 +279,18 @@ async function main(): Promise<void> {
             defaults: { page_type: "news", order: "published_desc", limit: 5 },
           },
         },
+      ],
+    });
+    // A third-party player: the consent-manager finds the vendor host in
+    // the module and in its placements' values (#1390).
+    const video = await op<{ moduleId: string }>(SYS, "modules.create", {
+      slug: "sg-video",
+      displayName: "Video",
+      description: "An embedded video player with a caption.",
+      html: '<figure class="video"><iframe src="https://www.youtube-nocookie.com/embed/{{video_id}}" title="{{caption}}" loading="lazy" allowfullscreen></iframe><figcaption>{{caption}}</figcaption></figure>',
+      fields: [
+        { name: "video_id", kind: "text", label: "Video id", default: "M7lc1UVf-VE" },
+        { name: "caption", kind: "text", label: "Caption", default: "Video" },
       ],
     });
     await op(SYS, "list_types.upsert_many", {
@@ -338,6 +387,19 @@ async function main(): Promise<void> {
         INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
         SELECT p.id, 'content', 1, '${feed.moduleId}', ci.id, 'synced'
         FROM pages p, ci WHERE p.slug ~ '^news-[0-9]+$' AND (substring(p.slug from 6)::int % 50) = 0`);
+      // About every 20th page embeds the video, with its own content instance.
+      await tx.unsafe(`
+        WITH p AS MATERIALIZED (
+               SELECT id, title, gen_random_uuid() AS ci_id FROM pages
+               WHERE deleted_at IS NULL AND (abs(hashtext(id::text)) % ${VIDEO_EVERY}) = 0),
+             ci AS (
+               INSERT INTO content_instances (id, module_id, "values")
+               SELECT p.ci_id, '${video.moduleId}',
+                      jsonb_build_object('video_id', 'M7lc1UVf-VE', 'caption', 'Video about ' || p.title)
+               FROM p RETURNING id)
+        INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+        SELECT p.id, 'content', 2, '${video.moduleId}', p.ci_id, 'unsynced'
+        FROM p WHERE EXISTS (SELECT 1 FROM ci WHERE ci.id = p.ci_id)`);
       await tx.unsafe(`
         INSERT INTO page_terms (page_id, list_id, item_id)
         SELECT p.id, '${vocabId}', (ARRAY['${catItems.join("','")}']::uuid[])[1 + (abs(hashtext(p.id::text)) % ${catItems.length})]
@@ -360,6 +422,63 @@ async function main(): Promise<void> {
         SELECT g, de, 'de', 'up_to_date', now() FROM pairs`);
     });
     step(`pages: ${sources} en + ${variants} de`);
+
+    // --- Plugin components on pages the editors open (#1390), placed the
+    // way add_plugin_to_page places them: one placeholder module per page
+    // and plugin (the placeholder names its page), the placements in bulk.
+    const editorPages = (await asSystem(
+      (tx) => tx`SELECT id::text AS id, current_path AS path FROM pages
+                 WHERE slug ~ '^news-[0-9]+$' ORDER BY substring(slug from 6)::int LIMIT 500`,
+    )) as unknown as { id: string; path: string }[];
+    const placeholders: { pageId: string; moduleId: string }[] = [];
+    for (const [k, slug] of COMPONENT_PLUGIN_SLUGS.entries()) {
+      for (let j = 0; j < COMPONENT_PAGES_PER_PLUGIN; j += 1) {
+        // Editors walk the pages in steps of 7 (run.ts): these come early.
+        const page = editorPages[((k * COMPONENT_PAGES_PER_PLUGIN + j) * 7) % editorPages.length];
+        if (!page) throw new Error("no editor pages to place plugin components on");
+        const m = await op<{ moduleId: string }>(SYS, "modules.create", {
+          slug: `plugin-${slug}-${j}`,
+          displayName: `${slug} (placeholder)`,
+          html: `<div data-caelo-plugin="${slug}" data-page-id="${page.id}"><!-- ${slug} loads here --></div>`,
+          css: "",
+          js: "",
+        });
+        placeholders.push({ pageId: page.id, moduleId: m.moduleId });
+      }
+    }
+    await asSystem(async (tx) => {
+      await tx.unsafe(`
+        WITH p AS MATERIALIZED (
+               SELECT x."pageId" AS page_id, x."moduleId" AS module_id, gen_random_uuid() AS ci_id
+               FROM jsonb_to_recordset('${JSON.stringify(placeholders)}'::jsonb)
+                    AS x("pageId" uuid, "moduleId" uuid)),
+             ci AS (
+               INSERT INTO content_instances (id, module_id, "values")
+               SELECT p.ci_id, p.module_id, '{}'::jsonb FROM p RETURNING id)
+        INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+        SELECT p.page_id, 'content', 3, p.module_id, p.ci_id, 'unsynced'
+        FROM p WHERE EXISTS (SELECT 1 FROM ci WHERE ci.id = p.ci_id)`);
+    });
+    // Ratings on a tenth of the English pages, three each: the ratings
+    // worker's aggregation has rows to read (visitor data, cms_public).
+    const ratingsRows = (await asSystem(
+      (tx) => tx`SELECT id::text AS id FROM plugins WHERE slug = 'ratings'`,
+    )) as unknown as { id: string }[];
+    const ratingsId = ratingsRows[0]?.id ?? "";
+    if (!ratingsId) throw new Error("ratings plugin row missing");
+    const rated = (await asSystem(
+      (tx) => tx`SELECT id::text AS id FROM pages
+                 WHERE slug ~ '^news-[0-9]+$' AND substring(slug from 6)::int % 10 = 3`,
+    )) as unknown as { id: string }[];
+    await rawPublic.begin(async (tx) => {
+      await tx.unsafe(`SELECT set_config('caelo.plugin_id', '${ratingsId}', true)`);
+      await tx.unsafe(`
+        INSERT INTO plugin_ratings.ratings (page_id, visitor_id, score, created_at)
+        SELECT p.id, 'sg-visitor-' || v, 1 + (abs(hashtext(p.id || v::text)) % 5), now()
+        FROM unnest(ARRAY['${rated.map((p) => p.id).join("','")}']::text[]) AS p(id),
+             generate_series(1, 3) v`);
+    });
+    step(`plugin data: ${placeholders.length} component placements, ${rated.length * 3} ratings`);
 
     // --- Chats: twenty open chats on the shared draft, one per editor.
     const chats: string[] = [];
@@ -464,11 +583,8 @@ async function main(): Promise<void> {
                  WHERE slug ~ '^news-[0-9]+$' AND substring(slug from 6)::int > ${variants}
                  ORDER BY substring(slug from 6)::int`,
     )) as unknown as { id: string; path: string }[];
-    const editorPages = (await asSystem(
-      (tx) => tx`SELECT id::text AS id, current_path AS path FROM pages
-                 WHERE slug ~ '^news-[0-9]+$' ORDER BY substring(slug from 6)::int LIMIT 500`,
-    )) as unknown as { id: string; path: string }[];
     await asSystem((tx) => tx`ANALYZE`);
+    await rawPublic`ANALYZE`;
 
     const fixture: ScaleGateFixture = {
       pages: n,
@@ -482,6 +598,7 @@ async function main(): Promise<void> {
     step(`wrote ${out}`);
   } finally {
     await raw.end();
+    await rawPublic.end();
     await adapter.close();
   }
 }

@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MPL-2.0
 #
 # Issue #1267 — the scale gate: 50,000 pages, 20 MCP agents, 5 editors on a
-# db-f1-micro-sized Postgres and a 1-vCPU / 2 GiB admin. Nightly, and on a
-# pull request that carries the `perf-gate` label. A release is blocked
-# while the nightly run is red (docs/dev/scale-gate.md).
+# db-f1-micro-sized Postgres (memory, connections and, #1390, its 0.2-vCPU
+# share) and a 1-vCPU / 2 GiB admin, with every shipped plugin active.
+# Nightly, and on a pull request that carries the `perf-gate` label. A
+# release is blocked while the nightly run is red (docs/dev/scale-gate.md).
 
 name: Scale gate
 
@@ -27,7 +28,9 @@ jobs:
     # On a pull request only with the label; the nightly and manual runs always.
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'perf-gate')
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The plugins' first rebuild on the capped database may take up to 15
+    # minutes (--settle-timeout) before the 5-minute load.
+    timeout-minutes: 90
     permissions:
       contents: read
     env:
@@ -44,6 +47,8 @@ jobs:
       PUBLIC_STAGING_DATABASE_URL: postgres://public_staging_role:caelo_public_staging_scale_gate@localhost:5432/cms_public_staging
       # A throwaway KEK for this run's throwaway database only.
       CAELO_SECRET_KEK: "0000000000000000000000000000000000000000000000000000000000000001"
+      # Signs the scheduler ticks the load drives (#1390); this run only.
+      CAELO_INTERNAL_SECRET: scale-gate-internal-secret-0000000000000001
       SCALE_GATE_PAGES: "50000"
       SCALE_GATE_DURATION: "300"
       ORIGIN: http://localhost:4391
@@ -60,6 +65,8 @@ jobs:
 
       # db-f1-micro: ~0.6 GB of memory, 100 connections. The lock-wait SLO
       # is measured through log_lock_waits with a 100 ms deadlock_timeout.
+      # Its CPU share (0.2 vCPU) is applied once the fixture is seeded (see
+      # "Cap Postgres at the db-f1-micro CPU share"), so seeding stays fast.
       - name: Start Postgres (db-f1-micro sized)
         run: |
           docker run -d --name scale-gate-pg --network host --memory=614m \
@@ -102,15 +109,27 @@ jobs:
           bun run plugins:build
           bun run build
 
+      # #1390 — db-f1-micro is a shared-core machine: 0.2 of a vCPU sustained
+      # (Compute Engine f1-micro, "fractional vCPU of 0.2"), bursting above it
+      # only for short periods. The gate models the sustained share, which is
+      # what production sat at (CPU utilisation 0.20–0.25) while the plugins'
+      # background reads stalled it: a CFS quota of 20 ms per 100 ms period.
+      - name: Cap Postgres at the db-f1-micro CPU share
+        run: |
+          docker update --cpus=0.2 scale-gate-pg
+          test "$(docker exec scale-gate-pg cat /sys/fs/cgroup/cpu.max)" = "20000 100000"
+
       # 1 vCPU / 2 GiB, like the Cloud Run admin. Non-production NODE_ENV so
-      # the shipped plugins are dev-signed at boot, as in the E2E suite.
+      # the shipped plugins are dev-signed at boot, as in the E2E suite. The
+      # load drives the scheduler tick itself, so the dev clock is off.
       - name: Start the admin (1 vCPU, 2 GiB)
         run: |
           docker run -d --name scale-gate-admin --network host --cpus=1 --memory=2g \
             -v "$PWD":/workspace -w /workspace/apps/admin \
             -e ADMIN_DATABASE_URL -e PUBLIC_ADMIN_DATABASE_URL -e PUBLIC_DATABASE_URL \
-            -e CAELO_SECRET_KEK -e ORIGIN -e PORT=4391 -e NODE_ENV=development \
-            -e CAELO_RELEASE_CHECK=off -e CAELO_UPDATE_SCHEDULER=off \
+            -e PUBLIC_STAGING_ADMIN_DATABASE_URL \
+            -e CAELO_SECRET_KEK -e CAELO_INTERNAL_SECRET -e ORIGIN -e PORT=4391 -e NODE_ENV=development \
+            -e CAELO_RELEASE_CHECK=off -e CAELO_UPDATE_SCHEDULER=off -e CAELO_SCHEDULER_CLOCK=off \
             -e CAELO_SITE_URL=https://scale-gate.example \
             oven/bun:1.4.4 bun run build/index.js
           docker logs -f scale-gate-admin > admin.log 2>&1 &
@@ -126,6 +145,7 @@ jobs:
           bun scripts/scale-gate/run.ts --fixture scale-gate-fixture.json \
             --base-url "$ORIGIN" --duration "$SCALE_GATE_DURATION" \
             --admin-log admin.log --pg-log postgres.log --report scale-gate-report.json \
+            --pg-container scale-gate-pg --tick-every 60 --settle-consumers \
             | tee scale-gate-report.md
 
       - name: Summary
