@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
+  "version": "0.11.11",
   "tools": [
     {
       "name": "read_content",
@@ -1947,7 +1947,7 @@
     },
     {
       "name": "retry_tool_call",
-      "description": "Fix a failed write call with a small patch instead of resending it — only for a call whose result names `retry_tool_call`. Paths are segment arrays exactly as the error names them (`[\"page\",\"pageType\"]`, `[\"modules\",3,\"html\"]`). `set` writes a value, `remove` drops a key or array entry, `replace` swaps one exact text inside one string (must match once). The call stays kept while you make the calls its error asks for first (create the page type, then patch). The patched call runs as a new call (permissions, validation, approval re-checked); if it fails again, patch the same toolCallId again.",
+      "description": "Fix a failed write call with a small patch instead of resending it — only for a call whose result names `retry_tool_call`. Paths are segment arrays exactly as the error names them (`[\"page\",\"pageType\"]`, `[\"modules\",3,\"html\"]`). `set` writes a value, `remove` drops a key or array entry, `replace` swaps one exact text inside one string (must match once). `remove` takes a list of paths: `remove: [[\"page\",\"terms\"]]`. The call stays kept while you make the calls its error asks for first (create the page type, then patch). The patched call runs as a new call (permissions, validation, approval re-checked); if it fails again, patch the same toolCallId again.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1961,6 +1961,7 @@
           },
           "set": {
             "type": "array",
+            "description": "List of {path, value}, e.g. [{\"path\":[\"page\",\"pageType\"],\"value\":\"post\"}].",
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -1996,10 +1997,12 @@
                 ]
               },
               "description": "Segment array as the error names it, e.g. [\"modules\",3,\"html\"]."
-            }
+            },
+            "description": "List of paths, e.g. [[\"page\",\"terms\"]]."
           },
           "replace": {
             "type": "array",
+            "description": "List of {path, old, new}.",
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -3982,10 +3985,16 @@
     },
     {
       "name": "retry_quality_audit",
-      "description": "Re-run the staged build's quality check when it FAILED (browser, timeout, staging unreachable) or never ran; changes nothing. Not for re-checking fixes — those need a new Stage, which audits itself.",
+      "description": "Run the staged build's quality check when it FAILED (browser, timeout, staging unreachable) or has none (`get_quality_audit` / `get_publish_gate` say so); changes nothing. Not for re-checking fixes — those need a new Stage, which audits itself.",
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "deployRunId": {
+            "description": "The Stage's build run (from `stage_changes` / `get_quality_audit`). Omit = the build staging serves now.",
+            "type": "string",
+            "format": "uuid"
+          }
+        },
         "additionalProperties": false
       }
     },
@@ -4998,7 +5007,7 @@
           "manifest": {
             "type": "object",
             "additionalProperties": true,
-            "description": "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, hasStaticRender}."
+            "description": "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, tableKinds, hasStaticRender}. publicOperations entries are {name, kind: read|write, captcha: required|none, inputJsonSchema, reads, writes, rateLimit?: {max, windowSeconds}}; tableKinds gives every schema table one kind (published: visitors read; inbox: visitors only insert; visitor-state: visitors read+write; private: admin only)."
           },
           "source": {
             "type": "string",
