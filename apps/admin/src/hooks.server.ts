@@ -59,7 +59,7 @@ import {
   startChangeConsumers,
   syncPluginHost,
 } from "@caelo-cms/plugin-host";
-import { execute } from "@caelo-cms/query-api";
+import { execute, withBranchVisibilityScope } from "@caelo-cms/query-api";
 import { type ExecutionContext, redirectTargetIssue } from "@caelo-cms/shared";
 import type { Handle, ServerInit } from "@sveltejs/kit/hooks";
 import { legacySecurityRedirect } from "#lib/legacy-security-redirect.js";
@@ -557,7 +557,14 @@ export const init: ServerInit = async () => {
   await assertDurableMediaRoot(mediaStorageSetup());
 };
 
-export const handle: Handle = async ({ event, resolve }) => {
+/**
+ * #1392 — every request runs in its own branch-visibility scope: the ops
+ * of one request (a preview, one MCP tool call, a chat turn) ask
+ * `caelo_branch_visible` once per branch, and no verdict outlives it.
+ */
+export const handle: Handle = (input) => withBranchVisibilityScope(() => handleRequest(input));
+
+const handleRequest: Handle = async ({ event, resolve }) => {
   // #684 — the Settings section moved from /security; keep every old link,
   // bookmark and in-flight Approve POST working. Answered before session
   // resolution: the target page runs its own auth guard.
