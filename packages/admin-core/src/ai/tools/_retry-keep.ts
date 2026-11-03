@@ -88,7 +88,14 @@ export function keptCallNotice(toolCallId: string, result: ToolResult): string {
   return `${lead} with \`retry_tool_call({toolCallId:"${toolCallId}", ${example}})\` — also after the calls the error asks for first (the call stays kept). Patch only what the errors name (\`replace\` edits text inside one string); resend only when inputs the errors do not name must change.`;
 }
 
-/** `result` with the kept-call notice appended to its content. */
+/**
+ * `result` with the kept-call notice appended to its content, marked
+ * `retryable` (#1364: a patchable failure is not auto-filed as a bug).
+ */
 export function withKeptCallNotice<R extends ToolResult>(toolCallId: string, result: R): R {
-  return { ...result, content: `${result.content}\n${keptCallNotice(toolCallId, result)}` };
+  return {
+    ...result,
+    content: `${result.content}\n${keptCallNotice(toolCallId, result)}`,
+    retryable: true,
+  };
 }

@@ -961,7 +961,7 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
     const fetchRunBudget = makeFetchRunBudget(toolCtx);
     const budget = fetchRunBudget ? await fetchRunBudget() : null;
     if (budget !== null && (budget.tripped || budget.remainingMicrocents <= 0)) {
-      return { ok: false, content: budget.pauseText };
+      return { ok: false, refusal: true, content: budget.pauseText };
     }
     // issue #306 — resolve the requested model tier BEFORE spawning; an
     // unmapped tier is a loud structured refusal, never a silent
@@ -1067,6 +1067,7 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
     if (input.subagents.length > SUBAGENT_MAX_BATCH) {
       return {
         ok: false,
+        refusal: true,
         content: `spawn_subagents accepts at most ${SUBAGENT_MAX_BATCH} subagents per call; got ${input.subagents.length}. Split the work into multiple calls.`,
       };
     }

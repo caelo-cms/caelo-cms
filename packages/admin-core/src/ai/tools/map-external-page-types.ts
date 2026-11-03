@@ -91,6 +91,7 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
     if (!budget.ok) {
       return {
         ok: false,
+        refusal: true,
         content: `${describeFetchBudgetDenied(budget)} Then map the page types again.`,
       };
     }

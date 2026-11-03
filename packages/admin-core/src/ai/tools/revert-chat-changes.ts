@@ -112,6 +112,7 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
     if (chatSnapshots.length === 0) {
       return {
         ok: false,
+        refusal: true,
         content: `revert_chat_changes: chat ${input.chatSessionId} (branch=${chatBranchId}) has no snapshots — nothing to revert. (If the chat is unpublished, discard it from the chat list instead.)`,
       };
     }
@@ -127,6 +128,7 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
     if (totalEntitySnapshotCount > maxEntities) {
       return {
         ok: false,
+        refusal: true,
         content: `revert_chat_changes: chat touched ${totalEntitySnapshotCount} entity-snapshot rows across ${chatSnapshots.length} snapshots — exceeds the maxEntities cap (${maxEntities}). The same entity touched in N snapshots counts as N (each is a revert operation). Use propose_revert_page / propose_revert_module per-entity, or set maxEntities=${totalEntitySnapshotCount} to override (NOT recommended without operator confirmation).`,
       };
     }
@@ -163,6 +165,7 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
     if (!preChat) {
       return {
         ok: false,
+        refusal: true,
         content: `revert_chat_changes: no snapshot exists before chat ${input.chatSessionId}. Reverting would leave the site empty, which this tool refuses to do. Discard the chat from the chat list instead.`,
       };
     }
