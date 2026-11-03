@@ -60,14 +60,14 @@ import {
   setGatewayAdapter,
 } from "../src/server.js";
 
-/** #1329 — the admin's adapter on the staging twin of cms_public. */
-const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
-
 function required(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`${name} is required`);
   return v;
 }
+
+/** #1329 — the admin's adapter on the staging twin of cms_public. */
+const STAGING_ADAPTER = stagingPublicAdapter(required("PUBLIC_STAGING_ADMIN_DATABASE_URL"));
 
 const ADMIN_URL = required("ADMIN_DATABASE_URL");
 const PUBLIC_ADMIN_URL = required("PUBLIC_ADMIN_DATABASE_URL");
