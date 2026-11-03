@@ -37,7 +37,7 @@ import {
   type ModuleFieldKind,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { pendingSnapshotSql } from "../draft.js";
+import { headOverlaySql, pendingSnapshotSql } from "../draft.js";
 import { loadPagesInView } from "../lists/pages-view.js";
 import { loadListEntities } from "../lists/store.js";
 import { effectiveLayoutModulesSql } from "../ops/content/layout-overlay.js";
@@ -179,28 +179,31 @@ function visible(alias: "p" | "m" | "ci" | "t" | "l", branchId: string | null) {
     : sql`${a}.chat_branch_id IS NULL`;
 }
 
-type OverlayTable =
-  | "module_snapshots"
-  | "template_snapshots"
-  | "content_instance_snapshots"
-  | "page_snapshots"
-  | "page_layout_snapshots";
+/** The draft-head kind of each snapshot table an overlay reads. */
+const OVERLAY_KINDS = {
+  module_snapshots: "module",
+  template_snapshots: "template",
+  content_instance_snapshots: "contentInstance",
+  page_snapshots: "page",
+  page_layout_snapshots: "pageLayout",
+} as const;
 
-/** Latest pending snapshot state per entity of one snapshot table. */
+type OverlayTable = keyof typeof OVERLAY_KINDS;
+
+/**
+ * Latest pending snapshot state per entity of one snapshot table, read
+ * through the draft head: one row per pending entity, not the branch's
+ * whole pending history (#1375).
+ */
 async function overlay(
   tx: TransactionRunner,
   branchId: string,
   table: OverlayTable,
-  idColumn: string,
 ): Promise<Map<string, unknown>> {
-  const rows = (await tx.execute(sql`
-    SELECT DISTINCT ON (x.${sql.raw(idColumn)}) x.${sql.raw(idColumn)}::text AS id, x.state
-    FROM ${sql.raw(table)} x
-    JOIN site_snapshots ss ON ss.id = x.site_snapshot_id
-    WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-    ORDER BY x.${sql.raw(idColumn)}, ss.created_at DESC
-  `)) as unknown as { id: string; state: unknown }[];
-  return new Map(rows.map((r) => [r.id, r.state]));
+  const rows = (await tx.execute(
+    headOverlaySql({ kind: OVERLAY_KINDS[table], table, branchId }),
+  )) as unknown as { entity_id: string; state: unknown }[];
+  return new Map(rows.map((r) => [r.entity_id, r.state]));
 }
 
 /**
@@ -394,7 +397,7 @@ async function overlayBranch(
     templates: Map<string, SourceTemplate>;
   },
 ): Promise<SourcePlacement[]> {
-  for (const [id, raw] of await overlay(tx, branchId, "module_snapshots", "module_id")) {
+  for (const [id, raw] of await overlay(tx, branchId, "module_snapshots")) {
     const s = parseAndUpgradeModuleState(raw);
     if (s.deletedAt) m.modules.delete(id);
     else {
@@ -407,7 +410,7 @@ async function overlayBranch(
       });
     }
   }
-  for (const [id, raw] of await overlay(tx, branchId, "template_snapshots", "template_id")) {
+  for (const [id, raw] of await overlay(tx, branchId, "template_snapshots")) {
     const s = parseAndUpgradeTemplateState(raw);
     const live = m.templates.get(id);
     if (s.deletedAt) m.templates.delete(id);
@@ -419,22 +422,17 @@ async function overlayBranch(
         layoutId: live?.layoutId ?? null,
       });
   }
-  for (const [id, raw] of await overlay(
-    tx,
-    branchId,
-    "content_instance_snapshots",
-    "content_instance_id",
-  )) {
+  for (const [id, raw] of await overlay(tx, branchId, "content_instance_snapshots")) {
     const s = raw as { moduleId: string; values: unknown; deletedAt: string | null };
     if (s.deletedAt) m.instances.delete(id);
     else m.instances.set(id, { id, moduleId: s.moduleId, values: asRecord(s.values) });
   }
-  for (const [id, raw] of await overlay(tx, branchId, "page_snapshots", "page_id")) {
+  for (const [id, raw] of await overlay(tx, branchId, "page_snapshots")) {
     const s = raw as { templateId?: string; deletedAt?: string | null };
     if (s.deletedAt) m.pageTemplates.delete(id);
     else if (s.templateId && m.pageTemplates.has(id)) m.pageTemplates.set(id, s.templateId);
   }
-  const layoutOverlay = await overlay(tx, branchId, "page_layout_snapshots", "page_id");
+  const layoutOverlay = await overlay(tx, branchId, "page_layout_snapshots");
   const kept = m.placements.filter(
     (p) => m.pageTemplates.has(p.pageId) && !layoutOverlay.has(p.pageId),
   );

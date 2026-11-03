@@ -21,6 +21,16 @@
  * created), with the branch's latest PENDING content-instance snapshot
  * (the same boundary `loadBranchedModuleStates` uses) superseding the
  * live values. A content instance the branch deleted does not count.
+ *
+ * #1375 — that latest pending state comes from the draft head
+ * (`draft_pending_entities`, #1268): one row per pending instance. The
+ * earlier read walked every pending content-instance snapshot of the
+ * branch, with its full state, and sorted them; on the shared draft of a
+ * site with several agents at work that is the whole day's edit history,
+ * and it ran on every `content_instances.get` / `.list` / `set_values_many`
+ * and `lists.list` (through the reach). Each took the 60 s statement
+ * timeout on the production database, held a pooled connection for it,
+ * and the admin answered nothing for half an hour.
  */
 
 import {
@@ -32,7 +42,7 @@ import {
 import { extractMediaRefs, ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
-import { pendingSnapshotSql } from "../../draft.js";
+import { headOverlaySql } from "../../draft.js";
 import type { ContentInstanceState } from "../../snapshots/state.js";
 
 /** One content instance whose values matched, with its values as JSON text. */
@@ -139,6 +149,10 @@ export async function findContentInstancesOfModules(
     chatBranchId ?? null,
     sql`ci.module_id = ANY(${uuidArray(moduleIds)})`,
     (moduleId) => wanted.has(moduleId),
+    // An instance never changes its module, so the branched states of
+    // other modules can stay in the database (the live filter drops their
+    // live rows the same way).
+    sql`es.state->>'moduleId' = ANY(${textArray(moduleIds)})`,
   );
 }
 
@@ -146,33 +160,43 @@ export async function findContentInstancesOfModules(
  * The live rows matching `liveFilter`, with the branch's pending states
  * superseding them (kept when `matchesBranched` accepts the branched
  * values) and instances the branch deleted dropped.
+ *
+ * @param branchedWhere narrows the branched states in SQL (a predicate on
+ *   the head row `d` / snapshot row `es`). It may only drop instances whose
+ *   live row `liveFilter` drops too: an instance left out here is not
+ *   known to be branched, so its live row would stand in for it.
  */
 async function loadInstancesInView(
   tx: TransactionRunner,
   branchId: string | null,
   liveFilter: SQL,
   matchesBranched: (moduleId: string, valuesText: string) => boolean,
+  branchedWhere?: SQL,
 ): Promise<ContentInstanceRef[]> {
   const out = new Map<string, ContentInstanceRef>();
 
   // Branched states first: they supersede the live row for this caller.
   const branched = new Set<string>();
   if (branchId) {
-    const rows = (await tx.execute(sql`
-      SELECT DISTINCT ON (cis.content_instance_id)
-             cis.content_instance_id::text AS id, cis.state
-        FROM content_instance_snapshots cis
-        JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-       WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-       ORDER BY cis.content_instance_id, ss.created_at DESC
-    `)) as unknown as { id: string; state: unknown }[];
+    const rows = (await tx.execute(
+      headOverlaySql({
+        kind: "contentInstance",
+        table: "content_instance_snapshots",
+        branchId,
+        ...(branchedWhere ? { where: branchedWhere } : {}),
+      }),
+    )) as unknown as { entity_id: string; state: unknown }[];
     for (const r of rows) {
       const state = r.state as ContentInstanceState;
-      branched.add(r.id);
+      branched.add(r.entity_id);
       if (state.deletedAt) continue;
       const valuesText = JSON.stringify(state.values ?? {});
       if (matchesBranched(state.moduleId, valuesText)) {
-        out.set(r.id, { contentInstanceId: r.id, moduleId: state.moduleId, valuesText });
+        out.set(r.entity_id, {
+          contentInstanceId: r.entity_id,
+          moduleId: state.moduleId,
+          valuesText,
+        });
       }
     }
   }

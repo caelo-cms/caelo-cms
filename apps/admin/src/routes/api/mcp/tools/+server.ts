@@ -7,6 +7,7 @@
  * the HTTP shell — same shape as ../chat/+server.ts.
  */
 
+import { mcpBusyFailureResponse } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { error, json } from "@sveltejs/kit";
 import { mcpOpFailure, mcpSystemCtx } from "#lib/server/mcp-http.js";
@@ -15,7 +16,7 @@ import type { RequestHandler } from "./$types";
 
 const SYSTEM_CTX = mcpSystemCtx("mcp-http-tools");
 
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, url }) => {
   const token = request.headers.get("x-caelo-mcp-token");
   if (!token) throw error(401, "missing x-caelo-mcp-token header");
 
@@ -25,6 +26,8 @@ export const POST: RequestHandler = async ({ request }) => {
   });
 
   if (!r.ok) {
+    const busy = mcpBusyFailureResponse(r.error, url.pathname);
+    if (busy) return busy;
     const failure = mcpOpFailure(r.error, "mcp.list_tools");
     throw error(failure.status, failure.message);
   }

@@ -47,10 +47,12 @@ import {
   liftSessionTimeouts,
   NestedPoolCheckoutError,
   POOL_ACQUIRE_TIMEOUT_MS,
+  POOL_BUSY_RETRY_AFTER_MS,
   PoolAcquireTimeoutError,
   PoolGuard,
   type PoolName,
 } from "./pool-guard.js";
+import { BUN_DEFAULT_POOL_MAX, PoolDemand, type PoolPressure } from "./pool-pressure.js";
 import {
   collectPostCommitEffects,
   commitNoticeOf,
@@ -394,6 +396,8 @@ export class DatabaseAdapter {
   readonly #acquireTimeoutMs: number;
   /** Issue #1210 — which call chains hold a transaction of which pool. */
   readonly #guard = new PoolGuard();
+  /** Issue #1375 — who waits for and who holds each pool's connections. */
+  readonly #demand: Record<PoolName, PoolDemand>;
   #verifyPromise: Promise<void> | null = null;
   #projectionPublisher: (() => Promise<unknown>) | null = null;
   readonly #onStatement: ((statement: string) => void) | null;
@@ -431,6 +435,19 @@ export class DatabaseAdapter {
     this.#public = drizzle(this.#publicRaw, this.#drizzleOptions);
     this.#skipVerify = config.skipRoleVerification === true;
     this.#acquireTimeoutMs = config.poolAcquireTimeoutMs ?? POOL_ACQUIRE_TIMEOUT_MS;
+    this.#demand = {
+      admin: new PoolDemand("admin", poolMax ?? BUN_DEFAULT_POOL_MAX),
+      public: new PoolDemand("public", publicPoolMax ?? BUN_DEFAULT_POOL_MAX),
+    };
+  }
+
+  /**
+   * Issue #1375 — how busy `pool` is right now: connections in use, callers
+   * waiting and for how long, and who holds the connections. A snapshot for
+   * back-pressure and diagnostics; it changes nothing.
+   */
+  poolPressure(pool: PoolName): PoolPressure {
+    return this.#demand[pool].snapshot();
   }
 
   /**
@@ -453,6 +470,7 @@ export class DatabaseAdapter {
     if (plan.kind === "join") return this.#joinHeld(pool, plan.outer, plan.marker, fn);
     const marker = plan.marker;
     const reserved = await this.#reserve(pool, raw, holder);
+    const endHold = this.#demand[pool].beginHold(holder);
     try {
       // drizzle's transaction() is `client.begin()`, which on a reserved
       // connection runs on exactly that connection.
@@ -469,6 +487,7 @@ export class DatabaseAdapter {
       return out;
     } finally {
       reserved.release();
+      endHold();
       await this.#runAfterEnd(marker);
     }
   }
@@ -558,6 +577,7 @@ export class DatabaseAdapter {
   ): Promise<Awaited<ReturnType<SQL["reserve"]>>> {
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(), this.#acquireTimeoutMs);
+    const endWait = this.#demand[pool].beginWait();
     try {
       return await raw.reserve({ signal: deadline.signal });
     } catch (e) {
@@ -566,6 +586,7 @@ export class DatabaseAdapter {
       }
       throw e;
     } finally {
+      endWait();
       clearTimeout(timer);
     }
   }
@@ -1183,11 +1204,48 @@ export class DatabaseAdapter {
   rawAdmin(): SQL {
     if (this.#adminRaw === null) throw new AdminDatabaseUnavailableError("rawAdmin");
     this.#guard.assertNoHeldTransaction("admin", "rawAdmin()");
-    return this.#adminRaw;
+    return this.#trackedRaw("admin", this.#adminRaw);
   }
   rawPublic(): SQL {
     this.#guard.assertNoHeldTransaction("public", "rawPublic()");
-    return this.#publicRaw;
+    return this.#trackedRaw("public", this.#publicRaw);
+  }
+
+  /**
+   * #1375 — the raw pool with its `begin()` counted in {@link poolPressure}
+   * (a waiter until the transaction starts, then a holder named
+   * `raw.begin` until it ends), so workers that open their own transaction
+   * on the raw pool (rate limiter, provider resolver, GC workers) show up
+   * in the back-pressure decision and its log. Everything else passes
+   * through unchanged.
+   */
+  #trackedRaw(pool: PoolName, raw: SQL): SQL {
+    const demand = this.#demand[pool];
+    return new Proxy(raw, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== "begin" || typeof value !== "function") {
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return (...args: unknown[]) => {
+          const last = args.length - 1;
+          const fn = args[last];
+          if (typeof fn !== "function") return value.apply(target, args);
+          const endWait = demand.beginWait();
+          const counted = async (tx: unknown) => {
+            endWait();
+            const endHold = demand.beginHold("raw.begin");
+            try {
+              return await (fn as (tx: unknown) => unknown)(tx);
+            } finally {
+              endHold();
+            }
+          };
+          const out = value.apply(target, [...args.slice(0, last), counted]) as Promise<unknown>;
+          return out.finally(endWait);
+        };
+      },
+    });
   }
 
   /**
@@ -1371,6 +1429,16 @@ export function thrownToQueryError(
   access: "read" | "write",
 ): QueryError {
   const raw = thrown instanceof Error ? thrown.message : String(thrown);
+  // #1375 — an exhausted pool is load, not a defect: no bug report, and the
+  // caller is told when to send the same call again.
+  if (thrown instanceof PoolAcquireTimeoutError) {
+    return {
+      kind: "HandlerError",
+      operation,
+      message: raw,
+      busy: { retryAfterMs: POOL_BUSY_RETRY_AFTER_MS },
+    };
+  }
   if (isRlsDenial(thrown)) {
     console.warn(`[query-api] ${operation}: RLS denied the ${access}: ${raw}`);
     return { kind: "RLSDenied", operation, detail: rlsDenialMessage(operation, access) };

@@ -14,6 +14,7 @@
  * as structured JSON, not as redirects.
  */
 
+import { mcpBusyFailureResponse } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import {
   CHAT_MAX_ATTACHMENTS,
@@ -31,7 +32,7 @@ const SYSTEM_CTX: ExecutionContext = {
   requestId: "mcp-http",
 };
 
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, url }) => {
   const token = request.headers.get("x-caelo-mcp-token");
   if (!token) throw error(401, "missing x-caelo-mcp-token header");
 
@@ -66,6 +67,9 @@ export const POST: RequestHandler = async ({ request }) => {
   });
 
   if (!r.ok) {
+    const busy = mcpBusyFailureResponse(r.error, url.pathname);
+
+    if (busy) return busy;
     const msg = "message" in r.error ? r.error.message : r.error.kind;
     // auth errors → 401; everything else → 500. The bridge surfaces the
     // error.message verbatim so MCP clients see "auth_error: token
