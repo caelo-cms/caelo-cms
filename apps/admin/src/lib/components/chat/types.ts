@@ -93,10 +93,10 @@ export interface ChatMessage {
    *  render, and shows an "interrupted" marker where a reply died. */
   status?: "complete" | "interrupted";
   /**
-   * issue #190 — operator-attached images on user messages. Rendered
-   * as thumbnails in the transcript (served from /_caelo/media); the
-   * chat-runner inlines the most recent message's images as provider
-   * image parts.
+   * issue #190 — operator-attached images on user messages (`assetId`,
+   * served from /_caelo/media), and issue #356 — images a tool produced,
+   * on tool rows (`storageKey` under `chat-images/`, served by the chat's
+   * own images route, #359). Exactly one of the two ids is set.
    */
-  attachments?: { assetId: string; mime: string; alt?: string }[] | null;
+  attachments?: { assetId?: string; storageKey?: string; mime: string; alt?: string }[] | null;
 }

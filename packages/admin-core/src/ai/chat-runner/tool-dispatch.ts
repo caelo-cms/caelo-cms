@@ -570,9 +570,9 @@ export async function dispatchToolCall(
   // v0.3.0 — when the tool returned an image (screenshot_page is
   // the only producer today), build a multimodal user message so the
   // AI sees the image alongside the text result on its next provider
-  // call. Image content is NOT persisted to chat_messages — it's
-  // runtime-only. After publish, the chat history shows only the text
-  // result; the image was consumed by the AI for that turn. Deferred
+  // call. This follow-up message is runtime-only; what persists is the
+  // attachment on the tool row above (#356), which a reloaded transcript
+  // shows through the chat's images route (#359). Deferred
   // (not pushed inline) so parallel image-returning calls keep every
   // tool result ahead of the first user message — see the parameter
   // doc above.
