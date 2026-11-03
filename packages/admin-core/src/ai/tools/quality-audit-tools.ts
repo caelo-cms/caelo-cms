@@ -328,7 +328,7 @@ export const getQualityAuditTool: typeof readQualityAuditTool = {
     };
     if (!input.deployRunId) return readUntilSettled(read, opts);
     // #1211 — a Stage that outlasted stage_changes' wait is still building:
-    // wait for its build (and its audit to be queued) first.
+    // wait for its build first (its audit is queued with it, #1319).
     const runId = input.deployRunId;
     return readStageAudit(
       {
@@ -392,6 +392,7 @@ export async function readStageAudit<R extends { ok: boolean; value?: unknown }>
 
 /** What get_quality_audit reads of a Stage's deploy run (deploy.get_run). */
 export interface StageRun {
+  readonly env: "dev" | "staging" | "production";
   readonly status: "pending" | "running" | "succeeded" | "failed";
   readonly errorMessage: string | null;
   readonly progress: { pagesDone: number; pagesTotal: number } | null;
@@ -402,13 +403,17 @@ type StageBuildState =
   | { readonly kind: "missing" }
   | { readonly kind: "running"; readonly run: StageRun }
   | { readonly kind: "failed"; readonly run: StageRun }
-  | { readonly kind: "audit-pending" }
+  | { readonly kind: "not-staging"; readonly run: StageRun }
+  | { readonly kind: "audit-missing" }
   | { readonly kind: "ready" };
 
 /**
- * Wait while a Stage's build runs, and after it succeeded until its audit
- * is queued (stage_changes queues it right after the build), within the
- * same bounded wait as a running audit.
+ * Wait while a Stage's build runs, within the same bounded wait as a
+ * running audit. #1319 — a staging build's audit row commits with the
+ * build's success (deploy.finish_trigger), so the run is read FIRST: a
+ * succeeded run whose audit is then still absent has none (a build staged
+ * before #1319, whose audit was lost), and waiting would not change that.
+ * Before, this answered "is being queued" for such a run forever.
  */
 export async function waitForStageBuild(
   readRun: () => Promise<StageRun | null>,
@@ -425,13 +430,14 @@ export async function waitForStageBuild(
   const now = opts.now ?? Date.now;
   const deadline = now() + opts.waitMs;
   for (;;) {
-    if (await auditExists()) return { kind: "ready" };
     const run = await readRun();
     let state: StageBuildState;
     if (run === null) state = { kind: "missing" };
     else if (run.status === "failed") return { kind: "failed", run };
-    else if (run.status === "succeeded") state = { kind: "audit-pending" };
-    else state = { kind: "running", run };
+    else if (run.env !== "staging") return { kind: "not-staging", run };
+    else if (run.status === "succeeded") {
+      return (await auditExists()) ? { kind: "ready" } : { kind: "audit-missing" };
+    } else state = { kind: "running", run };
     if (now() >= deadline || opts.signal?.aborted) return state;
     await sleep(opts.intervalMs);
   }
@@ -457,10 +463,16 @@ async function describeStageBuild(
       };
     case "running":
       return { ok: true, content: stillRunningStageText(runId, await readStatus()) };
-    case "audit-pending":
+    case "not-staging":
       return {
-        ok: true,
-        content: `The Stage's build (run ${runId}) succeeded; its quality check is being queued. Call get_quality_audit with deployRunId "${runId}" again.`,
+        ok: false,
+        content: `Run ${runId} is a ${state.run.env} build, not a Stage: only staging builds have a quality check. Call get_quality_audit without deployRunId for this chat's newest audit, or get_publish_gate for the staged build's.`,
+      };
+    case "audit-missing":
+      // #1319 — a Publish-live blocker with a one-call fix: say both.
+      return {
+        ok: false,
+        content: `The Stage's build (run ${runId}) succeeded, but it has NO quality check (none was ever queued for it), so Publish live stays blocked. Call retry_quality_audit with deployRunId "${runId}" now: it queues the check of that build (if it answers that a newer Stage replaced it, check that one instead). Do not Stage again only for this.`,
       };
     case "missing":
       return { ok: true, content: stillRunningStageText(runId, null) };

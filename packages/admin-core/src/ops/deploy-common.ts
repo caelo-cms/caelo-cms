@@ -5,10 +5,12 @@
  * deploy-trigger.ts: Stage and every other build). Internal to admin-core.
  */
 
+import { resolve } from "node:path";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext, PhaseTimer } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { resolveOutputRoot } from "../deploy/output-root.js";
 import type { StaticPublisher } from "../deploy/static-publisher.js";
 
 /**
@@ -148,4 +150,23 @@ export async function selectServedStagingPreview(
       { servedRunId, notRetired },
     );
   }
+}
+
+/**
+ * Absolute path of a run's build archive (`<outDir>/builds/<runId>`) as
+ * deploy.trigger wrote it on THIS process — the #553 audit serves it when
+ * the provider has no reachable staging origin.
+ */
+export function localBuildArchiveDir(args: {
+  provider: string | undefined;
+  env: string;
+  outDir: string;
+  runId: string;
+}): string {
+  return resolve(
+    resolveOutputRoot(),
+    effectiveOutDir(args.provider, args.env, args.outDir),
+    "builds",
+    args.runId,
+  );
 }

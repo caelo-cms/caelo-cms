@@ -25,7 +25,6 @@
  * while it builds, uploads or releases (#1211, #1225, #1250).
  */
 
-import { resolve } from "node:path";
 import {
   type DatabaseAdapter,
   defineOperation,
@@ -35,34 +34,14 @@ import {
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { resolveOutputRoot } from "../deploy/output-root.js";
 import { tryLockStagingPublication } from "../deploy/staging-publication-lock.js";
 import { loadStaticPublisher } from "../deploy/static-publisher.js";
-import { effectiveOutDir, rowToTarget, type TargetDbRow, targetRow } from "./deploy-common.js";
+import { rowToTarget, type TargetDbRow, targetRow } from "./deploy-common.js";
 import { settleOrphanedRuns } from "./deploy-run-lifecycle.js";
 
-export { effectiveOutDir } from "./deploy-common.js";
+export { effectiveOutDir, localBuildArchiveDir } from "./deploy-common.js";
 export { promoteDeployOp } from "./deploy-promote.js";
 export { triggerDeployOp } from "./deploy-trigger.js";
-
-/**
- * Absolute path of a run's build archive (`<outDir>/builds/<runId>`) as
- * deploy.trigger wrote it on THIS process — the #553 audit serves it when
- * the provider has no reachable staging origin.
- */
-export function localBuildArchiveDir(args: {
-  provider: string | undefined;
-  env: string;
-  outDir: string;
-  runId: string;
-}): string {
-  return resolve(
-    resolveOutputRoot(),
-    effectiveOutDir(args.provider, args.env, args.outDir),
-    "builds",
-    args.runId,
-  );
-}
 
 const runRow = z.object({
   id: z.string(),

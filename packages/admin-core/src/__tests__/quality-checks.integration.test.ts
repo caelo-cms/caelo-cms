@@ -151,21 +151,28 @@ async function stage(chatSessionId: string): Promise<{ runId: string; auditNeede
     "chat.merge_to_main",
     { chatSessionId, deferConsume: true, headerIds },
   );
+  // #1319 — the build queues its audit in the transaction that records it.
   const built = await op<{ runId: string }>(HUMAN, "deploy.trigger", {
     targetName: "staging",
     repoRoot: testRoot,
+    qualityAudit: { chatSessionId, branch, stagedBy: "operator" },
   });
   await op(HUMAN, "chat.finalize_stage", {
     chatSessionId,
     stagedAt: merged.mergedAt,
     headerIds: merged.mergedHeaderIds,
   });
-  const q = await op<{ classification: { auditNeeded: boolean } }>(
-    HUMAN,
-    "quality_audits.enqueue",
-    { deployRunId: built.runId, chatSessionId, branch, stagedBy: "operator" },
+  const q = await withSql(
+    async (tx) =>
+      (await tx`SELECT classification FROM quality_audit_runs WHERE deploy_run_id = ${built.runId}::uuid`) as unknown as {
+        classification: { auditNeeded: boolean };
+      }[],
   );
-  return { runId: built.runId, auditNeeded: q.classification.auditNeeded };
+  expect(q).toHaveLength(1);
+  return {
+    runId: built.runId,
+    auditNeeded: (q[0] as { classification: { auditNeeded: boolean } }).classification.auditNeeded,
+  };
 }
 
 interface AuditRead {
@@ -329,14 +336,10 @@ describe("the per-rule ratchet", () => {
   async function recordFindings(
     findings: { ruleId: string; pageId?: string; severity?: "error" | "warning" }[],
   ): Promise<string> {
-    const built = await op<{ runId: string }>(SYS, "deploy.trigger", {
+    // #1319 — the build queues its own audit (outside a chat).
+    await op<{ runId: string }>(SYS, "deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
-    });
-    await op(SYS, "quality_audits.enqueue", {
-      deployRunId: built.runId,
-      chatSessionId: null,
-      branch: null,
     });
     const claimed = await op<{ run: { auditRunId: string } }>(SYS, "quality_audits.claim_next", {});
     await op(SYS, "quality_audits.record_result", {
@@ -479,17 +482,16 @@ describe("a broken check", () => {
           n: number;
         }[],
     );
+    const chatSessionId = await newChat("flaky");
     const built = await op<{ runId: string }>(SYS, "deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
-    });
-    const chatSessionId = await newChat("flaky");
-    await op(HUMAN, "quality_audits.enqueue", {
-      deployRunId: built.runId,
-      chatSessionId,
-      branch: {
-        classification: { auditNeeded: false, reasons: [], skipped: ["field values: x"] },
-        touchedPageIds: [],
+      qualityAudit: {
+        chatSessionId,
+        branch: {
+          classification: { auditNeeded: false, reasons: [], skipped: ["field values: x"] },
+          touchedPageIds: [],
+        },
       },
     });
     await audit(noLighthouse, checks);
