@@ -35,7 +35,8 @@
     {
       "type": "required_status_checks",
       "parameters": {
-        "strict_required_status_checks_policy": true,
+        "strict_required_status_checks_policy": false,
+        "_strict_note": "Off: with many PRs merged back to back, requiring each branch to be up to date with main forces a rebase and a full CI rerun per merge. main's own CI after each merge catches what a stale branch missed.",
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           { "context": "Lockfile freshness" },
@@ -51,6 +52,10 @@
           {
             "context": "Admin production image — boot smoke",
             "_note": "Job in .github/workflows/ci.yml (admin-prod-image). Added in #55 — release-images catches build-time regressions; this catches boot-time `Cannot find module` regressions that the build-only matrix can't (the bug class #53 fixed crashes on `docker run`, not on `docker build`)."
+          },
+          {
+            "context": "Real-AI live-edit scenario",
+            "_note": "Job in .github/workflows/e2e-livedit.yml (issue #47): the live-API chat scenarios. Skipped (which passes) when a PR's paths or the weekly budget select no scenario; required so a run that did start must pass."
           },
           {
             "context": "CodeQL",
