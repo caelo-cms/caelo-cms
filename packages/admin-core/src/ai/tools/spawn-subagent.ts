@@ -998,6 +998,30 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
   },
 };
 
+/**
+ * #1364 — whether a `spawn_subagents` batch failed only because a budget
+ * stopped it (the run ceiling or the fallback batch cap): the budget
+ * working as designed, so a refusal and not an automatic bug report. A
+ * child that errored or timed out keeps the failure filed.
+ */
+export function isBudgetStopOnly(outcome: {
+  readonly budgetStopped: boolean;
+  readonly fallbackOverBudget: boolean;
+  readonly results: readonly { readonly status: string; readonly errorKind?: string }[];
+}): boolean {
+  const isBudgetStop = (r: { readonly status: string; readonly errorKind?: string }) =>
+    r.status === "errored" && r.errorKind !== undefined && BUDGET_STOP_KINDS.has(r.errorKind);
+  return (
+    (outcome.budgetStopped || outcome.fallbackOverBudget || outcome.results.some(isBudgetStop)) &&
+    outcome.results.every(
+      (r) => r.status === "completed" || r.status === "partial" || isBudgetStop(r),
+    )
+  );
+}
+
+/** Spec outcomes that only say a budget stopped the spec (never started or not re-dispatched). */
+const BUDGET_STOP_KINDS: ReadonlySet<string> = new Set(["batch-aborted", "run-budget-paused"]);
+
 export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInput> = {
   name: "spawn_subagents",
   description:
@@ -1150,6 +1174,10 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
       !outcome.fallbackOverBudget &&
       !outcome.budgetStopped &&
       outcome.results.every((r) => r.status === "completed");
-    return { ok: allCompleted, content: summarize(outcome.results) + rollUp };
+    return {
+      ok: allCompleted,
+      content: summarize(outcome.results) + rollUp,
+      ...(isBudgetStopOnly(outcome) ? { refusal: true as const } : {}),
+    };
   },
 };
