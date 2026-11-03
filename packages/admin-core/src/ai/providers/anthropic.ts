@@ -39,6 +39,7 @@ import type {
   GenerateObjectResult,
   ProviderEvent,
   ProviderName,
+  ToolDefinition,
 } from "../provider.js";
 import { runSDKGenerateObject, runSDKStream, toSDKMessages } from "./_sdk-shared.js";
 
@@ -496,6 +497,27 @@ export class AnthropicProvider implements AIProvider {
     this.#model = provider(options.model as Parameters<typeof provider>[0]);
   }
 
+  /**
+   * The tools Tool Search defers in a request carrying `tools`. Empty when
+   * the operator turned it off, or when the catalogue is below the
+   * threshold where it wins (small catalogues lose more on the search-tool
+   * overhead than they gain on description tokens; narrowed subagent
+   * catalogues ship fully loaded). Threshold defaults to 10, tunable via
+   * CAELO_ANTHROPIC_TOOL_SEARCH_THRESHOLD. Core workflow tools
+   * (`alwaysLoaded`, from CORE_TOOL_NAMES) keep their full definition in
+   * every request so a routine edit never needs a discovery round-trip.
+   */
+  deferredToolNames(tools: readonly ToolDefinition[]): ReadonlySet<string> {
+    if (this.#toolSearch === "off") return new Set();
+    const thresholdRaw = process.env.CAELO_ANTHROPIC_TOOL_SEARCH_THRESHOLD;
+    const threshold =
+      thresholdRaw && Number.isFinite(Number(thresholdRaw))
+        ? Math.max(1, Number(thresholdRaw))
+        : 10;
+    if (tools.length < threshold) return new Set();
+    return new Set(tools.filter((t) => !t.alwaysLoaded).map((t) => t.name));
+  }
+
   async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
     const systemEncoding = buildSystemEncoding(input.systemPrompt, input.cacheBreakpoints);
     const encodeConversation = (msgs: readonly ChatMessageInput[]): ModelMessage[] => [
@@ -516,24 +538,8 @@ export class AnthropicProvider implements AIProvider {
         },
       };
     }
-    // v0.6.0 W2 — Tool Search transform. Skip when (a) operator hasn't
-    // opted in, OR (b) catalogue is below the threshold where Tool
-    // Search wins (small catalogues lose more on the search-tool
-    // overhead than they gain on description token reduction).
-    // Threshold defaults to 10; tunable via
-    // CAELO_ANTHROPIC_TOOL_SEARCH_THRESHOLD env so deployments with
-    // catalog growth or shrinkage can adjust without a code change.
-    const thresholdRaw = process.env.CAELO_ANTHROPIC_TOOL_SEARCH_THRESHOLD;
-    const threshold =
-      thresholdRaw && Number.isFinite(Number(thresholdRaw))
-        ? Math.max(1, Number(thresholdRaw))
-        : 10;
-    const useToolSearch = this.#toolSearch !== "off" && input.tools.length >= threshold;
-    // Core workflow tools (ToolDefinition.alwaysLoaded, set from
-    // CORE_TOOL_NAMES) keep their full definition in every request so a
-    // routine edit never needs a discovery round-trip; only the long
-    // tail defers behind the search tool.
-    const alwaysLoadedNames = new Set(input.tools.filter((t) => t.alwaysLoaded).map((t) => t.name));
+    const deferredNames = this.deferredToolNames(input.tools);
+    const useToolSearch = deferredNames.size > 0;
     if (this.#toolSearch !== "off" && process.env.CAELO_DEBUG_TOOL_SEARCH === "1") {
       // Telemetry: log whether the transform engaged this turn AND the
       // loaded-vs-deferred split, so the operator can confirm BM25 fired
@@ -542,11 +548,12 @@ export class AnthropicProvider implements AIProvider {
       console.log("[anthropic.toolSearch]", {
         mode: this.#toolSearch,
         toolCount: input.tools.length,
-        threshold,
         engaged: useToolSearch,
-        alwaysLoaded: alwaysLoadedNames.size,
-        deferred: useToolSearch ? input.tools.length - alwaysLoadedNames.size : 0,
-        alwaysLoadedNames: [...alwaysLoadedNames].sort(),
+        deferred: deferredNames.size,
+        alwaysLoadedNames: input.tools
+          .filter((t) => !deferredNames.has(t.name))
+          .map((t) => t.name)
+          .sort(),
       });
     }
     const toolsTransform = useToolSearch
@@ -556,7 +563,7 @@ export class AnthropicProvider implements AIProvider {
           // Claude calls the search tool to discover it.
           let lastCoreName: string | undefined;
           for (const [name, def] of Object.entries(built)) {
-            if (alwaysLoadedNames.has(name)) {
+            if (!deferredNames.has(name)) {
               // Non-deferred (core) tool — track the last one so the tool
               // cache breakpoint lands on it below.
               lastCoreName = name;
@@ -635,6 +642,7 @@ export class AnthropicProvider implements AIProvider {
       // the initial request (system chunks + rolling conversation cache
       // breakpoint), so an overridden step's bytes match a fresh call's.
       loopMessages: encodeConversation,
+      deferredToolNames: deferredNames,
     });
     const wire = wirePath();
     if (!wire) {
@@ -858,6 +866,16 @@ export class FixtureProvider implements AIProvider {
     this.model = model;
   }
 
+  /**
+   * A fixture replays scripted events and sends no tool definitions to a
+   * provider, so nothing is deferred. A test that needs a deferring
+   * provider sets `deferred`.
+   */
+  deferred: ReadonlySet<string> = new Set();
+  deferredToolNames(): ReadonlySet<string> {
+    return this.deferred;
+  }
+
   /** Subclass hook — which script the NEXT model step replays. */
   protected nextStepEvents(): readonly ProviderEvent[] {
     return this.#stepEvents();
@@ -901,6 +919,7 @@ export class FixtureProvider implements AIProvider {
       model: model as unknown as import("ai").LanguageModel,
       input,
       systemAndMessages: { system, messages: toSDKMessages(input.messages) },
+      deferredToolNames: this.deferred,
     });
   }
 

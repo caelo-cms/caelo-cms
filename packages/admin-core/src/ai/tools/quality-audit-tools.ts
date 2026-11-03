@@ -103,7 +103,7 @@ function statusLine(run: AuditRun): string {
 export const AUDIT_FIX_LOOP_NEXT_STEP =
   "NEXT STEP — do not report these problems to the operator as a result; fix them now. " +
   "First every category marked DROPPED since the page's previous audit (look at the changes since then first), then every other PROBLEM: fix it in the module, page or theme the flagged elements and metrics name, call stage_changes, read get_quality_audit again, and repeat until the audit passes. " +
-  "Performance is already the best of several runs (host noise only ever slows a run down, so the best run is the page itself): a score below 100 is not measurement noise — fix what the metrics name. " +
+  "Performance is already de-noised (the best of several runs that agree, or the median of five when they disagree): a score below 100 is not measurement noise — fix what the metrics name. " +
   "Go to the operator only with what you proved cannot be fixed in the site (a CAELO PLATFORM finding: bug_report; a fix that would break what the operator asked for), as one accept_quality_findings decision per group, with the reason why.";
 
 /** Whether an audit result still has a problem no editor accepted. */
@@ -253,7 +253,7 @@ const readQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   name: "get_quality_audit",
   description:
     "Read the staged site's quality check: plugin page checks (when an active plugin adds any, e.g. SEO) reading EVERY page on every Stage, plus a mobile Lighthouse audit (Performance, Accessibility, Best Practices, SEO) when the Stage changed how pages render. No args = newest audit of THIS chat's Stages.\n" +
-    "Returns per page: scores; Performance metrics (FCP, LCP, TBT, CLS, Speed Index: best run + Lighthouse rating; LCP element + breakdown; shifted elements + causes); each problem's Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `render-blocking-insight`) + flagged elements (selector, HTML snippet, why, e.g. measured contrast); each page-check problem's rule id `<check>/<rule>` (contains a slash, e.g. `seo-check/title-missing`) + fix hint naming the tool. Plus site-wide findings, non-blocking warnings/hints, infrastructure errors.\n" +
+    "Returns per page: scores; Performance metrics (FCP, LCP, TBT, CLS, Speed Index: scoring run + Lighthouse rating; LCP element + breakdown; shifted elements + causes); each problem's Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `render-blocking-insight`) + flagged elements (selector, HTML snippet, why, e.g. measured contrast); each page-check problem's rule id `<check>/<rule>` (contains a slash, e.g. `seo-check/title-missing`) + fix hint naming the tool. Plus site-wide findings, non-blocking warnings/hints, infrastructure errors.\n" +
     "USE FOR: after a Stage, what to fix. Already accepted -> `list_quality_acceptances`. Never run Lighthouse yourself: the audit runs on the real staged build (no other URL serves it).\n" +
     "CORE RULES:\n" +
     "- TARGET 100 IN EVERY CATEGORY + ZERO FINDINGS: every category <100, every scored Lighthouse audit below perfect, every page-check error BLOCKS Publish live. 90 is NOT acceptable — fix until 100 wherever achievable. ACCEPTED problems don't block (a worse value than accepted blocks again). Warnings/hints never block.\n" +

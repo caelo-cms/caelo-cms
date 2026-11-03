@@ -368,6 +368,9 @@ export interface ToolDispatchResult {
   // ToolResult.value. Consumed by the W3 retry path to
   // extract a field at nextAction.retryWithArgs.fromValuePath.
   value?: unknown;
+  // #991 — propagated from ToolResult.toolReferences: deferred tools the
+  // result loads (`toolReferenceMessages` in tool-dispatch.ts).
+  toolReferences?: readonly string[];
   // #1091 — propagated from ToolResult.refusal: a guard refusal the
   // automatic bug capture skips.
   refusal?: true;

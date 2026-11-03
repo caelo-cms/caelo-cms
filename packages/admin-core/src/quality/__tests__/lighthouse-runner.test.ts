@@ -130,8 +130,8 @@ out({ kind: "done" });`,
     expect(r.failure.message).toContain("metrics");
   });
 
-  it("budgets time per page and run", () => {
-    expect(auditTimeoutMs(job)).toBe(30_000 + 3 * 60_000);
+  it("budgets time per page and run, counting every page's possible confirmation runs", () => {
+    expect(auditTimeoutMs(job)).toBe(30_000 + 5 * 60_000);
   });
 });
 

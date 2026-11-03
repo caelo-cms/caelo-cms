@@ -11,8 +11,9 @@
  * #428), launched with the DevTools port Lighthouse connects to on
  * 127.0.0.1. Before the first run the session measures the host's benchmark
  * index in that browser and calibrates Lighthouse's CPU slowdown to it
- * (cpu-calibration.ts), so every run emulates the same target device
- * instead of applying a fixed 4x to whatever CPU the host has.
+ * (cpu-calibration.ts): the multiplier is the host's index over the
+ * target device's, so every run emulates the same device whatever CPU
+ * its host has.
  */
 
 import { createServer } from "node:net";
@@ -22,6 +23,7 @@ import {
   type CpuCalibration,
   calibrateCpuSlowdown,
   fastestBenchmarkIndex,
+  TARGET_BENCHMARK_INDEX,
 } from "./cpu-calibration.js";
 import {
   type LhrLike,
@@ -40,7 +42,8 @@ type LighthouseFn = (
 const BENCHMARK_SAMPLES = 3;
 
 /** A started session, or why it could not start. `code` is the child
- *  protocol's fatal code (`browser-<reason>`, `host-too-slow`). */
+ *  protocol's fatal code (`browser-<reason>`, `host-too-slow`,
+ *  `benchmark-implausible`). */
 export type SessionStart =
   | { readonly ok: true; readonly session: LighthouseSession }
   | { readonly ok: false; readonly code: string; readonly message: string };
@@ -50,6 +53,7 @@ export interface LighthouseSession {
   readonly cpuCalibration: {
     readonly benchmarkIndex: number;
     readonly cpuSlowdownMultiplier: number;
+    readonly targetBenchmarkIndex: number;
   };
   /**
    * One Lighthouse run of `url`, reduced (`reduceRun`).
@@ -127,11 +131,12 @@ export async function startLighthouseSession(): Promise<SessionStart> {
   }
   if (!cpu.ok) {
     await launched.browser.close();
-    return { ok: false, code: "host-too-slow", message: cpu.message };
+    return { ok: false, code: cpu.code, message: cpu.message };
   }
   const cpuCalibration = {
     benchmarkIndex: cpu.benchmarkIndex,
     cpuSlowdownMultiplier: cpu.cpuSlowdownMultiplier,
+    targetBenchmarkIndex: TARGET_BENCHMARK_INDEX,
   };
   return {
     ok: true,

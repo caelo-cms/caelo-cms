@@ -96,6 +96,9 @@ export const runMeasurementSchema = z
       .object({
         benchmarkIndex: z.number().int().min(0),
         cpuSlowdownMultiplier: z.number().positive(),
+        // The task runs the admin's own version (pickOrder), so it always
+        // reports the device it emulated (#1370).
+        targetBenchmarkIndex: z.number().int().positive(),
       })
       .strict()
       .optional(),

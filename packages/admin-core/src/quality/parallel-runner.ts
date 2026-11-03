@@ -11,7 +11,9 @@
  * too (#837, #874). One container per run measures nothing but the page,
  * and all runs finish in about the time of one. Each task calibrates its
  * own host (cpu-calibration.ts), so runs on machines of different speed
- * still emulate the same target device.
+ * still emulate the same target device. A page whose runs disagree gets
+ * its confirmation runs in a second batch (#1370), so such an audit takes
+ * about the time of two runs.
  *
  * The provider part is an `AuditTaskLauncher` (start a task with its
  * order, read its state, read its result object); everything else — the
@@ -28,7 +30,7 @@ import {
   type AuditTaskResult,
   auditTaskResultSchema,
 } from "./audit-task-protocol.js";
-import { combineRuns, type RunMeasurement } from "./lighthouse-extract.js";
+import { combineRuns, performanceScoresOf, type RunMeasurement } from "./lighthouse-extract.js";
 import type { AuditJob } from "./lighthouse-protocol.js";
 import type {
   AuditedPage,
@@ -37,6 +39,7 @@ import type {
   PageAuditError,
 } from "./lighthouse-runner.js";
 import type { PageMeasurement } from "./ratchet.js";
+import { confirmationRunsNeeded } from "./run-selection.js";
 
 /** How far a started batch is. */
 export interface AuditBatchProgress {
@@ -59,7 +62,7 @@ export interface AuditTaskLauncher {
 
 export interface ParallelRunnerOptions {
   readonly launcher: AuditTaskLauncher;
-  /** Give up on the tasks after this long (default `parallelAuditTimeoutMs`). */
+  /** Give up on a batch's tasks after this long (default `parallelAuditTimeoutMs`). */
   readonly timeoutMs?: number;
   /** Between two looks at the pending tasks (default 3 s). */
   readonly pollMs?: number;
@@ -73,9 +76,10 @@ export interface ParallelRunnerOptions {
   readonly version?: string;
 }
 
-/** Container start + browser start + CPU benchmark + one Lighthouse run
- *  (Lighthouse's own page-load ceiling is ~45 s), with headroom for a cold
- *  image pull. All tasks run at once, so the page count does not add up. */
+/** Per batch: container start + browser start + CPU benchmark + one
+ *  Lighthouse run (Lighthouse's own page-load ceiling is ~45 s), with
+ *  headroom for a cold image pull. All tasks of a batch run at once, so the
+ *  page count does not add up; a confirmation batch gets its own budget. */
 export function parallelAuditTimeoutMs(): number {
   return 5 * 60_000;
 }
@@ -119,8 +123,64 @@ function errorMessage(e: unknown): string {
 }
 
 /**
+ * The confirmation runs of a job's first batch (#1370): for every page
+ * whose runs all measured and disagree (`confirmationRunsNeeded`,
+ * run-selection.ts), Performance runs up to `MEDIAN_RUNS`, numbered after
+ * the page's first runs. Pure; exported for tests.
+ *
+ * A page with a run error or an unreadable run gets none: `assemble`
+ * reports it as it is.
+ */
+export function planConfirmationTasks(
+  job: AuditJob,
+  tasks: readonly PlannedTask[],
+  results: ReadonlyMap<number, AuditTaskResult>,
+): PlannedTask[] {
+  const jobId = tasks[0]?.order.jobId;
+  if (jobId === undefined) return [];
+  const extra: PlannedTask[] = [];
+  job.pages.forEach((page, pageIndex) => {
+    const own = tasks
+      .map((t, i) => ({ t, r: results.get(i) }))
+      .filter(({ t }) => t.pageIndex === pageIndex)
+      .sort((a, b) => a.t.runIndex - b.t.runIndex);
+    const runs: RunMeasurement[] = [];
+    for (const { r } of own) {
+      if (r?.kind !== "run") return;
+      runs.push(r.run as RunMeasurement);
+    }
+    // A run without a Performance score is a reduction bug that
+    // `combineRuns` reports as the page's error; it gets no confirmation.
+    if (runs.some((r) => r.scores.performance === undefined)) return;
+    const needed = confirmationRunsNeeded(performanceScoresOf(runs));
+    const next = Math.max(...own.map(({ t }) => t.runIndex)) + 1;
+    for (let k = 0; k < needed; k += 1) {
+      const runIndex = next + k;
+      const taskId = `p${pageIndex}-r${runIndex}`;
+      extra.push({
+        pageIndex,
+        runIndex,
+        order: {
+          jobId,
+          taskId,
+          pageId: page.pageId,
+          url: page.url,
+          categories: "performance",
+          ...(job.stagedBuild ? { stagedBuild: job.stagedBuild } : {}),
+          resultKey: `${jobId}/${taskId}.json`,
+        },
+      });
+    }
+  });
+  return extra;
+}
+
+/**
  * A Lighthouse runner (the `runJob` shape `audit-worker.ts` takes) that fans
- * the job out to parallel tasks through `launcher`.
+ * the job out to parallel tasks through `launcher`: one batch with every
+ * page's first runs, then — only when a page's runs disagree (#1370) — a
+ * second batch with its confirmation runs, so it can be scored by the
+ * median of `MEDIAN_RUNS` (run-selection.ts).
  */
 export function createParallelAuditRunner(
   options: ParallelRunnerOptions,
@@ -130,61 +190,90 @@ export function createParallelAuditRunner(
   const pollMs = options.pollMs ?? 3_000;
   const timeoutMs = options.timeoutMs ?? parallelAuditTimeoutMs();
   const { launcher } = options;
+  const version = options.version ?? CAELO_VERSION;
 
-  return async (job) => {
-    const tasks = planAuditTasks(job, options.jobId?.() ?? randomUUID());
+  /** Start `tasks` as one batch and read every result, or fail. */
+  async function runBatch(
+    tasks: readonly PlannedTask[],
+  ): Promise<
+    { ok: true; results: Map<number, AuditTaskResult> } | { ok: false; result: AuditJobResult }
+  > {
     let handle: string;
     try {
-      handle = await launcher.start({
-        version: options.version ?? CAELO_VERSION,
-        orders: tasks.map((t) => t.order),
-      });
+      handle = await launcher.start({ version, orders: tasks.map((t) => t.order) });
     } catch (e) {
-      return failure(
-        "child-failed",
-        `could not start the audit tasks on ${launcher.label}: ${errorMessage(e)}`,
-      );
+      return {
+        ok: false,
+        result: failure(
+          "child-failed",
+          `could not start the audit tasks on ${launcher.label}: ${errorMessage(e)}`,
+        ),
+      };
     }
 
     const results = new Map<number, AuditTaskResult>();
     const deadline = now() + timeoutMs;
     for (;;) {
       const read = await readPending(launcher, tasks, results);
-      if (read) return read;
+      if (read) return { ok: false, result: read };
       if (results.size === tasks.length) break;
       let progress: AuditBatchProgress;
       try {
         progress = await launcher.progress(handle);
       } catch (e) {
-        return failure(
-          "child-failed",
-          `could not read the audit tasks' state on ${launcher.label}: ${errorMessage(e)}`,
-        );
+        return {
+          ok: false,
+          result: failure(
+            "child-failed",
+            `could not read the audit tasks' state on ${launcher.label}: ${errorMessage(e)}`,
+          ),
+        };
       }
       if (progress.failed > 0 || progress.finished) {
         // A task writes its result before it exits, and the object stores
         // are read-after-write consistent: read once more for results
         // written since the read above; what is still missing never comes.
         const again = await readPending(launcher, tasks, results);
-        if (again) return again;
+        if (again) return { ok: false, result: again };
         const missing = tasks.filter((_, i) => !results.has(i)).map((t) => t.order.taskId);
         if (missing.length > 0) {
-          return failure(
-            "child-failed",
-            `${missing.length} audit task(s) on ${launcher.label} stopped without a result (${missing.join(", ")}); the job's execution log names the cause`,
-          );
+          return {
+            ok: false,
+            result: failure(
+              "child-failed",
+              `${missing.length} audit task(s) on ${launcher.label} stopped without a result (${missing.join(", ")}); the job's execution log names the cause`,
+            ),
+          };
         }
         break;
       }
       if (now() >= deadline) {
-        return failure(
-          "timeout",
-          `${tasks.length - results.size} of ${tasks.length} audit task(s) on ${launcher.label} did not finish within ${Math.round(timeoutMs / 1000)} s`,
-        );
+        return {
+          ok: false,
+          result: failure(
+            "timeout",
+            `${tasks.length - results.size} of ${tasks.length} audit task(s) on ${launcher.label} did not finish within ${Math.round(timeoutMs / 1000)} s`,
+          ),
+        };
       }
       await sleep(pollMs);
     }
-    return assemble(job, tasks, results);
+    return { ok: true, results };
+  }
+
+  return async (job) => {
+    const tasks = planAuditTasks(job, options.jobId?.() ?? randomUUID());
+    const first = await runBatch(tasks);
+    if (!first.ok) return first.result;
+    const results = first.results;
+    // A fatal task fails the whole audit in `assemble`; no point confirming.
+    const fatal = [...results.values()].some((r) => r.kind === "fatal");
+    const extra = fatal ? [] : planConfirmationTasks(job, tasks, results);
+    if (extra.length === 0) return assemble(job, tasks, results);
+    const second = await runBatch(extra);
+    if (!second.ok) return second.result;
+    for (const [i, r] of second.results) results.set(tasks.length + i, r);
+    return assemble(job, [...tasks, ...extra], results);
   };
 }
 

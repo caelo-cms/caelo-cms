@@ -20,7 +20,12 @@
  * `combineRuns`, the same path the parallel audit tasks take (#875).
  */
 
-import { combineRuns, LighthouseRunError, type RunMeasurement } from "./lighthouse-extract.js";
+import {
+  combineRuns,
+  LighthouseRunError,
+  performanceScoresOf,
+  type RunMeasurement,
+} from "./lighthouse-extract.js";
 import {
   type AuditJob,
   auditJobSchema,
@@ -29,6 +34,7 @@ import {
 } from "./lighthouse-protocol.js";
 import { startLighthouseSession } from "./lighthouse-session.js";
 import { QUALITY_CATEGORIES } from "./ratchet.js";
+import { confirmationRunsNeeded } from "./run-selection.js";
 
 function emit(event: ChildEvent): void {
   process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -53,6 +59,12 @@ async function main(): Promise<void> {
       try {
         const runs: RunMeasurement[] = [await session.run(page.url, QUALITY_CATEGORIES)];
         for (let i = 1; i < job.performanceRuns; i += 1) {
+          runs.push(await session.run(page.url, ["performance"]));
+        }
+        // #1370 — runs that disagree are scored by their median of
+        // MEDIAN_RUNS, so the page gets the confirmation runs first.
+        const extra = confirmationRunsNeeded(performanceScoresOf(runs));
+        for (let i = 0; i < extra; i += 1) {
           runs.push(await session.run(page.url, ["performance"]));
         }
         const { measurement, performanceRuns } = combineRuns(runs);

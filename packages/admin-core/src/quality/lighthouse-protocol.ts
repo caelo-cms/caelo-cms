@@ -19,7 +19,9 @@ const categorySchema = z.enum(QUALITY_CATEGORIES);
 export const auditJobSchema = z
   .object({
     pages: z.array(z.object({ pageId: z.string().uuid(), url: z.string().url() }).strict()).min(1),
-    /** Lighthouse runs per page; the best one scores Performance (>= 1). */
+    /** Lighthouse runs per page before any confirmation runs
+     *  (run-selection.ts: the runners add up to `MEDIAN_RUNS` for a page
+     *  whose runs disagree). */
     performanceRuns: z.number().int().min(1).max(5),
     /** #875 — set when `pages[].url` is a loopback origin only this admin
      *  can open: a parallel audit task serves the same build itself. The
@@ -85,6 +87,9 @@ const performanceMetricSchema = z
 export const performanceMetricsSchema = z
   .object({
     runs: z.number().int().min(1),
+    /** How the scoring run was chosen (run-selection.ts). Absent on audits
+     *  recorded before #1370, which were all scored by their best run. */
+    scoredBy: z.enum(["best", "median"]).optional(),
     metrics: z.array(performanceMetricSchema).length(PERFORMANCE_METRICS.length),
     lcpElement: flaggedElementSchema.nullable(),
     lcpBreakdown: z.array(
@@ -107,6 +112,10 @@ export const performanceMetricsSchema = z
       .object({
         benchmarkIndex: z.number().int().min(0),
         cpuSlowdownMultiplier: z.number().positive(),
+        /** The emulated device (`TARGET_BENCHMARK_INDEX`). Absent on audits
+         *  recorded before #1370, whose calculator curve emulated a
+         *  different device per host. */
+        targetBenchmarkIndex: z.number().int().positive().optional(),
       })
       .strict()
       .optional(),

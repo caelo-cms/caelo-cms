@@ -35,6 +35,10 @@ const throwingProvider: AIProvider = {
   async *generate() {
     throw new Error("moduleize ran despite explicit fields — regression");
   },
+  async generateObject() {
+    throw new Error("moduleize ran despite explicit fields — regression");
+  },
+  deferredToolNames: () => new Set(),
 };
 
 /**

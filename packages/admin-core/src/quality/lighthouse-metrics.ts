@@ -12,20 +12,20 @@
  * and which element causes it, instead of guessing — or running Lighthouse
  * itself against a URL that is not the staged build.
  *
- * Every value comes from the page's BEST Performance run (`bestRunIndex`,
- * lighthouse-extract.ts), the same run the Performance score and the
- * Performance-only findings come from, so the three always agree. Host
- * interference only ever slows a run down, so the best run is the closest
- * measurement of the page on the target device (#874). `runValues` keeps
- * every run's value so the spread stays visible. A metric the best run did
- * not measure is null with the reason, never a zero or another run's value.
- * The elements (LCP element, breakdown, layout shifts) come from the best
- * run too.
+ * Every value comes from the page's SCORING run (`scoringRun`,
+ * run-selection.ts: the best run when the runs agree, the median run when
+ * they disagree, #874/#1370), the same run the Performance score and the
+ * Performance-only findings come from, so the three always agree.
+ * `runValues` keeps every run's value so the spread stays visible. A
+ * metric the scoring run did not measure is null with the reason, never a
+ * zero or another run's value. The elements (LCP element, breakdown,
+ * layout shifts) come from the scoring run too.
  */
 
 import type { LhrLike } from "./lighthouse-extract.js";
 import { elementFromNode, nonEmpty } from "./lighthouse-node.js";
 import type { FlaggedElement } from "./ratchet.js";
+import type { ScoredBy } from "./run-selection.js";
 
 /** The Performance metrics Lighthouse 13 scores, in report order. */
 export const PERFORMANCE_METRICS = [
@@ -54,7 +54,7 @@ export const PERFORMANCE_METRICS = [
 type MetricDef = (typeof PERFORMANCE_METRICS)[number];
 export type PerformanceMetricId = MetricDef["id"];
 
-/** One metric of one page: the best run's value, plus every run's. */
+/** One metric of one page: the scoring run's value, plus every run's. */
 export interface PerformanceMetric {
   readonly id: PerformanceMetricId;
   /** Short name ("LCP"). */
@@ -62,11 +62,11 @@ export interface PerformanceMetric {
   readonly title: string;
   /** Lighthouse's unit of `numericValue` (`millisecond`, or `unitless` for CLS). */
   readonly numericUnit: "millisecond" | "unitless";
-  /** The best run's value; null when that run did not measure it (see `unavailableReason`). */
+  /** The scoring run's value; null when that run did not measure it (see `unavailableReason`). */
   readonly numericValue: number | null;
-  /** The best run's value formatted the way Lighthouse shows it ("2.2 s", "120 ms", "0.012"). */
+  /** The scoring run's value formatted the way Lighthouse shows it ("2.2 s", "120 ms", "0.012"). */
   readonly displayValue: string | null;
-  /** The best run's 0..1 Lighthouse metric score; null with `numericValue`. */
+  /** The scoring run's 0..1 Lighthouse metric score; null with `numericValue`. */
   readonly score: number | null;
   /** Each run's value, in run order (the full run first); null where a run measured nothing. */
   readonly runValues: readonly (number | null)[];
@@ -93,8 +93,11 @@ export interface LayoutShift {
 
 /** The Performance metrics of one audited page. */
 export interface PerformanceMetrics {
-  /** How many Performance runs were taken; the values are the best one's. */
+  /** How many Performance runs were taken; the values are the scoring one's. */
   readonly runs: number;
+  /** How the scoring run was chosen (run-selection.ts). Absent on audits
+   *  recorded before #1370, which were all scored by their best run. */
+  readonly scoredBy?: ScoredBy;
   /** Every metric of `PERFORMANCE_METRICS`, in that order. */
   readonly metrics: readonly PerformanceMetric[];
   /** The Largest Contentful Paint element; null when Lighthouse named none. */
@@ -108,6 +111,9 @@ export interface PerformanceMetrics {
   readonly cpuCalibration?: {
     readonly benchmarkIndex: number;
     readonly cpuSlowdownMultiplier: number;
+    /** The emulated device's benchmark index (cpu-calibration.ts); absent
+     *  on audits recorded before #1370. */
+    readonly targetBenchmarkIndex?: number;
   };
 }
 
@@ -166,11 +172,12 @@ function runValue(run: LhrLike, def: MetricDef): RunMetricValue {
   return { value: audit.numericValue, score: audit.score };
 }
 
-function metricOfBestRun(
+function metricOfScoringRun(
   def: MetricDef,
   index: number,
   runs: readonly RunMetrics[],
-  bestIndex: number,
+  scoringIndex: number,
+  scoredBy: ScoredBy,
 ): PerformanceMetric {
   const decimals = def.unit === "unitless" ? 4 : 0;
   const per = runs.map((r) => {
@@ -180,22 +187,22 @@ function metricOfBestRun(
   });
   const runValues = per.map((p) => ("value" in p ? round(p.value, decimals) : null));
   const base = { id: def.id, label: def.label, title: def.title, numericUnit: def.unit, runValues };
-  const best = per[bestIndex] as RunMetricValue;
-  if ("reason" in best) {
+  const scoring = per[scoringIndex] as RunMetricValue;
+  if ("reason" in scoring) {
     return {
       ...base,
       numericValue: null,
       displayValue: null,
       score: null,
-      unavailableReason: `${def.label} was not measured in the best of ${runs.length} Lighthouse run(s) (run ${bestIndex + 1}: ${best.reason}); no other run's value is reported in its place.`,
+      unavailableReason: `${def.label} was not measured in the ${scoredBy} of ${runs.length} Lighthouse run(s) (run ${scoringIndex + 1}: ${scoring.reason}); no other run's value is reported in its place.`,
     };
   }
-  const value = round(best.value, decimals);
+  const value = round(scoring.value, decimals);
   return {
     ...base,
     numericValue: value,
     displayValue: formatMetricValue(def.id, value),
-    score: round(best.score, 2),
+    score: round(scoring.score, 2),
     unavailableReason: null,
   };
 }
@@ -281,31 +288,36 @@ export function runMetrics(run: LhrLike): RunMetrics {
  * The page's Performance metrics from its reduced runs.
  *
  * @param runs - every Performance run of the page, the full run first.
- * @param bestIndex - the run the Performance score comes from
- *   (`bestRunIndex`, lighthouse-extract.ts).
- * @throws when `runs` is empty or has no run `bestIndex`: an audited page
- *   without a Performance run is an infrastructure failure, never a
+ * @param scoringIndex - the run the Performance score comes from
+ *   (`scoringRun`, run-selection.ts).
+ * @param scoredBy - how that run was chosen.
+ * @throws when `runs` is empty or has no run `scoringIndex`: an audited
+ *   page without a Performance run is an infrastructure failure, never a
  *   measurement.
  */
 export function combineRunMetrics(
   runs: readonly RunMetrics[],
-  bestIndex: number,
+  scoringIndex: number,
+  scoredBy: ScoredBy,
 ): PerformanceMetrics {
   if (runs.length === 0) throw new Error("combineRunMetrics: no Lighthouse runs");
-  const best = runs[bestIndex];
-  if (!best) throw new Error(`combineRunMetrics: no run ${bestIndex + 1} of ${runs.length}`);
+  const scoring = runs[scoringIndex];
+  if (!scoring) throw new Error(`combineRunMetrics: no run ${scoringIndex + 1} of ${runs.length}`);
   return {
     runs: runs.length,
-    metrics: PERFORMANCE_METRICS.map((def, i) => metricOfBestRun(def, i, runs, bestIndex)),
-    lcpElement: best.lcpElement,
-    lcpBreakdown: [...best.lcpBreakdown],
-    layoutShifts: [...best.layoutShifts],
+    scoredBy,
+    metrics: PERFORMANCE_METRICS.map((def, i) =>
+      metricOfScoringRun(def, i, runs, scoringIndex, scoredBy),
+    ),
+    lcpElement: scoring.lcpElement,
+    lcpBreakdown: [...scoring.lcpBreakdown],
+    layoutShifts: [...scoring.layoutShifts],
   };
 }
 
 /**
- * The page's Performance metrics from its Lighthouse runs
- * (`combineRunMetrics` over `runMetrics` of each).
+ * The page's Performance metrics from its Lighthouse runs, scored by the
+ * best run `bestIndex` (`combineRunMetrics` over `runMetrics` of each).
  *
  * @param runs - every Performance run of the page, the full run first.
  * @param bestIndex - the run the Performance score comes from.
@@ -314,5 +326,5 @@ export function performanceMetricsFromRuns(
   runs: readonly LhrLike[],
   bestIndex: number,
 ): PerformanceMetrics {
-  return combineRunMetrics(runs.map(runMetrics), bestIndex);
+  return combineRunMetrics(runs.map(runMetrics), bestIndex, "best");
 }

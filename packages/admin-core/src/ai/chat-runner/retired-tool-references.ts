@@ -56,6 +56,26 @@ function rewriteDeep(value: unknown, rewrites: RetiredReferenceRewrite[]): unkno
     }
     return value;
   }
+  // #991 — load_skill's references: the AI SDK's custom content part,
+  // `{type: "custom", providerOptions: {anthropic: {type: "tool-reference", toolName}}}`.
+  const anthropic = (obj.providerOptions as { anthropic?: Record<string, unknown> } | undefined)
+    ?.anthropic;
+  if (obj.type === "custom" && anthropic?.type === "tool-reference") {
+    const name = anthropic.toolName;
+    const to =
+      typeof name === "string" && Object.hasOwn(RETIRED_TOOLS, name)
+        ? RETIRED_TOOLS[name]?.target
+        : undefined;
+    if (!to || typeof name !== "string") return value;
+    rewrites.push({ from: name, to });
+    return {
+      ...obj,
+      providerOptions: {
+        ...(obj.providerOptions as object),
+        anthropic: { ...anthropic, toolName: to },
+      },
+    };
+  }
   let changed = false;
   const next: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(obj)) {
@@ -68,7 +88,8 @@ function rewriteDeep(value: unknown, rewrites: RetiredReferenceRewrite[]): unkno
 
 /**
  * Rewrites retired-tool `tool_reference` blocks in replayed history, in both
- * shapes: SDK passthrough rows (`sdkMessages`) and reconstructed rows
+ * shapes: SDK passthrough rows (`sdkMessages`, including load_skill's
+ * custom-part references) and reconstructed rows
  * (`toolCalls[].result` / `serverToolCalls[].result`). Unchanged messages
  * are returned by identity.
  *

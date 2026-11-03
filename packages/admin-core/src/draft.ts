@@ -264,29 +264,6 @@ export function headOverlaySql(spec: {
               d.header_created_at DESC, d.row_created_at DESC, d.snapshot_row_id DESC`;
 }
 
-/**
- * The entities of `kind` whose pending state on `branchId` may match
- * `match` — a predicate over the snapshot row `es` that an index serves
- * under row-level security (a text `=`; e.g. the module of an instance
- * state, migration 0533). Only snapshot rows that ARE a head row of the
- * branch count, so the cost is the matches, never the draft. A superset:
- * read the newest state with {@link headOverlaySql} and confirm. Selects
- * `entity_id` (text).
- */
-export function pendingCandidatesSql(spec: {
-  readonly kind: Exclude<DraftHeadKind, "layoutChrome">;
-  readonly table: string;
-  readonly branchId: string;
-  readonly match: SQL;
-}): SQL {
-  return sql`
-    SELECT DISTINCT d.entity_id::text AS entity_id
-      FROM ${sql.raw(spec.table)} es
-      JOIN draft_pending_entities d ON d.snapshot_row_id = es.id
-     WHERE ${spec.match}
-       AND d.chat_branch_id = ${spec.branchId}::uuid AND d.entity_kind = ${spec.kind}`;
-}
-
 /** The snapshot reference tables of migration 0533, per draft-head kind. */
 const SNAPSHOT_REFS_TABLE = {
   contentInstance: "content_instance_snapshot_refs",
@@ -298,8 +275,8 @@ const SNAPSHOT_REFS_TABLE = {
  * of `refs` (ids anywhere in the state, media slugs) — looked up in the
  * snapshot reference tables of migration 0533 (the extraction of
  * `content_instance_refs`), kept only when the snapshot row is a head row
- * of the branch. A superset like {@link pendingCandidatesSql}; confirm on
- * the newest state. Empty `refs` select nothing.
+ * of the branch. A superset (another owner's newer state may not match):
+ * confirm on the newest state ({@link headOverlaySql}). Empty `refs` select nothing.
  */
 export function pendingRefCandidatesSql(spec: {
   readonly kind: keyof typeof SNAPSHOT_REFS_TABLE;
