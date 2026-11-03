@@ -50,7 +50,6 @@ import { loadStaticPublisher, type PublishSummary } from "../deploy/static-publi
 import { forgetAllBakes } from "../plugin-data/stale-pages.js";
 import { jsonbParam } from "../sql-helpers.js";
 import {
-  effectiveOutDir,
   rowToTarget,
   runStartedAt,
   type TargetDbRow,
@@ -59,28 +58,9 @@ import {
 import { abortableSleep } from "./deploy-lease-steps.js";
 import { settleOrphanedRuns } from "./deploy-run-lifecycle.js";
 
-export { effectiveOutDir } from "./deploy-common.js";
+export { effectiveOutDir, localBuildArchiveDir } from "./deploy-common.js";
 export { promoteDeployOp } from "./deploy-promote.js";
 export { triggerDeployOp } from "./deploy-trigger.js";
-
-/**
- * Absolute path of a run's build archive (`<outDir>/builds/<runId>`) as
- * deploy.trigger wrote it on THIS process — the #553 audit serves it when
- * the provider has no reachable staging origin.
- */
-export function localBuildArchiveDir(args: {
-  provider: string | undefined;
-  env: string;
-  outDir: string;
-  runId: string;
-}): string {
-  return resolve(
-    resolveOutputRoot(),
-    effectiveOutDir(args.provider, args.env, args.outDir),
-    "builds",
-    args.runId,
-  );
-}
 
 const runRow = z.object({
   id: z.string(),

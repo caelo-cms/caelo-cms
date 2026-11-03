@@ -28,7 +28,7 @@ import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cm
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { NOT_FOUND_PAGE_FILE } from "@caelo-cms/static-generator";
 import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
-import { localBuildArchiveDir } from "../ops/deploy.js";
+import { localBuildArchiveDir } from "../ops/deploy-common.js";
 import { linkSourcesFromOps, referenceSourcesFromOps } from "./checks/links-sources.js";
 import { type PluginAuditSource, withPluginAuditChecks } from "./checks/plugin-findings.js";
 import { type CheckRegistry, createCoreCheckRegistry } from "./checks/registry.js";
