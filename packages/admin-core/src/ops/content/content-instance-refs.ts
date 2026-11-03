@@ -32,7 +32,7 @@ import {
 import { extractMediaRefs, ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
-import { headOverlaySql } from "../../draft.js";
+import { headOverlaySql, pendingCandidatesSql, pendingRefCandidatesSql } from "../../draft.js";
 import type { ContentInstanceState } from "../../snapshots/state.js";
 
 /** One content instance whose values matched, with its values as JSON text. */
@@ -90,7 +90,7 @@ export async function findContentInstancesContaining(
     tx,
     chatBranchId ?? null,
     needleFilterSql(needles),
-    branchedNeedleSql(needles),
+    (branchId) => pendingNeedleCandidatesSql(branchId, needles),
     (_moduleId, valuesText) => needles.some((n) => holdsNeedle(n, valuesText)),
   );
 }
@@ -139,32 +139,33 @@ export async function findContentInstancesOfModules(
     tx,
     chatBranchId ?? null,
     sql`ci.module_id = ANY(${uuidArray(moduleIds)})`,
-    sql`es.state->>'moduleId' = ANY(${textArray(moduleIds)})`,
+    (branchId) =>
+      pendingCandidatesSql({
+        kind: "contentInstance",
+        table: "content_instance_snapshots",
+        branchId,
+        match: sql`(es.state ->> 'moduleId') = ANY(${textArray(moduleIds)})`,
+      }),
     (moduleId) => wanted.has(moduleId),
   );
 }
 
 /**
- * The branch-state prefilter of `needles` (non-empty): a pending state
- * whose values text holds one of them. A superset of {@link holdsNeedle},
- * which confirms; `es` is the snapshot row of {@link headOverlaySql}.
+ * The pending-state candidates of `needles` (non-empty) on `branchId`:
+ * head rows whose values reference one of them, from the snapshot
+ * reference table of migration 0533 — the same extraction as
+ * `content_instance_refs`. Exported for the plan test.
  */
-function branchedNeedleSql(needles: readonly ContentInstanceNeedle[]): SQL {
-  const ids = needles.flatMap((n) => (n.kind === "id" ? [n.id.toLowerCase()] : []));
-  const slugs = needles.flatMap((n) => (n.kind === "media_slug" ? [n.slug] : []));
-  const values = sql`(es.state->'values')::text`;
-  const terms: SQL[] = [];
-  if (ids.length > 0) {
-    terms.push(
-      sql`EXISTS (SELECT 1 FROM unnest(${textArray(ids)}) n WHERE strpos(lower(${values}), n) > 0)`,
-    );
-  }
-  if (slugs.length > 0) {
-    terms.push(
-      sql`EXISTS (SELECT 1 FROM unnest(${textArray(slugs)}) n WHERE strpos(${values}, n) > 0)`,
-    );
-  }
-  return sql`(${sql.join(terms, sql` OR `)})`;
+export function pendingNeedleCandidatesSql(
+  branchId: string,
+  needles: readonly ContentInstanceNeedle[],
+): SQL {
+  return pendingRefCandidatesSql({
+    kind: "contentInstance",
+    branchId,
+    ids: needles.flatMap((n) => (n.kind === "id" ? [n.id] : [])),
+    mediaSlugs: needles.flatMap((n) => (n.kind === "media_slug" ? [n.slug] : [])),
+  });
 }
 
 /**
@@ -172,60 +173,60 @@ function branchedNeedleSql(needles: readonly ContentInstanceNeedle[]): SQL {
  * superseding them (kept when `matchesBranched` accepts the branched
  * values) and instances the branch deleted dropped.
  *
- * The pending states come from the draft head (one row per pending
- * instance, `headOverlaySql`), never from the branch's whole pending
- * history: on the shared draft that history grows with every write of
- * every chat until the next Stage, and sorting all of it — states
- * included — for one lookup passed the 60 s statement timeout on
- * production (2026-11-03, a plugin's change consumer calling
- * `content_instances.list({ ids })` after each agent write). Only the
- * states `branchedFilter` (a superset of `matchesBranched`, over `es`)
- * keeps are read out; the rest only supersede their live row.
+ * Every read is served by an index, so the cost is the matches, never the
+ * site or the draft (#1391). The pending side used to filter every pending
+ * state of the branch in memory or by `strpos`, once per needle: on the
+ * shared draft that is every instance any chat changed since the last
+ * Stage, and on searchVIU production (2026-11-03) a plugin's change
+ * consumer paid it after every agent write until the db-f1-micro was
+ * saturated. Now:
+ *   1. the live matches (`liveFilter`, an indexed predicate on `ci`);
+ *   2. the pending candidates (`pendingCandidates`, an indexed lookup of
+ *      head rows of the branch: `pendingRefCandidatesSql` /
+ *      `pendingCandidatesSql`);
+ *   3. the newest pending state of exactly those instances
+ *      (`headOverlaySql`), which supersedes the live row: it is kept when
+ *      `matchesBranched` accepts it, and a deleted one drops the instance.
  */
 async function loadInstancesInView(
   tx: TransactionRunner,
   branchId: string | null,
   liveFilter: SQL,
-  branchedFilter: SQL,
+  pendingCandidates: (branchId: string) => SQL,
   matchesBranched: (moduleId: string, valuesText: string) => boolean,
 ): Promise<ContentInstanceRef[]> {
-  const out = new Map<string, ContentInstanceRef>();
-
-  // Branched states first: they supersede the live row for this caller.
-  const branched = new Set<string>();
-  if (branchId) {
-    const rows = (await tx.execute(
-      headOverlaySql({
-        kind: "contentInstance",
-        table: "content_instance_snapshots",
-        branchId,
-        columns: sql`CASE WHEN ${branchedFilter} THEN es.state END AS state`,
-      }),
-    )) as unknown as { entity_id: string; state: unknown }[];
-    for (const r of rows) {
-      branched.add(r.entity_id);
-      if (r.state === null) continue; // superseded, and cannot match
-      const state = r.state as ContentInstanceState;
-      if (state.deletedAt) continue;
-      const valuesText = JSON.stringify(state.values ?? {});
-      if (matchesBranched(state.moduleId, valuesText)) {
-        out.set(r.entity_id, {
-          contentInstanceId: r.entity_id,
-          moduleId: state.moduleId,
-          valuesText,
-        });
-      }
-    }
-  }
-
   const liveRows = (await tx.execute(liveInstancesSql(branchId, liveFilter))) as unknown as {
     id: string;
     module_id: string;
     values_text: string;
   }[];
+  const out = new Map<string, ContentInstanceRef>();
   for (const r of liveRows) {
-    if (branched.has(r.id)) continue; // the branch's own state decided above
     out.set(r.id, { contentInstanceId: r.id, moduleId: r.module_id, valuesText: r.values_text });
+  }
+  if (!branchId) return [...out.values()];
+
+  const candidates = (await tx.execute(pendingCandidates(branchId))) as unknown as {
+    entity_id: string;
+  }[];
+  const ids = [...new Set([...out.keys(), ...candidates.map((c) => c.entity_id)])];
+  if (ids.length === 0) return [];
+  const heads = (await tx.execute(
+    headOverlaySql({ kind: "contentInstance", table: "content_instance_snapshots", branchId, ids }),
+  )) as unknown as { entity_id: string; state: unknown }[];
+  for (const h of heads) {
+    // The branch's own state decides for this caller, match or not.
+    out.delete(h.entity_id);
+    const state = h.state as ContentInstanceState;
+    if (state.deletedAt) continue;
+    const valuesText = JSON.stringify(state.values ?? {});
+    if (matchesBranched(state.moduleId, valuesText)) {
+      out.set(h.entity_id, {
+        contentInstanceId: h.entity_id,
+        moduleId: state.moduleId,
+        valuesText,
+      });
+    }
   }
   return [...out.values()];
 }
@@ -254,6 +255,43 @@ export async function contentInstanceRefsDrift(
   return { missing: rows[0]?.missing ?? 0, extra: rows[0]?.extra ?? 0 };
 }
 
+/** The expected rows of the snapshot reference tables (migration 0533). */
+const SNAPSHOT_REFS_EXPECTED = `
+  SELECT 'ci' AS t, s.id AS snapshot_row_id, r.ref_kind, r.ref
+    FROM content_instance_snapshots s
+   CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state -> 'values') r
+  UNION ALL
+  SELECT 'pl', s.id, r.ref_kind, r.ref
+    FROM page_layout_snapshots s
+   CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state) r`;
+
+/** The maintained rows of the snapshot reference tables (migration 0533). */
+const SNAPSHOT_REFS_MAINTAINED = `
+  SELECT 'ci' AS t, snapshot_row_id, ref_kind, ref FROM content_instance_snapshot_refs
+  UNION ALL
+  SELECT 'pl', snapshot_row_id, ref_kind, ref FROM page_layout_snapshot_refs`;
+
+/**
+ * SQL of how far the snapshot reference tables (migration 0533) are from
+ * what the snapshot states say now: `missing` / `extra` rows. Both are 0
+ * while the triggers hold. Shared with the integration preload's check.
+ */
+export const SNAPSHOT_REFS_DRIFT_SQL = `
+  WITH expected AS (${SNAPSHOT_REFS_EXPECTED}), maintained AS (${SNAPSHOT_REFS_MAINTAINED})
+  SELECT (SELECT count(*)::int FROM (SELECT * FROM expected EXCEPT SELECT * FROM maintained) d) AS missing,
+         (SELECT count(*)::int FROM (SELECT * FROM maintained EXCEPT SELECT * FROM expected) d) AS extra`;
+
+/** {@link SNAPSHOT_REFS_DRIFT_SQL} in a transaction. */
+export async function snapshotRefsDrift(
+  tx: TransactionRunner,
+): Promise<{ missing: number; extra: number }> {
+  const rows = (await tx.execute(sql.raw(SNAPSHOT_REFS_DRIFT_SQL))) as unknown as {
+    missing: number;
+    extra: number;
+  }[];
+  return { missing: rows[0]?.missing ?? 0, extra: rows[0]?.extra ?? 0 };
+}
+
 export const rebuildContentInstanceRefsOp = defineOperation({
   name: "content_instances.rebuild_refs",
   // Why human-only: system-only. Derived state the database maintains
@@ -272,12 +310,21 @@ export const rebuildContentInstanceRefsOp = defineOperation({
       missing: z.number().int().nonnegative(),
       extra: z.number().int().nonnegative(),
     }),
+    /** #1391 — rows the snapshot reference tables (0533) hold after. */
+    snapshotRows: z.number().int().nonnegative(),
+    /** #1391 — their drift found before the rebuild. */
+    snapshotDrift: z.object({
+      missing: z.number().int().nonnegative(),
+      extra: z.number().int().nonnegative(),
+    }),
   }),
   handler: async (_ctx, _input, tx) => {
     const drift = await contentInstanceRefsDrift(tx);
+    const snapshotDrift = await snapshotRefsDrift(tx);
     const rows = (await tx.execute(
-      sql`SELECT caelo_content_instance_refs_rebuild()::int AS n`,
-    )) as unknown as { n: number }[];
-    return ok({ rows: rows[0]?.n ?? 0, drift });
+      sql`SELECT caelo_content_instance_refs_rebuild()::int AS n,
+                 caelo_snapshot_refs_rebuild()::int AS s`,
+    )) as unknown as { n: number; s: number }[];
+    return ok({ rows: rows[0]?.n ?? 0, drift, snapshotRows: rows[0]?.s ?? 0, snapshotDrift });
   },
 });

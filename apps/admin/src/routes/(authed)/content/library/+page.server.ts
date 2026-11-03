@@ -19,7 +19,9 @@ import type { PageServerLoad } from "./$types";
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "content.read");
   const { adapter, registry } = getQueryContext();
-  const r = await execute(registry, adapter, locals.ctx, "content_instances.list", {});
+  const r = await execute(registry, adapter, locals.ctx, "content_instances.list", {
+    usage: true,
+  });
   const instances = r.ok
     ? (
         r.value as {

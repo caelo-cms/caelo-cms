@@ -26,7 +26,7 @@
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { collectNestedRefs, rendersFieldDefault, type TemplateField } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { headOverlaySql, stateNamesAnySql } from "../../draft.js";
+import { headOverlaySql, pendingRefCandidatesSql } from "../../draft.js";
 import { loadListEntities } from "../../lists/store.js";
 import { loadBranchedModuleStates } from "../../snapshots/index.js";
 import type { PageLayoutState } from "../../snapshots/state.js";
@@ -104,34 +104,43 @@ export async function listPlacementsInView(
   }));
   if (branchId === null) return sortByPath(placements);
 
-  // The newest pending layout per page the branch reshaped — the same row
-  // `loadPageLayoutStateWithBranchOverlay` picks, read through the draft
-  // head (one row per pending page, not the branch's whole pending
-  // history). Every reshaped page supersedes its live placements; only
-  // the layouts that name a wanted instance are read out.
-  const overlaid = (await tx.execute(sql`
+  // The newest pending layout of every page that may hold a wanted
+  // instance on the branch — the same row
+  // `loadPageLayoutStateWithBranchOverlay` picks: the pages of the live
+  // placements (a pending layout supersedes them) and the pages whose
+  // pending layout references one (the snapshot reference table, 0533).
+  // Never every pending layout of the draft.
+  const pendingPages = (await tx.execute(
+    pendingRefCandidatesSql({ kind: "pageLayout", branchId, ids: contentInstanceIds }),
+  )) as unknown as { entity_id: string }[];
+  const pageIds = [
+    ...new Set([...placements.map((p) => p.pageId), ...pendingPages.map((r) => r.entity_id)]),
+  ];
+  const overlaid =
+    pageIds.length === 0
+      ? []
+      : ((await tx.execute(sql`
     SELECT h.entity_id AS page_id, p.current_path AS path, p.slug AS page_slug,
            p.title AS page_title, (p.deleted_at IS NOT NULL) AS page_deleted, h.state
       FROM (${headOverlaySql({
         kind: "pageLayout",
         table: "page_layout_snapshots",
         branchId,
-        columns: sql`CASE WHEN ${stateNamesAnySql(contentInstanceIds)} THEN es.state END AS state`,
+        ids: pageIds,
       })}) h
       JOIN pages p ON p.id = h.entity_id::uuid
   `)) as unknown as {
-    page_id: string;
-    path: string;
-    page_slug: string;
-    page_title: string;
-    page_deleted: boolean;
-    state: unknown;
-  }[];
+          page_id: string;
+          path: string;
+          page_slug: string;
+          page_title: string;
+          page_deleted: boolean;
+          state: unknown;
+        }[]);
   const wanted = new Set(contentInstanceIds);
   const overlaidIds = new Set(overlaid.map((r) => r.page_id));
   const inView = placements.filter((p) => !overlaidIds.has(p.pageId));
   for (const page of overlaid) {
-    if (page.state === null) continue; // names no wanted instance
     const layout = page.state as PageLayoutState;
     for (const block of layout.blocks) {
       if (!block.placements) {

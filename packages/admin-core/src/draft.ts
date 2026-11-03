@@ -265,18 +265,62 @@ export function headOverlaySql(spec: {
 }
 
 /**
- * SQL predicate over the snapshot row `es` of {@link headOverlaySql}: its
- * state names any of `ids` (non-empty) somewhere in its text. A superset —
- * callers confirm on the parsed state. Meant for the `columns` of a head
- * read (`CASE WHEN … THEN es.state END`), so every pending entity still
- * supersedes its live row while only the states a caller can use are
- * read out. Never as its `where`: that would let an older row of another
- * owner stand in for the newest one.
+ * The entities of `kind` whose pending state on `branchId` may match
+ * `match` — a predicate over the snapshot row `es` that an index serves
+ * under row-level security (a text `=`; e.g. the module of an instance
+ * state, migration 0533). Only snapshot rows that ARE a head row of the
+ * branch count, so the cost is the matches, never the draft. A superset:
+ * read the newest state with {@link headOverlaySql} and confirm. Selects
+ * `entity_id` (text).
  */
-export function stateNamesAnySql(ids: readonly string[]): SQL {
-  const needles = [...new Set(ids.map((id) => id.toLowerCase()))];
-  return sql`EXISTS (SELECT 1 FROM unnest(${textArray(needles)}) n
-                      WHERE strpos(lower(es.state::text), n) > 0)`;
+export function pendingCandidatesSql(spec: {
+  readonly kind: Exclude<DraftHeadKind, "layoutChrome">;
+  readonly table: string;
+  readonly branchId: string;
+  readonly match: SQL;
+}): SQL {
+  return sql`
+    SELECT DISTINCT d.entity_id::text AS entity_id
+      FROM ${sql.raw(spec.table)} es
+      JOIN draft_pending_entities d ON d.snapshot_row_id = es.id
+     WHERE ${spec.match}
+       AND d.chat_branch_id = ${spec.branchId}::uuid AND d.entity_kind = ${spec.kind}`;
+}
+
+/** The snapshot reference tables of migration 0533, per draft-head kind. */
+const SNAPSHOT_REFS_TABLE = {
+  contentInstance: "content_instance_snapshot_refs",
+  pageLayout: "page_layout_snapshot_refs",
+} as const;
+
+/**
+ * The entities of `kind` whose pending state on `branchId` references any
+ * of `refs` (ids anywhere in the state, media slugs) — looked up in the
+ * snapshot reference tables of migration 0533 (the extraction of
+ * `content_instance_refs`), kept only when the snapshot row is a head row
+ * of the branch. A superset like {@link pendingCandidatesSql}; confirm on
+ * the newest state. Empty `refs` select nothing.
+ */
+export function pendingRefCandidatesSql(spec: {
+  readonly kind: keyof typeof SNAPSHOT_REFS_TABLE;
+  readonly branchId: string;
+  readonly ids?: readonly string[];
+  readonly mediaSlugs?: readonly string[];
+}): SQL {
+  const ids = [...new Set((spec.ids ?? []).map((id) => id.toLowerCase()))];
+  const slugs = [...new Set(spec.mediaSlugs ?? [])];
+  const terms: SQL[] = [];
+  if (ids.length > 0) terms.push(sql`(r.ref_kind = 'id' AND r.ref = ANY(${textArray(ids)}))`);
+  if (slugs.length > 0) {
+    terms.push(sql`(r.ref_kind = 'media_slug' AND r.ref = ANY(${textArray(slugs)}))`);
+  }
+  const anyRef = terms.length > 0 ? sql.join(terms, sql` OR `) : sql`false`;
+  return sql`
+    SELECT DISTINCT d.entity_id::text AS entity_id
+      FROM ${sql.raw(SNAPSHOT_REFS_TABLE[spec.kind])} r
+      JOIN draft_pending_entities d ON d.snapshot_row_id = r.snapshot_row_id
+     WHERE (${anyRef})
+       AND d.chat_branch_id = ${spec.branchId}::uuid AND d.entity_kind = ${spec.kind}`;
 }
 
 /** The fields of a chat a head read needs (a {@link ChatBinding} has them). */

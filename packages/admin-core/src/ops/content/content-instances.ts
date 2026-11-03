@@ -104,26 +104,32 @@ const contentInstanceRowSchema = z.object({
   purpose: z.string().nullable(),
   values: z.record(z.string(), z.unknown()),
   version: z.number().int().nonnegative(),
-  /** Placements bound to this instance as the caller sees them (branch view). */
-  placementCount: z.number().int().nonnegative(),
+  /**
+   * Usage (#627, #1067) — present only when the caller asks for it
+   * (`content_instances.list` `usage: true`; always on `get`): it costs a
+   * reach walk per instance, which no caller should pay unasked (#1391).
+   *
+   * Placements bound to this instance as the caller sees them (branch view).
+   */
+  placementCount: z.number().int().nonnegative().optional(),
   /**
    * #1067 — instances that show this one inside a `module` / `module-list`
    * field.
    */
-  nestedParentCount: z.number().int().nonnegative(),
+  nestedParentCount: z.number().int().nonnegative().optional(),
   /**
    * #627 — every direct parent: the instances above plus modules whose
    * field default lists it and shared lists whose entries embed it.
    * Orphan = no placements AND no parents.
    */
-  parentCount: z.number().int().nonnegative(),
+  parentCount: z.number().int().nonnegative().optional(),
   /**
    * #627 — live pages it renders on: its own placements plus everything
    * its parents render on, transitively (the real blast radius of an edit).
    */
-  renderedPageCount: z.number().int().nonnegative(),
+  renderedPageCount: z.number().int().nonnegative().optional(),
   /** #627 — it renders in layout chrome or a shared list: site-wide reach. */
-  rendersSiteWide: z.boolean(),
+  rendersSiteWide: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   deletedAt: z.string().nullable(),
@@ -509,7 +515,7 @@ async function normaliseInstanceListValues(
 
 function rowToContentInstance(
   r: ContentInstanceRowSql,
-  reach: ContentInstanceReach,
+  reach: ContentInstanceReach | null,
 ): z.infer<typeof contentInstanceRowSchema> {
   const moduleKindRaw =
     r.module_kind === "chrome" ||
@@ -530,11 +536,15 @@ function rowToContentInstance(
     purpose: r.purpose ?? null,
     values: r.values as Record<string, unknown>,
     version: typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version,
-    placementCount: reach.placements.length,
-    nestedParentCount: reach.parentInstances.length,
-    parentCount: parentCountOf(reach),
-    renderedPageCount: reach.pages.length,
-    rendersSiteWide: reach.chromeLayouts.length > 0 || reach.viaLists.length > 0,
+    ...(reach
+      ? {
+          placementCount: reach.placements.length,
+          nestedParentCount: reach.parentInstances.length,
+          parentCount: parentCountOf(reach),
+          renderedPageCount: reach.pages.length,
+          rendersSiteWide: reach.chromeLayouts.length > 0 || reach.viaLists.length > 0,
+        }
+      : {}),
     createdAt: iso(r.created_at) ?? "",
     updatedAt: iso(r.updated_at) ?? "",
     deletedAt: iso(r.deleted_at),
@@ -577,6 +587,12 @@ export const listContentInstancesOp = withHumanisedLinks(
         search: z.string().min(1).max(128).optional(),
         pageId: z.string().uuid().optional(),
         includeDeleted: z.boolean().default(false),
+        /**
+         * #1391 — add each instance's usage (placementCount, parentCount,
+         * renderedPageCount, rendersSiteWide). A reach walk per instance:
+         * ask for it only to show or decide on usage.
+         */
+        usage: z.boolean().default(false),
       })
       .strict(),
     output: z.object({ instances: z.array(contentInstanceRowSchema) }),
@@ -668,8 +684,10 @@ export const listContentInstancesOp = withHumanisedLinks(
       }
       const visible = input.includeDeleted ? rows : rows.filter((r) => r.deleted_at === null);
       const ids = visible.map((r) => r.id);
+      if (!input.usage) {
+        return ok({ instances: visible.map((r) => rowToContentInstance(r, null)) });
+      }
       const reach = await loadContentInstanceReach(tx, ctx.chatBranchId ?? null, ids);
-
       return ok({
         instances: visible.map((r) => rowToContentInstance(r, reachOf(reach, r.id))),
       });

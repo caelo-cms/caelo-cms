@@ -36,7 +36,7 @@
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { headOverlaySql, stateNamesAnySql } from "../../draft.js";
+import { headOverlaySql, pendingRefCandidatesSql } from "../../draft.js";
 import { loadBranchedModuleStates } from "../../snapshots/load.js";
 import type { PageLayoutState } from "../../snapshots/state.js";
 import { findContentInstancesContaining, idNeedles } from "./content-instance-refs.js";
@@ -75,38 +75,6 @@ export async function findModulePagePlacements(
   for (const id of moduleIds) pagesByModule.set(id, new Map());
   if (moduleIds.length === 0) return new Map();
 
-  // Branched page layouts + page states: the newest pending snapshot per
-  // page on this branch, through the draft head (one row per pending page,
-  // not the branch's whole pending history). Every reshaped page
-  // supersedes its live rows; only layouts naming a requested module are
-  // read out (null otherwise). Empty for callers without a branch.
-  const branchedLayouts = new Map<string, PageLayoutState | null>();
-  const branchedDeletedPages = new Set<string>();
-  if (branchId) {
-    const layoutRows = (await tx.execute(
-      headOverlaySql({
-        kind: "pageLayout",
-        table: "page_layout_snapshots",
-        branchId,
-        columns: sql`CASE WHEN ${stateNamesAnySql(moduleIds)} THEN es.state END AS state`,
-      }),
-    )) as unknown as { entity_id: string; state: unknown }[];
-    for (const r of layoutRows) {
-      branchedLayouts.set(r.entity_id, r.state as PageLayoutState | null);
-    }
-    const pageRows = (await tx.execute(
-      headOverlaySql({
-        kind: "page",
-        table: "page_snapshots",
-        branchId,
-        columns: sql`(es.state->>'deletedAt') IS NOT NULL AS deleted`,
-      }),
-    )) as unknown as { entity_id: string; deleted: boolean }[];
-    for (const r of pageRows) {
-      if (r.deleted) branchedDeletedPages.add(r.entity_id);
-    }
-  }
-
   // Live page placements on pages visible to the caller.
   const visible = branchId
     ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
@@ -119,6 +87,46 @@ export async function findModulePagePlacements(
      WHERE pm.module_id = ANY(${uuidArray(moduleIds)})
        AND p.deleted_at IS NULL AND ${visible}
   `)) as unknown as { module_id: string; page_id: string; path: string; title: string }[];
+
+  // Branched page layouts + page states of the pages that may place a
+  // requested module: the pages of the live rows (a pending layout or
+  // delete supersedes them) and the pages whose pending layout references
+  // one (the snapshot reference table, 0533) — never every pending page of
+  // the draft. Empty for callers without a branch.
+  const branchedLayouts = new Map<string, PageLayoutState>();
+  const branchedDeletedPages = new Set<string>();
+  if (branchId) {
+    const pendingPages = (await tx.execute(
+      pendingRefCandidatesSql({ kind: "pageLayout", branchId, ids: moduleIds }),
+    )) as unknown as { entity_id: string }[];
+    const pageIds = [
+      ...new Set([...liveRows.map((r) => r.page_id), ...pendingPages.map((r) => r.entity_id)]),
+    ];
+    if (pageIds.length > 0) {
+      const layoutRows = (await tx.execute(
+        headOverlaySql({
+          kind: "pageLayout",
+          table: "page_layout_snapshots",
+          branchId,
+          ids: pageIds,
+        }),
+      )) as unknown as { entity_id: string; state: unknown }[];
+      for (const r of layoutRows) branchedLayouts.set(r.entity_id, r.state as PageLayoutState);
+      const pageRows = (await tx.execute(
+        headOverlaySql({
+          kind: "page",
+          table: "page_snapshots",
+          branchId,
+          ids: pageIds,
+          columns: sql`(es.state->>'deletedAt') IS NOT NULL AS deleted`,
+        }),
+      )) as unknown as { entity_id: string; deleted: boolean }[];
+      for (const r of pageRows) {
+        if (r.deleted) branchedDeletedPages.add(r.entity_id);
+      }
+    }
+  }
+
   for (const r of liveRows) {
     // A branched layout for this page supersedes its live rows.
     if (branchedLayouts.has(r.page_id) || branchedDeletedPages.has(r.page_id)) continue;
@@ -131,7 +139,7 @@ export async function findModulePagePlacements(
   const wanted = new Set(moduleIds);
   const branchedHits: { moduleId: string; pageId: string }[] = [];
   for (const [pageId, layout] of branchedLayouts) {
-    if (layout === null || branchedDeletedPages.has(pageId)) continue;
+    if (branchedDeletedPages.has(pageId)) continue;
     for (const block of layout.blocks) {
       for (const moduleId of block.moduleIds) {
         if (wanted.has(moduleId)) branchedHits.push({ moduleId, pageId });

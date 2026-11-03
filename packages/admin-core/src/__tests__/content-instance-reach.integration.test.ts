@@ -225,10 +225,27 @@ describe("#627 — nested-only instances reach the pages their parents render on
 
     const listed = await op<{
       instances: { id: string; renderedPageCount: number; parentCount: number }[];
-    }>(SYS, "content_instances.list", { moduleId: cardId });
+    }>(SYS, "content_instances.list", { moduleId: cardId, usage: true });
     const row = listed.instances.find((i) => i.id === grandchild);
     expect(row?.renderedPageCount).toBe(2);
     expect(row?.parentCount).toBe(1);
+
+    // #1391 — usage is asked for, never paid unasked: a plain list (what a
+    // plugin's change consumer reads after every write) carries none.
+    const lean = await op<{ instances: Record<string, unknown>[] }>(SYS, "content_instances.list", {
+      moduleId: cardId,
+    });
+    const leanRow = lean.instances.find((i) => i.id === grandchild);
+    expect(leanRow).toBeDefined();
+    for (const key of [
+      "placementCount",
+      "nestedParentCount",
+      "parentCount",
+      "renderedPageCount",
+      "rendersSiteWide",
+    ]) {
+      expect(leanRow).not.toHaveProperty(key);
+    }
 
     const tool = await getContentInstanceTool.handler(SYS, { id: grandchild }, {
       registry,

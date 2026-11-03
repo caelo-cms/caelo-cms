@@ -35,6 +35,7 @@ import {
   idNeedles,
   liveInstancesSql,
   needleFilterSql,
+  pendingNeedleCandidatesSql,
 } from "../ops/content/content-instance-refs.js";
 import { registerAdminOps } from "../register.js";
 
@@ -288,6 +289,47 @@ describe("#1287 — the lookup is served by the index", () => {
     );
     expect(seqScans).not.toContain("content_instances");
     expect(seqScans).not.toContain("content_instance_refs");
+  });
+});
+
+describe("#1391 — pending states are found through the index", () => {
+  it("scans no snapshot table for a needle on a few thousand pending states", async () => {
+    const chat = await op<{ chatBranchId: string; chatSessionId: string }>("chat.create_session", {
+      title: `cirefs-plan-${TS}`,
+    });
+    // A shared draft between two Stages: thousands of pending instance
+    // states, none of them naming the needle.
+    await asSystem(async (tx) => {
+      await tx.unsafe(`
+        WITH h AS (
+          INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id)
+          VALUES ('${ACTOR}', 'content_instances.set_values', 'cirefs-plan', '${chat.chatSessionId}',
+                  '${chat.chatBranchId}')
+          RETURNING id)
+        INSERT INTO content_instance_snapshots (site_snapshot_id, content_instance_id, state)
+        SELECT h.id, ci.id,
+               jsonb_build_object('schemaVersion', 1, 'moduleId', ci.module_id::text, 'slug', null,
+                                  'displayName', null, 'version', 2, 'deletedAt', null,
+                                  'values', ci."values")
+          FROM h, (SELECT id, module_id, "values" FROM content_instances LIMIT 4000) ci`);
+      await tx.unsafe("ANALYZE content_instance_snapshots");
+      await tx.unsafe("ANALYZE content_instance_snapshot_refs");
+      await tx.unsafe("ANALYZE draft_pending_entities");
+    });
+    const plan = await adapter.withAdminTransaction(SYS, async (tx) => {
+      const rows = (await tx.execute(
+        sql`EXPLAIN (FORMAT JSON) ${pendingNeedleCandidatesSql(chat.chatBranchId, [
+          { kind: "id", id: crypto.randomUUID() },
+        ])}`,
+      )) as unknown as Record<string, unknown>[];
+      return JSON.stringify(rows);
+    });
+    expect(plan).toContain("content_instance_snapshot_refs_ref_idx");
+    const seqScans = [...plan.matchAll(/"Node Type":"Seq Scan"[^}]*?"Relation Name":"(\w+)"/g)].map(
+      (m) => m[1],
+    );
+    expect(seqScans).not.toContain("content_instance_snapshots");
+    expect(seqScans).not.toContain("draft_pending_entities");
   });
 });
 

@@ -323,6 +323,48 @@ async function assertDraftHeadConsistent(url: string): Promise<void> {
  * values now. Whatever the file wrote — an op, a helper, its own seed SQL,
  * a Stage or a revert — a path the triggers miss fails here.
  */
+/**
+ * #1391 — rule 3 again for the snapshot reference tables of migration
+ * 0533: after each integration file they equal what the extraction derives
+ * from the content-instance and page-layout snapshot states now. The SQL
+ * mirrors `SNAPSHOT_REFS_DRIFT_SQL` (admin-core content-instance-refs.ts),
+ * which the rebuild op reports.
+ */
+async function assertSnapshotRefsExact(url: string): Promise<void> {
+  const sql = new SQL(url, { max: 1 });
+  try {
+    const drift = (await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx.unsafe(`
+        WITH expected AS (
+          SELECT 'ci' AS t, s.id AS snapshot_row_id, r.ref_kind, r.ref
+            FROM content_instance_snapshots s
+           CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state -> 'values') r
+          UNION ALL
+          SELECT 'pl', s.id, r.ref_kind, r.ref
+            FROM page_layout_snapshots s
+           CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state) r
+        ), maintained AS (
+          SELECT 'ci' AS t, snapshot_row_id, ref_kind, ref FROM content_instance_snapshot_refs
+          UNION ALL
+          SELECT 'pl', snapshot_row_id, ref_kind, ref FROM page_layout_snapshot_refs
+        )
+        SELECT (SELECT count(*)::int FROM (SELECT * FROM expected EXCEPT SELECT * FROM maintained) d) AS missing,
+               (SELECT count(*)::int FROM (SELECT * FROM maintained EXCEPT SELECT * FROM expected) d) AS extra`);
+    })) as { missing: number; extra: number }[];
+    const d = drift[0];
+    if (d && (d.missing > 0 || d.extra > 0)) {
+      throw new Error(
+        `the snapshot reference tables drifted from the snapshot states (#1391): ${d.missing} missing, ${d.extra} extra. ` +
+          "A snapshot write went past the triggers of migration 0533 " +
+          "(a disabled trigger, a write into the tables themselves); content_instances.rebuild_refs repairs it.",
+      );
+    }
+  } finally {
+    await sql.end();
+  }
+}
+
 async function assertContentInstanceRefsExact(url: string): Promise<void> {
   const sql = new SQL(url, { max: 1 });
   try {
@@ -366,6 +408,7 @@ if (ADMIN_URL && PUBLIC_URL && RESET_OPTED_IN) {
       assertNoDoubleEncodedJsonb(PUBLIC_URL),
       assertDraftHeadConsistent(ADMIN_URL),
       assertContentInstanceRefsExact(ADMIN_URL),
+      assertSnapshotRefsExact(ADMIN_URL),
     ]);
   });
 } else if (ADMIN_URL && PUBLIC_URL) {
