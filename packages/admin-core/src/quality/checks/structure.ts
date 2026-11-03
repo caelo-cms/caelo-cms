@@ -52,6 +52,14 @@
  *   `structure/js-rendered-content` (errors), `structure/site-wide-module-js`
  *   and `structure/js-written-text` (warnings) — a script in the wrong
  *   module, and content a script builds instead of the HTML carrying it.
+ * - Page weight (epic #1371, structure-weight.ts): `structure/heavy-chrome`
+ *   (warning, error from 400 elements) — the frame every page carries;
+ *   `structure/repeated-render` (error when one module renders a list
+ *   twice or a page renders it 3+ times, else warning) — one list written
+ *   into the DOM several times.
+ * - CSS where it is used (epic #1371, structure-css.ts), all warnings:
+ *   `structure/unused-css`, `structure/page-specific-layout-css`,
+ *   `structure/duplicate-css`.
  *
  * Deliberate exceptions go through the existing per-rule acceptance.
  */
@@ -77,9 +85,18 @@ import {
   type StructureModule,
   selectorClasses,
 } from "./structure-analysis.js";
+import {
+  createRenderedFold,
+  duplicateCssFindings,
+  pageSpecificLayoutCssFindings,
+  scriptTokens,
+  unusedCssFindings,
+} from "./structure-css.js";
 import { moduleJsFindings } from "./structure-js.js";
 import { manualListingFindings, type StructurePageIndex } from "./structure-listing.js";
 import { unconfirmedPageTypeFindings } from "./structure-page-type.js";
+import { frameModuleIds, heavyChromeFindings, repeatedRenderFindings } from "./structure-weight.js";
+import { measurePage, type PageWeight } from "./structure-weight-analysis.js";
 
 export const STRUCTURE_CHECK_ID = "structure";
 
@@ -89,6 +106,8 @@ export interface StructureLayout {
   readonly displayName: string;
   readonly html: string;
   readonly css: string;
+  /** Slugs of the chrome modules placed in its blocks (#1371: the frame). */
+  readonly chromeModuleSlugs: readonly string[];
 }
 
 /** Where the check reads the module templates, layouts and pages (main, = staged). */
@@ -153,12 +172,46 @@ export function structureFindings(
     ...manualListingFindings(analysis.listingGroups, pages, pageIndex, byId),
     ...unconfirmedPageTypeFindings(pageIndex),
     ...moduleJsFindings(analysis, pages, modules, layouts),
+    ...weightFindings(pages, modules, layouts, pageIndex, analysis, byId),
   ];
   // Errors first (stable within a severity), so a cut keeps what blocks.
   // The fix of one group is site-wide, so the next Stage re-reports
   // whatever was cut.
   const rank = (f: Finding) => (f.severity === "error" ? 0 : 1);
   return findings.sort((a, b) => rank(a) - rank(b)).slice(0, MAX_FINDINGS_PER_CALL);
+}
+
+/**
+ * Epic #1371 — the page-weight rules: the frame (structure-weight.ts) and
+ * CSS where it is used (structure-css.ts). One measuring pass per page.
+ */
+function weightFindings(
+  pages: readonly StagedPage[],
+  modules: readonly StructureModule[],
+  layouts: readonly StructureLayout[],
+  pageIndex: StructurePageIndex,
+  analysis: StructureAnalysis,
+  byId: ReadonlyMap<string, StructureModule>,
+): Finding[] {
+  const pageTypes = new Map([...pageIndex.pages].map(([id, p]) => [id, p.pageTypeId]));
+  const fold = createRenderedFold(layouts, pageIndex.pageLayouts, pageTypes);
+  const weights: PageWeight[] = pages.map((p) => {
+    const { weight, classes } = measurePage(p.pageId, p.path, p.html);
+    fold.add(p.pageId, classes);
+    return weight;
+  });
+  const rendered = fold.result();
+  const chromeSlugs = new Set(layouts.flatMap((l) => l.chromeModuleSlugs));
+  const frame = frameModuleIds(modules, chromeSlugs, analysis.placements, pages.length);
+  const placed = modules.filter((m) => analysis.placements.has(m.id));
+  const typeNames = new Map([...pageIndex.pageTypes].map(([id, t]) => [id, t.name]));
+  return [
+    ...heavyChromeFindings(weights, frame, byId),
+    ...repeatedRenderFindings(analysis.listRenders, byId),
+    ...unusedCssFindings(layouts, placed, rendered, scriptTokens(modules.map((m) => m.js))),
+    ...pageSpecificLayoutCssFindings(layouts, rendered, analysis.classUse, typeNames),
+    ...duplicateCssFindings(placed),
+  ];
 }
 
 /** How many distinct pages a set of occurrences spans. */

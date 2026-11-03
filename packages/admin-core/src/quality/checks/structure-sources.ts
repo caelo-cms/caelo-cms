@@ -101,6 +101,8 @@ export function structureSourcesFromOps(
         displayName: m.displayName,
         html: m.html,
         js: m.js,
+        css: m.css,
+        kind: m.kind,
         listFields: m.fields.filter((f) => LIST_KINDS.has(f.kind)).map((f) => f.name),
         moduleListFields: m.fields.filter((f) => f.kind === "module-list").map((f) => f.name),
         fieldNames: m.fields.map((f) => f.name),
@@ -113,15 +115,22 @@ export function structureSourcesFromOps(
     },
     layouts: () =>
       read("layouts.list", (v) =>
-        (v as { layouts: StructureLayout[] }).layouts.map((l) => ({
+        (
+          v as {
+            layouts: (Omit<StructureLayout, "chromeModuleSlugs"> & {
+              blocks: { moduleSlugs: string[] }[];
+            })[];
+          }
+        ).layouts.map((l) => ({
           id: l.id,
           displayName: l.displayName,
           html: l.html,
           css: l.css,
+          chromeModuleSlugs: l.blocks.flatMap((b) => b.moduleSlugs),
         })),
       ),
     pageIndex: async (): Promise<StructurePageIndex> => {
-      const [types, pages, siteUrls] = await Promise.all([
+      const [types, pages, templates, siteUrls] = await Promise.all([
         read(
           "page_types.list",
           (v) =>
@@ -149,9 +158,17 @@ export function structureSourcesFromOps(
                   pageTypeConfirmed: boolean;
                   title: string;
                   currentPath: string;
+                  templateId: string;
                 }[];
               }
             ).pages,
+        ),
+        read(
+          "templates.list",
+          (v) => (v as { templates: { id: string; layoutId: string }[] }).templates,
+          // A deleted template still names its layout; a page left on one
+          // must not fail the audit over the lookup.
+          { includeDeleted: true },
         ),
         readSiteUrls((op, input) => read(op, (v) => v, input)),
       ]);
@@ -174,6 +191,7 @@ export function structureSourcesFromOps(
           ]),
         ),
         siteHosts: siteHostsOf(siteUrls),
+        pageLayouts: pageLayoutsOf(pages, templates),
         variantGroups: await readVariantGroups(
           pages.map((p) => p.id),
           ctx.chatBranchId ?? null,
@@ -181,6 +199,28 @@ export function structureSourcesFromOps(
       };
     },
   };
+}
+
+/**
+ * #1371 — page id → the layout its template binds. A page whose template
+ * is not listed is a broken reference the build would already have
+ * refused; it throws here rather than reading as "no layout" (CLAUDE.md §2).
+ */
+function pageLayoutsOf(
+  pages: readonly { id: string; templateId: string }[],
+  templates: readonly { id: string; layoutId: string }[],
+): Map<string, string> {
+  const layoutOf = new Map(templates.map((t) => [t.id, t.layoutId]));
+  return new Map(
+    pages.map((p) => {
+      const layoutId = layoutOf.get(p.templateId);
+      if (layoutId === undefined)
+        throw new Error(
+          `structure sources: page ${p.id} binds template ${p.templateId}, which templates.list does not return`,
+        );
+      return [p.id, layoutId];
+    }),
+  );
 }
 
 /**

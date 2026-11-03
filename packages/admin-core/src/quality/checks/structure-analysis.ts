@@ -48,6 +48,7 @@ import {
   listingLinkGroups,
   listingTemplates,
 } from "./structure-listing-links.js";
+import { type ListRender, repeatedListRenders } from "./structure-weight-analysis.js";
 
 /** A module as the structure check needs it. */
 export interface StructureModule {
@@ -58,6 +59,10 @@ export interface StructureModule {
   readonly html: string;
   /** The module's script (#1198: whose markup it drives, whether it builds content). */
   readonly js: string;
+  /** The module's stylesheet (#1371: unused and duplicated rules). */
+  readonly css: string;
+  /** What the module is for (#1371: `chrome` modules are the frame every page carries). */
+  readonly kind: "chrome" | "hero" | "content" | "cta" | "utility";
   /**
    * Names of its `list` and `module-list` fields (#1256): a section over
    * one of them renders entries, any other section is a condition.
@@ -131,6 +136,8 @@ export interface StructureAnalysis {
   readonly templateShapes: ReadonlyMap<string, SubtreeShape>;
   /** Module id → the modules rendered inside its roots, at any depth (#1198). */
   readonly nested: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Lists rendered twice or more on one page (#1371). */
+  readonly listRenders: readonly ListRender[];
 }
 
 interface ParsedModule {
@@ -161,6 +168,7 @@ export function analyseStructure(
   const classUse = new Map<string, ClassUse>();
   const placements = new Map<string, Set<string>>();
   const nested = new Map<string, Set<string>>();
+  const listRenders: ListRender[] = [];
   const use = (cls: string): ClassUse => {
     let u = classUse.get(cls);
     if (!u) {
@@ -176,6 +184,7 @@ export function analyseStructure(
       use(cls).chrome = true;
     });
     listingGroups.push(...listingLinkGroups(page, roots, listing));
+    listRenders.push(...repeatedListRenders(page.pageId, page.path, roots));
     for (const root of moduleRoots(roots)) {
       const id = root.moduleId as string;
       let onPages = placements.get(id);
@@ -228,6 +237,7 @@ export function analyseStructure(
     placements,
     templateShapes,
     nested,
+    listRenders,
   };
 }
 

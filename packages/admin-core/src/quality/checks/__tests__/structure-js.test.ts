@@ -55,6 +55,8 @@ function mod(n: number, displayName: string, html: string, js = ""): StructureMo
     moduleListFields: [],
     fieldNames: [],
     entryKeys: {},
+    css: "",
+    kind: "content" as const,
   };
 }
 
@@ -93,6 +95,7 @@ function jsFindings(pages: StagedPage[], modules: StructureModule[], layouts = n
     pages: new Map(),
     siteHosts: new Set<string>(),
     variantGroups: new Map<string, string>(),
+    pageLayouts: new Map(),
   };
   return structureFindings(pages, modules, layouts, noTypes).filter((f) =>
     /module-js|js-rendered|js-written/.test(f.ruleId),
@@ -456,6 +459,7 @@ describe("structure/foreign-module-js (#1198)", () => {
       displayName: "Main",
       html: '<div class="shell">{{{modules}}}</div>',
       css: "",
+      chromeModuleSlugs: [],
     };
     expect(jsFindings([page(1, "/tools", nested)], [card, grid], [layout])).toEqual([]);
   });

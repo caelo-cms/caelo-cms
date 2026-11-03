@@ -23,7 +23,7 @@ import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError, toolError } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
-import { moduleJsGuardSuffix } from "./_module-js-guard.js";
+import { moduleWriteGuardSuffix } from "./_module-js-guard.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const editContentInput = z
@@ -180,10 +180,10 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
         (await designGuardSuffix(ctx, toolCtx, {
           html: applied.content,
           excludeModuleIds: [input.entityId],
-        })) + (await moduleJsGuardSuffix(ctx, toolCtx, [input.entityId]));
+        })) + (await moduleWriteGuardSuffix(ctx, toolCtx, [input.entityId]));
     } else if (input.entityKind === "module" && input.field === "js") {
       // #1198 — a script edit can reach into another module or build content.
-      suffix = await moduleJsGuardSuffix(ctx, toolCtx, [input.entityId]);
+      suffix = await moduleWriteGuardSuffix(ctx, toolCtx, [input.entityId]);
     }
 
     // Return the new sha + a cat -n snippet of each changed region (Claude

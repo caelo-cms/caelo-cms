@@ -56,7 +56,7 @@ import {
   MODULE_HTML_DESCRIPTION_KIT_REF,
   MODULE_JS_CONTRACT_KIT_REF,
 } from "./_module-js-contract.js";
-import { moduleJsGuardSuffix } from "./_module-js-guard.js";
+import { moduleWriteGuardSuffix } from "./_module-js-guard.js";
 import { resolvePageRef } from "./_page-ref.js";
 import { pluginWriteHintsSuffix, storedModuleWrites } from "./_plugin-write-hints.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
@@ -288,7 +288,7 @@ async function mintedModuleSuffix(
   moduleId: string,
 ): Promise<string> {
   if (mod.reused) return "";
-  return `${await cssVarWarningSuffix(ctx, toolCtx, mod.css)}${await designGuardSuffix(ctx, toolCtx, { css: mod.css, html: input.html, excludeModuleIds: [moduleId] })}${await pluginWriteHintsSuffix(ctx, await storedModuleWrites(ctx, toolCtx, [moduleId]))}${await moduleJsGuardSuffix(ctx, toolCtx, [moduleId])}`;
+  return `${await cssVarWarningSuffix(ctx, toolCtx, mod.css)}${await designGuardSuffix(ctx, toolCtx, { css: mod.css, html: input.html, excludeModuleIds: [moduleId] })}${await pluginWriteHintsSuffix(ctx, await storedModuleWrites(ctx, toolCtx, [moduleId]))}${await moduleWriteGuardSuffix(ctx, toolCtx, [moduleId])}`;
 }
 
 /** Every ok result's tail: the hints on the new module + the §2 ignored-authoring note. */
