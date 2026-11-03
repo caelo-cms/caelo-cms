@@ -80,8 +80,11 @@ let seoBaseBefore: string | null = null;
 const previewCalls = new AsyncLocalStorage<string[]>();
 /** Previews rendering right now. */
 let previewsRunning = 0;
-/** Operations that ran during a preview but not for it (background work). */
-const outsidePreview: string[] = [];
+/**
+ * The operations of a worker tick a test starts itself, each with whether
+ * a preview was rendering when it ran.
+ */
+const tickCalls = new AsyncLocalStorage<{ name: string; duringPreview: boolean }[]>();
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -214,9 +217,8 @@ beforeAll(async () => {
   const runOperation = adapter.runOperation.bind(adapter);
   adapter.runOperation = ((op, ctx, input) => {
     const name = `${ctx.actorKind}:${op.name}`;
-    const calls = previewCalls.getStore();
-    if (calls) calls.push(name);
-    else if (previewsRunning > 0) outsidePreview.push(name);
+    previewCalls.getStore()?.push(name);
+    tickCalls.getStore()?.push({ name, duringPreview: previewsRunning > 0 });
     return runOperation(op, ctx, input);
   }) as typeof adapter.runOperation;
   registry = new OperationRegistry();
@@ -307,17 +309,25 @@ describe("#1213 — international-site render hooks at scale", () => {
     if (!target || !smallPreview) throw new Error("previous test did not run");
     // What the scheduler runs at every full minute, started the way its
     // cron job starts it: outside any render pass, during this one.
-    outsidePreview.length = 0;
-    const tick = runPluginOperation({
-      invocation: { origin: "worker", actorId: SYSTEM_ACTOR_ID },
-      pluginSlug: "international-site",
-      operationName: "refresh_locales",
-      args: { _trigger: "worker", workerName: "locale-cache-refresh" },
-    });
+    const ran: { name: string; duringPreview: boolean }[] = [];
+    const tick = tickCalls.run(ran, () =>
+      runPluginOperation({
+        invocation: { origin: "worker", actorId: SYSTEM_ACTOR_ID },
+        pluginSlug: "international-site",
+        operationName: "refresh_locales",
+        args: { _trigger: "worker", workerName: "locale-cache-refresh" },
+      }),
+    );
     const during = await preview(target.de, [small[1]?.en ?? "", small[2]?.de ?? ""]);
     const ticked = await tick;
     if (!ticked.ok) throw new Error(ticked.error.message);
-    expect(outsidePreview).toContain("plugin:plugin_storage.list");
+    // The tick's two registry reads (locales, settings) ran while the
+    // preview rendered — the overlap CI run 41608208651 hit.
+    expect(ran.map((r) => r.name)).toEqual([
+      "plugin:plugin_storage.list",
+      "plugin:plugin_storage.list",
+    ]);
+    expect(ran.some((r) => r.duringPreview)).toBe(true);
     expect([...during.calls].sort()).toEqual([...smallPreview.calls].sort());
   });
 
