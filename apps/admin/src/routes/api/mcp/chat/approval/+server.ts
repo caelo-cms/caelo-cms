@@ -9,6 +9,7 @@
  * Read-only; auth lives inside the op (bearer in `x-caelo-mcp-token`).
  */
 
+import { mcpBusyFailureResponse } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error, json } from "@sveltejs/kit";
@@ -22,7 +23,7 @@ const SYSTEM_CTX: ExecutionContext = {
   requestId: "mcp-http-chat-approval",
 };
 
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, url }) => {
   const token = request.headers.get("x-caelo-mcp-token");
   if (!token) throw error(401, "missing x-caelo-mcp-token header");
   const parsed = z
@@ -39,6 +40,8 @@ export const POST: RequestHandler = async ({ request }) => {
     chatSessionId: parsed.data.chatSessionId,
   });
   if (!r.ok) {
+    const busy = mcpBusyFailureResponse(r.error, url.pathname);
+    if (busy) return busy;
     const msg = "message" in r.error ? r.error.message : r.error.kind;
     if (typeof msg === "string" && msg.startsWith("auth_error:")) throw error(401, msg);
     throw error(500, typeof msg === "string" ? msg : "mcp.get_chat_approval_state failed");

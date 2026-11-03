@@ -89,6 +89,22 @@ describe("#1375 — MCP back-pressure on a saturated admin pool", () => {
     expect(mcpBackPressureResponse("/api/mcp/tool", drained)).toBeNull();
   }, 30_000);
 
+  it("workers' raw transactions count too: waiting, then held as raw.begin", async () => {
+    const raw = Array.from({ length: POOL + 2 }, () =>
+      adapter.rawAdmin().begin(async (tx) => {
+        await tx`SELECT pg_sleep(1.5)`;
+      }),
+    );
+    await sleep(1_200);
+    const pressure = adapter.poolPressure("admin");
+    expect(pressure.inUse).toBe(POOL);
+    expect(pressure.waiting).toBe(2);
+    for (const h of pressure.holders) expect(h.holder).toBe("raw.begin");
+    expect(mcpBackPressureResponse("/api/mcp/tool", pressure)?.status).toBe(429);
+    await Promise.all(raw);
+    expect(adapter.poolPressure("admin")).toMatchObject({ inUse: 0, waiting: 0 });
+  }, 30_000);
+
   it("a call that hit the pool deadline is answered 429 with Retry-After, not 500", async () => {
     const held = await Promise.all(
       Array.from({ length: POOL }, () => adapter.rawAdmin().reserve()),

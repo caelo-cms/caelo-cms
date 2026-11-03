@@ -1204,11 +1204,48 @@ export class DatabaseAdapter {
   rawAdmin(): SQL {
     if (this.#adminRaw === null) throw new AdminDatabaseUnavailableError("rawAdmin");
     this.#guard.assertNoHeldTransaction("admin", "rawAdmin()");
-    return this.#adminRaw;
+    return this.#trackedRaw("admin", this.#adminRaw);
   }
   rawPublic(): SQL {
     this.#guard.assertNoHeldTransaction("public", "rawPublic()");
-    return this.#publicRaw;
+    return this.#trackedRaw("public", this.#publicRaw);
+  }
+
+  /**
+   * #1375 — the raw pool with its `begin()` counted in {@link poolPressure}
+   * (a waiter until the transaction starts, then a holder named
+   * `raw.begin` until it ends), so workers that open their own transaction
+   * on the raw pool (rate limiter, provider resolver, GC workers) show up
+   * in the back-pressure decision and its log. Everything else passes
+   * through unchanged.
+   */
+  #trackedRaw(pool: PoolName, raw: SQL): SQL {
+    const demand = this.#demand[pool];
+    return new Proxy(raw, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== "begin" || typeof value !== "function") {
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return (...args: unknown[]) => {
+          const last = args.length - 1;
+          const fn = args[last];
+          if (typeof fn !== "function") return value.apply(target, args);
+          const endWait = demand.beginWait();
+          const counted = async (tx: unknown) => {
+            endWait();
+            const endHold = demand.beginHold("raw.begin");
+            try {
+              return await (fn as (tx: unknown) => unknown)(tx);
+            } finally {
+              endHold();
+            }
+          };
+          const out = value.apply(target, [...args.slice(0, last), counted]) as Promise<unknown>;
+          return out.finally(endWait);
+        };
+      },
+    });
   }
 
   /**
