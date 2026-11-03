@@ -16,7 +16,8 @@
  * After the step, every new pool dials the DNS name with verify-full. When
  * the step fails, the target is read again: it may have rotated the
  * server certificate or moved the services before it stopped, and the job
- * still has to record its end.
+ * still has to record its end. When that read fails too, the pool already
+ * open stays.
  */
 
 import {
@@ -89,14 +90,22 @@ export async function convergeDatabase(deps: ConvergeDatabaseDeps): Promise<{
           try {
             host = await deps.runTlsStep();
           } catch (e) {
+            // Reconnect only on a target read after the step: without one,
+            // the pool already open is the best chance to record the end
+            // (its connections survive unless the step rotated the
+            // certificate, and a new handshake with the old data would not).
+            let reread: ConvergeDatabaseTarget | null = null;
             try {
-              target = await deps.resolveTarget();
+              reread = await deps.resolveTarget();
             } catch (again) {
               deps.warn(
-                `after the failed database TLS step, where to reach the database could not be read again: ${errorText(again)}`,
+                `after the failed database TLS step, where to reach the database could not be read again (${errorText(again)}); keeping the open connection`,
               );
             }
-            await db.reopen();
+            if (reread) {
+              target = reread;
+              await db.reopen();
+            }
             return { ok: false, error: errorText(e) };
           }
           target = { kind: "dns", host };

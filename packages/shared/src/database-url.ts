@@ -142,7 +142,9 @@ export function cloudSqlIamIpDatabaseUrls(
       `${ip} is a host name; connect to it with verify-full (cloudSqlIamDatabaseUrls), not with the IP-address checks`,
     );
   }
-  return iamUrls(ip, serviceAccountEmail, accessToken, verifyFullQuery());
+  // An IPv6 literal goes into the URI authority in brackets (RFC 3986 §3.2.2).
+  const authority = ip.includes(":") && !ip.startsWith("[") ? `[${ip}]` : ip;
+  return iamUrls(authority, serviceAccountEmail, accessToken, verifyFullQuery());
 }
 
 function iamUrls(

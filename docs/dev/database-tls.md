@@ -91,7 +91,25 @@ provider's URL in the `database-tls.ts` file comment.
   the instance (shared CA). Both come from the Admin API, never from the
   network. `sslmode=require` is never used. When the step fails, the job
   reads the target again (the step may have rotated the certificate) and
-  records the error and the request's end.
+  records the error and the request's end. If that read fails, it keeps the
+  connection it has.
+
+  Stage 1 runs the *installed* release's job code, which this cannot change
+  after the fact. From this release on, stage 1 only reads where to connect
+  and never runs the TLS step. For the one upgrade onto this release:
+  - **v0.11.9 and older.** Stage 1 has no TLS step and connects to the IP
+    the old way. It hands over to this release's stage 2, which runs the
+    step as a timeline step.
+  - **v0.11.10.** Stage 1 runs the TLS step before it opens its queue. An
+    install that runs v0.11.10 has finished that converge and dials the DNS
+    name, so the step returns at once. An install whose v0.11.10 converge
+    failed (the job then points at v0.11.10's image) re-runs the step when
+    the update is continued. The failure seen on searchviu-website
+    ("reports no PRIVATE_SERVICES_ACCESS DNS name") cannot happen on that
+    re-run: the instance already uses the shared CA, so the first describe
+    already names the DNS host (the cause fixed in #1372). Any other failure
+    of that step is still visible only in the job's log, once, until the
+    install has moved past v0.11.10.
 - **self-hosted.** `cms-provision up` and `upgrade` create the TLS files
   (`.caelo/postgres-tls/`). After pulling, the upgrade first recreates
   Postgres with TLS. The old containers keep connecting without TLS until

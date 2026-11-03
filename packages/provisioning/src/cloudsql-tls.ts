@@ -112,7 +112,7 @@ export async function describeInstance(
 }
 
 /** The instance's server certificates and which one is active (Cloud SQL Admin API). */
-export async function listServerCertificates(
+async function listServerCertificates(
   t: CloudSqlTlsTarget,
   run: GcloudRunner,
   http: HttpFetch,

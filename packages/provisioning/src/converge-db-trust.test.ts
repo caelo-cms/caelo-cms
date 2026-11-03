@@ -21,6 +21,7 @@ const PLACEMENT = { projectId: "p", region: "europe-west1" };
 const OWN_CA = "-----BEGIN CERTIFICATE-----\nper-instance\n-----END CERTIFICATE-----";
 const SHARED_BUNDLE = "-----BEGIN CERTIFICATE-----\nshared\n-----END CERTIFICATE-----";
 const ACTIVE = "a212b6cf51b3736b34a5d4a3194b200db6b3532a";
+const OLD = "0123456789abcdef0123456789abcdef01234567";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
@@ -120,14 +121,75 @@ describe("convergeDatabaseTarget", () => {
     expect(target).toEqual({ kind: "ip", host: IP, caPem: SHARED_BUNDLE, pinnedSha1: [ACTIVE] });
   });
 
-  it("moved to the shared CA but not rotated in: the server still shows its own CA's certificate", async () => {
+  it("moved to the shared CA but not rotated in: pinned to the one certificate the API names active", async () => {
     const g = gcloud({ host: IP, instance: shared });
     const target = await convergeDatabaseTarget(PLACEMENT, {
       run: g.run,
-      http: api({ activeVersion: "old-per-instance", serverCerts: [] }),
+      http: api({ activeVersion: OLD.toUpperCase(), serverCerts: [] }),
       readSharedCaBundle: () => SHARED_BUNDLE,
     });
-    expect(target).toEqual({ kind: "ip", host: IP, caPem: OWN_CA, pinnedSha1: null });
+    expect(target).toEqual({
+      kind: "ip",
+      host: IP,
+      caPem: `${OWN_CA}\n${SHARED_BUNDLE}`,
+      pinnedSha1: [OLD],
+    });
+  });
+
+  it("shared CA: a listing that does not positively name the active certificate is refused (fail closed)", async () => {
+    const answers: { body: unknown; why: RegExp }[] = [
+      { body: {}, why: /does not name the active certificate/ },
+      { body: { serverCerts: [{ sha1Fingerprint: ACTIVE }] }, why: /does not name/ },
+      { body: { activeVersion: "", serverCerts: [] }, why: /does not name/ },
+      { body: { activeVersion: "old-per-instance", serverCerts: [] }, why: /does not name/ },
+      {
+        body: { activeVersion: ACTIVE, serverCerts: [{ sha1Fingerprint: "nope" }] },
+        why: /does not name/,
+      },
+      { body: { activeVersion: ACTIVE, serverCerts: [{}] }, why: /does not name/ },
+      { body: { activeVersion: ACTIVE, serverCerts: "x" }, why: /does not name/ },
+    ];
+    for (const a of answers) {
+      await expect(
+        convergeDatabaseTarget(PLACEMENT, {
+          run: gcloud({ host: IP, instance: shared }).run,
+          http: api(a.body as object),
+          readSharedCaBundle: () => SHARED_BUNDLE,
+        }),
+      ).rejects.toThrow(a.why);
+    }
+    const notJson: HttpFetch = async () => ({ ok: true, status: 200, text: async () => "<html>" });
+    await expect(
+      convergeDatabaseTarget(PLACEMENT, {
+        run: gcloud({ host: IP, instance: shared }).run,
+        http: notJson,
+        readSharedCaBundle: () => SHARED_BUNDLE,
+      }),
+    ).rejects.toThrow(/answered no JSON/);
+  });
+
+  it("refuses a CA mode it cannot reason about", async () => {
+    await expect(
+      convergeDatabaseTarget(PLACEMENT, {
+        run: gcloud({
+          host: IP,
+          instance: {
+            serverCaCert: { cert: OWN_CA },
+            settings: { ipConfiguration: { serverCaMode: "CUSTOMER_MANAGED_CAS_CA" } },
+          },
+        }).run,
+      }),
+    ).rejects.toThrow(/CUSTOMER_MANAGED_CAS_CA/);
+  });
+
+  it("an instance that names no CA mode is on the per-instance default", async () => {
+    const g = gcloud({ host: IP, instance: { serverCaCert: { cert: OWN_CA } } });
+    expect(await convergeDatabaseTarget(PLACEMENT, { run: g.run })).toEqual({
+      kind: "ip",
+      host: IP,
+      caPem: OWN_CA,
+      pinnedSha1: null,
+    });
   });
 
   it("refuses to connect when it cannot tell whom to trust", async () => {

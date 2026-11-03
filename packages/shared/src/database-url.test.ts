@@ -153,6 +153,15 @@ describe("cloudSqlIamIpDatabaseUrls (#1373)", () => {
     );
   });
 
+  it("brackets an IPv6 literal in the authority", () => {
+    for (const ip of ["fd00::3", "[fd00::3]"]) {
+      const url = cloudSqlIamIpDatabaseUrls(ip, "job@p.iam.gserviceaccount.com", "t").admin;
+      expect(url).toBe("postgresql://job%40p.iam:t@[fd00::3]:5432/cms_admin?sslmode=verify-full");
+      expect(new URL(url).hostname).toBe("[fd00::3]");
+      expect(new URL(url).port).toBe("5432");
+    }
+  });
+
   it("refuses a host name, which takes the plain verify-full URLs", () => {
     expect(() =>
       cloudSqlIamIpDatabaseUrls("i1.p.europe-west1.sql-psa.goog", "job@p.iam", "t"),

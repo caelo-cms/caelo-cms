@@ -22,13 +22,16 @@
  * API, over an authenticated channel, about this one instance:
  *
  *   - per-instance CA (`GOOGLE_MANAGED_INTERNAL_CA`, the default before
- *     #1338, or the shared CA not rotated in yet): the instance's own server
- *     CA (`serverCaCert`). Nobody else holds a certificate from it, so a
- *     verified chain is this instance.
- *   - shared CA with its certificate active: Google's shared-CA bundle (the
- *     one every image ships), AND the server certificate's SHA-1
- *     fingerprint must be one the API lists for this instance — the shared
- *     CA signs other customers' instances too.
+ *     #1338): the instance's own server CA (`serverCaCert`). Nobody else
+ *     holds a certificate from it, so a verified chain is this instance.
+ *   - shared CA (`GOOGLE_MANAGED_CAS_CA`): always pinned, because the
+ *     shared CA signs other customers' instances too. With its certificate
+ *     active: Google's shared-CA bundle (the one every image ships) and the
+ *     fingerprints `listServerCertificates` names; not rotated in yet: the
+ *     one certificate the API names active. A listing that does not name
+ *     the active certificate with a well-formed fingerprint is refused —
+ *     fail closed, never a guess.
+ *   - any other CA mode: refused.
  *
  * No input but the metadata server's placement and the APIs: the job's
  * scrubbed-environment contract (§11.C) is unchanged.
@@ -36,7 +39,8 @@
 
 import { readFileSync } from "node:fs";
 import { CLOUD_SQL_CA_BUNDLE, isIpLiteral } from "@caelo-cms/shared";
-import { describeInstance, listServerCertificates } from "./cloudsql-tls.js";
+import { z } from "zod";
+import { describeInstance } from "./cloudsql-tls.js";
 import { findSqlInstance } from "./gateway-credentials.js";
 import { gcloud } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
@@ -94,34 +98,103 @@ export async function convergeDatabaseTarget(
   const described = await describeInstance(target, run);
   if (!described.ok) throw new Error(described.error);
   const d = described.d;
-  if (d.settings?.ipConfiguration?.serverCaMode === CLOUD_SQL_SERVER_CA_MODE) {
-    const certs = await listServerCertificates(
+  const mode = d.settings?.ipConfiguration?.serverCaMode;
+  const ownCa = d.serverCaCert?.cert?.trim() || null;
+  if (mode === CLOUD_SQL_SERVER_CA_MODE) {
+    const listing = await serverCertificateListing(
       target,
       run,
       deps.http ?? (fetch as unknown as HttpFetch),
     );
-    if (!certs.ok) throw new Error(certs.error);
-    const active = certs.activeVersion;
-    if (active !== null && certs.fingerprints.includes(active)) {
-      const read = deps.readSharedCaBundle ?? (() => readFileSync(CLOUD_SQL_CA_BUNDLE, "utf8"));
-      return {
-        kind: "ip",
-        host,
-        caPem: read(),
-        pinnedSha1: certs.fingerprints.map(normalizedSha1),
-      };
+    // Fail closed: once the shared CA may be active, every connection is
+    // pinned to a certificate the API names — the shared CA alone would
+    // also vouch for other customers' instances.
+    const sharedBundle = (
+      deps.readSharedCaBundle ?? (() => readFileSync(CLOUD_SQL_CA_BUNDLE, "utf8"))
+    )();
+    if (listing.fingerprints.includes(listing.active)) {
+      return { kind: "ip", host, caPem: sharedBundle, pinnedSha1: listing.fingerprints };
     }
     // Moved to the shared CA, its certificate not rotated in yet: the
-    // server still presents the one from its own CA (below).
+    // server still presents the active one from its own CA. Pinned to
+    // exactly that certificate, so which CA vouches for it does not widen
+    // what is accepted.
+    const caPem = [ownCa, sharedBundle].filter((c): c is string => Boolean(c)).join("\n");
+    return { kind: "ip", host, caPem, pinnedSha1: [listing.active] };
   }
-  const caPem = d.serverCaCert?.cert?.trim();
-  if (!caPem) {
+  // Per-instance CA (the default, which older instances do not name):
+  // nobody else holds a certificate from it, so the verified chain is this
+  // instance. Any other mode (a customer-managed CA) is not one this job
+  // can reason about.
+  if (mode !== undefined && mode !== PER_INSTANCE_CA_MODE) {
+    throw new Error(
+      `${lookup.name} uses the server CA mode ${mode}, which the converge job cannot verify a connection to ${host} for`,
+    );
+  }
+  if (!ownCa) {
     throw new Error(
       `${lookup.name} names no server CA certificate (serverCaCert), so the connection to ${host} could not be verified`,
     );
   }
-  return { kind: "ip", host, caPem, pinnedSha1: null };
+  return { kind: "ip", host, caPem: ownCa, pinnedSha1: null };
 }
+
+/** Cloud SQL's default per-instance server CA mode. */
+const PER_INSTANCE_CA_MODE = "GOOGLE_MANAGED_INTERNAL_CA";
+
+const SHA1_HEX = /^[0-9a-f]{40}$/;
+
+/**
+ * The Admin API's `listServerCertificates` answer, validated: the active
+ * certificate's fingerprint and every listed one, normalized. Throws on
+ * anything else — a missing `activeVersion`, a certificate without a
+ * well-formed fingerprint — since a guessed listing would be a guessed
+ * trust decision.
+ */
+async function serverCertificateListing(
+  t: { readonly projectId: string; readonly sqlInstance: string },
+  run: GcloudRunner,
+  http: HttpFetch,
+): Promise<{ readonly active: string; readonly fingerprints: readonly string[] }> {
+  const token = await run(["auth", "print-access-token"]);
+  const bearer = token.ok ? token.stdout.trim() : "";
+  if (!bearer) throw new Error(`gcloud auth print-access-token: ${token.stderr.trim()}`);
+  const res = await http(
+    `https://sqladmin.googleapis.com/v1/projects/${encodeURIComponent(t.projectId)}/instances/${encodeURIComponent(t.sqlInstance)}/listServerCertificates`,
+    { method: "GET", headers: { Authorization: `Bearer ${bearer}` } },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`list server certificates: HTTP ${res.status} ${text.slice(0, 300)}`);
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error("list server certificates: the Cloud SQL Admin API answered no JSON");
+  }
+  const parsed = ListingSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new Error(
+      `list server certificates: the answer does not name the active certificate and the listed ones with SHA-1 fingerprints (${parsed.error.issues[0]?.message ?? "invalid"}), so the connection is not trusted`,
+    );
+  }
+  return {
+    active: parsed.data.activeVersion,
+    fingerprints: parsed.data.serverCerts.map((c) => c.sha1Fingerprint),
+  };
+}
+
+const Sha1 = z
+  .string()
+  .transform(normalizedSha1)
+  .refine((f) => SHA1_HEX.test(f), "a SHA-1 fingerprint");
+
+const ListingSchema = z.object({
+  activeVersion: Sha1,
+  // Before the first shared-CA certificate exists the API may list none.
+  serverCerts: z.array(z.object({ sha1Fingerprint: Sha1 })).default([]),
+});
 
 /**
  * Why a server certificate with `fingerprint` (as `node:tls` prints it) is

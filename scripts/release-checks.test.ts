@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { afterAll, describe, expect, it } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { gitFixture } from "./git-fixture.test-helpers.ts";
 import {
@@ -20,6 +21,7 @@ import {
   RELEASE_COMMIT_SUBJECT,
   type ReleaseMeta,
   ReleaseMetaSchema,
+  readTags,
   setJsonVersionField,
   taggedAheadProblem,
   UNRELEASED_VERSION,
@@ -228,6 +230,45 @@ describe("infra contract against a real previous tag (git)", () => {
     git("commit", "-qm", "meta");
     git("tag", "v0.1.1");
     expect(lastContractVersionAt("v0.1.1", repo)).toBe("0.0.9");
+  });
+});
+
+describe("readTags: a failing git is an error, not an empty history (#814 review)", () => {
+  it("reads the tags of a repository and keeps a missing file at a ref as absent", () => {
+    const f = gitFixture("caelo-read-tags-");
+    try {
+      f.git("commit", "-q", "--allow-empty", "-m", "base");
+      f.git("tag", "v0.1.0");
+      f.git("tag", "not-a-release");
+      expect(readTags(f.repo)).toEqual(["0.1.0"]);
+      // `git show` of a file the tag does not have stays "absent".
+      expect(infraContractVersionAt("v0.1.0", f.repo)).toBeNull();
+    } finally {
+      f.remove();
+    }
+  });
+
+  it("throws when git tag fails", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caelo-not-a-repo-"));
+    try {
+      expect(() => readTags(dir)).toThrow(/git tag --list failed/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws when git does not finish in time", () => {
+    const bin = mkdtempSync(join(tmpdir(), "caelo-hanging-git-"));
+    const path = process.env.PATH;
+    try {
+      writeFileSync(join(bin, "git"), "#!/bin/sh\nsleep 5\n");
+      chmodSync(join(bin, "git"), 0o755);
+      process.env.PATH = `${bin}:${path ?? ""}`;
+      expect(() => readTags(bin, 300)).toThrow(/did not finish within 300 ms/);
+    } finally {
+      process.env.PATH = path;
+      rmSync(bin, { recursive: true, force: true });
+    }
   });
 });
 

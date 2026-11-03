@@ -82,6 +82,22 @@ describe("convergeDatabase", () => {
     expect(h.events).toEqual([{ host: DNS, message: "hello" }]);
   });
 
+  it("opening the queue never runs the TLS step: stage 1 only reads where to connect", async () => {
+    let ran = 0;
+    const h = harness({
+      targets: [ipTarget()],
+      step: async () => {
+        ran += 1;
+        return DNS;
+      },
+    });
+    const db = await h.run;
+    await db.queue.claimConverge("run1");
+    await db.queue.event("r", "start", "info", "claimed");
+    expect(ran).toBe(0);
+    expect(db.secureDatabase).not.toBeNull();
+  });
+
   it("writes on the IP before the step and on the DNS name after it", async () => {
     const h = harness({ targets: [ipTarget()], step: async () => DNS });
     const db = await h.run;
@@ -124,7 +140,7 @@ describe("convergeDatabase", () => {
     expect(h.opened[0]?.closed).toBe(true);
   });
 
-  it("a failed re-read after a failed step is a warning; the job still reports the step", async () => {
+  it("a failed re-read after a failed step keeps the open pool instead of a stale handshake", async () => {
     const h = harness({
       targets: [ipTarget()],
       reReadFails: true,
@@ -133,10 +149,13 @@ describe("convergeDatabase", () => {
       },
     });
     const db = await h.run;
+    await db.queue.event("r", "converge", "info", "before");
     expect(await db.secureDatabase?.()).toEqual({ ok: false, error: "boom" });
-    expect(h.warnings[0]).toContain("could not be read again: re-read failed");
+    expect(h.warnings[0]).toContain("could not be read again (re-read failed)");
     await db.queue.event("r", "finish", "error", "the end");
-    expect(h.events.map((e) => e.message)).toEqual(["the end"]);
+    expect(h.events.map((e) => e.message)).toEqual(["before", "the end"]);
+    // The pool opened before the step is still the one in use, never closed.
+    expect(h.opened.map((o) => [o.target.host, o.closed])).toEqual([[IP, false]]);
   });
 
   it("refuses to start when the first target cannot be read", async () => {
