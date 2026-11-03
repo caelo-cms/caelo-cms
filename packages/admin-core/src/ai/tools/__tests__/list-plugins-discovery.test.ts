@@ -129,6 +129,7 @@ describe("list_plugins — plugins found but not verified", () => {
         awaitingCapabilities: ["change_journal", "list_types"],
         awaitingRelease: false,
         problem: null,
+        consumerBackoff: null,
       }),
     ).toBe(
       "awaits Owner approval at /settings/plugins: its release asks for capabilities the Owner has not approved (change_journal, list_types)",
@@ -140,8 +141,19 @@ describe("list_plugins — plugins found but not verified", () => {
         awaitingCapabilities: [],
         awaitingRelease: true,
         problem: null,
+        consumerBackoff: null,
       }),
     ).toContain("changes what it declares");
+    // #1390 — a running plugin whose change consumer backs off says so.
+    expect(
+      healthProblem({
+        state: "running",
+        awaitingCapabilities: [],
+        awaitingRelease: false,
+        problem: null,
+        consumerBackoff: { consecutiveFailures: 3, nextRetryAt: "2026-11-03T10:00:04.000Z" },
+      }),
+    ).toBe("change consumer failed 3x, retried at 2026-11-03T10:00:04.000Z (get_plugin)");
     const r = await listPluginsTool.handler(
       AI,
       {} as never,

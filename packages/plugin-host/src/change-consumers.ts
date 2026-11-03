@@ -57,6 +57,7 @@ import {
   loadedPlugins,
   runPluginOperation,
 } from "./dispatch.js";
+import { setConsumerBackoff } from "./plugin-runtime-stats.js";
 import { hostInstanceId, recordPluginError } from "./runtime-health.js";
 
 /** The consumer name of a plugin: keyed on its id, never its reusable slug. */
@@ -84,15 +85,21 @@ export interface DrainLimits {
   readonly batchSize?: number;
   readonly maxBatches?: number;
   readonly claimMs?: number;
+  /** First retry delay of a failed consumer ({@link startChangeConsumers}). */
+  readonly failureRetryMinMs?: number;
+  /** Longest retry delay of a failed consumer ({@link startChangeConsumers}). */
+  readonly failureRetryMaxMs?: number;
 }
 /** How long a wake-up waits for the rest of its burst before it drains. */
 const WAKE_COALESCE_MS = 50;
 /** How long after another instance's claim lapses the takeover retry runs. */
 const TAKEOVER_SLACK_MS = 250;
 /**
- * The retry after a failed drain: 1 s, doubling to at most 5 minutes, reset
- * by a drain without errors. Bounded in interval, not in attempts: the
- * consumer must deliver eventually, and every failure is recorded (#1008).
+ * The retry of a consumer whose drain failed: 1 s, doubling to at most
+ * 5 minutes, reset by its next drain without an error. Bounded in interval,
+ * not in attempts: the consumer must deliver eventually, and every failure
+ * is recorded (#1008). Per consumer (#1390), and it gates the NOTIFY
+ * wake-ups too — see {@link startChangeConsumers}.
  */
 const FAILURE_RETRY_MIN_MS = 1_000;
 const FAILURE_RETRY_MAX_MS = 5 * 60_000;
@@ -394,6 +401,24 @@ async function dispatch(
   if (!r.ok) throw new ConsumerDispatchError(`${r.error.kind}: ${r.error.message}`);
 }
 
+/** Record a failure of the host's own consumer step (claim, poll, commit) under the plugin. */
+async function recordHostStepError(
+  adapter: DatabaseAdapter,
+  registry: OperationRegistry,
+  plugin: LoadedPlugin,
+  message: string,
+  thrown: unknown,
+): Promise<void> {
+  await recordPluginError({
+    infra: { adapter, registry },
+    systemActorId: hostSystemActorId(),
+    slug: plugin.slug,
+    pluginId: plugin.pluginId,
+    phase: "worker",
+    error: new Error(`change consumer: ${message}`, { cause: thrown }),
+  });
+}
+
 async function drainOne(
   adapter: DatabaseAdapter,
   registry: OperationRegistry,
@@ -412,11 +437,17 @@ async function drainOne(
   let released = false;
   let more = false;
   const claim = { name, pluginId: plugin.pluginId, holder, leaseMs: claimMs };
-  const { claimed, rebuildPending, retryInMs } = await run<{
-    claimed: boolean;
-    rebuildPending: boolean;
-    retryInMs: number | null;
-  }>(adapter, registry, "plugin_changes.claim", claim);
+  let claimResult: { claimed: boolean; rebuildPending: boolean; retryInMs: number | null };
+  try {
+    claimResult = await run(adapter, registry, "plugin_changes.claim", claim);
+  } catch (thrown) {
+    // Nothing is claimed, so nothing to release; the consumer's backoff
+    // retries it like a failed batch (#1390), not the other consumers.
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    await recordHostStepError(adapter, registry, plugin, message, thrown);
+    return { slug: plugin.slug, changes, rebuilt, skipped: false, error: message, more: false };
+  }
+  const { claimed, rebuildPending, retryInMs } = claimResult;
   if (!claimed) {
     return {
       slug: plugin.slug,
@@ -521,14 +552,7 @@ async function drainOne(
     if (thrown instanceof ConsumerDispatchError) {
       console.error(`[plugin-host] change consumer of "${plugin.slug}" stopped: ${message}`);
     } else {
-      await recordPluginError({
-        infra: { adapter, registry },
-        systemActorId: hostSystemActorId(),
-        slug: plugin.slug,
-        pluginId: plugin.pluginId,
-        phase: "worker",
-        error: new Error(`change consumer: ${message}`, { cause: thrown }),
-      });
+      await recordHostStepError(adapter, registry, plugin, message, thrown);
     }
     return { slug: plugin.slug, changes, rebuilt, skipped: false, error: message, more: false };
   } finally {
@@ -546,16 +570,20 @@ async function drainOne(
  * claim lets one instance run a consumer while the others skip it.
  *
  * @param only - limit to one plugin (tests and activation)
+ * @param waiting - consumers to leave out of this drain (the wake-up loop's
+ *   failure backoff); they get no report
  */
 export async function drainChangeConsumers(
   infra: { readonly adapter: DatabaseAdapter; readonly registry: OperationRegistry },
   only?: string,
   limits: DrainLimits = {},
+  waiting?: (plugin: LoadedPlugin) => boolean,
 ): Promise<DrainReport[]> {
   const reports: DrainReport[] = [];
   for (const plugin of loadedPlugins.all()) {
     if (!plugin.definition.changeConsumer || isPluginDisabled(plugin.slug)) continue;
     if (only !== undefined && plugin.slug !== only) continue;
+    if (waiting?.(plugin)) continue;
     reports.push(await drainOne(infra.adapter, infra.registry, plugin, limits));
   }
   return reports;
@@ -568,6 +596,14 @@ export interface ChangeConsumersHandle {
   drain(): Promise<void>;
 }
 
+/** A consumer whose last drain failed, waiting until `notBefore` (wake-up loop). */
+interface ConsumerBackoff {
+  /** The loaded plugin it belongs to: a reload (a new object) starts afresh. */
+  readonly plugin: LoadedPlugin;
+  readonly failures: number;
+  readonly notBefore: number;
+}
+
 /**
  * Start the wake-up loop: every journal NOTIFY (and every reconnect of the
  * LISTEN connection) drains the consumers. Wake-ups during a drain run one
@@ -575,6 +611,19 @@ export interface ChangeConsumersHandle {
  * consumer that ran out of its batch budget with changes left is drained
  * again right after the round, so a burst larger than the budget is
  * delivered without waiting for another write.
+ *
+ * #1390 — a consumer whose drain failed waits out its own backoff before it
+ * runs again, whatever wakes the loop. Before, only a quiet site waited: on
+ * searchVIU production (2026-11-03) every agent write's NOTIFY re-ran the
+ * consent-manager's failing batch at once — a site-sized read that hit the
+ * 60 s statement timeout each time, on a database already short of CPU.
+ * This is the retry backoff of a failing batch, NOT throttling of healthy
+ * work (#1253: healthy work is never held back programmatically): a
+ * consumer without a failure, and every other consumer next to a failing
+ * one, still drains on every wake-up. The failed batch stays uncommitted
+ * (at least once is unchanged) and a timer retries it when its time comes,
+ * also on a quiet site. The state is per instance and shown in plugin
+ * health (plugin-runtime-stats.ts, written with the runtime heartbeat).
  */
 export async function startChangeConsumers(
   infra: {
@@ -586,18 +635,19 @@ export async function startChangeConsumers(
   let running: Promise<void> | null = null;
   let again = false;
   let stopped = false;
-  // One pending takeover retry at a time, at the earliest lapse of a claim
-  // another instance held when this one skipped its consumer.
+  const retryMinMs = limits.failureRetryMinMs ?? FAILURE_RETRY_MIN_MS;
+  const retryMaxMs = limits.failureRetryMaxMs ?? FAILURE_RETRY_MAX_MS;
+  // One pending retry at a time, at the earliest of: the lapse of a claim
+  // another instance held when this one skipped its consumer, and the end
+  // of a failed consumer's backoff.
   let retry: { at: number; timer: ReturnType<typeof setTimeout> } | null = null;
-  // A failed drain leaves its batch uncommitted, and nothing else would
-  // wake the loop on a quiet site: retry with a backoff.
-  function retryAfterFailure(): void {
-    scheduleRetry(failureRetryMs);
-    failureRetryMs = Math.min(failureRetryMs * 2, FAILURE_RETRY_MAX_MS);
-  }
+  const backoffs = new Map<string, ConsumerBackoff>();
+  // A drain that threw as a whole (not one consumer's failure, which its
+  // report carries) retries everything with its own backoff.
+  let loopFailureRetryMs = retryMinMs;
   function scheduleRetry(inMs: number): void {
     if (stopped) return;
-    const at = Date.now() + inMs + TAKEOVER_SLACK_MS;
+    const at = Date.now() + Math.max(0, inMs) + TAKEOVER_SLACK_MS;
     if (retry && retry.at <= at) return;
     if (retry) clearTimeout(retry.timer);
     const timer = setTimeout(() => {
@@ -607,7 +657,45 @@ export async function startChangeConsumers(
     timer.unref?.();
     retry = { at, timer };
   }
-  let failureRetryMs = FAILURE_RETRY_MIN_MS;
+  function clearBackoff(slug: string): void {
+    if (backoffs.delete(slug)) setConsumerBackoff(slug, null);
+  }
+  /** Drop the backoff of a plugin that is gone or was reloaded since it failed. */
+  function forgetStale(): void {
+    for (const [slug, b] of backoffs) {
+      if (loadedPlugins.bySlug(slug) !== b.plugin) clearBackoff(slug);
+    }
+  }
+  function isWaiting(plugin: LoadedPlugin, now: number): boolean {
+    const b = backoffs.get(plugin.slug);
+    return b !== undefined && b.plugin === plugin && b.notBefore > now;
+  }
+  function settle(report: DrainReport): void {
+    if (report.error !== undefined) {
+      const plugin = loadedPlugins.bySlug(report.slug);
+      if (!plugin) return;
+      const prev = backoffs.get(report.slug);
+      const failures = (prev?.plugin === plugin ? prev.failures : 0) + 1;
+      const delay = Math.min(retryMinMs * 2 ** Math.min(failures - 1, 30), retryMaxMs);
+      const notBefore = Date.now() + delay;
+      backoffs.set(report.slug, { plugin, failures, notBefore });
+      setConsumerBackoff(report.slug, {
+        consecutiveFailures: failures,
+        nextRetryAt: new Date(notBefore).toISOString(),
+        lastError: report.error.slice(0, 1000),
+      });
+      console.warn(
+        `[plugin-host] change consumer of "${report.slug}" failed ${failures}x in a row; its batch is retried in ${delay} ms (other consumers keep running)`,
+      );
+    } else if (!report.skipped) {
+      clearBackoff(report.slug);
+    }
+  }
+  function scheduleBackoffRetry(): void {
+    if (backoffs.size === 0) return;
+    const earliest = Math.min(...[...backoffs.values()].map((b) => b.notBefore));
+    scheduleRetry(earliest - Date.now());
+  }
   function wake(): Promise<void> {
     if (running) {
       again = true;
@@ -618,20 +706,24 @@ export async function startChangeConsumers(
         // One drain per burst: the commits of one agent turn arrive within
         // milliseconds of each other.
         await new Promise((resolve) => setTimeout(resolve, WAKE_COALESCE_MS));
-        let failed = false;
         do {
           again = false;
-          const reports = await drainChangeConsumers(infra, undefined, limits);
+          forgetStale();
+          const now = Date.now();
+          const reports = await drainChangeConsumers(infra, undefined, limits, (plugin) =>
+            isWaiting(plugin, now),
+          );
+          for (const r of reports) settle(r);
           if (reports.some((r) => r.more)) again = true;
-          if (reports.some((r) => r.error !== undefined)) failed = true;
           const waits = reports.flatMap((r) => (r.retryInMs !== undefined ? [r.retryInMs] : []));
           if (waits.length > 0) scheduleRetry(Math.min(...waits));
         } while (again);
-        if (failed) retryAfterFailure();
-        else failureRetryMs = FAILURE_RETRY_MIN_MS;
+        scheduleBackoffRetry();
+        loopFailureRetryMs = retryMinMs;
       } catch (thrown) {
         console.error("[plugin-host] draining the change consumers failed", thrown);
-        retryAfterFailure();
+        scheduleRetry(loopFailureRetryMs);
+        loopFailureRetryMs = Math.min(loopFailureRetryMs * 2, retryMaxMs);
       } finally {
         running = null;
       }
@@ -653,6 +745,7 @@ export async function startChangeConsumers(
       retry = null;
       await handle.unlisten();
       await running;
+      for (const slug of [...backoffs.keys()]) clearBackoff(slug);
     },
     drain: wake,
   };

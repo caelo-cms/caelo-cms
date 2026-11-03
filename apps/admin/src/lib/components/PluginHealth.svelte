@@ -31,6 +31,14 @@
       awaitingRelease: boolean;
       problem: PluginErrorSummary | null;
       recentErrors: PluginErrorSummary[];
+      /** #1390 — its change consumer waits out a failure backoff. */
+      consumerBackoff: { consecutiveFailures: number; nextRetryAt: string; lastError: string } | null;
+      coreOpCost: {
+        since: string | null;
+        calls: number;
+        totalMs: number;
+        ops: { op: string; calls: number; totalMs: number; maxMs: number }[];
+      };
     };
   }
 
@@ -45,6 +53,13 @@
       not_running: "Not running",
     }[health.state],
   );
+
+  /** A duration in the unit a person reads it in. */
+  function duration(ms: number): string {
+    if (ms < 1_000) return `${ms} ms`;
+    if (ms < 120_000) return `${(ms / 1_000).toFixed(1)} s`;
+    return `${(ms / 60_000).toFixed(1)} min`;
+  }
 
   /** Who has to act, in the Owner's words. */
   function owner(e: PluginErrorSummary): string {
@@ -97,6 +112,36 @@
     <p class="max-w-md text-xs text-red-700 dark:text-red-400" data-testid="plugin-health-problem-{slug}">
       {owner(health.problem)}: {health.problem.message}
     </p>
+  {/if}
+  {#if health.consumerBackoff}
+    <p class="max-w-md text-xs text-amber-700 dark:text-amber-400" data-testid="plugin-health-backoff-{slug}">
+      Reacting to site changes failed {health.consumerBackoff.consecutiveFailures}× in a row; it tries again at
+      {new Date(health.consumerBackoff.nextRetryAt).toLocaleTimeString()}. Nothing is lost, and other plugins keep
+      running. Last error: <code class="break-all">{health.consumerBackoff.lastError}</code>
+    </p>
+  {/if}
+  {#if health.coreOpCost.calls > 0}
+    <details class="text-xs" data-testid="plugin-health-cost-{slug}">
+      <summary class="cursor-pointer text-muted-foreground">
+        Database time: {duration(health.coreOpCost.totalMs)} over {health.coreOpCost.calls} calls
+        {#if health.coreOpCost.since}since {new Date(health.coreOpCost.since).toLocaleString()}{/if}
+      </summary>
+      <table class="mt-1 max-w-md">
+        <thead class="text-muted-foreground">
+          <tr><th class="pr-3 text-left font-normal">Operation</th><th class="pr-3 text-right font-normal">Calls</th><th class="pr-3 text-right font-normal">Total</th><th class="text-right font-normal">Longest</th></tr>
+        </thead>
+        <tbody>
+          {#each health.coreOpCost.ops as o (o.op)}
+            <tr>
+              <td class="pr-3 font-mono">{o.op}</td>
+              <td class="pr-3 text-right">{o.calls}</td>
+              <td class="pr-3 text-right">{duration(o.totalMs)}</td>
+              <td class="text-right">{duration(o.maxMs)}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </details>
   {/if}
   {#if health.recentErrors.length > 0}
     <details class="text-xs">

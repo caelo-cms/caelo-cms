@@ -175,11 +175,46 @@ function consentPurposesLine(raw: unknown): string {
     .join("; ");
 }
 
+/**
+ * #1390 — the plugin's background cost lines: its change consumer's failure
+ * backoff, and the time of the core operations it called. Facts for the
+ * operator; nothing here switches the plugin off or slows it down.
+ */
+export function pluginBackgroundLines(h: {
+  consumerBackoff: { consecutiveFailures: number; nextRetryAt: string; lastError: string } | null;
+  coreOpCost: {
+    since: string | null;
+    calls: number;
+    totalMs: number;
+    ops: ReadonlyArray<{ op: string; calls: number; totalMs: number; maxMs: number }>;
+  };
+}): string[] {
+  const lines: string[] = [];
+  const b = h.consumerBackoff;
+  if (b) {
+    lines.push(
+      `change consumer backing off: failed ${b.consecutiveFailures}x in a row, retried at ${b.nextRetryAt} (other plugins unaffected): ${b.lastError}`,
+    );
+  }
+  const c = h.coreOpCost;
+  if (c.calls === 0) {
+    lines.push("core operation time: none recorded on the live servers");
+  } else {
+    const ops = c.ops
+      .map((o) => `${o.op} ${o.calls}x ${o.totalMs} ms (max ${o.maxMs} ms)`)
+      .join("; ");
+    lines.push(
+      `core operation time since ${c.since ?? "server start"}: ${c.calls} calls, ${c.totalMs} ms — ${ops}`,
+    );
+  }
+  return lines;
+}
+
 /** One plugin's detail + its last-24h AI spend against its cap. */
 export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
   name: "get_plugin",
   description:
-    "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, validator findings, declared tools/skills/capabilities, required plugins + active plugins requiring it, what it asks visitors to consent to (purpose, category, cookies), AI spend last 24h vs its cap. Never returns source.\n" +
+    "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, change-consumer backoff, DB time of the core ops it calls, validator findings, declared tools/skills/capabilities, required plugins + active plugins requiring it, what it asks visitors to consent to (purpose, category, cookies), AI spend last 24h vs its cap. Never returns source.\n" +
     "USE FOR: when `list_plugins`' summary isn't enough: why it fails or a submission was rejected, what an inactive plugin adds before `activate_plugin`, whether it nears its AI cap.\n" +
     "Errors: `core` = Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team -> repeat exactly, never say the team knows unless it says sent | `plugin` = the plugin's own code | `transient` = retried. Errors never switch a plugin off.",
   schema: getPluginInput,
@@ -215,6 +250,7 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
     }
     if (h.problem) lines.push(`problem: ${formatPluginError(h.problem)}`);
     for (const e of h.recentErrors) lines.push(`recent error: ${formatPluginError(e)}`);
+    lines.push(...pluginBackgroundLines(h));
     if (plugin.rejectionReason) lines.push(`rejected: ${plugin.rejectionReason}`);
     for (const f of plugin.validationErrors) lines.push(`validator: ${JSON.stringify(f)}`);
     const spend = await execute(

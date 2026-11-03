@@ -54,6 +54,13 @@ interface PluginRow {
     awaitingRelease: boolean;
     problem: PluginErrorSummary | null;
     recentErrors: PluginErrorSummary[];
+    consumerBackoff: { consecutiveFailures: number; nextRetryAt: string; lastError: string } | null;
+    coreOpCost: {
+      since: string | null;
+      calls: number;
+      totalMs: number;
+      ops: { op: string; calls: number; totalMs: number; maxMs: number }[];
+    };
   };
   /** Plugins that must be active before this one can be activated. */
   requiresPlugins: string[];
