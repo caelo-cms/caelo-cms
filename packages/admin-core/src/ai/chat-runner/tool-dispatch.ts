@@ -24,8 +24,9 @@ import { buildChatImageKey, untrustedToolResult } from "@caelo-cms/shared";
 import { getMediaStorage } from "../../media/storage.js";
 import { tryAutoRecover } from "../auto-recovery.js";
 import { chatPluginInvocation } from "../plugin-invocation.js";
-import type { AIProvider, ChatMessageInput } from "../provider.js";
+import type { AIProvider, ChatMessageInput, ProviderResponseMessage } from "../provider.js";
 import { keptCallArgs, withKeptCallNotice } from "../tools/_retry-keep.js";
+import type { ToolContext } from "../tools/dispatch.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { isE2eAutoApproveEnabled } from "./e2e-auto-approve.js";
 import { shrinkToolImage } from "./tool-image.js";
@@ -167,8 +168,8 @@ export interface DispatchDeps {
   chatBranchId: string;
   options: ChatRunnerOptions;
   runChatTurn: RunChatTurnFn;
-  /** This turn's always-loaded tool names (see ToolContext.preloadedToolNames). */
-  preloadedToolNames?: ReadonlySet<string>;
+  /** This turn's catalogue and deferred tools (see ToolContext.turnTools). */
+  turnTools?: ToolContext["turnTools"];
 }
 
 /**
@@ -259,7 +260,8 @@ export async function dispatchToolCall(
      * user(image A), tool B, …] and the provider SDK rejected the history
      * with AI_MissingToolResultsError: a user message may not appear before
      * every tool call of the turn has its result. The step-finish handler
-     * appends this array AFTER all of the step's tool rows.
+     * appends this array AFTER all of the step's tool rows. A result that
+     * loads tools (#991) puts its text here for the same reason.
      */
     deferredImageMessages: ChatMessageInput[];
     /**
@@ -357,7 +359,7 @@ export async function dispatchToolCall(
           // issue #412 — only the SSE route sets this; screenshot_page
           // picks its backend (operator browser vs server render) from it.
           ...(options.operatorBrowserAttached ? { operatorBrowserAttached: true } : {}),
-          ...(deps.preloadedToolNames ? { preloadedToolNames: deps.preloadedToolNames } : {}),
+          ...(deps.turnTools ? { turnTools: deps.turnTools } : {}),
           // issue #664 — Stop reaches the work a tool starts (subagents).
           ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
           ...(options.agentRunId ? { agentRunId: options.agentRunId } : {}),
@@ -480,14 +482,20 @@ export async function dispatchToolCall(
     const keptArgs = keptCallArgs(result, tools);
     if (keptArgs) result = withKeptCallNotice(call.id, result);
     result = await withTakeoverNotices(registry, adapter, humanCtx, deps.chatSessionId, result);
-    await execute(registry, adapter, humanCtx, "chat.cache_tool_result", {
-      chatSessionId: deps.chatSessionId,
-      toolCallId: call.id,
-      toolName: call.name,
-      ok: result.ok,
-      content: result.content,
-      ...(keptArgs ? { args: keptArgs } : {}),
-    });
+    // #991 — the cache keeps ok + content only, so a cached replay of a
+    // tool-loading result would drop its references while its text says the
+    // tools are callable. Such results (load_skill) are reads: re-running
+    // one on a replayed call is safe, so they are not cached.
+    if (!result.toolReferences?.length) {
+      await execute(registry, adapter, humanCtx, "chat.cache_tool_result", {
+        chatSessionId: deps.chatSessionId,
+        toolCallId: call.id,
+        toolName: call.name,
+        ok: result.ok,
+        content: result.content,
+        ...(keptArgs ? { args: keptArgs } : {}),
+      });
+    }
   }
 
   // Auto-capture EVERY failed tool result into ai_bug_reports (source 'auto'),
@@ -557,16 +565,41 @@ export async function dispatchToolCall(
   // writes the same key, which leaves the message history byte-identical and
   // keeps the provider's prompt cache intact.
   const attachments = await persistToolImage(call.name, result.image);
+  // #991 — a result that loads deferred tools is stored and replayed as the
+  // SDK's own messages: the tool result carries only the `tool_reference`
+  // parts (the API refuses a tool result that mixes them with text: "Tool
+  // definitions/code execution functions cannot be mixed with other
+  // content", e2e-livedit run 41651726318), and the result text follows as
+  // a user text block after ALL of the step's tool results — a text block
+  // ahead of another tool result would break the pairing, the same reason
+  // image follow-ups are deferred below.
+  const referencing = toolReferenceMessages(call, result, deps.turnTools);
   await execute(registry, adapter, humanCtx, "chat.append_message", {
     chatSessionId: deps.chatSessionId,
     role: "tool",
     content: result.content,
     toolCallId: call.id,
     ...(attachments ? { attachments } : {}),
+    ...(referencing
+      ? {
+          responseMessages: referencing.followUp
+            ? [referencing.toolMessage, referencing.followUp]
+            : [referencing.toolMessage],
+        }
+      : {}),
     // issue #303 — producer hint for the empty-content diagnostics.
     source: `tool result (${call.name})`,
   });
-  stepToolRows.push({ role: "tool", content: result.content, toolCallId: call.id });
+  if (referencing) {
+    stepToolRows.push({
+      role: "tool",
+      content: result.content,
+      sdkMessages: [referencing.toolMessage],
+    });
+    if (referencing.followUp) deferredImageMessages.push({ role: "user", content: result.content });
+  } else {
+    stepToolRows.push({ role: "tool", content: result.content, toolCallId: call.id });
+  }
   // v0.3.0 — when the tool returned an image (screenshot_page is
   // the only producer today), build a multimodal user message so the
   // AI sees the image alongside the text result on its next provider
@@ -602,4 +635,48 @@ export function shouldAutoCaptureToolFailure(
   return (
     !result.ok && toolName !== "bug_report" && result.refusal !== true && result.retryable !== true
   );
+}
+
+/**
+ * #991 — the SDK messages for a result that loads deferred tools
+ * (`ToolResult.toolReferences`): a tool message whose result is one
+ * `tool_reference` per tool, in the AI SDK's shape for it (a `custom`
+ * content part the Anthropic provider sends as `{type: "tool_reference",
+ * tool_name}`, CLAUDE.md §12), and the result text as a user message that
+ * goes after every tool result of the step (`followUp`; the API refuses
+ * text in a tool result next to tool references). Only names this request
+ * defers are referenced — a reference to a tool the request does not carry
+ * fails it, and one to a tool that ships in full adds nothing. Undefined
+ * when nothing is left to load: the result stays a plain text result.
+ */
+export function toolReferenceMessages(
+  call: { readonly id: string; readonly name: string },
+  result: { readonly content: string; readonly toolReferences?: readonly string[] },
+  turnTools: ToolContext["turnTools"],
+): { toolMessage: ProviderResponseMessage; followUp?: ProviderResponseMessage } | undefined {
+  const names = (result.toolReferences ?? []).filter((n) => turnTools?.deferred.has(n) === true);
+  if (names.length === 0) return undefined;
+  return {
+    toolMessage: {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: call.id,
+          toolName: call.name,
+          output: {
+            type: "content",
+            value: names.map((toolName) => ({
+              type: "custom",
+              providerOptions: { anthropic: { type: "tool-reference", toolName } },
+            })),
+          },
+        },
+      ],
+    },
+    // An empty user message is itself a provider rejection.
+    ...(result.content.trim().length > 0
+      ? { followUp: { role: "user", content: result.content } }
+      : {}),
+  };
 }

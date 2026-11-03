@@ -2,12 +2,13 @@
 
 /**
  * Regression (e2e-livedit 2026-10, two AI-filed reports titled
- * "placeholder"): load_skill said a skill's tools were "now available to
- * you" although most of them were deferred behind tool search for the
+ * "placeholder"; #991): load_skill said a skill's tools were "now available
+ * to you" although most of them were deferred behind tool search for the
  * running turn. The model then called bootstrap_site_scaffold, which it
  * could not emit, and a `bug_report` with title/whatHappened/expected all
- * "placeholder" came out instead. The note now names which tools still need
- * a tool-search load.
+ * "placeholder" came out instead. The result now LOADS the skill's deferred
+ * tools (`toolReferences` → `tool_reference` blocks) and its note says so,
+ * so no search step is left to skip.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -20,7 +21,7 @@ import {
 import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { z } from "zod";
 import type { ToolContext } from "../dispatch.js";
-import { loadSkillTool, skillToolsNote } from "../load-skill.js";
+import { loadSkillTool, skillToolsLoad } from "../load-skill.js";
 
 const AI: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-0000000000a1",
@@ -28,7 +29,7 @@ const AI: ExecutionContext = {
   requestId: "load-skill-tools-note-test",
 };
 
-function harness(preloaded?: ReadonlySet<string>): ToolContext {
+function harness(turnTools?: ToolContext["turnTools"]): ToolContext {
   const registry = new OperationRegistry();
   registry.register(
     defineOperation({
@@ -44,7 +45,7 @@ function harness(preloaded?: ReadonlySet<string>): ToolContext {
             slug: "bootstrap-site",
             displayName: "Bootstrap a fresh install",
             body: "PREFERRED PATH: call bootstrap_site_scaffold once.",
-            allowlistedTools: ["bootstrap_site_scaffold", "build_page"],
+            allowlistedTools: ["bootstrap_site_scaffold", "build_page", "create_layout"],
             status: "active",
           },
         }) as never,
@@ -54,34 +55,58 @@ function harness(preloaded?: ReadonlySet<string>): ToolContext {
     runOperation: (op: OperationDefinition, ctx: ExecutionContext, input: unknown) =>
       op.handler(ctx, input, {} as never),
   } as unknown as DatabaseAdapter;
-  return { adapter, registry, ...(preloaded ? { preloadedToolNames: preloaded } : {}) };
+  return { adapter, registry, ...(turnTools ? { turnTools } : {}) };
 }
 
-describe("load_skill tools note", () => {
-  it("never claims a deferred tool is available in the running turn", async () => {
+describe("load_skill tools", () => {
+  const turnTools = {
+    names: new Set(["build_page", "bug_report", "bootstrap_site_scaffold"]),
+    deferred: new Set(["bootstrap_site_scaffold"]),
+  };
+
+  it("loads the skill's deferred tools into the conversation and says they are callable", async () => {
+    const r = await loadSkillTool.handler(AI, { slugs: ["bootstrap-site"] }, harness(turnTools));
+    expect(r.ok).toBe(true);
+    expect(r.toolReferences).toEqual(["bootstrap_site_scaffold"]);
+    expect(r.content).not.toContain("now available");
+    expect(r.content).toContain(
+      "Loaded with this skill, callable from your next step: bootstrap_site_scaffold.",
+    );
+    expect(r.content).not.toContain("tool-search");
+  });
+
+  it("names the tools this chat does not have instead of letting the model substitute", async () => {
+    const r = await loadSkillTool.handler(AI, { slugs: ["bootstrap-site"] }, harness(turnTools));
+    expect(r.content).toContain("Not available in this chat: create_layout");
+    expect(r.content).toContain("never call a different tool in their place");
+  });
+
+  it("loads each tool once, however many loaded skills use it", async () => {
     const r = await loadSkillTool.handler(
       AI,
-      { slugs: ["bootstrap-site"] },
-      harness(new Set(["build_page", "bug_report"])),
+      { slugs: ["bootstrap-site", "bootstrap-site-again"] },
+      harness(turnTools),
     );
-    expect(r.ok).toBe(true);
-    expect(r.content).not.toContain("now available");
-    expect(r.content).toContain("Already in your tool list: build_page.");
-    expect(r.content).toContain("Possibly NOT loaded yet: bootstrap_site_scaffold");
-    expect(r.content).toContain("load it with the tool-search tool");
+    expect(r.toolReferences).toEqual(["bootstrap_site_scaffold"]);
   });
 
   it("only lists the tools where every tool is listed with its schema (Power-MCP)", () => {
-    expect(skillToolsNote(["a", "b"], undefined)).toBe("\n\nTools this skill uses: a, b.");
+    expect(skillToolsLoad(["a", "b"], undefined)).toEqual({
+      note: "\n\nTools this skill uses: a, b.",
+      references: [],
+    });
   });
 
-  it("says nothing about loading when every tool is preloaded", () => {
-    const note = skillToolsNote(["a"], new Set(["a"]));
-    expect(note).toContain("Already in your tool list: a.");
-    expect(note).not.toContain("tool-search");
+  it("loads nothing when the provider defers nothing", () => {
+    const load = skillToolsLoad(["a"], { names: new Set(["a"]), deferred: new Set() });
+    expect(load.references).toEqual([]);
+    expect(load.note).toBe("\n\nTools this skill uses: a.");
   });
 
   it("is empty for a skill without tools", () => {
-    expect(skillToolsNote([], new Set())).toBe("");
+    expect(skillToolsLoad([], { names: new Set(), deferred: new Set() })).toEqual({
+      note: "",
+      references: [],
+    });
   });
 });

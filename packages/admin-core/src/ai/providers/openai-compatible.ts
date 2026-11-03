@@ -42,5 +42,6 @@ export function makeOpenAiCompatibleProvider(cfg: OpenAiCompatibleConfig): AIPro
     model: cfg.model,
     generate: inner.generate.bind(inner),
     generateObject: inner.generateObject.bind(inner),
+    deferredToolNames: inner.deferredToolNames.bind(inner),
   };
 }
