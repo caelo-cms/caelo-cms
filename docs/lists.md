@@ -467,6 +467,15 @@ of the site, edited by people without module context, or assigning pages
 (vocabulary) → shared. `lists.promote_local` turns a local list into a
 shared one and rebinds the field in one call.
 
+Shared fixes the DATA, not the DOM (epic #1371): each list is rendered
+once per page. A header iterates its menu field once — one `<nav>`
+serves every width, the interaction kit's `mobile-nav` collapses it —
+and a footer binds its own short list instead of the whole menu. The
+structure check reports a list rendered twice on one page
+(`structure/repeated-render`, docs/quality-checks.md), and the module
+write tools hint at a field iterated twice or a shared list two modules
+show where one is chrome.
+
 Neither the HTML extractor (`ops/content/extract-module-lists.ts`, run by
 `modules.create` / `modules.update` when no fields are passed) nor
 moduleize (`ai/moduleize.ts`) ever mints a list type: types are

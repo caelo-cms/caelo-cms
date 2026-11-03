@@ -87,9 +87,9 @@ export interface ChatMessageInput {
    *
    * Placement: each part rides ALONGSIDE `content` on the same
    * message. The SDK-mapper composes them into a multimodal content
-   * array. The chat-runner does NOT persist these to chat_messages
-   * today — they're runtime-only (operator's screenshot is fed into
-   * the next provider call but not stored across sessions).
+   * array. The parts themselves are not stored: the images persist as
+   * attachments on their user or tool row, and the history replay
+   * (chat-runner/attachments.ts) rebuilds these parts from them.
    */
   readonly additionalContent?: readonly ContentPart[];
   /**

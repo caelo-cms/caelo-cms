@@ -30,7 +30,7 @@ import {
   MODULE_HTML_DESCRIPTION,
   MODULE_JS_CONTRACT,
 } from "./_module-js-contract.js";
-import { moduleJsGuardSuffix } from "./_module-js-guard.js";
+import { moduleWriteGuardSuffix } from "./_module-js-guard.js";
 import { pluginWriteHintsSuffix, storedModuleWrites } from "./_plugin-write-hints.js";
 import { stageReadinessSuffix } from "./_stage-readiness.js";
 import { bindCssToTheme } from "./_theme-binding.js";
@@ -414,7 +414,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     }
     const pluginHints =
       (await pluginWriteHintsSuffix(ctx, await storedModuleWrites(ctx, toolCtx, mintedIds))) +
-      (await moduleJsGuardSuffix(ctx, toolCtx, mintedIds));
+      (await moduleWriteGuardSuffix(ctx, toolCtx, mintedIds));
     const moduleNotes = [...notesByIndex.entries()]
       .sort(([a], [b]) => a - b)
       .flatMap(([i, texts]) => texts.map((t) => `\n${label(i)}: ${t}`))

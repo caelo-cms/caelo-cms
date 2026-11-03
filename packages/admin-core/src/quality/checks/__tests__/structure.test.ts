@@ -40,6 +40,7 @@ const NO_TYPES: StructurePageIndex = {
   pages: new Map(),
   siteHosts: new Set(),
   variantGroups: new Map(),
+  pageLayouts: new Map(),
 };
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -53,6 +54,9 @@ const TEXT: StructureModule = {
   moduleListFields: [],
   fieldNames: [],
   entryKeys: {},
+  css: "",
+  kind: "content" as const,
+  defaultModuleIds: [],
 };
 const DIFF_TEMPLATE =
   '<div class="split"><div class="copy"><h2>{{title}}</h2><p>{{lead}}</p></div>' +
@@ -67,6 +71,9 @@ const DIFF: StructureModule = {
   moduleListFields: [],
   fieldNames: [],
   entryKeys: {},
+  css: "",
+  kind: "content" as const,
+  defaultModuleIds: [],
 };
 const DIFF_COPY: StructureModule = {
   id: id(103),
@@ -78,6 +85,9 @@ const DIFF_COPY: StructureModule = {
   moduleListFields: [],
   fieldNames: [],
   entryKeys: {},
+  css: "",
+  kind: "content" as const,
+  defaultModuleIds: [],
 };
 const NAV: StructureModule = {
   id: id(104),
@@ -89,6 +99,9 @@ const NAV: StructureModule = {
   moduleListFields: [],
   fieldNames: [],
   entryKeys: {},
+  css: "",
+  kind: "content" as const,
+  defaultModuleIds: [],
 };
 const MODULES = [TEXT, DIFF, DIFF_COPY, NAV];
 
@@ -298,6 +311,9 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     moduleListFields: ["items"],
     fieldNames: ["title", "items", "featured"],
     entryKeys: {},
+    css: "",
+    kind: "content" as const,
+    defaultModuleIds: [],
     fields: [
       { name: "title", kind: "text" as const },
       { name: "items", kind: "module-list" as const },
@@ -330,6 +346,9 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     moduleListFields: ["karten"],
     fieldNames: ["title", "karten"],
     entryKeys: {},
+    css: "",
+    kind: "content" as const,
+    defaultModuleIds: [],
     fields: [
       { name: "title", kind: "text" as const },
       { name: "karten", kind: "module-list" as const },
@@ -347,6 +366,9 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     moduleListFields: m.fields.filter((f) => f.kind === "module-list").map((f) => f.name),
     fieldNames: m.fields.map((f) => f.name),
     entryKeys: {},
+    css: "",
+    kind: "content" as const,
+    defaultModuleIds: [],
   });
   const nestedModules = [asStructure(FAQ_ENTRY), asStructure(TOOL_CARD)];
 
@@ -508,6 +530,7 @@ describe("structure/layout-css-module-specific", () => {
       "/* .commented {} */ .shell{display:grid} .site-header{padding:1rem}" +
       " .chain{display:flex} @media (min-width: 40.5em){ .step{flex:1} }" +
       " .diff-card{border:1px solid} .prose h2{margin:0} .unused{x:y}",
+    chromeModuleSlugs: [],
   };
 
   it("flags layout rules for one module's classes or free-markup classes only", () => {
@@ -650,6 +673,9 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     moduleListFields: [],
     fieldNames: [],
     entryKeys: {},
+    css: "",
+    kind: "content" as const,
+    defaultModuleIds: [],
   };
   const FOOTER: StructureModule = {
     id: id(111),
@@ -661,6 +687,9 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     moduleListFields: [],
     fieldNames: [],
     entryKeys: {},
+    css: "",
+    kind: "content" as const,
+    defaultModuleIds: [],
   };
   const NAV_MODULES = [...MODULES, HEADER, FOOTER];
   const SHARED = "00000000-0000-4000-8000-000000000900";
@@ -703,15 +732,18 @@ describe("structure/duplicate-navigation (epic #1107)", () => {
     expect(() => findingSchema.parse(nav[0])).not.toThrow();
   });
 
-  it("two modules showing one shared list are the goal: no finding", () => {
-    expect(
-      structureFindings(
-        [page(1, "/", header(MENU, sharedStamp), footer(MENU, sharedStamp))],
-        NAV_MODULES,
-        noLayouts,
-        NO_TYPES,
-      ),
-    ).toEqual([]);
+  it("two modules showing one shared list: no navigation finding, only the render warning", () => {
+    // The data is right (one list); #1371 still reports the list written
+    // into one page twice — a warning, the footer gets a list of its own.
+    const findings = structureFindings(
+      [page(1, "/", header(MENU, sharedStamp), footer(MENU, sharedStamp))],
+      NAV_MODULES,
+      noLayouts,
+      NO_TYPES,
+    );
+    expect(findings.map((f) => [f.ruleId, f.severity])).toEqual([
+      ["structure/repeated-render", "warning"],
+    ]);
   });
 
   it("hand-written links in a field value count like a local list", () => {
