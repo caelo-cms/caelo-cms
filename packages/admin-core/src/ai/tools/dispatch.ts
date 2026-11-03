@@ -30,6 +30,7 @@ import type { CredentialKind } from "../../ops/credential_handoffs.js";
 import type { Permission } from "../../permissions.js";
 import { toolNamesIn } from "../op-tool-names.js";
 import type { AIProvider } from "../provider.js";
+import { type DraftRead, recordDraftReads } from "./_draft-reads.js";
 import { compactInputSchema } from "./compact-input-schema.js";
 import { generateInputSchema } from "./generate-input-schema.js";
 import { normalizeToolArgs } from "./normalize-args.js";
@@ -438,6 +439,15 @@ export interface ToolDefinitionWithHandler<I> {
    */
   readonly inputSchema?: ToolInputSchema;
   readonly handler: (ctx: ExecutionContext, input: I, toolCtx: ToolContext) => Promise<ToolResult>;
+  /**
+   * Issue #1260 — for a READ tool: the draft entities a successful call
+   * showed the AI in full (from the input and the result's `value`). The
+   * dispatcher records them as seen by the caller's chat, which is what
+   * clears a draft conflict naming this tool (`locks.ts` draftRereadHint).
+   * Only declare what the result really shows: a recorded read lets the
+   * next write of the entity overwrite another chat's change.
+   */
+  readonly draftReads?: (input: I, value: unknown, ctx: ExecutionContext) => readonly DraftRead[];
 }
 
 /**
@@ -1007,7 +1017,17 @@ export class ToolRegistry {
         }
       }
     }
+    const readStartedAt = new Date().toISOString();
     const result = await tool.handler(ctx, parsed.data, toolCtx);
+    if (result.ok && tool.draftReads) {
+      const note = await recordDraftReads(
+        ctx,
+        toolCtx,
+        tool.draftReads(parsed.data, result.value, ctx),
+        readStartedAt,
+      );
+      return note === null ? result : { ...result, content: result.content + note };
+    }
     if (result.ok) return result;
     // #1264 — the one place every tool's failure passes: op names a hint
     // carries become the tools the AI can call. Successful results stay

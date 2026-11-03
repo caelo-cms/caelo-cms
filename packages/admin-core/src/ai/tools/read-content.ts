@@ -145,6 +145,8 @@ export const readContentTool: ToolDefinitionWithHandler<ReadContentInput> = {
   ].join("\n"),
   schema: readContentInput,
   inputSchema: z.toJSONSchema(readContentInput) as Record<string, unknown>,
+  // #1260 — the re-read a draft conflict on a module/template/layout names.
+  draftReads: (input) => [{ kind: input.entityKind, ids: [input.entityId] }],
   handler: async (ctx, input, toolCtx) => {
     const target = resolveContentTarget(input.entityKind);
     if (!target) {

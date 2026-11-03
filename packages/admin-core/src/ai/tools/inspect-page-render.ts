@@ -71,6 +71,13 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
     "DO NOT USE FOR: the visual impression -> `screenshot_page`.\n" +
     "Renders this chat's branch preview (pending edits included); outside a chat -> published version.",
   schema: inspectInput,
+  // #1260 — the re-read a draft conflict on a page names: the page's
+  // modules and placements as this chat's draft has them. A look at
+  // another branch shows this chat nothing of its own draft.
+  draftReads: (input, _value, ctx) =>
+    input.chatBranchId === undefined || input.chatBranchId === ctx.chatBranchId
+      ? [{ kind: "page", ids: [input.pageId] }]
+      : [],
   inputSchema: {
     type: "object",
     additionalProperties: false,

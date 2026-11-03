@@ -21,6 +21,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
+import { observeDraftReads } from "../../locks.js";
 import {
   loadBranchedModuleStates,
   loadContentInstanceBranchStates,
@@ -489,6 +490,13 @@ export const listPageModuleContentOp = withHumanisedLinks(
         branchId,
         live.map((l) => ({ key: l.key, contentInstanceId: l.p.contentInstanceId, values: l.v })),
       );
+      // #1260 — the caller now holds this draft state of the page and every
+      // instance on it: the read a plugin's translation flow writes from.
+      await observeDraftReads(tx, ctx, "page", [input.pageId]);
+      await observeDraftReads(tx, ctx, "contentInstance", [
+        ...live.map((l) => l.p.contentInstanceId),
+        ...[...nested.values()].flat().map((n) => n.contentInstanceId),
+      ]);
       return ok({
         placements: live.map(({ p, m, v, key }) => ({
           blockName: p.blockName,
