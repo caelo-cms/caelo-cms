@@ -15,31 +15,39 @@
  * are chosen per placement), so a module with `module` / `module-list`
  * fields gets no foreign-markup hint. The Stage check sees the rendered
  * nesting and decides.
+ *
+ * Epic #1371 — the same catalog read feeds the page-weight hints
+ * (_page-weight-guard.ts: one list rendered twice), so every module write
+ * pays for one `modules.list` and at most one `layouts.list`.
  */
 
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { analyseModuleJs } from "../../quality/checks/module-js-analysis.js";
 import { foreignHooks, hookOwners, templateHooks } from "../../quality/checks/module-js-hooks.js";
+import { pageWeightHints, type WeightGuardModule } from "./_page-weight-guard.js";
 import type { ToolContext } from "./dispatch.js";
 
-interface GuardModule {
-  readonly id: string;
-  readonly displayName: string;
-  readonly html: string;
+interface GuardModule extends WeightGuardModule {
   readonly js: string;
-  readonly fields?: readonly unknown[];
+}
+
+/** A layout as the guards read it from `layouts.list`. */
+interface GuardLayout {
+  readonly html: string;
+  readonly blocks: readonly { readonly moduleSlugs: readonly string[] }[];
 }
 
 /** Most hooks a hint names. */
 const MAX_HOOKS = 4;
 
 /**
- * Hints for the JS of the given modules ("" when there is nothing to say).
+ * Write-time hints for the given modules ("" when there is nothing to
+ * say): their JS (#1198) and lists they render twice (#1371).
  *
- * @param moduleIds - the modules this write created or whose js / html it changed.
+ * @param moduleIds - the modules this write created or whose html, js or fields it changed.
  */
-export async function moduleJsGuardSuffix(
+export async function moduleWriteGuardSuffix(
   ctx: ExecutionContext,
   toolCtx: ToolContext,
   moduleIds: readonly string[],
@@ -51,8 +59,34 @@ export async function moduleJsGuardSuffix(
   // A failed read only loses the hint; the write it comments on succeeded.
   if (!listed.ok) return "";
   const catalog = (listed.value as { modules?: GuardModule[] }).modules ?? [];
+  let layouts: GuardLayout[] | null = null;
+  const readLayouts = async () => {
+    layouts ??= await listLayouts(ctx, toolCtx);
+    return layouts;
+  };
+  const jsHints = await moduleJsHints(catalog, moduleIds, readLayouts);
+  const written = catalog.filter((m) => moduleIds.includes(m.id));
+  const binds = written.some((m) =>
+    (m.fields ?? []).some((f) => (f as { kind?: unknown }).kind === "list"),
+  );
+  const chromeSlugs = binds
+    ? new Set((await readLayouts()).flatMap((l) => l.blocks.flatMap((b) => b.moduleSlugs)))
+    : new Set<string>();
+  const weightHints = binds ? pageWeightHints(catalog, moduleIds, chromeSlugs) : [];
+  return (
+    (jsHints.length === 0 ? "" : ` module-js-guard: ${jsHints.join(". ")}.`) +
+    (weightHints.length === 0 ? "" : ` page-weight-guard: ${weightHints.join(". ")}.`)
+  );
+}
+
+/** The module-JS hints (#1198) for the written modules that carry a script. */
+async function moduleJsHints(
+  catalog: readonly GuardModule[],
+  moduleIds: readonly string[],
+  readLayouts: () => Promise<GuardLayout[]>,
+): Promise<string[]> {
   const written = catalog.filter((m) => moduleIds.includes(m.id) && m.js.trim().length > 0);
-  if (written.length === 0) return "";
+  if (written.length === 0) return [];
 
   const owners = hookOwners(catalog);
   const byId = new Map(catalog.map((m) => [m.id, m]));
@@ -62,7 +96,7 @@ export async function moduleJsGuardSuffix(
     const facts = analyseModuleJs(m.js);
     const name = `"${m.displayName}"`;
     if (facts.hooks.length > 0 && !hasNestedFields(m)) {
-      neutral ??= await layoutHooks(ctx, toolCtx);
+      neutral ??= new Set((await readLayouts()).flatMap((l) => [...templateHooks(l.html)]));
       const foreign = foreignHooks(facts, new Set([m.id]), owners, neutral);
       for (const [id, hooks] of foreign.specific) {
         const target = `"${byId.get(id)?.displayName ?? id}" (${id})`;
@@ -87,7 +121,7 @@ export async function moduleJsGuardSuffix(
       );
     }
   }
-  return hints.length === 0 ? "" : ` module-js-guard: ${hints.join(". ")}.`;
+  return hints;
 }
 
 function hasNestedFields(m: GuardModule): boolean {
@@ -97,12 +131,11 @@ function hasNestedFields(m: GuardModule): boolean {
   });
 }
 
-/** Hooks of every layout's own markup (any module may drive the chrome); empty on a failed read. */
-async function layoutHooks(ctx: ExecutionContext, toolCtx: ToolContext): Promise<Set<string>> {
+/** Every layout (own markup + chrome slugs); empty on a failed read. */
+async function listLayouts(ctx: ExecutionContext, toolCtx: ToolContext): Promise<GuardLayout[]> {
   const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.list", {
     includeDeleted: false,
   });
-  if (!r.ok) return new Set();
-  const layouts = (r.value as { layouts?: { html: string }[] }).layouts ?? [];
-  return new Set(layouts.flatMap((l) => [...templateHooks(l.html)]));
+  if (!r.ok) return [];
+  return (r.value as { layouts?: GuardLayout[] }).layouts ?? [];
 }

@@ -31,7 +31,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gcloud as defaultGcloud } from "./gcloud.js";
-import type { GcloudRunner } from "./gcloud-retry.js";
+import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import { gcpSecretId, mcpAuthProxyServiceAccountEmail } from "./gcp-names.js";
 import { type EnsureOutcome, ensureMcpAuthProxyServiceAccount } from "./runtime-secrets.js";
 import {
@@ -70,9 +70,13 @@ export interface ReleaseServicesDeps {
     readonly path: string;
     readonly cleanup: () => void;
   };
+  /** Waits between retries of a grant on the account created a moment ago. */
+  readonly sleep?: Sleep;
 }
 
-const NOT_FOUND = /NOT_FOUND|not found|does not exist|could not be found/i;
+// gcloud words a missing Cloud Run service "Cannot find service [<name>]."
+// with no NOT_FOUND code (searchVIU upgrade to v0.11.10, 2026-11-03).
+const NOT_FOUND = /NOT_FOUND|not found|cannot find|does not exist|could not be found/i;
 
 /** Ensure everything {@link ReleaseServicesTarget} needs; outcomes in order, failures included. */
 export async function ensureReleaseServices(
@@ -84,7 +88,7 @@ export async function ensureReleaseServices(
   const account = await ensureMcpAuthProxyServiceAccount(target, { run });
   outcomes.push(account);
   if (account.status === "failed") return outcomes;
-  outcomes.push(...(await ensureMcpAuthProxySecretAccess(target, run)));
+  outcomes.push(...(await ensureMcpAuthProxySecretAccess(target, run, deps.sleep ?? realSleep)));
   if (outcomes.some((o) => o.status === "failed")) return outcomes;
   outcomes.push(
     target.provider === "gcp-firebase"
@@ -103,12 +107,15 @@ export async function ensureReleaseServices(
 async function ensureMcpAuthProxySecretAccess(
   target: Pick<ReleaseServicesTarget, "projectId" | "env">,
   run: GcloudRunner,
+  sleep: Sleep,
 ): Promise<EnsureOutcome[]> {
   const member = `serviceAccount:${mcpAuthProxyServiceAccountEmail(target.projectId, target.env)}`;
   const outcomes: EnsureOutcome[] = [];
   for (const secret of serviceSecrets("mcp-auth-proxy")) {
     const id = `secretAccessor → MCP-Auth-Proxy on ${secret}`;
-    const r = await run([
+    // The account was usually created a moment ago, and IAM answers "does
+    // not exist" until it has propagated: retried, not failed.
+    const r = await runWithRetry(run, sleep, [
       "secrets",
       "add-iam-policy-binding",
       gcpSecretId(target.env, secret),

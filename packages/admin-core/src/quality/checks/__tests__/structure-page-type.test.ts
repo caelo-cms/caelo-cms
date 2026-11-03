@@ -36,6 +36,7 @@ function index(pages: [string, boolean][]): StructurePageIndex {
     ),
     siteHosts: new Set(),
     variantGroups: new Map(),
+    pageLayouts: new Map(),
   };
 }
 

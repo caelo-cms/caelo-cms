@@ -92,3 +92,159 @@ describe("buildProviderHistory (#190)", () => {
     expect(out[0]?.additionalContent).toHaveLength(4);
   });
 });
+
+describe("buildProviderHistory — tool images (#1396)", () => {
+  const shot = (n: number): ChatAttachment => ({
+    storageKey: `chat-images/2026-11-03/${n}.webp`,
+    mime: "image/webp",
+    alt: "image returned by screenshot_page",
+  });
+  const keyLoader = async (a: ChatAttachment) =>
+    ({ type: "image", base64: `b64:${a.storageKey}`, mediaType: a.mime }) as const;
+  const assistantCalling = (...ids: string[]): HistoryMessage => ({
+    role: "assistant",
+    content: "",
+    toolCalls: ids.map((id) => ({ id, name: "screenshot_page", arguments: {} })),
+    toolCallId: null,
+    thinkingBlocks: null,
+  });
+  const toolRow = (id: string, attachments: ChatAttachment[] | null): HistoryMessage => ({
+    role: "tool",
+    content: "Screenshot captured.",
+    toolCalls: null,
+    toolCallId: id,
+    thinkingBlocks: null,
+    attachments,
+  });
+  const followUpText =
+    "[Screenshot returned by screenshot_page; analyse it for the operator's request.]";
+
+  it("replays each image as the follow-up the live turn sent, after the step's last tool row", async () => {
+    const out = await buildProviderHistory(
+      [
+        msg("user", "desktop and mobile please"),
+        assistantCalling("c1", "c2"),
+        toolRow("c1", [shot(1)]),
+        toolRow("c2", [shot(2)]),
+        msg("assistant", "both fine"),
+      ],
+      keyLoader,
+    );
+    expect(out.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "tool",
+      "user",
+      "user",
+      "assistant",
+    ]);
+    expect(out[4]).toEqual({
+      role: "user",
+      content: followUpText,
+      additionalContent: [
+        { type: "image", base64: `b64:${shot(1).storageKey}`, mediaType: "image/webp" },
+      ],
+    });
+    expect(out[5]?.additionalContent).toEqual([
+      { type: "image", base64: `b64:${shot(2).storageKey}`, mediaType: "image/webp" },
+    ]);
+    // The tool rows themselves stay text-only, as they were sent.
+    expect(out[2]?.additionalContent).toBeUndefined();
+  });
+
+  it("names the tool from the assistant row's SDK assembly too", async () => {
+    const out = await buildProviderHistory(
+      [
+        msg("user", "look at it"),
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: null,
+          toolCallId: null,
+          thinkingBlocks: null,
+          responseMessages: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool-call",
+                  toolCallId: "c9",
+                  toolName: "screenshot_external_page",
+                  input: {},
+                },
+              ],
+            },
+          ],
+        },
+        toolRow("c9", [shot(9)]),
+      ],
+      keyLoader,
+    );
+    expect(out.at(-1)?.content).toBe(
+      "[Screenshot returned by screenshot_external_page; analyse it for the operator's request.]",
+    );
+  });
+
+  it("an unreadable image keeps its message, with a note in place of the image part", async () => {
+    const out = await buildProviderHistory(
+      [msg("user", "shoot"), assistantCalling("c1"), toolRow("c1", [shot(1)])],
+      async () => ({ failed: "chat image chat-images/2026-11-03/1.webp is gone from storage" }),
+    );
+    const followUp = out.at(-1);
+    expect(followUp?.role).toBe("user");
+    expect(followUp?.content).toBe(followUpText);
+    expect(followUp?.additionalContent).toHaveLength(1);
+    const part = followUp?.additionalContent?.[0];
+    expect(part?.type).toBe("text");
+    expect(part?.type === "text" ? part.text : "").toContain("could NOT be loaded");
+    expect(part?.type === "text" ? part.text : "").toContain("is gone from storage");
+  });
+
+  it("a repeated tool result the repair drops takes its image with it", async () => {
+    const out = await buildProviderHistory(
+      [
+        msg("user", "shoot"),
+        assistantCalling("c1"),
+        toolRow("c1", [shot(1)]),
+        toolRow("c1", [shot(2)]),
+        msg("assistant", "done"),
+      ],
+      keyLoader,
+    );
+    expect(out.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user", "assistant"]);
+    expect(out[3]?.additionalContent).toEqual([
+      { type: "image", base64: `b64:${shot(1).storageKey}`, mediaType: "image/webp" },
+    ]);
+  });
+
+  it("a relocated tool result brings its image back next to it", async () => {
+    // A second turn's user message landed while the first turn's tool still
+    // ran (#628): the repair moves the result back after its call.
+    const out = await buildProviderHistory(
+      [
+        msg("user", "shoot"),
+        assistantCalling("c1"),
+        msg("user", "also this"),
+        toolRow("c1", [shot(1)]),
+      ],
+      keyLoader,
+    );
+    expect(out.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user", "user"]);
+    expect(out[3]?.content).toBe(followUpText);
+    expect(out[4]?.content).toBe("also this");
+  });
+
+  it("a row the image sweep cleared, and an orphan tool row, get no follow-up", async () => {
+    const out = await buildProviderHistory(
+      [
+        msg("user", "shoot"),
+        assistantCalling("c1"),
+        toolRow("c1", null),
+        toolRow("c-orphan", [shot(2)]),
+      ],
+      keyLoader,
+    );
+    expect(out.some((m) => m.content === followUpText)).toBe(false);
+  });
+});
