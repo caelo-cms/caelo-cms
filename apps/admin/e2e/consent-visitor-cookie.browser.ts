@@ -37,6 +37,10 @@ import { fileURLToPath } from "node:url";
 import { type BrowserContext, expect, type Page, test } from "@playwright/test";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+// Absolute, so the path names the file whatever directory a reader (or a
+// tool such as knip, which resolves script arguments against this
+// workspace and not against `cwd`) starts from.
+const FIXTURE = resolve(REPO_ROOT, "apps/api-gateway/e2e/consent-site.ts");
 const SESSION_COOKIE = "__session";
 
 // One fixture process owns the shared database at a time.
@@ -55,7 +59,7 @@ async function startFixture(opts: {
   ]) {
     if (!process.env[name]) throw new Error(`${name} is required (see ci.yml e2e)`);
   }
-  const proc = spawn("bun", ["--no-env-file", "apps/api-gateway/e2e/consent-site.ts"], {
+  const proc = spawn("bun", ["--no-env-file", FIXTURE], {
     cwd: REPO_ROOT,
     env: {
       PATH: process.env.PATH,
