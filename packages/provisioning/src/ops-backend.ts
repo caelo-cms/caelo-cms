@@ -30,7 +30,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gcloud as defaultGcloud } from "./gcloud.js";
+import { gcloud as defaultGcloud, isGcloudNotFound } from "./gcloud.js";
 import {
   type GcloudRunner,
   realSleep,
@@ -62,9 +62,6 @@ const OPS_APIS = ["storage.googleapis.com", "cloudkms.googleapis.com"] as const;
 
 /** Principals that must never appear on the ops bucket. */
 const PUBLIC_MEMBERS = new Set(["allUsers", "allAuthenticatedUsers"]);
-
-/** gcloud's wording for a resource that does not exist (yet). */
-const NOT_FOUND = /NOT_FOUND|NotFound|not found|404|does not exist/i;
 
 /** Everything {@link ensureOpsBackend} needs to know about the install. */
 export interface OpsBackendTarget {
@@ -211,7 +208,7 @@ export async function ensureOpsBackend(
     "--format=json",
   ]);
   let bucketExists = described.ok;
-  if (!described.ok && !NOT_FOUND.test(described.stderr)) {
+  if (!described.ok && !isGcloudNotFound(described.stderr)) {
     return {
       ok: false,
       error: `Could not read ${bucketUrl}: ${reason(described.stderr, described.exitCode)}. If the name is taken by a bucket outside project ${projectId}, the install can't use it — tell the maintainers (the name is <project>-caelo-ops).`,
@@ -367,7 +364,7 @@ export async function ensureOpsBackend(
     "--format=value(name)",
   ]);
   // In a dry run the KMS API may still be disabled; that reads as "not there yet".
-  const ringMissing = !ring.ok && (NOT_FOUND.test(ring.stderr) || dryRun);
+  const ringMissing = !ring.ok && (isGcloudNotFound(ring.stderr) || dryRun);
   if (!ring.ok && !ringMissing) return fail(`Reading key ring ${OPS_KEY_RING}`, ring);
   if (ringMissing) {
     act(`create KMS key ring ${OPS_KEY_RING} in ${region}`);
@@ -380,7 +377,7 @@ export async function ensureOpsBackend(
   const key = ringMissing
     ? { ok: false, stderr: "NOT_FOUND", stdout: "", exitCode: 1 }
     : await run(["kms", "keys", "describe", OPS_STATE_KEY, ...keyWhere, "--format=value(name)"]);
-  const keyMissing = !key.ok && NOT_FOUND.test(key.stderr);
+  const keyMissing = !key.ok && isGcloudNotFound(key.stderr);
   if (!key.ok && !keyMissing) return fail(`Reading key ${OPS_STATE_KEY}`, key);
   if (keyMissing) {
     act(`create KMS key ${OPS_KEY_RING}/${OPS_STATE_KEY}`);

@@ -3,7 +3,7 @@
 /**
  * Issue #1269 — `pages.search`: the pages whose words start with what the
  * caller typed, as the caller's branch sees them, read through the word
- * tables of migration 0603 instead of loading every page of the site.
+ * tables of migration 0612 instead of loading every page of the site.
  *
  * The rule. The query is split into words exactly as the pages are
  * (`caelo_search_words`). The LAST word must start a word of the page's
@@ -75,7 +75,7 @@ function decodeSearchCursor(text: string): SearchCursor | null {
   return { words: words as string[], word, pageId };
 }
 
-/** The query's words, split as the pages' words are (0603). */
+/** The query's words, split as the pages' words are (0612). */
 async function queryWords(tx: TransactionRunner, query: string): Promise<string[]> {
   // Ordered by first appearance: the last word typed drives the read.
   const rows = (await tx.execute(sql`
@@ -131,7 +131,7 @@ async function candidates(
   }[];
 }
 
-/** The ids of `pages` the rule matches (the words of each side split in SQL, as 0603 does). */
+/** The ids of `pages` the rule matches (the words of each side split in SQL, as 0612 does). */
 async function matching(
   tx: TransactionRunner,
   pages: readonly Listed[],

@@ -22,7 +22,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { gcloud as defaultGcloud } from "./gcloud.js";
+import { gcloud as defaultGcloud, isGcloudNotFound } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import {
   gatewayServiceAccountEmail,
@@ -86,7 +86,6 @@ export interface EnsureOutcome {
   readonly detail?: string;
 }
 
-const NOT_FOUND = /NOT_FOUND|not found|does not exist/i;
 const ALREADY_EXISTS = /ALREADY_EXISTS|already exists/i;
 
 // ===========================================================================
@@ -163,7 +162,7 @@ async function ensureServiceAccount(
     "--format=value(email)",
   ]);
   if (describe.ok) return { id, status: "present" };
-  if (!NOT_FOUND.test(describe.stderr)) {
+  if (!isGcloudNotFound(describe.stderr)) {
     return { id, status: "failed", error: describe.stderr.trim() };
   }
   const create = await run([
@@ -292,7 +291,7 @@ export async function createInstallSecret(
     "--format=value(name)",
   ]);
   const read: { ok: true; replication: SecretReplication } | { ok: false; error: string } =
-    !pg.ok && NOT_FOUND.test(pg.stderr)
+    !pg.ok && isGcloudNotFound(pg.stderr)
       ? { ok: true, replication: { kind: "user-managed", locations: [install.region] } }
       : await readSecretReplication(install, { run });
   if (!read.ok) return read;
@@ -360,7 +359,7 @@ export async function ensureGeneratedSecrets(
     const secretId = gcpSecretId(install.env, name);
     const id = `secret ${secretId}`;
     const describe = await run(["secrets", "describe", secretId, project, "--format=value(name)"]);
-    if (!describe.ok && !NOT_FOUND.test(describe.stderr)) {
+    if (!describe.ok && !isGcloudNotFound(describe.stderr)) {
       outcomes.push({ id, status: "failed", error: describe.stderr.trim() });
       continue;
     }

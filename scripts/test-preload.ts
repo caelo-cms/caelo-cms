@@ -414,7 +414,7 @@ async function assertPageSearchWordsExact(url: string): Promise<void> {
     if (d && (d.missing > 0 || d.extra > 0)) {
       throw new Error(
         `the page search words drifted from the pages and the draft head (#1269): ${d.missing} missing, ${d.extra} extra. ` +
-          "A write went past the triggers of migration 0603 " +
+          "A write went past the triggers of migration 0612 " +
           "(a disabled trigger, a write into the tables themselves); pages.rebuild_search_words repairs it.",
       );
     }

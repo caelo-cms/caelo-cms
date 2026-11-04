@@ -45,6 +45,7 @@
  */
 
 import { isIpLiteral } from "@caelo-cms/shared";
+import { isGcloudNotFound } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import type { HttpFetch } from "./runtime-secrets.js";
 import {
@@ -87,7 +88,6 @@ export interface InstanceDescription {
   readonly dnsNames?: readonly { readonly name?: string; readonly connectionType?: string }[];
 }
 
-const NOT_FOUND = /NOT_FOUND|not found|does not exist|404/i;
 const SQL_ADMIN = "https://sqladmin.googleapis.com/v1";
 
 /** `gcloud sql instances describe` of the install's instance, parsed. */
@@ -236,7 +236,7 @@ export async function ensureCloudSqlVerifyFull(
         `the private DNS zone ${zone} serves ${existing ?? "(no name)"}, not the instance's DNS name ${fqdn}. If the instance was replaced, delete the zone (gcloud dns managed-zones delete ${zone} ${project}) after removing its records, then re-run.`,
       );
     }
-  } else if (NOT_FOUND.test(z.stderr)) {
+  } else if (isGcloudNotFound(z.stderr)) {
     const c = await run([
       "dns",
       "managed-zones",
@@ -264,7 +264,7 @@ export async function ensureCloudSqlVerifyFull(
       if (!u.ok) return fail(`update the A record of ${fqdn}: ${u.stderr.trim()}`);
       done.push(`DNS ${fqdn} A ${rrdatas.join(",") || "(none)"} → ${privateIp}`);
     }
-  } else if (NOT_FOUND.test(a.stderr)) {
+  } else if (isGcloudNotFound(a.stderr)) {
     const c = await run([...rec, "create", ...where, "--ttl=300", `--rrdatas=${privateIp}`]);
     if (!c.ok) return fail(`create the A record of ${fqdn}: ${c.stderr.trim()}`);
     done.push(`DNS ${fqdn} A ${privateIp}`);

@@ -57,6 +57,7 @@
  *     `public_role`.
  */
 
+import { isGcloudNotFound } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import type { PlannedStep } from "./preview-plan.js";
 import { STAGING_DATABASE, STAGING_DATABASE_ROLE } from "./staging-database.js";
@@ -269,8 +270,6 @@ export function adoptionCandidates(
   return out;
 }
 
-const NOT_FOUND = /NOT_FOUND|not found|does not exist/i;
-
 /**
  * The candidates that exist in the project.
  *
@@ -284,7 +283,7 @@ export async function existingCandidates(
   for (const c of candidates) {
     const r = await run([...c.describeArgs]);
     if (r.ok) existing.push(c);
-    else if (!NOT_FOUND.test(r.stderr)) {
+    else if (!isGcloudNotFound(r.stderr)) {
       throw new AdoptionError(
         `could not tell whether the ${c.label} ${c.display} exists (gcloud: ${r.stderr.trim()}). Nothing was imported or applied. Check that gcloud is signed in as the Owner (gcloud auth login) and re-run the installer.`,
       );
