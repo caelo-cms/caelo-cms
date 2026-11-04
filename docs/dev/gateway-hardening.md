@@ -45,7 +45,7 @@ No protection on this page depends on a WAF. Where a provider has one it is an e
   |---|---|---|
   | 800 | `^/api/plugin/auth/(signup\|login\|request_password_reset\|reset_password)$` | ban an IP for 10 min above 30 a minute |
   | 810 | `/api/captcha/challenge` | throttle (429) above 60 a minute |
-  | 1000 | any path containing `/api/` | ban an IP for 10 min above 100 a minute |
+  | 1001 | any path containing `/api/` | ban an IP for 10 min above 100 a minute (replaces the old catch-all at 1000, which the converge deletes only after the new rules are in) |
   | 2000, 2001 | OWASP sqli / xss, sensitivity 1 | deny (403) |
 
   The general ban used to match every request; staged pages share the policy since #1330, so a reviewer who browsed a few of them was banned from staging. Sensitivity 1 keeps the OWASP packs from flagging ordinary comment and form text.

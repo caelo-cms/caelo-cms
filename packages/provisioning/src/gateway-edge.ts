@@ -39,6 +39,25 @@
 
 import { GENERAL_RATE_LIMIT_PRIORITY, type LiveArmorRule } from "./remote-mcp-edge.js";
 
+/**
+ * Priority of the `/api/` ban. Not the old catch-all's (1000): the converge
+ * creates this one first and deletes the old one only afterwards, so an
+ * install is never without a ban (gateway-armor.ts).
+ */
+export const API_BAN_PRIORITY = GENERAL_RATE_LIMIT_PRIORITY + 1;
+
+/**
+ * The catch-all ban every policy carried before #1339 (`srcIpRanges: *`,
+ * 100 a minute, 10-minute ban), retired by the converge once the rules
+ * below are in place.
+ */
+export const LEGACY_GENERAL_BAN = {
+  priority: GENERAL_RATE_LIMIT_PRIORITY,
+  count: 100,
+  intervalSec: 60,
+  banDurationSec: 600,
+} as const;
+
 /** A per-IP rate rule of the gateway's policy. */
 interface ArmorRateRule {
   readonly kind: "rate";
@@ -97,7 +116,7 @@ export const GATEWAY_ARMOR_RULES: readonly GatewayArmorRule[] = [
   },
   {
     kind: "rate",
-    priority: GENERAL_RATE_LIMIT_PRIORITY,
+    priority: API_BAN_PRIORITY,
     description: "Caelo gateway: per-IP ban on the visitor API",
     expression: "request.path.contains('/api/')",
     action: "rate_based_ban",
@@ -201,5 +220,22 @@ export function isGatewayArmorRule(live: LiveGatewayArmorRule, spec: GatewayArmo
     o?.exceedAction === "deny(429)" &&
     (o?.enforceOnKey ?? "ALL") === "IP" &&
     o?.banDurationSec === spec.banDurationSec
+  );
+}
+
+/** Whether a live rule is exactly {@link LEGACY_GENERAL_BAN}; any other rule at its priority is the Owner's. */
+export function isLegacyGeneralBan(live: LiveGatewayArmorRule): boolean {
+  const l = LEGACY_GENERAL_BAN;
+  const o = live.rateLimitOptions;
+  const config = (live.match as { config?: { srcIpRanges?: readonly string[] } } | undefined)
+    ?.config;
+  return (
+    live.priority === l.priority &&
+    live.action === "rate_based_ban" &&
+    live.match?.expr === undefined &&
+    JSON.stringify(config?.srcIpRanges ?? null) === JSON.stringify(["*"]) &&
+    o?.rateLimitThreshold?.count === l.count &&
+    o?.rateLimitThreshold?.intervalSec === l.intervalSec &&
+    o?.banDurationSec === l.banDurationSec
   );
 }

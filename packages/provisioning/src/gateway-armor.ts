@@ -6,17 +6,22 @@
  * 21). The stack declares the same rules for new installs; the converge
  * runs this, because the in-cloud upgrader holds no compute rights.
  *
- * Per rule: present and exactly to spec → left alone; present but
- * different → deleted and created again (Cloud Armor cannot turn a
- * source-IP match into an expression match in place, which the general
- * ban rule needs); missing → created. Rules at other priorities are the
- * Owner's own and stay.
+ * No step leaves the policy with less protection than before:
+ *   - a rule at a spec priority that differs is updated in place (one
+ *     write: it is the old rule or the new one, never none);
+ *   - a missing rule is created;
+ *   - only once every rule is in place is the old catch-all ban at priority
+ *     1000 ({@link LEGACY_GENERAL_BAN}) deleted, and only when it is exactly
+ *     that rule. A failure before that leaves it in force.
+ * Rules at other priorities are the Owner's own and stay.
  */
 
 import {
   GATEWAY_ARMOR_RULES,
   gatewayArmorRuleFlags,
   isGatewayArmorRule,
+  isLegacyGeneralBan,
+  LEGACY_GENERAL_BAN,
   type LiveGatewayArmorRule,
 } from "./gateway-edge.js";
 import { gcloud as defaultGcloud } from "./gcloud.js";
@@ -82,36 +87,49 @@ export async function ensureGatewayArmorRules(
   } catch {
     return { ok: false, error: `describe ${policy}: output is not JSON`, done };
   }
+  const rules = ["compute", "security-policies", "rules"];
   for (const spec of GATEWAY_ARMOR_RULES) {
     const existing = live.find((r) => r.priority === spec.priority);
     if (existing && isGatewayArmorRule(existing, spec)) continue;
-    const rule = ["compute", "security-policies", "rules"];
-    const at = [String(spec.priority), `--security-policy=${policy}`, project];
-    if (existing) {
-      const removed = await run([...rule, "delete", ...at, "--quiet"]);
-      if (!removed.ok) {
-        return {
-          ok: false,
-          error: `delete rule ${spec.priority} on ${policy}: ${removed.stderr.trim()}`,
-          done,
-        };
-      }
-    }
-    const created = await run([
-      ...rule,
-      "create",
-      ...at,
+    const verb = existing ? "update" : "create";
+    const r = await run([
+      ...rules,
+      verb,
+      String(spec.priority),
+      `--security-policy=${policy}`,
+      project,
       ...gatewayArmorRuleFlags(spec),
       "--quiet",
     ]);
-    if (!created.ok) {
+    if (!r.ok) {
       return {
         ok: false,
-        error: `create rule ${spec.priority} on ${policy}: ${created.stderr.trim()}`,
+        error: `${verb} rule ${spec.priority} on ${policy}: ${r.stderr.trim()}`,
         done,
       };
     }
-    done.push(`${existing ? "replaced" : "created"} rule ${spec.priority}: ${spec.description}`);
+    done.push(`${existing ? "updated" : "created"} rule ${spec.priority}: ${spec.description}`);
+  }
+  const legacy = live.find((r) => r.priority === LEGACY_GENERAL_BAN.priority);
+  if (legacy && isLegacyGeneralBan(legacy)) {
+    const r = await run([
+      ...rules,
+      "delete",
+      String(LEGACY_GENERAL_BAN.priority),
+      `--security-policy=${policy}`,
+      project,
+      "--quiet",
+    ]);
+    if (!r.ok) {
+      return {
+        ok: false,
+        error: `delete the old catch-all ban ${LEGACY_GENERAL_BAN.priority} on ${policy}: ${r.stderr.trim()}`,
+        done,
+      };
+    }
+    done.push(
+      `removed rule ${LEGACY_GENERAL_BAN.priority}: the old ban on every path (it banned staging reviewers)`,
+    );
   }
   return { ok: true, policy, done };
 }

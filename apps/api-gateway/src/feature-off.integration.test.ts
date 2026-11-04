@@ -124,13 +124,10 @@ afterAll(async () => {
 describe("E14 a: the live gateway with no visitor-facing plugin active", () => {
   it("answers the fixed 404 on every visitor route, then without the database", async () => {
     expect(servesVisitorOperations()).toBe(false);
-    // The first request after a publish learns the state: it passes the
-    // in-memory limiter (so it is read) and reads the registry once.
-    const first = await handleRequest(
-      new Request("http://localhost/api/captcha/challenge", {
-        headers: { "X-Forwarded-For": "198.51.100.7, 34.1.2.3" },
-      }),
-    );
+    // The first request after a publish learns the state with one registry
+    // read, before anything of the request is read: no client address
+    // (which would be a 503 here) is needed for the fixed 404 (#1429 review).
+    const first = await handleRequest(bare("GET", "/api/captcha/challenge"));
     expect(first.status).toBe(404);
     reads = 0;
     for (const [method, path] of [

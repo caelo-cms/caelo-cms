@@ -1200,7 +1200,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     // migrations; the general ban is limited to /api/ paths.
     const general = indexOf(
       events,
-      /^gcloud compute security-policies rules create 1000 --security-policy=caelo-production-waf-1 .*--expression=request\.path\.contains\('\/api\/'\)/,
+      /^gcloud compute security-policies rules create 1001 --security-policy=caelo-production-waf-1 .*--expression=request\.path\.contains\('\/api\/'\)/,
     );
     expect(
       indexOf(events, /rules create 800 --security-policy=caelo-production-waf-1 /),

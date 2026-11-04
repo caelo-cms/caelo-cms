@@ -72,7 +72,7 @@ describe("the gateway's Cloud Armor rules (#1339)", () => {
   });
 
   it("keeps staged pages out of the general ban: it matches /api/ paths only", () => {
-    const general = GATEWAY_ARMOR_RULES.find((r) => r.priority === 1000);
+    const general = GATEWAY_ARMOR_RULES.find((r) => r.priority === 1001);
     expect(general?.expression).toBe("request.path.contains('/api/')");
     for (const r of GATEWAY_ARMOR_RULES) expect(r.expression).not.toContain("srcIpRanges");
   });
@@ -114,6 +114,7 @@ describe("ensureGatewayArmorRules (the converge, contract 21)", () => {
       {
         priority: 1000,
         action: "rate_based_ban",
+        match: { versionedExpr: "SRC_IPS_V1", config: { srcIpRanges: ["*"] } },
         rateLimitOptions: {
           rateLimitThreshold: { count: 100, intervalSec: 60 },
           conformAction: "allow",
@@ -143,17 +144,17 @@ describe("ensureGatewayArmorRules (the converge, contract 21)", () => {
     const r = await ensureGatewayArmorRules(target, { run });
     expect(r.ok).toBe(true);
     const writes = calls.filter((c) => c.includes("rules")).map((c) => `${c[3]} ${c[4]}`);
+    // Updated in place (never a moment without the rule); the old catch-all
+    // goes only after every new rule is in.
     expect(writes).toEqual([
       "create 800",
       "create 810",
+      "create 1001",
+      "update 2000",
+      "update 2001",
       "delete 1000",
-      "create 1000",
-      "delete 2000",
-      "create 2000",
-      "delete 2001",
-      "create 2001",
     ]);
-    const general = calls.find((c) => c[3] === "create" && c[4] === "1000") ?? [];
+    const general = calls.find((c) => c[3] === "create" && c[4] === "1001") ?? [];
     expect(general).toContain("--expression=request.path.contains('/api/')");
     expect(general).toContain("--action=rate-based-ban");
     expect(general).toContain("--ban-duration-sec=600");
@@ -171,6 +172,48 @@ describe("ensureGatewayArmorRules (the converge, contract 21)", () => {
       expect(r.ok).toBe(false);
       expect(calls.some((c) => c.includes("create"))).toBe(false);
     }
+  });
+
+  it("keeps the old catch-all ban when a new rule could not be written", async () => {
+    const calls: string[][] = [];
+    const old = {
+      priority: 1000,
+      action: "rate_based_ban",
+      match: { versionedExpr: "SRC_IPS_V1", config: { srcIpRanges: ["*"] } },
+      rateLimitOptions: {
+        rateLimitThreshold: { count: 100, intervalSec: 60 },
+        conformAction: "allow",
+        exceedAction: "deny(429)",
+        enforceOnKey: "IP",
+        banDurationSec: 600,
+      },
+    };
+    const run = async (args: string[]): Promise<GcloudResult> => {
+      calls.push(args);
+      if (args.includes("list")) return ok("caelo-production-waf-x\n");
+      if (args.includes("describe")) return ok(JSON.stringify({ rules: [old] }));
+      if (args[4] === "1001") return { ok: false, stdout: "", stderr: "QUOTA", exitCode: 1 };
+      return ok();
+    };
+    const r = await ensureGatewayArmorRules(target, { run });
+    expect(r.ok).toBe(false);
+    expect(calls.some((c) => c.includes("delete"))).toBe(false);
+  });
+
+  it("leaves an Owner's own rule at the old priority alone", async () => {
+    const own = {
+      priority: 1000,
+      action: "rate_based_ban",
+      match: { versionedExpr: "SRC_IPS_V1", config: { srcIpRanges: ["203.0.113.0/24"] } },
+      rateLimitOptions: {
+        rateLimitThreshold: { count: 100, intervalSec: 60 },
+        banDurationSec: 600,
+      },
+    };
+    const { run, calls } = fakeGcloud([...gatewayArmorRuleArgs().map(live), own]);
+    const r = await ensureGatewayArmorRules(target, { run });
+    expect(r).toEqual({ ok: true, policy: "caelo-production-waf-1a2b3c", done: [] });
+    expect(calls.some((c) => c.includes("delete"))).toBe(false);
   });
 
   it("stops at the first failed write and says which rule", async () => {

@@ -217,7 +217,8 @@ describe("#1339 E14 a: the staging gateway while no staging host is set", () => 
     const listening = await listenForPublishedChanges(gateway);
     try {
       // The first request reads the published state; the LISTEN makes it cacheable.
-      const first = await handleRequest(req("x.a.run.app", "/about/"));
+      // Also the first one needs nothing of the request: no client address.
+      const first = await handleRequest(new Request("https://x.a.run.app/about/"));
       expect(first.status).toBe(404);
       expect(((await first.json()) as { error: { kind: string } }).error.kind).toBe("NotFound");
       // From now on nothing reaches the database, and the request is not read:

@@ -716,14 +716,9 @@ async function stagingRequest(
     return errorResponse("ServiceUnavailable", 503, requestId, { log: "gateway not bootstrapped" });
   }
   const adapter = cachedAdapter;
-  // E14 a — no staging host set: the staging site is off, the fixed 404
-  // before the request is read (cached state only; the LISTEN holds).
-  if (cachedStagingState && publishedCacheUsable() && cachedStagingState.host === null) {
-    return errorResponse("NotFound", 404, requestId);
-  }
-  // The allowlist and the failure budget match the address the rate limits bucket by.
-  const client = requestClientAddress(req, conn, requestId);
-  if (!client.ok) return client.response;
+  // The published state first: E14 a — with no staging host set the staging
+  // site is off, the fixed 404 before anything of the request is read (from
+  // memory while the LISTEN holds, else one read of the projection row).
   let state: StagingSiteState;
   try {
     state = await loadStagingSiteState(adapter);
@@ -742,6 +737,9 @@ async function stagingRequest(
     });
   }
   if (state.host === null) return errorResponse("NotFound", 404, requestId);
+  // The allowlist and the failure budget match the address the rate limits bucket by.
+  const client = requestClientAddress(req, conn, requestId);
+  if (!client.ok) return client.response;
   return handleStagingSiteRequest(req, {
     state,
     clientIp: client.value,
@@ -777,8 +775,15 @@ async function visitorRequest(
     return gatewayHealth(url, cachedAdapter, { client, requestId });
   }
 
-  // ---- E14 a: no visitor plugin active, the fixed 404 before anything else ----
+  // ---- E14 a: no visitor plugin active, the fixed 404 before anything of
+  // the request is read. Known from memory while the LISTEN holds; not
+  // known yet (the first request after a publish or boot, or the LISTEN is
+  // down): one registry read decides, shared by concurrent requests and at
+  // most one per SYNC_TTL_MS (plugin-host syncDispatchPlugins). ----
   if (featureOff()) return errorResponse("NotFound", 404, requestId);
+  if (cachedAdapter && (await learnVisitorApiOff())) {
+    return errorResponse("NotFound", 404, requestId);
+  }
 
   // ---- #1326: the input filter, before any database access ----
   const isCaptchaChallenge = req.method === "GET" && url.pathname === "/api/captcha/challenge";
@@ -794,9 +799,6 @@ async function visitorRequest(
   if (!cachedAdapter) {
     return errorResponse("ServiceUnavailable", 503, requestId, { log: "gateway not bootstrapped" });
   }
-  // Not known yet (first request after a publish, or the LISTEN is down):
-  // one registry read decides, behind the in-memory limiter above.
-  if (await learnVisitorApiOff()) return errorResponse("NotFound", 404, requestId);
   const adapter = cachedAdapter;
   let settings: GatewaySettings;
   try {

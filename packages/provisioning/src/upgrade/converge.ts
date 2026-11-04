@@ -469,7 +469,7 @@ export function startConverge(
     }
     s.warned(`Cloud Armor rules not updated: ${armor.error}`);
     r.warn(
-      "The upgrade continues; the gateway keeps its own rate limits, and the edge keeps its previous rules until this succeeds. Re-run upgrade once the cause is fixed.",
+      "The upgrade continues; the gateway keeps its own rate limits, and the edge keeps the old catch-all ban until every new rule is in (each rule is replaced in place, never removed first). Re-run upgrade once the cause is fixed.",
     );
     incomplete = true;
   }
