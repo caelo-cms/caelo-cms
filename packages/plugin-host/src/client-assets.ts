@@ -34,7 +34,9 @@
  * to serve from. Delivery differs, content does not — both go through
  * `collectBuildAssets` so the editor cannot show behaviour the deployed
  * site won't have. Two hand-kept head assemblies drifting apart is
- * exactly what produced the historical hreflang bug.
+ * exactly what produced the historical hreflang bug. The static build
+ * then minifies the files it writes, the same one deliberate divergence
+ * the page's own CSS and JS have (static-generator minify-pass.ts).
  */
 
 import { createHash } from "node:crypto";

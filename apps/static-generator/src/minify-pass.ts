@@ -16,6 +16,15 @@
  * minification here. The byte-parity invariant (ARCHITECTURE.md) holds
  * up to this pass.
  *
+ * Plugin client asset FILES (`_caelo/plugin/<slug>/…`, #449) are minified
+ * too, by {@link minifyPluginAsset} when the build writes them: they are
+ * served to every visitor as files, and an unminified plugin runtime is a
+ * Lighthouse `unminified-javascript` finding on every page that blocks
+ * Publish live — one the operator's AI cannot fix, because the file is
+ * the plugin's. Their name keeps the hash of the plugin's source
+ * (client-assets.ts): minification is deterministic, so one source still
+ * means one file.
+ *
  * Why esbuild for both: it keeps a script's semantics as a classic
  * script (directive prologues like `"use strict"` survive, top-level
  * names are never renamed because other modules' JS may read them), and
@@ -144,4 +153,34 @@ export async function minifyJs(js: string, pageSlug: string): Promise<string> {
     );
   }
   return code;
+}
+
+/** A plugin client asset as the build writes it (plugin-host client-assets.ts). */
+export interface PluginAssetFile {
+  readonly pluginSlug: string;
+  readonly fileName: string;
+  readonly kind: "js" | "css";
+  readonly content: string;
+}
+
+/**
+ * The minified body of a plugin's client asset file. A file is not inside
+ * a `<script>` or `<style>` element, so no escaping applies. JS that does
+ * not parse fails the build, naming the plugin: shipped as it is, it would
+ * not run for any visitor either.
+ */
+export async function minifyPluginAsset(asset: PluginAssetFile): Promise<string> {
+  try {
+    const { code } = await transform(asset.content, {
+      loader: asset.kind,
+      minify: true,
+      logLevel: "silent",
+    });
+    return code;
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `static-generator: plugin "${asset.pluginSlug}" returned a ${asset.fileName} from buildAssets that does not parse, so it would not run on any page. The plugin's code has to be fixed (a plugin release):\n${detail}`,
+    );
+  }
 }

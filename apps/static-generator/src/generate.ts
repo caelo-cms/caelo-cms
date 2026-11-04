@@ -87,7 +87,7 @@ import {
 } from "./list-data.js";
 import { BuildListOverlays, type OverlayBatchPage } from "./list-overlay-batches.js";
 import { type MediaDelivery, MediaPass, readMediaSettings } from "./media-pass.js";
-import { MinifyCache, minifyPageAssets } from "./minify-pass.js";
+import { MinifyCache, minifyPageAssets, minifyPluginAsset } from "./minify-pass.js";
 import {
   assertNoRenderFailures,
   type RenderFailure,
@@ -990,10 +990,11 @@ async function buildSite(
   });
   // #449 — plugin client assets: one call per contributing plugin for
   // the whole build, written under `_caelo/plugin/<slug>/` with the
-  // content hash in the name, then referenced from every page.
+  // content hash in the name, then referenced from every page; minified
+  // like the page's own CSS and JS (minify-pass.ts).
   const clientAssets = await args.plugins.collectBuildAssets(pageRows.map((p) => p.page_id));
   for (const asset of clientAssets) {
-    await writeBuildFile(asset.relPath, asset.content);
+    await writeBuildFile(asset.relPath, await minifyPluginAsset(asset));
     fileCount += 1;
   }
   const pluginListNames = await args.plugins.declaredListSourceNames();
