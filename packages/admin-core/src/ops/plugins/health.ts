@@ -113,6 +113,8 @@ export const pluginHealth = z.object({
    *  declares (visitor operations, table kinds, tools …) and needs the
    *  Owner's approval even with no new capability. */
   awaitingRelease: z.boolean(),
+  /** #1420 — when `awaiting_approval`: the digest an approval of this release is bound to. */
+  awaitingManifestDigest: z.string().nullable(),
   /** Why a live server failed to load it (the most recent), when `failing`. */
   problem: pluginErrorSummary.nullable(),
   /** The latest problems of the last 7 days, newest first (at most 5). */
@@ -236,6 +238,8 @@ export async function readPluginHealth(
     unapprovedCapabilities: readonly string[];
     /** #1332 — the manifest is not the approved one. */
     releaseUnapproved: boolean;
+    /** The digest of the manifest it asks to have approved. */
+    manifestDigest: string | null;
   }>,
 ): Promise<Map<string, PluginHealth>> {
   const out = new Map<string, PluginHealth>();
@@ -335,6 +339,7 @@ export async function readPluginHealth(
       servers: { loaded: s.loaded, failing: s.failing },
       awaitingCapabilities: state === "awaiting_approval" ? [...p.unapprovedCapabilities] : [],
       awaitingRelease: state === "awaiting_approval" && p.releaseUnapproved,
+      awaitingManifestDigest: state === "awaiting_approval" ? p.manifestDigest : null,
       problem: state === "failing" && problem ? summary(problem) : null,
       recentErrors: recent.filter((r) => r.plugin_slug === p.slug).map(summary),
       consumerBackoff: backoffBySlug.get(p.slug) ?? null,

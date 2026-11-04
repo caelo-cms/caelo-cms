@@ -433,7 +433,6 @@ import {
 import { listPluginPendingActionsOp, rejectPluginProposalOp } from "./ops/plugins/pending_queue.js";
 import {
   activatePluginOp,
-  approvePluginCapabilitiesOp,
   disablePluginOp,
   getPluginOp,
   listPendingPluginsOp,
@@ -443,6 +442,12 @@ import {
   revalidatePluginOp,
   submitPluginOp,
 } from "./ops/plugins/registry.js";
+import {
+  approvePluginCapabilitiesOp,
+  listPluginApprovalsOp,
+  previewApproveReleaseOp,
+  proposeApproveReleaseOp,
+} from "./ops/plugins/release_approval.js";
 import { reloadPluginOp } from "./ops/plugins/reload.js";
 import { executeUninstallPluginOp, proposeUninstallPluginOp } from "./ops/plugins/uninstall.js";
 import {
@@ -1437,6 +1442,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(activatePluginOp);
   registry.register(disablePluginOp);
   registry.register(approvePluginCapabilitiesOp);
+  registry.register(listPluginApprovalsOp);
+  registry.register(previewApproveReleaseOp);
+  registry.register(proposeApproveReleaseOp);
   registry.register(rejectPluginOp);
   registry.register(revalidatePluginOp);
   registry.register(reloadPluginOp);

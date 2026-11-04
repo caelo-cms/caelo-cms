@@ -9,6 +9,7 @@
    */
 
   import PluginHealth from "#lib/components/PluginHealth.svelte";
+  import { pluginApprovals } from "#lib/plugin-approvals.svelte.js";
   import { confirmSubmit } from "#lib/confirm.svelte.js";
   import {
     adminPanelLines,
@@ -54,13 +55,6 @@
     return p.requiresPlugins.filter((slug) => !active.has(slug));
   }
 
-  /** Shipped plugins that do not run until the Owner approves their release (#1267, #1332). */
-  const awaitingRelease = $derived(
-    data.tier1
-      .filter((p) => p.unapprovedCapabilities.length > 0 || p.releaseUnapproved)
-      .map((p) => p.slug),
-  );
-
   function fmtTime(s: string | null): string {
     if (!s) return "—";
     return new Date(s).toLocaleString();
@@ -87,24 +81,6 @@
   {#if form?.ok}
     <div class="rounded border border-green-200 bg-green-50 p-3 text-sm text-green-700 dark:border-green-700 dark:bg-green-950 dark:text-green-300">
       {form.message}
-    </div>
-  {/if}
-
-  {#if awaitingRelease.length > 0}
-    <!-- #1332 — a release that changed shipped plugins stops them until the
-         Owner approves; say so at the top, where it cannot be missed. -->
-    <div
-      class="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
-      data-testid="plugins-awaiting-approval"
-    >
-      <p class="font-medium">
-        {awaitingRelease.length === 1 ? "1 plugin waits" : `${awaitingRelease.length} plugins wait`}
-        for your approval: {awaitingRelease.join(", ")}.
-      </p>
-      <p>
-        This Caelo update changed what they declare. They stay installed but do not run, and Publish
-        live is blocked, until you click "Approve this release" on each one below.
-      </p>
     </div>
   {/if}
 
@@ -221,33 +197,15 @@
                 </TableCell>
                 <TableCell class="font-mono text-xs">{p.sourcePath ?? "—"}</TableCell>
                 <TableCell>
-                  {#if p.unapprovedCapabilities.length > 0 || p.releaseUnapproved}
-                    <!-- #1267 / #1332 — a new release asks for more than
-                         the Owner approved, or changes what it declares: it
-                         stays installed and active, and does not run (nor
-                         may the site be published live) until this click. -->
-                    <div class="mb-1 space-y-1 text-xs" data-testid="unapproved-{p.slug}">
-                      {#if p.unapprovedCapabilities.length > 0}
-                        <p>
-                          This version asks for new permissions:
-                          <span class="font-mono">{p.unapprovedCapabilities.join(", ")}</span>.
-                        </p>
-                      {/if}
-                      {#if p.releaseUnapproved}
-                        <p data-testid="release-changed-{p.slug}">
-                          This version changes what the plugin declares: what visitors can send
-                          and read, which of its tables they may write, its tools.
-                        </p>
-                      {/if}
-                      <p>It does not run until you approve it, and Publish live is blocked until then.</p>
-                    </div>
-                    <form method="post" action="?/approveCapabilities" use:enhance class="mb-1">
-                      <input type="hidden" name="slug" value={p.slug} />
-                      <input type="hidden" name="manifestDigest" value={p.manifestDigest ?? ""} />
-                      <Button type="submit" size="sm" data-testid="approve-capabilities-{p.slug}">
-                        Approve this release
-                      </Button>
-                    </form>
+                  {#if p.health.state === "awaiting_approval"}
+                    <Button
+                      size="sm"
+                      class="mb-1"
+                      data-testid="review-release-{p.slug}"
+                      onclick={() => (pluginApprovals.dialogOpen = true)}
+                    >
+                      Review this release
+                    </Button>
                   {/if}
                   {#if p.status === "active" && p.health.state === "failing"}
                     <form method="post" action="?/reload" use:enhance class="mb-1">

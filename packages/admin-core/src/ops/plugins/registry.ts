@@ -158,12 +158,18 @@ async function readRequiredBy(
   return out;
 }
 
+/** The columns the two approval checks below read. */
+type UnapprovedInput = Pick<
+  PluginDb,
+  "tier" | "status" | "manifest_json" | "approved_capabilities" | "approved_manifest_digest"
+>;
+
 /**
  * #1267 — what an active or disabled release-signed plugin's manifest asks
  * for beyond the Owner's approval; empty for runtime-installed plugins
  * (their grants are per artifact) and for rows that never ran.
  */
-function unapprovedOf(row: PluginDb): string[] {
+export function unapprovedOf(row: UnapprovedInput): string[] {
   return row.tier === 1 && (row.status === "active" || row.status === "disabled")
     ? unapprovedCapabilities(requestedCapabilitiesOf(row.manifest_json), row.approved_capabilities)
     : [];
@@ -173,7 +179,7 @@ function unapprovedOf(row: PluginDb): string[] {
  * #1332 — whether an active or disabled release-signed plugin's manifest is
  * another than the one the Owner approved (the loader's gate, loader.ts).
  */
-function releaseUnapprovedOf(row: PluginDb): boolean {
+export function releaseUnapprovedOf(row: UnapprovedInput): boolean {
   return (
     row.tier === 1 &&
     (row.status === "active" || row.status === "disabled") &&
@@ -188,6 +194,7 @@ function healthInputs(rows: readonly PluginDb[]) {
     status: r.status,
     unapprovedCapabilities: unapprovedOf(r),
     releaseUnapproved: releaseUnapprovedOf(r),
+    manifestDigest: approvedDigestOf(r),
   }));
 }
 
@@ -810,6 +817,7 @@ export const activatePluginOp = defineOperation({
             disabled_at = NULL,
             approved_capabilities = ${APPROVE_REQUESTED},
             approved_manifest_digest = ${approvedDigestOf(r)},
+            approved_manifest_json = manifest_json,
             updated_at = now()
         WHERE id = ${r.id}::uuid
       `);
@@ -858,6 +866,7 @@ export const activatePluginOp = defineOperation({
             activated_at = now(),
             approved_capabilities = ${APPROVE_REQUESTED},
             approved_manifest_digest = ${approvedDigestOf(r)},
+            approved_manifest_json = manifest_json,
             updated_at = now()
         WHERE id = ${r.id}::uuid
       `);
@@ -952,13 +961,8 @@ async function upsertPluginActor(
   return id;
 }
 
-// ---------------------------------------------------------------------------
-// Approve capabilities (#1267) — a release-signed plugin's new release asks
-// for more than the Owner approved; it does not run until this click.
-// ---------------------------------------------------------------------------
-
 /** The plugin row's manifest capabilities, as the SQL value approved_capabilities takes. */
-const APPROVE_REQUESTED = sql`ARRAY(SELECT jsonb_array_elements_text(
+export const APPROVE_REQUESTED = sql`ARRAY(SELECT jsonb_array_elements_text(
   CASE WHEN jsonb_typeof(manifest_json -> 'requestedCapabilities') = 'array'
        THEN manifest_json -> 'requestedCapabilities' ELSE '[]'::jsonb END))`;
 
@@ -989,7 +993,7 @@ async function unmetHostRequirement(
  * records (null for runtime-installed plugins: their grants are per
  * artifact, `plugin_capability_grants`).
  */
-function approvedDigestOf(row: { manifest_json: unknown; tier?: number }): string | null {
+export function approvedDigestOf(row: { manifest_json: unknown; tier?: number }): string | null {
   return row.tier === 2 ? null : releaseManifestDigest(row.manifest_json);
 }
 
@@ -997,72 +1001,6 @@ function requestedCapabilitiesOf(manifest: unknown): string[] {
   const caps = (manifest as { requestedCapabilities?: unknown } | null)?.requestedCapabilities;
   return Array.isArray(caps) ? caps.filter((c): c is string => typeof c === "string") : [];
 }
-
-export const approvePluginCapabilitiesOp = defineOperation({
-  name: "plugins.approve_capabilities",
-  readScope: "request",
-  // Why human-only: approving a capability is an Owner grant (CLAUDE.md §2,
-  // one plugin model) — the same decision as activating the plugin.
-  actorScope: ["human", "system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      slug: z.string().min(1).max(120),
-      /** #1332 — the manifest digest the Owner was shown; a release that
-       *  replaced it since is refused instead of approved unseen. */
-      manifestDigest: z
-        .string()
-        .regex(/^[0-9a-f]{64}$/)
-        .optional(),
-    })
-    .strict(),
-  output: z.object({ approved: z.array(z.string()) }),
-  handler: async (ctx, input, tx) => {
-    const current = (
-      (await tx.execute(sql`
-        SELECT manifest_json FROM plugins
-         WHERE slug = ${input.slug} AND tier = 1 AND status IN ('active', 'disabled')
-         FOR UPDATE
-      `)) as unknown as { manifest_json: unknown }[]
-    )[0];
-    if (!current) {
-      return err({
-        kind: "HandlerError",
-        operation: "plugins.approve_capabilities",
-        message: `no active or disabled release-signed plugin "${input.slug}" — activate a new plugin with plugins.activate; an installed one approves its grants in the installation review`,
-      });
-    }
-    const digest = approvedDigestOf(current);
-    if (input.manifestDigest !== undefined && input.manifestDigest !== digest) {
-      return err({
-        kind: "HandlerError",
-        operation: "plugins.approve_capabilities",
-        message: `plugin "${input.slug}" was replaced by another release since this page loaded — reload Settings → Plugins and review it again`,
-      });
-    }
-    // #1332 — the approval covers the whole manifest, not only its
-    // capability set: both are recorded together.
-    const rows = (await tx.execute(sql`
-      UPDATE plugins SET approved_capabilities = ${APPROVE_REQUESTED},
-                         approved_manifest_digest = ${digest},
-                         updated_at = now()
-       WHERE slug = ${input.slug} AND tier = 1
-      RETURNING id::text AS id, approved_capabilities
-    `)) as unknown as { id: string; approved_capabilities: string[] }[];
-    const row = rows[0];
-    if (!row) throw new Error("plugins.approve_capabilities: the locked row vanished");
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "plugins.approve_capabilities",
-      input,
-      succeeded: true,
-      entityId: row.id,
-      resultSummary: `approved=${row.approved_capabilities.join(",")}`,
-    });
-    return ok({ approved: row.approved_capabilities });
-  },
-});
 
 // ---------------------------------------------------------------------------
 // Disable — both tiers, human/system only.

@@ -246,7 +246,7 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
     );
     if (h.state === "awaiting_approval") {
       lines.push(
-        `not running: ${awaitingApprovalReason(h)}. Tell the operator to approve the release at /settings/plugins (Approve on the plugin); reload_plugin cannot approve it, and Publish live refuses until then.`,
+        `not running: ${awaitingApprovalReason(h)}. Call propose_approve_plugin_release (manifestDigest ${h.awaitingManifestDigest}) so the operator can approve it; reload_plugin cannot approve it, and Publish live refuses until then.`,
       );
     }
     if (h.problem) lines.push(`problem: ${formatPluginError(h.problem)}`);

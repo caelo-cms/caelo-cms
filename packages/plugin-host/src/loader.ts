@@ -190,9 +190,13 @@ export function unapprovedCapabilities(
  */
 export function notLoadedReason(status: string): string {
   return status === AWAITING_CAPABILITY_APPROVAL
-    ? "it waits for the Owner to approve its new release — new capabilities or a changed manifest (Settings → Plugins → Approve this release); a reload cannot start it"
+    ? AWAITING_APPROVAL_REASON
     : `plugin is ${status}, not active`;
 }
+
+/** {@link notLoadedReason} of a plugin that waits for the Owner, which a preview tells apart from a failure. */
+export const AWAITING_APPROVAL_REASON =
+  "it waits for the Owner to approve its new release — new capabilities or a changed manifest; a reload cannot start it";
 
 /** The `plugins` columns one load reads back. */
 interface LoadRow {
@@ -213,16 +217,21 @@ interface LoadRow {
 async function recordPriorManifestApproval(tx: TransactionRunner, slug: string): Promise<void> {
   const prior = (
     (await tx.execute(sql`
-      SELECT manifest_json FROM plugins
-       WHERE slug = ${slug} AND tier = 1 AND approved_manifest_digest IS NULL
-         AND status IN ('active', 'disabled')
+      SELECT manifest_json, approved_manifest_digest FROM plugins
+       WHERE slug = ${slug} AND tier = 1 AND status IN ('active', 'disabled')
+         AND (approved_manifest_digest IS NULL OR approved_manifest_json IS NULL)
        FOR UPDATE
-    `)) as unknown as { manifest_json: unknown }[]
+    `)) as unknown as { manifest_json: unknown; approved_manifest_digest: string | null }[]
   )[0];
   if (!prior) return;
+  const digest = releaseManifestDigest(prior.manifest_json);
+  // #1420 — the stored manifest is the approved one only while the digests
+  // match; a plugin already waiting keeps an unknown previous manifest.
+  if (prior.approved_manifest_digest !== null && prior.approved_manifest_digest !== digest) return;
   await tx.execute(sql`
-    UPDATE plugins SET approved_manifest_digest = ${releaseManifestDigest(prior.manifest_json)}
-     WHERE slug = ${slug} AND approved_manifest_digest IS NULL
+    UPDATE plugins SET approved_manifest_digest = ${digest},
+                       approved_manifest_json = manifest_json
+     WHERE slug = ${slug}
   `);
 }
 
@@ -1161,7 +1170,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
         INSERT INTO plugins (
           slug, version, tier, status,
           manifest_json, source_path, manifest_signature, submitted_by, approved_capabilities,
-          approved_manifest_digest
+          approved_manifest_digest, approved_manifest_json
         ) VALUES (
           ${def.slug}, ${def.version}, ${def.tier}, ${initialStatus},
           (${JSON.stringify(opts.manifest)}::text)::jsonb,
@@ -1171,7 +1180,10 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
           CASE WHEN ${initialApproved === null} THEN NULL
                ELSE ARRAY(SELECT jsonb_array_elements_text((${JSON.stringify(initialApproved ?? [])}::text)::jsonb))
           END,
-          ${initialDigest}
+          ${initialDigest},
+          CASE WHEN ${initialDigest === null} THEN NULL
+               ELSE (${JSON.stringify(opts.manifest)}::text)::jsonb
+          END
         )
         ON CONFLICT (slug) DO UPDATE SET
           version = EXCLUDED.version,

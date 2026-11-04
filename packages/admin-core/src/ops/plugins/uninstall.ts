@@ -45,6 +45,7 @@ import {
 import { applyUrlMigrationDiff, computeUrlMigrationDiff } from "../content/url_migrations.js";
 import { applyRevokeCapabilityProposal } from "./capability_proposals.js";
 import { afterPluginUninstallCommit } from "./host-sync.js";
+import { applyApproveReleaseProposal } from "./release_approval.js";
 
 /** Schema-drop hooks, configured by the host at bootstrap (the ops
  *  layer has no adapter handle; DDL on both pools lives there). */
@@ -193,7 +194,7 @@ const executeUninstallPluginOpDefinition = defineOperation({
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
   // One executor for the uniform `propose_*` plugin tools (uninstall,
-  // revoke_capability); the result fields depend on the row's kind.
+  // revoke_capability, approve_release); the result fields depend on the row's kind.
   // Activation keeps its own executor (`plugins.execute_activation`).
   output: z.object({
     slug: z.string(),
@@ -202,6 +203,7 @@ const executeUninstallPluginOpDefinition = defineOperation({
     skillsArchived: z.number().optional(),
     revokedCapability: z.string().optional(),
     disabled: z.boolean().optional(),
+    approvedCapabilities: z.array(z.string()).optional(),
   }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
@@ -227,6 +229,9 @@ const executeUninstallPluginOpDefinition = defineOperation({
     }
     if (row.kind === "revoke_capability") {
       return applyRevokeCapabilityProposal(ctx, tx, input.proposalId, row.payload);
+    }
+    if (row.kind === "approve_release") {
+      return applyApproveReleaseProposal(ctx, tx, row.payload);
     }
     // Anything else that is not an uninstall (an activation row) must
     // never fall through to the schema-dropping path below.

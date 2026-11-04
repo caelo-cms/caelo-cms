@@ -19,7 +19,7 @@ import type { Actions, PageServerLoad } from "./$types";
 
 interface Proposal {
   id: string;
-  kind: "activate" | "uninstall" | "revoke_capability";
+  kind: "activate" | "uninstall" | "revoke_capability" | "approve_release";
   proposedBy: string;
   preview: Record<string, unknown>;
   createdAt: string;
@@ -66,6 +66,15 @@ export const actions: Actions = {
     const r = await execute(registry, adapter, locals.ctx, executor, { proposalId });
     if (!r.ok) return fail(400, { error: messageOf(r.error, "approve failed") });
     const v = r.value as { slug: string };
+    if (kind === "approve_release") {
+      const live = await loadActivatedPlugin(v.slug);
+      return {
+        ok: true,
+        message: live.loaded
+          ? `"${v.slug}" runs again.`
+          : `Approved, but "${v.slug}" could not load on this server (${live.reason}). Settings → Plugins shows the error.`,
+      };
+    }
     if (kind === "activate") {
       const live = await loadActivatedPlugin(v.slug);
       if (!live.loaded) {

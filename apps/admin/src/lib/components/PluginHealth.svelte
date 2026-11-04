@@ -105,7 +105,7 @@
       {/if}
       {#if health.awaitingRelease}
         {health.awaitingCapabilities.length > 0 ? "and" : "because"} it changes what the plugin declares
-      {/if}. Click "Approve this release" to start it.
+      {/if}. Review it to start it.
     </p>
   {/if}
   {#if health.problem}

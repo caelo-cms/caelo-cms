@@ -8,11 +8,7 @@
  * with a public-schema rollback on commit failure.
  */
 
-import {
-  externalArtifactDigest,
-  loadActivatedPlugin,
-  releaseManifestDigest,
-} from "@caelo-cms/plugin-host";
+import { externalArtifactDigest, loadActivatedPlugin } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { error, fail } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
@@ -101,7 +97,6 @@ export const load: PageServerLoad = async ({ locals }) => {
     artifactDigest:
       p.tier === 2 ? externalArtifactDigest(p.manifestJson, p.sourceCode ?? "") : undefined,
     // #1332 — what an approval of a shipped plugin's release binds to.
-    manifestDigest: p.tier === 1 ? releaseManifestDigest(p.manifestJson) : undefined,
   }));
   const tier1 = plugins.filter((p) => p.tier === 1);
   const tier2Active = plugins.filter((p) => p.tier === 2 && p.status === "active");
@@ -227,34 +222,6 @@ export const actions: Actions = {
       };
     }
     return { ok: true, message: `Plugin ${slug} re-enabled.` };
-  },
-
-  // #1267 — a new release of a shipped plugin asks for more than the
-  // Owner approved: it does not run until this click (one plugin model).
-  approveCapabilities: async ({ request, locals }) => {
-    requirePermission(locals, "settings.write");
-    const form = await request.formData();
-    const slug = form.get("slug");
-    if (typeof slug !== "string" || !slug) return fail(400, { error: "slug required" });
-    const { adapter, registry } = getQueryContext();
-    const manifestDigest = form.get("manifestDigest");
-    const r = await execute(registry, adapter, locals.ctx, "plugins.approve_capabilities", {
-      slug,
-      ...(typeof manifestDigest === "string" && manifestDigest ? { manifestDigest } : {}),
-    });
-    if (!r.ok) {
-      return fail(400, {
-        error: "message" in r.error ? String(r.error.message) : r.error.kind,
-      });
-    }
-    const live = await loadActivatedPlugin(slug);
-    if (!live.loaded) {
-      return {
-        ok: true,
-        message: `Approved this release of ${slug}, but it could not be loaded on this server (${live.reason}). Its health below shows the error.`,
-      };
-    }
-    return { ok: true, message: `Approved this release of ${slug}; it runs again.` };
   },
 
   // #1008 — retry an active plugin that failed to load, on every server.
