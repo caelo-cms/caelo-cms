@@ -30,7 +30,9 @@ import { composePaths, renderScopeOf } from "./compose-paths.js";
 import {
   ancestorIdsOf,
   descendantIdsOf,
+  loadPageChains,
   loadPageTree,
+  loadScopedTree,
   type PageTree,
   type PageTreeNode,
 } from "./page-tree.js";
@@ -106,8 +108,9 @@ export async function recomputeCurrentPathsWithMoves(
 ): Promise<{ paths: Map<string, string>; moves: PathMove[] }> {
   const uniqueIds = [...new Set(pageIds)];
   if (uniqueIds.length === 0) return { paths: new Map(), moves: [] };
-  const tree = await loadPageTree(tx, scope.chatBranchId);
-  const targets = [...uniqueIds, ...descendantIdsOf(tree, uniqueIds)];
+  // #1269 — the pages, their subtrees and ancestors, not the whole tree.
+  const { tree, below } = await loadScopedTree(tx, scope.chatBranchId, uniqueIds);
+  const targets = [...uniqueIds, ...below];
   const paths = await composePaths(tx, tree, targets, scope);
   const stored = await loadStoredPaths(tx, [...paths.keys()]);
   const moves: PathMove[] = [];
@@ -186,7 +189,8 @@ export async function resolveCurrentPathsDryRun(
   view?: UrlCompositionView,
 ): Promise<Map<string, string>> {
   if (pageIds.length === 0) return new Map();
-  const tree = await loadPageTree(tx, scope.chatBranchId);
+  // #1269 — composing a page needs only its ancestor chain.
+  const { tree } = await loadPageChains(tx, scope.chatBranchId, pageIds);
   return composePaths(tx, tree, pageIds, scope, view);
 }
 
@@ -255,8 +259,11 @@ export const refreshCurrentPathOp = defineOperation({
     //   territory, even when it is confined to this subtree (PR #947
     //   review — a one-page site or a setting that only moves this
     //   subtree), so it always waits for the approved migration.
-    const tree = await loadPageTree(tx, null);
-    const subtree = [input.pageId, ...descendantIdsOf(tree, [input.pageId])];
+    // #1269 — the page's subtree and ancestors, not the whole tree: a
+    // plugin calls this after every variant write. Only a move that would
+    // shift a published page reads the whole tree, for the migration check.
+    const { tree, below } = await loadScopedTree(tx, null, [input.pageId]);
+    const subtree = [input.pageId, ...below];
     // #1254 — both checks compose main in this one transaction: one render
     // id lets the URL plugins answer the whole-site pass from one read.
     const { chatBranchId: _branch, ...mainCtx } = ctx;
@@ -264,7 +271,7 @@ export const refreshCurrentPathOp = defineOperation({
     if (await movesPublishedPage(tx, tree, subtree, mainScope)) {
       const held =
         ctx.actorKind !== "plugin" ||
-        [...(await pendingMigrationPageIds(tx, tree, mainScope))].some(
+        [...(await pendingMigrationPageIds(tx, await loadPageTree(tx, null), mainScope))].some(
           (id) => !subtree.includes(id),
         );
       if (held) {
