@@ -92,7 +92,7 @@ describe("requires: [email] (#1332)", () => {
     expect(refused.ok).toBe(false);
     if (!refused.ok) {
       const message = "message" in refused.error ? String(refused.error.message) : "";
-      expect(message).toContain("no mail transport is set up");
+      expect(message).toContain("the mail transport cannot deliver (no email transport is set up)");
       expect(message).toContain("Settings → Email");
     }
 

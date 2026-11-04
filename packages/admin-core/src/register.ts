@@ -257,7 +257,12 @@ import {
   setDomainTlsStatusOp,
   verifyDomainOp,
 } from "./ops/domains.js";
-import { getEmailConfigOp, sendTestEmailOp, setEmailConfigOp } from "./ops/email_config.js";
+import {
+  getEmailConfigOp,
+  senderDomainOp,
+  sendTestEmailOp,
+  setEmailConfigOp,
+} from "./ops/email_config.js";
 import {
   executeEmailConfigProposalOp,
   listPendingEmailConfigProposalsOp,
@@ -329,6 +334,13 @@ import {
 } from "./ops/links.js";
 import { resolveImportLinksOp } from "./ops/links-import.js";
 import { registerListOps } from "./ops/lists/index.js";
+import { getMailCapsOp, proposeSetMailCapsOp, setMailCapsOp } from "./ops/mail_caps.js";
+import {
+  claimMailOutboxOp,
+  completeMailOutboxOp,
+  finishMailDeliveriesOp,
+  reserveMailDeliveriesOp,
+} from "./ops/mail_outbox.js";
 import { listMcpApprovalHandoffsOp } from "./ops/mcp_approval_handoffs.js";
 import {
   executeMcpTokenProposalOp,
@@ -1186,6 +1198,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);
   registry.register(sendTestEmailOp);
+  registry.register(senderDomainOp);
   // v0.2.25 — email_config propose/execute pair. AI proposes
   // transport+fromAddress+config-without-secrets; Owner supplies the
   // smtp password / resend apiKey / SES key inline at approve time
@@ -1334,6 +1347,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // #1140 — the scheduler tick's due-table (system only).
   registry.register(scheduledTasksClaimOp);
   registry.register(scheduledTasksFinishOp);
+  // #1337 — the public mail outboxes' drain (system-only).
+  registry.register(claimMailOutboxOp);
+  registry.register(completeMailOutboxOp);
+  registry.register(reserveMailDeliveriesOp);
+  registry.register(finishMailDeliveriesOp);
+  registry.register(getMailCapsOp);
+  registry.register(setMailCapsOp);
+  registry.register(proposeSetMailCapsOp);
   // #757 — the step-up for the actions above: the Owner's password, re-entered.
   registry.register(stepUpConfirmPasswordOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the

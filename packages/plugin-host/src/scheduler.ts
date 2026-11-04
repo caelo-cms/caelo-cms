@@ -78,14 +78,28 @@ class WorkerScheduler {
       // A pattern only: paused and without a callback, croner never fires it.
       pattern: new Cron(w.cron, { paused: true }),
       run: async () => {
-        await opts.dispatch({
-          pluginSlug: opts.pluginSlug,
-          operationName: w.operationName,
-          args: { _trigger: "worker", workerName: w.name },
-          pluginActorId: opts.pluginActorId,
-          // Workers act on main by design (CMS_REQUIREMENTS §14.7).
-          invocation: { origin: "worker", actorId: opts.pluginActorId },
-        });
+        // #1333 — `publicDatabases: "each"` runs once per public database,
+        // live first; each run sees only its own environment's tables.
+        const targets: ReadonlyArray<"live" | "staging"> =
+          w.publicDatabases === "each" ? ["live", "staging"] : ["live"];
+        const failures: string[] = [];
+        for (const target of targets) {
+          const r = await opts.dispatch({
+            pluginSlug: opts.pluginSlug,
+            operationName: w.operationName,
+            args: { _trigger: "worker", workerName: w.name },
+            pluginActorId: opts.pluginActorId,
+            // Workers act on main by design (CMS_REQUIREMENTS §14.7).
+            invocation: { origin: "worker", actorId: opts.pluginActorId },
+            ...(target === "staging" ? { publicTarget: "staging" as const } : {}),
+          });
+          // A failed live run must not keep the staging run from its turn,
+          // and neither failure may pass unnoticed: the due-table row says so.
+          if (!r.ok) failures.push(`${target}: ${r.error.message}`);
+        }
+        if (failures.length > 0) {
+          throw new Error(`worker ${opts.pluginSlug}/${w.name} failed (${failures.join("; ")})`);
+        }
       },
     }));
     this.#byPlugin.set(opts.pluginSlug, list);

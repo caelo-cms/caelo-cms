@@ -39,6 +39,7 @@ import {
   approvedDigestOf,
   releaseUnapprovedOf,
   unapprovedOf,
+  unmetHostRequirement,
 } from "./registry.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
@@ -215,6 +216,11 @@ async function approveRelease(
       message: `plugin "${input.slug}" was replaced by another release since you looked at it — review it again`,
     });
   }
+  // #1334 — a release can start to need mail (the auth plugin's mandatory
+  // e-mail verification): approving it without a working transport would
+  // run it half broken, exactly what activation refuses.
+  const unmet = await unmetHostRequirement(tx, input.slug, current.manifest_json);
+  if (unmet) return err({ kind: "HandlerError" as const, operation, message: unmet });
   // #1332 — the approval covers the whole manifest, not only its
   // capability set: both are recorded together.
   const rows = (await tx.execute(sql`

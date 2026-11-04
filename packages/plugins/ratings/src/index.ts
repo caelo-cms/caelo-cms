@@ -3,14 +3,24 @@
 /**
  * @caelo-cms/plugin-ratings — Tier-1 plugin: 1-5 star ratings per (page, visitor).
  *
- * P12 PR2.3 — exercises real plugin-host worker scheduler (refresh aggregates
- * every 5 minutes), ON CONFLICT vote-change semantics via ctx.query, and
- * baked-at-deploy aggregate reads for the Web Component delta pattern.
+ * Votes are an inbox, averages are published (#1333, epic #763 E10): a
+ * visitor only adds a vote (`ratings`, INSERT only for the visitor role),
+ * and the admin recomputes the averages on its scheduler tick and writes
+ * them into `rating_aggregates`, which visitors can only read. A
+ * compromised gateway can therefore not rewrite an average, and cannot
+ * read, change or delete anyone's vote.
+ *
+ * The recompute runs once per public database (`publicDatabases: "each"`):
+ * the live averages come from live votes, the staging averages from the
+ * staging site's test votes, and neither crosses into the other or into
+ * cms_admin.
  *
  * Schema (cms_public.plugin_ratings.*):
- *   ratings           — visitor's score per page. One per (visitor_id, page_id)
- *                       for visitors who consented to the visitor-id cookie;
- *                       visitor_id NULL (never de-duplicated) for the rest.
+ *   ratings           — one row per vote. A visitor who consented to the
+ *                       visitor-id cookie votes again with the same
+ *                       visitor_id: the recompute counts their newest vote
+ *                       per page and deletes the older ones. visitor_id is
+ *                       NULL (never de-duplicated) for the rest.
  *
  * Consent: ratings is the plugin the gateway's visitor id (an entry of its
  * `__session` cookie) exists for.
@@ -21,10 +31,11 @@
  *   rating_aggregates — denormalised count + sum + average for fast static reads.
  *
  * Operations:
- *   submit            — PUBLIC. Visitor scores 1-5; ON CONFLICT updates.
- *   list_aggregates   — PUBLIC read. Used by static-render + delta-fetch.
- *   _refresh          — worker (every 5 min) + owner panel + AI tool.
- *                       Recomputes aggregates from raw votes; idempotent.
+ *   submit            — PUBLIC. Visitor scores 1-5; adds a vote.
+ *   list_aggregates   — PUBLIC read of the published averages.
+ *   _refresh          — worker (every 5 min, each public database) + owner
+ *                       panel + AI tool (live). Recomputes the averages from
+ *                       the votes; idempotent.
  *
  * AI tools:
  *   list_rating_aggregates   — per-page count + average. Read.
@@ -56,6 +67,21 @@ const listAggregatesInput = z.object({ pageId: z.string().max(200).optional() })
 /** Most rows one `ctx.query.list` returns (the SDK's cap). */
 const QUERY_LIST_CAP = 1000;
 
+/**
+ * Most votes one recompute reads (pages of {@link QUERY_LIST_CAP}). Past it
+ * the run rewrites nothing and fails loudly (it only prunes); the pruning
+ * of superseded votes keeps a site well below it.
+ */
+const REFRESH_VOTE_PAGES = 50;
+
+interface VoteRow {
+  id: string;
+  page_id: string;
+  visitor_id?: string | null;
+  score: number;
+  created_at: string;
+}
+
 interface AggregateRow {
   page_id: string;
   count: number;
@@ -84,10 +110,9 @@ export default definePlugin<PluginContextTier1>({
       updated_at: "timestamp",
     },
   },
-  /** #1292 — a vote finds the visitor's earlier one; the panel lists most-rated first. */
+  /** #1292 — the panel lists most-rated first; the recompute pages votes by id. */
   indexes: {
     schema: {
-      ratings: [["visitor_id", "page_id"]],
       rating_aggregates: [["page_id"], ["count"]],
     },
   },
@@ -119,8 +144,7 @@ export default definePlugin<PluginContextTier1>({
       kind: "write",
       input: submitInput,
       rateLimit: { max: 20, windowSeconds: 60 },
-      // The visitor's own earlier vote is found and replaced.
-      reads: ["ratings"],
+      // Adds a vote; the recompute finds the visitor's earlier one.
       writes: ["ratings"],
     },
     {
@@ -132,16 +156,11 @@ export default definePlugin<PluginContextTier1>({
     },
   ],
   /**
-   * #1332 — a vote is the visitor's own state today: `submit` finds and
-   * replaces their earlier vote. The aggregates are what the admin
-   * recomputes and visitors only read.
-   *
-   * FIXME(issue #1333): votes become `inbox` and the recompute moves to the
-   * #1140 scheduler, publishing the aggregates through the projection; the
-   * worker's direct write of `rating_aggregates` is the exception the grant
-   * generator documents (plugin-sandbox `publicTableGrants`).
+   * #1333 — votes are what visitors send in (`inbox`: insert only); the
+   * averages are what the admin recomputes and publishes, visitors only
+   * read them (`published`).
    */
-  tableKinds: { ratings: "visitor-state", rating_aggregates: "published" },
+  tableKinds: { ratings: "inbox", rating_aggregates: "published" },
   operations: {
     submit: async (ctx, args) => {
       const parsed = submitInput.safeParse(args);
@@ -155,42 +174,16 @@ export default definePlugin<PluginContextTier1>({
         );
       }
       const input = parsed.data;
-      // A visitor who has not consented to the visitor-id cookie (#677)
-      // cannot be recognised, so their vote is a new anonymous one: there
-      // is no earlier vote to find. Repeat votes from one browser are then
-      // bounded by the gateway's per-IP rate limit and the captcha, not
-      // by de-duplication.
-      const visitorId = ctx.visitor.id;
-      if (visitorId === null) {
-        const r = await ctx.query.insert("ratings", {
-          page_id: input.pageId,
-          visitor_id: null,
-          score: input.score,
-        });
-        return { recorded: true, id: r.id, mode: "inserted" as const };
-      }
-      // Lookup existing vote by (visitor, page) and update OR insert.
-      // The schema has no UNIQUE constraint here (the plugin's emitted schema
-      // only enforces id PK), so we de-dupe at the plugin layer: list, then
-      // update if found (and clean up any concurrent duplicates), else insert.
-      const existing = await ctx.query.list<"ratings", { id: string }>("ratings", {
-        visitor_id: visitorId,
-        page_id: input.pageId,
-        limit: 50,
-      });
-      if (existing[0]) {
-        await ctx.query.update("ratings", existing[0].id, { score: input.score });
-        for (const dup of existing.slice(1)) {
-          await ctx.query.delete("ratings", dup.id);
-        }
-        return { recorded: true, id: existing[0].id, mode: "updated" as const };
-      }
+      // One vote row per submit. A consented visitor's id lets the
+      // recompute keep only their newest vote per page; without consent
+      // (#677) the vote is anonymous and counts on its own, bounded by the
+      // gateway's per-address rate limit and the captcha.
       const r = await ctx.query.insert("ratings", {
         page_id: input.pageId,
-        visitor_id: visitorId,
+        visitor_id: ctx.visitor.id,
         score: input.score,
       });
-      return { recorded: true, id: r.id, mode: "inserted" as const };
+      return { recorded: true, id: r.id };
     },
 
     list_aggregates: async (ctx, args) => {
@@ -206,39 +199,73 @@ export default definePlugin<PluginContextTier1>({
     },
 
     /**
-     * Worker handler. The scheduler dispatches this every 5 min (cron in
-     * `workers[]`). Recomputes per-page aggregates from raw
-     * ratings via two ctx.query passes — simple, idempotent.
+     * Worker handler, on the admin's scheduler tick (#1140) every 5 minutes,
+     * once per public database (#1333). Recomputes per-page averages from
+     * the votes: a consented visitor's newest vote per page counts, their
+     * older ones are deleted; anonymous votes count each. Idempotent.
      */
     _refresh: async (ctx, _args) => {
-      const ratings = await ctx.query.list<
-        "ratings",
-        { page_id: string; visitor_id?: string | null; score: number }
-      >("ratings", { limit: QUERY_LIST_CAP });
-      // Bucket, deduplicating concurrent rows for the same (page_id, visitor_id)
-      // when visitor_id is present.
-      const seenVisitorVotes = new Set<string>();
-      const buckets = new Map<string, { page_id: string; count: number; sum: number }>();
-      for (const r of ratings) {
-        if (typeof r.visitor_id === "string" && r.visitor_id.length > 0) {
-          const visitorKey = `${r.page_id}\0${r.visitor_id}`;
-          if (seenVisitorVotes.has(visitorKey)) continue;
-          seenVisitorVotes.add(visitorKey);
+      const votes: VoteRow[] = [];
+      let afterId: string | undefined;
+      let truncated = false;
+      for (let page = 0; ; page++) {
+        if (page >= REFRESH_VOTE_PAGES) {
+          truncated = true;
+          break;
         }
-        const key = r.page_id;
-        const b = buckets.get(key) ?? {
-          page_id: r.page_id,
-          count: 0,
-          sum: 0,
-        };
+        const batch = await ctx.query.list<"ratings", VoteRow>("ratings", {
+          orderBy: "id",
+          orderDir: "asc",
+          limit: QUERY_LIST_CAP,
+          ...(afterId ? { afterId } : {}),
+        });
+        votes.push(...batch);
+        if (batch.length < QUERY_LIST_CAP) break;
+        afterId = batch[batch.length - 1]?.id;
+      }
+      // Newest vote per (page, visitor); ties on created_at go to the larger id.
+      const newest = new Map<string, VoteRow>();
+      const superseded: string[] = [];
+      const counted: VoteRow[] = [];
+      for (const v of votes) {
+        if (typeof v.visitor_id !== "string" || v.visitor_id.length === 0) {
+          counted.push(v);
+          continue;
+        }
+        const key = `${v.page_id}\0${v.visitor_id}`;
+        const prev = newest.get(key);
+        if (!prev) {
+          newest.set(key, v);
+          continue;
+        }
+        const at = new Date(v.created_at).getTime();
+        const prevAt = new Date(prev.created_at).getTime();
+        const later = at > prevAt || (at === prevAt && v.id > prev.id);
+        superseded.push(later ? prev.id : v.id);
+        if (later) newest.set(key, v);
+      }
+      if (truncated) {
+        // An incomplete read must not rewrite averages: pages past it would
+        // lose theirs and the rest would be wrong. The superseded votes it
+        // found are still pruned, so the next run reads fewer; then refuse
+        // loudly, on the worker's task row and to the panel's caller.
+        for (const id of superseded) await ctx.query.delete("ratings", id);
+        throw new Error(
+          `_refresh: more than ${REFRESH_VOTE_PAGES * QUERY_LIST_CAP} votes to read in one run; the averages were left as they were (${superseded.length} superseded votes pruned, the next run reads fewer)`,
+        );
+      }
+      counted.push(...newest.values());
+      const buckets = new Map<string, { page_id: string; count: number; sum: number }>();
+      for (const v of counted) {
+        const b = buckets.get(v.page_id) ?? { page_id: v.page_id, count: 0, sum: 0 };
         b.count += 1;
-        b.sum += r.score;
-        buckets.set(key, b);
+        b.sum += v.score;
+        buckets.set(v.page_id, b);
       }
       // Upsert per page instead of wipe + reinsert: a refresh that overlaps
-      // another (the 5-minute worker and an on-demand refresh) then never
-      // leaves a page without its aggregate, and any duplicate row an
-      // overlap did create is removed by the next run.
+      // another (the worker and an on-demand refresh) then never leaves a
+      // page without its average, and any duplicate row an overlap did
+      // create is removed by the next run.
       const existing = await ctx.query.list<"rating_aggregates", { id: string; page_id: string }>(
         "rating_aggregates",
         { limit: QUERY_LIST_CAP },
@@ -263,12 +290,21 @@ export default definePlugin<PluginContextTier1>({
         if (buckets.has(pageId)) continue;
         for (const id of ids) await ctx.query.delete("rating_aggregates", id);
       }
-      // At the query handle's row cap the votes read are not all of them;
-      // say so instead of reporting a partial recount as complete.
-      return { refreshed: written, truncated: ratings.length >= QUERY_LIST_CAP };
+      // Only once the new averages are written: a run that fails before
+      // keeps every vote for the next one.
+      for (const id of superseded) await ctx.query.delete("ratings", id);
+      return { refreshed: written, pruned: superseded.length };
     },
   },
-  workers: [{ name: "refresh_aggregates", cron: "*/5 * * * *", operationName: "_refresh" }],
+  workers: [
+    {
+      name: "refresh_aggregates",
+      cron: "*/5 * * * *",
+      operationName: "_refresh",
+      // #1333 — live averages from live votes, staging from staging votes.
+      publicDatabases: "each",
+    },
+  ],
   /** Page ratings in the admin (rendered from this declaration). */
   adminPanels: [
     {
@@ -321,7 +357,7 @@ export default definePlugin<PluginContextTier1>({
     {
       name: "refresh_rating_aggregates",
       description:
-        "Recompute the per-page rating aggregates from the raw votes now, instead of waiting for the 5-minute refresh. Safe to repeat; it only rebuilds derived numbers. `truncated: true` means the site has more votes than one refresh can read, so the averages are approximate.",
+        "Recompute the per-page rating aggregates from the raw votes now, instead of waiting for the 5-minute refresh. Safe to repeat; it only rebuilds derived numbers. If the site has more votes than one refresh can read, it changes no average and says so.",
       operationName: "_refresh",
       requiredPermission: "settings.write",
       inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },

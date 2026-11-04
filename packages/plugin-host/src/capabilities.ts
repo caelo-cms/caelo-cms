@@ -21,7 +21,6 @@ import type {
   PluginCms,
   PluginContext,
   PluginContextTier1,
-  PluginEmail,
   PluginInvocation,
   PluginQuery,
   PluginQueryFilter,
@@ -30,7 +29,7 @@ import type {
   PluginVisitor,
   PublicOperationDef,
 } from "@caelo-cms/plugin-sdk";
-import { execute } from "@caelo-cms/query-api";
+import { type DatabaseAdapter, execute } from "@caelo-cms/query-api";
 import { makePluginConsentPurposes } from "./consent-purposes.js";
 import {
   hostSystemActorId,
@@ -41,6 +40,7 @@ import {
 import { operatorCanAuthor } from "./external-authorization.js";
 import { makePluginFonts } from "./fonts.js";
 import { makePluginImages } from "./images.js";
+import { makePluginEmail } from "./mail-queue.js";
 import { makePluginAi } from "./plugin-ai.js";
 import { timedPluginOpCall } from "./plugin-runtime-stats.js";
 import { makePluginPrivateFiles } from "./private-files.js";
@@ -57,6 +57,13 @@ export interface MakePluginContextOpts {
   /** #1332 — the visitor operation being served, whose `reads` / `writes`
    *  are the only public tables `ctx.query` may touch on that call. */
   readonly publicOperation?: PublicOperationDef;
+  /**
+   * #1333 — which public database `ctx.query` works on (admin side only).
+   * `"staging"` binds it to cms_public_staging and attaches nothing else:
+   * a worker declared `publicDatabases: "each"` recomputing the staging
+   * site's derived rows from the staging site's own visitors.
+   */
+  readonly publicTarget?: "live" | "staging";
 }
 
 /**
@@ -92,6 +99,23 @@ export async function makePluginContext(
     // Dispatch resolves the contract before it builds a visitor context;
     // without one there is nothing to bound the call's table access by.
     throw new Error("a visitor call needs its declared public operation");
+  }
+
+  if (opts.publicTarget === "staging") {
+    if (isPublicSideHost(infra) || !infra.stagingAdapter) {
+      throw new Error(
+        `plugin "${plugin.slug}": a staging-database run needs the admin's adapter on cms_public_staging (PluginHostInfra.stagingAdapter)`,
+      );
+    }
+    const stagingAdapter = infra.stagingAdapter;
+    return {
+      query: makePluginQuery(plugin, infra, invocation, undefined, stagingAdapter),
+      api: makePluginApi(plugin, infra),
+      theme: makePluginTheme(),
+      visitor: makePluginVisitor(undefined),
+      captcha: makePluginCaptcha(undefined),
+      invocation: Object.freeze({ ...invocation }),
+    };
   }
 
   const baseCtx: PluginContext = {
@@ -156,7 +180,7 @@ export async function makePluginContext(
     if (requested.has("cms_admin_schema")) {
       tier1.adminQuery = makeProjectedAdminQuery(plugin, infra);
     }
-    if (requested.has("email")) tier1.email = makePluginEmail(infra);
+    if (requested.has("email")) tier1.email = makePluginEmail(plugin, infra, infra.adapter, true);
     return tier1;
   }
   if (requested.has("cms_admin")) {
@@ -172,7 +196,8 @@ export async function makePluginContext(
     tier1.snapshots = makePluginSnapshots(plugin, infra);
   }
   if (requested.has("email")) {
-    tier1.email = makePluginEmail(infra);
+    // #1337 — on the admin side a queued mail goes to the live outbox.
+    tier1.email = makePluginEmail(plugin, infra, infra.adapter, false);
   }
   // Shipped plugins get private files on the same author terms as installed ones.
   if (
@@ -274,6 +299,8 @@ interface QueryScope {
   readonly pool: "public" | "admin";
   /** #1332 — on a visitor call, the contract bounding which tables it reaches. */
   readonly publicOperation?: PublicOperationDef;
+  /** #1333 — the adapter of the public database to use; the host's own unless given. */
+  readonly adapter?: DatabaseAdapter;
 }
 
 /**
@@ -404,7 +431,7 @@ function makeScopedQuery(
     // must not touch the registry (the handles are lazy by design).
     registerPluginStorageOps(infra.registry, { lockPluginRow: infra.lockPluginRow });
     const r = await timedPluginOpCall(plugin.slug, opName, () =>
-      execute(infra.registry, infra.adapter, ctx, opName, input),
+      execute(infra.registry, scope.adapter ?? infra.adapter, ctx, opName, input),
     );
     if (!r.ok) {
       throw new Error("message" in r.error ? String(r.error.message) : r.error.kind);
@@ -527,6 +554,7 @@ function makePluginQuery(
   infra: PluginHostInfra,
   invocation: PluginInvocation,
   publicOperation: PublicOperationDef | undefined,
+  adapter?: DatabaseAdapter,
 ): PluginQuery {
   return makeScopedQuery(plugin, infra, invocation, {
     label: "ctx.query",
@@ -534,6 +562,7 @@ function makePluginQuery(
     schemaMap: plugin.definition.schema,
     pool: "public",
     ...(publicOperation ? { publicOperation } : {}),
+    ...(adapter ? { adapter } : {}),
   });
 }
 
@@ -622,27 +651,6 @@ export function makePluginCaptcha(visitorContext?: VisitorContext): PluginCaptch
     requireProof: async () => {
       if (!visitorContext) return true;
       return !visitorContext.captcha.enforced || visitorContext.captcha.proofVerified;
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// PluginEmail (P12 PR1.3) — outbound email via configured transport.
-// Default no-op stub logs to stderr; bootstrap caller swaps in real SMTP /
-// Resend adapter via PluginHostInfra.emailTransport.
-// ---------------------------------------------------------------------------
-
-function makePluginEmail(infra: PluginHostInfra): PluginEmail {
-  return {
-    send: async (args) => {
-      const transport = infra.emailTransport;
-      if (!transport) {
-        console.warn(
-          `[plugin-host] ctx.email.send (no transport configured): to=${args.to} subject=${args.subject}`,
-        );
-        return { messageId: `noop-${Date.now()}` };
-      }
-      return transport.send(args);
     },
   };
 }

@@ -6,21 +6,25 @@ import newsletterPlugin from "../../newsletter/src/index.js";
 import ratingsPlugin from "./index.js";
 
 describe("ratings & newsletter plugin input & deduplication hardening", () => {
-  test("ratings.submit rejects missing or empty pageId and cleans up duplicate visitor rows", async () => {
-    const deletedIds: string[] = [];
-    const updatedIds: string[] = [];
+  test("ratings.submit rejects missing or empty pageId and only ever adds a vote (#1333)", async () => {
+    const inserted: Array<Record<string, unknown>> = [];
     const ctx = {
       visitor: { id: "vis-1" },
       captcha: { requireProof: async () => true },
       query: {
-        list: async () => [{ id: "row-1" }, { id: "row-2" }],
-        update: async (_t: string, id: string) => {
-          updatedIds.push(id);
+        list: async () => {
+          throw new Error("submit must not read: votes are an inbox");
         },
-        delete: async (_t: string, id: string) => {
-          deletedIds.push(id);
+        update: async () => {
+          throw new Error("submit must not update a vote");
         },
-        insert: async () => ({ id: "row-new" }),
+        delete: async () => {
+          throw new Error("submit must not delete a vote");
+        },
+        insert: async (_t: string, row: Record<string, unknown>) => {
+          inserted.push(row);
+          return { id: "row-new" };
+        },
       },
     } as unknown as PluginContextTier1;
 
@@ -29,21 +33,39 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
     );
 
     const res = await ratingsPlugin.operations.submit(ctx, { pageId: "page-1", score: 4 });
-    expect(res).toEqual({ recorded: true, id: "row-1", mode: "updated" });
-    expect(updatedIds).toEqual(["row-1"]);
-    expect(deletedIds).toEqual(["row-2"]);
+    expect(res).toEqual({ recorded: true, id: "row-new" });
+    expect(inserted).toEqual([{ page_id: "page-1", visitor_id: "vis-1", score: 4 }]);
   });
 
-  test("ratings._refresh deduplicates concurrent votes from the same consented visitor", async () => {
+  test("ratings._refresh counts a consented visitor's newest vote and prunes the older ones", async () => {
     const insertedAggs: Array<Record<string, unknown>> = [];
+    const deleted: string[] = [];
     const ctx = {
       query: {
         list: async (table: string) => {
           if (table === "ratings") {
             return [
-              { page_id: "p1", visitor_id: "v1", score: 5 },
-              { page_id: "p1", visitor_id: "v1", score: 5 }, // duplicate concurrent row
-              { page_id: "p1", visitor_id: null, score: 3 }, // anonymous vote (kept)
+              {
+                id: "a",
+                page_id: "p1",
+                visitor_id: "v1",
+                score: 1,
+                created_at: "2026-11-01T10:00:00Z",
+              },
+              {
+                id: "b",
+                page_id: "p1",
+                visitor_id: "v1",
+                score: 5,
+                created_at: "2026-11-01T11:00:00Z",
+              },
+              {
+                id: "c",
+                page_id: "p1",
+                visitor_id: null,
+                score: 3,
+                created_at: "2026-11-01T09:00:00Z",
+              },
             ];
           }
           return [];
@@ -53,28 +75,35 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
           return { id: "agg-1" };
         },
         update: async () => {},
-        delete: async () => {},
+        delete: async (table: string, id: string) => {
+          deleted.push(`${table}:${id}`);
+        },
       },
     } as unknown as PluginContextTier1;
 
-    await ratingsPlugin.operations._refresh(ctx, {});
-    expect(insertedAggs).toEqual([
-      {
-        page_id: "p1",
-        count: 2,
-        sum: 8,
-        average: 400,
-      },
-    ]);
+    const r = await ratingsPlugin.operations._refresh(ctx, {});
+    expect(insertedAggs).toEqual([{ page_id: "p1", count: 2, sum: 8, average: 400 }]);
+    expect(deleted).toEqual(["ratings:a"]);
+    expect(r).toEqual({ refreshed: 1, pruned: 1 });
   });
 
-  test("newsletter.subscribe resends confirmation email for unconfirmed subscriber and confirm/unsubscribe validate token", async () => {
-    const sentEmails: Array<{ to: string; html: string }> = [];
+  test("the recompute runs once per public database (#1333)", () => {
+    const w = ratingsPlugin.workers?.find((x) => x.name === "refresh_aggregates");
+    expect(w?.publicDatabases).toBe("each");
+    expect(ratingsPlugin.tableKinds).toEqual({ ratings: "inbox", rating_aggregates: "published" });
+  });
+
+  test("newsletter.subscribe queues a fresh confirmation for an unconfirmed subscriber; confirm/unsubscribe validate the token", async () => {
+    const queued: Array<{ template: string; to: string; token?: string }> = [];
+    const updates: Array<Record<string, unknown>> = [];
     const ctx = {
       captcha: { requireProof: async () => true },
       email: {
-        send: async (msg: { to: string; html: string }) => {
-          sentEmails.push(msg);
+        send: async () => {
+          throw new Error("a visitor call queues, never sends");
+        },
+        queue: async (m: { template: string; to: string; token?: string }) => {
+          queued.push(m);
         },
       },
       query: {
@@ -83,10 +112,13 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
             id: "sub-1",
             confirmed_at: null,
             confirm_token: "11111111-2222-3333-4444-555555555555",
+            confirm_expires_at: "2000-01-01T00:00:00Z",
           },
         ],
         insert: async () => ({ id: "sub-new" }),
-        update: async () => {},
+        update: async (_t: string, _id: string, patch: Record<string, unknown>) => {
+          updates.push(patch);
+        },
       },
     } as unknown as PluginContextTier1;
 
@@ -94,8 +126,13 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
       email: "reader@example.com",
     });
     expect(subRes).toEqual({ awaitingConfirm: true });
-    expect(sentEmails.length).toBe(1);
-    expect(sentEmails[0]?.html).toContain("11111111-2222-3333-4444-555555555555");
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.template).toBe("confirm_subscription");
+    expect(queued[0]?.to).toBe("reader@example.com");
+    // A new token replaces the old one, with a new expiry.
+    expect(queued[0]?.token).not.toBe("11111111-2222-3333-4444-555555555555");
+    expect(updates[0]?.confirm_token).toBe(queued[0]?.token);
+    expect(typeof updates[0]?.confirm_expires_at).toBe("string");
 
     await expect(newsletterPlugin.operations.confirm(ctx, { token: "" })).rejects.toThrow(
       "confirm: invalid token",
@@ -103,5 +140,34 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
     await expect(newsletterPlugin.operations.unsubscribe(ctx, { token: "short" })).rejects.toThrow(
       "unsubscribe: invalid token",
     );
+    // #1337 — a still valid link is mailed again unchanged, never voided.
+    const validQueued: Array<{ token?: string }> = [];
+    const validCtx = {
+      captcha: { requireProof: async () => true },
+      email: {
+        queue: async (m: { token?: string }) => {
+          validQueued.push(m);
+        },
+      },
+      query: {
+        list: async () => [
+          {
+            id: "sub-2",
+            confirmed_at: null,
+            confirm_token: "99999999-2222-3333-4444-555555555555",
+            confirm_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          },
+        ],
+        update: async () => {
+          throw new Error("a valid link must not be replaced");
+        },
+      },
+    } as unknown as PluginContextTier1;
+    await newsletterPlugin.operations.subscribe(validCtx, { email: "again@example.com" });
+    expect(validQueued[0]?.token).toBe("99999999-2222-3333-4444-555555555555");
+    // #1337 — an expired link is refused.
+    await expect(
+      newsletterPlugin.operations.confirm(ctx, { token: "11111111-2222-3333-4444-555555555555" }),
+    ).rejects.toThrow("confirm: the link has expired");
   });
 });

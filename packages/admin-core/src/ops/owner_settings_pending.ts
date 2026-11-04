@@ -37,6 +37,7 @@ import { lookupPricing } from "../ai/pricing-cache.js";
 import { recordAudit } from "../audit.js";
 import { requiresApproverPermission } from "./_approver-permission.js";
 import { gatewaySettingsInput, getGatewaySettingsOp, setGatewaySettingsOp } from "./gateway.js";
+import { applyMailCapsProposal } from "./mail_caps.js";
 import {
   errorMessage,
   handlerError,
@@ -420,6 +421,9 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
       const applied = await applyOwnerStagingProposal(ctx, tx, row.kind, row.payload);
       if ("error" in applied) return handlerError(op, applied.error);
       nextStep = applied.nextStep;
+    } else if (row.kind === "set_mail_caps") {
+      const problem = await applyMailCapsProposal(ctx, tx, row.payload);
+      if (problem) return handlerError(op, problem);
     } else if (row.kind === "set_ai_budget") {
       const payload = proposeAiBudgetInput.parse(row.payload);
       for (const cell of payload.budgets) {

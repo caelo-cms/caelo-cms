@@ -1,0 +1,41 @@
+# Visitor mail: the public outbox
+
+How a public operation mails a visitor (a double opt-in, a sign-up verification, a password reset) without the public side holding a mail transport (issue #1337, epic #763 M7, E12). The auth core's use of it is #1334.
+
+## The path
+
+1. A plugin declares the mails it may send as `mailTemplates` in its manifest (plugin SDK `mail-templates.ts`): a subject, plain-text paragraphs and at most one link, whose target is one of its public write operations. The plugin also declares `requires: ["email"]` and the `email` capability; the manifest lint refuses templates without them.
+2. The operation calls `ctx.email.queue({ template, to, token })`. On the public side that inserts one row into the public database's `mail_outbox` (cms_public migration 0610): the plugin id, the template name, the normalised recipient and the token. `ctx.email.send` refuses on the public side: there is no transport there. On the admin side `queue` writes to the live outbox and `send` uses the configured transport (an approved newsletter campaign).
+3. The admin drains each public database's outbox on every scheduler tick (`core:mail-outbox`, admin-core `email/outbox.ts`): live, then staging. It renders the template, puts the link on the environment's own host and sends the mail with the transport configured at Settings → Email.
+4. The link opens the gateway's confirmation page, `GET /api/_caelo/mail-link/<slug>/<operation>?token=…` (api-gateway `mail-link.ts`). Opening it changes nothing, because mail scanners open links. A click solves the operation's proof-of-work and calls `POST /api/plugin/<slug>/<operation>` with `{ token, …fields }`, an ordinary visitor call under every gateway rule (JSON only, the Origin rule, input schema, captcha, rate limits). The template may ask for password fields (the password reset).
+
+## The outbox is attacker-writable
+
+The public side is assumed compromised ([public-admin-boundary.md](./public-admin-boundary.md)). So:
+
+- **The visitor role may only queue.** `INSERT` of the payload columns, nothing else: it cannot read the queue back, change or delete a row, or choose `id` or `created_at`. The policy admits a row only for a plugin in `published_plugins`. CHECKs bound every column: the template is a name, the recipient one address (no header injection), the token 16–128 of `[A-Za-z0-9_-]`.
+- **A row chooses nothing a recipient reads.** The drain validates each row (`parseUntrustedRows`) and drops it unless a plugin this admin runs declares the template. Subject, text and link label come from that template as the admin loaded it. The link's origin comes from cms_admin: the site's base URL on live (`site_defaults.site_base_url`), the staging host on staging (`staging_access.staging_host`). The token only becomes the link's query.
+- **Caps come from the admin's ledger.** Per environment, at most N mails per recipient in 24 hours and a site-wide number per hour on live and on staging. The drain counts rows of cms_admin `public_mail_deliveries` (migration 0610; the SHA-256 of the address, no address), which the public side cannot touch. The caps are the Owner's settings (`mail_delivery_caps`, migration 0611, seeded 5 / 200 / 50; Settings → Email): `mail_caps.set` is human-only, the AI proposes through the owner-settings gate (`propose_set_mail_caps` → `owner_settings.execute_proposal`, approver needs `settings.write`). The drain fails loudly if the row is missing; there is no default at read time.
+- **Staging mails only the team.** Mail from the staging database's outbox goes only to addresses of cms_admin users; any other recipient is dropped and counted, never mailed (decision on #1330, moved to #1337).
+- **Rows are short-lived and never lost.** A row older than 60 minutes is deleted unsent. A claimed row is leased to the drain (`claimed_until`, 10 minutes) and deleted when the drain is done with it (`mail_outbox.complete`); a drain that dies mid-way leaves it to the next tick (at least once). A transport failure is recorded on the ledger row and not retried. A linking mail is refused before any cap slot is used when the environment has no link origin.
+- **No address in a log.** The drain logs counts per environment and the transport's status code, never its error text (which may echo the recipient) and never an address (#763 M7).
+- **The link proves the inbox and nothing else.** The confirmation page sends the mail's token as `token`; a template may not declare a field of that name, and the operation must require `token` and every field (manifest lint). The auth plugin's verification link also asks for the password chosen at that sign-up, so the inbox owner cannot be tricked into completing someone else's earlier sign-up of their address.
+
+## No transport, no half-working plugin
+
+- `plugins.activate` and `plugins.approve_capabilities` refuse a plugin that `requires: ["email"]` while the transport is `none`, naming the setup step.
+- `email_config.set` refuses to switch the transport to `none` while such a plugin is active, naming it.
+- If the transport breaks anyway (a revoked API key), queued mail waits and expires, and the `core:mail-outbox` task fails loudly on its scheduler row while mail is waiting.
+
+## The sending domain
+
+A provider delivers for a domain only once its DNS says so (SPF, DKIM, a return-path MX). `email_config.sender_domain` (Settings → Email "Sending domain", the AI's `check_email_domain`) lists the records Resend asks for with their status, and with `verify` asks Resend to check again. Resend is the only implemented transport; its free plan sends 3,000 mails a month and 100 a day, its paid plans start at 50,000 a month (pricing checked 2026-11-04 at resend.com/pricing). The recommendation per provider (E12) is SES on aws and Communication Services on azure, which do not have transports yet.
+
+## How this squares with the change journal
+
+[state-and-changes.md](./state-and-changes.md) allows one mechanism for "what changed" in cms_admin, and no new outboxes there. The mail outbox is not such a mechanism: it lives in each public database (outside the journal, which covers cms_admin only), and it is an inbox of visitor requests, written by the public side and consumed once by the admin. The admin-side `public_mail_deliveries` is a ledger the caps count, exempt from the journal with that reason (`packages/shared/src/change-journal.ts`).
+
+## Tests
+
+- `packages/admin-core/src/__tests__/mail-outbox.integration.test.ts`: the visitor roles' privileges on both public databases, a forged row against template, host and caps, the site-wide cap, expiry, the staging team rule, the transport guard, the sending-domain records.
+- `packages/plugin-sdk/src/mail-templates.test.ts`, `apps/api-gateway/src/mail-link.test.ts`: the manifest checks and the confirmation page.

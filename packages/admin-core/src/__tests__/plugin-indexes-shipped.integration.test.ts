@@ -82,7 +82,12 @@ const READS: ReadonlyArray<readonly [string, Zone, string, PluginQueryFilter]> =
   ["auth", "schema", "auth_config_proposals", { status: "pending", orderBy: "created_at" }],
   ["auth", "schema", "password_reset_tokens", { orderBy: "expires_at", orderDir: "asc" }],
   ["auth", "schema", "password_reset_tokens", { token_hash: "h" }],
-  ["auth", "schema", "public_users", { email: "a@b.c" }],
+  ["auth", "schema", "email_verification_tokens", { token_hash: "h" }],
+  ["auth", "schema", "email_verification_tokens", { public_user_id: U }],
+  ["auth", "schema", "email_verification_tokens", { orderBy: "expires_at", orderDir: "asc" }],
+  ["auth", "schema", "login_throttle", { email_hash: "h" }],
+  ["auth", "schema", "login_throttle", { orderBy: "window_started_at", orderDir: "asc" }],
+  ["auth", "schema", "public_users", { anyOf: { email: ["a@b.c", "A@b.c"] } }],
   ["auth", "schema", "public_users", { id: U }],
   ["auth", "schema", "visitor_sessions", { orderBy: "expires_at", orderDir: "asc" }],
   ["auth", "schema", "visitor_sessions", { token_hash: "h" }],
@@ -202,7 +207,7 @@ const READS: ReadonlyArray<readonly [string, Zone, string, PluginQueryFilter]> =
   ["newsletter", "adminSchema", "send_runs", { status: "approved", orderBy: "created_at" }],
   ["ratings", "schema", "rating_aggregates", { page_id: U, orderBy: "count" }],
   ["ratings", "schema", "rating_aggregates", { orderBy: "count" }],
-  ["ratings", "schema", "ratings", { visitor_id: "v", page_id: U }],
+  ["ratings", "schema", "ratings", { orderBy: "id", orderDir: "asc", afterId: U }],
 ];
 
 /** Short, so `plugin_<slug>_<table>_plugin_scope` stays within 63 bytes like the real slug's. */

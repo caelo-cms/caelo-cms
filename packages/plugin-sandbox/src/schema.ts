@@ -194,12 +194,11 @@ export const VISITOR_TABLE_PRIVILEGES: Readonly<Record<PluginTableKind, readonly
  * all four in every kind: it moderates the inbox and writes the published
  * rows through the plugin's own operations.
  *
- * FIXME(issue #1333): `rating_aggregates` is published, but the ratings
- * worker recomputes it in the admin and writes it straight into this one
- * database with the admin role, instead of publishing it through the
- * projection to every public database. That direct write is the reason
- * the admin role keeps write privileges on published tables here; once
- * #1333 moves the recompute to the projection, published tables drop it.
+ * The admin role writes published tables because the admin is what
+ * publishes them: a plugin's own operations in the admin (a form
+ * definition) and its workers, which run once per public database when
+ * they declare `publicDatabases: "each"` (#1333: the rating averages,
+ * recomputed from each database's own votes).
  *
  * @param fqTable the quoted `schema.table`
  */

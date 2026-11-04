@@ -33,6 +33,7 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   publicOperations: "What visitors can send",
   tableKinds: "Who can reach its tables",
   requires: "Required site setup",
+  mailTemplates: "Mails it sends to visitors",
   visitorProjection: "Private data shown to visitors",
   hasBuildAssets: "Files added to every page",
   hasDeferrals: "Withheld page modules",

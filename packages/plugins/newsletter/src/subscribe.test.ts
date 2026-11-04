@@ -30,7 +30,7 @@ function harness(proofOk: boolean) {
       },
     },
     email: {
-      send: async () => {
+      queue: async () => {
         state.mails += 1;
       },
     },
@@ -61,6 +61,8 @@ describe("newsletter subscribe", () => {
     expect(r).toEqual({ awaitingConfirm: true });
     expect(h.state.captchaCalls).toBe(1);
     expect(h.state.inserts).toBe(1);
+    // #1337 — the double opt-in mail is queued, not sent from the gateway.
+    expect(h.state.mails).toBe(1);
   });
 
   it("fakes success for a filled honeypot without storing or mailing", async () => {
@@ -85,8 +87,9 @@ describe("newsletter subscribe answers alike for every address", () => {
       query: {
         list: async () => (row ? [row] : []),
         insert: async () => ({ id: "33333333-3333-4333-8333-333333333333" }),
+        update: async () => {},
       },
-      email: { send: async () => ({ messageId: "m" }) },
+      email: { queue: async () => {} },
     } as unknown as PluginContextTier1;
     return subscribe(ctx, { email: "known@example.com" });
   }

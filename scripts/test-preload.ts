@@ -118,6 +118,9 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   "email_config",
   "layout_blocks",
   "layouts",
+  // Seed-bearing since 0611 (#1337): the Owner's caps on visitor mail.
+  // Tests that change them restore them (mail-outbox.integration.test.ts).
+  "mail_delivery_caps",
   // Seed-bearing since 0352 (epic #1107): the shipped list types.
   "list_types",
   "permissions",

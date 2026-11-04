@@ -44,6 +44,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { type EmailConfigRow, emailDeliveryProblem } from "../../email/transport.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "../_helpers.js";
 import {
@@ -973,7 +974,7 @@ export const APPROVE_REQUESTED = sql`ARRAY(SELECT jsonb_array_elements_text(
  * whose subscribers never get a confirmation), which §2 forbids; the
  * message names the setup step instead.
  */
-async function unmetHostRequirement(
+export async function unmetHostRequirement(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   slug: string,
   manifest: unknown,
@@ -981,11 +982,25 @@ async function unmetHostRequirement(
   const requires = (manifest as { requires?: unknown } | null)?.requires;
   if (!Array.isArray(requires) || !requires.includes("email")) return null;
   const rows = (await tx.execute(sql`
-    SELECT transport FROM email_config WHERE id = 1
-  `)) as unknown as { transport: string }[];
-  const transport = rows[0]?.transport ?? "none";
-  if (transport !== "none") return null;
-  return `plugin "${slug}" sends email, and no mail transport is set up: configure one first (Settings → Email, or ask the AI — it proposes the setup with propose_set_email_config and verifies it with send_test_email), then activate "${slug}" again`;
+    SELECT transport, from_address, config_json FROM email_config WHERE id = 1
+  `)) as unknown as {
+    transport: EmailConfigRow["transport"];
+    from_address: string;
+    config_json: Record<string, unknown>;
+  }[];
+  const row = rows[0];
+  // #1334 — the same test the mail drain applies: a configured but
+  // unimplemented transport (smtp, ses) or a Resend without a key delivers
+  // nothing, so it counts as none.
+  const problem = row
+    ? emailDeliveryProblem({
+        transport: row.transport,
+        fromAddress: row.from_address,
+        config: row.config_json,
+      })
+    : "no email transport is set up";
+  if (problem === null) return null;
+  return `plugin "${slug}" sends email, and the mail transport cannot deliver (${problem}): set up a working one first (Settings → Email, or ask the AI — it proposes the setup with propose_set_email_config and verifies it with send_test_email), then activate "${slug}" again`;
 }
 
 /**

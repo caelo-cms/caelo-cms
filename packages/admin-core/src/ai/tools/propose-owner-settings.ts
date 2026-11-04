@@ -21,6 +21,7 @@
 
 import { z } from "zod";
 import type { getGatewaySettingsOp } from "../../ops/gateway.js";
+import { proposeMailCapsInput } from "../../ops/mail_caps.js";
 import {
   proposeAiBudgetInput,
   proposeAiPricingInput,
@@ -107,6 +108,18 @@ export const proposeRotateGatewayCookieSecretTool = makeProposeTool({
   summarize: () => "rotate the gateway cookie secret",
 });
 
+export const proposeSetMailCapsTool = makeProposeTool({
+  toolName: "propose_set_mail_caps",
+  opName: "owner_settings.propose_set_mail_caps",
+  pendingQueuePath: PENDING_QUEUE,
+  when:
+    "Propose the caps on visitor mail (sign-up confirmations, password resets, newsletter opt-ins): per recipient per 24h, site-wide per hour on live and on staging.\n" +
+    "USE FOR: the operator names new caps, or mails are refused at a cap they want raised. Read current caps first (`get_mail_caps`).\n" +
+    "CORE RULES: send ONLY the caps that change (rest kept). Never propose a number the operator did not name.",
+  schema: proposeMailCapsInput,
+  summarize: (_input, preview) => String(preview.summary ?? "mail caps change"),
+});
+
 // ─── read companions ─────────────────────────────────────────────────
 
 const noInput = z.object({}).strict();
@@ -169,5 +182,19 @@ export const getGatewaySettingsTool = makeReadTool({
     const { cookieSecretSet: _secret, ...s } = (value as OpValue<typeof getGatewaySettingsOp>)
       .settings;
     return JSON.stringify(s);
+  },
+});
+
+export const getMailCapsTool = makeReadTool({
+  name: "get_mail_caps",
+  description:
+    "Read the caps on visitor mail (per recipient per 24h; site-wide per hour on live and staging). Use before `propose_set_mail_caps`, or when sign-up / newsletter mails are reported missing (a cap may have refused them).",
+  opName: "mail_caps.get",
+  input: noInput,
+  format: (value) => {
+    const c = (
+      value as { caps: { perRecipientPerDay: number; livePerHour: number; stagingPerHour: number } }
+    ).caps;
+    return `per recipient: ${c.perRecipientPerDay} per 24h; live: ${c.livePerHour} per hour; staging: ${c.stagingPerHour} per hour`;
   },
 });
