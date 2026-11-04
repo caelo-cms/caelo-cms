@@ -385,6 +385,15 @@ describe("stagingDomainState", () => {
     });
   });
 
+  it("says why when gcloud cannot list its components", async () => {
+    const { run } = fakeGcloud({ "components list": [fail("component manager crashed")] });
+    const { stagingDomainState } = await import("./admin-domain.js");
+    expect(await stagingDomainState({ ...target, run })).toEqual({
+      status: "unknown",
+      reason: 'check the gcloud "beta" component: component manager crashed',
+    });
+  });
+
   it("never installs the beta component to answer", async () => {
     const { run, calls } = fakeGcloud({ "components list": [ok("")] });
     const { stagingDomainState } = await import("./admin-domain.js");

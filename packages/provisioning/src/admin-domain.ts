@@ -212,7 +212,13 @@ export async function stagingDomainState(opts: {
     "--filter=id=beta",
     "--format=value(id)",
   ]);
-  if (!listed.ok || !listed.stdout.split("\n").some((s) => s.trim() === "beta")) {
+  if (!listed.ok) {
+    return {
+      status: "unknown",
+      reason: `check the gcloud "beta" component: ${listed.stderr.trim() || `exit ${listed.exitCode}`}`,
+    };
+  }
+  if (!listed.stdout.split("\n").some((s) => s.trim() === "beta")) {
     return { status: "unknown", reason: 'the gcloud "beta" component is not installed' };
   }
   const described = await run([
