@@ -200,6 +200,9 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
           region,
           iapAllowlist: installIapAllowlist(meta.ownerEmail),
           imageDigests,
+          // Only a deployed install's state is migrated: its gateway is
+          // declared (stack-gateways.ts).
+          deployGateways: true,
         },
         resolveRemoteMcpIdentity: () =>
           resolveRemoteMcpIdentityForPreview({

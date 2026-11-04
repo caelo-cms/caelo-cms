@@ -92,8 +92,10 @@ export async function checkDeployedRuntimeEnv(opts: {
     const found = await findDeployedService(run, opts, slug);
     // #1330 — the staging gateway is the CLI's (staging-gateway-setup.ts):
     // an install from before it gets it after this `up`, so a missing one
-    // runs no release that could mismatch the env.
-    if (!found.ok && slug === "staging-gateway" && found.missing) continue;
+    // runs no release that could mismatch the env. The data gateway is
+    // missing after a first `up` that withheld it (gateway-bootstrap.ts) and
+    // a run that stopped before the next one; the same holds.
+    if (!found.ok && (slug === "staging-gateway" || slug === "gateway") && found.missing) continue;
     if (!found.ok) return { ok: false, error: found.error };
     const describe = await run([
       "run",

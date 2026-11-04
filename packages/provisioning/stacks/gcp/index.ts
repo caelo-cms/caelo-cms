@@ -64,6 +64,7 @@ import {
   STATIC_CDN_POLICY,
   secretFileVolumesTemplate,
 } from "../../dist/stack-contract.js";
+import { DEPLOY_GATEWAYS_CONFIG, parseDeployGateways } from "../../dist/stack-gateways.js";
 import { GCP_STATIC_RESPONSE_HEADERS } from "../../dist/static-security-headers.js";
 
 const cfg = new pulumi.Config();
@@ -947,18 +948,26 @@ const adminSvc = cloudRunService({
   ],
   mediaVolume: adminMediaVolumeTemplate(adminMediaVolume(project, env)),
 });
-const gatewaySvc = cloudRunService({
-  serviceName: "gateway",
-  minInstances: gatewayMinInstances,
-  maxInstances: gatewayMaxInstances,
-  memory: "512Mi",
-  // Visitor requests only (#1328 moved remote MCP's long streams to the
-  // MCP-Auth-Proxy): Cloud Run's default.
-  timeout: "300s",
-  // public_role on cms_public only: no cms_admin login of any role
-  // (#613, #635, CLAUDE.md §2).
-  contractEnv: [...gatewayEnvContract(envContractInputs), ...poolBudget.env.gateway],
-});
+// The first `up` of a fresh install withholds the gateway and everything
+// that routes to it (stack-gateways.ts): it refuses to start until the
+// migrations, which run after that `up`, have isolated its database login.
+// The URL map goes with it because its `/api/*` rule must exist at creation
+// (the stack ignores `pathRules` after that, gcp-url-map.ts).
+const deployGateways = parseDeployGateways(cfg.get(DEPLOY_GATEWAYS_CONFIG));
+const gatewaySvc = deployGateways
+  ? cloudRunService({
+      serviceName: "gateway",
+      minInstances: gatewayMinInstances,
+      maxInstances: gatewayMaxInstances,
+      memory: "512Mi",
+      // Visitor requests only (#1328 moved remote MCP's long streams to the
+      // MCP-Auth-Proxy): Cloud Run's default.
+      timeout: "300s",
+      // public_role on cms_public only: no cms_admin login of any role
+      // (#613, #635, CLAUDE.md §2).
+      contractEnv: [...gatewayEnvContract(envContractInputs), ...poolBudget.env.gateway],
+    })
+  : null;
 
 // =========================================================================
 // Tier 1 + Tier 2 + Tier 3 LB — single HTTPS LB serves three backends
@@ -1059,26 +1068,28 @@ const staticBackendBucket = new gcp.compute.BackendBucket(
 );
 
 // Tier 3 backend — gateway Cloud Run via serverless NEG
-const gatewayNeg = new gcp.compute.RegionNetworkEndpointGroup(
-  `${namePrefix}-gateway-neg`,
-  {
-    region,
-    networkEndpointType: "SERVERLESS",
-    cloudRun: { service: gatewaySvc.name },
-  },
-  opts,
-);
-
-const gatewayBackendService = new gcp.compute.BackendService(
-  `${namePrefix}-gateway-backend`,
-  {
-    protocol: "HTTPS",
-    backends: [{ group: gatewayNeg.id }],
-    loadBalancingScheme: "EXTERNAL_MANAGED",
-    securityPolicy: wafPolicy.id,
-  },
-  opts,
-);
+function gatewayBackend(service: gcp.cloudrunv2.Service): gcp.compute.BackendService {
+  const gatewayNeg = new gcp.compute.RegionNetworkEndpointGroup(
+    `${namePrefix}-gateway-neg`,
+    {
+      region,
+      networkEndpointType: "SERVERLESS",
+      cloudRun: { service: service.name },
+    },
+    opts,
+  );
+  return new gcp.compute.BackendService(
+    `${namePrefix}-gateway-backend`,
+    {
+      protocol: "HTTPS",
+      backends: [{ group: gatewayNeg.id }],
+      loadBalancingScheme: "EXTERNAL_MANAGED",
+      securityPolicy: wafPolicy.id,
+    },
+    opts,
+  );
+}
+const gatewayBackendService = gatewaySvc ? gatewayBackend(gatewaySvc) : null;
 
 // Tier 2 backend — admin Cloud Run via serverless NEG, IAP-gated.
 const adminNeg = new gcp.compute.RegionNetworkEndpointGroup(
@@ -1258,18 +1269,22 @@ new gcp.iap.WebBackendServiceIamMember(
 // #587 — the public path matcher also carries the redirects table as
 // `urlRedirect` rules, written by the admin on every Confirm-publish; the
 // stack ignores that field after creation (src/gcp-url-map.ts).
-const urlMap = createSiteUrlMap(
-  `${namePrefix}-url-map`,
-  {
-    domain,
-    adminDomain,
-    stagingHost,
-    staticBackend: staticBackendBucket.id,
-    gatewayBackend: gatewayBackendService.id,
-    adminBackend: adminBackendService.id,
-  },
-  opts,
-);
+// Withheld with the gateway (see `deployGateways`), and the HTTPS proxy and
+// forwarding rule below with it.
+function siteUrlMap(gatewayBackendId: pulumi.Input<string>): gcp.compute.URLMap {
+  return createSiteUrlMap(
+    `${namePrefix}-url-map`,
+    {
+      domain,
+      adminDomain,
+      stagingHost,
+      staticBackend: staticBackendBucket.id,
+      gatewayBackend: gatewayBackendId,
+      adminBackend: adminBackendService.id,
+    },
+    opts,
+  );
+}
 
 // #587 — the admin's run SA may rewrite the URL map's redirect rules through
 // a project custom role. The CLI owns that role, not this stack: the
@@ -1302,22 +1317,25 @@ const adminCert = new gcp.compute.ManagedSslCertificate(
 // (staging-gateway-setup.ts, `caelo-<env>-staging-cert`), attached next to
 // these two after the first `up` and by every converge, so the proxy's
 // certificate list is left to it after creation.
-const httpsProxy = new gcp.compute.TargetHttpsProxy(
-  `${namePrefix}-https-proxy`,
-  { urlMap: urlMap.id, sslCertificates: [adminCert.id, managedCert.id] },
-  { ...opts, ignoreChanges: ["sslCertificates"] },
-);
+if (gatewayBackendService) {
+  const urlMap = siteUrlMap(gatewayBackendService.id);
+  const httpsProxy = new gcp.compute.TargetHttpsProxy(
+    `${namePrefix}-https-proxy`,
+    { urlMap: urlMap.id, sslCertificates: [adminCert.id, managedCert.id] },
+    { ...opts, ignoreChanges: ["sslCertificates"] },
+  );
 
-new gcp.compute.GlobalForwardingRule(
-  `${namePrefix}-https-fwd`,
-  {
-    target: httpsProxy.id,
-    portRange: "443",
-    ipAddress: lbIp.address,
-    loadBalancingScheme: "EXTERNAL_MANAGED",
-  },
-  opts,
-);
+  new gcp.compute.GlobalForwardingRule(
+    `${namePrefix}-https-fwd`,
+    {
+      target: httpsProxy.id,
+      portRange: "443",
+      ipAddress: lbIp.address,
+      loadBalancingScheme: "EXTERNAL_MANAGED",
+    },
+    opts,
+  );
+}
 
 // HTTP → HTTPS redirect: a tiny URLMap with no backend, just a 301
 // redirect rule. Same LB IP, port 80, returns to the request's host
@@ -1371,8 +1389,11 @@ const loggingSink = new gcp.logging.ProjectSink(
   {
     name: `${namePrefix}-edge-log-sink`,
     destination: pulumi.interpolate`bigquery.googleapis.com/projects/${project}/datasets/${edgeLogDataset.datasetId}`,
-    // Capture all gateway request logs + admin warnings/errors.
-    filter: pulumi.interpolate`(resource.type="cloud_run_revision" AND resource.labels.service_name="${gatewaySvc.name}") OR (resource.type="cloud_run_revision" AND resource.labels.service_name="${adminSvc.name}" AND severity>=WARNING)`,
+    // Capture all gateway request logs + admin warnings/errors (the
+    // gateway's once it is declared).
+    filter: gatewaySvc
+      ? pulumi.interpolate`(resource.type="cloud_run_revision" AND resource.labels.service_name="${gatewaySvc.name}") OR (resource.type="cloud_run_revision" AND resource.labels.service_name="${adminSvc.name}" AND severity>=WARNING)`
+      : pulumi.interpolate`resource.type="cloud_run_revision" AND resource.labels.service_name="${adminSvc.name}" AND severity>=WARNING`,
     uniqueWriterIdentity: true,
   },
   opts,
@@ -1438,7 +1459,7 @@ export const environmentOut = out.environment;
 export const cloudSqlConnectionNameOut = sqlInstance.connectionName;
 export const cloudSqlPrivateIpOut = sqlInstance.privateIpAddress;
 export const adminCloudRunUrlOut = adminSvc.uri;
-export const gatewayCloudRunUrlOut = gatewaySvc.uri;
+export const gatewayCloudRunUrlOut = gatewaySvc?.uri;
 export const lbIpOut = lbIp.address;
 export const adminDomainOut = adminDomain;
 export const bootstrapTokenExpiresAtOut = tokenInfo.expiresAt;

@@ -51,6 +51,11 @@ import { formatDnsRecordGroups, groupDnsRecords, type InstallDnsRecord } from ".
 import { pickDnsAdapter } from "../dns/index.js";
 import type { DnsRecord } from "../dns/types.js";
 import {
+  deployOntoMigratedDatabase,
+  type GatewayStart,
+  readGatewayStart,
+} from "../gateway-bootstrap.js";
+import {
   activeAccount,
   type BillingAccount,
   checkGcloudAuth,
@@ -417,7 +422,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // the live services, so this `up` keeps what they carry. A fresh install
   // has no services yet: the identity is resolved after the first `up` and
   // applied by a second one below.
-  const identityBefore = deployed
+  let identityBefore = deployed
     ? await stepResolveRemoteMcpIdentity(projectId, region, provider, domain, "before")
     : null;
 
@@ -426,7 +431,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // (caelo-website/caelo-cms-images by default). Cloud Run reads them
   // directly with no operator-side IAM binding — anonymous public pull.
   phase("Provisioning the infrastructure (pulumi up, 8-15 min)");
-  const upOpts: PulumiUpOpts = {
+  const upOpts: Omit<PulumiUpOpts, "deployGateways"> = {
     projectId,
     domain,
     // #650 — the wizard recorded it (or the install predates the setting).
@@ -449,8 +454,43 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     provider,
     nonInteractive: opts.nonInteractive,
   };
-  await stepPulumiUp(installId, { ...upOpts, remoteMcpIdentity: identityBefore?.identity ?? null });
-  recordImageDigests(installId, imageDigests);
+  // An install whose gateway has never started (a fresh one, or one whose
+  // first run failed right here) is migrated between an `up` without the
+  // gateway and one with it: the gateway refuses to boot until the
+  // migrations isolated its database login (gateway-bootstrap.ts).
+  const gatewayStart = await stepReadGatewayStart(projectId, region, provider);
+  const { databasePrepared } = await deployOntoMigratedDatabase(gatewayStart, {
+    up: async (deployGateways) => {
+      if (!deployGateways) {
+        log.info(
+          "First pass without the public gateway: it can only start once the database migrations have run.",
+        );
+      }
+      await stepPulumiUp(installId, {
+        ...upOpts,
+        deployGateways,
+        remoteMcpIdentity: identityBefore?.identity ?? null,
+      });
+      // Recorded after every pass: a run stopped between them keeps this
+      // release on the next run, which then finds no gateway to read it from.
+      recordImageDigests(installId, imageDigests);
+    },
+    prepareDatabase: async () => {
+      await stepPublicRoleIsolation(projectId);
+      phase("Applying database migrations");
+      await stepMigrations(projectId, region);
+      // gcp-firebase: the admin and the MCP-Auth-Proxy exist now, so the
+      // gateway's `up` declares their identity instead of a third `up`. On
+      // gcp the identity lookup needs the gateway service itself; the read
+      // after that `up` (10.05) covers it.
+      if (provider === "gcp-firebase") {
+        identityBefore =
+          (await stepResolveRemoteMcpIdentity(projectId, region, provider, domain, "before")) ??
+          identityBefore;
+      }
+      phase("Provisioning the public gateway (pulumi up)");
+    },
+  });
 
   // === 10.05. The identity once the services exist (#1082) ===
   // Read again after every `up`: on a fresh install (or one whose identity
@@ -463,7 +503,11 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     log.info(
       "Applying the remote-MCP URLs and IAP audience through the stack (second pulumi up)...",
     );
-    await stepPulumiUp(installId, { ...upOpts, remoteMcpIdentity: identity.identity });
+    await stepPulumiUp(installId, {
+      ...upOpts,
+      deployGateways: true,
+      remoteMcpIdentity: identity.identity,
+    });
   }
 
   // === 10.1. Remove the default network's pre-populated firewall rules ===
@@ -506,21 +550,19 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // The stack creates public_role through the Cloud SQL Admin API, which
   // makes it a member of cloudsqlsuperuser. Revoked before migrations: the
   // migration job's role audit verifies it and fails the install otherwise.
-  await stepPublicRoleIsolation(projectId);
+  // Already done before the gateway's `up` when it had never started.
+  if (!databasePrepared) await stepPublicRoleIsolation(projectId);
 
   // === 10.95. The admin may write redirects into the URL map (#587) ===
   // Confirm-publish writes the redirects table into the load balancer's URL
   // map; the custom role is the CLI's, not the stack's (url-map-redirects-access.ts).
   if (provider === "gcp") await stepUrlMapRedirectsAccess(projectId);
 
-  phase("Applying database migrations");
-  {
-    const { runMigrationsViaCloudRunJob } = await import("../migration-runner.js");
-    const r = await runMigrationsViaCloudRunJob({ projectId, region });
-    if (!r.ok) {
-      cancel(`Migrations failed: ${r.error}. Inspect the Cloud Run Job logs and re-run.`);
-      process.exit(1);
-    }
+  // A gateway that had never started got the migrations before its `up`,
+  // with the admin image this run deploys; the `up` since rolled nothing.
+  if (!databasePrepared) {
+    phase("Applying database migrations");
+    await stepMigrations(projectId, region);
   }
 
   phase("Finishing: operator access, welcome page");
@@ -1040,6 +1082,41 @@ async function stepGrantBaseRoles(
  * (cloudsqlsuperuser, #633). Idempotent, so it runs on every wizard pass;
  * the migration job's role audit verifies the result.
  */
+/**
+ * Both migration targets through the one-shot Cloud Run job, with the admin
+ * service's image (migration-runner.ts). Idempotent; aborts the run on a
+ * failure rather than continuing on a half-migrated database.
+ */
+async function stepMigrations(projectId: string, region: string): Promise<void> {
+  const { runMigrationsViaCloudRunJob } = await import("../migration-runner.js");
+  const r = await runMigrationsViaCloudRunJob({ projectId, region });
+  if (!r.ok) {
+    cancel(`Migrations failed: ${r.error}. Inspect the Cloud Run Job logs and re-run.`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Whether the install's data gateway has ever started (gateway-bootstrap.ts),
+ * which decides whether the migrations run before its `pulumi up`. Aborts on
+ * a failed read: guessing "started" would repeat the failed deploy, guessing
+ * "never started" would withhold a gateway that serves visitors.
+ */
+async function stepReadGatewayStart(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+): Promise<GatewayStart> {
+  const r = await readGatewayStart({ provider, projectId, region }, gcloud);
+  if (!r.ok) {
+    cancel(
+      `Could not tell whether the public gateway is deployed: ${r.error}. Re-run the installer.`,
+    );
+    process.exit(1);
+  }
+  return r.start;
+}
+
 async function stepPublicRoleIsolation(projectId: string): Promise<void> {
   const s = spinner();
   s.start("Removing the gateway logins from the Cloud SQL superuser group...");
@@ -1780,6 +1857,8 @@ interface PulumiUpOpts {
   nonInteractive: boolean;
   /** #1082 — the remote-MCP identity the stack declares (gcp-pulumi.ts PulumiUpInputs). */
   remoteMcpIdentity?: RemoteMcpIdentity | null;
+  /** Whether the stack declares the public gateway (gateway-bootstrap.ts). */
+  deployGateways: boolean;
 }
 
 /**
