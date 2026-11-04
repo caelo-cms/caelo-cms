@@ -17,6 +17,7 @@ import {
   GATEWAY_ARMOR_RULES,
   gatewayArmorRuleArgs,
   isGatewayArmorRule,
+  isLegacyGeneralBan,
   type LiveGatewayArmorRule,
 } from "./gateway-edge.js";
 import type { GcloudResult } from "./gcloud.js";
@@ -214,6 +215,31 @@ describe("ensureGatewayArmorRules (the converge, contract 21)", () => {
     const r = await ensureGatewayArmorRules(target, { run });
     expect(r).toEqual({ ok: true, policy: "caelo-production-waf-1a2b3c", done: [] });
     expect(calls.some((c) => c.includes("delete"))).toBe(false);
+  });
+
+  it("deletes the old catch-all only when every option is the old stack's (#1429 review)", () => {
+    const old: LiveGatewayArmorRule = {
+      priority: 1000,
+      action: "rate_based_ban",
+      match: { versionedExpr: "SRC_IPS_V1", config: { srcIpRanges: ["*"] } } as never,
+      rateLimitOptions: {
+        rateLimitThreshold: { count: 100, intervalSec: 60 },
+        conformAction: "allow",
+        exceedAction: "deny(429)",
+        enforceOnKey: "IP",
+        banDurationSec: 600,
+      },
+    };
+    expect(isLegacyGeneralBan(old)).toBe(true);
+    const o = old.rateLimitOptions ?? {};
+    for (const customised of [
+      { ...old, rateLimitOptions: { ...o, enforceOnKey: "ALL" } },
+      { ...old, rateLimitOptions: { ...o, exceedAction: "deny(403)" } },
+      { ...old, rateLimitOptions: { ...o, banThreshold: { count: 500, intervalSec: 600 } } },
+      { ...old, rateLimitOptions: { ...o, banDurationSec: 3600 } },
+    ]) {
+      expect(isLegacyGeneralBan(customised as LiveGatewayArmorRule)).toBe(false);
+    }
   });
 
   it("stops at the first failed write and says which rule", async () => {

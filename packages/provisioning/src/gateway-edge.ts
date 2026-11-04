@@ -223,6 +223,15 @@ export function isGatewayArmorRule(live: LiveGatewayArmorRule, spec: GatewayArmo
   );
 }
 
+/** The rate-limit options the pre-#1339 stack set on the catch-all ban. */
+const LEGACY_RATE_OPTION_KEYS = new Set([
+  "rateLimitThreshold",
+  "conformAction",
+  "exceedAction",
+  "enforceOnKey",
+  "banDurationSec",
+]);
+
 /** Whether a live rule is exactly {@link LEGACY_GENERAL_BAN}; any other rule at its priority is the Owner's. */
 export function isLegacyGeneralBan(live: LiveGatewayArmorRule): boolean {
   const l = LEGACY_GENERAL_BAN;
@@ -236,6 +245,12 @@ export function isLegacyGeneralBan(live: LiveGatewayArmorRule): boolean {
     JSON.stringify(config?.srcIpRanges ?? null) === JSON.stringify(["*"]) &&
     o?.rateLimitThreshold?.count === l.count &&
     o?.rateLimitThreshold?.intervalSec === l.intervalSec &&
-    o?.banDurationSec === l.banDurationSec
+    o?.banDurationSec === l.banDurationSec &&
+    o?.conformAction === "allow" &&
+    o?.exceedAction === "deny(429)" &&
+    o?.enforceOnKey === "IP" &&
+    // Every other option the old stack never set (a ban threshold, an
+    // enforce-on-key config, a redirect, …) makes it an Owner's rule.
+    Object.keys(o ?? {}).every((k) => LEGACY_RATE_OPTION_KEYS.has(k))
   );
 }
