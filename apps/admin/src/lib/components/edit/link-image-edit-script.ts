@@ -55,6 +55,24 @@ export const LINK_IMAGE_EDIT_SCRIPT = `
     return { wrap: wrap, el: el };
   }
 
+  // The open link editor's suggestion list, the pending query's timer, and
+  // the number of the newest question: an answer to an older one is late.
+  var pathList = null;
+  var pathQueryTimer = null;
+  var pathQuerySeq = 0;
+
+  /** Fills the open link editor's suggestions from \`pagePaths\` (the editor's answer). */
+  function renderPagePaths() {
+    if (!pathList) return;
+    pathList.textContent = "";
+    pagePaths.forEach(function (p) {
+      var o = document.createElement("option");
+      o.value = p.path;
+      o.textContent = p.title;
+      pathList.appendChild(o);
+    });
+  }
+
   function openLinkEditor(link, x, y) {
     var u = ensureUi();
     if (!u) return;
@@ -80,13 +98,28 @@ export const LINK_IMAGE_EDIT_SCRIPT = `
     if (hrefInput) {
       var list = document.createElement("datalist");
       list.id = listId;
-      pagePaths.forEach(function (p) {
-        var o = document.createElement("option");
-        o.value = p.path;
-        o.textContent = p.title;
-        list.appendChild(o);
-      });
+      pathList = list;
+      pagePaths = [];
       u.panel.appendChild(list);
+      // #1269 — the suggestions are the editor's page search for what the
+      // field holds, asked again whenever typing rests; a full URL to
+      // another site asks nothing.
+      var askPaths = function () {
+        var v = hrefInput.el.value.trim();
+        pathQuerySeq++;
+        if (v === "" || /^[a-z][a-z0-9+.-]*:/i.test(v)) {
+          // Nothing to look up: no suggestions, and a pending answer is late.
+          pagePaths = [];
+          renderPagePaths();
+          return;
+        }
+        postToEditor({ kind: "caelo:page-paths-query", query: v.slice(0, 200), seq: pathQuerySeq });
+      };
+      hrefInput.el.addEventListener("input", function () {
+        clearTimeout(pathQueryTimer);
+        pathQueryTimer = setTimeout(askPaths, 150);
+      });
+      askPaths();
     }
     if (textInput) u.panel.appendChild(textInput.wrap);
     if (hrefInput) u.panel.appendChild(hrefInput.wrap);

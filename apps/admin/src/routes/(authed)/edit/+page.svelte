@@ -24,12 +24,13 @@
   import { page } from "$app/state";
   import { ArrowLeft, Ellipsis, GitCompareArrows } from "lucide-svelte";
   import CaeloMascot from "#lib/components/CaeloMascot.svelte";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { editorRefreshUrl, unpinChatParam } from "#lib/components/edit/chat-pin.js";
   import CrossChatBanner from "#lib/components/edit/CrossChatBanner.svelte";
   import PluginApprovalStrip from "#lib/components/PluginApprovalStrip.svelte";
   import DiffPanel from "#lib/components/edit/DiffPanel.svelte";
   import PageSearch from "#lib/components/edit/PageSearch.svelte";
+  import { searchPagesUntilFound } from "#lib/components/edit/page-search.js";
   import PageSeoInfo from "#lib/components/edit/PageSeoInfo.svelte";
   import PluginPreview from "#lib/components/edit/PluginPreview.svelte";
   import PluginToolbarSlots from "#lib/components/edit/PluginToolbarSlots.svelte";
@@ -81,8 +82,9 @@
       ? V
       : never
     : never;
-  const pages = new StreamedValue<Settled<"pages">>();
-  const recentPageIds = new StreamedValue<Settled<"recentPageIds">>();
+  const firstPages = new StreamedValue<Settled<"firstPages">>();
+  const recentPages = new StreamedValue<Settled<"recentPages">>();
+  const rootPage = new StreamedValue<Settled<"rootPage">>();
   const modules = new StreamedValue<Settled<"modules">>();
   const branchEditedModuleIds = new StreamedValue<Settled<"branchEditedModuleIds">>();
   const branchChangeCount = new StreamedValue<Settled<"branchChangeCount">>();
@@ -96,8 +98,9 @@
   const chatKey = $derived(data.activeChat.id);
   $effect(() => {
     const chat = data.activeChat.id;
-    pages.follow(data.pages, chat);
-    recentPageIds.follow(data.recentPageIds, chat);
+    firstPages.follow(data.firstPages, chat);
+    recentPages.follow(data.recentPages, chat);
+    rootPage.follow(data.rootPage, chat);
     modules.follow(data.modules, chat);
     branchEditedModuleIds.follow(data.branchEditedModuleIds, chat);
     branchChangeCount.follow(data.branchChangeCount, chat);
@@ -107,8 +110,19 @@
     live.follow(data.live, data.activePageId);
     pageSeo.follow(data.pageSeo, data.activePageId);
   });
-  /** The page list once loaded; empty before (searches find nothing yet). */
-  const pageList = $derived(pages.current ?? []);
+  /**
+   * #1269 — the pages the editor knows without asking: the site's first
+   * pages, the recently edited ones and the last one picked from a search.
+   * Never the whole site; the search box asks the server for the rest.
+   */
+  let pickedPage = $state<NonNullable<typeof data.activePage> | null>(null);
+  const knownPages = $derived(
+    new Map(
+      [...(firstPages.current?.pages ?? []), ...(recentPages.current ?? []), ...(pickedPage ? [pickedPage] : [])].map(
+        (p) => [p.id, p] as const,
+      ),
+    ),
+  );
   /** What the Staging and Publish live controls need, as far as it failed. */
   const publishErrors = $derived(
     [
@@ -129,9 +143,17 @@
     if (branchChangeCount.pendingFor(chatKey) || !changes || !deploy || !liveLinks) return null;
     return { changes, deploy, liveLinks };
   });
+  /** #1269 — why the preview's link editor got no suggestions, or null. */
+  let linkSuggestionsError = $state<string | null>(null);
   /** Streamed parts without a spot of their own: their failures show in one strip. */
   const streamErrors = $derived(
-    [pages.error, modules.error, branchEditedModuleIds.errorFor(chatKey)].filter(
+    [
+      firstPages.error,
+      rootPage.error,
+      modules.error,
+      branchEditedModuleIds.errorFor(chatKey),
+      linkSuggestionsError,
+    ].filter(
       (e): e is string => e !== null,
     ),
   );
@@ -202,8 +224,9 @@
   });
   $effect.pre(() => {
     const found =
-      pageList.find((p) => p.id === activePageId) ??
-      (data.activePage?.id === activePageId ? data.activePage : null);
+      (data.activePage?.id === activePageId ? data.activePage : null) ??
+      knownPages.get(activePageId) ??
+      null;
     if (found) activePage = found;
     else if (!activePageId) activePage = null;
   });
@@ -232,16 +255,6 @@
       : "",
   );
   let iframe = $state<HTMLIFrameElement | null>(null);
-  // Counts `caelo:ready` from the preview: each document load asks for the
-  // link-target suggestions again (#918).
-  let previewReady = $state(0);
-  $effect(() => {
-    if (previewReady === 0 || pages.current === null) return;
-    postToPreview(iframe?.contentWindow, {
-      kind: "caelo:page-paths",
-      pages: pageList.map((p) => ({ path: p.currentPath, title: p.title })),
-    });
-  });
   // The iframe's src is set here, not bound in the markup: the editor also
   // navigates the iframe itself (`caelo:navigate`, #946), and once the
   // preview reports the page it landed on, `previewSrc` follows to the same
@@ -355,9 +368,8 @@
           renderedSave = awaitingRender;
           awaitingRender = null;
         }
-        // Link-target suggestions for the preview's link editor (#918),
-        // posted by the effect below once the page list is in too.
-        previewReady++;
+      } else if (msg.kind === "caelo:page-paths-query") {
+        void answerPagePaths(msg.query, msg.seq);
       } else if (msg.kind === "caelo:cookies") {
         // The sandboxed preview cannot store cookies; the editor keeps
         // them so a consent decision survives the next load.
@@ -386,47 +398,23 @@
     return () => { window.removeEventListener("message", handler); document.removeEventListener("click", openLink, true); };
   });
 
-  // v0.9.3 — auto-switch the iframe when the AI creates a new home page
-  // mid-chat. The operator-already-on-something path uses a diff
-  // against the previously-seen ids so we only switch when a HOME row
-  // newly appears (build_page with slug=home),
-  // never on every load. Operators who deliberately picked a non-home
-  // page keep that selection unless their pick was itself a previous
-  // home — that's the build-from-scratch flow taking over.
-  //
-  // v0.9.5 — `initialized` flag instead of `seenPageIds.size === 0` as
-  // the init gate. Without it, an empty `data.pages` on mount (fresh
-  // install before any AI activity) loops the effect forever: each run
-  // writes a NEW empty Set to seenPageIds, the size === 0 invariant
-  // stays true, Svelte triggers another run, infinite update depth.
-  let initialized = $state(false);
-  let seenPageIds = $state(new Set<string>());
+  // v0.9.3 / #1269 — follow the home page the AI creates (or renames a
+  // page to) mid-chat: the load streams the page composed at "/" in the
+  // chat's view. The first answer opens it in an editor that shows no page
+  // yet (a fresh install); a later change is followed when the editor
+  // shows no page or the previous home (the build-from-scratch flow),
+  // never over a page the operator picked.
+  let seenRoot: { pageId: string | null } | undefined;
   $effect(() => {
-    if (pages.current === null) return;
-    const currentIds = new Set(pageList.map((p) => p.id));
-    if (!initialized) {
-      initialized = true;
-      // Fresh-install "no active page yet" — pick the home (or first)
-      // so the iframe gets a src instead of staying blank.
-      if (activePageId === "" && pageList.length > 0) {
-        const home = pageList.find((p) => p.currentPath === "/");
-        const pick = home ?? pageList[0];
-        if (pick) activePageId = pick.id;
-      }
-      seenPageIds = currentIds;
-      return;
+    const root = rootPage.currentFor(chatKey);
+    if (root === null) return;
+    const before = untrack(() => seenRoot);
+    seenRoot = root;
+    if (root.pageId === null || root.pageId === before?.pageId) return;
+    const shown = untrack(() => activePageId);
+    if (shown === "" || (before !== undefined && shown === before.pageId)) {
+      activePageId = root.pageId;
     }
-    const newIds = [...currentIds].filter((id) => !seenPageIds.has(id));
-    if (newIds.length === 0) return;
-    const newPages = pageList.filter((p) => newIds.includes(p.id));
-    const newHome = newPages.find((p) => p.currentPath === "/");
-    if (newHome) {
-      const cur = pageList.find((p) => p.id === activePageId);
-      if (!cur || cur.currentPath === "/" || activePageId === "") {
-        activePageId = newHome.id;
-      }
-    }
-    seenPageIds = currentIds;
   });
 
   // v0.3.22 — debounce rapid iframe reloads. Bulk tool variants
@@ -474,6 +462,33 @@
     if (!r.changed) return refreshAll();
     if (r.pinned) pinnedChatId = data.activeChat.id;
     return goto(r.url.toString(), { replace: true, reset: false, refreshAll: true });
+  }
+
+  /**
+   * #1269 — the link editor in the preview asks for link targets: answered
+   * with the page search's matches in this chat's view. A newer question
+   * aborts the older one; a failed search says so in the error strip and
+   * leaves the suggestions empty.
+   */
+  let pagePathsQuery: AbortController | null = null;
+  async function answerPagePaths(query: string, seq: number): Promise<void> {
+    pagePathsQuery?.abort();
+    const controller = new AbortController();
+    pagePathsQuery = controller;
+    try {
+      // Continued past a call that found nothing yet (its candidate cap).
+      const r = await searchPagesUntilFound(query, data.activeChat.chatBranchId, controller.signal);
+      linkSuggestionsError = null;
+      postToPreview(iframe?.contentWindow, {
+        kind: "caelo:page-paths",
+        pages: r.pages.map((p) => ({ path: p.currentPath, title: p.title })),
+        seq,
+      });
+    } catch (e) {
+      if (controller.signal.aborted) return;
+      linkSuggestionsError = `Link suggestions: ${e instanceof Error ? e.message : String(e)}`;
+      postToPreview(iframe?.contentWindow, { kind: "caelo:page-paths", pages: [], seq });
+    }
   }
 
   /** The editor's URL for a page switch: without the chat this editor pinned. */
@@ -572,9 +587,10 @@
     const targetPageId =
       args && typeof args["pageId"] === "string" ? (args["pageId"] as string) : null;
     if (targetPageId && targetPageId !== activePageId) {
-      if (pages.current === null || pageList.some((p) => p.id === targetPageId)) {
-        activePageId = targetPageId;
-      }
+      // #1269 — the refresh below loads `?page=<target>` (editorRefreshUrl),
+      // which resolves the page in the chat's view or opens another when it
+      // is gone (pageToFollow).
+      activePageId = targetPageId;
     }
 
     // v0.3.22 — refresh server-loaded `data.pages` etc. so newly-
@@ -652,7 +668,7 @@
     {#if pluginPreviewUrl}
       <code class="rounded bg-muted px-1.5 py-0.5 text-xs" data-testid="edit-url">Preview</code>
       <button type="button" class="underline" onclick={closePluginPreview}>Website preview</button>
-    {:else if activePage || pageList.length > 0}
+    {:else if activePage || knownPages.size > 0}
       <!-- The page address: what the browser's address bar is to a site.
            The SEO info sits where a browser shows the site info. -->
       <div
@@ -678,13 +694,16 @@
         >{urlText}</code>
         <div class="flex min-w-0 flex-1" data-testid="edit-page-picker">
           <PageSearch
-            pages={pageList}
-            loading={pages.loading}
-            recent={recentPageIds.error
-              ? { error: recentPageIds.error }
-              : { pageIds: recentPageIds.current ?? [] }}
+            first={firstPages.current}
+            recent={recentPages.error
+              ? { error: recentPages.error }
+              : { pages: recentPages.current ?? [] }}
+            branchId={data.activeChat.chatBranchId}
             currentPageId={activePageId}
-            onPick={onPageChange}
+            onPick={(picked) => {
+              pickedPage = picked;
+              onPageChange(picked.id);
+            }}
           />
         </div>
         <!-- v0.9.9 — per-page status toggle. Drafts are LIVE-EDIT ONLY
@@ -736,7 +755,6 @@
           <PluginToolbarSlots
             {slots}
             path={urlText}
-            pageIds={new Set(pageList.map((p) => p.id))}
             onOpenPage={onPageChange}
           />
         {/if}
@@ -895,7 +913,7 @@
         <div class="space-y-2 text-center">
           <p class="text-lg font-semibold">Chat and build your page</p>
           <p class="text-sm text-muted-foreground">
-            {!activePage && pageList.length === 0
+            {!activePage && knownPages.size === 0
               ? "Describe what you want in the chat — your page appears right here."
               : "Tell the chat which page to open — or pick one in the top bar."}
           </p>

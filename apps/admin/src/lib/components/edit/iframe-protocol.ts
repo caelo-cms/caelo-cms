@@ -28,8 +28,10 @@
  *   - iframe → parent: `caelo:cookies` — the preview's cookie jar after
  *     the page changed a cookie, kept for the next load (a consent
  *     decision survives a reload; `preview-cookie-jar.ts`).
- *   - parent → iframe: `caelo:page-paths` (#918) — the site's pages, for
- *     link-target suggestions.
+ *   - iframe → parent: `caelo:page-paths-query` (#1269) — the link editor
+ *     asks for link targets matching what its field holds.
+ *   - parent → iframe: `caelo:page-paths` (#918) — the answer: the pages
+ *     the editor's page search found, for link-target suggestions.
  *   - parent → iframe: `caelo:reload` to refetch the iframe's source
  *     after a tool result lands a new branch snapshot.
  *
@@ -172,6 +174,18 @@ const cookiesSchema = z.object({
   cookies: previewCookieJarSchema,
 });
 
+/**
+ * #1269 — the link editor asks for link targets: the editor answers with
+ * `caelo:page-paths`, the page search's matches for `query` in the chat's
+ * view (it never holds the site's every page).
+ */
+const pagePathsQuerySchema = z.object({
+  kind: z.literal("caelo:page-paths-query"),
+  query: z.string().min(1).max(200),
+  /** The question's number; the answer carries it, and an older one's answer is dropped. */
+  seq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+});
+
 /** Every message the preview may send the editor. Unknown keys are stripped. */
 export const iframeToParentSchema = z.discriminatedUnion("kind", [
   readySchema,
@@ -181,6 +195,7 @@ export const iframeToParentSchema = z.discriminatedUnion("kind", [
   fieldEditMessageSchema,
   imageReplaceMessageSchema,
   cookiesSchema,
+  pagePathsQuerySchema,
 ]);
 
 export type FieldEdit = z.infer<typeof fieldEditSchema>;
@@ -188,10 +203,12 @@ export type FieldEditMessage = z.infer<typeof fieldEditMessageSchema>;
 export type ImageReplaceMessage = z.infer<typeof imageReplaceMessageSchema>;
 export type IframeToParent = z.infer<typeof iframeToParentSchema>;
 
-/** #918 — the site's pages, for link-target suggestions in the link editor. */
+/** #918 / #1269 — the pages matching the link editor's query, as link-target suggestions. */
 export interface PagePathsMessage {
   kind: "caelo:page-paths";
   pages: { path: string; title: string }[];
+  /** The `seq` of the `caelo:page-paths-query` this answers. */
+  seq: number;
 }
 
 export interface ReloadMessage {

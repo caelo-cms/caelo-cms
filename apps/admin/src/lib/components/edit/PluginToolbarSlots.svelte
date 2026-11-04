@@ -9,7 +9,9 @@
    * no plugin code runs here, and every value is text (#635). Up to three
    * places show; from four on, two show and the rest share one "+N"
    * popover. A place whose operation failed stays in the bar with a red
-   * dot and the reason (#1008: loud, never hidden).
+   * dot and the reason (#1008: loud, never hidden). An entry links a page
+   * only when it carries a `pageId`: the server keeps it only for pages the
+   * chat's view has (`withOpenablePages`, #1269).
    */
 
   import { Puzzle } from "lucide-svelte";
@@ -23,14 +25,11 @@
   let {
     slots,
     path,
-    pageIds,
     onOpenPage,
   }: {
     slots: readonly EditorToolbarSlot[];
     /** The shown page's path, for `{page}` in prompts. */
     path: string;
-    /** Pages the editor can open; an entry's link to any other id is not offered. */
-    pageIds: ReadonlySet<string>;
     onOpenPage: (pageId: string) => void;
   } = $props();
 
@@ -77,7 +76,7 @@
       {#if slot.state.items && slot.state.items.length > 0}
         <ul class="-mx-2">
           {#each slot.state.items as entry, i (i)}
-            {@const linked = entry.pageId !== undefined && pageIds.has(entry.pageId) && !entry.current}
+            {@const linked = entry.pageId !== undefined && !entry.current}
             {#snippet entryBody()}
               <span class={cn("truncate", entry.current && "font-medium")}>{entry.label}</span>
               {#if entry.detail}

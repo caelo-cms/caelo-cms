@@ -17,7 +17,6 @@ import {
   activePageScope,
   branchPageScope,
   type EditPage,
-  pickActivePage,
   pickScopedPage,
   toEditPage,
 } from "#lib/server/edit-active-page.js";
@@ -129,25 +128,52 @@ async function readOrFail<T>(ctx: ExecutionContext, op: string, input: unknown):
 
 /**
  * The page to open as `ctx` sees it, from a bounded lookup of the `?page=`
- * and home candidates (`scope`); only when neither is found (or there is no
- * scope) is the whole page list read, to open the first page. `all` is that
- * list when it was read, so the streamed page list reuses it.
+ * and home candidates (`scope`). When neither is found, the page composed
+ * at "/" in this view (`site_defaults.get`'s `rootPageId`: a chat may have
+ * renamed another page to home), else the site's first page — never the
+ * whole page list (#1269).
  */
 async function resolveActivePage(
   ctx: ExecutionContext,
   queryPage: string | null,
   scope: { pageIds?: string[]; paths?: string[] } | null,
-): Promise<{ page: EditPage | null; candidates: EditPage[]; all: EditPage[] | null }> {
+): Promise<{ page: EditPage | null; candidates: EditPage[] }> {
   const candidates = scope
     ? (await readOrFail<{ pages: EditPage[] }>(ctx, "pages.list", scope)).pages.map(toEditPage)
     : [];
   const page = pickScopedPage(candidates, queryPage);
-  if (page) return { page, candidates, all: null };
-  const all = (await readOrFail<{ pages: EditPage[] }>(ctx, "pages.list", {})).pages.map(
-    toEditPage,
+  if (page) return { page, candidates };
+  const defaults = await readOrFail<{ defaults: { rootPageId: string | null } | null }>(
+    ctx,
+    "site_defaults.get",
+    {},
   );
-  return { page: pickActivePage(all, queryPage), candidates, all };
+  const rootPageId = defaults.defaults === null ? null : defaults.defaults.rootPageId;
+  if (rootPageId) {
+    const root = await readOrFail<{ pages: EditPage[] }>(ctx, "pages.list", {
+      pageIds: [rootPageId],
+    });
+    const page = root.pages.map(toEditPage)[0];
+    if (page) return { page, candidates };
+  }
+  // `pages.list` applies its limit before the chat's pending deletes, so a
+  // page can come back empty with more to follow: page on until one shows.
+  let cursor: string | null = null;
+  do {
+    const next: { pages: EditPage[]; nextCursor: string | null } = await readOrFail(
+      ctx,
+      "pages.list",
+      { limit: FIRST_PAGE_BATCH, ...(cursor ? { cursor } : {}) },
+    );
+    const page = next.pages.map(toEditPage)[0];
+    if (page) return { page, candidates };
+    cursor = next.nextCursor;
+  } while (cursor !== null);
+  return { page: null, candidates };
 }
+
+/** Pages read per step when the editor looks for the site's first page. */
+const FIRST_PAGE_BATCH = 10;
 
 /**
  * #1268 — first paint awaits only what it shows: the page, the chat and the
@@ -387,8 +413,8 @@ export const load: PageServerLoad = async ({ locals, url, setHeaders }) => {
       firstRunSuggestions = pluginSuggestions;
     }
   }
-  // No page in the chat's view at all: `resolveActivePage` read the whole
-  // list and it is empty.
+  // No page in the chat's view at all: neither the lookup, the root nor
+  // the first page of the site found one.
   if (activePage === null) {
     const defaultsR = await execute(registry, adapter, locals.ctx, "site_defaults.get", {});
     const identity = defaultsR.ok
@@ -446,6 +472,7 @@ export const load: PageServerLoad = async ({ locals, url, setHeaders }) => {
         permissions: editUser.permissions,
         pageId: activePage.id,
         chatBranchId: chat.chatBranchId,
+        branchCtx: ctxWithBranch,
       })
     : Promise.resolve([]);
 
@@ -455,7 +482,6 @@ export const load: PageServerLoad = async ({ locals, url, setHeaders }) => {
     chatSessionId: chat.id,
     activePage,
     mainCandidates: main.candidates,
-    branchPages: branch.all,
   });
 
   setHeaders({ "server-timing": timing.header() });
@@ -497,8 +523,9 @@ export const load: PageServerLoad = async ({ locals, url, setHeaders }) => {
     /** The plugin places in the toolbar for the shown page (streamed). */
     pluginToolbar,
     // #1268 — streamed: each resolves to its value or why it failed.
-    pages: stream.pages,
-    recentPageIds: stream.recentPageIds,
+    firstPages: stream.firstPages,
+    recentPages: stream.recentPages,
+    rootPage: stream.rootPage,
     modules: stream.modules,
     branchEditedModuleIds: stream.branchEditedModuleIds,
     branchChangeCount: stream.branchChangeCount,

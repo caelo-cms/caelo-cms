@@ -20,7 +20,8 @@ import { LINK_IMAGE_EDIT_SCRIPT } from "./link-image-edit-script.js";
  *      link and image editing (#918).
  *   4. Listen for `{kind: "caelo:reload"}` (answered with a
  *      `caelo:navigate` to the current page, scroll position included),
- *      and for `caelo:page-paths` (link-target suggestions, #918).
+ *      and for `caelo:page-paths` (link-target suggestions, #918: the
+ *      answer to the link editor's `caelo:page-paths-query`, #1269).
  *
  * Plain clicks on same-origin absolute links are rewritten to the
  * preview-by-path equivalent so internal navigation stays inside the
@@ -191,8 +192,13 @@ export const INJECT_SCRIPT = `
     if (ev.origin !== editorOrigin) return;
     if (!ev.data || typeof ev.data !== "object") return;
     if (ev.data.kind === "caelo:reload") reload();
-    else if (ev.data.kind === "caelo:page-paths" && Array.isArray(ev.data.pages)) {
+    else if (
+      ev.data.kind === "caelo:page-paths" &&
+      Array.isArray(ev.data.pages) &&
+      ev.data.seq === pathQuerySeq
+    ) {
       pagePaths = ev.data.pages;
+      renderPagePaths();
     }
   });
 })();
