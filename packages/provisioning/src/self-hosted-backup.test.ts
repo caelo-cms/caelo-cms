@@ -109,12 +109,12 @@ describe("backupSelfHosted", () => {
     expect(out).toEqual({ ok: true, path: to });
     expect(probe(r.calls.map((c) => c.cmd))).toEqual([
       "exec -T postgres pg_isready -U caelo",
-      "stop caelo-admin caelo-gateway",
+      "stop caelo-admin caelo-gateway caelo-staging-gateway",
       "exec -T postgres pg_dumpall -U caelo --globals-only",
       "exec -T postgres pg_dump -U caelo -Fc cms_admin",
       "exec -T postgres pg_dump -U caelo -Fc cms_public",
       "run --rm --no-deps -T --entrypoint tar caelo-admin -C / -cf - srv/caelo data/media",
-      "up -d caelo-admin caelo-gateway",
+      "up -d caelo-admin caelo-gateway caelo-staging-gateway",
       "exec -T caelo-admin bun -e <probe>",
       "exec -T caelo-gateway bun -e <probe>",
     ]);
@@ -146,7 +146,9 @@ describe("backupSelfHosted", () => {
       ...quiet,
     });
     expect(out.ok).toBe(false);
-    expect(r.calls.map((c) => c.cmd)).toContain("up -d caelo-admin caelo-gateway");
+    expect(r.calls.map((c) => c.cmd)).toContain(
+      "up -d caelo-admin caelo-gateway caelo-staging-gateway",
+    );
   });
 
   it("refuses when Postgres is not running and changes nothing", async () => {
@@ -194,7 +196,7 @@ describe("restoreSelfHosted", () => {
     const out = await restoreSelfHosted(archive, restoreDeps(r));
     expect(out.ok).toBe(true);
     expect(probe(r.calls.map((c) => c.cmd))).toEqual([
-      "stop caelo-admin caelo-gateway",
+      "stop caelo-admin caelo-gateway caelo-staging-gateway",
       "up -d --wait postgres",
       "exec -T postgres psql -U caelo -d postgres -v ON_ERROR_STOP=1 -c DROP DATABASE IF EXISTS cms_admin WITH (FORCE) -c DROP DATABASE IF EXISTS cms_public WITH (FORCE)",
       "<converge roles>",

@@ -12,7 +12,7 @@
  *     missing at release time. That includes the superuser's password: the
  *     self-hosted role convergence suite logs in as the superuser, and its
  *     absence failed the v0.10.36 publish a second time.
- * R3: every browser install ci.yml's check job runs before its tests also
+ * R3: every browser install ci.yml's test shards run before their tests also
  *     runs in the release gate before "Test". The live Chromium suites fail
  *     in CI without a browser (#869), which failed the v0.10.54 publish.
  */
@@ -56,8 +56,8 @@ describe("release gate env", () => {
     expect(required.filter((v) => !available.has(v as string))).toEqual([]);
   });
 
-  it("R2: carries every database role variable ci.yml's check job sets", () => {
-    const ciVars = Object.keys(workflow("ci.yml").jobs.check?.env ?? {}).filter((k) =>
+  it("R2: carries every database role variable ci.yml's test shards set", () => {
+    const ciVars = Object.keys(workflow("ci.yml").jobs.test?.env ?? {}).filter((k) =>
       ROLE_VAR.test(k),
     );
     expect(ciVars.length).toBeGreaterThan(0);
@@ -65,7 +65,7 @@ describe("release gate env", () => {
     expect(ciVars.filter((v) => !gateVars.has(v))).toEqual([]);
   });
 
-  it("R3: installs every browser ci.yml's check job installs, before Test", () => {
+  it("R3: installs every browser ci.yml's test shards install, before Test", () => {
     // A browser install is either a `playwright install` command or the
     // shared composite action that wraps it (#984).
     const installs = (steps: readonly Step[] | undefined) =>
@@ -75,7 +75,7 @@ describe("release gate env", () => {
           ? [s.run.trim()]
           : [];
       });
-    const ciInstalls = installs(workflow("ci.yml").jobs.check?.steps);
+    const ciInstalls = installs(workflow("ci.yml").jobs.test?.steps);
     expect(ciInstalls.length).toBeGreaterThan(0);
     const steps = gate?.steps ?? [];
     const testIndex = steps.findIndex((s) => s.name === "Test");

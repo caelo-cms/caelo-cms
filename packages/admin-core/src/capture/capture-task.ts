@@ -17,11 +17,12 @@
  * admin reports the execution as failed with a pointer to its log.
  */
 
-import { CAELO_VERSION, mediaSecurityHeaders } from "@caelo-cms/shared";
+import { CAELO_VERSION, mediaSecurityHeaders, STAGING_RUN_TOKEN_HEADER } from "@caelo-cms/shared";
 import {
   createPlaywrightScreenshotter,
   EXTERNAL_URL_BLOCKED,
   isExternalUrlBlockedError,
+  type OriginHeaders,
   type Screenshot,
   type Screenshotter,
   type ServeOwnOrigin,
@@ -37,6 +38,7 @@ import {
   previewInputSchema,
   queryInputSchema,
   SIGNED_URL_HOST,
+  type StagingAccess,
 } from "./capture-protocol.js";
 import { CAPTURE_BUCKET_ENV_VAR } from "./capture-store.js";
 
@@ -158,10 +160,18 @@ export async function runOrder(
       case "external-capture":
         return captureResult(
           captureId,
-          await screenshotter.capture(op.url, { ...op.opts, external: true }),
+          await screenshotter.capture(op.url, {
+            ...op.opts,
+            external: true,
+            ...originHeadersOf(op.stagingAccess),
+          }),
         );
       case "external-render": {
-        const r = await screenshotter.renderHtml(op.url, { ...op.opts, external: true });
+        const r = await screenshotter.renderHtml(op.url, {
+          ...op.opts,
+          external: true,
+          ...originHeadersOf(op.stagingAccess),
+        });
         return {
           kind: "render",
           captureId,
@@ -243,4 +253,16 @@ if (import.meta.main) {
       process.exit(1);
     },
   );
+}
+
+/** #1330 — the staging token as headers for the staging origin only. */
+function originHeadersOf(access: StagingAccess | undefined): { originHeaders?: OriginHeaders } {
+  return access
+    ? {
+        originHeaders: {
+          origin: access.origin,
+          headers: { [STAGING_RUN_TOKEN_HEADER]: access.token },
+        },
+      }
+    : {};
 }

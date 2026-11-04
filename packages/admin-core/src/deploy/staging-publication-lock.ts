@@ -1,33 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Orders every change to WHICH staged build the staging host serves (#650).
+ * Orders every change to WHICH staged build the staging host serves (#650,
+ * #1330).
  *
- * A Stage publishes its preview channel, records it as the staging origin
- * (`staging_access.origin_url`) and deletes every other preview channel;
- * Publish live reads the origin and deletes every channel but that one.
- * Two of these interleaving would delete the channel the other one just
- * recorded: Stage A prunes B's fresh channel, then B records that deleted
- * channel as the origin — both report success and staging serves nothing.
- *
- * So the publish-record-prune sequence runs under the `staging-publication`
- * lease (`deploy_leases`, migration 0393; the row mechanics are in
- * deploy-lease.ts). It used to be a transaction-scoped advisory lock, which
- * only worked because a Stage held one transaction across its whole build
- * and upload (#1211: that pinned a pooled connection for minutes and
- * starved the pool). Two kinds of holder share the row:
- *
- *   - A Stage and a Publish live of a build with its own staging host hold
- *     no transaction while they upload (#1211, #1225). They ACQUIRE the
- *     lease (`deploy.acquire_staging_publication`) and poll outside any
- *     transaction while it is held.
- *   - The preview keep-alive runs inside one short transaction. It LOCKS
- *     the row ({@link tryLockStagingPublication}) only while no run holds
- *     the lease, and skips its staging work while one does.
- *   - #1254 — the redirect sync CLAIMS the lease for the seconds of its
- *     push ({@link claimStagingPublicationForSync}) and holds no
- *     transaction while the provider answers; busy, it leaves staging
- *     behind.
+ * A Stage fills the staging slot staging does not serve and then records
+ * it as served (`staging_access.served_location`). Two Stages doing that
+ * at once would fill the same slot with a mix of both builds. So a Stage
+ * holds the `staging-publication` lease (`deploy_leases`, migration 0393;
+ * the row mechanics are in deploy-lease.ts) from before its upload opens
+ * until the transaction that records it: it ACQUIRES the lease
+ * (`deploy.acquire_staging_publication`) and polls outside any transaction
+ * while another Stage holds it. #1254 — the redirect sync CLAIMS the lease
+ * for the seconds of its push ({@link claimStagingPublicationForSync}) and
+ * holds no transaction while the provider answers; busy, it leaves staging
+ * behind. Publish live does not touch staging (it copies the build live)
+ * and takes no part.
  *
  * A later Stage waits for the earlier one and then supersedes it, which is
  * the order operators expect. Lock order against live-release-lock.ts is
@@ -56,8 +44,6 @@ import {
   claimLease,
   claimSyncLease,
   type DeployLeaseHolder,
-  type LeaseRowLock,
-  lockLeaseRow,
   previousReleaseRunInFlight,
   releaseLease,
   releaseSyncLease,
@@ -78,22 +64,6 @@ export const LEGACY_STAGING_PUBLICATION_LOCK_KEY = "caelo:staging-publication";
 
 /** How long a Stage or Publish live waits for another one that is publishing staging. */
 export const STAGING_PUBLICATION_WAIT_MS = 10 * 60_000;
-
-/**
- * Inside a transaction: lock the lease row when no run holds the lease,
- * for the rest of this transaction. Waits for another transaction that
- * locked the row (like the advisory lock did); never waits for a run that
- * holds the lease — it reports that run instead.
- */
-export async function tryLockStagingPublication(tx: TransactionRunner): Promise<LeaseRowLock> {
-  // The previous release's protocol (file header): held until this
-  // transaction ends, like that release held it. Not held: a transaction
-  // of the previous release publishes right now (heldBy null).
-  if (!(await tryPreviousReleaseLock(tx, LEGACY_STAGING_PUBLICATION_LOCK_KEY))) {
-    return { locked: false, heldBy: null };
-  }
-  return lockLeaseRow(tx, STAGING_PUBLICATION_LEASE, { skipLocked: false });
-}
 
 /**
  * A run's side, in its own short transaction: take the lease for `runId`

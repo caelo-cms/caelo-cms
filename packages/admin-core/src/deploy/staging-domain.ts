@@ -1,32 +1,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #650 — which installs serve staging at its own protected host, and
- * that host.
+ * Issue #650 / #1330 — which installs serve staging at its own protected
+ * host, and that host.
  *
- * On those installs a staging build renders the staging host into every
- * absolute URL and Publish live rebuilds the same content with the live
- * host behind the parity guard (build-parity.ts). Everywhere else staging
- * is built with the live host and Publish live ships the staged build as
- * it is — unchanged behaviour until the provider gets its gate:
- *
- *   gcp-firebase  the gateway proxies the staging host to the current
- *                 preview channel behind the access gate (this PR)
- *   self-hosted   Caddy already serves a staging host; its gate is the
- *                 follow-up to #650
- *   gcp           staging stays the IAP-gated admin route (follow-up)
- *   aws / azure   no publisher yet
+ * Staging is served by its own gateway behind the #650 gate, on every host
+ * it is reached by (epic #763 E8, E11): gcp-firebase (a second Hosting
+ * site rewriting everything to the staging gateway), gcp (a host rule on
+ * the load balancer) and self-hosted (Caddy in front of the staging
+ * gateway). Every build renders the live host; the staging gateway rewrites
+ * it to the staging host while it serves, so a changed staging host needs
+ * no new Stage and Publish live is a copy (#1003). aws / azure have no
+ * publisher yet (#749, #750). A development checkout (no CAELO_PROVIDER)
+ * keeps serving `current/` on its local staging port.
  *
  * The host is an install SETTING, not a derivation: the wizard asks for it
  * (default `staging.<domain>`), provisioning hands it to the admin as
  * `CAELO_STAGING_HOST`, the admin seeds `staging_access.staging_host` from
  * it once, and from then on the database row is the truth — the Owner (or
- * the AI through the §11.A gate) changes it with `staging_access.set_host`,
- * and `cms-provision staging-domain enable --staging-domain <host>` sets it
- * explicitly through `staging_access.provision` (#678). The seed never
- * overwrites a stored value, so an upgrade never undoes either.
- * On a provider with a staging domain an unset host fails loudly
- * (CLAUDE.md §2) instead of building staging with the live host.
+ * the AI through the §11.A gate) changes it with `staging_access.set_host`.
+ * The seed never overwrites a stored value, so an upgrade never undoes it.
  */
 
 import type { defineOperation } from "@caelo-cms/query-api";
@@ -40,13 +33,15 @@ export const STAGING_HOST_ENV = "CAELO_STAGING_HOST";
 /** Env var carrying the gate's shared key (Secret Manager `staging-gate-secret`). */
 export const STAGING_GATE_SECRET_ENV = "CAELO_STAGING_GATE_SECRET";
 
-const PROVIDERS_WITH_STAGING_DOMAIN: ReadonlySet<string> = new Set(["gcp-firebase"]);
-
 type Env = Readonly<Record<string, string | undefined>>;
 
-/** True when `provider` serves staging at its own gated host. */
-export function providerHasStagingDomain(provider: string | undefined): boolean {
-  return provider !== undefined && PROVIDERS_WITH_STAGING_DOMAIN.has(provider);
+/**
+ * True when `provider` serves staging through the staging gateway at its own
+ * gated host (#1330). False for aws / azure (no staging gateway yet) and a
+ * development checkout without CAELO_PROVIDER.
+ */
+export function stagingServedByGateway(provider: string | undefined): boolean {
+  return provider === "gcp-firebase" || provider === "gcp" || provider === "self-hosted";
 }
 
 /** The stored staging host (`staging_access.staging_host`), or null when unset. */
@@ -58,43 +53,15 @@ export async function readStagingHost(tx: Tx): Promise<string | null> {
 }
 
 /**
- * Issue #678 — why the staging host shows nothing (or the wrong host) yet:
- * nothing is staged, or the served build was rendered for another host
- * (the host changed after the last Stage). Null when the served build
- * matches the current host.
+ * Issue #678 — why the staging host shows nothing yet: nothing is staged.
+ * (#1330: a changed staging host no longer needs a new Stage — the staging
+ * gateway rewrites every build to the host as it is now.)
  */
-export type StageNeeded = "nothing-staged" | "host-changed" | null;
+export type StageNeeded = "nothing-staged" | null;
 
-/**
- * The host the currently served staging build rendered (its run's
- * `deploy_runs.site_url`), or null when nothing is staged.
- */
-export async function readStagedBuildHost(tx: Tx): Promise<string | null> {
-  const rows = (await tx.execute(sql`
-    SELECT r.site_url
-    FROM staging_access s JOIN deploy_runs r ON r.id = s.origin_run_id
-    WHERE s.id = 1
-  `)) as unknown as { site_url: string | null }[];
-  const url = rows[0]?.site_url;
-  if (!url) return null;
-  try {
-    return new URL(url).host;
-  } catch {
-    return null;
-  }
-}
-
-/** {@link StageNeeded} for the current host and the served build's host. */
-export function stageNeededFor(
-  currentHost: string | null,
-  stagedHost: string | null,
-  hasStagedBuild: boolean,
-): StageNeeded {
-  if (!hasStagedBuild) return "nothing-staged";
-  if (currentHost !== null && stagedHost !== null && stagedHost !== currentHost) {
-    return "host-changed";
-  }
-  return null;
+/** {@link StageNeeded} for whether a build is staged. */
+export function stageNeededFor(hasStagedBuild: boolean): StageNeeded {
+  return hasStagedBuild ? null : "nothing-staged";
 }
 
 /** The operator/AI-facing sentence for a {@link StageNeeded}, or null. */
@@ -103,10 +70,25 @@ export function describeStageNeeded(needed: StageNeeded, host: string | null): s
   if (needed === "nothing-staged") {
     return `Nothing is served at ${where} until the next Stage — Stage once (AI: stage_changes; admin: Stage in the editor or Open changes) to put the current published pages there.`;
   }
-  if (needed === "host-changed") {
-    return `The served staging build was rendered for another host — Stage again (AI: stage_changes) so ${where} serves a build with its own canonicals, sitemap and robots.txt.`;
-  }
   return null;
+}
+
+/**
+ * #1330 — the origin every build renders (`site_defaults.site_base_url`,
+ * the live site's), or null while none is set (the generator then refuses
+ * the build itself).
+ */
+export async function liveSiteOrigin(tx: Tx): Promise<string | null> {
+  const rows = (await tx.execute(
+    sql`SELECT site_base_url FROM site_defaults WHERE id = 1`,
+  )) as unknown as { site_base_url: string | null }[];
+  const url = rows[0]?.site_base_url;
+  if (!url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -119,11 +101,11 @@ export async function stagingSiteUrl(
   tx: Tx,
   provider: string | undefined = process.env.CAELO_PROVIDER,
 ): Promise<string | null> {
-  if (!providerHasStagingDomain(provider)) return null;
+  if (!stagingServedByGateway(provider)) return null;
   const host = await readStagingHost(tx);
   if (!host) {
     throw new Error(
-      `No staging host is configured. A ${provider} install serves staging at its own host (default staging.<domain>), and every staging build renders it. Next step: run \`cms-provision upgrade\` (it sets ${STAGING_HOST_ENV}, which the admin stores on its next start), or set the host under Settings → Domains, then Stage again.`,
+      `No staging host is configured. A ${provider} install serves staging at its own host (default staging.<domain>), behind the staging gate. Next step: run \`cms-provision upgrade\` (it sets ${STAGING_HOST_ENV}, which the admin stores on its next start), or set the host under Settings → Domains.`,
     );
   }
   return `https://${host}`;

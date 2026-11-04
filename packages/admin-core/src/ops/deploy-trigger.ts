@@ -15,7 +15,9 @@
  *                          run row committed as `running` with its lease
  *   themes.ensure_favicon_rendition
  *   (generator)            no transaction; progress via deploy.update_progress
- *   deploy.acquire_staging_publication  (a Stage with its own staging host)
+ *   deploy.acquire_staging_publication  (a Stage: before the upload opens,
+ *                          #1330 — the upload fills the staging slot staging
+ *                          does not serve, and no other Stage may fill it too)
  *   (publisher upload)     no transaction
  *   deploy.finish_trigger  record the origin + the run, release the lease,
  *                          mark the target's redirects behind; a staging
@@ -75,7 +77,6 @@ import {
   removeUploadedBuild,
   retainedBuildsFor,
 } from "../deploy/build-cleanup.js";
-import { buildManifestOf } from "../deploy/build-parity.js";
 import {
   DEPLOY_RUN_HEARTBEAT_MS,
   DEPLOY_RUN_LEASE_TTL_MS,
@@ -101,7 +102,7 @@ import {
   reconcilePluginsForBuild,
 } from "../deploy/plugin-problems.js";
 import { markRedirectsBehind } from "../deploy/redirect-sync.js";
-import { stagingSiteUrl } from "../deploy/staging-domain.js";
+import { liveSiteOrigin, readStagingHost, stagingGateSecret } from "../deploy/staging-domain.js";
 import {
   releaseStagingPublication,
   STAGING_PUBLICATION_WAIT_MS,
@@ -113,7 +114,11 @@ import {
 } from "../deploy/static-publisher.js";
 import { truncatedListSchema } from "../deploy/truncated-lists.js";
 import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
-import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
+import {
+  STAGING_GATEWAY_URL_ENV,
+  verifyStagedBuildServed,
+  verifyStagingGatewayServes,
+} from "../deploy/verify-staged-serve.js";
 import { loadedVisitorProjections } from "../public-projection.js";
 import { kickQualityAuditWorker } from "../quality/audit-worker.js";
 import { jsonbParam } from "../sql-helpers.js";
@@ -125,12 +130,11 @@ import {
   productionNeedsHuman,
   rowToTarget,
   runStartedAt,
-  selectServedStagingPreview,
   TARGET_COLUMNS,
   type TargetDbRow,
   targetRow,
 } from "./deploy-common.js";
-import { acquireLeaseStep, fenceRunLeases } from "./deploy-lease-steps.js";
+import { acquireLeaseStep } from "./deploy-lease-steps.js";
 import { beginRunInTx } from "./deploy-run-lifecycle.js";
 import { digestUndigestedMedia } from "./media_digests.js";
 import {
@@ -244,8 +248,13 @@ const startPlan = z.object({
   target: targetRow,
   /** The run's first-publication instant (its committed started_at). */
   publishAt: z.string(),
-  /** #650 — the staging host this build renders, or null. */
-  stagingOrigin: z.string().nullable(),
+  /**
+   * #1330 — a staging build's origin, the live site's
+   * (`site_defaults.site_base_url`): every build renders the live host, and
+   * the staging gateway rewrites it to the staging host while it streams.
+   * Recorded as the run's `site_url`. Null for other targets.
+   */
+  buildOrigin: z.string().nullable(),
   pluginProblems: z.array(deployPluginProblem),
   /** #553 — the publish-anyway decision a production build carries. */
   override: z.object({ auditRunId: z.string(), reason: z.string() }).nullable(),
@@ -374,23 +383,10 @@ export const startTriggerOp = defineOperation({
       override = gate.override;
     }
 
-    // #650 — on a provider whose staging has its own host, a staging build
-    // renders that host into every absolute URL (canonical, sitemap,
-    // og:url, hreflang, robots) so staging.<domain> is self-consistent for
-    // crawlers. Resolved before the run row exists: a missing host is a
-    // provisioning error, not a build failure.
-    let stagingOrigin: string | null = null;
-    if (target.env === "staging") {
-      try {
-        stagingOrigin = await stagingSiteUrl(tx, process.env.CAELO_PROVIDER);
-      } catch (e) {
-        return err({
-          kind: "HandlerError",
-          operation: "deploy.trigger",
-          message: e instanceof Error ? e.message : String(e),
-        });
-      }
-    }
+    // #1330 — a staging build renders the live host like every build (one
+    // build, copied live by Publish live, #1003); the staging gateway
+    // rewrites it to the staging host while it serves the build.
+    const buildOrigin = target.env === "staging" ? await liveSiteOrigin(tx) : null;
 
     // #1319 — a staging build's audit is planned now, before anything is
     // built: once the build is visible on staging, writing its audit row
@@ -469,7 +465,7 @@ export const startTriggerOp = defineOperation({
       runId: input.runId,
       target: rowToTarget(target),
       publishAt: await deployRunStartedAt(tx, input.runId),
-      stagingOrigin,
+      buildOrigin,
       pluginProblems,
       override,
     });
@@ -493,16 +489,21 @@ export const finishTriggerOp = defineOperation({
       pageCount: z.number().int(),
       fileCount: z.number().int(),
       publishSummary: z.record(z.string(), z.unknown()),
-      /** #650 — set for a Stage with its own staging host: it held the lease. */
-      stagingOrigin: z.string().nullable(),
-      parityManifest: z.record(z.string(), z.string()).nullable(),
+      /** #1330 — a Stage's build origin (it held the staging-publication lease); null otherwise. */
+      buildOrigin: z.string().nullable(),
+      /** #1330 — where a Stage's complete build lies in staging storage; null otherwise. */
+      stagingLocation: z.string().nullable(),
       override: z.object({ auditRunId: z.string(), reason: z.string() }).nullable(),
       phaseTimings: z.array(phaseTimingSchema),
       /** #1319 — what the audit log records as the Stage's audit request. */
       qualityAudit: stagingAuditRequestSchema.nullable(),
     })
     .strict(),
-  output: z.object({ draftPages: draftPagesSummary }),
+  output: z.object({
+    draftPages: draftPagesSummary,
+    /** #1330 — `https://<staging host>/` for a Stage while a host is set; null otherwise. */
+    stagingUrl: z.string().nullable(),
+  }),
   handler: async (ctx, input, tx) => {
     // Refusals throw OperationAbortError: nothing of this step may commit,
     // the caller records the failure (deploy.fail_run).
@@ -533,23 +534,24 @@ export const finishTriggerOp = defineOperation({
         `staging build ${input.runId} has no planned quality check (deploy_runs.planned_audit: ${planned.error.message}), so it is not recorded as staged. Stage again.`,
       );
     }
-    if (input.stagingOrigin) {
+    if (input.env === "staging") {
       // Released first: this transaction keeps the row locked until it
       // commits, so the redirect sync below sees it free and no other
       // publish gets in between.
       const held = await releaseStagingPublication(tx, input.runId);
       if (held !== true) {
         refuse(
-          `staging build ${input.runId} lost its place in the staging publish order (its lease lapsed), so another Stage or Publish live may have changed what staging serves. Staging keeps serving that; Stage again.`,
+          `staging build ${input.runId} lost its place in the staging publish order (its lease lapsed), so another Stage may have changed what staging serves. Staging keeps serving that; Stage again.`,
         );
       }
-      // #650 / #908 — the build staging serves now, and the origin the
-      // gateway proxies to.
-      const previewUrl = input.publishSummary.previewUrl;
-      await setStagingOrigin(tx, {
-        originUrl: typeof previewUrl === "string" ? previewUrl : null,
-        runId: input.runId,
-      });
+      const servedLocation =
+        input.stagingLocation ??
+        refuse(
+          `staging build ${input.runId} was published without a staging location, so the staging gateway would not find it. A Caelo bug; report it with bug_report, then Stage again.`,
+        );
+      // #1330 — the build staging serves from now on: the drain after this
+      // commit points the staging gateway at its complete slot.
+      await setStagingOrigin(tx, { servedLocation, runId: input.runId });
     }
     // The publish-anyway decision is recorded only now that the build it
     // allowed is live; a failed build leaves the quality gate closed.
@@ -578,8 +580,7 @@ export const finishTriggerOp = defineOperation({
           file_count = ${input.fileCount},
           build_id = ${input.runId},
           publish_summary = ${jsonbParam(input.publishSummary)},
-          site_url = ${input.stagingOrigin},
-          parity_manifest = ${input.parityManifest === null ? null : jsonbParam(input.parityManifest)},
+          site_url = ${input.buildOrigin},
           lease_expires_at = NULL, planned_audit = NULL
       WHERE id = ${input.runId}::uuid
     `);
@@ -603,7 +604,11 @@ export const finishTriggerOp = defineOperation({
     // on the build it serves now — after this commit (deploy.trigger), so
     // no provider I/O runs inside this transaction (#1211).
     await markRedirectsBehind(tx, [input.targetId]);
-    return ok({ draftPages: await mainDraftPages(tx) });
+    const host = input.env === "staging" ? await readStagingHost(tx) : null;
+    return ok({
+      draftPages: await mainDraftPages(tx),
+      stagingUrl: host ? `https://${host}/` : null,
+    });
   },
 });
 
@@ -677,6 +682,32 @@ async function runTrigger(
   };
 
   try {
+    // #1330 — a Stage changes which build staging serves: it takes the
+    // staging publish slot before its upload opens, because the upload
+    // fills the staging slot staging does NOT serve, and two Stages filling
+    // the same slot at once would mix their files. The served location is
+    // read with the lease held; nobody changes it until this run releases it.
+    let servedStagingLocation: string | null = null;
+    if (plan.target.env === "staging") {
+      const slot = await acquireLeaseStep<{
+        acquired: boolean;
+        heldByRunId: string | null;
+        servedLocation: string | null;
+      }>(steps, sys, {
+        op: "deploy.acquire_staging_publication",
+        runId,
+        ttlMs,
+        stop,
+        waitMs: STAGING_PUBLICATION_WAIT_MS,
+        what: "staging publish slot",
+        busyMessage: (heldBy) =>
+          `${heldBy ? `another Stage (build ${heldBy})` : "another Stage"} kept publishing the staging site for ${Math.round(STAGING_PUBLICATION_WAIT_MS / 60_000)} minutes, so this build was not started. Stage again once it finished (Settings → Deployments shows it).`,
+      });
+      timer.lap("lock-wait");
+      if (!slot.ok) return await fail(slot.message);
+      heartbeat.expectPublication(true);
+      servedStagingLocation = slot.value.servedLocation;
+    }
     // The active theme's raster favicon ships as its 64 px rendition
     // (ops/media_favicon.ts). One bound before that rule has none: create
     // it from the stored original now, so an upgraded install needs no
@@ -707,7 +738,7 @@ async function runTrigger(
       // is written, so it never lands on this container's disk (memory on
       // Cloud Run).
       upload = publisher.openBuildUpload
-        ? await publisher.openBuildUpload({ runId, target })
+        ? await publisher.openBuildUpload({ runId, target, servedStagingLocation })
         : null;
     } catch (e) {
       timer.lap("prepare");
@@ -724,7 +755,6 @@ async function runTrigger(
       changedPageIds: input.changedPageIds,
       changedListIds: input.changedListIds,
       changedListTypeIds: input.changedListTypeIds,
-      ...(plan.stagingOrigin ? { siteBaseUrlOverride: plan.stagingOrigin } : {}),
       syncCurrent: publisher.servesCurrentDir,
       retainBuilds: retainedBuildsFor(publisher),
       mediaDelivery: mediaDeliveryFor(publisher),
@@ -750,24 +780,6 @@ async function runTrigger(
     // run is recorded instead of reported as "nothing was published".
     const servedByGenerator = publisher.servesCurrentDir;
 
-    // #650 — publishing a preview, recording it as the staging origin and
-    // pruning the others is one ordered step per Stage: a concurrent Stage
-    // must not prune this channel between its creation and our record.
-    if (plan.stagingOrigin) {
-      const slot = await acquireLeaseStep(steps, sys, {
-        op: "deploy.acquire_staging_publication",
-        runId,
-        ttlMs,
-        stop,
-        waitMs: STAGING_PUBLICATION_WAIT_MS,
-        what: "staging publish slot",
-        busyMessage: (heldBy) =>
-          `${heldBy ? `another Stage or Publish live (build ${heldBy})` : "a Publish live"} kept publishing the staging site for ${Math.round(STAGING_PUBLICATION_WAIT_MS / 60_000)} minutes, so this build was not published. Stage again once it finished (Settings → Deployments shows it).`,
-      });
-      timer.lap("lock-wait");
-      if (!slot.ok) return await fail(slot.message);
-      heartbeat.expectPublication(true);
-    }
     if (stop.aborted && !servedByGenerator) return await fail(abortMessage(stop));
 
     // #1329 — staging starts from what this Stage publishes: the test
@@ -802,6 +814,7 @@ async function runTrigger(
         buildDir: built.buildDir,
         runId,
         target,
+        servedStagingLocation,
         ...(upload ? { upload } : {}),
       });
       publishSummary = summary as Record<string, unknown>;
@@ -825,7 +838,19 @@ async function runTrigger(
       process.env.CAELO_SKIP_STAGING_SERVE_CHECK !== "1"
     ) {
       const stagingBaseUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
-      const check = await verifyStagedBuildServed({ stagingBaseUrl, runId });
+      const gatewayUrl = process.env[STAGING_GATEWAY_URL_ENV];
+      const location = publishSummary.stagingLocation;
+      // #1330 — an install asks its staging gateway (through the gate, with a
+      // per-run check token); a development checkout its local staging port.
+      const check =
+        gatewayUrl && typeof location === "string"
+          ? await verifyStagingGatewayServes({
+              gatewayUrl,
+              location,
+              runId,
+              gateSecret: stagingGateSecret(),
+            })
+          : await verifyStagedBuildServed({ stagingBaseUrl, runId });
       timer.lap("verify-served");
       if (!check.served) {
         const outputRoot = resolve(repoRoot, target.outDir);
@@ -837,55 +862,8 @@ async function runTrigger(
       }
     }
 
-    // #650 — what Publish live's parity guard compares against: this
-    // build's content with the staging host swapped back to the live one.
-    // Read now, while the build directory is on this instance.
-    let parityManifest: Record<string, string> | null = null;
-    if (plan.stagingOrigin) {
-      try {
-        // #1271 — taken by the generator while it wrote the build, with
-        // the staging host swapped back to the live one (parity-digest.ts).
-        parityManifest = await buildManifestOf(built.buildDir, "normalised");
-      } catch (e) {
-        timer.lap("parity");
-        return await fail(
-          `staging build ${runId} could not be fingerprinted for Publish live's parity check: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
-      timer.lap("parity");
-      // The last point a stop is honoured: selecting the preview retires
-      // the one staging serves, so from here on the run must be recorded.
-      if (stop.aborted) return await fail(abortMessage(stop));
-      // Selecting retires every other preview, so it needs PROOF that this
-      // run still holds the staging publish slot — not the heartbeat's
-      // last word, which may be minutes old when beats failed. One renewal
-      // now proves it and keeps it for a full TTL from before the call;
-      // retiring stops halfway through that window.
-      const fence = await fenceRunLeases(steps, sys, {
-        runId,
-        ttlMs,
-        need: { publication: true, liveRelease: false },
-        lostMessage: (renewError) =>
-          renewError !== null
-            ? `staging build ${runId} was published, but could not confirm it still holds the staging publish slot (${renewError}), so it did not take over staging. Staging still serves the previous build; Stage again.`
-            : `staging build ${runId} lost its place in the staging publish order (its lease lapsed), so it did not take over staging: another Stage or Publish live may have changed what staging serves. Stage again.`,
-      });
-      if (!fence.ok) return await fail(fence.message);
-      // #650 / #908 — staging.<domain> now serves this build: its preview
-      // becomes the served one (kept alive, every other preview retired);
-      // deploy.finish_trigger records it as the origin.
-      try {
-        await selectServedStagingPreview(publisher, runId, { retireUntil: fence.until });
-      } catch (e) {
-        timer.lap("select-preview");
-        return await fail(
-          `staging build ${runId} was published but could not be made the build staging serves: ${e instanceof Error ? e.message : String(e)}. Stage again.`,
-        );
-      }
-      timer.lap("select-preview");
-    } else if (stop.aborted && !servedByGenerator) {
-      return await fail(abortMessage(stop));
-    }
+    // The last point a stop is honoured: from here on the run is recorded.
+    if (stop.aborted && !servedByGenerator) return await fail(abortMessage(stop));
 
     timer.lap("finish");
     const finished = await execute(registry, adapter, ctx, "deploy.finish_trigger", {
@@ -895,8 +873,9 @@ async function runTrigger(
       pageCount: built.pageCount,
       fileCount: built.fileCount,
       publishSummary,
-      stagingOrigin: plan.stagingOrigin,
-      parityManifest,
+      buildOrigin: plan.buildOrigin,
+      stagingLocation:
+        typeof publishSummary.stagingLocation === "string" ? publishSummary.stagingLocation : null,
       override: plan.override,
       phaseTimings: timer.phases(),
       qualityAudit:
@@ -930,11 +909,8 @@ async function runTrigger(
       generatorPeakRssMb: built.peakRssMb,
     });
 
-    // #650 — where staging has its own host, that host is the only staging
-    // URL anyone is shown; the provider's preview origin stays internal.
-    const providerPreview =
-      typeof publishSummary.previewUrl === "string" ? publishSummary.previewUrl : undefined;
-    const previewUrl = plan.stagingOrigin ? `${plan.stagingOrigin}/` : providerPreview;
+    // #650 / #1330 — staging is shown by its own host, behind the gate.
+    const previewUrl = (finished.value as { stagingUrl: string | null }).stagingUrl ?? undefined;
     return ok({
       runId,
       targetName: plan.target.name,

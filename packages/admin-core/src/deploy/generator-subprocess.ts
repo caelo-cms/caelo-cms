@@ -174,8 +174,6 @@ export interface GeneratorRunArgs {
    *  every page whose render dependencies they reach. */
   readonly changedListIds?: ReadonlyArray<string>;
   readonly changedListTypeIds?: ReadonlyArray<string>;
-  /** #650 — render this origin instead of the stored site URL. */
-  readonly siteBaseUrlOverride?: string;
   /** Epic #1107 — first-publication time of never-live pages (see generateSite). */
   readonly publishAt: string;
   /**
@@ -341,7 +339,6 @@ async function runGeneratorProcess(
         ...(args.changedListTypeIds && args.changedListTypeIds.length > 0
           ? { changedListTypeIds: [...args.changedListTypeIds] }
           : {}),
-        ...(args.siteBaseUrlOverride ? { siteBaseUrlOverride: args.siteBaseUrlOverride } : {}),
         ...(args.syncCurrent === false ? { syncCurrent: false } : {}),
         ...(args.retainBuilds !== undefined ? { retainBuilds: args.retainBuilds } : {}),
         mediaDelivery: args.mediaDelivery,

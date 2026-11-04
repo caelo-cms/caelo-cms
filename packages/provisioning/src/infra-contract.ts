@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 18;
+export const INFRA_CONTRACT_VERSION = 20;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -150,6 +150,25 @@ export const INFRA_CONTRACT_VERSION = 18;
 //       on the admin. The new admin runs its periodic work and plugin workers
 //       only on that tick, so an in-cloud upgrader must not roll an install
 //       onto it before the tick exists.
+//  19 — the scheduler workflow's tick is a JSON POST. Without a content type
+//       SvelteKit refused every tick of contract 18 with 403, so no periodic
+//       work ran. The workflow source is only deployed by a converge.
+//  20 — #1330/#1331: the staging gateway (converge release 2 of the gateway
+//       hardening). Its service account (secretAccessor on
+//       public-staging-role-password only, log/metric writer), its Cloud Run
+//       service `caelo-<env>-staging-gateway` (the gateway's image,
+//       CAELO_GATEWAY_ENVIRONMENT=staging, allUsers invoker: the gate is its
+//       own), object viewer on the staging bucket — on gcp-firebase a new
+//       private bucket, which the admin may write (CAELO_STAGING_BUCKET) —
+//       and its edge: on gcp-firebase a second Hosting site with one `**`
+//       rewrite and the staging host as its custom domain, the old Cloud Run
+//       domain mapping deleted; on gcp a serverless NEG, backend service,
+//       managed certificate and URL-map host rule. The live gateway loses
+//       CAELO_STAGING_GATE_SECRET (the gate key reaches the staging gateway
+//       through the staging projection) and the MCP-Auth-Proxy its interim
+//       forwarder. New service, account, bucket, IAM and edge resources the
+//       in-cloud upgrader may not create, and the app-roll rolls four
+//       services from now on.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -175,6 +194,8 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   16: "the MCP sign-in service as its own Cloud Run service with its own account (no database access), the visitor gateway as its own service on Firebase installs, and on Google Cloud load-balancer installs the sign-in service's backend and Cloud Armor rule (#1328)",
   17: "the staging site's own database and its gateway login, kept apart from the live data (#1329)",
   18: "the scheduler tick that runs the admin's periodic work and plugin workers every few minutes: its service account, workflow and Cloud Scheduler job, and its IAP access (#1140)",
+  19: "the scheduler tick sent as a JSON request, because the admin refused every tick before (#1140)",
+  20: "the staging gateway that serves the staged site behind the staging gate on every address: its service, service account and grants, the private staging bucket, and the staging host's own route (a second Firebase Hosting site, or a host rule and certificate on the load balancer); the live gateway no longer holds the staging gate key (#1330, #1331)",
 };
 
 /**

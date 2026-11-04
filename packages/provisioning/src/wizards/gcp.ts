@@ -130,6 +130,10 @@ import {
   sameRemoteMcpIdentity,
 } from "../stack-contract.js";
 import {
+  ensureStagingGatewayEdge,
+  ensureStagingGatewayFromLiveGateway,
+} from "../staging-gateway-setup.js";
+import {
   chooseInstallBackend,
   describeBackend,
   gcsBackendRecord,
@@ -521,6 +525,18 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
 
   phase("Finishing: operator access, welcome page");
 
+  // === 11.2. The staging gateway and its edge (#1330) ===
+  // Before the audit job, which reads the staging bucket this step creates
+  // on gcp-firebase.
+  const stagingReady = await stepStagingGateway(
+    projectId,
+    region,
+    provider,
+    domain,
+    installStagingHost(meta),
+    imageDigests,
+  );
+
   // === 11.3. The quality-audit job: parallel Lighthouse runs (#875) ===
   // Before the upgrader, which gets actAs on the job's service account.
   await stepAuditJob(projectId, region, provider);
@@ -573,10 +589,10 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // A fresh install ran every converge step above, so it is at this CLI's
   // infrastructure contract — recorded only when the upgrader and the
   // converge job are in place (the steps contract bumps 2 and 9 added) and
-  // remote MCP's steps (#806, bump 10) and the scheduler tick (#1140, bump
-  // 18) succeeded. With the release version, the admin can install the next
+  // remote MCP's steps (#806, bump 10), the scheduler tick (#1140, bump 18)
+  // and the staging gateway (#1330, bump 20) succeeded. With the release version, the admin can install the next
   // update itself.
-  if (upgraderReady && convergeReady && remoteMcpReady && schedulerReady) {
+  if (upgraderReady && convergeReady && remoteMcpReady && schedulerReady && stagingReady) {
     const version = releaseVersion;
     // #1025 — the linux/amd64 forms Cloud Run reports, next to the indexes,
     // so the upgrader recognises what serves without a registry lookup.
@@ -1462,6 +1478,49 @@ async function stepRemoteMcp(
     return failed(`pulumi up left ${[...new Set(missing)].join(", ")} out of the services' env`);
   }
   s.stop(green(`Remote MCP and Google sign-in prepared (${identity.identity.mcpPublicUrl})`));
+  return true;
+}
+
+/**
+ * #1330 — the staging gateway (the live gateway's image, gate on, serving the
+ * staged build from the staging bucket) and the route of the staging host to
+ * it (staging-gateway-setup.ts). The site works without it, so a failure
+ * warns and `upgrade` retries. Prints the DNS records the staging host needs.
+ *
+ * @returns whether both parts are in place
+ */
+async function stepStagingGateway(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+  domain: string,
+  stagingHost: string,
+  imageDigests: ImageDigests,
+): Promise<boolean> {
+  const s = spinner();
+  s.start(`Setting up the staging gateway behind the staging gate (${stagingHost})...`);
+  const failed = (error: string) => {
+    s.stop(yellow(`Staging gateway not set up: ${error}`));
+    log.warn(
+      `The site works; ${stagingHost} answers nothing until ${bold(selfCommand("upgrade"))} sets it up.`,
+    );
+    return false;
+  };
+  const target = { provider, projectId, region, env: GCP_STACK_ENV, domain, stagingHost };
+  const service = await ensureStagingGatewayFromLiveGateway({
+    ...target,
+    gatewayImageRef: releaseImageRef("gateway", imageDigests.gateway),
+  });
+  const broken = service.find((o) => o.status === "failed");
+  if (broken) return failed(`${broken.id}: ${broken.error ?? ""}`);
+  const edge = await ensureStagingGatewayEdge(target);
+  if (!edge.ok) return failed(edge.error);
+  s.stop(green(`Staging gateway ready: ${stagingHost} is served behind the staging gate`));
+  for (const line of edge.done) log.info(`  ${line}`);
+  if (edge.dnsRecords.length > 0) {
+    log.info(`  DNS for ${stagingHost} (Settings → Updates shows the same):`);
+    for (const d of edge.dnsRecords) log.info(`    ${d.name}  ${d.type}  ${d.value}`);
+  }
   return true;
 }
 
@@ -2436,14 +2495,19 @@ async function stepFinalize(installId: string, setupLink: "print" | "secret"): P
           `  To bind ${cyan(`admin.${meta.domain}`)}, run`,
           `  ${dim(selfCommand("admin-domain", "enable"))}`,
           `  (it walks you through the one-time Search Console verification, prints the DNS record and waits for the certificate).`,
-          "",
-          bold("Protected staging site:"),
-          `  Stage builds render ${cyan(installStagingHost(meta))}; to serve it, run`,
-          `  ${dim(selfCommand("staging-domain", "enable"))}`,
-          `  It maps the host, turns on password protection and prints the staging login once;`,
-          `  add the DNS record it prints. The host serves pages after the first Stage.`,
         ]
       : [];
+  // #1330 — staging is served by its own gateway on every GCP install; the
+  // records it needs were printed by the staging gateway step above.
+  adminNote.push(
+    "",
+    bold("Protected staging site:"),
+    `  ${cyan(installStagingHost(meta))} is served by the staging gateway behind the staging gate,`,
+    "  once the DNS records printed above (also under Settings → Updates) point at it.",
+    `  To turn on password protection and print the staging login once, run`,
+    `  ${dim(selfCommand("staging-domain", "enable"))}`,
+    "  The host serves pages after the first Stage.",
+  );
 
   note(
     [

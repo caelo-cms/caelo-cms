@@ -226,6 +226,14 @@ export interface SafeFetchOptions {
    */
   readonly allowedHosts?: readonly string[];
   readonly headers?: Record<string, string>;
+  /**
+   * #1330 — headers sent only on a hop whose origin is exactly `origin` (a
+   * capture's staging token). A redirect to any other origin never gets them.
+   */
+  readonly originHeaders?: {
+    readonly origin: string;
+    readonly headers: Readonly<Record<string, string>>;
+  };
   /** Redirect hops to follow (each re-validated). Default 3. */
   readonly maxRedirects?: number;
   /** Response size cap; exceeding it ABORTS (no silent truncation). Default 5 MiB. */
@@ -466,6 +474,9 @@ function requestOnce(
           "User-Agent": "CaleoSiteImporter/1.0 (+https://caleo-cms.com/imports)",
           Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.5",
           ...opts?.headers,
+          ...(opts?.originHeaders && u.origin === opts.originHeaders.origin
+            ? opts.originHeaders.headers
+            : {}),
         },
       },
       (res: IncomingMessage) => {

@@ -23,6 +23,7 @@ import {
 } from "@caelo-cms/query-api";
 import {
   checkPageTypeDef,
+  type ExecutionContext,
   ok,
   type PageTypeDef,
   pageTypeDefSchema,
@@ -31,6 +32,8 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { headOverlaySql } from "../../draft.js";
+import { countPagesByType } from "../../lists/counts.js";
 import { checkDefinitionExt } from "../../lists/ext.js";
 import { fitPageToType, loadVocabularyIndex } from "../../lists/page-fit.js";
 import { parseTermRef } from "../../lists/page-terms.js";
@@ -50,7 +53,7 @@ import {
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { emitSnapshot } from "../../snapshots/index.js";
 import type { PageTypeState } from "../../snapshots/state.js";
-import { updatePageOp } from "../content/pages.js";
+import { listPagesOp, updatePageOp } from "../content/pages.js";
 import { structureWriteRefusal } from "./_permission.js";
 import {
   branchOf,
@@ -66,8 +69,8 @@ const pageTypeRowSchema = pageTypeDefSchema.extend({
   id: z.string(),
   version: z.number().int().positive(),
   updatedAt: z.string(),
-  /** Pages of this type the caller sees. */
-  pageCount: z.number().int().nonnegative(),
+  /** Pages of this type the caller sees — only with `counts: true`. */
+  pageCount: z.number().int().nonnegative().optional(),
   /** Vocabulary list slugs, in `vocabularies` order. */
   vocabularySlugs: z.array(z.string()),
 });
@@ -76,24 +79,79 @@ async function rows(
   tx: Tx,
   branchId: string | null,
   filter: (def: PageTypeDef) => boolean,
+  counts: boolean,
 ): Promise<z.infer<typeof pageTypeRowSchema>[]> {
   const types = (await loadListEntities(tx, "pageType", branchId)).filter((t) =>
     filter(t.state.definition),
   );
-  const pages = await loadPagesInView(tx, branchId);
-  const counts = new Map<string, number>();
-  for (const p of pages) counts.set(p.pageTypeId, (counts.get(p.pageTypeId) ?? 0) + 1);
+  const pageCounts = counts ? await countPagesByType(tx, branchId) : null;
+  // The vocabularies' slugs only, not every list of the site (#1269).
+  const vocabularyIds = [
+    ...new Set(types.flatMap((t) => t.state.definition.vocabularies.map((v) => v.list))),
+  ];
   const listSlugs = new Map(
-    (await loadListEntities(tx, "list", branchId)).map((l) => [l.id, l.state.slug]),
+    (await loadListEntities(tx, "list", branchId, { ids: vocabularyIds })).map((l) => [
+      l.id,
+      l.state.slug,
+    ]),
   );
   return types.map((t) => ({
     ...t.state.definition,
     id: t.id,
     version: t.state.version,
     updatedAt: t.updatedAt,
-    pageCount: counts.get(t.id) ?? 0,
+    ...(pageCounts ? { pageCount: pageCounts.get(t.id) ?? 0 } : {}),
     vocabularySlugs: t.state.definition.vocabularies.map((v) => listSlugs.get(v.list) ?? v.list),
   }));
+}
+
+/**
+ * Up to `n` pages of page type `typeId` in the caller's view, by path,
+ * as `pages.list` shows them there (title and composed path with the
+ * branch's pending edits). The candidates are a few stored pages of the
+ * type (its index) and, on a branch, the pending pages whose newest state
+ * has the type — a page a chat retyped into it — so the sample never
+ * reads every page of the type. Each is kept only if the branch view
+ * still gives it the type.
+ */
+async function samplePagesOfType(
+  ctx: ExecutionContext,
+  tx: Tx,
+  branchId: string | null,
+  typeId: string,
+  n: number,
+): Promise<{ pageId: string; path: string; title: string }[]> {
+  const visible = branchId
+    ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${branchId}::uuid)`
+    : sql`chat_branch_id IS NULL`;
+  const stored = (await tx.execute(sql`
+    SELECT id::text AS id FROM pages
+     WHERE page_type_id = ${typeId}::uuid AND deleted_at IS NULL AND ${visible}
+     ORDER BY current_path LIMIT ${n * 4}
+  `)) as unknown as { id: string }[];
+  const retyped = branchId
+    ? ((await tx.execute(sql`
+        SELECT h.entity_id AS id FROM (${headOverlaySql({
+          kind: "page",
+          table: "page_snapshots",
+          branchId,
+          columns: sql`es.state->>'pageTypeId' AS type_id`,
+        })}) h
+         WHERE h.type_id = ${typeId}
+         LIMIT ${n * 4}
+      `)) as unknown as { id: string }[])
+    : [];
+  const ids = [...new Set([...stored, ...retyped].map((r) => r.id))];
+  if (ids.length === 0) return [];
+  const listed = await listPagesOp.handler(ctx, { includeDeleted: false, pageIds: ids }, tx);
+  if (!listed.ok) return [];
+  return (
+    listed.value.pages as { id: string; pageTypeId: string; currentPath: string; title: string }[]
+  )
+    .filter((p) => p.pageTypeId === typeId)
+    .sort((x, y) => x.currentPath.localeCompare(y.currentPath))
+    .slice(0, n)
+    .map((p) => ({ pageId: p.id, path: p.currentPath, title: p.title }));
 }
 
 // ─── page_types.list ─────────────────────────────────────────────────
@@ -105,7 +163,17 @@ export const listPageTypesOp = defineOperation({
   // plugin reads property definitions (and their `ext`) through named ops.
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
-  input: z.object({ query: z.string().min(1).max(128).optional() }).strict(),
+  input: z
+    .object({
+      query: z.string().min(1).max(128).optional(),
+      /**
+       * Count each type's pages (`pageCount`). Exact, counted by Postgres
+       * over the type's pages (lists/counts.ts): ask only where the number
+       * is shown — the admin pages, the AI's list tool.
+       */
+      counts: z.boolean().default(false),
+    })
+    .strict(),
   output: z.object({ pageTypes: z.array(pageTypeRowSchema) }),
   handler: async (ctx, input, tx) => {
     const q = input.query?.toLowerCase();
@@ -115,6 +183,7 @@ export const listPageTypesOp = defineOperation({
         branchOf(ctx),
         (def) =>
           q === undefined || `${def.slug} ${def.name} ${def.purpose}`.toLowerCase().includes(q),
+        input.counts,
       ),
     });
   },
@@ -135,7 +204,7 @@ export const getPageTypeOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     const branchId = branchOf(ctx);
-    const [row] = await rows(tx, branchId, (def) => def.slug === input.slug);
+    const [row] = await rows(tx, branchId, (def) => def.slug === input.slug, true);
     if (!row) {
       const known = (await loadListEntities(tx, "pageType", branchId)).map((t) => t.state.slug);
       return {
@@ -146,10 +215,9 @@ export const getPageTypeOp = defineOperation({
         ),
       };
     }
-    const pages = (await loadPagesInView(tx, branchId, { pageTypeIds: [row.id] })).slice(0, 5);
     return ok({
       pageType: row,
-      samplePages: pages.map((p) => ({ pageId: p.id, path: p.currentPath, title: p.title })),
+      samplePages: await samplePagesOfType(ctx, tx, branchId, row.id, 5),
     });
   },
 });
@@ -214,10 +282,7 @@ export const upsertPageTypesManyOp = defineOperation({
     const hints: string[] = [];
     // The duplicate guard compares against the types the caller sees and
     // the batch's own entries (`blog` + `blogs` in one call is a duplicate).
-    const pageCounts = new Map<string, number>();
-    for (const p of await loadPagesInView(tx, branchId)) {
-      pageCounts.set(p.pageTypeId, (pageCounts.get(p.pageTypeId) ?? 0) + 1);
-    }
+    const pageCounts = await countPagesByType(tx, branchId);
     const inView = await loadListEntities(tx, "pageType", branchId);
     const existingSlugs = new Set(inView.map((t) => t.state.slug));
     const guardPool: PageTypeForGuard[] = [

@@ -30,6 +30,7 @@ import {
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_GATEWAY_UPSTREAM,
   COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
+  COMPOSE_STAGING_GATEWAY_UPSTREAM,
   composeProjectName,
   generateDockerCompose,
   SITE_OUTPUT_ROOT,
@@ -89,6 +90,9 @@ const publicRolePassword = pulumi.secret(randomHex(32));
 const publicStagingRolePassword = pulumi.secret(randomHex(32));
 // P18 — the KEK that encrypts stored provider keys.
 const caeloSecretKek = pulumi.secret(randomHex(32));
+// #650 / #1330 — the staging gate's key (admin only; the admin publishes it
+// to the staging gateway through the staging projection).
+const stagingGateSecret = pulumi.secret(randomHex(32));
 
 const composeYaml = pulumi
   .all([
@@ -97,10 +101,13 @@ const composeYaml = pulumi
     publicRolePassword,
     publicStagingRolePassword,
     caeloSecretKek,
+    stagingGateSecret,
   ])
-  .apply(([pgPw, adminPw, publicPw, publicStagingPw, kek]) =>
+  .apply(([pgPw, adminPw, publicPw, publicStagingPw, kek, gateSecret]) =>
     generateDockerCompose({
       domain,
+      stagingHost,
+      stagingGateSecret: gateSecret,
       postgresPassword: pgPw,
       rolePasswords: { admin: adminPw, public: publicPw, publicStaging: publicStagingPw },
       caeloSecretKek: kek,
@@ -126,7 +133,7 @@ const caddyConf = generateCaddyfile({
   ownerEmail,
   tls: "acme",
   publicSiteRoot: `${SITE_OUTPUT_ROOT}/output/production/current`,
-  stagingSiteRoot: `${SITE_OUTPUT_ROOT}/output/staging/current`,
+  stagingGatewayUpstream: COMPOSE_STAGING_GATEWAY_UPSTREAM,
   adminUpstream: COMPOSE_ADMIN_UPSTREAM,
   gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
   mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,

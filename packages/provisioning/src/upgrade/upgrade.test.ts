@@ -41,6 +41,8 @@ const GATEWAY = "caelo-production-data-gateway";
 const PROXY = "caelo-production-gateway-bbb";
 /** gcp: the proxy's fixed name (the gateway keeps its auto-named service). */
 const GCP_PROXY = "caelo-production-mcp-auth-proxy";
+/** #1330 — the staging gateway, under its fixed name on both providers. */
+const STAGING = "caelo-production-staging-gateway";
 const SQL = "caelo-production-pg-abc";
 const BACKUP_ID = "1760000000000";
 const DIGEST = {
@@ -51,6 +53,8 @@ const DIGEST = {
 const IMAGES: Record<RollSlug, ReleaseImage> = {
   admin: { digest: DIGEST.admin, imageRef: `registry/admin@${DIGEST.admin}` },
   gateway: { digest: DIGEST.gateway, imageRef: `registry/gateway@${DIGEST.gateway}` },
+  // #1330 — the staging gateway runs the gateway's image.
+  "staging-gateway": { digest: DIGEST.gateway, imageRef: `registry/gateway@${DIGEST.gateway}` },
   "mcp-auth-proxy": {
     digest: DIGEST["mcp-auth-proxy"],
     imageRef: `registry/mcp-auth-proxy@${DIGEST["mcp-auth-proxy"]}`,
@@ -115,6 +119,16 @@ const GATEWAY_JSON = serviceJson("registry/gateway@sha256:old", [
   secretRef("PUBLIC_DATABASE_PASSWORD", "public-role-password"),
 ]);
 
+/** #1330 — the staging gateway as the converge deployed it. */
+const STAGING_JSON = serviceJson("registry/gateway@sha256:old", [
+  {
+    name: "PUBLIC_DATABASE_URL",
+    value:
+      "postgresql://public_staging_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+  },
+  secretRef("PUBLIC_DATABASE_PASSWORD", "public-staging-role-password"),
+]);
+
 /**
  * gcp-firebase: the service that was the gateway, before this upgrade turns
  * it into the MCP-Auth-Proxy — the visitor gateway's database login, the
@@ -150,6 +164,28 @@ function fakeInstall(events: string[], overrides: [RegExp, Answer][] = []) {
     // On gcp this prefix is the gateway's, on gcp-firebase the proxy's.
     [/^run services list .*caelo-production-gateway/, ok(`${PROXY}\n`)],
     [/^run services list .*caelo-production-mcp-auth-proxy/, ok(`${GCP_PROXY}\n`)],
+    [/^run services list .*caelo-production-staging-gateway/, ok(`${STAGING}\n`)],
+    [new RegExp(`describe ${STAGING} .*--format=json`), ok(STAGING_JSON)],
+    // #1330 — the gcp staging edge: one WAF policy, one HTTPS proxy, the site's URL map.
+    [/^compute security-policies list/, ok("caelo-production-waf-1\n")],
+    [
+      /^compute target-https-proxies list/,
+      ok(JSON.stringify([{ name: "caelo-production-https-proxy-1", sslCertificates: [] }])),
+    ],
+    [
+      /^compute url-maps list/,
+      ok(
+        JSON.stringify([
+          {
+            name: "caelo-production-url-map-1",
+            hostRules: [{ hosts: ["acme.com"], pathMatcher: "public" }],
+            pathMatchers: [
+              { name: "public", pathRules: [{ paths: ["/api/*"], service: "gw-backend" }] },
+            ],
+          },
+        ]),
+      ),
+    ],
     [/describe (\S+) .*revisionName/, (l) => ok(`${l.split(" ")[3]}-00001-old\n`)],
     [new RegExp(`describe ${ADMIN} .*--format=json`), ok(ADMIN_JSON)],
     [new RegExp(`describe ${GATEWAY} .*--format=json`), ok(GATEWAY_JSON)],
@@ -298,7 +334,7 @@ const ANY_WRITE =
  * install lacks (mcp-auth-proxy-setup.ts). Additive; nothing serves on them.
  */
 const PRE_PLAN_WRITE =
-  /^(iam service-accounts create caelo-production-mcp-proxy-sa |secrets add-iam-policy-binding caelo-production-(mcp-oauth-seal-key|operator-oauth-client) .*--member=serviceAccount:caelo-production-mcp-proxy-sa@|run services replace |run deploy caelo-production-mcp-auth-proxy )/;
+  /^(iam service-accounts create caelo-production-(mcp-proxy-sa|stg-gw-sa) |secrets add-iam-policy-binding caelo-production-(mcp-oauth-seal-key|operator-oauth-client) .*--member=serviceAccount:caelo-production-mcp-proxy-sa@|secrets add-iam-policy-binding caelo-production-public-staging-role-password .*--member=serviceAccount:caelo-production-stg-gw-sa@|storage buckets (create|add-iam-policy-binding) gs:\/\/acme-caelo-production-staging |run services replace |run deploy caelo-production-(mcp-auth-proxy|staging-gateway) |run services add-iam-policy-binding caelo-production-staging-gateway .*--member=allUsers )/;
 
 const indexOf = (events: string[], pattern: RegExp): number => {
   const i = events.findIndex((e) => pattern.test(e));
@@ -606,10 +642,13 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
       .slice(deep)
       .filter((e) => e.includes("update-traffic") && e.includes("--to-revisions"));
     // Newest first: the proxy (back to the gateway release it was), the
-    // gateway, the admin.
+    // staging gateway (#1330), the gateway, the admin.
     expect(rollbacks).toEqual([
       expect.stringContaining(
         `${PROXY} --region europe-west1 --project acme --to-revisions ${PROXY}-00001-old=100`,
+      ),
+      expect.stringContaining(
+        `${STAGING} --region europe-west1 --project acme --to-revisions ${STAGING}-00001-old=100`,
       ),
       expect.stringContaining(
         `${GATEWAY} --region europe-west1 --project acme --to-revisions ${GATEWAY}-00001-old=100`,
@@ -752,6 +791,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     const before = {
       admin: `${ADMIN}-00000-before`,
       gateway: `${GATEWAY}-00000-before`,
+      "staging-gateway": `${STAGING}-00000-before`,
       "mcp-auth-proxy": `${PROXY}-00000-before`,
     };
     expect(
@@ -772,12 +812,13 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     const rollbacks = events.filter((e) => e.includes("--to-revisions"));
     expect(rollbacks).toEqual([
       expect.stringContaining(`--to-revisions ${before["mcp-auth-proxy"]}=100`),
+      expect.stringContaining(`--to-revisions ${before["staging-gateway"]}=100`),
       expect.stringContaining(`--to-revisions ${before.gateway}=100`),
       expect.stringContaining(`--to-revisions ${before.admin}=100`),
     ]);
   });
 
-  it("#1328 — a checkpoint without the proxy's revision (an older release wrote it) keeps the planned one", async () => {
+  it("#1328/#1330 — a checkpoint without the proxy's or staging gateway's revision (an older release wrote it) keeps the planned one", async () => {
     const events: string[] = [];
     const { deps } = upgradeDeps(events, { deep: { ok: false, error: "unhealthy" } });
     const before = { admin: `${ADMIN}-00000-before`, gateway: `${GATEWAY}-00000-before` };
@@ -792,6 +833,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     ).toBe(false);
     expect(events.filter((e) => e.includes("--to-revisions"))).toEqual([
       expect.stringContaining(`--to-revisions ${PROXY}-00001-old=100`),
+      expect.stringContaining(`--to-revisions ${STAGING}-00001-old=100`),
       expect.stringContaining(`--to-revisions ${before.gateway}=100`),
       expect.stringContaining(`--to-revisions ${before.admin}=100`),
     ]);
@@ -916,11 +958,12 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(gateway).not.toContain("operator-oauth-client");
     expect(gateway).not.toContain("--timeout");
     expect(admin).not.toContain("--timeout");
-    // No extra revision: everything rides the image rolls.
-    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(3);
+    // No extra revision: everything rides the image rolls (four services
+    // since the staging gateway, #1330).
+    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(4);
   });
 
-  it("#1328 — the gcp-firebase proxy roll leaves the VPC, drops every database login and forwards to the data gateway", async () => {
+  it("#1328/#1331 — the gcp-firebase proxy roll leaves the VPC, drops every database login and forwards nothing", async () => {
     const events: string[] = [];
     const { deps, calls } = upgradeDeps(events);
     expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
@@ -931,7 +974,8 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     );
     expect(proxy).toContain("--clear-network");
     expect(proxy).toContain("CAELO_REMOTE_MCP=available");
-    expect(proxy).toContain(`CAELO_INTERIM_FORWARD_ORIGIN=https://${GATEWAY}-xyz.a.run.app`);
+    // #1331 — the interim forwarder to the data gateway is gone.
+    expect(proxy).not.toContain("CAELO_INTERIM_FORWARD_ORIGIN");
     const removedEnv = proxy.match(/--remove-env-vars=(\S+)/)?.[1]?.split(",") ?? [];
     const removedSecrets = proxy.match(/--remove-secrets=(\S+)/)?.[1]?.split(",") ?? [];
     expect(removedEnv).toContain("PUBLIC_DATABASE_URL");
@@ -1031,10 +1075,12 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     const admin = rolls.find((c) => c.startsWith(`run services update ${ADMIN} `)) ?? "";
     const gateway = rolls.find((c) => c.startsWith(`run services update ${GATEWAY} `)) ?? "";
     const proxy = rolls.find((c) => c.startsWith(`run services update ${PROXY} `)) ?? "";
+    const staging = rolls.find((c) => c.startsWith(`run services update ${STAGING} `)) ?? "";
     expect(gateway).toContain("--cpu-throttling");
+    expect(staging).toContain("--cpu-throttling");
     expect(proxy).toContain("--cpu-throttling");
     expect(admin).not.toContain("cpu-throttling");
-    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(3);
+    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(4);
   });
 
   it("#806/#1328 — on gcp, moves the remote-MCP paths and the Cloud Armor rule to the proxy's backend before the roll", async () => {
@@ -1122,7 +1168,13 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
       events,
       /^gcloud compute security-policies rules delete 900 --security-policy=caelo-production-waf-1 /,
     );
-    expect(puts).toHaveLength(1);
+    // The remote-MCP routes first, then (#1330) the staging host's own rule.
+    expect(puts).toHaveLength(2);
+    const staging = JSON.parse(puts[1] as string) as typeof urlMap;
+    expect(staging.hostRules).toContainEqual({
+      hosts: ["staging.acme.com"],
+      pathMatcher: "staging",
+    });
     const put = JSON.parse(puts[0] as string) as typeof urlMap;
     const rules = put.pathMatchers[0]?.pathRules ?? [];
     expect(rules).toEqual([
@@ -1190,7 +1242,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
         healthProbe: async () => ({ ok: true, probe: throwing }),
       }),
     ).toBe(false);
-    expect(events.filter((e) => e.includes("--to-revisions"))).toHaveLength(3);
+    expect(events.filter((e) => e.includes("--to-revisions"))).toHaveLength(4);
     expect(recorded.digests).toEqual([]);
   });
 
@@ -1351,7 +1403,7 @@ describe("app-roll and converge stay on their side", () => {
     );
     expect(result).toEqual({ ok: true, digests: DIGEST });
     expect(calls.filter((c) => CONVERGE_WRITE.test(c))).toEqual([]);
-    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(3);
+    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(4);
   });
 
   it("#1338: without a converge, a plan whose services dial the database's IP stops before migrations", async () => {

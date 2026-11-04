@@ -30,16 +30,16 @@
 import type { GcloudRunner } from "./gcloud-retry.js";
 import type { ImageDigests, InstallMetadata } from "./install-state.js";
 import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
-import { ROLL_ORDER, type RollSlug } from "./upgrade/app-roll.js";
+import { SERVICE_IMAGE_NAMES, type ServiceImageName } from "./stack-contract.js";
 import type { ReleaseImageForms } from "./upgrade/image-forms.js";
 import { releaseVersionForDigest } from "./upgrade/release-images.js";
 
 /** Every digest each serving image is known by (gcp-lookup.ts servingImageDigests). */
-export type ServingDigests = Readonly<Record<RollSlug, readonly string[]>>;
+export type ServingDigests = Readonly<Record<ServiceImageName, readonly string[]>>;
 
 // #1328 — the MCP-Auth-Proxy serves on every install this code runs on (the
 // upgrader runs only on installs converged to its contract).
-const SLUGS: readonly RollSlug[] = ROLL_ORDER;
+const SLUGS: readonly ServiceImageName[] = SERVICE_IMAGE_NAMES;
 
 /**
  * Whether install.json names the images that serve: per service, the
@@ -176,7 +176,7 @@ export async function findServingRelease(
 type ReleaseJudgement =
   | {
       readonly kind: "judged";
-      readonly matching: readonly RollSlug[];
+      readonly matching: readonly ServiceImageName[];
       readonly platformDigests: ImageDigests | null;
     }
   | { readonly kind: "unreadable"; readonly transient: boolean; readonly message: string };
@@ -191,8 +191,8 @@ async function judgeRelease(
   serving: ServingDigests,
   imageForms: ReleaseImageForms,
 ): Promise<ReleaseJudgement> {
-  const matching: RollSlug[] = [];
-  const platform: Partial<Record<RollSlug, string>> = {};
+  const matching: ServiceImageName[] = [];
+  const platform: Partial<Record<ServiceImageName, string>> = {};
   for (const slug of SLUGS) {
     const index = m.digests[slug];
     // #1328 — a release from before the proxy cannot be what serves here.
@@ -257,7 +257,7 @@ function capitalize(s: string): string {
 }
 
 /** `the admin`, `the gateway and the MCP-Auth-Proxy`, … for the refusal text. */
-function serviceList(slugs: readonly RollSlug[]): string {
+function serviceList(slugs: readonly ServiceImageName[]): string {
   const names = slugs.map((s) => (s === "mcp-auth-proxy" ? "the MCP-Auth-Proxy" : `the ${s}`));
   if (names.length <= 1) return names[0] ?? "";
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;

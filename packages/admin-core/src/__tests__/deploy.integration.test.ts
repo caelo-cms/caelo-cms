@@ -500,7 +500,8 @@ describe("P6 deploy.trigger", () => {
       );
       const timed = await latestRunTimings();
       expect(timed.status).toBe("failed");
-      expect(timed.phases).toEqual(["prepare", "generator"]);
+      // #1330 — a Stage takes the staging publish slot before anything else.
+      expect(timed.phases).toEqual(["lock-wait", "prepare", "generator"]);
       expect(timed.spanCoversSteps).toBe(true);
     } finally {
       delete process.env.CAELO_GENERATOR_CLI;

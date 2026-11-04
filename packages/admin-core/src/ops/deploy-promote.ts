@@ -16,14 +16,13 @@
  * the env-level `X-Robots-Tag` header. A source build from before the
  * env-independent SEO pass is refused with a "Stage again" next step.
  *
- * #650 — a build staged with its own staging host (deploy_runs.site_url
- * set) is not copied: Publish live rebuilds main with the live host and
- * ships the rebuild only when it matches the staged build file by file
- * with the host swapped back (build-parity.ts). Anything else that
- * differs blocks the publish and names the files.
+ * #1330 — every staged build is rendered for the live host (the staging
+ * gateway rewrites it to the staging host while it serves it), so Publish
+ * live is a copy on every provider: nothing is rebuilt (#1003). A build an
+ * older release staged for a separate staging host cannot be copied live
+ * and is refused with "Stage again".
  *
- * #1225 — Publish live holds NO database transaction while it rebuilds and
- * uploads. It is a step-wise op (`defineStepwiseOperation`), like the Stage
+ * #1225 — Publish live holds NO database transaction while it uploads. It is a step-wise op (`defineStepwiseOperation`), like the Stage
  * (deploy-trigger.ts); every database step is a short op of its own:
  *
  *   deploy.start_promote     the gates (targets, a human for production,
@@ -33,9 +32,7 @@
  *   deploy.acquire_live_release        the live-release lease (waits outside
  *                            any transaction for a rollback or plugin-data
  *                            build that is releasing right now)
- *   deploy.acquire_staging_publication (a build with its own staging host)
- *   (select the served staging preview, rebuild + parity, or copy)
- *                            no transaction; progress via deploy.update_progress
+ *   (copy)                   no transaction
  *   deploy.renew_run_lease   the fence: proof the run still holds every lease,
  *                            right before the provider release
  *   (provider release)       no transaction
@@ -51,7 +48,7 @@
  * recorded, because production serves it.
  *
  * Before #1225 one transaction held a pooled connection for the whole
- * rebuild and upload while its own progress writes took more from the same
+ * rebuild (#650, gone with #1330) and upload while its own progress writes took more from the same
  * pool (#1209); an approved card and "publish anyway" ran it inside their
  * own transactions on top of that.
  */
@@ -68,7 +65,6 @@ import {
   type QueryError,
 } from "@caelo-cms/query-api";
 import {
-  CAELO_VERSION,
   type ExecutionContext,
   err,
   ok,
@@ -76,29 +72,17 @@ import {
   phaseTimingSchema,
   type Result,
 } from "@caelo-cms/shared";
-import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator";
+import { readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
-import {
-  buildDirOf,
-  mediaDeliveryFor,
-  removeUploadedBuild,
-  retainedBuildsFor,
-} from "../deploy/build-cleanup.js";
-import { buildManifestOf, compareBuildManifests, parityRefusal } from "../deploy/build-parity.js";
 import {
   DEPLOY_RUN_HEARTBEAT_MS,
   DEPLOY_RUN_LEASE_TTL_MS,
   type DeployRunBeat,
   DeployRunHeartbeat,
 } from "../deploy/deploy-run-lock.js";
-import {
-  abortMessage,
-  resolveGeneratorCli,
-  runGenerator,
-  systemContextOf,
-} from "../deploy/generator-subprocess.js";
+import { abortMessage, systemContextOf } from "../deploy/generator-subprocess.js";
 import { LIVE_RELEASE_WAIT_MS, releaseLiveRelease } from "../deploy/live-release-lock.js";
 import { resolveOutputRoot } from "../deploy/output-root.js";
 import {
@@ -108,32 +92,21 @@ import {
   stagedWithoutPlugins,
 } from "../deploy/plugin-problems.js";
 import { markRedirectsBehind } from "../deploy/redirect-sync.js";
-import {
-  releaseStagingPublication,
-  STAGING_PUBLICATION_WAIT_MS,
-} from "../deploy/staging-publication-lock.js";
-import {
-  type BuildUpload,
-  loadStaticPublisher,
-  type StaticPublisher,
-} from "../deploy/static-publisher.js";
+import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publisher.js";
 import { rewindBakesToRun } from "../plugin-data/stale-pages.js";
 import { jsonbParam } from "../sql-helpers.js";
-import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
+import { stampFirstPublished } from "./content/first-published.js";
 import {
-  effectiveOutDir,
   logRunTimings,
   productionNeedsHuman,
   rowToTarget,
   runStartedAt,
-  selectServedStagingPreview,
   TARGET_COLUMNS,
   type TargetDbRow,
   targetRow,
 } from "./deploy-common.js";
 import { acquireLeaseStep, fenceRunLeases } from "./deploy-lease-steps.js";
 import { beginRunInTx } from "./deploy-run-lifecycle.js";
-import { digestUndigestedMedia } from "./media_digests.js";
 import { actorHasPermission } from "./quality/_permissions.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
 import { recordProductionOverride } from "./quality/production-gate.js";
@@ -182,12 +155,11 @@ const promotePlan = z.object({
   /** The staged run being published and its build. */
   fromRunId: z.string(),
   buildId: z.string(),
-  /** #650 — the staging host the staged build carries, or null (copied as is). */
-  stagedSiteUrl: z.string().nullable(),
-  /** The staged run's first-publication instant (the rebuild renders it too). */
-  publishAt: z.string(),
-  /** The staged build's host-normalised manifest (#650), null when it has none. */
-  parityManifest: z.record(z.string(), z.string()).nullable(),
+  /**
+   * #1330 — where the staged run's artefact lives remotely
+   * (`publish_summary.location`; Firebase: its Hosting version).
+   */
+  stagedLocation: z.string().nullable(),
   /** The Caelo version that rendered the staged build (#834), null before 0287. */
   stagedCaeloVersion: z.string().nullable(),
   stagedPageCount: z.number().int().nullable(),
@@ -228,8 +200,8 @@ export const startPromoteOp = defineOperation({
     const to = rows.find((r) => r.name === input.toTarget);
     if (!from || !to) return refused("fromTarget or toTarget not found");
     const fromRunRows = (await tx.execute(sql`
-      SELECT id::text AS id, build_id, site_url, plugin_problems, parity_manifest,
-             caelo_version, page_count, file_count
+      SELECT id::text AS id, build_id, site_url, plugin_problems,
+             publish_summary->>'location' AS location, caelo_version, page_count, file_count
       FROM deploy_runs
       WHERE target_id = ${from.id}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
       ORDER BY started_at DESC LIMIT 1
@@ -238,7 +210,7 @@ export const startPromoteOp = defineOperation({
       build_id: string | null;
       site_url: string | null;
       plugin_problems: unknown;
-      parity_manifest: Record<string, string> | null;
+      location: string | null;
       caelo_version: string | null;
       page_count: number | string | null;
       file_count: number | string | null;
@@ -249,6 +221,15 @@ export const startPromoteOp = defineOperation({
       // §11): name the next step instead of just the diagnosis.
       return refused(
         `no succeeded build to promote from '${from.name}' — run Stage first (deploy.trigger targetName=${from.name}); Publish live only copies an already-staged build`,
+      );
+    }
+    // #1330 — a copy goes live as it is: a build an older release staged for
+    // a separate staging host (its site_url names another origin than the
+    // live site's) would ship staging URLs to visitors.
+    const siteBaseUrl = (await readSeoSettings(tx)).siteBaseUrl;
+    if (fromRow.site_url !== null && originOf(fromRow.site_url) !== originOf(siteBaseUrl)) {
+      return refused(
+        `the staged build ${fromRow.id} was rendered for ${originOf(fromRow.site_url) ?? fromRow.site_url}, not for the live site (${originOf(siteBaseUrl) ?? siteBaseUrl}) — it was staged by an older Caelo release or before the site's base URL changed. Stage again, then Publish live.`,
       );
     }
     // #1154 — Publish live is a human's click (the toolbar, the pages list,
@@ -300,15 +281,14 @@ export const startPromoteOp = defineOperation({
     }
 
     // The run row commits with this transaction, as `running` with its
-    // lease: the deployments page shows it and its rebuild's progress.
+    // lease: the deployments page shows it.
     await beginRunInTx(tx, {
       runId: input.runId,
       targetId: to.id,
       actorId: ctx.actorId,
       startedAt,
       renderFingerprint: null,
-      // Set when the run finishes: a rebuild is rendered by this version,
-      // a copy keeps the version of the build it copies.
+      // Set when the run finishes: a copy keeps the version of the build it copies.
       caeloVersion: null,
       // The plugin check belongs to the Stage it promotes, not to this run.
       pluginProblems: null,
@@ -324,15 +304,11 @@ export const startPromoteOp = defineOperation({
       to: rowToTarget(to),
       fromRunId: fromRow.id,
       buildId: fromRow.build_id,
-      stagedSiteUrl: fromRow.site_url,
-      // The staged build's instant: the parity guard compares the two
-      // renders, and Publish live stores this value (#1121 review).
-      publishAt: await deployRunStartedAt(tx, fromRow.id),
-      parityManifest: fromRow.parity_manifest,
+      stagedLocation: fromRow.location,
       stagedCaeloVersion: fromRow.caelo_version,
       stagedPageCount: num(fromRow.page_count),
       stagedFileCount: num(fromRow.file_count),
-      siteBaseUrl: (await readSeoSettings(tx)).siteBaseUrl,
+      siteBaseUrl,
       override,
     });
   },
@@ -375,8 +351,6 @@ export const finishPromoteOp = defineOperation({
       fileCount: z.number().int().nullable(),
       buildId: z.string(),
       publishSummary: z.record(z.string(), z.unknown()),
-      /** The live host a rebuild rendered; null for a copied build. */
-      siteUrl: z.string().nullable(),
       caeloVersion: z.string().nullable(),
       override: z.object({ auditRunId: z.string(), reason: z.string() }).nullable(),
       phaseTimings: z.array(phaseTimingSchema),
@@ -435,14 +409,12 @@ export const finishPromoteOp = defineOperation({
         refuse("the publish-anyway decision does not belong to the published build.");
       }
     }
-    // Released first: this transaction keeps the rows locked until it
+    // Released first: this transaction keeps the row locked until it
     // commits, so nobody else publishes in between.
-    await releaseStagingPublication(tx, input.runId);
     await releaseLiveRelease(tx, input.runId);
     if (input.env === "production") {
       // Epic #1107 — the pages of the build it ships get their
-      // first_published_at — the staged run's start, which is what both
-      // the staged build and its live rebuild rendered.
+      // first_published_at — the staged run's start, which the build rendered.
       await stampFirstPublished(tx, input.fromRunId);
       // #1155 — the promoted build baked its plugin data when it was
       // staged; bakes a plugin-data build made since are pending again.
@@ -468,7 +440,6 @@ export const finishPromoteOp = defineOperation({
           file_count = ${input.fileCount},
           build_id = ${input.buildId},
           publish_summary = ${jsonbParam(input.publishSummary)},
-          site_url = ${input.siteUrl},
           caelo_version = ${input.caeloVersion},
           lease_expires_at = NULL
       WHERE id = ${input.runId}::uuid
@@ -488,110 +459,15 @@ class ReleaseRefusedError extends Error {
   override readonly name = "ReleaseRefusedError";
 }
 
-/** #650 — the live rebuild differs from the staged build in more than the host. */
-class ParityRefusalError extends Error {
-  override readonly name = "ParityRefusalError";
-}
-
 type PublishResult = Awaited<ReturnType<StaticPublisher["promoteToProduction"]>>;
 
-/**
- * #650 — for a build staged with its own staging host: rebuild main with
- * the live host into this run (without touching what is served) and
- * compare it file by file with the staged build's host-normalised
- * manifest. Throws {@link ParityRefusalError} naming the differing files,
- * or an Error for a failed rebuild.
- */
-async function rebuildForLive(
-  ctx: ExecutionContext,
-  steps: OperationSteps,
-  args: {
-    readonly plan: PromotePlan;
-    readonly publisher: StaticPublisher;
-    readonly provider: string | undefined;
-    readonly target: DeployTarget;
-    readonly repoRoot: string;
-    readonly timer: PhaseTimer;
-    readonly stop: AbortSignal;
-  },
-): Promise<{
-  buildDir: string;
-  pageCount: number;
-  fileCount: number;
-  upload: BuildUpload | null;
-}> {
-  const { plan } = args;
-  if (!args.publisher.publishLiveBuild) {
-    throw new Error(
-      `staged build ${plan.fromRunId} was rendered for a separate staging host, but the ${args.provider ?? "self-hosted"} publisher cannot publish a rebuilt tree. Stage again so the build carries the live host.`,
-    );
-  }
-  // #1271 — the build names media by their stored digests (see deploy.trigger).
-  const digested = await digestUndigestedMedia(steps.registry, steps.adapter, systemContextOf(ctx));
-  if (digested !== null) throw new Error(`the media digests could not be stored: ${digested}`);
-  // #1271 — streamed into the provider as it is written; nothing of it is
-  // served before the parity guard passed and the release ran.
-  const upload = args.publisher.openBuildUpload
-    ? await args.publisher.openBuildUpload({ runId: plan.toRunId, target: args.target })
-    : null;
+/** The origin of `url`, or null when it is not one. */
+function originOf(url: string): string | null {
   try {
-    return await rebuildInto(ctx, steps, args, upload);
-  } catch (e) {
-    await upload?.abort();
-    throw e;
+    return new URL(url).origin;
+  } catch {
+    return null;
   }
-}
-
-/** The live rebuild itself (see {@link rebuildForLive}). */
-async function rebuildInto(
-  ctx: ExecutionContext,
-  steps: OperationSteps,
-  args: Parameters<typeof rebuildForLive>[2],
-  upload: BuildUpload | null,
-): Promise<Awaited<ReturnType<typeof rebuildForLive>>> {
-  const { plan } = args;
-  if (plan.parityManifest === null) {
-    throw new Error(
-      `staged build ${plan.fromRunId} has no parity manifest, so Publish live cannot prove the live build matches it. Stage again, then Publish live.`,
-    );
-  }
-  const built = await runGenerator(steps.registry, steps.adapter, ctx, {
-    cliPath: resolveGeneratorCli(),
-    runId: plan.toRunId,
-    target: args.target,
-    repoRoot: args.repoRoot,
-    publishAt: plan.publishAt,
-    // Nothing may serve this build before the parity guard passed.
-    syncCurrent: false,
-    // #1211 — an uploading publisher keeps no builds in the container.
-    retainBuilds: retainedBuildsFor(args.publisher),
-    mediaDelivery: mediaDeliveryFor(args.publisher),
-    ...(upload ? { upload } : {}),
-    signal: args.stop,
-  });
-  if (built.ok) args.timer.include("generator", built.result.phases);
-  args.timer.lap("generator");
-  if (!built.ok) {
-    const tail = built.stderr ? ` — ${built.stderr.slice(-300).trim()}` : "";
-    throw new Error(`the live rebuild failed: ${built.message}${tail}`);
-  }
-  const diff = compareBuildManifests(
-    plan.parityManifest,
-    await buildManifestOf(built.result.buildDir, "plain"),
-  );
-  const refusal = parityRefusal(diff, {
-    stagingRunId: plan.fromRunId,
-    stagedCaeloVersion: plan.stagedCaeloVersion,
-    runningCaeloVersion: CAELO_VERSION,
-  });
-  args.timer.lap("parity");
-  if (refusal) throw new ParityRefusalError(refusal);
-  return {
-    buildDir: built.result.buildDir,
-    pageCount: built.result.pageCount,
-    fileCount: built.result.fileCount,
-    upload,
-  };
 }
 
 /** The body of deploy.promote (see the module comment). */
@@ -623,7 +499,6 @@ async function runPromote(
   const sys = systemContextOf(ctx);
   const provider = process.env.CAELO_PROVIDER;
   const repoRoot = resolveOutputRoot(input.repoRoot);
-  const withStagingHost = plan.stagedSiteUrl !== null;
 
   const heartbeat = new DeployRunHeartbeat(async (): Promise<DeployRunBeat> => {
     const r = await execute(registry, adapter, sys, "deploy.renew_run_lease", { runId, ttlMs });
@@ -632,7 +507,6 @@ async function runPromote(
   }, DEPLOY_RUN_HEARTBEAT_MS);
   const stop = steps.signal ? AbortSignal.any([steps.signal, heartbeat.lost]) : heartbeat.lost;
   let publisher: StaticPublisher | null = null;
-  let buildDir: string | null = null;
 
   /** Record the failure (releasing every lease) and answer with `reply`. */
   const fail = async (
@@ -654,7 +528,7 @@ async function runPromote(
     fenceRunLeases(steps, sys, {
       runId,
       ttlMs,
-      need: { publication: withStagingHost, liveRelease: true },
+      need: { publication: false, liveRelease: true },
       lostMessage: (renewError) =>
         renewError !== null
           ? `Publish live ${runId} could not confirm it still holds its place in the publish order (${renewError}), so nothing was released. Publish live again.`
@@ -664,7 +538,7 @@ async function runPromote(
   try {
     timer.lap("prepare");
     // A rollback, plugin-data build or CDN purge must not release another
-    // version mid-publish. Lock order: live release first, then staging.
+    // version mid-publish. Staging is not touched: it keeps serving its slot.
     const live = await acquireLeaseStep(steps, sys, {
       op: "deploy.acquire_live_release",
       runId,
@@ -677,87 +551,11 @@ async function runPromote(
     });
     if (!live.ok) return await fail(live.message);
     heartbeat.expectLiveRelease(true);
-    // #650 — no Stage may publish or prune previews until this publish has
-    // decided what staging serves next. A Stage that is publishing right
-    // now finishes first.
-    let servedRunId: string | null = null;
-    if (withStagingHost) {
-      const slot = await acquireLeaseStep<{
-        acquired: boolean;
-        heldByRunId: string | null;
-        servedRunId: string | null;
-      }>(steps, sys, {
-        op: "deploy.acquire_staging_publication",
-        runId,
-        ttlMs,
-        stop,
-        waitMs: STAGING_PUBLICATION_WAIT_MS,
-        what: "staging publish slot",
-        busyMessage: (heldBy) =>
-          `a Stage is publishing the staging site right now (${heldBy ? `build ${heldBy}` : "a run of the previous Caelo version, during the update"}) and did not finish within ${Math.round(STAGING_PUBLICATION_WAIT_MS / 1000)} s. Nothing was published; Publish live again once that Stage finished (Settings → Deployments shows it).`,
-      });
-      if (!slot.ok) return await fail(slot.message);
-      heartbeat.expectPublication(true);
-      servedRunId = slot.value.servedRunId;
-    }
     timer.lap("lock-wait");
     try {
       publisher = await loadStaticPublisher(provider);
     } catch (e) {
       return await fail(`promotion failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
-    const target: DeployTarget = {
-      ...plan.to,
-      // v0.2.78 — on Cloud Run the row's out_dir resolves to a read-only path.
-      outDir: effectiveOutDir(provider, plan.to.env, plan.to.outDir),
-    };
-
-    if (withStagingHost) {
-      // staging.<domain> keeps serving what it serves — the build about to
-      // go live, or a newer Stage — so after the release it shows the
-      // published state instead of "nothing staged". Re-selecting it keeps
-      // its preview alive even when it was staged before served previews
-      // stopped expiring, and sweeps up previews a failed retirement left.
-      // Done before the release, so a failure publishes nothing; retiring
-      // other previews needs proof this run still holds the staging slot.
-      const proof = await fence();
-      if (!proof.ok) return await fail(proof.message);
-      try {
-        await selectServedStagingPreview(publisher, servedRunId, { retireUntil: proof.until });
-      } catch (e) {
-        timer.lap("select-preview");
-        return await fail(`promotion failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      timer.lap("select-preview");
-    }
-
-    // #650 — a build staged with its own staging host cannot be copied live
-    // (every absolute URL names staging.<domain>): rebuild the same content
-    // with the live host, prove it differs only in the host, and publish the
-    // rebuild. A build staged with the live host is copied as before.
-    let rebuilt: Awaited<ReturnType<typeof rebuildForLive>> | null = null;
-    if (withStagingHost) {
-      // #1211 — every way out deletes what the generator wrote (finally).
-      buildDir = buildDirOf(repoRoot, target.outDir, runId);
-      try {
-        rebuilt = await rebuildForLive(ctx, steps, {
-          plan,
-          publisher,
-          provider,
-          target,
-          repoRoot,
-          timer,
-          stop,
-        });
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        // The parity guard's refusal already says what happened and what
-        // to do next; anything else is an unexpected publish failure.
-        return await fail(
-          message,
-          e instanceof ParityRefusalError ? message : `promotion failed: ${message}`,
-        );
-      }
     }
 
     // The last point a stop is honoured is the fence the publisher runs
@@ -786,28 +584,17 @@ async function runPromote(
       // v0.2.78 — delegate to the per-provider StaticPublisher. Self-hosted
       // does the copyTreeExcept + syncContents overlay; cloud does
       // cross-bucket server-side object copies or a version release.
-      summary =
-        rebuilt !== null && publisher.publishLiveBuild
-          ? await publisher.publishLiveBuild({
-              buildDir: rebuilt.buildDir,
-              runId,
-              target,
-              sourceRunId: plan.fromRunId,
-              beforeRelease,
-              ...(rebuilt.upload ? { upload: rebuilt.upload } : {}),
-            })
-          : await publisher.promoteToProduction({
-              sourceRunId: plan.buildId,
-              sourceBuildDir: resolve(repoRoot, plan.from.outDir, "builds", plan.buildId),
-              fromTarget: plan.from,
-              toTarget: plan.to,
-              siteBaseUrl: plan.siteBaseUrl,
-              beforeRelease,
-            });
+      summary = await publisher.promoteToProduction({
+        sourceRunId: plan.buildId,
+        sourceBuildDir: resolve(repoRoot, plan.from.outDir, "builds", plan.buildId),
+        sourceLocation: plan.stagedLocation,
+        fromTarget: plan.from,
+        toTarget: plan.to,
+        siteBaseUrl: plan.siteBaseUrl,
+        beforeRelease,
+      });
     } catch (e) {
       timer.lap("publish");
-      // Nothing of a given-up rebuild is served (no-op once released).
-      await rebuilt?.upload?.abort();
       if (e instanceof ReleaseRefusedError) return await fail(e.message);
       return await fail(`promotion failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -821,14 +608,12 @@ async function runPromote(
       fromRunId: plan.fromRunId,
       targetId: plan.to.id,
       env: plan.to.env,
-      pageCount: rebuilt ? rebuilt.pageCount : plan.stagedPageCount,
-      fileCount: rebuilt ? rebuilt.fileCount : plan.stagedFileCount,
+      pageCount: plan.stagedPageCount,
+      fileCount: plan.stagedFileCount,
       buildId: published.destinationBuildId,
       publishSummary: published as Record<string, unknown>,
-      siteUrl: rebuilt ? plan.siteBaseUrl : null,
-      // #834 — a rebuild is rendered by this version; a copy keeps the
-      // version that rendered the copied build.
-      caeloVersion: rebuilt ? CAELO_VERSION : plan.stagedCaeloVersion,
+      // #834 — a copy keeps the version that rendered the copied build.
+      caeloVersion: plan.stagedCaeloVersion,
       override: plan.override,
       phaseTimings: timer.phases(),
     });
@@ -865,9 +650,6 @@ async function runPromote(
   } finally {
     await heartbeat.stop();
     timer.close();
-    // Uploaded, refused or failed: the provider holds what goes live, not
-    // /tmp (memory on Cloud Run).
-    if (publisher && buildDir) await removeUploadedBuild(publisher, buildDir);
   }
 }
 

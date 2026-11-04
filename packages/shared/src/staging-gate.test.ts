@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { sessionCookieValue } from "./session-cookie.js";
 import {
   constantTimeEqual,
   DEFAULT_STAGING_HEADER_NAME,
@@ -12,18 +13,27 @@ import {
   normalizeStagingHost,
   parseBasicAuthorization,
   parseCidr,
-  readCookie,
-  STAGING_SESSION_COOKIE,
+  STAGING_RUN_TOKEN_HEADER,
+  STAGING_RUN_TOKEN_MAX_TTL_SECONDS,
+  STAGING_SESSION_ENTRY,
   type StagingAccessRequest,
   type StagingAccessSettings,
   safeStagingNextPath,
+  signStagingRunToken,
   signStagingToken,
   stagingHostProblem,
+  stagingIpAllowlistSupported,
+  verifyStagingRunToken,
   verifyStagingToken,
 } from "./staging-gate.js";
 
 const SECRET = "test-gate-secret-0123456789abcdef";
 const NOW = 1_800_000_000;
+
+/** The staging session as the gateway stores it: the `staging` entry of `__session`. */
+function gateCookie(token: string): string {
+  return `a=1; __session=${sessionCookieValue(new Map([[STAGING_SESSION_ENTRY, { value: token, expiresAt: NOW + 3600 }]]))}; b=2`;
+}
 
 const OFF: StagingAccessSettings = {
   cookieEnabled: false,
@@ -147,11 +157,6 @@ describe("header parsing", () => {
     expect(parseBasicAuthorization(`Basic ${btoa("nocolon")}`)).toBeNull();
     expect(parseBasicAuthorization(null)).toBeNull();
   });
-
-  it("reads one cookie", () => {
-    expect(readCookie("a=1; caelo_staging_access=tok; b=2", STAGING_SESSION_COOKIE)).toBe("tok");
-    expect(readCookie("a=1", STAGING_SESSION_COOKIE)).toBeNull();
-  });
 });
 
 describe("decideStagingAccess", () => {
@@ -165,23 +170,17 @@ describe("decideStagingAccess", () => {
   it("cookie mode: a valid session cookie gets in, an expired or open token does not", async () => {
     const s = { ...OFF, cookieEnabled: true };
     const session = await signStagingToken(SECRET, "session", NOW + 100);
-    expect(await decide(s, req({ cookieHeader: `${STAGING_SESSION_COOKIE}=${session}` }))).toEqual({
+    expect(await decide(s, req({ cookieHeader: gateCookie(session) }))).toEqual({
       allowed: true,
       via: "cookie",
       satisfied: ["cookie"],
     });
     const expired = await signStagingToken(SECRET, "session", NOW - 1);
-    expect(
-      (await decide(s, req({ cookieHeader: `${STAGING_SESSION_COOKIE}=${expired}` }))).allowed,
-    ).toBe(false);
+    expect((await decide(s, req({ cookieHeader: gateCookie(expired) }))).allowed).toBe(false);
     const open = await signStagingToken(SECRET, "open", NOW + 100);
-    expect(
-      (await decide(s, req({ cookieHeader: `${STAGING_SESSION_COOKIE}=${open}` }))).allowed,
-    ).toBe(false);
+    expect((await decide(s, req({ cookieHeader: gateCookie(open) }))).allowed).toBe(false);
     // Cookie mode off: the same valid cookie is ignored.
-    expect(
-      (await decide(OFF, req({ cookieHeader: `${STAGING_SESSION_COOKIE}=${session}` }))).allowed,
-    ).toBe(false);
+    expect((await decide(OFF, req({ cookieHeader: gateCookie(session) }))).allowed).toBe(false);
   });
 
   it("basic-auth mode: right user + derived password only; 401 otherwise", async () => {
@@ -255,7 +254,7 @@ describe("decideStagingAccess", () => {
       await decide(
         s,
         req({
-          cookieHeader: `${STAGING_SESSION_COOKIE}=${session}`,
+          cookieHeader: gateCookie(session),
           headers: { "x-caelo-staging-key": value },
           authorizationHeader: basic("crawler", "the-sites-own-password"),
         }),
@@ -309,15 +308,60 @@ describe("staging host setting", () => {
     expect(stagingHostProblem("WWW.example.com", reserved)).toContain("live site");
     expect(stagingHostProblem("admin.example.com", reserved)).toContain("admin");
   });
-  it("on gcp-firebase refuses hosts a Cloud Run domain mapping cannot take (> 64 chars)", () => {
+  it("takes a long host on every provider (#1331: no Cloud Run domain mapping any more)", () => {
     const long = `staging.${"a".repeat(50)}.example.com`; // 70 characters
     expect(stagingHostProblem(long, reserved)).toBeNull();
-    expect(stagingHostProblem(long, reserved, { provider: "self-hosted" })).toBeNull();
-    const problem = stagingHostProblem(long, reserved, { provider: "gcp-firebase" });
-    expect(problem).toContain("at most 64");
-    expect(problem).toContain("pick a shorter host");
-    const fits = `s.${"a".repeat(50)}.example.com`; // 64 characters
-    expect(fits.length).toBe(64);
-    expect(stagingHostProblem(fits, reserved, { provider: "gcp-firebase" })).toBeNull();
+  });
+});
+
+describe("#1330 per-run tokens", () => {
+  const decide = (request: StagingAccessRequest) =>
+    decideStagingAccess({ settings: OFF, secret: SECRET, request, nowSeconds: NOW });
+  const run = "0b7c0d6e-1111-4111-8111-111111111111";
+
+  it("admits a valid capture token even with every mode off; a check token opens nothing", async () => {
+    const capture = await signStagingRunToken(SECRET, "capture", run, NOW + 300, NOW);
+    expect(await verifyStagingRunToken(SECRET, capture, NOW)).toEqual({
+      purpose: "capture",
+      runId: run,
+    });
+    expect(await decide(req({ headers: { [STAGING_RUN_TOKEN_HEADER]: capture } }))).toEqual({
+      allowed: true,
+      via: "run-token",
+      satisfied: ["run-token"],
+    });
+    const check = await signStagingRunToken(SECRET, "check", run, NOW + 300, NOW);
+    expect(await verifyStagingRunToken(SECRET, check, NOW)).toEqual({
+      purpose: "check",
+      runId: run,
+    });
+    expect((await decide(req({ headers: { [STAGING_RUN_TOKEN_HEADER]: check } }))).allowed).toBe(
+      false,
+    );
+  });
+
+  it("refuses an expired, forged, other-key or over-long token", async () => {
+    const expired = await signStagingRunToken(SECRET, "capture", run, NOW - 1, NOW - 100);
+    expect(await verifyStagingRunToken(SECRET, expired, NOW)).toBeNull();
+    const token = await signStagingRunToken(SECRET, "capture", run, NOW + 60, NOW);
+    expect(await verifyStagingRunToken("another-key-0123456789abcdef0123", token, NOW)).toBeNull();
+    expect(await verifyStagingRunToken(SECRET, token.replace("capture", "check"), NOW)).toBeNull();
+    expect(await verifyStagingRunToken(SECRET, `${token}x`, NOW)).toBeNull();
+    await expect(
+      signStagingRunToken(SECRET, "capture", run, NOW + STAGING_RUN_TOKEN_MAX_TTL_SECONDS + 1, NOW),
+    ).rejects.toThrow(/exceeds/);
+    // A session or open token is not a run token.
+    const session = await signStagingToken(SECRET, "session", NOW + 60);
+    expect(await verifyStagingRunToken(SECRET, session, NOW)).toBeNull();
+    expect((await decide(req({ headers: { [STAGING_RUN_TOKEN_HEADER]: session } }))).allowed).toBe(
+      false,
+    );
+  });
+
+  it("turns the IP allowlist off only on gcp-firebase", () => {
+    expect(stagingIpAllowlistSupported("gcp-firebase")).toBe(false);
+    for (const p of ["gcp", "self-hosted", "aws", "azure", undefined]) {
+      expect(stagingIpAllowlistSupported(p)).toBe(true);
+    }
   });
 });

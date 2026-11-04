@@ -1,33 +1,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #650 — the protected staging domain, end to end on gcp-firebase
- * (real generator, real Postgres, an in-memory fake of the Firebase
- * Hosting REST API — no network, no credentials):
+ * Issue #650 / #1330 / #1331 — staging behind the staging gateway, end to
+ * end on gcp-firebase (real generator, real Postgres, an in-memory fake of
+ * the Firebase Hosting REST API and of the private staging bucket — no
+ * network, no credentials):
  *
- *   - Stage renders `https://staging.<domain>` into canonical / sitemap /
- *     robots, records a host-normalised parity manifest, points the gate at
- *     the new preview channel and retires the older ones; operators are
- *     shown the staging host, never the channel;
- *   - Publish live rebuilds with the live host, passes the parity guard,
- *     releases the rebuild on the live channel and retires the last
- *     preview;
- *   - a change merged after the Stage blocks Publish live and names the
- *     file;
- *   - the access settings ops and their §11.A proposals;
- *   - #969: the served preview is kept alive by TTL refreshes (Stage,
- *     Publish live, deploy.refresh_staging_preview) — the fake refuses the
- *     expireTime clear exactly like the live API.
+ *   - Stage renders the live host, finalizes a Hosting version it releases
+ *     nowhere (no preview channel), fills the staging slot staging does not
+ *     serve and points the staging gateway at it through cms_public_staging
+ *     (the gate key goes there and only there);
+ *   - Publish live releases a copy of that version, rebuilding nothing;
+ *   - a Stage takes the staging publish slot before it builds;
+ *   - the access settings ops and their §11.A proposals.
  */
 
 import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import { CAELO_VERSION, deriveStagingCredential, type ExecutionContext } from "@caelo-cms/shared";
+import { deriveStagingCredential, type ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
 import { DEPLOY_RUN_LOCK_PREFIX } from "../deploy/deploy-run-lock.js";
@@ -39,12 +34,13 @@ import {
 import {
   LEGACY_STAGING_PUBLICATION_LOCK_KEY,
   STAGING_PUBLICATION_LEASE,
-  tryLockStagingPublication,
 } from "../deploy/staging-publication-lock.js";
-import { SERVED_PREVIEW_CHANNEL_TTL } from "../deploy/static-publisher-firebase.js";
+import { setStagingBucketForTests } from "../deploy/staging-slots.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
+import { publishProjectionOnce, stagingPublicAdapter } from "../public-projection.js";
 import { registerAdminOps } from "../register.js";
+import { type FakeStagingBucket, fakeStagingBucket } from "./fixtures/fake-staging-bucket.js";
 import { FakeChannelLifetimes } from "./fixtures/firebase-channel-lifetime.js";
 import { ensureRoleUser } from "./fixtures/role-user.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
@@ -61,7 +57,8 @@ mock.module("google-auth-library", () => ({
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
-if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
+const STAGING_PUBLIC_URL = process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL;
+if (!ADMIN_URL || !PUBLIC_URL || !STAGING_PUBLIC_URL) throw new Error("DB URLs required");
 
 const LIVE = "https://example.com";
 const STAGING = "https://staging.example.com";
@@ -69,7 +66,7 @@ const GATE_SECRET = "integration-gate-secret";
 const SITE = "test-site";
 const API = "https://firebasehosting.googleapis.com/v1beta1/";
 const UPLOAD = "https://upload.test/";
-const DAY_MS = 24 * 60 * 60 * 1000;
+const _DAY_MS = 24 * 60 * 60 * 1000;
 
 const SYSTEM: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -133,13 +130,37 @@ class FakeFirebase {
       await this.onPopulate?.();
       const v = this.versions.get(populate[1] ?? "");
       if (!v) throw new Error("populate on unknown version");
-      v.files = parsed.files;
+      v.files = { ...v.files, ...parsed.files };
       return json({
-        uploadRequiredHashes: Object.values(v.files).filter((h) => !this.blobs.has(h)),
+        uploadRequiredHashes: Object.values(parsed.files as Record<string, string>).filter(
+          (h) => !this.blobs.has(h),
+        ),
         uploadUrl: `${UPLOAD}${populate[1]}`,
       });
     }
-    if (method === "PATCH" && /versions\/[^/]+$/.test(route)) return json({});
+    const versionRoute = route.match(/^sites\/[^/]+\/versions\/([^/:]+)$/);
+    if (method === "PATCH" && versionRoute) {
+      // #1330 — the config is set when the version is finalized.
+      const v = this.versions.get(versionRoute[1] ?? "");
+      if (v && (params.get("updateMask") ?? "").includes("config")) v.config = parsed.config;
+      return json({});
+    }
+    if (method === "GET" && versionRoute) {
+      const v = this.versions.get(versionRoute[1] ?? "");
+      if (!v) return new Response("{}", { status: 404 });
+      return json({ name: `sites/${SITE}/versions/${versionRoute[1]}`, config: v.config });
+    }
+    const filesRoute = route.match(/^sites\/[^/]+\/versions\/([^/:]+)\/files$/);
+    if (method === "GET" && filesRoute) {
+      const v = this.versions.get(filesRoute[1] ?? "");
+      return json({
+        files: Object.entries(v?.files ?? {}).map(([path, hash]) => ({
+          path,
+          hash,
+          status: "ACTIVE",
+        })),
+      });
+    }
     if (method === "POST" && route === `sites/${SITE}/channels`) {
       const id = params.get("channelId") ?? "";
       const channelUrl = `https://${SITE}--${id}-x1y2.web.app`;
@@ -185,7 +206,9 @@ class FakeFirebase {
 const realFetch = globalThis.fetch;
 const fake = new FakeFirebase();
 let adapter: DatabaseAdapter;
+let stagingAdapter: DatabaseAdapter;
 let registry: OperationRegistry;
+let slots: FakeStagingBucket;
 let testRoot: string;
 let moduleId = "";
 const ENV = {
@@ -221,7 +244,8 @@ async function wipe(): Promise<void> {
     await tx`UPDATE staging_access SET cookie_enabled = true, basic_auth_enabled = false,
                basic_auth_user = 'caelo', basic_auth_nonce = NULL, header_enabled = false,
                header_name = 'X-Caelo-Staging-Key', header_nonce = NULL, ip_allowlist = '{}',
-               origin_url = NULL, origin_run_id = NULL, staging_host = NULL WHERE id = 1`;
+               origin_url = NULL, origin_run_id = NULL, served_location = NULL,
+               staging_host = NULL WHERE id = 1`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${tx(SLUGS)})`;
     await tx`DELETE FROM pages WHERE slug IN ${tx(SLUGS)}`;
     await tx`DELETE FROM modules WHERE slug = ${MOD_SLUG}`;
@@ -256,8 +280,11 @@ async function publish<T>(input: Record<string, unknown>): Promise<T> {
 async function stagingRow() {
   return withSql(
     (tx) =>
-      tx`SELECT origin_url, origin_run_id::text AS origin_run_id FROM staging_access WHERE id = 1`,
-  ) as Promise<{ origin_url: string | null; origin_run_id: string | null }[]>;
+      tx`SELECT origin_url, origin_run_id::text AS origin_run_id, served_location
+         FROM staging_access WHERE id = 1`,
+  ) as Promise<
+    { origin_url: string | null; origin_run_id: string | null; served_location: string | null }[]
+  >;
 }
 
 beforeAll(async () => {
@@ -266,10 +293,13 @@ beforeAll(async () => {
     process.env[k] = v;
   }
   globalThis.fetch = fake.fetch as typeof fetch;
+  slots = fakeStagingBucket();
+  setStagingBucketForTests(slots.bucket);
   await wipe();
   restoreSiteBaseUrl = await pinSiteBaseUrl(ADMIN_URL!, LIVE);
   restoreSiteLanguage = await pinSiteLanguage(ADMIN_URL!, "en");
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  stagingAdapter = stagingPublicAdapter(STAGING_PUBLIC_URL!);
   registry = new OperationRegistry();
   registerAdminOps(registry);
   setDeployBridge({ registry, adapter });
@@ -317,6 +347,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   globalThis.fetch = realFetch;
+  setStagingBucketForTests(null);
   for (const [k, v] of Object.entries(savedEnv)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -327,188 +358,165 @@ afterAll(async () => {
   await restoreSiteLanguage?.();
   await rm(testRoot, { recursive: true, force: true });
   await adapter.close();
+  await stagingAdapter.close();
 });
 
-describe("Stage → Publish live with a protected staging domain (gcp-firebase)", () => {
-  it("Stage renders the staging host, points the gate at the new channel and prunes older ones", async () => {
+describe("Stage → Publish live behind the staging gateway (gcp-firebase, #1330, #1331)", () => {
+  /** The staging gateway's row, read as the staging gateway's own database holds it. */
+  async function stagingSite(url: string) {
+    const sql = new SQL(url);
+    try {
+      return (await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return tx`SELECT staging_host, gate_secret, served_run_id::text AS served_run_id,
+                         served_location, build_origin FROM published_staging_site`;
+      })) as {
+        staging_host: string | null;
+        gate_secret: string | null;
+        served_run_id: string | null;
+        served_location: string | null;
+        build_origin: string | null;
+      }[];
+    } finally {
+      await sql.end();
+    }
+  }
+
+  it("Stage renders the live host, fills a staging slot and points the staging gateway at it", async () => {
     const first = await ok<{ runId: string; previewUrl?: string }>("deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
     });
-    const second = await ok<{ runId: string; previewUrl?: string }>("deploy.trigger", {
+    // Operators and the AI are shown the staging host.
+    expect(first.previewUrl).toBe(`${STAGING}/`);
+    const [run] = (await withSql(
+      (tx) => tx`SELECT site_url, publish_summary FROM deploy_runs WHERE id = ${first.runId}::uuid`,
+    )) as { site_url: string; publish_summary: { location: string; stagingLocation: string } }[];
+    // One build for staging and live: the live host, rewritten by the gateway.
+    expect(run?.site_url).toBe(LIVE);
+    const page = slots.objects.get(
+      `${run!.publish_summary.stagingLocation}/${PAGE_SLUG}/index.html`,
+    );
+    expect(page?.toString()).toContain(`${LIVE}/${PAGE_SLUG}/`);
+    expect(page?.toString()).not.toContain("staging.example.com");
+    // The Hosting version is finalized and released nowhere: no preview channel.
+    expect(fake.channels.size).toBe(0);
+    expect(fake.live).toEqual([]);
+    expect(await stagingRow()).toEqual([
+      { origin_url: null, origin_run_id: first.runId, served_location: "_slots/a" },
+    ]);
+    // The drain published it into the staging database, with the gate key —
+    // and nothing of it into the live database (#1331).
+    await publishProjectionOnce(adapter, stagingAdapter, { declarations: new Map() });
+    expect(await stagingSite(STAGING_PUBLIC_URL!)).toEqual([
+      {
+        staging_host: "staging.example.com",
+        gate_secret: GATE_SECRET,
+        served_run_id: first.runId,
+        served_location: "_slots/a",
+        build_origin: LIVE,
+      },
+    ]);
+    expect(await stagingSite(PUBLIC_URL!)).toEqual([]);
+
+    // The next Stage fills the other slot and leaves the served one alone.
+    slots.writes.length = 0;
+    const second = await ok<{ runId: string }>("deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
     });
-    // Operators and the AI are shown the staging host, never the channel.
-    expect(second.previewUrl).toBe(`${STAGING}/`);
-
-    const [run] = (await withSql(
-      (tx) => tx`SELECT site_url, parity_manifest, publish_summary
-                 FROM deploy_runs WHERE id = ${second.runId}::uuid`,
-    )) as {
-      site_url: string;
-      parity_manifest: Record<string, string>;
-      publish_summary: { location: string; previewUrl: string };
-    }[];
-    expect(run?.site_url).toBe(STAGING);
-    expect(Object.keys(run?.parity_manifest ?? {})).toContain(`${PAGE_SLUG}/index.html`);
-    expect(Object.keys(run?.parity_manifest ?? {})).not.toContain("robots.txt");
-
-    const page = fake.body(run!.publish_summary.location, `/${PAGE_SLUG}/index.html`);
-    expect(page).toContain(`${STAGING}/${PAGE_SLUG}/`);
-    expect(page).not.toContain(`"${LIVE}/`);
-    expect(fake.body(run!.publish_summary.location, "/sitemap.xml")).toContain(STAGING);
-
-    const [row] = await stagingRow();
-    expect(row?.origin_url).toBe(run!.publish_summary.previewUrl);
-    expect(row?.origin_run_id).toBe(second.runId);
-    // Only the current Stage's channel is left, refreshed to the 30-day
-    // maximum: staging must not turn into a 404 after an idle week (#969 —
-    // with the live API's refusal of the expireTime clear in the fake).
-    expect([...fake.channels.keys()]).toEqual([`runid-${second.runId}`]);
-    expect(fake.lifetimes.remainingMs(`runid-${second.runId}`)).toBeGreaterThan(29 * DAY_MS);
-    expect(first.runId).not.toBe(second.runId);
+    expect(slots.writes.every((w) => w.startsWith("_slots/b"))).toBe(true);
+    expect((await stagingRow())[0]).toMatchObject({
+      origin_run_id: second.runId,
+      served_location: "_slots/b",
+    });
   });
 
-  it("Publish live rebuilds with the live host, passes the parity guard and keeps staging on the published build", async () => {
+  it("Publish live copies the staged version live, nothing rebuilt, and staging keeps its slot", async () => {
     const staged = await ok<{ runId: string }>("deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
     });
     await markAudited(staged.runId);
+    const [stagedRun] = (await withSql(
+      (tx) => tx`SELECT publish_summary->>'location' AS location FROM deploy_runs
+                 WHERE id = ${staged.runId}::uuid`,
+    )) as { location: string }[];
+    const servedBefore = await stagingRow();
     const promoted = await publish<{ toRunId: string; buildId: string }>({
       fromTarget: "staging",
       toTarget: "production",
       repoRoot: testRoot,
     });
-    // "Live matches staging" keeps working: the live run names the Stage.
     expect(promoted.buildId).toBe(staged.runId);
     const liveVersion = fake.live[0]!;
-    const page = fake.body(liveVersion, `/${PAGE_SLUG}/index.html`);
-    expect(page).toContain(`${LIVE}/${PAGE_SLUG}/`);
-    expect(page).not.toContain("staging.example.com");
+    // A copy of the staged version: same page bytes, production robots.
+    expect(fake.body(liveVersion, `/${PAGE_SLUG}/index.html`)).toBe(
+      fake.body(stagedRun!.location, `/${PAGE_SLUG}/index.html`),
+    );
     expect(fake.body(liveVersion, "/robots.txt")).toContain(`Sitemap: ${LIVE}/sitemap.xml`);
-
     const [run] = (await withSql(
-      (tx) => tx`SELECT status, site_url, publish_summary->>'location' AS location
-                 FROM deploy_runs WHERE id = ${promoted.toRunId}::uuid`,
-    )) as { status: string; site_url: string; location: string }[];
-    expect(run).toEqual({ status: "succeeded", site_url: LIVE, location: liveVersion });
-    // Staging keeps serving the build that just went live instead of
-    // answering every page with "nothing staged"; only its channel is left.
-    const [stagedRun] = (await withSql(
-      (tx) => tx`SELECT publish_summary->>'previewUrl' AS preview_url
-                 FROM deploy_runs WHERE id = ${staged.runId}::uuid`,
-    )) as { preview_url: string }[];
-    expect(await stagingRow()).toEqual([
-      { origin_url: stagedRun!.preview_url, origin_run_id: staged.runId },
-    ]);
-    expect([...fake.channels.keys()]).toEqual([`runid-${staged.runId}`]);
+      (tx) =>
+        tx`SELECT status, phase_timings FROM deploy_runs WHERE id = ${promoted.toRunId}::uuid`,
+    )) as { status: string; phase_timings: { phase: string }[] }[];
+    expect(run?.status).toBe("succeeded");
+    expect(run?.phase_timings.map((p) => p.phase)).not.toContain("generator");
+    expect(await stagingRow()).toEqual(servedBefore);
+  });
+
+  it("Publish live refuses a build an older release staged for the staging host (Stage again)", async () => {
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    await markAudited(staged.runId);
+    await withSql(
+      (tx) => tx`UPDATE deploy_runs SET site_url = ${STAGING} WHERE id = ${staged.runId}::uuid`,
+    );
+    const r = await execute(registry, adapter, PUBLISHER, "deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain("Stage again");
   });
 
   it("#1003 a Stage and a Publish live record where their time went, step by step", async () => {
-    type TimedRun = {
-      phase_timings: { phase: string; ms: number }[];
-      publish_summary: Record<string, unknown>;
-      took_ms: number;
-    };
-    const timedRun = async (runId: string): Promise<TimedRun> => {
-      const [run] = (await withSql(
-        (tx) => tx`SELECT phase_timings, publish_summary,
-                          (EXTRACT(EPOCH FROM finished_at - started_at) * 1000)::int AS took_ms
-                   FROM deploy_runs WHERE id = ${runId}::uuid`,
-      )) as TimedRun[];
-      if (!run) throw new Error(`no deploy run ${runId}`);
-      return run;
-    };
-    const topLevel = (r: TimedRun) =>
-      r.phase_timings.map((p) => p.phase).filter((p) => !p.includes("."));
-    const names = (r: TimedRun) => r.phase_timings.map((p) => p.phase);
-
     const staged = await ok<{ runId: string; phases: { phase: string; ms: number }[] }>(
       "deploy.trigger",
       { targetName: "staging", repoRoot: testRoot },
     );
-    const stageRun = await timedRun(staged.runId);
-    expect(staged.phases).toEqual(stageRun.phase_timings);
-    expect(topLevel(stageRun)).toEqual([
+    expect(staged.phases.map((p) => p.phase).filter((p) => !p.includes("."))).toEqual([
+      "lock-wait",
       "prepare",
       "generator",
-      "lock-wait",
       "clear-staging-inbox",
       "publish",
-      "parity",
-      "select-preview",
       "finish",
     ]);
-    // The generator's passes and the upload's steps come along as breakdowns.
-    expect(names(stageRun)).toEqual(
-      expect.arrayContaining([
-        "generator.load-pages",
-        "generator.compose",
-        "generator.media",
-        "generator.write",
-        "generator.gc",
-        // #1271 — files are uploaded while the generator writes them; the
-        // publish phase finishes the version.
-        "publish.upload-files",
-        "publish.populate",
-        "publish.upload-assets",
-        "publish.finalize",
-        "publish.channel",
-      ]),
+    expect(staged.phases.map((p) => p.phase)).toEqual(
+      expect.arrayContaining(["publish.upload-files", "publish.finalize", "publish.staging-slot"]),
     );
-    // started_at / finished_at are real clock times, not the transaction
-    // start twice: the run's span covers its steps.
-    const stepsMs = stageRun.phase_timings
-      .filter((p) => !p.phase.includes("."))
-      .reduce((n, p) => n + p.ms, 0);
-    expect(stageRun.took_ms).toBeGreaterThan(0);
-    expect(stageRun.took_ms).toBeGreaterThanOrEqual(stepsMs - 5);
-    // Timings live in their own column, not in the publisher's summary.
-    expect(stageRun.publish_summary).not.toHaveProperty("phases");
-    // Nothing on Firebase serves `<outDir>/current/`, so the build is not
-    // mirrored into it (the largest step of a Stage before #1003).
-    expect(names(stageRun)).not.toContain("generator.sync-current");
+    // Nothing on Firebase serves `<outDir>/current/`, and the uploaded build
+    // does not stay in the container (#1003, #1211).
     expect(existsSync(join(testRoot, "output", "staging", "current"))).toBe(false);
-    // #1211 — and the uploaded build does not stay in the container (on
-    // Cloud Run /tmp is memory): Firebase holds what staging serves.
     expect(existsSync(join(testRoot, "output", "staging", "builds", staged.runId))).toBe(false);
-
     await markAudited(staged.runId);
     const promoted = await publish<{ toRunId: string }>({
       fromTarget: "staging",
       toTarget: "production",
       repoRoot: testRoot,
     });
-    const liveRun = await timedRun(promoted.toRunId);
-    expect(topLevel(liveRun)).toEqual([
+    const [liveRun] = (await withSql(
+      (tx) => tx`SELECT phase_timings FROM deploy_runs WHERE id = ${promoted.toRunId}::uuid`,
+    )) as { phase_timings: { phase: string }[] }[];
+    expect(liveRun!.phase_timings.map((p) => p.phase).filter((p) => !p.includes("."))).toEqual([
       "prepare",
       "lock-wait",
-      "select-preview",
-      "generator",
-      "parity",
       "publish",
-      // Hold release and the completion write: inside the stored span (#1003).
       "finish",
     ]);
-    expect(names(liveRun)).toEqual(
-      expect.arrayContaining([
-        "generator.compose",
-        "publish.populate",
-        "publish.finalize",
-        "publish.release",
-      ]),
-    );
-    const liveStepsMs = liveRun.phase_timings
-      .filter((p) => !p.phase.includes("."))
-      .reduce((n, p) => n + p.ms, 0);
-    expect(liveRun.took_ms).toBeGreaterThanOrEqual(liveStepsMs - 5);
-    expect(liveRun.publish_summary).not.toHaveProperty("phases");
-    // #1211 — nor does Publish live's uploaded rebuild.
-    expect(existsSync(join(testRoot, "output", "production", "builds", promoted.toRunId))).toBe(
-      false,
-    );
   });
 
   it("#1003 a running Stage is visible with its progress, also when the AI started it", async () => {
@@ -607,7 +615,15 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
           settled = true;
         },
       );
-      await builtAndWaiting();
+      // The Stage started (it swept the dead runs) and waits for the slot.
+      for (let i = 0; i < 400; i++) {
+        const swept = (await withSql(
+          (tx) => tx`SELECT status FROM deploy_runs WHERE id = ${orphan}::uuid`,
+        )) as { status: string }[];
+        if (swept[0]?.status === "failed") break;
+        await Bun.sleep(25);
+      }
+      await Bun.sleep(500);
       expect(settled).toBe(false);
       const rows = (await withSql(
         (tx) => tx`SELECT id::text AS id, status, error_message FROM deploy_runs
@@ -634,131 +650,6 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       );
     }
   });
-
-  it("#908 / #969 Publish live refreshes the served preview's TTL (one staged by an earlier version too)", async () => {
-    const staged = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    // What the previous version left behind: served, but on its 7-day TTL
-    // with a day left.
-    fake.lifetimes.seed(`runid-${staged.runId}`, Date.now() + DAY_MS);
-    await markAudited(staged.runId);
-    await publish({
-      fromTarget: "staging",
-      toTarget: "production",
-      repoRoot: testRoot,
-    });
-    expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
-    expect(fake.lifetimes.remainingMs(`runid-${staged.runId}`)).toBeGreaterThan(29 * DAY_MS);
-  });
-
-  it("#969 deploy.refresh_staging_preview extends the served preview after idle days and fails loudly once it is gone", async () => {
-    const staged = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    const channelId = `runid-${staged.runId}`;
-    // Ten idle days later the keep-alive worker ticks.
-    const start = Date.now();
-    fake.lifetimes.now = () => start + 10 * DAY_MS;
-    try {
-      expect(fake.lifetimes.remainingMs(channelId)).toBeLessThan(21 * DAY_MS);
-      const r = await ok<{ servedRunId: string; expiresAt: string }>(
-        "deploy.refresh_staging_preview",
-        {},
-      );
-      expect(r).toEqual({
-        servedRunId: staged.runId,
-        expiresAt: fake.lifetimes.expireTime(channelId)!,
-      });
-      expect(fake.lifetimes.remainingMs(channelId)).toBeGreaterThan(29 * DAY_MS);
-      expect(fake.lifetimes.ttlPatches.at(-1)).toEqual({
-        channelId,
-        ttl: SERVED_PREVIEW_CHANNEL_TTL,
-      });
-
-      // The AI never runs the keep-alive (no tool, op not AI-scoped).
-      const ai = await execute(
-        registry,
-        adapter,
-        { ...SYSTEM, actorKind: "ai" },
-        "deploy.refresh_staging_preview",
-        {},
-      );
-      expect(ai.ok).toBe(false);
-
-      // Expired anyway (e.g. the admin was not running for a month): loud, never recreated.
-      const url = fake.channels.get(channelId)!;
-      fake.channels.delete(channelId);
-      fake.lifetimes.forget(channelId);
-      const gone = await execute(registry, adapter, SYSTEM, "deploy.refresh_staging_preview", {});
-      expect(gone.ok).toBe(false);
-      expect(JSON.stringify(gone.ok ? null : gone.error)).toContain("Stage again");
-      expect(fake.channels.has(channelId)).toBe(false);
-      fake.channels.set(channelId, url);
-      fake.lifetimes.create(channelId, SERVED_PREVIEW_CHANNEL_TTL);
-    } finally {
-      fake.lifetimes.now = () => Date.now();
-    }
-  });
-
-  it("#908 a Stage whose preview cannot be kept alive fails, leaves that preview on its TTL and staging on the previous build", async () => {
-    const served = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    const channelsBefore = new Set(fake.channels.keys());
-    const servedExpiry = fake.lifetimes.expireTime(`runid-${served.runId}`);
-    fake.lifetimes.failTtl = SERVED_PREVIEW_CHANNEL_TTL;
-    try {
-      const r = await execute(registry, adapter, SYSTEM, "deploy.trigger", {
-        targetName: "staging",
-        repoRoot: testRoot,
-      });
-      expect(r.ok).toBe(false);
-      expect(JSON.stringify(r.ok ? null : r.error)).toContain("Stage again");
-    } finally {
-      fake.lifetimes.failTtl = null;
-    }
-    const failed = [...fake.channels.keys()].filter((id) => !channelsBefore.has(id));
-    expect(failed).toHaveLength(1);
-    // The failed Stage's preview expires on its own within a week; the
-    // served one is untouched.
-    expect(fake.lifetimes.remainingMs(failed[0]!)).toBeLessThanOrEqual(7 * DAY_MS);
-    expect(fake.channels.has(`runid-${served.runId}`)).toBe(true);
-    expect(fake.lifetimes.expireTime(`runid-${served.runId}`)).toBe(servedExpiry);
-    expect((await stagingRow())[0]?.origin_run_id).toBe(served.runId);
-    const [run] = (await withSql(
-      (tx) => tx`SELECT status FROM deploy_runs
-                 WHERE id = ${failed[0]!.slice("runid-".length)}::uuid`,
-    )) as { status: string }[];
-    expect(run?.status).toBe("failed");
-
-    // The next Stage retires the failed Stage's leftover preview.
-    const next = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    expect([...fake.channels.keys()]).toEqual([`runid-${next.runId}`]);
-  });
-
-  /** #1211 — resolves once a running Stage finished building (it then waits for the lease). */
-  async function builtAndWaiting(): Promise<void> {
-    for (let i = 0; i < 2400; i++) {
-      const rows = (await withSql(
-        (tx) => tx`
-          SELECT count(*)::int AS n FROM deploy_runs
-          WHERE status = 'running' AND lease_expires_at IS NOT NULL AND progress IS NOT NULL
-            AND (progress->>'pagesTotal')::int > 0
-            AND (progress->>'pagesDone')::int = (progress->>'pagesTotal')::int`,
-      )) as { n: number }[];
-      if ((rows[0]?.n ?? 0) > 0) break;
-      await Bun.sleep(25);
-    }
-    // A few acquire attempts; a Stage that did not wait would publish now.
-    await Bun.sleep(500);
-  }
 
   /** A committed `running` Stage holding the staging-publication lease (#1211). */
   async function leaseHeldByAnotherStage(): Promise<{
@@ -793,56 +684,6 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     };
   }
 
-  it("a Stage waits for a transaction holding the staging publication before it publishes and prunes (codex review on #652)", async () => {
-    // Without ordering, Stage A prunes Stage B's fresh channel and B then
-    // records that deleted channel as the staging origin. The keep-alive
-    // and the redirect sync hold the lease row locked in their transaction
-    // (#1211); Publish live holds the lease as its run (#1225).
-    await withSql(
-      (tx) => tx`INSERT INTO deploy_leases (name) VALUES (${STAGING_PUBLICATION_LEASE})
-                 ON CONFLICT (name) DO NOTHING`,
-    );
-    const holder = new SQL(ADMIN_URL!);
-    let release!: () => void;
-    const released = new Promise<void>((r) => {
-      release = r;
-    });
-    let held!: () => void;
-    const locked = new Promise<void>((r) => {
-      held = r;
-    });
-    const holderTx = holder.begin(async (tx) => {
-      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx`UPDATE deploy_leases SET name = name WHERE name = ${STAGING_PUBLICATION_LEASE}`;
-      held();
-      await released;
-    });
-    try {
-      await locked;
-      const channelsBefore = [...fake.channels.keys()];
-      let settled = false;
-      const pending = ok<{ runId: string }>("deploy.trigger", {
-        targetName: "staging",
-        repoRoot: testRoot,
-      }).finally(() => {
-        settled = true;
-      });
-      await builtAndWaiting();
-      // Built, but queued for the publish slot: no channel published, none pruned.
-      expect(settled).toBe(false);
-      expect([...fake.channels.keys()]).toEqual(channelsBefore);
-      release();
-      await holderTx;
-      const staged = await pending;
-      expect([...fake.channels.keys()]).toEqual([`runid-${staged.runId}`]);
-      expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
-    } finally {
-      release();
-      await holderTx.catch(() => undefined);
-      await holder.end();
-    }
-  });
-
   /**
    * #1211 rolling update — a transaction of the previous release holding
    * `key` (its staging-publication lock, or its run lock) until released.
@@ -872,68 +713,24 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     };
   }
 
-  /** Stage while `hold` keeps the previous release publishing; it waits, then publishes. */
-  async function stageWaitsFor(hold: { release: () => Promise<void> }): Promise<void> {
-    try {
-      const channelsBefore = [...fake.channels.keys()];
-      let settled = false;
-      const pending = ok<{ runId: string }>("deploy.trigger", {
-        targetName: "staging",
-        repoRoot: testRoot,
-      }).finally(() => {
-        settled = true;
-      });
-      await builtAndWaiting();
-      expect(settled).toBe(false);
-      expect([...fake.channels.keys()]).toEqual(channelsBefore);
-      await hold.release();
-      const staged = await pending;
-      expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
-    } finally {
-      await hold.release();
+  /** #1330 — resolves once a Stage started and is waiting for the staging publish slot. */
+  async function waitingForTheSlot(holderRunId: string): Promise<void> {
+    for (let i = 0; i < 400; i++) {
+      const rows = (await withSql(
+        (tx) => tx`SELECT count(*)::int AS n FROM deploy_runs
+                   WHERE status = 'running' AND id <> ${holderRunId}::uuid`,
+      )) as { n: number }[];
+      if ((rows[0]?.n ?? 0) > 0) break;
+      await Bun.sleep(25);
     }
+    // A few acquire attempts; a Stage that did not wait would build now.
+    await Bun.sleep(500);
   }
 
-  it("#1211 rolling update: a Stage waits while the previous release holds its staging-publication lock", async () => {
-    await stageWaitsFor(await previousReleaseHolds(LEGACY_STAGING_PUBLICATION_LOCK_KEY));
-  });
-
-  it("#1211 rolling update: a Stage waits while a Stage or Publish live of the previous release is in flight", async () => {
-    const [{ id: targetId } = { id: "" }] = (await withSql(
-      (tx) => tx`SELECT id::text AS id FROM deploy_targets WHERE name = 'production'`,
-    )) as { id: string }[];
-    const runId = crypto.randomUUID();
-    // The previous release's run: no lease, its run lock held by its transaction.
-    await withSql(
-      (tx) => tx`INSERT INTO deploy_runs (id, target_id, actor_id, status)
-                 VALUES (${runId}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running')`,
-    );
-    const hold = await previousReleaseHolds(`${DEPLOY_RUN_LOCK_PREFIX}${runId}`);
-    try {
-      await stageWaitsFor(hold);
-    } finally {
-      await withSql((tx) => tx`DELETE FROM deploy_runs WHERE id = ${runId}::uuid`);
-    }
-  });
-
-  it("#1211 rolling update: the keep-alive and the redirect sync hold the previous release's lock too", async () => {
-    const hold = await previousReleaseHolds(LEGACY_STAGING_PUBLICATION_LOCK_KEY);
-    try {
-      const busy = await adapter.withAdminTransaction(SYSTEM, (tx) =>
-        tryLockStagingPublication(tx),
-      );
-      expect(busy.locked).toBe(false);
-    } finally {
-      await hold.release();
-    }
-    const free = await adapter.withAdminTransaction(SYSTEM, (tx) => tryLockStagingPublication(tx));
-    expect(free.locked).toBe(true);
-  });
-
-  it("#1211 a Stage waits for another Stage that holds the publish lease, without a transaction", async () => {
+  it("#1211 / #1330 a Stage waits for another Stage that holds the publish slot, before it builds and without a transaction", async () => {
     const other = await leaseHeldByAnotherStage();
     try {
-      const channelsBefore = [...fake.channels.keys()];
+      const writesBefore = slots.writes.length;
       let settled = false;
       const pending = ok<{ runId: string }>("deploy.trigger", {
         targetName: "staging",
@@ -941,10 +738,10 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       }).finally(() => {
         settled = true;
       });
-      await builtAndWaiting();
+      await waitingForTheSlot(other.runId);
       expect(settled).toBe(false);
-      expect([...fake.channels.keys()]).toEqual(channelsBefore);
-      // Waiting for a lease pins no connection in a transaction.
+      // Nothing was written into a slot while another Stage holds them.
+      expect(slots.writes.length).toBe(writesBefore);
       const open = (await withSql(
         (tx) => tx`SELECT count(*)::int AS n FROM pg_stat_activity
                    WHERE datname = 'cms_admin' AND pid <> pg_backend_pid()
@@ -953,7 +750,6 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       expect(open[0]?.n).toBe(0);
       await other.release();
       const staged = await pending;
-      expect([...fake.channels.keys()]).toEqual([`runid-${staged.runId}`]);
       expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
       const [lease] = (await withSql(
         (tx) =>
@@ -965,286 +761,24 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     }
   });
 
-  it("#1204 a Stage stopped while it uploads frees the publish lease and keeps staging on the previous build", async () => {
-    const served = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    const stop = new AbortController();
-    fake.onPopulate = async () => {
-      stop.abort(new Error("the operator pressed Stop"));
-    };
-    try {
-      const r = await execute(
-        registry,
-        adapter,
-        SYSTEM,
-        "deploy.trigger",
-        { targetName: "staging", repoRoot: testRoot },
-        { signal: stop.signal },
-      );
-      expect(r.ok).toBe(false);
-      expect(JSON.stringify(r.ok ? null : r.error)).toContain("stopped before it finished");
-    } finally {
-      fake.onPopulate = null;
-    }
-    // Nothing of the stopped Stage became what staging serves, and it holds nothing.
-    expect((await stagingRow())[0]?.origin_run_id).toBe(served.runId);
-    expect(fake.channels.has(`runid-${served.runId}`)).toBe(true);
-    const [lease] = (await withSql(
-      (tx) => tx`SELECT holder_run_id FROM deploy_leases WHERE name = ${STAGING_PUBLICATION_LEASE}`,
-    )) as { holder_run_id: string | null }[];
-    expect(lease?.holder_run_id ?? null).toBeNull();
-    const running = (await withSql(
-      (tx) => tx`SELECT count(*)::int AS n FROM deploy_runs WHERE status = 'running'`,
-    )) as { n: number }[];
-    expect(running[0]?.n).toBe(0);
-    // The next Stage runs at once and supersedes both.
-    const next = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    expect((await stagingRow())[0]?.origin_run_id).toBe(next.runId);
-    expect([...fake.channels.keys()]).toEqual([`runid-${next.runId}`]);
-  });
-
-  it("#1211 a Stage records its run before it pushes the redirects to the provider", async () => {
-    const runId = crypto.randomUUID();
-    const seen: string[] = [];
-    // The redirect sync's first request reads the served channel's release.
-    fake.onRequest = async (method, route) => {
-      if (method === "GET" && /channels\/[^/]+\/releases$/.test(route)) {
-        const [run] = (await withSql(
-          (tx) => tx`SELECT status FROM deploy_runs WHERE id = ${runId}::uuid`,
-        )) as { status: string }[];
-        seen.push(run?.status ?? "missing");
-      }
-    };
-    try {
-      await ok("deploy.trigger", { targetName: "staging", repoRoot: testRoot, runId });
-    } finally {
-      fake.onRequest = null;
-    }
-    // Committed before any provider I/O of the sync: no transaction of the
-    // Stage stays open across it (migration 0392's idle timeout).
-    expect(seen.length).toBeGreaterThan(0);
-    expect(seen.every((s) => s === "succeeded")).toBe(true);
-  });
-
-  it("#1211 a Stage whose publish lease lapsed unnoticed retires no other Stage's preview", async () => {
-    const served = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    // While this Stage uploads, its lease lapses without a heartbeat noticing
-    // (beats failing for two minutes) and a later Stage takes the slot and
-    // publishes its own preview.
-    let later: Awaited<ReturnType<typeof leaseHeldByAnotherStage>> | null = null;
-    fake.onPopulate = async () => {
-      fake.onPopulate = null;
-      later = await leaseHeldByAnotherStage();
-      fake.channels.set(`runid-${later.runId}`, `https://${SITE}--runid-${later.runId}.web.app`);
-      fake.lifetimes.create(`runid-${later.runId}`, SERVED_PREVIEW_CHANNEL_TTL);
-    };
-    try {
-      const r = await execute(registry, adapter, SYSTEM, "deploy.trigger", {
-        targetName: "staging",
-        repoRoot: testRoot,
-      });
-      expect(r.ok).toBe(false);
-      expect(JSON.stringify(r.ok ? null : r.error)).toContain("lost its place");
-      // The later Stage's preview and the one staging serves survive.
-      const laterRun = later as unknown as { runId: string } | null;
-      expect(laterRun).not.toBeNull();
-      expect(fake.channels.has(`runid-${laterRun!.runId}`)).toBe(true);
-      expect(fake.channels.has(`runid-${served.runId}`)).toBe(true);
-      expect((await stagingRow())[0]?.origin_run_id).toBe(served.runId);
-    } finally {
-      fake.onPopulate = null;
-      const laterRun = later as unknown as { runId: string; release: () => Promise<void> } | null;
-      if (laterRun) {
-        fake.channels.delete(`runid-${laterRun.runId}`);
-        await laterRun.release();
-      }
-    }
-  });
-
-  it("#1211 Publish live waits for a Stage that is publishing staging", async () => {
-    const staged = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    await markAudited(staged.runId);
-    const other = await leaseHeldByAnotherStage();
+  it("#1211 rolling update: a Stage waits while the previous release holds its staging-publication lock", async () => {
+    const hold = await previousReleaseHolds(LEGACY_STAGING_PUBLICATION_LOCK_KEY);
     try {
       let settled = false;
-      const pending = publish<{ toRunId: string }>({
-        fromTarget: "staging",
-        toTarget: "production",
+      const pending = ok<{ runId: string }>("deploy.trigger", {
+        targetName: "staging",
         repoRoot: testRoot,
       }).finally(() => {
         settled = true;
       });
-      await Bun.sleep(1_000);
+      await waitingForTheSlot("00000000-0000-0000-0000-000000000000");
       expect(settled).toBe(false);
-      const liveBefore = [...fake.live];
-      expect(fake.live).toEqual(liveBefore);
-      await other.release();
-      expect((await pending).toRunId).toBeTruthy();
-      expect(fake.live.length).toBe(liveBefore.length + 1);
+      await hold.release();
+      const staged = await pending;
+      expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
     } finally {
-      await other.release();
+      await hold.release();
     }
-  });
-
-  it("Publish live keeps a newer Stage served and its preview alive (codex review on #652)", async () => {
-    const staged = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    await markAudited(staged.runId);
-    // A newer Stage committed while this publish ran (simulated: the
-    // gate already points at another run and its channel exists).
-    const newer = "00000000-0000-4000-8000-00000000a652";
-    const newerUrl = `https://${SITE}--runid-${newer}-x1y2.web.app`;
-    fake.channels.set(`runid-${newer}`, newerUrl);
-    fake.lifetimes.create(`runid-${newer}`, SERVED_PREVIEW_CHANNEL_TTL);
-    await withSql(
-      (tx) => tx`UPDATE staging_access SET origin_url = ${newerUrl}, origin_run_id = ${newer}::uuid
-                 WHERE id = 1`,
-    );
-    const promoted = await execute(registry, adapter, PUBLISHER, "deploy.promote", {
-      fromTarget: "staging",
-      toTarget: "production",
-      repoRoot: testRoot,
-    });
-    // Whether this promote picks the simulated run or the real one, the
-    // newer Stage's origin and channel must survive it.
-    if (promoted.ok) {
-      expect(await stagingRow()).toEqual([{ origin_url: newerUrl, origin_run_id: newer }]);
-      expect([...fake.channels.keys()]).toEqual([`runid-${newer}`]);
-    }
-    fake.channels.delete(`runid-${newer}`);
-    await withSql(
-      (tx) => tx`UPDATE staging_access SET origin_url = NULL, origin_run_id = NULL WHERE id = 1`,
-    );
-    expect(promoted.ok).toBe(true);
-  });
-
-  it("a change merged after the Stage blocks Publish live and names the file", async () => {
-    const staged = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    await markAudited(staged.runId);
-    const liveBefore = fake.live.length;
-    await ok("modules.update", { moduleId, html: "<p>changed after the stage</p>" });
-    const r = await execute(registry, adapter, PUBLISHER, "deploy.promote", {
-      fromTarget: "staging",
-      toTarget: "production",
-      repoRoot: testRoot,
-    });
-    expect(r.ok).toBe(false);
-    const message = JSON.stringify(r.ok ? null : r.error);
-    expect(message).toContain("Publish live stopped");
-    expect(message).toContain(`${PAGE_SLUG}/index.html`);
-    expect(message).toContain("Stage again");
-    expect(fake.live.length).toBe(liveBefore);
-    // The staged build stays served — nothing was published.
-    expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
-  });
-
-  // #834 — after an upgrade between Stage and Publish live, the refusal
-  // must name the version change, not blame site edits nobody made.
-  async function stageRenderedByOtherVersion(version: string | null): Promise<void> {
-    // The module may still carry the previous test's post-Stage edit; this
-    // Stage includes it, so only the simulated render difference remains.
-    const staged = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    await markAudited(staged.runId);
-    const [recorded] = (await withSql(
-      (tx) => tx`SELECT caelo_version FROM deploy_runs WHERE id = ${staged.runId}::uuid`,
-    )) as { caelo_version: string | null }[];
-    expect(recorded?.caelo_version).toBe(CAELO_VERSION);
-    // The previous version rendered one page differently (e.g. #793's
-    // renamed font files): no site edit, only another generator.
-    await withSql(
-      (tx) => tx`UPDATE deploy_runs
-                 SET caelo_version = ${version},
-                     parity_manifest = jsonb_set(parity_manifest,
-                       ${`{${PAGE_SLUG}/index.html}`}::text[],'"rendered-by-old-caelo"'::jsonb)
-                 WHERE id = ${staged.runId}::uuid`,
-    );
-  }
-
-  async function promoteRefusal(): Promise<string> {
-    const r = await execute(registry, adapter, PUBLISHER, "deploy.promote", {
-      fromTarget: "staging",
-      toTarget: "production",
-      repoRoot: testRoot,
-    });
-    expect(r.ok).toBe(false);
-    return r.ok ? "" : r.error.message;
-  }
-
-  it("a Caelo upgrade between Stage and Publish live is named as the cause (#834)", async () => {
-    await stageRenderedByOtherVersion("0.0.1-before-upgrade");
-    const liveBefore = fake.live.length;
-    const message = await promoteRefusal();
-    expect(message).toStartWith(
-      `Publish live stopped: Caelo was updated from 0.0.1-before-upgrade to ${CAELO_VERSION} since this Stage`,
-    );
-    expect(message).toContain(`${PAGE_SLUG}/index.html`);
-    expect(message).not.toContain("another edit was merged");
-    expect(message).toContain('"Stage again" button');
-    expect(fake.live.length).toBe(liveBefore);
-  });
-
-  it("a build staged before versions were recorded says the version is unknown (#834)", async () => {
-    await stageRenderedByOtherVersion(null);
-    const message = await promoteRefusal();
-    expect(message).toContain("The Caelo version that made this Stage is unknown");
-    expect(message).not.toContain("Caelo was updated from");
-  });
-
-  it("#1211 a live rebuild that fails mid-build leaves nothing in the container", async () => {
-    const staged = await ok<{ runId: string }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
-    });
-    await markAudited(staged.runId);
-    // A generator that writes part of its build, then fails.
-    const stub = join(testRoot, "failing-generator.ts");
-    await writeFile(
-      stub,
-      `import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-for await (const line of console) {
-  const cfg = JSON.parse(line);
-  const dir = join(resolve(cfg.repoRoot, cfg.target.outDir), "builds", cfg.runId);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "index.html"), "<p>half</p>");
-  console.log(JSON.stringify({ kind: "error", message: "stub generator failed mid-build" }));
-  process.exit(1);
-}
-`,
-    );
-    const liveBuilds = join(testRoot, "output", "production", "builds");
-    const before = existsSync(liveBuilds) ? await readdir(liveBuilds) : [];
-    const saved = process.env.CAELO_GENERATOR_CLI;
-    process.env.CAELO_GENERATOR_CLI = stub;
-    try {
-      const message = await promoteRefusal();
-      expect(message).toContain("stub generator failed mid-build");
-    } finally {
-      if (saved === undefined) delete process.env.CAELO_GENERATOR_CLI;
-      else process.env.CAELO_GENERATOR_CLI = saved;
-    }
-    // With retainBuilds: 0 nothing else would ever prune it (Cloud Run /tmp is memory).
-    const after = existsSync(liveBuilds) ? await readdir(liveBuilds) : [];
-    expect(after).toEqual(before);
   });
 
   /** Transactions open longer than a short op's gap between statements. */
@@ -1572,7 +1106,7 @@ describe("staging access settings", () => {
       provider: process.env.CAELO_PROVIDER,
       secret: process.env.CAELO_STAGING_GATE_SECRET,
     };
-    process.env.CAELO_PROVIDER = "self-hosted";
+    process.env.CAELO_PROVIDER = "aws";
     delete process.env.CAELO_STAGING_GATE_SECRET;
     try {
       const v = await ok<{ stagingDomainSupported: boolean; credentials?: unknown }>(
@@ -1587,57 +1121,95 @@ describe("staging access settings", () => {
     }
   });
 
+  it("get with includeCredentials answers in a development checkout (no CAELO_PROVIDER, no gate key) — it is not self-hosted (#1330)", async () => {
+    const saved = {
+      provider: process.env.CAELO_PROVIDER,
+      secret: process.env.CAELO_STAGING_GATE_SECRET,
+    };
+    delete process.env.CAELO_PROVIDER;
+    delete process.env.CAELO_STAGING_GATE_SECRET;
+    try {
+      const v = await ok<{
+        stagingDomainSupported: boolean;
+        provider: string;
+        credentials?: unknown;
+      }>("staging_access.get", { includeCredentials: true });
+      expect(v.stagingDomainSupported).toBe(false);
+      expect(v.provider).toBe("development checkout");
+      expect(v.credentials).toBeUndefined();
+    } finally {
+      process.env.CAELO_PROVIDER = saved.provider;
+      process.env.CAELO_STAGING_GATE_SECRET = saved.secret;
+    }
+  });
+
   it("set generates a credential on first enable, keeps it, validates, and rotate replaces it", async () => {
-    await ok("staging_access.set", {
+    // #1325 — an IP allowlist only where a client address can be trusted.
+    const refused = await execute(registry, adapter, SYSTEM, "staging_access.set", {
       cookieEnabled: true,
-      basicAuthEnabled: true,
-      basicAuthUser: "searchviu",
-      headerEnabled: false,
-      headerName: "X-Caelo-Staging-Key",
-      ipAllowlist: ["198.51.100.0/24", " 2001:db8::/48 "],
-    });
-    const nonce = async () =>
-      (
-        (await withSql(
-          (tx) => tx`SELECT basic_auth_nonce, header_nonce, ip_allowlist FROM staging_access`,
-        )) as {
-          basic_auth_nonce: string | null;
-          header_nonce: string | null;
-          ip_allowlist: string[];
-        }[]
-      )[0]!;
-    const first = await nonce();
-    expect(first.basic_auth_nonce).not.toBeNull();
-    expect(first.header_nonce).toBeNull();
-    expect(first.ip_allowlist).toEqual(["198.51.100.0/24", "2001:db8::/48"]);
-
-    await ok("staging_access.set", {
-      cookieEnabled: false,
-      basicAuthEnabled: true,
-      basicAuthUser: "searchviu",
-      headerEnabled: false,
-      headerName: "X-Caelo-Staging-Key",
-      ipAllowlist: [],
-    });
-    expect((await nonce()).basic_auth_nonce).toBe(first.basic_auth_nonce);
-
-    const bad = await execute(registry, adapter, SYSTEM, "staging_access.set", {
-      cookieEnabled: false,
       basicAuthEnabled: false,
-      basicAuthUser: "x",
+      basicAuthUser: "caelo",
       headerEnabled: false,
-      headerName: "Authorization",
-      ipAllowlist: ["not-an-ip"],
+      headerName: "X-Caelo-Staging-Key",
+      ipAllowlist: ["198.51.100.0/24"],
     });
-    expect(bad.ok).toBe(false);
-    expect(JSON.stringify(bad.ok ? null : bad.error)).toContain("not an IPv4/IPv6 address");
+    expect(refused.ok).toBe(false);
+    expect(JSON.stringify(refused)).toContain("IP allowlist cannot protect staging");
+    process.env.CAELO_PROVIDER = "gcp";
+    try {
+      await ok("staging_access.set", {
+        cookieEnabled: true,
+        basicAuthEnabled: true,
+        basicAuthUser: "searchviu",
+        headerEnabled: false,
+        headerName: "X-Caelo-Staging-Key",
+        ipAllowlist: ["198.51.100.0/24", " 2001:db8::/48 "],
+      });
+      const nonce = async () =>
+        (
+          (await withSql(
+            (tx) => tx`SELECT basic_auth_nonce, header_nonce, ip_allowlist FROM staging_access`,
+          )) as {
+            basic_auth_nonce: string | null;
+            header_nonce: string | null;
+            ip_allowlist: string[];
+          }[]
+        )[0]!;
+      const first = await nonce();
+      expect(first.basic_auth_nonce).not.toBeNull();
+      expect(first.header_nonce).toBeNull();
+      expect(first.ip_allowlist).toEqual(["198.51.100.0/24", "2001:db8::/48"]);
 
-    await ok("staging_access.rotate_credentials", { which: "basic-auth" });
-    const rotated = await nonce();
-    expect(rotated.basic_auth_nonce).not.toBe(first.basic_auth_nonce);
-    expect(
-      await deriveStagingCredential(GATE_SECRET, "basic-auth", rotated.basic_auth_nonce!),
-    ).not.toBe(await deriveStagingCredential(GATE_SECRET, "basic-auth", first.basic_auth_nonce!));
+      await ok("staging_access.set", {
+        cookieEnabled: false,
+        basicAuthEnabled: true,
+        basicAuthUser: "searchviu",
+        headerEnabled: false,
+        headerName: "X-Caelo-Staging-Key",
+        ipAllowlist: [],
+      });
+      expect((await nonce()).basic_auth_nonce).toBe(first.basic_auth_nonce);
+
+      const bad = await execute(registry, adapter, SYSTEM, "staging_access.set", {
+        cookieEnabled: false,
+        basicAuthEnabled: false,
+        basicAuthUser: "x",
+        headerEnabled: false,
+        headerName: "Authorization",
+        ipAllowlist: ["not-an-ip"],
+      });
+      expect(bad.ok).toBe(false);
+      expect(JSON.stringify(bad.ok ? null : bad.error)).toContain("not an IPv4/IPv6 address");
+
+      await ok("staging_access.rotate_credentials", { which: "basic-auth" });
+      const rotated = await nonce();
+      expect(rotated.basic_auth_nonce).not.toBe(first.basic_auth_nonce);
+      expect(
+        await deriveStagingCredential(GATE_SECRET, "basic-auth", rotated.basic_auth_nonce!),
+      ).not.toBe(await deriveStagingCredential(GATE_SECRET, "basic-auth", first.basic_auth_nonce!));
+    } finally {
+      process.env.CAELO_PROVIDER = "gcp-firebase";
+    }
   });
 
   it("issue_open_link signs a short-lived link on the staging host — only while the cookie mode is on", async () => {
@@ -1728,6 +1300,15 @@ describe("staging access settings", () => {
 
 describe("cms-provision staging-domain enable → staging_access.provision (#678)", () => {
   const SOURCE = "cms-provision staging-domain enable";
+  // Nothing staged: a new host serves nothing until the next Stage. (A
+  // changed host with a staged build needs none — the staging gateway
+  // rewrites every build to the current host, #1330.)
+  beforeAll(() =>
+    withSql(
+      (tx) =>
+        tx`UPDATE staging_access SET origin_run_id = NULL, served_location = NULL WHERE id = 1`,
+    ),
+  );
   const row = async () =>
     (
       (await withSql(

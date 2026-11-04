@@ -94,6 +94,16 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
   { op: "chat.list_open_changes", ctx: "system", input: () => ({ limit: 20 }) },
   // Unbounded list ops (#1269 makes them keyset-paginated).
   { op: "pages.list", ctx: "chat", input: () => ({}) },
+  // #1269 — one page of the site, and the pages a plugin names
+  // (international-site reads a page's variants and links by id).
+  { op: "pages.list", label: "pages.list {limit}", ctx: "chat", input: () => ({ limit: 50 }) },
+  {
+    op: "pages.list",
+    label: "pages.list {pageIds}",
+    ctx: "chat",
+    plugins: ["international-site"],
+    input: (r) => ({ pageIds: [r.pageId] }),
+  },
   { op: "modules.list", ctx: "chat", input: () => ({}) },
   { op: "content_instances.list", ctx: "chat", input: () => ({}) },
   // The shapes plugins call in the background, after every write: the
@@ -122,8 +132,22 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     input: (r) => ({ moduleIds: [r.write.moduleId] }),
   },
   { op: "lists.list", ctx: "chat", input: () => ({}) },
-  { op: "list_types.list", ctx: "chat", input: () => ({}) },
-  { op: "page_types.list", ctx: "chat", input: () => ({}) },
+  // international-site's render hooks and translation ops read the definitions only.
+  { op: "list_types.list", ctx: "chat", plugins: ["international-site"], input: () => ({}) },
+  { op: "page_types.list", ctx: "chat", plugins: ["international-site"], input: () => ({}) },
+  // The counted shapes (EXACT_COUNTS): the admin pages and the AI's list tools.
+  {
+    op: "list_types.list",
+    label: "list_types.list {counts}",
+    ctx: "chat",
+    input: () => ({ counts: true }),
+  },
+  {
+    op: "page_types.list",
+    label: "page_types.list {counts}",
+    ctx: "chat",
+    input: () => ({ counts: true }),
+  },
   { op: "redirects.list", ctx: "system", input: () => ({}) },
   // Writes an agent makes one page at a time (translation-shaped work).
   {
@@ -135,6 +159,14 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     op: "content_instances.set_values",
     ctx: "chat",
     input: (r, tag) => ({ id: r.write.instanceId, values: { heading: `Heading (${tag})` } }),
+  },
+  // #1269 — international-site refreshes a page's path after every variant
+  // write: the page's subtree and ancestors, not the page tree.
+  {
+    op: "pages.refresh_current_path",
+    ctx: "system",
+    plugins: ["international-site"],
+    input: (r) => ({ pageId: r.pageId }),
   },
   {
     op: "pages.update",

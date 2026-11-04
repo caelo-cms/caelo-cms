@@ -63,7 +63,6 @@ import {
   type CloudRunEnvVar,
   CONVERGE_JOB_ENV_VAR,
   DATABASE_URL_VARS,
-  INTERIM_FORWARD_ORIGIN_ENV,
   MCP_ENV_VAR,
   OPERATOR_ACCESS_JOB_ENV_VAR,
   parseSchedulerIntervalMinutes,
@@ -78,10 +77,11 @@ import {
   removeRetiredIamBindings,
 } from "../stack-converge.js";
 import { ensureStagingDatabase } from "../staging-database.js";
+import { ensureStagingGatewayEdge } from "../staging-gateway-setup.js";
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import type { AppRollHooks, AppRollPlan, RollPlan, RollSlug } from "./app-roll.js";
-import { findServiceUrl, lookupFailure } from "./gcp-lookup.js";
+import { lookupFailure } from "./gcp-lookup.js";
 import type { UpgradeReporter } from "./reporter.js";
 
 /**
@@ -160,6 +160,7 @@ export function startConverge(
   const services = {
     admin: service("admin").serviceName,
     gateway: service("gateway").serviceName,
+    "staging-gateway": service("staging-gateway").serviceName,
     "mcp-auth-proxy": service("mcp-auth-proxy").serviceName,
   };
   const target = {
@@ -450,17 +451,41 @@ export function startConverge(
     incomplete = true;
   }
 
-  async function interimForwardEnv(): Promise<CloudRunEnvVar[]> {
-    // #1328 — on gcp-firebase the proxy is the service the current live
-    // release's Firebase rewrite and the staging domain mapping still
-    // point at; it forwards that traffic to the data gateway, whose URL is
-    // its origin (stack-contract.ts INTERIM_FORWARD_ORIGIN_ENV). Without it
-    // the proxy answers the live site's /api/** with 404 until the next
-    // Publish live, and the staging host with 404 — so this aborts.
-    if (install.provider !== "gcp-firebase") return [];
-    const url = await findServiceUrl(run, install.projectId, install.region, services.gateway);
-    if (!url) throw new Error(`could not read the URL of ${services.gateway}`);
-    return [{ name: INTERIM_FORWARD_ORIGIN_ENV, value: new URL(url).origin }];
+  async function stagingEdge(): Promise<void> {
+    // #1330 — route the staging host to the staging gateway and nowhere
+    // else: gcp-firebase's second Hosting site (and the old Cloud Run domain
+    // mapping deleted), gcp's host rule, backend and certificate
+    // (staging-gateway-setup.ts). Only staging depends on it, so a failure
+    // warns; the records the staging host needs are printed (Settings →
+    // Updates shows them too).
+    const s = r.step(`Routing the staging host ${install.stagingHost} to the staging gateway...`);
+    const edge = await ensureStagingGatewayEdge(
+      {
+        provider: install.provider,
+        projectId: install.projectId,
+        region: install.region,
+        env: install.env,
+        domain: install.domain,
+        stagingHost: install.stagingHost,
+      },
+      { run, ...(deps.http ? { http: deps.http } : {}) },
+    );
+    for (const line of edge.done) r.info(`  ${line}`);
+    if (edge.ok) {
+      s.done(`The staging host is served by the staging gateway, behind the staging gate`);
+      if (edge.dnsRecords.length > 0) {
+        r.info(
+          `  DNS for ${install.stagingHost} (add or change at your registrar if it differs; Settings → Updates shows the same):`,
+        );
+        for (const d of edge.dnsRecords) r.info(`    ${d.name}  ${d.type}  ${d.value}`);
+      }
+      return;
+    }
+    s.warned(`The staging host is not routed yet: ${edge.error}`);
+    r.warn(
+      `The upgrade continues; ${install.stagingHost} answers nothing until this succeeds (the live site is not affected). Re-run upgrade once the cause is fixed.`,
+    );
+    incomplete = true;
   }
 
   /** The admin's origin behind IAP, once {@link remoteMcpIdentity} read it. */
@@ -847,6 +872,7 @@ export function startConverge(
       await auditJob();
       await captureJob();
       await remoteMcpEdge();
+      await stagingEdge();
       return true;
     },
 
@@ -859,19 +885,7 @@ export function startConverge(
         await convergeJob();
         await schedulerTick();
         await operatorAccess();
-        let forward: CloudRunEnvVar[];
-        try {
-          forward = await interimForwardEnv();
-        } catch (e) {
-          r.error(
-            `The MCP-Auth-Proxy cannot be pointed at the data gateway: ${e instanceof Error ? e.message : String(e)}. Nothing was rolled; re-run upgrade once it is fixed.`,
-          );
-          return { ok: false };
-        }
-        const extraEnv: Partial<Record<RollSlug, CloudRunEnvVar[]>> = {
-          ...(identity ?? {}),
-          "mcp-auth-proxy": [...(identity?.["mcp-auth-proxy"] ?? []), ...forward],
-        };
+        const extraEnv: Partial<Record<RollSlug, CloudRunEnvVar[]>> = { ...(identity ?? {}) };
         return {
           ok: true,
           leaveUntouched: [...leaveUntouched],

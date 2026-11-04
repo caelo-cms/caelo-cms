@@ -465,7 +465,6 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
       fileCount: 1,
       buildId: "forged",
       publishSummary: {},
-      siteUrl: null,
       caeloVersion: null,
       override: null,
       phaseTimings: [],

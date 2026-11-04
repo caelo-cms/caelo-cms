@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { providerHasStagingDomain } from "@caelo-cms/admin-core";
+import { stagingServedByGateway } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
@@ -45,7 +45,7 @@ export function stagingOpenRedirect(target: string): Response {
  * serves staging at its own host but no host is configured.
  */
 export async function stagingOriginForAdmin(ctx: ExecutionContext): Promise<string | null> {
-  if (!providerHasStagingDomain(process.env.CAELO_PROVIDER)) return null;
+  if (!stagingServedByGateway(process.env.CAELO_PROVIDER)) return null;
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, ctx, "staging_access.get", {});
   const url = r.ok ? (r.value as { stagingUrl: string | null }).stagingUrl : null;

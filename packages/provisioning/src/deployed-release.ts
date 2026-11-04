@@ -21,7 +21,9 @@ import {
   cloudRunServicePrefix,
   type GcpProvider,
   RETIRED_SERVICE_ENV,
+  SERVICE_IMAGE_NAMES,
   SERVICE_SECRET_ENV,
+  type ServiceImageName,
 } from "./stack-contract.js";
 import { liveContainerEnv } from "./stack-converge.js";
 
@@ -35,7 +37,7 @@ async function findDeployedService(
   run: GcloudRunner,
   opts: { provider: GcpProvider; projectId: string; region: string },
   slug: CloudRunSlug,
-): Promise<{ ok: true; name: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; name: string } | { ok: false; error: string; missing: boolean }> {
   const prefix = cloudRunServicePrefix(opts.provider, GCP_STACK_ENV, slug);
   const list = await run([
     "run",
@@ -46,7 +48,8 @@ async function findDeployedService(
     `--filter=metadata.name~^${prefix}`,
     "--format=value(metadata.name)",
   ]);
-  if (!list.ok) return { ok: false, error: `list Cloud Run services: ${list.stderr.trim()}` };
+  if (!list.ok)
+    return { ok: false, error: `list Cloud Run services: ${list.stderr.trim()}`, missing: false };
   const names = list.stdout
     .split("\n")
     .map((s) => s.trim())
@@ -58,6 +61,7 @@ async function findDeployedService(
         names.length === 0
           ? `no ${prefix}* Cloud Run service: the install runs a release from before it (the ${slug} became its own service in #1328). Run \`upgrade\` first: it creates the service and moves the release over.`
           : `expected one ${prefix}* Cloud Run service, found ${names.join(", ")}`,
+      missing: names.length === 0,
     };
   }
   return { ok: true, name: names[0] as string };
@@ -86,7 +90,11 @@ export async function checkDeployedRuntimeEnv(opts: {
   const run = opts.run ?? defaultGcloud;
   for (const slug of CLOUD_RUN_SLUGS) {
     const found = await findDeployedService(run, opts, slug);
-    if (!found.ok) return found;
+    // #1330 — the staging gateway is the CLI's (staging-gateway-setup.ts):
+    // an install from before it gets it after this `up`, so a missing one
+    // runs no release that could mismatch the env.
+    if (!found.ok && slug === "staging-gateway" && found.missing) continue;
+    if (!found.ok) return { ok: false, error: found.error };
     const describe = await run([
       "run",
       "services",
@@ -131,8 +139,14 @@ export async function readDeployedImageDigests(opts: {
   run?: GcloudRunner;
 }): Promise<{ ok: true; digests: ImageDigests } | { ok: false; error: string }> {
   const run = opts.run ?? defaultGcloud;
-  const digests: Record<CloudRunSlug, string> = { admin: "", gateway: "", "mcp-auth-proxy": "" };
-  for (const slug of CLOUD_RUN_SLUGS) {
+  const digests: Record<ServiceImageName, string> = {
+    admin: "",
+    gateway: "",
+    "mcp-auth-proxy": "",
+  };
+  const digestOf = async (
+    slug: CloudRunSlug,
+  ): Promise<{ ok: true; digest: string } | { ok: false; error: string; missing: boolean }> => {
     const found = await findDeployedService(run, opts, slug);
     if (!found.ok) return found;
     const image = await run([
@@ -144,15 +158,36 @@ export async function readDeployedImageDigests(opts: {
       `--project=${opts.projectId}`,
       "--format=value(spec.template.spec.containers[0].image)",
     ]);
-    if (!image.ok) return { ok: false, error: `describe ${found.name}: ${image.stderr.trim()}` };
+    if (!image.ok) {
+      return { ok: false, error: `describe ${found.name}: ${image.stderr.trim()}`, missing: false };
+    }
     const digest = digestFromImageRef(image.stdout);
     if (!digest) {
       return {
         ok: false,
         error: `${found.name} runs '${image.stdout.trim()}', which is not pinned to a digest`,
+        missing: false,
       };
     }
-    digests[slug] = digest;
+    return { ok: true, digest };
+  };
+  // One digest per release image.
+  for (const slug of SERVICE_IMAGE_NAMES) {
+    const d = await digestOf(slug);
+    if (!d.ok) return { ok: false, error: d.error };
+    digests[slug] = d.digest;
+  }
+  // #1330 — the staging gateway runs the gateway's image and rolls with it:
+  // one that runs another image means the services serve two releases, and
+  // the wizard must not record (or deploy) either as "the" release. An
+  // install from before it has none yet (the CLI creates it after `up`).
+  const staging = await digestOf("staging-gateway");
+  if (!staging.ok && !staging.missing) return { ok: false, error: staging.error };
+  if (staging.ok && staging.digest !== digests.gateway) {
+    return {
+      ok: false,
+      error: `the staging gateway runs ${staging.digest}, but the gateway runs ${digests.gateway}: the two must run the same release image. Run \`upgrade\` first — it rolls both onto one release — then re-run the installer.`,
+    };
   }
   return { ok: true, digests };
 }

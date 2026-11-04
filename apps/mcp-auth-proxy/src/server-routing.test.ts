@@ -2,28 +2,18 @@
 
 /**
  * #1328 — the MCP-Auth-Proxy's request order (server.ts): health always,
- * the interim forwarder on gcp-firebase, the fixed 404 while remote MCP is
- * unavailable, off or not asked for, then the router — and no database
- * anywhere on the way.
+ * the fixed 404 while remote MCP is unavailable, off or not asked for, then
+ * the router — and no database anywhere on the way, nothing forwarded
+ * elsewhere (#1331).
  */
 
 import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  INTERIM_FORWARDED_HOST_HEADER,
-  JSON_SECURITY_HEADERS,
-  TRUSTED_PROXY_HOPS_ENV,
-} from "@caelo-cms/shared";
+import { JSON_SECURITY_HEADERS, TRUSTED_PROXY_HOPS_ENV } from "@caelo-cms/shared";
 import { BASE_ENV, CONFIGURED_FILE, PUBLIC } from "./__tests__/harness.js";
-import {
-  createProxyHandler,
-  INTERIM_FORWARD_ORIGIN_ENV,
-  interimForwardHeaders,
-  REMOTE_MCP_ENV,
-  remoteMcpModeFromEnv,
-} from "./server.js";
+import { createProxyHandler, REMOTE_MCP_ENV, remoteMcpModeFromEnv } from "./server.js";
 
 const PEER = { peerAddress: "198.51.100.7" };
 const DATA_GATEWAY = "https://caelo-production-data-gateway-abc-ew.a.run.app";
@@ -51,14 +41,6 @@ describe("CAELO_REMOTE_MCP", () => {
     expect(() => remoteMcpModeFromEnv({})).toThrow(/CAELO_REMOTE_MCP is not set/);
     expect(() => remoteMcpModeFromEnv({ [REMOTE_MCP_ENV]: "on" })).toThrow(/"on"/);
     expect(() => createProxyHandler({ env: { ...BASE_ENV } })).toThrow(/CAELO_REMOTE_MCP/);
-  });
-
-  it("refuses a forward origin that is not a bare https origin", () => {
-    for (const bad of [`${DATA_GATEWAY}/`, "http://gw.example.com", "not a url"]) {
-      expect(() =>
-        createProxyHandler({ env: configuredEnv({ [INTERIM_FORWARD_ORIGIN_ENV]: bad }) }),
-      ).toThrow(/CAELO_INTERIM_FORWARD_ORIGIN/);
-    }
   });
 });
 
@@ -141,110 +123,23 @@ describe("request order", () => {
   });
 });
 
-describe("interim forwarder (FIXME #1331, gcp-firebase)", () => {
-  interface Seen {
-    url: string;
-    method: string;
-    headers: Headers;
-    body: string;
-  }
-
-  function forwarding(): { handler: ReturnType<typeof createProxyHandler>; seen: Seen[] } {
-    const seen: Seen[] = [];
-    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-      const body = init?.body ? await new Response(init.body).text() : "";
-      seen.push({
-        url: String(input),
-        method: init?.method ?? "GET",
-        headers: new Headers(init?.headers),
-        body,
-      });
-      const headers = new Headers({ "content-type": "text/plain" });
-      headers.append("set-cookie", "a=1; Path=/");
-      headers.append("set-cookie", "b=2; Path=/");
-      return new Response("from the gateway", { status: 201, headers });
-    }) as typeof fetch;
+describe("no forwarding (#1331)", () => {
+  it("answers the fixed 404 for visitor and staging traffic instead of passing it on", async () => {
+    // Until #1331 the gcp-firebase proxy streamed the old /api/** rewrite and
+    // the staging domain mapping to the data gateway. Both are gone: the
+    // live rewrite names the data gateway (#1380), the staging host is the
+    // staging gateway's (#1330). A leftover env var forwards nothing.
     const handler = createProxyHandler({
-      env: configuredEnv({ [INTERIM_FORWARD_ORIGIN_ENV]: DATA_GATEWAY }),
-      fetchImpl,
+      env: configuredEnv({ CAELO_INTERIM_FORWARD_ORIGIN: DATA_GATEWAY }),
     });
-    return { handler, seen };
-  }
-
-  it("streams the live /api rewrite and the staging host to the data gateway unchanged", async () => {
-    const { handler, seen } = forwarding();
-    const res = await handler(
-      new Request("https://staging.example.com/api/plugin/forms/submit?x=1", {
-        method: "POST",
-        body: '{"a":1}',
-        headers: {
-          host: "staging.example.com",
-          "content-type": "application/json",
-          cookie: "caelo_staging=t",
-          authorization: "Basic abc",
-          "x-forwarded-for": "6.6.6.6",
-          "x-caelo-mcp-client": "forged",
-          forwarded: "for=6.6.6.6",
-          connection: "keep-alive",
-        },
-      }),
-      PEER,
-    );
-    expect(res.status).toBe(201);
-    expect(await res.text()).toBe("from the gateway");
-    expect(res.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
-    // The data gateway's answer, not the proxy's: passed through untouched.
-    expect(res.headers.get("x-frame-options")).toBeNull();
-    const [up] = seen;
-    expect(up?.url).toBe(`${DATA_GATEWAY}/api/plugin/forms/submit?x=1`);
-    expect(up?.method).toBe("POST");
-    expect(up?.body).toBe('{"a":1}');
-    expect(up?.headers.get(INTERIM_FORWARDED_HOST_HEADER)).toBe("staging.example.com");
-    expect(up?.headers.get("cookie")).toBe("caelo_staging=t");
-    expect(up?.headers.get("authorization")).toBe("Basic abc");
-    for (const stripped of [
-      "host",
-      "x-forwarded-for",
-      "x-caelo-mcp-client",
-      "forwarded",
-      "connection",
+    for (const url of [
+      "https://staging.example.com/",
+      "https://staging.example.com/api/plugin/forms/submit",
+      `${PUBLIC}/api/plugin/forms/submit`,
     ]) {
-      expect(up?.headers.get(stripped)).toBeNull();
+      const res = await handler(new Request(url, { method: "POST", body: "{}" }), PEER);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual(OFF);
     }
-  });
-
-  it("does not forward remote MCP on its own host", async () => {
-    const { handler, seen } = forwarding();
-    const res = await handler(new Request(`${PUBLIC}/api/mcp/oauth/status`), PEER);
-    expect(res.status).toBe(200);
-    expect(((await res.json()) as { configured: boolean }).configured).toBe(true);
-    expect(seen).toHaveLength(0);
-  });
-
-  it("forwards an MCP path on another host (the staging host is not the broker's origin)", async () => {
-    const { handler, seen } = forwarding();
-    await handler(
-      new Request("https://staging.example.com/api/mcp/oauth/authorize", {
-        headers: { host: "staging.example.com" },
-      }),
-      PEER,
-    );
-    expect(seen).toHaveLength(1);
-  });
-
-  it("keeps answering health itself", async () => {
-    const { handler, seen } = forwarding();
-    const res = await handler(new Request("https://staging.example.com/api/mcp/health"), PEER);
-    expect(res.status).toBe(200);
-    expect(seen).toHaveLength(0);
-  });
-
-  it("strips a client's own forwarded-host claim before setting it", () => {
-    const headers = interimForwardHeaders(
-      new Request(`${PUBLIC}/x`, {
-        headers: { host: "staging.example.com", [INTERIM_FORWARDED_HOST_HEADER]: "evil.example" },
-      }),
-    );
-    expect(headers.get(INTERIM_FORWARDED_HOST_HEADER)).toBe("staging.example.com");
   });
 });

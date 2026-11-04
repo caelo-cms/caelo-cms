@@ -320,3 +320,30 @@ function locationFor(toPath: string, pageUrlStyle: RedirectPageUrlStyle): string
   if (/[?#]/.test(toPath) || looksLikeFile(toPath)) return toPath;
   return `${toPath}/`;
 }
+
+/**
+ * #1357 — the status a 410 row of the redirects table answers with on
+ * `provider`'s hosting. Caddy (self-hosted) and CloudFront (aws) answer a
+ * bare 410; Firebase Hosting and the GCP load balancer can only answer a
+ * redirect rule with a 3xx, and Front Door (azure) no bare status at all, so
+ * there a gone path answers the 404 every path without a file gets
+ * (`buildRedirectPlan`'s `gone` entries; serving a real 410 there is #1018).
+ * The redirect tools and Settings → Redirects say so instead of "live".
+ */
+export function goneStatusOnProvider(provider?: string): 410 | 404 {
+  switch (provider) {
+    case undefined:
+    case "":
+    case "self-hosted":
+    case "aws":
+      return 410;
+    case "gcp":
+    case "gcp-firebase":
+    case "azure":
+      return 404;
+    default:
+      throw new Error(
+        `goneStatusOnProvider: unknown CAELO_PROVIDER='${provider}'. Expected one of: self-hosted | gcp | gcp-firebase | aws | azure.`,
+      );
+  }
+}

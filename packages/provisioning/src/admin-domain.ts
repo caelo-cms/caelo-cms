@@ -2,9 +2,9 @@
 
 /**
  * `cms-provision admin-domain enable` — serve a gcp-firebase admin at
- * `admin.<domain>` instead of its `*.run.app` URL — and, the same way,
- * `cms-provision staging-domain enable` (#650): serve the protected staging
- * site at `staging.<domain>` from the gateway, which gates and proxies it.
+ * `admin.<domain>` instead of its `*.run.app` URL. (The staging host has no
+ * Cloud Run domain mapping any more since #1330: it is a custom domain of
+ * the staging Hosting site, staging-gateway-setup.ts.)
  *
  * The gcp-firebase stack only creates that Cloud Run domain mapping behind
  * `provisionAdminDomain=true`, off by default: Google refuses a mapping
@@ -48,9 +48,6 @@ export type AdminDomainResult =
   | { status: "needs-verification"; hostname: string; verifyDomain: string }
   | { status: "failed"; error: string };
 
-/** What `staging-domain enable` reports; same shape as the admin's. */
-export type StagingDomainResult = AdminDomainResult;
-
 interface DomainMappingJson {
   status?: { resourceRecords?: { name?: string; type?: string; rrdata?: string }[] };
 }
@@ -80,7 +77,7 @@ function logOf(opts: DomainOpts): (message: string) => void {
 /**
  * The one deployed Cloud Run service playing `slug` on a gcp-firebase
  * install (stack-contract.ts cloudRunServicePrefix: since #1328 the visitor
- * gateway is `caelo-production-data-gateway`); also used by staging-admin.ts.
+ * gateway is `caelo-production-data-gateway`).
  */
 export async function findService(
   run: Run,
@@ -124,116 +121,6 @@ export async function enableAdminDomain(opts: DomainOpts): Promise<AdminDomainRe
   const found = await findService(run, scope, "admin");
   if (!found.ok) return { status: "failed", error: found.error };
   return mapDomain(run, logOf(opts), scope, opts.domain, `admin.${opts.domain}`, found.service);
-}
-
-/**
- * #650 — map the install's staging host (its setting, default
- * `staging.<domain>`; any FQDN) to the gateway, which serves the protected
- * staging site. Cloud Run refuses domain-mapped requests while a service's
- * ingress is internal-only, so the gateway's ingress is opened first (the
- * stack declares the same since #650; installs from before keep the old
- * value until this runs). Idempotent like the admin mapping.
- *
- * #1328 — a new mapping goes to the data gateway, which runs the gate. A
- * mapping made before stays on the service that was the gateway (now the
- * MCP-Auth-Proxy, which forwards it there) until the staging cutover moves
- * it (#1330, #1331); an existing mapping is only reported here.
- */
-export async function enableStagingDomain(
-  opts: DomainOpts & { stagingHost: string },
-): Promise<StagingDomainResult> {
-  const run = opts.run ?? defaultGcloud;
-  const scope = [`--region=${opts.region}`, `--project=${opts.projectId}`];
-  const found = await findService(run, scope, "gateway");
-  if (!found.ok) return { status: "failed", error: found.error };
-  const ingress = await run([
-    "run",
-    "services",
-    "describe",
-    found.service,
-    ...scope,
-    '--format=value(metadata.annotations["run.googleapis.com/ingress"])',
-  ]);
-  if (!ingress.ok) {
-    return { status: "failed", error: `read the gateway's ingress: ${ingress.stderr.trim()}` };
-  }
-  if (ingress.stdout.trim() !== "all") {
-    const update = await run([
-      "run",
-      "services",
-      "update",
-      found.service,
-      ...scope,
-      "--ingress=all",
-      "--quiet",
-    ]);
-    if (!update.ok) {
-      return {
-        status: "failed",
-        error: `open the gateway's ingress for the domain mapping: ${update.stderr.trim()}`,
-      };
-    }
-  }
-  // Search Console verification: the install domain covers its own
-  // subdomains; a host on another domain is verified itself.
-  const verifyDomain =
-    opts.stagingHost === opts.domain || opts.stagingHost.endsWith(`.${opts.domain}`)
-      ? opts.domain
-      : opts.stagingHost;
-  return mapDomain(run, logOf(opts), scope, verifyDomain, opts.stagingHost, found.service);
-}
-
-/** What {@link stagingDomainState} found. */
-export type StagingDomainState =
-  | { readonly status: "mapped" }
-  | { readonly status: "unmapped" }
-  | { readonly status: "unknown"; readonly reason: string };
-
-/**
- * Whether the install's staging host already has its Cloud Run domain
- * mapping, read-only. The upgrade asks before it tells the operator to run
- * `staging-domain enable`, so an install that serves its staging host is
- * not sent to set it up again. It never installs the gcloud `beta`
- * component (an upgrade should not pause for a download to print a hint):
- * without it, or on any error but gcloud's NOT_FOUND, the state is unknown
- * and says why.
- */
-export async function stagingDomainState(opts: {
-  projectId: string;
-  region: string;
-  stagingHost: string;
-  run?: Run;
-}): Promise<StagingDomainState> {
-  const run = opts.run ?? defaultGcloud;
-  const listed = await run([
-    "components",
-    "list",
-    "--only-local-state",
-    "--filter=id=beta",
-    "--format=value(id)",
-  ]);
-  if (!listed.ok) {
-    return {
-      status: "unknown",
-      reason: `check the gcloud "beta" component: ${listed.stderr.trim() || `exit ${listed.exitCode}`}`,
-    };
-  }
-  if (!listed.stdout.split("\n").some((s) => s.trim() === "beta")) {
-    return { status: "unknown", reason: 'the gcloud "beta" component is not installed' };
-  }
-  const described = await run([
-    "beta",
-    "run",
-    "domain-mappings",
-    "describe",
-    `--domain=${opts.stagingHost}`,
-    `--region=${opts.region}`,
-    `--project=${opts.projectId}`,
-    "--format=value(metadata.name)",
-  ]);
-  if (described.ok) return { status: "mapped" };
-  if (/\bNOT_FOUND\b/.test(described.stderr)) return { status: "unmapped" };
-  return { status: "unknown", reason: described.stderr.trim() };
 }
 
 /** What {@link setAdminStagingHostEnv} did. */

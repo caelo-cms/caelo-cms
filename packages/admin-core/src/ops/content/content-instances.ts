@@ -69,6 +69,7 @@ import {
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { runEveryItem } from "../_bulk.js";
+import { decodeKeysetCursor, encodeKeysetCursor } from "../keyset-cursor.js";
 import { cloneContentInstancesDeep } from "./content-instance-clone.js";
 import {
   type ContentInstanceReach,
@@ -563,6 +564,9 @@ function reachOf(
 
 // ─── content_instances.list ──────────────────────────────────────────
 
+/** The largest page `content_instances.list` returns at once. */
+export const CONTENT_INSTANCE_LIST_MAX_LIMIT = 1000;
+
 export const listContentInstancesOp = withHumanisedLinks(
   defineOperation({
     name: "content_instances.list",
@@ -593,10 +597,43 @@ export const listContentInstancesOp = withHumanisedLinks(
          * ask for it only to show or decide on usage.
          */
         usage: z.boolean().default(false),
+        /**
+         * #1269 — at most this many instances, oldest first; `nextCursor`
+         * of the answer continues after the last one.
+         */
+        limit: z.number().int().min(1).max(CONTENT_INSTANCE_LIST_MAX_LIMIT).optional(),
+        /** #1269 — `nextCursor` of the previous page (requires `limit`). */
+        cursor: z.string().min(1).max(200).optional(),
       })
       .strict(),
-    output: z.object({ instances: z.array(contentInstanceRowSchema) }),
+    output: z.object({
+      instances: z.array(contentInstanceRowSchema),
+      /** Continue with `cursor: nextCursor`; null when nothing follows (or no `limit` was given). */
+      nextCursor: z.string().nullable(),
+    }),
     handler: async (ctx, input, tx) => {
+      if (input.cursor !== undefined && input.limit === undefined) {
+        return err({
+          kind: "HandlerError",
+          operation: "content_instances.list",
+          message: "cursor needs limit: send the same limit as the call that returned it.",
+        });
+      }
+      const after =
+        input.cursor === undefined
+          ? null
+          : decodeKeysetCursor("content_instances.list", input.cursor);
+      if (input.cursor !== undefined && after === null) {
+        return err({
+          kind: "HandlerError",
+          operation: "content_instances.list",
+          message:
+            "cursor is not a content_instances.list cursor: pass nextCursor exactly as a previous call returned it, or omit it to start at the first page.",
+        });
+      }
+      const afterFilter = after
+        ? sql`AND (ci.created_at, ci.id) > ((${after.createdAt}::timestamp AT TIME ZONE 'UTC'), ${after.id}::uuid)`
+        : sql``;
       // v0.12.2 — `chat_branch_id` exists on BOTH content_instances and
       // modules; this query joins both so the helper's unqualified
       // `chat_branch_id` filter is ambiguous to the planner. Inline the
@@ -628,12 +665,12 @@ export const listContentInstancesOp = withHumanisedLinks(
             layout.blocks.flatMap((b) => (b.placements ?? []).map((p) => p.contentInstanceId)),
           ),
         ];
-        if (onPage.length === 0) return ok({ instances: [] });
+        if (onPage.length === 0) return ok({ instances: [], nextCursor: null });
         pageFilter = sql`AND ci.id = ANY(${uuidArray(onPage)})`;
       }
       const deletedFilter = input.includeDeleted ? sql`` : sql`AND ci.deleted_at IS NULL`;
 
-      const rows = (await tx.execute(sql`
+      const fetched = (await tx.execute(sql`
       SELECT
         ci.id::text AS id,
         ci.module_id::text AS module_id,
@@ -647,7 +684,8 @@ export const listContentInstancesOp = withHumanisedLinks(
         ci.version,
         ci.created_at,
         ci.updated_at,
-        ci.deleted_at
+        ci.deleted_at,
+        to_char(ci.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS created_key
       FROM content_instances ci
       JOIN modules m ON m.id = ci.module_id
       WHERE 1=1
@@ -659,8 +697,17 @@ export const listContentInstancesOp = withHumanisedLinks(
         ${slugFilter}
         ${searchFilter}
         ${pageFilter}
-      ORDER BY ci.created_at ASC
-    `)) as unknown as ContentInstanceRowSql[];
+        ${afterFilter}
+      ORDER BY ci.created_at ASC, ci.id ASC
+      ${input.limit === undefined ? sql`` : sql`LIMIT ${input.limit + 1}`}
+    `)) as unknown as (ContentInstanceRowSql & { created_key: string })[];
+      const more = input.limit !== undefined && fetched.length > input.limit;
+      const rows = more ? fetched.slice(0, input.limit) : fetched;
+      const lastRow = rows.at(-1);
+      const nextCursor =
+        more && lastRow
+          ? encodeKeysetCursor("content_instances.list", lastRow.created_key, lastRow.id)
+          : null;
 
       // #820 — same caller-branch overlay as content_instances.get: a
       // branched set_values lands only in content_instance_snapshots, so a
@@ -685,11 +732,12 @@ export const listContentInstancesOp = withHumanisedLinks(
       const visible = input.includeDeleted ? rows : rows.filter((r) => r.deleted_at === null);
       const ids = visible.map((r) => r.id);
       if (!input.usage) {
-        return ok({ instances: visible.map((r) => rowToContentInstance(r, null)) });
+        return ok({ instances: visible.map((r) => rowToContentInstance(r, null)), nextCursor });
       }
       const reach = await loadContentInstanceReach(tx, ctx.chatBranchId ?? null, ids);
       return ok({
         instances: visible.map((r) => rowToContentInstance(r, reachOf(reach, r.id))),
+        nextCursor,
       });
     },
   }),

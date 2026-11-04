@@ -30,11 +30,13 @@ import type { ExecutionContext, PhaseTiming } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
 import sharp from "sharp";
+import { setStagingBucketForTests } from "../deploy/staging-slots.js";
 import { runMediaPipeline } from "../media/pipeline.js";
 import { LocalVolumeAdapter, setMediaStorage } from "../media/storage.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { FakeFirebaseHosting } from "./fixtures/fake-firebase-hosting.js";
+import { fakeStagingBucket } from "./fixtures/fake-staging-bucket.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -265,6 +267,10 @@ beforeAll(async () => {
     CAELO_SKIP_STAGING_SERVE_CHECK: "1",
   });
   globalThis.fetch = hosting.fetch as typeof fetch;
+  // #1330 — a Stage mirrors its build into the private staging bucket; the
+  // fake keeps no page bytes, so it adds nothing to the measured memory.
+  setStagingBucketForTests(fakeStagingBucket({ keepBodies: false }).bucket);
+  restore.push(async () => setStagingBucketForTests(null));
   restore.push(await pinSiteBaseUrl(ADMIN_URL!, "https://example.com"));
   restore.push(await pinSiteLanguage(ADMIN_URL!, "en"));
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });

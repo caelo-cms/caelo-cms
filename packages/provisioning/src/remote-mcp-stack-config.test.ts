@@ -96,6 +96,7 @@ describe("remote-MCP identity as stack config (#1082)", () => {
     expect(remoteMcpIdentityStackEnv(undefined)).toEqual({
       admin: [],
       gateway: [],
+      "staging-gateway": [],
       "mcp-auth-proxy": [],
     });
   });

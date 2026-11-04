@@ -40,7 +40,6 @@
 export {
   ClientAddressError,
   clientAddress,
-  forwardedClientIp,
   TRUSTED_PROXY_HOPS_ENV,
   trustedProxyHopsFromEnv,
 } from "@caelo-cms/shared";

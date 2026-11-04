@@ -29,13 +29,10 @@ import {
   type DatabaseAdapter,
   defineOperation,
   type OperationRegistry,
-  type TransactionRunner,
 } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { tryLockStagingPublication } from "../deploy/staging-publication-lock.js";
-import { loadStaticPublisher } from "../deploy/static-publisher.js";
 import { rowToTarget, type TargetDbRow, targetRow } from "./deploy-common.js";
 import { settleOrphanedRuns } from "./deploy-run-lifecycle.js";
 
@@ -225,63 +222,6 @@ export const updateDeployProgressOp = defineOperation({
       WHERE id = ${input.runId}::uuid
     `);
     return ok({});
-  },
-});
-
-/**
- * #650 — the run staging serves, or null when nothing was ever staged. Read
- * under the staging-publication lock, so the answer holds until commit.
- */
-async function servedStagingRun(tx: TransactionRunner): Promise<string | null> {
-  const rows = (await tx.execute(sql`
-    SELECT origin_run_id::text AS run_id FROM staging_access WHERE id = 1
-  `)) as unknown as { run_id: string | null }[];
-  return rows[0]?.run_id ?? null;
-}
-
-/**
- * #969 — keep the preview staging serves alive between Stages. A provider
- * whose served preview has a finite lifetime (Firebase Hosting: preview
- * channels live at most 30 days and cannot be made permanent) extends it
- * again; Stage and Publish live do the same through selectStagingPreview,
- * this covers the idle stretch in between. Runs under the staging
- * publication lock, so it refreshes exactly the preview a concurrent
- * Publish live leaves served. While a Stage holds the lease (#1211) the
- * tick is skipped: that Stage selects — and so refreshes — the preview
- * staging serves next itself. A served preview that is already gone fails
- * loudly (Stage again) — never a silent no-op.
- */
-export const refreshStagingPreviewOp = defineOperation({
-  name: "deploy.refresh_staging_preview",
-  readScope: "request",
-  // Why human-only: a maintenance tick the keep-alive worker runs on a
-  // timer; it decides nothing an editor or the AI chooses (Stage already
-  // refreshes the preview), so it carries no AI tool.
-  actorScope: ["human", "system"],
-  database: "cms_admin",
-  input: z.object({}).strict(),
-  output: z.object({
-    servedRunId: z.string().nullable(),
-    expiresAt: z.string().nullable(),
-  }),
-  handler: async (_ctx, _input, tx) => {
-    const publisher = await loadStaticPublisher(process.env.CAELO_PROVIDER);
-    if (!publisher.refreshStagingPreview) return ok({ servedRunId: null, expiresAt: null });
-    if (!(await tryLockStagingPublication(tx)).locked) {
-      return ok({ servedRunId: null, expiresAt: null });
-    }
-    const servedRunId = await servedStagingRun(tx);
-    if (servedRunId === null) return ok({ servedRunId: null, expiresAt: null });
-    try {
-      const { expiresAt } = await publisher.refreshStagingPreview({ servedRunId });
-      return ok({ servedRunId, expiresAt });
-    } catch (e) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.refresh_staging_preview",
-        message: `the staging preview of build ${servedRunId} could not be kept alive: ${e instanceof Error ? e.message : String(e)}`,
-      });
-    }
   },
 });
 

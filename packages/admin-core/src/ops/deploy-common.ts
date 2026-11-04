@@ -11,7 +11,6 @@ import type { ExecutionContext, PhaseTimer } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { resolveOutputRoot } from "../deploy/output-root.js";
-import type { StaticPublisher } from "../deploy/static-publisher.js";
 
 /**
  * The directory a target's builds are written to. v0.2.78 — on Cloud Run
@@ -123,33 +122,6 @@ export function productionNeedsHuman(
     message:
       "production is built only by a human Publish live (or an Owner-initiated production build) — nothing publishes automatically. Stage the change and let the Owner click Publish live.",
   };
-}
-
-/**
- * #650 / #908 — make `servedRunId`'s public preview the one staging serves
- * (null: none) through the publisher, which keeps it alive and retires the
- * rest. Throws when the served preview cannot be kept alive: the caller
- * then neither records nor releases anything. A preview that could not be
- * retired still expires with its restored TTL and is retried by the next
- * selection, so that is logged loudly instead of failing the operation.
- * `retireUntil`: see {@link StaticPublisher.selectStagingPreview}.
- */
-export async function selectServedStagingPreview(
-  publisher: StaticPublisher,
-  servedRunId: string | null,
-  opts: { readonly retireUntil?: number } = {},
-): Promise<void> {
-  if (!publisher.selectStagingPreview) return;
-  const { notRetired } = await publisher.selectStagingPreview({
-    servedRunId,
-    ...(opts.retireUntil !== undefined ? { retireUntil: opts.retireUntil } : {}),
-  });
-  if (notRetired.length > 0) {
-    console.error(
-      "[deploy] could not delete superseded staging previews; they stay publicly reachable until their TTL ends or the next Stage or Publish live retires them",
-      { servedRunId, notRetired },
-    );
-  }
 }
 
 /**

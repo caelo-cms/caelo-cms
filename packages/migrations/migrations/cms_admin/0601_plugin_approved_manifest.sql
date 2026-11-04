@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0596 — the Owner sees what a plugin release changes (#1420).
+-- 0601 — the Owner sees what a plugin release changes (#1420).
 --
 -- `approved_manifest_digest` says THAT a release differs from the approved
 -- one, not HOW: the previous manifest is overwritten when the release
