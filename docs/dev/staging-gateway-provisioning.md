@@ -1,6 +1,6 @@
 # Staging gateway provisioning
 
-Since #1330 / #1331 (epic #763, converge release 2, infrastructure contract 19), every install that serves a protected staging site runs a **staging gateway**: the live gateway's image with `CAELO_GATEWAY_ENVIRONMENT=staging`. It serves the staged build from staging storage behind the staging gate, on every host it answers (`*.run.app` included), and staging's own data (`cms_public_staging`). How the gateway serves is in [gateway-hardening.md](./gateway-hardening.md); this page is about what provisioning creates.
+Since #1330 / #1331 (epic #763, converge release 2, infrastructure contract 20), every install that serves a protected staging site runs a **staging gateway**: the live gateway's image with `CAELO_GATEWAY_ENVIRONMENT=staging`. It serves the staged build from staging storage behind the staging gate, on every host it answers (`*.run.app` included), and staging's own data (`cms_public_staging`). How the gateway serves is in [gateway-hardening.md](./gateway-hardening.md); this page is about what provisioning creates.
 
 ## One shape, per provider (E11)
 
@@ -27,7 +27,7 @@ The quality audit's Lighthouse job does not go through the staging gateway (#875
 
 The stacks declare only the staging gateway's service account, its secret binding and its telemetry roles. Everything else is CLI-owned (`packages/provisioning/src/staging-gateway-setup.ts`), like the audit and capture jobs:
 
-- `ensureStagingGatewayService` — account, secret access, the gcp-firebase bucket and the admin's write on it, the staging gateway's read on it, the service (deployed once with the release's gateway image, VPC egress copied from the live gateway), `allUsers` invoker. Runs in the upgrade's pre-plan step (`ensureReleaseServices`), because the app-roll rolls four services from contract 19 on (admin, gateway, staging gateway, MCP-Auth-Proxy; the staging gateway takes the gateway's image).
+- `ensureStagingGatewayService` — account, secret access, the gcp-firebase bucket and the admin's write on it, the staging gateway's read on it, the service (deployed once with the release's gateway image, VPC egress copied from the live gateway), `allUsers` invoker. Runs in the upgrade's pre-plan step (`ensureReleaseServices`), because the app-roll rolls four services from contract 20 on (admin, gateway, staging gateway, MCP-Auth-Proxy; the staging gateway takes the gateway's image).
 - `ensureStagingGatewayEdge` — the Hosting site or the load-balancer pieces above, idempotently. Runs in the converge before the roll, in the wizard after the first `up`, and in `cms-provision staging-domain enable` (which also switches on password protection the first time and prints the DNS records).
 
 The `gcp` stack's URL map declares the `staging` host rule and matcher (pointing at the static bucket at creation) and ignores `pathMatchers[2].defaultService`, which the CLI moves to the staging gateway's backend; the HTTPS proxy ignores `sslCertificates`, to which the CLI adds the staging certificate.

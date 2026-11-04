@@ -590,7 +590,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // infrastructure contract — recorded only when the upgrader and the
   // converge job are in place (the steps contract bumps 2 and 9 added) and
   // remote MCP's steps (#806, bump 10), the scheduler tick (#1140, bump 18)
-  // and the staging gateway (#1330, bump 19) succeeded. With the release version, the admin can install the next
+  // and the staging gateway (#1330, bump 20) succeeded. With the release version, the admin can install the next
   // update itself.
   if (upgraderReady && convergeReady && remoteMcpReady && schedulerReady && stagingReady) {
     const version = releaseVersion;

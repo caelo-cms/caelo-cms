@@ -743,7 +743,7 @@ async function servingDigests(
   // #1330 — the staging gateway must serve the very image the gateway
   // serves: it rolls with it, and an install whose staging gateway runs
   // another release is not on one release (the upgrader runs only on
-  // installs converged to contract 19, which have it).
+  // installs converged to contract 20, which have it).
   const stagingPrefix = cloudRunServicePrefix(provider, deps.env, "staging-gateway");
   const staging = await resolveGcpResourceName(
     deps.run,
