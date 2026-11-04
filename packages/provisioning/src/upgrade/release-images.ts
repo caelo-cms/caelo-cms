@@ -16,6 +16,13 @@
 import { IMAGE_DIGEST } from "@caelo-cms/shared";
 import { confirm, isCancel, log, spinner } from "@clack/prompts";
 import { green, red } from "kleur/colors";
+import {
+  CLOUD_RUN_SLUGS,
+  type CloudRunSlug,
+  SERVICE_IMAGE,
+  SERVICE_IMAGE_NAMES,
+  type ServiceImageName,
+} from "../stack-contract.js";
 
 /** The Caelo services shipped as release images (#1328 added the MCP-Auth-Proxy). */
 export type ReleaseService = "admin" | "gateway" | "mcp-auth-proxy";
@@ -467,4 +474,41 @@ export async function verifyCosignAll(
     s.stop(green(`${plan.slug} signature verified ✓`));
   }
   return true;
+}
+
+/**
+ * Resolve each release image's digest from the public registry, and give
+ * every service the image it runs (#1330: the staging gateway runs the
+ * gateway's — there is no `staging-gateway` image to look up). Via the
+ * registry's anonymous V2 API, not `gcloud artifacts docker tags list`: that
+ * needs IAM read on Caelo's registry project, which operators don't have.
+ *
+ * @param resolve - the tag lookup (tests pass a fake)
+ */
+export async function resolveReleaseImages(
+  tag: string,
+  resolve: (image: string, tag: string) => Promise<DigestResult> = resolveTagDigest,
+): Promise<
+  | { ok: true; images: Record<CloudRunSlug, { digest: string; imageRef: string }> }
+  | { ok: false; error: string }
+> {
+  const byImage: Partial<Record<ServiceImageName, { digest: string; imageRef: string }>> = {};
+  for (const image of SERVICE_IMAGE_NAMES) {
+    const res = await resolve(image, tag);
+    if (!res.ok) {
+      const r = RELEASE_REGISTRY;
+      return {
+        ok: false,
+        error:
+          `Couldn't resolve image digest for ${image}:${tag}: the public registry returned ${res.reason}.\n` +
+          `Verify the tag exists at https://${r.region}-docker.pkg.dev/${r.project}/${r.repo}/${image}:${tag}\n` +
+          "(latest releases live at https://github.com/caelo-cms/caelo-cms/releases — pass --version vX.Y.Z to pin.)",
+      };
+    }
+    byImage[image] = { digest: res.digest, imageRef: releaseImageRef(image, res.digest) };
+  }
+  const images = Object.fromEntries(
+    CLOUD_RUN_SLUGS.map((slug) => [slug, byImage[SERVICE_IMAGE[slug]]]),
+  ) as Record<CloudRunSlug, { digest: string; imageRef: string }>;
+  return { ok: true, images };
 }
