@@ -492,6 +492,8 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/gateway.ts`,
   `${A}/ops/staging_access.ts`,
   `${A}/ops/owner_settings_*.ts`,
+  // #1337 — the Owner's mail caps, an owner-settings proposal like the above.
+  `${A}/ops/mail_caps.ts`,
   `${A}/ops/mcp_*.ts`,
   // #1375 — the MCP back-pressure gate answers HTTP before any AI turn runs.
   `${A}/mcp-back-pressure.ts`,

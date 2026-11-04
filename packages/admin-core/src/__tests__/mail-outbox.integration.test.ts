@@ -535,6 +535,7 @@ describe("the sending domain's DNS records (E12)", () => {
 describe("the caps are the Owner's settings (#1337, §11.A)", () => {
   it("seeded with the defaults; the AI proposes, the Owner's approval applies, the drain follows", async () => {
     const ai = { ...OWNER, actorKind: "ai" as const };
+    let restored: Awaited<ReturnType<typeof execute>> | undefined;
     const read = await execute(registry, adapter, ai, "mail_caps.get", {});
     if (!read.ok) throw new Error(JSON.stringify(read.error));
     expect(read.value).toEqual({
@@ -579,12 +580,14 @@ describe("the caps are the Owner's settings (#1337, §11.A)", () => {
       expect(report.sent).toBe(2);
       expect(report.refused.recipient_cap).toBe(2);
     } finally {
-      const back = await execute(registry, adapter, OWNER, "mail_caps.set", {
+      // Restored for the files after this one (the caps row is preserved).
+      // No throw in finally: a failed restore is reported by the check below.
+      restored = await execute(registry, adapter, OWNER, "mail_caps.set", {
         perRecipientPerDay: MAIL_RECIPIENT_CAP,
         livePerHour: LIVE_CAP,
         stagingPerHour: 50,
       });
-      if (!back.ok) throw new Error(JSON.stringify(back.error));
     }
+    expect(restored?.ok).toBe(true);
   });
 });
