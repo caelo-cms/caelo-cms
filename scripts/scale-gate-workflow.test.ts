@@ -32,11 +32,11 @@ import {
 import { SHIPPED_PLUGIN_SLUGS } from "./scale-gate/plugins.ts";
 import {
   countNewMatches,
+  markdownCell,
   notRunning,
   POOL_EXHAUSTED,
   percentile,
   pluginsPass,
-  markdownCell,
   readFirstPaint,
   retryAfterSeconds,
   summarise,
