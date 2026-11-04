@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: MPL-2.0
+import { describe, expect, it } from "bun:test";
+import { parseProposalContent } from "./proposal-parser.js";
+const UUID = "d2d5a41a-0ecb-4f70-aab1-73963240e9f1";
+describe("parseProposalContent", () => {
+    it("parses canonical create_layout output", () => {
+        const content = `Queued proposal ${UUID}: layout-create slug=default (3 blocks). Approve it on the proposal card in this chat (queue: /settings/layouts/pending).`;
+        const result = parseProposalContent(content);
+        expect(result).not.toBeNull();
+        expect(result?.proposalId).toBe(UUID);
+        expect(result?.summary).toBe("layout-create slug=default (3 blocks)");
+        expect(result?.queueUrl).toBe("/settings/layouts/pending");
+        expect(result?.domain).toBe("layouts");
+    });
+    // Pre-card-first tail ("An Owner must click Approve at … to apply.")
+    // still lives in persisted chat_messages rows — those must keep
+    // rendering ProposeCards after the wording change.
+    it("parses the legacy pre-card-first tail (persisted messages)", () => {
+        const content = `Queued proposal ${UUID}: add domain 'shop.example.com'. An Owner must click Approve at /settings/domains/pending to apply.`;
+        const result = parseProposalContent(content);
+        expect(result?.domain).toBe("domains");
+        expect(result?.queueUrl).toBe("/settings/domains/pending");
+    });
+    // #684 — tool results persisted before Security became Settings still say
+    // /security/…; their cards must keep Approve / Reject (no HTTP request is
+    // made to parse them, so the 308 redirect cannot help), posting to the
+    // moved route.
+    it("parses a pre-rename queue URL (old Security prefix) and points it at /settings", () => {
+        const old = ["", "security", "layouts", "pending"].join("/");
+        const content = `Queued proposal ${UUID}: layout-create slug=default. Approve it on the proposal card in this chat (queue: ${old}).`;
+        const result = parseProposalContent(content);
+        expect(result?.domain).toBe("layouts");
+        expect(result?.queueUrl).toBe("/settings/layouts/pending");
+    });
+    it("parses canonical propose_deploy_promote output", () => {
+        const content = `Queued proposal ${UUID}: promote staging → production (build=abc, pages=10, files=20). Approve it on the proposal card in this chat (queue: /settings/deployments/pending).`;
+        const result = parseProposalContent(content);
+        expect(result?.domain).toBe("deployments");
+    });
+    it("parses canonical tune_rate_limit output", () => {
+        const content = `Queued proposal ${UUID}: rate-limit comments.submit = 5/60s. Approve it on the proposal card in this chat (queue: /settings/gateway/pending).`;
+        const result = parseProposalContent(content);
+        expect(result?.domain).toBe("gateway");
+        // Summary may truncate at the first period inside the data (e.g.
+        // "comments.submit") — that's a pre-v0.5.11 ProposeCard limitation,
+        // not a v0.5.13 regression. The Approve button still works because
+        // proposalId + queueUrl extract correctly.
+        expect(result?.summary).toMatch(/^rate-limit /);
+    });
+    it("returns null for pre-v0.5.11 non-canonical 'Queued layout-create proposal' format", () => {
+        const content = `Queued layout-create proposal ${UUID} (slug=default, 3 blocks). An Owner must click Approve at /settings/layouts/pending to create the layout.`;
+        expect(parseProposalContent(content)).toBeNull();
+    });
+    it("returns null for tool-error content", () => {
+        expect(parseProposalContent("layouts.propose_create failed: slug already in use")).toBeNull();
+    });
+    it("returns null for content without a uuid", () => {
+        expect(parseProposalContent("Queued proposal not-a-uuid: something. /settings/x/pending")).toBeNull();
+    });
+    it("returns null for content without a queue url", () => {
+        expect(parseProposalContent(`Queued proposal ${UUID}: summary. nothing more.`)).toBeNull();
+    });
+    it("returns null on empty string", () => {
+        expect(parseProposalContent("")).toBeNull();
+    });
+    // `/settings/locales/pending` was removed in #382; old persisted chat
+    // messages that reference it must degrade to plain markdown rather than
+    // rendering an actionable ProposeCard whose Approve/Reject POSTs 404.
+    it("returns null for deprecated locales domain (route removed in #382)", () => {
+        const content = `Queued proposal ${UUID}: add locale 'de'. Approve it on the proposal card in this chat (queue: /settings/locales/pending).`;
+        expect(parseProposalContent(content)).toBeNull();
+    });
+});

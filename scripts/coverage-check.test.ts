@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  argValue,
   classifyTestExit,
   computeOpCoveragePct,
   describeTestRun,
@@ -226,5 +227,14 @@ describe("shardFiles / parseShard (sharded CI)", () => {
   it("parses i/n and refuses anything else", () => {
     expect(parseShard("2/4")).toEqual({ index: 2, count: 4 });
     for (const bad of ["0/4", "5/4", "2", "a/b", "2/0"]) expect(() => parseShard(bad)).toThrow();
+  });
+});
+
+describe("argValue (sharded CI)", () => {
+  it("reads a flag's value, null when absent, and refuses a flag without one", () => {
+    expect(argValue(["--shard", "2/4"], "--shard")).toBe("2/4");
+    expect(argValue([], "--merge")).toBeNull();
+    expect(() => argValue(["--merge"], "--merge")).toThrow(/needs a value/);
+    expect(() => argValue(["--merge", "--shard", "1/4"], "--merge")).toThrow(/needs a value/);
   });
 });

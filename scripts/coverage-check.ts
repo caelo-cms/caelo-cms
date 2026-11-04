@@ -30,7 +30,7 @@
  * whole suite and gates it, as before (local use).
  *
  * The pure helpers (`parseLcovLinePct`, `mergeLcov`, `shardFiles`,
- * `parseShard`, `loadOpCoverageSet`, `computeOpCoveragePct`, `evaluateTier`,
+ * `parseShard`, `argValue`, `loadOpCoverageSet`, `computeOpCoveragePct`, `evaluateTier`,
  * `loadThresholds`, `classifyTestExit`) are exported for unit testing; the
  * orchestration runs only under `import.meta.main`.
  */
@@ -371,10 +371,21 @@ async function enumerateDeclaredOps(): Promise<string[]> {
   return [...registry.names()];
 }
 
-/** The value after `name` on the command line, or null. */
-function argValue(argv: readonly string[], name: string): string | null {
+/**
+ * The value after `name` on the command line; null when `name` is absent.
+ * Throws when `name` is given without a value: `--merge` alone must not
+ * fall through to running the whole suite.
+ */
+export function argValue(argv: readonly string[], name: string): string | null {
   const i = argv.indexOf(name);
-  return i >= 0 ? (argv[i + 1] ?? null) : null;
+  if (i < 0) return null;
+  const value = argv[i + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new Error(
+      `${name} needs a value (e.g. ${name === "--shard" ? "--shard 2/4" : "--merge coverage/shards"})`,
+    );
+  }
+  return value;
 }
 
 /** Run one tier's files; the lcov / op data land in `outDir`. */
@@ -414,6 +425,8 @@ async function main(argv: readonly string[]): Promise<number> {
   const thresholds = loadThresholds(JSON.parse(readFileSync(THRESHOLDS_FILE, "utf8")));
 
   const mergeDir = argValue(argv, "--merge");
+  const shardArg = argValue(argv, "--shard");
+  if (mergeDir !== null && shardArg !== null) throw new Error("pass --shard or --merge, not both");
   if (mergeDir !== null) return gateMerged(resolve(REPO_ROOT, mergeDir), thresholds);
 
   const { unit, integration } = discoverTestFiles();
@@ -427,7 +440,6 @@ async function main(argv: readonly string[]): Promise<number> {
       "no integration-tier test files found (*.integration.test.ts) — check discovery",
     );
 
-  const shardArg = argValue(argv, "--shard");
   if (shardArg !== null) {
     const { index, count } = parseShard(shardArg);
     const size = (f: string) => statSync(join(REPO_ROOT, f)).size;

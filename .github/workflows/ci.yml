@@ -222,6 +222,13 @@ jobs:
           cat "$RUNNER_TEMP/firestore-emulator.log"
           exit 1
 
+      - name: Build the workspace packages (tsc -b)
+        # The tests load built package outputs — every shipped plugin's
+        # `dist/` (shipped-plugins-validate, public-surface) among them —
+        # which `bun run typecheck` built when it ran in this job; it runs
+        # in `lint` now, on another runner.
+        run: bunx tsc -b
+
       - name: Test (this shard's files; raw coverage, no gate)
         run: bun run coverage:check --shard ${{ matrix.shard }}/4
 
