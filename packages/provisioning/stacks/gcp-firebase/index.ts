@@ -835,6 +835,10 @@ const envContractInputs = {
 // gateway was also the remote-MCP broker.
 const gatewaySvc = cloudRunService({
   serviceName: "gateway",
+  // Its own logical name: `${namePrefix}-gateway` belongs to the
+  // MCP-Auth-Proxy (E13 a, below), and two resources with one URN fail
+  // every `pulumi up` (a fresh install could not converge, 2026-11-04).
+  resourceName: `${namePrefix}-data-gateway`,
   minInstances: gatewayMinInstances,
   maxInstances: gatewayMaxInstances,
   memory: "512Mi",
