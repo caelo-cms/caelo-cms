@@ -264,16 +264,23 @@ export function headOverlaySql(spec: {
               d.header_created_at DESC, d.row_created_at DESC, d.snapshot_row_id DESC`;
 }
 
-/** The snapshot reference tables of migration 0533, per draft-head kind. */
+/**
+ * The snapshot reference tables per draft-head kind: content-instance
+ * values and page layouts (migration 0592), page terms (0594), list items
+ * and module fields (0595).
+ */
 const SNAPSHOT_REFS_TABLE = {
   contentInstance: "content_instance_snapshot_refs",
   pageLayout: "page_layout_snapshot_refs",
+  page: "page_snapshot_refs",
+  list: "list_snapshot_refs",
+  module: "module_snapshot_refs",
 } as const;
 
 /**
  * The entities of `kind` whose pending state on `branchId` references any
  * of `refs` (ids anywhere in the state, media slugs) — looked up in the
- * snapshot reference tables of migration 0533 (the extraction of
+ * snapshot reference tables of migration 0592 (the extraction of
  * `content_instance_refs`), kept only when the snapshot row is a head row
  * of the branch. A superset (another owner's newer state may not match):
  * confirm on the newest state ({@link headOverlaySql}). Empty `refs` select nothing.

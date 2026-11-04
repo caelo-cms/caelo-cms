@@ -13,10 +13,10 @@
  * pending snapshots — the same overlay every module / instance read uses.
  */
 
-import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
 import type { ListPaginationSettings, SourceDef } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { headOverlaySql } from "../draft.js";
+import { headOverlaySql, pendingRefCandidatesSql } from "../draft.js";
 import { loadBranchedModuleStates, loadContentInstanceBranchStates } from "../snapshots/index.js";
 
 /** A module field of kind `list` (shape owned by the module field schema, docs §7). */
@@ -77,19 +77,36 @@ export function bindingOf(field: ListFieldDef): "local" | "shared" | "source" {
 }
 
 /**
- * Every non-deleted module the caller sees, with its fields as the branch
- * has them.
+ * The non-deleted modules the caller sees, with their fields as the branch
+ * has them — every module, or only `ids`, or only the modules whose fields
+ * may reference one of `referencing` (the module reference tables, 0595;
+ * the caller confirms on the returned fields). The scoped forms read the
+ * matches, never every module and pending module (#1391).
  */
 export async function loadModulesInView(
   tx: TransactionRunner,
   branchId: string | null,
+  scope: { readonly ids?: readonly string[]; readonly referencing?: readonly string[] } = {},
 ): Promise<ModuleInView[]> {
   const visible = branchId
     ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${branchId}::uuid)`
     : sql`chat_branch_id IS NULL`;
+  let ids = scope.ids;
+  if (scope.referencing !== undefined) {
+    const needles = [...new Set(scope.referencing.map((id) => id.toLowerCase()))];
+    if (needles.length === 0) return [];
+    const found = (await tx.execute(sql`
+      SELECT DISTINCT module_id::text AS id FROM module_refs
+       WHERE ref_kind = 'id' AND ref = ANY(${textArray(needles)})
+      ${branchId ? sql`UNION ${pendingRefCandidatesSql({ kind: "module", branchId, ids: needles })}` : sql``}
+    `)) as unknown as { id?: string; entity_id?: string }[];
+    ids = [...new Set(found.map((r) => r.id ?? r.entity_id ?? ""))].filter((id) => id !== "");
+  }
+  if (ids !== undefined && ids.length === 0) return [];
+  const idFilter = ids ? sql` AND id = ANY(${uuidArray(ids)})` : sql``;
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, slug, display_name, fields, deleted_at
-    FROM modules WHERE ${visible}
+    FROM modules WHERE ${visible}${idFilter}
     ORDER BY slug
   `)) as unknown as {
     id: string;
@@ -98,7 +115,9 @@ export async function loadModulesInView(
     fields: unknown;
     deleted_at: string | Date | null;
   }[];
-  const branched = branchId ? await loadBranchedModuleStates(tx, branchId) : new Map();
+  const branched = branchId
+    ? await loadBranchedModuleStates(tx, branchId, ids ?? undefined)
+    : new Map();
   const out: ModuleInView[] = [];
   for (const r of rows) {
     const b = branched.get(r.id);
@@ -235,42 +254,72 @@ export async function findLocalLists(
   return out;
 }
 
-/** The page terms in the caller's view that use vocabulary `listId`: page id → term refs. */
-export async function pageTermsOfList(
+/**
+ * How many pages in the caller's view carry a term of each vocabulary in
+ * `listIds`, keyed by list id (0 when none).
+ *
+ * The cost is the tagged pages and the matching pending ones, never the
+ * draft (#1269): on a branch, the pending pages that matter are the
+ * tagged live pages a chat changed (their newest state may have dropped
+ * the term) and the pending pages whose terms reference one of the lists
+ * (the page snapshot reference table, 0594). Each of those is judged on
+ * its newest state; every other tagged page counts as stored.
+ */
+export async function countPagesTaggedWithLists(
   tx: TransactionRunner,
   branchId: string | null,
-  listId: string,
-): Promise<Map<string, string[]>> {
-  const out = new Map<string, string[]>();
-  const prefix = `caelo:term/${listId}/`;
-  const live = (await tx.execute(sql`
-    SELECT pt.page_id::text AS page_id,
-           'caelo:term/' || pt.list_id::text || '/' || pt.item_id::text AS ref
-    FROM page_terms pt JOIN pages p ON p.id = pt.page_id
-    WHERE pt.list_id = ${listId}::uuid AND p.deleted_at IS NULL
-      AND ${branchId ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)` : sql`p.chat_branch_id IS NULL`}
-  `)) as unknown as { page_id: string; ref: string }[];
-  for (const r of live) out.set(r.page_id, [...(out.get(r.page_id) ?? []), r.ref]);
-  if (!branchId) return out;
-  // The branch's pending pages through the draft head (one row per page).
-  const branched = (await tx.execute(
-    headOverlaySql({
-      kind: "page",
-      table: "page_snapshots",
-      branchId,
-      columns: sql`jsonb_build_object('terms', es.state->'terms', 'deletedAt', es.state->'deletedAt') AS state`,
-    }),
-  )) as unknown as { entity_id: string; state: unknown }[];
-  for (const b of branched) {
-    const state = b.state as {
-      terms?: unknown;
-      deletedAt?: string | null;
-    };
-    const terms = Array.isArray(state.terms)
-      ? state.terms.filter((t): t is string => typeof t === "string" && t.startsWith(prefix))
-      : [];
-    if (state.deletedAt || terms.length === 0) out.delete(b.entity_id);
-    else out.set(b.entity_id, terms);
+  listIds: readonly string[],
+): Promise<Map<string, number>> {
+  const ids = [...new Set(listIds.map((id) => id.toLowerCase()))];
+  const out = new Map(ids.map((id) => [id, 0]));
+  if (ids.length === 0) return out;
+  const visibility = branchId
+    ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
+    : sql`p.chat_branch_id IS NULL`;
+  let pendingIds: string[] = [];
+  if (branchId) {
+    const candidates = (await tx.execute(sql`
+      SELECT DISTINCT d.entity_id::text AS entity_id
+        FROM page_terms pt
+        JOIN draft_pending_entities d
+          ON d.entity_id = pt.page_id AND d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'page'
+       WHERE pt.list_id = ANY(${uuidArray(ids)})
+      UNION
+      ${pendingRefCandidatesSql({ kind: "page", branchId, ids })}
+    `)) as unknown as { entity_id: string }[];
+    pendingIds = candidates.map((c) => c.entity_id);
+    if (pendingIds.length > 0) {
+      const heads = (await tx.execute(
+        headOverlaySql({
+          kind: "page",
+          table: "page_snapshots",
+          branchId,
+          ids: pendingIds,
+          columns: sql`jsonb_build_object('terms', es.state->'terms', 'deletedAt', es.state->'deletedAt') AS state`,
+        }),
+      )) as unknown as {
+        entity_id: string;
+        state: { terms?: unknown; deletedAt?: string | null };
+      }[];
+      for (const h of heads) {
+        if (h.state.deletedAt || !Array.isArray(h.state.terms)) continue;
+        const tagged = new Set<string>();
+        for (const t of h.state.terms) {
+          if (typeof t !== "string") continue;
+          const listId = /^caelo:term\/([^/]+)\//.exec(t.toLowerCase())?.[1];
+          if (listId !== undefined && out.has(listId)) tagged.add(listId);
+        }
+        for (const listId of tagged) out.set(listId, (out.get(listId) ?? 0) + 1);
+      }
+    }
   }
+  const live = (await tx.execute(sql`
+    SELECT pt.list_id::text AS list_id, count(DISTINCT pt.page_id)::int AS n
+      FROM page_terms pt JOIN pages p ON p.id = pt.page_id
+     WHERE pt.list_id = ANY(${uuidArray(ids)}) AND p.deleted_at IS NULL AND ${visibility}
+       AND pt.page_id <> ALL(${uuidArray(pendingIds)})
+     GROUP BY pt.list_id
+  `)) as unknown as { list_id: string; n: number }[];
+  for (const r of live) out.set(r.list_id, (out.get(r.list_id) ?? 0) + r.n);
   return out;
 }

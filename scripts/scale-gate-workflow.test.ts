@@ -32,11 +32,13 @@ import {
 import { SHIPPED_PLUGIN_SLUGS } from "./scale-gate/plugins.ts";
 import {
   countNewMatches,
+  markdownCell,
   notRunning,
   POOL_EXHAUSTED,
   percentile,
   pluginsPass,
   readFirstPaint,
+  retryAfterSeconds,
   summarise,
 } from "./scale-gate/run.ts";
 
@@ -208,6 +210,19 @@ describe("scale-gate runner report", () => {
     expect(summarise([10], 1, 0, 100).pass).toBe(false);
     expect(summarise([10], 0, 1, 100).pass).toBe(false);
     expect(summarise([10, 200], 0, 0, 100).pass).toBe(false);
+    // A call the admin refused with 429 is back-pressure: overloaded, not met.
+    expect(summarise([10, 20], 0, 0, 100, 1)).toMatchObject({ refused: 1, pass: false });
+  });
+
+  it("escapes a statement for a markdown cell: backslash, pipe, backtick, line breaks", () => {
+    expect(markdownCell("a\\b | `c`\nd")).toBe("a\\\\b \\| \\`c\\` d");
+  });
+
+  it("waits as long as a 429 asks (#1375), 5 s when it names nothing", () => {
+    expect(
+      retryAfterSeconds('{"message":"Caelo is at capacity right now: ... Wait 10 s, then send"}'),
+    ).toBe(10);
+    expect(retryAfterSeconds("busy")).toBe(5);
   });
 
   it("counts only log lines written after the run started", () => {

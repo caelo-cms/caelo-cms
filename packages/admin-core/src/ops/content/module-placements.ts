@@ -91,7 +91,7 @@ export async function findModulePagePlacements(
   // Branched page layouts + page states of the pages that may place a
   // requested module: the pages of the live rows (a pending layout or
   // delete supersedes them) and the pages whose pending layout references
-  // one (the snapshot reference table, 0533) — never every pending page of
+  // one (the snapshot reference table, 0592) — never every pending page of
   // the draft. Empty for callers without a branch.
   const branchedLayouts = new Map<string, PageLayoutState>();
   const branchedDeletedPages = new Set<string>();

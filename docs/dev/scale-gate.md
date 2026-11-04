@@ -70,6 +70,7 @@ During the load it also:
 
 - samples the Postgres container's own cgroup every `--cpu-interval` seconds (default 5) through `docker exec <--pg-container> cat /sys/fs/cgroup/cpu.stat`, and reads the share it runs under from `cpu.max` (`scripts/scale-gate/observe.ts`);
 - calls the scheduler tick every `--tick-every` seconds, the first one at once (a worker the due-table has not seen is due then), and records each plugin worker's runs and failures from the tick's answer;
+- resets `pg_stat_statements` at the start of the settle wait and again at the start of the load, and reports the 15 statements with the most execution time of each phase (calls, total and mean ms, rows, buffers, the normalised text; JSON `dbStatements.settle` / `.load`, the top ten in the table), so a saturated CPU share names the statements it went to;
 - afterwards reads the admin log written since the preflight for plugin failures: `[plugin-host] <slug> <phase> failed (…)` (a failed load, operation or render, `recordPluginError`), `change consumer of "<slug>" stopped`, and the host-level consumer and heartbeat failures.
 
 ## Definitions and SLOs
@@ -77,7 +78,7 @@ During the load it also:
 - **First paint**: the `/edit` HTML document received up to `</html>`, every awaited load done. SvelteKit appends the load's streamed parts (`apps/admin/src/lib/server/edit-streamed.ts`, #1268) to the same response after `</html>`, so the harness stops the clock there and drains the rest untimed.
 - **Preview**: the `preview-by-path` response received in full.
 - **Unchanged-page preview**: the same preview requested again with no change to that page in between.
-- **MCP write / read**: one `/api/mcp/tool` call of a writing / reading tool, until its JSON answer.
+- **MCP write / read**: one `/api/mcp/tool` call of a writing / reading tool, until its JSON answer. An agent obeys back-pressure as a real MCP client does (#1375): a 429 ("Caelo is at capacity … Wait N s") is waited out and the same call sent again, and the sample is the whole time until it ran. Each refusal is counted in the table's `refused (429)` column.
 
 | Measurement (p95) | Target |
 |---|---|
@@ -87,7 +88,7 @@ During the load it also:
 | MCP write | < 1 s |
 | MCP read | < 500 ms |
 
-Plus **zero pool-acquire timeouts** (a `PoolAcquireTimeoutError` in the admin log, or a call answering that the pool had no free connection), **zero lock waits over 100 ms** (`still waiting for` in the Postgres log) and, since #1390, **zero plugin failures**: no plugin failure line in the admin log (a plugin's background work failing under load, such as a change consumer whose site-sized read hit the statement timeout and stopped, is exactly what stalled production on 2026-11-03), no failed or timed-out plugin worker run, no failed tick, and the change consumers settled before the load. A failure in an agent's own plugin call is counted here as well as in its measurement. A measurement with no samples, an error or a timeout fails too. `--baseline` records without failing (for a run on `main` before a change).
+Plus **zero pool-acquire timeouts** (a `PoolAcquireTimeoutError` in the admin log, or a call answering that the pool had no free connection), **zero lock waits over 100 ms** (`still waiting for` in the Postgres log) and, since #1390, **zero plugin failures**: no plugin failure line in the admin log (a plugin's background work failing under load, such as a change consumer whose site-sized read hit the statement timeout and stopped, is exactly what stalled production on 2026-11-03), no failed or timed-out plugin worker run, no failed tick, and the change consumers settled before the load. A failure in an agent's own plugin call is counted here as well as in its measurement. A measurement with no samples, an error, a timeout or a refusal fails too. `--baseline` records without failing (for a run on `main` before a change).
 
 **DB CPU** is reported, not a pass/fail of its own: mean, p95 and max CPUs used over the samples next to the share, the share of samples at ≥ 95 % of it (the database was CPU-bound) and the mean fraction of scheduler periods that hit the quota. A saturated share is what the latency SLOs then fail on; the CPU line says why. The JSON report carries it as `dbCpu`, the plugin side as `plugins` (`failures` per slug, `sampleFailures`, `settleSeconds`, `ticks.workers`).
 

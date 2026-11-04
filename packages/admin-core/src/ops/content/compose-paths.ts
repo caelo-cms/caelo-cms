@@ -18,9 +18,10 @@ import {
   resolvePageUrl,
   type UrlCompositionView,
 } from "@caelo-cms/plugin-host";
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import { type ExecutionContext, isHomeSlug } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { headOverlaySql } from "../../draft.js";
 import { ancestorSlugsOf, type PageTree, type PageTreeNode } from "./page-tree.js";
 
 /**
@@ -58,24 +59,84 @@ function isCompositionHome(
 }
 
 /**
- * The page core composes at "/" in `tree` — the root half of
- * {@link isCompositionHome} without plugin annotations: the designated
- * home when one is set, else the top-level magic-slug page. Null when
- * the site has neither. `site_defaults.get` reports it as `rootPageId`
- * so readers (URL plugins deciding which page's counterparts are locale
- * roots) never re-derive the rule from the designation alone.
+ * The page core composes at "/" on `chatBranchId` (null = main) — the
+ * root half of {@link isCompositionHome} without plugin annotations: the
+ * designated home when one is set, else the top-level magic-slug page.
+ * Null when the site has neither. `site_defaults.get` reports it as
+ * `rootPageId` so readers (URL plugins deciding which page's counterparts
+ * are locale roots) never re-derive the rule from the designation alone.
+ *
+ * Reads O(1) rows, not the page tree (#1269): the candidates are the
+ * pages whose stored `current_path` is "/" (indexed; what the root
+ * composed to when it was last written) and, on a branch, the pending
+ * pages whose head is top-level with a magic slug (indexed, 0594). Each candidate is
+ * then judged on its newest state, so a pending rename or move of the
+ * stored root takes it out.
  */
-export function compositionRootPageId(
-  tree: PageTree,
+export async function loadCompositionRootPageId(
+  tx: TransactionRunner,
+  chatBranchId: string | null,
   designatedHomePageId: string | null,
-): string | null {
+): Promise<string | null> {
   if (designatedHomePageId !== null) return designatedHomePageId;
-  for (const node of tree.byId.values()) {
-    if (isCompositionHome(node.id, node.slug, node.parentPageId !== null, null, {})) {
-      return node.id;
+  const visibility = chatBranchId
+    ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${chatBranchId}::uuid)`
+    : sql`chat_branch_id IS NULL`;
+  const stored = (await tx.execute(sql`
+    SELECT id::text AS id, slug, parent_page_id::text AS parent_page_id
+      FROM pages
+     WHERE current_path = '/' AND deleted_at IS NULL AND ${visibility}
+  `)) as unknown as { id: string; slug: string; parent_page_id: string | null }[];
+  const candidates = new Map(
+    stored.map((r) => [r.id, { slug: r.slug, parentPageId: r.parent_page_id, deleted: false }]),
+  );
+  if (chatBranchId) {
+    // Entity-level predicate first, newest state second: another owner's
+    // older head may match the filter while the newest state does not.
+    // Only magic slugs can be a root: page slugs are `slugSchema` (no
+    // slashes, never empty), so `isHomeSlug` holds for exactly these —
+    // plus "" from rows older than the schema.
+    const pendingTopLevel = (await tx.execute(sql`
+      SELECT DISTINCT d.entity_id::text AS id
+        FROM draft_pending_entities d
+       WHERE d.chat_branch_id = ${chatBranchId}::uuid AND d.entity_kind = 'page'
+         AND d.parent_page_id IS NULL AND d.slug = ANY(${textArray(HOME_SLUGS)})
+    `)) as unknown as { id: string }[];
+    const ids = [...new Set([...candidates.keys(), ...pendingTopLevel.map((r) => r.id)])];
+    if (ids.length > 0) {
+      const heads = (await tx.execute(
+        headOverlaySql({ kind: "page", table: "page_snapshots", branchId: chatBranchId, ids }),
+      )) as unknown as { entity_id: string; state: PendingRootState }[];
+      for (const h of heads) {
+        const live = candidates.get(h.entity_id);
+        candidates.set(h.entity_id, {
+          slug: h.state.slug ?? live?.slug ?? "",
+          parentPageId:
+            h.state.parentPageId !== undefined
+              ? h.state.parentPageId
+              : (live?.parentPageId ?? null),
+          deleted: Boolean(h.state.deletedAt),
+        });
+      }
     }
   }
-  return null;
+  const roots = [...candidates]
+    .filter(
+      ([id, c]) => !c.deleted && isCompositionHome(id, c.slug, c.parentPageId !== null, null, {}),
+    )
+    .map(([id]) => id)
+    .sort();
+  return roots[0] ?? null;
+}
+
+/** The slugs `isHomeSlug` accepts that a page row can carry. */
+const HOME_SLUGS: readonly string[] = ["", "home", "index"];
+
+/** The fields of a pending page state the root lookup reads. */
+interface PendingRootState {
+  readonly slug?: string;
+  readonly parentPageId?: string | null;
+  readonly deletedAt?: string | null;
 }
 
 async function loadDesignatedHomePageId(tx: TransactionRunner): Promise<string | null> {

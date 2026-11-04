@@ -13,7 +13,7 @@ import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { countPlacementsInView } from "../ops/content/content-instance-reach.js";
 import { findContentInstancesContaining, idNeedles } from "../ops/content/content-instance-refs.js";
-import { listFieldsOf, loadModulesInView, pageTermsOfList } from "./local.js";
+import { countPagesTaggedWithLists, listFieldsOf, loadModulesInView } from "./local.js";
 import { loadListEntities } from "./store.js";
 
 /** How one shared list is used. */
@@ -62,7 +62,7 @@ export async function loadListUsage(
   const refs = new Map(listIds.map((id) => [`caelo:list/${id}`, id]));
 
   const modulesByList = new Map<string, ListUsage["modules"][number][]>();
-  for (const m of await loadModulesInView(tx, branchId)) {
+  for (const m of await loadModulesInView(tx, branchId, { referencing: listIds })) {
     for (const f of listFieldsOf(m.fields)) {
       for (const candidate of [f.list, f.default]) {
         const listId = typeof candidate === "string" ? refs.get(candidate) : undefined;
@@ -88,46 +88,71 @@ export async function loadListUsage(
 
   const pageTypes = await loadListEntities(tx, "pageType", branchId);
 
+  // One statement per question for all lists, not one per list (#1269):
+  // `lists.list` asks for every list of the site.
+  const allInstanceIds = [...new Set([...instancesByList.values()].flat())];
+  const allModuleIds = [...new Set([...modulesByList.values()].flat().map((m) => m.moduleId))];
+  const ciCounts = await countPlacementsInView(tx, allInstanceIds, branchId);
+  const modulePlacements = new Map<string, number>();
+  if (allModuleIds.length > 0) {
+    const rows = (await tx.execute(sql`
+      SELECT module_id::text AS module_id, count(*)::int AS n FROM (
+        SELECT pm.module_id FROM page_modules pm JOIN pages p ON p.id = pm.page_id
+         WHERE pm.module_id = ANY(${uuidArray(allModuleIds)}) AND p.deleted_at IS NULL
+        UNION ALL
+        SELECT lm.module_id FROM layout_modules lm WHERE lm.module_id = ANY(${uuidArray(allModuleIds)})
+      ) x GROUP BY module_id
+    `)) as unknown as { module_id: string; n: number }[];
+    for (const r of rows) modulePlacements.set(r.module_id, r.n);
+  }
+  const keys = listIds.flatMap((listId) => [
+    ...(modulesByList.get(listId) ?? []).map((m) => ({ list_id: listId, module_id: m.moduleId })),
+    ...(instancesByList.get(listId) ?? []).map((ci) => ({ list_id: listId, ci_id: ci })),
+  ]);
+  const samples = new Map<string, { pageId: string; path: string; title: string }[]>();
+  if (keys.length > 0) {
+    const rows = (await tx.execute(sql`
+      SELECT list_id, page_id, path, title FROM (
+        SELECT list_id, page_id, path, title,
+               row_number() OVER (PARTITION BY list_id ORDER BY path) AS n
+          FROM (
+            SELECT DISTINCT k.list_id, p.id::text AS page_id, p.current_path AS path, p.title
+              FROM jsonb_to_recordset((${JSON.stringify(keys)}::text)::jsonb) AS k(list_id text, module_id uuid, ci_id uuid)
+              JOIN page_modules pm ON pm.module_id = k.module_id OR pm.content_instance_id = k.ci_id
+              JOIN pages p ON p.id = pm.page_id
+             WHERE p.deleted_at IS NULL
+               AND (${branchId === null ? sql`p.chat_branch_id IS NULL` : sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`})
+          ) d
+      ) ranked WHERE n <= ${SAMPLE_PAGES}
+      ORDER BY list_id, path
+    `)) as unknown as { list_id: string; page_id: string; path: string; title: string }[];
+    for (const r of rows) {
+      samples.set(r.list_id, [
+        ...(samples.get(r.list_id) ?? []),
+        { pageId: r.page_id, path: r.path, title: r.title },
+      ]);
+    }
+  }
+  const tagged = await countPagesTaggedWithLists(tx, branchId, listIds);
+
   for (const listId of listIds) {
     const modules = modulesByList.get(listId) ?? [];
     const instanceIds = instancesByList.get(listId) ?? [];
-    const moduleIds = modules.map((m) => m.moduleId);
-    const ciCounts = await countPlacementsInView(tx, instanceIds, branchId);
-    let placementCount = [...ciCounts.values()].reduce((a, b) => a + b, 0);
-    const moduleIdList = uuidArray(moduleIds);
-    const instanceIdList = uuidArray(instanceIds);
-    if (moduleIds.length > 0) {
-      const rows = (await tx.execute(sql`
-        SELECT
-          (SELECT count(*)::int FROM page_modules pm JOIN pages p ON p.id = pm.page_id
-            WHERE pm.module_id = ANY(${moduleIdList}) AND p.deleted_at IS NULL) +
-          (SELECT count(*)::int FROM layout_modules lm WHERE lm.module_id = ANY(${moduleIdList})) AS n
-      `)) as unknown as { n: number }[];
-      placementCount += rows[0]?.n ?? 0;
-    }
-    const samplePages =
-      moduleIds.length + instanceIds.length === 0
-        ? []
-        : ((await tx.execute(sql`
-            SELECT DISTINCT p.id::text AS page_id, p.current_path AS path, p.title
-            FROM page_modules pm JOIN pages p ON p.id = pm.page_id
-            WHERE p.deleted_at IS NULL
-              AND (${branchId === null ? sql`p.chat_branch_id IS NULL` : sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`})
-              AND (pm.module_id = ANY(${moduleIdList}) OR pm.content_instance_id = ANY(${instanceIdList}))
-            ORDER BY p.current_path
-            LIMIT ${SAMPLE_PAGES}
-          `)) as unknown as { page_id: string; path: string; title: string }[]);
-    const vocabularyOf = pageTypes
-      .filter((pt) => pt.state.definition.vocabularies.some((v) => v.list === listId))
-      .map((pt) => pt.state.slug);
-    const tagged = await pageTermsOfList(tx, branchId, listId);
+    const placementCount =
+      instanceIds.reduce((a, id) => a + (ciCounts.get(id) ?? 0), 0) +
+      [...new Set(modules.map((m) => m.moduleId))].reduce(
+        (a, id) => a + (modulePlacements.get(id) ?? 0),
+        0,
+      );
     out.set(listId, {
       modules,
       contentInstanceIds: instanceIds,
       placementCount,
-      samplePages: samplePages.map((p) => ({ pageId: p.page_id, path: p.path, title: p.title })),
-      pageTypes: vocabularyOf,
-      taggedPageCount: tagged.size,
+      samplePages: samples.get(listId) ?? [],
+      pageTypes: pageTypes
+        .filter((pt) => pt.state.definition.vocabularies.some((v) => v.list === listId))
+        .map((pt) => pt.state.slug),
+      taggedPageCount: tagged.get(listId.toLowerCase()) ?? 0,
     });
   }
   return out;

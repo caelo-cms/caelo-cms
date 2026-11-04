@@ -31,8 +31,7 @@ import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { jsonbParam } from "../sql-helpers.js";
-import { compositionRootPageId } from "./content/compose-paths.js";
-import { loadPageTree } from "./content/page-tree.js";
+import { loadCompositionRootPageId } from "./content/compose-paths.js";
 
 const siteDefaultsRow = z.object({
   defaultLayoutId: z.string(),
@@ -115,9 +114,11 @@ export const getSiteDefaultsOp = defineOperation({
     }[];
     const r = rows[0];
     if (!r) return ok({ defaults: null });
-    const rootPageId =
-      r.home_page_id ??
-      compositionRootPageId(await loadPageTree(tx, ctx.chatBranchId ?? null), null);
+    const rootPageId = await loadCompositionRootPageId(
+      tx,
+      ctx.chatBranchId ?? null,
+      r.home_page_id,
+    );
     return ok({
       defaults: {
         defaultLayoutId: r.default_layout_id,

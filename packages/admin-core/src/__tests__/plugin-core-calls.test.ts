@@ -78,14 +78,14 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     },
   },
   "international-site": {
-    "content_instances.get": { pending: INTL_1255 },
+    "content_instances.get": { measured: ["content_instances.get"] },
     "content_instances.list": { pending: LIST_RESOLVE_1270 },
     "deploy.list_runs": { notBackground: "list translation tools report the last Stage" },
     "links.canonicalise_values": { pending: INTL_1255 },
     "list_types.list": { pending: LIST_RESOLVE_1270 },
     "lists.list": { pending: LIST_RESOLVE_1270 },
     "modules.list": { pending: LIST_RESOLVE_1270 },
-    "page_module_content.list_for_page": { pending: INTL_1255 },
+    "page_module_content.list_for_page": { measured: ["page_module_content.list_for_page"] },
     "page_module_content.set": { notBackground: "translate tools write one page's content" },
     "page_types.list": { pending: LIST_RESOLVE_1270 },
     "pages.duplicate": { notBackground: "the create_variant tool duplicates one page" },
@@ -100,7 +100,7 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     "pages_seo.get": { measured: ["pages_seo.get"] },
     "placement.fork_content": { notBackground: "translate tools fork one placement" },
     "redirects.create": { notBackground: "variant tools create the redirect of a moved page" },
-    "site_defaults.get": { pending: INTL_1255 },
+    "site_defaults.get": { measured: ["site_defaults.get"] },
   },
 };
 

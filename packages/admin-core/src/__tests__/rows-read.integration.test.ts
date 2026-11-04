@@ -41,6 +41,8 @@ import { type FixtureRefs, growFixture, LARGE, SMALL } from "./rows-read/fixture
 import { inputKey, ROWS_READ_INPUTS } from "./rows-read/inputs.js";
 
 const ENABLED = process.env.CAELO_ROWS_READ === "1";
+/** A call shape (`inputKey`) whose statements to print, heaviest first — to find what grows. */
+const DETAIL = process.env.CAELO_ROWS_READ_DETAIL ?? "";
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL ?? "";
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL ?? "";
 
@@ -61,7 +63,12 @@ let stats: SQL;
 const small = new Map<string, Cost>();
 const large = new Map<string, Cost>();
 
-async function measure(ctx: ExecutionContext, op: string, input: unknown): Promise<Cost> {
+async function measure(
+  ctx: ExecutionContext,
+  op: string,
+  input: unknown,
+  key: string,
+): Promise<Cost> {
   clearSiteViewCache();
   clearSiteFontUsageCache();
   await stats`SELECT pg_stat_statements_reset()`;
@@ -80,6 +87,15 @@ async function measure(ctx: ExecutionContext, op: string, input: unknown): Promi
        AND toplevel
        AND query NOT ILIKE '%pg_stat_statements%'
   `) as { statements: number; rows: string; blocks: string }[];
+  if (DETAIL === key) {
+    const top = await stats`
+      SELECT calls, rows, shared_blks_hit + shared_blks_read AS blocks, left(query, 300) AS query
+        FROM pg_stat_statements
+       WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+         AND toplevel AND query NOT ILIKE '%pg_stat_statements%'
+       ORDER BY rows DESC, blocks DESC LIMIT 8`;
+    console.log(`${key} statements:`, top);
+  }
   const row = rows[0];
   return {
     statements: row?.statements ?? 0,
@@ -101,7 +117,8 @@ async function measureAll(refs: FixtureRefs, size: "small" | "large", into: Map<
     // process's first call verifies the database roles — one-time costs
     // that are not what grows with the site.
     await execute(registry, adapter, ctx, entry.op, entry.input(refs, `${size}-warm`));
-    into.set(inputKey(entry), await measure(ctx, entry.op, entry.input(refs, size)));
+    const key = inputKey(entry);
+    into.set(key, await measure(ctx, entry.op, entry.input(refs, size), key));
   }
 }
 
