@@ -51,12 +51,18 @@ describe("#1420 — what a plugin release changes", () => {
     ).toEqual([]);
   });
 
-  it("leaves identity and capabilities to the approval itself", () => {
+  it("leaves the version to the approval itself", () => {
+    expect(describeManifestChanges({ version: "1.0.0" }, { version: "2.0.0" })).toEqual([]);
+  });
+
+  it("names a permission a release gives up, which no approval list would show", () => {
     expect(
       describeManifestChanges(
-        { version: "1.0.0", requestedCapabilities: ["email"] },
-        { version: "2.0.0", requestedCapabilities: ["email", "snapshots"] },
+        { requestedCapabilities: ["email", "snapshots"] },
+        { requestedCapabilities: ["email"] },
       ),
-    ).toEqual([]);
+    ).toEqual([
+      { area: "Permissions it asks for", added: [], removed: ["snapshots"], changed: [] },
+    ]);
   });
 });

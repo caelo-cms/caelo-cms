@@ -2,8 +2,7 @@
 
 /**
  * What a plugin release declares differently from the approved one, in the
- * Owner's words (#1420, CMS_REQUIREMENTS §14.5). Capabilities are left out:
- * the approval lists them with what each one allows.
+ * Owner's words (#1420, CMS_REQUIREMENTS §14.5).
  */
 
 import type { PluginManifest } from "@caelo-cms/plugin-sdk";
@@ -42,6 +41,8 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   auditFindingsOperation: "Stage audit findings",
   writeHintsOperation: "Hints to the AI",
   changeConsumer: "Followed site changes",
+  requestedCapabilities: "Permissions it asks for",
+  capabilityReasons: "Its reasons for its permissions",
   capabilityConstraints: "Limits on its permissions",
   workers: "Background jobs",
   tools: "AI tools",

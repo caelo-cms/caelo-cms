@@ -37,6 +37,11 @@
         {pluginApprovals.canApprove
           ? "A new version needs your approval. Publish live is blocked until then."
           : "A new version needs an Owner's approval. Publish live is blocked until then."}
+        {#if reviews.length > 0}
+          {reviews.length === 1
+            ? "1 plugin package also waits for your review."
+            : `${reviews.length} plugin packages also wait for your review.`}
+        {/if}
       {:else}
         <span class="font-medium">
           {reviews.length === 1

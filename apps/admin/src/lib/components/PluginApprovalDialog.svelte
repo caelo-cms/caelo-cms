@@ -100,6 +100,8 @@
                 {/each}
               </ul>
             </div>
+          {:else if release.capabilities.length === 0}
+            <p class="text-xs text-muted-foreground">Only the version number changed.</p>
           {/if}
 
           {#if pluginApprovals.canApprove}

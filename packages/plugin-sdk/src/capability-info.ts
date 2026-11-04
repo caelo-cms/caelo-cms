@@ -21,7 +21,8 @@ export const PLUGIN_CAPABILITY_INFO: Readonly<Record<PluginCapability, PluginCap
   },
   cms_admin_schema: {
     label: "Private data storage",
-    allows: "Keep its own tables in the authoring database. Visitors cannot reach them.",
+    allows:
+      "Keep its own tables in the authoring database. Visitors reach only the fields it declares for them.",
   },
   ai_provider: {
     label: "AI calls",
