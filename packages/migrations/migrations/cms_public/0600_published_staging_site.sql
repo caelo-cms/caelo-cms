@@ -24,7 +24,7 @@
 -- publisher writes it ONLY into cms_public_staging: the live database never
 -- holds the gate key (admin-core public-projection `writeSnapshot`, pinned by
 -- staging-site-projection.integration.test.ts). The staging run grants
--- SELECT to public_staging_role (runner.ts retargetVisitorRole); nothing may
+-- SELECT to the staging gateway's own login (runner.ts retargetVisitorRole); nothing may
 -- write it but the system publisher.
 
 CREATE TABLE IF NOT EXISTS published_staging_site (
