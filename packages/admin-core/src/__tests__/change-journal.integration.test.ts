@@ -28,6 +28,7 @@ import {
   OperationRegistry,
   pollChanges,
   registerConsumer,
+  type TransactionRunner,
 } from "@caelo-cms/query-api";
 import type { ExecutionContext, LiveTopic } from "@caelo-cms/shared";
 import { SQL } from "bun";
@@ -398,6 +399,83 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
     );
     // An `id > cursor` read would have skipped it: its id is below `late`'s.
     expect(second.changes.map((c) => c.rowId)).toEqual([early]);
+  });
+
+  it("a read costs what the cursor has not seen, even while a long transaction holds xmin back (#1392)", async () => {
+    const name = `test:${crypto.randomUUID()}`;
+    const filter = { kinds: ["redirect"] };
+    await adapter.withAdminTransaction(SYS, (tx) => registerConsumer(tx, name));
+    // A long transaction with an xid holds every later snapshot's xmin at it,
+    // as a plugin's first rebuild or a build does.
+    let release!: () => void;
+    const released = new Promise<void>((r) => {
+      release = r;
+    });
+    let started!: () => void;
+    const hasStarted = new Promise<void>((r) => {
+      started = r;
+    });
+    const long = adapter.withAdminTransaction(SYS, async (tx) => {
+      await tx.execute(sql`SELECT pg_current_xact_id()`);
+      started();
+      await released;
+    });
+    await hasStarted;
+    try {
+      // Many changes the consumer reads and commits while xmin stays put.
+      await otherAdapter.withAdminTransaction(SYS, (tx) =>
+        tx.execute(sql`
+          INSERT INTO redirects (id, from_path, to_path, created_by)
+          SELECT gen_random_uuid(), ${`/${PFX}bulk-`} || i, '/x', ${ACTOR}::uuid
+            FROM generate_series(1, 4000) i`),
+      );
+      let more = true;
+      while (more) {
+        const batch = await otherAdapter.withAdminTransaction(SYS, (tx) =>
+          pollChanges(tx, name, { filter, limit: 5000 }),
+        );
+        await otherAdapter.withAdminTransaction(SYS, (tx) => commitChanges(tx, name, batch.token));
+        more = batch.more;
+      }
+      const one = crypto.randomUUID();
+      await otherAdapter.withAdminTransaction(SYS, (tx) =>
+        tx.execute(sql`
+          INSERT INTO redirects (id, from_path, to_path, created_by)
+          VALUES (${one}::uuid, ${`/${PFX}after-bulk`}, '/x', ${ACTOR}::uuid)`),
+      );
+      // The next read: one new row. Measure the buffers of every statement it sends.
+      const buffers: number[] = [];
+      const next = await otherAdapter.withAdminTransaction(SYS, async (tx) => {
+        // Planned as on a full journal: a table this small is scanned whole
+        // either way (the index gate plans the same way, docs/dev/query-index-gate.md).
+        await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+        const measured = new Proxy(tx, {
+          get(target, prop, receiver) {
+            if (prop !== "execute") return Reflect.get(target, prop, receiver);
+            return async (q: Parameters<TransactionRunner["execute"]>[0]) => {
+              const plan = (await target.execute(
+                sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${q}`,
+              )) as unknown as {
+                "QUERY PLAN": [
+                  { Plan: { "Shared Hit Blocks": number; "Shared Read Blocks": number } },
+                ];
+              }[];
+              const top = plan[0]?.["QUERY PLAN"][0]?.Plan;
+              buffers.push((top?.["Shared Hit Blocks"] ?? 0) + (top?.["Shared Read Blocks"] ?? 0));
+              return target.execute(q);
+            };
+          },
+        }) as TransactionRunner;
+        return pollChanges(measured, name, { filter, limit: 100 });
+      });
+      expect(next.changes.map((c) => c.rowId)).toEqual([one]);
+      // The 4,000 delivered rows sit between xmin and the cursor's xmax: the
+      // old `xid >= xmin` scan read them all again (98 buffers here, 8 now).
+      expect(Math.max(...buffers)).toBeLessThan(30);
+    } finally {
+      release();
+      await long;
+    }
   });
 
   it("keeps the previous release's change signals written for one release, and trims the font log", async () => {

@@ -21,10 +21,11 @@
  * `pg_current_snapshot()`. Delivered are the rows visible now and not
  * visible in the cursor, so a transaction that started before the last
  * read but committed after it is delivered on the next read — never
- * skipped, which an `id > cursor` read does. The re-scanned tail starts at
- * the cursor's xmin: a long transaction (a build) holds xmin back and makes
- * every read re-check the rows above it, a cost bounded by the writes
- * during that transaction. A paged read pins its target snapshot, so rows
+ * skipped, which an `id > cursor` read does. A read looks up only the
+ * rows the cursor has not seen — at or after its xmax, or of a transaction
+ * in its in-flight list (`unseenBy`) — so a long transaction holding xmin
+ * back (a build, a plugin's first rebuild) no longer makes every read
+ * re-scan what was delivered since it began. A paged read pins its target snapshot, so rows
  * committing between pages are left for the next round instead of being
  * marked seen without delivery.
  *
@@ -157,6 +158,37 @@ function filterSql(filter: JournalFilter, alias = "ec") {
 }
 
 /**
+ * The journal rows the snapshot in `cte.s` has not seen, as a FROM item:
+ * those of a transaction at or after its xmax, or of one in flight when it
+ * was taken (its xip list, all below xmax). That is exactly
+ * `NOT pg_visible_in_snapshot` for the rows a reader can see, read through
+ * the primary key: two index ranges, the bounds as scalar subqueries
+ * Postgres evaluates once (a join filter on the CTE's column, or one OR of
+ * both, made it walk the whole key in order). The old `xid >= xmin` scan
+ * re-read every row between xmin and xmax on every read — everything
+ * delivered since the oldest transaction open at the cursor — so a long
+ * transaction (a plugin's first rebuild, a build) made every consumer's
+ * poll after every write re-read the journal since it began (#1392: 894 s
+ * of the scale gate's database time, 42,000 buffers per read). Callers
+ * keep the exact visibility test.
+ */
+function unseenRows(cte: string, opts: { readonly withOwn?: boolean } = {}) {
+  const c = sql.raw(cte);
+  return sql`(SELECT * FROM entity_changes WHERE xid >= (SELECT pg_snapshot_xmax(s) FROM ${c})
+              UNION ALL
+              SELECT * FROM entity_changes
+               WHERE xid = ANY(ARRAY(SELECT pg_snapshot_xip(s) FROM ${c}))
+              ${
+                // The marked transaction's own rows: Postgres counts its own
+                // xid as visible in its snapshots, but a later write by it
+                // must still invalidate (see JournalMark.ownXid).
+                opts.withOwn
+                  ? sql`UNION ALL SELECT * FROM entity_changes WHERE xid = (SELECT own FROM ${c})`
+                  : sql``
+              })`;
+}
+
+/**
  * Where a cached read stands in the journal: taken in the same statement
  * as (or before) the read it describes.
  */
@@ -223,9 +255,8 @@ export async function checkJournalMark(
                WHERE x.xid < pg_snapshot_xmax(c.s) AND pg_visible_in_snapshot(x.xid, c.s)
             )
             AND NOT EXISTS (
-              SELECT 1 FROM entity_changes ec
-               WHERE (ec.xid >= pg_snapshot_xmin(c.s) OR ec.xid = c.own)
-                 AND (NOT pg_visible_in_snapshot(ec.xid, c.s) OR ec.xid = c.own)
+              SELECT 1 FROM ${unseenRows("c", { withOwn: true })} ec
+               WHERE (NOT pg_visible_in_snapshot(ec.xid, c.s) OR ec.xid = c.own)
                  AND ${filterSql(filter)}
             )
             AND NOT EXISTS (
@@ -509,9 +540,8 @@ export async function readChanges(
              ec.site_snapshot_id::text AS site_snapshot_id,
              ec.prev_snapshot_id::text AS prev_snapshot_id, ec.op_name,
              ec.created_at::text AS created_at
-        FROM entity_changes ec, c
-       WHERE ec.xid >= pg_snapshot_xmin(c.s)
-         AND NOT pg_visible_in_snapshot(ec.xid, c.s)
+        FROM ${unseenRows("c")} ec, c
+       WHERE NOT pg_visible_in_snapshot(ec.xid, c.s)
          AND pg_visible_in_snapshot(ec.xid, c.t)
          ${
            after
