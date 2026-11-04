@@ -10,7 +10,7 @@
  * workflow and locks the step's presence, command, and position,
  * mirroring `scripts/knip-ci-step.test.ts`.
  *
- * CC1: the `check` job contains a step whose `run` invokes
+ * CC1: the `lint` job contains a step whose `run` invokes
  *      `bun run circular`. Removing the step disables the gate.
  * CC2: the madge step sits AFTER `Knip (dead-code gate)` and BEFORE
  *      `Lockstep version check`. Both are fast static gates that need
@@ -41,15 +41,16 @@ type Workflow = {
 };
 
 const workflow = yaml.load(RAW) as Workflow;
-const checkSteps = workflow.jobs?.check?.steps ?? [];
+// The static gates run in the `lint` job since the tests were sharded.
+const checkSteps = workflow.jobs?.lint?.steps ?? [];
 const stepIndex = (predicate: (s: Step) => boolean): number => checkSteps.findIndex(predicate);
 
 const MADGE_STEP_NAME = "Circular dependencies (madge)";
 
 describe("madge CI gate contract (issue #13)", () => {
-  it("CC1: the check job runs `bun run circular`", () => {
+  it("CC1: the lint job runs `bun run circular`", () => {
     const madgeStep = checkSteps.find((s) => s.run?.includes("bun run circular"));
-    expect(madgeStep, "no step in the `check` job runs `bun run circular`").toBeDefined();
+    expect(madgeStep, "no step in the `lint` job runs `bun run circular`").toBeDefined();
   });
 
   it("CC2: the madge step sits between Knip and Lockstep version check", () => {

@@ -14,7 +14,7 @@ export const load: PageServerLoad = async ({ locals }) => {
   const [pagesResult, templatesResult, pageTypesResult] = await Promise.all([
     execute(registry, adapter, locals.ctx, "pages.list", {}),
     execute(registry, adapter, locals.ctx, "templates.list", {}),
-    execute(registry, adapter, locals.ctx, "page_types.list", {}),
+    execute(registry, adapter, locals.ctx, "page_types.list", { counts: true }),
   ]);
   const pages = pagesResult.ok
     ? (

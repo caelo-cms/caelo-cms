@@ -165,6 +165,11 @@ export function tickOrigin(
  * Credentials API, authenticated with the workflow's own OAuth token), then
  * POST the tick with it. A refused or failed tick (HTTP ≥ 400) fails the
  * execution, so it shows in the workflow's execution history and logs.
+ *
+ * The tick carries `Content-Type: application/json` and a JSON body, like the
+ * self-hosted clock (admin-core scheduler/clock.ts), because the admin's
+ * SvelteKit treats a POST with no content type and no `Origin` as a
+ * cross-site form submission: it answers 403 before the route runs.
  */
 export function schedulerWorkflowSource(opts: {
   readonly serviceAccount: string;
@@ -198,6 +203,8 @@ main:
           url: "${origin}${SCHEDULER_TICK_PATH}"
           headers:
             Authorization: \${"Bearer " + signed.body.signedJwt}
+            Content-Type: application/json
+          body: {}
           timeout: ${SCHEDULER_TICK_TIMEOUT_SECONDS}
         result: answer
     - done:

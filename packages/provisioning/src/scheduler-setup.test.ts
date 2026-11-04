@@ -177,6 +177,12 @@ describe("schedulerWorkflowSource", () => {
     expect(src).toContain(`exp: \${now + 600}`);
   });
 
+  it("declares the tick as JSON, or SvelteKit refuses it as a cross-site form post", () => {
+    const tick = src.slice(src.indexOf("- tick:"), src.indexOf("- done:"));
+    expect(tick).toContain("Content-Type: application/json");
+    expect(tick).toContain("body: {}");
+  });
+
   it("posts the tick with the signed JWT and a bounded timeout", () => {
     expect(src).toContain('url: "https://admin.acme.com/api/internal/scheduler/tick"');
     expect(src).toContain(`Authorization: \${"Bearer " + signed.body.signedJwt}`);
