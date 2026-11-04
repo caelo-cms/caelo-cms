@@ -39,7 +39,7 @@ import {
   GATEWAY_POOL_MAX,
   isIpLiteral,
 } from "@caelo-cms/shared";
-import { gcloud as defaultGcloud } from "./gcloud.js";
+import { gcloud as defaultGcloud, isGcloudNotFound } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import {
   firebaseStagingSiteId,
@@ -87,7 +87,6 @@ export interface StagingDnsRecord {
   readonly value: string;
 }
 
-const NOT_FOUND = /NOT_FOUND|not found|cannot find|does not exist|could not be found|404/i;
 const ALREADY_EXISTS = /ALREADY_EXISTS|already exists|409/i;
 
 /** The `gcp` staging host's managed certificate: the edge's prefix plus six hex of the host's SHA-256. */
@@ -269,7 +268,7 @@ async function ensureStagingBucket(
       "--format=value(name)",
     ]);
     if (described.ok) outcomes.push({ id, status: "present" });
-    else if (!NOT_FOUND.test(described.stderr)) {
+    else if (!isGcloudNotFound(described.stderr)) {
       return [{ id, status: "failed", error: described.stderr.trim() }];
     } else {
       const created = await run([
@@ -352,7 +351,7 @@ async function ensureService(
     `--project=${inputs.projectId}`,
     "--format=value(metadata.name)",
   ]);
-  if (!existing.ok && !NOT_FOUND.test(existing.stderr)) {
+  if (!existing.ok && !isGcloudNotFound(existing.stderr)) {
     return { id, status: "failed", error: existing.stderr.trim() };
   }
   if (!existing.ok) {
@@ -689,7 +688,7 @@ async function deleteStagingDomainMapping(
     "--format=value(metadata.name)",
   ]);
   if (!described.ok) {
-    if (/\bNOT_FOUND\b|not found|could not be found/i.test(described.stderr)) {
+    if (isGcloudNotFound(described.stderr)) {
       return { ok: true, deleted: false };
     }
     return {
@@ -814,7 +813,7 @@ async function ensureGcpEdge(
     "--format=value(name)",
   ]);
   if (!neg.ok) {
-    if (!NOT_FOUND.test(neg.stderr)) return fail(`describe ${names.neg}: ${neg.stderr.trim()}`);
+    if (!isGcloudNotFound(neg.stderr)) return fail(`describe ${names.neg}: ${neg.stderr.trim()}`);
     const created = await run([
       "compute",
       "network-endpoint-groups",
@@ -862,7 +861,7 @@ async function ensureGcpEdge(
   ]);
   let backendJson: { selfLink?: string; backends?: { group?: string }[] } = {};
   if (!backend.ok) {
-    if (!NOT_FOUND.test(backend.stderr)) {
+    if (!isGcloudNotFound(backend.stderr)) {
       return fail(`describe ${names.backend}: ${backend.stderr.trim()}`);
     }
     const created = await run([
@@ -922,7 +921,7 @@ async function ensureGcpEdge(
     "--format=value(name)",
   ]);
   if (!cert.ok) {
-    if (!NOT_FOUND.test(cert.stderr)) return fail(`describe ${certName}: ${cert.stderr.trim()}`);
+    if (!isGcloudNotFound(cert.stderr)) return fail(`describe ${certName}: ${cert.stderr.trim()}`);
     const created = await run([
       "compute",
       "ssl-certificates",

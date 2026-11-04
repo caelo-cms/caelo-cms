@@ -47,7 +47,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readlinkSync } from "node:fs";
 import { hostname, networkInterfaces } from "node:os";
 import { z } from "zod";
-import type { GcloudResult } from "./gcloud.js";
+import { type GcloudResult, isGcloudNotFound } from "./gcloud.js";
 
 /** A Cloud Run job execution, fully addressed. */
 export interface CloudRunExecutionRef {
@@ -229,8 +229,6 @@ export type ExecutionState =
   /** Cloud Run could not be asked; `error` says why. */
   | { readonly kind: "unknown"; readonly error: string };
 
-const NOT_FOUND = /NOT_FOUND|not found|could not be found|does not exist/i;
-
 const executionStatusSchema = z.object({
   status: z
     .object({
@@ -257,7 +255,7 @@ const executionStatusSchema = z.object({
  */
 export function parseExecutionState(result: GcloudResult): ExecutionState {
   if (!result.ok) {
-    if (NOT_FOUND.test(result.stderr)) return { kind: "not-found" };
+    if (isGcloudNotFound(result.stderr)) return { kind: "not-found" };
     return {
       kind: "unknown",
       error: result.stderr.trim() || `gcloud exited ${result.exitCode}`,
