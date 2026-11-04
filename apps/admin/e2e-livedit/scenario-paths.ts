@@ -464,6 +464,9 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/platform_health.ts`,
   `${A}/email/**`,
   `${A}/ops/email_config*.ts`,
+  // The public mail outboxes' drain (#1337): system-only ops on the
+  // scheduler tick, which no chat reaches.
+  `${A}/ops/mail_outbox.ts`,
   `${A}/release-check-worker.ts`,
   `${A}/password.ts`,
   `${A}/csrf.ts`,
