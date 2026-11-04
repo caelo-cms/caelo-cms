@@ -557,11 +557,10 @@ async function ensureFirebaseStagingSite(
   const liveSite = await readAdminEnv(run, t, "CAELO_FIREBASE_SITE");
   if (!liveSite.ok) return fail(liveSite.error);
   const site = firebaseStagingSiteId(t.env, liveSite.value);
-  const token = await run(["auth", "print-access-token"]);
-  const bearer = token.ok ? token.stdout.trim() : "";
-  if (!bearer) return fail(`gcloud auth print-access-token: ${token.stderr.trim()}`);
+  const bearer = await accessToken(run);
+  if (!bearer.ok) return fail(bearer.error);
   const headers = {
-    Authorization: `Bearer ${bearer}`,
+    Authorization: `Bearer ${bearer.token}`,
     "Content-Type": "application/json",
     // A user's token needs a quota project for the Firebase APIs.
     "X-Goog-User-Project": t.projectId,
@@ -983,10 +982,13 @@ async function ensureGcpEdge(
   }
   const next = planStagingHostRule(site[0] as LiveUrlMap, t, backendLink);
   if (next) {
-    const token = await run(["auth", "print-access-token"]);
-    const bearer = token.ok ? token.stdout.trim() : "";
-    if (!bearer) return fail(`gcloud auth print-access-token: ${token.stderr.trim()}`);
-    const headers = { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" };
+    const bearer = await accessToken(run);
+    if (!bearer.ok) return fail(bearer.error);
+    if (!URL_MAP_NAME.test(next.name)) return fail(`"${next.name}" is not a URL map name`);
+    const headers = {
+      Authorization: `Bearer ${bearer.token}`,
+      "Content-Type": "application/json",
+    };
     const base = `${COMPUTE_API}/projects/${encodeURIComponent(t.projectId)}/global`;
     // `urlMaps.update` carries the fingerprint: a concurrent write (the
     // admin publishing redirects) fails it instead of being lost.
@@ -1006,6 +1008,9 @@ async function ensureGcpEdge(
     let op = (safeJson(text) ?? {}) as Operation;
     for (let i = 0; op.status !== "DONE" && i < OPERATION_POLLS; i++) {
       await sleep(2_000);
+      if (!OPERATION_NAME.test(op.name ?? "")) {
+        return fail(`the URL-map update answered no operation name (${op.name ?? "none"})`);
+      }
       const poll = await http(`${base}/operations/${encodeURIComponent(op.name ?? "")}`, {
         method: "GET",
         headers,
@@ -1042,6 +1047,31 @@ async function ensureGcpEdge(
     dnsRecords:
       ips.length === 1 ? [{ name: t.stagingHost, type: "A", value: ips[0] as string }] : [],
   };
+}
+
+/** An OAuth access token as gcloud prints one: base64url-ish characters only. */
+const ACCESS_TOKEN = /^[A-Za-z0-9._~+/=-]{1,4096}$/;
+/** A Compute resource name (RFC 1035 label). */
+const URL_MAP_NAME = /^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$/;
+/** A Compute operation name. */
+const OPERATION_NAME = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * The caller's gcloud access token, checked to be one before it goes into
+ * a request header: gcloud's output is never forwarded as it came.
+ */
+async function accessToken(
+  run: GcloudRunner,
+): Promise<{ ok: true; token: string } | { ok: false; error: string }> {
+  const r = await run(["auth", "print-access-token"]);
+  const token = r.ok ? r.stdout.trim() : "";
+  if (!ACCESS_TOKEN.test(token)) {
+    return {
+      ok: false,
+      error: `gcloud auth print-access-token gave no access token${r.ok ? "" : `: ${r.stderr.trim()}`}`,
+    };
+  }
+  return { ok: true, token };
 }
 
 function safeJson(text: string): unknown {
