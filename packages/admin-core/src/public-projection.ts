@@ -89,11 +89,15 @@ export function loadedVisitorProjections(): VisitorProjectionDeclarations {
 export function projectionDatabases(
   adapter: DatabaseAdapter,
   stagingAdapter: DatabaseAdapter,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): ProjectionDatabases {
   return {
     readAdmin: (fn) => adapter.withAdminTransaction(SYSTEM_CTX, fn),
     writePublic: (target, fn) =>
       (target === "live" ? adapter : stagingAdapter).withPublicTransaction(SYSTEM_CTX, fn),
+    // #1330 / #1331 — the staging gateway reads the gate key from its own
+    // database; the admin is the one process that holds it.
+    stagingGateSecret: env.CAELO_STAGING_GATE_SECRET || null,
   };
 }
 

@@ -444,13 +444,10 @@ const claimedRunSchema = z.object({
   deployRunId: z.string(),
   performanceRuns: z.number().int(),
   pageUrlStyle: z.enum(["directory", "no-extension"]),
-  /** Provider preview URL of the staged build (Firebase channels). */
-  previewUrl: z.string().nullable(),
-  /** #650 — the origin the staged build rendered its absolute URLs with
-   *  (`deploy_runs.site_url`: the staging host at Stage time); null when
-   *  it was built with the live host. Reports name THIS host, not the
-   *  current setting, which may have moved since. */
-  siteUrl: z.string().nullable(),
+  /** #1330 — the run's staging slot (`publish_summary.stagingLocation`); null before it. */
+  stagingLocation: z.string().nullable(),
+  /** `https://<staging host>`: the origin reports name; null while no host is set. */
+  stagingOrigin: z.string().nullable(),
   /** The deploy target's env + out_dir: where this process wrote the
    *  build archive (served by the loopback origin on providers without a
    *  reachable staging URL). */
@@ -513,14 +510,16 @@ export const claimNextAuditOp = defineOperation({
     const row = claimed[0];
     if (!row) return ok({ run: null, superseded: superseded.length });
     const runInfo = (await tx.execute(sql`
-      SELECT t.page_url_style, r.publish_summary->>'previewUrl' AS preview_url, r.site_url,
+      SELECT t.page_url_style, r.publish_summary->>'stagingLocation' AS staging_location,
+             (SELECT 'https://' || s.staging_host FROM staging_access s
+               WHERE s.id = 1 AND s.staging_host IS NOT NULL) AS staging_origin,
              t.env, t.out_dir
       FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
       WHERE r.id = ${row.deploy_run_id}::uuid
     `)) as unknown as {
       page_url_style: "directory" | "no-extension";
-      preview_url: string | null;
-      site_url: string | null;
+      staging_location: string | null;
+      staging_origin: string | null;
       env: string;
       out_dir: string;
     }[];
@@ -560,8 +559,8 @@ export const claimNextAuditOp = defineOperation({
         deployRunId: row.deploy_run_id,
         performanceRuns: row.performance_runs,
         pageUrlStyle: info.page_url_style,
-        previewUrl: info.preview_url,
-        siteUrl: info.site_url,
+        stagingLocation: info.staging_location,
+        stagingOrigin: info.staging_origin,
         env: info.env,
         outDir: info.out_dir,
         pages: pages.map(toClaimedAuditPage),

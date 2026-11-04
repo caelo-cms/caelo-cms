@@ -219,7 +219,6 @@ import {
   listDeployRunsOp,
   listDeployTargetsOp,
   promoteDeployOp,
-  refreshStagingPreviewOp,
   updateDeployProgressOp,
 } from "./ops/deploy.js";
 import {
@@ -1070,7 +1069,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(finishRollbackOp);
   registry.register(updateDeployProgressOp);
   // #969 — the keep-alive worker's refresh of the served staging preview.
-  registry.register(refreshStagingPreviewOp);
   // #1155 — plugin data into the live HTML: stale marks + the plugin-data build.
   registry.register(markPluginDataPagesOp);
   registry.register(buildPluginDataOp);

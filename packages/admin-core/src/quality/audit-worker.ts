@@ -39,10 +39,10 @@ import type { AuditJobResult } from "./lighthouse-runner.js";
 import { lighthouseRunnerFromEnv } from "./lighthouse-runner-select.js";
 import type { StagedBuildSource } from "./staged-build-source.js";
 import {
-  gcsStagingSource,
   localBuildSource,
   type StagedFileSource,
   serveStagedBuild,
+  stagingSlotSource,
 } from "./staged-origin.js";
 
 const WORKER_CTX: ExecutionContext = {
@@ -59,9 +59,14 @@ export interface ClaimedAuditRun {
   readonly deployRunId: string;
   readonly performanceRuns: number;
   readonly pageUrlStyle: "directory" | "no-extension";
-  readonly previewUrl: string | null;
-  /** #650 — the staging origin the build was rendered for (`deploy_runs.site_url`). */
-  readonly siteUrl: string | null;
+  /**
+   * #1330 — where the run's complete files lie in staging storage
+   * (`publish_summary.stagingLocation`: a slot of the staging bucket on
+   * gcp / gcp-firebase); null for a run staged before it.
+   */
+  readonly stagingLocation: string | null;
+  /** The origin operators know staging by (`https://<staging host>`); null when no host is set. */
+  readonly stagingOrigin: string | null;
   readonly env: string;
   readonly outDir: string;
   /** Lighthouse's pages; empty when the Stage needs no Lighthouse. */
@@ -85,10 +90,10 @@ export type StagingOrigin =
       readonly baseUrl: string;
       /**
        * #650 — the origin operators know staging by, when it differs from
-       * `baseUrl`: on gcp-firebase the audit loads the preview channel
-       * directly (not through the gated gateway, whose cold start would
-       * skew the performance scores), but the recorded report names
-       * `https://staging.<domain>`.
+       * `baseUrl`: on gcp and gcp-firebase the audit loads the staged build
+       * on a loopback origin (not through the gated staging gateway, whose
+       * cold start and streaming rewrite would skew the scores, #875), but
+       * the recorded report names `https://<staging host>`.
        */
       readonly displayBaseUrl?: string;
       /** Set for a loopback origin this audit owns: close it afterwards. */
@@ -96,7 +101,7 @@ export type StagingOrigin =
       /**
        * #875 — how a parallel audit task, which cannot open this admin's
        * loopback origin, reaches the same build. Absent when `baseUrl` is
-       * reachable from anywhere (a preview channel, self-hosted staging).
+       * reachable from anywhere (self-hosted staging).
        */
       readonly stagedBuild?: StagedBuildSource;
     }
@@ -106,34 +111,27 @@ export type StagingOrigin =
 export interface OriginEnv {
   readonly provider?: string;
   readonly stagingBaseUrl?: string;
-  /**
-   * gcp: the live site origin (`CAELO_SITE_URL`) whose `/api/*` reaches
-   * the gateway; the loopback origin forwards plugin calls there.
-   */
-  readonly siteUrl?: string;
   /** Override the file source of a loopback origin (tests). */
   readonly loopbackSource?: (run: ClaimedAuditRun) => StagedFileSource;
 }
 
 /**
- * The file source for providers whose staging the browser cannot open.
- * gcp: the staging bucket (the build archive on disk is ephemeral and may
- * live on another instance). aws / azure: the build archive this process
- * wrote, when it is still here. Null: nothing to serve from.
+ * The file source for providers whose staging the browser cannot open
+ * without the gate. gcp / gcp-firebase: the run's staging slot (#1330).
+ * aws / azure: the build archive this process wrote, when it is still here.
  */
 function loopbackSourceFor(
   provider: string,
   run: ClaimedAuditRun,
 ): { source: StagedFileSource } | { code: string; message: string } {
-  if (provider === "gcp") {
-    try {
-      return { source: gcsStagingSource(run.deployRunId) };
-    } catch (e) {
+  if (provider === "gcp" || provider === "gcp-firebase") {
+    if (!run.stagingLocation) {
       return {
         code: "staging-unresolvable",
-        message: e instanceof Error ? e.message : String(e),
+        message: `deploy run ${run.deployRunId} recorded no staging slot (it was staged by an older release) — Stage again`,
       };
     }
+    return { source: stagingSlotSource(run.stagingLocation, run.deployRunId) };
   }
   const dir = localBuildArchiveDir({
     provider,
@@ -159,27 +157,6 @@ export async function resolveStagingOrigin(
   env: OriginEnv,
 ): Promise<StagingOrigin> {
   const provider = env.provider ?? "";
-  if (provider === "gcp-firebase") {
-    if (!run.previewUrl) {
-      return {
-        ok: false,
-        code: "staging-unresolvable",
-        message: `deploy run ${run.deployRunId} has no Firebase preview channel URL — Stage again to publish a fresh preview channel`,
-      };
-    }
-    // The preview channel is the origin staging.<domain> proxies to; the
-    // audit hits it directly and reports under the staging host THIS build
-    // was rendered for (the run's site_url) — not the current setting, which
-    // an Owner may have moved while the audit was queued.
-    if (!run.siteUrl) {
-      return {
-        ok: false,
-        code: "staging-unresolvable",
-        message: `staged build ${run.deployRunId} recorded no staging host, so the audit cannot name the staging site it checked — set the staging host under Settings → Domains (or run \`cms-provision upgrade\`) and Stage again`,
-      };
-    }
-    return { ok: true, baseUrl: run.previewUrl, displayBaseUrl: run.siteUrl };
-  }
   if (provider === "" || provider === "self-hosted") {
     // Same origin the Stage flow's own serve check and Preview link use.
     const baseUrl = env.stagingBaseUrl ?? "http://localhost:8081";
@@ -196,18 +173,15 @@ export async function resolveStagingOrigin(
     }
     return { ok: true, baseUrl };
   }
-  if (provider === "gcp" || provider === "aws" || provider === "azure") {
-    // No staging URL the browser can open (gcp: private bucket behind the
-    // IAP-gated admin proxy): serve the run's files on a loopback port.
-    const apiOrigin = provider === "gcp" ? env.siteUrl?.trim() : undefined;
-    if (provider === "gcp" && !apiOrigin) {
-      return {
-        ok: false,
-        code: "staging-unresolvable",
-        message:
-          "CAELO_SITE_URL is not set on the admin, so the audit cannot reach the API gateway that plugin components on the staged pages call — run `cms-provision upgrade`",
-      };
-    }
+  if (
+    provider === "gcp" ||
+    provider === "gcp-firebase" ||
+    provider === "aws" ||
+    provider === "azure"
+  ) {
+    // The build on a loopback port, so the measurement never goes through
+    // the gated staging gateway (#875). Plugin calls are answered there with
+    // the staging stub: an audit writes no visitor data anywhere (#763 N4).
     let source: StagedFileSource;
     if (env.loopbackSource) {
       source = env.loopbackSource(run);
@@ -216,18 +190,20 @@ export async function resolveStagingOrigin(
       if ("code" in found) return { ok: false, code: found.code, message: found.message };
       source = found.source;
     }
-    const origin = await serveStagedBuild(source, apiOrigin ? { apiOrigin } : {});
+    const origin = await serveStagedBuild(source);
+    const slotted = (provider === "gcp" || provider === "gcp-firebase") && run.stagingLocation;
     return {
       ok: true,
       baseUrl: origin.baseUrl,
+      ...(run.stagingOrigin ? { displayBaseUrl: run.stagingOrigin } : {}),
       close: origin.close,
-      ...(provider === "gcp" && apiOrigin
+      ...(slotted
         ? {
             stagedBuild: {
-              kind: "gcs-staging" as const,
+              kind: "staging-slot" as const,
+              location: run.stagingLocation as string,
               runId: run.deployRunId,
               baseUrl: origin.baseUrl,
-              apiOrigin,
             },
           }
         : {}),
@@ -349,7 +325,6 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
   const env = deps.env ?? {
     provider: process.env.CAELO_PROVIDER,
     stagingBaseUrl: process.env.CAELO_STAGING_BASE_URL,
-    siteUrl: process.env.CAELO_SITE_URL,
   };
   if (run.pages.length === 0 && run.checkPages.length === 0) {
     await record(deps, run.auditRunId, null, {

@@ -213,3 +213,19 @@ export async function repointStaleGatewayRewriteAtBoot(
     },
   });
 }
+
+/**
+ * #1331 — at the admin's boot on gcp-firebase: delete the preview channels
+ * an older release staged to (public by URL, a second path to staged pages).
+ * Logs the ones that are still there; every Stage tries again.
+ */
+export async function retireLegacyStagingPreviewsAtBoot(): Promise<void> {
+  if (process.env.CAELO_PROVIDER !== "gcp-firebase") return;
+  const { retireLegacyPreviewChannels } = await import("./deploy/static-publisher-firebase.js");
+  for (const left of await retireLegacyPreviewChannels()) {
+    console.error(
+      "[bootstrap.staging-previews] an old preview channel could not be deleted yet",
+      left,
+    );
+  }
+}

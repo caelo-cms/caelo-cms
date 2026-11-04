@@ -50,13 +50,14 @@ import {
   parseRedirectsFile,
   type RedirectPlan,
   runBatched,
+  type StagedFileEntry,
 } from "@caelo-cms/shared";
 import {
   type AssetReferences,
   assetSourcePath,
   readAssetReferences,
 } from "@caelo-cms/static-generator";
-import type { Bucket, Storage as StorageType } from "@google-cloud/storage";
+import type { Bucket, File as GcsFile, Storage as StorageType } from "@google-cloud/storage";
 import { readBuildFiles, uniqueAssets } from "./build-files.js";
 import {
   adcComputeApi,
@@ -71,6 +72,7 @@ import {
   type StagedBuildFiles,
   StagedRunError,
 } from "./staged-build-files.js";
+import { GcsSlotSync, type SlotSyncSummary } from "./staging-slots.js";
 import { contentTypeFor, gcsObjectMetadata } from "./static-file-policy.js";
 import type {
   BuildUpload,
@@ -164,11 +166,12 @@ export function createGcsStaticPublisher(
     servesCurrentDir: false,
     openBuildUpload: async ({ runId }) => GcsBuildUpload.open(runId),
 
-    async publishStaging({ buildDir, runId, target, upload }) {
+    async publishStaging({ buildDir, runId, target, upload, servedStagingLocation }) {
       const filled = await gcsUploadOf(upload, buildDir, runId);
       return filled.finish({
         references: await readAssetReferences(buildDir),
         pageUrlStyle: target.pageUrlStyle ?? "directory",
+        servedStagingLocation,
       });
     },
 
@@ -476,6 +479,10 @@ class GcsBuildUpload implements BuildUpload {
   readonly #prefix: string;
   readonly #runId: string;
   readonly #paths = new Set<string>();
+  /** #1330 — every file's slot entry: its type and CRC32C. */
+  readonly #entries = new Map<string, StagedFileEntry>();
+  /** Files saved under the run's prefix (the rest are identical to live). */
+  readonly #inPrefix = new Set<string>();
   #redirectsFile: string | null = null;
   #uploaded = 0;
   #skipped = 0;
@@ -501,14 +508,17 @@ class GcsBuildUpload implements BuildUpload {
     this.#paths.add(file.relPath);
     const body = Buffer.from(file.body);
     if (file.relPath === "_redirects") this.#redirectsFile = body.toString("utf8");
-    if (this.#manifest?.files[file.relPath] === crc32cBase64(body)) {
+    // v0.2.85 — a bare-slug page ('no-extension') says its Content-Type;
+    // everything else is typed from its extension.
+    const contentType = file.contentType ?? contentTypeFor(file.relPath);
+    const crc = crc32cBase64(body);
+    this.#entries.set(file.relPath, { type: contentType, hash: crc });
+    if (this.#manifest?.files[file.relPath] === crc) {
       // Identical to what's currently live (see the class comment).
       this.#skipped += 1;
       return;
     }
-    // v0.2.85 — a bare-slug page ('no-extension') says its Content-Type;
-    // everything else is typed from its extension.
-    const contentType = file.contentType ?? contentTypeFor(file.relPath);
+    this.#inPrefix.add(file.relPath);
     await this.#h.stagingBucket.file(this.#prefix + file.relPath).save(body, {
       contentType,
       // Cache-Control follows the site path, not the prefixed key (#891:
@@ -521,6 +531,8 @@ class GcsBuildUpload implements BuildUpload {
   async finish(args: {
     references: AssetReferences;
     pageUrlStyle: "directory" | "no-extension";
+    /** #1330 — the slot staging serves now (the sync fills the other one). */
+    servedStagingLocation: string | null;
   }): Promise<PublishSummary> {
     if (this.#state !== "open") throw new Error(`gcs upload is ${this.#state}`);
     const h = this.#h;
@@ -557,13 +569,56 @@ class GcsBuildUpload implements BuildUpload {
       Buffer.from(JSON.stringify(buildFiles), "utf8"),
       "application/json",
     );
+    const slot = await this.#syncSlot(
+      args.servedStagingLocation,
+      args.references,
+      assets.inPrefix,
+      args.pageUrlStyle,
+    );
     this.#state = "finished";
     return {
       provider: "gcp",
       uploadedCount: this.#uploaded + assets.uploaded,
       skippedUnchangedCount: this.#skipped + assets.skipped,
       location: `gs://${h.stagingBucketName}/${this.#prefix}`,
+      stagingLocation: slot.location,
     };
+  }
+
+  /**
+   * #1330 — mirror the whole build into the staging slot that is not
+   * served, by server-side copies: a file this run saved under its prefix
+   * comes from there, every other one is identical to its live object
+   * (the hash-skip above) and comes from the live bucket. No byte passes
+   * the admin, the first Stage after the update included.
+   */
+  async #syncSlot(
+    servedLocation: string | null,
+    references: AssetReferences,
+    assetsInPrefix: ReadonlySet<string>,
+    pageUrlStyle: "directory" | "no-extension",
+  ): Promise<SlotSyncSummary> {
+    const h = this.#h;
+    const sync = await GcsSlotSync.open(h.stagingBucket, servedLocation);
+    const copyFrom = (path: string, inPrefix: boolean) => async (destination: GcsFile) => {
+      const source = inPrefix
+        ? h.stagingBucket.file(this.#prefix + path)
+        : h.staticBucket.file(path);
+      const type = this.#entries.get(path)?.type ?? contentTypeFor(path);
+      await source.copy(destination, { contentType: type, metadata: { cacheControl: "no-store" } });
+    };
+    await runBatched([...this.#entries], PARALLEL_COPIES, async ([path, entry]) => {
+      await sync.take(path, entry, copyFrom(path, this.#inPrefix.has(path)));
+    });
+    // Media and fonts carry their content hash in their name.
+    await runBatched(uniqueAssets(references), PARALLEL_COPIES, async (asset) => {
+      await sync.take(
+        asset.path,
+        { type: contentTypeFor(asset.path), hash: `name:${asset.path}` },
+        copyFrom(asset.path, assetsInPrefix.has(asset.path)),
+      );
+    });
+    return sync.finish({ runId: this.#runId, pageUrlStyle });
   }
 
   /**
@@ -735,14 +790,16 @@ async function uploadMissingAssets(
   prefix: string,
   references: AssetReferences,
   present: (path: string) => boolean,
-): Promise<{ uploaded: number; skipped: number }> {
+): Promise<{ uploaded: number; skipped: number; inPrefix: ReadonlySet<string> }> {
   let uploaded = 0;
   let skipped = 0;
+  const inPrefix = new Set<string>();
   await runBatched(uniqueAssets(references), PARALLEL_UPLOADS, async (asset) => {
     if (present(asset.path)) {
       skipped += 1;
       return;
     }
+    inPrefix.add(asset.path);
     const absolutePath = assetSourcePath(references, asset);
     try {
       await uploadFile(bucket, {
@@ -761,7 +818,7 @@ async function uploadMissingAssets(
     }
     uploaded += 1;
   });
-  return { uploaded, skipped };
+  return { uploaded, skipped, inPrefix };
 }
 
 /** CRC32C of some bytes as GCS reports it (`crc32c` metadata): base64 of 4 big-endian bytes. */

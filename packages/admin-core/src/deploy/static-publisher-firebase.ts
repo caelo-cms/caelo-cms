@@ -12,19 +12,16 @@
  *   - Deduplication: Firebase's populateFiles API only requests
  *     uploads for files NOT already content-addressed in the site
  *     (sha256 of gzipped body). No manual CRC32C-manifest needed.
- *   - Preview channels: each Stage deploys the version to a
- *     per-runId preview channel with a 7-day TTL. #650 — the channel
- *     URL is never shown: the gateway serves staging.<domain> from it
- *     behind the access gate, older channels are pruned when a newer
- *     Stage succeeds, the last one after Publish live. #969 — a preview
- *     channel cannot be made permanent (Firebase refuses to clear its
- *     expireTime), so the served one is kept alive by refreshing its TTL
- *     to Firebase's 30-day maximum on every Stage, Publish live and
- *     periodic keep-alive (refreshStagingPreview).
- *   - Publish live: a release on the live channel. When staging has
- *     its own host (#650) it is a fresh version of the rebuild with the
- *     live host (publishLiveBuild, after the parity guard); otherwise a
- *     copy of the staged version (promoteToProduction). Rollback
+ *   - Staging (#1330): a Stage's version is finalized and never released —
+ *     an unreleased version is served nowhere. The staging gateway serves
+ *     the build behind the gate from a full mirror in the private staging
+ *     bucket (staging-slots.ts), which the upload fills file by file as
+ *     the generator writes it (only files that differ from the slot).
+ *     There are no preview channels any more (#1331); those an older
+ *     release left are deleted ({@link retireLegacyPreviewChannels}).
+ *   - Publish live: a copy — the staged version released on the live
+ *     channel with the live robots, security headers and gateway rewrite
+ *     (promoteToProduction, #1003: nothing is rebuilt). Rollback
  *     re-releases the Hosting version a run recorded.
  *
  * Auth: ADC via the Cloud Run service identity. The runSa needs
@@ -38,8 +35,10 @@
  */
 
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import {
   CONTENT_HASHED_PATH_PATTERN,
   HTML_CACHE_CONTROL,
@@ -69,31 +68,18 @@ import {
 } from "./firebase-gateway-rewrite.js";
 import { syncFirebaseRedirects } from "./firebase-redirect-sync.js";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
+import { GcsSlotSync, stagingBucket } from "./staging-slots.js";
+import { contentTypeFor } from "./static-file-policy.js";
 import type {
   BuildUpload,
   BuildUploadFile,
   PromoteSummary,
   PublishSummary,
-  StagingPreviewRefresh,
-  StagingPreviewSelection,
   StaticPublisher,
 } from "./static-publisher.js";
 
 const FIREBASE_HOSTING_API = "https://firebasehosting.googleapis.com/v1beta1";
 const PARALLEL_UPLOADS = 50;
-const PREVIEW_CHANNEL_TTL_DAYS = 7;
-const DAY_MS = 24 * 60 * 60 * 1000;
-/** Firebase `ttl` duration of a preview channel staging does not serve. */
-const PREVIEW_CHANNEL_TTL = `${PREVIEW_CHANNEL_TTL_DAYS * 24 * 60 * 60}s`;
-/**
- * #969 — the longest a preview channel can live: Firebase documents "up to
- * 30 days" (firebase-tools enforces it as MAX_DURATION) and refuses to clear
- * a preview channel's expireTime, so only the live channel never expires.
- */
-const SERVED_PREVIEW_CHANNEL_TTL_DAYS = 30;
-/** Firebase `ttl` duration the served preview is refreshed to. */
-export const SERVED_PREVIEW_CHANNEL_TTL = `${SERVED_PREVIEW_CHANNEL_TTL_DAYS * 24 * 60 * 60}s`;
-
 export function siteName(): string {
   const site = process.env.CAELO_FIREBASE_SITE;
   if (!site) {
@@ -317,11 +303,6 @@ interface PopulateFilesResponse {
   uploadRequiredHashes?: string[];
   uploadUrl: string; // e.g. "https://upload-firebasehosting.googleapis.com/upload/sites/<site>/versions/<versionId>/files"
 }
-interface CreateChannelResponse {
-  name: string; // "sites/<site>/channels/<channelId>"
-  url: string; // public preview URL
-}
-
 /**
  * A non-2xx answer from the Firebase Hosting REST API. Carries the HTTP
  * status so callers can branch on it (the custom-domain reconnect treats
@@ -392,34 +373,8 @@ async function uploadGzippedFile(
   }
 }
 
-/** Every channel Stage creates is named `runid-<runId>`; nothing else is. */
+/** Every channel an older Stage created is named `runid-<runId>`; nothing else is. */
 const RUN_CHANNEL_PREFIX = "runid-";
-
-function channelIdFor(runId: string): string {
-  return `${RUN_CHANNEL_PREFIX}${runId.replace(/[^a-z0-9-]/gi, "").toLowerCase()}`.slice(0, 63);
-}
-
-/** The version behind the latest release on a runId's preview channel. */
-async function channelHeadVersion(
-  site: string,
-  runId: string,
-  token: string,
-  op: "promote",
-): Promise<string> {
-  const channelId = channelIdFor(runId);
-  type ListReleasesResponse = { releases?: { name: string; version: { name: string } }[] };
-  const releases = await firebaseFetch<ListReleasesResponse>(
-    `sites/${site}/channels/${channelId}/releases`,
-    { token },
-  );
-  const head = releases.releases?.[0];
-  if (!head) {
-    throw new Error(
-      `firebase publisher ${op}: no releases found on channel ${channelId} for runId=${runId}. Run Stage first.`,
-    );
-  }
-  return head.version.name;
-}
 
 async function versionConfig(
   site: string,
@@ -699,24 +654,37 @@ class FirebaseBuildUpload implements BuildUpload {
   #uploaded = 0;
   #redirectsFile: string | null = null;
   #state: "open" | "finished" | "aborted" = "open";
+  /** #1330 — a Stage's mirror into the staging slot it fills; null for other targets. */
+  readonly #slot: GcsSlotSync | null;
 
-  private constructor(site: string, token: string, versionName: string) {
+  private constructor(site: string, token: string, versionName: string, slot: GcsSlotSync | null) {
     this.#site = site;
     this.#token = token;
     this.#versionName = versionName;
     this.#versionId = versionName.split("/").pop() ?? "";
+    this.#slot = slot;
   }
 
-  /** Create the (empty) version the build goes into. */
-  static async open(): Promise<FirebaseBuildUpload> {
+  /**
+   * Create the (empty) version the build goes into. A staging build also
+   * opens the sync of the staging slot `servedStagingLocation` does not name.
+   */
+  static async open(args: {
+    target: DeployTarget;
+    servedStagingLocation: string | null;
+  }): Promise<FirebaseBuildUpload> {
     const site = siteName();
     const token = await googleAuthToken();
+    const slot =
+      args.target.env === "staging"
+        ? await GcsSlotSync.open(await stagingBucket(), args.servedStagingLocation)
+        : null;
     const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
       method: "POST",
       body: JSON.stringify({}),
       token,
     });
-    return new FirebaseBuildUpload(site, token, created.name);
+    return new FirebaseBuildUpload(site, token, created.name, slot);
   }
 
   async put(file: BuildUploadFile): Promise<void> {
@@ -728,7 +696,13 @@ class FirebaseBuildUpload implements BuildUpload {
     // The redirects ride the version config, built at finish().
     if (file.relPath === "_redirects")
       this.#redirectsFile = Buffer.from(file.body).toString("utf8");
-    const { body, sha256 } = await gzipAndHashBytes(Buffer.from(file.body));
+    const raw = Buffer.from(file.body);
+    const { body, sha256 } = await gzipAndHashBytes(raw);
+    // #1330 — the slot keeps the plain bytes; the gzip hash names them.
+    const type = file.contentType ?? contentTypeFor(file.relPath);
+    await this.#slot?.take(file.relPath, { type, hash: sha256 }, (destination) =>
+      destination.save(raw, { contentType: type, resumable: false }),
+    );
     this.#batch.push({ path: file.relPath, sha256, gzipped: body });
     this.#batchBytes += body.byteLength;
     if (this.#batch.length >= POPULATE_BATCH || this.#batchBytes >= POPULATE_BATCH_BYTES) {
@@ -789,7 +763,14 @@ class FirebaseBuildUpload implements BuildUpload {
     references: AssetReferences;
     target: DeployTarget;
     timer: PhaseTimer;
-  }): Promise<{ versionName: string; uploadedCount: number; skippedUnchangedCount: number }> {
+    runId: string;
+  }): Promise<{
+    versionName: string;
+    uploadedCount: number;
+    skippedUnchangedCount: number;
+    /** The staging slot this upload filled; null for other targets. */
+    stagingLocation: string | null;
+  }> {
     if (this.#state !== "open") throw new Error(`firebase upload is ${this.#state}`);
     const { references, target, timer } = args;
     await this.#flush();
@@ -823,6 +804,18 @@ class FirebaseBuildUpload implements BuildUpload {
       assetUploads += toUpload.size;
     }
     timer.lap("upload-assets");
+    // #1330 — the slot gets every asset it lacks, streamed from its store.
+    if (this.#slot) {
+      for (const asset of assets) {
+        const type = contentTypeFor(asset.path);
+        await this.#slot.take(asset.path, { type, hash: asset.gzipSha256 }, (destination) =>
+          pipeline(
+            createReadStream(assetSourcePath(references, asset)),
+            destination.createWriteStream({ contentType: type, resumable: false }),
+          ),
+        );
+      }
+    }
 
     // The redirects table rides the version config — Hosting ignores the
     // `_redirects` file the generator writes. Every build carries that
@@ -847,12 +840,20 @@ class FirebaseBuildUpload implements BuildUpload {
       },
     );
     timer.lap("finalize");
+    const slot = this.#slot
+      ? await this.#slot.finish({
+          runId: args.runId,
+          pageUrlStyle: target.pageUrlStyle ?? "directory",
+        })
+      : null;
+    if (slot) timer.lap("staging-slot");
     this.#state = "finished";
     const uploadedCount = this.#uploaded + assetUploads;
     return {
       versionName: this.#versionName,
       uploadedCount,
       skippedUnchangedCount: served.size - uploadedCount,
+      stagingLocation: slot?.location ?? null,
     };
   }
 
@@ -909,6 +910,7 @@ function siteConfig(target: DeployTarget, redirects: unknown): FirebaseVersionCo
 async function uploadOf(
   upload: BuildUpload | undefined,
   buildDir: string,
+  open: { target: DeployTarget; servedStagingLocation: string | null },
 ): Promise<FirebaseBuildUpload> {
   if (upload !== undefined) {
     if (!(upload instanceof FirebaseBuildUpload)) {
@@ -916,7 +918,7 @@ async function uploadOf(
     }
     return upload;
   }
-  const opened = await FirebaseBuildUpload.open();
+  const opened = await FirebaseBuildUpload.open(open);
   try {
     const build = await readBuildFiles(buildDir);
     await runBatched([...build.built], CPU_PARALLELISM, async (f) => {
@@ -1008,19 +1010,10 @@ function changedOutsideCaelo(asset: AssetReference): Error {
   );
 }
 
-/** A `runid-*` preview channel Stage created, with when Firebase deletes it (null: never). */
-interface RunPreviewChannel {
-  readonly id: string;
-  readonly expireTime: string | null;
-}
-
-/** Every `runid-*` preview channel Stage created on the site (any order). */
-async function listRunPreviewChannels(site: string, token: string): Promise<RunPreviewChannel[]> {
-  type ListChannelsResponse = {
-    channels?: { name: string; expireTime?: string | null }[];
-    nextPageToken?: string;
-  };
-  const found: RunPreviewChannel[] = [];
+/** Every `runid-*` preview channel an older release's Stage created on the site. */
+async function listRunPreviewChannels(site: string, token: string): Promise<string[]> {
+  type ListChannelsResponse = { channels?: { name: string }[]; nextPageToken?: string };
+  const found: string[] = [];
   let pageToken: string | undefined;
   do {
     const page = await firebaseFetch<ListChannelsResponse>(
@@ -1029,15 +1022,11 @@ async function listRunPreviewChannels(site: string, token: string): Promise<RunP
     );
     for (const c of page.channels ?? []) {
       const id = c.name.split("/").pop() ?? "";
-      if (id.startsWith(RUN_CHANNEL_PREFIX)) found.push({ id, expireTime: c.expireTime ?? null });
+      if (id.startsWith(RUN_CHANNEL_PREFIX)) found.push(id);
     }
     pageToken = page.nextPageToken;
   } while (pageToken);
   return found;
-}
-
-function isNotFound(e: unknown): boolean {
-  return e instanceof FirebaseHostingHttpError && e.status === 404;
 }
 
 function messageOf(e: unknown): string {
@@ -1045,181 +1034,60 @@ function messageOf(e: unknown): string {
 }
 
 /**
- * #969 — whether a preview about to be retired outlives the regular preview
- * TTL from `nowMs` on (it was the served one, refreshed to 30 days, or it
- * carries no expiry at all), so it must get the short TTL back before the
- * delete: a failed delete then still takes it offline within a week.
+ * #1331 — delete the preview channels older releases staged to. A preview
+ * channel is public to anyone with its URL, so one left behind would be a
+ * second, ungated path to staged pages. Run at the admin's boot and by every
+ * Stage; already gone counts as deleted. Returns the channels that are still
+ * there, each with why.
  */
-export function outlivesRetiredPreviewTtl(expireTime: string | null, nowMs: number): boolean {
-  if (expireTime === null) return true;
-  const expiresAt = Date.parse(expireTime);
-  if (Number.isNaN(expiresAt)) {
-    throw new Error(
-      `firebase publisher: Firebase reported an unparseable channel expireTime ${JSON.stringify(expireTime)}`,
-    );
-  }
-  return expiresAt > nowMs + PREVIEW_CHANNEL_TTL_DAYS * DAY_MS;
-}
-
-/**
- * Set a channel's TTL (`expireTime` = now + `ttl`) — the only way Firebase
- * changes a preview channel's lifetime; `updateMask=expireTime` with a null
- * expireTime is refused with 400 "mask included expire_time, while channel
- * has no expire time assigned" (#969). Returns the expireTime Firebase now
- * reports, and fails loudly when it reports none.
- */
-async function setChannelTtl(
-  site: string,
-  channelId: string,
-  ttl: string,
-  token: string,
-): Promise<string> {
-  const updated = await firebaseFetch<{ expireTime?: string | null }>(
-    `sites/${site}/channels/${channelId}?updateMask=ttl`,
-    { method: "PATCH", body: JSON.stringify({ ttl }), token },
-  );
-  if (!updated.expireTime) {
-    throw new Error(
-      `firebase publisher: setting ttl=${ttl} on preview channel ${channelId} returned no expireTime, so its lifetime is unknown. Check the channel in the Firebase console (Hosting → preview channels).`,
-    );
-  }
-  return updated.expireTime;
-}
-
-/** The error for a served preview Firebase no longer has. */
-function servedPreviewGone(servedRunId: string, channelId: string): Error {
-  return new Error(
-    `staging serves build ${servedRunId}, but its preview channel ${channelId} no longer exists on Firebase Hosting (it expired or was deleted), so staging cannot serve it. Stage again, then retry.`,
-  );
-}
-
-/**
- * Retire a preview that staging no longer serves. One that outlives the
- * regular TTL (the previously served one) first gets the short TTL back:
- * if the delete then fails (transient API error), the preview still
- * disappears within a week instead of staying publicly reachable for a
- * month. Already gone counts as retired.
- */
-async function retirePreviewChannel(
-  site: string,
-  channel: RunPreviewChannel,
-  token: string,
-): Promise<void> {
-  let ttlError: unknown = null;
-  if (outlivesRetiredPreviewTtl(channel.expireTime, Date.now())) {
+export async function retireLegacyPreviewChannels(): Promise<
+  readonly { readonly channel: string; readonly error: string }[]
+> {
+  const site = siteName();
+  const token = await googleAuthToken();
+  const left: { channel: string; error: string }[] = [];
+  for (const channel of await listRunPreviewChannels(site, token)) {
     try {
-      await setChannelTtl(site, channel.id, PREVIEW_CHANNEL_TTL, token);
+      await firebaseFetch(`sites/${site}/channels/${channel}`, { method: "DELETE", token });
     } catch (e) {
-      if (!isNotFound(e)) ttlError = e;
+      if (e instanceof FirebaseHostingHttpError && e.status === 404) continue;
+      left.push({ channel, error: messageOf(e) });
     }
   }
-  try {
-    await firebaseFetch(`sites/${site}/channels/${channel.id}`, { method: "DELETE", token });
-  } catch (e) {
-    if (isNotFound(e)) return;
-    if (ttlError === null) throw e;
-    throw new Error(
-      `${messageOf(e)}; shortening its TTL failed too (${messageOf(ttlError)}), so it stays reachable until its current expiry (${channel.expireTime ?? "none"}) or until a later Stage or Publish live retires it`,
-    );
-  }
+  return left;
 }
 
 export const firebaseHostingPublisher: StaticPublisher = {
   servesCurrentDir: false,
-  openBuildUpload: () => FirebaseBuildUpload.open(),
+  openBuildUpload: ({ target, servedStagingLocation }) =>
+    FirebaseBuildUpload.open({ target, servedStagingLocation }),
 
-  async publishStaging({ buildDir, runId, target, upload }) {
+  async publishStaging({ buildDir, runId, target, upload, servedStagingLocation }) {
     const timer = PhaseTimer.withMemory();
     try {
-      const filled = await uploadOf(upload, buildDir);
-      const site = filled.site;
-      const token = filled.token;
+      const filled = await uploadOf(upload, buildDir, { target, servedStagingLocation });
       timer.lap("upload-files");
+      // Finalized, never released: an unreleased version is served nowhere.
+      // Publish live releases exactly this version (promoteToProduction).
       const version = await filled.finish({
         references: await readAssetReferences(buildDir),
         target,
         timer,
+        runId,
       });
-      const versionName = version.versionName;
-
-      // 6. Create a per-runId preview channel with a 7-day TTL.
-      //    Firebase channel IDs must be lowercase alphanumeric +
-      //    dashes; sanitise the runId UUID (already alphanumeric+dashes).
-      //    #650 — the channel URL is an internal origin: the gateway proxies
-      //    staging.<domain> to it behind the access gate, and it is never
-      //    shown to operators or the AI. Firebase cannot lock a channel
-      //    (preview channels are public by URL), so older channels are
-      //    deleted as soon as a newer Stage succeeds. The 7-day TTL stays
-      //    until the Stage selects the channel as the one staging serves
-      //    (selectStagingPreview refreshes it to 30 days), so a Stage that
-      //    fails after this point leaves nothing public beyond a week.
-      const channelId = channelIdFor(runId);
-      const channel = await firebaseFetch<CreateChannelResponse>(
-        `sites/${site}/channels?channelId=${channelId}`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            ttl: PREVIEW_CHANNEL_TTL,
-            retainedReleaseCount: 1,
-          }),
-          token,
-        },
-      );
-      timer.lap("channel");
-
-      // 7. Release the version to the preview channel.
-      await firebaseFetch(
-        `sites/${site}/channels/${channelId}/releases?versionName=${versionName}`,
-        {
-          method: "POST",
-          body: JSON.stringify({}),
-          token,
-        },
-      );
-      timer.lap("release");
-
+      // #1331 — no preview channel of an older release stays reachable.
+      if (target.env === "staging") {
+        for (const left of await retireLegacyPreviewChannels()) {
+          console.error("[deploy] an old staging preview channel could not be deleted yet", left);
+        }
+        timer.lap("retire-previews");
+      }
       const summary: PublishSummary = {
         provider: "gcp-firebase",
         uploadedCount: version.uploadedCount,
         skippedUnchangedCount: version.skippedUnchangedCount,
-        location: versionName,
-        previewUrl: channel.url,
-        phases: timer.phases(),
-      };
-      return summary;
-    } finally {
-      timer.close();
-    }
-  },
-
-  async publishLiveBuild({ buildDir, target, sourceRunId, beforeRelease, upload }) {
-    const timer = PhaseTimer.withMemory();
-    try {
-      const filled = await uploadOf(upload, buildDir);
-      const site = filled.site;
-      const token = filled.token;
-      timer.lap("upload-files");
-      const version = await filled.finish({
-        references: await readAssetReferences(buildDir),
-        target,
-        timer,
-      });
-      // The upload above changes nothing that is served; the release does.
-      await beforeRelease?.();
-      await firebaseFetch(`sites/${site}/releases?versionName=${version.versionName}`, {
-        method: "POST",
-        body: JSON.stringify({}),
-        token,
-      });
-      timer.lap("release");
-      const summary: PromoteSummary = {
-        provider: "gcp-firebase",
-        uploadedCount: version.uploadedCount,
-        skippedUnchangedCount: version.skippedUnchangedCount,
         location: version.versionName,
-        // The staged run this live build was checked against — the same id a
-        // copy-promote records, so "live matches staging" keeps working.
-        destinationBuildId: sourceRunId,
+        ...(version.stagingLocation ? { stagingLocation: version.stagingLocation } : {}),
         phases: timer.phases(),
       };
       return summary;
@@ -1228,71 +1096,23 @@ export const firebaseHostingPublisher: StaticPublisher = {
     }
   },
 
-  async selectStagingPreview({ servedRunId, retireUntil }): Promise<StagingPreviewSelection> {
+  async promoteToProduction({
+    sourceRunId,
+    sourceLocation,
+    fromTarget,
+    toTarget,
+    siteBaseUrl,
+    beforeRelease,
+  }) {
     const site = siteName();
     const token = await googleAuthToken();
-    const channels = await listRunPreviewChannels(site, token);
-    const servedId = servedRunId === null ? null : channelIdFor(servedRunId);
-
-    // The served preview first: staging.<domain> proxies to it until the
-    // next Stage — after Publish live too, where it shows the published
-    // state — so an idle period must not expire it into a 404 on every
-    // page. #969 — Firebase cannot make a preview channel permanent; its
-    // TTL is refreshed to the 30-day maximum here and by the periodic
-    // keep-alive (refreshStagingPreview).
-    let servedExpiresAt: string | null = null;
-    if (servedRunId !== null && servedId !== null) {
-      if (!channels.some((c) => c.id === servedId)) {
-        throw servedPreviewGone(servedRunId, servedId);
-      }
-      servedExpiresAt = await setChannelTtl(site, servedId, SERVED_PREVIEW_CHANNEL_TTL, token);
+    // The Hosting version the Stage finalized — a copy of it goes live.
+    if (!sourceLocation || !/^sites\/[^/]+\/versions\/[^/]+$/.test(sourceLocation)) {
+      throw new Error(
+        `firebase publisher promote: staged run ${sourceRunId} recorded no Hosting version (publish_summary.location = ${JSON.stringify(sourceLocation)}), so there is nothing to put live. Stage again, then Publish live.`,
+      );
     }
-
-    const retired: string[] = [];
-    const notRetired: { preview: string; error: string }[] = [];
-    for (const channel of channels) {
-      if (channel.id === servedId) continue;
-      if (retireUntil !== undefined && Date.now() >= retireUntil) {
-        notRetired.push({
-          preview: channel.id,
-          error:
-            "not retired: the Stage selecting the served preview could no longer prove it holds the staging publish slot; the next Stage or Publish live retires it",
-        });
-        continue;
-      }
-      try {
-        await retirePreviewChannel(site, channel, token);
-        retired.push(channel.id);
-      } catch (e) {
-        notRetired.push({ preview: channel.id, error: messageOf(e) });
-      }
-    }
-    return { retired, notRetired, servedExpiresAt };
-  },
-
-  async refreshStagingPreview({ servedRunId }): Promise<StagingPreviewRefresh> {
-    const site = siteName();
-    const token = await googleAuthToken();
-    const channelId = channelIdFor(servedRunId);
-    // Read first: a PATCH on a missing channel would implicitly create an
-    // empty one, and staging would serve 404s without anyone noticing.
-    try {
-      await firebaseFetch(`sites/${site}/channels/${channelId}`, { token });
-    } catch (e) {
-      if (isNotFound(e)) throw servedPreviewGone(servedRunId, channelId);
-      throw e;
-    }
-    const expiresAt = await setChannelTtl(site, channelId, SERVED_PREVIEW_CHANNEL_TTL, token);
-    return { expiresAt };
-  },
-
-  async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl, beforeRelease }) {
-    const site = siteName();
-    const token = await googleAuthToken();
-    // The preview channel for the source runId — its latest release's
-    // version is what we promote.
-    const sourceVersionName = await channelHeadVersion(site, sourceRunId, token, "promote");
-    const sourceConfig = await versionConfig(site, sourceVersionName, token);
+    const sourceConfig = await versionConfig(site, sourceLocation, token);
     if (
       fromTarget.robotsDefault === "noindex" &&
       toTarget.robotsDefault === "index" &&
@@ -1304,7 +1124,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
     const released = await releaseAsTarget({
       site,
       token,
-      sourceVersionName,
+      sourceVersionName: sourceLocation,
       sourceConfig,
       target: toTarget,
       siteBaseUrl,
@@ -1320,15 +1140,25 @@ export const firebaseHostingPublisher: StaticPublisher = {
     return summary;
   },
 
-  async syncRedirects({ target, rows, servedRunId }) {
+  async syncRedirects({ target, rows }) {
+    // #1330 — staging's redirects are answered by the staging gateway, from
+    // the table the admin publishes into the staging database.
+    if (target.env !== "production") {
+      return {
+        outcome: "not-served",
+        redirectCount: 0,
+        goneCount: 0,
+        shadowedCount: 0,
+        unservedTargets: [],
+        location: "the staging gateway (published redirects table)",
+      };
+    }
     const site = siteName();
     const token = await googleAuthToken();
     return syncFirebaseRedirects({
       call: (path, init) => firebaseFetch(path, { ...init, token }),
       site,
-      // Production is the live channel; staging is the preview channel the
-      // staging host serves (#650), named after its run.
-      channelId: target.env === "production" ? "live" : channelIdFor(servedRunId),
+      channelId: "live",
       target,
       rows,
     });

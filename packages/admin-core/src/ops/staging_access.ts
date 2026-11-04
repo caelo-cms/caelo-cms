@@ -33,6 +33,7 @@ import {
   safeStagingNextPath,
   signStagingToken,
   stagingHostProblem,
+  stagingIpAllowlistSupported,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -40,12 +41,11 @@ import { recordAudit } from "../audit.js";
 import { draftPagesSummary, mainDraftPages } from "../deploy/draft-pages.js";
 import {
   describeStageNeeded,
-  providerHasStagingDomain,
-  readStagedBuildHost,
   readStagingHost,
   reservedStagingHosts,
   stageNeededFor,
   stagingGateSecret,
+  stagingServedByGateway,
   stagingSiteUrl,
 } from "../deploy/staging-domain.js";
 import { jsonbParam } from "../sql-helpers.js";
@@ -205,16 +205,14 @@ export const stagingAccessOutput = z.object({
   stagingDomainSupported: z.boolean(),
   provider: z.string(),
   settings: settingsOutput,
-  /** True while a staged build is being served (gcp-firebase: a preview channel exists). */
+  /** True while a staged build is being served (the staging gateway has a build to serve). */
   hasStagedBuild: z.boolean(),
-  /** #678 — the host the served build was rendered for; null when nothing is staged. */
-  stagedBuildHost: z.string().nullable(),
   /**
-   * #678 — why the staging host does not (yet) serve the current host's
-   * build: nothing staged, or the host changed after the last Stage. Null
-   * when it does, or on a provider without a staging domain.
+   * #678 — why the staging host serves nothing yet: nothing staged since
+   * the update. Null when it serves a build, or on a provider without a
+   * staging gateway.
    */
-  stageNeeded: z.enum(["nothing-staged", "host-changed"]).nullable(),
+  stageNeeded: z.enum(["nothing-staged"]).nullable(),
   /** The operator/AI-facing sentence for `stageNeeded` (the next step), or null. */
   stageNote: z.string().nullable(),
   /** #678 — main's draft pages: never staged until they are published. */
@@ -249,13 +247,10 @@ export const getStagingAccessOp = defineOperation({
     const op = "staging_access.get";
     const row = await readStagingAccessRow(tx);
     const provider = process.env.CAELO_PROVIDER ?? "self-hosted";
-    const supported = providerHasStagingDomain(provider);
+    const supported = stagingServedByGateway(provider);
     const stagingHost = await readStagingHost(tx);
     const hasStagedBuild = row.origin_run_id !== null;
-    const stagedBuildHost = await readStagedBuildHost(tx);
-    const stageNeeded = supported
-      ? stageNeededFor(stagingHost, stagedBuildHost, hasStagedBuild)
-      : null;
+    const stageNeeded = supported ? stageNeededFor(hasStagedBuild) : null;
     const base = {
       stagingUrl: supported && stagingHost ? `https://${stagingHost}` : null,
       stagingHost,
@@ -263,7 +258,6 @@ export const getStagingAccessOp = defineOperation({
       provider,
       settings: toOutput(row),
       hasStagedBuild,
-      stagedBuildHost,
       stageNeeded,
       stageNote: describeStageNeeded(stageNeeded, stagingHost),
       draftPages: await mainDraftPages(tx),
@@ -332,6 +326,17 @@ export const setStagingAccessOp = defineOperation({
         ? newStagingCredentialNonce()
         : current.header_nonce;
     const allowlist = [...new Set(input.ipAllowlist.map((c) => c.trim()))];
+    // #1325 — behind the gcp-firebase Hosting rewrite the only address the
+    // gateway can trust is a Google proxy that changes per request: an
+    // allowlist there would admit nobody (or, trusting a forgeable entry,
+    // anybody). The staging gateway never matches it; refusing it here
+    // keeps the Owner from relying on it.
+    if (allowlist.length > 0 && !stagingIpAllowlistSupported(process.env.CAELO_PROVIDER)) {
+      return handlerError(
+        "staging_access.set",
+        "An IP allowlist cannot protect staging on this install (gcp-firebase): Firebase Hosting hands the staging gateway no visitor address it can trust. Leave the allowlist empty and use the admin cookie, basic auth or the secret header for crawlers and tools.",
+      );
+    }
     await tx.execute(sql`
       UPDATE staging_access SET
         cookie_enabled     = ${input.cookieEnabled},
@@ -459,21 +464,23 @@ export const issueStagingOpenLinkOp = defineOperation({
 });
 
 /**
- * Record which staged build staging.<domain> serves (#650): its provider
- * origin and run. Written by deploy.trigger inside its transaction; the
- * gateway reads it to know where to proxy. Publish live leaves it alone, so
- * after a release staging keeps showing the published state until the
- * next Stage.
+ * Record which staged build the staging gateway serves (#650, #1330): its
+ * run and where its complete files lie in staging storage. Written by
+ * deploy.finish_trigger inside its transaction, after the build's slot is
+ * complete; the 0281 trigger makes the drain publish it into
+ * cms_public_staging. Publish live leaves it alone, so after a release
+ * staging keeps showing the published state until the next Stage.
  */
 export async function setStagingOrigin(
   tx: Tx,
-  staged: { readonly originUrl: string | null; readonly runId: string },
+  staged: { readonly servedLocation: string; readonly runId: string },
 ): Promise<void> {
   await tx.execute(sql`
     UPDATE staging_access SET
-      origin_url    = ${staged.originUrl},
-      origin_run_id = ${staged.runId}::uuid,
-      updated_at    = now()
+      origin_url      = NULL,
+      origin_run_id   = ${staged.runId}::uuid,
+      served_location = ${staged.servedLocation},
+      updated_at      = now()
     WHERE id = 1
   `);
 }
@@ -494,9 +501,7 @@ export async function checkStagingHost(
   tx: Tx,
   host: string,
 ): Promise<{ ok: true; host: string } | { ok: false; message: string }> {
-  const problem = stagingHostProblem(host, await reservedStagingHosts(tx), {
-    provider: process.env.CAELO_PROVIDER,
-  });
+  const problem = stagingHostProblem(host, await reservedStagingHosts(tx));
   return problem ? { ok: false, message: problem } : { ok: true, host: normalizeStagingHost(host) };
 }
 
@@ -648,7 +653,7 @@ export const provisionStagingOutput = z.object({
     /** Only when generated / rotated now, or `revealBasicAuth` was asked. */
     password: z.string().nullable(),
   }),
-  stageNeeded: z.enum(["nothing-staged", "host-changed"]).nullable(),
+  stageNeeded: z.enum(["nothing-staged"]).nullable(),
   stageNote: z.string().nullable(),
   draftPages: draftPagesSummary,
 });
@@ -670,7 +675,7 @@ export const provisionStagingOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const op = "staging_access.provision";
     const provider = process.env.CAELO_PROVIDER;
-    if (!providerHasStagingDomain(provider)) {
+    if (!stagingServedByGateway(provider)) {
       return handlerError(
         op,
         `this install's provider (${provider ?? "self-hosted"}) has no protected staging domain yet — nothing to provision.`,
@@ -757,11 +762,7 @@ export const provisionStagingOp = defineOperation({
       });
     }
     const after = await readStagingAccessRow(tx);
-    const stageNeeded = stageNeededFor(
-      host,
-      await readStagedBuildHost(tx),
-      after.origin_run_id !== null,
-    );
+    const stageNeeded = stageNeededFor(after.origin_run_id !== null);
     return ok({
       host,
       previousHost,

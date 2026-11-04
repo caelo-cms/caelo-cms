@@ -28,9 +28,14 @@ import {
   writeAssetReferences,
 } from "../../__tests__/fixtures/asset-references.js";
 import {
+  type FakeStagingBucket,
+  fakeStagingBucket,
+} from "../../__tests__/fixtures/fake-staging-bucket.js";
+import {
   FakeChannelLifetimes,
   FIREBASE_EXPIRE_TIME_CLEAR_REFUSED,
 } from "../../__tests__/fixtures/firebase-channel-lifetime.js";
+import { setStagingBucketForTests } from "../staging-slots.js";
 
 const realGoogleAuthExports = { ...realGoogleAuth };
 
@@ -76,6 +81,8 @@ class FakeFirebase {
   live: string[] = []; // versionNames released on the live channel (newest first)
   blobs = new Map<string, Buffer>(); // sha256 → gzipped body
   deletedChannels: string[] = [];
+  /** The last version finalized or seeded: what a Stage recorded as its location (#1330). */
+  lastFinalized: string | null = null;
   /** `populateFiles` calls (#1271: in batches as files arrive). */
   populateCalls = 0;
   /** When each channel expires, as the live API keeps it (#969). */
@@ -110,6 +117,7 @@ class FakeFirebase {
     const id = `seed${++this.seq}`;
     this.versions.set(id, { config, files, status: "FINALIZED" });
     this.channels.set(channelId, [this.versionName(id)]);
+    this.lastFinalized = this.versionName(id);
     this.lifetimes.create(channelId, "604800s");
   }
 
@@ -181,6 +189,7 @@ class FakeFirebase {
         // firebase-tools does): the redirects need every served path.
         const mask = (params.get("updateMask") ?? "").split(",");
         if (mask.includes("status")) v.status = parsed.status;
+        if (parsed.status === "FINALIZED") this.lastFinalized = this.versionName(m[1]!);
         if (mask.includes("config")) v.config = parsed.config ?? {};
         return json({});
       }
@@ -281,6 +290,7 @@ const PAGE_HTML = "<html><head><title>About</title></head><body>about</body></ht
 
 let fake: FakeFirebase;
 let buildDir: string;
+let slots: FakeStagingBucket;
 const realFetch = globalThis.fetch;
 const ENV_KEYS = ["CAELO_FIREBASE_SITE", "CAELO_GATEWAY_SERVICE", "CAELO_GATEWAY_REGION"] as const;
 const savedEnv: Record<string, string | undefined> = {};
@@ -293,6 +303,9 @@ function robotsHeaders(config: VersionConfig): HeaderEntry[] {
 
 beforeEach(async () => {
   fake = new FakeFirebase();
+  // #1330 — a Stage mirrors its build into the private staging bucket.
+  slots = fakeStagingBucket();
+  setStagingBucketForTests(slots.bucket);
   globalThis.fetch = fake.fetch as typeof fetch;
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
   process.env.CAELO_FIREBASE_SITE = SITE;
@@ -317,6 +330,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   globalThis.fetch = realFetch;
+  setStagingBucketForTests(null);
   for (const k of ENV_KEYS) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
@@ -327,7 +341,12 @@ afterEach(async () => {
 describe("firebaseHostingPublisher — env-level robots per target", () => {
   it("staging versions send X-Robots-Tag: noindex; production versions do not", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
+    await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "run-a",
+      target: STAGING,
+      servedStagingLocation: null,
+    });
     const staged = fake.versions.get("v1");
     const { VERSION_CONFIG_HEADERS } = await import("../static-publisher-firebase.js");
     // #555's cache entries + the staging-only robots entry, nothing else.
@@ -336,17 +355,28 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
       { glob: "**", headers: { "X-Robots-Tag": "noindex" } },
     ]);
 
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-b", target: PRODUCTION });
+    await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "run-b",
+      target: PRODUCTION,
+      servedStagingLocation: null,
+    });
     const direct = [...fake.versions.values()].at(-1);
     expect(direct!.config.headers).toEqual([...VERSION_CONFIG_HEADERS]);
   });
 
   it("Publish live drops the noindex header, keeps content, and serves production robots + sitemap", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-1", target: STAGING });
+    await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "run-1",
+      target: STAGING,
+      servedStagingLocation: null,
+    });
     const staged = fake.versions.get("v1")!;
 
     const summary = await firebaseHostingPublisher.promoteToProduction({
+      sourceLocation: fake.lastFinalized,
       sourceRunId: "run-1",
       sourceBuildDir: buildDir,
       fromTarget: STAGING,
@@ -393,6 +423,7 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await expect(
       firebaseHostingPublisher.promoteToProduction({
+        sourceLocation: fake.lastFinalized,
         sourceRunId: "legacy",
         sourceBuildDir: buildDir,
         fromTarget: STAGING,
@@ -409,10 +440,8 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
       buildDir,
       runId: "run-2",
       target: STAGING,
+      servedStagingLocation: null,
     });
-    // #650 — the run's preview channel may be gone by now (a later Stage
-    // retired it); rollback uses the Hosting version the run recorded.
-    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: null });
     await firebaseHostingPublisher.rollback({
       targetBuildId: "run-2",
       sourceBuildDir: buildDir,
@@ -429,7 +458,7 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
   });
 });
 
-describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
+describe("firebaseHostingPublisher — staging behind the staging gateway (#1330, #1331)", () => {
   it("rollback without a recorded Hosting version fails loudly", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await expect(
@@ -444,227 +473,123 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
     expect(fake.live).toEqual([]);
   });
 
-  it("publishLiveBuild releases the rebuilt tree itself on the live channel, without noindex", async () => {
-    const { firebaseHostingPublisher, VERSION_CONFIG_HEADERS } = await import(
-      "../static-publisher-firebase.js"
-    );
-    await writeFile(
-      join(buildDir, "robots.txt"),
-      `User-agent: *\nAllow: /\n\nSitemap: ${SITE_BASE_URL}/sitemap.xml\n`,
-      "utf8",
-    );
-    const summary = await firebaseHostingPublisher.publishLiveBuild!({
+  it("a Stage finalizes its version, releases it nowhere and creates no preview channel", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    const staged = await firebaseHostingPublisher.publishStaging({
       buildDir,
-      runId: "prod-run",
-      target: PRODUCTION,
-      sourceRunId: "stage-run",
+      runId: "run-s",
+      target: STAGING,
+      servedStagingLocation: null,
     });
-    const live = fake.liveVersion();
-    expect(summary.location).toBe(fake.live[0]!);
-    expect(summary.destinationBuildId).toBe("stage-run");
-    expect(live.status).toBe("FINALIZED");
-    expect(live.config.headers).toEqual([...VERSION_CONFIG_HEADERS]);
-    expect(fake.fileBody(live, "/about/index.html")).toBe(PAGE_HTML);
-    expect(fake.fileBody(live, "/robots.txt")).toContain("Allow: /");
-    // No preview channel for a live build.
+    expect(fake.versions.get("v1")?.status).toBe("FINALIZED");
+    expect(staged.location).toBe(fake.versionName("v1"));
     expect(fake.channels.size).toBe(0);
+    expect(fake.live).toEqual([]);
   });
 
-  it("#1003 publishStaging and publishLiveBuild report their steps in order", async () => {
+  it("a Stage mirrors the whole build into the slot staging does not serve", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    const first = await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "0b7c0d6e-1111-4111-8111-111111111111",
+      target: STAGING,
+      servedStagingLocation: null,
+    });
+    expect(first.stagingLocation).toBe("_slots/a");
+    expect(slots.objects.get("_slots/a/about/index.html")?.toString()).toBe(PAGE_HTML);
+    const manifest = JSON.parse(slots.objects.get("_slots/a.manifest.json")?.toString() ?? "{}");
+    expect(manifest.runId).toBe("0b7c0d6e-1111-4111-8111-111111111111");
+    expect(Object.keys(manifest.files)).toContain("sitemap.xml");
+    // The next Stage fills b and writes only what changed against b.
+    slots.writes.length = 0;
+    const second = await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "0b7c0d6e-2222-4222-8222-222222222222",
+      target: STAGING,
+      servedStagingLocation: "_slots/a",
+    });
+    expect(second.stagingLocation).toBe("_slots/b");
+    expect(slots.writes.every((w) => w.startsWith("_slots/b"))).toBe(true);
+    // A production build fills no slot.
+    slots.writes.length = 0;
+    const prod = await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "run-p",
+      target: PRODUCTION,
+      servedStagingLocation: null,
+    });
+    expect(prod.stagingLocation).toBeUndefined();
+    expect(slots.writes).toEqual([]);
+  });
+
+  it("#1003 publishStaging reports its steps in order", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     const staged = await firebaseHostingPublisher.publishStaging({
       buildDir,
       runId: "run-timed",
       target: STAGING,
+      servedStagingLocation: null,
     });
-    // #1271 — the files go into the version as they arrive ("upload-files":
-    // gzip, hash, batched populate + upload), the referenced media after.
     expect(staged.phases?.map((p) => p.phase)).toEqual([
       "upload-files",
       "populate",
       "upload-assets",
       "finalize",
-      "channel",
-      "release",
+      "staging-slot",
+      "retire-previews",
     ]);
-    const live = await firebaseHostingPublisher.publishLiveBuild!({
-      buildDir,
-      runId: "run-timed-live",
-      target: PRODUCTION,
-      sourceRunId: "run-timed",
-    });
-    expect(live.phases?.map((p) => p.phase)).toEqual([
-      "upload-files",
-      "populate",
-      "upload-assets",
-      "finalize",
-      "release",
-    ]);
-    for (const p of [...(staged.phases ?? []), ...(live.phases ?? [])]) {
-      expect(p.ms).toBeGreaterThanOrEqual(0);
-    }
+    for (const p of staged.phases ?? []) expect(p.ms).toBeGreaterThanOrEqual(0);
   });
 
-  it("selectStagingPreview deletes every other run channel, keeps the served one and never touches live", async () => {
-    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    for (const runId of ["run-old-1", "run-old-2", "run-new"]) {
-      await firebaseHostingPublisher.publishStaging({ buildDir, runId, target: STAGING });
-    }
-    fake.channels.set("someone-elses-channel", []);
-    fake.lifetimes.create("someone-elses-channel", "604800s");
-    const r = await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-new" });
-    expect([...r.retired].sort()).toEqual(["runid-run-old-1", "runid-run-old-2"]);
-    expect(r.notRetired).toEqual([]);
-    expect([...fake.channels.keys()].sort()).toEqual(["runid-run-new", "someone-elses-channel"]);
-
-    // Nothing served: every run channel goes.
-    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: null });
-    expect([...fake.channels.keys()]).toEqual(["someone-elses-channel"]);
-  });
-
-  it("#1211 selectStagingPreview retires nothing once retireUntil has passed, but keeps the served one", async () => {
-    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    for (const runId of ["run-later", "run-late"]) {
-      await firebaseHostingPublisher.publishStaging({ buildDir, runId, target: STAGING });
-    }
-    const r = await firebaseHostingPublisher.selectStagingPreview!({
-      servedRunId: "run-late",
-      retireUntil: Date.now() - 1,
-    });
-    expect(r.retired).toEqual([]);
-    expect(r.notRetired.map((n) => n.preview)).toEqual(["runid-run-later"]);
-    expect(r.notRetired[0]?.error).toContain("staging publish slot");
-    expect([...fake.channels.keys()].sort()).toEqual(["runid-run-late", "runid-run-later"]);
-    expect(r.servedExpiresAt).not.toBeNull();
-  });
-
-  it("#908 publishStaging keeps the finite TTL: a Stage that fails before selection leaves nothing beyond a week", async () => {
-    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-dies", target: STAGING });
-    expect(fake.channels.get("runid-run-dies")?.length).toBe(1);
-    expect(fake.lifetimes.remainingMs("runid-run-dies")).toBeLessThanOrEqual(7 * DAY_MS);
-  });
-
-  it("#969 the fake refuses the expireTime clear exactly like the live API", async () => {
-    // Guards the fake itself: #909 passed its tests because the fake
-    // accepted a request the live API answers with this 400.
-    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-x", target: STAGING });
-    const res = await fake.fetch(`${API}sites/${SITE}/channels/runid-run-x?updateMask=expireTime`, {
-      method: "PATCH",
-      body: JSON.stringify({ expireTime: null }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual(FIREBASE_EXPIRE_TIME_CLEAR_REFUSED);
-  });
-
-  it("#969 selection succeeds and refreshes the served channel's TTL to 30 days (no expireTime clear)", async () => {
-    const { firebaseHostingPublisher, SERVED_PREVIEW_CHANNEL_TTL } = await import(
+  it("#1331 a Stage deletes every preview channel an older release staged to, never live", async () => {
+    fake.seedVersion("runid-old-1", { headers: [] }, { "/index.html": "abc" });
+    fake.seedVersion("runid-old-2", { headers: [] }, { "/index.html": "abc" });
+    const { firebaseHostingPublisher, retireLegacyPreviewChannels } = await import(
       "../static-publisher-firebase.js"
     );
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-idle", target: STAGING });
-    const r = await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-idle" });
-    expect(SERVED_PREVIEW_CHANNEL_TTL).toBe("2592000s");
-    expect(fake.lifetimes.ttlPatches).toEqual([
-      { channelId: "runid-run-idle", ttl: SERVED_PREVIEW_CHANNEL_TTL },
-    ]);
-    expect(r.servedExpiresAt).toBe(fake.lifetimes.expireTime("runid-run-idle"));
-    // An idle week (the #969 acceptance) and more cannot expire it.
-    expect(fake.lifetimes.remainingMs("runid-run-idle")).toBeGreaterThan(29 * DAY_MS);
-  });
-
-  it("#969 selection refreshes the TTL of a served channel staged by an earlier version (7-day TTL)", async () => {
-    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    // Staged and recorded by the previous version: served, but on its
-    // 7-day TTL with 2 days left. Publish live re-selects it.
-    fake.seedVersion("runid-run-legacy", { headers: [] }, { "/index.html": "abc" });
-    fake.lifetimes.seed("runid-run-legacy", Date.now() + 2 * DAY_MS);
-    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-legacy" });
-    expect(fake.channels.has("runid-run-legacy")).toBe(true);
-    expect(fake.lifetimes.remainingMs("runid-run-legacy")).toBeGreaterThan(29 * DAY_MS);
-  });
-
-  it("#969 refreshStagingPreview pushes the served channel's expiry out again and touches nothing else", async () => {
-    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-old", target: STAGING });
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
-    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-a" });
-    expect(fake.deletedChannels).toEqual(["runid-run-old"]);
-    // 20 idle days later the keep-alive ticks.
-    const start = Date.now();
-    fake.lifetimes.now = () => start + 20 * DAY_MS;
-    expect(fake.lifetimes.remainingMs("runid-run-a")).toBeLessThan(11 * DAY_MS);
-    const patchesBefore = fake.lifetimes.ttlPatches.length;
-    const r = await firebaseHostingPublisher.refreshStagingPreview!({ servedRunId: "run-a" });
-    expect(r.expiresAt).toBe(fake.lifetimes.expireTime("runid-run-a"));
-    expect(fake.lifetimes.remainingMs("runid-run-a")).toBeGreaterThan(29 * DAY_MS);
-    expect(fake.lifetimes.ttlPatches.slice(patchesBefore).map((p) => p.channelId)).toEqual([
-      "runid-run-a",
-    ]);
-    expect(fake.deletedChannels).toEqual(["runid-run-old"]);
-  });
-
-  it("#969 refreshStagingPreview fails loudly when the served channel is gone, and never recreates it", async () => {
-    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await expect(
-      firebaseHostingPublisher.refreshStagingPreview!({ servedRunId: "run-gone" }),
-    ).rejects.toThrow("Stage again");
+    await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "run-new",
+      target: STAGING,
+      servedStagingLocation: null,
+    });
+    expect(fake.deletedChannels.sort()).toEqual(["runid-old-1", "runid-old-2"]);
     expect(fake.channels.size).toBe(0);
+    expect(await retireLegacyPreviewChannels()).toEqual([]);
   });
 
-  it("#969 a TTL refresh Firebase answers without an expireTime fails loudly", async () => {
+  it("#1331 a preview channel that cannot be deleted yet is reported, not thrown", async () => {
+    fake.seedVersion("runid-stuck", { headers: [] }, { "/index.html": "abc" });
+    fake.failDelete.add("runid-stuck");
+    const { retireLegacyPreviewChannels } = await import("../static-publisher-firebase.js");
+    const left = await retireLegacyPreviewChannels();
+    expect(left.map((l) => l.channel)).toEqual(["runid-stuck"]);
+  });
+
+  it("promote without a recorded Hosting version fails loudly", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
-    const inner = fake.fetch;
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      if (init?.method === "PATCH" && String(input).includes("updateMask=ttl")) {
-        return new Response(JSON.stringify({ name: "x" }), { status: 200 });
-      }
-      return inner(input, init);
-    }) as typeof fetch;
     await expect(
-      firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-a" }),
-    ).rejects.toThrow("returned no expireTime");
+      firebaseHostingPublisher.promoteToProduction({
+        sourceRunId: "run-x",
+        sourceBuildDir: buildDir,
+        sourceLocation: null,
+        fromTarget: STAGING,
+        toTarget: PRODUCTION,
+        siteBaseUrl: SITE_BASE_URL,
+      }),
+    ).rejects.toThrow("recorded no Hosting version");
+    expect(fake.live).toEqual([]);
   });
 
-  it("#908 a channel that stops being served gets the short TTL back, so a failed delete still expires within a week", async () => {
+  it("the staging target's redirects are the staging gateway's, not Hosting's", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
-    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-a" });
-    expect(fake.lifetimes.remainingMs("runid-run-a")).toBeGreaterThan(29 * DAY_MS);
-
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-b", target: STAGING });
-    fake.failDelete.add("runid-run-a");
-    const r = await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-b" });
-    expect(r.retired).toEqual([]);
-    expect(r.notRetired.map((n) => n.preview)).toEqual(["runid-run-a"]);
-    expect(fake.channels.has("runid-run-a")).toBe(true);
-    expect(fake.lifetimes.remainingMs("runid-run-a")).toBeLessThanOrEqual(7 * DAY_MS);
-    expect(fake.lifetimes.remainingMs("runid-run-b")).toBeGreaterThan(29 * DAY_MS);
-
-    // The next selection retires it.
-    fake.failDelete.clear();
-    const next = await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-b" });
-    expect(next.retired).toEqual(["runid-run-a"]);
-    expect([...fake.channels.keys()]).toEqual(["runid-run-b"]);
-  });
-
-  it("#969 a never-served preview is deleted without a TTL round-trip", async () => {
-    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-b", target: STAGING });
-    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-b" });
-    expect(fake.lifetimes.ttlPatches.map((p) => p.channelId)).toEqual(["runid-run-b"]);
-    expect(fake.deletedChannels).toEqual(["runid-run-a"]);
-  });
-
-  it("#908 selecting a served channel that no longer exists fails loudly and retires nothing", async () => {
-    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
-    await expect(
-      firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-gone" }),
-    ).rejects.toThrow("Stage again");
-    expect([...fake.channels.keys()]).toEqual(["runid-run-a"]);
+    const r = await firebaseHostingPublisher.syncRedirects({
+      target: STAGING,
+      rows: [{ fromPath: "/x", toPath: "/", statusCode: 301 }],
+      servedRunId: "run-s",
+      outputRoot: buildDir,
+    });
+    expect(r.outcome).toBe("not-served");
   });
 });
 
@@ -689,28 +614,6 @@ describe("withTargetRobotsHeader", () => {
   });
 });
 
-describe("outlivesRetiredPreviewTtl (#969)", () => {
-  const NOW = Date.parse("2026-10-21T12:00:00Z");
-
-  it("is false for a preview within the regular 7-day TTL", async () => {
-    const { outlivesRetiredPreviewTtl } = await import("../static-publisher-firebase.js");
-    expect(outlivesRetiredPreviewTtl("2026-10-28T12:00:00Z", NOW)).toBe(false);
-    expect(outlivesRetiredPreviewTtl("2026-10-22T00:00:00Z", NOW)).toBe(false);
-  });
-
-  it("is true for a served (30-day) preview and for one without an expiry", async () => {
-    const { outlivesRetiredPreviewTtl } = await import("../static-publisher-firebase.js");
-    expect(outlivesRetiredPreviewTtl("2026-11-20T12:00:00Z", NOW)).toBe(true);
-    expect(outlivesRetiredPreviewTtl("2026-10-28T12:00:01Z", NOW)).toBe(true);
-    expect(outlivesRetiredPreviewTtl(null, NOW)).toBe(true);
-  });
-
-  it("fails loudly on an expireTime it cannot read", async () => {
-    const { outlivesRetiredPreviewTtl } = await import("../static-publisher-firebase.js");
-    expect(() => outlivesRetiredPreviewTtl("in 604800s", NOW)).toThrow("unparseable");
-  });
-});
-
 describe("firebaseHostingPublisher — security headers (#891)", () => {
   it("Publish live of a version staged before #891 goes live with the SVG CSP + nosniff", async () => {
     // A pre-#891 staging version: cache entries + staging robots, no
@@ -729,6 +632,7 @@ describe("firebaseHostingPublisher — security headers (#891)", () => {
       "../static-publisher-firebase.js"
     );
     await firebaseHostingPublisher.promoteToProduction({
+      sourceLocation: fake.lastFinalized,
       sourceRunId: "pre-891",
       sourceBuildDir: buildDir,
       fromTarget: STAGING,
@@ -790,6 +694,7 @@ describe("firebaseHostingPublisher — clones name the current gateway (#1328)",
     );
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await firebaseHostingPublisher.promoteToProduction({
+      sourceLocation: fake.lastFinalized,
       sourceRunId: "pre-1328",
       sourceBuildDir: buildDir,
       fromTarget: STAGING,
@@ -819,8 +724,14 @@ describe("firebaseHostingPublisher — clones name the current gateway (#1328)",
 
   it("the plugin-data release of a live version from before the move rewrites /api/** to the current gateway", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-1", target: STAGING });
+    await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "run-1",
+      target: STAGING,
+      servedStagingLocation: null,
+    });
     const promoted = await firebaseHostingPublisher.promoteToProduction({
+      sourceLocation: fake.lastFinalized,
       sourceRunId: "run-1",
       sourceBuildDir: buildDir,
       fromTarget: STAGING,
@@ -867,8 +778,14 @@ describe("firebaseHostingPublisher — clones name the current gateway (#1328)",
 describe("firebaseHostingPublisher — plugin-data release (#1155)", () => {
   async function publishLive() {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-1", target: STAGING });
+    await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "run-1",
+      target: STAGING,
+      servedStagingLocation: null,
+    });
     const promoted = await firebaseHostingPublisher.promoteToProduction({
+      sourceLocation: fake.lastFinalized,
       sourceRunId: "run-1",
       sourceBuildDir: buildDir,
       fromTarget: STAGING,
@@ -972,6 +889,7 @@ describe("firebaseHostingPublisher — referenced media (#1271)", () => {
       buildDir,
       runId: "run-media",
       target: STAGING,
+      servedStagingLocation: null,
     });
     const version = fake.versions.get("v1");
     expect(version?.files[`/${PATH}`]).toBe(gzipSha256);
@@ -988,10 +906,13 @@ describe("firebaseHostingPublisher — referenced media (#1271)", () => {
     await chmod(file, 0o000);
     try {
       const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+      // A production build: a Stage's slot mirror (#1330) would read the
+      // file once to fill an empty slot; Hosting itself needs no byte.
       await firebaseHostingPublisher.publishStaging({
         buildDir,
         runId: "run-have",
-        target: STAGING,
+        target: PRODUCTION,
+        servedStagingLocation: null,
       });
     } finally {
       await chmod(file, 0o644);
@@ -1005,7 +926,12 @@ describe("firebaseHostingPublisher — referenced media (#1271)", () => {
     await writeFile(file, new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]));
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await expect(
-      firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-changed", target: STAGING }),
+      firebaseHostingPublisher.publishStaging({
+        buildDir,
+        runId: "run-changed",
+        target: STAGING,
+        servedStagingLocation: null,
+      }),
     ).rejects.toThrow("restore the original file");
   });
 
@@ -1023,7 +949,12 @@ describe("firebaseHostingPublisher — referenced media (#1271)", () => {
     });
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await expect(
-      firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-profile", target: STAGING }),
+      firebaseHostingPublisher.publishStaging({
+        buildDir,
+        runId: "run-profile",
+        target: STAGING,
+        servedStagingLocation: null,
+      }),
     ).rejects.toThrow("digests of another gzip");
   });
 });
@@ -1053,6 +984,7 @@ describe("firebaseHostingPublisher — a build streamed into the version (#1271)
       runId: "run-stream",
       target: STAGING,
       upload,
+      servedStagingLocation: null,
     });
     const version = fake.versions.get(summary.location.split("/").pop() ?? "");
     expect(version?.status).toBe("FINALIZED");

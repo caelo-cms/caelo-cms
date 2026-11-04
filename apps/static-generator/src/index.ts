@@ -63,15 +63,6 @@ export { type MediaDelivery, MediaPass } from "./media-pass.js";
 // loads it there, not at the page's own path).
 export { NOT_FOUND_PAGE_FILE } from "./not-found-page.js";
 export {
-  type BuildManifest,
-  type BuildParity,
-  type ContentNormaliser,
-  hostNormaliser,
-  ParityRecorder,
-  PER_BUILD_FILES,
-  readBuildParity,
-} from "./parity-digest.js";
-export {
   axisSpecHash,
   cachedPinnedFaceSlices,
   type PinnedSlice,

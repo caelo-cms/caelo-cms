@@ -2,19 +2,18 @@
 
 /**
  * Issue #553 — a short-lived loopback origin that serves ONE staged build
- * to the audit browser, for providers whose staging has no URL the browser
- * can open (plain gcp: private bucket behind the IAP-protected admin proxy;
- * aws / azure). gcp-firebase and self-hosted keep auditing their real
- * staging URL.
+ * to the audit browser, for providers whose staging the browser cannot open
+ * without the gate (gcp and gcp-firebase: the staging slot the gated staging
+ * gateway serves, #1330 — Lighthouse must not measure through the gateway,
+ * #875; aws / azure). Self-hosted keeps auditing its real staging URL.
  *
  * Shape (maintainer decision on PR #583):
  * - bound to 127.0.0.1 on a random port, alive only for one audit;
  * - read-only for the build: GET and HEAD, nothing else;
- * - `/api/plugin/*` is answered here with the staging stub (#1326 interim,
- *   @caelo-cms/shared `staging-plugin-stub.ts`): it never reaches live;
- * - every other `/api/*` goes to the install's real gateway when
- *   `apiOrigin` is given, unchanged in method and body — see
- *   {@link StagedOriginOptions};
+ * - `/api/plugin/*` is answered here with the staging stub
+ *   (@caelo-cms/shared `staging-plugin-stub.ts`): an audit never writes
+ *   visitor data, on live or on staging; nothing else under `/api/` is
+ *   forwarded anywhere;
  * - path-traversal safe: the request path is decoded once and reduced to
  *   plain segments before it becomes a storage key; `.`/`..`, backslashes
  *   and NUL are refused, and a local file must resolve inside the build;
@@ -25,20 +24,20 @@
  */
 
 import { readFile, realpath } from "node:fs/promises";
-import {
-  createServer,
-  request as httpRequest,
-  type IncomingMessage,
-  type ServerResponse,
-} from "node:http";
-import { request as httpsRequest } from "node:https";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, sep } from "node:path";
 import {
   isPluginCallPath,
   mediaSecurityHeaders,
   STAGING_PLUGIN_STUB_BODY,
+  type StagedManifest,
+  stagedFileKey,
+  stagedKeysFor,
+  stagedManifestKey,
+  stagedManifestSchema,
 } from "@caelo-cms/shared";
-import { readStagedBuildFiles, readStagedObject } from "../deploy/staged-build-files.js";
+import { StagedRunError } from "../deploy/staged-build-files.js";
+import { stagingBucket } from "../deploy/staging-slots.js";
 import { cacheControlForContentType, contentTypeFor } from "../deploy/static-file-policy.js";
 
 /** One file of a staged build. */
@@ -53,29 +52,8 @@ export interface StagedFileSource {
   read(key: string): Promise<StagedFile | null>;
 }
 
-/**
- * Map a request path to the storage key(s) to try, or null when the path
- * is not a plain, safe site path. Pure (exported for tests).
- *
- * `/` → `index.html`; `/about/` → `about/index.html`; `/about` → `about`
- * (no-extension builds) then `about/index.html`.
- */
-export function stagedKeysFor(requestPath: string): string[] | null {
-  const pathOnly = requestPath.split("?")[0]?.split("#")[0] ?? "";
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(pathOnly);
-  } catch {
-    return null;
-  }
-  if (!decoded.startsWith("/") || decoded.includes("\0") || decoded.includes("\\")) return null;
-  const segments = decoded.split("/").filter((s) => s.length > 0);
-  if (segments.some((s) => s === "." || s === "..")) return null;
-  const key = segments.join("/");
-  if (key === "") return ["index.html"];
-  if (decoded.endsWith("/")) return [`${key}/index.html`];
-  return [key, `${key}/index.html`];
-}
+/** #1330 — moved to @caelo-cms/shared staged-site.ts (the staging gateway uses it too). */
+export { stagedKeysFor } from "@caelo-cms/shared";
 
 /** Files of a build directory on this machine (`<outDir>/builds/<runId>`). */
 export function localBuildSource(buildDir: string): StagedFileSource {
@@ -120,153 +98,50 @@ export function localBuildSource(buildDir: string): StagedFileSource {
 }
 
 /**
- * Files of a gcp staging run: the private staging bucket under `<runId>/`,
- * falling back to the live static bucket for files the incremental Stage
- * skipped as unchanged, and only for files the build contains (#842: a
- * page the build deleted is still live until Confirm-publish) — the same
- * lookup as the admin's staging preview.
+ * #1330 — files of a staged build in its staging slot (`_slots/a` of the
+ * private staging bucket, gcp and gcp-firebase): the complete mirror the
+ * staging gateway serves, read through its manifest. The quality audit's
+ * Lighthouse runs load it on a loopback origin instead of through the gated
+ * gateway, so a cold start or the streaming rewrite never skews a score
+ * (#875; decision 2026-11-04, D4). Throws a {@link StagedRunError} when the
+ * slot holds another run (a later Stage resynced it): the audit is then of a
+ * build staging no longer has.
  */
-export function gcsStagingSource(runId: string): StagedFileSource {
-  const stagingName = process.env.CAELO_STAGING_BUCKET;
-  const staticName = process.env.CAELO_STATIC_BUCKET;
-  if (!stagingName || !staticName) {
-    throw new Error(
-      "CAELO_STAGING_BUCKET / CAELO_STATIC_BUCKET not set — the GCP stack sets both on the admin service",
-    );
-  }
-  let run: Promise<{
-    staging: import("@google-cloud/storage").Bucket;
-    live: import("@google-cloud/storage").Bucket;
-    buildFiles: ReadonlySet<string>;
+export function stagingSlotSource(location: string, runId: string): StagedFileSource {
+  let opened: Promise<{
+    bucket: import("@google-cloud/storage").Bucket;
+    manifest: StagedManifest;
   }> | null = null;
   const open = () => {
-    run ??= import("@google-cloud/storage").then(async ({ Storage }) => {
-      const storage = new Storage();
-      const staging = storage.bucket(stagingName);
-      return {
-        staging,
-        live: storage.bucket(staticName),
-        buildFiles: await readStagedBuildFiles(staging, runId),
-      };
+    opened ??= stagingBucket().then(async (bucket) => {
+      const file = bucket.file(stagedManifestKey(location));
+      const [exists] = await file.exists();
+      if (!exists) {
+        throw new StagedRunError(
+          `the staging slot ${location} has no manifest (a Stage is resyncing it). Stage again.`,
+        );
+      }
+      const manifest = stagedManifestSchema.parse(
+        JSON.parse((await file.download())[0].toString("utf8")),
+      );
+      if (manifest.runId !== runId) {
+        throw new StagedRunError(
+          `the staging slot ${location} holds build ${manifest.runId} now, not ${runId} — a later Stage replaced it. Stage again to check the current build.`,
+        );
+      }
+      return { bucket, manifest };
     });
-    return run;
+    return opened;
   };
   return {
     async read(key) {
-      const object = await readStagedObject({ ...(await open()), runId, key });
-      if (!object) return null;
-      return {
-        bytes: new Uint8Array(object.body),
-        contentType: object.contentType ?? contentTypeFor(key),
-      };
+      const { bucket, manifest } = await open();
+      const entry = manifest.files[key];
+      if (!entry) return null;
+      const [body] = await bucket.file(stagedFileKey(location, key)).download();
+      return { bytes: new Uint8Array(body), contentType: entry.type };
     },
   };
-}
-
-/**
- * How the loopback origin answers what is not a build file.
- */
-export interface StagedOriginOptions {
-  /**
-   * The live site's origin (`https://<domain>`), whose `/api/*` the load
-   * balancer routes to the API gateway. Plugin components call
-   * `/api/plugin/<slug>/<op>` same-origin when a page loads (auth `me`,
-   * the comment list, the rating average — all POSTs), so a build served
-   * without the gateway behind it audits a page whose components fail and
-   * log console errors that staging never shows. Forwarding everything
-   * keeps the audit equal to gcp-firebase and self-hosted staging, whose
-   * `/api/*` reaches the same gateway: the request meets the gateway's
-   * rate limit, WAF, honeypot and CAPTCHA like any visitor's. Writes stay
-   * out of reach in practice because they follow a click, and Lighthouse
-   * never clicks.
-   */
-  readonly apiOrigin?: string;
-}
-
-/** Largest request body forwarded to the gateway (its own hard ceiling). */
-const MAX_API_BODY_BYTES = 1024 * 1024;
-
-/** Request headers a page's own `/api/*` call carries that the gateway reads. */
-const FORWARDED_REQUEST_HEADERS = [
-  "accept",
-  "accept-language",
-  "content-type",
-  "cookie",
-  "user-agent",
-] as const;
-
-/** Response headers that describe the hop, not the answer. */
-const DROPPED_RESPONSE_HEADERS = new Set(["connection", "keep-alive", "transfer-encoding"]);
-
-/**
- * The gateway URL a loopback `/api/*` request goes to, or null when the
- * path is not a plain `/api/` path on that origin. Pure (exported for tests).
- */
-export function apiTargetFor(requestPath: string, apiOrigin: string): string | null {
-  if (!requestPath.startsWith("/api/")) return null;
-  const origin = new URL(apiOrigin).origin;
-  const parsed = new URL(requestPath, origin);
-  // `new URL` resolves dot segments: `/api/../x` must not leave `/api/`.
-  if (parsed.origin !== origin || !parsed.pathname.startsWith("/api/")) return null;
-  // Rebuilt on the fixed origin and the literal `/api/` prefix, so the
-  // request can only ever reach the gateway's `/api/` tree.
-  return `${origin}/api/${parsed.pathname.slice("/api/".length)}${parsed.search}`;
-}
-
-async function readBody(req: IncomingMessage): Promise<Buffer | null> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).byteLength;
-    if (size > MAX_API_BODY_BYTES) return null;
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks);
-}
-
-/**
- * Forward one `/api/*` request. The upstream host comes only from the
- * configured origin and the request contributes only the path, so no
- * request can choose where the forward goes.
- */
-function forwardToGateway(
-  req: IncomingMessage,
-  res: ServerResponse,
-  apiOrigin: URL,
-  path: string,
-  body: Buffer | null,
-): Promise<void> {
-  const headers: Record<string, string> = {};
-  for (const name of FORWARDED_REQUEST_HEADERS) {
-    const value = req.headers[name];
-    if (typeof value === "string") headers[name] = value;
-  }
-  if (body) headers["content-length"] = String(body.byteLength);
-  const send = apiOrigin.protocol === "https:" ? httpsRequest : httpRequest;
-  return new Promise<void>((resolve, reject) => {
-    const upstream = send(
-      {
-        protocol: apiOrigin.protocol,
-        hostname: apiOrigin.hostname,
-        port: apiOrigin.port || undefined,
-        method: req.method ?? "GET",
-        path,
-        headers,
-      },
-      (answer) => {
-        const out: Record<string, string | string[]> = {};
-        for (const [name, value] of Object.entries(answer.headers)) {
-          if (value !== undefined && !DROPPED_RESPONSE_HEADERS.has(name)) out[name] = value;
-        }
-        res.writeHead(answer.statusCode ?? 502, out);
-        answer.pipe(res);
-        answer.on("end", resolve);
-        answer.on("error", reject);
-      },
-    );
-    upstream.on("error", reject);
-    upstream.end(body ?? undefined);
-  });
 }
 
 /** A running loopback origin. */
@@ -276,10 +151,7 @@ export interface StagedOrigin {
 }
 
 /** Serve `source` on 127.0.0.1 at a random port until `close()`. */
-export async function serveStagedBuild(
-  source: StagedFileSource,
-  options: StagedOriginOptions = {},
-): Promise<StagedOrigin> {
+export async function serveStagedBuild(source: StagedFileSource): Promise<StagedOrigin> {
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // #1326 interim — a plugin call never goes to live: the live gateway
     // refuses the staged page (no live Origin), and must. Answer it here
@@ -293,18 +165,6 @@ export async function serveStagedBuild(
           "Cache-Control": "no-store",
         })
         .end(STAGING_PLUGIN_STUB_BODY);
-      return;
-    }
-    const apiTarget = options.apiOrigin ? apiTargetFor(req.url ?? "/", options.apiOrigin) : null;
-    if (apiTarget && options.apiOrigin) {
-      const hasBody = req.method !== "GET" && req.method !== "HEAD";
-      const body = hasBody ? await readBody(req) : null;
-      if (hasBody && body === null) {
-        res.writeHead(413, { "Content-Type": "text/plain; charset=utf-8" }).end("body too large");
-        return;
-      }
-      const origin = new URL(options.apiOrigin);
-      await forwardToGateway(req, res, origin, apiTarget.slice(origin.origin.length), body);
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") {

@@ -60,6 +60,8 @@ export * from "./ai/system-prompt.js";
 // v0.2.77 — describeError reused by SvelteKit form actions to surface
 // the underlying QueryError reason (e.g. "Staging build failed: ...").
 export { describeError } from "./ai/tools/_describe-error.js";
+// #1330 — the admin's own renders of the protected staging site.
+export { setStagingCaptureAccess } from "./ai/tools/_external-screenshotter.js";
 export * from "./ai/tools/index.js";
 export * from "./audit.js";
 export {
@@ -67,6 +69,7 @@ export {
   bugIntakeUrl,
   DEFAULT_BUG_INTAKE_URL,
 } from "./bug-forwarding/client.js";
+export { stagingCaptureAccess } from "./capture/staging-access.js";
 // P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
 export { sweepChatImagesOnce } from "./chat-image-gc-worker.js";
 export * from "./csrf.js";
@@ -82,7 +85,7 @@ export {
   StagedRunError,
 } from "./deploy/staged-build-files.js";
 // #650 — which installs serve staging at a protected staging.<domain>.
-export { providerHasStagingDomain } from "./deploy/staging-domain.js";
+export { stagingServedByGateway } from "./deploy/staging-domain.js";
 // #1257 — the Stage warning for page lists cut at the query cap.
 export {
   describeTruncatedLists,
@@ -250,6 +253,7 @@ export * from "./rate-limit.js";
 export {
   registerRedirectSyncRunner,
   repointStaleGatewayRewriteAtBoot,
+  retireLegacyStagingPreviewsAtBoot,
 } from "./redirect-sync-worker.js";
 export * from "./register.js";
 export type { ReleaseCheckOpts } from "./release-check-worker.js";

@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * `deploy.get_run_origin` — where one deploy run's build can be read back
- * over HTTP, for providers that publish to a hosting service instead of a
- * bucket the admin reads (gcp-firebase: the run's preview channel).
+ * `deploy.get_run_origin` — where one deploy run's build can be read back,
+ * for providers that publish to a hosting service whose files the admin
+ * cannot list (gcp-firebase).
  *
- * #1088 — `inspect_built_page` on a Firebase install needs the run's
- * preview channel origin (recorded in `publish_summary.previewUrl`) and the
- * staging host it was rendered for (`site_url`). `deploy.list_runs` does not
- * carry the preview origin on purpose: #650 keeps that URL internal, and
- * list_runs feeds operator surfaces. Callers of this op must not show
- * `previewUrl` to anyone; they name `siteUrl` instead.
+ * #1088 / #1330 — `inspect_built_page` on a Firebase install reads a staged
+ * run from its staging slot (`publish_summary.stagingLocation`, the private
+ * staging bucket the staging gateway serves) and names the staging host.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -21,8 +18,7 @@ import { z } from "zod";
 export const getDeployRunOriginOp = defineOperation({
   name: "deploy.get_run_origin",
   readScope: "request",
-  // CLAUDE.md §11 — a read; the AI reaches it only through
-  // inspect_built_page, which never prints the internal preview origin.
+  // CLAUDE.md §11 — a read; the AI reaches it through inspect_built_page.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid() }).strict(),
@@ -30,23 +26,25 @@ export const getDeployRunOriginOp = defineOperation({
     runId: z.string(),
     env: z.string(),
     status: z.string(),
-    /** Internal origin of the staged build (#650: never shown). */
-    previewUrl: z.string().nullable(),
-    /** The staging host the build was rendered for, as operators know it. */
-    siteUrl: z.string().nullable(),
+    /** #1330 — the staged run's slot in the staging bucket; null before it. */
+    stagingLocation: z.string().nullable(),
+    /** `https://<staging host>`, as operators know staging; null while no host is set. */
+    stagingOrigin: z.string().nullable(),
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT r.id::text AS id, t.env, r.status,
-             r.publish_summary->>'previewUrl' AS preview_url, r.site_url
+             r.publish_summary->>'stagingLocation' AS staging_location,
+             (SELECT 'https://' || s.staging_host FROM staging_access s
+               WHERE s.id = 1 AND s.staging_host IS NOT NULL) AS staging_origin
       FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
       WHERE r.id = ${input.runId}::uuid
     `)) as unknown as {
       id: string;
       env: string;
       status: string;
-      preview_url: string | null;
-      site_url: string | null;
+      staging_location: string | null;
+      staging_origin: string | null;
     }[];
     const row = rows[0];
     if (!row) {
@@ -60,8 +58,8 @@ export const getDeployRunOriginOp = defineOperation({
       runId: row.id,
       env: row.env,
       status: row.status,
-      previewUrl: row.preview_url,
-      siteUrl: row.site_url,
+      stagingLocation: row.staging_location,
+      stagingOrigin: row.staging_origin,
     });
   },
 });
