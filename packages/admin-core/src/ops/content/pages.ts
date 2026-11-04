@@ -319,7 +319,8 @@ export const listPagesOp = defineOperation({
         message: "cursor needs limit: send the same limit as the call that returned it.",
       });
     }
-    const after = input.cursor === undefined ? null : decodeKeysetCursor(input.cursor);
+    const after =
+      input.cursor === undefined ? null : decodeKeysetCursor("pages.list", input.cursor);
     if (input.cursor !== undefined && after === null) {
       return err({
         kind: "HandlerError",
@@ -348,7 +349,9 @@ export const listPagesOp = defineOperation({
       // below it without touching the rows: on a branch those pages are
       // candidates too, matched on the composed path below.
       const drifting =
-        branchId && only.paths.size > 0 ? await pagesBelowPendingMoves(tx, branchId) : [];
+        branchId && only.paths.size > 0
+          ? await pagesNamedByLastSegment(tx, branchId, [...only.paths])
+          : [];
       const parts = [
         byId,
         byPath,
@@ -383,7 +386,8 @@ export const listPagesOp = defineOperation({
     const more = input.limit !== undefined && rows.length > input.limit;
     const pageRows = more ? rows.slice(0, input.limit) : rows;
     const last = pageRows.at(-1);
-    const nextCursor = more && last ? encodeKeysetCursor(last.created_key, last.id) : null;
+    const nextCursor =
+      more && last ? encodeKeysetCursor("pages.list", last.created_key, last.id) : null;
 
     // Run #9 R9 — the caller's branch view of each returned page: a
     // branched delete, rename or edit lives in the draft head until a
@@ -445,26 +449,39 @@ export const listPagesOp = defineOperation({
 });
 
 /**
- * The pages whose path a branch's pending rename or move changes: the
- * pending pages whose slug or parent differs from the stored row, and
- * everything below them. The cost is the branch's pending pages and
- * their subtrees.
+ * On a branch, the pages that could carry one of `paths` once the
+ * branch's pending renames and moves are applied, though their stored
+ * `current_path` differs: a page's composed path ends in its own slug, so
+ * the candidates are the visible pages and the branch's pending pages
+ * whose slug is a path's last segment (indexed, 0596; the magic home
+ * slugs for "/"). A URL-space root keeps its path when renamed, so the
+ * stored path finds it. The caller keeps those whose composed path
+ * matches. The cost is the pages sharing those slugs, never a subtree.
  */
-async function pagesBelowPendingMoves(tx: TransactionRunner, branchId: string): Promise<string[]> {
-  const moved = (await tx.execute(sql`
-    SELECT h.entity_id FROM (${headOverlaySql({
-      kind: "page",
-      table: "page_snapshots",
-      branchId,
-      columns: sql`d.slug AS head_slug, d.parent_page_id AS head_parent`,
-    })}) h
-    JOIN pages p ON p.id = h.entity_id::uuid
-   WHERE h.head_slug IS DISTINCT FROM p.slug OR h.head_parent IS DISTINCT FROM p.parent_page_id
-  `)) as unknown as { entity_id: string }[];
-  const out = new Set(moved.map((m) => m.entity_id));
-  for (const m of moved)
-    for (const id of await loadSubtreeIds(tx, branchId, m.entity_id)) out.add(id);
-  return [...out];
+async function pagesNamedByLastSegment(
+  tx: TransactionRunner,
+  branchId: string,
+  paths: readonly string[],
+): Promise<string[]> {
+  const slugs = new Set<string>();
+  for (const p of paths) {
+    const last = p
+      .split("/")
+      .filter((x) => x !== "")
+      .at(-1);
+    if (last === undefined) for (const h of ["", "home", "index"]) slugs.add(h);
+    else slugs.add(last);
+  }
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id FROM pages
+     WHERE slug = ANY(${textArray([...slugs])}) AND deleted_at IS NULL
+       AND (chat_branch_id IS NULL OR chat_branch_id = ${branchId}::uuid)
+    UNION
+    SELECT DISTINCT d.entity_id::text FROM draft_pending_entities d
+     WHERE d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'page'
+       AND d.slug = ANY(${textArray([...slugs])})
+  `)) as unknown as { id: string }[];
+  return rows.map((r) => r.id);
 }
 
 /**

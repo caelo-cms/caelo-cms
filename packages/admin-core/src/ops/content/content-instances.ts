@@ -619,7 +619,10 @@ export const listContentInstancesOp = withHumanisedLinks(
           message: "cursor needs limit: send the same limit as the call that returned it.",
         });
       }
-      const after = input.cursor === undefined ? null : decodeKeysetCursor(input.cursor);
+      const after =
+        input.cursor === undefined
+          ? null
+          : decodeKeysetCursor("content_instances.list", input.cursor);
       if (input.cursor !== undefined && after === null) {
         return err({
           kind: "HandlerError",
@@ -702,7 +705,9 @@ export const listContentInstancesOp = withHumanisedLinks(
       const rows = more ? fetched.slice(0, input.limit) : fetched;
       const lastRow = rows.at(-1);
       const nextCursor =
-        more && lastRow ? encodeKeysetCursor(lastRow.created_key, lastRow.id) : null;
+        more && lastRow
+          ? encodeKeysetCursor("content_instances.list", lastRow.created_key, lastRow.id)
+          : null;
 
       // #820 — same caller-branch overlay as content_instances.get: a
       // branched set_values lands only in content_instance_snapshots, so a

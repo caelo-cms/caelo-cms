@@ -145,6 +145,17 @@ describe("#1269 — pages.list pages with limit + cursor", () => {
       ours((await allPaged(ctx, 2, { underPageId: blog })).pages).map((p) => p.id);
     expect(await under(ai)).toEqual([post]);
     expect(await under(SYSTEM)).toEqual([]);
+
+    // A path lookup finds a page under its branch path (the parent renamed
+    // there), and under its stored path on main only.
+    const byPath = async (ctx: ExecutionContext, path: string) =>
+      (await ok<{ pages: Listed[] }>(ctx, "pages.list", { paths: [path], limit: 10 })).pages.map(
+        (p) => p.id,
+      );
+    expect(await byPath(ai, `/${PFX}-manual/${PFX}-guide`)).toEqual([guide]);
+    expect(await byPath(ai, `/${PFX}-docs/${PFX}-guide`)).toEqual([]);
+    expect(await byPath(SYSTEM, `/${PFX}-docs/${PFX}-guide`)).toEqual([guide]);
+    expect(await byPath(ai, `/${PFX}-blog/${PFX}-post`)).toEqual([post]);
   });
 
   it("content_instances.list: paged instances equal the unpaged list, with a chat's delete", async () => {
@@ -214,5 +225,29 @@ describe("#1269 — pages.list pages with limit + cursor", () => {
     });
     expect(forged.ok).toBe(false);
     if (!forged.ok) expect(JSON.stringify(forged.error)).toContain("nextCursor");
+
+    // Shaped like a cursor, but an id and a time Postgres could not cast,
+    // and a real cursor of the other list op: refused, not a cast error.
+    const enc = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+    for (const cursor of [
+      enc(["pages.list", "2026-02-30 10:00:00.000000", "00000000-0000-4000-8000-000000000001"]),
+      enc(["pages.list", "2026-02-03 10:00:00.000000", "------------------------------------"]),
+      enc([
+        "content_instances.list",
+        "2026-02-03 10:00:00.000000",
+        "00000000-0000-4000-8000-000000000001",
+      ]),
+    ]) {
+      const r = await execute(registry, adapter, SYSTEM, "pages.list", { limit: 5, cursor });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.kind).toBe("HandlerError");
+    }
+    const page1 = await ok<{ nextCursor: string | null }>(SYSTEM, "pages.list", { limit: 1 });
+    expect(page1.nextCursor).not.toBeNull();
+    const crossed = await execute(registry, adapter, SYSTEM, "content_instances.list", {
+      limit: 5,
+      cursor: page1.nextCursor,
+    });
+    expect(crossed.ok).toBe(false);
   });
 });

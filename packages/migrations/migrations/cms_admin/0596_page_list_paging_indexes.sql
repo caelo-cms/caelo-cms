@@ -13,13 +13,22 @@
 -- chat moved in): that lookup gets its own partial index on the draft
 -- head, so it reads the moved pages, not every pending page.
 --
--- Expand-only: three indexes.
+-- A path lookup on a branch (`pages.list({ paths })`) also finds the
+-- pages a pending rename or move gave that path: a composed path ends in
+-- the page's own slug, so it looks the last segment up among the pages'
+-- slugs and the draft head's pending slugs.
+--
+-- Expand-only: five indexes.
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
 
 CREATE INDEX pages_created_id_idx ON pages (created_at, id);
 CREATE INDEX content_instances_created_id_idx ON content_instances (created_at, id);
+
+CREATE INDEX pages_slug_idx ON pages (slug) WHERE deleted_at IS NULL;
+CREATE INDEX draft_pending_entities_page_slug_idx ON draft_pending_entities
+  (chat_branch_id, slug) WHERE entity_kind = 'page';
 
 CREATE INDEX draft_pending_entities_page_parent_idx ON draft_pending_entities
   (chat_branch_id, parent_page_id) WHERE entity_kind = 'page' AND parent_page_id IS NOT NULL;
