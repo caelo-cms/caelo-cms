@@ -492,6 +492,12 @@ const keyVaultSecrets: Record<AzureDatabaseSecret, azure.keyvault.Secret> = {
 interface SecretReader {
   readonly identity: azure.managedidentity.UserAssignedIdentity;
   readonly reader: AzureSecretReader;
+  /**
+   * Its grants on the secrets. A Container App resolves its Key Vault
+   * references when it is created, so it must wait for them (Azure: grant
+   * the identity access before referencing the secret).
+   */
+  readonly grants: readonly azure.authorization.RoleAssignment[];
 }
 
 function secretReader(reader: AzureSecretReader): SecretReader {
@@ -500,15 +506,17 @@ function secretReader(reader: AzureSecretReader): SecretReader {
     resourceName: `${namePrefix}-${reader}-id`,
     location,
   });
+  const grants: azure.authorization.RoleAssignment[] = [];
   for (const name of new Set(Object.values(AZURE_SERVICE_DATABASE_SECRETS[reader]))) {
-    new azure.authorization.RoleAssignment(`${namePrefix}-${reader}-reads-${name}`, {
+    const grant = new azure.authorization.RoleAssignment(`${namePrefix}-${reader}-reads-${name}`, {
       principalId: identity.principalId,
       principalType: "ServicePrincipal",
       roleDefinitionId: pulumi.interpolate`/subscriptions/${clientConfig.subscriptionId}/providers/Microsoft.Authorization/roleDefinitions/${KEY_VAULT_SECRETS_USER_ROLE}`,
       scope: keyVaultSecrets[name].id,
     });
+    grants.push(grant);
   }
-  return { identity, reader };
+  return { identity, reader, grants };
 }
 
 const adminSecretReader = secretReader("admin");
@@ -545,66 +553,71 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
     ? Object.entries(AZURE_SERVICE_DATABASE_SECRETS[args.secrets.reader])
     : [];
   const secretNames = [...new Set(passwords.map(([, name]) => name))];
-  return new azure.app.ContainerApp(`${namePrefix}-${args.serviceName}`, {
-    resourceGroupName: rg.name,
-    containerAppName: `${namePrefix}-${args.serviceName}`,
-    location,
-    managedEnvironmentId: cappEnv.id,
-    ...(args.secrets
-      ? {
-          identity: {
-            type: "UserAssigned",
-            userAssignedIdentities: [args.secrets.identity.id],
-          },
-        }
-      : {}),
-    configuration: {
-      activeRevisionsMode: "Single",
+  return new azure.app.ContainerApp(
+    `${namePrefix}-${args.serviceName}`,
+    {
+      resourceGroupName: rg.name,
+      containerAppName: `${namePrefix}-${args.serviceName}`,
+      location,
+      managedEnvironmentId: cappEnv.id,
       ...(args.secrets
         ? {
-            secrets: secretNames.map((name) => ({
-              name,
-              keyVaultUrl: keyVaultSecrets[name].properties.apply((p) => p.secretUri ?? ""),
-              identity: (args.secrets as SecretReader).identity.id,
-            })),
+            identity: {
+              type: "UserAssigned",
+              userAssignedIdentities: [args.secrets.identity.id],
+            },
           }
         : {}),
-      ingress: {
-        external: false,
-        targetPort: 8080,
-        transport: "Auto",
-      },
-    },
-    template: {
-      scale: {
-        minReplicas: args.isolated ? 0 : (args.minReplicas ?? (env !== "production" ? 0 : 1)),
-        maxReplicas: MAX_REPLICAS,
-      },
-      containers: [
-        {
-          name: args.serviceName,
-          // Image pushed via `az acr build` for v1 (operator's job).
-          image:
-            cfg.get(`image-${args.serviceName}`) ??
-            `${namePrefix}.azurecr.io/${args.serviceName}:latest`,
-          env: args.isolated
-            ? [{ name: "CAELO_PROVIDER", value: "azure" }, ...(args.extraEnv ?? [])]
-            : [
-                { name: "CAELO_PROVIDER", value: "azure" },
-                { name: "CAELO_ENV", value: env },
-                ...args.databaseEnv,
-                ...passwords.map(([envName, name]) => ({ name: envName, secretRef: name })),
-                {
-                  name: "MEDIA_STORAGE_URL",
-                  value: pulumi.interpolate`https://${storage.name}.blob.core.windows.net/media`,
-                },
-                ...(args.extraEnv ?? []),
-              ],
-          resources: args.resources ?? { cpu: 0.5, memory: "1.0Gi" },
+      configuration: {
+        activeRevisionsMode: "Single",
+        ...(args.secrets
+          ? {
+              secrets: secretNames.map((name) => ({
+                name,
+                keyVaultUrl: keyVaultSecrets[name].properties.apply((p) => p.secretUri ?? ""),
+                identity: (args.secrets as SecretReader).identity.id,
+              })),
+            }
+          : {}),
+        ingress: {
+          external: false,
+          targetPort: 8080,
+          transport: "Auto",
         },
-      ],
+      },
+      template: {
+        scale: {
+          minReplicas: args.isolated ? 0 : (args.minReplicas ?? (env !== "production" ? 0 : 1)),
+          maxReplicas: MAX_REPLICAS,
+        },
+        containers: [
+          {
+            name: args.serviceName,
+            // Image pushed via `az acr build` for v1 (operator's job).
+            image:
+              cfg.get(`image-${args.serviceName}`) ??
+              `${namePrefix}.azurecr.io/${args.serviceName}:latest`,
+            env: args.isolated
+              ? [{ name: "CAELO_PROVIDER", value: "azure" }, ...(args.extraEnv ?? [])]
+              : [
+                  { name: "CAELO_PROVIDER", value: "azure" },
+                  { name: "CAELO_ENV", value: env },
+                  ...args.databaseEnv,
+                  ...passwords.map(([envName, name]) => ({ name: envName, secretRef: name })),
+                  {
+                    name: "MEDIA_STORAGE_URL",
+                    value: pulumi.interpolate`https://${storage.name}.blob.core.windows.net/media`,
+                  },
+                  ...(args.extraEnv ?? []),
+                ],
+            resources: args.resources ?? { cpu: 0.5, memory: "1.0Gi" },
+          },
+        ],
+      },
     },
-  });
+    // Its Key Vault references resolve at creation: the grants come first.
+    { dependsOn: [...(args.secrets?.grants ?? [])] },
+  );
 }
 
 const adminDatabaseEnv = [

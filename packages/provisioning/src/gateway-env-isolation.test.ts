@@ -235,6 +235,8 @@ describe("azure: the gateway container app (#635)", () => {
     expect(src).not.toMatch(/accessPolicies/);
     expect(src.match(/new azure\.authorization\.RoleAssignment\(/g)).toHaveLength(1);
     expect(src).toContain("scope: keyVaultSecrets[name].id,");
+    // An app resolves its Key Vault references at creation: grants first (#1429 review).
+    expect(src).toContain("{ dependsOn: [...(args.secrets?.grants ?? [])] }");
     expect(src).toContain(
       "for (const name of new Set(Object.values(AZURE_SERVICE_DATABASE_SECRETS[reader]))) {",
     );
