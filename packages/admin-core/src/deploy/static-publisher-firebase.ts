@@ -62,7 +62,11 @@ import {
 } from "@caelo-cms/static-generator";
 import { CPU_PARALLELISM, readBuildFiles, uniqueAssets } from "./build-files.js";
 import { readFirebaseBuiltFile } from "./firebase-channel-file.js";
-import { currentGatewayRewrite, withCurrentGatewayRewrite } from "./firebase-gateway-rewrite.js";
+import {
+  currentGatewayRewrite,
+  hasCurrentGatewayRewrite,
+  withCurrentGatewayRewrite,
+} from "./firebase-gateway-rewrite.js";
 import { syncFirebaseRedirects } from "./firebase-redirect-sync.js";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
 import type {
@@ -476,6 +480,19 @@ async function liveChannelVersion(site: string, token: string): Promise<string |
   const head = r.releases?.[0];
   if (!head || head.type === "SITE_DISABLE") return null;
   return head.version?.name ?? null;
+}
+
+/**
+ * #1380 — whether the live release sends `/api/**` to the gateway the
+ * admin's env names now (`CAELO_GATEWAY_SERVICE`), or null when nothing is
+ * live. One channel read and one version read.
+ */
+export async function liveGatewayRewriteIsCurrent(): Promise<boolean | null> {
+  const site = siteName();
+  const token = await googleAuthToken();
+  const live = await liveChannelVersion(site, token);
+  if (live === null) return null;
+  return hasCurrentGatewayRewrite(await versionConfig(site, live, token));
 }
 
 /**

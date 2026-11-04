@@ -43,6 +43,7 @@ import {
   makePluginTextProvider,
   mcpBackPressureResponse,
   registerRedirectSyncRunner,
+  repointStaleGatewayRewriteAtBoot,
   startLiveFanOut,
   startQualityAuditWorker,
   startSiteImportWorker,
@@ -487,6 +488,20 @@ let liveFanOutBootstrapped = false;
 function bootstrapRedirectSync(): void {
   const { adapter, registry } = getQueryContext();
   registerRedirectSyncRunner({ adapter, registry });
+  // #1380 — a converge that moved the visitor gateway leaves the live
+  // Firebase release's /api/** rewrite on the old service; the first boot
+  // after it re-releases the served version with the current rewrite (no
+  // build). Every other provider returns at once.
+  void repointStaleGatewayRewriteAtBoot({ adapter, registry }).then(
+    (outcome) => {
+      if (outcome === "repointed") {
+        console.info(
+          "[bootstrap.gateway-rewrite] the live /api/** rewrite now names the current gateway",
+        );
+      }
+    },
+    (e) => console.error("[bootstrap.gateway-rewrite] failed", e),
+  );
 }
 
 // #1140 — dev and test runs have no scheduler: no Cloud Scheduler, no

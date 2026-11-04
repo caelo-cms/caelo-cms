@@ -247,7 +247,10 @@ export * from "./public-projection.js";
 export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit-worker.js";
 export * from "./rate-limit.js";
 // #1157 — the post-commit redirect sync every redirects write runs.
-export { registerRedirectSyncRunner } from "./redirect-sync-worker.js";
+export {
+  registerRedirectSyncRunner,
+  repointStaleGatewayRewriteAtBoot,
+} from "./redirect-sync-worker.js";
 export * from "./register.js";
 export type { ReleaseCheckOpts } from "./release-check-worker.js";
 // #1140 — the scheduler tick: the core maintenance tasks, the plugin
