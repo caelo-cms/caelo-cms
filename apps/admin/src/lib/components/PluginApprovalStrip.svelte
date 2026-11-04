@@ -22,7 +22,8 @@
 
 {#if count + reviews.length > 0}
   <div
-    role="status"
+    role="region"
+    aria-label="Plugins waiting for a decision"
     data-testid="plugin-approval-strip"
     class={cn(
       "flex flex-wrap items-center gap-x-3 gap-y-1 border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200",
