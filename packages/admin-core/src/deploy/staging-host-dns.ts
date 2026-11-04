@@ -110,7 +110,9 @@ export async function readStagingHostDns(
   deps: StagingHostDnsDeps = {},
 ): Promise<StagingHostDns> {
   const env = deps.env ?? process.env;
-  const provider = env.CAELO_PROVIDER ?? "self-hosted";
+  // An unset provider is a development checkout, not self-hosted: it
+  // serves no staging host, so there is no record to show.
+  const provider = env.CAELO_PROVIDER;
   if (provider === "gcp" || provider === "self-hosted") {
     return { kind: "same-as-site", host, sameAs: siteHost };
   }

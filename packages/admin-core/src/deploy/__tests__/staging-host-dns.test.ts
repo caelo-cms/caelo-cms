@@ -72,5 +72,10 @@ describe("readStagingHostDns", () => {
     expect(
       await readStagingHostDns("staging.acme.com", "acme.com", { env: { CAELO_PROVIDER: "aws" } }),
     ).toEqual({ kind: "unsupported", host: "staging.acme.com" });
+    // A development checkout (no CAELO_PROVIDER) is not self-hosted (#1330).
+    expect(await readStagingHostDns("staging.acme.com", "acme.com", { env: {} })).toEqual({
+      kind: "unsupported",
+      host: "staging.acme.com",
+    });
   });
 });
