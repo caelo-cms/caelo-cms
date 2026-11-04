@@ -25,8 +25,8 @@
  * flag drift to the operator before they click Confirm.
  *
  * Where the build is read from: plain gcp reads the staging / static
- * GCS buckets; gcp-firebase (#1088) has no buckets and reads the run's
- * preview channel or the live channel over HTTP (firebase-built-file.ts).
+ * GCS buckets; gcp-firebase (#1088) reads a staged run from its staging
+ * slot (#1330) and the live site over HTTP (firebase-built-file.ts).
  * Off GCP the tool is not offered at all (install-availability.ts):
  * built HTML lives on the operator's local disk or another cloud's
  * storage, not behind a storage API the admin process can read
@@ -38,6 +38,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
 import { firebaseLiveChannelUrl, readFirebaseBuiltFile } from "../../deploy/firebase-built-file.js";
 import { readStagedBuildFiles, readStagedObject } from "../../deploy/staged-build-files.js";
+import { stagingSlotSource } from "../../quality/staged-origin.js";
 import { describeError, toolError } from "./_describe-error.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 import { isGcpInstall } from "./install-availability.js";
@@ -234,9 +235,8 @@ function builtPageResult(
 
 /**
  * Read a built page on a gcp-firebase install: a staging run from its
- * preview channel, the live site from the live channel. The preview
- * channel's own URL stays internal (#650) — the result names the staging
- * host the build was rendered for.
+ * staging slot (#1330), the live site from the live channel. The result
+ * names the staging host.
  */
 async function readFromFirebase(
   ctx: ExecutionContext,
@@ -264,30 +264,37 @@ async function readFromFirebase(
   if (!runR.ok) {
     return toolError(runR.error, `deploy.get_run_origin failed: ${describeError(runR.error)}`);
   }
-  const run = runR.value as { env: string; previewUrl: string | null; siteUrl: string | null };
+  const run = runR.value as {
+    env: string;
+    stagingLocation: string | null;
+    stagingOrigin: string | null;
+  };
   if (run.env !== "staging") {
     return {
       ok: false,
       content: `deploy run ${runId} is a ${run.env} build, not a staged one. Pass a staging runId, omit runId for the newest staged build, or use target='static' for the live site.`,
     };
   }
-  if (!run.previewUrl) {
+  if (!run.stagingLocation) {
     return {
       ok: false,
-      content: `staged build ${runId} recorded no Firebase preview channel, so its files cannot be read back. Run Stage again, then call inspect_built_page.`,
+      content: `staged build ${runId} recorded no staging slot (it was staged by an older release), so its files cannot be read back. Run Stage again, then call inspect_built_page.`,
     };
   }
-  const shownAs = run.siteUrl
-    ? `${run.siteUrl.replace(/\/+$/, "")}/${objectKey} (staged build ${runId})`
+  const shownAs = run.stagingOrigin
+    ? `${run.stagingOrigin}/${objectKey} (staged build ${runId})`
     : `staged build ${runId}: ${objectKey}`;
-  const file = await readFirebaseBuiltFile(run.previewUrl, objectKey);
-  if (!file.found) {
+  let file: Awaited<ReturnType<ReturnType<typeof stagingSlotSource>["read"]>>;
+  try {
+    file = await stagingSlotSource(run.stagingLocation, runId).read(objectKey);
+  } catch (e) {
+    return { ok: false, content: e instanceof Error ? e.message : String(e) };
+  }
+  if (!file) {
     return {
       ok: false,
-      content:
-        `Page not in staging build ${runId} (${shownAs} answered ${file.status}). Either the page was not published (still a draft) or not part of this build when it was staged, ` +
-        "or this build's preview was retired because a newer Stage or a Publish live replaced it (only the build staging serves stays readable). Publish the page if needed and run Stage again.",
+      content: `Page not in staging build ${runId} (${shownAs}). Either the page was not published (still a draft) or not part of this build when it was staged. Publish the page if needed and run Stage again.`,
     };
   }
-  return { ok: true, location: shownAs, body: file.body };
+  return { ok: true, location: shownAs, body: Buffer.from(file.bytes) };
 }

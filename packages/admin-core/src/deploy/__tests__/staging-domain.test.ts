@@ -6,10 +6,10 @@ import { basicAuthUserForSite } from "../../ops/staging_access.js";
 import { describeDraftPages } from "../draft-pages.js";
 import {
   describeStageNeeded,
-  providerHasStagingDomain,
   stageNeededFor,
   stagingGateSecret,
   stagingPageUrl,
+  stagingServedByGateway,
   stagingSiteUrl,
 } from "../staging-domain.js";
 
@@ -18,24 +18,27 @@ function txWith(host: string | null) {
   return { execute: async () => [{ staging_host: host }] } as never;
 }
 
-describe("stagingSiteUrl (#650)", () => {
-  it("is null on providers without a protected staging domain, whatever is stored", async () => {
-    for (const p of ["gcp", "aws", "azure", "self-hosted", undefined]) {
+describe("stagingSiteUrl (#650, #1330)", () => {
+  it("is null where no staging gateway serves staging (aws, azure, a dev checkout)", async () => {
+    for (const p of ["aws", "azure", undefined]) {
       expect(await stagingSiteUrl(txWith("staging.example.com"), p)).toBe(null);
-      expect(providerHasStagingDomain(p)).toBe(false);
+      expect(stagingServedByGateway(p)).toBe(false);
     }
   });
 
-  it("is the stored staging host on gcp-firebase — any host the operator chose", async () => {
-    expect(await stagingSiteUrl(txWith("staging.example.com"), "gcp-firebase")).toBe(
-      "https://staging.example.com",
-    );
-    expect(await stagingSiteUrl(txWith("preview.other.de"), "gcp-firebase")).toBe(
+  it("is the stored staging host wherever the staging gateway serves it — any host the operator chose", async () => {
+    for (const p of ["gcp-firebase", "gcp", "self-hosted"]) {
+      expect(stagingServedByGateway(p)).toBe(true);
+      expect(await stagingSiteUrl(txWith("staging.example.com"), p)).toBe(
+        "https://staging.example.com",
+      );
+    }
+    expect(await stagingSiteUrl(txWith("preview.other.de"), "gcp")).toBe(
       "https://preview.other.de",
     );
   });
 
-  it("fails loudly on gcp-firebase when no host is stored", async () => {
+  it("fails loudly when no host is stored", async () => {
     await expect(stagingSiteUrl(txWith(null), "gcp-firebase")).rejects.toThrow(
       "No staging host is configured",
     );
@@ -59,14 +62,12 @@ describe("stagingGateSecret / stagingPageUrl", () => {
 });
 
 describe("what the staging host serves (#678)", () => {
-  it("needs a Stage when nothing is staged or the served build has another host", () => {
-    expect(stageNeededFor("p.example.com", null, false)).toBe("nothing-staged");
-    expect(stageNeededFor("p.example.com", "staging.example.com", true)).toBe("host-changed");
-    expect(stageNeededFor("p.example.com", "p.example.com", true)).toBe(null);
+  it("needs a Stage only when nothing is staged (#1330: a host change needs none)", () => {
+    expect(stageNeededFor(false)).toBe("nothing-staged");
+    expect(stageNeededFor(true)).toBe(null);
     expect(describeStageNeeded("nothing-staged", "p.example.com")).toContain(
       "Nothing is served at https://p.example.com/ until the next Stage",
     );
-    expect(describeStageNeeded("host-changed", "p.example.com")).toContain("stage_changes");
     expect(describeStageNeeded(null, "p.example.com")).toBe(null);
   });
 
@@ -95,7 +96,6 @@ describe("what the staging host serves (#678)", () => {
       stagingDomainSupported: true,
       provider: "gcp-firebase",
       hasStagedBuild: false,
-      stagedBuildHost: null,
       stageNeeded: "nothing-staged",
       stageNote: describeStageNeeded("nothing-staged", "p.example.com"),
       draftPages: { count: 1, pages: [{ id: "1", title: "Pricing", path: "/pricing/" }] },

@@ -24,6 +24,7 @@ import { sql } from "drizzle-orm";
 import { describeError } from "./ai/tools/_describe-error.js";
 import { SYSTEM_ACTOR_ID } from "./audit.js";
 import {
+  markRedirectsBehind,
   type RedirectSyncOutcome,
   type RedirectSyncTrigger,
   redirectChangesPending,
@@ -131,4 +132,100 @@ export function registerRedirectSyncRunner(opts: RedirectSyncWorkerOpts): void {
 export function unregisterRedirectSyncRunner(): void {
   registered = false;
   setRedirectSyncRunner(null);
+}
+
+/** What {@link repointStaleGatewayRewrite} found and did. */
+export type GatewayRepointOutcome =
+  /** The provider has no `/api/**` rewrite of its own (everything but gcp-firebase). */
+  | "not-applicable"
+  /** The live release already sends `/api/**` to the current gateway. */
+  | "current"
+  /** Nothing is live yet; the first Publish live writes the current rewrite. */
+  | "nothing-live"
+  /** It named an older gateway; a sync of the production targets released the current one. */
+  | "repointed";
+
+/** What {@link repointStaleGatewayRewrite} needs; injected so the decision is testable. */
+export interface GatewayRepointDeps {
+  /**
+   * Whether the live release's `/api/**` rewrite names the gateway the
+   * admin's env names now; null when nothing is live.
+   */
+  readonly liveRewriteIsCurrent: () => Promise<boolean | null>;
+  /** Mark every production target behind and push it (`redirects.sync_provider`, `manual`). */
+  readonly syncProduction: () => Promise<RedirectSyncOutcome[]>;
+}
+
+/**
+ * #1380 — after a converge that moved the visitor gateway (#1328 made the
+ * old gcp-firebase `gateway` service the MCP-Auth-Proxy), the live Hosting
+ * release keeps an `/api/**` rewrite to the old service until something
+ * releases a new version. Run at the admin's boot: when the live rewrite is
+ * stale, one redirect sync of the production targets re-releases the served
+ * version with the current rewrite. The sync is the one writer of the
+ * served-version record, so the plugin-data build and rollback keep finding
+ * the release (`movedServedBuild`). Nothing is built or published: the
+ * files, redirects and headers of the live release stay as they are.
+ *
+ * @throws when the sync ran and a production target failed (logged by the caller; the redirect-sync worker retries it).
+ */
+export async function repointStaleGatewayRewrite(
+  provider: string | undefined,
+  deps: GatewayRepointDeps,
+): Promise<GatewayRepointOutcome> {
+  if (provider !== "gcp-firebase") return "not-applicable";
+  const current = await deps.liveRewriteIsCurrent();
+  if (current === null) return "nothing-live";
+  if (current) return "current";
+  const outcomes = await deps.syncProduction();
+  const failed = outcomes.filter((o) => o.env === "production" && o.status === "failed");
+  if (failed.length > 0) {
+    throw new Error(
+      `the live site's /api/** still reaches the previous gateway: ${failed.map((o) => `${o.targetName}: ${o.error ?? "failed"}`).join("; ")}. The redirect sync retries it on the next scheduler tick; Settings → Redirects shows the error.`,
+    );
+  }
+  return "repointed";
+}
+
+/**
+ * {@link repointStaleGatewayRewrite} with the real Firebase read and sync,
+ * for the admin's boot (apps/admin hooks.server.ts).
+ */
+export async function repointStaleGatewayRewriteAtBoot(
+  opts: RedirectSyncWorkerOpts,
+): Promise<GatewayRepointOutcome> {
+  return repointStaleGatewayRewrite(process.env.CAELO_PROVIDER, {
+    liveRewriteIsCurrent: async () =>
+      (await import("./deploy/static-publisher-firebase.js")).liveGatewayRewriteIsCurrent(),
+    syncProduction: async () => {
+      const ids = await opts.adapter.withAdminTransaction(
+        { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: `gateway-repoint-${runs++}` },
+        async (tx) => {
+          const rows = (await tx.execute(sql`
+            SELECT id::text AS id FROM deploy_targets WHERE env = 'production' ORDER BY id
+          `)) as unknown as { id: string }[];
+          const targetIds = rows.map((r) => r.id);
+          await markRedirectsBehind(tx, targetIds);
+          return targetIds;
+        },
+      );
+      return ids.length === 0 ? [] : runSync(opts, "manual", ids);
+    },
+  });
+}
+
+/**
+ * #1331 — at the admin's boot on gcp-firebase: delete the preview channels
+ * an older release staged to (public by URL, a second path to staged pages).
+ * Logs the ones that are still there; every Stage tries again.
+ */
+export async function retireLegacyStagingPreviewsAtBoot(): Promise<void> {
+  if (process.env.CAELO_PROVIDER !== "gcp-firebase") return;
+  const { retireLegacyPreviewChannels } = await import("./deploy/static-publisher-firebase.js");
+  for (const left of await retireLegacyPreviewChannels()) {
+    console.error(
+      "[bootstrap.staging-previews] an old preview channel could not be deleted yet",
+      left,
+    );
+  }
 }

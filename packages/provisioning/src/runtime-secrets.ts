@@ -30,6 +30,8 @@ import {
   gcpSecretId,
   mcpAuthProxyServiceAccountEmail,
   mcpAuthProxyServiceAccountId,
+  stagingGatewayServiceAccountEmail,
+  stagingGatewayServiceAccountId,
 } from "./gcp-names.js";
 import {
   CLI_GENERATED_SECRETS,
@@ -119,6 +121,25 @@ export function ensureMcpAuthProxyServiceAccount(
     mcpAuthProxyServiceAccountId(install.env),
     mcpAuthProxyServiceAccountEmail(install.projectId, install.env),
     `Caelo ${install.env} MCP-Auth-Proxy`,
+    deps,
+  );
+}
+
+/**
+ * #1330 — create the staging gateway's run SA unless it exists. Its rights:
+ * `secretAccessor` on `public-staging-role-password` (runtimeSecretBindings),
+ * the log and metric writer, and object viewer on the staging bucket
+ * (staging-gateway-setup.ts) — nothing of the live site's.
+ */
+export function ensureStagingGatewayServiceAccount(
+  install: { readonly projectId: string; readonly env: string },
+  deps: RuntimeDeps = {},
+): Promise<EnsureOutcome> {
+  return ensureServiceAccount(
+    install.projectId,
+    stagingGatewayServiceAccountId(install.env),
+    stagingGatewayServiceAccountEmail(install.projectId, install.env),
+    `Caelo ${install.env} staging gateway`,
     deps,
   );
 }

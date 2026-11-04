@@ -318,8 +318,11 @@ export async function loadPageChains(
 }
 
 /**
- * Issue #1269 — the ids of every page below `rootId` as `chatBranchId`
- * sees the tree, read one level at a time (at most {@link MAX_PAGE_DEPTH})
+ * Issue #1269 — the ids of every page below `rootIds` as `chatBranchId`
+ * sees the tree (the roots themselves are never listed),
+ * read one level at a time for all roots together (at most
+ * {@link MAX_PAGE_DEPTH} levels, so the round trips are bounded by the
+ * depth, not the number of roots)
  * from the parent index and, on a branch, the pending pages whose head
  * names a parent of the level (moved in). The cost is the subtree, never
  * the site.
@@ -327,14 +330,15 @@ export async function loadPageChains(
 export async function loadSubtreeIds(
   tx: TransactionRunner,
   chatBranchId: string | null,
-  rootId: string,
+  rootIds: string | readonly string[],
 ): Promise<string[]> {
   const visibility = chatBranchId
     ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${chatBranchId}::uuid)`
     : sql`chat_branch_id IS NULL`;
+  const roots = [...new Set(typeof rootIds === "string" ? [rootIds] : rootIds)];
   const below: string[] = [];
-  const seen = new Set<string>([rootId]);
-  let frontier = [rootId];
+  const seen = new Set<string>(roots);
+  let frontier = roots;
   for (let level = 0; level < MAX_PAGE_DEPTH && frontier.length > 0; level += 1) {
     const live = (await tx.execute(sql`
       SELECT id::text AS id, parent_page_id::text AS parent_page_id FROM pages
@@ -377,4 +381,22 @@ export async function loadSubtreeIds(
     frontier = next;
   }
   return below;
+}
+
+/**
+ * Issue #1269 — the part of the page tree a path recompute of `rootIds`
+ * needs: those pages, every page below them, and their ancestors, as
+ * `chatBranchId` sees them — read through the subtree and ancestor
+ * walks, never the whole tree. `below` lists the descendants (each once).
+ */
+export async function loadScopedTree(
+  tx: TransactionRunner,
+  chatBranchId: string | null,
+  rootIds: readonly string[],
+): Promise<{ tree: PageTree; below: string[] }> {
+  const roots = [...new Set(rootIds)];
+  // One walk for all roots: round trips bounded by the tree depth.
+  const below = await loadSubtreeIds(tx, chatBranchId, roots);
+  const { tree } = await loadPageChains(tx, chatBranchId, [...roots, ...below]);
+  return { tree, below };
 }

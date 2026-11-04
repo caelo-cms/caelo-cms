@@ -30,7 +30,7 @@
 import { z } from "zod";
 import type { ImageDigests } from "../install-state.js";
 import type { ReleaseManifest } from "../release-manifest.js";
-import { ROLL_ORDER, type RollSlug } from "./app-roll.js";
+import { SERVICE_IMAGE_NAMES, type ServiceImageName } from "../stack-contract.js";
 import { fetchRegistryManifest, IMAGE_DIGEST, RELEASE_REGISTRY } from "./release-images.js";
 
 /** The digests one release image is known by. */
@@ -58,10 +58,10 @@ export interface ReleaseImageForms {
   /** The forms of release `m`'s image `slug` (signed platform digests win). */
   of(
     m: Pick<ReleaseManifest, "version" | "digests" | "platformDigests">,
-    slug: RollSlug,
+    slug: ServiceImageName,
   ): Promise<ImageFormsResult>;
   /** The forms of the index `indexDigest` of image `slug`, read from the mirror. */
-  ofIndex(slug: RollSlug, indexDigest: string): Promise<ImageFormsResult>;
+  ofIndex(slug: ServiceImageName, indexDigest: string): Promise<ImageFormsResult>;
 }
 
 const INDEX_MEDIA_TYPES = new Set([
@@ -133,7 +133,7 @@ export function createReleaseImageForms(fetchImpl: typeof fetch = fetch): Releas
   const cache = new Map<string, Promise<ImageFormsResult>>();
   const { region, project, repo } = RELEASE_REGISTRY;
 
-  async function lookup(slug: RollSlug, indexDigest: string): Promise<ImageFormsResult> {
+  async function lookup(slug: ServiceImageName, indexDigest: string): Promise<ImageFormsResult> {
     const where = `the ${slug} image index ${indexDigest} in the release mirror`;
     const fetched = await fetchRegistryManifest(
       `${region}-docker.pkg.dev`,
@@ -165,7 +165,7 @@ export function createReleaseImageForms(fetchImpl: typeof fetch = fetch): Releas
     return formsFromIndexJson(indexDigest, json);
   }
 
-  const ofIndex = (slug: RollSlug, indexDigest: string): Promise<ImageFormsResult> => {
+  const ofIndex = (slug: ServiceImageName, indexDigest: string): Promise<ImageFormsResult> => {
     const key = `${slug}@${indexDigest}`;
     let pending = cache.get(key);
     if (!pending) {
@@ -212,8 +212,8 @@ export async function platformDigestsOf(
   | { readonly ok: true; readonly platformDigests: ImageDigests }
   | { readonly ok: false; readonly message: string }
 > {
-  const out: Partial<Record<RollSlug, string>> = {};
-  for (const slug of ROLL_ORDER) {
+  const out: Partial<Record<ServiceImageName, string>> = {};
+  for (const slug of SERVICE_IMAGE_NAMES) {
     const index = digests[slug];
     // #1328 — digests recorded before the MCP-Auth-Proxy existed carry none.
     if (!index) continue;

@@ -20,7 +20,7 @@ const spec: CaddyfileSpec = {
   ownerEmail: "owner@example.com",
   tls: "acme",
   publicSiteRoot: "/srv/caelo/output/production/current",
-  stagingSiteRoot: "/srv/caelo/output/staging/current",
+  stagingGatewayUpstream: "caelo-staging-gateway:8091",
   adminUpstream: COMPOSE_ADMIN_UPSTREAM,
   gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
   mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
@@ -96,9 +96,12 @@ describe("Caddyfile upstreams (#707)", () => {
     expect(out).not.toContain("localhost");
     expect(out).not.toContain("127.0.0.1");
     expect(block(out, "admin.example.com")).toContain("reverse_proxy caelo-admin:5173");
-    for (const host of ["example.com", "staging.example.com"]) {
-      expect(block(out, host)).toContain("handle /api/* {\n    reverse_proxy caelo-gateway:8090\n");
-    }
+    expect(block(out, "example.com")).toContain(
+      "handle /api/* {\n    reverse_proxy caelo-gateway:8090\n",
+    );
+    // #1330 — the staging host goes to the staging gateway, every path.
+    expect(block(out, "staging.example.com")).toContain("reverse_proxy caelo-staging-gateway:8091");
+    expect(block(out, "staging.example.com")).not.toContain("caelo-gateway:8090");
   });
 
   it("does not route /admin/* on the public site (the admin routes from / on its own host)", () => {
@@ -123,12 +126,15 @@ describe("Caddyfile static site (#566)", () => {
     );
   });
 
-  it("serves production and staging from their own roots; only staging is noindex", () => {
+  it("serves production from its root; staging only through the staging gateway, noindex", () => {
     const out = generateCaddyfile(spec);
     expect(block(out, "example.com")).toContain("root * /srv/caelo/output/production/current");
     expect(block(out, "example.com")).not.toContain("X-Robots-Tag");
     const staging = block(out, "staging.example.com");
-    expect(staging).toContain("root * /srv/caelo/output/staging/current");
+    // #1330 — no second path to the staged files: Caddy serves none of them.
+    expect(staging).not.toContain("root *");
+    expect(staging).not.toContain("file_server");
+    expect(staging).not.toContain("output/staging");
     expect(staging).toContain('header X-Robots-Tag "noindex"');
   });
 });

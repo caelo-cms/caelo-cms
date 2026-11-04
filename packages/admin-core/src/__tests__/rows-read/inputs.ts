@@ -160,6 +160,14 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     ctx: "chat",
     input: (r, tag) => ({ id: r.write.instanceId, values: { heading: `Heading (${tag})` } }),
   },
+  // #1269 — international-site refreshes a page's path after every variant
+  // write: the page's subtree and ancestors, not the page tree.
+  {
+    op: "pages.refresh_current_path",
+    ctx: "system",
+    plugins: ["international-site"],
+    input: (r) => ({ pageId: r.pageId }),
+  },
   {
     op: "pages.update",
     ctx: "chat",

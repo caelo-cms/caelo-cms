@@ -42,9 +42,16 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import { CADDY_REDIRECTS_FILE, emitCaddyRedirects, formatRedirectsFile } from "@caelo-cms/shared";
+import {
+  CADDY_REDIRECTS_FILE,
+  emitCaddyRedirects,
+  formatRedirectsFile,
+  isSafeStagedPath,
+  type StagedManifest,
+} from "@caelo-cms/shared";
 import { BUILD_INTERNAL_FILES } from "@caelo-cms/static-generator";
 import { planRedirectSync } from "./redirect-sync-plan.js";
+import { contentTypeFor } from "./static-file-policy.js";
 import type {
   PromoteSummary,
   PublishSummary,
@@ -61,13 +68,20 @@ export const selfHostedStaticPublisher: StaticPublisher = {
    * bind-mount serves from `current/`. So publishing is a no-op —
    * we report what was synced and where for the Ops dashboard.
    */
-  async publishStaging({ buildDir, target }) {
+  async publishStaging({ buildDir, runId, target }) {
     const fileCount = await countFiles(buildDir);
+    // #1330 — the staging gateway serves the build directory itself (its
+    // container mounts the staging target's output directory read-only):
+    // a run's directory is complete and never changes, so pointing staging
+    // at it once it has its manifest is the whole publish.
+    const stagingLocation =
+      target.env === "staging" ? await writeBuildManifest(buildDir, runId, target) : null;
     return {
       provider: "self-hosted",
       uploadedCount: fileCount,
       skippedUnchangedCount: 0,
       location: `${target.outDir}/current/`,
+      ...(stagingLocation ? { stagingLocation } : {}),
     };
   },
 
@@ -313,6 +327,60 @@ function parseJsonOrNull(raw: string): unknown {
 function basename(p: string): string {
   const i = p.lastIndexOf("/");
   return i === -1 ? p : p.slice(i + 1);
+}
+
+/**
+ * #1330 — write the manifest the staging gateway serves `buildDir` by
+ * (`builds/<runId>.manifest.json`, next to the build in the staging
+ * target's output directory) and return the build's location there. The
+ * build's internal files are left out, so the gateway never serves them;
+ * manifests of builds the generator has pruned are deleted.
+ */
+async function writeBuildManifest(
+  buildDir: string,
+  runId: string,
+  target: { readonly pageUrlStyle?: "directory" | "no-extension" | null },
+): Promise<string> {
+  const files = await listFiles(buildDir);
+  for (const name of BUILD_INTERNAL_FILES) files.delete(name);
+  const overrides: Record<string, string> = await readFile(
+    join(buildDir, "_content-types.json"),
+    "utf8",
+  ).then(
+    (t) => JSON.parse(t) as Record<string, string>,
+    (e: NodeJS.ErrnoException) => {
+      if (e.code === "ENOENT") return {};
+      throw e;
+    },
+  );
+  const entries: Record<string, { type: string; hash: string }> = {};
+  for (const path of [...files].sort()) {
+    if (!isSafeStagedPath(path)) {
+      throw new Error(
+        `self-hosted publisher: the build has a file the staging gateway may not serve (${JSON.stringify(path)}). Re-run the build.`,
+      );
+    }
+    // The directory is the run's own and never changes: nothing to diff.
+    entries[path] = { type: overrides[path] ?? contentTypeFor(path), hash: runId };
+  }
+  const location = `builds/${runId}`;
+  const buildsDir = dirname(buildDir);
+  const manifest: StagedManifest = {
+    version: 1,
+    runId,
+    pageUrlStyle: target.pageUrlStyle ?? "directory",
+    files: entries,
+  };
+  const manifestPath = join(buildsDir, `${runId}.manifest.json`);
+  await writeFile(`${manifestPath}.tmp`, JSON.stringify(manifest), "utf8");
+  await rename(`${manifestPath}.tmp`, manifestPath);
+  for (const entry of await readdir(buildsDir)) {
+    const id = entry.endsWith(".manifest.json") ? entry.slice(0, -".manifest.json".length) : null;
+    if (id && id !== runId && !existsSync(join(buildsDir, id))) {
+      await rm(join(buildsDir, entry), { force: true });
+    }
+  }
+  return location;
 }
 
 /** Every file below `dir`, relative and `/`-separated; empty when `dir` is missing. */

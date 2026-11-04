@@ -111,6 +111,27 @@ describe("readDeployedImageDigests", () => {
     if (!r.ok) expect(r.error).toContain("not pinned to a digest");
   });
 
+  it("#1330 — accepts a staging gateway on the gateway's image, refuses one on another", async () => {
+    const answers = (staging: string) => ({
+      ...firebaseLists(),
+      "metadata.name~^caelo-production-staging-gateway": [ok("caelo-production-staging-gateway\n")],
+      "describe caelo-production-admin-abc": [ok(`${REG}/admin@${A}`)],
+      "describe caelo-production-data-gateway": [ok(`${REG}/gateway@${B}`)],
+      "describe caelo-production-gateway-def": [ok(`${REG}/mcp-auth-proxy@${C}`)],
+      "describe caelo-production-staging-gateway": [ok(`${REG}/gateway@${staging}`)],
+    });
+    const same = fakeGcloud(answers(B));
+    expect(await readDeployedImageDigests({ ...FIREBASE, run: same.run })).toEqual({
+      ok: true,
+      digests: { admin: A, gateway: B, "mcp-auth-proxy": C },
+    });
+    expect(same.calls.some((c) => c.includes("caelo-production-staging-gateway"))).toBe(true);
+    const other = fakeGcloud(answers(A));
+    const r = await readDeployedImageDigests({ ...FIREBASE, run: other.run });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("the staging gateway runs");
+  });
+
   it("surfaces a gcloud failure", async () => {
     const { run } = fakeGcloud({ "services list": [fail("PERMISSION_DENIED")] });
     const r = await readDeployedImageDigests({ ...FIREBASE, run });

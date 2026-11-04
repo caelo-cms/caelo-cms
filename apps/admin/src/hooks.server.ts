@@ -43,6 +43,11 @@ import {
   makePluginTextProvider,
   mcpBackPressureResponse,
   registerRedirectSyncRunner,
+  repointStaleGatewayRewriteAtBoot,
+  retireLegacyStagingPreviewsAtBoot,
+  setStagingCaptureAccess,
+  stagingCaptureAccess,
+  stagingServedByGateway,
   startLiveFanOut,
   startQualityAuditWorker,
   startSiteImportWorker,
@@ -474,6 +479,29 @@ let liveFanOutBootstrapped = false;
 function bootstrapRedirectSync(): void {
   const { adapter, registry } = getQueryContext();
   registerRedirectSyncRunner({ adapter, registry });
+  // #1380 — a converge that moved the visitor gateway leaves the live
+  // Firebase release's /api/** rewrite on the old service; the first boot
+  // after it re-releases the served version with the current rewrite (no
+  // build). Every other provider returns at once.
+  void repointStaleGatewayRewriteAtBoot({ adapter, registry }).then(
+    (outcome) => {
+      if (outcome === "repointed") {
+        console.info(
+          "[bootstrap.gateway-rewrite] the live /api/** rewrite now names the current gateway",
+        );
+      }
+    },
+    (e) => console.error("[bootstrap.gateway-rewrite] failed", e),
+  );
+  // #1331 — preview channels an older release staged to are public by URL:
+  // delete them, so the staging gateway stays the only path to staged pages.
+  void retireLegacyStagingPreviewsAtBoot().catch((e) =>
+    console.error("[bootstrap.staging-previews] failed", e),
+  );
+  // #1330 — renders of the protected staging site carry a per-run token.
+  if (stagingServedByGateway(process.env.CAELO_PROVIDER)) {
+    setStagingCaptureAccess(stagingCaptureAccess(adapter));
+  }
 }
 
 // #1140 — dev and test runs have no scheduler: no Cloud Scheduler, no

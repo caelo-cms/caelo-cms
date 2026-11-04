@@ -28,6 +28,7 @@ import { createPlaywrightScreenshotter, type Screenshotter } from "@caelo-cms/si
 import { captureBackend } from "../../capture/capture-backend.js";
 import { createCaptureSlots, IN_PROCESS_CAPTURE_SLOTS } from "../../capture/capture-slot.js";
 import { jobScreenshotter } from "../../capture/job-screenshotter.js";
+import type { StagingCaptureAccess } from "../../capture/staging-access.js";
 
 type ScreenshotterFactory = (opts: {
   allowedHosts: readonly string[];
@@ -91,6 +92,39 @@ export function reuseWrapper(inner: Screenshotter): Screenshotter {
   };
 }
 
+/** #1330 — set at the admin's boot (capture/staging-access.ts); null: no staging renders. */
+let stagingAccess: StagingCaptureAccess | null = null;
+
+/** Register (or with null remove) how renders of the staging site get their token. */
+export function setStagingCaptureAccess(next: StagingCaptureAccess | null): void {
+  stagingAccess = next;
+}
+
+/**
+ * #1330 — an external render of the protected staging site carries a
+ * per-run token for the staging origin only; every other render is passed
+ * through unchanged. Exported for tests.
+ */
+export function withStagingAccess(
+  inner: Screenshotter,
+  access: () => StagingCaptureAccess | null = () => stagingAccess,
+): Screenshotter {
+  const headersFor = async (url: string, external: boolean | undefined) => {
+    const resolve = access();
+    if (!external || !resolve) return {};
+    const originHeaders = await resolve(url);
+    return originHeaders ? { originHeaders } : {};
+  };
+  return {
+    capture: async (url, opts) =>
+      inner.capture(url, { ...opts, ...(await headersFor(url, opts?.external)) }),
+    renderHtml: async (url, opts) =>
+      inner.renderHtml(url, { ...opts, ...(await headersFor(url, opts?.external)) }),
+    query: (html, opts) => inner.query(html, opts),
+    dispose: () => inner.dispose(),
+  };
+}
+
 /** Every render refused with the same message (no browser on this install). */
 function refusingScreenshotter(message: string): Screenshotter {
   const refuse = async (): Promise<never> => {
@@ -113,6 +147,13 @@ function refusingScreenshotter(message: string): Screenshotter {
  * The job-backed screenshotter passes the hosts with every order.
  */
 export async function getExternalScreenshotter(opts: {
+  allowedHosts: readonly string[];
+}): Promise<Screenshotter | null> {
+  const s = await baseScreenshotter(opts);
+  return s ? withStagingAccess(s) : null;
+}
+
+async function baseScreenshotter(opts: {
   allowedHosts: readonly string[];
 }): Promise<Screenshotter | null> {
   // Tests install their own factory + own the lifecycle — never cache it.

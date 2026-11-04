@@ -54,14 +54,12 @@ export interface PublishSummary {
    *  'output/staging/builds/<runId>/' (self-hosted). */
   location: string;
   /**
-   * v0.3.0 — provider-supplied origin of the staged build. Populated by
-   * the Firebase Hosting publisher (the preview channel URL, like
-   * https://<site>--runid-<runId>-<hash>.web.app). #650 — internal only:
-   * the quality audit loads it directly and the gateway proxies
-   * staging.<domain> to it; operators and the AI are shown the staging
-   * host instead. Absent on other publishers.
+   * #1330 — where the staging gateway finds this build complete in staging
+   * storage (`_slots/a` of the staging bucket, `builds/<runId>` of a
+   * self-hosted staging target). Set by publishStaging only; the Stage
+   * records it as served in the transaction that records the run.
    */
-  previewUrl?: string;
+  stagingLocation?: string;
   /**
    * Where the publish spent its time, step by step (hashing, upload,
    * channel …). The Stage records them with its own steps in
@@ -115,7 +113,12 @@ export interface StaticPublisher {
    * The upload is finished by {@link publishStaging} or
    * {@link publishLiveBuild}, or given up with {@link BuildUpload.abort}.
    */
-  openBuildUpload?(args: { runId: string; target: DeployTarget }): Promise<BuildUpload>;
+  openBuildUpload?(args: {
+    runId: string;
+    target: DeployTarget;
+    /** #1330 — see {@link StaticPublisher.publishStaging}'s `servedStagingLocation`. */
+    servedStagingLocation: string | null;
+  }): Promise<BuildUpload>;
 
   /**
    * Publish the build at `buildDir` so the staged version becomes
@@ -128,6 +131,13 @@ export interface StaticPublisher {
     buildDir: string;
     runId: string;
     target: DeployTarget;
+    /**
+     * #1330 — the build location staging serves now
+     * (`staging_access.served_location`). The publisher fills the OTHER
+     * one, so staging keeps serving the previous build until this one is
+     * complete and recorded.
+     */
+    servedStagingLocation: string | null;
     /**
      * #1271 — the upload the generator streamed the build into
      * ({@link openBuildUpload}); `buildDir` then holds only the build's
@@ -155,6 +165,12 @@ export interface StaticPublisher {
   promoteToProduction(args: {
     sourceRunId: string;
     sourceBuildDir: string;
+    /**
+     * The staged run's `publish_summary.location` — where its artefact
+     * lives on publishers that keep it remotely (Firebase: the Hosting
+     * version, finalized and never released before). Null when it recorded none.
+     */
+    sourceLocation: string | null;
     fromTarget: DeployTarget;
     toTarget: DeployTarget;
     /** site_defaults.site_base_url — the absolute base of the
@@ -190,31 +206,6 @@ export interface StaticPublisher {
      *  Hosting version). Null when the run recorded none. */
     sourceLocation: string | null;
   }): Promise<PublishSummary>;
-
-  /**
-   * #650 — put a freshly built tree live as it is (Publish live on a
-   * provider whose staging has its own host: the live build is a rebuild
-   * of the staged content with the live host, checked by the parity guard
-   * first). Implemented by the publishers of providers with a staging
-   * domain (deploy/staging-domain.ts); absent elsewhere.
-   */
-  publishLiveBuild?(args: {
-    buildDir: string;
-    runId: string;
-    target: DeployTarget;
-    /** #1271 — see {@link StaticPublisher.publishStaging}'s `upload`. */
-    upload?: BuildUpload;
-    /** The staged run the build was checked against. */
-    sourceRunId: string;
-    /**
-     * #1225 — called right before the new version goes live (after any
-     * upload that does not change what is served). It throws when the run
-     * no longer holds its place in the publish order; the publisher then
-     * releases nothing. A publisher whose upload IS the release calls it
-     * before the upload.
-     */
-    beforeRelease?: () => Promise<void>;
-  }): Promise<PromoteSummary>;
 
   /**
    * #1157 — put the redirects table live on `target` WITHOUT a build: compute
@@ -267,43 +258,6 @@ export interface StaticPublisher {
      */
     beforeRelease?: () => Promise<void>;
   }): Promise<PromoteSummary>;
-
-  /**
-   * #650 / #908 / #969 — make `servedRunId`'s public preview the one staging
-   * serves, and retire every other one. A preview is created with a short
-   * TTL, so a Stage that fails before it is selected leaves nothing that
-   * outlives it; selection extends the served preview's lifetime as far as
-   * the provider allows (Firebase: a 30-day TTL — a preview channel cannot
-   * be made permanent), and {@link refreshStagingPreview} keeps extending it
-   * so an idle staging does not expire into 404s; a retired preview gets the
-   * short TTL back before it is deleted, so one whose delete fails still
-   * expires soon. `servedRunId: null` retires them all.
-   *
-   * Throws when the served preview cannot be kept alive (including when it
-   * no longer exists) — the caller must not record it as served. Previews
-   * that could not be retired are reported in `notRetired`, not thrown:
-   * the next selection retries them. Absent on publishers whose staging is
-   * not publicly reachable per run.
-   *
-   * `retireUntil` (epoch ms): no preview is retired once that instant has
-   * passed — those are reported in `notRetired`. A Stage passes the end of
-   * the window in which it proved it holds the staging publish slot
-   * (#1211), so it never deletes a preview a later Stage published after
-   * its slot lapsed.
-   */
-  selectStagingPreview?(args: {
-    servedRunId: string | null;
-    retireUntil?: number;
-  }): Promise<StagingPreviewSelection>;
-
-  /**
-   * #969 — extend the served preview's lifetime again without touching any
-   * other preview: the periodic keep-alive between Stages. Throws when the
-   * preview no longer exists (Stage again) or the provider did not extend
-   * it. Present exactly on publishers that implement selectStagingPreview
-   * with a finite served lifetime.
-   */
-  refreshStagingPreview?(args: { servedRunId: string }): Promise<StagingPreviewRefresh>;
 }
 
 /**
@@ -336,32 +290,9 @@ export async function loadStaticPublisher(provider?: string): Promise<StaticPubl
   }
 }
 
-/**
- * #1357 — the status a 410 row of the redirects table answers with on
- * `provider`'s hosting. Caddy (self-hosted) and CloudFront (aws) answer a
- * bare 410; Firebase Hosting and the GCP load balancer can only answer a
- * redirect rule with a 3xx, and Front Door (azure) no bare status at all, so
- * there a gone path answers the 404 every path without a file gets
- * (`buildRedirectPlan`'s `gone` entries; serving a real 410 there is #1018).
- * The redirect tools and Settings → Redirects say so instead of "live".
- */
-export function goneStatusOnProvider(provider?: string): 410 | 404 {
-  switch (provider) {
-    case undefined:
-    case "":
-    case "self-hosted":
-    case "aws":
-      return 410;
-    case "gcp":
-    case "gcp-firebase":
-    case "azure":
-      return 404;
-    default:
-      throw new Error(
-        `goneStatusOnProvider: unknown CAELO_PROVIDER='${provider}'. Expected one of: self-hosted | gcp | gcp-firebase | aws | azure.`,
-      );
-  }
-}
+// #1357 / #1330 — in @caelo-cms/shared now: the staging gateway answers a
+// gone row with the status the live provider would.
+export { goneStatusOnProvider } from "@caelo-cms/shared";
 
 /** One served file the generator hands to an upload. */
 export interface BuildUploadFile {
@@ -389,7 +320,7 @@ export interface RedirectSyncArgs {
   readonly target: DeployTarget;
   /** Every row of the redirects table. */
   readonly rows: readonly RedirectTableRow[];
-  /** The deploy run whose build the target serves (staging: the served preview's run). */
+  /** The deploy run whose build the target serves (staging: the run staging serves). */
   readonly servedRunId: string;
   /** The directory relative `target.outDir` values resolve against (self-hosted). */
   readonly outputRoot: string;
@@ -417,20 +348,4 @@ export interface RedirectSyncResult {
    * that run still finds its build after older versions age out.
    */
   readonly movedServedBuild?: { readonly from: string; readonly to: string };
-}
-
-/** What {@link StaticPublisher.selectStagingPreview} did with the other previews. */
-export interface StagingPreviewSelection {
-  /** Previews deleted (or already gone). */
-  readonly retired: readonly string[];
-  /** Previews that are still there, each with why its retirement failed. */
-  readonly notRetired: readonly { readonly preview: string; readonly error: string }[];
-  /** When the served preview now expires (ISO 8601); null when nothing is served. */
-  readonly servedExpiresAt: string | null;
-}
-
-/** What {@link StaticPublisher.refreshStagingPreview} did. */
-export interface StagingPreviewRefresh {
-  /** When the served preview now expires (ISO 8601). */
-  readonly expiresAt: string;
 }

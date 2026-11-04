@@ -61,6 +61,25 @@ const externalRenderOptsSchema = z
   })
   .strict();
 
+/**
+ * #1330 — a capture of the protected staging site: the per-run token the
+ * job sends ONLY with requests to the staging origin (a
+ * `X-Caelo-Staging-Run` header, never to another host the page embeds and
+ * never across a redirect off the origin). The job holds neither the gate
+ * key nor a crawler credential.
+ */
+const stagingAccessSchema = z
+  .object({
+    origin: z
+      .string()
+      .url()
+      .refine((o) => new URL(o).origin === o && o.startsWith("https://"), "an https origin"),
+    token: z.string().regex(/^run\.capture\.[A-Za-z0-9-]{1,64}\.\d{1,12}\.[A-Za-z0-9_-]{20,64}$/),
+  })
+  .strict();
+
+export type StagingAccess = z.infer<typeof stagingAccessSchema>;
+
 export const captureOpSchema = z.discriminatedUnion("kind", [
   /** Screenshot of a public URL, SSRF-guarded like every external render. */
   z
@@ -69,6 +88,7 @@ export const captureOpSchema = z.discriminatedUnion("kind", [
       url: z.string().url(),
       allowedHosts: allowedHostsSchema,
       opts: externalCaptureOptsSchema,
+      stagingAccess: stagingAccessSchema.optional(),
     })
     .strict(),
   /** Rendered (JS-applied) HTML of a public URL, no pixels. */
@@ -78,6 +98,7 @@ export const captureOpSchema = z.discriminatedUnion("kind", [
       url: z.string().url(),
       allowedHosts: allowedHostsSchema,
       opts: externalRenderOptsSchema,
+      stagingAccess: stagingAccessSchema.optional(),
     })
     .strict(),
   /** A css/xpath selector over an HTML string (input: {@link queryInputSchema}). */

@@ -19,7 +19,6 @@ import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { getQueryContext } from "./query.js";
 import { openStagingHref, stagingOriginForAdmin } from "./staging-link.js";
-import { stagingPreviewPath } from "./staging-preview-path.js";
 
 /**
  * Preview URL of a staged build plus the draft-page count. `previewLabel`
@@ -70,15 +69,6 @@ export async function describeStagedBuild(
     previewLabel = `${stagingOrigin}${path.startsWith("/") ? path : `/${path}`}`;
   } else if (build.previewUrl) {
     previewUrl = build.previewUrl;
-  } else if (process.env.CAELO_PROVIDER === "gcp") {
-    previewUrl = `/_staging-preview/${build.runId}/`;
-    if (pageId) {
-      const pageRow = await execute(registry, adapter, ctx, "pages.get", { pageId });
-      if (pageRow.ok) {
-        const p = (pageRow.value as { page: { currentPath: string } }).page;
-        previewUrl = `/_staging-preview/${build.runId}/${stagingPreviewPath(p.currentPath)}`;
-      }
-    }
   } else {
     previewUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
   }

@@ -20,8 +20,8 @@ function run(overrides: Partial<ClaimedAuditRun> = {}): ClaimedAuditRun {
     deployRunId: RUN_ID,
     performanceRuns: 3,
     pageUrlStyle: "directory",
-    previewUrl: null,
-    siteUrl: null,
+    stagingLocation: null,
+    stagingOrigin: null,
     env: "staging",
     outDir: "output/staging",
     pages: [
@@ -92,11 +92,9 @@ describe("resolveStagingOrigin", () => {
   });
   afterAll(() => server.stop(true));
 
-  it("self-hosted: the staging base URL, once it serves this run", async () => {
+  it("a dev checkout: the staging base URL, once it serves this run", async () => {
     const base = `http://127.0.0.1:${server.port}`;
-    expect(
-      await resolveStagingOrigin(run(), { provider: "self-hosted", stagingBaseUrl: base }),
-    ).toEqual({
+    expect(await resolveStagingOrigin(run(), { provider: "", stagingBaseUrl: base })).toEqual({
       ok: true,
       baseUrl: base,
     });
@@ -115,80 +113,44 @@ describe("resolveStagingOrigin", () => {
     expect(r.message).toContain(RUN_ID);
   });
 
-  it("gcp-firebase: audits the preview channel directly, reported as the staging host (#650)", async () => {
-    const staged = {
-      previewUrl: "https://site--ch.web.app",
-      siteUrl: "https://staging.example.com",
-    };
-    expect(await resolveStagingOrigin(run(staged), { provider: "gcp-firebase" })).toEqual({
-      ok: true,
-      baseUrl: "https://site--ch.web.app",
-      displayBaseUrl: "https://staging.example.com",
-    });
-    const missing = await resolveStagingOrigin(run({ siteUrl: staged.siteUrl }), {
-      provider: "gcp-firebase",
-    });
-    expect(missing.ok).toBe(false);
-    // Without the run's staging host the report could only name the internal origin.
-    const noHost = await resolveStagingOrigin(run({ previewUrl: staged.previewUrl }), {
-      provider: "gcp-firebase",
-    });
-    expect(noHost).toMatchObject({ ok: false, code: "staging-unresolvable" });
-  });
-
-  it("gcp-firebase: reports under the host the run was STAGED for, not a host set later (Codex review on #652)", async () => {
-    // The Owner moved staging to preview.example.com while this audit of a
-    // build rendered for staging.example.com was queued: the report keeps
-    // the run's host. (OriginEnv no longer carries the mutable setting.)
-    const r = await resolveStagingOrigin(
-      run({ previewUrl: "https://site--ch.web.app", siteUrl: "https://staging.example.com" }),
-      { provider: "gcp-firebase" },
-    );
-    expect(r).toMatchObject({ ok: true, displayBaseUrl: "https://staging.example.com" });
-  });
-
-  it("gcp / aws / azure: a loopback origin serving the run's files, closed after use", async () => {
-    for (const provider of ["gcp", "aws", "azure"]) {
-      const r = await resolveStagingOrigin(run(), {
-        provider,
-        siteUrl: "https://example.com",
-        loopbackSource: () => ({
-          read: async (key) =>
-            key === "index.html"
-              ? { bytes: new TextEncoder().encode("<h1>staged</h1>"), contentType: "text/html" }
-              : null,
-        }),
-      });
+  it("gcp / gcp-firebase / aws / azure: a loopback origin serving the run's files, closed after use (#1330: never the gated gateway)", async () => {
+    for (const provider of ["gcp", "gcp-firebase", "self-hosted", "aws", "azure"]) {
+      const r = await resolveStagingOrigin(
+        run({ stagingLocation: "_slots/a", stagingOrigin: "https://staging.example.com" }),
+        {
+          provider,
+          loopbackSource: () => ({
+            read: async (key) =>
+              key === "index.html"
+                ? { bytes: new TextEncoder().encode("<h1>staged</h1>"), contentType: "text/html" }
+                : null,
+          }),
+        },
+      );
       if (!r.ok) throw new Error(r.message);
       expect(r.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(r.displayBaseUrl).toBe("https://staging.example.com");
       expect(await (await fetch(`${r.baseUrl}/`)).text()).toBe("<h1>staged</h1>");
-      expect(r.stagedBuild?.apiOrigin).toBe(provider === "gcp" ? "https://example.com" : undefined);
+      // A parallel Lighthouse task reads the same slot (gcp, gcp-firebase).
+      expect(r.stagedBuild).toEqual(
+        provider === "gcp" || provider === "gcp-firebase"
+          ? { kind: "staging-slot", location: "_slots/a", runId: RUN_ID, baseUrl: r.baseUrl }
+          : undefined,
+      );
       await r.close?.();
     }
   });
 
-  it("gcp without the site URL fails loudly: plugin calls would have no gateway", async () => {
-    const r = await resolveStagingOrigin(run(), {
-      provider: "gcp",
-      loopbackSource: () => ({ read: async () => null }),
-    });
-    expect(r).toMatchObject({ ok: false, code: "staging-unresolvable" });
-    if (!r.ok) expect(r.message).toContain("CAELO_SITE_URL");
-  });
-
-  it("gcp without its bucket env and aws without the build on this instance fail loudly", async () => {
-    const saved = process.env.CAELO_STAGING_BUCKET;
-    delete process.env.CAELO_STAGING_BUCKET;
-    try {
-      expect(
-        await resolveStagingOrigin(run(), { provider: "gcp", siteUrl: "https://example.com" }),
-      ).toMatchObject({
+  it("gcp / gcp-firebase: a run staged before the slots fails loudly", async () => {
+    for (const provider of ["gcp", "gcp-firebase"]) {
+      expect(await resolveStagingOrigin(run(), { provider })).toMatchObject({
         ok: false,
         code: "staging-unresolvable",
       });
-    } finally {
-      if (saved !== undefined) process.env.CAELO_STAGING_BUCKET = saved;
     }
+  });
+
+  it("aws without the build on this instance fails loudly", async () => {
     expect(await resolveStagingOrigin(run(), { provider: "aws" })).toMatchObject({
       ok: false,
       code: "build-unavailable",
@@ -216,8 +178,8 @@ describe("toDisplayUrl (#650)", () => {
   });
 });
 
-describe("processClaimedRun on gcp-firebase (#650)", () => {
-  it("runs Lighthouse against the preview origin but records only the staging host", async () => {
+describe("processClaimedRun on gcp-firebase (#650, #1330)", () => {
+  it("runs Lighthouse against the loopback copy of the slot but records only the staging host", async () => {
     const recorded: unknown[] = [];
     const jobs: unknown[] = [];
     const fetched: string[] = [];
@@ -248,7 +210,10 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
       {
         registry: registry as never,
         adapter: adapter as never,
-        env: { provider: "gcp-firebase" },
+        env: {
+          provider: "gcp-firebase",
+          loopbackSource: () => ({ read: async () => null }),
+        },
         checks: testCheckRegistry(async () => {
           throw new Error("runJob replaces the Lighthouse runner");
         }),
@@ -279,7 +244,7 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
                       score: 0.5,
                       categories: ["performance"],
                       elements: [
-                        { url: "https://site--ch.web.app/_assets/logo.png" },
+                        { url: `${new URL(job.pages[0]!.url).origin}/_assets/logo.png` },
                         { url: "https://cdn.example.net/widget.js" },
                       ],
                     },
@@ -292,22 +257,23 @@ describe("processClaimedRun on gcp-firebase (#650)", () => {
             pageErrors: [
               {
                 pageId: "p2",
-                url: "https://site--ch.web.app/b/",
+                url: `${new URL(job.pages[0]!.url).origin}/b/`,
                 code: "load-failed",
-                message: "could not load https://site--ch.web.app/b/",
+                message: `could not load ${new URL(job.pages[0]!.url).origin}/b/`,
               },
             ],
           };
         },
       },
-      run({ previewUrl: "https://site--ch.web.app", siteUrl: "https://staging.example.com" }),
+      run({ stagingLocation: "_slots/a", stagingOrigin: "https://staging.example.com" }),
     );
-    expect(JSON.stringify(jobs)).toContain("https://site--ch.web.app/");
-    expect(fetched).toEqual(["https://site--ch.web.app/"]);
+    expect(JSON.stringify(jobs)).toMatch(/http:\/\/127\.0\.0\.1:\d+\//);
+    expect(fetched).toHaveLength(1);
+    expect(fetched[0]).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
     const text = JSON.stringify(recorded);
     // The registered page check's finding is reported too.
     expect(text).toContain("test-meta/placeholder-description");
-    expect(text).not.toContain("web.app");
+    expect(text).not.toContain("127.0.0.1");
     expect(text).toContain("https://staging.example.com/");
     expect(text).toContain("https://staging.example.com/_assets/logo.png");
     expect(text).toContain("https://cdn.example.net/widget.js");

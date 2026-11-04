@@ -5,13 +5,17 @@
  *
  * One pure module shared by the two sides of the gate:
  *
- *  - the admin, which issues "Open staging" tokens and shows the Owner the
- *    crawler credentials (basic auth, secret header) it derives here;
- *  - the gateway (gcp-firebase), which verifies every staging request
- *    against the same rules before it proxies to the staged build.
+ *  - the admin, which issues "Open staging" tokens and per-run tokens and
+ *    shows the Owner the crawler credentials (basic auth, secret header) it
+ *    derives here;
+ *  - the staging gateway (#1330), which verifies every request on every host
+ *    against the same rules before it serves the staged build.
  *
  * Every secret is derived from ONE shared key, the `staging-gate-secret`
- * in Secret Manager (`CAELO_STAGING_GATE_SECRET` on admin + gateway):
+ * (Secret Manager on the cloud installs, `CAELO_STAGING_GATE_SECRET` on the
+ * admin). The staging gateway reads it from its own database, where the
+ * admin publishes it (`published_staging_site`, #1331); no gateway holds it
+ * in its env:
  *
  *  - Crawler credentials are `HMAC(key, kind + nonce)`. The database keeps
  *    only the random nonce, so a database read alone reveals no credential,
@@ -25,11 +29,41 @@
  * so the module runs unchanged in Bun, Node and the admin's SvelteKit build.
  */
 
-/** Cookie the gateway sets on `staging.<domain>` after "Open staging". */
-export const STAGING_SESSION_COOKIE = "caelo_staging_access";
+import { readSessionCookie, SESSION_ENTRY } from "./session-cookie.js";
+
+/**
+ * The staging session lives in the `staging` entry of the one `__session`
+ * cookie (session-cookie.ts): the only cookie Firebase Hosting forwards over
+ * the staging site's rewrite (#1325 P0, E13 a), so every provider uses it.
+ */
+export const STAGING_SESSION_ENTRY = SESSION_ENTRY.staging;
+
+/**
+ * #1330 — the request header the admin's own staging clients (the capture
+ * job, the Stage's serve check) send their per-run token in
+ * ({@link signStagingRunToken}). Never a crawler credential, never the key.
+ */
+export const STAGING_RUN_TOKEN_HEADER = "X-Caelo-Staging-Run";
+
+/** What a per-run staging token may be used for. */
+export type StagingRunPurpose = "capture" | "check";
+
+/**
+ * The longest a per-run token may live. The admin mints one per capture or
+ * serve check; the gateway refuses one that claims a longer life, so a token
+ * that leaks from a job's input is worthless soon after.
+ */
+export const STAGING_RUN_TOKEN_MAX_TTL_SECONDS = 15 * 60;
 
 /** Path on the staging host that turns an "Open staging" token into the session cookie. */
 export const STAGING_ACCESS_PATH = "/_caelo/staging-access";
+
+/**
+ * #1330 — path on the staging gateway that answers the admin's serve check:
+ * with a per-run `check` token, the run id whose manifest a staging
+ * location holds (`?location=_slots/a`). Nothing else answers there.
+ */
+export const STAGING_CHECK_PATH = "/_caelo/staging-check";
 
 /** How long an "Open staging" link stays usable. Short: it travels in a URL. */
 export const STAGING_OPEN_TOKEN_TTL_SECONDS = 120;
@@ -40,8 +74,12 @@ export const STAGING_SESSION_TTL_SECONDS = 12 * 60 * 60;
 /** Default name of the secret request header crawlers can send. */
 export const DEFAULT_STAGING_HEADER_NAME = "X-Caelo-Staging-Key";
 
-/** The access modes of the gate. Any one satisfied lets a request in. */
-export type StagingAccessMode = "cookie" | "basic-auth" | "header" | "ip";
+/**
+ * The access modes of the gate. Any one satisfied lets a request in.
+ * `run-token` is the admin's own (capture and serve checks, #1330): always
+ * on, short-lived, minted per run.
+ */
+export type StagingAccessMode = "cookie" | "basic-auth" | "header" | "ip" | "run-token";
 
 /** The gate's settings as stored (`staging_access`, migration 0251). */
 export interface StagingAccessSettings {
@@ -168,6 +206,56 @@ export async function verifyStagingToken(
   return valid && exp > nowSeconds;
 }
 
+/**
+ * #1330 — a per-run token for one of the admin's own staging clients:
+ * `run.<purpose>.<runId>.<expiresAt>.<mac>`. Scoped to its purpose and
+ * stateless like the session token; `runId` names the run that asked, for
+ * the logs. The admin hands it to the capture job or its serve check, which
+ * send it ONLY on requests to the staging origin ({@link STAGING_RUN_TOKEN_HEADER}).
+ *
+ * @throws when `runId` is not a plain id or the lifetime exceeds {@link STAGING_RUN_TOKEN_MAX_TTL_SECONDS}.
+ */
+export async function signStagingRunToken(
+  secret: string,
+  purpose: StagingRunPurpose,
+  runId: string,
+  expiresAtSeconds: number,
+  nowSeconds: number,
+): Promise<string> {
+  if (!/^[A-Za-z0-9-]{1,64}$/.test(runId))
+    throw new Error(`staging run token: bad run id "${runId}"`);
+  const exp = Math.floor(expiresAtSeconds);
+  if (exp - nowSeconds > STAGING_RUN_TOKEN_MAX_TTL_SECONDS) {
+    throw new Error(
+      `staging run token: a lifetime of ${exp - nowSeconds}s exceeds ${STAGING_RUN_TOKEN_MAX_TTL_SECONDS}s`,
+    );
+  }
+  const mac = base64Url(await hmacBytes(secret, `caelo-staging-run:${purpose}:${runId}:${exp}`));
+  return `run.${purpose}.${runId}.${exp}.${mac}`;
+}
+
+/** The purpose and run of a valid, unexpired per-run token, or null. */
+export async function verifyStagingRunToken(
+  secret: string,
+  token: string,
+  nowSeconds: number,
+): Promise<{ readonly purpose: StagingRunPurpose; readonly runId: string } | null> {
+  const parts = token.split(".");
+  if (parts.length !== 5) return null;
+  const [tag, purpose, runId, expRaw, mac] = parts as [string, string, string, string, string];
+  if (tag !== "run" || (purpose !== "capture" && purpose !== "check")) return null;
+  if (!/^[A-Za-z0-9-]{1,64}$/.test(runId) || !/^\d{1,12}$/.test(expRaw)) return null;
+  const exp = Number(expRaw);
+  const expected = base64Url(
+    await hmacBytes(secret, `caelo-staging-run:${purpose}:${runId}:${exp}`),
+  );
+  const valid = constantTimeEqual(mac, expected);
+  if (!valid || exp <= nowSeconds || exp - nowSeconds > STAGING_RUN_TOKEN_MAX_TTL_SECONDS) {
+    return null;
+  }
+  return { purpose, runId };
+}
+
 // ─── IP allowlist ─────────────────────────────────────────────────────
 
 function parseIpv4(s: string): number[] | null {
@@ -273,23 +361,18 @@ export function parseBasicAuthorization(
   return { user: decoded.slice(0, i), password: decoded.slice(i + 1) };
 }
 
-/** The value of cookie `name` in a `Cookie` header, or null. */
-export function readCookie(header: string | null, name: string): string | null {
-  if (!header) return null;
-  for (const part of header.split(/;\s*/)) {
-    const eq = part.indexOf("=");
-    if (eq > 0 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
-  }
-  return null;
-}
-
 /** The request facts the gate looks at. */
 export interface StagingAccessRequest {
   readonly cookieHeader: string | null;
   readonly authorizationHeader: string | null;
   /** Reads a request header by (case-insensitive) name. */
   readonly header: (name: string) => string | null;
-  /** The client address the platform vouches for, or null when unknown. */
+  /**
+   * The client address the platform vouches for, or null when unknown — and
+   * null where no address can be trusted (gcp-firebase: the address behind
+   * the Hosting rewrite is a Google proxy, #1325), which turns the IP
+   * allowlist off.
+   */
   readonly clientIp: string | null;
 }
 
@@ -308,7 +391,9 @@ export async function decideStagingAccess(args: {
   const granted: StagingAccessMode[] = [];
 
   if (settings.cookieEnabled) {
-    const token = readCookie(request.cookieHeader, STAGING_SESSION_COOKIE);
+    const token = readSessionCookie(request.cookieHeader, args.nowSeconds).get(
+      STAGING_SESSION_ENTRY,
+    )?.value;
     if (token && (await verifyStagingToken(secret, token, "session", args.nowSeconds))) {
       granted.push("cookie");
     }
@@ -327,6 +412,11 @@ export async function decideStagingAccess(args: {
   }
   const ip = request.clientIp;
   if (ip && settings.ipAllowlist.some((c) => ipMatchesCidr(ip, c))) granted.push("ip");
+  // Only a capture token opens the site; a check token answers the serve
+  // check (STAGING_CHECK_PATH) and nothing else.
+  const runToken = request.header(STAGING_RUN_TOKEN_HEADER);
+  const run = runToken ? await verifyStagingRunToken(secret, runToken, args.nowSeconds) : null;
+  if (run?.purpose === "capture") granted.push("run-token");
 
   const via = granted[0];
   if (via) return { allowed: true, via, satisfied: granted };
@@ -357,6 +447,17 @@ export function safeStagingNextPath(next: string | null): string {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
+/**
+ * #1325 — whether the staging gate can trust a client address on
+ * `provider`. Behind the gcp-firebase Hosting rewrite the address Cloud Run
+ * vouches for is a Google front-end proxy that changes per request, so an
+ * IP allowlist there would admit nobody or, with a forgeable entry, anybody:
+ * the admin refuses to enable it and the gateway never matches it.
+ */
+export function stagingIpAllowlistSupported(provider: string | undefined): boolean {
+  return provider !== "gcp-firebase";
+}
+
 // ─── the staging host setting ─────────────────────────────────────────
 
 /**
@@ -366,14 +467,6 @@ export function safeStagingNextPath(next: string | null): string {
 export function defaultStagingHost(domain: string): string {
   return `staging.${domain.trim().toLowerCase().replace(/\.$/, "")}`;
 }
-
-/**
- * Longest host a Cloud Run domain mapping accepts — the gcp-firebase
- * gateway is mapped to the staging host, so a longer one would be stored,
- * rendered into every staged build and then never answer.
- * https://cloud.google.com/run/docs/mapping-custom-domains#limitations
- */
-export const CLOUD_RUN_DOMAIN_MAPPING_MAX_HOST_LENGTH = 64;
 
 const FQDN =
   /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -387,9 +480,7 @@ export function normalizeStagingHost(host: string): string {
  * Why `host` cannot be the staging host, or null when it can. It must be a
  * bare fully-qualified domain name (no scheme, port or path) and must not be
  * the live site's host or an admin host — staging would otherwise shadow
- * the site or the admin it is served next to. On gcp-firebase (`provider`)
- * it must also fit a Cloud Run domain mapping
- * ({@link CLOUD_RUN_DOMAIN_MAPPING_MAX_HOST_LENGTH} characters).
+ * the site or the admin it is served next to.
  *
  * @example
  *   stagingHostProblem("preview.example.com", { liveHosts: ["example.com"], adminHosts: ["admin.example.com"] })
@@ -398,14 +489,10 @@ export function normalizeStagingHost(host: string): string {
 export function stagingHostProblem(
   host: string,
   reserved: { readonly liveHosts: readonly string[]; readonly adminHosts: readonly string[] },
-  opts: { readonly provider?: string | undefined } = {},
 ): string | null {
   const h = normalizeStagingHost(host);
   if (!FQDN.test(h)) {
     return `"${host}" is not a valid host name — use a bare domain such as staging.example.com (no https://, port or path)`;
-  }
-  if (opts.provider === "gcp-firebase" && h.length > CLOUD_RUN_DOMAIN_MAPPING_MAX_HOST_LENGTH) {
-    return `"${h}" is ${h.length} characters long; on gcp-firebase the staging host is served through a Cloud Run domain mapping, which accepts at most ${CLOUD_RUN_DOMAIN_MAPPING_MAX_HOST_LENGTH} — pick a shorter host (e.g. stg.<your domain>, or a shorter domain you own)`;
   }
   const norm = (list: readonly string[]) => list.map(normalizeStagingHost).filter(Boolean);
   if (norm(reserved.liveHosts).includes(h)) {

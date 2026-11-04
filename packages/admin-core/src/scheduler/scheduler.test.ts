@@ -48,7 +48,6 @@ describe("coreScheduledTasks", () => {
       "core:rate-limit-gc": 3600,
       "core:change-journal-gc": 3600,
       "core:bug-forwarding-status": 21_600,
-      "core:staging-preview-keepalive": 21_600,
       "core:proposal-gc": 86_400,
       "core:chat-image-gc": 86_400,
     });

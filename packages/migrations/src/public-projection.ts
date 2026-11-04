@@ -113,6 +113,14 @@ export const PUBLIC_TARGETS: readonly PublicTarget[] = ["live", "staging"];
 export interface ProjectionDatabases {
   readAdmin<T>(fn: (tx: ProjectionTx) => Promise<T>): Promise<T>;
   writePublic(target: PublicTarget, fn: (tx: ProjectionTx) => Promise<void>): Promise<void>;
+  /**
+   * #1330 / #1331 — the staging gate's key (`CAELO_STAGING_GATE_SECRET`, the
+   * admin's), published into cms_public_staging only, for the staging
+   * gateway. A process without it (the migration job) passes nothing: the
+   * published key then stays as the last process that had it wrote it, and
+   * is never cleared or read back.
+   */
+  readonly stagingGateSecret?: string | null;
 }
 
 /**
@@ -137,6 +145,7 @@ export type VisitorProjectionDeclarations = ReadonlyMap<string, VisitorProjectio
 export type ProjectionSection =
   | "settings"
   | "staging"
+  | "staging_site"
   | "rate_limits"
   | "plugins"
   | "comments"
@@ -219,6 +228,20 @@ export function liveSiteOrigins(input: {
     ...input.publicHosts.map((h) => originOf(`https://${h}`)),
   ].filter((o): o is string => o !== null && o !== staging);
   return [...new Set(found)].sort();
+}
+
+/**
+ * #1330 — the origins the staging gateway takes plugin posts from: the
+ * staging host only (the published `live_origins` of cms_public_staging).
+ * Empty while no staging host is set, so every post is refused.
+ */
+export function stagingSiteOrigins(stagingHost: string | null | undefined): string[] {
+  if (!stagingHost) return [];
+  try {
+    return [new URL(`https://${stagingHost}`).origin];
+  } catch {
+    return [];
+  }
 }
 
 async function rows(tx: ProjectionTx, query: SQL): Promise<Row[]> {
@@ -618,6 +641,8 @@ type SettingsRows = Record<PublicTarget, Row[]>;
 interface Snapshot {
   settings?: SettingsRows;
   staging?: Row[];
+  /** #1330 — the staging gateway's row: the gate and the served build (staging database only). */
+  stagingSite?: Row[];
   rateLimits?: Row[];
   redirects?: Row[];
   /** Each target's release state to publish, narrowed; absent: not wanted. */
@@ -653,6 +678,11 @@ async function readSettings(tx: ProjectionTx): Promise<SettingsRows> {
     captcha_provider: string;
     captcha_pow_target_prefix: string;
   }[];
+  const stagingHost = (
+    (await rows(tx, sql`SELECT staging_host FROM staging_access WHERE id = 1`))[0] as
+      | { staging_host: string | null }
+      | undefined
+  )?.staging_host;
   const origins = liveSiteOrigins({
     baseUrl: (
       (await rows(tx, sql`SELECT site_base_url FROM site_defaults WHERE id = 1`))[0] as
@@ -664,16 +694,12 @@ async function readSettings(tx: ProjectionTx): Promise<SettingsRows> {
         hostname: string;
       }[]
     ).map((d) => d.hostname),
-    stagingHost: (
-      (await rows(tx, sql`SELECT staging_host FROM staging_access WHERE id = 1`))[0] as
-        | { staging_host: string | null }
-        | undefined
-    )?.staging_host,
+    stagingHost,
   });
   const row = found[0];
   // A secret not set up yet leaves the section unpublished (the gateway
   // answers ProjectionNotPublished), never a shared or empty one.
-  const of = (secret: string | null | undefined): Row[] =>
+  const of = (secret: string | null | undefined, allowed: readonly string[]): Row[] =>
     row && secret
       ? [
           {
@@ -681,13 +707,15 @@ async function readSettings(tx: ProjectionTx): Promise<SettingsRows> {
             max_body_bytes: row.max_body_bytes,
             captcha_provider: row.captcha_provider,
             captcha_pow_target_prefix: row.captcha_pow_target_prefix,
-            live_origins: origins,
+            live_origins: allowed,
           },
         ]
       : [];
   return {
-    live: of(row?.gateway_cookie_secret),
-    staging: of(row?.gateway_staging_cookie_secret),
+    live: of(row?.gateway_cookie_secret, origins),
+    // #1330 — the staging gateway takes plugin posts only from the staging
+    // site's own pages; a live page must never write into staging data.
+    staging: of(row?.gateway_staging_cookie_secret, stagingSiteOrigins(stagingHost)),
   };
 }
 
@@ -706,6 +734,22 @@ async function readSnapshot(
                  basic_auth_nonce, header_enabled, header_name, header_nonce,
                  to_jsonb(ip_allowlist) AS ip_allowlist, origin_url
           FROM staging_access WHERE id = 1`,
+    );
+    // #1330 — the served build is published only once its slot is complete
+    // (`served_location` is set by the Stage that filled it), with the origin
+    // its run rendered (the live site's), which the gateway rewrites.
+    snap.stagingSite = await rows(
+      tx,
+      sql`SELECT s.staging_host, s.cookie_enabled, s.basic_auth_enabled, s.basic_auth_user,
+                 s.basic_auth_nonce, s.header_enabled, s.header_name, s.header_nonce,
+                 to_jsonb(s.ip_allowlist) AS ip_allowlist,
+                 CASE WHEN s.served_location IS NULL THEN NULL ELSE s.origin_run_id::text END
+                   AS served_run_id,
+                 s.served_location,
+                 CASE WHEN s.served_location IS NULL THEN NULL
+                      ELSE substring(r.site_url FROM '^(https?://[^/[:space:]]+)') END AS build_origin
+          FROM staging_access s LEFT JOIN deploy_runs r ON r.id = s.origin_run_id
+          WHERE s.id = 1`,
     );
   }
   if (want.has("rate_limits")) {
@@ -785,10 +829,44 @@ async function writeRelease(tx: ProjectionTx, release: ReleaseState): Promise<Pr
   return ["plugins", ...release.projected.map((id) => `plugin:${id}` as const)];
 }
 
+const STAGING_SITE_COLUMNS =
+  "staging_host, cookie_enabled, basic_auth_enabled, basic_auth_user, basic_auth_nonce, header_enabled, header_name, header_nonce, ip_allowlist, served_run_id, served_location, build_origin";
+const STAGING_SITE_RECORDSET =
+  "staging_host text, cookie_enabled boolean, basic_auth_enabled boolean, basic_auth_user text, basic_auth_nonce text, header_enabled boolean, header_name text, header_nonce text, ip_allowlist jsonb, served_run_id uuid, served_location text, build_origin text";
+
+/**
+ * #1330 — write the staging gateway's row. An upsert, not a replace: a
+ * publisher that does not hold the gate key (the migration job) leaves the
+ * published key as it is instead of clearing it, without reading it back.
+ */
+async function writeStagingSite(
+  tx: ProjectionTx,
+  data: readonly Row[],
+  gateSecret: string | null,
+): Promise<void> {
+  const row = data[0];
+  if (!row) {
+    await tx.execute(sql`DELETE FROM published_staging_site`);
+    return;
+  }
+  const updates = STAGING_SITE_COLUMNS.split(", ")
+    .map((c) => `${c} = EXCLUDED.${c}`)
+    .join(", ");
+  const json = JSON.stringify([{ ...row, gate_secret: gateSecret }]);
+  await tx.execute(sql`
+    INSERT INTO published_staging_site (id, ${sql.raw(STAGING_SITE_COLUMNS)}, gate_secret)
+    SELECT 1, ${sql.raw(STAGING_SITE_COLUMNS)}, gate_secret
+    FROM jsonb_to_recordset((${json}::text)::jsonb) AS x(${sql.raw(STAGING_SITE_RECORDSET)}, gate_secret text)
+    ON CONFLICT (id) DO UPDATE SET ${sql.raw(updates)},
+      gate_secret = COALESCE(EXCLUDED.gate_secret, published_staging_site.gate_secret)
+  `);
+}
+
 async function writeSnapshot(
   tx: ProjectionTx,
   target: PublicTarget,
   snap: Snapshot,
+  gateSecret: string | null,
 ): Promise<{ sections: ProjectionSection[]; comments: number }> {
   const sections: ProjectionSection[] = [];
   const settings = snap.settings?.[target];
@@ -816,6 +894,10 @@ async function writeSnapshot(
       snap.staging,
     );
     sections.push("staging");
+  }
+  if (snap.stagingSite && target === "staging") {
+    await writeStagingSite(tx, snap.stagingSite, gateSecret);
+    sections.push("staging_site");
   }
   if (snap.rateLimits) {
     await replaceAll(
@@ -872,7 +954,7 @@ async function writeAll(
   let comments = 0;
   for (const target of PUBLIC_TARGETS) {
     await dbs.writePublic(target, async (ptx) => {
-      const written = await writeSnapshot(ptx, target, snap);
+      const written = await writeSnapshot(ptx, target, snap, dbs.stagingGateSecret ?? null);
       sections[target] = written.sections;
       comments = Math.max(comments, written.comments);
     });

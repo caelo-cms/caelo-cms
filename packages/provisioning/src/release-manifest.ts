@@ -254,7 +254,7 @@ export function manifestServiceImages(m: Pick<ReleaseManifest, "version" | "dige
   | {
       readonly ok: true;
       readonly images: Readonly<
-        Record<"admin" | "gateway" | "mcp-auth-proxy", ManifestServiceImage>
+        Record<"admin" | "gateway" | "staging-gateway" | "mcp-auth-proxy", ManifestServiceImage>
       >;
     }
   | { readonly ok: false; readonly error: string } {
@@ -274,6 +274,8 @@ export function manifestServiceImages(m: Pick<ReleaseManifest, "version" | "dige
     images: {
       admin: image("admin", m.digests.admin),
       gateway: image("gateway", m.digests.gateway),
+      // #1330 — the staging gateway runs the live gateway's image.
+      "staging-gateway": image("gateway", m.digests.gateway),
       "mcp-auth-proxy": image("mcp-auth-proxy", proxy),
     },
   };

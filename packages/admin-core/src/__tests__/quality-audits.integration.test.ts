@@ -711,7 +711,7 @@ describe("worker drain", () => {
         checks: testCheckRegistry(async () => {
           throw new Error("runJob replaces the Lighthouse runner");
         }),
-        env: { provider: "self-hosted", stagingBaseUrl: `http://127.0.0.1:${port}` },
+        env: { provider: "", stagingBaseUrl: `http://127.0.0.1:${port}` },
         runJob: async (job): Promise<AuditJobResult> => {
           jobs.push(job);
           return {
@@ -781,7 +781,7 @@ describe("worker drain", () => {
       await drainAuditQueue({
         adapter,
         registry,
-        env: { provider: "self-hosted", stagingBaseUrl: `http://127.0.0.1:${server.port}` },
+        env: { provider: "", stagingBaseUrl: `http://127.0.0.1:${server.port}` },
         runJob: createParallelAuditRunner({ launcher, sleep: async () => {} }),
       });
     } finally {
@@ -822,7 +822,7 @@ describe("worker drain", () => {
     await drainAuditQueue({
       adapter,
       registry,
-      env: { provider: "self-hosted", stagingBaseUrl: "http://127.0.0.1:9" },
+      env: { provider: "", stagingBaseUrl: "http://127.0.0.1:9" },
       runJob: async () => {
         throw new Error("must not run");
       },

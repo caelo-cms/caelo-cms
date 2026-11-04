@@ -10,6 +10,7 @@ import {
   RELEASE_SIGNER_IDENTITY_REGEXP,
   releaseTag,
   resolveRegistryDigest,
+  resolveReleaseImages,
 } from "./release-images.js";
 
 const DIGEST = `sha256:${"d".repeat(64)}`;
@@ -136,5 +137,32 @@ describe("cosignInstallHint (#816)", () => {
     expect(linux).toContain("./run.sh upgrade");
     expect(linux).toContain("docs.sigstore.dev");
     expect(cosignInstallHint("darwin")).toContain("brew install cosign");
+  });
+});
+
+describe("resolveReleaseImages (#1330)", () => {
+  it("looks up each release image once and gives the staging gateway the gateway's", async () => {
+    const asked: string[] = [];
+    const r = await resolveReleaseImages("0.12.0", async (image) => {
+      asked.push(image);
+      return { ok: true, digest: `sha256:${image === "gateway" ? "b" : "a"}${"0".repeat(63)}` };
+    });
+    expect(asked).toEqual(["admin", "gateway", "mcp-auth-proxy"]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.images["staging-gateway"]).toEqual(r.images.gateway);
+    expect(r.images["staging-gateway"].imageRef).toContain("/gateway@sha256:");
+  });
+
+  it("names the image whose tag is missing", async () => {
+    const r = await resolveReleaseImages("0.12.0", async (image) =>
+      image === "gateway"
+        ? { ok: false, reason: "404" }
+        : { ok: true, digest: `sha256:${"a".repeat(64)}` },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("gateway:0.12.0");
+    expect(r.error).not.toContain("staging-gateway");
   });
 });

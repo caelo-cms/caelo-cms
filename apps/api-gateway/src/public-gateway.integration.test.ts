@@ -37,7 +37,6 @@ import {
   DatabaseAdapter,
   OperationRegistry,
 } from "@caelo-cms/query-api";
-import { STAGING_SESSION_COOKIE, signStagingToken } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { databaseIsolationProblems } from "./database-env.js";
@@ -698,6 +697,9 @@ describe("the public side cannot rewrite what the admin published (#635, adversa
       sql`DELETE FROM published_plugins`,
       sql`INSERT INTO published_rate_limits VALUES ('x', 'y', 1, 1)`,
       sql`UPDATE published_staging_access SET ip_allowlist = '["0.0.0.0/0"]'`,
+      sql`INSERT INTO published_staging_site (id, cookie_enabled, basic_auth_enabled, basic_auth_user,
+            header_enabled, header_name, ip_allowlist, gate_secret)
+          VALUES (1, true, false, 'x', false, 'X', '[]', 'forged')`,
       sql`DELETE FROM published_projection_sections`,
       sql`DELETE FROM published_comments`,
     ]) {
@@ -897,66 +899,24 @@ describe("captcha challenge minting is rate limited (#845)", () => {
   });
 });
 
-describe("staging.<domain> from the published gate settings (#650, #635)", () => {
-  const STAGING = "https://staging.example.com";
-  const PREVIEW = "https://site--runid-t650-x1.web.app";
-  const SECRET = "t650-gate-secret";
-
-  it("reads the published gate settings + origin and proxies an admitted request", async () => {
-    const saved = {
-      provider: process.env.CAELO_PROVIDER,
-      secret: process.env.CAELO_STAGING_GATE_SECRET,
-    };
-    const realFetch = globalThis.fetch;
-    process.env.CAELO_PROVIDER = "gcp-firebase";
-    // gcp-firebase: the staging domain mapping's front end appends one entry.
-    process.env.CAELO_TRUSTED_PROXY_HOPS = "1";
-    const viaDomainMapping = { "x-forwarded-for": "198.51.100.77" };
-    process.env.CAELO_STAGING_GATE_SECRET = SECRET;
+describe("the live gateway serves no staging host (#1331)", () => {
+  it("answers the staging host like any unknown route, whatever the published gate says", async () => {
     await asAdmin(async (tx) => {
-      await tx`UPDATE staging_access SET origin_url = ${PREVIEW}, cookie_enabled = true,
-                 staging_host = 'staging.example.com' WHERE id = 1`;
+      await tx`UPDATE staging_access SET cookie_enabled = true, staging_host = 'staging.example.com'
+               WHERE id = 1`;
     });
     await publish();
-    const upstream: string[] = [];
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      // Compare the parsed origin exactly: a prefix test would also match
-      // `https://site--runid-t650-x1.web.app.evil.example`.
-      if (new URL(url).origin !== PREVIEW) return realFetch(input, init);
-      upstream.push(url);
-      return new Response("<h1>staged</h1>", { headers: { "content-type": "text/html" } });
-    }) as typeof fetch;
     try {
-      const denied = await handleRequest(
-        new Request(`${STAGING}/about/`, {
-          headers: { host: "staging.example.com", ...viaDomainMapping },
+      const r = await handleRequest(
+        new Request("https://staging.example.com/about/", {
+          headers: { host: "staging.example.com", "x-forwarded-for": "198.51.100.77, 35.191.0.1" },
         }),
       );
-      expect(denied.status).toBe(403);
-      const session = await signStagingToken(SECRET, "session", Math.floor(Date.now() / 1000) + 60);
-      const allowed = await handleRequest(
-        new Request(`${STAGING}/about/`, {
-          headers: {
-            host: "staging.example.com",
-            cookie: `${STAGING_SESSION_COOKIE}=${session}`,
-            ...viaDomainMapping,
-          },
-        }),
-      );
-      await expectStatus(allowed, 200);
-      expect(await allowed.text()).toBe("<h1>staged</h1>");
-      expect(allowed.headers.get("x-robots-tag")).toBe("noindex");
-      expect(upstream).toEqual([`${PREVIEW}/about/`]);
+      expect(r.status).toBe(404);
+      expect(await r.text()).not.toContain("staged");
     } finally {
-      globalThis.fetch = realFetch;
-      process.env.CAELO_TRUSTED_PROXY_HOPS = "2";
-      if (saved.provider === undefined) delete process.env.CAELO_PROVIDER;
-      else process.env.CAELO_PROVIDER = saved.provider;
-      if (saved.secret === undefined) delete process.env.CAELO_STAGING_GATE_SECRET;
-      else process.env.CAELO_STAGING_GATE_SECRET = saved.secret;
       await asAdmin(async (tx) => {
-        await tx`UPDATE staging_access SET origin_url = NULL, staging_host = NULL WHERE id = 1`;
+        await tx`UPDATE staging_access SET staging_host = NULL WHERE id = 1`;
       });
       await publish();
     }

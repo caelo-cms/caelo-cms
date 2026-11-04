@@ -33,12 +33,14 @@ import * as random from "@pulumi/random";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import {
+  firebaseStagingSiteId,
   gatewayServiceAccountId,
   gcpBucketName,
   gcpSecretId,
   MCP_IAP_SERVICE_ACCOUNT_ID,
   mcpAuthProxyServiceAccountId,
   runServiceAccountId,
+  stagingGatewayServiceAccountId,
 } from "../../dist/gcp-names.js";
 import {
   DEFAULT_ADMIN_MAX_INSTANCES,
@@ -65,7 +67,6 @@ import {
   defaultStagingHost,
   fixedCloudRunServiceName,
   gatewayEnvContract,
-  INTERIM_FORWARD_ORIGIN_ENV,
   MCP_AUTH_PROXY_TIMEOUT_SECONDS,
   mcpAuthProxyEnvContract,
   REMOTE_MCP_IDENTITY_CONFIG,
@@ -482,9 +483,24 @@ const mcpAuthProxySa = new gcp.serviceaccount.Account(
   },
   opts,
 );
+// #1330 — the staging gateway's own SA and (below) its secretAccessor on
+// its one login password, plus the telemetry roles. Its service, its read
+// access to the staging bucket and its edge (gcp: NEG, backend, host rule,
+// certificate; gcp-firebase: the second Hosting site) are the CLI's
+// (staging-gateway-setup.ts, after the first `up` and in every converge).
+const stagingGatewaySa = new gcp.serviceaccount.Account(
+  `${namePrefix}-staging-gateway-sa`,
+  {
+    accountId: stagingGatewayServiceAccountId(env),
+    displayName: `Caelo ${env} staging gateway`,
+    createIgnoreAlreadyExists: true,
+  },
+  opts,
+);
 const serviceSa: Record<CloudRunSlug, gcp.serviceaccount.Account> = {
   admin: runSa,
   gateway: gatewaySa,
+  "staging-gateway": stagingGatewaySa,
   "mcp-auth-proxy": mcpAuthProxySa,
 };
 
@@ -494,6 +510,7 @@ const serviceSa: Record<CloudRunSlug, gcp.serviceaccount.Account> = {
 const secretBindings: Record<CloudRunSlug, gcp.secretmanager.SecretIamMember[]> = {
   admin: [],
   gateway: [],
+  "staging-gateway": [],
   "mcp-auth-proxy": [],
 };
 for (const binding of runtimeSecretBindings()) {
@@ -590,6 +607,24 @@ new gcp.projects.IAMMember(
     project,
     role: "roles/monitoring.metricWriter",
     member: pulumi.interpolate`serviceAccount:${gatewaySa.email}`,
+  },
+  opts,
+);
+new gcp.projects.IAMMember(
+  `${namePrefix}-staging-gateway-log-writer`,
+  {
+    project,
+    role: "roles/logging.logWriter",
+    member: pulumi.interpolate`serviceAccount:${stagingGatewaySa.email}`,
+  },
+  opts,
+);
+new gcp.projects.IAMMember(
+  `${namePrefix}-staging-gateway-metric-writer`,
+  {
+    project,
+    role: "roles/monitoring.metricWriter",
+    member: pulumi.interpolate`serviceAccount:${stagingGatewaySa.email}`,
   },
   opts,
 );
@@ -805,12 +840,10 @@ const gatewaySvc = cloudRunService({
   memory: "512Mi",
   // Firebase Hosting cuts a rewritten request at 60 s anyway.
   timeout: "300s",
-  // #650 — all traffic: `cms-provision staging-domain enable` maps the
-  // staging host onto the data gateway (Cloud Run refuses domain-mapped
-  // requests under an internal-only ingress), and it is invokable by
-  // allUsers anyway (data-gateway-public-invoker below): every /api request
-  // passes its rate limits, captcha and honeypot; staging requests pass the
-  // staging access gate.
+  // All traffic: the Firebase rewrite arrives from Google's edge, and it is
+  // invokable by allUsers anyway (data-gateway-public-invoker below): every
+  // /api request passes its rate limits, captcha and honeypot. Staging has a
+  // gateway of its own since #1330 (staging-gateway-setup.ts).
   ingress: "INGRESS_TRAFFIC_ALL",
   contractEnv: [...gatewayEnvContract(envContractInputs), ...poolBudget.env.gateway],
 });
@@ -832,15 +865,11 @@ const mcpAuthProxySvc = cloudRunService({
   // MCP clients call its run.app URL, never the Firebase rewrite (which
   // buffers streams and cuts at 60 s).
   timeout: `${MCP_AUTH_PROXY_TIMEOUT_SECONDS}s`,
-  // Public: MCP clients reach it directly; until #1331 the staging host's
-  // domain mapping (#650) still points at this service too, and the proxy
-  // forwards that traffic to the data gateway (INTERIM_FORWARD_ORIGIN_ENV).
+  // Public: MCP clients reach it directly.
   ingress: "INGRESS_TRAFFIC_ALL",
   contractEnv: [
     ...mcpAuthProxyEnvContract({ provider: "gcp-firebase", env }),
     ...remoteMcpEnv["mcp-auth-proxy"],
-    // FIXME(issue #1331): goes with the staging cutover.
-    { name: INTERIM_FORWARD_ORIGIN_ENV, value: gatewaySvc.uri },
   ],
 });
 
@@ -861,6 +890,9 @@ const adminSvc = cloudRunService({
     ...adminEnvContract({
       ...envContractInputs,
       firebaseSiteId,
+      firebaseStagingSiteId: pulumi
+        .output(firebaseSiteId)
+        .apply((id) => firebaseStagingSiteId(env, id)),
       gatewayService: gatewaySvc.name,
     }),
     ...remoteMcpEnv.admin,

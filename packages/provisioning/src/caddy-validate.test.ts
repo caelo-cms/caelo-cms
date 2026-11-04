@@ -64,7 +64,7 @@ const base: CaddyfileSpec = {
   ownerEmail: "owner@example.com",
   tls: "acme",
   publicSiteRoot: "/srv/caelo/output/production/current",
-  stagingSiteRoot: "/srv/caelo/output/staging/current",
+  stagingGatewayUpstream: "caelo-staging-gateway:8091",
   adminUpstream: COMPOSE_ADMIN_UPSTREAM,
   gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
   mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,

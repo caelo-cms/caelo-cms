@@ -28,6 +28,8 @@ const base: Omit<ComposeSpec, "images"> = {
   caeloSecretKek: "0".repeat(64),
   dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
   internalSecret: "i".repeat(48),
+  stagingHost: "staging.example.com",
+  stagingGateSecret: "g".repeat(64),
   anthropicApiKey: "sk-ant-x",
   diskSize: "20Gi",
   ports: { http: 80, https: 443 },

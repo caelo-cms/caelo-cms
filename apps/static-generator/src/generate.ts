@@ -115,7 +115,6 @@ import {
   followUpCollisionError,
   type TruncatedListReport,
 } from "./pagination-pass.js";
-import { hostNormaliser, ParityRecorder } from "./parity-digest.js";
 import { BakeStore, type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { rewritePreviewFontUrls } from "./preview-font-urls.js";
 import { redirectFiles } from "./redirects-pass.js";
@@ -512,20 +511,10 @@ export async function generateSite(args: {
   /** Epic #1107 — list types changed since the last build (incremental). */
   changedListTypeIds?: ReadonlyArray<string>;
   /**
-   * #650 — the origin this build renders into every absolute URL
-   * (canonical, sitemap, og:url, hreflang, robots `Sitemap:`) instead of
-   * `site_defaults.site_base_url`. A staging build on a provider with its
-   * own staging host (`https://staging.<domain>`) passes that host; Publish
-   * live rebuilds the same content without it. Omitted = the stored site URL.
-   */
-  siteBaseUrlOverride?: string;
-  /**
    * Mirror the finished build into `<outDir>/current/` (the directory the
-   * self-hosted serving layer serves). Default true. #650 — Publish live's
-   * rebuild passes false: the build must pass the parity guard before
-   * anything serves it, and the publisher puts it live afterwards. #1003 —
-   * cloud publishers pass false too: they upload the build directory and
-   * nothing reads `current/`.
+   * self-hosted serving layer serves). Default true. #1003 — cloud
+   * publishers pass false: they upload the build directory and nothing
+   * reads `current/`.
    */
   syncCurrent?: boolean;
   /**
@@ -581,10 +570,7 @@ async function buildSite(
 
   // #551 — read first: a missing site base URL or site language fails the
   // run before any file is written, not halfway through the page passes.
-  const storedSeo = requireSiteLanguage(await readSeoSettings(tx));
-  const seoSettings = args.siteBaseUrlOverride
-    ? { ...storedSeo, siteBaseUrl: args.siteBaseUrlOverride }
-    : storedSeo;
+  const seoSettings = requireSiteLanguage(await readSeoSettings(tx));
 
   await mkdir(buildDir, { recursive: true });
 
@@ -924,14 +910,6 @@ async function buildSite(
   });
   fileCount += fontAssets.length;
   const shippedFonts = new Set(themeFontFiles.map((f) => f.relPath));
-  // #650 — the parity digests, taken from each file's bytes as it is
-  // written; a Stage with its own staging host also records them with that
-  // host swapped back to the live one (parity-digest.ts).
-  const parity = new ParityRecorder(
-    args.siteBaseUrlOverride
-      ? hostNormaliser(args.siteBaseUrlOverride, storedSeo.siteBaseUrl)
-      : null,
-  );
   // Every served path the build wrote (the redirect plan checks against them).
   const servedPaths = new Set<string>();
   const writeBuildFile = async (
@@ -940,7 +918,6 @@ async function buildSite(
     contentType?: string,
   ): Promise<void> => {
     await output.write({ relPath, content, ...(contentType ? { contentType } : {}) });
-    parity.record(relPath, content);
     servedPaths.add(relPath);
   };
 
@@ -1415,14 +1392,12 @@ async function buildSite(
   }
 
   // #1271 — the build's description, kept in the build directory on every
-  // provider: what the publisher delivers from the stores, and the parity
-  // digests of every served file (each digested as it was written).
+  // provider: what the publisher delivers from the stores.
   await writeFile(
     join(buildDir, ASSET_REFERENCES_FILE),
     serializeAssetReferences({ version: 1, mediaRoot, fontsCacheDir, assets }),
     "utf8",
   );
-  await parity.finish({ buildDir, assets });
   timer.lap("manifests");
   // Atomic-ish swap. `current/` is a regular directory (not a symlink)
   // because Docker Desktop / VirtioFS bind mounts on macOS don't follow

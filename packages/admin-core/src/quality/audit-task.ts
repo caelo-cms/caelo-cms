@@ -31,7 +31,7 @@ import {
 import { LighthouseRunError, type RunMeasurement } from "./lighthouse-extract.js";
 import { startLighthouseSession } from "./lighthouse-session.js";
 import { QUALITY_CATEGORIES } from "./ratchet.js";
-import { gcsStagingSource, serveStagedBuild } from "./staged-origin.js";
+import { serveStagedBuild, stagingSlotSource } from "./staged-origin.js";
 
 function trimTrailingSlash(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
@@ -55,9 +55,9 @@ async function measure(order: AuditTaskOrder): Promise<AuditTaskResult> {
   let close: (() => Promise<void>) | undefined;
   let taskBase: string | null = null;
   if (order.stagedBuild) {
-    const origin = await serveStagedBuild(gcsStagingSource(order.stagedBuild.runId), {
-      apiOrigin: order.stagedBuild.apiOrigin,
-    });
+    const origin = await serveStagedBuild(
+      stagingSlotSource(order.stagedBuild.location, order.stagedBuild.runId),
+    );
     close = origin.close;
     taskBase = origin.baseUrl;
     const base = trimTrailingSlash(order.stagedBuild.baseUrl);

@@ -17,7 +17,6 @@
  * | login rate-limit GC          | hourly      |
  * | change journal GC            | hourly      |
  * | bug forwarding (status)      | 6 hours     |
- * | staging-preview keep-alive   | 6 hours     |
  * | proposal + staging-bucket GC | daily       |
  * | chat-image GC                | daily       |
  *
@@ -48,7 +47,6 @@ import type { PublicProjectionPublisher } from "../public-projection.js";
 import { sweepExpiredRateLimitBuckets } from "../rate-limit-gc-worker.js";
 import { retryRedirectSync } from "../redirect-sync-worker.js";
 import { type ReleaseCheckOpts, runReleaseCheck } from "../release-check-worker.js";
-import { refreshStagingPreview } from "../staging-preview-keepalive-worker.js";
 import { DEFAULT_TASK_LEASE_SECONDS, type ScheduledTask } from "./task.js";
 
 const MINUTE = 60;
@@ -176,10 +174,6 @@ export function coreScheduledTasks(deps: CoreTaskDeps): ScheduledTask[] {
     task("bug-forwarding-status", BUG_STATUS_REFRESH_SECONDS, async () => {
       const refreshed = await refreshClusterStatus(bug);
       return refreshed > 0 ? `${refreshed} cluster(s) refreshed` : undefined;
-    }),
-    task("staging-preview-keepalive", 6 * HOUR, async () => {
-      await refreshStagingPreview({ adapter, registry });
-      return undefined;
     }),
     task("proposal-gc", 24 * HOUR, async () => {
       const r = await sweepStaleProposals({ adapter });
