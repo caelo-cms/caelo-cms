@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describeError, providerHasStagingDomain } from "@caelo-cms/admin-core";
+import { describeError, stagingServedByGateway } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { openStagingHref, stagingOriginForAdmin } from "#lib/server/staging-link.js";
-import { stagingPreviewPath } from "#lib/server/staging-preview-path.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -142,7 +141,7 @@ export const actions: Actions = {
 
     let previewUrl: string;
     let previewLabel: string | null = null;
-    if (providerHasStagingDomain(process.env.CAELO_PROVIDER)) {
+    if (stagingServedByGateway(process.env.CAELO_PROVIDER)) {
       // #650 — staging.<domain> through "Open staging"; the provider's
       // preview origin is never shown.
       const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
@@ -153,16 +152,6 @@ export const actions: Actions = {
       previewLabel = `${await stagingOriginForAdmin(locals.ctx)}${path}`;
     } else if (summary.previewUrl) {
       previewUrl = summary.previewUrl;
-    } else if (process.env.CAELO_PROVIDER === "gcp") {
-      // v0.2.84 — see apps/admin/src/lib/server/staging-preview-path.ts
-      // (mirrors static-generator's pageOutputPath).
-      const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
-      if (pageRow.ok) {
-        const p = (pageRow.value as { page: { currentPath: string } }).page;
-        previewUrl = `/_staging-preview/${summary.runId}/${stagingPreviewPath(p.currentPath)}`;
-      } else {
-        previewUrl = `/_staging-preview/${summary.runId}/`;
-      }
     } else {
       const stagingBaseUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
       previewUrl = `${stagingBaseUrl}`;

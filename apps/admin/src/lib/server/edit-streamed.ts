@@ -20,7 +20,7 @@
  * A load then holds at most three pooled connections, not ten.
  */
 
-import { providerHasStagingDomain } from "@caelo-cms/admin-core";
+import { stagingServedByGateway } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import type { ChatModule } from "#lib/components/chat/types.js";
@@ -233,7 +233,7 @@ async function loadDeployState(ctx: ExecutionContext): Promise<DeployState> {
     limit: 20,
     buildKind: "site",
   });
-  return deployStateFromRuns(runs, providerHasStagingDomain(process.env.CAELO_PROVIDER));
+  return deployStateFromRuns(runs, stagingServedByGateway(process.env.CAELO_PROVIDER));
 }
 
 /**

@@ -44,6 +44,10 @@ import {
   mcpBackPressureResponse,
   registerRedirectSyncRunner,
   repointStaleGatewayRewriteAtBoot,
+  retireLegacyStagingPreviewsAtBoot,
+  setStagingCaptureAccess,
+  stagingCaptureAccess,
+  stagingServedByGateway,
   startLiveFanOut,
   startQualityAuditWorker,
   startSiteImportWorker,
@@ -502,6 +506,15 @@ function bootstrapRedirectSync(): void {
     },
     (e) => console.error("[bootstrap.gateway-rewrite] failed", e),
   );
+  // #1331 — preview channels an older release staged to are public by URL:
+  // delete them, so the staging gateway stays the only path to staged pages.
+  void retireLegacyStagingPreviewsAtBoot().catch((e) =>
+    console.error("[bootstrap.staging-previews] failed", e),
+  );
+  // #1330 — renders of the protected staging site carry a per-run token.
+  if (stagingServedByGateway(process.env.CAELO_PROVIDER)) {
+    setStagingCaptureAccess(stagingCaptureAccess(adapter));
+  }
 }
 
 // #1140 — dev and test runs have no scheduler: no Cloud Scheduler, no
