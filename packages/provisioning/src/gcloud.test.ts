@@ -198,6 +198,7 @@ describe("isGcloudNotFound — one list of every service's wording", () => {
     "ERROR: (gcloud.compute.backend-services.describe) The resource 'projects/p/global/backendServices/b' was not found",
     "ERROR: (gcloud.iam.service-accounts.describe) NOT_FOUND: Unknown service account.",
     "HTTPError 404: Not Found",
+    'ERROR: {"error": {"code": 404, "message": "Requested entity was not found."}}',
     "ERROR: (gcloud.run.jobs.executions.describe) Execution [e] could not be found.",
   ])("reads %p as missing", (stderr) => {
     expect(isGcloudNotFound(stderr)).toBe(true);
@@ -207,6 +208,7 @@ describe("isGcloudNotFound — one list of every service's wording", () => {
     "ERROR: (gcloud.iam.service-accounts.describe) PERMISSION_DENIED",
     "ERROR: (gcloud.run.services.describe) There was a problem refreshing your current auth tokens",
     "ERROR: project 4041234 quota exceeded",
+    "ERROR: (gcloud.run.services.describe) PERMISSION_DENIED: on projects/caelo-404-prod/locations/europe-west1",
   ])("does not read %p as missing", (stderr) => {
     expect(isGcloudNotFound(stderr)).toBe(false);
   });
