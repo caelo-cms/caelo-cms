@@ -73,15 +73,51 @@ export function pageSearchGroups(sources: PageSearchSources, query: string): Pag
   ];
 }
 
-/** The editor's page search on the server, in the chat's view (`/api/pages/search`). */
+/** One answer of the server's page search; `nextCursor` continues it. */
+export interface SearchAnswer {
+  readonly pages: SearchablePage[];
+  readonly nextCursor: string | null;
+}
+
+/** One call of the editor's page search on the server, in the chat's view (`/api/pages/search`). */
 export async function searchPages(
   query: string,
   branchId: string,
   signal: AbortSignal,
-  fetcher: typeof fetch = fetch,
-): Promise<{ pages: SearchablePage[]; more: boolean }> {
-  const url = `/api/pages/search?${new URLSearchParams({ q: query, branch: branchId })}`;
-  const res = await fetcher(url, { signal });
-  if (!res.ok) throw new Error(`The page search failed (${res.status}).`);
-  return (await res.json()) as { pages: SearchablePage[]; more: boolean };
+  opts: { readonly cursor?: string | null; readonly fetcher?: typeof fetch } = {},
+): Promise<SearchAnswer> {
+  const params = new URLSearchParams({ q: query, branch: branchId });
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  const res = await (opts.fetcher ?? fetch)(`/api/pages/search?${params}`, { signal });
+  if (!res.ok) {
+    // The route answers with SvelteKit's `{ message }` naming the reason.
+    let reason = "";
+    try {
+      const body = (await res.json()) as { message?: unknown };
+      if (typeof body.message === "string") reason = `: ${body.message}`;
+    } catch {
+      // Not JSON (a proxy's error page): the status says what there is.
+    }
+    throw new Error(`The page search failed (${res.status})${reason}.`);
+  }
+  return (await res.json()) as SearchAnswer;
+}
+
+/**
+ * The search, continued while a call found nothing but has more to look
+ * at: one call stops at its candidate cap (`pages.search`), so an empty
+ * answer with a cursor does not mean that no page matches. Each call is
+ * bounded; `signal` stops the walk when the operator types on.
+ */
+export async function searchPagesUntilFound(
+  query: string,
+  branchId: string,
+  signal: AbortSignal,
+  opts: { readonly cursor?: string | null; readonly fetcher?: typeof fetch } = {},
+): Promise<SearchAnswer> {
+  let answer = await searchPages(query, branchId, signal, opts);
+  while (answer.pages.length === 0 && answer.nextCursor !== null) {
+    answer = await searchPages(query, branchId, signal, { ...opts, cursor: answer.nextCursor });
+  }
+  return answer;
 }

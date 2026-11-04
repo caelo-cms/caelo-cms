@@ -119,7 +119,7 @@ describe("previewMessage (#946 — opaque-origin preview)", () => {
 
 describe("caelo:page-paths-query (#1269)", () => {
   it("accepts the link editor's question for link targets, and only a bounded one", () => {
-    const ask = { kind: "caelo:page-paths-query", query: "pricing pla" };
+    const ask = { kind: "caelo:page-paths-query" as const, query: "pricing pla" };
     expect(previewMessage(fromPreview(ask), preview, CHANNEL)).toEqual(ask);
     for (const query of ["", "x".repeat(201)]) {
       expect(

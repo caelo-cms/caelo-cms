@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { type PageSearchSources, pageSearchGroups, searchPages } from "./page-search.js";
+import {
+  type PageSearchSources,
+  pageSearchGroups,
+  searchPages,
+  searchPagesUntilFound,
+} from "./page-search.js";
 
 const page = (id: string, title: string, currentPath: string) => ({
   id,
@@ -50,19 +55,53 @@ describe("pageSearchGroups", () => {
   });
 });
 
+const signal = () => new AbortController().signal;
+
 describe("searchPages", () => {
-  it("asks the search route in the chat's view and refuses a failed answer", async () => {
-    let asked = "";
-    const ok = (async (url: string) => {
-      asked = url;
-      return new Response(JSON.stringify({ pages: [about], more: false }));
+  it("asks the search route in the chat's view, with the cursor when continuing", async () => {
+    const asked: string[] = [];
+    const fetcher = (async (url: string) => {
+      asked.push(url);
+      return new Response(JSON.stringify({ pages: [about], nextCursor: null }));
     }) as unknown as typeof fetch;
-    const r = await searchPages("about us", "b-1", new AbortController().signal, ok);
-    expect(asked).toBe("/api/pages/search?q=about+us&branch=b-1");
-    expect(r.pages).toEqual([about]);
-    const failed = (async () => new Response("no", { status: 500 })) as unknown as typeof fetch;
-    await expect(searchPages("x", "b-1", new AbortController().signal, failed)).rejects.toThrow(
-      "500",
+    const r = await searchPages("about us", "b-1", signal(), { fetcher });
+    await searchPages("about us", "b-1", signal(), { fetcher, cursor: "c1" });
+    expect(asked).toEqual([
+      "/api/pages/search?q=about+us&branch=b-1",
+      "/api/pages/search?q=about+us&branch=b-1&cursor=c1",
+    ]);
+    expect(r).toEqual({ pages: [about], nextCursor: null });
+  });
+
+  it("refuses a failed answer with the route's reason, or the status alone", async () => {
+    const withReason = (async () =>
+      new Response(JSON.stringify({ message: "Branch not found" }), {
+        status: 404,
+      })) as unknown as typeof fetch;
+    await expect(searchPages("x", "b-1", signal(), { fetcher: withReason })).rejects.toThrow(
+      "The page search failed (404): Branch not found.",
     );
+    const bare = (async () => new Response("<html>", { status: 502 })) as unknown as typeof fetch;
+    await expect(searchPages("x", "b-1", signal(), { fetcher: bare })).rejects.toThrow(
+      "The page search failed (502).",
+    );
+  });
+});
+
+describe("searchPagesUntilFound", () => {
+  it("continues past calls that stopped at their cap with nothing found", async () => {
+    const answers = [
+      { pages: [], nextCursor: "c1" },
+      { pages: [], nextCursor: "c2" },
+      { pages: [pricing], nextCursor: "c3" },
+    ];
+    const asked: string[] = [];
+    const fetcher = (async (url: string) => {
+      asked.push(new URL(url, "http://x").searchParams.get("cursor") ?? "-");
+      return new Response(JSON.stringify(answers.shift()));
+    }) as unknown as typeof fetch;
+    const r = await searchPagesUntilFound("pla", "b-1", signal(), { fetcher });
+    expect(asked).toEqual(["-", "c1", "c2"]);
+    expect(r).toEqual({ pages: [pricing], nextCursor: "c3" });
   });
 });

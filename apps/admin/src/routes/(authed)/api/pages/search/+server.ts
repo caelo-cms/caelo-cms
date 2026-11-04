@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #1269 — the editor's page search: `GET /api/pages/search?q=<words>&branch=<chatBranchId>`
+ * #1269 — the editor's page search:
+ * `GET /api/pages/search?q=<words>&branch=<chatBranchId>[&cursor=<nextCursor>]`
  * answers `pages.search` in the chat's view, so the address bar's search
  * and the preview's link-target suggestions read the pages they find
  * instead of the editor loading every page of the site. The Query API
- * refuses a branch the caller may not see.
+ * refuses a branch the caller may not see. `nextCursor` continues: a call
+ * may stop at its candidate cap with few or no pages and more to come.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -30,16 +32,23 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export const GET: RequestHandler = async ({ locals, url }) => {
   requirePermission(locals, "content.read");
   const query = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
-  if (query === "") return json({ pages: [], more: false });
+  if (query === "") return json({ pages: [], nextCursor: null });
   const branch = url.searchParams.get("branch");
   if (branch !== null && !UUID_RE.test(branch)) error(400, "branch must be a chat branch id");
   const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit") ?? "30") || 30));
+  const cursor = url.searchParams.get("cursor");
   const ctx: ExecutionContext = branch ? { ...locals.ctx, chatBranchId: branch } : locals.ctx;
   const { adapter, registry } = getQueryContext();
-  const r = await execute(registry, adapter, ctx, "pages.search", { query, limit });
+  const r = await execute(registry, adapter, ctx, "pages.search", {
+    query,
+    limit,
+    ...(cursor ? { cursor } : {}),
+  });
   if (!r.ok) {
     // A branch the caller may not see answers like one that does not exist.
     if (r.error.kind === "BranchNotFound") error(404, "Branch not found");
+    // A cursor of another query, or not one the search issued.
+    if (r.error.kind === "HandlerError") error(400, opErrorMessage(r.error, "Bad search"));
     error(500, opErrorMessage(r.error, "The page search failed"));
   }
   const v = r.value as { pages: SearchedPage[]; nextCursor: string | null };
@@ -51,6 +60,6 @@ export const GET: RequestHandler = async ({ locals, url }) => {
       status: p.status,
       currentPath: p.currentPath,
     })),
-    more: v.nextCursor !== null,
+    nextCursor: v.nextCursor,
   });
 };

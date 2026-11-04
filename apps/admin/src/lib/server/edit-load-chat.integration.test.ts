@@ -190,6 +190,38 @@ describe("#1201 — /edit opens a usable chat for the page", () => {
     for (const key of STREAMED) await data[key];
   });
 
+  it("pages past the first page the chat deleted when it looks for one to open (#1269)", async () => {
+    const me = await editor("deleted-first");
+    // No home page in this file; the site's oldest page is deleted in the chat.
+    const first = await op<{ pages: { id: string }[] }>(SYSTEM, "pages.list", { limit: 1 });
+    const oldest = first.pages[0]?.id ?? (await seedPage("deleted-first-a"));
+    await seedPage("deleted-first-b");
+    const chat = await op<{ chatSessionId: string; chatBranchId: string }>(
+      me,
+      "chat.create_session",
+      { title: `${PFX}deleted-first` },
+    );
+    const inChat: ExecutionContext = {
+      ...me,
+      chatBranchId: chat.chatBranchId,
+      chatTaskId: chat.chatSessionId,
+    };
+    await op(inChat, "pages.delete", { pageId: oldest });
+    const event = {
+      locals: { user: { permissions: new Set(["content.write", "content.read"]) }, ctx: me },
+      url: new URL(`http://admin.test/edit?chat=${chat.chatSessionId}`),
+      setHeaders: () => {},
+    } as unknown as Parameters<typeof load>[0];
+    const data = (await load(event)) as Record<string, unknown> & {
+      activeChat: { id: string };
+      activePage: { id: string } | null;
+    };
+    expect(data.activeChat.id).toBe(chat.chatSessionId);
+    expect(data.activePage).not.toBeNull();
+    expect(data.activePage?.id).not.toBe(oldest);
+    for (const key of STREAMED) await data[key];
+  });
+
   it("resumes the operator's open chat on the page", async () => {
     const me = await editor("open");
     const pageId = await seedPage("open");

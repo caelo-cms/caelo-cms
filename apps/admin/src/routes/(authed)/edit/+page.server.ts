@@ -149,13 +149,31 @@ async function resolveActivePage(
     {},
   );
   const rootPageId = defaults.defaults === null ? null : defaults.defaults.rootPageId;
-  const fallback = await readOrFail<{ pages: EditPage[] }>(
-    ctx,
-    "pages.list",
-    rootPageId ? { pageIds: [rootPageId] } : { limit: 1 },
-  );
-  return { page: fallback.pages.map(toEditPage)[0] ?? null, candidates };
+  if (rootPageId) {
+    const root = await readOrFail<{ pages: EditPage[] }>(ctx, "pages.list", {
+      pageIds: [rootPageId],
+    });
+    const page = root.pages.map(toEditPage)[0];
+    if (page) return { page, candidates };
+  }
+  // `pages.list` applies its limit before the chat's pending deletes, so a
+  // page can come back empty with more to follow: page on until one shows.
+  let cursor: string | null = null;
+  do {
+    const next: { pages: EditPage[]; nextCursor: string | null } = await readOrFail(
+      ctx,
+      "pages.list",
+      { limit: FIRST_PAGE_BATCH, ...(cursor ? { cursor } : {}) },
+    );
+    const page = next.pages.map(toEditPage)[0];
+    if (page) return { page, candidates };
+    cursor = next.nextCursor;
+  } while (cursor !== null);
+  return { page: null, candidates };
 }
+
+/** Pages read per step when the editor looks for the site's first page. */
+const FIRST_PAGE_BATCH = 10;
 
 /**
  * #1268 — first paint awaits only what it shows: the page, the chat and the

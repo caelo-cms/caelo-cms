@@ -30,7 +30,7 @@
   import PluginApprovalStrip from "#lib/components/PluginApprovalStrip.svelte";
   import DiffPanel from "#lib/components/edit/DiffPanel.svelte";
   import PageSearch from "#lib/components/edit/PageSearch.svelte";
-  import { searchPages } from "#lib/components/edit/page-search.js";
+  import { searchPagesUntilFound } from "#lib/components/edit/page-search.js";
   import PageSeoInfo from "#lib/components/edit/PageSeoInfo.svelte";
   import PluginPreview from "#lib/components/edit/PluginPreview.svelte";
   import PluginToolbarSlots from "#lib/components/edit/PluginToolbarSlots.svelte";
@@ -476,7 +476,8 @@
     const controller = new AbortController();
     pagePathsQuery = controller;
     try {
-      const r = await searchPages(query, data.activeChat.chatBranchId, controller.signal);
+      // Continued past a call that found nothing yet (its candidate cap).
+      const r = await searchPagesUntilFound(query, data.activeChat.chatBranchId, controller.signal);
       linkSuggestionsError = null;
       postToPreview(iframe?.contentWindow, {
         kind: "caelo:page-paths",

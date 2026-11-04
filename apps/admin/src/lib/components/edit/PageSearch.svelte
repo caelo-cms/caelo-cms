@@ -17,7 +17,7 @@
   import { tick } from "svelte";
   import { Search } from "lucide-svelte";
   import { cn } from "#lib/utils.js";
-  import { pageSearchGroups, type SearchablePage, searchPages } from "./page-search.js";
+  import { pageSearchGroups, type SearchablePage, searchPagesUntilFound } from "./page-search.js";
 
   /** How long typing rests before the search asks the server. */
   const SEARCH_DELAY_MS = 150;
@@ -43,31 +43,39 @@
   let query = $state("");
   let picked = $state("");
   let inputEl = $state<HTMLInputElement | null>(null);
-  /** The answer for `answered`; a later query keeps showing it until its own arrives. */
-  let results = $state<{ pages: SearchablePage[]; more: boolean } | null>(null);
-  let answered = $state("");
-  let searchError = $state<string | null>(null);
+  /**
+   * The search's answer and its failure, each for the (branch, query) it
+   * belongs to: after the operator types on or switches chats, an answer
+   * for another query or another chat's view is never shown as this one's.
+   */
+  let answer = $state<{ key: string; pages: SearchablePage[]; nextCursor: string | null } | null>(
+    null,
+  );
+  let searchError = $state<{ key: string; message: string } | null>(null);
+  let loadingMore = $state(false);
+  const searchKey = $derived(`${branchId}\u0000${query.trim()}`);
+  const current = $derived(answer?.key === searchKey ? answer : null);
+  const currentError = $derived(searchError?.key === searchKey ? searchError.message : null);
+  const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-  // One request per resting query; a newer query aborts the older one.
+  // One request per resting query, in the chat's view: both are read here,
+  // so a newer query or a chat switch aborts the older request.
   $effect(() => {
     const q = query.trim();
-    if (q === "") {
-      results = null;
-      answered = "";
-      searchError = null;
-      return;
-    }
+    const branch = branchId;
+    if (q === "") return;
+    const key = `${branch}\u0000${q}`;
     const controller = new AbortController();
     const timer = setTimeout(() => {
-      searchPages(q, branchId, controller.signal)
+      searchPagesUntilFound(q, branch, controller.signal)
         .then((r) => {
-          results = r;
-          answered = q;
+          answer = { key, ...r };
           searchError = null;
         })
         .catch((e: unknown) => {
           if (controller.signal.aborted) return;
-          searchError = e instanceof Error ? e.message : String(e);
+          answer = null;
+          searchError = { key, message: message(e) };
         });
     }, SEARCH_DELAY_MS);
     return () => {
@@ -75,6 +83,26 @@
       controller.abort();
     };
   });
+
+  /** The next matches of the shown answer, appended (a call stops at its candidate cap). */
+  async function showMore(): Promise<void> {
+    const shown = current;
+    if (!shown?.nextCursor || loadingMore) return;
+    const [branch, q] = shown.key.split("\u0000") as [string, string];
+    loadingMore = true;
+    try {
+      const r = await searchPagesUntilFound(q, branch, new AbortController().signal, {
+        cursor: shown.nextCursor,
+      });
+      if (answer?.key === shown.key) {
+        answer = { key: shown.key, pages: [...shown.pages, ...r.pages], nextCursor: r.nextCursor };
+      }
+    } catch (e) {
+      searchError = { key: shown.key, message: message(e) };
+    } finally {
+      loadingMore = false;
+    }
+  }
 
   /**
    * Hands the pick on and empties the field. bits-ui writes the picked
@@ -94,13 +122,13 @@
     }
   }
 
-  const searching = $derived(query.trim() !== "" && answered !== query.trim() && !searchError);
+  const searching = $derived(query.trim() !== "" && current === null && currentError === null);
   const groups = $derived(
     pageSearchGroups(
       {
         recent: "pages" in recent ? recent.pages : [],
         first: first ?? { pages: [], more: false },
-        results,
+        results: current ? { pages: current.pages, more: current.nextCursor !== null } : null,
       },
       query,
     ),
@@ -141,6 +169,11 @@
       sideOffset={6}
       data-testid="page-search-results"
     >
+      {#if currentError}
+        <p class="px-2 py-1.5 text-xs text-red-700 dark:text-red-300" role="alert" data-testid="page-search-error">
+          {currentError}
+        </p>
+      {/if}
       {#if "error" in recent && query.trim() === ""}
         <p class="px-2 py-1.5 text-xs text-red-700 dark:text-red-300" role="alert">{recent.error}</p>
       {/if}
@@ -165,24 +198,36 @@
               {/if}
             </Combobox.Item>
           {/each}
-          {#if group.more}
+          {#if group.more && query.trim() === ""}
             <p class="px-2 py-1.5 text-xs text-muted-foreground" data-testid="page-search-more">
-              {query.trim() === "" ? "More pages — type to find them." : "More pages match — type more."}
+              More pages — type to find them.
             </p>
+          {:else if group.more}
+            <!-- Kept in the list on press: mousedown would blur the field and close it. -->
+            <button
+              type="button"
+              class="w-full rounded-sm px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent"
+              data-testid="page-search-more"
+              disabled={loadingMore}
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => void showMore()}
+            >
+              {loadingMore ? "Looking for more…" : "More pages may match — show more"}
+            </button>
           {/if}
         </Combobox.Group>
       {:else}
-        <p class="px-2 py-3 text-center text-xs text-muted-foreground">
-          {searchError
-            ? searchError
-            : query.trim() === ""
+        {#if !currentError}
+          <p class="px-2 py-3 text-center text-xs text-muted-foreground">
+            {query.trim() === ""
               ? first === null
                 ? "Loading the pages…"
                 : "The site has no pages yet."
               : searching
                 ? "Searching…"
                 : `No page matches “${query.trim()}”.`}
-        </p>
+          </p>
+        {/if}
       {/each}
     </Combobox.Content>
   </Combobox.Portal>
