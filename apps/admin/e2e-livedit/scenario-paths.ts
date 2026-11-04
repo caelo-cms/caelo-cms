@@ -218,7 +218,7 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${SHARED}/{phase-timer,source-text-transport,escaped-line-breaks,module-id-tag}.ts`,
       `${SHARED}/{link-canonicalise,interactions}.ts`,
       `${SHARED}/{page-log,proposal-status,document-language,database-url,screenshot-capture}.ts`,
-      `${SHARED}/{static-cache-policy,static-security-headers,publish-live-parity,staging-gate}.ts`,
+      `${SHARED}/{static-cache-policy,static-security-headers,publish-live-parity,staging-gate,staged-site}.ts`,
       `${SHARED}/session-cookie.ts`,
       `${A}/ops/notifications.ts`,
       "packages/query-api/src/**",
