@@ -388,7 +388,11 @@ async function stagingCheck(
       AbortSignal.timeout(FIRST_BYTE_BUDGET_MS),
     );
   } catch (e) {
-    return json(502, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    // The reason goes to the log only, never into an answer.
+    console.error(
+      `[api-gateway] staging check of ${location} failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return json(502, { ok: false, error: "staging storage unreadable" });
   }
   if (text === null) return json(404, { ok: false, error: `no manifest at ${location}` });
   const parsed = stagedManifestSchema.safeParse(JSON.parse(text));
