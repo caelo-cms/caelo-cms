@@ -265,7 +265,8 @@ function rowToPage(r: RawPageRow, bound: TypeBound | undefined): z.infer<typeof 
   };
 }
 
-const pageListRowSchema = pageRowSchema.extend({
+/** One page as `pages.list` and `pages.search` return it: the page plus its depth. */
+export const pageListRowSchema = pageRowSchema.extend({
   /** 0263 — nesting level: 1 = top level. */
   depth: z.number().int().positive(),
 });

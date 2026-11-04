@@ -170,6 +170,7 @@ import {
 } from "./ops/content/page-module-content.js";
 import { patchPageModuleFieldsOp } from "./ops/content/page-module-patch.js";
 import { movePagesManyOp, planPageMovesOp } from "./ops/content/page-moves.js";
+import { rebuildPageSearchWordsOp, searchPagesOp } from "./ops/content/page-search.js";
 import { listPageStatusesOp } from "./ops/content/page-statuses.js";
 import {
   changeTemplateOp,
@@ -791,6 +792,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(rejectTemplateProposalOp);
   registry.register(listPendingTemplateProposalsOp);
   registry.register(listPagesOp);
+  registry.register(searchPagesOp);
   registry.register(getPageOp);
   registry.register(getPageWithModulesOp);
   registry.register(createPageOp);
@@ -838,6 +840,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // v0.12.0 — content_instances + placement binding ops.
   registry.register(listContentInstancesOp);
   registry.register(rebuildContentInstanceRefsOp);
+  registry.register(rebuildPageSearchWordsOp);
   registry.register(listModulePeersOp);
   registry.register(getContentInstanceOp);
   registry.register(createContentInstanceOp);
