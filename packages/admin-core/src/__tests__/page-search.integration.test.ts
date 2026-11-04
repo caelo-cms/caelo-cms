@@ -175,6 +175,14 @@ describe("#1269 — pages.search by word prefix", () => {
     expect(crossed.ok).toBe(false);
   });
 
+  it("never skips a page between two words of another page that match the same prefix", async () => {
+    // Candidates in word order: (…shop, a), (…shopper, b), (…shopping, a).
+    // With limit 1 the first call takes a; the next must still reach b.
+    const a = await page(`${PFX}-dup-a`, `${PFX}shop ${PFX}shopping`);
+    const b = await page(`${PFX}-dup-b`, `${PFX}shopper`);
+    expect(await search(SYSTEM, `${PFX}shop`, 1)).toEqual([a, b].sort());
+  });
+
   it("the rebuild finds the triggers exact", async () => {
     const r = await ok<{ rows: number; drift: { missing: number; extra: number } }>(
       SYSTEM,

@@ -193,16 +193,21 @@ export const searchPagesOp = defineOperation({
         if (!listed.ok) return listed;
         const hit = await matching(tx, listed.value.pages, words);
         const byId = new Map(listed.value.pages.map((p) => [p.id, p]));
-        for (const id of ids) {
-          const p = byId.get(id);
-          if (p && hit.has(id)) found.push(p);
+        // In candidate order, each page at its first candidate here: when
+        // the limit is reached, the next call continues right after the
+        // candidate just taken, so a page matched later in the chunk under
+        // another word is examined again and never skipped.
+        const taken = new Set<string>();
+        for (const c of chunk) {
+          if (!ids.includes(c.page_id) || taken.has(c.page_id)) continue;
+          taken.add(c.page_id);
+          const p = byId.get(c.page_id);
+          if (!p || !hit.has(c.page_id)) continue;
+          found.push(p);
           if (found.length === input.limit) {
-            // Continue after this page: the rest of the chunk is examined again.
-            const at = chunk.findLastIndex((c) => c.page_id === id);
-            const stop = chunk[at] ?? last;
             return ok({
               pages: found,
-              nextCursor: encodeSearchCursor({ word: stop.word, pageId: stop.page_id }),
+              nextCursor: encodeSearchCursor({ word: c.word, pageId: c.page_id }),
             });
           }
         }
