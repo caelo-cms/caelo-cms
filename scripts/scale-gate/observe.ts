@@ -161,6 +161,58 @@ function dockerExec(container: string, args: readonly string[]): Promise<string>
   });
 }
 
+/** One normalised statement's database cost over a phase (`pg_stat_statements`). */
+export interface StatementCost {
+  readonly database: string;
+  readonly calls: number;
+  readonly totalMs: number;
+  readonly meanMs: number;
+  readonly rows: number;
+  readonly buffers: number;
+  /** The normalised text, whitespace collapsed, cut at 400 characters. */
+  readonly query: string;
+}
+
+/** psql in the database container as its superuser (the image's POSTGRES_USER). */
+function psqlInContainer(container: string, statement: string): Promise<string> {
+  return dockerExec(container, [
+    "sh",
+    "-c",
+    'psql -X -q -At -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c "$0"',
+    statement,
+  ]);
+}
+
+/**
+ * Start a phase's statement statistics from zero. Fails loudly when the
+ * extension is not loaded: a gate that cannot say where the database time
+ * went hides what it is for.
+ */
+export async function resetStatementStats(container: string): Promise<void> {
+  await psqlInContainer(
+    container,
+    "CREATE EXTENSION IF NOT EXISTS pg_stat_statements; SELECT pg_stat_statements_reset();",
+  );
+}
+
+/** The `limit` statements with the most execution time since the last reset, heaviest first. */
+export async function topStatements(container: string, limit: number): Promise<StatementCost[]> {
+  const out = await psqlInContainer(
+    container,
+    `SELECT COALESCE(json_agg(t), '[]') FROM (
+       SELECT d.datname AS database, s.calls::bigint AS calls,
+              round(s.total_exec_time)::bigint AS "totalMs",
+              round(s.mean_exec_time::numeric, 1)::float AS "meanMs",
+              s.rows::bigint AS rows,
+              (s.shared_blks_hit + s.shared_blks_read)::bigint AS buffers,
+              left(regexp_replace(s.query, '\\s+', ' ', 'g'), 400) AS query
+         FROM pg_stat_statements s JOIN pg_database d ON d.oid = s.dbid
+        WHERE s.query NOT ILIKE '%pg_stat_statements%'
+        ORDER BY s.total_exec_time DESC LIMIT ${Math.trunc(limit)}) t`,
+  );
+  return JSON.parse(out.trim() || "[]") as StatementCost[];
+}
+
 /**
  * Sample a container's CPU every `intervalSeconds` until `stop()` is
  * called. The first read fails loudly (no container, no cgroup v2): a

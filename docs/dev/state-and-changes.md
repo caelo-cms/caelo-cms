@@ -62,6 +62,8 @@ The derived structures on the journal today:
 | international-site translation staleness | plugin consumer, main line | `changeConsumer` | `rebuild_translation_staleness` |
 | the editor's `draft` live topic | in-memory cursor per instance | `readChanges` | a cursor behind the horizon publishes `draft` once and restarts at "now" |
 | content-instance references (`content_instance_refs`, migration 0458) | synchronous, statement triggers on `content_instances` | `findContentInstancesContaining` (nested-content tree, reach, module placements, list usage, media delete guard) | `content_instances.rebuild_refs`; maintained == rebuilt after every integration file (`scripts/test-preload.ts`) |
+| pending-state references (`content_instance_snapshot_refs`, `page_layout_snapshot_refs` 0592, `page_snapshot_refs` 0594, `list_snapshot_refs`, `module_snapshot_refs` 0595) | synchronous, statement triggers on the snapshot tables | `pendingRefCandidatesSql` (which pending states of a branch reference an id: reach, module placements, a vocabulary's tagged pages, list and module-default parents) | `content_instances.rebuild_refs`; maintained == rebuilt after every integration file |
+| list and module references (`list_refs`, `module_refs`, migration 0595) | synchronous, statement triggers on `lists` / `modules` | the reach's list and module-default parents, list usage's binding modules (`loadModulesInView({ referencing })`) | `content_instances.rebuild_refs`; maintained == rebuilt after every integration file |
 
 ## 4. Cursor semantics
 

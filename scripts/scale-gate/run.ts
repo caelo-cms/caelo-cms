@@ -41,10 +41,13 @@ import {
   addTick,
   countPluginFailures,
   type DbCpuSummary,
+  resetStatementStats,
+  type StatementCost,
   samplePluginFailures,
   startCpuSampler,
   type TickSummary,
   type TickTaskRun,
+  topStatements,
 } from "./observe.ts";
 import { CHANGE_CONSUMER_SLUGS, SHIPPED_PLUGIN_SLUGS } from "./plugins.ts";
 
@@ -65,6 +68,8 @@ export interface MeasurementSummary {
   readonly count: number;
   readonly errors: number;
   readonly timeouts: number;
+  /** Calls the admin refused with 429 (back-pressure) before running them; each was retried. */
+  readonly refused: number;
   readonly p50: number;
   readonly p95: number;
   readonly max: number;
@@ -86,6 +91,15 @@ export interface ScaleGateReport {
   readonly lockWaitsOver100ms: number;
   /** #1390 — the database container's CPU during the load; null without `--pg-container`. */
   readonly dbCpu: DbCpuSummary | null;
+  /**
+   * The statements that took the most database time while the plugins
+   * settled and during the load (`pg_stat_statements`, reset at the start
+   * of each); null without `--pg-container`. Where the CPU went.
+   */
+  readonly dbStatements: {
+    readonly settle: readonly StatementCost[] | null;
+    readonly load: readonly StatementCost[] | null;
+  };
   /** #1390 — the shipped plugins and what went wrong in their background work. */
   readonly plugins: {
     readonly expected: readonly string[];
@@ -109,6 +123,18 @@ export interface ScaleGateReport {
  * answers it (the operator-facing message of `PoolAcquireTimeoutError`).
  */
 export const POOL_EXHAUSTED = /PoolAcquireTimeoutError|pool had no free connection/;
+
+/** A 429 from the admin: the call did not run and is to be sent again. */
+class BackPressure extends Error {}
+
+/**
+ * Seconds a 429 answer asks the client to wait ("Wait 5 s, then send the
+ * same call again"); 5 when it names none.
+ */
+export function retryAfterSeconds(body: string): number {
+  const n = Number.parseInt(/Wait (\d+) s\b/.exec(body)?.[1] ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 5;
+}
 
 /**
  * #1268 — reads an `/edit` document up to the end of its HTML and returns
@@ -153,6 +179,7 @@ export function summarise(
   errors: number,
   timeouts: number,
   targetP95: number,
+  refused = 0,
 ): MeasurementSummary {
   const sorted = [...samples].sort((a, b) => a - b);
   const p95 = percentile(sorted, 95);
@@ -160,12 +187,13 @@ export function summarise(
     count: sorted.length,
     errors,
     timeouts,
+    refused,
     p50: Math.round(percentile(sorted, 50)),
     p95: Math.round(p95),
     max: Math.round(sorted.at(-1) ?? 0),
     targetP95,
     // No sample is a failure too: a class the run never reached was not met.
-    pass: sorted.length > 0 && errors === 0 && timeouts === 0 && p95 < targetP95,
+    pass: sorted.length > 0 && errors === 0 && timeouts === 0 && refused === 0 && p95 < targetP95,
   };
 }
 
@@ -190,11 +218,29 @@ function arg(flag: string): string | null {
   return i >= 0 ? (process.argv[i + 1] ?? null) : null;
 }
 
+/** Markdown lines for the heaviest statements of one phase. */
+function statementLines(phase: string, top: readonly StatementCost[] | null): string[] {
+  if (top === null) return [];
+  return [
+    "",
+    `Heaviest statements while ${phase} (pg_stat_statements):`,
+    "",
+    "| total ms | calls | mean ms | rows | buffers | statement |",
+    "|---|---|---|---|---|---|",
+    ...top
+      .slice(0, 10)
+      .map(
+        (t) =>
+          `| ${t.totalMs} | ${t.calls} | ${t.meanMs} | ${t.rows} | ${t.buffers} | \`${t.query.slice(0, 160).replace(/\|/g, "\\|")}\` |`,
+      ),
+  ];
+}
+
 /** Markdown table of a report. */
 export function reportTable(r: ScaleGateReport): string {
   const rows = (Object.keys(SLO_P95_MS) as Measurement[]).map((m) => {
     const s = r.measurements[m];
-    return `| ${m} | ${s.count} | ${s.p50} | ${s.p95} | ${s.max} | ${s.errors} | ${s.timeouts} | < ${s.targetP95} | ${s.pass ? "pass" : "FAIL"} |`;
+    return `| ${m} | ${s.count} | ${s.p50} | ${s.p95} | ${s.max} | ${s.errors} | ${s.timeouts} | ${s.refused} | < ${s.targetP95} | ${s.pass ? "pass" : "FAIL"} |`;
   });
   const cpu = r.dbCpu;
   const cpuLines = cpu
@@ -228,10 +274,12 @@ export function reportTable(r: ScaleGateReport): string {
   return [
     `Fixture: ${r.pages} pages, ${r.agents} agents, ${r.editors} editors, ${r.durationSeconds} s, call timeout ${r.callTimeoutMs} ms`,
     "",
-    "| measurement | n | p50 ms | p95 ms | max ms | errors | timeouts | target p95 | |",
-    "|---|---|---|---|---|---|---|---|---|",
+    "| measurement | n | p50 ms | p95 ms | max ms | errors | timeouts | refused (429) | target p95 | |",
+    "|---|---|---|---|---|---|---|---|---|---|",
     ...rows,
     ...cpuLines,
+    ...statementLines("settling the plugins", r.dbStatements.settle),
+    ...statementLines("the load", r.dbStatements.load),
     ...pluginLines,
     "",
     `Variants created: ${r.variantsCreated}. Pool-acquire timeouts: ${r.poolAcquireTimeouts}. Lock waits > 100 ms: ${r.lockWaitsOver100ms}. Overall: ${r.pass ? "pass" : "FAIL"}.`,
@@ -462,6 +510,7 @@ async function main(): Promise<void> {
     mcp_read: 0,
   };
   const timeouts: Record<Measurement, number> = { ...errors };
+  const refusals: Record<Measurement, number> = { ...errors };
   const sampleErrors = new Set<string>();
   let poolRefusals = 0;
   const noteError = (m: Measurement, message: string) => {
@@ -479,8 +528,8 @@ async function main(): Promise<void> {
     url: string,
     init: RequestInit,
     check: (res: Response) => Promise<T>,
+    t0: number = performance.now(),
   ): Promise<T | null> {
-    const t0 = performance.now();
     try {
       const res = await fetch(url, {
         ...init,
@@ -497,6 +546,8 @@ async function main(): Promise<void> {
         timeouts[m] += 1;
         return null;
       }
+      // A refusal is no sample: the caller waits and sends the call again.
+      if (e instanceof BackPressure) return null;
       samples[m].push(performance.now() - t0);
       noteError(m, (e as Error).message);
       return null;
@@ -509,7 +560,9 @@ async function main(): Promise<void> {
   // A plugin failure while the consumers settle counts too.
   const pluginLogStart = sizeOf(adminLog);
   await assertPluginsRunning(baseUrl, fixture, timeoutMs);
+  if (pgContainer) await resetStatementStats(pgContainer);
   const settled = settleConsumers ? await settle(adminDbUrl, settleTimeoutS) : null;
+  const settleStatements = pgContainer ? await topStatements(pgContainer, 15) : null;
   if (settled) {
     console.log(
       `[scale-gate] change consumers ${settled.settled ? "settled" : "NOT settled"} after ${settled.seconds} s (${settled.state})`,
@@ -538,19 +591,37 @@ async function main(): Promise<void> {
     if (!opened.ok)
       throw new Error(`agent ${index}: open session ${opened.status} ${await opened.text()}`);
     const chatSessionId = ((await opened.json()) as { chatSessionId: string }).chatSessionId;
-    const tool = (m: Measurement, toolName: string, args: unknown) =>
-      timed(
-        m,
-        `${baseUrl}/api/mcp/tool`,
-        { method: "POST", headers, body: JSON.stringify({ toolName, args, chatSessionId }) },
-        async (res) => {
-          const text = await res.text();
-          if (!res.ok) throw new Error(`${toolName}: HTTP ${res.status} ${text}`);
-          const body = JSON.parse(text) as { ok: boolean; content: string };
-          if (!body.ok) throw new Error(`${toolName}: ${body.content}`);
-          return body.content;
-        },
-      );
+    // An agent obeys back-pressure as a real MCP client does (#1375): a 429
+    // says how long to wait, and the same call is sent again unchanged. The
+    // sample is the whole time until the call ran, waits included; each
+    // refusal is counted on its own.
+    const tool = async (m: Measurement, toolName: string, args: unknown) => {
+      const t0 = performance.now();
+      for (;;) {
+        let refusedFor: number | null = null;
+        const value = await timed(
+          m,
+          `${baseUrl}/api/mcp/tool`,
+          { method: "POST", headers, body: JSON.stringify({ toolName, args, chatSessionId }) },
+          async (res) => {
+            const text = await res.text();
+            if (res.status === 429) {
+              refusedFor = retryAfterSeconds(text);
+              throw new BackPressure();
+            }
+            if (!res.ok) throw new Error(`${toolName}: HTTP ${res.status} ${text}`);
+            const body = JSON.parse(text) as { ok: boolean; content: string };
+            if (!body.ok) throw new Error(`${toolName}: ${body.content}`);
+            return body.content;
+          },
+          t0,
+        );
+        if (refusedFor === null) return value;
+        refusals[m] += 1;
+        if (Date.now() + refusedFor * 1000 >= deadline) return null;
+        await Bun.sleep(refusedFor * 1000);
+      }
+    };
     while (Date.now() < deadline) {
       const page = queue.shift();
       if (!page) return;
@@ -620,6 +691,7 @@ async function main(): Promise<void> {
   console.log(
     `[scale-gate] ${agents} agents + ${editors} editors against ${baseUrl} for ${durationS} s (${fixture.pages} pages)`,
   );
+  if (pgContainer) await resetStatementStats(pgContainer);
   const sampler = pgContainer ? await startCpuSampler(pgContainer, cpuIntervalS) : null;
   deadline = Date.now() + durationS * 1000;
   const ticks =
@@ -631,6 +703,7 @@ async function main(): Promise<void> {
     ...Array.from({ length: editors }, (_, i) => editor(i)),
   ]);
   const dbCpu = sampler ? await sampler.stop() : null;
+  const loadStatements = pgContainer ? await topStatements(pgContainer, 15) : null;
   const tickSummary = ticks ? await ticks : null;
   for (const r of results) {
     if (r.status === "rejected") {
@@ -648,7 +721,7 @@ async function main(): Promise<void> {
   const measurements = Object.fromEntries(
     (Object.keys(SLO_P95_MS) as Measurement[]).map((m) => [
       m,
-      summarise(samples[m], errors[m], timeouts[m], SLO_P95_MS[m]),
+      summarise(samples[m], errors[m], timeouts[m], SLO_P95_MS[m], refusals[m]),
     ]),
   ) as Record<Measurement, MeasurementSummary>;
   // A refusal the admin also logged would count twice; take the larger view.
@@ -669,6 +742,7 @@ async function main(): Promise<void> {
     poolAcquireTimeouts,
     lockWaitsOver100ms,
     dbCpu,
+    dbStatements: { settle: settleStatements, load: loadStatements },
     plugins: {
       expected: SHIPPED_PLUGIN_SLUGS,
       settleSeconds: settled?.seconds ?? null,

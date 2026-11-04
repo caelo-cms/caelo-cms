@@ -160,7 +160,7 @@ export async function findContentInstancesOfModules(
 /**
  * The pending-state candidates of `needles` (non-empty) on `branchId`:
  * head rows whose values reference one of them, from the snapshot
- * reference table of migration 0533 — the same extraction as
+ * reference table of migration 0592 — the same extraction as
  * `content_instance_refs`. Exported for the plan test.
  */
 export function pendingNeedleCandidatesSql(
@@ -279,7 +279,7 @@ export async function contentInstanceRefsDrift(
   return { missing: rows[0]?.missing ?? 0, extra: rows[0]?.extra ?? 0 };
 }
 
-/** The expected rows of the snapshot reference tables (migration 0533). */
+/** The expected rows of the snapshot reference tables (0592, 0594) and the list / module reference tables (0595). */
 const SNAPSHOT_REFS_EXPECTED = `
   SELECT 'ci' AS t, s.id AS snapshot_row_id, r.ref_kind, r.ref
     FROM content_instance_snapshots s
@@ -287,16 +287,42 @@ const SNAPSHOT_REFS_EXPECTED = `
   UNION ALL
   SELECT 'pl', s.id, r.ref_kind, r.ref
     FROM page_layout_snapshots s
-   CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state) r`;
+   CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state) r
+  UNION ALL
+  SELECT 'p', s.id, r.ref_kind, r.ref
+    FROM page_snapshots s
+   CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state -> 'terms') r
+  UNION ALL
+  SELECT 'l', s.id, r.ref_kind, r.ref
+    FROM lists s CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.items) r
+  UNION ALL
+  SELECT 'm', s.id, r.ref_kind, r.ref
+    FROM modules s CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.fields) r
+  UNION ALL
+  SELECT 'ls', s.id, r.ref_kind, r.ref
+    FROM list_snapshots s CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state -> 'items') r
+  UNION ALL
+  SELECT 'ms', s.id, r.ref_kind, r.ref
+    FROM module_snapshots s CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state -> 'fields') r`;
 
-/** The maintained rows of the snapshot reference tables (migration 0533). */
+/** The maintained rows of the tables of {@link SNAPSHOT_REFS_EXPECTED}. */
 const SNAPSHOT_REFS_MAINTAINED = `
   SELECT 'ci' AS t, snapshot_row_id, ref_kind, ref FROM content_instance_snapshot_refs
   UNION ALL
-  SELECT 'pl', snapshot_row_id, ref_kind, ref FROM page_layout_snapshot_refs`;
+  SELECT 'pl', snapshot_row_id, ref_kind, ref FROM page_layout_snapshot_refs
+  UNION ALL
+  SELECT 'p', snapshot_row_id, ref_kind, ref FROM page_snapshot_refs
+  UNION ALL
+  SELECT 'l', list_id, ref_kind, ref FROM list_refs
+  UNION ALL
+  SELECT 'm', module_id, ref_kind, ref FROM module_refs
+  UNION ALL
+  SELECT 'ls', snapshot_row_id, ref_kind, ref FROM list_snapshot_refs
+  UNION ALL
+  SELECT 'ms', snapshot_row_id, ref_kind, ref FROM module_snapshot_refs`;
 
 /**
- * SQL of how far the snapshot reference tables (migration 0533) are from
+ * SQL of how far the snapshot reference tables (migration 0592) are from
  * what the snapshot states say now: `missing` / `extra` rows. Both are 0
  * while the triggers hold. Shared with the integration preload's check.
  */
@@ -334,7 +360,7 @@ export const rebuildContentInstanceRefsOp = defineOperation({
       missing: z.number().int().nonnegative(),
       extra: z.number().int().nonnegative(),
     }),
-    /** #1391 — rows the snapshot reference tables (0533) hold after. */
+    /** #1391 — rows the snapshot (0592, 0594) and list / module (0595) reference tables hold after. */
     snapshotRows: z.number().int().nonnegative(),
     /** #1391 — their drift found before the rebuild. */
     snapshotDrift: z.object({
@@ -347,8 +373,14 @@ export const rebuildContentInstanceRefsOp = defineOperation({
     const snapshotDrift = await snapshotRefsDrift(tx);
     const rows = (await tx.execute(
       sql`SELECT caelo_content_instance_refs_rebuild()::int AS n,
-                 caelo_snapshot_refs_rebuild()::int AS s`,
-    )) as unknown as { n: number; s: number }[];
-    return ok({ rows: rows[0]?.n ?? 0, drift, snapshotRows: rows[0]?.s ?? 0, snapshotDrift });
+                 caelo_snapshot_refs_rebuild()::int AS s,
+                 caelo_list_module_refs_rebuild()::int AS lm`,
+    )) as unknown as { n: number; s: number; lm: number }[];
+    return ok({
+      rows: rows[0]?.n ?? 0,
+      drift,
+      snapshotRows: (rows[0]?.s ?? 0) + (rows[0]?.lm ?? 0),
+      snapshotDrift,
+    });
   },
 });

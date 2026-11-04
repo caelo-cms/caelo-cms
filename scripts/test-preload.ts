@@ -344,10 +344,36 @@ async function assertSnapshotRefsExact(url: string): Promise<void> {
           SELECT 'pl', s.id, r.ref_kind, r.ref
             FROM page_layout_snapshots s
            CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state) r
+          UNION ALL
+          SELECT 'p', s.id, r.ref_kind, r.ref
+            FROM page_snapshots s
+           CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state -> 'terms') r
+          UNION ALL
+          SELECT 'l', s.id, r.ref_kind, r.ref
+            FROM lists s CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.items) r
+          UNION ALL
+          SELECT 'm', s.id, r.ref_kind, r.ref
+            FROM modules s CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.fields) r
+          UNION ALL
+          SELECT 'ls', s.id, r.ref_kind, r.ref
+            FROM list_snapshots s CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state -> 'items') r
+          UNION ALL
+          SELECT 'ms', s.id, r.ref_kind, r.ref
+            FROM module_snapshots s CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state -> 'fields') r
         ), maintained AS (
           SELECT 'ci' AS t, snapshot_row_id, ref_kind, ref FROM content_instance_snapshot_refs
           UNION ALL
           SELECT 'pl', snapshot_row_id, ref_kind, ref FROM page_layout_snapshot_refs
+          UNION ALL
+          SELECT 'p', snapshot_row_id, ref_kind, ref FROM page_snapshot_refs
+          UNION ALL
+          SELECT 'l', list_id, ref_kind, ref FROM list_refs
+          UNION ALL
+          SELECT 'm', module_id, ref_kind, ref FROM module_refs
+          UNION ALL
+          SELECT 'ls', snapshot_row_id, ref_kind, ref FROM list_snapshot_refs
+          UNION ALL
+          SELECT 'ms', snapshot_row_id, ref_kind, ref FROM module_snapshot_refs
         )
         SELECT (SELECT count(*)::int FROM (SELECT * FROM expected EXCEPT SELECT * FROM maintained) d) AS missing,
                (SELECT count(*)::int FROM (SELECT * FROM maintained EXCEPT SELECT * FROM expected) d) AS extra`);

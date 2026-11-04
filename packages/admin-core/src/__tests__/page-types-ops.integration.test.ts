@@ -520,3 +520,39 @@ describe("#1107 render-data loader", () => {
     expect(preview.siteLanguage).toBe("en");
   });
 });
+
+describe("#1269 — a vocabulary's tagged-page count reads the tagged and the pending pages only", () => {
+  it("counts live tags, drops a page the chat deleted, adds a page the chat tagged", async () => {
+    const news = await seedNews("count");
+    const other = await seedNews("count-other");
+    const tagged = async (ctx: ExecutionContext, vocabId: string) =>
+      (
+        await op<{ list: { usage: { taggedPageCount: number } } }>(ctx, "lists.get", {
+          id: vocabId,
+        })
+      ).list.usage.taggedPageCount;
+    const create = async (ctx: ExecutionContext, slug: string, typeSlug: string, term: string) =>
+      (
+        await op<{ pageId: string }>(ctx, "pages.create", {
+          slug: `${PFX}${slug}`,
+          title: slug,
+          pageType: typeSlug,
+          terms: [term],
+        })
+      ).pageId;
+    const first = await create(SYS, "tc1", news.typeSlug, news.catA);
+    await create(SYS, "tc2", news.typeSlug, news.catB);
+    await create(SYS, "tc3", other.typeSlug, other.catA);
+    expect(await tagged(SYS, news.vocabId)).toBe(2);
+
+    const a = await chat("tag counter");
+    expect(await tagged(a.ctx, news.vocabId)).toBe(2);
+    await op(a.ctx, "pages.delete", { pageId: first });
+    expect(await tagged(a.ctx, news.vocabId)).toBe(1);
+    await create(a.ctx, "tc4", news.typeSlug, news.catA);
+    await create(a.ctx, "tc5", news.typeSlug, news.catB);
+    expect(await tagged(a.ctx, news.vocabId)).toBe(3);
+    expect(await tagged(a.ctx, other.vocabId)).toBe(1);
+    expect(await tagged(SYS, news.vocabId)).toBe(2);
+  });
+});

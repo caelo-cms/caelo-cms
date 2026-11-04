@@ -283,6 +283,16 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
     "derived (synchronous, #1391): the ids and media slugs each content-instance snapshot state references, maintained by triggers on the journaled content_instance_snapshots; rebuilt by content_instances.rebuild_refs",
   page_layout_snapshot_refs:
     "derived (synchronous, #1391): the ids each page-layout snapshot state references, maintained by triggers on the journaled page_layout_snapshots; rebuilt by content_instances.rebuild_refs",
+  list_refs:
+    "derived (synchronous, #1391): the ids and media slugs each list's items reference, maintained by triggers on the journaled lists; rebuilt by content_instances.rebuild_refs",
+  module_refs:
+    "derived (synchronous, #1391): the ids and media slugs each module's fields (their defaults) reference, maintained by triggers on the journaled modules; rebuilt by content_instances.rebuild_refs",
+  list_snapshot_refs:
+    "derived (synchronous, #1391): the ids and media slugs each list snapshot state's items reference, maintained by triggers on the journaled list_snapshots; rebuilt by content_instances.rebuild_refs",
+  module_snapshot_refs:
+    "derived (synchronous, #1391): the ids and media slugs each module snapshot state's fields reference, maintained by triggers on the journaled module_snapshots; rebuilt by content_instances.rebuild_refs",
+  page_snapshot_refs:
+    "derived (synchronous, #1269): the ids each page snapshot state's terms reference, maintained by triggers on the journaled page_snapshots; rebuilt by content_instances.rebuild_refs",
   plugin_data_build_state: RUNTIME,
   plugin_data_stale_pages: "derived: which pages' baked plugin regions are stale",
   plugin_runtime: RUNTIME,

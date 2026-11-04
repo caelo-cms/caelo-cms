@@ -249,7 +249,9 @@ async function specFor(
     };
   }
   const moduleId = input.moduleId as string;
-  const module = (await loadModulesInView(tx, branchId)).find((m) => m.id === moduleId);
+  const module = (await loadModulesInView(tx, branchId, { ids: [moduleId] })).find(
+    (m) => m.id === moduleId,
+  );
   if (!module) {
     return { ok: false, message: `no module ${moduleId} — list_modules shows the modules.` };
   }

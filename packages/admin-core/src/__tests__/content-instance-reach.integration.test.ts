@@ -540,3 +540,69 @@ describe("#627 — nested-only instances reach the pages their parents render on
     expect(impact.pageIds).toEqual([pageId]);
   });
 });
+
+/** Writes a list straight to the row: the list ops author no module entries, the renderer reads them. */
+async function sharedListShowing(slug: string, items: unknown): Promise<string> {
+  const sql = new SQL(ADMIN_URL as string);
+  try {
+    return await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const rows = (await tx`
+        INSERT INTO lists (slug, name, purpose, list_type_id, items)
+        SELECT ${`cireach-${slug}-${TS}`}, ${slug}, 'test', id, (${JSON.stringify(items)}::text)::jsonb
+          FROM list_types WHERE slug = 'menu' AND deleted_at IS NULL
+        RETURNING id::text AS id`) as { id: string }[];
+      return rows[0]?.id ?? "";
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
+describe("#1391 — the reach finds module-default and list parents through their reference tables", () => {
+  it("a shared list listing the instance is a parent; one listing another instance is not", async () => {
+    const child = await instance(cardId, "List child", { title: "In a list" });
+    const other = await instance(cardId, "Other child", { title: "Elsewhere" });
+    const listId = await sharedListShowing("list-parent", [{ node: "entry", values: { label: "a", module: ref(child) } }]);
+    await sharedListShowing("list-other", [{ node: "entry", values: { label: "b", module: ref(other) } }]);
+
+    const got = await op<{ parentLists: { listId: string }[] }>(SYS, "content_instances.get", {
+      id: child,
+    });
+    expect(got.parentLists.map((l) => l.listId)).toEqual([listId]);
+  });
+
+  it("a module a chat deletes on its branch is no default parent there, still on main", async () => {
+    const child = await instance(cardId, "Default child", { title: "Default" });
+    const holder = await createModule("branch-default", "<div>{{#items}}{{>.}}{{/items}}</div>", [
+      { name: "items", kind: "module-list", label: "Items" },
+    ]);
+    await setFieldDefault(holder, "items", [ref(child)]);
+    const session = await op<{ chatSessionId: string; chatBranchId: string }>(
+      SYS,
+      "chat.create_session",
+      { title: `cireach-default-${TS}` },
+    );
+    const ai: ExecutionContext = {
+      actorId: HUMAN,
+      actorKind: "ai",
+      requestId: "cireach-default",
+      chatBranchId: session.chatBranchId,
+      chatTaskId: session.chatSessionId,
+    };
+    const parentsOn = async (ctx: ExecutionContext) =>
+      (
+        await op<{ parentModules: { moduleId: string }[] }>(ctx, "content_instances.get", {
+          id: child,
+        })
+      ).parentModules.map((m) => m.moduleId);
+
+    expect(await parentsOn(ai)).toEqual([holder]);
+    // An edit on the branch keeps the default in the pending state.
+    await op(ai, "modules.update", { moduleId: holder, displayName: "Holder renamed" });
+    expect(await parentsOn(ai)).toEqual([holder]);
+    await op(ai, "modules.delete", { moduleId: holder });
+    expect(await parentsOn(ai)).toEqual([]);
+    expect(await parentsOn(SYS)).toEqual([holder]);
+  });
+});

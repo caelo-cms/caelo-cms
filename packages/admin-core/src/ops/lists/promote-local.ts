@@ -66,7 +66,9 @@ export const promoteLocalListOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const op = "lists.promote_local";
     const branchId = branchOf(ctx);
-    const module = (await loadModulesInView(tx, branchId)).find((m) => m.id === input.moduleId);
+    const module = (await loadModulesInView(tx, branchId, { ids: [input.moduleId] })).find(
+      (m) => m.id === input.moduleId,
+    );
     if (!module) {
       return failBatch(
         false,

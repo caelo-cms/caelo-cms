@@ -502,9 +502,9 @@ async function rewriteLocalList(
   items: ListItem[],
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   if (place.kind === "moduleDefault") {
-    const module = (await loadModulesInView(tx, ctx.chatBranchId ?? null)).find(
-      (m) => m.id === place.moduleId,
-    );
+    const module = (
+      await loadModulesInView(tx, ctx.chatBranchId ?? null, { ids: [place.moduleId] })
+    ).find((m) => m.id === place.moduleId);
     if (!module) return { ok: false, message: `module ${place.moduleId} is gone` };
     const fields = module.fields.map((f) =>
       listFieldsOf([f]).some((lf) => lf.name === place.field)

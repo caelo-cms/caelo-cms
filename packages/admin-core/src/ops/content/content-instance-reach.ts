@@ -23,11 +23,11 @@
  * so they agree with each other and with the renderer.
  */
 
-import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
 import { collectNestedRefs, rendersFieldDefault, type TemplateField } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { headOverlaySql, pendingRefCandidatesSql } from "../../draft.js";
-import { loadListEntities } from "../../lists/store.js";
+import { type ListEntityView, loadListEntities } from "../../lists/store.js";
 import { loadBranchedModuleStates } from "../../snapshots/index.js";
 import type { PageLayoutState } from "../../snapshots/state.js";
 import {
@@ -108,7 +108,7 @@ export async function listPlacementsInView(
   // instance on the branch — the same row
   // `loadPageLayoutStateWithBranchOverlay` picks: the pages of the live
   // placements (a pending layout supersedes them) and the pages whose
-  // pending layout references one (the snapshot reference table, 0533).
+  // pending layout references one (the snapshot reference table, 0592).
   // Never every pending layout of the draft.
   const pendingPages = (await tx.execute(
     pendingRefCandidatesSql({ kind: "pageLayout", branchId, ids: contentInstanceIds }),
@@ -297,9 +297,10 @@ export async function loadContentInstanceReach(
   const ids = [...new Set(contentInstanceIds)];
   if (ids.length === 0) return out;
 
-  // Module field defaults that list an instance, for every instance at
-  // once: the walk below and the module-default reach both read it.
-  const moduleParents = await moduleDefaultParents(tx, branchId);
+  // Module field defaults that list an instance of the walk, read per
+  // level for the frontier: the walk below and the module-default reach
+  // both read it.
+  const moduleParents = new Map<string, DefaultParent[]>();
 
   // 1. Parent instances, transitively, one indexed lookup per level
   // (content_instance_refs, #1287). An instance whose module's
@@ -313,6 +314,9 @@ export async function loadContentInstanceReach(
   let frontier = ids;
   for (let depth = 0; depth < MAX_NESTING_DEPTH && frontier.length > 0; depth += 1) {
     const found = await nestedParentsInView(tx, branchId, frontier);
+    for (const [child, parents] of await moduleDefaultParents(tx, branchId, frontier)) {
+      moduleParents.set(child, parents);
+    }
     const unloaded = new Set<string>();
     for (const id of frontier) {
       for (const m of moduleParents.get(id) ?? []) {
@@ -345,9 +349,11 @@ export async function loadContentInstanceReach(
   const closure = [...parentsOf.keys()];
   const inClosure = new Set(closure);
 
-  // 2. Shared lists that show any instance of the closure.
+  // 2. Shared lists that show any instance of the closure: the lists whose
+  // items reference one (the list reference tables, 0595), confirmed on
+  // their newest items.
   const listParents = new Map<string, ListParent[]>();
-  for (const list of await loadListEntities(tx, "list", branchId)) {
+  for (const list of await listsReferencing(tx, branchId, closure)) {
     const parent = { listId: list.id, slug: list.state.slug, name: list.state.name };
     const children = new Set(
       collectNestedRefs({ items: list.state.items }).map((r) => r.contentInstanceId),
@@ -407,34 +413,76 @@ export async function loadContentInstanceReach(
   return out;
 }
 
+/**
+ * The lists in the caller's view (deleted ones excluded) whose items may
+ * reference one of `ids`: live lists from `list_refs`, and on a branch the
+ * pending lists from their snapshot references — a superset the caller
+ * confirms on the returned (newest) items.
+ */
+async function listsReferencing(
+  tx: Tx,
+  branchId: string | null,
+  ids: readonly string[],
+): Promise<ListEntityView<"list">[]> {
+  const needles = [...new Set(ids.map((id) => id.toLowerCase()))];
+  if (needles.length === 0) return [];
+  const live = (await tx.execute(sql`
+    SELECT DISTINCT list_id::text AS id FROM list_refs
+     WHERE ref_kind = 'id' AND ref = ANY(${textArray(needles)})
+  `)) as unknown as { id: string }[];
+  const pending = branchId
+    ? ((await tx.execute(
+        pendingRefCandidatesSql({ kind: "list", branchId, ids: needles }),
+      )) as unknown as { entity_id: string }[])
+    : [];
+  const candidateIds = [...new Set([...live.map((r) => r.id), ...pending.map((p) => p.entity_id)])];
+  if (candidateIds.length === 0) return [];
+  return (await loadListEntities(tx, "list", branchId, { ids: candidateIds })).filter(
+    (l) => l.state.deletedAt === null,
+  );
+}
+
 /** A module default parent, with the field it is the default of. */
 interface DefaultParent extends ModuleParent {
   readonly fieldSpec: Pick<TemplateField, "name" | "kind" | "bind">;
 }
 
 /**
- * Modules (as the caller sees them) whose field defaults reference a
- * content instance, keyed by child id. The live read is prefiltered on
- * the ref key; the branch's pending module states supersede live rows.
+ * Modules (as the caller sees them) whose field defaults reference one of
+ * `childIds`, keyed by child id. The candidates come from the module
+ * reference tables (0595): live modules whose fields reference a child,
+ * and on a branch the pending modules whose newest state may — so the
+ * cost is the matches, never every module or pending module (#1391).
+ * Each candidate is confirmed on its newest fields.
  */
 async function moduleDefaultParents(
   tx: Tx,
   branchId: string | null,
+  childIds: readonly string[],
 ): Promise<Map<string, DefaultParent[]>> {
+  const wanted = new Set(childIds);
+  const needles = [...new Set(childIds.map((id) => id.toLowerCase()))];
+  if (needles.length === 0) return new Map();
   const visible = branchId
-    ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${branchId}::uuid)`
-    : sql`chat_branch_id IS NULL`;
+    ? sql`(m.chat_branch_id IS NULL OR m.chat_branch_id = ${branchId}::uuid)`
+    : sql`m.chat_branch_id IS NULL`;
   const live = (await tx.execute(sql`
-    SELECT id::text AS id, slug, display_name, fields
-      FROM modules
-     WHERE deleted_at IS NULL AND ${visible} AND fields::text LIKE ${"%contentInstanceId%"}
+    SELECT m.id::text AS id, m.slug, m.display_name, m.fields
+      FROM modules m
+     WHERE m.deleted_at IS NULL AND ${visible}
+       AND m.id IN (SELECT r.module_id FROM module_refs r
+                     WHERE r.ref_kind = 'id' AND r.ref = ANY(${textArray(needles)}))
   `)) as unknown as { id: string; slug: string; display_name: string; fields: unknown }[];
   const candidates = new Map<string, { slug: string; displayName: string; fields: unknown }>();
   for (const r of live) {
     candidates.set(r.id, { slug: r.slug, displayName: r.display_name, fields: r.fields });
   }
   if (branchId) {
-    for (const [id, s] of await loadBranchedModuleStates(tx, branchId)) {
+    const pending = (await tx.execute(
+      pendingRefCandidatesSql({ kind: "module", branchId, ids: needles }),
+    )) as unknown as { entity_id: string }[];
+    const ids = [...new Set([...candidates.keys(), ...pending.map((p) => p.entity_id)])];
+    for (const [id, s] of await loadBranchedModuleStates(tx, branchId, ids)) {
       if (s.deletedAt !== null) {
         candidates.delete(id);
         continue;
@@ -451,6 +499,7 @@ async function moduleDefaultParents(
         collectNestedRefs({ [f.name]: f.default }).map((r) => r.contentInstanceId),
       );
       for (const child of children) {
+        if (!wanted.has(child)) continue;
         const parent: DefaultParent = {
           moduleId,
           slug: m.slug,
