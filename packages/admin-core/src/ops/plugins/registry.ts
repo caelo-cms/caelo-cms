@@ -1040,6 +1040,17 @@ export const approvePluginCapabilitiesOp = defineOperation({
         message: `plugin "${input.slug}" was replaced by another release since this page loaded — reload Settings → Plugins and review it again`,
       });
     }
+    // #1334 — a release can start to need mail (the auth plugin's
+    // mandatory e-mail verification): approving it without a transport
+    // would run it half broken, exactly what activation refuses.
+    const unmet = await unmetHostRequirement(tx, input.slug, current.manifest_json);
+    if (unmet) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.approve_capabilities",
+        message: unmet,
+      });
+    }
     // #1332 — the approval covers the whole manifest, not only its
     // capability set: both are recorded together.
     const rows = (await tx.execute(sql`

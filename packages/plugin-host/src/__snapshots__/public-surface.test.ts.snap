@@ -2,6 +2,46 @@
 
 exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surface 1`] = `
 {
+  "mailTemplates": {
+    "password_reset": {
+      "body": [
+        "Someone asked to reset the password of the account with this e-mail address. The link works once, for one hour.",
+        "If it was not you, ignore this mail: your password stays as it is.",
+      ],
+      "link": {
+        "done": "Your password is changed. You can log in with it now.",
+        "fields": [
+          {
+            "label": "New password",
+            "name": "newPassword",
+            "type": "password",
+          },
+        ],
+        "label": "Set a new password",
+        "operation": "reset_password",
+      },
+      "subject": "Reset your password",
+    },
+    "signup_existing_account": {
+      "body": [
+        "Someone tried to create an account with this e-mail address, which already has one.",
+        "If it was you, log in with your password, or reset it if you no longer know it. If not, you can ignore this mail.",
+      ],
+      "subject": "You already have an account",
+    },
+    "verify_email": {
+      "body": [
+        "Please confirm your e-mail address to finish creating your account.",
+        "If you did not sign up, ignore this mail: without the confirmation nobody can use the account.",
+      ],
+      "link": {
+        "done": "Your e-mail address is confirmed. You can log in now.",
+        "label": "Confirm e-mail address",
+        "operation": "verify_email",
+      },
+      "subject": "Confirm your e-mail address",
+    },
+  },
   "publicOperations": [
     {
       "captcha": "required",
@@ -10,11 +50,12 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
         "additionalProperties": false,
         "properties": {
           "email": {
-            "maxLength": 1024,
+            "maxLength": 254,
+            "minLength": 3,
             "type": "string",
           },
           "password": {
-            "maxLength": 4096,
+            "maxLength": 1024,
             "type": "string",
           },
         },
@@ -36,7 +77,38 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
       ],
       "writes": [
         "public_users",
-        "visitor_sessions",
+        "email_verification_tokens",
+      ],
+    },
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "maxLength": 128,
+            "minLength": 16,
+            "type": "string",
+          },
+        },
+        "required": [
+          "token",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "verify_email",
+      "rateLimit": {
+        "max": 10,
+        "windowSeconds": 60,
+      },
+      "reads": [
+        "email_verification_tokens",
+      ],
+      "writes": [
+        "email_verification_tokens",
+        "public_users",
       ],
     },
     {
@@ -46,11 +118,12 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
         "additionalProperties": false,
         "properties": {
           "email": {
-            "maxLength": 1024,
+            "maxLength": 254,
+            "minLength": 3,
             "type": "string",
           },
           "password": {
-            "maxLength": 4096,
+            "maxLength": 1024,
             "type": "string",
           },
         },
@@ -67,9 +140,11 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
         "windowSeconds": 60,
       },
       "reads": [
+        "login_throttle",
         "public_users",
       ],
       "writes": [
+        "login_throttle",
         "public_users",
         "visitor_sessions",
       ],
@@ -79,12 +154,7 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
       "inputJsonSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "properties": {
-          "sessionToken": {
-            "maxLength": 256,
-            "type": "string",
-          },
-        },
+        "properties": {},
         "type": "object",
       },
       "kind": "write",
@@ -105,12 +175,7 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
       "inputJsonSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "properties": {
-          "sessionToken": {
-            "maxLength": 256,
-            "type": "string",
-          },
-        },
+        "properties": {},
         "type": "object",
       },
       "kind": "read",
@@ -132,7 +197,8 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
         "additionalProperties": false,
         "properties": {
           "email": {
-            "maxLength": 1024,
+            "maxLength": 254,
+            "minLength": 3,
             "type": "string",
           },
         },
@@ -161,11 +227,12 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
         "additionalProperties": false,
         "properties": {
           "newPassword": {
-            "maxLength": 4096,
+            "maxLength": 1024,
             "type": "string",
           },
           "token": {
-            "maxLength": 256,
+            "maxLength": 128,
+            "minLength": 16,
             "type": "string",
           },
         },
@@ -193,7 +260,9 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
       ],
     },
   ],
-  "requires": [],
+  "requires": [
+    "email",
+  ],
   "tables": {
     "auth_config": {
       "kind": "published",
@@ -204,6 +273,24 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
     "auth_config_proposals": {
       "kind": "private",
       "visitorPrivileges": [],
+    },
+    "email_verification_tokens": {
+      "kind": "visitor-state",
+      "visitorPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+      ],
+    },
+    "login_throttle": {
+      "kind": "visitor-state",
+      "visitorPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+      ],
     },
     "password_reset_tokens": {
       "kind": "visitor-state",
@@ -238,6 +325,7 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
 
 exports[`shipped plugins' public surface (#1332) comments: matches the reviewed surface 1`] = `
 {
+  "mailTemplates": {},
   "publicOperations": [
     {
       "captcha": "required",
@@ -349,6 +437,7 @@ exports[`shipped plugins' public surface (#1332) comments: matches the reviewed 
 
 exports[`shipped plugins' public surface (#1332) consent-manager: matches the reviewed surface 1`] = `
 {
+  "mailTemplates": {},
   "publicOperations": [
     {
       "captcha": "none",
@@ -409,6 +498,7 @@ exports[`shipped plugins' public surface (#1332) consent-manager: matches the re
 
 exports[`shipped plugins' public surface (#1332) forms: matches the reviewed surface 1`] = `
 {
+  "mailTemplates": {},
   "publicOperations": [
     {
       "captcha": "required",
@@ -513,6 +603,7 @@ exports[`shipped plugins' public surface (#1332) forms: matches the reviewed sur
 
 exports[`shipped plugins' public surface (#1332) international-site: matches the reviewed surface 1`] = `
 {
+  "mailTemplates": {},
   "publicOperations": [],
   "requires": [],
   "tables": {},
@@ -521,6 +612,20 @@ exports[`shipped plugins' public surface (#1332) international-site: matches the
 
 exports[`shipped plugins' public surface (#1332) newsletter: matches the reviewed surface 1`] = `
 {
+  "mailTemplates": {
+    "confirm_subscription": {
+      "body": [
+        "Please confirm that you want to receive this site's newsletter.",
+        "If you did not sign up, ignore this mail: without your confirmation you will not get any newsletter.",
+      ],
+      "link": {
+        "done": "Thank you, your subscription is confirmed.",
+        "label": "Confirm subscription",
+        "operation": "confirm",
+      },
+      "subject": "Confirm your newsletter subscription",
+    },
+  },
   "publicOperations": [
     {
       "captcha": "required",
@@ -642,6 +747,7 @@ exports[`shipped plugins' public surface (#1332) newsletter: matches the reviewe
 
 exports[`shipped plugins' public surface (#1332) ratings: matches the reviewed surface 1`] = `
 {
+  "mailTemplates": {},
   "publicOperations": [
     {
       "captcha": "required",
@@ -672,9 +778,7 @@ exports[`shipped plugins' public surface (#1332) ratings: matches the reviewed s
         "max": 20,
         "windowSeconds": 60,
       },
-      "reads": [
-        "ratings",
-      ],
+      "reads": [],
       "writes": [
         "ratings",
       ],
@@ -709,12 +813,9 @@ exports[`shipped plugins' public surface (#1332) ratings: matches the reviewed s
       ],
     },
     "ratings": {
-      "kind": "visitor-state",
+      "kind": "inbox",
       "visitorPrivileges": [
-        "SELECT",
         "INSERT",
-        "UPDATE",
-        "DELETE",
       ],
     },
   },

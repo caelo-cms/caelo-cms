@@ -48,11 +48,15 @@ The generator takes its target as a parameter (`PublicGrantTarget`: database, vi
 
 The manifest lint (`checkPublicSurface`) refuses: a table without a kind, a kind for an undeclared table, a public operation reading an inbox or private table, writing a published or private one, or a `read` that writes.
 
-Known exception: the ratings worker still writes `rating_aggregates` (published) directly with the admin role; #1333 moves the recompute to the projection.
+Published rows are written by the admin only: by the plugin's own operations in the admin (a form definition) and by its workers. A worker that recomputes published rows from an inbox declares `publicDatabases: "each"`: the host runs it once per public database, each run's `ctx.query` bound to that database alone, so the live result comes from live visitors and the staging result from the staging site's test data (#1333: the ratings averages from the votes). Nothing of either crosses into cms_admin.
 
 ## Host requirements
 
-`requires: ["email"]` says the plugin cannot work without a mail transport. `plugins.activate` refuses it while none is configured, and the error names the setup step (CLAUDE.md §2: no half-working plugin).
+`requires: ["email"]` says the plugin cannot work without a mail transport. `plugins.activate` and "Approve this release" refuse it while none is configured, `email_config.set` refuses to switch the transport off while it runs, and each error names the step (CLAUDE.md §2: no half-working plugin).
+
+## Mail templates
+
+A plugin mails visitors only through `mailTemplates` (#1337): a subject, plain-text paragraphs and at most one link to one of its public write operations, which the visitor confirms on the gateway's confirmation page. A visitor operation queues one with `ctx.email.queue({ template, to, token })`; the admin sends it. The row in the outbox chooses the template, the recipient and a token, never text or a host, and the admin caps the mails per recipient and site. See [dev/mail-outbox.md](./dev/mail-outbox.md). The templates are part of the public-surface snapshot below.
 
 ## Approval is bound to the manifest
 

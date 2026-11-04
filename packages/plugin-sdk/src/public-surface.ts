@@ -266,3 +266,20 @@ export class PublicOperationError extends Error {
 export function isPublicOperationError(e: unknown): e is PublicOperationError {
   return e instanceof Error && e.name === "PublicOperationError";
 }
+
+/**
+ * #1334 — throw this from a public operation when the host instance is at
+ * a resource limit the operation guards itself (the auth plugin's bound on
+ * concurrent password hashes). The host answers it as `Busy` (503 with a
+ * `Retry-After`), so a burst of expensive requests is refused cheaply
+ * instead of exhausting the instance's memory. Not recorded as a plugin
+ * error: it is the guard working.
+ */
+export class PublicOperationBusyError extends Error {
+  override readonly name = "PublicOperationBusyError";
+}
+
+/** Whether `e` is a {@link PublicOperationBusyError} (also across bundles). */
+export function isPublicOperationBusyError(e: unknown): e is PublicOperationBusyError {
+  return e instanceof Error && e.name === "PublicOperationBusyError";
+}

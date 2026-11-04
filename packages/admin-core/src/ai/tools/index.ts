@@ -27,6 +27,7 @@ import {
   listCaeloUpdatesTool,
 } from "./caelo-updates.js";
 import { cancelProposalTool } from "./cancel-proposal.js";
+import { checkEmailDomainTool } from "./check-email-domain.js";
 import { checkLinksTool } from "./check-links.js";
 import {
   getPageSeoTool,
@@ -661,6 +662,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(cleanupImportRunTool);
   registry.register(resolveImportLinksTool);
   registry.register(sendTestEmailTool);
+  registry.register(checkEmailDomainTool);
   // Agent-tool parity, part 2: the operator dashboards and maintenance
   // reads/writes the exceptions file listed as gaps.
   registry.register(getAiSpendTool);

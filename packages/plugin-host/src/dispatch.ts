@@ -15,6 +15,7 @@
 
 import { createHash } from "node:crypto";
 import {
+  isPublicOperationBusyError,
   isPublicOperationError,
   type PageUrlStyle,
   type PluginContext,
@@ -258,6 +259,8 @@ interface MakeContextOpts {
   /** #1332 — the declared contract of the visitor call being served; its
    *  `reads` / `writes` bound what `ctx.query` may touch. */
   readonly publicOperation?: PublicOperationDef;
+  /** #1333 — see `MakePluginContextOpts.publicTarget`. */
+  readonly publicTarget?: "live" | "staging";
 }
 
 /**
@@ -320,6 +323,12 @@ export interface RunPluginOperationOpts {
   /** Required: who the call acts for and on which branch. A call without
    *  it would silently act as "main, nobody" — the defect §14.7 closes. */
   readonly invocation: PluginInvocation;
+  /**
+   * #1333 — the public database `ctx.query` works on; live unless given.
+   * `"staging"` is for a worker declared `publicDatabases: "each"` and
+   * attaches no other handle (capabilities.ts).
+   */
+  readonly publicTarget?: "live" | "staging";
 }
 
 /**
@@ -404,7 +413,10 @@ export type RunPluginOperationResult =
           | "CaptchaRequired"
           // #1332 — the handler refused the visitor with a
           // `PublicOperationError`; its message is meant for them.
-          | "Rejected";
+          | "Rejected"
+          // #1334 — the handler refused because the instance is at a
+          // resource bound it guards (`PublicOperationBusyError`): a 503.
+          | "Busy";
         readonly message: string;
       };
     };
@@ -709,6 +721,7 @@ async function runPluginOperationNow(
       visitorContext: opts.visitorContext,
       invocation: opts.invocation,
       ...(publicOperation ? { publicOperation } : {}),
+      ...(opts.publicTarget ? { publicTarget: opts.publicTarget } : {}),
     });
   } catch (e) {
     if (isProjectionNotPublished(e)) {
@@ -812,6 +825,12 @@ async function runPluginOperationNow(
     // #1332 — the plugin refusing a visitor ("invalid credentials") is an
     // answer, not a fault: its own words go back, and it is not logged as
     // a plugin error.
+    if (publicOperation && isPublicOperationBusyError(e)) {
+      return {
+        ok: false,
+        error: { kind: "Busy", message: e.message.slice(0, VISITOR_MESSAGE_MAX) },
+      };
+    }
     if (publicOperation && isPublicOperationError(e)) {
       return {
         ok: false,

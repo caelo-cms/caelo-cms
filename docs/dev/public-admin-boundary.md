@@ -74,6 +74,10 @@ The gateway garbage-collects them itself. Every column is bounded by a `CHECK`. 
 
 The admin reads `gateway_plugin_op_events` for one thing: hints for the plugin-data build (#1155, [plugin-baked-data.md](../plugin-baked-data.md)). A visitor call of an operation a plugin declares as a baked-data trigger records the page it changed (`page_id`, cms_public 0372). Since #1338 the gateway writes an op event for such a call only; any other visitor call writes none, because nobody reads it. The admin treats every row as untrusted, as below: a row counts only for a declared visitor trigger of a plugin the admin runs, under that plugin's own slug, and a main-line page that exists in `cms_admin`; it only marks that page for a re-render from authoritative state, and the build rewrites nothing but that plugin's own bake regions in the published files.
 
+### The mail outbox (#1337)
+
+Each public database has a `mail_outbox` (cms_public migration 0610): the visitor role may insert a row naming a declared mail template of an active plugin, one recipient and one token, and nothing more. The admin drains it on its scheduler tick and sends the mail with the transport configured in cms_admin, which the public side never holds. Text, link and link host come from the plugin's manifest and cms_admin; per-recipient and site-wide caps count a cms_admin ledger; mail from the staging database goes only to cms_admin users. Details: [mail-outbox.md](./mail-outbox.md).
+
 Plugin op records from visitor calls go to `gateway_plugin_op_events`. They never go to `audit_events`: the public side must not be able to forge entries in the admin's audit trail.
 
 `public_role` may insert an op event only for a plugin listed in `published_plugins` (the active plugins the admin published), and only when the slug before the `.` in `operation` is that plugin's slug (cms_public migration 0300). A reader must still validate every row: a stale projection can list a plugin that `cms_admin` has since disabled or removed.

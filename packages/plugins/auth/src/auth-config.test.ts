@@ -16,80 +16,11 @@
 import { describe, expect, it } from "bun:test";
 import type { PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
-
-type Row = Record<string, unknown> & { id: string };
-
-const RESERVED = new Set(["limit", "orderBy", "orderDir", "since"]);
-
-function world(seed: Partial<Record<string, Row[]>> = {}) {
-  let nextId = 0;
-  const tables: Record<string, Row[]> = {
-    public_users: [],
-    visitor_sessions: [],
-    password_reset_tokens: [],
-    auth_config: [],
-    auth_config_proposals: [],
-    ...seed,
-  };
-  const t = (name: string): Row[] => {
-    const rows = tables[name];
-    if (!rows) throw new Error(`undeclared table ${name}`);
-    return rows;
-  };
-  const state = { captchaCalls: 0, sessionCleared: false };
-  const ctx = {
-    invocation: { origin: "visitor", actorId: "00000000-0000-0000-0000-00000000ffff" },
-    captcha: {
-      requireProof: async () => {
-        state.captchaCalls += 1;
-        return true;
-      },
-    },
-    visitor: {
-      setSession: (s: unknown) => {
-        if (s === null) state.sessionCleared = true;
-      },
-    },
-    query: {
-      insert: async (table: string, data: Record<string, unknown>) => {
-        nextId += 1;
-        const id = `00000000-0000-4000-8000-${String(nextId).padStart(12, "0")}`;
-        t(table).push({ id, updated_at: null, created_at: new Date().toISOString(), ...data });
-        return { id };
-      },
-      list: async (table: string, filter: Record<string, unknown> = {}) => {
-        // The host caps every page at 1000 rows.
-        const limit = Math.min(Number(filter.limit ?? 100), 1000);
-        return t(table)
-          .filter((r) => Object.entries(filter).every(([k, v]) => RESERVED.has(k) || r[k] === v))
-          .slice(0, limit);
-      },
-      update: async (table: string, id: string, patch: Record<string, unknown>) => {
-        const row = t(table).find((r) => r.id === id);
-        if (row) Object.assign(row, patch);
-      },
-      delete: async (table: string, id: string) => {
-        tables[table] = t(table).filter((r) => r.id !== id);
-      },
-    },
-  } as unknown as PluginContextTier1;
-  return { ctx, tables, state };
-}
-
-async function run(ctx: PluginContextTier1, op: string, args: unknown): Promise<unknown> {
-  const fn = plugin.operations[op];
-  if (!fn) throw new Error(`operation ${op} missing`);
-  return fn(ctx, args);
-}
+import { run, sha256Hex, world } from "./test-world.js";
 
 async function activate(ctx: PluginContextTier1): Promise<void> {
   if (!plugin.onActivate) throw new Error("auth must seed its config in onActivate");
   await plugin.onActivate(ctx);
-}
-
-async function sha256Hex(s: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 describe("auth config seeding", () => {
@@ -151,7 +82,8 @@ describe("signup honours auth_config", () => {
     ).rejects.toThrow(/password >= 12 chars/);
     expect(w.tables.public_users).toHaveLength(0);
     const ok = await run(w.ctx, "signup", { email: "a@example.com", password: "twelve-chars" });
-    expect(ok).toMatchObject({ publicUserId: expect.any(String) });
+    expect(ok).toEqual({ awaitingVerification: true });
+    expect(w.tables.public_users).toHaveLength(1);
   });
 });
 
@@ -163,9 +95,10 @@ describe("reset_password", () => {
       ],
       public_users: [{ id: "u1", email: "a@example.com", password_hash: "old" }],
     });
-    const token = "reset-token";
+    const token = "reset-token-0123456789";
     w.tables.password_reset_tokens?.push({
       id: "t1",
+      created_at: new Date().toISOString(),
       public_user_id: "u1",
       token_hash: await sha256Hex(token),
       expires_at: new Date(Date.now() + 60_000).toISOString(),

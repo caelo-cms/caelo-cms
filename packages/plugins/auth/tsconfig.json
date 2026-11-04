@@ -15,5 +15,5 @@
       "path": "../../plugin-component-kit"
     }
   ],
-  "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]
+  "exclude": ["**/*.test.ts", "src/test-world.ts", "**/dist", "**/node_modules"]
 }

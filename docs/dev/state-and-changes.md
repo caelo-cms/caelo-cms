@@ -42,7 +42,7 @@ Entity tables and snapshots in `cms_admin`, plugin storage rows and row snapshot
 
 **Kinds are a registry.** A new core domain adds its kind to `JOURNAL_KINDS`. Plugin storage needs no journal migration: the host attaches the trigger whenever it provisions a plugin's `cms_admin` schema (`caelo_journal_attach_plugin_schema`), under the kind `plugin_storage`, keyed on the plugin's **id**, never on its reusable slug.
 
-**Out of scope: `cms_public`.** It is a separate database with its own xid space. Derived state on visitor writes (a ratings aggregate) is maintained inside the `publicOperation` that writes it.
+**Out of scope: `cms_public`.** It is a separate database with its own xid space. Derived state on visitor writes is recomputed by the admin from that database's own rows: a plugin worker declared `publicDatabases: "each"` runs once per public database (the ratings averages, #1333). The public mail outbox (#1337) is an inbox in each public database, not a change mechanism of cms_admin ([mail-outbox.md](./mail-outbox.md)).
 
 ## 3. Derived state: two kinds, both rebuildable
 

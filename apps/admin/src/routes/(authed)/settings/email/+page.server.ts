@@ -84,8 +84,8 @@ export const actions: Actions = {
       fromAddress: typeof fromAddress === "string" ? fromAddress : "",
       config: cfg,
     });
-    if (!r.ok) return fail(400, { error: r.error.kind });
-    return { ok: true, message: "Email config saved. Restart admin process to take effect." };
+    if (!r.ok) return fail(400, { error: describeError(r.error) });
+    return { ok: true, message: "Email config saved. The next mail goes out with it." };
   },
   testSend: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");
@@ -100,5 +100,31 @@ export const actions: Actions = {
     if (!r.ok) return fail(400, { error: describeError(r.error) });
     const v = r.value as { messageId: string };
     return { ok: true, message: `Sent test email (id ${v.messageId}).` };
+  },
+  /** #1337 — the sending domain's DNS records as the provider sees them. */
+  checkDomain: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const form = await request.formData();
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "email_config.sender_domain", {
+      verify: form.get("verify") === "1",
+    });
+    if (!r.ok) return fail(400, { error: describeError(r.error) });
+    return {
+      domainStatus: r.value as {
+        found: boolean;
+        domain: string;
+        status?: string;
+        verificationStarted?: boolean;
+        records?: Array<{
+          purpose: string;
+          type: string;
+          name: string;
+          value: string;
+          priority: number | null;
+          status: string;
+        }>;
+      },
+    };
   },
 };

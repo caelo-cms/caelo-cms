@@ -32,9 +32,9 @@
       Email transport
     </h1>
     <p class="text-sm text-muted-foreground">
-      Plugins that declare the <code>email</code> capability (newsletter, auth password reset)
-      dispatch through this transport. Until you switch off <code>none</code>, sends are logged
-      to stderr and not delivered.
+      Plugins that send mail (newsletter confirmations, visitor sign-up and password reset)
+      deliver through this transport. A plugin that sends mail cannot be activated while the
+      transport is <code>none</code>.
     </p>
   </div>
 
@@ -130,4 +130,66 @@
       </form>
     </CardContent>
   </Card>
+
+  {#if data.config.transport === "resend"}
+    <Card>
+      <CardHeader>
+        <CardTitle>Sending domain</CardTitle>
+        <CardDescription>
+          The DNS records Resend needs before it delivers for your from-address domain. Create
+          the ones not verified at your domain registrar, then check again.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="grid gap-3">
+        <div class="flex gap-2">
+          <form method="post" action="?/checkDomain" use:enhance>
+            <Button type="submit" variant="secondary">Show records</Button>
+          </form>
+          <form method="post" action="?/checkDomain" use:enhance>
+            <input type="hidden" name="verify" value="1" />
+            <Button type="submit" variant="secondary">Check again</Button>
+          </form>
+        </div>
+        {#if form?.domainStatus}
+          {#if !form.domainStatus.found}
+            <p class="text-sm">
+              Resend does not know <code>{form.domainStatus.domain}</code> yet. Add it in the Resend
+              dashboard under Domains, then show the records here.
+            </p>
+          {:else}
+            <p class="text-sm">
+              <code>{form.domainStatus.domain}</code>: {form.domainStatus.status}{form.domainStatus
+                .verificationStarted
+                ? " (Resend is checking again; show the records in a minute)"
+                : ""}
+            </p>
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead>
+                  <tr>
+                    <th class="p-1">Purpose</th>
+                    <th class="p-1">Type</th>
+                    <th class="p-1">Name</th>
+                    <th class="p-1">Value</th>
+                    <th class="p-1">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each form.domainStatus.records ?? [] as rec (rec.purpose + rec.type + rec.name)}
+                    <tr class="border-t align-top">
+                      <td class="p-1">{rec.purpose}</td>
+                      <td class="p-1">{rec.type}{rec.priority !== null ? ` (${rec.priority})` : ""}</td>
+                      <td class="p-1 break-all"><code>{rec.name}</code></td>
+                      <td class="p-1 break-all"><code>{rec.value}</code></td>
+                      <td class="p-1">{rec.status}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        {/if}
+      </CardContent>
+    </Card>
+  {/if}
 </div>

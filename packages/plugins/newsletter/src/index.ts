@@ -114,6 +114,9 @@ const tokenInput = z
   })
   .strict();
 
+/** How long a double opt-in link stays valid (#1337: tokens expire). */
+const CONFIRM_TOKEN_TTL_MS = 1000 * 60 * 60 * 48;
+
 /** `subscribe`'s one answer for every address (P6, #1336). */
 const SUBSCRIBE_ANSWER = Object.freeze({ awaitingConfirm: true as const });
 
@@ -163,6 +166,8 @@ export default definePlugin<PluginContextTier1>({
       email: "string",
       email_hash: "string",
       confirm_token: "string",
+      /** #1337 — the double opt-in link expires; a new subscribe sends a new one. */
+      confirm_expires_at: "timestamp_nullable",
       confirmed_at: "timestamp_nullable",
       unsub_token: "string",
       unsubscribed_at: "timestamp_nullable",
@@ -222,6 +227,24 @@ export default definePlugin<PluginContextTier1>({
    */
   requires: ["email"],
   /**
+   * #1337 — the double opt-in mail. Queued by `subscribe` into the public
+   * outbox; the admin sends it with the link on this environment's host.
+   */
+  mailTemplates: {
+    confirm_subscription: {
+      subject: "Confirm your newsletter subscription",
+      body: [
+        "Please confirm that you want to receive this site's newsletter.",
+        "If you did not sign up, ignore this mail: without your confirmation you will not get any newsletter.",
+      ],
+      link: {
+        operation: "confirm",
+        label: "Confirm subscription",
+        done: "Thank you, your subscription is confirmed.",
+      },
+    },
+  },
+  /**
    * #1332 — subscribers are visitor state: a visitor's own confirm and
    * unsubscribe links find their row by token. Campaigns and the per-
    * recipient send log are the admin's; no visitor reaches them.
@@ -277,32 +300,30 @@ export default definePlugin<PluginContextTier1>({
         { id: string; confirmed_at: string | null; confirm_token: string }
       >("subscribers", { email_hash: hash, limit: 1 });
       if (existing[0]?.confirmed_at) return SUBSCRIBE_ANSWER;
-      if (existing[0]) {
-        if (ctx.email && typeof existing[0].confirm_token === "string") {
-          await ctx.email.send({
-            to: input.email,
-            subject: "Confirm your newsletter subscription",
-            html: `<p>Click <a href="/api/plugin/newsletter/confirm?token=${existing[0].confirm_token}">here</a> to confirm.</p>`,
-          });
-        }
-        return SUBSCRIBE_ANSWER;
-      }
+      if (!ctx.email) throw new Error("subscribe: the email capability is not attached");
+      // #1337 — a fresh link each time, valid for 48 hours: the mail of a
+      // repeated sign-up replaces the earlier one.
       const confirmToken = crypto.randomUUID();
-      const unsubToken = crypto.randomUUID();
-      await ctx.query.insert("subscribers", {
-        email: input.email,
-        email_hash: hash,
-        confirm_token: confirmToken,
-        unsub_token: unsubToken,
-      });
-      // Send confirmation email if email transport is configured.
-      if (ctx.email) {
-        await ctx.email.send({
-          to: input.email,
-          subject: "Confirm your newsletter subscription",
-          html: `<p>Click <a href="/api/plugin/newsletter/confirm?token=${confirmToken}">here</a> to confirm.</p>`,
+      const confirmExpiresAt = new Date(Date.now() + CONFIRM_TOKEN_TTL_MS).toISOString();
+      if (existing[0]) {
+        await ctx.query.update("subscribers", existing[0].id, {
+          confirm_token: confirmToken,
+          confirm_expires_at: confirmExpiresAt,
+        });
+      } else {
+        await ctx.query.insert("subscribers", {
+          email: input.email,
+          email_hash: hash,
+          confirm_token: confirmToken,
+          confirm_expires_at: confirmExpiresAt,
+          unsub_token: crypto.randomUUID(),
         });
       }
+      await ctx.email.queue({
+        template: "confirm_subscription",
+        to: input.email,
+        token: confirmToken,
+      });
       return SUBSCRIBE_ANSWER;
     },
 
@@ -310,11 +331,19 @@ export default definePlugin<PluginContextTier1>({
       const parsed = tokenInput.safeParse(args);
       if (!parsed.success) throw new PublicOperationError("confirm: invalid token");
       const input = parsed.data;
-      const matches = await ctx.query.list<"subscribers", { id: string }>("subscribers", {
+      const matches = await ctx.query.list<
+        "subscribers",
+        { id: string; confirm_expires_at: string | null }
+      >("subscribers", {
         confirm_token: input.token,
         limit: 1,
       });
       if (!matches[0]) throw new PublicOperationError("confirm: invalid token");
+      // A row from before #1337 has no expiry: it signs up again for a new link.
+      const expires = matches[0].confirm_expires_at;
+      if (!expires || new Date(expires) < new Date()) {
+        throw new PublicOperationError("confirm: the link has expired");
+      }
       await ctx.query.update("subscribers", matches[0].id, {
         confirmed_at: new Date().toISOString(),
       });

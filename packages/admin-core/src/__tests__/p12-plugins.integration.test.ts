@@ -152,9 +152,35 @@ async function pluginScopedAdminQuery<T>(
   );
 }
 
+/** What the admin-side transport sent (a campaign's per-recipient mails). */
+const transportSent: string[] = [];
+
+/** The token of the newest mail of `template` in the live outbox (#1337). */
+async function queuedToken(template: string): Promise<string> {
+  const rows = await adapter.public.transaction(async (tx) => {
+    await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
+    return (await tx.execute(
+      sql`SELECT token FROM mail_outbox WHERE template = ${template} ORDER BY id DESC LIMIT 1`,
+    )) as unknown as { token: string }[];
+  });
+  const token = rows[0]?.token;
+  if (!token) throw new Error(`no queued ${template} mail`);
+  return token;
+}
+
 async function bootstrapAll(): Promise<void> {
   await bootstrapPluginHost({
-    infra: { adapter, registry },
+    infra: {
+      adapter,
+      registry,
+      // #1337 — an admin-side send (the campaign drain) needs a transport.
+      emailTransport: {
+        send: async ({ to }) => {
+          transportSent.push(to);
+          return { messageId: `test-${transportSent.length}` };
+        },
+      },
+    },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [
@@ -199,27 +225,35 @@ afterAll(async () => {
 });
 
 describe("Ratings plugin", () => {
-  it("vote, then re-vote on same (page, locale): updates not duplicates", async () => {
+  it("each vote is a new inbox row; the recompute keeps the visitor's newest (#1333)", async () => {
     await bootstrapAll();
-    const r1 = await runPluginOperation({
+    for (const score of [4, 5]) {
+      const r = await runPluginOperation({
+        invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+        pluginSlug: "ratings",
+        operationName: "submit",
+        args: { pageId: "page-1", score },
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value).toMatchObject({ recorded: true });
+    }
+    const votes = await pluginScopedQuery<{ score: number }>(
+      "ratings",
+      sql`SELECT score FROM plugin_ratings.ratings WHERE page_id = 'page-1' ORDER BY created_at`,
+    );
+    expect(votes.map((v) => v.score)).toEqual([4, 5]);
+    const refresh = await runPluginOperation({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "ratings",
-      operationName: "submit",
-      args: { pageId: "page-1", score: 4 },
+      operationName: "_refresh",
+      args: {},
     });
-    expect(r1.ok).toBe(true);
-    if (!r1.ok) return;
-    expect((r1.value as { mode: string }).mode).toBe("inserted");
-
-    const r2 = await runPluginOperation({
-      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
-      pluginSlug: "ratings",
-      operationName: "submit",
-      args: { pageId: "page-1", score: 5 },
-    });
-    expect(r2.ok).toBe(true);
-    if (!r2.ok) return;
-    expect((r2.value as { mode: string }).mode).toBe("updated");
+    expect(refresh.ok && refresh.value).toMatchObject({ refreshed: 1, pruned: 1 });
+    const left = await pluginScopedQuery<{ score: number }>(
+      "ratings",
+      sql`SELECT score FROM plugin_ratings.ratings WHERE page_id = 'page-1'`,
+    );
+    expect(left.map((v) => v.score)).toEqual([5]);
   });
 
   it("worker _refresh recomputes aggregates", async () => {
@@ -709,6 +743,33 @@ describe("Auth plugin", () => {
     });
     expect(signup.ok).toBe(true);
     if (!signup.ok) return;
+    // #1334 — no session before the address is verified.
+    expect(mut.current.kind).toBe("none");
+    const verify = await runPluginOperation({
+      invocation: { origin: "visitor", actorId: "00000000-0000-0000-0000-00000000aaaa" },
+      pluginSlug: "auth",
+      operationName: "verify_email",
+      args: { token: await queuedToken("verify_email") },
+      visitorContext: {
+        visitorId: "00000000-0000-0000-0000-00000000aaaa",
+        captcha: { enforced: true, proofVerified: true },
+        sessionToken: null,
+      },
+    });
+    expect(verify.ok).toBe(true);
+    const firstLogin = await runPluginOperation({
+      invocation: { origin: "visitor", actorId: "00000000-0000-0000-0000-00000000aaaa" },
+      pluginSlug: "auth",
+      operationName: "login",
+      args: { email: "alice@example.com", password: "supersecret" },
+      visitorContext: {
+        visitorId: "00000000-0000-0000-0000-00000000aaaa",
+        captcha: { enforced: true, proofVerified: true },
+        sessionToken: null,
+        sessionMutation: mut,
+      },
+    });
+    expect(firstLogin.ok).toBe(true);
     expect(mut.current.kind).toBe("set");
     if (mut.current.kind !== "set") return;
     const sessionToken = mut.current.sessionToken;
@@ -793,7 +854,7 @@ describe("Auth plugin", () => {
     expect((me3.value as { authenticated: boolean }).authenticated).toBe(true);
   });
 
-  it("login with wrong password fails; signup duplicate email fails", async () => {
+  it("login with wrong password fails; a duplicate signup answers alike and adds no account", async () => {
     await bootstrapAll();
     await runPluginOperation({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
@@ -816,8 +877,13 @@ describe("Auth plugin", () => {
       operationName: "signup",
       args: { email: "bob@example.com", password: "anyotherpass" },
     });
-    expect(r2.ok).toBe(false);
-    if (!r2.ok) expect(r2.error.message).toContain("already registered");
+    // #1334 (#763 M5) — the same answer as a new address; no second account.
+    expect(r2.ok && r2.value).toEqual({ awaitingVerification: true });
+    const users = await pluginScopedQuery<{ id: string }>(
+      "auth",
+      sql`SELECT id::text AS id FROM plugin_auth.public_users WHERE email = 'bob@example.com'`,
+    );
+    expect(users).toHaveLength(1);
   });
 
   it("password reset flow", async () => {

@@ -10,6 +10,7 @@
  * | projection outbox backstop   | every tick  |
  * | redirect sync retry          | every tick  |
  * | bug forwarding (send)        | every tick  |
+ * | public mail outboxes (#1337) | every tick  |
  * | plugin-data build (#1155)    | 5 minutes   |
  * | update scheduler             | 15 minutes  |
  * | release check                | hourly      |
@@ -29,6 +30,7 @@
  * regions only (#1155).
  */
 
+import { pluginHostBootstrapped } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { BugIntakeClient } from "../bug-forwarding/client.js";
 import {
@@ -38,6 +40,7 @@ import {
 } from "../bug-forwarding/worker.js";
 import { sweepChangeJournal } from "../change-journal-gc-worker.js";
 import { sweepChatImagesOnce } from "../chat-image-gc-worker.js";
+import { describeDrain, drainPublicOutboxes } from "../email/outbox.js";
 import { type AutoUpdateSchedulerOpts, runAutoUpdateTick } from "../platform-updates/scheduler.js";
 import { runPluginDataBuildIfDue } from "../plugin-data/worker.js";
 import { sweepStaleProposals } from "../proposal-gc-worker.js";
@@ -68,6 +71,12 @@ export interface CoreTaskDeps {
    * leaves the task out (`CAELO_UPDATE_SCHEDULER=off` for test runs).
    */
   readonly autoUpdate: Omit<AutoUpdateSchedulerOpts, "adapter" | "registry"> | null;
+  /**
+   * #1337 — the admin's adapter on cms_public_staging, for the staging
+   * mail outbox. Defaults to the plugin host's (the admin process always
+   * has one); a test passes its own.
+   */
+  readonly stagingAdapter?: () => DatabaseAdapter | null;
 }
 
 /** Build a task, defaulting its lease. */
@@ -113,6 +122,21 @@ export function coreScheduledTasks(deps: CoreTaskDeps): ScheduledTask[] {
     task("bug-forwarding-send", 0, async () => {
       const sent = await forwardDueReports(bug);
       return sent > 0 ? `${sent} report(s) handled` : undefined;
+    }),
+    // #1337 — the mail the public gateways queued (double opt-in, password
+    // reset), live then staging. Every tick: a confirmation link is waited for.
+    task("mail-outbox", 0, async () => {
+      const reports = await drainPublicOutboxes({
+        registry,
+        adapter,
+        targets: {
+          live: adapter,
+          staging: deps.stagingAdapter
+            ? deps.stagingAdapter()
+            : (pluginHostBootstrapped()?.infra.stagingAdapter ?? null),
+        },
+      });
+      return describeDrain(reports);
     }),
     task("plugin-data-build", 5 * MINUTE, async () => {
       // The due-table spaces the runs; the op's own spacing would only
