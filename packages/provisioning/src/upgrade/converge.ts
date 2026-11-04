@@ -38,6 +38,7 @@ import {
   moveServicesToDnsHost,
 } from "../cloudsql-tls.js";
 import { ensureConvergeJob } from "../converge-job-setup.js";
+import { ensureGatewayArmorRules } from "../gateway-armor.js";
 import { findSqlInstance, planPublicRoleSwitch } from "../gateway-credentials.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import { schedulerServiceAccountEmail, upgraderServiceAccountEmail } from "../gcp-names.js";
@@ -447,6 +448,28 @@ export function startConverge(
     s.warned(`Remote-MCP load-balancer route not set up: ${edge.error}`);
     r.warn(
       "The upgrade continues; remote MCP (Settings → MCP → Remote) cannot be reached through the site's domain until this succeeds. Re-run upgrade once the cause is fixed.",
+    );
+    incomplete = true;
+  }
+
+  async function gatewayArmor(): Promise<void> {
+    // #1339 — on `gcp` the gateway's Cloud Armor policy gets its per-path
+    // rules (gateway-edge.ts). An extra layer over the gateway's own limits
+    // (E3 of #763), so a failure warns; the old rules stay in force.
+    if (install.provider !== "gcp") return;
+    const s = r.step("Bringing the gateway's Cloud Armor rules up to date...");
+    const armor = await ensureGatewayArmorRules(
+      { projectId: install.projectId, env: install.env },
+      runDeps,
+    );
+    for (const line of armor.done) r.info(`  ${line}`);
+    if (armor.ok) {
+      s.done(`Cloud Armor rules of ${armor.policy} in place`);
+      return;
+    }
+    s.warned(`Cloud Armor rules not updated: ${armor.error}`);
+    r.warn(
+      "The upgrade continues; the gateway keeps its own rate limits, and the edge keeps its previous rules until this succeeds. Re-run upgrade once the cause is fixed.",
     );
     incomplete = true;
   }
@@ -872,6 +895,7 @@ export function startConverge(
       await auditJob();
       await captureJob();
       await remoteMcpEdge();
+      await gatewayArmor();
       await stagingEdge();
       return true;
     },

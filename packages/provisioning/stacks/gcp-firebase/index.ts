@@ -9,16 +9,27 @@
  *                   + IAP-on-Cloud-Run (no LB IAP)
  *   - Gateway:      Cloud Run `caelo-<env>-data-gateway` + Firebase
  *                   Hosting `rewrites` (no LB, no Cloud Armor)
+ *   - Staging gateway: Cloud Run `caelo-<env>-staging-gateway` behind a
+ *                   second Hosting site's `**` rewrite (#1330)
  *   - MCP-Auth-Proxy: Cloud Run on its own run.app URL (#1328; the
  *                   service that was the gateway, E13 a of #763)
  *   - Database:     Cloud SQL Postgres on private VPC IP only (same
  *                   as `gcp/`)
  *   - Workers:      share admin Cloud Run (same as `gcp/`)
  *
- * The trade-off (no Cloud Armor on the gateway) was explicitly
- * accepted by the operator. Mitigation: Firebase Edge DDoS shield,
- * Cloud Run max-instance caps, Caelo's in-app rate-limit
- * middleware, form CAPTCHA/PoW.
+ * No load balancer and no WAF (epic #763 decision E3): this is the cheap
+ * setup. Leaving out the LB, Cloud CDN and the two Cloud Armor policies
+ * saves their lines of the cost table (src/wizards/gcp-cost.ts, the
+ * source of every price; about $37 a month at list prices). No protection
+ * depends on a WAF: the three public services are publicly invokable on
+ * their run.app URLs too (`allUsers`, needed by the Firebase rewrites and
+ * by MCP clients), so each one sheds junk and rate-limits itself before
+ * the database (in-memory budgets per client and per operation, captcha,
+ * per-operation database limits, `public_role`'s connection limit and
+ * timeouts; docs/dev/gateway-hardening.md), and the instance caps bound
+ * the rest. A public service whose feature is off answers a fixed 404
+ * before it reads the request (E14 a). Where a provider has a WAF (gcp:
+ * Cloud Armor), it is an extra layer.
  *
  * Code structure mirrors `packages/provisioning/stacks/gcp/index.ts`
  * for the shared blocks (VPC, Secrets, Cloud SQL, run SA, Cloud Run
@@ -701,9 +712,9 @@ interface CloudRunArgs {
    * in-memory filesystem and is lost with the instance.
    */
   readonly mediaVolume?: ReturnType<typeof adminMediaVolumeTemplate>;
-  /** v0.3.1 — admin: ALL (so IAP gates internet traffic). gateway:
-   *  INTERNAL_LOAD_BALANCER (locked down; only Firebase Hosting
-   *  rewrites + run.invoker-authorised callers can reach it). */
+  /** v0.3.1 — admin: ALL (so IAP gates internet traffic). Every
+   *  service is ALL today: the public ones are reached through Firebase
+   *  Hosting rewrites and their run.app URLs (E3 of #763). */
   readonly ingress: "INGRESS_TRAFFIC_ALL" | "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER";
   /** v0.3.1 — set true on admin so Cloud Run IAP gates traffic. */
   readonly iapEnabled?: boolean;
@@ -911,9 +922,9 @@ const adminSvc = cloudRunService({
 //
 // v0.3.13 — Gateway is PUBLIC by design.
 //
-// Per the gcp-firebase architecture decision: no Cloud Armor on
-// the gateway; in-app rate limits + CAPTCHA on form submission
-// endpoints gate abuse. The original plan was to grant the
+// Per the gcp-firebase architecture decision (E3 of #763): no LB and no
+// Cloud Armor on the gateway; its own layers gate abuse (the file
+// comment). The original plan was to grant the
 // Firebase Hosting SA `roles/run.invoker` so Firebase rewrites
 // could call the gateway as that SA. But the gcp-sa-firebasehosting
 // SA is created lazily by Firebase on first Cloud-Run-rewrite
@@ -1300,9 +1311,10 @@ const out: CloudAdapterOutputs = {
   bootstrapUrl:
     pulumi.interpolate`https://${adminDomain}/setup?token=${tokenInfo.token}` as unknown as string,
   dnsRecordsRequired: dnsRecords as unknown as DnsRecord[],
-  // gcp-firebase doesn't provision BigQuery sinks today (no LB → no
-  // edge log stream). v0.3.x+ adds a Firebase Hosting log export.
-  edgeLogSinkUrl: `bigquery://${project}/firebase_logs` as unknown as string,
+  // #1339 — no BigQuery export here (that dataset was never created):
+  // the services' request logs stay in Cloud Logging, the cross-cutting
+  // single sink of CLAUDE.md §11.B, in the project's `_Default` bucket.
+  edgeLogSinkUrl: `logging://${project}/_Default` as unknown as string,
   provider: "gcp-firebase",
   environment: env,
 };

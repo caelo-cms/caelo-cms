@@ -1196,6 +1196,17 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(neg).toBeLessThan(backend);
     expect(backend).toBeLessThan(retire);
     expect(retire).toBeLessThan(indexOf(events, /^migrate /));
+    // #1339 (contract 21) — the gateway policy's per-path rules, before the
+    // migrations; the general ban is limited to /api/ paths.
+    const general = indexOf(
+      events,
+      /^gcloud compute security-policies rules create 1000 --security-policy=caelo-production-waf-1 .*--expression=request\.path\.contains\('\/api\/'\)/,
+    );
+    expect(
+      indexOf(events, /rules create 800 --security-policy=caelo-production-waf-1 /),
+    ).toBeLessThan(general);
+    expect(general).toBeLessThan(indexOf(events, /^migrate /));
+    expect(lines).toContain("done: Cloud Armor rules of caelo-production-waf-1 in place");
   });
 
   it("on gcp-firebase there is no URL map: no redirects role", async () => {

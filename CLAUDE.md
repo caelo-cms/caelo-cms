@@ -298,17 +298,20 @@ The admin app must **never be reachable from the public internet without authent
 - **Cost:** ~$0/mo idle (scale-to-zero); ~$2-15/mo with light editorial use depending on `adminMinInstances`.
 - **Why not "just rely on Caelo's session cookie":** when (not if) a 0day lands in the admin's request path, the identity proxy IS the only thing between the attacker and the database. CMS spec calls this out implicitly via §17.4 ("admin-only" surfaces); §11.B makes the GCP/AWS/Azure mechanism explicit.
 
-### Tier 3 — API gateway (public visitor writes, WAF-gated)
+### Tier 3 — API gateway (public visitor writes, self-protecting; a WAF where the provider has one)
 
 The gateway accepts public POSTs (form submissions, comments, ratings, newsletter signups). It is the only piece that handles untrusted traffic. MCP calls (`caelo_chat`, Power-MCP) are NOT gateway traffic: they hit the admin's `/api/mcp/*` (Tier 2) and pass IAP with a service-account JWT plus Caelo's own MCP bearer (issue #37). Remote MCP from claude.ai / ChatGPT is not gateway traffic either: its OAuth broker and stream to the admin through IAP run in the **MCP-Auth-Proxy** (`apps/mcp-auth-proxy`, #1328), a public service of its own on every provider — its own image, an account that reads only the Google sign-in client and the seal key, no database, no VPC route — always provisioned at zero instances and answering a fixed 404 while remote MCP is off. On gcp-firebase it is the service that was the gateway (its run.app URL is every connector's address, its own origin); the visitor gateway is `caelo-<env>-data-gateway` there. On gcp it has its own backend and Cloud Armor policy but still answers on the site's host until it gets a host of its own (follow-up to #1328: DNS, certificate and a new redirect URI).
 
-- **Primitive:** managed serverless container behind a cloud-native WAF (rate limiting + OWASP rule pack + bot detection), routed via the Tier-1 LB's URL map (`/api/*` path prefix → gateway backend).
-  - GCP: Cloud Run + Cloud Armor SecurityPolicy attached to the gateway BackendService.
-  - AWS: Lambda / Fargate behind the ALB + AWS WAF.
-  - Azure: Container Apps behind the Front Door + Front Door WAF.
-  - Self-hosted: Caddy with `rate_limit` + `crowdsec` middleware (P13 ships the equivalents in-process).
-- **Public:** yes, but every request hits rate limit + WAF before the gateway runs.
-- **Cost:** ~$0 idle, ~$3-5/mo light traffic. WAF basic rules free; ML-based bot mitigation +$5/mo (`cloudArmorAdaptive` knob).
+**No protection depends on a WAF (epic #763 decision E3).** The cheap setup (gcp-firebase) has no load balancer and no WAF, and every public service stays reachable on its own URL, so each one sheds junk and rate-limits itself before the database (in-memory budgets per client and per operation, captcha, per-operation database limits, `public_role`'s connection limit and timeouts: [`docs/dev/gateway-hardening.md`](./docs/dev/gateway-hardening.md)). Where the provider has a WAF it is an extra layer. Every public service (live gateway, staging gateway, MCP-Auth-Proxy) is always provisioned at zero minimum instances and answers a fixed 404 before it reads the request while its feature is off (E14 a; toggling through a converge request comes later). `packages/provisioning/src/public-service-shape.ts` is the per-provider table (E11) a test pins every adapter and the cost table to.
+
+- **Primitive:** managed serverless container, routed by the provider's edge (the Tier-1 LB's URL map, `/api/*` → gateway backend, where there is an LB).
+  - GCP: Cloud Run + Cloud Armor SecurityPolicy on the gateway BackendService, per-path rules (`packages/provisioning/src/gateway-edge.ts`).
+  - GCP Firebase: Cloud Run behind the Firebase Hosting rewrite, no LB, no WAF (E3).
+  - AWS: Lambda / Fargate behind the ALB (#749).
+  - Azure: Container Apps behind the Front Door (#750).
+  - Self-hosted: Caddy caps the request body; the rate limits are the gateway's own (stock Caddy has no `rate_limit`).
+- **Public:** yes; every request meets the gateway's own limits before the database, and the WAF first where there is one.
+- **Cost:** ~$0 idle, ~$3-5/mo light traffic. On gcp the Cloud Armor policy bills $5 plus $1 per rule (`src/wizards/gcp-cost.ts` prices it); ML-based bot mitigation +$5/mo (`wafAdaptiveProtection` knob).
 - **Same LB as Tier 1** — the LB cost is already paid for the static path; adding the API path-prefix route is free.
 
 ### Tier 4 — Database (private VPC IP only)

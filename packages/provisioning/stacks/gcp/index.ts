@@ -5,7 +5,10 @@
  *
  *   Tier 1 — Static site:    GCS + Cloud CDN + Managed SSL via single LB
  *   Tier 2 — Admin app:      Cloud Run + Identity-Aware Proxy (allowlist)
- *   Tier 3 — API gateway:    Cloud Run + Cloud Armor (path-prefix on the LB)
+ *   Tier 3 — API gateway:    Cloud Run + Cloud Armor (path-prefix on the LB);
+ *                            the staging gateway (#1330) shares the policy.
+ *                            Cloud Armor is an extra layer: the gateways
+ *                            protect themselves without it (E3 of #763)
  *   Tier 4 — Database:       Cloud SQL Postgres on private VPC IP only
  *   Tier 5 — Workers:        share the admin's Cloud Run process
  *
@@ -14,7 +17,8 @@
  * mapping (admin.<domain>) so IAP can gate it independently — IAP can't
  * be attached selectively to one path of a multi-backend LB.
  *
- * Defaults: minimal-cost (~$30/mo). Operators bump knobs to scale up.
+ * Defaults: minimal-cost; src/wizards/gcp-cost.ts prices every resource
+ * (the wizard shows it before `up`). Operators bump knobs to scale up.
  */
 
 import * as gcp from "@pulumi/gcp";
@@ -22,6 +26,7 @@ import * as pulumi from "@pulumi/pulumi";
 import * as random from "@pulumi/random";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
+import { gatewayArmorRuleArgs } from "../../dist/gateway-edge.js";
 import {
   gatewayServiceAccountId,
   gcpBucketName,
@@ -987,54 +992,18 @@ const lbIp = new gcp.compute.GlobalAddress(
   opts,
 );
 
-// Tier 3 — Cloud Armor security policy (rate limit + OWASP basic rules)
+// Tier 3 — Cloud Armor security policy: per-path rate rules + OWASP packs
+// (#1339, src/gateway-edge.ts says why each rule is what it is; the converge
+// applies the same rules to existing installs, gateway-armor.ts). An extra
+// layer: every protection also lives in the gateway itself (E3 of #763).
+// #1328 — no remote-MCP rule here any more: the URL map sends /api/mcp/* to
+// the MCP-Auth-Proxy's backend, whose own policy carries it
+// (remote-mcp-edge.ts, created by the CLI).
 const wafPolicy = new gcp.compute.SecurityPolicy(
   `${namePrefix}-waf`,
   {
-    description: `Caelo ${env} Cloud Armor — rate limit + OWASP`,
-    rules: [
-      // #1328 — no remote-MCP rule here any more: the URL map sends
-      // /api/mcp/* to the MCP-Auth-Proxy's backend, whose own policy carries
-      // it (remote-mcp-edge.ts, created by the CLI; `upgrade` drops the old
-      // rule from this policy).
-      // Rate limit per source IP — 100 req / min sliding window.
-      {
-        action: "rate_based_ban",
-        priority: 1000,
-        match: {
-          versionedExpr: "SRC_IPS_V1",
-          config: { srcIpRanges: ["*"] },
-        },
-        rateLimitOptions: {
-          rateLimitThreshold: { count: 100, intervalSec: 60 },
-          conformAction: "allow",
-          exceedAction: "deny(429)",
-          enforceOnKey: "IP",
-          banDurationSec: 600,
-        },
-      },
-      // OWASP rule pack (preconfigured WAF) — free tier covers the basics.
-      {
-        action: "deny(403)",
-        priority: 2000,
-        match: {
-          expr: { expression: "evaluatePreconfiguredWaf('sqli-v33-stable')" },
-        },
-      },
-      {
-        action: "deny(403)",
-        priority: 2001,
-        match: {
-          expr: { expression: "evaluatePreconfiguredWaf('xss-v33-stable')" },
-        },
-      },
-      // Default allow.
-      {
-        action: "allow",
-        priority: 2147483647,
-        match: { versionedExpr: "SRC_IPS_V1", config: { srcIpRanges: ["*"] } },
-      },
-    ],
+    description: `Caelo ${env} Cloud Armor — per-path rate rules + OWASP`,
+    rules: gatewayArmorRuleArgs(),
     ...(wafAdaptiveProtection
       ? { adaptiveProtectionConfig: { layer7DdosDefenseConfig: { enable: true } } }
       : {}),

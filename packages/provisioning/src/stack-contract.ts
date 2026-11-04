@@ -526,6 +526,23 @@ export type RuntimeSecret =
    */
   | "mcp-oauth-seal-key";
 
+/**
+ * Every {@link RuntimeSecret} as a value (the record makes the compiler
+ * check the list against the union): the cost table prices one active
+ * version of each.
+ */
+export const RUNTIME_SECRETS = Object.keys({
+  "postgres-password": true,
+  "public-role-password": true,
+  "public-staging-role-password": true,
+  "secret-kek": true,
+  "internal-secret": true,
+  "tool-approval-secret": true,
+  "staging-gate-secret": true,
+  "operator-oauth-client": true,
+  "mcp-oauth-seal-key": true,
+} satisfies Record<RuntimeSecret, true>) as readonly RuntimeSecret[];
+
 /** The Postgres roles Caelo's services log in as, with their passwords. */
 export type DatabaseRole = "admin_role" | "public_role" | "public_staging_role";
 

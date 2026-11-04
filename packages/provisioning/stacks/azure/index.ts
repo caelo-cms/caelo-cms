@@ -14,8 +14,9 @@
  *     domain with a managed certificate — files served as files, no compute
  *     on the request path (CLAUDE.md §11.B Tier 1).
  *  5. Azure Container Apps (admin/gateway/orchestrator/runner, and the
- *     MCP-Auth-Proxy without any secret, #1328),
- *     mounted with Key Vault secrets via managed identity.
+ *     MCP-Auth-Proxy without any secret, #1328). Database passwords are
+ *     Key Vault references read through a user-assigned identity per
+ *     service (#1339): the URLs carry no password.
  *  6. Key Vault entries (postgres-password, csrf-secret, cookie-secret,
  *     anthropic-api-key, resend-api-key).
  *  7. Log Analytics workspace receives Container Apps logs;
@@ -40,6 +41,11 @@ import * as azure from "@pulumi/azure-native";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { azureFrontDoorDnsRecords } from "../../dist/azure-front-door.js";
+import {
+  AZURE_SERVICE_DATABASE_SECRETS,
+  type AzureDatabaseSecret,
+  type AzureSecretReader,
+} from "../../dist/azure-secrets.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import {
   DEFAULT_MAX_CONNECTIONS,
@@ -86,6 +92,10 @@ const maxConnections = Number.parseInt(
 );
 /** Replicas each Container App may scale to (see containerApp). */
 const MAX_REPLICAS = 10;
+// The §11.B knob, same name and default as every adapter: the public API
+// gateway scales to zero unless the operator keeps replicas warm (E14 a of
+// #763: a public service is provisioned at zero minimum instances).
+const gatewayMinInstances = Number.parseInt(cfg.get("gatewayMinInstances") ?? "0", 10);
 // The admin, orchestrator and runner apps all open the admin's two pools,
 // so the budget counts their replicas together as admin instances.
 const ADMIN_SIDE_APPS = 3;
@@ -153,8 +163,8 @@ function keyVaultSecret(shortName: string, value: pulumi.Output<string>): azure.
   });
 }
 
-const _pgSecret = keyVaultSecret("pg-password", postgresPassword);
-keyVaultSecret("public-role-password", publicRolePassword);
+const pgSecret = keyVaultSecret("pg-password", postgresPassword);
+const publicRoleSecret = keyVaultSecret("public-role-password", publicRolePassword);
 // #1329 — read by nothing yet: the staging gateway's app (#750) will.
 keyVaultSecret("public-staging-role-password", publicStagingRolePassword);
 keyVaultSecret("csrf-secret", csrfSecret);
@@ -220,31 +230,22 @@ const _pgPublicStaging = new azure.dbforpostgresql.Database(`${namePrefix}-cms-p
 // Bun trusts out of the box, so no sslrootcert (shared database-tls.ts).
 const AZURE_TLS = verifyFullQuery();
 
-const adminDatabaseUrl = pulumi
-  .all([pgServer.fullyQualifiedDomainName, postgresPassword])
-  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_admin?${AZURE_TLS}`);
+// #1339 (epic #763 L5) — password-less, like on GCP: the password is a Key
+// Vault reference on the Container App (AZURE_SERVICE_DATABASE_SECRETS),
+// never part of the URL, so it shows up neither in the app's env nor in its
+// revision history (shared database-url.ts `<NAME>_PASSWORD`).
+const dbUrl = (role: string, db: string) =>
+  pulumi.interpolate`postgresql://${role}@${pgServer.fullyQualifiedDomainName}:5432/${db}?${AZURE_TLS}`;
+const adminDatabaseUrl = dbUrl("caelo_admin", "cms_admin");
 // What the admin connects to cms_public with (DDL, migrations, moderation).
-const publicAdminDatabaseUrl = pulumi
-  .all([pgServer.fullyQualifiedDomainName, postgresPassword])
-  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_public?${AZURE_TLS}`);
+const publicAdminDatabaseUrl = dbUrl("caelo_admin", "cms_public");
 // The gateway's only login (#613, #635): public_role on cms_public. It has
 // no cms_admin login at all (CLAUDE.md §2).
-const publicDatabaseUrl = pulumi
-  .all([pgServer.fullyQualifiedDomainName, publicRolePassword])
-  .apply(([host, pw]) => `postgresql://public_role:${pw}@${host}:5432/cms_public?${AZURE_TLS}`);
+const publicDatabaseUrl = dbUrl("public_role", "cms_public");
 // #1329 — the admin's pool on the staging database (plugin schemas, the
 // staging half of the projection), and the staging gateway's only login.
-const publicStagingAdminDatabaseUrl = pulumi
-  .all([pgServer.fullyQualifiedDomainName, postgresPassword])
-  .apply(
-    ([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_public_staging?${AZURE_TLS}`,
-  );
-const publicStagingDatabaseUrl = pulumi
-  .all([pgServer.fullyQualifiedDomainName, publicStagingRolePassword])
-  .apply(
-    ([host, pw]) =>
-      `postgresql://public_staging_role:${pw}@${host}:5432/cms_public_staging?${AZURE_TLS}`,
-  );
+const publicStagingAdminDatabaseUrl = dbUrl("caelo_admin", "cms_public_staging");
+const publicStagingDatabaseUrl = dbUrl("public_staging_role", "cms_public_staging");
 
 // === 4. Storage account + containers ===
 const storage = new azure.storage.StorageAccount(`${namePrefix}-st`, {
@@ -477,8 +478,49 @@ const cappEnv = new azure.app.ManagedEnvironment(`${namePrefix}-capp-env`, {
   },
 });
 
+// #1339 — one user-assigned identity per secret reader, with "Key Vault
+// Secrets User" on exactly the secrets AZURE_SERVICE_DATABASE_SECRETS gives
+// it (RBAC on the secret, not the vault): the gateway's identity can read
+// public_role's password and nothing else.
+const KEY_VAULT_SECRETS_USER_ROLE = "4633458b-17de-408a-b874-0445c86b69e6";
+const clientConfig = azure.authorization.getClientConfigOutput();
+const keyVaultSecrets: Record<AzureDatabaseSecret, azure.keyvault.Secret> = {
+  "pg-password": pgSecret,
+  "public-role-password": publicRoleSecret,
+};
+
+interface SecretReader {
+  readonly identity: azure.managedidentity.UserAssignedIdentity;
+  readonly reader: AzureSecretReader;
+}
+
+function secretReader(reader: AzureSecretReader): SecretReader {
+  const identity = new azure.managedidentity.UserAssignedIdentity(`${namePrefix}-${reader}-id`, {
+    resourceGroupName: rg.name,
+    resourceName: `${namePrefix}-${reader}-id`,
+    location,
+  });
+  for (const name of new Set(Object.values(AZURE_SERVICE_DATABASE_SECRETS[reader]))) {
+    new azure.authorization.RoleAssignment(`${namePrefix}-${reader}-reads-${name}`, {
+      principalId: identity.principalId,
+      principalType: "ServicePrincipal",
+      roleDefinitionId: pulumi.interpolate`/subscriptions/${clientConfig.subscriptionId}/providers/Microsoft.Authorization/roleDefinitions/${KEY_VAULT_SECRETS_USER_ROLE}`,
+      scope: keyVaultSecrets[name].id,
+    });
+  }
+  return { identity, reader };
+}
+
+const adminSecretReader = secretReader("admin");
+const gatewaySecretReader = secretReader("gateway");
+
 interface ContainerAppArgs {
   readonly serviceName: string;
+  /**
+   * #1339 — the identity whose Key Vault references become the app's
+   * `<NAME>_PASSWORD` env vars; none for an app that reads no secret.
+   */
+  readonly secrets?: SecretReader;
   /**
    * The service's database connection env. The admin-side services get
    * admin_role's URLs; the gateway gets only its own two logins (#613,
@@ -494,16 +536,39 @@ interface ContainerAppArgs {
    * minimum replicas in every environment (E14 a of #763).
    */
   readonly isolated?: true;
+  /** Minimum replicas; unset: 0 outside production, 1 in production. */
+  readonly minReplicas?: number;
 }
 
 function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
+  const passwords = args.secrets
+    ? Object.entries(AZURE_SERVICE_DATABASE_SECRETS[args.secrets.reader])
+    : [];
+  const secretNames = [...new Set(passwords.map(([, name]) => name))];
   return new azure.app.ContainerApp(`${namePrefix}-${args.serviceName}`, {
     resourceGroupName: rg.name,
     containerAppName: `${namePrefix}-${args.serviceName}`,
     location,
     managedEnvironmentId: cappEnv.id,
+    ...(args.secrets
+      ? {
+          identity: {
+            type: "UserAssigned",
+            userAssignedIdentities: [args.secrets.identity.id],
+          },
+        }
+      : {}),
     configuration: {
       activeRevisionsMode: "Single",
+      ...(args.secrets
+        ? {
+            secrets: secretNames.map((name) => ({
+              name,
+              keyVaultUrl: keyVaultSecrets[name].properties.apply((p) => p.secretUri ?? ""),
+              identity: (args.secrets as SecretReader).identity.id,
+            })),
+          }
+        : {}),
       ingress: {
         external: false,
         targetPort: 8080,
@@ -512,7 +577,7 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
     },
     template: {
       scale: {
-        minReplicas: args.isolated || env !== "production" ? 0 : 1,
+        minReplicas: args.isolated ? 0 : (args.minReplicas ?? (env !== "production" ? 0 : 1)),
         maxReplicas: MAX_REPLICAS,
       },
       containers: [
@@ -528,6 +593,7 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
                 { name: "CAELO_PROVIDER", value: "azure" },
                 { name: "CAELO_ENV", value: env },
                 ...args.databaseEnv,
+                ...passwords.map(([envName, name]) => ({ name: envName, secretRef: name })),
                 {
                   name: "MEDIA_STORAGE_URL",
                   value: pulumi.interpolate`https://${storage.name}.blob.core.windows.net/media`,
@@ -550,6 +616,7 @@ const adminDatabaseEnv = [
 const adminApp = containerApp({
   serviceName: "admin",
   databaseEnv: adminDatabaseEnv,
+  secrets: adminSecretReader,
   resources: adminResources,
   // #551 — the public site URL; the admin seeds site_defaults.site_base_url
   // from it (canonical, og:url, sitemap) when it is not configured yet.
@@ -557,6 +624,8 @@ const adminApp = containerApp({
 });
 const _gatewayApp = containerApp({
   serviceName: "gateway",
+  secrets: gatewaySecretReader,
+  minReplicas: gatewayMinInstances,
   databaseEnv: [
     { name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl },
     ...poolBudget.env.gateway,
@@ -592,8 +661,13 @@ const _mcpAuthProxyApp = containerApp({
 const _orchestratorApp = containerApp({
   serviceName: "orchestrator",
   databaseEnv: adminDatabaseEnv,
+  secrets: adminSecretReader,
 });
-const _runnerApp = containerApp({ serviceName: "runner", databaseEnv: adminDatabaseEnv });
+const _runnerApp = containerApp({
+  serviceName: "runner",
+  databaseEnv: adminDatabaseEnv,
+  secrets: adminSecretReader,
+});
 // === 7. Bootstrap token ===
 const tokenInfo = generateBootstrapToken();
 
@@ -609,6 +683,7 @@ const dnsRecordsRequired = pulumi
   );
 
 const out: CloudAdapterOutputs = {
+  // Password-less — the passwords live only in Key Vault (#1339).
   adminDatabaseUrl: adminDatabaseUrl as unknown as string,
   publicDatabaseUrl: publicDatabaseUrl as unknown as string,
   publicStagingDatabaseUrl: publicStagingDatabaseUrl as unknown as string,
