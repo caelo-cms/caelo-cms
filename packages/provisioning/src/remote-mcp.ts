@@ -345,8 +345,17 @@ export async function checkRemoteMcpIdentityEnv(
 ): Promise<RemoteMcpResult<{ readonly drift: Record<CloudRunSlug, EnvChange[]> }>> {
   const run = deps.run ?? defaultGcloud;
   const desired = remoteMcpIdentityEnv(identity);
-  const drift: Record<CloudRunSlug, EnvChange[]> = { admin: [], gateway: [], "mcp-auth-proxy": [] };
+  const drift: Record<CloudRunSlug, EnvChange[]> = {
+    admin: [],
+    gateway: [],
+    "staging-gateway": [],
+    "mcp-auth-proxy": [],
+  };
   for (const slug of CLOUD_RUN_SLUGS) {
+    // Nothing to check where the identity names nothing (the visitor
+    // gateways), and the staging gateway is the CLI's (#1330), not the
+    // stack's: it may not exist yet right after a first `up`.
+    if (desired[slug].length === 0) continue;
     const described = await describeService(target, target.services[slug], run);
     if (!described.ok) return described;
     const plan = planEnvUpdate(liveContainerEnv(described.json), desired[slug]);

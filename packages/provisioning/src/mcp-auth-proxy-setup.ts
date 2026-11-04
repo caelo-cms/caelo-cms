@@ -48,6 +48,7 @@ import {
   secretFilePath,
   serviceSecrets,
 } from "./stack-contract.js";
+import { ensureStagingGatewayFromLiveGateway } from "./staging-gateway-setup.js";
 import { listFlag } from "./stack-converge.js";
 import { lookupFailure, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 
@@ -61,7 +62,14 @@ export interface ReleaseServicesTarget {
   readonly domain: string;
   /** The release's digest-pinned MCP-Auth-Proxy image (`…/mcp-auth-proxy@sha256:…`). */
   readonly mcpAuthProxyImageRef: string;
+  /** #1330 — the release's digest-pinned gateway image, which the staging gateway runs too. */
+  readonly gatewayImageRef: string;
+  /** #1330 — the staging host (install.json `stagingDomain`). */
+  readonly stagingHost: string;
 }
+
+/** What the `gcp` proxy's own service needs. */
+export type ProxyServiceTarget = Omit<ReleaseServicesTarget, "gatewayImageRef" | "stagingHost">;
 
 export interface ReleaseServicesDeps {
   readonly run?: GcloudRunner;
@@ -94,6 +102,10 @@ export async function ensureReleaseServices(
     target.provider === "gcp-firebase"
       ? await ensureDataGatewayService(target, run, deps.writeSpecFile ?? writeTempSpec)
       : await ensureMcpAuthProxyServiceGcp(target, run),
+  );
+  if (outcomes.some((o) => o.status === "failed")) return outcomes;
+  outcomes.push(
+    ...(await ensureStagingGatewayFromLiveGateway(target, { run, sleep: deps.sleep ?? realSleep })),
   );
   return outcomes;
 }
@@ -317,7 +329,7 @@ function gcpProxyEnv(target: Pick<ReleaseServicesTarget, "env" | "domain">): Clo
  * invokable without a Google identity (MCP clients have none), request-based
  * CPU, no VPC, and its Google sign-in client file as a secret volume.
  */
-export function gcpProxyDeployArgs(target: ReleaseServicesTarget): string[] {
+export function gcpProxyDeployArgs(target: ProxyServiceTarget): string[] {
   const name = fixedCloudRunServiceName("gcp", target.env, "mcp-auth-proxy") as string;
   const env = gcpProxyEnv(target);
   const plain = env.flatMap((e) => ("value" in e ? [`${e.name}=${e.value}`] : []));
@@ -356,7 +368,7 @@ export function gcpProxyDeployArgs(target: ReleaseServicesTarget): string[] {
  * app-roll moves it onto each release's image after that.
  */
 export async function ensureMcpAuthProxyServiceGcp(
-  target: ReleaseServicesTarget,
+  target: ProxyServiceTarget,
   run: GcloudRunner,
 ): Promise<EnsureOutcome> {
   const name = fixedCloudRunServiceName("gcp", target.env, "mcp-auth-proxy") as string;

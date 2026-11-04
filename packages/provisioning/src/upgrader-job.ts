@@ -63,14 +63,17 @@ import {
   type ReleaseManifest,
   type ReleaseManifestResult,
 } from "./release-manifest.js";
-import { cloudRunServicePrefix } from "./stack-contract.js";
+import {
+  cloudRunServicePrefix,
+  SERVICE_IMAGE_NAMES,
+  type ServiceImageName,
+} from "./stack-contract.js";
 import { StateLockHeldError } from "./state-store.js";
 import {
   type AppRollPlan,
   executeAppRoll,
   planAppRoll,
   type ReleaseImage,
-  ROLL_ORDER,
   type RollSlug,
 } from "./upgrade/app-roll.js";
 import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
@@ -699,7 +702,7 @@ export async function recordUpdateEnd(
   return false;
 }
 
-/** Every digest the revisions serving traffic are known by, per service. */
+/** Every digest the revisions serving traffic are known by, per release image. */
 async function servingDigests(
   deps: UpgraderJobDeps,
   provider: InstallMetadata["provider"],
@@ -708,16 +711,18 @@ async function servingDigests(
       ok: true;
       digests: ServingDigests;
       /** The services' deployed names, for the template hints. */
-      services: Readonly<Record<RollSlug, string>>;
+      services: Readonly<Record<ServiceImageName, string>>;
     }
   | { ok: false; error: string }
 > {
-  const digests: Partial<Record<RollSlug, readonly string[]>> = {};
-  const services: Partial<Record<RollSlug, string>> = {};
+  const digests: Partial<Record<ServiceImageName, readonly string[]>> = {};
+  const services: Partial<Record<ServiceImageName, string>> = {};
   if (provider !== "gcp" && provider !== "gcp-firebase") {
     return { ok: false, error: `the upgrader runs on Google Cloud installs only, not ${provider}` };
   }
-  for (const slug of ROLL_ORDER) {
+  // The staging gateway (#1330) runs the gateway's image and rolls with
+  // it; the images, one service each, name the release.
+  for (const slug of SERVICE_IMAGE_NAMES) {
     // #1328 — which service plays which role differs per provider.
     const prefix = cloudRunServicePrefix(provider, deps.env, slug);
     const service = await resolveGcpResourceName(
@@ -738,7 +743,7 @@ async function servingDigests(
   return {
     ok: true,
     digests: digests as ServingDigests,
-    services: services as Record<RollSlug, string>,
+    services: services as Record<ServiceImageName, string>,
   };
 }
 
@@ -749,10 +754,10 @@ async function servingDigests(
  */
 async function templateDigests(
   deps: UpgraderJobDeps,
-  services: Readonly<Record<RollSlug, string>>,
+  services: Readonly<Record<ServiceImageName, string>>,
 ): Promise<ServingDigests> {
-  const out: Partial<Record<RollSlug, readonly string[]>> = {};
-  for (const slug of ROLL_ORDER) {
+  const out: Partial<Record<ServiceImageName, readonly string[]>> = {};
+  for (const slug of SERVICE_IMAGE_NAMES) {
     const d = await findTemplateImageDigest(deps.run, deps.projectId, deps.region, services[slug]);
     out[slug] = d ? [d] : [];
   }

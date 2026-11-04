@@ -33,7 +33,7 @@ import { isIpLiteral } from "@caelo-cms/shared";
 import { removeDefaultFirewallRules } from "./default-firewall.js";
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
-import { gcpBucketName, gcpSecretId } from "./gcp-names.js";
+import { firebaseStagingSiteId, gcpBucketName, gcpSecretId } from "./gcp-names.js";
 import { selfCommand } from "./self-command.js";
 import {
   ADMIN_MEMORY_DEFAULT,
@@ -63,6 +63,7 @@ import {
   STATIC_CDN_POLICY,
   secretFilePath,
   stackIamInvariants,
+  stagingGatewayEnvContract,
   staticBackendBucketPrefix,
 } from "./stack-contract.js";
 import { GCP_STATIC_RESPONSE_HEADERS } from "./static-security-headers.js";
@@ -360,6 +361,7 @@ export function planContractEnv(
       ...runtime,
       provider: "gcp-firebase",
       firebaseSiteId: site.value,
+      firebaseStagingSiteId: firebaseStagingSiteId(install.env, site.value),
       gatewayService: services.gateway.serviceName,
     };
   } else {
@@ -380,6 +382,7 @@ export function planContractEnv(
     contracts = {
       admin: desired("admin", adminEnvContract(inputs)),
       gateway: desired("gateway", gatewayEnvContract(runtime)),
+      "staging-gateway": desired("staging-gateway", stagingGatewayEnvContract(runtime)),
       "mcp-auth-proxy": desired("mcp-auth-proxy", mcpAuthProxyEnvContract(install)),
     };
   } catch (e) {

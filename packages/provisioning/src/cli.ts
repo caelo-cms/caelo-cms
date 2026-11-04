@@ -63,6 +63,7 @@ import {
   BOOTSTRAP_DIR,
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_GATEWAY_UPSTREAM,
+  COMPOSE_STAGING_GATEWAY_UPSTREAM,
   COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
   type ComposeImages,
   composeProjectName,
@@ -111,6 +112,14 @@ interface CaeloConfig {
    * generated before P18 still load — emitConfig() back-fills if missing.
    */
   caeloSecretKek?: string;
+  /**
+   * #650 / #1330 — the staging gate's key (32 hex bytes): signs "Open
+   * staging" links, derives the crawler credentials. Generated once and
+   * persisted here; never re-minted, or every crawler credential stops
+   * working. The admin gets it as CAELO_STAGING_GATE_SECRET and publishes it
+   * to the staging gateway through the staging projection.
+   */
+  stagingGateSecret?: string;
   /**
    * #613 — one password per application role. Optional in the type so
    * config.json files from before still load; `up` back-fills them and
@@ -319,7 +328,7 @@ function writeCaddyfile(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[]): void
     ownerEmail: cfg.ownerEmail,
     tls: cfg.tls,
     publicSiteRoot: `${SITE_OUTPUT_ROOT}/output/production/current`,
-    stagingSiteRoot: `${SITE_OUTPUT_ROOT}/output/staging/current`,
+    stagingGatewayUpstream: COMPOSE_STAGING_GATEWAY_UPSTREAM,
     // Caddy runs in its own container: the Compose service names, never
     // localhost (#707).
     adminUpstream: COMPOSE_ADMIN_UPSTREAM,
@@ -359,6 +368,16 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
     throw new Error("config has no rolePasswords — run `cms-provision up`");
   }
   if (!cfg.caeloSecretKek) throw new Error("config has no caeloSecretKek — run `cms-provision up`");
+  // #1330 — back-filled once for installs from before the staging gate
+  // came to self-hosted; persisted before anything uses it.
+  if (!cfg.stagingGateSecret) {
+    cfg.stagingGateSecret = randomSecret(32);
+    saveConfig(cfg);
+  }
+  if (!cfg.stagingDomain) {
+    cfg.stagingDomain = defaultStagingHost(cfg.domain);
+    saveConfig(cfg);
+  }
   if (!cfg.ports || !cfg.composeProject) {
     throw new Error(
       "config has no ports / composeProject — they are back-filled on load; this is a bug",
@@ -369,6 +388,8 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
   for (const line of ensureSelfHostedDbTls(CAELO_DIR)) console.log(`  database TLS: ${line}`);
   return generateDockerCompose({
     domain: cfg.domain,
+    stagingHost: cfg.stagingDomain,
+    stagingGateSecret: cfg.stagingGateSecret,
     postgresPassword: cfg.postgresPassword,
     rolePasswords: cfg.rolePasswords,
     caeloSecretKek: cfg.caeloSecretKek,
@@ -1420,7 +1441,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     selectInstall,
     writeMetadata,
   } = await import("./install-state.js");
-  const { enableAdminDomain, enableStagingDomain } = await import("./admin-domain.js");
+  const { enableAdminDomain } = await import("./admin-domain.js");
   // Guessing among several installs could map the domain in the wrong project.
   const selected = selectInstall(
     listInstalls().filter((m) => m.projectId),
@@ -1448,13 +1469,10 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     const requested = arg("staging-domain");
     const { normalizeStagingHost, stagingHostProblem } = await import("@caelo-cms/shared");
     let adminHost: string | null = null;
-    if (!requested && meta.provider === "gcp-firebase" && meta.projectId && meta.region) {
+    const google = googleAdminTarget(meta);
+    if (!requested && google) {
       const { inspectStagingAdmin } = await import("./staging-admin.js");
-      const inspected = await inspectStagingAdmin({
-        provider: "gcp-firebase",
-        projectId: meta.projectId,
-        region: meta.region,
-      });
+      const inspected = await inspectStagingAdmin(google);
       if (!inspected.ok) {
         console.error(
           `${command}: could not read the admin's staging host: ${inspected.error}\n` +
@@ -1465,11 +1483,10 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
       adminHost = inspected.value.stagingHost;
     }
     const host = requested ?? adminHost ?? installStagingHost(meta);
-    const problem = stagingHostProblem(
-      host,
-      { liveHosts: [meta.domain, `www.${meta.domain}`], adminHosts: [`admin.${meta.domain}`] },
-      { provider: meta.provider },
-    );
+    const problem = stagingHostProblem(host, {
+      liveHosts: [meta.domain, `www.${meta.domain}`],
+      adminHosts: [`admin.${meta.domain}`],
+    });
     if (problem) {
       console.error(
         requested
@@ -1498,23 +1515,20 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     );
     process.exit(1);
   }
+  if (kind === "staging") {
+    await serveStagingHost(meta, command, retry, { rotatePassword, showPassword });
+    return;
+  }
   if (meta.provider !== "gcp-firebase") {
     console.log(
-      kind === "admin"
-        ? meta.provider === "gcp"
-          ? `Nothing to do: on gcp the load balancer already serves admin.${meta.domain}.`
-          : `admin-domain is for gcp-firebase installs; this one is ${meta.provider}.`
-        : meta.provider === "self-hosted"
-          ? `Recorded staging host ${installStagingHost(meta)}; Caddy serves it after \`cms-provision regenerate-caddy\`.`
-          : `staging-domain is for gcp-firebase installs; on ${meta.provider} the protected staging domain is not available yet (issue #650 follow-up).`,
+      meta.provider === "gcp"
+        ? `Nothing to do: on gcp the load balancer already serves admin.${meta.domain}.`
+        : `admin-domain is for gcp-firebase installs; this one is ${meta.provider}.`,
     );
     return;
   }
   const target = { projectId: meta.projectId, region: meta.region, domain: meta.domain };
-  const r =
-    kind === "admin"
-      ? await enableAdminDomain(target)
-      : await enableStagingDomain({ ...target, stagingHost: installStagingHost(meta) });
+  const r = await enableAdminDomain(target);
   if (r.status === "failed") {
     console.error(`${command}: ${r.error}`);
     process.exit(1);
@@ -1527,56 +1541,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     );
     process.exit(3);
   }
-  const mappedTo = kind === "admin" ? "the admin" : "the gateway (protected staging site)";
-  console.log(
-    `${r.hostname} ${r.created ? "is now mapped" : "was already mapped"} to ${mappedTo}.`,
-  );
-  if (kind === "staging") {
-    // #678 — the operator's decision reaches the admin here: the host is
-    // set there, password protection is switched on the first time, and
-    // the password is printed once (never stored by the CLI).
-    const { applyStagingAdmin, describeStagingApply } = await import("./staging-admin.js");
-    const applied = await applyStagingAdmin(
-      { provider: "gcp-firebase", projectId: meta.projectId, region: meta.region },
-      {
-        host: r.hostname,
-        ...(rotatePassword ? { rotateBasicAuth: true } : {}),
-        ...(showPassword ? { revealBasicAuth: true } : {}),
-      },
-    );
-    if (!applied.ok) {
-      console.error(
-        `${command}: ${r.hostname} is mapped, but the admin could not be updated: ${applied.error}\n` +
-          `Run \`${retry}\` again once that is fixed (it is idempotent).`,
-      );
-      process.exit(5);
-    }
-    // Prints the staging basic-auth password ON PURPOSE (#678): the operator
-    // asked for it to be shown once; it is never written to disk or logs.
-    console.log(describeStagingApply(applied.value).join("\n"));
-    // #1058 — and the admin's CAELO_STAGING_HOST, so the provisioned value
-    // agrees with install.json and the stored host (the converge job
-    // refuses an install whose records and admin disagree). After the
-    // provision call: the update starts a new admin revision.
-    const { setAdminStagingHostEnv } = await import("./admin-domain.js");
-    const env = await setAdminStagingHostEnv({
-      projectId: meta.projectId,
-      region: meta.region,
-      stagingHost: r.hostname,
-    });
-    if (env.status === "failed") {
-      console.error(
-        `${command}: ${r.hostname} is mapped and stored in the admin, but its CAELO_STAGING_HOST could not be updated: ${env.error}\n` +
-          `Run \`${retry}\` again once that is fixed (it is idempotent).`,
-      );
-      process.exit(5);
-    }
-    if (env.status === "set") {
-      console.log(
-        `The admin (${env.service}) now runs with CAELO_STAGING_HOST=${r.hostname}${env.previous ? ` (was ${env.previous})` : ""}.`,
-      );
-    }
-  }
+  console.log(`${r.hostname} ${r.created ? "is now mapped" : "was already mapped"} to the admin.`);
   if (r.records.length === 0) {
     console.log(
       `Google has not published the DNS records yet; run \`cms-provision ${command} enable\` again in a minute.`,
@@ -1591,10 +1556,106 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     region: meta.region,
   });
   if (!waited) process.exit(4);
+  console.log(`Admin login: https://${r.hostname}/login`);
+}
+
+/** The admin-internal target of a Google Cloud install, or null for another provider. */
+function googleAdminTarget(
+  meta: import("./install-state.js").InstallMetadata,
+): import("./staging-admin.js").StagingAdminTarget | null {
+  if (!meta.projectId || !meta.region) return null;
+  if (meta.provider === "gcp-firebase") {
+    return { provider: "gcp-firebase", projectId: meta.projectId, region: meta.region };
+  }
+  if (meta.provider === "gcp") {
+    return { provider: "gcp", projectId: meta.projectId, domain: meta.domain };
+  }
+  return null;
+}
+
+/**
+ * #1330 — `staging-domain enable` on a Google Cloud install: route the
+ * staging host to the staging gateway (staging-gateway-setup.ts — the same
+ * step every converge runs), tell the admin the host and switch on password
+ * protection the first time (#678, printing the password once), keep the
+ * admin's CAELO_STAGING_HOST in step (#1058), and print the DNS records.
+ */
+async function serveStagingHost(
+  meta: import("./install-state.js").InstallMetadata,
+  command: string,
+  retry: string,
+  opts: { readonly rotatePassword: boolean; readonly showPassword: boolean },
+): Promise<void> {
+  const { installStagingHost } = await import("./install-state.js");
+  const host = installStagingHost(meta);
+  const google = googleAdminTarget(meta);
+  if (!google || !meta.projectId || !meta.region) {
+    console.log(
+      meta.provider === "self-hosted"
+        ? `Recorded staging host ${host}; the staging gateway serves it behind Caddy after \`cms-provision regenerate-caddy\`.`
+        : `On ${meta.provider} the protected staging site is not available yet: it needs the staging gateway this provider does not run yet (#749 / #750).`,
+    );
+    return;
+  }
+  const { ensureStagingGatewayEdge } = await import("./staging-gateway-setup.js");
+  const { GCP_STACK_ENV } = await import("./gcp-names.js");
+  const edge = await ensureStagingGatewayEdge({
+    provider: meta.provider as "gcp" | "gcp-firebase",
+    projectId: meta.projectId,
+    region: meta.region,
+    env: GCP_STACK_ENV,
+    domain: meta.domain,
+    stagingHost: host,
+  });
+  for (const line of edge.done) console.log(`  ${line}`);
+  if (!edge.ok) {
+    console.error(
+      `${command}: ${host} could not be routed to the staging gateway: ${edge.error}\nRun \`${retry}\` again once that is fixed (it is idempotent); \`cms-provision upgrade\` sets up the staging gateway itself if it is missing.`,
+    );
+    process.exit(1);
+  }
+  const { applyStagingAdmin, describeStagingApply } = await import("./staging-admin.js");
+  const applied = await applyStagingAdmin(google, {
+    host,
+    ...(opts.rotatePassword ? { rotateBasicAuth: true } : {}),
+    ...(opts.showPassword ? { revealBasicAuth: true } : {}),
+  });
+  if (!applied.ok) {
+    console.error(
+      `${command}: ${host} is routed to the staging gateway, but the admin could not be updated: ${applied.error}\nRun \`${retry}\` again once that is fixed (it is idempotent).`,
+    );
+    process.exit(5);
+  }
+  // Prints the staging basic-auth password ON PURPOSE (#678): the operator
+  // asked for it to be shown once; it is never written to disk or logs.
+  console.log(describeStagingApply(applied.value).join("\n"));
+  const { setAdminStagingHostEnv } = await import("./admin-domain.js");
+  const env = await setAdminStagingHostEnv({
+    projectId: meta.projectId,
+    region: meta.region,
+    stagingHost: host,
+  });
+  if (env.status === "failed") {
+    console.error(
+      `${command}: ${host} is routed and stored in the admin, but its CAELO_STAGING_HOST could not be updated: ${env.error}\nRun \`${retry}\` again once that is fixed (it is idempotent).`,
+    );
+    process.exit(5);
+  }
+  if (env.status === "set") {
+    console.log(
+      `The admin (${env.service}) now runs with CAELO_STAGING_HOST=${host}${env.previous ? ` (was ${env.previous})` : ""}.`,
+    );
+  }
+  if (edge.dnsRecords.length > 0) {
+    const width = Math.max(...edge.dnsRecords.map((d) => d.name.length));
+    console.log(
+      `\nSet these DNS records at your registrar (if you have not already; Settings → Updates shows them too):\n${edge.dnsRecords
+        .map((d) => `  ${d.name.padEnd(width)}  ${d.type.padEnd(5)}  ${d.value}`)
+        .join("\n")}`,
+    );
+  }
   console.log(
-    kind === "admin"
-      ? `Admin login: https://${r.hostname}/login`
-      : `Protected staging site: https://${r.hostname}/`,
+    `Protected staging site: https://${host}/ (its certificate is issued once the records resolve)`,
   );
 }
 

@@ -372,3 +372,9 @@ export {
 } from "./stage/stage-chats.js";
 export * from "./tokens.js";
 export * from "./untrusted/public-data.js";
+// #1330 — the staging host's DNS records, for Settings → Updates.
+export {
+  readStagingHostDns,
+  type StagingDnsRecord,
+  type StagingHostDns,
+} from "./deploy/staging-host-dns.js";

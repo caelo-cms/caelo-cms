@@ -91,7 +91,7 @@ describe("ensureAuditJob", () => {
     for (const c of bucketGrants) expect(flag(c, "condition")).toBe("None");
   });
 
-  it("grants the job only results-create, build-read (gcp) and logs", async () => {
+  it("grants the job only results-create, read of the staging bucket and logs", async () => {
     const { run, calls } = fakeGcloud();
     const r = await ensureAuditJob(TARGET, { run, sleep: async () => {} });
     expect(r.ok).toBe(true);
@@ -100,10 +100,6 @@ describe("ensureAuditJob", () => {
       [`storage buckets add-iam-policy-binding gs://${RESULTS}`, "roles/storage.objectCreator"],
       [
         "storage buckets add-iam-policy-binding gs://acme-caelo-production-staging",
-        "roles/storage.objectViewer",
-      ],
-      [
-        "storage buckets add-iam-policy-binding gs://acme-caelo-production-static",
         "roles/storage.objectViewer",
       ],
       ["projects add-iam-policy-binding acme", "roles/logging.logWriter"],
@@ -151,7 +147,7 @@ describe("ensureAuditJob", () => {
     expect(flag(deploy, "max-retries")).toBe("0");
     expect(flag(deploy, "parallelism")).toBe("15");
     expect(flag(deploy, "set-env-vars")).toBe(
-      `CAELO_PROVIDER=gcp,CAELO_AUDIT_RESULTS_BUCKET=${RESULTS},CAELO_STAGING_BUCKET=acme-caelo-production-staging,CAELO_STATIC_BUCKET=acme-caelo-production-static`,
+      `CAELO_PROVIDER=gcp,CAELO_AUDIT_RESULTS_BUCKET=${RESULTS},CAELO_STAGING_BUCKET=acme-caelo-production-staging`,
     );
     const line = deploy.join(" ");
     for (const banned of ["--network", "--subnet", "--vpc", "--set-secrets", "--update-secrets"]) {
@@ -206,16 +202,20 @@ describe("ensureAuditJob", () => {
     expect(deployOf(calls)).toBeUndefined();
   });
 
-  it("on gcp-firebase reads no bucket: the task audits the public preview channel", async () => {
+  it("#1330 — on gcp-firebase reads the staging bucket too: no preview channel any more", async () => {
     const { run, calls } = fakeGcloud();
     await ensureAuditJob({ ...TARGET, provider: "gcp-firebase" }, { run, sleep: async () => {} });
     const job = grants(calls).filter((g) => g.member === AUDIT);
-    expect(job.map((g) => g.role)).toEqual([
-      "roles/storage.objectCreator",
-      "roles/logging.logWriter",
+    expect(job.map((g) => [g.where, g.role])).toEqual([
+      [`storage buckets add-iam-policy-binding gs://${RESULTS}`, "roles/storage.objectCreator"],
+      [
+        "storage buckets add-iam-policy-binding gs://acme-caelo-production-staging",
+        "roles/storage.objectViewer",
+      ],
+      ["projects add-iam-policy-binding acme", "roles/logging.logWriter"],
     ]);
     expect(flag(deployOf(calls), "set-env-vars")).toBe(
-      `CAELO_PROVIDER=gcp-firebase,CAELO_AUDIT_RESULTS_BUCKET=${RESULTS}`,
+      `CAELO_PROVIDER=gcp-firebase,CAELO_AUDIT_RESULTS_BUCKET=${RESULTS},CAELO_STAGING_BUCKET=acme-caelo-production-staging`,
     );
   });
 

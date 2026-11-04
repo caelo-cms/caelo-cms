@@ -413,6 +413,7 @@ const firebase: RemoteMcpTarget = {
   services: {
     admin: "caelo-production-admin-aaa",
     gateway: "caelo-production-data-gateway",
+    "staging-gateway": "caelo-production-staging-gateway",
     "mcp-auth-proxy": "caelo-production-gateway-bbb",
   },
 };
@@ -606,7 +607,10 @@ describe("checkRemoteMcpIdentityEnv (#1082)", () => {
       ),
     });
     const r = await checkRemoteMcpIdentityEnv(firebase, identity, { run });
-    expect(r).toEqual({ ok: true, drift: { admin: [], gateway: [], "mcp-auth-proxy": [] } });
+    expect(r).toEqual({
+      ok: true,
+      drift: { admin: [], gateway: [], "staging-gateway": [], "mcp-auth-proxy": [] },
+    });
     expect(calls.some((c) => c.startsWith("run services update"))).toBe(false);
   });
 

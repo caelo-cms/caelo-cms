@@ -46,6 +46,7 @@ describe("gcp stack URL map (Pulumi mocks)", () => {
       {
         domain: "example.com",
         adminDomain: "admin.example.com",
+        stagingHost: "staging.example.com",
         staticBackend: "bucket-id",
         gatewayBackend: "gateway-id",
         adminBackend: "admin-id",
@@ -61,6 +62,8 @@ describe("gcp stack URL map (Pulumi mocks)", () => {
     expect(hostRules).toEqual([
       { hosts: ["example.com"], pathMatcher: PUBLIC_PATH_MATCHER },
       { hosts: ["admin.example.com"], pathMatcher: "admin" },
+      // #1330 — the staging host, its matcher moved to the staging gateway by the CLI.
+      { hosts: ["staging.example.com"], pathMatcher: "staging" },
     ]);
     expect(pathMatchers).toEqual([
       {
@@ -70,6 +73,7 @@ describe("gcp stack URL map (Pulumi mocks)", () => {
         pathRules: [{ paths: [...GCP_GATEWAY_PATHS], service: "gateway-id" }],
       },
       { name: "admin", defaultService: "admin-id" },
+      { name: "staging", defaultService: "bucket-id" },
     ]);
     expect(registered.find((r) => r.name === "caelo-production-url-map")?.type).toBe(
       "gcp:compute/uRLMap:URLMap",
@@ -115,16 +119,23 @@ describe("gcp stack URL map (Pulumi mocks)", () => {
     const { SITE_URL_MAP_IGNORE_CHANGES, siteUrlMapArgs, PUBLIC_PATH_MATCHER } = await import(
       "./gcp-url-map.js"
     );
-    expect(SITE_URL_MAP_IGNORE_CHANGES).toEqual(["pathMatchers[0].pathRules"]);
+    expect(SITE_URL_MAP_IGNORE_CHANGES).toEqual([
+      "pathMatchers[0].pathRules",
+      // #1330 — the staging matcher's backend is the CLI's.
+      "pathMatchers[2].defaultService",
+    ]);
     const args = siteUrlMapArgs({
       domain: "d",
       adminDomain: "a.d",
+      stagingHost: "s.d",
       staticBackend: "s",
       gatewayBackend: "g",
       adminBackend: "a",
     });
-    // Index 0 must stay the public matcher, or the ignore would hit the admin's.
+    // Index 0 must stay the public matcher, or the ignore would hit the admin's;
+    // index 2 the staging one (the CLI writes it last, staging-gateway-setup.ts).
     expect((args.pathMatchers as { name: string }[])[0]?.name).toBe(PUBLIC_PATH_MATCHER);
+    expect((args.pathMatchers as { name: string }[])[2]?.name).toBe("staging");
   });
 });
 

@@ -20,7 +20,6 @@ import { join } from "node:path";
 import { provisioningUpgradeCommand } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
-import { stagingDomainState } from "./admin-domain.js";
 import { activeAccount, checkGcloudAuth, gcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep } from "./gcloud-retry.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
@@ -686,22 +685,12 @@ async function upgradeLockedInstall(
   // #696 — upgrade never moves Pulumi state; it says how to.
   const stateNotice = localStateNotice(meta);
   if (stateNotice) note(stateNotice, "Pulumi state is on this machine");
-  if (ok && provider === "gcp-firebase") {
-    // #650 — staging builds render the staging host; the gateway serves it
-    // once it is mapped. Only an install without the mapping is told to run
-    // `staging-domain enable`.
-    const staging = await stagingDomainState({ projectId, region, stagingHost, run });
-    if (staging.status === "mapped") {
-      log.info(`Protected staging site: https://${stagingHost}/`);
-    } else {
-      const unknown =
-        staging.status === "unknown"
-          ? ` (could not check whether ${bold(stagingHost)} is mapped: ${staging.reason})`
-          : "";
-      log.info(
-        `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve the staging host${unknown} (it maps the host the admin uses — ${bold(stagingHost)} unless changed there —, turns on password protection, prints the login and the DNS record). Host and access: admin → Settings → Domains / Staging access.`,
-      );
-    }
+  if (ok) {
+    // #1330 — the converge routed the staging host to the staging gateway
+    // and printed its DNS records (Settings → Updates shows them as well).
+    log.info(
+      `Protected staging site: https://${stagingHost}/ — served by the staging gateway behind the staging gate. Password protection and other access: admin → Settings → Staging access (or ${bold("cms-provision staging-domain enable")}).`,
+    );
   }
   return ok;
 }

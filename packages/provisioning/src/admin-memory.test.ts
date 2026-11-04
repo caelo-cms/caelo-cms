@@ -78,6 +78,8 @@ describe("self-hosted compose", () => {
     caeloSecretKek: "0".repeat(64),
     dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
     internalSecret: "i".repeat(48),
+    stagingHost: "staging.example.com",
+    stagingGateSecret: "g".repeat(64),
     diskSize: "20Gi",
     ports: { http: 80, https: 443 },
     project: "caelo-example-com",
