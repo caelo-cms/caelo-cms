@@ -86,6 +86,7 @@ describe("list_plugins — plugins found but not verified", () => {
       state: "running",
       awaitingCapabilities: [],
       awaitingRelease: false,
+      awaitingManifestDigest: null,
       problem: null,
     };
     const r = await listPluginsTool.handler(
@@ -128,11 +129,12 @@ describe("list_plugins — plugins found but not verified", () => {
         state: "awaiting_approval",
         awaitingCapabilities: ["change_journal", "list_types"],
         awaitingRelease: false,
+        awaitingManifestDigest: "abc",
         problem: null,
         consumerBackoff: null,
       }),
     ).toBe(
-      "awaits Owner approval at /settings/plugins: its release asks for capabilities the Owner has not approved (change_journal, list_types)",
+      "awaits Owner approval (propose_approve_plugin_release, manifestDigest abc): its release asks for capabilities the Owner has not approved (change_journal, list_types)",
     );
     // #1332 — a changed manifest waits the same way, with no new capability.
     expect(
@@ -140,6 +142,7 @@ describe("list_plugins — plugins found but not verified", () => {
         state: "awaiting_approval",
         awaitingCapabilities: [],
         awaitingRelease: true,
+        awaitingManifestDigest: null,
         problem: null,
         consumerBackoff: null,
       }),
@@ -150,6 +153,7 @@ describe("list_plugins — plugins found but not verified", () => {
         state: "running",
         awaitingCapabilities: [],
         awaitingRelease: false,
+        awaitingManifestDigest: null,
         problem: null,
         consumerBackoff: { consecutiveFailures: 3, nextRetryAt: "2026-11-03T10:00:04.000Z" },
       }),
@@ -168,6 +172,7 @@ describe("list_plugins — plugins found but not verified", () => {
               state: "awaiting_approval",
               awaitingCapabilities: ["change_journal"],
               awaitingRelease: false,
+              awaitingManifestDigest: null,
               problem: null,
             },
             requiresPlugins: [],
@@ -178,7 +183,7 @@ describe("list_plugins — plugins found but not verified", () => {
       }),
     );
     expect(r.content).toMatch(
-      /international-site.*awaiting_approval.*awaits Owner approval at \/settings\/plugins: its release asks for capabilities the Owner has not approved \(change_journal\)/,
+      /international-site.*awaiting_approval.*awaits Owner approval \(propose_approve_plugin_release, manifestDigest null\): its release asks for capabilities the Owner has not approved \(change_journal\)/,
     );
   });
 

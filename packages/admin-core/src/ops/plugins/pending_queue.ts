@@ -2,7 +2,7 @@
 
 /**
  * The Owner queue over `plugin_pending_actions` (activate / uninstall /
- * revoke_capability).
+ * revoke_capability / approve_release).
  *
  * In the chat a gated plugin tool proposes and applies in one approved
  * step, so rows never wait. Over the Power-MCP an external agent has no
@@ -21,7 +21,7 @@ import { recordAudit } from "../../audit.js";
 
 const pendingRow = z.object({
   id: z.string(),
-  kind: z.enum(["activate", "uninstall", "revoke_capability"]),
+  kind: z.enum(["activate", "uninstall", "revoke_capability", "approve_release"]),
   proposedBy: z.string(),
   preview: z.record(z.string(), z.unknown()),
   status: proposalStatus,
@@ -44,7 +44,7 @@ export const listPluginPendingActionsOp = defineOperation({
       LIMIT ${input.limit ?? 50}
     `)) as unknown as Array<{
       id: string;
-      kind: "activate" | "uninstall" | "revoke_capability";
+      kind: "activate" | "uninstall" | "revoke_capability" | "approve_release";
       proposed_by: string;
       preview: unknown;
       status: z.infer<typeof proposalStatus>;

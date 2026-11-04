@@ -32,6 +32,10 @@
  * Caelo team. Asked once, when it first matters; answering either way on
  * /settings/bugs clears it.
  *
+ * #1420 — `pluginApprovals`: plugin releases stopped until the Owner
+ * approves them and installed packages waiting for review. Derived from the
+ * plugin rows (`readPluginApprovals`), so it clears by itself.
+ *
  * Single op (not four) so the AppShell makes one network call per
  * poll. Adapter / Validator runs in the same actor scope as the
  * caller so the read is RLS-safe.
@@ -42,6 +46,7 @@ import { CAELO_VERSION, isNewerVersion, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { UPDATES_PATH } from "./platform-updates.js";
+import { readPluginApprovals } from "./plugins/release_approval.js";
 
 const notificationsRow = z.object({
   pendingProposals: z.number().int().nonnegative(),
@@ -54,6 +59,7 @@ const notificationsRow = z.object({
   /** Where the Owner installs the update (#696) — the release notice links here. */
   updatesPath: z.literal(UPDATES_PATH),
   bugForwardingUndecided: z.boolean(),
+  pluginApprovals: z.number().int().nonnegative(),
   total: z.number().int().nonnegative(),
 });
 
@@ -87,7 +93,10 @@ export const aggregateNotificationsOp = defineOperation({
         UNION ALL SELECT 1 FROM template_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM domain_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM site_defaults_pending_actions WHERE status = 'pending'
-        UNION ALL SELECT 1 FROM plugin_pending_actions WHERE status = 'pending'
+        -- An approve_release card is the same decision as the row
+        -- pluginApprovals counts; it must not count twice.
+        UNION ALL SELECT 1 FROM plugin_pending_actions
+          WHERE status = 'pending' AND kind <> 'approve_release'
         UNION ALL SELECT 1 FROM owner_settings_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM plugin_rate_limit_proposals WHERE status = 'pending'
         UNION ALL SELECT 1 FROM site_memory_proposals WHERE status = 'pending'
@@ -147,6 +156,8 @@ export const aggregateNotificationsOp = defineOperation({
     const releaseUrl = r.release_url;
     const upgradeAvailable = latestVersion !== null && isNewerVersion(latestVersion, CAELO_VERSION);
     const bugForwardingUndecided = r.bug_forwarding_undecided === true;
+    const { releases, reviews } = await readPluginApprovals(tx);
+    const pluginApprovals = releases.length + reviews.length;
 
     return ok({
       pendingProposals,
@@ -158,6 +169,7 @@ export const aggregateNotificationsOp = defineOperation({
       releaseUrl,
       updatesPath: UPDATES_PATH,
       bugForwardingUndecided,
+      pluginApprovals,
       // Bell badge count includes "1" for the upgrade tile so the
       // operator notices a new release the same way they notice a
       // pending proposal.
@@ -166,6 +178,7 @@ export const aggregateNotificationsOp = defineOperation({
         failedDeploys +
         staleBranches +
         failedRedirectSyncs +
+        pluginApprovals +
         (upgradeAvailable ? 1 : 0) +
         (bugForwardingUndecided ? 1 : 0),
     });

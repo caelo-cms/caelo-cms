@@ -45,6 +45,7 @@ import {
   approverPermissionsForGatedCall,
   fullPreviewArgsForGatedCall,
   preflightGatedCall,
+  serverApprovalPreview,
 } from "./approval-preflight.js";
 import {
   type BudgetGateState,
@@ -916,15 +917,22 @@ export async function* runToolLoop(
       // Everything failed preflight → nothing to ask; resume so the model
       // can correct itself on the next run.
       if (askable.length === 0 && rejected.length > 0) continue;
-      const cards = askable.map((req) => ({
-        req,
-        preview: buildApprovalPreview(
-          req.name,
-          req.arguments,
-          fullPreviewArgsForGatedCall(req.name),
-        ),
-        requiredPermissions: approverPermissionsForGatedCall(tools, registry, req.name),
-      }));
+      const cards = await Promise.all(
+        askable.map(async (req) => ({
+          req,
+          preview:
+            (await serverApprovalPreview(
+              tools,
+              registry,
+              adapter,
+              humanCtx,
+              req.name,
+              req.arguments,
+            )) ??
+            buildApprovalPreview(req.name, req.arguments, fullPreviewArgsForGatedCall(req.name)),
+          requiredPermissions: approverPermissionsForGatedCall(tools, registry, req.name),
+        })),
+      );
       const autoApprove = isE2eAutoApproveEnabled();
       // Issue #658 — record each card with whose turn paused, so the Live
       // Edit chat shows it after a reload (and for a caelo_chat turn at all)

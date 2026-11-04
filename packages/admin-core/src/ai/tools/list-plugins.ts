@@ -58,7 +58,7 @@ export function describeDiscoveryFailures(
  */
 export function healthProblem(h: PluginListRow["health"]): string {
   if (h.state === "awaiting_approval") {
-    return `awaits Owner approval at /settings/plugins: ${awaitingApprovalReason(h)}`;
+    return `awaits Owner approval (propose_approve_plugin_release, manifestDigest ${h.awaitingManifestDigest}): ${awaitingApprovalReason(h)}`;
   }
   const parts = h.problem ? [h.problem.message] : [];
   const b = h.consumerBackoff;
@@ -80,6 +80,7 @@ interface PluginListRow {
     state: string;
     awaitingCapabilities: string[];
     awaitingRelease: boolean;
+    awaitingManifestDigest: string | null;
     problem: { message: string } | null;
     consumerBackoff: { consecutiveFailures: number; nextRetryAt: string } | null;
   };
@@ -92,7 +93,7 @@ export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>
   description:
     "Installed plugins with `status` (Owner's decision) and `health` (what running servers make of it).\n" +
     "- status: `active` = Owner wants it running | `awaiting_activation` = installed + verified, nothing loaded | `disabled` = Owner stopped it.\n" +
-    "- Availability ONLY from health: `running` = tools/skills usable now | `failing` = active but failed to load on a server (`problem` says why; NOT switched off -> tell the operator, details in `get_plugin`) | `awaiting_approval` = active, but its release asks for capabilities the Owner has not approved, so it does not run (`problem` names them) -> tell the operator to approve them at /settings/plugins; reload_plugin cannot | `unreported` = active, no server reported yet | `not_running` = not active. Never say a capability works while its plugin is failing.\n" +
+    "- Availability ONLY from health: `running` = tools/skills usable now | `failing` = active but failed to load on a server (`problem` says why; NOT switched off -> tell the operator, details in `get_plugin`) | `awaiting_approval` = active, but its release asks for capabilities the Owner has not approved, so it does not run (`problem` names them) -> `propose_approve_plugin_release`; reload_plugin cannot | `unreported` = active, no server reported yet | `not_running` = not active. Never say a capability works while its plugin is failing.\n" +
     "- `requires` = plugins that must be active first (activate those first, in that order) | `required_by` = active plugins needing this one (it cannot be disabled or uninstalled until they are).\n" +
     "USE FOR a capability you have no tool for (translation, forms, comments, newsletter, ratings): plugin installed-but-inactive -> TELL the operator it exists and one click at /settings/plugins turns it on. Plugins on disk that failed verification follow the table: NOT installed -> explain why + the fix.\n" +
     "DO NOT USE as a general capability check before routine work — your tool catalogue already reflects everything running.",

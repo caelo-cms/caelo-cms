@@ -42,7 +42,7 @@ import { sql } from "drizzle-orm";
 import { isPluginDisabled, type LoadedPlugin, loadedPlugins } from "./dispatch.js";
 import { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
 import { describeLoadError } from "./load-error.js";
-import { loadActivatedPlugin, pluginHostBootstrapped } from "./loader.js";
+import { AWAITING_APPROVAL_REASON, loadActivatedPlugin, pluginHostBootstrapped } from "./loader.js";
 import { clearPluginRuntime, recordPluginRuntime } from "./runtime-health.js";
 
 /** Minimum gap between two state reads (per instance). */
@@ -66,6 +66,8 @@ const notRunningHere = new Map<string, string>();
 export interface PluginNotRunning {
   readonly slug: string;
   readonly reason: string;
+  /** #1420 — nothing failed: the plugin waits for the Owner's release approval. */
+  readonly waitsForOwner?: true;
 }
 
 /**
@@ -86,7 +88,11 @@ export function pluginNotRunningSlug(marker: string): string | null {
 /** The active plugins this instance does not run right now. */
 export function pluginsNotRunningHere(): ReadonlyArray<PluginNotRunning> {
   return [...notRunningHere.entries()]
-    .map(([slug, reason]) => ({ slug, reason }))
+    .map(([slug, reason]) => ({
+      slug,
+      reason,
+      ...(reason === AWAITING_APPROVAL_REASON ? { waitsForOwner: true as const } : {}),
+    }))
     .sort((a, b) => a.slug.localeCompare(b.slug));
 }
 

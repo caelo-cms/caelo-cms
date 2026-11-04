@@ -26,7 +26,8 @@
  */
 
 import { pluginToolsRegistry } from "@caelo-cms/plugin-host";
-import type { OperationRegistry } from "@caelo-cms/query-api";
+import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 
 import { approverPermissionsOf } from "../../ops/_approver-permission.js";
 import type { ToolRegistry } from "../tools/index.js";
@@ -107,6 +108,28 @@ export function approverPermissionsForGatedCall(
   }
   const op = registry.lookup(executeOp);
   return op.ok ? approverPermissionsOf(op.value) : null;
+}
+
+/**
+ * #1420 — what the approval card shows for a gated tool that declares an
+ * `approvalPreviewOp`, or null for every other tool. A failed read says so
+ * on the card: the approver must not take a short card for the whole story.
+ */
+export async function serverApprovalPreview(
+  tools: ToolRegistry,
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ctx: ExecutionContext,
+  toolName: string,
+  args: unknown,
+): Promise<string | null> {
+  if (typeof tools?.get !== "function") return null;
+  const op = tools.get(toolName)?.gated?.approvalPreviewOp;
+  if (!op) return null;
+  const r = await execute(registry, adapter, ctx, op, args);
+  if (r.ok) return (r.value as { preview: string }).preview;
+  const why = "message" in r.error ? r.error.message : r.error.kind;
+  return `Could not read what this would change: ${why}`;
 }
 
 /**

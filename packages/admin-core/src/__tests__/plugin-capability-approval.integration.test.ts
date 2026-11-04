@@ -33,6 +33,8 @@ const OWNER: ExecutionContext = {
   actorKind: "human",
   requestId: "t1267a",
 };
+/** Approving needs plugins.install on a human; these tests act as the platform. */
+const PLATFORM: ExecutionContext = { ...OWNER, actorKind: "system" };
 const SLUG = "t1267a-upgraded";
 /** What the pre-#1008 loader wrote on a failed load (searchVIU, 2026-10-22). */
 const STALE_FINDING = [{ kind: "load", hint: 'syntax error at or near "CREATE SCHEMA"' }];
@@ -143,9 +145,9 @@ describe("#1267 — a new release's capabilities wait for the Owner", () => {
     // A reload says what starts it, not "plugin is …, not active".
     const reloaded = await loadActivatedPlugin(SLUG);
     expect(reloaded.loaded).toBe(false);
-    expect(reloaded.reason).toContain("Approve this release");
+    expect(reloaded.reason).toContain("waits for the Owner");
 
-    const approved = await execute(registry, adapter, OWNER, "plugins.approve_capabilities", {
+    const approved = await execute(registry, adapter, PLATFORM, "plugins.approve_capabilities", {
       slug: SLUG,
     });
     if (!approved.ok) throw new Error(JSON.stringify(approved.error));
@@ -194,13 +196,13 @@ describe("#1267 — a new release's capabilities wait for the Owner", () => {
     expect(row.health.awaitingRelease).toBe(true);
 
     // An approval of a manifest the Owner was not shown is refused.
-    const stale = await execute(registry, adapter, OWNER, "plugins.approve_capabilities", {
+    const stale = await execute(registry, adapter, PLATFORM, "plugins.approve_capabilities", {
       slug: SLUG,
       manifestDigest: "f".repeat(64),
     });
     expect(stale.ok).toBe(false);
 
-    const approved = await execute(registry, adapter, OWNER, "plugins.approve_capabilities", {
+    const approved = await execute(registry, adapter, PLATFORM, "plugins.approve_capabilities", {
       slug: SLUG,
     });
     if (!approved.ok) throw new Error(JSON.stringify(approved.error));
@@ -217,9 +219,172 @@ describe("#1267 — a new release's capabilities wait for the Owner", () => {
     );
     expect(ai.ok).toBe(false);
     if (!ai.ok) expect(ai.error.kind).toBe("ActorScopeRejected");
-    const missing = await execute(registry, adapter, OWNER, "plugins.approve_capabilities", {
+    const missing = await execute(registry, adapter, PLATFORM, "plugins.approve_capabilities", {
       slug: "t1267a-nothing",
     });
     expect(missing.ok).toBe(false);
+  });
+
+  it("#1420 — refuses a human without the right to decide", async () => {
+    const r = await execute(registry, adapter, OWNER, "plugins.approve_capabilities", {
+      slug: SLUG,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect("message" in r.error && r.error.message).toContain("plugins.install");
+  });
+});
+
+describe("#1420 — what waits for the Owner is visible and approved in one place", () => {
+  interface Approvals {
+    releases: {
+      slug: string;
+      manifestDigest: string;
+      capabilities: { id: string; label: string; allows: string }[];
+      changes: { area: string; added: string[] }[] | null;
+    }[];
+  }
+
+  async function waiting() {
+    const r = await execute(registry, adapter, OWNER, "plugins.list_approvals", {});
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    return (r.value as Approvals).releases.find((p) => p.slug === SLUG);
+  }
+
+  async function bell(): Promise<number> {
+    const r = await execute(registry, adapter, OWNER, "notifications.aggregate", {});
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    return (r.value as { pluginApprovals: number }).pluginApprovals;
+  }
+
+  /** An upgrade: the approved manifest had one tool fewer and no background jobs. */
+  async function stopByUpgrade() {
+    await cleanup();
+    expect((await boot()).loaded.map((l) => l.slug)).toEqual([SLUG]);
+    resetPluginHost();
+    await asSystem(
+      (tx) =>
+        tx`UPDATE plugins SET approved_capabilities = ARRAY['cms_admin'],
+                              approved_manifest_digest = ${"0".repeat(64)},
+                              approved_manifest_json = manifest_json || '{"operations":["old"]}'::jsonb
+           WHERE slug = ${SLUG}`,
+    );
+    await boot();
+  }
+
+  it("records the approved manifest with the activation", async () => {
+    await cleanup();
+    await boot();
+    const rows = await asSystem(
+      (tx) => tx`SELECT approved_manifest_json FROM plugins WHERE slug = ${SLUG}`,
+    );
+    expect(
+      (rows as { approved_manifest_json: { slug: string } }[])[0]?.approved_manifest_json.slug,
+    ).toBe(SLUG);
+    expect(await waiting()).toBeUndefined();
+  });
+
+  it("keeps the manifest an install approved before this was recorded, when a release replaces it", async () => {
+    await cleanup();
+    await boot();
+    resetPluginHost();
+    await asSystem(
+      (tx) => tx`UPDATE plugins SET approved_manifest_json = NULL WHERE slug = ${SLUG}`,
+    );
+    const next = definePlugin({
+      slug: SLUG,
+      version: "0.3.0",
+      tier: 1,
+      schema: {},
+      requestedCapabilities: ["background_workers", "cms_admin"],
+      operations: { noop: async () => ({}), added: async () => ({}) },
+    });
+    await bootstrap({
+      infra: { adapter, registry },
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: next }],
+    });
+    expect((await waiting())?.changes).toEqual([
+      { area: "Internal operations", added: ["added"], removed: [], changed: [] },
+    ]);
+  });
+
+  it("lists a stopped release in plain language with what changed, and the bell counts it", async () => {
+    await cleanup();
+    const before = await bell();
+    await stopByUpgrade();
+    const release = await waiting();
+    expect(release?.capabilities.map((c) => c.label)).toEqual(["Background jobs"]);
+    expect(release?.capabilities[0]?.allows).toContain("scheduled work");
+    expect(release?.changes).toEqual([
+      { area: "Internal operations", added: ["noop"], removed: ["old"], changed: [] },
+    ]);
+    expect(await bell()).toBe(before + 1);
+  });
+
+  it("says the change is unknown rather than guessing when no manifest was recorded", async () => {
+    await stopByUpgrade();
+    await asSystem(
+      (tx) => tx`UPDATE plugins SET approved_manifest_json = NULL WHERE slug = ${SLUG}`,
+    );
+    expect((await waiting())?.changes).toBeNull();
+  });
+
+  it("the AI's card shows the server's text, and only the click applies it", async () => {
+    await stopByUpgrade();
+    const release = await waiting();
+    if (!release) throw new Error("nothing waits");
+    const input = { slug: SLUG, manifestDigest: release.manifestDigest };
+    const ai: ExecutionContext = { ...OWNER, actorKind: "ai" };
+
+    const preview = await execute(registry, adapter, ai, "plugins.preview_approve_release", input);
+    if (!preview.ok) throw new Error(JSON.stringify(preview.error));
+    expect((preview.value as { preview: string }).preview).toContain("Background jobs:");
+
+    const stale = await execute(registry, adapter, ai, "plugins.propose_approve_release", {
+      slug: SLUG,
+      manifestDigest: "f".repeat(64),
+    });
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) {
+      expect("message" in stale.error && stale.error.message).toContain(release.manifestDigest);
+    }
+
+    const proposed = await execute(registry, adapter, ai, "plugins.propose_approve_release", input);
+    if (!proposed.ok) throw new Error(JSON.stringify(proposed.error));
+    const { proposalId } = proposed.value as { proposalId: string };
+
+    const self = await execute(registry, adapter, ai, "plugins.execute_proposal", { proposalId });
+    expect(self.ok).toBe(false);
+    expect(await waiting()).toBeDefined();
+
+    const applied = await execute(registry, adapter, PLATFORM, "plugins.execute_proposal", {
+      proposalId,
+    });
+    if (!applied.ok) throw new Error(JSON.stringify(applied.error));
+    expect(await waiting()).toBeUndefined();
+    expect((await loadActivatedPlugin(SLUG)).loaded).toBe(true);
+  });
+
+  it("an approval made elsewhere closes the card that asked for it", async () => {
+    await stopByUpgrade();
+    const release = await waiting();
+    if (!release) throw new Error("nothing waits");
+    const input = { slug: SLUG, manifestDigest: release.manifestDigest };
+    const ai: ExecutionContext = { ...OWNER, actorKind: "ai" };
+    const proposed = await execute(registry, adapter, ai, "plugins.propose_approve_release", input);
+    if (!proposed.ok) throw new Error(JSON.stringify(proposed.error));
+    const approved = await execute(
+      registry,
+      adapter,
+      PLATFORM,
+      "plugins.approve_capabilities",
+      input,
+    );
+    if (!approved.ok) throw new Error(JSON.stringify(approved.error));
+    const again = await execute(registry, adapter, PLATFORM, "plugins.execute_proposal", {
+      proposalId: (proposed.value as { proposalId: string }).proposalId,
+    });
+    expect(again.ok).toBe(false);
   });
 });

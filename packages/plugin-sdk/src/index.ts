@@ -153,6 +153,8 @@ export const pluginCapability = z.enum([
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
 
+export { PLUGIN_CAPABILITY_INFO, type PluginCapabilityInfo } from "./capability-info.js";
+
 /**
  * Provenance is the trust axis (epic #380): who authored the plugin and
  * how it entered the system. `release-signed` = the manifest carries a

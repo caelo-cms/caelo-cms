@@ -94,6 +94,7 @@ const EXACT: Readonly<Record<string, readonly LiveTopic[]>> = {
   "gateway.execute_rate_limit_proposal": ["pending"],
   "gateway.reject_rate_limit_proposal": ["pending"],
   "plugins.approve_installation": ["pending"],
+  "plugins.approve_capabilities": ["pending"],
   "credentials.issue": ["credentials"],
   "chat.stage": ["quality", "deploys"],
   "chat.unstage": ["quality"],

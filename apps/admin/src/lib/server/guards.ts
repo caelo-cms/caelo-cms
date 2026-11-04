@@ -34,6 +34,18 @@ export function requirePermission(
  *
  * @param executeOp the op the Approve action is about to run.
  */
+/** Whether the signed-in user may approve `executeOp` (#589); false when it declares no permission. */
+export function holdsApproverPermission(
+  locals: App.Locals,
+  registry: OperationRegistry,
+  executeOp: string,
+): boolean {
+  const user = requireUser(locals);
+  const op = registry.lookup(executeOp);
+  const required = op.ok ? approverPermissionsOf(op.value) : null;
+  return required !== null && required.every((p) => user.permissions.has(p));
+}
+
 export function requireApproverPermission(
   locals: App.Locals,
   registry: OperationRegistry,
