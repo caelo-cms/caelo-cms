@@ -41,6 +41,17 @@ import { lookupFailure } from "./upgrade/gcp-lookup.js";
 /** Whether the install's data gateway has ever started. */
 export type GatewayStart = "started" | "never-started";
 
+/** What {@link readGatewayStart} found. */
+export type GatewayStartRead =
+  | { readonly ok: true; readonly start: "started" }
+  | {
+      readonly ok: true;
+      readonly start: "never-started";
+      /** Gateway services that exist but never had a ready revision (a failed first run). */
+      readonly neverStarted: readonly string[];
+    }
+  | { readonly ok: false; readonly error: string };
+
 /** The install the gateway is looked up on. */
 export interface GatewayStartTarget {
   readonly provider: GcpProvider;
@@ -58,7 +69,7 @@ export interface GatewayStartTarget {
 export async function readGatewayStart(
   target: GatewayStartTarget,
   run: GcloudRunner,
-): Promise<{ ok: true; start: GatewayStart } | { ok: false; error: string }> {
+): Promise<GatewayStartRead> {
   const prefix = cloudRunServicePrefix(target.provider, GCP_STACK_ENV, "gateway");
   const list = await run([
     "run",
@@ -84,19 +95,74 @@ export async function readGatewayStart(
     .map((s) => s.trim())
     .filter(Boolean);
   for (const name of names) {
-    const ready = await run([
+    const ready = await latestReadyRevision(target, name, run);
+    if (!ready.ok) return ready;
+    if (ready.revision) return { ok: true, start: "started" };
+  }
+  return { ok: true, start: "never-started", neverStarted: names };
+}
+
+async function latestReadyRevision(
+  target: GatewayStartTarget,
+  name: string,
+  run: GcloudRunner,
+): Promise<{ ok: true; revision: string } | { ok: false; error: string }> {
+  const r = await run([
+    "run",
+    "services",
+    "describe",
+    name,
+    `--region=${target.region}`,
+    `--project=${target.projectId}`,
+    "--format=value(status.latestReadyRevisionName)",
+  ]);
+  return r.ok
+    ? { ok: true, revision: r.stdout.trim() }
+    : { ok: false, error: `describe ${name}: ${r.stderr.trim()}` };
+}
+
+/**
+ * Delete gateway services a failed first run left behind, which never had a
+ * ready revision — so never served a request. Run under the install's state
+ * lock, right before the `up` that withholds the gateway: Pulumi would
+ * delete them in that `up` anyway, but cannot when the operator enabled
+ * `deletionProtection`, and a fixed-name one outside the state would block
+ * the later create. The `up`'s refresh then drops them from the state.
+ * Each is described again first; one that has become ready meanwhile is
+ * kept and reported, never deleted.
+ *
+ * @returns the services deleted, or an error naming the one that stopped it
+ */
+export async function deleteNeverStartedGateways(
+  target: GatewayStartTarget,
+  names: readonly string[],
+  run: GcloudRunner,
+): Promise<{ ok: true; deleted: string[] } | { ok: false; error: string }> {
+  const deleted: string[] = [];
+  for (const name of names) {
+    const ready = await latestReadyRevision(target, name, run);
+    if (!ready.ok) return ready;
+    if (ready.revision) {
+      return {
+        ok: false,
+        error: `${name} has started meanwhile (revision ${ready.revision}), so another run has deployed the gateway; re-run the installer`,
+      };
+    }
+    const r = await run([
       "run",
       "services",
-      "describe",
+      "delete",
       name,
       `--region=${target.region}`,
       `--project=${target.projectId}`,
-      "--format=value(status.latestReadyRevisionName)",
+      "--quiet",
     ]);
-    if (!ready.ok) return { ok: false, error: `describe ${name}: ${ready.stderr.trim()}` };
-    if (ready.stdout.trim()) return { ok: true, start: "started" };
+    if (!r.ok && !/NOT_FOUND|not found|could not be found/i.test(r.stderr)) {
+      return { ok: false, error: `delete ${name}: ${r.stderr.trim()}` };
+    }
+    deleted.push(name);
   }
-  return { ok: true, start: "never-started" };
+  return { ok: true, deleted };
 }
 
 /** The steps {@link deployOntoMigratedDatabase} orders. */

@@ -187,7 +187,8 @@ describe("applyStackConfig writes the identity (#1082)", () => {
     gatewayMinInstances: 0,
     wafAdaptiveProtection: false,
     iapAllowlist: ["owner@viu.one"],
-    imageDigests: { admin: "sha256:a", gateway: "sha256:g" },
+    imageDigests: { admin: "sha256:a", gateway: "sha256:g", "mcp-auth-proxy": "sha256:m" },
+    deployGateways: true,
   };
   const key = `caelo-gcp-firebase:${REMOTE_MCP_IDENTITY_CONFIG}`;
 

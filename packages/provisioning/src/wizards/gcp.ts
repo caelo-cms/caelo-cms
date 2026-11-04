@@ -51,6 +51,7 @@ import { formatDnsRecordGroups, groupDnsRecords, type InstallDnsRecord } from ".
 import { pickDnsAdapter } from "../dns/index.js";
 import type { DnsRecord } from "../dns/types.js";
 import {
+  deleteNeverStartedGateways,
   deployOntoMigratedDatabase,
   type GatewayStart,
   readGatewayStart,
@@ -1117,6 +1118,42 @@ async function stepReadGatewayStart(
   return r.start;
 }
 
+/**
+ * Under the install's state lock, before an `up` that withholds the
+ * gateway: read its state again — another run may have deployed it since
+ * this run decided, and withholding it now would delete a serving gateway —
+ * and delete the services a failed first run left, which never started
+ * (deleteNeverStartedGateways: Pulumi cannot when `deletionProtection` is
+ * on).
+ *
+ * @returns whether this `up` declares the gateway after all
+ */
+async function withholdGatewayUnderLock(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+): Promise<{ ok: true; deployGateways: boolean } | { ok: false; error: string }> {
+  const target = { provider, projectId, region };
+  const now = await readGatewayStart(target, gcloud);
+  if (!now.ok) {
+    return {
+      ok: false,
+      error: `Could not tell whether the public gateway is deployed: ${now.error}. Re-run the installer.`,
+    };
+  }
+  if (now.start === "started") {
+    log.info("Another run has deployed the public gateway meanwhile; this pass keeps it.");
+    return { ok: true, deployGateways: true };
+  }
+  if (now.neverStarted.length === 0) return { ok: true, deployGateways: false };
+  const removed = await deleteNeverStartedGateways(target, now.neverStarted, gcloud);
+  if (!removed.ok) return { ok: false, error: `${removed.error}.` };
+  log.info(
+    `Removed the gateway service a failed run left behind, which never started: ${removed.deleted.join(", ")}.`,
+  );
+  return { ok: true, deployGateways: false };
+}
+
 async function stepPublicRoleIsolation(projectId: string): Promise<void> {
   const s = spinner();
   s.start("Removing the gateway logins from the Cloud SQL superuser group...");
@@ -1955,6 +1992,21 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
     );
     process.exit(1);
   }
+  // Decided before the lock: under it, look again (gateway-bootstrap.ts).
+  let deployGateways = opts.deployGateways;
+  if (!deployGateways) {
+    const withheld = await withholdGatewayUnderLock(
+      opts.projectId,
+      opts.region,
+      opts.provider ?? "gcp",
+    );
+    if (!withheld.ok) {
+      releaseLock();
+      cancel(withheld.error);
+      process.exit(1);
+    }
+    deployGateways = withheld.deployGateways;
+  }
   log.info(`Pulumi up — wall-clock 8–15 min (Cloud SQL is the long pole). Streaming progress...`);
 
   let resourceCount = 0;
@@ -1967,6 +2019,7 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
         installRoot: root,
         secretsDir,
         ...opts,
+        deployGateways,
         // A deployed install's stack must exist: a missing one means the
         // state is elsewhere, and a fresh stack would try to recreate it all.
         stackMustExist: deployed,

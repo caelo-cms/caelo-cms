@@ -13,7 +13,11 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type * as automation from "@pulumi/pulumi/automation";
-import { deployOntoMigratedDatabase, readGatewayStart } from "./gateway-bootstrap.js";
+import {
+  deleteNeverStartedGateways,
+  deployOntoMigratedDatabase,
+  readGatewayStart,
+} from "./gateway-bootstrap.js";
 import type { GcloudResult } from "./gcloud.js";
 import { fixedCloudRunServiceName } from "./stack-contract.js";
 import { DEPLOY_GATEWAYS_CONFIG, parseDeployGateways } from "./stack-gateways.js";
@@ -55,7 +59,11 @@ describe("parseDeployGateways", () => {
 describe("readGatewayStart", () => {
   it("a project without a gateway service has a gateway that never started", async () => {
     const g = fakeGcloud([[/services list/, ok("")]]);
-    expect(await readGatewayStart(TARGET, g.run)).toEqual({ ok: true, start: "never-started" });
+    expect(await readGatewayStart(TARGET, g.run)).toEqual({
+      ok: true,
+      start: "never-started",
+      neverStarted: [],
+    });
     expect(g.calls[0]).toContain("--filter=metadata.name~^caelo-production-gateway");
   });
 
@@ -65,7 +73,11 @@ describe("readGatewayStart", () => {
       [/services list/, ok("caelo-production-gateway-1a2b3c4\n")],
       [/describe caelo-production-gateway-1a2b3c4 .*latestReadyRevisionName/, ok("\n")],
     ]);
-    expect(await readGatewayStart(TARGET, g.run)).toEqual({ ok: true, start: "never-started" });
+    expect(await readGatewayStart(TARGET, g.run)).toEqual({
+      ok: true,
+      start: "never-started",
+      neverStarted: ["caelo-production-gateway-1a2b3c4"],
+    });
   });
 
   it("a gateway with a ready revision has started, even if its latest revision failed", async () => {
@@ -94,6 +106,41 @@ describe("readGatewayStart", () => {
     ]);
     const d = await readGatewayStart(TARGET, describe.run);
     expect(d.ok).toBe(false);
+  });
+});
+
+describe("deleteNeverStartedGateways", () => {
+  it("deletes a gateway that never started (Pulumi cannot when deletionProtection is on)", async () => {
+    const g = fakeGcloud([
+      [/describe/, ok("")],
+      [/services delete caelo-production-gateway-1a2b3c4 /, ok("")],
+    ]);
+    expect(
+      await deleteNeverStartedGateways(TARGET, ["caelo-production-gateway-1a2b3c4"], g.run),
+    ).toEqual({ ok: true, deleted: ["caelo-production-gateway-1a2b3c4"] });
+    expect(g.calls.at(-1)).toContain("--quiet");
+  });
+
+  it("never deletes one that has started meanwhile (another run deployed it)", async () => {
+    const g = fakeGcloud([[/describe/, ok("caelo-production-gateway-1a2b3c4-00001-abc\n")]]);
+    const r = await deleteNeverStartedGateways(TARGET, ["caelo-production-gateway-1a2b3c4"], g.run);
+    expect(r.ok).toBe(false);
+    expect(g.calls.some((c) => c.includes("services delete"))).toBe(false);
+  });
+
+  it("treats an already-gone service as deleted, and fails loudly on any other error", async () => {
+    const gone = fakeGcloud([
+      [/describe/, ok("")],
+      [/services delete/, failed("NOT_FOUND: service not found")],
+    ]);
+    expect((await deleteNeverStartedGateways(TARGET, ["s"], gone.run)).ok).toBe(true);
+    const denied = fakeGcloud([
+      [/describe/, ok("")],
+      [/services delete/, failed("PERMISSION_DENIED")],
+    ]);
+    const r = await deleteNeverStartedGateways(TARGET, ["s"], denied.run);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("PERMISSION_DENIED");
   });
 });
 
@@ -313,6 +360,17 @@ describe("the installer wires the order (wizards/gcp.ts)", () => {
     expect(prepareBody.indexOf("stepMigrations(projectId, region)")).toBeGreaterThan(
       prepareBody.indexOf("stepPublicRoleIsolation(projectId)"),
     );
+  });
+
+  it("looks at the gateway again under the state lock before an up that withholds it", () => {
+    const up = src.slice(src.indexOf("async function stepPulumiUp("));
+    const lock = up.indexOf("acquireStateLock(");
+    const recheck = up.indexOf("withholdGatewayUnderLock(");
+    const pulumi = up.indexOf("pulumiUpGcp(");
+    expect(lock).toBeGreaterThan(-1);
+    expect(recheck).toBeGreaterThan(lock);
+    expect(pulumi).toBeGreaterThan(recheck);
+    expect(up.slice(pulumi, pulumi + 400)).toContain("deployGateways,");
   });
 
   it("migrates after the up only when it did not before", () => {
