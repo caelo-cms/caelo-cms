@@ -55,9 +55,11 @@ export const LINK_IMAGE_EDIT_SCRIPT = `
     return { wrap: wrap, el: el };
   }
 
-  // The open link editor's suggestion list, and the pending query's timer.
+  // The open link editor's suggestion list, the pending query's timer, and
+  // the number of the newest question: an answer to an older one is late.
   var pathList = null;
   var pathQueryTimer = null;
+  var pathQuerySeq = 0;
 
   /** Fills the open link editor's suggestions from \`pagePaths\` (the editor's answer). */
   function renderPagePaths() {
@@ -104,8 +106,14 @@ export const LINK_IMAGE_EDIT_SCRIPT = `
       // another site asks nothing.
       var askPaths = function () {
         var v = hrefInput.el.value.trim();
-        if (v === "" || /^[a-z][a-z0-9+.-]*:/i.test(v)) return;
-        postToEditor({ kind: "caelo:page-paths-query", query: v.slice(0, 200) });
+        pathQuerySeq++;
+        if (v === "" || /^[a-z][a-z0-9+.-]*:/i.test(v)) {
+          // Nothing to look up: no suggestions, and a pending answer is late.
+          pagePaths = [];
+          renderPagePaths();
+          return;
+        }
+        postToEditor({ kind: "caelo:page-paths-query", query: v.slice(0, 200), seq: pathQuerySeq });
       };
       hrefInput.el.addEventListener("input", function () {
         clearTimeout(pathQueryTimer);

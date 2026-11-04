@@ -2,8 +2,9 @@
 
 /**
  * What the live editor's page search lists (#1207). Opened without a
- * query it shows the pages changed last, then the site's first pages by
- * path, so on a small site it doubles as a page list. Typing searches the
+ * query it shows the pages changed last, then one page of the site
+ * (`pages.list({ limit })`: the oldest pages, shown by path), so on a
+ * small site it doubles as a page list and on a large one it is a start. Typing searches the
  * whole site on the server (`/api/pages/search`, `pages.search`: the words
  * typed start words of the page's title or path, #1269) — the editor
  * never holds the site's every page. A page appears at most once: the
@@ -30,7 +31,7 @@ export interface PageSearchGroup {
 export interface PageSearchSources {
   /** The pages changed last, newest first. */
   readonly recent: readonly SearchablePage[];
-  /** The site's first pages (one page of `pages.list`); `more` when the site has others. */
+  /** One page of `pages.list` (the oldest pages); `more` when the site has others. */
   readonly first: { readonly pages: readonly SearchablePage[]; readonly more: boolean };
   /** The server's answer for the current query, or null while it is on its way. */
   readonly results: { readonly pages: readonly SearchablePage[]; readonly more: boolean } | null;

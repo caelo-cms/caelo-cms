@@ -185,6 +185,13 @@ test("link text + target, shared content scope, and image replace", async ({ pag
   await expect(preview.locator(`#caelo-page-paths option[value="/${TWIN_SLUG}"]`)).toHaveCount(1, {
     timeout: 10_000,
   });
+  // A URL to another site asks nothing, and the earlier suggestions go.
+  await preview.getByTestId("caelo-link-href").fill("https://example.com/");
+  await expect(preview.locator("#caelo-page-paths option")).toHaveCount(0);
+  await preview.getByTestId("caelo-link-href").fill(`/${TWIN_SLUG}`);
+  await expect(preview.locator(`#caelo-page-paths option[value="/${TWIN_SLUG}"]`)).toHaveCount(1, {
+    timeout: 10_000,
+  });
   await preview.getByTestId("caelo-link-save").click();
   await expect(preview.getByTestId("caelo-scope")).toContainText("2 pages");
   let saved = save();

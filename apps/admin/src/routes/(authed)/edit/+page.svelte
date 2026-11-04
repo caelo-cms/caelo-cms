@@ -369,7 +369,7 @@
           awaitingRender = null;
         }
       } else if (msg.kind === "caelo:page-paths-query") {
-        void answerPagePaths(msg.query);
+        void answerPagePaths(msg.query, msg.seq);
       } else if (msg.kind === "caelo:cookies") {
         // The sandboxed preview cannot store cookies; the editor keeps
         // them so a consent decision survives the next load.
@@ -471,7 +471,7 @@
    * leaves the suggestions empty.
    */
   let pagePathsQuery: AbortController | null = null;
-  async function answerPagePaths(query: string): Promise<void> {
+  async function answerPagePaths(query: string, seq: number): Promise<void> {
     pagePathsQuery?.abort();
     const controller = new AbortController();
     pagePathsQuery = controller;
@@ -482,11 +482,12 @@
       postToPreview(iframe?.contentWindow, {
         kind: "caelo:page-paths",
         pages: r.pages.map((p) => ({ path: p.currentPath, title: p.title })),
+        seq,
       });
     } catch (e) {
       if (controller.signal.aborted) return;
       linkSuggestionsError = `Link suggestions: ${e instanceof Error ? e.message : String(e)}`;
-      postToPreview(iframe?.contentWindow, { kind: "caelo:page-paths", pages: [] });
+      postToPreview(iframe?.contentWindow, { kind: "caelo:page-paths", pages: [], seq });
     }
   }
 

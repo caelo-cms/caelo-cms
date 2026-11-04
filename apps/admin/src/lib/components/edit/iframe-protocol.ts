@@ -182,6 +182,8 @@ const cookiesSchema = z.object({
 const pagePathsQuerySchema = z.object({
   kind: z.literal("caelo:page-paths-query"),
   query: z.string().min(1).max(200),
+  /** The question's number; the answer carries it, and an older one's answer is dropped. */
+  seq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 });
 
 /** Every message the preview may send the editor. Unknown keys are stripped. */
@@ -205,6 +207,8 @@ export type IframeToParent = z.infer<typeof iframeToParentSchema>;
 export interface PagePathsMessage {
   kind: "caelo:page-paths";
   pages: { path: string; title: string }[];
+  /** The `seq` of the `caelo:page-paths-query` this answers. */
+  seq: number;
 }
 
 export interface ReloadMessage {

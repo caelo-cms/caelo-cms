@@ -192,7 +192,11 @@ export const INJECT_SCRIPT = `
     if (ev.origin !== editorOrigin) return;
     if (!ev.data || typeof ev.data !== "object") return;
     if (ev.data.kind === "caelo:reload") reload();
-    else if (ev.data.kind === "caelo:page-paths" && Array.isArray(ev.data.pages)) {
+    else if (
+      ev.data.kind === "caelo:page-paths" &&
+      Array.isArray(ev.data.pages) &&
+      ev.data.seq === pathQuerySeq
+    ) {
       pagePaths = ev.data.pages;
       renderPagePaths();
     }

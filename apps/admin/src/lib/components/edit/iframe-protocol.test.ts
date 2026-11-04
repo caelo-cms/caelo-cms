@@ -119,11 +119,16 @@ describe("previewMessage (#946 — opaque-origin preview)", () => {
 
 describe("caelo:page-paths-query (#1269)", () => {
   it("accepts the link editor's question for link targets, and only a bounded one", () => {
-    const ask = { kind: "caelo:page-paths-query" as const, query: "pricing pla" };
+    const ask = { kind: "caelo:page-paths-query" as const, query: "pricing pla", seq: 3 };
     expect(previewMessage(fromPreview(ask), preview, CHANNEL)).toEqual(ask);
-    for (const query of ["", "x".repeat(201)]) {
+    for (const bad of [
+      { query: "", seq: 1 },
+      { query: "x".repeat(201), seq: 1 },
+      { query: "ok" },
+      { query: "ok", seq: -1 },
+    ]) {
       expect(
-        previewMessage(fromPreview({ kind: "caelo:page-paths-query", query }), preview, CHANNEL),
+        previewMessage(fromPreview({ kind: "caelo:page-paths-query", ...bad }), preview, CHANNEL),
       ).toBeNull();
     }
   });
@@ -213,11 +218,11 @@ describe("previewUrl / postToPreview / channel", () => {
     const sent: { msg: unknown; target: string }[] = [];
     const win = { postMessage: (msg: unknown, target: string) => sent.push({ msg, target }) };
     postToPreview(win as unknown as Window, { kind: "caelo:reload" });
-    postToPreview(win as unknown as Window, { kind: "caelo:page-paths", pages: [] });
+    postToPreview(win as unknown as Window, { kind: "caelo:page-paths", pages: [], seq: 0 });
     postToPreview(null, { kind: "caelo:reload" });
     expect(sent).toEqual([
       { msg: { kind: "caelo:reload" }, target: "*" },
-      { msg: { kind: "caelo:page-paths", pages: [] }, target: "*" },
+      { msg: { kind: "caelo:page-paths", pages: [], seq: 0 }, target: "*" },
     ]);
   });
 

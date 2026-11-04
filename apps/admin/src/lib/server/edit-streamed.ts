@@ -84,7 +84,10 @@ export interface DeployState {
 
 /** The streamed parts of the Live Edit load. */
 export interface EditorStream {
-  /** #1269 — the site's first pages (one page of `pages.list`), and whether it has more. */
+  /**
+   * #1269 — one page of `pages.list` (the oldest pages, as it orders), and
+   * whether the site has more: what the search box lists before typing.
+   */
   readonly firstPages: Promise<Streamed<{ pages: EditPage[]; more: boolean }>>;
   /** #1207 — the pages changed last, newest first: what the search offers before typing. */
   readonly recentPages: Promise<Streamed<EditPage[]>>;
