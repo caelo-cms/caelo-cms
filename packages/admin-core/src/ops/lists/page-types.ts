@@ -23,6 +23,7 @@ import {
 } from "@caelo-cms/query-api";
 import {
   checkPageTypeDef,
+  type ExecutionContext,
   ok,
   type PageTypeDef,
   pageTypeDefSchema,
@@ -52,7 +53,7 @@ import {
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { emitSnapshot } from "../../snapshots/index.js";
 import type { PageTypeState } from "../../snapshots/state.js";
-import { updatePageOp } from "../content/pages.js";
+import { listPagesOp, updatePageOp } from "../content/pages.js";
 import { structureWriteRefusal } from "./_permission.js";
 import {
   branchOf,
@@ -105,11 +106,16 @@ async function rows(
 }
 
 /**
- * Up to `n` pages of page type `typeId` in the caller's view, by path —
- * read from the type's index a few at a time, never every page of it.
- * A page the branch deleted or retyped is skipped.
+ * Up to `n` pages of page type `typeId` in the caller's view, by path,
+ * as `pages.list` shows them there (title and composed path with the
+ * branch's pending edits). The candidates are a few stored pages of the
+ * type (its index) and, on a branch, the pending pages whose newest state
+ * has the type — a page a chat retyped into it — so the sample never
+ * reads every page of the type. Each is kept only if the branch view
+ * still gives it the type.
  */
 async function samplePagesOfType(
+  ctx: ExecutionContext,
   tx: Tx,
   branchId: string | null,
   typeId: string,
@@ -118,30 +124,34 @@ async function samplePagesOfType(
   const visible = branchId
     ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${branchId}::uuid)`
     : sql`chat_branch_id IS NULL`;
-  const candidates = (await tx.execute(sql`
-    SELECT id::text AS id, current_path AS path, title FROM pages
+  const stored = (await tx.execute(sql`
+    SELECT id::text AS id FROM pages
      WHERE page_type_id = ${typeId}::uuid AND deleted_at IS NULL AND ${visible}
      ORDER BY current_path LIMIT ${n * 4}
-  `)) as unknown as { id: string; path: string; title: string }[];
-  if (!branchId || candidates.length === 0) {
-    return candidates.slice(0, n).map((c) => ({ pageId: c.id, path: c.path, title: c.title }));
-  }
-  const heads = (await tx.execute(
-    headOverlaySql({
-      kind: "page",
-      table: "page_snapshots",
-      branchId,
-      ids: candidates.map((c) => c.id),
-      columns: sql`es.state->>'pageTypeId' AS type_id, (es.state->>'deletedAt') IS NOT NULL AS deleted`,
-    }),
-  )) as unknown as { entity_id: string; type_id: string | null; deleted: boolean }[];
-  const gone = new Set(
-    heads.filter((h) => h.deleted || h.type_id !== typeId).map((h) => h.entity_id),
-  );
-  return candidates
-    .filter((c) => !gone.has(c.id))
+  `)) as unknown as { id: string }[];
+  const retyped = branchId
+    ? ((await tx.execute(sql`
+        SELECT h.entity_id AS id FROM (${headOverlaySql({
+          kind: "page",
+          table: "page_snapshots",
+          branchId,
+          columns: sql`es.state->>'pageTypeId' AS type_id`,
+        })}) h
+         WHERE h.type_id = ${typeId}
+         LIMIT ${n * 4}
+      `)) as unknown as { id: string }[])
+    : [];
+  const ids = [...new Set([...stored, ...retyped].map((r) => r.id))];
+  if (ids.length === 0) return [];
+  const listed = await listPagesOp.handler(ctx, { includeDeleted: false, pageIds: ids }, tx);
+  if (!listed.ok) return [];
+  return (
+    listed.value.pages as { id: string; pageTypeId: string; currentPath: string; title: string }[]
+  )
+    .filter((p) => p.pageTypeId === typeId)
+    .sort((x, y) => x.currentPath.localeCompare(y.currentPath))
     .slice(0, n)
-    .map((c) => ({ pageId: c.id, path: c.path, title: c.title }));
+    .map((p) => ({ pageId: p.id, path: p.currentPath, title: p.title }));
 }
 
 // ─── page_types.list ─────────────────────────────────────────────────
@@ -207,7 +217,7 @@ export const getPageTypeOp = defineOperation({
     }
     return ok({
       pageType: row,
-      samplePages: await samplePagesOfType(tx, branchId, row.id, 5),
+      samplePages: await samplePagesOfType(ctx, tx, branchId, row.id, 5),
     });
   },
 });
