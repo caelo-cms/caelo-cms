@@ -373,6 +373,11 @@ export async function growFixture(
       "plugin_row_snapshots",
       "chat_sessions",
       "draft_pending_entities",
+      // The page search's word tables (0603), filled by the pages' and the
+      // draft head's triggers during the bulk load: without statistics the
+      // planner takes them for empty and scans them whole.
+      "page_search_words",
+      "draft_pending_page_words",
     ]) {
       await tx.unsafe(`ANALYZE ${t}`);
     }
