@@ -144,11 +144,11 @@ export async function readDeployedImageDigests(opts: {
     gateway: "",
     "mcp-auth-proxy": "",
   };
-  // One service per release image: the staging gateway (#1330) runs the
-  // gateway's and rolls with it.
-  for (const slug of SERVICE_IMAGE_NAMES) {
+  const digestOf = async (
+    slug: CloudRunSlug,
+  ): Promise<{ ok: true; digest: string } | { ok: false; error: string; missing: boolean }> => {
     const found = await findDeployedService(run, opts, slug);
-    if (!found.ok) return { ok: false, error: found.error };
+    if (!found.ok) return found;
     const image = await run([
       "run",
       "services",
@@ -158,15 +158,36 @@ export async function readDeployedImageDigests(opts: {
       `--project=${opts.projectId}`,
       "--format=value(spec.template.spec.containers[0].image)",
     ]);
-    if (!image.ok) return { ok: false, error: `describe ${found.name}: ${image.stderr.trim()}` };
+    if (!image.ok) {
+      return { ok: false, error: `describe ${found.name}: ${image.stderr.trim()}`, missing: false };
+    }
     const digest = digestFromImageRef(image.stdout);
     if (!digest) {
       return {
         ok: false,
         error: `${found.name} runs '${image.stdout.trim()}', which is not pinned to a digest`,
+        missing: false,
       };
     }
-    digests[slug] = digest;
+    return { ok: true, digest };
+  };
+  // One digest per release image.
+  for (const slug of SERVICE_IMAGE_NAMES) {
+    const d = await digestOf(slug);
+    if (!d.ok) return { ok: false, error: d.error };
+    digests[slug] = d.digest;
+  }
+  // #1330 — the staging gateway runs the gateway's image and rolls with it:
+  // one that runs another image means the services serve two releases, and
+  // the wizard must not record (or deploy) either as "the" release. An
+  // install from before it has none yet (the CLI creates it after `up`).
+  const staging = await digestOf("staging-gateway");
+  if (!staging.ok && !staging.missing) return { ok: false, error: staging.error };
+  if (staging.ok && staging.digest !== digests.gateway) {
+    return {
+      ok: false,
+      error: `the staging gateway runs ${staging.digest}, but the gateway runs ${digests.gateway}: the two must run the same release image. Run \`upgrade\` first — it rolls both onto one release — then re-run the installer.`,
+    };
   }
   return { ok: true, digests };
 }
