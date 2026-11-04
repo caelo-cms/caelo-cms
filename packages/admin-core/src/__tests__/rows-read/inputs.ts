@@ -94,6 +94,16 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
   { op: "chat.list_open_changes", ctx: "system", input: () => ({ limit: 20 }) },
   // Unbounded list ops (#1269 makes them keyset-paginated).
   { op: "pages.list", ctx: "chat", input: () => ({}) },
+  // #1269 — one page of the site, and the pages a plugin names
+  // (international-site reads a page's variants and links by id).
+  { op: "pages.list", label: "pages.list {limit}", ctx: "chat", input: () => ({ limit: 50 }) },
+  {
+    op: "pages.list",
+    label: "pages.list {pageIds}",
+    ctx: "chat",
+    plugins: ["international-site"],
+    input: (r) => ({ pageIds: [r.pageId] }),
+  },
   { op: "modules.list", ctx: "chat", input: () => ({}) },
   { op: "content_instances.list", ctx: "chat", input: () => ({}) },
   // The shapes plugins call in the background, after every write: the

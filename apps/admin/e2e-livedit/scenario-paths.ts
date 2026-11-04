@@ -99,6 +99,8 @@ const MODULES = [
   `${A}/ops/content/modules.ts`,
   `${A}/ops/content/module-placements.ts`,
   `${A}/ops/content/content-instance*.ts`,
+  // #1269 — the cursor content_instances.list (and pages.list) page by.
+  `${A}/ops/keyset-cursor.ts`,
   `${A}/ops/content/shared-content.ts`,
   `${A}/ops/content/page-module-*.ts`,
   `${A}/ops/content/extract-module-*.ts`,

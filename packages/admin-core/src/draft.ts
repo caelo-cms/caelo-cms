@@ -242,7 +242,13 @@ export function pendingChangeKindSql(alias = "d"): SQL {
  * draft head — so an overlay reads one head row per pending entity instead
  * of the entity's whole pending history. Selects `entity_id` (text) plus
  * `columns` (default `es.state`). `ids` narrows to those entities; `where`
- * adds a predicate on `d` / `es`.
+ * adds a predicate on `d` / `es`, applied to the newest state.
+ *
+ * The newest head row of each entity is picked from the head alone (its
+ * key index), and only that row's snapshot state is read (#1269): an
+ * entity several chats changed has one head row per chat, and joining
+ * every one of them to its state first read each state to discard all
+ * but one.
  */
 export function headOverlaySql(spec: {
   readonly kind: Exclude<DraftHeadKind, "layoutChrome">;
@@ -253,15 +259,17 @@ export function headOverlaySql(spec: {
   readonly where?: SQL;
 }): SQL {
   return sql`
-    SELECT DISTINCT ON (d.entity_id, d.entity_sub) d.entity_id::text AS entity_id,
+    SELECT d.entity_id::text AS entity_id,
            ${spec.columns ?? sql`es.state`}
-      FROM draft_pending_entities d
+      FROM (SELECT DISTINCT ON (h.entity_id, h.entity_sub) h.*
+              FROM draft_pending_entities h
+             WHERE h.chat_branch_id = ${spec.branchId}::uuid AND h.entity_kind = ${spec.kind}
+               ${spec.ids ? sql`AND h.entity_id = ANY(${uuidArray(spec.ids)})` : sql``}
+             ORDER BY h.entity_id, h.entity_sub,
+                      h.header_created_at DESC, h.row_created_at DESC, h.snapshot_row_id DESC) d
       JOIN ${sql.raw(spec.table)} es ON es.id = d.snapshot_row_id
-     WHERE d.chat_branch_id = ${spec.branchId}::uuid AND d.entity_kind = ${spec.kind}
-       ${spec.ids ? sql`AND d.entity_id = ANY(${uuidArray(spec.ids)})` : sql``}
-       ${spec.where ? sql`AND ${spec.where}` : sql``}
-     ORDER BY d.entity_id, d.entity_sub,
-              d.header_created_at DESC, d.row_created_at DESC, d.snapshot_row_id DESC`;
+     ${spec.where ? sql`WHERE ${spec.where}` : sql``}
+     ORDER BY d.entity_id, d.entity_sub`;
 }
 
 /**
