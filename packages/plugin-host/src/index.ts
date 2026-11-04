@@ -48,6 +48,7 @@ export {
   injectPluginAssets,
   PLUGIN_ASSET_DIR,
   type PluginClientAsset,
+  withAssetContent,
 } from "./client-assets.js";
 export {
   consentPurposeDeclared,
