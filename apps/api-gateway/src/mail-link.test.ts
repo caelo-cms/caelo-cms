@@ -81,8 +81,11 @@ describe("the page", () => {
     const res = mailLinkPage({ slug: "auth", operation: "reset_password" }, link, "r");
     const csp = res.headers.get("content-security-policy") ?? "";
     const html = await res.text();
-    const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1] ?? "";
-    const style = html.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? "";
+    // The page's own fixed elements, cut out by position (not a tag filter).
+    const between = (open: string, close: string) =>
+      html.slice(html.indexOf(open) + open.length, html.indexOf(close));
+    const script = between("<script>", "</script>");
+    const style = between("<style>", "</style>");
     const hash = (s: string) => `'sha256-${createHash("sha256").update(s).digest("base64")}'`;
     expect(csp).toContain(`script-src ${hash(script)}`);
     expect(csp).toContain(`style-src ${hash(style)}`);
