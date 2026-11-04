@@ -122,6 +122,8 @@ export interface StagingSiteDeps {
   readonly api: (req: Request) => Promise<Response>;
   readonly secure: boolean;
   readonly nowSeconds?: () => number;
+  /** Override {@link FIRST_BYTE_BUDGET_MS} (tests). */
+  readonly firstByteBudgetMs?: number;
 }
 
 /** A gateway-wide failure budget, one bucket per client. */
@@ -271,6 +273,15 @@ export async function handleStagingSiteRequest(
   }
   const secret = state.gateSecret;
 
+  // Before any HMAC, on every path the gate answers — the token exchange and
+  // the serve check included: a client that used up its failure budget waits
+  // it out whatever it presents (DoS only).
+  if (!deps.failures.peek(deps.clientKey).allowed) {
+    return gatePage(429, "Too many attempts", "Try again in a few minutes.", {
+      "Retry-After": "60",
+    });
+  }
+
   if (url.pathname === STAGING_ACCESS_PATH) {
     const token = url.searchParams.get("t") ?? "";
     const valid =
@@ -297,11 +308,6 @@ export async function handleStagingSiteRequest(
 
   if (url.pathname === STAGING_CHECK_PATH) return stagingCheck(req, url, deps, secret, now);
 
-  if (!deps.failures.peek(deps.clientKey).allowed) {
-    return gatePage(429, "Too many attempts", "Try again in a few minutes.", {
-      "Retry-After": "60",
-    });
-  }
   const decision = await decideStagingAccess({
     settings: state.settings,
     secret,
@@ -334,6 +340,8 @@ export async function handleStagingSiteRequest(
     const answer = await deps.api(req);
     const headers = new Headers(answer.headers);
     headers.set("X-Robots-Tag", "noindex");
+    // No shared cache may keep an admitted answer for someone the gate would refuse.
+    headers.set("Cache-Control", "private, no-store");
     return new Response(answer.body, {
       status: answer.status,
       statusText: answer.statusText,
@@ -404,6 +412,20 @@ async function stagingCheck(
   });
 }
 
+/**
+ * The first-byte budget of one staged file: it aborts the storage read only
+ * while the answer has not started. Cleared once the file is open, so a
+ * large file that takes longer than the budget to stream is never cut.
+ */
+function firstByteBudget(ms: number): { readonly signal: AbortSignal; clear(): void } {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error("the staged file did not start in time")),
+    ms,
+  );
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
+
 async function serveStagedPath(
   req: Request,
   url: URL,
@@ -411,7 +433,23 @@ async function serveStagedPath(
   served: ServedBuild,
   deps: StagingSiteDeps,
 ): Promise<Response> {
-  const signal = AbortSignal.timeout(FIRST_BYTE_BUDGET_MS);
+  const budget = firstByteBudget(deps.firstByteBudgetMs ?? FIRST_BYTE_BUDGET_MS);
+  try {
+    return await serveStagedPathWithin(req, url, state, served, deps, budget.signal);
+  } finally {
+    // The answer has started (or failed): its body streams without a deadline.
+    budget.clear();
+  }
+}
+
+async function serveStagedPathWithin(
+  req: Request,
+  url: URL,
+  state: StagingSiteState,
+  served: ServedBuild,
+  deps: StagingSiteDeps,
+  signal: AbortSignal,
+): Promise<Response> {
   let build: LoadedBuild;
   try {
     build = await deps.manifests.get(deps.storage, served, signal);

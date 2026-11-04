@@ -319,16 +319,25 @@ describe("#1330 per-run tokens", () => {
     decideStagingAccess({ settings: OFF, secret: SECRET, request, nowSeconds: NOW });
   const run = "0b7c0d6e-1111-4111-8111-111111111111";
 
-  it("admits a valid capture or check token even with every mode off", async () => {
-    for (const purpose of ["capture", "check"] as const) {
-      const token = await signStagingRunToken(SECRET, purpose, run, NOW + 300, NOW);
-      expect(await verifyStagingRunToken(SECRET, token, NOW)).toEqual({ purpose, runId: run });
-      expect(await decide(req({ headers: { [STAGING_RUN_TOKEN_HEADER]: token } }))).toEqual({
-        allowed: true,
-        via: "run-token",
-        satisfied: ["run-token"],
-      });
-    }
+  it("admits a valid capture token even with every mode off; a check token opens nothing", async () => {
+    const capture = await signStagingRunToken(SECRET, "capture", run, NOW + 300, NOW);
+    expect(await verifyStagingRunToken(SECRET, capture, NOW)).toEqual({
+      purpose: "capture",
+      runId: run,
+    });
+    expect(await decide(req({ headers: { [STAGING_RUN_TOKEN_HEADER]: capture } }))).toEqual({
+      allowed: true,
+      via: "run-token",
+      satisfied: ["run-token"],
+    });
+    const check = await signStagingRunToken(SECRET, "check", run, NOW + 300, NOW);
+    expect(await verifyStagingRunToken(SECRET, check, NOW)).toEqual({
+      purpose: "check",
+      runId: run,
+    });
+    expect((await decide(req({ headers: { [STAGING_RUN_TOKEN_HEADER]: check } }))).allowed).toBe(
+      false,
+    );
   });
 
   it("refuses an expired, forged, other-key or over-long token", async () => {

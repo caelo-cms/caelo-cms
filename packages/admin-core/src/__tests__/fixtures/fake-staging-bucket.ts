@@ -23,7 +23,13 @@ export interface FakeStagingBucket {
 export function fakeStagingBucket(opts: { keepBodies?: boolean } = {}): FakeStagingBucket {
   const keep = (name: string) => opts.keepBodies !== false || name.endsWith(".manifest.json");
   const objects = new Map<string, Buffer>();
+  const generations = new Map<string, number>();
+  let generation = 0;
   const writes: string[] = [];
+  const stored = (name: string, body: Buffer) => {
+    objects.set(name, body);
+    generations.set(name, ++generation);
+  };
   const file = (name: string): File =>
     ({
       name,
@@ -37,11 +43,18 @@ export function fakeStagingBucket(opts: { keepBodies?: boolean } = {}): FakeStag
       },
       async delete() {
         objects.delete(name);
+        generations.delete(name);
         return [{}];
+      },
+      async getMetadata() {
+        if (!objects.has(name)) {
+          throw Object.assign(new Error(`No such object: ${name}`), { code: 404 });
+        }
+        return [{ generation: String(generations.get(name)) }];
       },
       async save(body: string | Buffer | Uint8Array) {
         writes.push(name);
-        objects.set(name, keep(name) ? Buffer.from(body) : Buffer.alloc(0));
+        stored(name, keep(name) ? Buffer.from(body) : Buffer.alloc(0));
         return [{}];
       },
       createWriteStream() {
@@ -53,7 +66,7 @@ export function fakeStagingBucket(opts: { keepBodies?: boolean } = {}): FakeStag
           },
           final(done) {
             writes.push(name);
-            objects.set(name, keep(name) ? Buffer.concat(chunks) : Buffer.alloc(0));
+            stored(name, keep(name) ? Buffer.concat(chunks) : Buffer.alloc(0));
             done();
           },
         });

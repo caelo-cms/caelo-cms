@@ -412,10 +412,11 @@ export async function decideStagingAccess(args: {
   }
   const ip = request.clientIp;
   if (ip && settings.ipAllowlist.some((c) => ipMatchesCidr(ip, c))) granted.push("ip");
+  // Only a capture token opens the site; a check token answers the serve
+  // check (STAGING_CHECK_PATH) and nothing else.
   const runToken = request.header(STAGING_RUN_TOKEN_HEADER);
-  if (runToken && (await verifyStagingRunToken(secret, runToken, args.nowSeconds))) {
-    granted.push("run-token");
-  }
+  const run = runToken ? await verifyStagingRunToken(secret, runToken, args.nowSeconds) : null;
+  if (run?.purpose === "capture") granted.push("run-token");
 
   const via = granted[0];
   if (via) return { allowed: true, via, satisfied: granted };

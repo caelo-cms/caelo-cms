@@ -129,6 +129,10 @@ async function gcStaleStagingPrefixes(opts: {
   const [files] = await bucket.getFiles();
   let deleted = 0;
   for (const file of files) {
+    // #1330 — the staging slots are the staged site the staging gateway
+    // serves: kept for as long as it is served, synced in place by the next
+    // Stage, so an old object is not a stale one.
+    if (isStagingSlotKey(file.name)) continue;
     const created = (file.metadata as { timeCreated?: string } | undefined)?.timeCreated;
     if (!created) continue;
     if (new Date(created) >= cutoff) continue;
@@ -142,6 +146,11 @@ async function gcStaleStagingPrefixes(opts: {
     }
   }
   return { deletedObjects: deleted };
+}
+
+/** #1330 — whether `key` belongs to a staging slot (`_slots/a/…`, `_slots/a.manifest.json`). */
+export function isStagingSlotKey(key: string): boolean {
+  return key.startsWith("_slots/");
 }
 
 const DEFAULT_STAGING_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days

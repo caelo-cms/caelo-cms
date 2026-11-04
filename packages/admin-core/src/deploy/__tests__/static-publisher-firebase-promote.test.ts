@@ -558,9 +558,20 @@ describe("firebaseHostingPublisher — staging behind the staging gateway (#1330
   it("#1331 a preview channel that cannot be deleted yet is reported, not thrown", async () => {
     fake.seedVersion("runid-stuck", { headers: [] }, { "/index.html": "abc" });
     fake.failDelete.add("runid-stuck");
-    const { retireLegacyPreviewChannels } = await import("../static-publisher-firebase.js");
+    const { firebaseHostingPublisher, retireLegacyPreviewChannels } = await import(
+      "../static-publisher-firebase.js"
+    );
     const left = await retireLegacyPreviewChannels();
     expect(left.map((l) => l.channel)).toEqual(["runid-stuck"]);
+    // A Stage does not succeed while a public preview is still there.
+    await expect(
+      firebaseHostingPublisher.publishStaging({
+        buildDir,
+        runId: "run-stuck",
+        target: STAGING,
+        servedStagingLocation: null,
+      }),
+    ).rejects.toThrow("could not be deleted");
   });
 
   it("promote without a recorded Hosting version fails loudly", async () => {

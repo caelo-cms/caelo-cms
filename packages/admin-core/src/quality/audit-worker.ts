@@ -118,7 +118,8 @@ export interface OriginEnv {
 /**
  * The file source for providers whose staging the browser cannot open
  * without the gate. gcp / gcp-firebase: the run's staging slot (#1330).
- * aws / azure: the build archive this process wrote, when it is still here.
+ * self-hosted (the staging host is gated since #1330), aws / azure: the
+ * build archive this process wrote, when it is still here.
  */
 function loopbackSourceFor(
   provider: string,
@@ -157,8 +158,9 @@ export async function resolveStagingOrigin(
   env: OriginEnv,
 ): Promise<StagingOrigin> {
   const provider = env.provider ?? "";
-  if (provider === "" || provider === "self-hosted") {
-    // Same origin the Stage flow's own serve check and Preview link use.
+  if (provider === "") {
+    // A development checkout: its local staging port serves `current/`, the
+    // same origin the Stage flow's own serve check and Preview link use.
     const baseUrl = env.stagingBaseUrl ?? "http://localhost:8081";
     const served = await verifyStagedBuildServed({
       stagingBaseUrl: baseUrl,
@@ -176,6 +178,7 @@ export async function resolveStagingOrigin(
   if (
     provider === "gcp" ||
     provider === "gcp-firebase" ||
+    provider === "self-hosted" ||
     provider === "aws" ||
     provider === "azure"
   ) {

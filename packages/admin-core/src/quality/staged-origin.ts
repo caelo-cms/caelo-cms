@@ -111,12 +111,26 @@ export function stagingSlotSource(location: string, runId: string): StagedFileSo
   let opened: Promise<{
     bucket: import("@google-cloud/storage").Bucket;
     manifest: StagedManifest;
+    generation: string;
   }> | null = null;
+  const replaced = () =>
+    new StagedRunError(
+      `the staging slot ${location} no longer holds build ${runId} — a later Stage replaced it. Stage again to check the current build.`,
+    );
+  /** The manifest's generation, or null when it is gone (a Stage is resyncing the slot). */
+  const generationOf = async (bucket: import("@google-cloud/storage").Bucket) => {
+    try {
+      const [meta] = await bucket.file(stagedManifestKey(location)).getMetadata();
+      return meta.generation === undefined ? null : String(meta.generation);
+    } catch {
+      return null;
+    }
+  };
   const open = () => {
     opened ??= stagingBucket().then(async (bucket) => {
       const file = bucket.file(stagedManifestKey(location));
-      const [exists] = await file.exists();
-      if (!exists) {
+      const generation = await generationOf(bucket);
+      if (generation === null) {
         throw new StagedRunError(
           `the staging slot ${location} has no manifest (a Stage is resyncing it). Stage again.`,
         );
@@ -124,21 +138,22 @@ export function stagingSlotSource(location: string, runId: string): StagedFileSo
       const manifest = stagedManifestSchema.parse(
         JSON.parse((await file.download())[0].toString("utf8")),
       );
-      if (manifest.runId !== runId) {
-        throw new StagedRunError(
-          `the staging slot ${location} holds build ${manifest.runId} now, not ${runId} — a later Stage replaced it. Stage again to check the current build.`,
-        );
-      }
-      return { bucket, manifest };
+      if (manifest.runId !== runId) throw replaced();
+      return { bucket, manifest, generation };
     });
     return opened;
   };
   return {
     async read(key) {
-      const { bucket, manifest } = await open();
+      const { bucket, manifest, generation } = await open();
       const entry = manifest.files[key];
       if (!entry) return null;
       const [body] = await bucket.file(stagedFileKey(location, key)).download();
+      // The fence: a slot sync deletes the manifest before it writes the
+      // first file, so a manifest still at the generation this source read
+      // AFTER the download proves the bytes are this build's, not a later
+      // Stage's that reuses the slot.
+      if ((await generationOf(bucket)) !== generation) throw replaced();
       return { bytes: new Uint8Array(body), contentType: entry.type };
     },
   };

@@ -410,3 +410,74 @@ describe("#1330 staging storage: a directory", () => {
     expect(await storage.readText("builds/missing")).toBeNull();
   });
 });
+
+describe("#1330 staging gateway: review hardening", () => {
+  it("a serve-check token opens nothing but the serve check", async () => {
+    const check = await signStagingRunToken(SECRET, "check", RUN, NOW + 60, NOW);
+    const res = await handleStagingSiteRequest(
+      get("/about/", { [STAGING_RUN_TOKEN_HEADER]: check }),
+      deps(),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("an exhausted failure budget stops the token exchange and the serve check too", async () => {
+    const d = deps();
+    for (let i = 0; i < 31; i++) await handleStagingSiteRequest(get("/"), d);
+    const open = await signStagingToken(SECRET, "open", NOW + 60);
+    const check = await signStagingRunToken(SECRET, "check", RUN, NOW + 60, NOW);
+    expect(
+      (
+        await handleStagingSiteRequest(
+          get(`${STAGING_ACCESS_PATH}?t=${encodeURIComponent(open)}`),
+          d,
+        )
+      ).status,
+    ).toBe(429);
+    expect(
+      (
+        await handleStagingSiteRequest(
+          get(`${STAGING_CHECK_PATH}?location=${LOCATION}`, { [STAGING_RUN_TOKEN_HEADER]: check }),
+          d,
+        )
+      ).status,
+    ).toBe(429);
+  });
+
+  it("marks admitted /api/* answers private and uncacheable", async () => {
+    const res = await handleStagingSiteRequest(
+      get("/api/captcha/challenge", { cookie: await sessionCookie() }),
+      deps({ api: async () => new Response(null, { status: 204 }) }),
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("a file that started in time streams to its end, whatever its length", async () => {
+    let pull = 0;
+    const slow: StagingStorage = {
+      describe: "slow",
+      readText: async (key) => FILES[key] ?? null,
+      open: async () => ({
+        size: null,
+        body: new ReadableStream<Uint8Array>({
+          async pull(c) {
+            pull += 1;
+            if (pull > 3) {
+              c.close();
+              return;
+            }
+            await Bun.sleep(40);
+            c.enqueue(new TextEncoder().encode(`chunk${pull} `));
+          },
+        }),
+      }),
+    };
+    const res = await handleStagingSiteRequest(
+      get("/_assets/logo.png", { cookie: await sessionCookie() }),
+      deps({ storage: slow, firstByteBudgetMs: 50 }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("chunk1 chunk2 chunk3 ");
+  });
+});

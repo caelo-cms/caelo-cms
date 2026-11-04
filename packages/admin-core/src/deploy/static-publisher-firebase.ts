@@ -1076,11 +1076,16 @@ export const firebaseHostingPublisher: StaticPublisher = {
         runId,
       });
       // #1331 — no preview channel of an older release stays reachable.
+      // A channel left behind is a public, ungated path to staged pages, so
+      // the Stage does not succeed while one is still there.
       if (target.env === "staging") {
-        for (const left of await retireLegacyPreviewChannels()) {
-          console.error("[deploy] an old staging preview channel could not be deleted yet", left);
-        }
+        const left = await retireLegacyPreviewChannels();
         timer.lap("retire-previews");
+        if (left.length > 0) {
+          throw new Error(
+            `${left.length} preview channel(s) an older Caelo release staged to could not be deleted (${left.map((l) => `${l.channel}: ${l.error}`).join("; ")}). They are public by URL, so this Stage is not recorded; staging keeps the previous build. Stage again; if it persists, delete the channels under Firebase Hosting → preview channels.`,
+          );
+        }
       }
       const summary: PublishSummary = {
         provider: "gcp-firebase",

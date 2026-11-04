@@ -92,11 +92,9 @@ describe("resolveStagingOrigin", () => {
   });
   afterAll(() => server.stop(true));
 
-  it("self-hosted: the staging base URL, once it serves this run", async () => {
+  it("a dev checkout: the staging base URL, once it serves this run", async () => {
     const base = `http://127.0.0.1:${server.port}`;
-    expect(
-      await resolveStagingOrigin(run(), { provider: "self-hosted", stagingBaseUrl: base }),
-    ).toEqual({
+    expect(await resolveStagingOrigin(run(), { provider: "", stagingBaseUrl: base })).toEqual({
       ok: true,
       baseUrl: base,
     });
@@ -116,7 +114,7 @@ describe("resolveStagingOrigin", () => {
   });
 
   it("gcp / gcp-firebase / aws / azure: a loopback origin serving the run's files, closed after use (#1330: never the gated gateway)", async () => {
-    for (const provider of ["gcp", "gcp-firebase", "aws", "azure"]) {
+    for (const provider of ["gcp", "gcp-firebase", "self-hosted", "aws", "azure"]) {
       const r = await resolveStagingOrigin(
         run({ stagingLocation: "_slots/a", stagingOrigin: "https://staging.example.com" }),
         {
