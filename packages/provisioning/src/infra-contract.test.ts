@@ -20,8 +20,8 @@ describe("infrastructure contract steps", () => {
     );
   });
 
-  it("is at 18: public_role revoke (3), URL-map redirects role (4), no gateway cms_admin login (5), ops-bucket list (6), gateway proxy hops (7), quality-audit job (8), converge job (9), remote MCP (10), Google sign-in (11), project-level sign-in client (12), edge security headers (13), capture job (14), database verify-full TLS (15), MCP-Auth-Proxy (16), staging database (17), scheduler tick (18)", () => {
-    expect(INFRA_CONTRACT_VERSION).toBe(18);
+  it("is at 19: public_role revoke (3), URL-map redirects role (4), no gateway cms_admin login (5), ops-bucket list (6), gateway proxy hops (7), quality-audit job (8), converge job (9), remote MCP (10), Google sign-in (11), project-level sign-in client (12), edge security headers (13), capture job (14), database verify-full TLS (15), MCP-Auth-Proxy (16), staging database (17), scheduler tick (18), scheduler tick as JSON (19)", () => {
+    expect(INFRA_CONTRACT_VERSION).toBe(19);
     expect(INFRA_CONTRACT_STEPS[3]).toContain("#633");
     expect(INFRA_CONTRACT_STEPS[4]).toContain("#587");
     expect(INFRA_CONTRACT_STEPS[5]).toContain("#635");
@@ -38,6 +38,7 @@ describe("infrastructure contract steps", () => {
     expect(INFRA_CONTRACT_STEPS[16]).toContain("#1328");
     expect(INFRA_CONTRACT_STEPS[17]).toContain("#1329");
     expect(INFRA_CONTRACT_STEPS[18]).toContain("#1140");
+    expect(INFRA_CONTRACT_STEPS[19]).toContain("JSON");
   });
 
   it("lists the pending steps oldest first", () => {
@@ -48,6 +49,6 @@ describe("infrastructure contract steps", () => {
   });
 
   it("names a version a newer release added by number", () => {
-    expect(infraStepsText(18, 19)).toBe("infrastructure step 19 (see that release's notes)");
+    expect(infraStepsText(19, 20)).toBe("infrastructure step 20 (see that release's notes)");
   });
 });
