@@ -104,6 +104,15 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     plugins: ["international-site"],
     input: (r) => ({ pageIds: [r.pageId] }),
   },
+  // #1269 — the editor's page search: the fixture's one "Zebrafinch"
+  // page, typed as far as an editor would. It reads its matches, not the
+  // site.
+  {
+    op: "pages.search",
+    label: "pages.search {query}",
+    ctx: "chat",
+    input: () => ({ query: "zebrafinch lan", limit: 50 }),
+  },
   { op: "modules.list", ctx: "chat", input: () => ({}) },
   { op: "content_instances.list", ctx: "chat", input: () => ({}) },
   // The shapes plugins call in the background, after every write: the

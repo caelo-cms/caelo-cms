@@ -373,6 +373,11 @@ export async function growFixture(
       "plugin_row_snapshots",
       "chat_sessions",
       "draft_pending_entities",
+      // The page search's word tables (0603), filled by the pages' and the
+      // draft head's triggers during the bulk load: without statistics the
+      // planner takes them for empty and scans them whole.
+      "page_search_words",
+      "draft_pending_page_words",
     ]) {
       await tx.unsafe(`ANALYZE ${t}`);
     }
@@ -408,6 +413,15 @@ export async function growFixture(
   );
   const w = written[0];
   if (!w) throw new Error("rows-read fixture: write target missing");
+  // One page whose title no other page starts a word of, on every size:
+  // the page search for it is the same request on both fixtures.
+  await asSystem(url, (tx) =>
+    tx.unsafe(`
+      INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
+      SELECT '${RR_PREFIX}search-target', 'Zebrafinch landing', 'Zebrafinch landing', '${templateId}',
+             '${pageTypeId}', true, '/${RR_PREFIX}search-target', 'published'
+       WHERE NOT EXISTS (SELECT 1 FROM pages WHERE slug = '${RR_PREFIX}search-target')`),
+  );
 
   const refs = await asSystem(
     url,
