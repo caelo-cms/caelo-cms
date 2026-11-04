@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { provisioningUpgradeCommand } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
+import { stagingDomainState } from "./admin-domain.js";
 import { activeAccount, checkGcloudAuth, gcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep } from "./gcloud-retry.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
@@ -686,12 +687,21 @@ async function upgradeLockedInstall(
   const stateNotice = localStateNotice(meta);
   if (stateNotice) note(stateNotice, "Pulumi state is on this machine");
   if (ok && provider === "gcp-firebase") {
-    // #650 — staging builds now render the staging host; the gateway
-    // serves it once it is mapped. The command is idempotent, so this
-    // reminder is safe to repeat on every upgrade.
-    log.info(
-      `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve the staging host (it maps the host the admin uses — ${bold(stagingHost)} unless changed there —, turns on password protection, prints the login and the DNS record). Host and access: admin → Settings → Domains / Staging access.`,
-    );
+    // #650 — staging builds render the staging host; the gateway serves it
+    // once it is mapped. Only an install without the mapping is told to run
+    // `staging-domain enable`.
+    const staging = await stagingDomainState({ projectId, region, stagingHost, run });
+    if (staging.status === "mapped") {
+      log.info(`Protected staging site: https://${stagingHost}/`);
+    } else {
+      const unknown =
+        staging.status === "unknown"
+          ? ` (could not check whether ${bold(stagingHost)} is mapped: ${staging.reason})`
+          : "";
+      log.info(
+        `Protected staging site: run ${bold("cms-provision staging-domain enable")} once to serve the staging host${unknown} (it maps the host the admin uses — ${bold(stagingHost)} unless changed there —, turns on password protection, prints the login and the DNS record). Host and access: admin → Settings → Domains / Staging access.`,
+      );
+    }
   }
   return ok;
 }
