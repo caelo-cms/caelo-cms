@@ -2,7 +2,7 @@
 
 /**
  * #1269 — `pages.search` finds pages by the start of their words, as the
- * caller's view shows them, through the word tables of migration 0603: the
+ * caller's view shows them, through the word tables of migration 0612: the
  * last word names the page itself, earlier words may match its path; a
  * chat finds the pages it renamed or created by their pending titles and
  * no longer finds the ones it deleted, while main keeps its own view; the

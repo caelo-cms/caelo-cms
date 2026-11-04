@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0603 — the words of every page, for a page search that reads what it
+-- 0612 — the words of every page, for a page search that reads what it
 -- finds (issue #1269, epic #1392).
 --
 -- The editor's page search, its link-target suggestions and the AI's page
