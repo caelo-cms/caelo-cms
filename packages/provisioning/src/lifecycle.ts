@@ -69,12 +69,7 @@ import {
   resolveBackend,
 } from "./state-backend.js";
 import { acquireStateLock, realSyncGcloud, releaseOnSignal } from "./state-store.js";
-import {
-  type AppRollPlan,
-  type ReleaseImage,
-  ROLL_ORDER,
-  type RollSlug,
-} from "./upgrade/app-roll.js";
+import type { AppRollPlan, RollSlug } from "./upgrade/app-roll.js";
 import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
 import { findServiceUrl, lookupFailure, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe, type HealthProbe } from "./upgrade/health.js";
@@ -84,12 +79,10 @@ import {
   canonicalReleaseTag,
   ensureCosignAvailable,
   fetchLatestReleaseTag,
-  RELEASE_REGISTRY,
-  releaseImageRef,
   releaseTag,
   releaseVersionForDigest,
   resolveOpsImageRef,
-  resolveTagDigest,
+  resolveReleaseImages,
   verifyCosignAll,
 } from "./upgrade/release-images.js";
 import { clackReporter } from "./upgrade/reporter.js";
@@ -461,32 +454,6 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
         ? "--region names one install's region; drop it when upgrading several installs."
         : null,
   );
-}
-
-/**
- * Resolve both release images' digests from the public registry. Via the
- * registry's anonymous V2 API, not `gcloud artifacts docker tags list`: that
- * needs IAM read on Caelo's registry project, which operators don't have.
- */
-async function resolveReleaseImages(
-  tag: string,
-): Promise<{ ok: true; images: Record<RollSlug, ReleaseImage> } | { ok: false; error: string }> {
-  const images: Partial<Record<RollSlug, ReleaseImage>> = {};
-  for (const slug of ROLL_ORDER) {
-    const res = await resolveTagDigest(slug, tag);
-    if (!res.ok) {
-      const r = RELEASE_REGISTRY;
-      return {
-        ok: false,
-        error:
-          `Couldn't resolve image digest for ${slug}:${tag}: the public registry returned ${res.reason}.\n` +
-          `Verify the tag exists at https://${r.region}-docker.pkg.dev/${r.project}/${r.repo}/${slug}:${tag}\n` +
-          "(latest releases live at https://github.com/caelo-cms/caelo-cms/releases — pass --version vX.Y.Z to pin.)",
-      };
-    }
-    images[slug] = { digest: res.digest, imageRef: releaseImageRef(slug, res.digest) };
-  }
-  return { ok: true, images: images as Record<RollSlug, ReleaseImage> };
 }
 
 /**

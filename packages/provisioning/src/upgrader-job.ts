@@ -740,6 +740,35 @@ async function servingDigests(
     digests[slug] = servingImageDigests(image);
     services[slug] = service.name;
   }
+  // #1330 — the staging gateway must serve the very image the gateway
+  // serves: it rolls with it, and an install whose staging gateway runs
+  // another release is not on one release (the upgrader runs only on
+  // installs converged to contract 19, which have it).
+  const stagingPrefix = cloudRunServicePrefix(provider, deps.env, "staging-gateway");
+  const staging = await resolveGcpResourceName(
+    deps.run,
+    "run-service",
+    stagingPrefix,
+    deps.projectId,
+    deps.region,
+  );
+  if (staging.status !== "found") {
+    return {
+      ok: false,
+      error: lookupFailure(staging, `${stagingPrefix}* Cloud Run service`, "job"),
+    };
+  }
+  const stagingImage = await findServingImage(deps.run, deps.projectId, deps.region, staging.name);
+  if (!stagingImage) {
+    return { ok: false, error: "could not read which image the staging gateway serves" };
+  }
+  const stagingDigests = servingImageDigests(stagingImage);
+  if (!stagingDigests.some((d) => (digests.gateway ?? []).includes(d))) {
+    return {
+      ok: false,
+      error: `the staging gateway (${staging.name}) serves ${stagingDigests[0] ?? "an unknown image"}, but the gateway serves ${digests.gateway?.[0] ?? "an unknown image"}: the install does not run one release. Nothing was changed; an upgrade from Cloud Shell rolls both onto one release.`,
+    };
+  }
   return {
     ok: true,
     digests: digests as ServingDigests,

@@ -284,10 +284,13 @@ describe("the gcp edge: the staging host's own rule on the load balancer", () =>
     const routed = planStagingHostRule(map, t, BACKEND);
     if (!routed) throw new Error("expected a plan");
     expect(planStagingHostRule(routed, t, BACKEND)).toBeNull();
-    // The stack's placeholder (the static bucket) is replaced.
+    // The stack's fail-closed placeholder (a redirect, no backend) is replaced.
     const placeholder = {
       ...routed,
-      pathMatchers: [...map.pathMatchers, { name: "staging", defaultService: "static" }],
+      pathMatchers: [
+        ...map.pathMatchers,
+        { name: "staging", defaultUrlRedirect: { hostRedirect: "acme.com" } },
+      ],
     };
     expect(planStagingHostRule(placeholder, t, BACKEND)?.pathMatchers?.at(-1)).toEqual({
       name: "staging",
