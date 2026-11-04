@@ -34,7 +34,11 @@
  * to serve from. Delivery differs, content does not — both go through
  * `collectBuildAssets` so the editor cannot show behaviour the deployed
  * site won't have. Two hand-kept head assemblies drifting apart is
- * exactly what produced the historical hreflang bug.
+ * exactly what produced the historical hreflang bug. The static build
+ * then minifies them (inlined and linked alike) and names each file by
+ * the hash of the minified bytes ({@link withAssetContent}), the same one
+ * deliberate divergence the page's own CSS and JS have (static-generator
+ * minify-pass.ts).
  */
 
 import { createHash } from "node:crypto";
@@ -84,6 +88,16 @@ function assetPaths(
   const ext = fileName.slice(dot + 1);
   const rel = `${PLUGIN_ASSET_DIR}/${pluginSlug}/${stem}.${hash}.${ext}`;
   return { relPath: rel, publicPath: `/${rel}` };
+}
+
+/**
+ * `asset` with a new body and the path that body's hash names. The
+ * static build uses it for the minified file it ships, so the immutable
+ * URL always names the bytes served — a minifier change cannot leave a
+ * cached old file under an unchanged name.
+ */
+export function withAssetContent(asset: PluginClientAsset, content: string): PluginClientAsset {
+  return { ...asset, content, ...assetPaths(asset.pluginSlug, asset.fileName, content) };
 }
 
 /**

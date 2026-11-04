@@ -2,7 +2,13 @@
 
 import { describe, expect, it } from "bun:test";
 import { composePageWithLayout } from "@caelo-cms/shared";
-import { MinifyCache, minifyCss, minifyJs, minifyPageAssets } from "./minify-pass.js";
+import {
+  MinifyCache,
+  minifyCss,
+  minifyJs,
+  minifyPageAssets,
+  minifyPluginAsset,
+} from "./minify-pass.js";
 
 const layoutHtml =
   '<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content"></caelo-slot></body></html>';
@@ -101,5 +107,47 @@ describe("minifyPageAssets (issue #158)", () => {
       await cache.get("css", `.y${i}{}`, async () => `.y${i}{}`);
     }
     expect(cache.css.size).toBeLessThanOrEqual(MinifyCache.MAX_ENTRIES);
+  });
+});
+
+describe("minifyPluginAsset (#449 asset files)", () => {
+  const asset = (kind: "js" | "css", content: string) => ({
+    pluginSlug: "consent-manager",
+    fileName: `runtime.${kind}`,
+    kind,
+    content,
+  });
+
+  it("minifies a plugin runtime and keeps its IIFE strict", async () => {
+    const source = [
+      "(function () {",
+      '"use strict";',
+      "  var CONFIG = { categories: [ 'marketing' ] };",
+      "  // a comment visitors never need",
+      "  function   showBanner ( config ) {",
+      "    return config.categories.length;",
+      "  }",
+      "  window.__caeloConsent = showBanner(CONFIG);",
+      "})();",
+    ].join("\n");
+    const out = await minifyPluginAsset(asset("js", source));
+    expect(out.length).toBeLessThan(source.length);
+    expect(out).not.toContain("a comment visitors never need");
+    expect(out).toContain('"use strict"');
+    const run = new Function("window", out);
+    const window: Record<string, unknown> = {};
+    run(window);
+    expect(window.__caeloConsent).toBe(1);
+  });
+
+  it("minifies a plugin stylesheet", async () => {
+    const out = await minifyPluginAsset(asset("css", ".banner {\n  color: red;\n}\n"));
+    expect(out.trim()).toBe(".banner{color:red}");
+  });
+
+  it("fails the build naming the plugin when its JS does not parse", async () => {
+    await expect(minifyPluginAsset(asset("js", "function ( {"))).rejects.toThrow(
+      /plugin "consent-manager" returned a runtime\.js .* does not parse/,
+    );
   });
 });
