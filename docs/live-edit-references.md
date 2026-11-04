@@ -60,8 +60,6 @@ untrusted. They never run with the operator's admin session:
   the preview (on the live site they work as usual).
 - The AI's in-browser screenshot renders the preview HTML in a frame with
   `allow-same-origin` and no scripts; script-built DOM is not in it.
-- Staged pages proxied from the admin (`/_staging-preview`) keep their origin
-  so their assets load, and run no script.
 
 The menu, toolbar and target outline live in a shadow root appended
 to the site's `<body>`: site CSS cannot restyle them and they never touch the

@@ -12,7 +12,7 @@ The rule since #1271: **build memory is a batch of pages plus a small record per
   - `reference` (Firebase, GCS): each file is listed in `_caelo-asset-references.json` with its stored digests and storage key. A `stat` is the only check the build does on it.
   - `link` (self-hosted): each file is hard-linked into the build. The kernel copies it across filesystems. `syncContents` skips a content-hashed file that `current/` already has at the same size.
 - **Fonts** are referenced the same way (`font-assets.ts`). A file's digests are taken once and kept next to it in the fonts cache (`<file>.digest.json`).
-- **Parity digests in the same pass.** `ParityRecorder` (`parity-digest.ts`) hashes each page from the bytes being written. A Stage with its own staging host also hashes the page with that host swapped back to the live one. Referenced files count by their stored hash. The result goes to `_caelo-parity.json`, which `deploy.trigger` and Publish live read (`deploy/build-parity.ts`). No file is read again to fingerprint a build.
+- **No second read of the build.** Since #1330 every build renders the live host and Publish live copies it, so no parity digest is taken; the staging slot sync hashes each file as the upload already has it in hand.
 - **Parallel where the CPU is.** Minification runs through esbuild's service, so every distinct body of a batch is minified at once on all cores. Files are written 32 at a time. Composition itself is about 0.1 ms per page and stays on the main thread.
 
 - **Files go where they are served, as they are written** (`build-output.ts`).

@@ -24,7 +24,7 @@ Per provider:
 
 | Provider | Production | Staging | Rights |
 |---|---|---|---|
-| `gcp-firebase` | New Hosting version: the live version's files (reused by hash, no upload) and its config with only `config.redirects` replaced (and the `/api/**` rewrite pointed at the current gateway, see below), released on the live channel. | The same, on the preview channel the staging host serves (#650). | `roles/firebasehosting.admin` on the run SA, which Stage and Publish live already use. |
+| `gcp-firebase` | New Hosting version: the live version's files (reused by hash, no upload) and its config with only `config.redirects` replaced (and the `/api/**` rewrite pointed at the current gateway, see below), released on the live channel. | Not on Hosting: the staging gateway answers the redirects table itself, from cms_public_staging (#1330). | `roles/firebasehosting.admin` on the run SA, which Stage and Publish live already use. |
 | `gcp` | URL-map redirect rules of the site host's path matcher, against the live bucket's objects (`applyGcpRedirectPlan`). | `not-served`: staging is the admin's staging preview over the staging bucket. It serves no redirects there; the staged plan goes live with Publish live. | `caeloUrlMapRedirects` custom role + live bucket read, which Publish live already uses. |
 | self-hosted | `_redirects`, `_redirects.cloudflare` and `_redirects.caddy` rewritten (write-then-rename) in `<out_dir>/current/`, against the files there. The Caddy container's reload loop picks the snippet up within a few seconds (`caddy-redirects.ts`). | The same, in staging's `current/`. | The admin already writes `current/`. |
 | `aws`, `azure` | No publisher exists (#749, #750), so nothing is ever published and the sync records `nothing-live`. The stub's `syncRedirects` throws the same NotImplemented as the rest of the stub. | Same. | n/a |
@@ -43,7 +43,7 @@ Gates (CLAUDE.md §11.A) are unchanged. Creating or changing a redirect is routi
 
 ## Global settings: classification
 
-"Provider / runtime" settings are read where the site is served, so a save is the sync. "Rendered" settings are baked into the build. They are stored live (not on the chat's branch) and reach production only with the next Stage + Publish live: a copy-promote ships the staged build, and a rebuild-promote (#650) is refused by the parity guard when they changed after the Stage. With #1154 nothing else builds production. Making them branch-aware draft state is #1158.
+"Provider / runtime" settings are read where the site is served, so a save is the sync. "Rendered" settings are baked into the build. They are stored live (not on the chat's branch) and reach production only with the next Stage + Publish live: Publish live copies the staged build (#1330), and a staged build rendered for another origin than the live site's is refused with "Stage again". With #1154 nothing else builds production. Making them branch-aware draft state is #1158.
 
 | Setting | Op(s) | Class | How it goes live | Approval (§11.A) |
 |---|---|---|---|---|

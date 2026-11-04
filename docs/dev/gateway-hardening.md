@@ -28,18 +28,36 @@ The admin publishes `published_gateway_settings.live_origins` (cms_public 0500) 
 
 A request without `Origin` is refused: every browser sends it on a POST. NULL (an older admin published the row) and an empty list are a 503 whose log line names the fix.
 
-Interim until staging gets its own gateway (#1329, #1330): a staged page's plugin call never runs against live data (#763 N4), but it must not fail visibly either, or the Stage quality audit would count a "Failed to load resource" console error on every page with a plugin component and block Publish live. So both places it can reach answer it with HTTP 200 `{ ok: false, error: { kind: "StagingPreview" } }` (`@caelo-cms/shared` `staging-plugin-stub.ts`), dispatching and writing nothing:
+The staging gateway publishes the staging origin as its own `live_origins` (`stagingSiteOrigins`), so staged pages post to staging data and never to live, and a live page never posts into staging data. The quality audit's loopback copy of a staged build (`admin-core quality/staged-origin.ts`) still answers plugin calls with HTTP 200 `{ ok: false, error: { kind: "StagingPreview" } }` (`@caelo-cms/shared` `staging-plugin-stub.ts`): an audit writes no visitor data anywhere, and a failed request would count as a page error.
 
-- the gateway, for a POST whose `Origin` is the published staging host (gcp-firebase and self-hosted, where staging's `/api` reaches the live gateway);
-- the audit's loopback origin (`admin-core quality/staged-origin.ts`, gcp / aws / azure), which no longer forwards `/api/plugin/*` to live at all.
+## The staging gateway (#1330, #1331)
 
-Components take their ordinary "no data" path, so plugin data does not show on staging in the meantime. The captcha challenge (a GET, no Origin) is still forwarded and may mint a challenge row in live, bounded by its per-address limit.
+Staging is served by its own gateway: the same image, `CAELO_GATEWAY_ENVIRONMENT=staging`, its own database `cms_public_staging` as `public_staging_role` (below), and `CAELO_STAGING_STORAGE` naming the private staging storage it reads (`gs://<staging bucket>` on gcp and gcp-firebase, `file:///srv/staging`, the staging output directory mounted read-only, on self-hosted). `apps/api-gateway/src/staging/site.ts` answers every request:
+
+| Step | What |
+|---|---|
+| 1 | `/healthz` is the only path without the gate (the server routes it first). |
+| 2 | `/_caelo/staging-access?t=…` turns an "Open staging" token into the `staging` entry of the `__session` cookie (the one cookie Firebase Hosting forwards, #1325). `/_caelo/staging-check?location=…` answers the admin's serve check, with a per-run `check` token only. |
+| 3 | A client whose gate failures used up its budget (`GATE_FAILURE_LIMIT`: 30, then one per 10 s) gets a 429 before any HMAC (DoS only). |
+| 4 | The #650 gate: session entry, basic auth, secret header, IP allowlist, or a per-run token of the admin's capture and serve checks. The host plays no part, so `*.run.app` gets the same gate as the staging host. The IP allowlist is never matched on gcp-firebase (no trustworthy client address behind the rewrite; the admin refuses to save one there). |
+| 5 | Admitted `/api/*` takes the visitor routes of this gateway (its own database). |
+| 6 | Admitted GET/HEAD: the published redirects table (the live page wins; a gone row answers what the live provider answers), then the file from the served build's manifest, then its `404.html`. |
+
+Files stream from staging storage. Only paths the manifest lists are read, so a request cannot name a storage key outside the served location. Every build renders the live host (Publish live is a copy, #1003), so text types are piped through `originRewriteStream` (`@caelo-cms/shared` staged-site.ts), which replaces the live origin (and its JSON-escaped form, whole origins only) with the staging host while it streams. Every answer carries `X-Robots-Tag: noindex` and `Cache-Control: private, no-store`. A file that does not start within 45 s is a 504 (Firebase replays a GET that has not answered after 60 s up to eight times).
+
+What the staging gateway reads comes through its projection (`published_staging_site`, cms_public 0600, written into cms_public_staging only): the gate settings, the gate key (#1331: it moved there from the gateways' env, never re-minted, so crawler credentials keep working; the live gateway holds no gate key any more), the served run, its location and the origin it was rendered for. The row is an upsert: the migration job, which does not hold the key, leaves the published key as it is.
+
+### Staging storage and the A/B slots
+
+Staging storage always holds complete builds (decision 2026-11-04 on #1330). On gcp and gcp-firebase it has two slots, `_slots/a` and `_slots/b`, each with its manifest next to it (`_slots/a.manifest.json`: run, page URL style, every file with its type and a hash). A Stage takes the staging publish slot before its upload opens, fills the slot staging does not serve and records it as served in the transaction that records the run (`staging_access.served_location`, cms_admin 0600); the drain then points the staging gateway at it. The sync compares hashes with the slot's manifest, writes only what changed, deletes what the build lost and writes the manifest last; it deletes the manifest first, so a sync that stopped halfway makes the next one write everything again (`admin-core deploy/staging-slots.ts`). gcp fills a slot with server-side copies (from the run's prefix and the live bucket); gcp-firebase uploads the files that differ while the generator streams them (Hosting files cannot be read back). Self-hosted serves the run's build directory (`builds/<runId>` with `builds/<runId>.manifest.json`). The Firebase Hosting version a Stage creates is finalized and released nowhere; Publish live releases a copy of it.
+
+Lighthouse never measures through the gateway (#875): the audit loads the slot on a loopback origin. Captures of the staging host (`screenshot_external_page`, …) get a per-run `capture` token (`admin-core capture/staging-access.ts`), which the browser sends only to the staging origin and never across a redirect off it.
 
 ## Errors and headers
 
 A visitor's error is `{ ok: false, error: { kind, requestId } }` and nothing more. The details (an exception's text, a plugin's message, the readiness reason, the limits) go to the log as `[api-gateway] request <requestId>: <kind> — <details>`, and the response carries `X-Request-Id`. Plugin components fall back to their own generic text.
 
-Every JSON response carries `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cross-Origin-Resource-Policy: same-origin` (`middleware/security-headers.ts`), including the staging proxy's and the MCP router's JSON.
+Every JSON response carries `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cross-Origin-Resource-Policy: same-origin` (`middleware/security-headers.ts`), including the staging gateway's and the MCP router's JSON.
 
 `/api/_caelo/health` reports no release version (the upgrade's deep check verifies the gateway's database login; which release runs is established by the roll itself, `packages/provisioning/src/upgrade/health.ts`). `?deep=1` is throttled per client before its database round trip.
 
@@ -66,7 +84,7 @@ The staging gateway's `public_staging_role` carries the same four values (#1329,
 
 ## The staging database (#1329)
 
-Staging has data of its own: `cms_public_staging`, on the same server as the other two databases, reached by the staging gateway as `public_staging_role` (epic #763 E10; the staging gateway is served from #1330). Converge release 1 of the hardening only adds it; nothing is served from it yet, so a rollback stays harmless.
+Staging has data of its own: `cms_public_staging`, on the same server as the other two databases, reached by the staging gateway as `public_staging_role` (epic #763 E10).
 
 - **One schema, two databases.** `migrate.ts public-staging` runs the cms_public migration files on it, with every whole-word `public_role` retargeted to `public_staging_role` (runner.ts `retargetVisitorRole`): GRANTs, `TO public_role` policies and role checks alike. After each run the role audit proves neither public database grants anything to the other environment's login (`assertPublicDatabaseOwnsItsLogin`).
 - **Crosswise isolation, enforced by Postgres.** `public_role` has no CONNECT on cms_public_staging, `public_staging_role` none on cms_public or cms_admin, and PUBLIC none on any of the three (cms_admin migration 0530, bootstrap.sh, `self-hosted-roles.ts`; the role audit refuses anything else). `staging-isolation.integration.test.ts` connects as each login and tries.
