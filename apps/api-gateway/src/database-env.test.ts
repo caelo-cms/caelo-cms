@@ -13,6 +13,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DB_PUBLIC_POOL_MAX_ENV, GATEWAY_POOL_MAX } from "@caelo-cms/shared";
 import {
   adminDatabaseAccessInEnv,
   type GatewayEnvironment,
@@ -49,6 +50,24 @@ const STAGING_OWN = {
 };
 
 describe("adminDatabaseAccessInEnv (#635)", () => {
+  it("accepts the own pool size every adapter sets, as a plain count only", () => {
+    expect(check({ ...OWN, CAELO_DB_PUBLIC_POOL_MAX: "2" })).toEqual([]);
+    expect(check({ ...STAGING_OWN, CAELO_DB_PUBLIC_POOL_MAX: "2" }, NO_FILES, "staging")).toEqual(
+      [],
+    );
+    for (const value of ["postgres://admin_role:p@db/cms_admin", "2 host=db", "0", "-1"]) {
+      expect(check({ ...OWN, CAELO_DB_PUBLIC_POOL_MAX: value })).toHaveLength(1);
+    }
+    expect(check({ ...OWN, CAELO_DB_POOL_MAX: "2" })).toHaveLength(1);
+  });
+
+  it("boots on the pool env every stack sets on a gateway (fresh plain-gcp install, 2026-11-04)", () => {
+    // What poolBudgetEnv(…, "gateway") and the staging gateway setup set.
+    const env = { [DB_PUBLIC_POOL_MAX_ENV]: String(GATEWAY_POOL_MAX) };
+    expect(check({ ...OWN, ...env })).toEqual([]);
+    expect(check({ ...STAGING_OWN, ...env }, NO_FILES, "staging")).toEqual([]);
+  });
+
   it("accepts the gateway's own login and the env the adapters and platforms set", () => {
     expect(
       check({

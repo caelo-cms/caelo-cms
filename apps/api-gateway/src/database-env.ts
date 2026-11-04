@@ -20,7 +20,7 @@
 
 import { closeSync, constants, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { join } from "node:path";
-import { databaseUrlFromEnv } from "@caelo-cms/shared";
+import { DB_PUBLIC_POOL_MAX_ENV, databaseUrlFromEnv } from "@caelo-cms/shared";
 
 /** The env var that names which environment this gateway serves. */
 export const GATEWAY_ENVIRONMENT_ENV = "CAELO_GATEWAY_ENVIRONMENT";
@@ -94,6 +94,15 @@ const DATABASE_ISH_TOKEN =
  * URL smuggled into `PWD` is still refused.
  */
 const RUNTIME_ENV_NAMES = new Set(["PWD", "OLDPWD"]);
+
+/**
+ * The size of the gateway's own cms_public pool: every adapter sets it from
+ * the pool budget (#1254), so its `DB` token must not refuse the boot. Only
+ * a plain decimal count passes; any other value is refused like any
+ * database-ish name, so the exemption cannot carry a connection string.
+ */
+const POOL_SIZE_ENV = new Set<string>([DB_PUBLIC_POOL_MAX_ENV]);
+const POOL_SIZE_VALUE = /^[1-9][0-9]{0,3}$/;
 
 function isDatabaseIshName(name: string): boolean {
   return name
@@ -218,7 +227,9 @@ export const nodeSecretFiles: SecretFileReader = {
  * Every way to a database the gateway's environment offers besides its own
  * login, as `NAME: why` — never the value. What is checked, exactly:
  *
- * - **Names.** Only {@link GATEWAY_DATABASE_ENV} may be database-ish. Any
+ * - **Names.** Only {@link GATEWAY_DATABASE_ENV} may be database-ish, and
+ *   the own pool size (`CAELO_DB_PUBLIC_POOL_MAX`) while it holds a plain
+ *   count. Any
  *   other variable whose name has a database, `PG*`, connection-string or
  *   password token (`DATABASE_URL`, `PGPASSWORD`, `DB_ADMIN_PASS`, …) is
  *   refused, whatever it holds.
@@ -256,6 +267,7 @@ export function adminDatabaseAccessInEnv(
       continue;
     }
     if (OWN_LOGIN_ENV.has(name)) continue;
+    if (POOL_SIZE_ENV.has(name) && POOL_SIZE_VALUE.test(value)) continue;
     if (!RUNTIME_ENV_NAMES.has(name) && isDatabaseIshName(name)) {
       found.push(
         `${name}: a database-related variable; the gateway's only database access is PUBLIC_DATABASE_URL`,
