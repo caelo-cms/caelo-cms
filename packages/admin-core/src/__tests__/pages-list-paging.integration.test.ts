@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #1269 — `pages.list` pages through the site with `limit` + `cursor`, and
+ * #1269 — `pages.list` and `content_instances.list` page through the site
+ * with `limit` + `cursor`. For pages,
  * every page it returns looks as the unpaged list showed it: the chat's
  * pending deletes, renames and moves applied, the depth and the composed
  * path from the page's own ancestor chain, and `underPageId` following a
@@ -144,6 +145,64 @@ describe("#1269 — pages.list pages with limit + cursor", () => {
       ours((await allPaged(ctx, 2, { underPageId: blog })).pages).map((p) => p.id);
     expect(await under(ai)).toEqual([post]);
     expect(await under(SYSTEM)).toEqual([]);
+  });
+
+  it("content_instances.list: paged instances equal the unpaged list, with a chat's delete", async () => {
+    const { moduleId } = await ok<{ moduleId: string }>(SYSTEM, "modules.create", {
+      slug: `${PFX}-card`,
+      displayName: `${PFX} card`,
+      html: "<p>{{title}}</p>",
+      fields: [{ name: "title", kind: "text", label: "Title" }],
+    });
+    const ids: string[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      ids.push(
+        (
+          await ok<{ contentInstanceId: string }>(SYSTEM, "content_instances.create", {
+            moduleId,
+            displayName: `${PFX} card ${i}`,
+            purpose: "paging test",
+            values: { title: `Card ${i}` },
+          })
+        ).contentInstanceId,
+      );
+    }
+    const chat = await ok<{ chatSessionId: string; chatBranchId: string }>(
+      SYSTEM,
+      "chat.create_session",
+      { title: `${PFX}-ci-chat` },
+    );
+    const ai: ExecutionContext = {
+      actorId: SYSTEM.actorId,
+      actorKind: "ai",
+      requestId: `${PFX}-ci-ai`,
+      chatBranchId: chat.chatBranchId,
+      chatTaskId: chat.chatSessionId,
+    };
+    await ok(ai, "content_instances.delete", { id: ids[2] });
+    type Row = { id: string };
+    for (const ctx of [SYSTEM, ai]) {
+      const unpaged = (
+        await ok<{ instances: Row[] }>(ctx, "content_instances.list", { moduleId })
+      ).instances.map((r) => r.id);
+      const paged: string[] = [];
+      let cursor: string | null = null;
+      do {
+        const r: { instances: Row[]; nextCursor: string | null } = await ok(
+          ctx,
+          "content_instances.list",
+          { moduleId, limit: 2, ...(cursor ? { cursor } : {}) },
+        );
+        paged.push(...r.instances.map((x) => x.id));
+        cursor = r.nextCursor;
+      } while (cursor !== null);
+      expect(paged).toEqual(unpaged);
+    }
+    const onBranch = (
+      await ok<{ instances: Row[] }>(ai, "content_instances.list", { moduleId })
+    ).instances.map((r) => r.id);
+    expect(onBranch).not.toContain(ids[2]);
+    expect(onBranch).toHaveLength(6);
   });
 
   it("refuses a cursor without limit and a cursor it did not issue", async () => {
