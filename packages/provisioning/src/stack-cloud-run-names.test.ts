@@ -20,7 +20,9 @@ const stackSource = (provider: string): string =>
 /** The logical name of each `cloudRunService({ … })` call, as the stack's helper derives it. */
 function cloudRunLogicalNames(source: string): string[] {
   const names: string[] = [];
-  for (const call of source.matchAll(/cloudRunService\(\{([\s\S]*?)\n\}\);/g)) {
+  // Up to the first closing `})` at a line start, indented or not (a
+  // conditional call is indented, stack-gateways.ts): the names come first.
+  for (const call of source.matchAll(/cloudRunService\(\{([\s\S]*?)\n\s*\}\)/g)) {
     const body = call[1] ?? "";
     const explicit = body.match(/resourceName:\s*`\$\{namePrefix\}-([a-z-]+)`/);
     const slug = body.match(/serviceName:\s*"([a-z-]+)"/);

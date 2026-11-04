@@ -219,6 +219,14 @@ function declaredBy(
 
 const SERVICE = "gcp:cloudrunv2/service:Service";
 
+describe.each(["gcp", "gcp-firebase"] as const)("%s stack — one URN per resource", (provider) => {
+  it.each(["false", "true"] as const)("with deployGateways=%s", (deployGateways) => {
+    // Pulumi fails the whole program on a duplicate URN (#1434).
+    const urns = declaredBy(provider, deployGateways).map((r) => `${r.type}::${r.name}`);
+    expect(new Set(urns).size).toBe(urns.length);
+  });
+});
+
 describe("gcp stack — the first up declares no gateway (Pulumi mocks)", () => {
   // Everything that serves or routes visitor traffic to the gateway: the URL
   // map goes with it, because the stack ignores its path rules after creation.
