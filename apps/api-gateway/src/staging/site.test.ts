@@ -118,7 +118,8 @@ function deps(over: Partial<StagingSiteDeps> = {}): StagingSiteDeps {
     manifests: new ManifestCache(),
     redirects: async () => [],
     failures: gateFailureLimiter(),
-    api: async () => new Response('{"ok":true}', { headers: { "content-type": "application/json" } }),
+    api: async () =>
+      new Response('{"ok":true}', { headers: { "content-type": "application/json" } }),
     secure: true,
     nowSeconds: () => NOW,
     ...over,
@@ -141,7 +142,13 @@ describe("#1330 staging gateway: the gate in front of everything", () => {
       "example.com",
     ]) {
       const storage = memoryStorage();
-      for (const path of ["/", "/about/", "/_assets/logo.png", "/sitemap.xml", "/api/plugin/comments/list"]) {
+      for (const path of [
+        "/",
+        "/about/",
+        "/_assets/logo.png",
+        "/sitemap.xml",
+        "/api/plugin/comments/list",
+      ]) {
         const res = await handleStagingSiteRequest(get(path, {}, host), deps({ storage }));
         expect(res.status).toBe(403);
         expect(res.headers.get("x-robots-tag")).toBe("noindex");
@@ -178,7 +185,11 @@ describe("#1330 staging gateway: the gate in front of everything", () => {
   it("refuses the IP allowlist on gcp-firebase, where no client address can be trusted", async () => {
     const inList = deps({ clientIp: "203.0.113.9", clientKey: "203.0.113.9" });
     expect((await handleStagingSiteRequest(get("/"), inList)).status).toBe(200);
-    const firebase = deps({ clientIp: "203.0.113.9", clientKey: "203.0.113.9", provider: "gcp-firebase" });
+    const firebase = deps({
+      clientIp: "203.0.113.9",
+      clientKey: "203.0.113.9",
+      provider: "gcp-firebase",
+    });
     expect((await handleStagingSiteRequest(get("/"), firebase)).status).toBe(403);
   });
 
@@ -309,7 +320,12 @@ describe("#1330 staging gateway: serving the staged build", () => {
     expect(nothing.status).toBe(503);
     const other = await handleStagingSiteRequest(
       get("/", { cookie }),
-      deps({ state: { ...STATE, served: { ...STATE.served!, runId: "0b7c0d6e-2222-4222-8222-222222222222" } } }),
+      deps({
+        state: {
+          ...STATE,
+          served: { ...STATE.served!, runId: "0b7c0d6e-2222-4222-8222-222222222222" },
+        },
+      }),
     );
     expect(other.status).toBe(503);
   });
@@ -329,7 +345,10 @@ describe("#1330 staging gateway: serving the staged build", () => {
 
   it("refuses everything but GET and HEAD for files", async () => {
     const res = await handleStagingSiteRequest(
-      new Request("https://staging.example.com/", { method: "POST", headers: { cookie: await sessionCookie() } }),
+      new Request("https://staging.example.com/", {
+        method: "POST",
+        headers: { cookie: await sessionCookie() },
+      }),
       deps(),
     );
     expect(res.status).toBe(405);
@@ -354,8 +373,15 @@ describe("#1330 staging gateway: the admin's serve check", () => {
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ ok: true, runId: RUN, files: 5 });
     const capture = await signStagingRunToken(SECRET, "capture", RUN, NOW + 60, NOW);
-    for (const h of [{}, { [STAGING_RUN_TOKEN_HEADER]: capture }, { cookie: await sessionCookie() }]) {
-      const res = await handleStagingSiteRequest(get(`${STAGING_CHECK_PATH}?location=${LOCATION}`, h), deps());
+    for (const h of [
+      {},
+      { [STAGING_RUN_TOKEN_HEADER]: capture },
+      { cookie: await sessionCookie() },
+    ]) {
+      const res = await handleStagingSiteRequest(
+        get(`${STAGING_CHECK_PATH}?location=${LOCATION}`, h),
+        deps(),
+      );
       expect(res.status).toBe(403);
     }
     const bad = await handleStagingSiteRequest(

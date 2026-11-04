@@ -682,27 +682,6 @@ async function runTrigger(
   };
 
   try {
-    // The active theme's raster favicon ships as its 64 px rendition
-    // (ops/media_favicon.ts). One bound before that rule has none: create
-    // it from the stored original now, so an upgraded install needs no
-    // manual step. A failure (original missing / undecodable) fails the
-    // build loudly.
-    const fav = await execute(registry, adapter, ctx, "themes.ensure_favicon_rendition", {});
-    if (!fav.ok) {
-      timer.lap("prepare");
-      const message =
-        fav.error.kind === "HandlerError" ? fav.error.message : JSON.stringify(fav.error);
-      return await fail(`Blocked, favicon: ${message}`, message);
-    }
-    // #1271 — the build names media by their stored digests and never
-    // reads them. Rows still without digests (written before migration
-    // 0452, or by the previous release during an upgrade) get them now,
-    // the same way the favicon rendition is made above.
-    const digested = await digestUndigestedMedia(registry, adapter, sys);
-    if (digested !== null) {
-      timer.lap("prepare");
-      return await fail(`Blocked, media digests: ${digested}`, digested);
-    }
     // #1330 — a Stage changes which build staging serves: it takes the
     // staging publish slot before its upload opens, because the upload
     // fills the staging slot staging does NOT serve, and two Stages filling
@@ -728,6 +707,27 @@ async function runTrigger(
       if (!slot.ok) return await fail(slot.message);
       heartbeat.expectPublication(true);
       servedStagingLocation = slot.value.servedLocation;
+    }
+    // The active theme's raster favicon ships as its 64 px rendition
+    // (ops/media_favicon.ts). One bound before that rule has none: create
+    // it from the stored original now, so an upgraded install needs no
+    // manual step. A failure (original missing / undecodable) fails the
+    // build loudly.
+    const fav = await execute(registry, adapter, ctx, "themes.ensure_favicon_rendition", {});
+    if (!fav.ok) {
+      timer.lap("prepare");
+      const message =
+        fav.error.kind === "HandlerError" ? fav.error.message : JSON.stringify(fav.error);
+      return await fail(`Blocked, favicon: ${message}`, message);
+    }
+    // #1271 — the build names media by their stored digests and never
+    // reads them. Rows still without digests (written before migration
+    // 0452, or by the previous release during an upgrade) get them now,
+    // the same way the favicon rendition is made above.
+    const digested = await digestUndigestedMedia(registry, adapter, sys);
+    if (digested !== null) {
+      timer.lap("prepare");
+      return await fail(`Blocked, media digests: ${digested}`, digested);
     }
     // Loaded before the build: the publisher decides whether the build is
     // mirrored into `current/` (#1003 — only a serving layer that reads it

@@ -38,9 +38,11 @@ import type { ExecutionContext, PhaseTiming } from "@caelo-cms/shared";
 import { PAGE_BATCH } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
+import { setStagingBucketForTests } from "../deploy/staging-slots.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { FakeFirebaseHosting } from "./fixtures/fake-firebase-hosting.js";
+import { fakeStagingBucket } from "./fixtures/fake-staging-bucket.js";
 import {
   RICH_PREFIX,
   type RichSite,
@@ -162,6 +164,10 @@ beforeAll(async () => {
     CAELO_SKIP_STAGING_SERVE_CHECK: "1",
   });
   globalThis.fetch = hosting.fetch as typeof fetch;
+  // #1330 — a Stage mirrors its build into the private staging bucket; the
+  // fake keeps no page bytes, so it adds nothing to the measured heap.
+  setStagingBucketForTests(fakeStagingBucket({ keepBodies: false }).bucket);
+  restore.push(async () => setStagingBucketForTests(null));
   restore.push(await pinSiteBaseUrl(ADMIN_URL!, "https://example.com"));
   restore.push(await pinSiteLanguage(ADMIN_URL!, "en"));
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });

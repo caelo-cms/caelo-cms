@@ -16,8 +16,12 @@ export interface FakeStagingBucket {
   readonly writes: string[];
 }
 
-/** A fresh, empty fake staging bucket. */
-export function fakeStagingBucket(): FakeStagingBucket {
+/**
+ * A fresh, empty fake staging bucket. `keepBodies: false` stores only
+ * manifests (a memory test must not count the fake's own copies).
+ */
+export function fakeStagingBucket(opts: { keepBodies?: boolean } = {}): FakeStagingBucket {
+  const keep = (name: string) => opts.keepBodies !== false || name.endsWith(".manifest.json");
   const objects = new Map<string, Buffer>();
   const writes: string[] = [];
   const file = (name: string): File =>
@@ -37,7 +41,7 @@ export function fakeStagingBucket(): FakeStagingBucket {
       },
       async save(body: string | Buffer | Uint8Array) {
         writes.push(name);
-        objects.set(name, Buffer.from(body));
+        objects.set(name, keep(name) ? Buffer.from(body) : Buffer.alloc(0));
         return [{}];
       },
       createWriteStream() {
@@ -49,7 +53,7 @@ export function fakeStagingBucket(): FakeStagingBucket {
           },
           final(done) {
             writes.push(name);
-            objects.set(name, Buffer.concat(chunks));
+            objects.set(name, keep(name) ? Buffer.concat(chunks) : Buffer.alloc(0));
             done();
           },
         });

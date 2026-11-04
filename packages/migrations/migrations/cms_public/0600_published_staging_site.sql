@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS published_staging_site (
   ip_allowlist       jsonb NOT NULL,
   -- NULL until a process that holds the key published it (the migration job
   -- does not; the admin's boot publish does).
-  gate_secret        text NULL CHECK (gate_secret IS NULL OR length(gate_secret) BETWEEN 32 AND 512),
+  gate_secret        text NULL CHECK (gate_secret IS NULL OR length(gate_secret) BETWEEN 1 AND 512),
   served_run_id      uuid NULL,
   served_location    text NULL CHECK (served_location IS NULL OR served_location ~ '^[A-Za-z0-9_./-]{1,200}$'),
   build_origin       text NULL CHECK (build_origin IS NULL OR build_origin ~ '^https?://[^/\s]+$')
