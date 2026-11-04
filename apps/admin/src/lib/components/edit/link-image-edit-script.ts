@@ -55,6 +55,22 @@ export const LINK_IMAGE_EDIT_SCRIPT = `
     return { wrap: wrap, el: el };
   }
 
+  // The open link editor's suggestion list, and the pending query's timer.
+  var pathList = null;
+  var pathQueryTimer = null;
+
+  /** Fills the open link editor's suggestions from \`pagePaths\` (the editor's answer). */
+  function renderPagePaths() {
+    if (!pathList) return;
+    pathList.textContent = "";
+    pagePaths.forEach(function (p) {
+      var o = document.createElement("option");
+      o.value = p.path;
+      o.textContent = p.title;
+      pathList.appendChild(o);
+    });
+  }
+
   function openLinkEditor(link, x, y) {
     var u = ensureUi();
     if (!u) return;
@@ -80,13 +96,22 @@ export const LINK_IMAGE_EDIT_SCRIPT = `
     if (hrefInput) {
       var list = document.createElement("datalist");
       list.id = listId;
-      pagePaths.forEach(function (p) {
-        var o = document.createElement("option");
-        o.value = p.path;
-        o.textContent = p.title;
-        list.appendChild(o);
-      });
+      pathList = list;
+      pagePaths = [];
       u.panel.appendChild(list);
+      // #1269 — the suggestions are the editor's page search for what the
+      // field holds, asked again whenever typing rests; a full URL to
+      // another site asks nothing.
+      var askPaths = function () {
+        var v = hrefInput.el.value.trim();
+        if (v === "" || /^[a-z][a-z0-9+.-]*:/i.test(v)) return;
+        postToEditor({ kind: "caelo:page-paths-query", query: v.slice(0, 200) });
+      };
+      hrefInput.el.addEventListener("input", function () {
+        clearTimeout(pathQueryTimer);
+        pathQueryTimer = setTimeout(askPaths, 150);
+      });
+      askPaths();
     }
     if (textInput) u.panel.appendChild(textInput.wrap);
     if (hrefInput) u.panel.appendChild(hrefInput.wrap);

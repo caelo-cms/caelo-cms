@@ -99,8 +99,9 @@ async function openLiveEdit(ctx: ExecutionContext, pageId: string) {
 
 /** The streamed parts of the /edit load (#1268). */
 const STREAMED = [
-  "pages",
-  "recentPageIds",
+  "firstPages",
+  "recentPages",
+  "rootPage",
   "modules",
   "branchEditedModuleIds",
   "branchChangeCount",
@@ -161,14 +162,31 @@ describe("#1201 — /edit opens a usable chat for the page", () => {
     } as unknown as Parameters<typeof load>[0];
     const data = (await load(event)) as Record<string, unknown> & {
       activePage: { id: string } | null;
-      pages: Promise<{ ok: boolean; value?: { id: string }[] }>;
+      firstPages: Promise<{ ok: boolean; value?: { pages: { id: string }[]; more: boolean } }>;
     };
     expect(data.activePage?.id).toBe(pageId);
-    expect(data.pages).toBeInstanceOf(Promise);
-    const pages = await data.pages;
-    expect(pages.ok).toBe(true);
-    expect(pages.value?.some((p) => p.id === pageId)).toBe(true);
+    // #1269 — the picker streams one page of the site, never the whole list.
+    expect(data.firstPages).toBeInstanceOf(Promise);
+    const first = await data.firstPages;
+    expect(first.ok).toBe(true);
+    expect(first.value?.pages.length).toBeLessThanOrEqual(50);
     expect(headers["server-timing"]).toMatch(/page-main;dur=.*chats;dur=/);
+    for (const key of STREAMED) await data[key];
+  });
+
+  it("without ?page= and without a home page, opens the site's first page, never reading the list (#1269)", async () => {
+    const me = await editor("no-home");
+    await seedPage("no-home");
+    const event = {
+      locals: { user: { permissions: new Set(["content.write", "content.read"]) }, ctx: me },
+      url: new URL("http://admin.test/edit"),
+      setHeaders: () => {},
+    } as unknown as Parameters<typeof load>[0];
+    const data = (await load(event)) as Record<string, unknown> & {
+      activePage: { id: string } | null;
+    };
+    const first = await op<{ pages: { id: string }[] }>(me, "pages.list", { limit: 1 });
+    expect(data.activePage?.id).toBe(first.pages[0]?.id);
     for (const key of STREAMED) await data[key];
   });
 
