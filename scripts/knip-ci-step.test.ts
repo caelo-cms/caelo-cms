@@ -10,7 +10,7 @@
  * and position, mirroring the YAML-shape approach in
  * `scripts/dependabot-config.test.ts`.
  *
- * CI1: the `check` job contains a step whose `run` invokes
+ * CI1: the `lint` job contains a step whose `run` invokes
  *      `bun run knip:strict`. Removing the step disables the gate.
  * CI2: the knip step sits AFTER `Lint` and BEFORE `Lockstep version
  *      check`. Ordering matters: knip needs the earlier
@@ -40,13 +40,14 @@ type Workflow = {
 };
 
 const workflow = yaml.load(RAW) as Workflow;
-const checkSteps = workflow.jobs?.check?.steps ?? [];
+// The static gates run in the `lint` job since the tests were sharded.
+const checkSteps = workflow.jobs?.lint?.steps ?? [];
 const stepIndex = (predicate: (s: Step) => boolean): number => checkSteps.findIndex(predicate);
 
 describe("knip CI gate contract (issue #12)", () => {
-  it("CI1: the check job runs `bun run knip:strict`", () => {
+  it("CI1: the lint job runs `bun run knip:strict`", () => {
     const knipStep = checkSteps.find((s) => s.run?.includes("bun run knip:strict"));
-    expect(knipStep, "no step in the `check` job runs `bun run knip:strict`").toBeDefined();
+    expect(knipStep, "no step in the `lint` job runs `bun run knip:strict`").toBeDefined();
   });
 
   it("CI2: the knip step sits between Lint and Lockstep version check", () => {
