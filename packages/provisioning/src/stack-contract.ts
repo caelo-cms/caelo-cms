@@ -50,6 +50,7 @@ import {
   operatorAccessJobResource,
   runServiceAccountEmail,
   schedulerServiceAccountEmail,
+  stagingGatewayServiceAccountEmail,
   staticPublisherServiceAccountId,
   upgraderJobResource,
 } from "./gcp-names.js";
@@ -57,15 +58,45 @@ import {
 export type GcpProvider = "gcp" | "gcp-firebase";
 /**
  * The install's Cloud Run services, by role: the admin, the visitor data
- * gateway and (#1328) the MCP-Auth-Proxy — remote MCP's sign-in broker and
- * its forwarder to the IAP-protected admin, a service of its own so a hole
- * in a visitor handler can never reach the operators' Google tokens.
- * Which deployed service plays which role is {@link cloudRunServicePrefix}.
+ * gateway, (#1330) the staging gateway — the same image as the live one,
+ * gate on, serving the staged build and staging's own data
+ * (`cms_public_staging`) — and (#1328) the MCP-Auth-Proxy — remote MCP's
+ * sign-in broker and its forwarder to the IAP-protected admin, a service of
+ * its own so a hole in a visitor handler can never reach the operators'
+ * Google tokens. Which deployed service plays which role is
+ * {@link cloudRunServicePrefix}.
  */
-export type CloudRunSlug = "admin" | "gateway" | "mcp-auth-proxy";
+export type CloudRunSlug = "admin" | "gateway" | "staging-gateway" | "mcp-auth-proxy";
 
 /** Every {@link CloudRunSlug}, in roll order: the admin first, the proxy last. */
-export const CLOUD_RUN_SLUGS: readonly CloudRunSlug[] = ["admin", "gateway", "mcp-auth-proxy"];
+export const CLOUD_RUN_SLUGS: readonly CloudRunSlug[] = [
+  "admin",
+  "gateway",
+  "staging-gateway",
+  "mcp-auth-proxy",
+];
+
+/** The release images the Cloud Run services run (one per image, not per service). */
+export type ServiceImageName = "admin" | "gateway" | "mcp-auth-proxy";
+
+/** Every {@link ServiceImageName}, in roll order. */
+export const SERVICE_IMAGE_NAMES: readonly ServiceImageName[] = [
+  "admin",
+  "gateway",
+  "mcp-auth-proxy",
+];
+
+/**
+ * The release image each service runs: the staging gateway runs the live
+ * gateway's image (#1330 — one image, its environment decides what it
+ * serves), every other service its own.
+ */
+export const SERVICE_IMAGE: Readonly<Record<CloudRunSlug, ServiceImageName>> = {
+  admin: "admin",
+  gateway: "gateway",
+  "staging-gateway": "gateway",
+  "mcp-auth-proxy": "mcp-auth-proxy",
+};
 
 /**
  * The name prefix of the Cloud Run service that plays `slug` on an install
@@ -84,8 +115,13 @@ export const CLOUD_RUN_SLUGS: readonly CloudRunSlug[] = ["admin", "gateway", "mc
  * the MCP address is the site's own host behind the load balancer, so no
  * service name is pinned there and the proxy is the new service.
  *
+ * #1330 — the staging gateway is `caelo-<env>-staging-gateway` on both
+ * providers, created by the CLI (staging-gateway-setup.ts) under that fixed
+ * name.
+ *
  * No prefix is a prefix of another (`…-gateway` does not prefix
- * `…-data-gateway`), so a `metadata.name~^<prefix>` lookup finds one role.
+ * `…-data-gateway` or `…-staging-gateway`), so a `metadata.name~^<prefix>`
+ * lookup finds one role.
  */
 export function cloudRunServicePrefix(
   provider: GcpProvider,
@@ -94,6 +130,7 @@ export function cloudRunServicePrefix(
 ): string {
   const prefix = gcpNamePrefix(env);
   if (slug === "admin") return `${prefix}-admin`;
+  if (slug === "staging-gateway") return `${prefix}-staging-gateway`;
   if (provider === "gcp-firebase") {
     return slug === "gateway" ? `${prefix}-data-gateway` : `${prefix}-gateway`;
   }
@@ -102,7 +139,8 @@ export function cloudRunServicePrefix(
 
 /**
  * The exact name of a service that is created under a fixed name (#1328):
- * the `gcp-firebase` data gateway and the `gcp` MCP-Auth-Proxy. Fixed, not
+ * the `gcp-firebase` data gateway, the `gcp` MCP-Auth-Proxy and (#1330) the
+ * staging gateway on both. Fixed, not
  * Pulumi-suffixed, because the converge creates them on existing installs
  * with gcloud, and the stack's next `pulumi up` must then find the same
  * service instead of creating a second one. Null for the services Pulumi
@@ -114,6 +152,7 @@ export function fixedCloudRunServiceName(
   slug: CloudRunSlug,
 ): string | null {
   const fixed =
+    slug === "staging-gateway" ||
     (provider === "gcp-firebase" && slug === "gateway") ||
     (provider === "gcp" && slug === "mcp-auth-proxy");
   return fixed ? cloudRunServicePrefix(provider, env, slug) : null;
@@ -253,6 +292,8 @@ export function cloudSqlPrivateDnsName(
 export const DATABASE_URL_VARS = {
   admin: ["ADMIN_DATABASE_URL", "PUBLIC_ADMIN_DATABASE_URL", "PUBLIC_STAGING_ADMIN_DATABASE_URL"],
   gateway: ["PUBLIC_DATABASE_URL"],
+  // #1330 — public_staging_role on cms_public_staging, its only login.
+  "staging-gateway": ["PUBLIC_DATABASE_URL"],
   // #1328 — no database login at all. On gcp-firebase the service still
   // carries the gateway's URL until its roll removes it with the rest of
   // the gateway env (RETIRED_SERVICE_ENV), so the TLS step leaves it alone.
@@ -276,6 +317,8 @@ export type AdminEnvInputs<V = string> =
   | (RuntimeEnvInputs<V> & {
       readonly provider: "gcp-firebase";
       readonly firebaseSiteId: V;
+      /** #1330 — the second Hosting site that serves the staging host (gcp-names.ts firebaseStagingSiteId). */
+      readonly firebaseStagingSiteId: V;
       readonly gatewayService: V;
     });
 
@@ -295,6 +338,9 @@ export function defaultStagingHost(domain: string): string {
 
 /** Env var the admin seeds its staging host setting from. */
 export const STAGING_HOST_ENV = "CAELO_STAGING_HOST";
+
+/** #1330 — env var naming the gcp-firebase staging Hosting site on the admin. */
+export const FIREBASE_STAGING_SITE_ENV = "CAELO_FIREBASE_STAGING_SITE";
 
 /**
  * The admin env var naming the MCP service account (issue #37). `upgrade`
@@ -515,7 +561,10 @@ export const CLI_GENERATED_SECRETS = [
   "public-staging-role-password",
   // #650 — the staging access gate's key: signs "Open staging" links and
   // session cookies, derives the crawler credentials. Read by the admin
-  // (issues) and the gateway (verifies).
+  // only; since #1330 the admin publishes it to the staging gateway through
+  // the staging projection (cms_public_staging), so no gateway reads it
+  // from Secret Manager (moved, never re-minted: the crawler credentials
+  // derived from it keep working).
   "staging-gate-secret",
   // #914 / #806 — the Google sign-in client starts as the `{}` placeholder
   // (not configured; the Owner fills it under Settings → Google sign-in),
@@ -533,10 +582,7 @@ export const CLI_GENERATED_SECRETS = [
  */
 export const SECRETS_SET_UP_AHEAD_OF_THEIR_READER: Readonly<
   Partial<Record<(typeof CLI_GENERATED_SECRETS)[number], string>>
-> = {
-  "public-staging-role-password":
-    "#1329 — public_staging_role's password. The stacks (gcp.sql.User) and the converge (staging-database.ts) set the role's password from it; the staging gateway service (#1330) is its first runtime reader.",
-};
+> = {};
 
 /** A CLI-generated secret's first value: random hex, random base64, or a fixed placeholder. */
 export type GeneratedSecretFormat =
@@ -607,10 +653,15 @@ export const SERVICE_SECRET_ENV: Readonly<
   },
   gateway: {
     // CLAUDE.md §2: no cms_admin credential of any role (#613, #635).
-    // public_role on cms_public is the gateway's only login.
+    // public_role on cms_public is the gateway's only login. Its one
+    // credential (#763: each gateway holds exactly one).
     PUBLIC_DATABASE_PASSWORD: "public-role-password",
-    // #650 — verifies staging-host requests (api-gateway staging-proxy.ts).
-    CAELO_STAGING_GATE_SECRET: "staging-gate-secret",
+  },
+  // #1330 — public_staging_role on cms_public_staging: the staging
+  // gateway's one credential. The gate key comes through the staging
+  // projection, never from here; the two gateways share no secret.
+  "staging-gateway": {
+    PUBLIC_DATABASE_PASSWORD: "public-staging-role-password",
   },
   // #1328 — with the Google sign-in client file below, the proxy's whole
   // Secret Manager reach: no database password, no other key.
@@ -668,6 +719,7 @@ export function secretFilePath(file: SecretFileContract): string {
 export const SERVICE_SECRET_FILES: Readonly<Record<CloudRunSlug, readonly SecretFileContract[]>> = {
   admin: [],
   gateway: [],
+  "staging-gateway": [],
   "mcp-auth-proxy": [OPERATOR_OAUTH_CLIENT_FILE],
 };
 
@@ -706,6 +758,7 @@ export const RETIRED_SECRET_FILES: Readonly<Record<CloudRunSlug, readonly Retire
       why: "the remote-MCP broker moved to the MCP-Auth-Proxy (#1328); the visitor gateway must not hold the Google sign-in client",
     },
   ],
+  "staging-gateway": [],
   "mcp-auth-proxy": [
     {
       // gcp-firebase: the proxy is the service that was the gateway, which
@@ -780,7 +833,13 @@ export const RETIRED_SERVICE_ENV: Readonly<Record<CloudRunSlug, readonly string[
     "CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS",
     "CAELO_MCP_PUBLIC_URL",
     "CAELO_ADMIN_URL",
+    // #1330/#1331 — the staging gate moved to the staging gateway, which
+    // gets its key through the staging projection.
+    "CAELO_STAGING_GATE_SECRET",
   ],
+  // #1330 — a fresh service; nothing older to remove. Listed so the
+  // contract names every service.
+  "staging-gateway": [],
   // #1328 — on gcp-firebase the proxy is the service that was the gateway:
   // everything that service carried for visitor traffic goes, above all
   // every database login and the staging gate key. The proxy's SA cannot
@@ -798,6 +857,9 @@ export const RETIRED_SERVICE_ENV: Readonly<Record<CloudRunSlug, readonly string[
     "ADMIN_DATABASE_PASSWORD",
     "GATEWAY_DATABASE_URL",
     "GATEWAY_DATABASE_PASSWORD",
+    // #1331 — the interim forwarder to the data gateway is gone: the live
+    // rewrite names the data gateway, the staging host the staging gateway.
+    "CAELO_INTERIM_FORWARD_ORIGIN",
   ],
 };
 
@@ -872,6 +934,48 @@ export const GATEWAY_TRUSTED_PROXY_HOPS: Readonly<Record<SupportedProvider, numb
 };
 
 /**
+ * #1330 — {@link TRUSTED_PROXY_HOPS_ENV} of the staging gateway per
+ * provider: its own topology, so the staging gate's IP allowlist trusts
+ * exactly the entry its own front end appends and a forged
+ * `X-Forwarded-For` cannot pass it (stack-contract.test.ts pins the table).
+ */
+export const STAGING_GATEWAY_TRUSTED_PROXY_HOPS: Readonly<Record<SupportedProvider, number>> = {
+  // The staging host's own host rule on the external Application LB:
+  // `<client>,<LB IP>`; ingress is internal-and-LB only, so nothing reaches
+  // the service around the LB.
+  gcp: 2,
+  // The second Hosting site's `**` rewrite, then Cloud Run's front end,
+  // which appends a per-request Google proxy (#1325). The visitor entry
+  // Hosting writes before it cannot be told from a forged one (the service
+  // is invokable on *.run.app too), so the IP-allowlist mode is refused on
+  // gcp-firebase and the entry is used only to throttle failed attempts.
+  "gcp-firebase": 1,
+  // Caddy without `trusted_proxies` replaces the header with its peer; the
+  // staging gateway is reachable only on the Compose network.
+  "self-hosted": 1,
+  // Not deployed yet (#749): the live gateway's topology once it is.
+  aws: 2,
+  // Not deployed yet (#750).
+  azure: 1,
+};
+
+/**
+ * #1330 — where the staging gateway reads the staged build:
+ * `gs://<staging bucket>` on gcp / gcp-firebase, `file:///srv/staging` on
+ * self-hosted (the admin's `output/staging`, mounted read-only). The
+ * gateway reads only the build slots under it (`_slots/` on GCS).
+ */
+export const STAGING_STORAGE_ENV = "CAELO_STAGING_STORAGE";
+
+/** {@link STAGING_STORAGE_ENV} of a GCP install. */
+export function gcpStagingStorage(projectId: string, env: string): string {
+  return `gs://${gcpBucketName(projectId, env, "staging")}`;
+}
+
+/** #1330 — the staging gateway's request timeout: Firebase Hosting cuts a rewrite at 60 s (#1325). */
+export const STAGING_GATEWAY_TIMEOUT_SECONDS = 60;
+
+/**
  * The env of the gateway service. Order is stable so the stacks see no
  * spurious diffs.
  */
@@ -884,6 +988,30 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
     { name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS[inputs.provider]) },
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
     ...secretEnv("gateway", inputs.env),
+  ];
+}
+
+/**
+ * #1330 — the env of the staging gateway: the live gateway's image with
+ * `CAELO_GATEWAY_ENVIRONMENT=staging`. Its one credential is
+ * `public_staging_role` on `cms_public_staging`; it reads the staged build
+ * from {@link STAGING_STORAGE_ENV}. No media bucket, no gate key (the
+ * admin publishes that to the staging database), nothing of the live data.
+ */
+export function stagingGatewayEnvContract<V>(
+  inputs: RuntimeEnvInputs<V>,
+): CloudRunEnvVar<V | string>[] {
+  return [
+    { name: "CAELO_PROVIDER", value: inputs.provider },
+    { name: "CAELO_ENV", value: inputs.env },
+    { name: GATEWAY_ENVIRONMENT_ENV, value: "staging" },
+    {
+      name: TRUSTED_PROXY_HOPS_ENV,
+      value: String(STAGING_GATEWAY_TRUSTED_PROXY_HOPS[inputs.provider]),
+    },
+    { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.publicStaging },
+    { name: STAGING_STORAGE_ENV, value: gcpStagingStorage(inputs.projectId, inputs.env) },
+    ...secretEnv("staging-gateway", inputs.env),
   ];
 }
 
@@ -927,25 +1055,11 @@ export const MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS: Readonly<Record<SupportedProvide
 };
 
 /**
- * #1328 — points the `gcp-firebase` MCP-Auth-Proxy at the visitor data
- * gateway for the traffic that still reaches the service that used to be
- * the gateway: the Firebase `/api/**` rewrite of the release that is live
- * until the next Publish live, and the staging host's Cloud Run domain
- * mapping (#650), which only the domain's verified owner could move. The
- * proxy streams that traffic to the data gateway unchanged instead of
- * answering it (apps/mcp-auth-proxy interim-forward.ts). gcp-firebase only.
- */
-// FIXME(issue #1331): goes with the staging cutover, once neither a mapping
-// nor a published rewrite can point at the proxy any more.
-export const INTERIM_FORWARD_ORIGIN_ENV = "CAELO_INTERIM_FORWARD_ORIGIN";
-
-/**
  * The env of the MCP-Auth-Proxy. No database URL, no pool size, no site
  * settings: the broker reads env plus one secret file and nothing else
  * (apps/mcp-auth-proxy, whose import lint keeps every database client out).
  * The remote-MCP identity env — its public origin, the admin's URL — comes
- * on top from {@link remoteMcpIdentityEnv}, the gcp-firebase forward origin
- * from the stack or the converge ({@link INTERIM_FORWARD_ORIGIN_ENV}).
+ * on top from {@link remoteMcpIdentityEnv}.
  */
 export function mcpAuthProxyEnvContract(inputs: {
   readonly provider: SupportedProvider;
@@ -1006,6 +1120,7 @@ export const SERVICE_CPU_IDLE: Readonly<Record<CloudRunSlug, boolean>> = {
   // between requests (the category-A jobs, the heartbeat at request start).
   admin: false,
   gateway: true,
+  "staging-gateway": true,
   "mcp-auth-proxy": true,
 };
 
@@ -1018,6 +1133,8 @@ export const SERVICE_CPU_IDLE: Readonly<Record<CloudRunSlug, boolean>> = {
 export const SERVICE_VPC_EGRESS: Readonly<Record<CloudRunSlug, boolean>> = {
   admin: true,
   gateway: true,
+  // #1330 — reaches the staging database on Cloud SQL's private IP.
+  "staging-gateway": true,
   "mcp-auth-proxy": false,
 };
 
@@ -1158,9 +1275,10 @@ export function remoteMcpIdentityEnv(
         ? [{ name: REMOTE_MCP_ENV.googleOrgDomain, value: id.googleOrgDomain }]
         : []),
     ],
-    // #1328 — the broker lives in the MCP-Auth-Proxy; the visitor gateway
-    // gets none of it.
+    // #1328 — the broker lives in the MCP-Auth-Proxy; the visitor gateways
+    // get none of it.
     gateway: [],
+    "staging-gateway": [],
     "mcp-auth-proxy": [
       { name: REMOTE_MCP_ENV.adminUrl, value: id.adminUrl },
       { name: REMOTE_MCP_ENV.mcpPublicUrl, value: id.mcpPublicUrl },
@@ -1228,7 +1346,9 @@ export function remoteMcpIdentityStackEnv(
   raw: string | undefined,
 ): Record<CloudRunSlug, CloudRunEnvVar[]> {
   const id = parseRemoteMcpIdentityConfig(raw);
-  return id ? remoteMcpIdentityEnv(id) : { admin: [], gateway: [], "mcp-auth-proxy": [] };
+  return id
+    ? remoteMcpIdentityEnv(id)
+    : { admin: [], gateway: [], "staging-gateway": [], "mcp-auth-proxy": [] };
 }
 
 /** Whether two identities would give the services the same env. */
@@ -1326,26 +1446,31 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
       value: operatorOAuthClientSecretResource(projectId, env),
     },
   ];
+  // #1330 — the staging bucket: the full staged build in two slots that the
+  // staging gateway serves from (gcp: Stage also keeps its per-run prefixes
+  // there for Publish live and rollback).
+  admin.push({ name: "CAELO_STAGING_BUCKET", value: gcpBucketName(projectId, env, "staging") });
   if (inputs.provider === "gcp") {
     // v0.2.78 — the GCS StaticPublisher: Stage uploads to staging,
     // Confirm-publish copies to static.
-    admin.push(
-      { name: "CAELO_STATIC_BUCKET", value: gcpBucketName(projectId, env, "static") },
-      { name: "CAELO_STAGING_BUCKET", value: gcpBucketName(projectId, env, "staging") },
-    );
+    admin.push({ name: "CAELO_STATIC_BUCKET", value: gcpBucketName(projectId, env, "static") });
   } else {
     // v0.3.1 — the Firebase publisher deploys to this site and declares
     // the /api/** rewrite to the gateway service.
     admin.push(
       { name: "CAELO_FIREBASE_SITE", value: inputs.firebaseSiteId },
+      // #1330 — the staging host's Hosting site: Settings → Updates reads
+      // the DNS records of its custom domain.
+      { name: FIREBASE_STAGING_SITE_ENV, value: inputs.firebaseStagingSiteId },
       { name: "CAELO_GATEWAY_SERVICE", value: inputs.gatewayService },
       { name: "CAELO_GATEWAY_REGION", value: inputs.region },
-      // #650 — seeds the admin's staging host setting (staging builds render
-      // it, the gateway's gate answers on it); the admin DB is the truth
-      // afterwards, changed under Settings → Domains.
-      { name: STAGING_HOST_ENV, value: inputs.stagingHost },
     );
   }
+  // #650 — seeds the admin's staging host setting (staging pages carry it,
+  // the staging gateway's gate answers on it); the admin DB is the truth
+  // afterwards, changed under Settings → Domains. Every provider since
+  // #1330: each serves staging at its own host.
+  admin.push({ name: STAGING_HOST_ENV, value: inputs.stagingHost });
   admin.push(...secretEnv("admin", env));
   return admin;
 }
@@ -1378,6 +1503,8 @@ export type IamPrincipal =
   | "gateway-sa"
   /** #1328 — the MCP-Auth-Proxy's SA: two secrets, nothing else. */
   | "mcp-auth-proxy-sa"
+  /** #1330 — the staging gateway's SA: its login password and the staging bucket. */
+  | "staging-gateway-sa"
   /** The `gcp` stack's static-publisher SA. */
   | "static-publisher-sa"
   /** IAP's Google-managed service agent (forwards IAP traffic to Cloud Run). */
@@ -1442,6 +1569,7 @@ export function runtimeSecretBindings(): RuntimeSecretBinding[] {
 export const SERVICE_PRINCIPAL: Readonly<Record<CloudRunSlug, IamPrincipal>> = {
   admin: "run-sa",
   gateway: "gateway-sa",
+  "staging-gateway": "staging-gateway-sa",
   "mcp-auth-proxy": "mcp-auth-proxy-sa",
 };
 
@@ -1507,6 +1635,22 @@ const TELEMETRY: readonly IamInvariant[] = [
     target: { kind: "project" },
     onFailure: "warn",
     why: "gateway CPU/memory metrics reach Cloud Monitoring (autoscaling signals)",
+  },
+  {
+    stackResource: "staging-gateway-log-writer",
+    role: "roles/logging.logWriter",
+    member: "staging-gateway-sa",
+    target: { kind: "project" },
+    onFailure: "warn",
+    why: "staging gateway container logs reach Cloud Logging",
+  },
+  {
+    stackResource: "staging-gateway-metric-writer",
+    role: "roles/monitoring.metricWriter",
+    member: "staging-gateway-sa",
+    target: { kind: "project" },
+    onFailure: "warn",
+    why: "staging gateway CPU/memory metrics reach Cloud Monitoring (autoscaling signals)",
   },
 ];
 
@@ -1658,6 +1802,13 @@ export const RETIRED_IAM_BINDINGS: readonly RetiredIamBinding[] = [
     why: "the remote-MCP broker moved to the MCP-Auth-Proxy (#1328); the visitor gateway must not read the Google sign-in client's secret",
   },
   {
+    // #1330/#1331 — the gate key moved to the staging gateway's projection.
+    role: SECRET_ACCESSOR,
+    member: "gateway-sa",
+    target: { kind: "secret", name: "staging-gate-secret" },
+    why: "the staging gate moved to the staging gateway, which gets its key through the staging projection (#1330); the live gateway must not hold it",
+  },
+  {
     // gcp-firebase: the Firebase rewrite targets the data gateway since
     // #1328, so the publisher no longer needs to read the proxy.
     role: "roles/run.viewer",
@@ -1713,6 +1864,8 @@ export function iamMember(
       return `serviceAccount:${gatewayServiceAccountEmail(install.projectId, install.env)}`;
     case "mcp-auth-proxy-sa":
       return `serviceAccount:${mcpAuthProxyServiceAccountEmail(install.projectId, install.env)}`;
+    case "staging-gateway-sa":
+      return `serviceAccount:${stagingGatewayServiceAccountEmail(install.projectId, install.env)}`;
     case "static-publisher-sa":
       return `serviceAccount:${staticPublisherServiceAccountId(install.env)}@${install.projectId}.iam.gserviceaccount.com`;
     case "iap-service-agent":

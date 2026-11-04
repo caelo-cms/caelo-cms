@@ -220,7 +220,7 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${SHARED}/{phase-timer,source-text-transport,escaped-line-breaks,module-id-tag}.ts`,
       `${SHARED}/{link-canonicalise,interactions}.ts`,
       `${SHARED}/{page-log,proposal-status,document-language,database-url,screenshot-capture}.ts`,
-      `${SHARED}/{static-cache-policy,static-security-headers,publish-live-parity,staging-gate}.ts`,
+      `${SHARED}/{static-cache-policy,static-security-headers,publish-live-parity,staging-gate,staged-site}.ts`,
       `${SHARED}/session-cookie.ts`,
       `${A}/ops/notifications.ts`,
       "packages/query-api/src/**",
@@ -465,7 +465,6 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/email/**`,
   `${A}/ops/email_config*.ts`,
   `${A}/release-check-worker.ts`,
-  `${A}/staging-preview-keepalive-worker.ts`,
   `${A}/password.ts`,
   `${A}/csrf.ts`,
   `${A}/healthcheck.ts`,
@@ -506,7 +505,7 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${SHARED}/redirect-emit-*.ts`,
   // #1328 — HTTP plumbing of the public gateway and the MCP-Auth-Proxy;
   // the admin and the AI never run it.
-  `${SHARED}/{body-cap,client-address,interim-forwarded-host,json-security-headers}.ts`,
+  `${SHARED}/{body-cap,client-address,json-security-headers}.ts`,
   `${ADMIN}/lib/server/google-iap.ts`,
   `${ADMIN}/lib/server/forgot-password.ts`,
   `${ADMIN}/lib/server/operator-access.ts`,

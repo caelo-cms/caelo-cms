@@ -73,6 +73,26 @@ export class MemoryRateLimiter {
     return { allowed: true, retryAfterSec: 0 };
   }
 
+  /**
+   * Whether `key` has a token left, without taking one (#1330: the staging
+   * gate's failure budget is checked before the gate runs and spent only
+   * by a refusal).
+   */
+  peek(key: string): MemoryLimitDecision {
+    const found = this.buckets.get(key);
+    if (!found) return { allowed: true, retryAfterSec: 0 };
+    const refilled = Math.min(
+      this.spec.capacity,
+      found.tokens + ((this.now() - found.at) / 1000) * this.spec.refillPerSec,
+    );
+    return refilled >= 1
+      ? { allowed: true, retryAfterSec: 0 }
+      : {
+          allowed: false,
+          retryAfterSec: Math.max(1, Math.ceil((1 - refilled) / this.spec.refillPerSec)),
+        };
+  }
+
   /** Buckets held; for tests and the bound. */
   get size(): number {
     return this.buckets.size;

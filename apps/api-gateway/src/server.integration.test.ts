@@ -365,7 +365,7 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
     expect(r.headers.get("x-content-type-options")).toBe("nosniff");
   });
 
-  it("answers a staged page's plugin call with the stub: no dispatch, no row, no failed request (#1326)", async () => {
+  it("refuses a staged page's plugin call on the live gateway: staging posts to its own gateway (#1330)", async () => {
     await bootstrapAndProvision();
     const asSystem = async (fn: (tx: SQL) => Promise<unknown>) => {
       const sql = new SQL(ADMIN_URL);
@@ -387,8 +387,8 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
       const req = postReq(`/api/plugin/${SLUG}/save`, { message: "from staging" });
       req.headers.set("Origin", "https://staging.localhost");
       const r = await handleRequest(req);
-      expect(r.status).toBe(200);
-      expect(await r.json()).toEqual({ ok: false, error: { kind: "StagingPreview" } });
+      expect(r.status).toBe(403);
+      expect(((await r.json()) as { error: { kind: string } }).error.kind).toBe("OriginNotAllowed");
       // Staging is never a live origin, whatever the domains registry says.
       const live = await new SQL(PUBLIC_URL).begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");

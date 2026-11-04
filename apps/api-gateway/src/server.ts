@@ -8,8 +8,11 @@
  *   GET  /api/captcha/challenge             PoW challenge envelope
  *   GET  /healthz                           liveness probe
  *   GET  /api/_caelo/health[?deep=1]        upgrade health check (health.ts)
- *   *    (Host: staging.<domain>)           #650 staging gate + proxy to the
- *                                           staged build (staging-proxy.ts)
+ *
+ * The staging gateway (`CAELO_GATEWAY_ENVIRONMENT=staging`, #1330) puts the
+ * #650 gate in front of every route but `/healthz`, on every host, and
+ * serves the staged site itself (staging/site.ts); admitted `/api/*`
+ * requests take the routes above against its own database.
  *
  * Before anything reaches the database (#1326 — the cheap setup has no WAF
  * in front, E3, so the gateway must shed junk itself): a path that names no
@@ -76,7 +79,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
-import { SESSION_ENTRY, STAGING_PLUGIN_STUB_BODY } from "@caelo-cms/shared";
+import { type RedirectTableRow, SESSION_ENTRY } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import {
   ClientAddressError,
@@ -120,11 +123,12 @@ import {
   publishedCacheUsable,
 } from "./published-changes.js";
 import {
-  handleStagingRequest,
-  isStagingRequest,
-  type StagingState,
-  stagingGateFromEnv,
-} from "./staging-proxy.js";
+  gateFailureLimiter,
+  handleStagingSiteRequest,
+  ManifestCache,
+  type StagingSiteState,
+} from "./staging/site.js";
+import { type StagingStorage, stagingStorageFromEnv } from "./staging/storage.js";
 import {
   ANONYMOUS_VISITOR_ACTOR,
   invalidateVisitorConsentRule,
@@ -263,18 +267,22 @@ async function sectionPublished(tx: TransactionRunner, section: string): Promise
 export function invalidateGatewaySettings(): void {
   cachedSettings = null;
   cachedStagingState = null;
+  cachedRedirects = null;
   invalidateVisitorConsentRule();
 }
 
 // ---------------------------------------------------------------------------
-// Staging gate state (#650) — the staging_access row: access modes and the
-// current staged build's origin. Cached and invalidated like the settings
-// above (the admin notifies on every change and every Stage).
+// The staging site (#1330) — what the staging gateway serves, as the admin
+// published it into cms_public_staging (`published_staging_site`): the gate,
+// its key and the served build; and the redirects table. Cached and
+// invalidated like the settings above (the admin notifies on every change
+// and every Stage).
 // ---------------------------------------------------------------------------
 
-let cachedStagingState: StagingState | null = null;
+let cachedStagingState: StagingSiteState | null = null;
+let cachedRedirects: readonly RedirectTableRow[] | null = null;
 
-async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState> {
+async function loadStagingSiteState(adapter: DatabaseAdapter): Promise<StagingSiteState> {
   if (cachedStagingState && publishedCacheUsable()) return cachedStagingState;
   const startedAt = publishedCacheGeneration();
   const rows = (await adapter.withPublicTransaction(
@@ -282,8 +290,9 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
     async (tx) =>
       await tx.execute(sql`
         SELECT staging_host, cookie_enabled, basic_auth_enabled, basic_auth_user, basic_auth_nonce,
-               header_enabled, header_name, header_nonce, ip_allowlist, origin_url
-        FROM published_staging_access WHERE id = 1
+               header_enabled, header_name, header_nonce, ip_allowlist, gate_secret,
+               served_run_id::text AS served_run_id, served_location, build_origin
+        FROM published_staging_site WHERE id = 1
       `),
   )) as unknown as {
     staging_host: string | null;
@@ -295,15 +304,18 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
     header_name: string;
     header_nonce: string | null;
     ip_allowlist: string[] | string;
-    origin_url: string | null;
+    gate_secret: string | null;
+    served_run_id: string | null;
+    served_location: string | null;
+    build_origin: string | null;
   }[];
   const row = rows[0];
   if (!row) {
     throw new GatewayNotReadyError(
-      "the admin has not published the staging gate settings yet; run the database migrations (they publish them) or start the admin",
+      "the admin has not published the staging site yet (published_staging_site); start the admin once, it publishes it",
     );
   }
-  const state: StagingState = {
+  const state: StagingSiteState = {
     host: row.staging_host,
     settings: {
       cookieEnabled: row.cookie_enabled,
@@ -318,10 +330,57 @@ async function loadStagingState(adapter: DatabaseAdapter): Promise<StagingState>
           ? (JSON.parse(row.ip_allowlist) as string[])
           : row.ip_allowlist,
     },
-    originUrl: row.origin_url,
+    gateSecret: row.gate_secret,
+    served:
+      row.served_run_id && row.served_location
+        ? { runId: row.served_run_id, location: row.served_location, buildOrigin: row.build_origin }
+        : null,
   };
   if (mayCacheRead(startedAt)) cachedStagingState = state;
   return state;
+}
+
+async function loadPublishedRedirects(
+  adapter: DatabaseAdapter,
+): Promise<readonly RedirectTableRow[]> {
+  if (cachedRedirects && publishedCacheUsable()) return cachedRedirects;
+  const startedAt = publishedCacheGeneration();
+  const rows = (await adapter.withPublicTransaction(
+    SYSTEM_CTX,
+    async (tx) =>
+      await tx.execute(
+        sql`SELECT from_path, to_path, status_code FROM published_redirects ORDER BY from_path`,
+      ),
+  )) as unknown as { from_path: string; to_path: string; status_code: number }[];
+  const redirects = rows.map((r) => ({
+    fromPath: r.from_path,
+    toPath: r.to_path,
+    statusCode: r.status_code,
+  }));
+  if (mayCacheRead(startedAt)) cachedRedirects = redirects;
+  return redirects;
+}
+
+/** The staging gateway's serving parts (#1330); null on the live gateway. */
+interface StagingSiteRuntime {
+  readonly storage: StagingStorage;
+  readonly manifests: ManifestCache;
+  readonly failures: ReturnType<typeof gateFailureLimiter>;
+}
+let stagingSite: StagingSiteRuntime | null = null;
+
+/**
+ * Make this gateway the staging gateway (#1330): every request but
+ * `/healthz` passes the gate, and the staged site is served from `storage`.
+ * Called at boot for `CAELO_GATEWAY_ENVIRONMENT=staging`; tests call it
+ * directly, and with `null` to go back to the live gateway.
+ */
+export function setStagingSite(storage: StagingStorage | null): void {
+  stagingSite = storage
+    ? { storage, manifests: new ManifestCache(), failures: gateFailureLimiter() }
+    : null;
+  cachedStagingState = null;
+  cachedRedirects = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -587,37 +646,68 @@ async function routeRequest(
 ): Promise<Response> {
   const url = new URL(req.url);
 
-  // #650 — the staging host (gcp-firebase; the stored setting, default
-  // staging.<domain>): the access gate + proxy to the staged build. Nothing
-  // below (plugin dispatch, captcha) serves it.
-  const stagingGate = stagingGateFromEnv(process.env);
-  if (
-    stagingGate &&
-    cachedAdapter &&
-    url.pathname !== "/healthz" &&
-    url.pathname !== GATEWAY_HEALTH_PATH
-  ) {
-    let state: StagingState | null = null;
-    try {
-      state = await loadStagingState(cachedAdapter);
-    } catch (e) {
-      // Not knowing the staging host must not take /api/* down with it; the
-      // routes below answer from their own settings (or 503 on their own).
-      console.error(`[api-gateway] staging host unavailable: ${describeFailure(e)}`);
-    }
-    if (state?.host && isStagingRequest(req, state.host)) {
-      const loaded = state;
-      // The allowlist matches the same address the rate limits bucket by.
-      const clientIp = requestClientAddress(req, conn, requestId);
-      if (!clientIp.ok) return clientIp.response;
-      return handleStagingRequest(req, {
-        config: { stagingOrigin: `https://${loaded.host}`, secret: stagingGate.secret },
-        clientIp: clientIp.value,
-        loadState: async () => loaded,
-      });
-    }
+  if (stagingSite && url.pathname !== "/healthz") {
+    return stagingRequest(req, conn, requestId, stagingSite);
   }
+  return visitorRequest(req, conn, requestId);
+}
 
+/**
+ * One request on the staging gateway (#1330, staging/site.ts): the gate on
+ * every host, then the staged site or, for `/api/*`, the visitor routes on
+ * this gateway's own database.
+ */
+async function stagingRequest(
+  req: Request,
+  conn: GatewayConnection,
+  requestId: string,
+  site: StagingSiteRuntime,
+): Promise<Response> {
+  if (!cachedAdapter) {
+    return errorResponse("ServiceUnavailable", 503, requestId, { log: "gateway not bootstrapped" });
+  }
+  const adapter = cachedAdapter;
+  // The allowlist and the failure budget match the address the rate limits bucket by.
+  const client = requestClientAddress(req, conn, requestId);
+  if (!client.ok) return client.response;
+  let state: StagingSiteState;
+  try {
+    state = await loadStagingSiteState(adapter);
+  } catch (e) {
+    console.error(
+      `[api-gateway] request ${requestId}: staging site unavailable — ${describeFailure(e)}`,
+    );
+    return new Response("Staging is unavailable. Try again in a moment.", {
+      status: 503,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "private, no-store",
+        "X-Robots-Tag": "noindex",
+        "X-Request-Id": requestId,
+      },
+    });
+  }
+  return handleStagingSiteRequest(req, {
+    state,
+    clientIp: client.value,
+    clientKey: rateLimitAddress(client.value),
+    provider: process.env.CAELO_PROVIDER,
+    storage: site.storage,
+    manifests: site.manifests,
+    redirects: () => loadPublishedRedirects(adapter),
+    failures: site.failures,
+    api: (admitted) => visitorRequest(admitted, conn, requestId),
+    secure: process.env.NODE_ENV === "production",
+  });
+}
+
+/** The visitor routes (both gateways; on staging only after the gate). */
+async function visitorRequest(
+  req: Request,
+  conn: GatewayConnection,
+  requestId: string,
+): Promise<Response> {
+  const url = new URL(req.url);
   if (url.pathname === "/healthz") {
     return jsonResponse({ ok: true });
   }
@@ -721,24 +811,6 @@ async function servedToVisitors(
   return served ? "served" : "unknown";
 }
 
-/**
- * Whether `req` comes from the staging host's pages (`Origin` is
- * `https://<staging host>`, as the admin published it). False when no
- * staging host is set or the gate state cannot be read: the caller then
- * refuses the request like any other foreign origin.
- */
-async function isStagingOrigin(req: Request, adapter: DatabaseAdapter): Promise<boolean> {
-  const origin = req.headers.get("origin")?.toLowerCase();
-  if (!origin) return false;
-  try {
-    const state = await loadStagingState(adapter);
-    return state.host !== null && origin === `https://${state.host.toLowerCase()}`;
-  } catch (e) {
-    console.error(`[api-gateway] staging host unavailable: ${describeFailure(e)}`);
-    return false;
-  }
-}
-
 /** `POST /api/plugin/<slug>/<operation>` (pipeline in the file comment). */
 async function pluginOperation(
   req: Request,
@@ -763,20 +835,6 @@ async function pluginOperation(
     return errorResponse("Forbidden", 403, requestId);
   }
   const refused = refusePluginRequest(req, settings.liveOrigins);
-  if (refused?.kind === "OriginNotAllowed" && (await isStagingOrigin(req, adapter))) {
-    // #1326 interim (until staging has its own gateway, #1329/#1330): a
-    // staged page's plugin call is refused without a failed request in
-    // the browser, so the Stage audit does not count it as a page error.
-    // Nothing is dispatched or written.
-    return new Response(STAGING_PLUGIN_STUB_BODY, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": "no-store",
-        "X-Request-Id": requestId,
-      },
-    });
-  }
   if (refused) {
     return errorResponse(refused.kind, refused.status, requestId, {
       log: `${req.headers.get("content-type") ?? "no content-type"} from ${req.headers.get("origin") ?? "no origin"} to ${slug}.${operationName}`,
@@ -1049,6 +1107,13 @@ if (import.meta.main) {
   const registry = new OperationRegistry();
   registerGatewayOperations(registry);
   setGatewayAdapter(adapter);
+  // #1330 — the staging gateway serves the staged site from staging storage,
+  // behind the gate; the live gateway has none.
+  if (urls.environment === "staging") {
+    const storage = stagingStorageFromEnv(process.env);
+    setStagingSite(storage);
+    console.log(`[api-gateway] serving the staged site from ${storage.describe}, behind the gate`);
+  }
   // #1267 — the admin's publisher notifies cms_public after every publish
   // (#635). The caches of published state are served only while this LISTEN
   // is acknowledged (published-changes.ts); boot waits for it, so a gateway

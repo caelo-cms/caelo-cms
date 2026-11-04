@@ -15,6 +15,9 @@
  *     #           MCP-Auth-Proxy on its own host, never the site's origin)
  *     # public  → /api/* → <gatewayUpstream>; everything else is the
  *     #           static site (try_files + file_server, 404 → /404.html)
+ *     # staging → reverse_proxy <stagingGatewayUpstream> for every path
+ *     #           (#1330: the staging gateway serves the staged build
+ *     #           behind the staging gate, and staging's own /api)
  *   }
  *
  * Upstreams are `host:port` as seen FROM CADDY. In the Compose install
@@ -27,7 +30,10 @@
  * run in CI) — issue #566 shipped a `try_files` nested inside
  * `file_server { }`, which Caddy 2.11 refuses, so no vhost came up.
  *
- * Staging vhosts force `X-Robots-Tag: noindex`.
+ * Staging vhosts force `X-Robots-Tag: noindex`. Caddy serves no staging
+ * file itself (#1330): the staging gateway mounts the staged builds
+ * read-only, and Caddy has no other path to them, so nothing reaches a
+ * staged page without passing the gate.
  *
  * Public vhosts import the redirect snippet of the build they serve
  * (`_redirects.caddy`, #587); the Caddy container reloads itself when a
@@ -91,7 +97,8 @@ export interface CaddyfileSpec {
   readonly ownerEmail: string;
   readonly tls: CaddyTlsMode;
   readonly publicSiteRoot: string; // absolute path inside the Caddy container
-  readonly stagingSiteRoot: string;
+  /** #1330 — `host:port` of the staging gateway as Caddy reaches it (Compose: `caelo-staging-gateway:8091`). */
+  readonly stagingGatewayUpstream: string;
   /** `host:port` of the admin as Caddy reaches it (Compose: `caelo-admin:5173`). */
   readonly adminUpstream: string;
   /** `host:port` of the API gateway as Caddy reaches it (Compose: `caelo-gateway:8090`). */
@@ -173,7 +180,7 @@ function assertSafeCaddyToken(label: string, value: string, kind: "address" | "t
 export function generateCaddyfile(spec: CaddyfileSpec): string {
   assertSafeCaddyToken("ownerEmail", spec.ownerEmail, "token");
   assertSafeCaddyToken("publicSiteRoot", spec.publicSiteRoot, "token");
-  assertSafeCaddyToken("stagingSiteRoot", spec.stagingSiteRoot, "token");
+  assertSafeCaddyToken("stagingGatewayUpstream", spec.stagingGatewayUpstream, "token");
   assertSafeCaddyToken("adminUpstream", spec.adminUpstream, "token");
   assertSafeCaddyToken("gatewayUpstream", spec.gatewayUpstream, "token");
   assertSafeCaddyToken("mcpAuthProxyUpstream", spec.mcpAuthProxyUpstream, "token");
@@ -234,10 +241,22 @@ function vhost(d: CaddyDomainSpec, spec: CaddyfileSpec): string {
 }
 `;
   }
+  if (d.env === "staging") {
+    // #1330 — every path to the staging gateway: it runs the gate first and
+    // serves the staged build and staging's /api itself. The #891 security
+    // headers stay on as a second layer over the gateway's own.
+    return `${d.hostname} {${noindex}
+  header X-Content-Type-Options "${NOSNIFF}"
+  @svg path *.svg
+  header @svg Content-Security-Policy "${SVG_DOCUMENT_CSP}"
+  reverse_proxy ${spec.stagingGatewayUpstream}
+}
+`;
+  }
   // public — API routes go to the gateway, the rest is the static site.
   // `try_files` is its own directive (a rewrite), never a file_server
   // subdirective (#566).
-  const root = d.env === "staging" ? spec.stagingSiteRoot : spec.publicSiteRoot;
+  const root = spec.publicSiteRoot;
   // #587 — the redirects table of the build this vhost serves.
   return `${d.hostname} {${noindex}
   root * ${root}

@@ -9,50 +9,12 @@
  * #555) and content types (.ico favicons, #571).
  */
 
-import { extname } from "node:path";
-import {
-  HTML_CACHE_CONTROL,
-  IMMUTABLE_CACHE_CONTROL,
-  isContentHashedPath,
-  isSvgContentType,
-} from "@caelo-cms/shared";
+import { cacheControlForContentType, isSvgContentType } from "@caelo-cms/shared";
 
-/** Content-Type by file extension (`application/octet-stream` when unknown). */
-export function contentTypeFor(key: string): string {
-  const ext = extname(key).toLowerCase();
-  switch (ext) {
-    case ".html":
-      return "text/html; charset=utf-8";
-    case ".css":
-      return "text/css; charset=utf-8";
-    case ".js":
-    case ".mjs":
-      return "application/javascript; charset=utf-8";
-    case ".json":
-      return "application/json; charset=utf-8";
-    case ".svg":
-      return "image/svg+xml";
-    case ".ico":
-      return "image/x-icon";
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".webp":
-      return "image/webp";
-    case ".woff2":
-      return "font/woff2";
-    case ".woff":
-      return "font/woff";
-    case ".txt":
-      return "text/plain; charset=utf-8";
-    case ".xml":
-      return "application/xml; charset=utf-8";
-    default:
-      return "application/octet-stream";
-  }
-}
+// #1330 — the rules live in @caelo-cms/shared staged-site.ts now, so the
+// staging gateway serves a staged build with the same Content-Type and
+// Cache-Control as the live publishers.
+export { cacheControlForContentType, contentTypeFor } from "@caelo-cms/shared";
 
 /**
  * Object metadata for a published file in a GCS bucket served through the
@@ -81,27 +43,4 @@ export function gcsObjectMetadata(
   return isSvgContentType(contentType)
     ? { cacheControl, contentDisposition: "attachment" }
     : { cacheControl };
-}
-
-/** Cache-Control for a file of `contentType` served at site path `key`. */
-export function cacheControlForContentType(contentType: string, key: string): string {
-  // Content-hashed outputs (fonts, plugin bundles, media, Vite chunks)
-  // are immutable regardless of content-type — the hash in the path is
-  // the signal. Anything else under `_assets/` stays on the 1h default.
-  if (isContentHashedPath(key)) {
-    return IMMUTABLE_CACHE_CONTROL;
-  }
-  if (contentType.startsWith("text/html")) {
-    return HTML_CACHE_CONTROL;
-  }
-  if (key === "routing-manifest.json" || key === "_content-types.json") {
-    return "public, max-age=10";
-  }
-  if (contentType.startsWith("application/json")) {
-    return "public, max-age=60";
-  }
-  if (key === "robots.txt" || key === "sitemap.xml") {
-    return "public, max-age=300";
-  }
-  return "public, max-age=3600";
 }

@@ -162,6 +162,8 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
       caeloSecretKek: "0".repeat(64),
       dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
+      stagingHost: "staging.example.com",
+      stagingGateSecret: "g".repeat(64),
       diskSize: "20Gi",
       images: {
         mode: "release" as const,

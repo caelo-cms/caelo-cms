@@ -154,7 +154,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   } else {
     provider = jobModeProvider ?? opts.provider ?? (await pickProvider());
     domain = opts.domain ?? (await promptDomain());
-    const stagingDomain = await resolveStagingDomain(domain, provider, opts);
+    const stagingDomain = await resolveStagingDomain(domain, opts);
     ownerEmail = opts.ownerEmail ?? (await promptOwnerEmail());
     projectIdHint = jobModeProjectId ?? opts.projectId ?? null;
     installId = deriveInstallId(provider, projectIdHint ?? domain);
@@ -389,11 +389,10 @@ async function promptDomain(): Promise<string> {
  */
 async function resolveStagingDomain(
   domain: string,
-  provider: Provider,
   opts: Pick<WizardOptions, "stagingDomain" | "nonInteractive">,
 ): Promise<string> {
   const reserved = { liveHosts: [domain, `www.${domain}`], adminHosts: [`admin.${domain}`] };
-  const problemOf = (host: string) => stagingHostProblem(host, reserved, { provider });
+  const problemOf = (host: string) => stagingHostProblem(host, reserved);
   if (opts.stagingDomain) {
     const problem = problemOf(opts.stagingDomain);
     if (problem) {

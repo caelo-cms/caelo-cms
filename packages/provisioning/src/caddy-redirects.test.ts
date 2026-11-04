@@ -24,7 +24,7 @@ const caddyfile = generateCaddyfile({
   ownerEmail: "owner@example.com",
   tls: "acme",
   publicSiteRoot: "/srv/caelo/output/production/current",
-  stagingSiteRoot: "/srv/caelo/output/staging/current",
+  stagingGatewayUpstream: "caelo-staging-gateway:8091",
   adminUpstream: COMPOSE_ADMIN_UPSTREAM,
   gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
   mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
@@ -41,13 +41,13 @@ function block(host: string): string {
 }
 
 describe("Caddyfile — redirects (#587)", () => {
-  it("each public vhost imports the redirect snippet of the build it serves", () => {
+  it("the live vhost imports the redirect snippet of the build it serves", () => {
     expect(block("example.com")).toContain(
       "  root * /srv/caelo/output/production/current\n  import /srv/caelo/output/production/current/_redirects.caddy*\n",
     );
-    expect(block("staging.example.com")).toContain(
-      "import /srv/caelo/output/staging/current/_redirects.caddy*",
-    );
+    // #1330 — staging's redirects are the staging gateway's (from the
+    // staging projection), not Caddy's.
+    expect(block("staging.example.com")).not.toContain("_redirects.caddy");
     expect(block("admin.example.com")).not.toContain("_redirects.caddy");
   });
 
@@ -67,6 +67,8 @@ describe("Compose — Caddy picks up new redirects (#587)", () => {
     caeloSecretKek: "0".repeat(64),
     dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
     internalSecret: "i".repeat(48),
+    stagingHost: "staging.example.com",
+    stagingGateSecret: "g".repeat(64),
     diskSize: "20Gi",
     ports: { http: 80, https: 443 },
     project: "caelo-example-com",

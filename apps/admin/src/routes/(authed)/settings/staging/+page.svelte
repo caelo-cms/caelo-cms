@@ -61,12 +61,9 @@
     {#if access.stagingUrl && (access.stageNeeded || access.draftPages.count > 0)}
       <CardContent class="space-y-2">
         {#if access.stageNeeded}
-          <!-- #678 — a new host (or one changed since the last Stage) serves
-               nothing / a stale build until the next Stage. -->
+          <!-- #678 — staging serves nothing until the first Stage. -->
           <div class="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200" data-testid="staging-stage-needed">
-            {access.stageNeeded === "nothing-staged"
-              ? `Nothing is served at ${access.stagingUrl}/ until the next Stage.`
-              : `The served build was rendered for ${access.stagedBuildHost} — Stage again so ${access.stagingUrl}/ gets its own canonicals, sitemap and robots.txt.`}
+            Nothing is served at {access.stagingUrl}/ until the next Stage.
             Stage from the editor or <a class="underline" href="/content/changes">Open changes</a>.
           </div>
         {/if}

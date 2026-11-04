@@ -13,14 +13,16 @@
  * rendered document instead.
  */
 
+import { STAGING_RUN_TOKEN_HEADER } from "@caelo-cms/shared";
 import {
   EXTERNAL_URL_BLOCKED,
+  type OriginHeaders,
   type RenderedHtml,
   type Screenshot,
   type Screenshotter,
 } from "@caelo-cms/site-importer";
 import type { CaptureClient } from "./capture-client.js";
-import type { CaptureResult } from "./capture-protocol.js";
+import type { CaptureResult, StagingAccess } from "./capture-protocol.js";
 
 /** A result of the wrong kind or an `error` result, as the error callers see. */
 function unwrap<K extends CaptureResult["kind"]>(
@@ -37,6 +39,24 @@ function unwrap<K extends CaptureResult["kind"]>(
   }
   if (r.kind !== kind) throw new Error(`the capture job answered a ${kind} with a ${r.kind}`);
   return r as Extract<CaptureResult, { kind: K }>;
+}
+
+/**
+ * #1330 — the order's staging access for a render's origin headers: only
+ * the per-run staging token travels to the job, nothing else.
+ *
+ * @throws when the headers are anything but that one token.
+ */
+function stagingAccessOf(headers: OriginHeaders | undefined): { stagingAccess?: StagingAccess } {
+  if (!headers) return {};
+  const names = Object.keys(headers.headers);
+  const token = headers.headers[STAGING_RUN_TOKEN_HEADER];
+  if (names.length !== 1 || token === undefined) {
+    throw new Error(
+      `the capture job sends no headers but the staging run token (${STAGING_RUN_TOKEN_HEADER}); got ${names.join(", ")}`,
+    );
+  }
+  return { stagingAccess: { origin: headers.origin, token } };
 }
 
 /** Undefined-valued keys dropped, so the order passes the strict schema. */
@@ -67,6 +87,7 @@ export function jobScreenshotter(
           kind: "external-capture",
           url,
           allowedHosts: hosts,
+          ...stagingAccessOf(opts.originHeaders),
           opts: defined({
             width: opts.width,
             height: opts.height,
@@ -90,6 +111,7 @@ export function jobScreenshotter(
           kind: "external-render",
           url,
           allowedHosts: hosts,
+          ...stagingAccessOf(opts.originHeaders),
           opts: defined({
             width: opts.width,
             height: opts.height,

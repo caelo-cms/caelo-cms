@@ -154,6 +154,7 @@ export {
   bundledChromiumLaunchOptions,
   createPlaywrightScreenshotter,
   launchBundledChromium,
+  type OriginHeaders,
   type RenderedHtml,
   type Screenshot,
   type Screenshotter,

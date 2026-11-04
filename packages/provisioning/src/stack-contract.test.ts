@@ -14,7 +14,6 @@ import {
   defaultStagingHost,
   fixedCloudRunServiceName,
   gatewayEnvContract,
-  INTERIM_FORWARD_ORIGIN_ENV,
   iamMember,
   MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS,
   mcpAuthProxyEnvContract,
@@ -24,12 +23,15 @@ import {
   RETIRED_SERVICE_ENV,
   runtimeSecretBindings,
   SECRETS_SET_UP_AHEAD_OF_THEIR_READER,
+  SERVICE_IMAGE,
   SERVICE_SECRET_ENV,
   SERVICE_SECRET_FILES,
   SERVICE_VPC_EGRESS,
   STACK_IAM_NOT_ENSURED,
+  STAGING_GATEWAY_TRUSTED_PROXY_HOPS,
   serviceSecrets,
   stackIamInvariants,
+  stagingGatewayEnvContract,
 } from "./stack-contract.js";
 
 const base = {
@@ -108,6 +110,8 @@ describe("adminEnvContract", () => {
       CAELO_CAPTURE_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-capture",
       CAELO_STATIC_BUCKET: "acme-caelo-production-static",
       CAELO_STAGING_BUCKET: "acme-caelo-production-staging",
+      // #1330 — every provider serves staging at its own host now.
+      CAELO_STAGING_HOST: "staging.acme.com",
       ...ADMIN_SECRETS,
     });
   });
@@ -119,10 +123,13 @@ describe("adminEnvContract", () => {
           ...base,
           provider: "gcp-firebase",
           firebaseSiteId: "caelo-production-site-abc123",
+          firebaseStagingSiteId: "caelo-production-stg-6eace1",
           gatewayService: "caelo-production-gateway-1a2b3c4",
         }),
       ),
     ).toEqual({
+      CAELO_FIREBASE_STAGING_SITE: "caelo-production-stg-6eace1",
+      CAELO_STAGING_BUCKET: "acme-caelo-production-staging",
       CAELO_PROVIDER: "gcp-firebase",
       CAELO_ENV: "production",
       MEDIA_STORAGE_URL: "gs://acme-caelo-production-media",
@@ -210,8 +217,8 @@ describe("gatewayEnvContract", () => {
       PUBLIC_DATABASE_URL:
         "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
       PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-role-password:latest",
-      CAELO_STAGING_GATE_SECRET: "secret:caelo-production-staging-gate-secret:latest",
-      // No remote-MCP env: the broker is the MCP-Auth-Proxy's (#1328).
+      // No remote-MCP env: the broker is the MCP-Auth-Proxy's (#1328); no
+      // staging gate key: the staging gateway's, through its projection (#1330).
     });
   });
 
@@ -222,10 +229,53 @@ describe("gatewayEnvContract", () => {
     expect(asRecord(gateway).CAELO_TRUSTED_PROXY_HOPS).toBe("2");
   });
 
-  it("#650 — reads the staging host from the database, not its env", () => {
+  it("#1330 — the live gateway knows no staging host and holds no staging gate key", () => {
     const fb = asRecord(gatewayEnvContract({ ...base, provider: "gcp-firebase" }));
     expect(fb.CAELO_STAGING_HOST).toBeUndefined();
-    expect(fb.CAELO_STAGING_GATE_SECRET).toBe("secret:caelo-production-staging-gate-secret:latest");
+    expect(fb.CAELO_STAGING_GATE_SECRET).toBeUndefined();
+    expect(RETIRED_SERVICE_ENV.gateway).toContain("CAELO_STAGING_GATE_SECRET");
+  });
+
+  it("#1330 — the staging gateway is the gateway image set to staging: its one login, its storage, nothing live", () => {
+    for (const provider of ["gcp", "gcp-firebase"] as const) {
+      expect(asRecord(stagingGatewayEnvContract({ ...base, provider }))).toEqual({
+        CAELO_PROVIDER: provider,
+        CAELO_ENV: "production",
+        CAELO_GATEWAY_ENVIRONMENT: "staging",
+        CAELO_TRUSTED_PROXY_HOPS: String(STAGING_GATEWAY_TRUSTED_PROXY_HOPS[provider]),
+        PUBLIC_DATABASE_URL:
+          "postgresql://public_staging_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+        CAELO_STAGING_STORAGE: "gs://acme-caelo-production-staging",
+        PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-staging-role-password:latest",
+      });
+    }
+  });
+
+  it("pins the trusted hop count per provider, so a forged X-Forwarded-For entry is never trusted", () => {
+    expect(STAGING_GATEWAY_TRUSTED_PROXY_HOPS).toEqual({
+      gcp: 2,
+      "gcp-firebase": 1,
+      "self-hosted": 1,
+      aws: 2,
+      azure: 1,
+    });
+  });
+
+  it("shares no secret with the live gateway and reads exactly its own login", () => {
+    expect(serviceSecrets("staging-gateway")).toEqual(["public-staging-role-password"]);
+    const live = new Set(serviceSecrets("gateway"));
+    expect(serviceSecrets("staging-gateway").some((x) => live.has(x))).toBe(false);
+    expect(serviceSecrets("gateway")).not.toContain("staging-gate-secret");
+    expect(SECRETS_SET_UP_AHEAD_OF_THEIR_READER["public-staging-role-password"]).toBeUndefined();
+  });
+
+  it("runs the live gateway's image under its own fixed name", () => {
+    expect(SERVICE_IMAGE["staging-gateway"]).toBe("gateway");
+    for (const provider of ["gcp", "gcp-firebase"] as const) {
+      expect(fixedCloudRunServiceName(provider, "production", "staging-gateway")).toBe(
+        "caelo-production-staging-gateway",
+      );
+    }
   });
 
   it("#650 — the admin's staging host seed is the install setting, any host", () => {
@@ -235,6 +285,7 @@ describe("gatewayEnvContract", () => {
         stagingHost: "preview.other.de",
         provider: "gcp-firebase",
         firebaseSiteId: "s",
+        firebaseStagingSiteId: "s-stg",
         gatewayService: "g",
       }),
     );
@@ -243,7 +294,7 @@ describe("gatewayEnvContract", () => {
   });
 
   it("the gateway's run SA reads no admin-only secret (admin password, KEK, internal, tool approval)", () => {
-    expect(serviceSecrets("gateway")).toEqual(["public-role-password", "staging-gate-secret"]);
+    expect(serviceSecrets("gateway")).toEqual(["public-role-password"]);
     for (const v of gateway) {
       expect(v.name).not.toMatch(/KEK|INTERNAL|TOOL_APPROVAL|PUBLIC_ADMIN/);
     }
@@ -336,10 +387,11 @@ describe("runtime secrets", () => {
         secret: "public-role-password",
         stackResource: "gateway-public-role-password-binding",
       },
+      // #1330 — the staging gateway: its own login only.
       {
-        service: "gateway",
-        secret: "staging-gate-secret",
-        stackResource: "gateway-staging-gate-secret-binding",
+        service: "staging-gateway",
+        secret: "public-staging-role-password",
+        stackResource: "staging-gateway-public-staging-role-password-binding",
       },
       // #1328 — the broker's seal key (env) and Google sign-in client (a
       // file, which counts like an env secret: the SA reads it).
@@ -385,6 +437,8 @@ describe("self-hosted compose", () => {
       caeloSecretKek: "k",
       dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
+      stagingHost: "staging.example.com",
+      stagingGateSecret: "g".repeat(64),
       diskSize: "10G",
       ports: { http: 80, https: 443 },
       project: "caelo-example-com",
@@ -424,14 +478,19 @@ describe("stackIamInvariants", () => {
     }
   });
 
-  it("grants the gateway SA only its own role password, the staging gate key + telemetry roles", () => {
+  it("grants the gateway SA only its own role password + telemetry roles (#1330: no staging gate key)", () => {
     for (const provider of ["gcp", "gcp-firebase"] as const) {
       const gateway = stackIamInvariants(provider).filter((i) => i.member === "gateway-sa");
       expect(gateway.map((i) => `${i.role} ${JSON.stringify(i.target)}`).sort()).toEqual([
         'roles/logging.logWriter {"kind":"project"}',
         'roles/monitoring.metricWriter {"kind":"project"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"public-role-password"}',
-        'roles/secretmanager.secretAccessor {"kind":"secret","name":"staging-gate-secret"}',
+      ]);
+      const staging = stackIamInvariants(provider).filter((i) => i.member === "staging-gateway-sa");
+      expect(staging.map((i) => `${i.role} ${JSON.stringify(i.target)}`).sort()).toEqual([
+        'roles/logging.logWriter {"kind":"project"}',
+        'roles/monitoring.metricWriter {"kind":"project"}',
+        'roles/secretmanager.secretAccessor {"kind":"secret","name":"public-staging-role-password"}',
       ]);
     }
   });
@@ -508,10 +567,11 @@ describe("MCP-Auth-Proxy contract (#1328)", () => {
       CAELO_REMOTE_MCP: "unavailable",
       CAELO_TRUSTED_PROXY_HOPS: String(MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS.azure),
     });
-    // The interim forward origin is the stack's / converge's, never the contract's.
+    // #1331 — the interim forwarder is gone; the roll removes its env.
     expect(
       mcpAuthProxyEnvContract({ provider: "gcp-firebase", env: "production" }).map((v) => v.name),
-    ).not.toContain(INTERIM_FORWARD_ORIGIN_ENV);
+    ).not.toContain("CAELO_INTERIM_FORWARD_ORIGIN");
+    expect(RETIRED_SERVICE_ENV["mcp-auth-proxy"]).toContain("CAELO_INTERIM_FORWARD_ORIGIN");
   });
 
   it("the proxy's SA reads exactly its two secrets and holds no other invariant", () => {

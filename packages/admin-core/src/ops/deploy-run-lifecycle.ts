@@ -239,29 +239,33 @@ export const renewDeployRunLeaseOp = defineOperation({
 export const acquireStagingPublicationOp = defineOperation({
   name: "deploy.acquire_staging_publication",
   readScope: "request",
-  // Why human-only: internal step of deploy.trigger / deploy.promote
-  // (system actor); a Stage takes the lease before it publishes its
-  // preview, a Publish live before it changes which preview staging serves.
+  // Why human-only: internal step of deploy.trigger (system actor); a Stage
+  // takes the lease before its upload fills a staging slot (#1330).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid(), ttlMs: leaseTtl }).strict(),
   output: leaseAcquired.extend({
     /**
-     * The run staging serves (`staging_access.origin_run_id`), read with
-     * the lease taken: nobody else changes it until the lease is released.
-     * Null when not acquired or nothing was ever staged.
+     * #1330 — where the build staging serves lies in staging storage
+     * (`staging_access.served_location`), read with the lease taken: nobody
+     * else changes it until the lease is released. The Stage fills the
+     * other slot. Null when not acquired or nothing was staged since #1330.
      */
-    servedRunId: z.string().nullable(),
+    servedLocation: z.string().nullable(),
   }),
   handler: async (_ctx, input, tx) => {
     const r = await acquireStagingPublication(tx, input);
     if (!r.acquired) {
-      return ok({ acquired: false, heldByRunId: r.heldBy?.runId ?? null, servedRunId: null });
+      return ok({ acquired: false, heldByRunId: r.heldBy?.runId ?? null, servedLocation: null });
     }
     const served = (await tx.execute(sql`
-      SELECT origin_run_id::text AS run_id FROM staging_access WHERE id = 1
-    `)) as unknown as { run_id: string | null }[];
-    return ok({ acquired: true, heldByRunId: null, servedRunId: served[0]?.run_id ?? null });
+      SELECT served_location FROM staging_access WHERE id = 1
+    `)) as unknown as { served_location: string | null }[];
+    return ok({
+      acquired: true,
+      heldByRunId: null,
+      servedLocation: served[0]?.served_location ?? null,
+    });
   },
 });
 

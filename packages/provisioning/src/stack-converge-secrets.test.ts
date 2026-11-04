@@ -203,12 +203,14 @@ const INSTALL = {
 };
 /** The fixtures' services; the proxy is added by {@link upgrade} when absent. */
 type InstallServices = Record<"admin" | "gateway", FakeService> & {
+  "staging-gateway"?: FakeService;
   "mcp-auth-proxy"?: FakeService;
 };
 
 const SERVICE_ACCOUNTS: Record<CloudRunSlug, string> = {
   admin: "caelo-production-run-sa@acme.iam.gserviceaccount.com",
   gateway: "caelo-production-gateway-sa@acme.iam.gserviceaccount.com",
+  "staging-gateway": "caelo-production-stg-gw-sa@acme.iam.gserviceaccount.com",
   "mcp-auth-proxy": "caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com",
 };
 
@@ -217,9 +219,12 @@ function upgrade(services: InstallServices) {
   // #1328 — the gcp MCP-Auth-Proxy: created by the converge before the plan,
   // with no env yet in these fixtures (they are about database logins).
   services["mcp-auth-proxy"] ??= new FakeService(new Map(), SERVICE_ACCOUNTS["mcp-auth-proxy"]);
+  // #1330 — likewise the staging gateway.
+  services["staging-gateway"] ??= new FakeService(new Map(), SERVICE_ACCOUNTS["staging-gateway"]);
   const plan = planContractEnv(INSTALL, {
     admin: { serviceName: "adm", liveEnv: services.admin.env },
     gateway: { serviceName: "gw", liveEnv: services.gateway.env },
+    "staging-gateway": { serviceName: "stg", liveEnv: services["staging-gateway"].env },
     "mcp-auth-proxy": { serviceName: "proxy", liveEnv: services["mcp-auth-proxy"].env },
   });
   if (!plan.ok) throw new Error(plan.error);
@@ -363,8 +368,8 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
       // #1329 — the gateway says it is the live site's.
       "CAELO_GATEWAY_ENVIRONMENT",
       // No remote-MCP env: the broker is the MCP-Auth-Proxy's (#1328).
-      // #650 — the staging gate key arrives in the same roll.
-      "CAELO_STAGING_GATE_SECRET",
+      // No staging gate key: it reaches the staging gateway through the
+      // staging projection (#1330), never the live gateway.
       // #845 — and which forwarded address is the visitor.
       "CAELO_TRUSTED_PROXY_HOPS",
       "PUBLIC_DATABASE_PASSWORD",

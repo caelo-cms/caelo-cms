@@ -91,9 +91,9 @@ Docs: "Firebase Hosting is subject to a 60-second request timeout" (<https://fir
 What P3b-2 must handle for (a):
 
 - The staging gate's session cookie (`caelo_staging_access`, `packages/shared/src/staging-gate.ts`) must be named `__session` on that site. It is the only cookie the staging host can ever receive, so nothing else on the staging host may need a cookie of its own. Since #1343 `__session` is a container shared by several owners (`packages/shared/src/session-cookie.ts`): the gate's session goes in its reserved `staging` entry, and whoever writes the cookie keeps the other entries it received.
-- `isStagingRequest` (`apps/api-gateway/src/staging-proxy.ts`) compares `Host`; behind the rewrite it must read `X-Forwarded-Host`. That header is forgeable on `*.run.app`, which is acceptable only because the gate itself still decides every request.
+- #1330: the staging gateway gates every request whatever the host, so it does not look at `Host` or `X-Forwarded-Host` at all; it rewrites the build to the stored staging host.
 - The gate's **IP allowlist mode cannot work behind the rewrite**: the only trustworthy address is a Google proxy, and any earlier entry is forgeable on `*.run.app`. On gcp-firebase under (a) the allowlist mode has to be refused (or replaced by the secret header), not silently kept.
-- Staging responses are proxied static files from the preview channel, so 60 s is enough. A slow GET must still never be allowed to run past 60 s: Firebase would replay it up to 8 times.
+- Staging responses are static files the staging gateway streams from the private staging bucket, so 60 s is enough. A file that does not start within 45 s answers 504: Firebase would replay a slower GET up to 8 times.
 
 ## 4. Cloud Run domain mappings: regions
 

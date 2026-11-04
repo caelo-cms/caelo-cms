@@ -34,14 +34,8 @@ import { z } from "zod";
 /** Where a build lists its referenced files (build-relative). */
 export const ASSET_REFERENCES_FILE = "_caelo-asset-references.json";
 
-/** Where a build's parity digests are written (parity-digest.ts). */
-export const PARITY_FILE = "_caelo-parity.json";
-
 /** Build files that describe the build for the deploy ops and are never served. */
-export const BUILD_INTERNAL_FILES: ReadonlySet<string> = new Set([
-  ASSET_REFERENCES_FILE,
-  PARITY_FILE,
-]);
+export const BUILD_INTERNAL_FILES: ReadonlySet<string> = new Set([ASSET_REFERENCES_FILE]);
 
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 

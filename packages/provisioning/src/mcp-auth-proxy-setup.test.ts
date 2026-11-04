@@ -44,8 +44,17 @@ const firebase: ReleaseServicesTarget = {
   region: "europe-west1",
   env: "production",
   domain: "acme.com",
+  stagingHost: "staging.acme.com",
   mcpAuthProxyImageRef: `${IMAGE}/mcp-auth-proxy@sha256:${"c".repeat(64)}`,
+  gatewayImageRef: `${IMAGE}/gateway@sha256:${"b".repeat(64)}`,
 };
+
+/**
+ * The outcomes of the #1328 part; the staging gateway's (#1330) come after
+ * them and are covered by staging-gateway-setup.test.ts.
+ */
+const proxyPart = (outcomes: readonly { id: string; status: string }[]) =>
+  outcomes.filter((o) => !/staging gateway/.test(o.id)).map((o) => o.status);
 const gcp: ReleaseServicesTarget = { ...firebase, provider: "gcp" };
 
 /** The old gateway service as `gcloud run services describe --format=json` shows it. */
@@ -210,7 +219,7 @@ describe("ensureReleaseServices", () => {
         };
       },
     });
-    expect(outcomes.map((o) => o.status)).toEqual(["applied", "present", "present", "applied"]);
+    expect(proxyPart(outcomes)).toEqual(["applied", "present", "present", "applied"]);
     expect(calls.filter((c) => c.startsWith("secrets add-iam-policy-binding"))).toEqual([
       `secrets add-iam-policy-binding caelo-production-mcp-oauth-seal-key --project=acme --member=serviceAccount:${PROXY_SA} --role=roles/secretmanager.secretAccessor --condition=None --quiet`,
       `secrets add-iam-policy-binding caelo-production-operator-oauth-client --project=acme --member=serviceAccount:${PROXY_SA} --role=roles/secretmanager.secretAccessor --condition=None --quiet`,
@@ -237,7 +246,7 @@ describe("ensureReleaseServices", () => {
       "run services describe caelo-production-data-gateway": ok("caelo-production-data-gateway\n"),
     });
     const outcomes = await ensureReleaseServices(firebase, { run });
-    expect(outcomes.map((o) => o.status)).toEqual(["present", "present", "present", "present"]);
+    expect(proxyPart(outcomes)).toEqual(["present", "present", "present", "present"]);
     expect(calls.some((c) => c.includes("replace") || c.includes("create"))).toBe(false);
   });
 
@@ -267,7 +276,7 @@ describe("ensureReleaseServices", () => {
       "run deploy caelo-production-mcp-auth-proxy": ok(),
     });
     const outcomes = await ensureReleaseServices(gcp, { run });
-    expect(outcomes.map((o) => o.status)).toEqual(["applied", "present", "present", "applied"]);
+    expect(proxyPart(outcomes)).toEqual(["applied", "present", "present", "applied"]);
     expect(calls).toContain(gcpProxyDeployArgs(gcp).join(" "));
   });
 
@@ -280,7 +289,7 @@ describe("ensureReleaseServices", () => {
       ),
     });
     const outcomes = await ensureReleaseServices(gcp, { run });
-    expect(outcomes.at(-1)?.status).toBe("present");
+    expect(proxyPart(outcomes).at(-1)).toBe("present");
     expect(calls.some((c) => c.startsWith("run deploy"))).toBe(false);
   });
 
@@ -292,7 +301,7 @@ describe("ensureReleaseServices", () => {
       ),
     });
     const outcomes = await ensureReleaseServices(gcp, { run });
-    expect(outcomes.map((o) => o.status)).toEqual(["applied", "present", "failed"]);
+    expect(proxyPart(outcomes)).toEqual(["applied", "present", "failed"]);
     expect(calls.some((c) => c.startsWith("run "))).toBe(false);
   });
 
@@ -320,7 +329,7 @@ describe("ensureReleaseServices", () => {
         pauses.push(ms);
       },
     });
-    expect(outcomes.map((o) => o.status)).toEqual(["applied", "present", "present", "present"]);
+    expect(proxyPart(outcomes)).toEqual(["applied", "present", "present", "present"]);
     expect(pauses.length).toBe(2);
     expect(calls.filter((c) => c.startsWith("secrets add-iam-policy-binding"))).toHaveLength(2);
   });

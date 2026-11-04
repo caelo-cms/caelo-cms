@@ -22,10 +22,12 @@
  *
  *   - `roles/storage.objectCreator` on the audit results bucket — create
  *     only: it can neither read results back nor overwrite one;
- *   - on `gcp` only, `roles/storage.objectViewer` on the staging and static
- *     buckets: it serves the staged build to its own browser, as the admin's
- *     audit does (admin-core quality/staged-origin.ts). gcp-firebase audits
- *     the public preview channel and needs no bucket;
+ *   - `roles/storage.objectViewer` on the staging bucket: it serves the
+ *     staged build to its own browser from the served build slot, which
+ *     holds the complete build (#1330, admin-core quality/staged-origin.ts),
+ *     so Lighthouse never goes through the staging gateway (#875). Both
+ *     providers since #1330 (gcp-firebase had no bucket and audited the
+ *     preview channel before); no read on the static bucket any more;
  *   - `roles/logging.logWriter`.
  *
  * Nothing else: no Secret Manager, no Cloud SQL, and no VPC egress, so the
@@ -231,18 +233,16 @@ export async function ensureAuditJob(
   }
   done.push(`bucket ${resultsUrl} (results deleted after 1 day)`);
 
-  // 3. Bucket grants: the job creates results and (gcp) reads the build;
+  // 3. Bucket grants: the job creates results and reads the staged build;
   //    the admin reads results.
   const bucketGrants: { bucket: string; member: string; role: string; why: string }[] = [
     { bucket: results, member, role: "roles/storage.objectCreator", why: "tasks write results" },
-    ...(provider === "gcp"
-      ? (["staging", "static"] as const).map((b) => ({
-          bucket: gcpBucketName(projectId, env, b),
-          member,
-          role: "roles/storage.objectViewer",
-          why: "tasks serve the staged build to their browser",
-        }))
-      : []),
+    {
+      bucket: gcpBucketName(projectId, env, "staging"),
+      member,
+      role: "roles/storage.objectViewer",
+      why: "tasks serve the staged build to their browser",
+    },
     {
       bucket: results,
       member: runSaMember,
@@ -295,12 +295,7 @@ export async function ensureAuditJob(
   const envVars = [
     `CAELO_PROVIDER=${provider}`,
     `CAELO_AUDIT_RESULTS_BUCKET=${results}`,
-    ...(provider === "gcp"
-      ? [
-          `CAELO_STAGING_BUCKET=${gcpBucketName(projectId, env, "staging")}`,
-          `CAELO_STATIC_BUCKET=${gcpBucketName(projectId, env, "static")}`,
-        ]
-      : []),
+    `CAELO_STAGING_BUCKET=${gcpBucketName(projectId, env, "staging")}`,
   ];
   const deploy = await run([
     "run",

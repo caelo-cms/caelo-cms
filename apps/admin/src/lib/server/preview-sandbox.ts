@@ -47,16 +47,6 @@ export {
 } from "@caelo-cms/admin-core";
 
 /**
- * CSP of a staged-build page proxied from the admin origin
- * (`/_staging-preview`). Opened top-level and clicked through like the real
- * site, its assets load through the identity proxy with the operator's
- * cookies — so it keeps its origin and runs NO script instead (staged JS
- * runs on the staging host, not in the admin).
- */
-export const STAGED_DOCUMENT_CSP =
-  "sandbox allow-same-origin allow-popups allow-popups-to-escape-sandbox; script-src 'none'";
-
-/**
  * The response for one sandboxed preview document: fonts inlined, the
  * sandbox headers set, and — for a logged-in operator — the read-only media
  * grant refreshed and the operator's preview cookies restored.

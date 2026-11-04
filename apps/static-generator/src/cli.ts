@@ -16,7 +16,7 @@
  *
  *   stdin, first line — the config:
  *     { adminDatabaseUrl, publicDatabaseUrl, target, runId, repoRoot, publishAt,
- *       changedPageIds?, siteBaseUrlOverride?, syncCurrent?, retainBuilds?,
+ *       changedPageIds?, syncCurrent?, retainBuilds?,
  *       mediaDelivery? }
  *   stdout — progress and the outcome:
  *     {kind:"progress", pagesDone, pagesTotal}
@@ -69,8 +69,6 @@ interface CliInput {
   /** Epic #1107 — shared lists / list types changed since the last build. */
   changedListIds?: string[];
   changedListTypeIds?: string[];
-  /** #650 — see generateSite's `siteBaseUrlOverride`. */
-  siteBaseUrlOverride?: string;
   /** #650 — see generateSite's `syncCurrent`. */
   syncCurrent?: boolean;
   /** #1211 — see generateSite's `retainBuilds`. */
@@ -177,7 +175,6 @@ async function main(): Promise<void> {
           changedPageIds: input.changedPageIds,
           changedListIds: input.changedListIds,
           changedListTypeIds: input.changedListTypeIds,
-          siteBaseUrlOverride: input.siteBaseUrlOverride,
           syncCurrent: input.syncCurrent,
           retainBuilds: input.retainBuilds,
           mediaDelivery: input.mediaDelivery,

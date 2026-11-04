@@ -289,6 +289,8 @@ describe("a succeeded staging build always has its audit (#1319)", () => {
     // The build is now visible on staging; the chat goes away meanwhile.
     // Recording the run still cannot fail on its audit row.
     await withSql((tx) => tx`DELETE FROM chat_sessions WHERE id = ${chatSessionId}::uuid`);
+    // #1330 — a Stage holds the staging publish slot from before its upload.
+    await op(SYS, "deploy.acquire_staging_publication", { runId, ttlMs: 60_000 });
     await op(SYS, "deploy.finish_trigger", {
       runId,
       targetId: plan.target.id,
@@ -296,8 +298,8 @@ describe("a succeeded staging build always has its audit (#1319)", () => {
       pageCount: 1,
       fileCount: 1,
       publishSummary: {},
-      stagingOrigin: null,
-      parityManifest: null,
+      buildOrigin: "https://example.com",
+      stagingLocation: "_slots/a",
       override: null,
       phaseTimings: [],
       qualityAudit: null,

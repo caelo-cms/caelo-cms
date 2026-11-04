@@ -24,12 +24,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import {
-  describeStageNeeded,
-  readStagedBuildHost,
-  readStagingHost,
-  stageNeededFor,
-} from "../deploy/staging-domain.js";
+import { describeStageNeeded, readStagingHost, stageNeededFor } from "../deploy/staging-domain.js";
 import {
   errorMessage,
   handlerError,
@@ -272,7 +267,7 @@ export async function applyOwnerStagingProposal(
 async function accessNextStep(tx: Tx): Promise<string> {
   const host = await readStagingHost(tx);
   const row = await readStagingAccessRow(tx);
-  const needed = stageNeededFor(host, await readStagedBuildHost(tx), row.origin_run_id !== null);
+  const needed = stageNeededFor(row.origin_run_id !== null);
   const stage = describeStageNeeded(needed, host);
   return (
     "The gate applies the change within seconds. A new basic-auth password / header value is never shown to the AI: the operator copies it from Settings → Staging access (/settings/staging)." +

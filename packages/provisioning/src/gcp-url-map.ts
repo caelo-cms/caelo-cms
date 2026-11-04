@@ -26,16 +26,28 @@ import type * as pulumi from "@pulumi/pulumi";
 /** Name of the site host's path matcher. */
 export const PUBLIC_PATH_MATCHER = "public";
 
+/** #1330 — name of the staging host's path matcher (gcp-names.ts stagingGatewayEdgeNames). */
+export const STAGING_PATH_MATCHER = "staging";
+
 /**
  * The URL map's `ignoreChanges`: the public path matcher (index 0, see
- * {@link siteUrlMapArgs}) holds the admin-managed redirect rules.
+ * {@link siteUrlMapArgs}) holds the admin-managed redirect rules, and the
+ * staging matcher's (index 2) target is the CLI's: the stack creates it as a
+ * redirect, and staging-gateway-setup.ts ensureStagingGatewayEdge (#1330)
+ * replaces that with the staging gateway's backend once it exists.
  */
-export const SITE_URL_MAP_IGNORE_CHANGES: readonly string[] = ["pathMatchers[0].pathRules"];
+export const SITE_URL_MAP_IGNORE_CHANGES: readonly string[] = [
+  "pathMatchers[0].pathRules",
+  "pathMatchers[2].defaultService",
+  "pathMatchers[2].defaultUrlRedirect",
+];
 
 /** Inputs of {@link siteUrlMapArgs}. */
 export interface SiteUrlMapInputs {
   readonly domain: string;
   readonly adminDomain: string;
+  /** #1330 — the protected staging site's host. */
+  readonly stagingHost: string;
   readonly staticBackend: pulumi.Input<string>;
   readonly gatewayBackend: pulumi.Input<string>;
   readonly adminBackend: pulumi.Input<string>;
@@ -43,9 +55,17 @@ export interface SiteUrlMapInputs {
 
 /**
  * The URL map's arguments: the site host to the static bucket with `/api/*`
- * to the gateway; the admin host to the IAP-gated admin. The public path
- * matcher comes first — {@link SITE_URL_MAP_IGNORE_CHANGES} addresses it by
- * index.
+ * to the gateway; the admin host to the IAP-gated admin; (#1330) the staging
+ * host, every path, to the staging gateway. The public path matcher comes
+ * first and the staging one third — {@link SITE_URL_MAP_IGNORE_CHANGES}
+ * addresses them by index.
+ *
+ * The staging matcher fails closed until the staging gateway's backend
+ * exists (it is the CLI's, created after the first `up`): it serves nothing
+ * at all, it redirects every staging request to the live site's home page.
+ * Never a backend — above all never the static bucket — so a failed edge
+ * step can never show a file on the staging host. The CLI then routes it to
+ * the staging gateway, and the stack leaves it there.
  */
 export function siteUrlMapArgs(i: SiteUrlMapInputs): gcp.compute.URLMapArgs {
   return {
@@ -53,6 +73,7 @@ export function siteUrlMapArgs(i: SiteUrlMapInputs): gcp.compute.URLMapArgs {
     hostRules: [
       { hosts: [i.domain], pathMatcher: PUBLIC_PATH_MATCHER },
       { hosts: [i.adminDomain], pathMatcher: "admin" },
+      { hosts: [i.stagingHost], pathMatcher: STAGING_PATH_MATCHER },
     ],
     pathMatchers: [
       {
@@ -67,6 +88,16 @@ export function siteUrlMapArgs(i: SiteUrlMapInputs): gcp.compute.URLMapArgs {
       {
         name: "admin",
         defaultService: i.adminBackend,
+      },
+      {
+        name: STAGING_PATH_MATCHER,
+        defaultUrlRedirect: {
+          hostRedirect: i.domain,
+          pathRedirect: "/",
+          httpsRedirect: true,
+          redirectResponseCode: "FOUND",
+          stripQuery: true,
+        },
       },
     ],
   };

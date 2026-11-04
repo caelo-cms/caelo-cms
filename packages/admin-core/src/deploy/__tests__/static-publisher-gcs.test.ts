@@ -252,6 +252,7 @@ describe("gcsStaticPublisher.publishStaging", () => {
       buildDir,
       runId: "run-1",
       target: TARGET,
+      servedStagingLocation: null,
     });
     expect(summary.provider).toBe("gcp");
     expect(summary.uploadedCount).toBe(4);
@@ -291,6 +292,7 @@ describe("gcsStaticPublisher.publishStaging", () => {
       buildDir,
       runId: "run-noext",
       target: TARGET,
+      servedStagingLocation: null,
     });
     const file = stagingBucket.files.get("run-noext/en/about");
     expect(file).toBeDefined();
@@ -313,15 +315,31 @@ describe("gcsStaticPublisher.publishStaging", () => {
         }),
       ),
     });
+    // The live copy the hash-skip relies on (#1330: the slot copies it).
+    await staticBucket.file("en/about/index.html").save(Buffer.from(aboutBody), {
+      contentType: "text/html; charset=utf-8",
+    });
     const gcsStaticPublisher = await publisher();
     const summary = await gcsStaticPublisher.publishStaging({
       buildDir,
       runId: "run-2",
       target: TARGET,
+      servedStagingLocation: null,
     });
     expect(summary.skippedUnchangedCount).toBe(1);
     expect(summary.uploadedCount).toBe(3);
     expect(stagingBucket.files.has("run-2/en/about/index.html")).toBe(false);
+    // #1330 — the slot holds the whole build, the skipped page included,
+    // copied server-side from the live bucket.
+    expect(summary.stagingLocation).toBe("_slots/a");
+    expect(stagingBucket.files.get("_slots/a/en/about/index.html")?.body?.toString()).toBe(
+      aboutBody,
+    );
+    const slot = JSON.parse(
+      stagingBucket.files.get("_slots/a.manifest.json")?.body?.toString() ?? "{}",
+    );
+    expect(slot.runId).toBe("run-2");
+    expect(Object.keys(slot.files)).toContain("en/about/index.html");
   });
 });
 
@@ -336,7 +354,12 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
   it("Publish live serves production robots.txt with the Sitemap line and the staged sitemap", async () => {
     await writeGeneratorArtefacts({ env: "staging", envNoindexInHtml: false });
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-seo", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-seo",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     await gcsStaticPublisher.promoteToProduction({
       sourceRunId: "run-seo",
       sourceBuildDir: buildDir,
@@ -357,9 +380,15 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
   it("refuses a legacy staging build whose pages carry staging's noindex", async () => {
     await writeGeneratorArtefacts({ env: "staging" });
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-legacy", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-legacy",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     await expect(
       gcsStaticPublisher.promoteToProduction({
+        sourceLocation: null,
         sourceRunId: "run-legacy",
         sourceBuildDir: buildDir,
         fromTarget: TARGET,
@@ -378,6 +407,7 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
       buildDir,
       runId: "run-3",
       target: TARGET,
+      servedStagingLocation: null,
     });
     expect(stagingBucket.files.size).toBeGreaterThan(0);
 
@@ -411,7 +441,12 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
       "utf8",
     );
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-nositemap", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-nositemap",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     await gcsStaticPublisher.promoteToProduction({
       sourceRunId: "run-nositemap",
       sourceBuildDir: buildDir,
@@ -428,7 +463,7 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
   // PR #947 review — the staged run skipped an unchanged sitemap.xml (it
   // is served from the live copy); if that live copy is gone, promote must
   // refuse before any file moves rather than advertise a 404.
-  it("refuses a run whose hash-skipped sitemap vanished from the live bucket", async () => {
+  it("refuses a Stage whose hash-skipped sitemap vanished from the live bucket (#1330: the slot copy finds it gone)", async () => {
     await writeGeneratorArtefacts({ env: "staging", envNoindexInHtml: false });
     const sitemapBody = Buffer.from("<urlset></urlset>", "utf8");
     staticBucket.files.set("_state/last-build-manifest.json", {
@@ -442,17 +477,15 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
       ),
     });
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-gone", target: TARGET });
-    expect(stagingBucket.files.has("run-gone/sitemap.xml")).toBe(false);
     await expect(
-      gcsStaticPublisher.promoteToProduction({
-        sourceRunId: "run-gone",
-        sourceBuildDir: buildDir,
-        fromTarget: TARGET,
-        toTarget: PROD_TARGET,
-        siteBaseUrl: "https://www.example.com",
+      gcsStaticPublisher.publishStaging({
+        buildDir,
+        runId: "run-gone",
+        target: TARGET,
+        servedStagingLocation: null,
       }),
-    ).rejects.toThrow("neither staged nor live");
+    ).rejects.toThrow("could not be written");
+    expect(stagingBucket.files.has("_slots/a.manifest.json")).toBe(false);
     expect(staticBucket.files.has("en/about/index.html")).toBe(false);
   });
 });
@@ -490,7 +523,12 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
   it("content-hashed fonts + plugin bundles are immutable on staging AND after promote", async () => {
     await seedAssets();
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-cc", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-cc",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     for (const rel of [FONT, PINNED_FONT, PLUGIN_JS]) {
       expect(cacheControlOf(stagingBucket, `run-cc/${rel}`)).toBe(IMMUTABLE_CACHE_CONTROL);
     }
@@ -518,7 +556,12 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
     await writeFile(join(buildDir, ICO), new Uint8Array([0, 0, 1, 0, 1, 0]));
     await writePromotableManifest();
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-ico", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-ico",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     const contentTypeOf = (bucket: MockBucket, key: string): string | undefined =>
       (bucket.files.get(key)?.metadata as { contentType?: string } | undefined)?.contentType;
     expect(contentTypeOf(stagingBucket, `run-ico/${ICO}`)).toBe("image/x-icon");
@@ -548,7 +591,12 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
     );
     await writePromotableManifest();
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-ne", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-ne",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     await gcsStaticPublisher.promoteToProduction({
       sourceRunId: "run-ne",
       sourceBuildDir: buildDir,
@@ -578,6 +626,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
       buildDir,
       runId: "run-pv",
       target: TARGET,
+      servedStagingLocation: null,
     });
     expect(summary.skippedUnchangedCount).toBe(0);
     expect(cacheControlOf(stagingBucket, `run-pv/${FONT}`)).toBe(IMMUTABLE_CACHE_CONTROL);
@@ -608,7 +657,12 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
     await writeFile(join(buildDir, PNG), new Uint8Array([137, 80, 78, 71]));
     await writePromotableManifest();
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-svg", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-svg",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     const metaOf = (bucket: MockBucket, key: string) =>
       bucket.files.get(key)?.metadata as
         | { contentType?: string; contentDisposition?: string; cacheControl?: string }
@@ -666,7 +720,12 @@ describe("gcsStaticPublisher — redirects on the load balancer (#587)", () => {
   it("Stage stores the build's plan; Publish live writes it into the URL map", async () => {
     await writePromotable();
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-r", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-r",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     const stored = JSON.parse(
       stagingBucket.files.get("_redirect-plans/run-r.json")?.body?.toString("utf8") ?? "{}",
     ) as { redirects: { fromPath: string; location: string }[] };
@@ -699,7 +758,12 @@ describe("gcsStaticPublisher — redirects on the load balancer (#587)", () => {
   it("leaves out a redirect whose old path the build serves", async () => {
     await writeFile(join(buildDir, "_redirects"), "/en/about /x 301\n", "utf8");
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-s", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-s",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     const stored = JSON.parse(
       stagingBucket.files.get("_redirect-plans/run-s.json")?.body?.toString("utf8") ?? "{}",
     ) as { redirects: unknown[]; shadowedByBuild: string[] };
@@ -712,7 +776,12 @@ describe("gcsStaticPublisher — redirects on the load balancer (#587)", () => {
     await writeFile(join(buildDir, "_redirects"), `${lines}\n`, "utf8");
     const gcsStaticPublisher = await publisher();
     await expect(
-      gcsStaticPublisher.publishStaging({ buildDir, runId: "run-big", target: TARGET }),
+      gcsStaticPublisher.publishStaging({
+        buildDir,
+        runId: "run-big",
+        target: TARGET,
+        servedStagingLocation: null,
+      }),
     ).rejects.toThrow(
       // Two paths per redirect (with and without the trailing slash) plus the
       // site's own routing to the gateway.
@@ -724,17 +793,28 @@ describe("gcsStaticPublisher — redirects on the load balancer (#587)", () => {
     await rm(join(buildDir, "_redirects"));
     const gcsStaticPublisher = await publisher();
     await expect(
-      gcsStaticPublisher.publishStaging({ buildDir, runId: "run-x", target: TARGET }),
+      gcsStaticPublisher.publishStaging({
+        buildDir,
+        runId: "run-x",
+        target: TARGET,
+        servedStagingLocation: null,
+      }),
     ).rejects.toThrow(/has no _redirects file/);
   });
 
   it("Publish live refuses a run staged without a plan (older release) before copying anything", async () => {
     await writePromotable();
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-old", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-old",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     stagingBucket.files.delete("_redirect-plans/run-old.json");
     await expect(
       gcsStaticPublisher.promoteToProduction({
+        sourceLocation: null,
         sourceRunId: "run-old",
         sourceBuildDir: buildDir,
         fromTarget: TARGET,
@@ -771,8 +851,14 @@ describe("gcsStaticPublisher — live objects the build no longer contains", () 
         cachePolicyVersion: CACHE_POLICY_VERSION,
       }),
     );
+    seedLive("en/about/index.html", "<html>about</html>");
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-fl", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-fl",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     expect(stagingBucket.files.has("run-fl/en/about/index.html")).toBe(false);
     const stored = JSON.parse(
       stagingBucket.files.get("_build-files/run-fl.json")?.body?.toString("utf8") ?? "{}",
@@ -799,7 +885,12 @@ describe("gcsStaticPublisher — live objects the build no longer contains", () 
     await writeFile(join(buildDir, "404.html"), "<html>not found</html>", "utf8");
     await writePromotable();
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-p", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-p",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     await gcsStaticPublisher.promoteToProduction({
       sourceRunId: "run-p",
       sourceBuildDir: buildDir,
@@ -824,10 +915,16 @@ describe("gcsStaticPublisher — live objects the build no longer contains", () 
     await writePromotable();
     seedLive("en/deleted/index.html", "<html>gone</html>");
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-nofl", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-nofl",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     stagingBucket.files.delete("_build-files/run-nofl.json");
     await expect(
       gcsStaticPublisher.promoteToProduction({
+        sourceLocation: null,
         sourceRunId: "run-nofl",
         sourceBuildDir: buildDir,
         fromTarget: TARGET,
@@ -843,13 +940,19 @@ describe("gcsStaticPublisher — live objects the build no longer contains", () 
     await writePromotable();
     seedLive("en/kept/index.html", "<html>kept</html>");
     const gcsStaticPublisher = await publisher();
-    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-empty", target: TARGET });
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-empty",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     stagingBucket.files.set("_build-files/run-empty.json", {
       ...makeFile(stagingBucket, "_build-files/run-empty.json"),
       body: Buffer.from(JSON.stringify({ files: [] })),
     });
     await expect(
       gcsStaticPublisher.promoteToProduction({
+        sourceLocation: null,
         sourceRunId: "run-empty",
         sourceBuildDir: buildDir,
         fromTarget: TARGET,
@@ -939,7 +1042,12 @@ describe("gcsStaticPublisher — plugin-data release (#1155)", () => {
       JSON.stringify({ env: "staging", envNoindexInHtml: false }),
     );
     const gcs = await publisher();
-    await gcs.publishStaging({ buildDir, runId: "run-1", target: TARGET });
+    await gcs.publishStaging({
+      buildDir,
+      runId: "run-1",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     await gcs.promoteToProduction({
       sourceRunId: "run-1",
       sourceBuildDir: buildDir,
@@ -1021,7 +1129,12 @@ describe("gcsStaticPublisher — referenced media (#1271)", () => {
   it("streams a referenced file the live bucket lacks into the staging prefix", async () => {
     await withLogo();
     const gcs = await publisher();
-    await gcs.publishStaging({ buildDir, runId: "run-media", target: TARGET });
+    await gcs.publishStaging({
+      buildDir,
+      runId: "run-media",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     const staged = stagingBucket.files.get(`run-media/${PATH}`);
     expect(new Uint8Array(staged?.body ?? [])).toEqual(LOGO);
     expect((staged?.metadata as { cacheControl?: string })?.cacheControl).toBe(
@@ -1046,8 +1159,14 @@ describe("gcsStaticPublisher — referenced media (#1271)", () => {
         }),
       ),
     );
+    await staticBucket.file(PATH).save(Buffer.from(LOGO), { contentType: "image/png" });
     const gcs = await publisher();
-    const summary = await gcs.publishStaging({ buildDir, runId: "run-have", target: TARGET });
+    const summary = await gcs.publishStaging({
+      buildDir,
+      runId: "run-have",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
     expect(stagingBucket.files.has(`run-have/${PATH}`)).toBe(false);
     expect(summary.skippedUnchangedCount).toBeGreaterThanOrEqual(1);
   });

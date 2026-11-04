@@ -59,9 +59,11 @@ const policy = (bindings: { role: string; members: string[]; condition?: unknown
 const RUN_SA = "serviceAccount:caelo-production-run-sa@acme.iam.gserviceaccount.com";
 const GW_SA = "serviceAccount:caelo-production-gateway-sa@acme.iam.gserviceaccount.com";
 const PROXY_SA = "serviceAccount:caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com";
+/** #1330 — the staging gateway's run SA. */
+const STG_SA = "serviceAccount:caelo-production-stg-gw-sa@acme.iam.gserviceaccount.com";
 const GW_TELEMETRY = [
-  { role: "roles/logging.logWriter", members: [GW_SA] },
-  { role: "roles/monitoring.metricWriter", members: [GW_SA] },
+  { role: "roles/logging.logWriter", members: [GW_SA, STG_SA] },
+  { role: "roles/monitoring.metricWriter", members: [GW_SA, STG_SA] },
 ];
 const IAP_AGENT = "serviceAccount:service-42@gcp-sa-iap.iam.gserviceaccount.com";
 
@@ -73,6 +75,7 @@ const firebase: InstallTarget = {
   services: {
     admin: "caelo-production-admin-aaa",
     gateway: "caelo-production-data-gateway",
+    "staging-gateway": "caelo-production-staging-gateway",
     "mcp-auth-proxy": "caelo-production-gateway-bbb",
   },
 };
@@ -328,6 +331,7 @@ describe("planContractEnv", () => {
         // #1328 — the data gateway, a copy of the old gateway service.
         gateway: { serviceName: "caelo-production-data-gateway", liveEnv: gatewayLive },
         // The old gateway service, which becomes the MCP-Auth-Proxy (E13 a).
+        "staging-gateway": { serviceName: "caelo-production-staging-gateway", liveEnv: new Map() },
         "mcp-auth-proxy": { serviceName: "caelo-production-gateway-bbb", liveEnv: gatewayLive },
       },
     );
@@ -336,7 +340,7 @@ describe("planContractEnv", () => {
     // and gate key onto an install that predates it.
     expect(plan.services.admin.flags).toEqual([
       // #1329 — and the staging database's pool onto one that predates it.
-      "--update-env-vars=PUBLIC_STAGING_ADMIN_DATABASE_URL=postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem,CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_CONVERGE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-converge,CAELO_AUDIT_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit,CAELO_AUDIT_RESULTS_BUCKET=acme-caelo-production-audit-results,CAELO_CAPTURE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-capture,CAELO_CAPTURE_BUCKET=acme-caelo-production-capture,CAELO_MEDIA_BUCKET=acme-caelo-production-media,CAELO_SCHEDULER_SERVICE_ACCOUNT=caelo-production-scheduler@acme.iam.gserviceaccount.com,CAELO_OPERATOR_OAUTH_CLIENT_STORE=projects/acme/secrets/caelo-production-operator-oauth-client,CAELO_GATEWAY_SERVICE=caelo-production-data-gateway,CAELO_STAGING_HOST=staging.acme.com",
+      "--update-env-vars=PUBLIC_STAGING_ADMIN_DATABASE_URL=postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem,CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_CONVERGE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-converge,CAELO_AUDIT_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit,CAELO_AUDIT_RESULTS_BUCKET=acme-caelo-production-audit-results,CAELO_CAPTURE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-capture,CAELO_CAPTURE_BUCKET=acme-caelo-production-capture,CAELO_MEDIA_BUCKET=acme-caelo-production-media,CAELO_SCHEDULER_SERVICE_ACCOUNT=caelo-production-scheduler@acme.iam.gserviceaccount.com,CAELO_OPERATOR_OAUTH_CLIENT_STORE=projects/acme/secrets/caelo-production-operator-oauth-client,CAELO_STAGING_BUCKET=acme-caelo-production-staging,CAELO_FIREBASE_STAGING_SITE=caelo-production-stg-6eace1,CAELO_GATEWAY_SERVICE=caelo-production-data-gateway,CAELO_STAGING_HOST=staging.acme.com",
       "--update-secrets=PUBLIC_STAGING_ADMIN_DATABASE_PASSWORD=caelo-production-postgres-password:latest,CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
     // #1328 — the Firebase rewrite follows the data gateway (above), which
@@ -345,7 +349,6 @@ describe("planContractEnv", () => {
       // The gateway learns which forwarded address is the visitor (#845),
       // and (#1329) that it is the live site's.
       "--update-env-vars=CAELO_GATEWAY_ENVIRONMENT=live,CAELO_TRUSTED_PROXY_HOPS=1",
-      "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
     // The old gateway service becomes the proxy in one revision: every
     // database and site var goes, its own contract arrives.
@@ -379,6 +382,7 @@ describe("planContractEnv", () => {
           serviceName: "caelo-production-data-gateway",
           liveEnv: liveContainerEnv(serviceJson(CONVERGED_GATEWAY_DB)),
         },
+        "staging-gateway": { serviceName: "caelo-production-staging-gateway", liveEnv: new Map() },
         "mcp-auth-proxy": { serviceName: "caelo-production-gateway-bbb", liveEnv: new Map() },
       },
       { leaveUntouched: ["CAELO_MCP_IAP_SERVICE_ACCOUNT", "CAELO_OPERATOR_ACCESS_JOB"] },
@@ -400,6 +404,7 @@ describe("planContractEnv", () => {
       {
         admin: { serviceName: "adm", liveEnv: liveContainerEnv(serviceJson(CONVERGED_ADMIN_DB)) },
         gateway: { serviceName: "gw", liveEnv: new Map() },
+        "staging-gateway": { serviceName: "caelo-production-staging-gateway", liveEnv: new Map() },
         "mcp-auth-proxy": { serviceName: "px", liveEnv: new Map() },
       },
     );
@@ -429,6 +434,7 @@ describe("planContractEnv", () => {
         liveEnv: liveContainerEnv(serviceJson(onIp(CONVERGED_GATEWAY_DB) as never)),
       },
       // #1328 — no database URL, so the TLS step has nothing to move on it.
+      "staging-gateway": { serviceName: "caelo-production-staging-gateway", liveEnv: new Map() },
       "mcp-auth-proxy": { serviceName: "px", liveEnv: new Map() },
     };
     const install = {
@@ -465,6 +471,7 @@ describe("planContractEnv", () => {
       {
         admin: { serviceName: "adm", liveEnv: new Map() },
         gateway: { serviceName: "gw", liveEnv: new Map() },
+        "staging-gateway": { serviceName: "caelo-production-staging-gateway", liveEnv: new Map() },
         "mcp-auth-proxy": { serviceName: "px", liveEnv: new Map() },
       },
     );
@@ -565,7 +572,7 @@ describe("ensureStackInvariants", () => {
     ],
     "secrets get-iam-policy": [
       policy([
-        { role: "roles/secretmanager.secretAccessor", members: [RUN_SA, GW_SA, PROXY_SA] },
+        { role: "roles/secretmanager.secretAccessor", members: [RUN_SA, GW_SA, STG_SA, PROXY_SA] },
         // #806 — the admin adds remote-MCP OAuth client versions.
         { role: "roles/secretmanager.secretVersionAdder", members: [RUN_SA] },
       ]),
@@ -825,7 +832,10 @@ describe("ensureStackInvariants", () => {
       ],
       "secrets get-iam-policy": [
         policy([
-          { role: "roles/secretmanager.secretAccessor", members: [RUN_SA, GW_SA, PROXY_SA] },
+          {
+            role: "roles/secretmanager.secretAccessor",
+            members: [RUN_SA, GW_SA, STG_SA, PROXY_SA],
+          },
           { role: "roles/secretmanager.secretVersionAdder", members: [RUN_SA] },
         ]),
       ],
@@ -952,11 +962,10 @@ describe("ensureStackInvariants", () => {
         (c) => c.startsWith("secrets add-iam-policy-binding") && c.includes(GW_SA),
       );
       // #613 — never admin_role's postgres-password; #635 — nor
-      // gateway_role's. #650 — the staging gate key is the one secret the
-      // gateway shares with the admin.
+      // gateway_role's; #1330 — nor the staging gate key: its own login
+      // password only.
       expect(gatewayGrants).toEqual([
         `secrets add-iam-policy-binding caelo-production-public-role-password --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
-        `secrets add-iam-policy-binding caelo-production-staging-gate-secret --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
       ]);
       // #1328 — the remote-MCP broker's seal key and OAuth client file are
       // the MCP-Auth-Proxy's, and those two secrets are all its SA reads.
@@ -1001,6 +1010,7 @@ describe("removeRetiredIamBindings (#613)", () => {
       "absent",
       "absent",
       "absent",
+      "absent",
     ]);
     expect(calls).toContain(REMOVE);
     // The admin's own binding on the same secret is never touched.
@@ -1020,6 +1030,7 @@ describe("removeRetiredIamBindings (#613)", () => {
       "absent",
       "absent",
       "absent",
+      "absent",
     ]);
     expect(calls.filter((c) => c.includes("remove-iam-policy-binding"))).toEqual([]);
   });
@@ -1034,6 +1045,7 @@ describe("removeRetiredIamBindings (#613)", () => {
     expect(outcomes.map((o) => o.status)).toEqual([
       "absent",
       "removed",
+      "absent",
       "absent",
       "absent",
       "absent",
@@ -1064,6 +1076,7 @@ describe("removeRetiredIamBindings (#613)", () => {
       "absent",
       "removed",
       "removed",
+      "absent",
       "removed",
     ]);
     for (const secret of ["mcp-oauth-seal-key", "operator-oauth-client"]) {
@@ -1074,6 +1087,21 @@ describe("removeRetiredIamBindings (#613)", () => {
     // The proxy keeps its own access and its public invoker.
     expect(calls.some((c) => c.includes("remove") && c.includes(PROXY_SA))).toBe(false);
     expect(calls.some((c) => c.includes("remove") && c.includes("allUsers"))).toBe(false);
+  });
+
+  it("#1330: takes the live gateway SA off the staging gate key", async () => {
+    const { run, calls } = fakeGcloud({
+      "secrets get-iam-policy caelo-production-staging-gate-secret": [
+        policy([{ role: "roles/secretmanager.secretAccessor", members: [RUN_SA, GW_SA] }]),
+      ],
+    });
+    const outcomes = await removeRetiredIamBindings(firebase, { run, sleep: async () => {} });
+    expect(outcomes.map((o) => o.status)[4]).toBe("removed");
+    expect(calls).toContain(
+      `secrets remove-iam-policy-binding caelo-production-staging-gate-secret --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+    );
+    // The admin keeps it: it signs the open links and publishes the key.
+    expect(calls.some((c) => c.includes("remove") && c.includes(RUN_SA))).toBe(false);
   });
 
   it("reports a failed removal instead of throwing", async () => {

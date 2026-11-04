@@ -15,6 +15,8 @@
  * the CLI's dependencies.
  */
 
+import { createHash } from "node:crypto";
+
 /** The Pulumi stack name the wizard provisions and `upgrade` operates on. */
 export const GCP_STACK_ENV = "production";
 
@@ -85,6 +87,57 @@ export function mcpAuthProxyEdgeNames(env: string): {
 /** Email of the service account the MCP-Auth-Proxy runs as. */
 export function mcpAuthProxyServiceAccountEmail(projectId: string, env: string): string {
   return `${mcpAuthProxyServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+}
+
+/**
+ * #1330 — account id of the service account the staging gateway runs as. It
+ * may read the staging database's login password and the staging bucket,
+ * and nothing else: no live data, no media, no gate key (the gate key
+ * reaches it through the staging projection). Shortened: account ids max
+ * out at 30 characters (`caelo-production-stg-gateway-sa` would be 31).
+ */
+export function stagingGatewayServiceAccountId(env: string): string {
+  return `${gcpNamePrefix(env)}-stg-gw-sa`;
+}
+
+/** Email of the service account the staging gateway runs as. */
+export function stagingGatewayServiceAccountEmail(projectId: string, env: string): string {
+  return `${stagingGatewayServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+}
+
+/**
+ * #1330 — the `gcp` staging gateway's load-balancer resources, CLI-owned
+ * (staging-gateway-setup.ts): its serverless NEG, its backend service and
+ * the managed certificate for the staging host. None matches a prefix the
+ * other lookups use (`…-waf`, `…-admin-backend`, `…-gateway-backend`,
+ * `…-mcp-auth-proxy-*`).
+ */
+export function stagingGatewayEdgeNames(env: string): {
+  readonly neg: string;
+  readonly backend: string;
+  readonly cert: string;
+  readonly pathMatcher: string;
+} {
+  const prefix = `${gcpNamePrefix(env)}-staging-gateway`;
+  return {
+    neg: `${prefix}-neg`,
+    backend: `${prefix}-backend`,
+    cert: `${gcpNamePrefix(env)}-staging-cert`,
+    pathMatcher: "staging",
+  };
+}
+
+/**
+ * #1330 — the second Firebase Hosting site of a `gcp-firebase` install,
+ * which serves the staging host through a `**` rewrite to the staging
+ * gateway (E13 a of #763). Derived from the live site's id (Hosting site ids
+ * are global, and the live one carries a random suffix): `caelo-<env>-stg-`
+ * plus six hex characters of its SHA-256, so the admin and the converge,
+ * which both know the live site id (`CAELO_FIREBASE_SITE`), name the same
+ * site without storing it anywhere.
+ */
+export function firebaseStagingSiteId(env: string, liveSiteId: string): string {
+  return `${gcpNamePrefix(env)}-stg-${createHash("sha256").update(liveSiteId).digest("hex").slice(0, 6)}`;
 }
 
 /**

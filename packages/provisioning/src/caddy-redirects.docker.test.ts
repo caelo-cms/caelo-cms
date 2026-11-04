@@ -9,9 +9,10 @@
  *   imported;
  * - a container started like the Compose service (same Caddyfile shape,
  *   same `/srv/caelo` mount, same reload-loop command and snippet glob)
- *   answers redirected paths on the live and the staging host with the
- *   planned status + Location — query kept, case-sensitive, the live page
- *   wins, 410 for gone;
+ *   answers redirected paths on the live host with the planned status +
+ *   Location — query kept, case-sensitive, the live page wins, 410 for
+ *   gone — and serves nothing of output/staging on the staging host (#1330:
+ *   that is the staging gateway's);
  * - the reload loop picks up a deploy's new snippet, a snippet Caddy
  *   rejects leaves the previous redirects live, and the next good snippet
  *   is picked up again.
@@ -147,7 +148,7 @@ describe.skipIf(!dockerUp)(`self-hosted redirects through ${CADDY_IMAGE}`, () =>
         ownerEmail: "owner@example.test",
         tls: "internal",
         publicSiteRoot: `${SITE_OUTPUT_ROOT}/output/production/current`,
-        stagingSiteRoot: `${SITE_OUTPUT_ROOT}/output/staging/current`,
+        stagingGatewayUpstream: "caelo-staging-gateway:8091",
         adminUpstream: COMPOSE_ADMIN_UPSTREAM,
         gatewayUpstream: COMPOSE_GATEWAY_UPSTREAM,
         mcpAuthProxyUpstream: COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
@@ -246,7 +247,11 @@ describe.skipIf(!dockerUp)(`self-hosted redirects through ${CADDY_IMAGE}`, () =>
     expectRedirect("/hop1", 301, "/blog/");
     expectRedirect("/Case", 301, "/about/");
     expectRedirect("/q?dropped=1", 301, "/about?ref=old");
-    expectRedirect("/staged-old", 301, "/blog/", STAGING);
+    // #1330 — Caddy serves no staged file and answers no staging redirect:
+    // the staging host goes to the staging gateway (not running here, so
+    // Caddy answers 502), whatever lies in output/staging.
+    expect(probe(STAGING, "/staged-old").status).toBe(502);
+    expect(probe(STAGING, "/index.html").status).toBe(502);
     expect(probe(LIVE, "/gone").status).toBe(410);
     // Exact, case-sensitive: /case is not /Case.
     expect(probe(LIVE, "/case").status).toBe(404);

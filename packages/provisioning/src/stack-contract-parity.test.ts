@@ -63,6 +63,7 @@ const MEMBER_EXPR: Record<IamInvariant["member"], string> = {
   // The secret loop resolves the SA per service through `serviceSa`.
   "gateway-sa": "gatewaySa.email",
   "mcp-auth-proxy-sa": "mcpAuthProxySa.email",
+  "staging-gateway-sa": "stagingGatewaySa.email",
   "static-publisher-sa": "staticPublisherSa.email",
   "iap-service-agent": "iapServiceIdentity.email",
   allUsers: 'member: "allUsers"',
@@ -166,15 +167,18 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
       /serviceName: "gateway",[\s\S]*?contractEnv: \[\s*\.\.\.gatewayEnvContract\(envContractInputs\),\s*\.\.\.poolBudget\.env\.gateway,?\s*\]/,
     );
     if (provider === "gcp-firebase") {
-      // The proxy: its contract, its identity env, and (until #1331) the
-      // data gateway it forwards to — a stack output no contract can name.
+      // The proxy: its contract and its identity env, nothing else (#1331:
+      // no forward origin any more).
       expect(src).toMatch(
-        /serviceName: "mcp-auth-proxy",[\s\S]*?contractEnv: \[\s*\.\.\.mcpAuthProxyEnvContract\(\{ provider: "gcp-firebase", env \}\),\s*\.\.\.remoteMcpEnv\["mcp-auth-proxy"\],[\s\S]*?\{ name: INTERIM_FORWARD_ORIGIN_ENV, value: gatewaySvc\.uri \},\s*\]/,
+        /serviceName: "mcp-auth-proxy",[\s\S]*?contractEnv: \[\s*\.\.\.mcpAuthProxyEnvContract\(\{ provider: "gcp-firebase", env \}\),\s*\.\.\.remoteMcpEnv\["mcp-auth-proxy"\],?\s*\]/,
       );
+      expect(src).not.toContain("INTERIM_FORWARD_ORIGIN");
     } else {
       // gcp: the proxy is CLI-owned (mcp-auth-proxy-setup.ts), not a stack service.
       expect(src).not.toContain('serviceName: "mcp-auth-proxy"');
     }
+    // #1330 — the staging gateway is CLI-owned on both (staging-gateway-setup.ts).
+    expect(src).not.toContain('serviceName: "staging-gateway"');
     expect(src).toContain("envs: [...args.contractEnv],");
   });
 

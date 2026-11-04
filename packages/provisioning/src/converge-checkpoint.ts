@@ -49,6 +49,7 @@ export const ConvergeCheckpointSchema = InstallJobStatusSchema.extend({
       admin: z.string().min(1),
       gateway: z.string().min(1),
       // #1328 — absent in a checkpoint an older release wrote.
+      "staging-gateway": z.string().min(1).optional(),
       "mcp-auth-proxy": z.string().min(1).optional(),
     })
     .optional(),

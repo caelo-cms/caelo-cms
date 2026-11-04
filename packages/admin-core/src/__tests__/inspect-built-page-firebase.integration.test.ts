@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #1088 — inspect_built_page on a gcp-firebase install. #993 offered the
- * tool there (the install counts as GCP), but the handler only knew GCS
- * buckets and every call failed with "CAELO_STATIC_BUCKET /
- * CAELO_STAGING_BUCKET not set". Firebase builds live on Hosting channels:
- * the staged run is read from its preview channel, and the result names
- * the staging host, never the internal channel URL (#650). Real Postgres
- * (§6); only the channel's HTTP answer is faked.
+ * #1088 / #1330 — inspect_built_page on a gcp-firebase install. A staged
+ * run is read from its staging slot (the private staging bucket the
+ * staging gateway serves), and the result names the staging host. Real
+ * Postgres (§6); only the staging bucket is faked.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -16,7 +13,9 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { inspectBuiltPageTool } from "../ai/tools/inspect-built-page.js";
+import { setStagingBucketForTests } from "../deploy/staging-slots.js";
 import { registerAdminOps } from "../register.js";
+import { type FakeStagingBucket, fakeStagingBucket } from "./fixtures/fake-staging-bucket.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -28,16 +27,14 @@ const SYSTEM: ExecutionContext = {
   requestId: "inspect-built-firebase-int",
 };
 const PFX = "ibpfb";
-const PREVIEW = "https://caelo-site--runid-abc123.web.app";
-const STAGING_HOST = "https://staging.example.test";
+const STAGING_HOST = "staging.example.test";
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let pageId: string;
 const toolCtx = () => ({ adapter, registry }) as ToolContext;
-const realFetch = globalThis.fetch;
 const realProvider = process.env.CAELO_PROVIDER;
-const fetched: string[] = [];
+let slots: FakeStagingBucket;
 
 async function withSql<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL!);
@@ -61,15 +58,14 @@ async function wipe(): Promise<void> {
   });
 }
 
-/** A succeeded staging run; `previewUrl` null models a run without a channel. */
-async function stagingRun(previewUrl: string | null, minutesAgo: number): Promise<string> {
+/** A succeeded staging run; `stagingLocation` null models a run staged before #1330. */
+async function stagingRun(stagingLocation: string | null, minutesAgo: number): Promise<string> {
   return withSql(async (tx) => {
     const rows = (await tx`
-      INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, publish_summary, site_url)
+      INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, publish_summary)
       SELECT id, ${SYSTEM.actorId}::uuid, 'succeeded',
              now() - make_interval(mins => ${minutesAgo}), now(),
-             jsonb_strip_nulls(jsonb_build_object('location', 'x', 'previewUrl', ${previewUrl}::text)),
-             ${STAGING_HOST}
+             jsonb_strip_nulls(jsonb_build_object('location', 'x', 'stagingLocation', ${stagingLocation}::text))
       FROM deploy_targets WHERE name = 'staging'
       RETURNING id::text AS id
     `) as unknown as { id: string }[];
@@ -77,6 +73,26 @@ async function stagingRun(previewUrl: string | null, minutesAgo: number): Promis
     if (!id) throw new Error("deploy run seed");
     return id;
   });
+}
+
+/** Put a build of `runId` with `files` into a slot of the fake staging bucket. */
+function fillSlot(location: string, runId: string, files: Record<string, string>): void {
+  slots.objects.set(
+    `${location}.manifest.json`,
+    Buffer.from(
+      JSON.stringify({
+        version: 1,
+        runId,
+        pageUrlStyle: "directory",
+        files: Object.fromEntries(
+          Object.keys(files).map((p) => [p, { type: "text/html; charset=utf-8", hash: p }]),
+        ),
+      }),
+    ),
+  );
+  for (const [path, body] of Object.entries(files)) {
+    slots.objects.set(`${location}/${path}`, Buffer.from(body));
+  }
 }
 
 beforeAll(async () => {
@@ -101,40 +117,34 @@ beforeAll(async () => {
   pageId = (pg.value as { pageId: string }).pageId;
 
   process.env.CAELO_PROVIDER = "gcp-firebase";
-  globalThis.fetch = (async (url: string | URL | Request) => {
-    const href = String(url instanceof Request ? url.url : url);
-    fetched.push(href);
-    if (href === `${PREVIEW}/${PFX}-page/index.html`) {
-      return new Response("<html><head><meta name=description content=built></head></html>", {
-        status: 200,
-      });
-    }
-    return new Response("Not Found", { status: 404 });
-  }) as typeof fetch;
+  slots = fakeStagingBucket();
+  setStagingBucketForTests(slots.bucket);
+  await withSql((tx) => tx`UPDATE staging_access SET staging_host = ${STAGING_HOST} WHERE id = 1`);
 });
 
 afterAll(async () => {
-  globalThis.fetch = realFetch;
+  setStagingBucketForTests(null);
+  await withSql((tx) => tx`UPDATE staging_access SET staging_host = NULL WHERE id = 1`);
   if (realProvider === undefined) delete process.env.CAELO_PROVIDER;
   else process.env.CAELO_PROVIDER = realProvider;
   await wipe();
   await adapter.close();
 });
 
-describe("inspect_built_page on gcp-firebase (#1088)", () => {
-  it("reads the newest staged build from its preview channel, shown under the staging host", async () => {
-    await stagingRun(PREVIEW, 0);
+describe("inspect_built_page on gcp-firebase (#1088, #1330)", () => {
+  it("reads the newest staged build from its staging slot, shown under the staging host", async () => {
+    const runId = await stagingRun("_slots/a", 0);
+    fillSlot("_slots/a", runId, {
+      [`${PFX}-page/index.html`]: "<html><head><meta name=description content=built></head></html>",
+    });
     const r = await inspectBuiltPageTool.handler(SYSTEM, { pageId, target: "staging" }, toolCtx());
     expect(r.ok).toBe(true);
     const body = JSON.parse(r.content) as { html: string; location: string; runId: string };
     expect(body.html).toContain("content=built");
-    expect(body.location).toStartWith(`${STAGING_HOST}/${PFX}-page/index.html`);
-    // #650 — the channel URL is read, never shown.
-    expect(r.content).not.toContain("web.app");
-    expect(fetched).toContain(`${PREVIEW}/${PFX}-page/index.html`);
+    expect(body.location).toStartWith(`https://${STAGING_HOST}/${PFX}-page/index.html`);
   });
 
-  it("names Stage again when the run has no preview channel", async () => {
+  it("names Stage again when the run was staged before the slots", async () => {
     const runId = await stagingRun(null, 5);
     const r = await inspectBuiltPageTool.handler(
       SYSTEM,
@@ -142,19 +152,27 @@ describe("inspect_built_page on gcp-firebase (#1088)", () => {
       toolCtx(),
     );
     expect(r.ok).toBe(false);
-    expect(r.content).toMatch(/no Firebase preview channel.*Run Stage again/);
+    expect(r.content).toMatch(/no staging slot.*Run Stage again/);
     expect(r.content).not.toMatch(/CAELO_STATIC_BUCKET/);
   });
 
-  it("explains a page the channel does not serve", async () => {
-    const runId = await stagingRun("https://caelo-site--runid-old.web.app", 10);
-    const r = await inspectBuiltPageTool.handler(
+  it("explains a page the slot does not have, and a slot a later Stage replaced", async () => {
+    const runId = await stagingRun("_slots/b", 10);
+    fillSlot("_slots/b", runId, { "index.html": "<html></html>" });
+    const missing = await inspectBuiltPageTool.handler(
       SYSTEM,
       { pageId, target: "staging", runId },
       toolCtx(),
     );
-    expect(r.ok).toBe(false);
-    expect(r.content).toMatch(/Page not in staging build .* answered 404/);
-    expect(r.content).not.toContain("web.app");
+    expect(missing.ok).toBe(false);
+    expect(missing.content).toMatch(/Page not in staging build/);
+    fillSlot("_slots/b", "0b7c0d6e-9999-4999-8999-999999999999", { "index.html": "x" });
+    const replaced = await inspectBuiltPageTool.handler(
+      SYSTEM,
+      { pageId, target: "staging", runId },
+      toolCtx(),
+    );
+    expect(replaced.ok).toBe(false);
+    expect(replaced.content).toMatch(/later Stage replaced it/);
   });
 });

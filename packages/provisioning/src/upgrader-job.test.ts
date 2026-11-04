@@ -171,6 +171,11 @@ function fakeGcloud(events: string[], overrides: [RegExp, Answer][] = []) {
     [/^run services list .*caelo-production-admin/, ok(`${ADMIN}\n`)],
     [/^run services list .*caelo-production-data-gateway/, ok(`${GATEWAY}\n`)],
     [/^run services list .*caelo-production-gateway/, ok(`${PROXY}\n`)],
+    // #1330 — the staging gateway, serving the gateway's image (below).
+    [
+      /^run services list .*caelo-production-staging-gateway/,
+      ok("caelo-production-staging-gateway\n"),
+    ],
     [/describe (\S+) .*revisionName/, (l) => ok(`${l.split(" ")[3]}-00001-old\n`)],
     [new RegExp(`describe ${ADMIN} .*--format=json`), ok(ADMIN_JSON)],
     [new RegExp(`describe ${GATEWAY} .*--format=json`), ok(GATEWAY_JSON)],
@@ -476,6 +481,24 @@ describe("runUpgraderJob", () => {
         "iam projects/caelo-website/locations/europe-west1/repositories/caelo-cms-images",
       ].sort(),
     );
+  });
+
+  it("#1330: a staging gateway that serves another image than the gateway stops the run; nothing changed", async () => {
+    const { deps, order, q, written } = setup({
+      gcloud: [
+        [
+          /^run revisions describe caelo-production-staging-gateway/,
+          ok(revisionJson(D("9"), P("9"))),
+        ],
+      ],
+    });
+    const r = await runUpgraderJob(deps);
+    expect(r).toMatchObject({ exitCode: 1, status: "failed" });
+    expect(q.end()?.reason).toContain(
+      "the staging gateway (caelo-production-staging-gateway) serves",
+    );
+    expect(order.some((l) => /^gcloud run services update /.test(l))).toBe(false);
+    expect(written).toEqual([]);
   });
 
   it("#818: missing grants end needs-Cloud-Shell with EVERY missing permission named; nothing changed", async () => {
