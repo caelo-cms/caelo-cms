@@ -36,6 +36,7 @@ import {
   type RemoteMcpIdentity,
   serializeRemoteMcpIdentity,
 } from "../stack-contract.js";
+import { DEPLOY_GATEWAYS_CONFIG } from "../stack-gateways.js";
 import type { ResolvedBackend } from "../state-backend.js";
 
 /**
@@ -108,6 +109,12 @@ export interface PulumiUpInputs {
    * first `up`): the config keeps what an earlier run wrote.
    */
   remoteMcpIdentity?: RemoteMcpIdentity | null;
+  /**
+   * Whether the stack declares the public data gateway (stack-gateways.ts).
+   * False only for the first `up` of an install whose gateway has never
+   * started (gateway-bootstrap.ts): its migrations have not run yet.
+   */
+  deployGateways: boolean;
 }
 
 export interface PulumiUpResult {
@@ -469,6 +476,7 @@ export type StackConfigInputs = Pick<
   | "iapAllowlist"
   | "imageDigests"
   | "remoteMcpIdentity"
+  | "deployGateways"
 > & { provider: "gcp" | "gcp-firebase" };
 
 /**
@@ -504,6 +512,7 @@ export async function applyStackConfig(
       ? { [`${ns}:wafAdaptiveProtection`]: { value: String(inputs.wafAdaptiveProtection) } }
       : {}),
     [`${ns}:iapAllowlist`]: { value: inputs.iapAllowlist.join(",") },
+    [`${ns}:${DEPLOY_GATEWAYS_CONFIG}`]: { value: String(inputs.deployGateways) },
     // v0.3.2 — anthropicApiKey config dropped. Runtime path is
     // /settings/ai → ai_providers (KEK-encrypted).
     ...imageDigestConfig(provider, inputs.imageDigests),

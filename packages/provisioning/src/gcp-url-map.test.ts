@@ -156,7 +156,7 @@ describe("gcp stack wiring (source)", () => {
   const src = readFileSync(resolve(import.meta.dir, "../stacks/gcp/index.ts"), "utf8");
 
   it("builds the URL map through createSiteUrlMap", () => {
-    expect(src).toMatch(/const urlMap = createSiteUrlMap\(\s*`\$\{namePrefix\}-url-map`/);
+    expect(src).toMatch(/return createSiteUrlMap\(\s*`\$\{namePrefix\}-url-map`/);
     expect(src).not.toMatch(/new gcp\.compute\.URLMap\(\s*`\$\{namePrefix\}-url-map`/);
   });
 
