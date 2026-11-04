@@ -183,6 +183,53 @@ export async function enableStagingDomain(
   return mapDomain(run, logOf(opts), scope, verifyDomain, opts.stagingHost, found.service);
 }
 
+/** What {@link stagingDomainState} found. */
+export type StagingDomainState =
+  | { readonly status: "mapped" }
+  | { readonly status: "unmapped" }
+  | { readonly status: "unknown"; readonly reason: string };
+
+/**
+ * Whether the install's staging host already has its Cloud Run domain
+ * mapping, read-only. The upgrade asks before it tells the operator to run
+ * `staging-domain enable`, so an install that serves its staging host is
+ * not sent to set it up again. It never installs the gcloud `beta`
+ * component (an upgrade should not pause for a download to print a hint):
+ * without it, or on any error but gcloud's NOT_FOUND, the state is unknown
+ * and says why.
+ */
+export async function stagingDomainState(opts: {
+  projectId: string;
+  region: string;
+  stagingHost: string;
+  run?: Run;
+}): Promise<StagingDomainState> {
+  const run = opts.run ?? defaultGcloud;
+  const listed = await run([
+    "components",
+    "list",
+    "--only-local-state",
+    "--filter=id=beta",
+    "--format=value(id)",
+  ]);
+  if (!listed.ok || !listed.stdout.split("\n").some((s) => s.trim() === "beta")) {
+    return { status: "unknown", reason: 'the gcloud "beta" component is not installed' };
+  }
+  const described = await run([
+    "beta",
+    "run",
+    "domain-mappings",
+    "describe",
+    `--domain=${opts.stagingHost}`,
+    `--region=${opts.region}`,
+    `--project=${opts.projectId}`,
+    "--format=value(metadata.name)",
+  ]);
+  if (described.ok) return { status: "mapped" };
+  if (/\bNOT_FOUND\b/.test(described.stderr)) return { status: "unmapped" };
+  return { status: "unknown", reason: described.stderr.trim() };
+}
+
 /** What {@link setAdminStagingHostEnv} did. */
 export type AdminStagingEnvResult =
   | { readonly status: "set"; readonly service: string; readonly previous: string | null }

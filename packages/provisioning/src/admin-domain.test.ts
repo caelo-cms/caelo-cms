@@ -340,3 +340,59 @@ describe("setAdminStagingHostEnv (#1058)", () => {
     expect(b.status === "failed" && b.error).toContain("set CAELO_STAGING_HOST on the admin");
   });
 });
+
+describe("stagingDomainState", () => {
+  const target = { projectId: "p", region: "europe-west1", stagingHost: "staging.example.com" };
+
+  it("reports an existing mapping as mapped", async () => {
+    const { run, calls } = fakeGcloud({
+      "beta run domain-mappings describe": [ok("staging.example.com\n")],
+    });
+    const { stagingDomainState } = await import("./admin-domain.js");
+    expect(await stagingDomainState({ ...target, run })).toEqual({ status: "mapped" });
+    expect(calls).toContainEqual([
+      "beta",
+      "run",
+      "domain-mappings",
+      "describe",
+      "--domain=staging.example.com",
+      "--region=europe-west1",
+      "--project=p",
+      "--format=value(metadata.name)",
+    ]);
+  });
+
+  it("reports gcloud's NOT_FOUND as unmapped", async () => {
+    const { run } = fakeGcloud({
+      "beta run domain-mappings describe": [
+        fail(
+          "ERROR: (gcloud.beta.run.domain-mappings.describe) NOT_FOUND: Resource 'staging.example.com' of kind 'DOMAIN_MAPPING' in region 'europe-west1' in project 'p' does not exist.",
+        ),
+      ],
+    });
+    const { stagingDomainState } = await import("./admin-domain.js");
+    expect(await stagingDomainState({ ...target, run })).toEqual({ status: "unmapped" });
+  });
+
+  it("does not guess on another error", async () => {
+    const { run } = fakeGcloud({
+      "beta run domain-mappings describe": [fail("PERMISSION_DENIED: run.domainmappings.get")],
+    });
+    const { stagingDomainState } = await import("./admin-domain.js");
+    expect(await stagingDomainState({ ...target, run })).toEqual({
+      status: "unknown",
+      reason: "PERMISSION_DENIED: run.domainmappings.get",
+    });
+  });
+
+  it("never installs the beta component to answer", async () => {
+    const { run, calls } = fakeGcloud({ "components list": [ok("")] });
+    const { stagingDomainState } = await import("./admin-domain.js");
+    expect(await stagingDomainState({ ...target, run })).toEqual({
+      status: "unknown",
+      reason: 'the gcloud "beta" component is not installed',
+    });
+    expect(calls.some((c) => c.join(" ").startsWith("components install"))).toBe(false);
+    expect(calls.some((c) => c[0] === "beta")).toBe(false);
+  });
+});
