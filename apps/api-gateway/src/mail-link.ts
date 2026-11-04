@@ -27,9 +27,6 @@
 import { createHash } from "node:crypto";
 import type { PluginMailTemplates } from "@caelo-cms/plugin-sdk";
 
-/** Where the confirmation pages live. */
-export const MAIL_LINK_PREFIX = "/api/_caelo/mail-link/";
-
 const MAIL_LINK_PATH_RE =
   /^\/api\/_caelo\/mail-link\/([a-z][a-z0-9-]{0,54})\/([a-z_][a-z0-9_]{0,119})$/;
 
