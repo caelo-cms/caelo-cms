@@ -563,8 +563,12 @@ describe("#1391 — the reach finds module-default and list parents through thei
   it("a shared list listing the instance is a parent; one listing another instance is not", async () => {
     const child = await instance(cardId, "List child", { title: "In a list" });
     const other = await instance(cardId, "Other child", { title: "Elsewhere" });
-    const listId = await sharedListShowing("list-parent", [{ node: "entry", values: { label: "a", module: ref(child) } }]);
-    await sharedListShowing("list-other", [{ node: "entry", values: { label: "b", module: ref(other) } }]);
+    const listId = await sharedListShowing("list-parent", [
+      { node: "entry", values: { label: "a", module: ref(child) } },
+    ]);
+    await sharedListShowing("list-other", [
+      { node: "entry", values: { label: "b", module: ref(other) } },
+    ]);
 
     const got = await op<{ parentLists: { listId: string }[] }>(SYS, "content_instances.get", {
       id: child,
