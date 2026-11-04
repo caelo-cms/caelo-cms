@@ -556,3 +556,34 @@ describe("#1269 — a vocabulary's tagged-page count reads the tagged and the pe
     expect(await tagged(SYS, news.vocabId)).toBe(2);
   });
 });
+
+describe("#1269 — page_types.get samples pages as the caller's branch shows them", () => {
+  it("a page a chat retyped into the type shows there, with the chat's title; main does not", async () => {
+    const target = await seedNews("sample-a");
+    const other = await seedNews("sample-b");
+    const { pageId } = await op<{ pageId: string }>(SYS, "pages.create", {
+      slug: `${PFX}retyped`,
+      title: "Before",
+      pageType: other.typeSlug,
+      terms: [other.catA],
+    });
+    const a = await chat("retyper");
+    await op(a.ctx, "pages.update", {
+      pageId,
+      pageType: target.typeSlug,
+      templateId: target.templateId,
+      terms: [target.catA],
+      title: "After",
+    });
+    const samples = async (ctx: ExecutionContext) =>
+      (
+        await op<{ samplePages: { pageId: string; title: string }[] }>(ctx, "page_types.get", {
+          slug: target.typeSlug,
+        })
+      ).samplePages;
+    expect(await samples(a.ctx)).toContainEqual(
+      expect.objectContaining({ pageId, title: "After" }),
+    );
+    expect((await samples(SYS)).map((p) => p.pageId)).not.toContain(pageId);
+  });
+});

@@ -27,6 +27,7 @@ import {
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { countListsByType } from "../../lists/counts.js";
 import { checkDefinitionExt, inertExtPaths } from "../../lists/ext.js";
 import {
   describeLocalPlace,
@@ -67,8 +68,8 @@ const listTypeRowSchema = z.object({
   /** Node kinds with their labels, e.g. `entry (Menu entry)`. */
   nodes: z.array(z.string()),
   definition: listTypeDefSchema,
-  /** Shared lists of this type the caller sees. */
-  listCount: z.number().int().nonnegative(),
+  /** Shared lists of this type the caller sees — from `list_types.list` only with `counts: true`. */
+  listCount: z.number().int().nonnegative().optional(),
   version: z.number().int().positive(),
   updatedAt: z.string(),
   /**
@@ -88,7 +89,7 @@ type ListTypeRow = z.infer<typeof listTypeRowSchema>;
 
 function listTypeRow(
   t: { id: string; state: ListTypeState; updatedAt: string; ownerPlugin: string | null },
-  listCount: number,
+  listCount: number | undefined,
 ): ListTypeRow {
   return {
     id: t.id,
@@ -98,7 +99,7 @@ function listTypeRow(
     role: t.state.definition.role,
     nodes: summarizeNodes(t.state.definition),
     definition: t.state.definition,
-    listCount,
+    ...(listCount === undefined ? {} : { listCount }),
     version: t.state.version,
     updatedAt: t.updatedAt,
     ownerPlugin: t.ownerPlugin,
@@ -140,16 +141,18 @@ export const listListTypesOp = defineOperation({
       role: z.enum(LIST_TYPE_ROLES).optional(),
       /** Free-text match on slug, name and purpose. */
       query: z.string().min(1).max(128).optional(),
+      /**
+       * Count each type's shared lists (`listCount`). Exact, counted by
+       * Postgres (lists/counts.ts): ask only where the number is shown.
+       */
+      counts: z.boolean().default(false),
     })
     .strict(),
   output: z.object({ listTypes: z.array(listTypeRowSchema) }),
   handler: async (ctx, input, tx) => {
     const branchId = branchOf(ctx);
     const types = await loadListEntities(tx, "listType", branchId);
-    const lists = await loadListEntities(tx, "list", branchId);
-    const counts = new Map<string, number>();
-    for (const l of lists)
-      counts.set(l.state.listTypeId, (counts.get(l.state.listTypeId) ?? 0) + 1);
+    const counts = input.counts ? await countListsByType(tx, branchId) : null;
     const q = input.query?.toLowerCase();
     return ok({
       listTypes: types
@@ -161,7 +164,7 @@ export const listListTypesOp = defineOperation({
               .toLowerCase()
               .includes(q),
         )
-        .map((t) => listTypeRow(t, counts.get(t.id) ?? 0)),
+        .map((t) => listTypeRow(t, counts ? (counts.get(t.id) ?? 0) : undefined)),
     });
   },
 });

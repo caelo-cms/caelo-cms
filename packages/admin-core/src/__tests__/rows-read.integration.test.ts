@@ -36,7 +36,7 @@ import { clearSiteFontUsageCache } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { clearSiteViewCache } from "../site-view.js";
-import { ALLOWLIST } from "./rows-read/allowlist.js";
+import { ALLOWLIST, EXACT_COUNTS } from "./rows-read/allowlist.js";
 import { type FixtureRefs, growFixture, LARGE, SMALL } from "./rows-read/fixture.js";
 import { inputKey, ROWS_READ_INPUTS } from "./rows-read/inputs.js";
 
@@ -140,6 +140,15 @@ export function exceedsBar(base: Cost, big: Cost): string | null {
   return null;
 }
 
+/**
+ * The bar of an {@link EXACT_COUNTS} shape: statements and rows as for any
+ * request op; the buffers counting reads may grow.
+ */
+export function exceedsCountBar(base: Cost, big: Cost): string | null {
+  const why = exceedsBar(base, big);
+  return why?.startsWith("buffers ") ? null : why;
+}
+
 describe.skipIf(!ENABLED)("#1267 — request-scoped ops do not read more on a larger site", () => {
   beforeAll(async () => {
     if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -182,6 +191,7 @@ describe.skipIf(!ENABLED)("#1267 — request-scoped ops do not read more on a la
     expect(keys.filter((k, i) => keys.indexOf(k) !== i)).toEqual([]);
     const measured = new Set(keys);
     expect(Object.keys(ALLOWLIST).filter((op) => !measured.has(op))).toEqual([]);
+    expect(Object.keys(EXACT_COUNTS).filter((op) => !measured.has(op))).toEqual([]);
     for (const reason of Object.values(ALLOWLIST))
       expect(reason).toMatch(/^FIXME\(#(1268|1269|1270|1391)\) /);
   });
@@ -195,7 +205,7 @@ describe.skipIf(!ENABLED)("#1267 — request-scoped ops do not read more on a la
       const base = small.get(key);
       const big = large.get(key);
       if (!base || !big) throw new Error(`${key}: not measured`);
-      const why = exceedsBar(base, big);
+      const why = key in EXACT_COUNTS ? exceedsCountBar(base, big) : exceedsBar(base, big);
       report.push(`${key}: ${costLine(base, big)}${why ? ` — ${why}` : ""}`);
       if (why && !(key in ALLOWLIST)) failures.push(`${key}: ${why}`);
       if (!why && key in ALLOWLIST) nowCompliant.push(key);
