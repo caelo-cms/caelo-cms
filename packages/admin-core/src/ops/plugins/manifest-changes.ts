@@ -15,8 +15,8 @@ export interface ManifestChange {
   readonly changed: string[];
 }
 
-/** Identity and capabilities: shown by the approval itself, not as a change. */
-type NotCompared = "slug" | "version" | "tier" | "requestedCapabilities" | "capabilityReasons";
+/** Identity: shown by the approval itself, not as a change. */
+type NotCompared = "slug" | "version" | "tier";
 
 /**
  * Every other manifest field. A `Record` over the manifest's keys, so a new
