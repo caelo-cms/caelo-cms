@@ -27,6 +27,7 @@
   import { onMount } from "svelte";
   import { editorRefreshUrl, unpinChatParam } from "#lib/components/edit/chat-pin.js";
   import CrossChatBanner from "#lib/components/edit/CrossChatBanner.svelte";
+  import PluginApprovalStrip from "#lib/components/PluginApprovalStrip.svelte";
   import DiffPanel from "#lib/components/edit/DiffPanel.svelte";
   import PageSearch from "#lib/components/edit/PageSearch.svelte";
   import PageSeoInfo from "#lib/components/edit/PageSeoInfo.svelte";
@@ -592,6 +593,7 @@
   <!-- Measured with the toolbar below: the pinned-right chat column starts
        under both, so the banner never pushes toolbar controls beneath it. -->
   <div class="shrink-0" bind:clientHeight={bannerHeight}>
+    <PluginApprovalStrip variant="bar" />
     <CrossChatBanner
       chats={otherOpenChats.currentFor(chatKey) ?? []}
       error={otherOpenChats.errorFor(chatKey)}

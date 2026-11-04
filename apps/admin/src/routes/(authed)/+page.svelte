@@ -1,6 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { Bug, GitPullRequestArrow, Inbox, MessageSquare, Sailboat, Wand2 } from "lucide-svelte";
+  import PluginApprovalCard from "#lib/components/PluginApprovalCard.svelte";
   import StateDot from "#lib/components/StateDot.svelte";
   import { buttonVariants } from "#lib/components/ui/button/button-variants.js";
   import {
@@ -38,6 +39,8 @@
     <h1 class="text-2xl font-semibold tracking-tight">Welcome back</h1>
     <p class="text-sm text-muted-foreground">Signed in as <strong>{data.user.email}</strong></p>
   </div>
+
+  <PluginApprovalCard testid="dashboard-plugin-approvals" />
 
   {#if has("content.write")}
     <Card class="border-primary/40 bg-primary/5" data-testid="dashboard-live-edit">

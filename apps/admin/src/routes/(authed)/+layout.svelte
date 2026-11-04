@@ -5,8 +5,24 @@
   import AppShell from "#lib/components/AppShell.svelte";
   import CommandPalette from "#lib/components/CommandPalette.svelte";
   import ConfirmDialogHost from "#lib/components/ConfirmDialogHost.svelte";
+  import PluginApprovalDialog from "#lib/components/PluginApprovalDialog.svelte";
+  import PluginApprovalStrip from "#lib/components/PluginApprovalStrip.svelte";
+  import { pluginApprovals } from "#lib/plugin-approvals.svelte.js";
 
   let { data, children } = $props();
+
+  // #1420 — these two show the state as a card of their own.
+  const stripHidden = $derived(
+    page.url.pathname === "/" || page.url.pathname === "/settings/updates",
+  );
+  $effect(() => pluginApprovals.connect());
+  // An idle tab hears no topics, so its own navigation and form actions
+  // (disabling a plugin, say) re-read here (docs/dev/live-refresh.md).
+  $effect(() => {
+    void page.url.pathname;
+    void page.form;
+    void pluginApprovals.refresh();
+  });
 
   /**
    * P6.5.1 #2 — single source of toast feedback for every authenticated
@@ -90,6 +106,7 @@
 <CommandPalette />
 <!-- One confirm dialog for every destructive form (`use:confirmSubmit`). -->
 <ConfirmDialogHost />
+<PluginApprovalDialog csrfToken={data.csrfToken} />
 
 {#if page.url.pathname.startsWith("/edit")}
   <!-- P6.7.2 — /edit is the chrome-less surface: no AppShell, no sidebar,
@@ -104,6 +121,9 @@
     aiSpend7d={data.aiSpend7d}
     pluginNav={data.pluginNav}
   >
+    {#if !stripHidden}
+      <PluginApprovalStrip />
+    {/if}
     {@render children()}
   </AppShell>
 {/if}

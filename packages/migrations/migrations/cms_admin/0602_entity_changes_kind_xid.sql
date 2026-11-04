@@ -1,0 +1,31 @@
+-- SPDX-License-Identifier: MPL-2.0
+-- caelo:no-transaction
+--
+-- 0602 — the change journal by kind, then transaction (issue #1269, epic
+-- #1392).
+--
+-- Every journal reader asks for a few kinds after a point in the journal:
+-- a cached read's freshness check (`checkJournalMark`, the site view on
+-- every preview render) and every consumer poll (`readChanges`). The
+-- primary key leads with the transaction, so a reader walked every row
+-- written since its mark and dropped the ones of other kinds. A stale mark
+-- of the site view sat behind tens of thousands of plugin row snapshots
+-- (a plugin rebuilding 50,000 pages), so one check read all of them: 27
+-- checks at 9.5 s each in the capped scale gate. With (kind, xid) a reader
+-- reads one index range per kind it asks for, and only rows of those kinds.
+--
+-- Text and xid8 comparisons are leakproof, so the index stays usable under
+-- the table's FORCEd row level security.
+--
+-- Every journaled write inserts into this table, and the retention window
+-- can hold millions of rows: a plain CREATE INDEX would hold a SHARE lock
+-- for the whole build and stall every write of the running admin during
+-- the upgrade. CONCURRENTLY builds without it, outside a transaction (as
+-- 0463). The index is dropped first: an interrupted concurrent build
+-- leaves an INVALID index that `IF NOT EXISTS` would keep.
+--
+-- Expand-only: one index.
+
+DROP INDEX CONCURRENTLY IF EXISTS entity_changes_kind_xid_idx;
+--> statement-breakpoint
+CREATE INDEX CONCURRENTLY entity_changes_kind_xid_idx ON entity_changes (kind, xid);

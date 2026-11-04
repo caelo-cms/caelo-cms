@@ -56,7 +56,7 @@
       "entry": ["src/truncate.ts", "drizzle.config.cms-admin.ts", "drizzle.config.cms-public.ts"]
     },
     "packages/provisioning": {
-      "entry": ["stacks/*/index.ts"]
+      "entry": ["stacks/*/index.ts", "src/__tests__/stack-under-mocks.ts"]
     },
     "packages/platform-updater": {
       "entry": ["src/main.ts", "src/converge-main.ts"]

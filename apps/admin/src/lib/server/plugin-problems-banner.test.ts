@@ -67,4 +67,22 @@ describe("plugin problems banner (#1008)", () => {
       ),
     ).toEqual(["not-running", "render-failed"]);
   });
+
+  it("#1420 — a plugin waiting for approval is not reported as a failure to reload", () => {
+    const html = pluginProblemsBanner([
+      { slug: "consent-manager", reason: "ignored", waitsForOwner: true },
+    ]);
+    expect(html).toContain("stopped until its new release is approved");
+    expect(html).toContain("in the bar above the preview");
+    expect(html).not.toContain("could not be loaded");
+    expect(html).not.toContain("Reload on all servers");
+  });
+
+  it("#1420 — keeps the reload hint while another plugin really failed", () => {
+    const html = pluginProblemsBanner([
+      { slug: "consent-manager", reason: "ignored", waitsForOwner: true },
+      { slug: "international-site", reason: "[23505] duplicate key" },
+    ]);
+    expect(html).toContain("Reload on all servers");
+  });
 });

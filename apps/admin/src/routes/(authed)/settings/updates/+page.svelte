@@ -19,6 +19,8 @@
   import { Check, ChevronDown, Copy } from "lucide-svelte";
   import { applyAction, enhance, type SubmitFunction } from "$app/forms";
   import { toast } from "svelte-sonner";
+  import PluginApprovalCard from "#lib/components/PluginApprovalCard.svelte";
+  import { pluginApprovals } from "#lib/plugin-approvals.svelte.js";
   import { Alert, AlertDescription, AlertTitle } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -149,6 +151,12 @@
     }),
   );
   const action = $derived(pageState.action);
+
+  // #1420 — a finished update is when plugins start waiting for approval.
+  $effect(() => {
+    void pageState.kind;
+    void pluginApprovals.refresh();
+  });
   /**
    * The release the heading points at: while an update runs (or waits),
    * the one it installs — a newer release found meanwhile must not make the
@@ -239,32 +247,7 @@
     <input type="hidden" name="_csrf" value={data.csrfToken} />
   </form>
 
-  {#if data.pluginsAwaitingApproval.length > 0}
-    <!-- #1267 / #1332 — the installed release changed shipped plugins. -->
-    <Card data-testid="plugins-awaiting-approval">
-      <CardHeader class="space-y-1">
-        <CardTitle class="text-base">Plugins wait for your approval</CardTitle>
-        <p class="text-sm text-muted-foreground">
-          This version of Caelo changed these plugins. Each one does not run, and Publish live is
-          blocked, until you approve its release at
-          <a class="underline" href="/settings/plugins">Settings → Plugins</a>.
-        </p>
-        <ul class="text-sm">
-          {#each data.pluginsAwaitingApproval as p (p.slug)}
-            <li>
-              <span class="font-mono">{p.slug}</span>:
-              {#if p.capabilities.length > 0}
-                new permissions <span class="font-mono">{p.capabilities.join(", ")}</span>
-              {/if}
-              {#if p.releaseChanged}
-                {p.capabilities.length > 0 ? "; " : ""}changes what it declares
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      </CardHeader>
-    </Card>
-  {/if}
+  <PluginApprovalCard testid="plugins-awaiting-approval" />
 
   {#if data.stagingDns}
     <StagingHostDns dns={data.stagingDns} />

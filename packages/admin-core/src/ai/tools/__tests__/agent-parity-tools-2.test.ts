@@ -286,6 +286,7 @@ describe("get_plugin", () => {
             state: "awaiting_approval",
             servers: { loaded: 0, failing: 0 },
             awaitingCapabilities: ["change_journal"],
+            awaitingManifestDigest: "a".repeat(64),
             problem: null,
             recentErrors: [],
             consumerBackoff: null,
@@ -305,7 +306,9 @@ describe("get_plugin", () => {
     const r = await run(getPluginTool, { slug: "forms" }, h.toolCtx);
     expect(r.content).toContain("health: awaiting_approval (servers: 0 loaded, 0 failing)");
     expect(r.content).toContain("Owner has not approved (change_journal)");
-    expect(r.content).toContain("/settings/plugins");
+    expect(r.content).toContain(
+      `propose_approve_plugin_release (manifestDigest ${"a".repeat(64)})`,
+    );
     expect(r.content).toContain("reload_plugin cannot approve");
     expect(r.content).toContain("broker call time: none recorded");
     expect(r.content).not.toContain("backing off");

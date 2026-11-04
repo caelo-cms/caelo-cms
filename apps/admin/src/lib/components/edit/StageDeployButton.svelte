@@ -22,6 +22,7 @@
    *                            the live site, and whether live matches
    *                            staging.
    */
+  import { pluginApprovals } from "#lib/plugin-approvals.svelte.js";
   import { Check, ChevronDown, ExternalLink, LoaderCircle } from "lucide-svelte";
   import { enhance, type SubmitFunction } from "$app/forms";
   import StateDot from "#lib/components/StateDot.svelte";
@@ -279,6 +280,17 @@
     }),
   );
 
+  /**
+   * #1420 — the server refuses while a plugin is stopped, so the click goes
+   * straight to the decision that unblocks it. Without the right to decide
+   * the refusal itself explains it.
+   */
+  function openApprovalInstead(event: MouseEvent) {
+    if (pluginApprovals.releases.length === 0 || !pluginApprovals.canApprove) return;
+    event.preventDefault();
+    pluginApprovals.dialogOpen = true;
+  }
+
   /** Publish live's form submit, shared by the button and the Live menu's override. */
   const publishEnhance: SubmitFunction = () => {
     publishing = true;
@@ -342,6 +354,7 @@
         disabled={publishState.disabled}
         title={publishState.tooltip}
         data-testid={testid}
+        onclick={openApprovalInstead}
       >
         {#if publishing}
           <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" />Publishing…

@@ -149,6 +149,7 @@ import { patchPageModuleFieldsTool } from "./patch-page-module-fields.js";
 import {
   listPluginGrantsTool,
   listPluginInstallationsTool,
+  proposeApprovePluginReleaseTool,
   proposeRevokePluginCapabilityTool,
   rejectPluginTool,
   reloadPluginTool,
@@ -585,6 +586,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listPluginGrantsTool);
   registry.register(listPluginInstallationsTool);
   registry.register(proposeRevokePluginCapabilityTool);
+  registry.register(proposeApprovePluginReleaseTool);
   registry.register(rejectPluginTool);
   registry.register(revalidatePluginTool);
   registry.register(reloadPluginTool);

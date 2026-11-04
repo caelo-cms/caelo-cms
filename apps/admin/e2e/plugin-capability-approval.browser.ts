@@ -3,8 +3,8 @@
 /**
  * Issue #1267 — a shipped plugin whose release asks for a capability the
  * Owner has not approved for it waits for that approval (one plugin model):
- * Settings → Updates names it, Settings → Plugins shows what it asks for and
- * the Approve button, and one click approves it.
+ * Settings → Updates names it, a bar over Live edit and every other screen
+ * says so (#1420), and the Owner reviews and approves it from there.
  *
  * The upgrade is simulated the way migration 0431 leaves an install: the
  * plugin's approved set is what the previous release asked for, without the
@@ -43,7 +43,7 @@ function setApproved(capabilities: string[] | null): void {
   );
 }
 
-test("a new permission waits for the Owner, is named on Updates, and one click approves it", async ({
+test("a new permission waits for the Owner, shows on every screen, and is approved from Live edit", async ({
   page,
 }) => {
   await page.goto("/login");
@@ -77,14 +77,25 @@ test("a new permission waits for the Owner, is named on Updates, and one click a
     const notice = page.getByTestId("plugins-awaiting-approval");
     await expect(notice).toBeVisible();
     await expect(notice).toContainText(SLUG);
-    await expect(notice).toContainText("change_journal");
+    await expect(notice).toContainText("Change feed");
+
+    await page.goto("/");
+    await expect(page.getByTestId("dashboard-plugin-approvals")).toContainText(SLUG);
 
     await page.goto("/settings/plugins");
-    await expect(page.getByTestId(`unapproved-${SLUG}`)).toContainText("change_journal");
+    await expect(page.getByTestId("plugin-approval-strip")).toContainText(SLUG);
+
+    await page.goto("/edit");
+    const strip = page.getByTestId("plugin-approval-strip");
+    await expect(strip).toContainText(SLUG);
+    await strip.getByTestId("plugin-approval-review").click();
+    const dialog = page.getByTestId(`plugin-approval-${SLUG}`);
+    await expect(dialog).toContainText("Follow what changes on the site");
     await page.getByTestId(`approve-capabilities-${SLUG}`).click();
     await expect(page.getByTestId(`approve-capabilities-${SLUG}`)).toHaveCount(0, {
       timeout: 30_000,
     });
+    await expect(page).toHaveURL(/\/edit/);
 
     // Other specs may leave other plugins waiting; this one is approved.
     await page.goto("/settings/updates");

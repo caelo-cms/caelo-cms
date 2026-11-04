@@ -41,12 +41,21 @@ function escapeHtml(text: string): string {
 }
 
 function describeProblem(p: PreviewPluginProblem): string {
+  const slug = `<strong>${escapeHtml(p.slug)}</strong>`;
+  // #1420 — nothing failed: the reason's advice is for the AI, and a reload
+  // is exactly what does not help.
+  if (p.waitsForOwner) return `<li>${slug} is stopped until its new release is approved.</li>`;
   const what =
     p.kind === "render-failed"
       ? "runs on this server but failed while rendering this page"
       : "is active but could not be loaded on this server";
-  return `<li><strong>${escapeHtml(p.slug)}</strong> ${what}: ${escapeHtml(p.reason)}</li>`;
+  return `<li>${slug} ${what}: ${escapeHtml(p.reason)}</li>`;
 }
+
+// The preview frame is sandboxed, so a link here could not leave it: the
+// action lives in the strip above the preview (#1420).
+const APPROVE_HINT = "“Review” in the bar above the preview approves it.";
+const RELOAD_HINT = "Settings → Plugins shows the error and has “Reload on all servers”.";
 
 /** The banner markup for `problems`, or "" when every active plugin runs. */
 export function pluginProblemsBanner(problems: ReadonlyArray<PreviewPluginProblem>): string {
@@ -60,7 +69,7 @@ export function pluginProblemsBanner(problems: ReadonlyArray<PreviewPluginProble
     `so the page is shown without ${plural ? "their contributions" : "its contribution"}. ` +
     `Publish live is blocked until ${plural ? "they work" : "it works"}.</p>` +
     `<ul style="margin:0 0 4px 18px;padding:0">${items}</ul>` +
-    `<p style="margin:0">Settings → Plugins shows the error and has “Reload on all servers”.</p></div>`
+    `<p style="margin:0">${problems.every((p) => p.waitsForOwner) ? APPROVE_HINT : RELOAD_HINT}</p></div>`
   );
 }
 

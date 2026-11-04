@@ -16,6 +16,7 @@
   import { onDestroy, onMount } from "svelte";
   import { coalescedRefresh } from "#lib/components/edit/coalesced-refresh.js";
   import { liveFetch, liveHub } from "#lib/live/live-refresh.js";
+  import { pluginApprovals } from "#lib/plugin-approvals.svelte.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Card, CardContent } from "#lib/components/ui/card/index.js";
@@ -34,6 +35,8 @@
     updatesPath: string;
     /** Epic #901 — the Owner has not yet decided whether detected bugs go to the Caelo team. */
     bugForwardingUndecided: boolean;
+    /** #1420 — plugin releases stopped until approved, packages to review. */
+    pluginApprovals: number;
     total: number;
   }
 
@@ -47,6 +50,7 @@
     releaseUrl: null,
     updatesPath: "/settings/updates",
     bugForwardingUndecided: false,
+    pluginApprovals: 0,
     total: 0,
   });
   let loaded = $state(false);
@@ -160,6 +164,20 @@
                 <Badge variant="destructive">{counts.failedDeploys}</Badge>
                 <span>Latest deploy failed and not yet fixed</span>
               </a>
+            {/if}
+            {#if counts.pluginApprovals > 0}
+              <button
+                type="button"
+                class="-mx-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent"
+                data-testid="plugin-approval-notice"
+                onclick={() => {
+                  open = false;
+                  pluginApprovals.dialogOpen = true;
+                }}
+              >
+                <Badge variant="destructive">{counts.pluginApprovals}</Badge>
+                <span>Plugins wait for a decision</span>
+              </button>
             {/if}
             {#if counts.failedRedirectSyncs > 0}
               <a

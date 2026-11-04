@@ -77,6 +77,7 @@ import {
   SERVICE_VPC_EGRESS,
   secretFileVolumesTemplate,
 } from "../../dist/stack-contract.js";
+import { DEPLOY_GATEWAYS_CONFIG, parseDeployGateways } from "../../dist/stack-gateways.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -829,24 +830,38 @@ const envContractInputs = {
   },
 } as const;
 
-// The data gateway is provisioned first so its name/region can go into the
-// admin's env (the Firebase publisher wires the /api/** rewrite to it).
-// #1328 — a service of its own (`caelo-<env>-data-gateway`); before, the
-// gateway was also the remote-MCP broker.
-const gatewaySvc = cloudRunService({
-  serviceName: "gateway",
-  minInstances: gatewayMinInstances,
-  maxInstances: gatewayMaxInstances,
-  memory: "512Mi",
-  // Firebase Hosting cuts a rewritten request at 60 s anyway.
-  timeout: "300s",
-  // All traffic: the Firebase rewrite arrives from Google's edge, and it is
-  // invokable by allUsers anyway (data-gateway-public-invoker below): every
-  // /api request passes its rate limits, captcha and honeypot. Staging has a
-  // gateway of its own since #1330 (staging-gateway-setup.ts).
-  ingress: "INGRESS_TRAFFIC_ALL",
-  contractEnv: [...gatewayEnvContract(envContractInputs), ...poolBudget.env.gateway],
-});
+// #1328 — the data gateway, a service of its own (`caelo-<env>-data-gateway`);
+// before, the gateway was also the remote-MCP broker. Its fixed name goes into
+// the admin's env (the Firebase publisher wires the /api/** rewrite to it).
+//
+// The first `up` of a fresh install withholds it (stack-gateways.ts): it
+// refuses to start until the migrations, which run after that `up`, have
+// isolated its database login. The admin names it by its fixed name, not by
+// this resource, so the admin does not wait for it and keeps its env when it
+// is declared.
+const deployGateways = parseDeployGateways(cfg.get(DEPLOY_GATEWAYS_CONFIG));
+const dataGatewayName = fixedCloudRunServiceName("gcp-firebase", env, "gateway");
+if (!dataGatewayName) throw new Error("the gcp-firebase data gateway has no fixed service name");
+const gatewaySvc = deployGateways
+  ? cloudRunService({
+      serviceName: "gateway",
+      // Its own logical name: `${namePrefix}-gateway` belongs to the
+      // MCP-Auth-Proxy (E13 a, below), and two resources with one URN fail
+      // every `pulumi up` (a fresh install could not converge, 2026-11-04).
+      resourceName: `${namePrefix}-data-gateway`,
+      minInstances: gatewayMinInstances,
+      maxInstances: gatewayMaxInstances,
+      memory: "512Mi",
+      // Firebase Hosting cuts a rewritten request at 60 s anyway.
+      timeout: "300s",
+      // All traffic: the Firebase rewrite arrives from Google's edge, and it is
+      // invokable by allUsers anyway (data-gateway-public-invoker below): every
+      // /api request passes its rate limits, captcha and honeypot. Staging has a
+      // gateway of its own since #1330 (staging-gateway-setup.ts).
+      ingress: "INGRESS_TRAFFIC_ALL",
+      contractEnv: [...gatewayEnvContract(envContractInputs), ...poolBudget.env.gateway],
+    })
+  : null;
 
 // #1328 — the MCP-Auth-Proxy: remote MCP's sign-in broker and its stream to
 // the IAP-protected admin, with no database, no VPC route and an account
@@ -893,7 +908,7 @@ const adminSvc = cloudRunService({
       firebaseStagingSiteId: pulumi
         .output(firebaseSiteId)
         .apply((id) => firebaseStagingSiteId(env, id)),
-      gatewayService: gatewaySvc.name,
+      gatewayService: dataGatewayName,
     }),
     ...remoteMcpEnv.admin,
     ...poolBudget.env.admin,
@@ -930,17 +945,19 @@ const adminSvc = cloudRunService({
 // in-app rate-limit middleware + form CAPTCHA + per-endpoint
 // authentication remain the real security boundary, exactly as
 // designed.
-new gcp.cloudrunv2.ServiceIamMember(
-  `${namePrefix}-data-gateway-public-invoker`,
-  {
-    project,
-    location: region,
-    name: gatewaySvc.name,
-    role: "roles/run.invoker",
-    member: "allUsers",
-  },
-  opts,
-);
+if (gatewaySvc) {
+  new gcp.cloudrunv2.ServiceIamMember(
+    `${namePrefix}-data-gateway-public-invoker`,
+    {
+      project,
+      location: region,
+      name: gatewaySvc.name,
+      role: "roles/run.invoker",
+      member: "allUsers",
+    },
+    opts,
+  );
+}
 
 // #1328 — the MCP-Auth-Proxy: MCP clients sign in and call it without a
 // Google identity of their own. The binding the service had as the gateway,
@@ -975,17 +992,19 @@ new gcp.cloudrunv2.ServiceIamMember(
 // service for the runSa to act as itself. The gateway needs the
 // explicit cross-service grant because the admin's runSa is a
 // DIFFERENT-resource caller from the gateway's perspective.
-new gcp.cloudrunv2.ServiceIamMember(
-  `${namePrefix}-data-gateway-viewer-for-admin-sa`,
-  {
-    project,
-    location: region,
-    name: gatewaySvc.name,
-    role: "roles/run.viewer",
-    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
-  },
-  opts,
-);
+if (gatewaySvc) {
+  new gcp.cloudrunv2.ServiceIamMember(
+    `${namePrefix}-data-gateway-viewer-for-admin-sa`,
+    {
+      project,
+      location: region,
+      name: gatewaySvc.name,
+      role: "roles/run.viewer",
+      member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+    },
+    opts,
+  );
+}
 
 // =========================================================================
 // Admin custom domain — Cloud Run domain mapping
@@ -1318,7 +1337,7 @@ export const edgeLogSinkUrlOut = out.edgeLogSinkUrl;
 export const providerOut = out.provider;
 export const environmentOut = out.environment;
 export const adminCloudRunUrlOut = adminSvc.uri;
-export const gatewayCloudRunUrlOut = gatewaySvc.uri;
+export const gatewayCloudRunUrlOut = gatewaySvc?.uri;
 export const mcpAuthProxyCloudRunUrlOut = mcpAuthProxySvc.uri;
 export const adminDomainOut = adminDomain;
 export const firebaseSiteIdOut = firebaseSiteId;
