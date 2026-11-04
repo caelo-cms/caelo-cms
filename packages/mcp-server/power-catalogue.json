@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
+  "version": "0.11.14",
   "tools": [
     {
       "name": "read_content",
@@ -1947,7 +1947,7 @@
     },
     {
       "name": "retry_tool_call",
-      "description": "Fix a failed write call with a small patch instead of resending it — only for a call whose result names `retry_tool_call`. Paths are segment arrays exactly as the error names them (`[\"page\",\"pageType\"]`, `[\"modules\",3,\"html\"]`). `set` writes a value, `remove` drops a key or array entry, `replace` swaps one exact text inside one string (must match once). The call stays kept while you make the calls its error asks for first (create the page type, then patch). The patched call runs as a new call (permissions, validation, approval re-checked); if it fails again, patch the same toolCallId again.",
+      "description": "Fix a failed write call with a small patch instead of resending it — only for a call whose result names `retry_tool_call`. Paths are segment arrays exactly as the error names them (`[\"page\",\"pageType\"]`, `[\"modules\",3,\"html\"]`). `set` writes a value, `remove` drops a key or array entry, `replace` swaps one exact text inside one string (must match once). `remove` takes a list of paths: `remove: [[\"page\",\"terms\"]]`. The call stays kept while you make the calls its error asks for first (create the page type, then patch). The patched call runs as a new call (permissions, validation, approval re-checked); if it fails again, patch the same toolCallId again.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1961,6 +1961,7 @@
           },
           "set": {
             "type": "array",
+            "description": "List of {path, value}, e.g. [{\"path\":[\"page\",\"pageType\"],\"value\":\"post\"}].",
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -1996,10 +1997,12 @@
                 ]
               },
               "description": "Segment array as the error names it, e.g. [\"modules\",3,\"html\"]."
-            }
+            },
+            "description": "List of paths, e.g. [[\"page\",\"terms\"]]."
           },
           "replace": {
             "type": "array",
+            "description": "List of {path, old, new}.",
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -3834,7 +3837,7 @@
     },
     {
       "name": "get_quality_audit",
-      "description": "Read the staged site's quality check: plugin page checks (when an active plugin adds any, e.g. SEO) reading EVERY page on every Stage, plus a mobile Lighthouse audit (Performance, Accessibility, Best Practices, SEO) when the Stage changed how pages render. No args = newest audit of THIS chat's Stages.\nReturns per page: scores; Performance metrics (FCP, LCP, TBT, CLS, Speed Index: best run + Lighthouse rating; LCP element + breakdown; shifted elements + causes); each problem's Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `render-blocking-insight`) + flagged elements (selector, HTML snippet, why, e.g. measured contrast); each page-check problem's rule id `<check>/<rule>` (contains a slash, e.g. `seo-check/title-missing`) + fix hint naming the tool. Plus site-wide findings, non-blocking warnings/hints, infrastructure errors.\nUSE FOR: after a Stage, what to fix. Already accepted -> `list_quality_acceptances`. Never run Lighthouse yourself: the audit runs on the real staged build (no other URL serves it).\nCORE RULES:\n- TARGET 100 IN EVERY CATEGORY + ZERO FINDINGS: every category <100, every scored Lighthouse audit below perfect, every page-check error BLOCKS Publish live. 90 is NOT acceptable — fix until 100 wherever achievable. ACCEPTED problems don't block (a worse value than accepted blocks again). Warnings/hints never block.\n- Speed: fix the worst metric in the module rendering the named element, Stage again, re-read — repeat until Performance 100.\n- Only the truly unfixable goes to the operator: one decision per group (`accept_quality_findings` with `groups`) + the reason.\n- CAELO PLATFORM findings (back/forward cache, caching of Caelo's own files, server response, compression, redirects) come from Caelo's hosting/build: report via `bug_report`, never edit the site for them; they block until Caelo fixes it or the operator accepts.\n- Without an open operator chat (Power-MCP) a call on a queued/running audit waits up to ~50 s; call again if still running.",
+      "description": "Read the staged site's quality check: plugin page checks (when an active plugin adds any, e.g. SEO) reading EVERY page on every Stage, plus a mobile Lighthouse audit (Performance, Accessibility, Best Practices, SEO) when the Stage changed how pages render. No args = newest audit of THIS chat's Stages.\nReturns per page: scores; Performance metrics (FCP, LCP, TBT, CLS, Speed Index: scoring run + Lighthouse rating; LCP element + breakdown; shifted elements + causes); each problem's Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `render-blocking-insight`) + flagged elements (selector, HTML snippet, why, e.g. measured contrast); each page-check problem's rule id `<check>/<rule>` (contains a slash, e.g. `seo-check/title-missing`) + fix hint naming the tool. Plus site-wide findings, non-blocking warnings/hints, infrastructure errors.\nUSE FOR: after a Stage, what to fix. Already accepted -> `list_quality_acceptances`. Never run Lighthouse yourself: the audit runs on the real staged build (no other URL serves it).\nCORE RULES:\n- TARGET 100 IN EVERY CATEGORY + ZERO FINDINGS: every category <100, every scored Lighthouse audit below perfect, every page-check error BLOCKS Publish live. 90 is NOT acceptable — fix until 100 wherever achievable. ACCEPTED problems don't block (a worse value than accepted blocks again). Warnings/hints never block.\n- Speed: fix the worst metric in the module rendering the named element, Stage again, re-read — repeat until Performance 100.\n- Only the truly unfixable goes to the operator: one decision per group (`accept_quality_findings` with `groups`) + the reason.\n- CAELO PLATFORM findings (back/forward cache, caching of Caelo's own files, server response, compression, redirects) come from Caelo's hosting/build: report via `bug_report`, never edit the site for them; they block until Caelo fixes it or the operator accepts.\n- Without an open operator chat (Power-MCP) a call on a queued/running audit waits up to ~50 s; call again if still running.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3982,10 +3985,16 @@
     },
     {
       "name": "retry_quality_audit",
-      "description": "Re-run the staged build's quality check when it FAILED (browser, timeout, staging unreachable) or never ran; changes nothing. Not for re-checking fixes — those need a new Stage, which audits itself.",
+      "description": "Run the staged build's quality check when it FAILED (browser, timeout, staging unreachable) or has none (`get_quality_audit` / `get_publish_gate` say so); changes nothing. Not for re-checking fixes — those need a new Stage, which audits itself.",
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "deployRunId": {
+            "description": "The Stage's build run (from `stage_changes` / `get_quality_audit`). Omit = the build staging serves now.",
+            "type": "string",
+            "format": "uuid"
+          }
+        },
         "additionalProperties": false
       }
     },
@@ -4998,7 +5007,7 @@
           "manifest": {
             "type": "object",
             "additionalProperties": true,
-            "description": "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, hasStaticRender}."
+            "description": "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, tableKinds, hasStaticRender}. publicOperations entries are {name, kind: read|write, captcha: required|none, inputJsonSchema, reads, writes, rateLimit?: {max, windowSeconds}}; tableKinds gives every schema table one kind (published: visitors read; inbox: visitors only insert; visitor-state: visitors read+write; private: admin only)."
           },
           "source": {
             "type": "string",
@@ -7246,7 +7255,7 @@
     },
     {
       "name": "get_plugin",
-      "description": "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, validator findings, declared tools/skills/capabilities, required plugins + active plugins requiring it, what it asks visitors to consent to (purpose, category, cookies), AI spend last 24h vs its cap. Never returns source.\nUSE FOR: when `list_plugins`' summary isn't enough: why it fails or a submission was rejected, what an inactive plugin adds before `activate_plugin`, whether it nears its AI cap.\nErrors: `core` = Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team -> repeat exactly, never say the team knows unless it says sent | `plugin` = the plugin's own code | `transient` = retried. Errors never switch a plugin off.",
+      "description": "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, change-consumer backoff, time of its broker calls (core ops + own storage), validator findings, declared tools/skills/capabilities, required plugins + active plugins requiring it, what it asks visitors to consent to (purpose, category, cookies), AI spend last 24h vs its cap. Never returns source.\nUSE FOR: when `list_plugins`' summary isn't enough: why it fails or a submission was rejected, what an inactive plugin adds before `activate_plugin`, whether it nears its AI cap.\nErrors: `core` = Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team -> repeat exactly, never say the team knows unless it says sent | `plugin` = the plugin's own code | `transient` = retried. Errors never switch a plugin off.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -8121,7 +8130,7 @@
     },
     {
       "name": "promote_local_list",
-      "description": "Turn a module's LOCAL list into a SHARED list and bind the field to it, in one call — when a second place needs the same entries ('footer links in the mobile menu too', 'editors maintain these links without opening the module'). `field` = the module's `list` field. Refused when placements show different entries (names them) -> pick the entries to keep, use `upsert_lists_many` + `update_modules_many`. Returns list id + ref `caelo:list/<id>` for binding other modules.",
+      "description": "Turn a module's LOCAL list into a SHARED list and bind the field to it, in one call — when another module needs the same entries ('the sidebar shows these links too', 'editors maintain these links without opening the module'). Never for a mobile copy: one <nav> serves every width. `field` = the module's `list` field. Refused when placements show different entries (names them) -> pick the entries to keep, use `upsert_lists_many` + `update_modules_many`. Returns list id + ref `caelo:list/<id>` for binding other modules.",
       "inputSchema": {
         "type": "object",
         "properties": {
