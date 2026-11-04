@@ -90,12 +90,14 @@ export async function checkDeployedRuntimeEnv(opts: {
   const run = opts.run ?? defaultGcloud;
   for (const slug of CLOUD_RUN_SLUGS) {
     const found = await findDeployedService(run, opts, slug);
-    // #1330 — the staging gateway is the CLI's (staging-gateway-setup.ts):
-    // an install from before it gets it after this `up`, so a missing one
-    // runs no release that could mismatch the env. The data gateway is
-    // missing after a first `up` that withheld it (gateway-bootstrap.ts) and
-    // a run that stopped before the next one; the same holds.
-    if (!found.ok && (slug === "staging-gateway" || slug === "gateway") && found.missing) continue;
+    // A service that does not exist runs no release whose env could
+    // mismatch. That is the staging gateway of an install from before it
+    // (#1330, the CLI creates it after `up`), the data gateway after a first
+    // `up` that withheld it (gateway-bootstrap.ts), and on gcp the CLI-owned
+    // MCP-Auth-Proxy of a first run that stopped before the CLI created it.
+    // An install from before #1328 is sent to `upgrade` by the release
+    // choice instead (readDeployedImageDigests, chooseImageDigests).
+    if (!found.ok && found.missing) continue;
     if (!found.ok) return { ok: false, error: found.error };
     const describe = await run([
       "run",
