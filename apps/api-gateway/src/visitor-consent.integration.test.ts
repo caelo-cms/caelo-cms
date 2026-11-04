@@ -32,7 +32,6 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
-  drainProjectionOnce,
   loadedVisitorProjections,
   publishProjectionOnce,
   registerAdminOps,
