@@ -101,6 +101,22 @@ export function isGcloudAuthError(stderr: string): boolean {
   return GCLOUD_AUTH_ERROR.test(stderr);
 }
 
+/**
+ * Every way gcloud says a described resource does not exist. The wording
+ * differs per service: Cloud Run says "Cannot find service [<name>]." with
+ * no code, Secret Manager and IAM say NOT_FOUND, compute says "was not
+ * found", the REST APIs answer 404. One list, because a describe that missed
+ * a wording reads a missing resource as an unknown one and stops a fresh
+ * install (gcp-firebase scratch install of v0.11.15, 2026-11-04).
+ */
+const GCLOUD_NOT_FOUND =
+  /\bNOT_FOUND\b|NotFound|not found|cannot find|could not be found|does not exist|\b404\b/i;
+
+/** Whether a failed gcloud describe failed because the resource does not exist. */
+export function isGcloudNotFound(stderr: string): boolean {
+  return GCLOUD_NOT_FOUND.test(stderr);
+}
+
 /** The fix for expired credentials on the Owner's machine or in Cloud Shell. */
 export const GCLOUD_REAUTH_HINT =
   "gcloud credentials expired. Run `gcloud auth login` (and `gcloud auth application-default login` where Pulumi runs), then run this command again.";

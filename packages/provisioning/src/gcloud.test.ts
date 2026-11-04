@@ -6,6 +6,7 @@ import {
   type GcloudResult,
   grantProvisionerRoles,
   isGcloudAuthError,
+  isGcloudNotFound,
   PROVISIONER_ROLE_LIST,
   projectDisplayName,
 } from "./gcloud.js";
@@ -187,5 +188,26 @@ describe("checkGcloudAuth (#630)", () => {
       expect(isGcloudAuthError(stderr)).toBe(true);
     }
     expect(isGcloudAuthError("PERMISSION_DENIED: run.services.list")).toBe(false);
+  });
+});
+
+describe("isGcloudNotFound — one list of every service's wording", () => {
+  it.each([
+    "ERROR: (gcloud.run.services.describe) Cannot find service [caelo-production-gateway-aa7db32]",
+    "ERROR: (gcloud.secrets.describe) NOT_FOUND: Secret [x] not found or has no versions.",
+    "ERROR: (gcloud.compute.backend-services.describe) The resource 'projects/p/global/backendServices/b' was not found",
+    "ERROR: (gcloud.iam.service-accounts.describe) NOT_FOUND: Unknown service account.",
+    "HTTPError 404: Not Found",
+    "ERROR: (gcloud.run.jobs.executions.describe) Execution [e] could not be found.",
+  ])("reads %p as missing", (stderr) => {
+    expect(isGcloudNotFound(stderr)).toBe(true);
+  });
+
+  it.each([
+    "ERROR: (gcloud.iam.service-accounts.describe) PERMISSION_DENIED",
+    "ERROR: (gcloud.run.services.describe) There was a problem refreshing your current auth tokens",
+    "ERROR: project 4041234 quota exceeded",
+  ])("does not read %p as missing", (stderr) => {
+    expect(isGcloudNotFound(stderr)).toBe(false);
   });
 });

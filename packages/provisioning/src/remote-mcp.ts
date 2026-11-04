@@ -32,7 +32,7 @@
  */
 
 import { GCP_MCP_AUTH_PROXY_PATHS } from "@caelo-cms/shared";
-import { gcloud as defaultGcloud } from "./gcloud.js";
+import { gcloud as defaultGcloud, isGcloudNotFound } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import { gcpNamePrefix, mcpAuthProxyEdgeNames } from "./gcp-names.js";
 import { ensureMcpAuthProxyServiceGcp } from "./mcp-auth-proxy-setup.js";
@@ -563,15 +563,13 @@ async function describePolicyRules(
     "--format=json",
   ]);
   if (!describe.ok) {
-    return { ok: false, missing: NOT_FOUND.test(describe.stderr), error: describe.stderr.trim() };
+    return { ok: false, missing: isGcloudNotFound(describe.stderr), error: describe.stderr.trim() };
   }
   const described = parseJson(describe.stdout) as { rules?: LiveArmorRule[] } | null;
   if (!described)
     return { ok: false, missing: false, error: `describe ${policy}: output is not JSON` };
   return { ok: true, rules: described.rules ?? [] };
 }
-
-const NOT_FOUND = /NOT_FOUND|not found|was not found|does not exist/i;
 
 /**
  * #1328 — the MCP-Auth-Proxy's own Cloud Armor policy with the `/api/mcp/*`
@@ -703,7 +701,7 @@ export async function ensureMcpAuthProxyBackend(
     "--format=value(name)",
   ]);
   if (!neg.ok) {
-    if (!NOT_FOUND.test(neg.stderr))
+    if (!isGcloudNotFound(neg.stderr))
       return { ok: false, error: `describe ${names.neg}: ${neg.stderr.trim()}` };
     const created = await run([
       "compute",
@@ -730,7 +728,7 @@ export async function ensureMcpAuthProxyBackend(
   ]);
   let backendJson: { selfLink?: string; securityPolicy?: string; backends?: { group?: string }[] };
   if (!backend.ok) {
-    if (!NOT_FOUND.test(backend.stderr)) {
+    if (!isGcloudNotFound(backend.stderr)) {
       return { ok: false, error: `describe ${names.backend}: ${backend.stderr.trim()}` };
     }
     const created = await run([
