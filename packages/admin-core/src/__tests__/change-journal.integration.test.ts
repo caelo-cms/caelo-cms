@@ -580,6 +580,31 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
     expect(after.fresh).toBe(false);
   });
 
+  it("a consumer poll reads only the kinds it asks for, not every row since its cursor (#1269)", async () => {
+    // A consumer of modules behind a plugin's rebuild: thousands of rows of
+    // another kind were written since its cursor.
+    const name = `test:${crypto.randomUUID()}`;
+    const filter = { kinds: ["module"] };
+    await adapter.withAdminTransaction(SYS, (tx) => registerConsumer(tx, name));
+    await adapter.withAdminTransaction(SYS, (tx) =>
+      tx.execute(sql`
+        INSERT INTO redirects (id, from_path, to_path, created_by)
+        SELECT gen_random_uuid(), ${`/${PFX}poll-other-kind-`} || i, '/x', ${ACTOR}::uuid
+          FROM generate_series(1, 4000) i`),
+    );
+    const moduleId = await createModule("poll-kind-check");
+    const buffers: number[] = [];
+    const batch = await adapter.withAdminTransaction(SYS, async (tx) => {
+      await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+      return pollChanges(measuring(tx, buffers), name, { filter, limit: 100 });
+    });
+    expect(batch.changes.map((c) => c.rowId)).toContain(moduleId);
+    // Through the primary key the poll walked the 4,000 redirect rows
+    // written since the cursor; by (kind, xid) it reads the asked kind only.
+    expect(Math.max(...buffers)).toBeLessThan(30);
+    await asSystem((tx) => tx`DELETE FROM change_consumers WHERE name = ${name}`);
+  });
+
   it("keeps the previous release's change signals written for one release, and trims the font log", async () => {
     const generation = async () =>
       (

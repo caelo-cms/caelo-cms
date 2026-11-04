@@ -1,4 +1,5 @@
 -- SPDX-License-Identifier: MPL-2.0
+-- caelo:no-transaction
 --
 -- 0602 — the change journal by kind, then transaction (issue #1269, epic
 -- #1392).
@@ -16,12 +17,15 @@
 -- Text and xid8 comparisons are leakproof, so the index stays usable under
 -- the table's FORCEd row level security.
 --
--- Expand-only: one index. The journal holds the retention window only
--- (garbage collection), so building it is short.
+-- Every journaled write inserts into this table, and the retention window
+-- can hold millions of rows: a plain CREATE INDEX would hold a SHARE lock
+-- for the whole build and stall every write of the running admin during
+-- the upgrade. CONCURRENTLY builds without it, outside a transaction (as
+-- 0463). The index is dropped first: an interrupted concurrent build
+-- leaves an INVALID index that `IF NOT EXISTS` would keep.
+--
+-- Expand-only: one index.
 
-BEGIN;
-SET LOCAL caelo.actor_kind = 'system';
-
-CREATE INDEX entity_changes_kind_xid_idx ON entity_changes (kind, xid);
-
-COMMIT;
+DROP INDEX CONCURRENTLY IF EXISTS entity_changes_kind_xid_idx;
+--> statement-breakpoint
+CREATE INDEX CONCURRENTLY entity_changes_kind_xid_idx ON entity_changes (kind, xid);
