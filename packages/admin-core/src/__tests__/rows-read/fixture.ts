@@ -269,7 +269,10 @@ export async function growFixture(
     // Pending snapshots go to the chats in blocks of `perChat`, so every
     // chat owns the same number at both sizes (the draft grows by more
     // chats, not by more changes per chat) — #1268's per-chat reads cost
-    // what the chat changed. Staged ones are spread round-robin.
+    // what the chat changed. Staged ones are spread round-robin. Growing,
+    // both go to the pages without history first (#1269): otherwise the
+    // oldest pages gathered more chats' pending states at each size, and a
+    // read of them measured that instead of the site.
     const chatArray = `ARRAY['${chats.map((c) => c.id).join("','")}']::uuid[]`;
     const perChat = Math.floor(SMALL.pending / SMALL.chats);
     const snapshotsOf = async (what: "staged" | "pending", target: number) => {
@@ -281,8 +284,18 @@ export async function growFixture(
         )[0]?.n ?? 0;
       if (now >= target) return;
       await tx.unsafe(`
-        WITH pg AS (SELECT id, slug, title, row_number() OVER (ORDER BY id) AS rn FROM pages
-                     WHERE slug LIKE '${RR_PREFIX}p-%' AND slug <> '${RR_PREFIX}p-1'),
+        WITH pg0 AS (SELECT p.id, p.slug, p.title,
+                            EXISTS (SELECT 1 FROM page_snapshots ps
+                                      JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+                                     WHERE ps.page_id = p.id AND ss.description = '${RR_PREFIX}${what}') AS had
+                       FROM pages p
+                      WHERE p.slug LIKE '${RR_PREFIX}p-%' AND p.slug <> '${RR_PREFIX}p-1'),
+             -- New history goes to the pages that have none yet first, so
+             -- a page carries as many snapshots on the large fixture as on
+             -- the small one: the site grows, not the changes per page.
+             fresh AS (SELECT count(*) FILTER (WHERE NOT had) AS n FROM pg0),
+             pg AS (SELECT id, slug, title, row_number() OVER (ORDER BY id) AS rn FROM pg0
+                     WHERE NOT had OR (SELECT n FROM fresh) = 0),
              cnt AS (SELECT count(*) AS c FROM pg),
              h AS (
                INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id,

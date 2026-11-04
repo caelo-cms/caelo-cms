@@ -89,7 +89,7 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     "page_module_content.set": { notBackground: "translate tools write one page's content" },
     "page_types.list": { measured: ["page_types.list"] },
     "pages.duplicate": { notBackground: "the create_variant tool duplicates one page" },
-    "pages.list": { pending: INTL_1255 },
+    "pages.list": { measured: ["pages.list {pageIds}"], pending: INTL_1255 },
     "pages.list_shared_content": { pending: LIST_RESOLVE_1270 },
     "pages.list_statuses": { pending: INTL_1255 },
     "pages.refresh_current_path": { pending: INTL_1255 },

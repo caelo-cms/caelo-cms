@@ -53,6 +53,7 @@ import {
 } from "../../snapshots/index.js";
 import type { PageState } from "../../snapshots/state.js";
 import { buildPatchSet, buildWhere, jsonbParam } from "../../sql-helpers.js";
+import { decodeKeysetCursor, encodeKeysetCursor } from "../keyset-cursor.js";
 import { createRedirectOp } from "../redirects.js";
 import { cloneContentInstancesDeep } from "./content-instance-clone.js";
 import {
@@ -63,7 +64,7 @@ import {
 } from "./current-path.js";
 import { planPageMoves } from "./page-move-plan.js";
 import { executePageMoves } from "./page-moves.js";
-import { ancestorIdsOf, descendantIdsOf, loadPageTree, pendingDriftIds } from "./page-tree.js";
+import { ancestorIdsOf, loadPageChains, loadPageTree, loadSubtreeIds } from "./page-tree.js";
 import { applyPathMoveEffects } from "./path-moves.js";
 
 const pageRowSchema = z.object({
@@ -269,6 +270,9 @@ const pageListRowSchema = pageRowSchema.extend({
   depth: z.number().int().positive(),
 });
 
+/** The largest page `pages.list` returns at once. */
+export const PAGE_LIST_MAX_LIMIT = 1000;
+
 export const listPagesOp = defineOperation({
   name: "pages.list",
   readScope: "request",
@@ -291,17 +295,48 @@ export const listPagesOp = defineOperation({
      */
     pageIds: z.array(z.string().uuid()).min(1).max(1000).optional(),
     paths: z.array(z.string().min(1).max(2048)).min(1).max(1000).optional(),
+    /**
+     * #1269 — at most this many pages, oldest first; `nextCursor` of the
+     * answer continues after the last one. Pages through the site in
+     * request-sized reads: the overlay, depth and branch paths are read
+     * for the returned pages only.
+     */
+    limit: z.number().int().min(1).max(PAGE_LIST_MAX_LIMIT).optional(),
+    /** #1269 — `nextCursor` of the previous page (requires `limit`). */
+    cursor: z.string().min(1).max(200).optional(),
   }),
-  output: z.object({ pages: z.array(pageListRowSchema) }),
+  output: z.object({
+    pages: z.array(pageListRowSchema),
+    /** Continue with `cursor: nextCursor`; null when nothing follows (or no `limit` was given). */
+    nextCursor: z.string().nullable(),
+  }),
   handler: async (ctx, input, tx) => {
-    // v0.9.0 — branch-aware: chats see main + their own branched creates.
-    const filters = [];
+    const branchId = ctx.chatBranchId ?? null;
+    if (input.cursor !== undefined && input.limit === undefined) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.list",
+        message: "cursor needs limit: send the same limit as the call that returned it.",
+      });
+    }
+    const after = input.cursor === undefined ? null : decodeKeysetCursor(input.cursor);
+    if (input.cursor !== undefined && after === null) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.list",
+        message:
+          "cursor is not a pages.list cursor: pass nextCursor exactly as a previous call returned it, or omit it to start at the first page.",
+      });
+    }
+    const filters: SQL[] = [];
     if (!input.includeDeleted) filters.push(sql`pages.deleted_at IS NULL`);
+    filters.push(
+      branchId
+        ? sql`(pages.chat_branch_id IS NULL OR pages.chat_branch_id = ${branchId}::uuid)`
+        : sql`pages.chat_branch_id IS NULL`,
+    );
     const only = pageSelectionOf(input);
     if (only) {
-      // A chat's pending rename moves a page's path without touching the
-      // row, so on a branch only the ids narrow the read; the paths are
-      // matched on the composed view below.
       const byId = only.ids.length > 0 ? sql`pages.id = ANY(${uuidArray(only.ids)})` : null;
       const byPath =
         only.paths.size > 0
@@ -309,16 +344,27 @@ export const listPagesOp = defineOperation({
                       THEN rtrim(pages.current_path, '/') ELSE pages.current_path END)
                 = ANY(${textArray([...only.paths])})`
           : null;
-      if (!ctx.chatBranchId || only.paths.size === 0) {
-        filters.push(byId && byPath ? sql`(${byId} OR ${byPath})` : ((byId ?? byPath) as SQL));
-      }
+      // A chat's pending rename moves the paths of a page and everything
+      // below it without touching the rows: on a branch those pages are
+      // candidates too, matched on the composed path below.
+      const drifting =
+        branchId && only.paths.size > 0 ? await pagesBelowPendingMoves(tx, branchId) : [];
+      const parts = [
+        byId,
+        byPath,
+        drifting.length > 0 ? sql`pages.id = ANY(${uuidArray(drifting)})` : null,
+      ].filter((x): x is SQL => x !== null);
+      filters.push(sql`(${sql.join(parts, sql` OR `)})`);
     }
-    if (ctx.chatBranchId) {
+    if (input.underPageId !== undefined) {
+      const below = await loadSubtreeIds(tx, branchId, input.underPageId);
+      if (below.length === 0) return ok({ pages: [], nextCursor: null });
+      filters.push(sql`pages.id = ANY(${uuidArray(below)})`);
+    }
+    if (after) {
       filters.push(
-        sql`(pages.chat_branch_id IS NULL OR pages.chat_branch_id = ${ctx.chatBranchId}::uuid)`,
+        sql`(pages.created_at, pages.id) > ((${after.createdAt}::timestamp AT TIME ZONE 'UTC'), ${after.id}::uuid)`,
       );
-    } else {
-      filters.push(sql`pages.chat_branch_id IS NULL`);
     }
     const rows = (await tx.execute(sql`
       SELECT pages.id::text AS id, pages.slug, pages.current_path,
@@ -327,112 +373,124 @@ export const listPagesOp = defineOperation({
              pages.page_type_id::text AS page_type_id, pages.page_type_confirmed,
              pages.properties, pages.first_published_at,
              pages.status, pages.version,
-             pages.created_at, pages.updated_at, pages.deleted_at
+             pages.created_at, pages.updated_at, pages.deleted_at,
+             to_char(pages.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS created_key
       FROM pages
       ${buildWhere(filters)}
-      ORDER BY pages.created_at ASC
-    `)) as unknown as RawPageRow[];
-    // Run #9 R9 — caller-branch page-state overlay. A branched
-    // `pages.delete` emits a page_snapshots row with `deletedAt` set and
-    // leaves the live row untouched until publish (v0.5.3), but this
-    // list read only filtered live `deleted_at` — so a page the chat
-    // just deleted kept appearing in pages.list, in the `## Pages`
-    // context block, and in the /edit sidebar (which lists with the
-    // chat's branch ctx). Same regression class as run #8 R3
-    // (branch-blind reads): apply the latest branched snapshot per page
-    // so deletes (and branched slug/title/status edits) read back.
-    if (ctx.chatBranchId && rows.length > 0) {
+      ORDER BY pages.created_at ASC, pages.id ASC
+      ${input.limit === undefined ? sql`` : sql`LIMIT ${input.limit + 1}`}
+    `)) as unknown as (RawPageRow & { created_key: string })[];
+    const more = input.limit !== undefined && rows.length > input.limit;
+    const pageRows = more ? rows.slice(0, input.limit) : rows;
+    const last = pageRows.at(-1);
+    const nextCursor = more && last ? encodeKeysetCursor(last.created_key, last.id) : null;
+
+    // Run #9 R9 — the caller's branch view of each returned page: a
+    // branched delete, rename or edit lives in the draft head until a
+    // Stage, so the live row alone would show the pre-edit page (or a
+    // page the chat deleted). Read for exactly these pages (#1269).
+    let merged: RawPageRow[] = pageRows;
+    if (branchId && pageRows.length > 0) {
       const overlayRows = (await tx.execute(
-        headOverlaySql({ kind: "page", table: "page_snapshots", branchId: ctx.chatBranchId }),
+        headOverlaySql({
+          kind: "page",
+          table: "page_snapshots",
+          branchId,
+          ids: pageRows.map((r) => r.id),
+        }),
       )) as unknown as { entity_id: string; state: unknown }[];
-      if (overlayRows.length > 0) {
-        const overlayById = new Map(overlayRows.map((r) => [r.entity_id, r.state]));
-        const merged: RawPageRow[] = [];
-        for (const row of rows) {
-          const rawState = overlayById.get(row.id);
-          if (rawState === undefined) {
-            merged.push(row);
-            continue;
-          }
-          const s = rawState as {
-            slug?: string;
-            parentPageId?: string | null;
-            title?: string;
-            shortTitle?: string;
-            templateId?: string;
-            status?: "draft" | "published";
-            version?: number;
-            deletedAt?: string | null;
-          };
-          if (s.deletedAt && !input.includeDeleted) continue;
-          merged.push({
-            ...row,
-            slug: s.slug ?? row.slug,
-            parent_page_id: s.parentPageId === undefined ? row.parent_page_id : s.parentPageId,
-            title: s.title ?? row.title,
-            short_title: s.shortTitle ?? row.short_title,
-            template_id: s.templateId ?? row.template_id,
-            status: s.status ?? row.status,
-            version: s.version ?? row.version,
-            deleted_at: s.deletedAt ?? row.deleted_at,
-          });
+      const overlayById = new Map(overlayRows.map((r) => [r.entity_id, r.state]));
+      merged = [];
+      for (const row of pageRows) {
+        const rawState = overlayById.get(row.id);
+        if (rawState === undefined) {
+          merged.push(row);
+          continue;
         }
-        const bound = await loadTypeBound(tx, ctx, merged);
-        return ok({
-          pages: await withTreeView(
-            tx,
-            ctx,
-            merged.map((r) => rowToPage(r, bound.get(r.id))),
-            input.underPageId,
-            only,
-          ),
+        const st = rawState as {
+          slug?: string;
+          parentPageId?: string | null;
+          title?: string;
+          shortTitle?: string;
+          templateId?: string;
+          status?: "draft" | "published";
+          version?: number;
+          deletedAt?: string | null;
+        };
+        if (st.deletedAt && !input.includeDeleted) continue;
+        merged.push({
+          ...row,
+          slug: st.slug ?? row.slug,
+          parent_page_id: st.parentPageId === undefined ? row.parent_page_id : st.parentPageId,
+          title: st.title ?? row.title,
+          short_title: st.shortTitle ?? row.short_title,
+          template_id: st.templateId ?? row.template_id,
+          status: st.status ?? row.status,
+          version: st.version ?? row.version,
+          deleted_at: st.deletedAt ?? row.deleted_at,
         });
       }
     }
-    const bound = await loadTypeBound(tx, ctx, rows);
+    const bound = await loadTypeBound(tx, ctx, merged);
     return ok({
       pages: await withTreeView(
         tx,
         ctx,
-        rows.map((r) => rowToPage(r, bound.get(r.id))),
-        input.underPageId,
+        merged.map((r) => rowToPage(r, bound.get(r.id))),
         only,
       ),
+      nextCursor,
     });
   },
 });
 
 /**
- * 0263 — the tree half of pages.list: depth per page, the subtree
- * filter, and — under a chat branch — the chat's view of every path its
- * pending renames / moves change (the live `current_path` of a main page
- * only moves at publish). Deleted rows (includeDeleted) keep depth 1:
- * they are not part of the live tree.
+ * The pages whose path a branch's pending rename or move changes: the
+ * pending pages whose slug or parent differs from the stored row, and
+ * everything below them. The cost is the branch's pending pages and
+ * their subtrees.
+ */
+async function pagesBelowPendingMoves(tx: TransactionRunner, branchId: string): Promise<string[]> {
+  const moved = (await tx.execute(sql`
+    SELECT h.entity_id FROM (${headOverlaySql({
+      kind: "page",
+      table: "page_snapshots",
+      branchId,
+      columns: sql`d.slug AS head_slug, d.parent_page_id AS head_parent`,
+    })}) h
+    JOIN pages p ON p.id = h.entity_id::uuid
+   WHERE h.head_slug IS DISTINCT FROM p.slug OR h.head_parent IS DISTINCT FROM p.parent_page_id
+  `)) as unknown as { entity_id: string }[];
+  const out = new Set(moved.map((m) => m.entity_id));
+  for (const m of moved)
+    for (const id of await loadSubtreeIds(tx, branchId, m.entity_id)) out.add(id);
+  return [...out];
+}
+
+/**
+ * 0263 — the tree half of pages.list for the returned pages: depth, and —
+ * under a chat branch — the chat's view of every path its pending renames
+ * / moves change (the live `current_path` of a main page only moves at
+ * publish). Reads those pages' ancestor chains, never the whole tree
+ * (#1269). Deleted rows (includeDeleted) keep depth 1: they are not part
+ * of the live tree.
  */
 async function withTreeView(
   tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
   ctx: ExecutionContext,
   pages: z.infer<typeof pageRowSchema>[],
-  underPageId: string | undefined,
   only: PageSelection | null = null,
 ): Promise<z.infer<typeof pageListRowSchema>[]> {
-  const tree = await loadPageTree(tx, ctx.chatBranchId ?? null);
-  let visible = pages;
-  if (underPageId !== undefined) {
-    const below = new Set(descendantIdsOf(tree, [underPageId]));
-    visible = pages.filter((p) => below.has(p.id));
-  }
-  let branchPaths = new Map<string, string>();
-  if (ctx.chatBranchId) {
-    // Pages this chat renamed or moved (pending — main pages and its own
-    // alike), plus everything below them: their stored path predates the
-    // pending change.
-    const drifted = await pendingDriftIds(tx, tree, ctx.chatBranchId);
-    if (drifted.length > 0) {
-      branchPaths = await composePaths(tx, tree, drifted, renderScopeOf(ctx, tx));
-    }
-  }
-  const out = visible.map((p) => ({
+  const { tree, drifted } = await loadPageChains(
+    tx,
+    ctx.chatBranchId ?? null,
+    pages.map((p) => p.id),
+  );
+  const branchPaths =
+    ctx.chatBranchId && drifted.size > 0
+      ? await composePaths(tx, tree, [...drifted], renderScopeOf(ctx, tx))
+      : new Map<string, string>();
+  const out = pages.map((p) => ({
     ...p,
     currentPath: branchPaths.get(p.id) ?? p.currentPath,
     depth: tree.byId.has(p.id) ? ancestorIdsOf(tree, p.id).length + 1 : 1,
