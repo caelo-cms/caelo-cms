@@ -122,8 +122,22 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     input: (r) => ({ moduleIds: [r.write.moduleId] }),
   },
   { op: "lists.list", ctx: "chat", input: () => ({}) },
-  { op: "list_types.list", ctx: "chat", input: () => ({}) },
-  { op: "page_types.list", ctx: "chat", input: () => ({}) },
+  // international-site's render hooks and translation ops read the definitions only.
+  { op: "list_types.list", ctx: "chat", plugins: ["international-site"], input: () => ({}) },
+  { op: "page_types.list", ctx: "chat", plugins: ["international-site"], input: () => ({}) },
+  // The counted shapes (EXACT_COUNTS): the admin pages and the AI's list tools.
+  {
+    op: "list_types.list",
+    label: "list_types.list {counts}",
+    ctx: "chat",
+    input: () => ({ counts: true }),
+  },
+  {
+    op: "page_types.list",
+    label: "page_types.list {counts}",
+    ctx: "chat",
+    input: () => ({ counts: true }),
+  },
   { op: "redirects.list", ctx: "system", input: () => ({}) },
   // Writes an agent makes one page at a time (translation-shaped work).
   {

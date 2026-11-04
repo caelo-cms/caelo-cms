@@ -88,7 +88,10 @@ export const listPageTypesTool: ToolDefinitionWithHandler<ListPageTypesInput> = 
       };
     }
     const { slug: _slug, ...filters } = input;
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "page_types.list", filters);
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "page_types.list", {
+      ...filters,
+      counts: true,
+    });
     if (!r.ok) {
       return toolError(r.error, `list_page_types: ${describeError(r.error)}`);
     }

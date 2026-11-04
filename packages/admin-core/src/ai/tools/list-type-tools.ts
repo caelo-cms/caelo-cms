@@ -91,7 +91,10 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
       };
     }
     const { slug: _slug, ...filters } = input;
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "list_types.list", filters);
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "list_types.list", {
+      ...filters,
+      counts: true,
+    });
     if (!r.ok) {
       return { ok: false, content: `list_list_types: ${describeError(r.error)}` };
     }

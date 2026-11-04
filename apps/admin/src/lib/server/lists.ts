@@ -117,7 +117,8 @@ export async function loadList(
 
 /** Every list type. */
 export async function loadListTypes(ctx: ExecutionContext): Promise<ListTypeRow[]> {
-  return (await run<{ listTypes: ListTypeRow[] }>(ctx, "list_types.list", {})).listTypes;
+  return (await run<{ listTypes: ListTypeRow[] }>(ctx, "list_types.list", { counts: true }))
+    .listTypes;
 }
 
 /** One list type with the lists that share it, null when it does not exist. */
@@ -142,7 +143,8 @@ export async function loadListType(
 
 /** Every page type. */
 export async function loadPageTypes(ctx: ExecutionContext): Promise<PageTypeRow[]> {
-  return (await run<{ pageTypes: PageTypeRow[] }>(ctx, "page_types.list", {})).pageTypes;
+  return (await run<{ pageTypes: PageTypeRow[] }>(ctx, "page_types.list", { counts: true }))
+    .pageTypes;
 }
 
 /** Every vocabulary list with its entries (term pickers, query term knobs). */
