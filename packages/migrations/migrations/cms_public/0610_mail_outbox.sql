@@ -26,6 +26,8 @@
 --
 -- `id` comes from the sequence and `created_at` from now(), never from the
 -- writer: the admin expires rows by `created_at` and drains by `id`.
+-- A row is deleted once the drain is done with it (sent, refused or
+-- failed); while it is being sent it carries a lease (`claimed_until`).
 -- How many mails a recipient or the whole site gets is capped by the admin
 -- at delivery (cms_admin `public_mail_deliveries`), not here: a writer can
 -- queue any number of rows, but not get more than the caps delivered.
@@ -39,7 +41,11 @@ CREATE TABLE IF NOT EXISTS mail_outbox (
     AND recipient ~ '^[^][[:space:]@<>",;:\\()]+@[^][[:space:]@<>",;:\\()]+\.[^][[:space:]@<>",;:\\()]+$'
   ),
   token       text NULL CHECK (token IS NULL OR token ~ '^[A-Za-z0-9_-]{16,128}$'),
-  created_at  timestamptz NOT NULL DEFAULT now()
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  -- The admin's drain leases a row while it sends; a drain that dies
+  -- mid-way leaves the lease to run out and the next tick takes the row
+  -- again (at least once, never lost). The visitor role cannot set it.
+  claimed_until timestamptz NULL
 );
 
 -- The drain deletes expired rows by age before it claims by id.
@@ -66,5 +72,5 @@ CREATE POLICY mail_outbox_admin ON mail_outbox
 
 GRANT INSERT (plugin_id, template, recipient, token) ON mail_outbox TO public_role;
 GRANT USAGE ON SEQUENCE mail_outbox_id_seq TO public_role;
-GRANT SELECT, INSERT, DELETE ON mail_outbox TO admin_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON mail_outbox TO admin_role;
 GRANT USAGE ON SEQUENCE mail_outbox_id_seq TO admin_role;

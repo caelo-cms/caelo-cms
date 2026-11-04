@@ -4,13 +4,16 @@
  * The operations behind the public mail outboxes (issue #1337, epic #763
  * M7). The drain (`email/outbox.ts`) runs them on every scheduler tick:
  *
- * 1. `mail_outbox.claim` (each public database) takes the oldest rows out
- *    of that database's `mail_outbox` — deleted in the same statement, so
- *    no row is sent twice, by this instance or another.
+ * 1. `mail_outbox.claim` (each public database) leases the oldest rows of
+ *    that database's `mail_outbox`, so no other drain takes them meanwhile;
+ *    `mail_outbox.complete` deletes them once the drain is done. A drain
+ *    that dies mid-way loses nothing: the lease runs out and the next tick
+ *    takes the rows again (at least once).
  * 2. `public_mail_deliveries.reserve_many` (cms_admin) decides, from state
  *    the public side cannot touch, which of them may be sent: the staging
  *    rule (only addresses of cms_admin users), the per-recipient cap and
- *    the site-wide cap per environment. It records a ledger row for each
+ *    the site-wide cap per environment (the Owner's `mail_delivery_caps`,
+ *    `mail_caps.ts`). It records a ledger row for each
  *    allowed mail and returns the environment's link host.
  * 3. `public_mail_deliveries.finish_many` records what the transport said.
  *
@@ -21,23 +24,16 @@ import { defineOperation, textArray } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { readMailCaps } from "./mail_caps.js";
 
 /** Most outbox rows one claim takes. */
 export const MAIL_OUTBOX_CLAIM_MAX = 200;
 
-/** Mails one recipient gets per environment within {@link RECIPIENT_WINDOW_HOURS}. */
-export const MAIL_RECIPIENT_CAP = 5;
-export const RECIPIENT_WINDOW_HOURS = 24;
+/** How long a claimed row stays with the drain that took it (the task's lease is 5 minutes). */
+const MAIL_OUTBOX_LEASE_MINUTES = 10;
 
-/**
- * Mails the whole site sends per environment and hour. Live sits above a
- * real site's sign-up rate and below what spoils a sending domain's
- * reputation in an hour; staging mails only the team.
- */
-export const MAIL_SITE_CAP_PER_HOUR: Readonly<Record<"live" | "staging", number>> = {
-  live: 200,
-  staging: 50,
-};
+/** The window of the per-recipient cap (the cap itself: `mail_delivery_caps`). */
+export const RECIPIENT_WINDOW_HOURS = 24;
 
 /** Ledger rows older than this are collected (longer than every cap window). */
 const LEDGER_RETENTION_HOURS = 48;
@@ -82,14 +78,40 @@ export const claimMailOutboxOp = defineOperation({
       )) as unknown as { pending: boolean }[];
       return ok({ rows: [], expired: expired.length, pending: Boolean(left[0]?.pending) });
     }
+    // A lease, not a delete: a drain that dies before it is done leaves the
+    // rows to the next tick once the lease ran out (`mail_outbox.complete`
+    // deletes them when the drain is done).
     const rows = (await tx.execute(sql`
-      DELETE FROM mail_outbox
+      UPDATE mail_outbox SET claimed_until = now() + make_interval(mins => ${MAIL_OUTBOX_LEASE_MINUTES})
       WHERE id IN (
-        SELECT id FROM mail_outbox ORDER BY id LIMIT ${input.limit} FOR UPDATE SKIP LOCKED
+        SELECT id FROM mail_outbox
+        WHERE claimed_until IS NULL OR claimed_until < now()
+        ORDER BY id LIMIT ${input.limit} FOR UPDATE SKIP LOCKED
       )
       RETURNING id::text AS id, plugin_id::text AS plugin_id, template, recipient, token, created_at
     `)) as unknown as unknown[];
     return ok({ rows: [...rows], expired: expired.length, pending: false });
+  },
+});
+
+export const completeMailOutboxOp = defineOperation({
+  name: "mail_outbox.complete",
+  readScope: "request",
+  // Why system-only: the drain removes the rows it is done with.
+  actorScope: ["system"],
+  database: "cms_public",
+  input: z
+    .object({ ids: z.array(z.string().regex(/^[0-9]{1,19}$/)).max(MAIL_OUTBOX_CLAIM_MAX) })
+    .strict(),
+  output: z.object({ deleted: z.number().int() }),
+  handler: async (_ctx, input, tx) => {
+    if (input.ids.length === 0) return ok({ deleted: 0 });
+    const rows = (await tx.execute(sql`
+      DELETE FROM mail_outbox
+      WHERE id = ANY(ARRAY(SELECT jsonb_array_elements_text((${JSON.stringify(input.ids)}::text)::jsonb)::bigint))
+      RETURNING id
+    `)) as unknown as unknown[];
+    return ok({ deleted: rows.length });
   },
 });
 
@@ -105,6 +127,8 @@ const reserveInput = z
             recipientHash: z.string().regex(/^[0-9a-f]{64}$/),
             pluginId: z.string().uuid(),
             template: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+            /** The template links: refused before a reservation when no origin is set. */
+            needsLink: z.boolean(),
           })
           .strict(),
       )
@@ -112,7 +136,7 @@ const reserveInput = z
   })
   .strict();
 
-const refusal = z.enum(["not_a_team_member", "recipient_cap", "site_cap"]);
+const refusal = z.enum(["not_a_team_member", "recipient_cap", "site_cap", "no_link_origin"]);
 
 export const reserveMailDeliveriesOp = defineOperation({
   name: "public_mail_deliveries.reserve_many",
@@ -151,7 +175,9 @@ export const reserveMailDeliveriesOp = defineOperation({
       WHERE environment = ${input.environment} AND created_at > now() - interval '1 hour'
     `)) as unknown as { n: number }[];
     let siteUsed = siteRows[0]?.n ?? 0;
-    const siteCap = MAIL_SITE_CAP_PER_HOUR[input.environment];
+    // The Owner's caps (#1337, migration 0611): stored, never defaulted here.
+    const caps = await readMailCaps(tx);
+    const siteCap = input.environment === "live" ? caps.livePerHour : caps.stagingPerHour;
 
     const hashes = [...new Set(input.mails.map((m) => m.recipientHash))];
     const perRecipient = new Map<string, number>();
@@ -179,14 +205,21 @@ export const reserveMailDeliveriesOp = defineOperation({
       for (const r of found) team.add(r.email);
     }
 
+    // Before any reservation: a mail whose link has no origin would only
+    // use up a cap slot for nothing.
+    const linkOrigin = await linkOriginOf(tx, input.environment);
     const decisions: Array<{ deliveryId: string } | { refused: z.infer<typeof refusal> }> = [];
     for (const m of input.mails) {
+      if (m.needsLink && linkOrigin === null) {
+        decisions.push({ refused: "no_link_origin" });
+        continue;
+      }
       if (input.environment === "staging" && !team.has(m.recipient)) {
         decisions.push({ refused: "not_a_team_member" });
         continue;
       }
       const used = perRecipient.get(m.recipientHash) ?? 0;
-      if (used >= MAIL_RECIPIENT_CAP) {
+      if (used >= caps.perRecipientPerDay) {
         decisions.push({ refused: "recipient_cap" });
         continue;
       }
@@ -212,7 +245,7 @@ export const reserveMailDeliveriesOp = defineOperation({
       decisions.push({ deliveryId: id });
     }
 
-    return ok({ decisions, linkOrigin: await linkOriginOf(tx, input.environment) });
+    return ok({ decisions, linkOrigin });
   },
 });
 

@@ -266,6 +266,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   ai_budgets: "Owner AI budgets; read per call, nothing is derived from it",
   ai_pricing: "Owner AI pricing; read per call, nothing is derived from it",
   email_config: "Owner email configuration; read per send",
+  mail_delivery_caps:
+    "#1337: the Owner's delivery caps of the public mail outboxes; read per drain",
   public_mail_deliveries:
     "#1337: the ledger of mails the admin sent from the public mail outboxes; only counted for the delivery caps",
   telemetry_settings: "the install's telemetry consent",

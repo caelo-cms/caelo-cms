@@ -24,7 +24,7 @@ async function signUpAndVerify(w: ReturnType<typeof world>, email: string): Prom
   await run(w.ctx, "signup", { email, password: PASSWORD });
   const mail = w.state.mails.findLast((m) => m.template === "verify_email");
   if (!mail?.token) throw new Error("no verification mail queued");
-  await run(w.ctx, "verify_email", { token: mail.token });
+  await run(w.ctx, "verify_email", { token: mail.token, password: PASSWORD });
 }
 
 function median(xs: number[]): number {
@@ -167,7 +167,11 @@ describe("mandatory e-mail verification (E12)", () => {
     const mail = w.state.mails.find((m) => m.template === "verify_email");
     if (!mail?.token) throw new Error("no verification mail");
     expect(mail.to).toBe("a@example.com");
-    await run(w.ctx, "verify_email", { token: mail.token });
+    // The link works only with the password of its sign-up.
+    await expect(
+      run(w.ctx, "verify_email", { token: mail.token, password: "not the password" }),
+    ).rejects.toThrow(/invalid or expired link/);
+    await run(w.ctx, "verify_email", { token: mail.token, password: PASSWORD });
     await expect(
       run(w.ctx, "login", { email: "a@example.com", password: PASSWORD }),
     ).resolves.toMatchObject({ publicUserId: expect.any(String) });
@@ -177,10 +181,16 @@ describe("mandatory e-mail verification (E12)", () => {
   it("a squatted, unverified sign-up never gets a usable password", async () => {
     const w = world({ auth_config: [OPEN_CONFIG] });
     await run(w.ctx, "signup", { email: "victim@example.com", password: "attacker password" });
+    const squatterMail = w.state.mails.findLast((m) => m.template === "verify_email");
     await run(w.ctx, "signup", { email: "victim@example.com", password: PASSWORD });
+    // Even if the inbox owner opens the squatter's mail first, it needs the
+    // squatter's password, which they do not know.
+    await expect(
+      run(w.ctx, "verify_email", { token: squatterMail?.token, password: PASSWORD }),
+    ).rejects.toThrow(/invalid or expired link/);
     const victimMail = w.state.mails.findLast((m) => m.template === "verify_email");
     if (!victimMail?.token) throw new Error("no verification mail");
-    await run(w.ctx, "verify_email", { token: victimMail.token });
+    await run(w.ctx, "verify_email", { token: victimMail.token, password: PASSWORD });
     await expect(
       run(w.ctx, "login", { email: "victim@example.com", password: "attacker password" }),
     ).rejects.toThrow(/invalid credentials/);
@@ -229,8 +239,8 @@ describe("single-use tokens are redeemed atomically (#763 M6)", () => {
     await run(w.ctx, "signup", { email: "a@example.com", password: PASSWORD });
     const token = w.state.mails[0]?.token ?? "";
     const results = await Promise.allSettled([
-      run(w.ctx, "verify_email", { token }),
-      run(w.ctx, "verify_email", { token }),
+      run(w.ctx, "verify_email", { token, password: PASSWORD }),
+      run(w.ctx, "verify_email", { token, password: PASSWORD }),
     ]);
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
   });
@@ -274,6 +284,89 @@ describe("addresses, sessions and the login throttle (#763 M6)", () => {
     await expect(
       run(w.ctx, "login", { email: "ghost@example.com", password: "x" }),
     ).rejects.toThrow(/too many attempts/);
+  });
+
+  it("counts concurrent failures for one address exactly (one row, compare-and-swap)", async () => {
+    const w = world({ auth_config: [OPEN_CONFIG] });
+    await signUpAndVerify(w, "a@example.com");
+    // Three at a time stays under the hash bound; all three race on the row.
+    for (let round = 0; round < 2; round++) {
+      await Promise.allSettled(
+        Array.from({ length: 3 }, () =>
+          run(w.ctx, "login", { email: "a@example.com", password: "wrong" }),
+        ),
+      );
+    }
+    expect(w.tables.login_throttle).toHaveLength(1);
+    expect(w.tables.login_throttle?.[0]?.failures).toBe(6);
+    await expect(
+      run(w.ctx, "login", { email: "a@example.com", password: PASSWORD }),
+    ).rejects.toThrow(/too many attempts/);
+  });
+
+  it("two concurrent first sign-ups of one address create one account", async () => {
+    const w = world({ auth_config: [OPEN_CONFIG] });
+    const answers = await Promise.all([
+      run(w.ctx, "signup", { email: "same@example.com", password: PASSWORD }),
+      run(w.ctx, "signup", { email: "Same@Example.com", password: PASSWORD }),
+    ]);
+    expect(answers).toEqual([{ awaitingVerification: true }, { awaitingVerification: true }]);
+    expect(w.tables.public_users).toHaveLength(1);
+  });
+
+  it("a pre-#1334 account and a newer one of the same address stay reachable each under its spelling", async () => {
+    const legacyHash = await Bun.password.hash("legacy password", {
+      algorithm: "argon2id",
+      memoryCost: 19_456,
+      timeCost: 2,
+    });
+    const w = world({
+      auth_config: [OPEN_CONFIG],
+      public_users: [
+        {
+          id: "legacy",
+          email: "Alice@example.com",
+          password_hash: legacyHash,
+          email_verified_at: new Date().toISOString(),
+        } as Row,
+      ],
+    });
+    await signUpAndVerify(w, "alice@example.com");
+    expect(
+      await run(w.ctx, "login", { email: "Alice@example.com", password: "legacy password" }),
+    ).toEqual({ publicUserId: "legacy" });
+    const fresh = (await run(w.ctx, "login", {
+      email: "alice@example.com",
+      password: PASSWORD,
+    })) as { publicUserId: string };
+    expect(fresh.publicUserId).not.toBe("legacy");
+  });
+
+  it("the site's admin can lift a lockout early (unlock_login)", async () => {
+    const w = world({ auth_config: [OPEN_CONFIG] });
+    await signUpAndVerify(w, "a@example.com");
+    for (let i = 0; i < 5; i++) {
+      await run(w.ctx, "login", { email: "a@example.com", password: "wrong" }).catch(() => null);
+    }
+    await expect(
+      run(w.ctx, "login", { email: "a@example.com", password: PASSWORD }),
+    ).rejects.toThrow(/too many attempts/);
+    expect(await run(w.ctx, "unlock_login", { email: " A@Example.com " })).toEqual({
+      unlocked: true,
+      wasLocked: true,
+    });
+    await expect(
+      run(w.ctx, "login", { email: "a@example.com", password: PASSWORD }),
+    ).resolves.toBeDefined();
+    expect(await run(w.ctx, "unlock_login", { email: "a@example.com" })).toEqual({
+      unlocked: false,
+      wasLocked: false,
+    });
+    // Visitors never reach it; the admin panel and the AI tool do.
+    expect(publicOperationOf(plugin.publicOperations, "unlock_login")).toBeUndefined();
+    expect(plugin.tools?.find((t) => t.operationName === "unlock_login")?.name).toBe(
+      "unlock_visitor_login",
+    );
   });
 
   it("captcha is required on login and both reset steps", () => {

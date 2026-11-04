@@ -84,7 +84,7 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
     const r = await ratingsPlugin.operations._refresh(ctx, {});
     expect(insertedAggs).toEqual([{ page_id: "p1", count: 2, sum: 8, average: 400 }]);
     expect(deleted).toEqual(["ratings:a"]);
-    expect(r).toMatchObject({ refreshed: 1, pruned: 1, truncated: false });
+    expect(r).toEqual({ refreshed: 1, pruned: 1 });
   });
 
   test("the recompute runs once per public database (#1333)", () => {
@@ -140,6 +140,31 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
     await expect(newsletterPlugin.operations.unsubscribe(ctx, { token: "short" })).rejects.toThrow(
       "unsubscribe: invalid token",
     );
+    // #1337 — a still valid link is mailed again unchanged, never voided.
+    const validQueued: Array<{ token?: string }> = [];
+    const validCtx = {
+      captcha: { requireProof: async () => true },
+      email: {
+        queue: async (m: { token?: string }) => {
+          validQueued.push(m);
+        },
+      },
+      query: {
+        list: async () => [
+          {
+            id: "sub-2",
+            confirmed_at: null,
+            confirm_token: "99999999-2222-3333-4444-555555555555",
+            confirm_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          },
+        ],
+        update: async () => {
+          throw new Error("a valid link must not be replaced");
+        },
+      },
+    } as unknown as PluginContextTier1;
+    await newsletterPlugin.operations.subscribe(validCtx, { email: "again@example.com" });
+    expect(validQueued[0]?.token).toBe("99999999-2222-3333-4444-555555555555");
     // #1337 — an expired link is refused.
     await expect(
       newsletterPlugin.operations.confirm(ctx, { token: "11111111-2222-3333-4444-555555555555" }),

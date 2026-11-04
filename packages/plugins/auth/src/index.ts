@@ -225,8 +225,11 @@ const tokenField = z.string().min(16).max(128);
 const credentialsInput = z.object({ email: emailField, password: passwordField }).strict();
 const sessionInput = z.object({}).strict();
 const emailInput = z.object({ email: emailField }).strict();
-const tokenInput = z.object({ token: tokenField }).strict();
+/** A verification link plus the password chosen at that sign-up. */
+const verifyInput = z.object({ token: tokenField, password: passwordField }).strict();
 const resetInput = z.object({ token: tokenField, newPassword: passwordField }).strict();
+/** The address whose login lockout the site's admin lifts. */
+const unlockInput = z.object({ email: emailField }).strict();
 
 /**
  * One spelling per address: Unicode NFC, trimmed, lower case. `A@x` and
@@ -252,7 +255,7 @@ function storedSpellings(typed: string): string[] {
   return asTyped === normalised ? [normalised] : [normalised, asTyped];
 }
 
-/** The account stored under one of the address's spellings, normalised first. */
+/** The account stored under one of the address's spellings, the typed one first. */
 async function findAccount<T extends { id: string; email: string }>(
   q: PluginQuery,
   typed: string,
@@ -262,7 +265,11 @@ async function findAccount<T extends { id: string; email: string }>(
     anyOf: { email: spellings },
     limit: 2,
   });
-  return rows.find((r) => r.email === spellings[0]) ?? rows[0];
+  // The spelling as typed wins: where a pre-#1334 account (`Alice@x`) and
+  // a newer one (`alice@x`) coexist, each stays reachable under its own
+  // spelling instead of one silently answering for the other.
+  const asTyped = typed.trim();
+  return rows.find((r) => r.email === asTyped) ?? rows.find((r) => r.email === spellings[0]);
 }
 
 /**
@@ -358,21 +365,39 @@ async function recordLoginFailure(
   emailHash: string,
   row: ThrottleRow | undefined,
 ): Promise<void> {
-  const now = Date.now();
-  if (!row) {
-    await q.insert("login_throttle", {
-      email_hash: emailHash,
-      failures: 1,
-      window_started_at: new Date(now).toISOString(),
-    });
-  } else if (throttleWindowOpen(row, now)) {
-    await q.update("login_throttle", row.id, { failures: row.failures + 1 });
-  } else {
-    await q.update("login_throttle", row.id, {
-      failures: 1,
-      window_started_at: new Date(now).toISOString(),
-    });
+  // Atomic against concurrent failures for one address, on any gateway
+  // instance: one row per address (a unique index on `email_hash`), and
+  // every change is a compare-and-swap on the count it read. A lost race
+  // reads again and retries, so no failure goes uncounted.
+  let current = row;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const now = Date.now();
+    if (!current) {
+      try {
+        await q.insert("login_throttle", {
+          email_hash: emailHash,
+          failures: 1,
+          window_started_at: new Date(now).toISOString(),
+        });
+        return;
+      } catch (e) {
+        // Another request inserted the address's row first.
+        current = await loginThrottle(q, emailHash);
+        if (!current) throw e;
+        continue;
+      }
+    }
+    const patch = throttleWindowOpen(current, now)
+      ? { failures: current.failures + 1 }
+      : { failures: 1, window_started_at: new Date(now).toISOString() };
+    if (
+      await q.compareAndSwap("login_throttle", current.id, { failures: current.failures }, patch)
+    ) {
+      return;
+    }
+    current = await loginThrottle(q, emailHash);
   }
+  throw new Error("login: the failed attempt could not be counted (contended), refusing");
 }
 
 /** Issue a session and hand its token to the gateway's HttpOnly cookie. */
@@ -435,6 +460,12 @@ export default definePlugin<PluginContextTier1>({
     public_users: {
       id: "uuid",
       email: "string",
+      /**
+       * #1334 — SHA-256 of the normalised address, unique: two concurrent
+       * sign-ups of one address create one account. Accounts created before
+       * have none (a unique index admits any number of nulls).
+       */
+      email_key: "string",
       password_hash: "string",
       email_verified_at: "timestamp_nullable",
       created_at: "timestamp",
@@ -502,11 +533,14 @@ export default definePlugin<PluginContextTier1>({
     schema: {
       // Hash: a stored email may predate the 254-character signup bound,
       // and a btree entry holds at most ~2.7 KB (it would fail the build).
-      public_users: [{ columns: ["email"], method: "hash" }],
+      public_users: [
+        { columns: ["email"], method: "hash" },
+        { columns: ["email_key"], unique: true },
+      ],
       visitor_sessions: [["token_hash"], ["public_user_id"], ["expires_at"]],
       password_reset_tokens: [["token_hash"], ["expires_at"]],
       email_verification_tokens: [["token_hash"], ["public_user_id"], ["expires_at"]],
-      login_throttle: [["email_hash"], ["window_started_at"]],
+      login_throttle: [{ columns: ["email_hash"], unique: true }, ["window_started_at"]],
       auth_config_proposals: [["status", "created_at"]],
     },
   },
@@ -528,6 +562,7 @@ export default definePlugin<PluginContextTier1>({
         operation: "verify_email",
         label: "Confirm e-mail address",
         done: "Your e-mail address is confirmed. You can log in now.",
+        fields: [{ name: "password", label: "The password you signed up with", type: "password" }],
       },
     },
     signup_existing_account: {
@@ -580,7 +615,7 @@ export default definePlugin<PluginContextTier1>({
     {
       name: "verify_email",
       kind: "write",
-      input: tokenInput,
+      input: verifyInput,
       rateLimit: { max: 10, windowSeconds: 60 },
       reads: ["email_verification_tokens"],
       writes: ["email_verification_tokens", "public_users"],
@@ -667,15 +702,33 @@ export default definePlugin<PluginContextTier1>({
         email: string;
         email_verified_at: string | null;
       }>(ctx.query, input.email);
-      if (existing?.email_verified_at) {
-        await mailer(ctx).queue({ template: "signup_existing_account", to: email });
-      } else if (existing) {
-        await queueVerification(ctx, existing.id, email, password_hash);
-      } else {
+      let account = existing;
+      if (!account) {
         // The account exists from now on, but nobody can log in to it until
         // the link proved the inbox (`login` refuses unverified accounts).
-        const r = await ctx.query.insert("public_users", { email, password_hash });
-        await queueVerification(ctx, r.id, email, password_hash);
+        try {
+          const r = await ctx.query.insert("public_users", {
+            email,
+            email_key: await hashToken(email),
+            password_hash,
+          });
+          await queueVerification(ctx, r.id, email, password_hash);
+          return answerAtFloor(startedAt, SIGNUP_ANSWER);
+        } catch (e) {
+          // A concurrent sign-up of the same address created it first
+          // (the unique `email_key`): continue as for a known address.
+          account = await findAccount<{
+            id: string;
+            email: string;
+            email_verified_at: string | null;
+          }>(ctx.query, input.email);
+          if (!account) throw e;
+        }
+      }
+      if (account.email_verified_at) {
+        await mailer(ctx).queue({ template: "signup_existing_account", to: email });
+      } else {
+        await queueVerification(ctx, account.id, email, password_hash);
       }
       return answerAtFloor(startedAt, SIGNUP_ANSWER);
     },
@@ -686,7 +739,7 @@ export default definePlugin<PluginContextTier1>({
      * (claimed atomically); every other open link of the account dies.
      */
     verify_email: async (ctx, args) => {
-      const input = args as z.infer<typeof tokenInput>;
+      const input = args as z.infer<typeof verifyInput>;
       const rows = await ctx.query.list<
         "email_verification_tokens",
         {
@@ -701,9 +754,20 @@ export default definePlugin<PluginContextTier1>({
       if (!t || t.used_at || new Date(t.expires_at) < new Date()) {
         throw new PublicOperationError("verify_email: invalid or expired link");
       }
-      if (!(await claimToken(ctx.query, "email_verification_tokens", t.id))) {
-        throw new PublicOperationError("verify_email: invalid or expired link");
-      }
+      // The link sets the password of the sign-up it came from, so it works
+      // only with that password: a mail an earlier sign-up of someone else
+      // triggered (a squatter's) cannot be completed by the inbox owner
+      // without knowing the squatter's password, and the squatter never
+      // gets the mail. The slot is taken before the claim, so a Busy answer
+      // does not use up the link.
+      await withHashSlot(async () => {
+        if (!(await verifyPassword(input.password, t.password_hash))) {
+          throw new PublicOperationError("verify_email: invalid or expired link");
+        }
+        if (!(await claimToken(ctx.query, "email_verification_tokens", t.id))) {
+          throw new PublicOperationError("verify_email: invalid or expired link");
+        }
+      });
       await ctx.query.update("public_users", t.public_user_id, {
         password_hash: t.password_hash,
         email_verified_at: new Date().toISOString(),
@@ -845,6 +909,32 @@ export default definePlugin<PluginContextTier1>({
       await revokeAllSessions(ctx.query, t.public_user_id);
       ctx.visitor.setSession?.(null);
       return { reset: true };
+    },
+
+    /**
+     * #1334 (maintainer decision 2026-11-04) — the site's admin lifts the
+     * login lockout of one address before its window ends (a visitor who
+     * mistyped their password five times). Routine and reversible: the
+     * next failed logins count from zero again. Admin side only (the Owner
+     * panel and the AI tool); visitors never reach it. Audited by the host
+     * like every admin-side operation (input digest, no address).
+     */
+    unlock_login: async (ctx, args) => {
+      const parsed = unlockInput.safeParse(args);
+      if (!parsed.success) {
+        throw new Error(
+          "unlock_login: invalid input — pass { email } with the address exactly as the visitor signs in",
+        );
+      }
+      const row = await loginThrottle(
+        ctx.query,
+        await hashToken(normaliseEmail(parsed.data.email)),
+      );
+      if (!row) return { unlocked: false, wasLocked: false };
+      const wasLocked =
+        throttleWindowOpen(row, Date.now()) && row.failures >= LOGIN_THROTTLE_MAX_FAILURES;
+      await ctx.query.delete("login_throttle", row.id);
+      return { unlocked: true, wasLocked };
     },
 
     /**
@@ -1023,7 +1113,52 @@ export default definePlugin<PluginContextTier1>({
       return { deleted: sessions + tokens + verifications + throttles };
     },
   },
+  /** #1334 — the Owner lifts a visitor's login lockout (also as the AI tool below). */
+  adminPanels: [
+    {
+      slug: "visitor-logins",
+      title: "Visitor logins",
+      description: "Lift the lockout of a visitor who had too many failed logins.",
+      icon: "users",
+      permission: "settings.write",
+      sections: [
+        {
+          kind: "form",
+          id: "unlock",
+          title: "Unlock a visitor's login",
+          description:
+            "After 5 failed logins within 15 minutes an address is locked for the rest of those 15 minutes. Unlock it now, for example after the visitor asked for help.",
+          operation: "unlock_login",
+          fields: [
+            {
+              arg: "email",
+              label: "E-mail address",
+              input: "text",
+              required: true,
+              placeholder: "visitor@example.com",
+              maxLength: 254,
+            },
+          ],
+          submitLabel: "Unlock",
+          successMessage: "Done: the address can log in again.",
+        },
+      ],
+    },
+  ],
   tools: [
+    {
+      name: "unlock_visitor_login",
+      description:
+        "Lift the login lockout of one visitor address (auth plugin: 5 failed logins in 15 minutes lock that address until the window ends). Use when the operator asks to unlock a visitor, e.g. 'unlock x@y'. Reversible; the address keeps its account and password. `wasLocked: false` means it was not locked.",
+      operationName: "unlock_login",
+      requiredPermission: "settings.write",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["email"],
+        properties: { email: { type: "string", maxLength: 254 } },
+      },
+    },
     {
       name: "propose_auth_config",
       description:

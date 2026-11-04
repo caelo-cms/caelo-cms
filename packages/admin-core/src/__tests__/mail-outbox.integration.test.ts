@@ -22,7 +22,6 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { drainOutboxOnce, MAIL_OUTBOX_TTL_MINUTES } from "../email/outbox.js";
-import { MAIL_RECIPIENT_CAP, MAIL_SITE_CAP_PER_HOUR } from "../ops/mail_outbox.js";
 import { releaseProjectionForTests, stagingPublicAdapter } from "../public-projection.js";
 import { registerAdminOps } from "../register.js";
 
@@ -135,6 +134,10 @@ function resendDomains(url: string, init?: RequestInit): Response {
     ],
   });
 }
+
+/** The seeded caps (migration 0611): the drain reads them from cms_admin. */
+const MAIL_RECIPIENT_CAP = 5;
+const LIVE_CAP = 200;
 
 let adapter: DatabaseAdapter;
 let staging: DatabaseAdapter;
@@ -347,7 +350,7 @@ describe("the admin drains the live outbox", () => {
   });
 
   it("caps the whole site per hour", async () => {
-    const cap = MAIL_SITE_CAP_PER_HOUR.live;
+    const cap = LIVE_CAP;
     const sql = new SQL(PUBLIC_ROLE_URL as string);
     try {
       await sql`INSERT INTO mail_outbox (plugin_id, template, recipient)
@@ -371,6 +374,63 @@ describe("the admin drains the live outbox", () => {
     const report = await drain("live");
     expect(report.expired).toBe(1);
     expect(sent).toHaveLength(0);
+  });
+});
+
+describe("a drain that dies mid-way loses no mail", () => {
+  it("a claimed row is leased, not deleted, and taken again once the lease runs out", async () => {
+    await queueAsVisitor(PUBLIC_ROLE_URL as string, [
+      { template: "plain_note", recipient: "lease@x.test", token: null },
+    ]);
+    const claim = () =>
+      execute(registry, adapter, { ...OWNER, actorKind: "system" }, "mail_outbox.claim", {
+        limit: 10,
+        ttlMinutes: MAIL_OUTBOX_TTL_MINUTES,
+      });
+    const first = await claim();
+    if (!first.ok) throw new Error(JSON.stringify(first.error));
+    expect((first.value as { rows: unknown[] }).rows).toHaveLength(1);
+    // A second drain meanwhile gets nothing; the row is still there.
+    const second = await claim();
+    expect(second.ok && (second.value as { rows: unknown[] }).rows).toEqual([]);
+    // The first drain died: once its lease ran out, the next tick sends it.
+    await onDb(
+      PUBLIC_ADMIN_URL as string,
+      (tx) => tx`UPDATE mail_outbox SET claimed_until = now() - interval '1 second'`,
+    );
+    const report = await drain("live");
+    expect(report.sent).toBe(1);
+    expect(sent.map((m) => m.to)).toEqual(["lease@x.test"]);
+    const left = await onDb(
+      PUBLIC_ADMIN_URL as string,
+      async (tx) => (await tx`SELECT count(*)::int AS n FROM mail_outbox`) as { n: number }[],
+    );
+    expect(left[0]?.n).toBe(0);
+  });
+
+  it("a linking mail with no link origin is refused before it uses up a cap slot", async () => {
+    await onDb(
+      ADMIN_URL as string,
+      (tx) => tx`UPDATE site_defaults SET site_base_url = NULL WHERE id = 1`,
+    );
+    try {
+      await queueAsVisitor(PUBLIC_ROLE_URL as string, [
+        { template: "confirm_it", recipient: "origin@x.test", token: TOKEN },
+      ]);
+      const report = await drain("live");
+      expect(report.refused.no_link_origin).toBe(1);
+      const ledger = await onDb(
+        ADMIN_URL as string,
+        async (tx) =>
+          (await tx`SELECT count(*)::int AS n FROM public_mail_deliveries`) as { n: number }[],
+      );
+      expect(ledger[0]?.n).toBe(0);
+    } finally {
+      await onDb(
+        ADMIN_URL as string,
+        (tx) => tx`UPDATE site_defaults SET site_base_url = 'https://www.t1337.test' WHERE id = 1`,
+      );
+    }
   });
 });
 
@@ -469,5 +529,62 @@ describe("the sending domain's DNS records (E12)", () => {
       "POST /domains/dom-1/verify",
       "GET /domains/dom-1",
     ]);
+  });
+});
+
+describe("the caps are the Owner's settings (#1337, §11.A)", () => {
+  it("seeded with the defaults; the AI proposes, the Owner's approval applies, the drain follows", async () => {
+    const ai = { ...OWNER, actorKind: "ai" as const };
+    const read = await execute(registry, adapter, ai, "mail_caps.get", {});
+    if (!read.ok) throw new Error(JSON.stringify(read.error));
+    expect(read.value).toEqual({
+      caps: { perRecipientPerDay: MAIL_RECIPIENT_CAP, livePerHour: LIVE_CAP, stagingPerHour: 50 },
+    });
+    // The AI cannot set them directly.
+    const direct = await execute(registry, adapter, ai, "mail_caps.set", {
+      perRecipientPerDay: 50,
+      livePerHour: LIVE_CAP,
+      stagingPerHour: 50,
+    });
+    expect(direct.ok).toBe(false);
+    const proposed = await execute(registry, adapter, ai, "owner_settings.propose_set_mail_caps", {
+      perRecipientPerDay: 2,
+    });
+    if (!proposed.ok) throw new Error(JSON.stringify(proposed.error));
+    const { proposalId, preview } = proposed.value as {
+      proposalId: string;
+      preview: { changes: Record<string, unknown> };
+    };
+    expect(preview.changes).toEqual({ perRecipientPerDay: { from: MAIL_RECIPIENT_CAP, to: 2 } });
+    const executed = await execute(
+      registry,
+      adapter,
+      { ...OWNER, actorKind: "system" },
+      "owner_settings.execute_proposal",
+      {
+        proposalId,
+      },
+    );
+    if (!executed.ok) throw new Error(JSON.stringify(executed.error));
+    try {
+      await queueAsVisitor(
+        PUBLIC_ROLE_URL as string,
+        Array.from({ length: 4 }, () => ({
+          template: "plain_note",
+          recipient: "capped@x.test",
+          token: null,
+        })),
+      );
+      const report = await drain("live");
+      expect(report.sent).toBe(2);
+      expect(report.refused.recipient_cap).toBe(2);
+    } finally {
+      const back = await execute(registry, adapter, OWNER, "mail_caps.set", {
+        perRecipientPerDay: MAIL_RECIPIENT_CAP,
+        livePerHour: LIVE_CAP,
+        stagingPerHour: 50,
+      });
+      if (!back.ok) throw new Error(JSON.stringify(back.error));
+    }
   });
 });

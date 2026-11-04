@@ -24,9 +24,11 @@
  * - a row older than {@link MAIL_OUTBOX_TTL_MINUTES} is dropped: the
  *   tokens it carries are short-lived, and a mail an hour late confuses.
  *
- * A row is taken out of the outbox when it is read (deleted in the claim),
- * so no mail is sent twice; a transport failure is recorded and the mail is
- * not retried (the visitor asks again). Nothing is logged with an address.
+ * A claimed row is leased to this drain and deleted when the drain is done
+ * with it; a drain that dies mid-way leaves it to the next tick once the
+ * lease runs out (at least once, never lost). A transport failure is
+ * recorded and the mail is not retried (the visitor asks again). Nothing is
+ * logged with an address.
  */
 
 import { createHash } from "node:crypto";
@@ -235,6 +237,12 @@ export async function drainOutboxOnce(opts: {
       invalid += 1;
       continue;
     }
+    // A linking template needs the row's token: no half mail, and no cap
+    // slot spent on one.
+    if (found.template.link && !row.token) {
+      count("no_token");
+      continue;
+    }
     candidates.push({ row, ...found });
   }
 
@@ -251,6 +259,7 @@ export async function drainOutboxOnce(opts: {
         recipientHash: recipientHash(c.row.recipient),
         pluginId: c.row.plugin_id,
         template: c.row.template,
+        needsLink: c.template.link !== undefined,
       })),
     });
     const outcomes: Array<{
@@ -290,9 +299,11 @@ export async function drainOutboxOnce(opts: {
         });
       } catch (e) {
         failed += 1;
-        // The transport's words, never the address.
+        // Only the provider's status code: its error text may echo the
+        // request, recipient included (#763 M7: no address in a log).
+        const status = /\((\d{3})\)/.exec((e as Error).message)?.[1] ?? "no status";
         console.error(
-          `[mail-outbox] ${environment}: ${c.slug}.${c.row.template} not sent: ${(e as Error).message.slice(0, 300)}`,
+          `[mail-outbox] ${environment}: ${c.slug}.${c.row.template} not sent (transport answered ${status})`,
         );
         outcomes.push({ deliveryId: decision.deliveryId, outcome: "failed", messageId: null });
       }
@@ -301,6 +312,13 @@ export async function drainOutboxOnce(opts: {
       await run(registry, adapter, "public_mail_deliveries.finish_many", { outcomes });
     }
   }
+  // Done with every claimed row: sent, refused, invalid or failed. A row
+  // that failed validation has no id to trust, so it is deleted by the ids
+  // the claim returned, as text.
+  const claimedIds = claimed.rows
+    .map((r) => (r as { id?: unknown }).id)
+    .filter((id): id is string => typeof id === "string" && /^[0-9]{1,19}$/.test(id));
+  await run(registry, opts.publicAdapter, "mail_outbox.complete", { ids: claimedIds });
   return { claimed: claimed.rows.length, sent, failed, invalid, expired, refused };
 }
 

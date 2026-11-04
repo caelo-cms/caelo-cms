@@ -334,8 +334,10 @@ import {
 } from "./ops/links.js";
 import { resolveImportLinksOp } from "./ops/links-import.js";
 import { registerListOps } from "./ops/lists/index.js";
+import { getMailCapsOp, proposeSetMailCapsOp, setMailCapsOp } from "./ops/mail_caps.js";
 import {
   claimMailOutboxOp,
+  completeMailOutboxOp,
   finishMailDeliveriesOp,
   reserveMailDeliveriesOp,
 } from "./ops/mail_outbox.js";
@@ -1342,8 +1344,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(scheduledTasksFinishOp);
   // #1337 — the public mail outboxes' drain (system-only).
   registry.register(claimMailOutboxOp);
+  registry.register(completeMailOutboxOp);
   registry.register(reserveMailDeliveriesOp);
   registry.register(finishMailDeliveriesOp);
+  registry.register(getMailCapsOp);
+  registry.register(setMailCapsOp);
+  registry.register(proposeSetMailCapsOp);
   // #757 — the step-up for the actions above: the Owner's password, re-entered.
   registry.register(stepUpConfirmPasswordOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the

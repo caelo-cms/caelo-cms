@@ -14,9 +14,19 @@ import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
+/** #1337 — the Owner's caps on visitor mail (`mail_caps.get`). */
+interface MailCaps {
+  perRecipientPerDay: number;
+  livePerHour: number;
+  stagingPerHour: number;
+}
+
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
   const { adapter, registry } = getQueryContext();
+  const capsResult = await execute(registry, adapter, locals.ctx, "mail_caps.get", {});
+  if (!capsResult.ok) throw new Error(`mail_caps.get: ${describeError(capsResult.error)}`);
+  const mailCaps = (capsResult.value as { caps: MailCaps }).caps;
   const r = await execute(registry, adapter, locals.ctx, "email_config.get", {});
   if (!r.ok) {
     return {
@@ -27,6 +37,7 @@ export const load: PageServerLoad = async ({ locals }) => {
         updatedAt: new Date(0).toISOString(),
       },
       error: r.error.kind,
+      mailCaps,
     };
   }
   return {
@@ -41,6 +52,7 @@ export const load: PageServerLoad = async ({ locals }) => {
       }
     ).config,
     error: null,
+    mailCaps,
   };
 };
 
@@ -100,6 +112,20 @@ export const actions: Actions = {
     if (!r.ok) return fail(400, { error: describeError(r.error) });
     const v = r.value as { messageId: string };
     return { ok: true, message: `Sent test email (id ${v.messageId}).` };
+  },
+  /** #1337 — the Owner sets the caps on visitor mail directly (the AI proposes). */
+  saveCaps: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const form = await request.formData();
+    const num = (k: string) => Number.parseInt(String(form.get(k) ?? ""), 10);
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "mail_caps.set", {
+      perRecipientPerDay: num("perRecipientPerDay"),
+      livePerHour: num("livePerHour"),
+      stagingPerHour: num("stagingPerHour"),
+    });
+    if (!r.ok) return fail(400, { error: describeError(r.error) });
+    return { ok: true, message: "Mail caps saved." };
   },
   /** #1337 — the sending domain's DNS records as the provider sees them. */
   checkDomain: async ({ request, locals }) => {

@@ -14,6 +14,12 @@ export type Row = Record<string, unknown> & { id: string };
 
 const RESERVED = new Set(["limit", "orderBy", "orderDir", "since", "anyOf"]);
 
+/** The unique indexes of the auth manifest (`indexes.schema`). */
+const UNIQUE: ReadonlyArray<[string, string]> = [
+  ["login_throttle", "email_hash"],
+  ["public_users", "email_key"],
+];
+
 /** A mail the plugin queued. */
 export interface QueuedMail {
   readonly template: string;
@@ -74,12 +80,21 @@ export function world(seed: Partial<Record<string, Row[]>> = {}) {
     },
     query: {
       insert: async (table: string, data: Record<string, unknown>) => {
+        // A database round trip: concurrent callers interleave here.
+        await Promise.resolve();
+        // The unique indexes the manifest declares.
+        for (const [t2, col] of UNIQUE) {
+          if (table === t2 && data[col] != null && t(table).some((r) => r[col] === data[col])) {
+            throw new Error(`duplicate key value violates unique constraint (${table}.${col})`);
+          }
+        }
         nextId += 1;
         const id = `00000000-0000-4000-8000-${String(nextId).padStart(12, "0")}`;
         t(table).push({ id, updated_at: null, created_at: new Date().toISOString(), ...data });
         return { id };
       },
       list: async (table: string, filter: Record<string, unknown> = {}) => {
+        await Promise.resolve();
         const limit = Math.min(Number(filter.limit ?? 100), 1000);
         let rows = t(table).filter((r) => matches(r, filter));
         if (typeof filter.orderBy === "string") {

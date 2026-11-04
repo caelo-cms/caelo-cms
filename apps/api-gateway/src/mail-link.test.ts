@@ -98,6 +98,9 @@ describe("the page", () => {
     // The click calls the ordinary plugin endpoint with JSON; no form POST.
     expect(script).toContain('"/api/plugin/"+slug+"/"+op');
     expect(script).toContain('"Content-Type":"application/json"');
+    // The consent decision travels with both requests, like the component kit's.
+    expect(script).toContain('"x-caelo-consent"');
+    expect(script).toContain("headers:consent()");
     expect(html).not.toContain("<form method=");
   });
 });

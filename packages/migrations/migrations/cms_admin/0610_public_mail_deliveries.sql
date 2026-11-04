@@ -44,10 +44,6 @@ CREATE INDEX IF NOT EXISTS public_mail_deliveries_recipient_idx
 CREATE INDEX IF NOT EXISTS public_mail_deliveries_created_idx
   ON public_mail_deliveries (created_at);
 
--- The staging rule mails only addresses of cms_admin users; the drain looks
--- them up case-insensitively (an address is stored as the user typed it).
-CREATE INDEX IF NOT EXISTS users_lower_email_idx ON users (lower(email));
-
 ALTER TABLE public_mail_deliveries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public_mail_deliveries FORCE ROW LEVEL SECURITY;
 -- Only the system actor drains the outboxes (the ops are system-only).

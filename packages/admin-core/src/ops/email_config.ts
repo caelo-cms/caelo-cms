@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { resendSenderDomain, SenderDomainError, senderDomainOf } from "../email/sender-domain.js";
-import { buildEmailTransport } from "../email/transport.js";
+import { buildEmailTransport, emailDeliveryProblem } from "../email/transport.js";
 
 const transportEnum = z.enum(["none", "smtp", "resend", "ses"]);
 
@@ -129,12 +129,19 @@ export const setEmailConfigOp = defineOperation({
         message: "fromAddress is required for non-`none` transports",
       });
     }
-    if (input.transport === "none") {
+    if (
+      emailDeliveryProblem({
+        transport: input.transport,
+        fromAddress: input.fromAddress,
+        config: input.config,
+      }) !== null
+    ) {
       // #1337 / #1334 — a plugin that `requires: ["email"]` cannot be
-      // activated without a transport; switching the transport off under a
-      // running one would leave its confirmation and reset mails queued
-      // forever (password accounts that can never be verified). §2: refuse
-      // and name the step instead of degrading silently.
+      // activated without a working transport; switching to one that cannot
+      // deliver (none, or the unimplemented smtp/ses) under a running one
+      // would leave its confirmation and reset mails queued forever
+      // (password accounts that can never be verified). §2: refuse and name
+      // the step instead of degrading silently.
       const needing = (await tx.execute(sql`
         SELECT slug FROM plugins
         WHERE status = 'active'
@@ -147,7 +154,7 @@ export const setEmailConfigOp = defineOperation({
         return err({
           kind: "HandlerError",
           operation: "email_config.set",
-          message: `the mail transport cannot be switched off while ${slugs} ${needing.length === 1 ? "sends" : "send"} mail (sign-up confirmations, password resets): deactivate ${needing.length === 1 ? "it" : "them"} at Settings → Plugins first, or keep a transport configured`,
+          message: `the mail transport cannot be switched to one that does not deliver while ${slugs} ${needing.length === 1 ? "sends" : "send"} mail (sign-up confirmations, password resets): deactivate ${needing.length === 1 ? "it" : "them"} at Settings → Plugins first, or keep a transport configured`,
         });
       }
     }

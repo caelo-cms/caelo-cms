@@ -297,12 +297,33 @@ export default definePlugin<PluginContextTier1>({
       const hash = hashEmail(input.email);
       const existing = await ctx.query.list<
         "subscribers",
-        { id: string; confirmed_at: string | null; confirm_token: string }
+        {
+          id: string;
+          confirmed_at: string | null;
+          confirm_token: string;
+          confirm_expires_at: string | null;
+        }
       >("subscribers", { email_hash: hash, limit: 1 });
       if (existing[0]?.confirmed_at) return SUBSCRIBE_ANSWER;
       if (!ctx.email) throw new Error("subscribe: the email capability is not attached");
-      // #1337 — a fresh link each time, valid for 48 hours: the mail of a
-      // repeated sign-up replaces the earlier one.
+      // #1337 — a repeated sign-up mails the link that is still valid: a
+      // fresh one would void the link already in the inbox, and if the
+      // per-recipient cap refuses the new mail, nobody could confirm until
+      // the cap window passes (anyone who knows the address could cause
+      // that). Only an expired (or pre-#1337) link is replaced, for 48 hours.
+      const pending = existing[0];
+      if (
+        pending?.confirm_expires_at &&
+        new Date(pending.confirm_expires_at) > new Date() &&
+        typeof pending.confirm_token === "string"
+      ) {
+        await ctx.email.queue({
+          template: "confirm_subscription",
+          to: input.email,
+          token: pending.confirm_token,
+        });
+        return SUBSCRIBE_ANSWER;
+      }
       const confirmToken = crypto.randomUUID();
       const confirmExpiresAt = new Date(Date.now() + CONFIRM_TOKEN_TTL_MS).toISOString();
       if (existing[0]) {

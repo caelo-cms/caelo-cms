@@ -20,7 +20,9 @@
  * path is the same 404 as an unknown plugin path. The token is never
  * reflected into the document: the script reads it from the address bar,
  * and `Referrer-Policy: no-referrer` keeps it out of every request it
- * makes. The script and style are fixed; the CSP allows exactly their
+ * makes. Like the component kit, both requests carry the visitor's consent
+ * decision (`x-caelo-consent`, read from the banner's cookie), so
+ * confirming a mail never reads as a withdrawn consent to the gateway. The script and style are fixed; the CSP allows exactly their
  * hashes and requests to this origin.
  */
 
@@ -72,16 +74,17 @@ const SCRIPT = `(function(){
 var main=document.querySelector("main");var form=document.querySelector("form");var status=document.querySelector("[data-status]");
 var slug=main.getAttribute("data-slug");var op=main.getAttribute("data-operation");
 var token=new URLSearchParams(location.search).get("token")||"";
+function consent(){var m=document.cookie.match(/(?:^|; )caelo_consent=([^;]*)/);if(!m)return {};try{var s=JSON.parse(decodeURIComponent(m[1]));if(!Array.isArray(s.granted)||typeof s.policyVersion!=="number")return {};return {"x-caelo-consent":"v="+s.policyVersion+"; granted="+s.granted.join(",")}}catch(e){return {}}}
 history.replaceState(null,"",location.pathname);
 function hex(b){return Array.prototype.map.call(new Uint8Array(b),function(x){return x.toString(16).padStart(2,"0")}).join("")}
-async function proof(){var r=await fetch("/api/captcha/challenge",{credentials:"same-origin"});if(r.status===204)return null;if(!r.ok)throw new Error("challenge");
+async function proof(){var r=await fetch("/api/captcha/challenge",{credentials:"same-origin",headers:consent()});if(r.status===204)return null;if(!r.ok)throw new Error("challenge");
 var env=await r.json();var c=env.data.challenge,t=env.data.target,enc=new TextEncoder();
 for(var n=0;n<5000000;n++){var nonce=n.toString(16);var d=hex(await crypto.subtle.digest("SHA-256",enc.encode(c+"|"+slug+"."+op+"|"+nonce)));if(d.indexOf(t)===0)return{challenge:c,nonce:nonce}}
 throw new Error("pow")}
 form.addEventListener("submit",async function(ev){ev.preventDefault();var btn=form.querySelector("button");btn.disabled=true;status.textContent="…";
 try{var body={token:token};Array.prototype.forEach.call(form.querySelectorAll("input"),function(i){body[i.name]=i.value});
 var p=await proof();if(p)body._caelo_captcha=p;
-var res=await fetch("/api/plugin/"+slug+"/"+op,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+var res=await fetch("/api/plugin/"+slug+"/"+op,{method:"POST",credentials:"same-origin",headers:Object.assign({"Content-Type":"application/json"},consent()),body:JSON.stringify(body)});
 if(res.ok){status.textContent=main.getAttribute("data-done");form.querySelectorAll("input").forEach(function(i){i.value=""});return}
 status.textContent=res.status===503?"Please try again in a moment.":"This link is invalid or has expired.";btn.disabled=false}
 catch(e){status.textContent="Something went wrong. Please try again.";btn.disabled=false}});

@@ -158,11 +158,13 @@ import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-d
 import {
   getAiBudgetsTool,
   getGatewaySettingsTool,
+  getMailCapsTool,
   listAiPricingTool,
   proposeRotateGatewayCookieSecretTool,
   proposeSetAiBudgetTool,
   proposeSetAiPricingTool,
   proposeSetGatewaySettingsTool,
+  proposeSetMailCapsTool,
   proposeSetPluginAiCostCapTool,
   proposeSetTranslationModelTool,
 } from "./propose-owner-settings.js";
@@ -621,6 +623,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeSetGatewaySettingsTool);
   registry.register(proposeSetTranslationModelTool);
   registry.register(proposeSetPluginAiCostCapTool);
+  registry.register(proposeSetMailCapsTool);
+  registry.register(getMailCapsTool);
   registry.register(proposeRotateGatewayCookieSecretTool);
   // Issue #650 — the protected staging domain's access gate.
   registry.register(getStagingAccessTool);

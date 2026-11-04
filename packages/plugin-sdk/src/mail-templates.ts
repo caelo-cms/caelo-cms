@@ -83,7 +83,17 @@ export const mailTemplateLink = z
     label: z.string().min(1).max(80),
     /** What the confirmation page says once the operation succeeded. */
     done: z.string().min(1).max(200),
-    fields: z.array(mailLinkField).max(4).optional(),
+    fields: z
+      .array(mailLinkField)
+      .max(4)
+      .refine(
+        (fs) => new Set(fs.map((f) => f.name)).size === fs.length,
+        "each field name may appear once",
+      )
+      // The page sends the mail's token as `token`: a field of that name
+      // would replace it with what the visitor types.
+      .refine((fs) => fs.every((f) => f.name !== "token"), 'a field may not be named "token"')
+      .optional(),
   })
   .strict();
 
@@ -145,11 +155,16 @@ export function checkMailTemplates(
       continue;
     }
     const props = (op.inputJsonSchema.properties ?? {}) as Record<string, unknown>;
+    const required = new Set(
+      Array.isArray(op.inputJsonSchema.required) ? (op.inputJsonSchema.required as string[]) : [],
+    );
     for (const key of ["token", ...(t.link.fields ?? []).map((f) => f.name)]) {
-      if (!(key in props)) {
+      // Required, not only accepted: an operation whose token were optional
+      // could be called from the page without the mail's proof.
+      if (!(key in props) || !required.has(key)) {
         addIssue(
           ["mailTemplates", name, "link"],
-          `public operation "${op.name}" does not take "${key}", which the link of mail template "${name}" sends`,
+          `public operation "${op.name}" does not require "${key}", which the link of mail template "${name}" sends`,
         );
       }
     }

@@ -82,7 +82,44 @@ describe("mail templates in the manifest", () => {
           },
         },
       }),
-    ).toThrow(/does not take[\s\S]*newPassword/);
+    ).toThrow(/does not require[\s\S]*newPassword/);
+    // A token the operation only accepts is not enough: it must require it.
+    expect(() =>
+      manifestFromDefinition({
+        ...def,
+        publicOperations: [
+          {
+            name: "confirm",
+            kind: "write",
+            input: z.object({ token: z.string().optional() }).strict(),
+          },
+        ],
+        mailTemplates: {
+          t: { subject: "S", body: ["B"], link: { operation: "confirm", label: "L", done: "D" } },
+        },
+      }),
+    ).toThrow(/does not require[\s\S]*token/);
+    // A field may not overwrite the token, nor appear twice.
+    for (const fields of [
+      [{ name: "token", label: "T", type: "password" as const }],
+      [
+        { name: "p", label: "P", type: "password" as const },
+        { name: "p", label: "P", type: "password" as const },
+      ],
+    ]) {
+      expect(() =>
+        manifestFromDefinition({
+          ...def,
+          mailTemplates: {
+            t: {
+              subject: "S",
+              body: ["B"],
+              link: { operation: "confirm", label: "L", done: "D", fields },
+            },
+          },
+        }),
+      ).toThrow();
+    }
   });
 
   it("allows only plain text: no extra keys, bounded lengths", () => {

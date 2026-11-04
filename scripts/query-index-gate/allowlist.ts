@@ -62,6 +62,14 @@ export const ALLOWED: readonly AllowedRule[] = [
     reason: FIXED_SIZE("The page-type catalog: one row per page type (tens) (#1107)."),
   },
   {
+    table: "public.users",
+    op: "public_mail_deliveries.reserve_many",
+    filter: "(lower(email) = ANY ((InitPlan ?).col1))",
+    reason: FIXED_SIZE(
+      "The admin's team (cms_admin users, a handful of rows), matched case-insensitively against staging mail recipients (#1337). lower() is not LEAKPROOF, so under the FORCEd RLS no expression index could serve it (docs/dev/rls-and-the-planner.md).",
+    ),
+  },
+  {
     table: "public.layouts",
     reason: FIXED_SIZE("A site has a handful of layouts (site chrome)."),
   },

@@ -749,7 +749,7 @@ describe("Auth plugin", () => {
       invocation: { origin: "visitor", actorId: "00000000-0000-0000-0000-00000000aaaa" },
       pluginSlug: "auth",
       operationName: "verify_email",
-      args: { token: await queuedToken("verify_email") },
+      args: { token: await queuedToken("verify_email"), password: "supersecret" },
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
         captcha: { enforced: true, proofVerified: true },

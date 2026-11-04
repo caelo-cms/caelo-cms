@@ -56,7 +56,7 @@ Published rows are written by the admin only: by the plugin's own operations in 
 
 ## Mail templates
 
-A plugin mails visitors only through `mailTemplates` (#1337): a subject, plain-text paragraphs and at most one link to one of its public write operations, which the visitor confirms on the gateway's confirmation page. A visitor operation queues one with `ctx.email.queue({ template, to, token })`; the admin sends it. The row in the outbox chooses the template, the recipient and a token, never text or a host, and the admin caps the mails per recipient and site. See [dev/mail-outbox.md](./dev/mail-outbox.md). The templates are part of the public-surface snapshot below.
+A plugin mails visitors only through `mailTemplates` (#1337): a subject, plain-text paragraphs and at most one link to one of its public write operations, which the visitor confirms on the gateway's confirmation page. A visitor operation queues one with `ctx.email.queue({ template, to, token })`; the admin sends it. The row in the outbox chooses the template, the recipient and a token, never text or a host, and the admin caps the mails per recipient and site (Owner settings, Settings → Email). See [dev/mail-outbox.md](./dev/mail-outbox.md). The templates are part of the public-surface snapshot below.
 
 ## Approval is bound to the manifest
 

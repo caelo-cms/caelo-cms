@@ -69,8 +69,8 @@ const QUERY_LIST_CAP = 1000;
 
 /**
  * Most votes one recompute reads (pages of {@link QUERY_LIST_CAP}). Past it
- * the averages are approximate and the result says so (`truncated`); the
- * pruning of superseded votes keeps a site well below it.
+ * the run rewrites nothing and fails loudly (it only prunes); the pruning
+ * of superseded votes keeps a site well below it.
  */
 const REFRESH_VOTE_PAGES = 50;
 
@@ -244,6 +244,16 @@ export default definePlugin<PluginContextTier1>({
         superseded.push(later ? prev.id : v.id);
         if (later) newest.set(key, v);
       }
+      if (truncated) {
+        // An incomplete read must not rewrite averages: pages past it would
+        // lose theirs and the rest would be wrong. The superseded votes it
+        // found are still pruned, so the next run reads fewer; then refuse
+        // loudly, on the worker's task row and to the panel's caller.
+        for (const id of superseded) await ctx.query.delete("ratings", id);
+        throw new Error(
+          `_refresh: more than ${REFRESH_VOTE_PAGES * QUERY_LIST_CAP} votes to read in one run; the averages were left as they were (${superseded.length} superseded votes pruned, the next run reads fewer)`,
+        );
+      }
       counted.push(...newest.values());
       const buckets = new Map<string, { page_id: string; count: number; sum: number }>();
       for (const v of counted) {
@@ -283,7 +293,7 @@ export default definePlugin<PluginContextTier1>({
       // Only once the new averages are written: a run that fails before
       // keeps every vote for the next one.
       for (const id of superseded) await ctx.query.delete("ratings", id);
-      return { refreshed: written, pruned: superseded.length, truncated };
+      return { refreshed: written, pruned: superseded.length };
     },
   },
   workers: [
@@ -347,7 +357,7 @@ export default definePlugin<PluginContextTier1>({
     {
       name: "refresh_rating_aggregates",
       description:
-        "Recompute the per-page rating aggregates from the raw votes now, instead of waiting for the 5-minute refresh. Safe to repeat; it only rebuilds derived numbers. `truncated: true` means the site has more votes than one refresh can read, so the averages are approximate.",
+        "Recompute the per-page rating aggregates from the raw votes now, instead of waiting for the 5-minute refresh. Safe to repeat; it only rebuilds derived numbers. If the site has more votes than one refresh can read, it changes no average and says so.",
       operationName: "_refresh",
       requiredPermission: "settings.write",
       inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },

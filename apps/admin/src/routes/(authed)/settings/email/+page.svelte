@@ -131,6 +131,36 @@
     </CardContent>
   </Card>
 
+  <Card>
+    <CardHeader>
+      <CardTitle>Visitor mail caps</CardTitle>
+      <CardDescription>
+        How many sign-up confirmations, password resets and newsletter opt-ins the site sends.
+        Mails over a cap are dropped, which protects your mail quota and your domain's sending
+        reputation from abuse.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      <form method="post" action="?/saveCaps" use:enhance class="grid gap-3 max-w-md">
+        <label class="grid gap-1 text-sm">
+          <span>Per recipient, per 24 hours</span>
+          <Input name="perRecipientPerDay" type="number" min="1" max="100" required value={data.mailCaps.perRecipientPerDay} />
+        </label>
+        <label class="grid gap-1 text-sm">
+          <span>Live site, per hour</span>
+          <Input name="livePerHour" type="number" min="1" max="100000" required value={data.mailCaps.livePerHour} />
+        </label>
+        <label class="grid gap-1 text-sm">
+          <span>Staging site, per hour (team members only)</span>
+          <Input name="stagingPerHour" type="number" min="1" max="10000" required value={data.mailCaps.stagingPerHour} />
+        </label>
+        <div>
+          <Button type="submit" variant="secondary">Save caps</Button>
+        </div>
+      </form>
+    </CardContent>
+  </Card>
+
   {#if data.config.transport === "resend"}
     <Card>
       <CardHeader>

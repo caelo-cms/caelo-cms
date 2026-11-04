@@ -36,6 +36,13 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
       ],
       "link": {
         "done": "Your e-mail address is confirmed. You can log in now.",
+        "fields": [
+          {
+            "label": "The password you signed up with",
+            "name": "password",
+            "type": "password",
+          },
+        ],
         "label": "Confirm e-mail address",
         "operation": "verify_email",
       },
@@ -86,6 +93,10 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "password": {
+            "maxLength": 1024,
+            "type": "string",
+          },
           "token": {
             "maxLength": 128,
             "minLength": 16,
@@ -94,6 +105,7 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
         },
         "required": [
           "token",
+          "password",
         ],
         "type": "object",
       },
