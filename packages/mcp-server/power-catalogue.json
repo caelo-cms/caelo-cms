@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
+  "version": "0.11.15",
   "tools": [
     {
       "name": "read_content",
@@ -988,7 +988,7 @@
     },
     {
       "name": "list_plugins",
-      "description": "Installed plugins with `status` (Owner's decision) and `health` (what running servers make of it).\n- status: `active` = Owner wants it running | `awaiting_activation` = installed + verified, nothing loaded | `disabled` = Owner stopped it.\n- Availability ONLY from health: `running` = tools/skills usable now | `failing` = active but failed to load on a server (`problem` says why; NOT switched off -> tell the operator, details in `get_plugin`) | `awaiting_approval` = active, but its release asks for capabilities the Owner has not approved, so it does not run (`problem` names them) -> tell the operator to approve them at /settings/plugins; reload_plugin cannot | `unreported` = active, no server reported yet | `not_running` = not active. Never say a capability works while its plugin is failing.\n- `requires` = plugins that must be active first (activate those first, in that order) | `required_by` = active plugins needing this one (it cannot be disabled or uninstalled until they are).\nUSE FOR a capability you have no tool for (translation, forms, comments, newsletter, ratings): plugin installed-but-inactive -> TELL the operator it exists and one click at /settings/plugins turns it on. Plugins on disk that failed verification follow the table: NOT installed -> explain why + the fix.\nDO NOT USE as a general capability check before routine work — your tool catalogue already reflects everything running.",
+      "description": "Installed plugins with `status` (Owner's decision) and `health` (what running servers make of it).\n- status: `active` = Owner wants it running | `awaiting_activation` = installed + verified, nothing loaded | `disabled` = Owner stopped it.\n- Availability ONLY from health: `running` = tools/skills usable now | `failing` = active but failed to load on a server (`problem` says why; NOT switched off -> tell the operator, details in `get_plugin`) | `awaiting_approval` = active, but its release asks for capabilities the Owner has not approved, so it does not run (`problem` names them) -> `propose_approve_plugin_release`; reload_plugin cannot | `unreported` = active, no server reported yet | `not_running` = not active. Never say a capability works while its plugin is failing.\n- `requires` = plugins that must be active first (activate those first, in that order) | `required_by` = active plugins needing this one (it cannot be disabled or uninstalled until they are).\nUSE FOR a capability you have no tool for (translation, forms, comments, newsletter, ratings): plugin installed-but-inactive -> TELL the operator it exists and one click at /settings/plugins turns it on. Plugins on disk that failed verification follow the table: NOT installed -> explain why + the fix.\nDO NOT USE as a general capability check before routine work — your tool catalogue already reflects everything running.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1947,7 +1947,7 @@
     },
     {
       "name": "retry_tool_call",
-      "description": "Fix a failed write call with a small patch instead of resending it — only for a call whose result names `retry_tool_call`. Paths are segment arrays exactly as the error names them (`[\"page\",\"pageType\"]`, `[\"modules\",3,\"html\"]`). `set` writes a value, `remove` drops a key or array entry, `replace` swaps one exact text inside one string (must match once). The call stays kept while you make the calls its error asks for first (create the page type, then patch). The patched call runs as a new call (permissions, validation, approval re-checked); if it fails again, patch the same toolCallId again.",
+      "description": "Fix a failed write call with a small patch instead of resending it — only for a call whose result names `retry_tool_call`. Paths are segment arrays exactly as the error names them (`[\"page\",\"pageType\"]`, `[\"modules\",3,\"html\"]`). `set` writes a value, `remove` drops a key or array entry, `replace` swaps one exact text inside one string (must match once). `remove` takes a list of paths: `remove: [[\"page\",\"terms\"]]`. The call stays kept while you make the calls its error asks for first (create the page type, then patch). The patched call runs as a new call (permissions, validation, approval re-checked); if it fails again, patch the same toolCallId again.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1961,6 +1961,7 @@
           },
           "set": {
             "type": "array",
+            "description": "List of {path, value}, e.g. [{\"path\":[\"page\",\"pageType\"],\"value\":\"post\"}].",
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -1996,10 +1997,12 @@
                 ]
               },
               "description": "Segment array as the error names it, e.g. [\"modules\",3,\"html\"]."
-            }
+            },
+            "description": "List of paths, e.g. [[\"page\",\"terms\"]]."
           },
           "replace": {
             "type": "array",
+            "description": "List of {path, old, new}.",
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -3834,7 +3837,7 @@
     },
     {
       "name": "get_quality_audit",
-      "description": "Read the staged site's quality check: plugin page checks (when an active plugin adds any, e.g. SEO) reading EVERY page on every Stage, plus a mobile Lighthouse audit (Performance, Accessibility, Best Practices, SEO) when the Stage changed how pages render. No args = newest audit of THIS chat's Stages.\nReturns per page: scores; Performance metrics (FCP, LCP, TBT, CLS, Speed Index: best run + Lighthouse rating; LCP element + breakdown; shifted elements + causes); each problem's Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `render-blocking-insight`) + flagged elements (selector, HTML snippet, why, e.g. measured contrast); each page-check problem's rule id `<check>/<rule>` (contains a slash, e.g. `seo-check/title-missing`) + fix hint naming the tool. Plus site-wide findings, non-blocking warnings/hints, infrastructure errors.\nUSE FOR: after a Stage, what to fix. Already accepted -> `list_quality_acceptances`. Never run Lighthouse yourself: the audit runs on the real staged build (no other URL serves it).\nCORE RULES:\n- TARGET 100 IN EVERY CATEGORY + ZERO FINDINGS: every category <100, every scored Lighthouse audit below perfect, every page-check error BLOCKS Publish live. 90 is NOT acceptable — fix until 100 wherever achievable. ACCEPTED problems don't block (a worse value than accepted blocks again). Warnings/hints never block.\n- Speed: fix the worst metric in the module rendering the named element, Stage again, re-read — repeat until Performance 100.\n- Only the truly unfixable goes to the operator: one decision per group (`accept_quality_findings` with `groups`) + the reason.\n- CAELO PLATFORM findings (back/forward cache, caching of Caelo's own files, server response, compression, redirects) come from Caelo's hosting/build: report via `bug_report`, never edit the site for them; they block until Caelo fixes it or the operator accepts.\n- Without an open operator chat (Power-MCP) a call on a queued/running audit waits up to ~50 s; call again if still running.",
+      "description": "Read the staged site's quality check: plugin page checks (when an active plugin adds any, e.g. SEO) reading EVERY page on every Stage, plus a mobile Lighthouse audit (Performance, Accessibility, Best Practices, SEO) when the Stage changed how pages render. No args = newest audit of THIS chat's Stages.\nReturns per page: scores; Performance metrics (FCP, LCP, TBT, CLS, Speed Index: scoring run + Lighthouse rating; LCP element + breakdown; shifted elements + causes); each problem's Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `render-blocking-insight`) + flagged elements (selector, HTML snippet, why, e.g. measured contrast); each page-check problem's rule id `<check>/<rule>` (contains a slash, e.g. `seo-check/title-missing`) + fix hint naming the tool. Plus site-wide findings, non-blocking warnings/hints, infrastructure errors.\nUSE FOR: after a Stage, what to fix. Already accepted -> `list_quality_acceptances`. Never run Lighthouse yourself: the audit runs on the real staged build (no other URL serves it).\nCORE RULES:\n- TARGET 100 IN EVERY CATEGORY + ZERO FINDINGS: every category <100, every scored Lighthouse audit below perfect, every page-check error BLOCKS Publish live. 90 is NOT acceptable — fix until 100 wherever achievable. ACCEPTED problems don't block (a worse value than accepted blocks again). Warnings/hints never block.\n- Speed: fix the worst metric in the module rendering the named element, Stage again, re-read — repeat until Performance 100.\n- Only the truly unfixable goes to the operator: one decision per group (`accept_quality_findings` with `groups`) + the reason.\n- CAELO PLATFORM findings (back/forward cache, caching of Caelo's own files, server response, compression, redirects) come from Caelo's hosting/build: report via `bug_report`, never edit the site for them; they block until Caelo fixes it or the operator accepts.\n- Without an open operator chat (Power-MCP) a call on a queued/running audit waits up to ~50 s; call again if still running.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3982,10 +3985,16 @@
     },
     {
       "name": "retry_quality_audit",
-      "description": "Re-run the staged build's quality check when it FAILED (browser, timeout, staging unreachable) or never ran; changes nothing. Not for re-checking fixes — those need a new Stage, which audits itself.",
+      "description": "Run the staged build's quality check when it FAILED (browser, timeout, staging unreachable) or has none (`get_quality_audit` / `get_publish_gate` say so); changes nothing. Not for re-checking fixes — those need a new Stage, which audits itself.",
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "deployRunId": {
+            "description": "The Stage's build run (from `stage_changes` / `get_quality_audit`). Omit = the build staging serves now.",
+            "type": "string",
+            "format": "uuid"
+          }
+        },
         "additionalProperties": false
       }
     },
@@ -4998,7 +5007,7 @@
           "manifest": {
             "type": "object",
             "additionalProperties": true,
-            "description": "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, hasStaticRender}."
+            "description": "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, tableKinds, hasStaticRender}. publicOperations entries are {name, kind: read|write, captcha: required|none, inputJsonSchema, reads, writes, rateLimit?: {max, windowSeconds}}; tableKinds gives every schema table one kind (published: visitors read; inbox: visitors only insert; visitor-state: visitors read+write; private: admin only)."
           },
           "source": {
             "type": "string",
@@ -5371,6 +5380,30 @@
       "gated": true
     },
     {
+      "name": "propose_approve_plugin_release",
+      "description": "Ask the operator to approve a plugin release that stopped it (health `awaiting_approval`), so the plugin runs again and Publish live is unblocked. Propose as soon as you find one; never send the operator to Settings instead. Take `manifestDigest` from `list_plugins`.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "manifestDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "slug",
+          "manifestDigest"
+        ],
+        "additionalProperties": false
+      },
+      "gated": true
+    },
+    {
       "name": "reject_plugin",
       "description": "Reject a submitted plugin NOT running yet (draft | awaiting activation), e.g. operator decided against it or you withdraw your own. Source + validator errors kept; `revalidate_plugin` re-files it. Not for running plugins (stops nothing).",
       "inputSchema": {
@@ -5413,7 +5446,7 @@
     },
     {
       "name": "reload_plugin",
-      "description": "Retry loading an ACTIVE plugin on every server — the fix for health `failing` (servers don't retry on their own). Use after the cause was fixed, when transient, or when asked. Returns this server's result; others follow within seconds (`get_plugin`). Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`), nor health `awaiting_approval` (the Owner approves its capabilities at /settings/plugins).",
+      "description": "Retry loading an ACTIVE plugin on every server — the fix for health `failing` (servers don't retry on their own). Use after the cause was fixed, when transient, or when asked. Returns this server's result; others follow within seconds (`get_plugin`). Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`), nor health `awaiting_approval` (`propose_approve_plugin_release`).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -6301,6 +6334,44 @@
         "additionalProperties": false
       },
       "gated": true
+    },
+    {
+      "name": "propose_set_mail_caps",
+      "description": "Propose the caps on visitor mail (sign-up confirmations, password resets, newsletter opt-ins): per recipient per 24h, site-wide per hour on live and on staging.\nUSE FOR: the operator names new caps, or mails are refused at a cap they want raised. Read current caps first (`get_mail_caps`).\nCORE RULES: send ONLY the caps that change (rest kept). Never propose a number the operator did not name.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "perRecipientPerDay": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Mails one recipient gets per environment within 24 hours."
+          },
+          "livePerHour": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000,
+            "description": "Mails the live site sends per hour, all recipients together."
+          },
+          "stagingPerHour": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000,
+            "description": "Mails the staging site sends per hour (only to team members)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "gated": true
+    },
+    {
+      "name": "get_mail_caps",
+      "description": "Read the caps on visitor mail (per recipient per 24h; site-wide per hour on live and staging). Use before `propose_set_mail_caps`, or when sign-up / newsletter mails are reported missing (a cap may have refused them).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "propose_rotate_gateway_cookie_secret",
@@ -7229,6 +7300,23 @@
       }
     },
     {
+      "name": "check_email_domain",
+      "description": "List the DNS records (SPF, DKIM, return-path MX) the mail provider needs for the site's sending domain and whether each is verified. Use after the transport is set up (`propose_set_email_config`) and before activating a plugin that sends mail, or when mails don't arrive: give the operator the records that are not verified to create at their registrar, then call again with verify: true. Only the Resend transport is supported.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "verify": {
+            "type": "boolean",
+            "description": "true after the operator says they created the records: asks the provider to check them now (results follow within a minute, call again with false to read them)."
+          }
+        },
+        "required": [
+          "verify"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "get_ai_spend",
       "description": "Report AI spend over a window: total cost + tokens, text vs image, per provider/model, per source (plugin, person, subagent), recent days, admin domains the AI's tool calls hit (op counts + failures). Use for what AI costs, why a budget warned, which feature is expensive. Caps -> `get_ai_budgets`; one plugin vs its cap -> `get_plugin`.",
       "inputSchema": {
@@ -7246,7 +7334,7 @@
     },
     {
       "name": "get_plugin",
-      "description": "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, validator findings, declared tools/skills/capabilities, required plugins + active plugins requiring it, what it asks visitors to consent to (purpose, category, cookies), AI spend last 24h vs its cap. Never returns source.\nUSE FOR: when `list_plugins`' summary isn't enough: why it fails or a submission was rejected, what an inactive plugin adds before `activate_plugin`, whether it nears its AI cap.\nErrors: `core` = Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team -> repeat exactly, never say the team knows unless it says sent | `plugin` = the plugin's own code | `transient` = retried. Errors never switch a plugin off.",
+      "description": "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, change-consumer backoff, time of its broker calls (core ops + own storage), validator findings, declared tools/skills/capabilities, required plugins + active plugins requiring it, what it asks visitors to consent to (purpose, category, cookies), AI spend last 24h vs its cap. Never returns source.\nUSE FOR: when `list_plugins`' summary isn't enough: why it fails or a submission was rejected, what an inactive plugin adds before `activate_plugin`, whether it nears its AI cap.\nErrors: `core` = Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team -> repeat exactly, never say the team knows unless it says sent | `plugin` = the plugin's own code | `transient` = retried. Errors never switch a plugin off.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -8121,7 +8209,7 @@
     },
     {
       "name": "promote_local_list",
-      "description": "Turn a module's LOCAL list into a SHARED list and bind the field to it, in one call — when a second place needs the same entries ('footer links in the mobile menu too', 'editors maintain these links without opening the module'). `field` = the module's `list` field. Refused when placements show different entries (names them) -> pick the entries to keep, use `upsert_lists_many` + `update_modules_many`. Returns list id + ref `caelo:list/<id>` for binding other modules.",
+      "description": "Turn a module's LOCAL list into a SHARED list and bind the field to it, in one call — when another module needs the same entries ('the sidebar shows these links too', 'editors maintain these links without opening the module'). Never for a mobile copy: one <nav> serves every width. `field` = the module's `list` field. Refused when placements show different entries (names them) -> pick the entries to keep, use `upsert_lists_many` + `update_modules_many`. Returns list id + ref `caelo:list/<id>` for binding other modules.",
       "inputSchema": {
         "type": "object",
         "properties": {
