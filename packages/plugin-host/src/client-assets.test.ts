@@ -17,6 +17,7 @@ import {
   INLINE_CSS_MAX_BYTES,
   injectPluginAssets,
   type PluginClientAsset,
+  withAssetContent,
 } from "./client-assets.js";
 
 const DOC = "<html><head><title>t</title></head><body><main>x</main></body></html>";
@@ -165,5 +166,28 @@ describe("plugin client assets — page injection", () => {
     const src = /<script defer src="data:text\/javascript;charset=utf-8;base64,([^"]+)"/.exec(html);
     expect(src).not.toBeNull();
     expect(Buffer.from(src?.[1] ?? "", "base64").toString("utf8")).toBe(content);
+  });
+});
+
+describe("withAssetContent", () => {
+  it("names the file by the hash of the new body", () => {
+    const source = asset({ content: "console.log( 1 );\n" });
+    const a = withAssetContent(source, "console.log(1);");
+    const b = withAssetContent(source, "console.log(2);");
+    expect(a.content).toBe("console.log(1);");
+    expect(a.relPath).toMatch(/^_caelo\/plugin\/consent-manager\/runtime\.[0-9a-f]{12}\.js$/);
+    expect(a.publicPath).toBe(`/${a.relPath}`);
+    expect(a.relPath).not.toBe(b.relPath);
+    expect(withAssetContent(source, "console.log(1);").relPath).toBe(a.relPath);
+  });
+
+  it("inlines the new body where small CSS is inlined", () => {
+    const css = withAssetContent(
+      asset({ fileName: "runtime.css", kind: "css", content: ".a {\n  color: red;\n}\n" }),
+      ".a{color:red}",
+    );
+    const html = injectPluginAssets(DOC, [css], "linked");
+    expect(html).toContain(".a{color:red}");
+    expect(html).not.toContain("color: red");
   });
 });

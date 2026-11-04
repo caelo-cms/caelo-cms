@@ -36,7 +36,11 @@ import { fontReader } from "@caelo-cms/font-service";
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { type BuildPluginServices, injectPluginAssets } from "@caelo-cms/plugin-host";
+import {
+  type BuildPluginServices,
+  injectPluginAssets,
+  withAssetContent,
+} from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -990,11 +994,17 @@ async function buildSite(
   });
   // #449 — plugin client assets: one call per contributing plugin for
   // the whole build, written under `_caelo/plugin/<slug>/` with the
-  // content hash in the name, then referenced from every page; minified
-  // like the page's own CSS and JS (minify-pass.ts).
-  const clientAssets = await args.plugins.collectBuildAssets(pageRows.map((p) => p.page_id));
+  // content hash in the name, then referenced from every page. Minified
+  // like the page's own CSS and JS (minify-pass.ts) before anything uses
+  // them, so inlined CSS ships minified too and each name hashes the
+  // bytes served.
+  const clientAssets = await Promise.all(
+    (await args.plugins.collectBuildAssets(pageRows.map((p) => p.page_id))).map(async (asset) =>
+      withAssetContent(asset, await minifyPluginAsset(asset)),
+    ),
+  );
   for (const asset of clientAssets) {
-    await writeBuildFile(asset.relPath, await minifyPluginAsset(asset));
+    await writeBuildFile(asset.relPath, asset.content);
     fileCount += 1;
   }
   const pluginListNames = await args.plugins.declaredListSourceNames();

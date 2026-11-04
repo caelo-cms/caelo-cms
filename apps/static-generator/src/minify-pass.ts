@@ -21,9 +21,9 @@
  * served to every visitor as files, and an unminified plugin runtime is a
  * Lighthouse `unminified-javascript` finding on every page that blocks
  * Publish live — one the operator's AI cannot fix, because the file is
- * the plugin's. Their name keeps the hash of the plugin's source
- * (client-assets.ts): minification is deterministic, so one source still
- * means one file.
+ * the plugin's. The build minifies them before it inlines or links them,
+ * and renames each by the hash of the minified bytes (client-assets.ts
+ * `withAssetContent`), so an immutable URL always names what it serves.
  *
  * Why esbuild for both: it keeps a script's semantics as a classic
  * script (directive prologues like `"use strict"` survive, top-level
