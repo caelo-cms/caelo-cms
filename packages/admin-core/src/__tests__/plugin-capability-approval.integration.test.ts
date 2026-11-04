@@ -322,6 +322,28 @@ describe("#1420 — what waits for the Owner is visible and approved in one plac
     expect(await bell()).toBe(before + 1);
   });
 
+  it("counts a package review only for who may decide it", async () => {
+    await cleanup();
+    await boot();
+    const count = async (ctx: ExecutionContext) => {
+      const r = await execute(registry, adapter, ctx, "notifications.aggregate", {});
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      return (r.value as { pluginApprovals: number }).pluginApprovals;
+    };
+    const before = await count(PLATFORM);
+    await asSystem(async (tx) => {
+      // The stage policy checks that the submitter is the acting actor.
+      await tx.unsafe(`SET LOCAL caelo.actor_id = '${SYSTEM_ACTOR_ID}'`);
+      await tx`INSERT INTO plugin_installation_versions
+                 (plugin_id, artifact_digest, manifest_json, source_code, origin, submitted_by)
+               SELECT id, ${"a".repeat(64)}, '{"version":"0.3.0"}'::jsonb, '', 'external-package',
+                      ${SYSTEM_ACTOR_ID}::uuid
+                 FROM plugins WHERE slug = ${SLUG}`;
+    });
+    expect(await count(PLATFORM)).toBe(before + 1);
+    expect(await count(OWNER)).toBe(before);
+  });
+
   it("says the change is unknown rather than guessing when no manifest was recorded", async () => {
     await stopByUpgrade();
     await asSystem(
@@ -364,6 +386,35 @@ describe("#1420 — what waits for the Owner is visible and approved in one plac
     if (!applied.ok) throw new Error(JSON.stringify(applied.error));
     expect(await waiting()).toBeUndefined();
     expect((await loadActivatedPlugin(SLUG)).loaded).toBe(true);
+  });
+
+  it("an approval does not wait for a proposal another approval is applying", async () => {
+    await stopByUpgrade();
+    const release = await waiting();
+    if (!release) throw new Error("nothing waits");
+    const input = { slug: SLUG, manifestDigest: release.manifestDigest };
+    const ai: ExecutionContext = { ...OWNER, actorKind: "ai" };
+    const proposed = await execute(registry, adapter, ai, "plugins.propose_approve_release", input);
+    if (!proposed.ok) throw new Error(JSON.stringify(proposed.error));
+    const { proposalId } = proposed.value as { proposalId: string };
+    const sql = new SQL(ADMIN_URL as string);
+    try {
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`SELECT 1 FROM plugin_pending_actions WHERE id = ${proposalId}::uuid FOR UPDATE`;
+        const approved = await execute(
+          registry,
+          adapter,
+          PLATFORM,
+          "plugins.approve_capabilities",
+          input,
+        );
+        if (!approved.ok) throw new Error(JSON.stringify(approved.error));
+      });
+    } finally {
+      await sql.end();
+    }
+    expect(await waiting()).toBeUndefined();
   });
 
   it("an approval made elsewhere closes the card that asked for it", async () => {

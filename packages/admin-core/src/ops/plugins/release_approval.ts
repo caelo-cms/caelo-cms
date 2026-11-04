@@ -227,10 +227,17 @@ async function approveRelease(
   `)) as unknown as { id: string; approved_capabilities: string[] }[];
   const row = rows[0];
   if (!row) throw new Error(`${operation}: the locked row vanished`);
+  // SKIP LOCKED: `plugins.execute_proposal` locks its proposal before this
+  // plugin row, so waiting for a proposal here could deadlock. A row skipped
+  // this way is being applied right now and closes itself.
   await tx.execute(sql`
     UPDATE plugin_pending_actions
        SET status = 'applied', decided_by = ${ctx.actorId}::uuid, decided_at = now()
-     WHERE plugin_id = ${row.id}::uuid AND kind = 'approve_release' AND status = 'pending'
+     WHERE id IN (
+       SELECT id FROM plugin_pending_actions
+        WHERE plugin_id = ${row.id}::uuid AND kind = 'approve_release' AND status = 'pending'
+        FOR UPDATE SKIP LOCKED
+     )
   `);
   await recordAudit(tx, {
     actorId: ctx.actorId,

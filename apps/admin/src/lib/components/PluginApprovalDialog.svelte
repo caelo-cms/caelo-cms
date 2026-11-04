@@ -102,14 +102,18 @@
             </div>
           {/if}
 
-          <Button
-            size="sm"
-            disabled={approving !== null}
-            data-testid="approve-capabilities-{release.slug}"
-            onclick={() => approve(release)}
-          >
-            {approving === release.slug ? "Approving…" : "Approve this release"}
-          </Button>
+          {#if pluginApprovals.canApprove}
+            <Button
+              size="sm"
+              disabled={approving !== null}
+              data-testid="approve-capabilities-{release.slug}"
+              onclick={() => approve(release)}
+            >
+              {approving === release.slug ? "Approving…" : "Approve this release"}
+            </Button>
+          {:else}
+            <p class="text-xs text-muted-foreground">An Owner needs to approve this release.</p>
+          {/if}
         </section>
       {/each}
 

@@ -72,9 +72,8 @@ class PluginApprovals {
     }
   });
 
-  /** Start reading. @returns the stop, for a Svelte `$effect`. */
+  /** Follow the live topic. @returns the stop, for a Svelte `$effect`. */
   connect(): () => void {
-    void this.refresh();
     return liveHub.register({ topics: ["pending"], refresh: () => void this.refresh() });
   }
 

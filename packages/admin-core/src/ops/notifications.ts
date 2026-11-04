@@ -45,8 +45,9 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { CAELO_VERSION, isNewerVersion, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { approverRefusal } from "./_approver-permission.js";
 import { UPDATES_PATH } from "./platform-updates.js";
-import { readPluginApprovals } from "./plugins/release_approval.js";
+import { PLUGIN_APPROVER_PERMISSIONS, readPluginApprovals } from "./plugins/release_approval.js";
 
 const notificationsRow = z.object({
   pendingProposals: z.number().int().nonnegative(),
@@ -73,7 +74,7 @@ export const aggregateNotificationsOp = defineOperation({
   database: "cms_admin",
   input: z.object({}).strict(),
   output: notificationsRow,
-  handler: async (_ctx, _input, tx) => {
+  handler: async (ctx, _input, tx) => {
     // v0.2.32 — `pending_proposals` now sums across every pending
     // table (deploy / layouts / users / roles / snapshots
     // / email_config / ai_providers / mcp_tokens / templates / domains
@@ -157,7 +158,17 @@ export const aggregateNotificationsOp = defineOperation({
     const upgradeAvailable = latestVersion !== null && isNewerVersion(latestVersion, CAELO_VERSION);
     const bugForwardingUndecided = r.bug_forwarding_undecided === true;
     const { releases, reviews } = await readPluginApprovals(tx);
-    const pluginApprovals = releases.length + reviews.length;
+    // A package review is visible only to who may decide it, so nobody is
+    // told about a decision they cannot find.
+    const mayReview =
+      reviews.length > 0 &&
+      (await approverRefusal(
+        tx,
+        ctx,
+        "plugins.approve_installation",
+        PLUGIN_APPROVER_PERMISSIONS,
+      )) === null;
+    const pluginApprovals = releases.length + (mayReview ? reviews.length : 0);
 
     return ok({
       pendingProposals,

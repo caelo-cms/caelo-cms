@@ -16,6 +16,13 @@
     page.url.pathname === "/" || page.url.pathname === "/settings/updates",
   );
   $effect(() => pluginApprovals.connect());
+  // An idle tab hears no topics, so its own navigation and form actions
+  // (disabling a plugin, say) re-read here (docs/dev/live-refresh.md).
+  $effect(() => {
+    void page.url.pathname;
+    void page.form;
+    void pluginApprovals.refresh();
+  });
 
   /**
    * P6.5.1 #2 — single source of toast feedback for every authenticated
