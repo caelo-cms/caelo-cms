@@ -41,6 +41,8 @@ import {
   agentUnavailable,
   checkReleasesNow,
   type PlatformUpdateEvent,
+  readStagingHostDns,
+  type StagingHostDns,
   type PlatformUpdateRequest,
   type PlatformUpdateStatus,
   type SchedulerStatus,
@@ -78,6 +80,20 @@ async function readEmailConfigured(ctx: App.Locals["ctx"]): Promise<boolean> {
   const r = await execute(registry, adapter, ctx, "email_config.get", {});
   if (!r.ok) throw new Error(opErrorMessage(r.error, "could not read the email settings"));
   return (r.value as { config: { transport: string } }).config.transport !== "none";
+}
+
+/**
+ * #1330 — the DNS records of the staging host (null while no staging host is
+ * stored). Never fails the page: a lookup error is shown as such.
+ */
+async function readStagingDns(ctx: App.Locals["ctx"]): Promise<StagingHostDns | null> {
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, ctx, "staging_access.get", {});
+  if (!r.ok) return null;
+  const url = (r.value as { stagingUrl: string | null }).stagingUrl;
+  if (!url) return null;
+  const siteHost = process.env.CAELO_SITE_URL ? new URL(process.env.CAELO_SITE_URL).host : "";
+  return readStagingHostDns(new URL(url).host, siteHost);
 }
 
 /** The self-hosted update agent's last check-in (null when it never checked in). */
@@ -230,6 +246,7 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
     history,
     cloudShell,
     pluginsAwaitingApproval,
+    stagingDns: await readStagingDns(locals.ctx),
   };
 };
 

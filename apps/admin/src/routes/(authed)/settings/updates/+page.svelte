@@ -34,6 +34,7 @@
   import AutoUpdatePolicy from "#lib/components/updates/AutoUpdatePolicy.svelte";
   import CloudShellUpgrade from "#lib/components/updates/CloudShellUpgrade.svelte";
   import PasswordConfirmDialog from "#lib/components/updates/PasswordConfirmDialog.svelte";
+  import StagingHostDns from "#lib/components/updates/StagingHostDns.svelte";
   import UpdateTimeline from "#lib/components/updates/UpdateTimeline.svelte";
   import { thrownErrorAsFailure } from "#lib/thrown-error-message.js";
   import {
@@ -263,6 +264,10 @@
         </ul>
       </CardHeader>
     </Card>
+  {/if}
+
+  {#if data.stagingDns}
+    <StagingHostDns dns={data.stagingDns} />
   {/if}
 
   <Card data-testid="update-status-card" data-state={pageState.kind}>
