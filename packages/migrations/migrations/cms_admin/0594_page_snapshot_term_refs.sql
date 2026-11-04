@@ -23,6 +23,11 @@
 --
 -- `caelo_snapshot_refs_rebuild()` is replaced to rebuild this table too.
 --
+-- Also: the pending top-level pages of a branch by slug, for the root
+-- lookup of `site_defaults.get` (a chat that renames a page to `home`
+-- moves the branch's root): without it the lookup would read every
+-- pending top-level page of the draft.
+--
 -- Expand-only: a new table, functions and triggers. The previous image
 -- never reads the table; its page snapshot writes fire the triggers.
 
@@ -128,6 +133,9 @@ SELECT s.id, r.ref_kind, r.ref
   FROM page_snapshots s
  CROSS JOIN LATERAL caelo_content_instance_ref_rows(s.state -> 'terms') r
 ON CONFLICT DO NOTHING;
+
+CREATE INDEX draft_pending_entities_top_level_slug_idx ON draft_pending_entities
+  (chat_branch_id, slug) WHERE entity_kind = 'page' AND parent_page_id IS NULL;
 
 ANALYZE page_snapshot_refs;
 

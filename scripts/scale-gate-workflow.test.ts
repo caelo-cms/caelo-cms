@@ -36,6 +36,7 @@ import {
   POOL_EXHAUSTED,
   percentile,
   pluginsPass,
+  markdownCell,
   readFirstPaint,
   retryAfterSeconds,
   summarise,
@@ -211,6 +212,10 @@ describe("scale-gate runner report", () => {
     expect(summarise([10, 200], 0, 0, 100).pass).toBe(false);
     // A call the admin refused with 429 is back-pressure: overloaded, not met.
     expect(summarise([10, 20], 0, 0, 100, 1)).toMatchObject({ refused: 1, pass: false });
+  });
+
+  it("escapes a statement for a markdown cell: backslash, pipe, backtick, line breaks", () => {
+    expect(markdownCell("a\\b | `c`\nd")).toBe("a\\\\b \\| \\`c\\` d");
   });
 
   it("waits as long as a 429 asks (#1375), 5 s when it names nothing", () => {

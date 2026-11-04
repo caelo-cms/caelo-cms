@@ -124,6 +124,9 @@ export interface ScaleGateReport {
  */
 export const POOL_EXHAUSTED = /PoolAcquireTimeoutError|pool had no free connection/;
 
+/** A call the admin refused (429) that could not be sent again before the deadline. */
+const NOT_RUN = Symbol("not run");
+
 /** A 429 from the admin: the call did not run and is to be sent again. */
 class BackPressure extends Error {}
 
@@ -218,6 +221,14 @@ function arg(flag: string): string | null {
   return i >= 0 ? (process.argv[i + 1] ?? null) : null;
 }
 
+/**
+ * `text` as one markdown table cell: backslashes, pipes and backticks
+ * escaped, line breaks flattened (a statement may contain all of them).
+ */
+export function markdownCell(text: string): string {
+  return text.replace(/[\\|`]/g, (c) => `\\${c}`).replace(/[\r\n]+/g, " ");
+}
+
 /** Markdown lines for the heaviest statements of one phase. */
 function statementLines(phase: string, top: readonly StatementCost[] | null): string[] {
   if (top === null) return [];
@@ -231,7 +242,7 @@ function statementLines(phase: string, top: readonly StatementCost[] | null): st
       .slice(0, 10)
       .map(
         (t) =>
-          `| ${t.totalMs} | ${t.calls} | ${t.meanMs} | ${t.rows} | ${t.buffers} | \`${t.query.slice(0, 160).replace(/\|/g, "\\|")}\` |`,
+          `| ${t.totalMs} | ${t.calls} | ${t.meanMs} | ${t.rows} | ${t.buffers} | ${markdownCell(t.query.slice(0, 160))} |`,
       ),
   ];
 }
@@ -618,14 +629,16 @@ async function main(): Promise<void> {
         );
         if (refusedFor === null) return value;
         refusals[m] += 1;
-        if (Date.now() + refusedFor * 1000 >= deadline) return null;
+        // Out of time to retry: the call never ran, so the agent stops here
+        // rather than go on to a step that needs it (a write after a refused read).
+        if (Date.now() + refusedFor * 1000 >= deadline) return NOT_RUN;
         await Bun.sleep(refusedFor * 1000);
       }
     };
     while (Date.now() < deadline) {
       const page = queue.shift();
       if (!page) return;
-      await tool("mcp_read", "inspect_page_render", { pageId: page.id });
+      if ((await tool("mcp_read", "inspect_page_render", { pageId: page.id })) === NOT_RUN) return;
       if (Date.now() >= deadline) return;
       const slug = `${page.path.replace(/^\//, "")}-de`;
       const created = await tool("mcp_write", "create_variant", {
@@ -633,6 +646,7 @@ async function main(): Promise<void> {
         localeCode: "de",
         slug,
       });
+      if (created === NOT_RUN) return;
       if (created === null || Date.now() >= deadline) continue;
       const variantId = /"(?:pageId|variantPageId|newPageId)"\s*:\s*"([0-9a-f-]{36})"/.exec(
         created,

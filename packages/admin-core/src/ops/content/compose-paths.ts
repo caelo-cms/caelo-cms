@@ -18,7 +18,7 @@ import {
   resolvePageUrl,
   type UrlCompositionView,
 } from "@caelo-cms/plugin-host";
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import { type ExecutionContext, isHomeSlug } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { headOverlaySql } from "../../draft.js";
@@ -69,7 +69,7 @@ function isCompositionHome(
  * Reads O(1) rows, not the page tree (#1269): the candidates are the
  * pages whose stored `current_path` is "/" (indexed; what the root
  * composed to when it was last written) and, on a branch, the pending
- * pages whose head is top-level with a magic slug. Each candidate is
+ * pages whose head is top-level with a magic slug (indexed, 0594). Each candidate is
  * then judged on its newest state, so a pending rename or move of the
  * stored root takes it out.
  */
@@ -93,11 +93,14 @@ export async function loadCompositionRootPageId(
   if (chatBranchId) {
     // Entity-level predicate first, newest state second: another owner's
     // older head may match the filter while the newest state does not.
+    // Only magic slugs can be a root: page slugs are `slugSchema` (no
+    // slashes, never empty), so `isHomeSlug` holds for exactly these —
+    // plus "" from rows older than the schema.
     const pendingTopLevel = (await tx.execute(sql`
       SELECT DISTINCT d.entity_id::text AS id
         FROM draft_pending_entities d
        WHERE d.chat_branch_id = ${chatBranchId}::uuid AND d.entity_kind = 'page'
-         AND d.parent_page_id IS NULL
+         AND d.parent_page_id IS NULL AND d.slug = ANY(${textArray(HOME_SLUGS)})
     `)) as unknown as { id: string }[];
     const ids = [...new Set([...candidates.keys(), ...pendingTopLevel.map((r) => r.id)])];
     if (ids.length > 0) {
@@ -125,6 +128,9 @@ export async function loadCompositionRootPageId(
     .sort();
   return roots[0] ?? null;
 }
+
+/** The slugs `isHomeSlug` accepts that a page row can carry. */
+const HOME_SLUGS: readonly string[] = ["", "home", "index"];
 
 /** The fields of a pending page state the root lookup reads. */
 interface PendingRootState {
