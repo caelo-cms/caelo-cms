@@ -15,8 +15,11 @@ import {
   evaluateTier,
   loadOpCoverageSet,
   loadThresholds,
+  mergeLcov,
   parseLcovLinePct,
+  parseShard,
   round1,
+  shardFiles,
 } from "./coverage-check.ts";
 
 describe("round1", () => {
@@ -169,5 +172,59 @@ describe("classifyTestExit (#984)", () => {
       "[coverage] integration test run failed (exit 1) — fix failing tests first.",
     );
     expect(describeTestRun("unit", { kind: "passed" })).toBeNull();
+  });
+});
+
+describe("mergeLcov (sharded CI)", () => {
+  const a = ["SF:x.ts", "DA:1,1", "DA:2,0", "DA:3,0", "LF:3", "LH:1", "end_of_record"].join("\n");
+  const b = [
+    "SF:x.ts",
+    "DA:1,0",
+    "DA:2,4",
+    "DA:3,0",
+    "LF:3",
+    "LH:1",
+    "end_of_record",
+    "SF:y.ts",
+    "DA:7,1",
+    "LF:1",
+    "LH:1",
+    "end_of_record",
+  ].join("\n");
+
+  it("unites each file's lines: a line counts once, hit when any shard hit it", () => {
+    expect(mergeLcov([a, b])).toEqual({ pct: 75, linesFound: 4, linesHit: 3 });
+  });
+
+  it("equals parseLcovLinePct for a single report", () => {
+    expect(mergeLcov([a])).toEqual(parseLcovLinePct(a));
+  });
+
+  it("throws when no report has line data", () => {
+    expect(() => mergeLcov(["TN:", ""])).toThrow(/no line data/);
+  });
+});
+
+describe("shardFiles / parseShard (sharded CI)", () => {
+  const files = ["a.test.ts", "b.test.ts", "c.test.ts", "d.test.ts", "e.test.ts"];
+  const size = (f: string) =>
+    ({ "a.test.ts": 50, "b.test.ts": 10, "c.test.ts": 40, "d.test.ts": 10, "e.test.ts": 30 })[f] ??
+    0;
+
+  it("puts every file in exactly one shard", () => {
+    const shards = [1, 2, 3].map((i) => shardFiles(files, size, i, 3));
+    expect(shards.flat().sort()).toEqual(files);
+  });
+
+  it("balances by size, largest first into the lightest shard", () => {
+    expect([1, 2].map((i) => shardFiles(files, size, i, 2))).toEqual([
+      ["a.test.ts", "b.test.ts", "d.test.ts"],
+      ["c.test.ts", "e.test.ts"],
+    ]);
+  });
+
+  it("parses i/n and refuses anything else", () => {
+    expect(parseShard("2/4")).toEqual({ index: 2, count: 4 });
+    for (const bad of ["0/4", "5/4", "2", "a/b", "2/0"]) expect(() => parseShard(bad)).toThrow();
   });
 });

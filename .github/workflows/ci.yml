@@ -42,26 +42,83 @@ jobs:
             exit 1
           fi
 
-  check:
-    name: Lint, Typecheck, Migrate, Test, License
+  lint:
+    name: Lint, Typecheck, License
     needs: lockfile
-    # Least-privilege GITHUB_TOKEN: read the repo + upload an artifact; no
-    # registry, PR, or issue writes.
+    # Least-privilege GITHUB_TOKEN: this job only reads the repo.
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    # 2026-07-27: was 10, which the suite had grown into. Three runs that day
-    # landed at 9m57s (reported success), 10m06s and 10m36s (both cancelled) —
-    # and the cancelled ones had already printed "613 pass / 0 fail" and
-    # "[coverage] gate PASSED" before the kill. The gate was being decided by
-    # runner noise rather than by the code. Raised to give real headroom; the
-    # test step itself is ~7 min, the rest is install + bootstrap + migrate.
-    # 2026-10-30 (#1267): main had grown to 18m33s (integration suite 665 s);
-    # the change journal adds one journal row per write statement (~0.25 ms
-    # measured locally) and its own tests, and the run cancelled at 20m12s
-    # after "0 fail" and "[coverage] gate PASSED" — the same noise-decided
-    # gate as above. Raised again for headroom.
-    timeout-minutes: 30
+    # Split out of `check` (sharded tests): the static gates run next to
+    # the test shards instead of before them.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Sync SvelteKit types (generates .svelte-kit/types for the admin app)
+        run: bun run --filter=@caelo-cms/admin sync
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Knip (dead-code gate)
+        # Issue #12 — knip detects unused files, unused exports, and
+        # unused dependencies across every workspace. Default mode here
+        # rather than `--strict` because `--strict` implies production-
+        # only analysis (excludes devDependencies + tests), and Caelo's
+        # e2e helpers / migration tooling live outside the production
+        # tree — `--strict` would flag them as unreachable. The
+        # `github-actions` reporter emits inline annotations on the PR.
+        run: bun run knip:strict
+
+      - name: Circular dependencies (madge)
+        # Issue #13 — madge fails the build on any new runtime import
+        # cycle (`madge --circular apps packages`, exit non-zero on a
+        # cycle). Sits next to knip: both are fast static gates that
+        # need only the earlier `bun install`, no Postgres. `.madgerc`
+        # sets skipTypeImports so type-only edges (erased under
+        # verbatimModuleSyntax) don't count as runtime cycles. See
+        # docs/dev/madge.md.
+        run: bun run circular
+
+      - name: Lockstep version check
+        # P20 — every workspace package.json + version.ts must agree.
+        # Catches PRs that hand-edit a single package's version field
+        # (drift would silently ship). Bumps go through scripts/release.ts.
+        run: bun scripts/release.ts --check
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: License check (MPL-2.0 compatibility)
+        run: bun run license:check
+
+
+  test:
+    name: Test shard ${{ matrix.shard }}/4
+    needs: lockfile
+    # Least-privilege GITHUB_TOKEN: read the repo + upload an artifact.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    # The suite runs file by file against one database (the per-file reset
+    # of scripts/test-preload.ts), so one job cannot run it in parallel: it
+    # had grown to 23 min. Four jobs, each with its own Postgres, run a
+    # quarter of the files each (`coverage:check --shard`, split by file
+    # size); `check` unites their coverage and gates it.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     env:
       POSTGRES_USER: caelo
@@ -135,38 +192,6 @@ jobs:
       - name: Sync SvelteKit types (generates .svelte-kit/types for the admin app)
         run: bun run --filter=@caelo-cms/admin sync
 
-      - name: Lint
-        run: bun run lint
-
-      - name: Knip (dead-code gate)
-        # Issue #12 — knip detects unused files, unused exports, and
-        # unused dependencies across every workspace. Default mode here
-        # rather than `--strict` because `--strict` implies production-
-        # only analysis (excludes devDependencies + tests), and Caelo's
-        # e2e helpers / migration tooling live outside the production
-        # tree — `--strict` would flag them as unreachable. The
-        # `github-actions` reporter emits inline annotations on the PR.
-        run: bun run knip:strict
-
-      - name: Circular dependencies (madge)
-        # Issue #13 — madge fails the build on any new runtime import
-        # cycle (`madge --circular apps packages`, exit non-zero on a
-        # cycle). Sits next to knip: both are fast static gates that
-        # need only the earlier `bun install`, no Postgres. `.madgerc`
-        # sets skipTypeImports so type-only edges (erased under
-        # verbatimModuleSyntax) don't count as runtime cycles. See
-        # docs/dev/madge.md.
-        run: bun run circular
-
-      - name: Lockstep version check
-        # P20 — every workspace package.json + version.ts must agree.
-        # Catches PRs that hand-edit a single package's version field
-        # (drift would silently ship). Bumps go through scripts/release.ts.
-        run: bun scripts/release.ts --check
-
-      - name: Typecheck
-        run: bun run typecheck
-
       - name: Run migrations
         run: bun run db:migrate
 
@@ -197,31 +222,76 @@ jobs:
           cat "$RUNNER_TEMP/firestore-emulator.log"
           exit 1
 
-      - name: Test + coverage gate
-        # Issue #14 — runs the full suite split into the unit
-        # (`*.test.ts`) and integration (`*.integration.test.ts`) tiers
-        # under `bun test --coverage`, then enforces the per-tier ratchet
-        # floors in scripts/coverage-thresholds.json (CLAUDE.md §6: unit
-        # line coverage, integration = % of declared Query API ops
-        # exercised). Fails the build when a tier drops below its floor.
-        # Replaces the bare `bun test --isolate` step — the gate runs every
-        # test exactly once; the integration tier keeps `--isolate` so the
-        # per-file Postgres reset in scripts/test-preload.ts still fires.
-        run: bun run coverage:check
+      - name: Test (this shard's files; raw coverage, no gate)
+        run: bun run coverage:check --shard ${{ matrix.shard }}/4
+
+      - name: Upload this shard's coverage data
+        # `if: always()`: a failing shard's data still lands for inspection;
+        # `check` refuses to gate on a shard that did not pass.
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: coverage/shard-${{ matrix.shard }}/
+          if-no-files-found: error
+
+  check:
+    # The required status check (.github/rulesets/main.json): it passes only
+    # when the static gates and every test shard passed and the united
+    # coverage meets its floors.
+    name: Lint, Typecheck, Migrate, Test, License
+    needs: [lint, test]
+    # Always runs: a job skipped because a job it needs failed would report
+    # "skipped", which a required status check accepts as passing.
+    if: always()
+    # Least-privilege GITHUB_TOKEN: read the repo + download / upload artifacts.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Every static gate and test shard passed
+        env:
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "lint: $LINT, test shards: $TEST"
+          test "$LINT" = success && test "$TEST" = success
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Download the shards' coverage data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-shard-*
+          path: coverage/shards
+
+      - name: Coverage gate (united shards)
+        # Issue #14 — the per-tier ratchet floors in
+        # scripts/coverage-thresholds.json (CLAUDE.md §6: unit line coverage,
+        # integration = % of declared Query API ops exercised), over the
+        # shards united: each file's lines and the op sets, as one run over
+        # every test would have measured them.
+        run: bun run coverage:check --merge coverage/shards
 
       - name: Upload coverage report
-        # `if: always()` so the lcov + summary land as an artifact even
-        # when the gate step above fails — that's exactly when you want to
-        # inspect what dropped below the floor.
+        # `if: always()` so the summary lands as an artifact even when the
+        # gate step above fails — that's exactly when you want to inspect
+        # what dropped below the floor.
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report
           path: coverage/
           if-no-files-found: warn
-
-      - name: License check (MPL-2.0 compatibility)
-        run: bun run license:check
 
   rows-read:
     name: Rows read per request op (pg_stat_statements)
