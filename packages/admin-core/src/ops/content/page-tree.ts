@@ -378,3 +378,23 @@ export async function loadSubtreeIds(
   }
   return below;
 }
+
+/**
+ * Issue #1269 — the part of the page tree a path recompute of `rootIds`
+ * needs: those pages, every page below them, and their ancestors, as
+ * `chatBranchId` sees them — read through the subtree and ancestor
+ * walks, never the whole tree. `below` lists the descendants (each once).
+ */
+export async function loadScopedTree(
+  tx: TransactionRunner,
+  chatBranchId: string | null,
+  rootIds: readonly string[],
+): Promise<{ tree: PageTree; below: string[] }> {
+  const roots = [...new Set(rootIds)];
+  const below = new Set<string>();
+  for (const id of roots) {
+    for (const child of await loadSubtreeIds(tx, chatBranchId, id)) below.add(child);
+  }
+  const { tree } = await loadPageChains(tx, chatBranchId, [...roots, ...below]);
+  return { tree, below: [...below].filter((id) => !roots.includes(id)) };
+}

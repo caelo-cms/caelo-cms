@@ -92,7 +92,7 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     "pages.list": { measured: ["pages.list {pageIds}"], pending: INTL_1255 },
     "pages.list_shared_content": { pending: LIST_RESOLVE_1270 },
     "pages.list_statuses": { pending: INTL_1255 },
-    "pages.refresh_current_path": { pending: INTL_1255 },
+    "pages.refresh_current_path": { measured: ["pages.refresh_current_path"] },
     "pages.resolve_public_urls": { pending: LIST_RESOLVE_1270 },
     "pages.update": { notBackground: "variant tools update the pages they name" },
     "pages_seo.apply_translation": { notBackground: "translate tools write one page's SEO" },
