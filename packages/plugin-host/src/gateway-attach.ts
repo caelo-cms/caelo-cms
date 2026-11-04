@@ -128,6 +128,12 @@ let state: {
   syncedAt: number;
   inFlight: Promise<void> | null;
   lastError: string | null;
+  /**
+   * Bumped by {@link markDispatchRegistryStale}. A sync that started under
+   * an older generation read a registry the admin has since republished, so
+   * it does not count as current (syncedAt stays 0).
+   */
+  generation: number;
 } | null = null;
 
 /**
@@ -164,7 +170,7 @@ export async function bootstrapDispatchOnly(opts: DispatchOnlyBootstrapOpts): Pr
     }
   }
 
-  state = { opts, verified, syncedAt: 0, inFlight: null, lastError: null };
+  state = { opts, verified, syncedAt: 0, inFlight: null, lastError: null, generation: 0 };
   await syncDispatchPlugins({ force: true });
   if (state.lastError) failed.push({ slug: "<registry>", reason: state.lastError });
   return {
@@ -216,7 +222,8 @@ export async function syncDispatchPlugins(opts: { force?: boolean } = {}): Promi
   const s = state;
   if (!s) return;
   if (s.inFlight) return s.inFlight;
-  if (!opts.force && Date.now() - s.syncedAt < SYNC_TTL_MS) return;
+  if (!opts.force && s.syncedAt > 0 && Date.now() - s.syncedAt < SYNC_TTL_MS) return;
+  const startedUnder = s.generation;
   s.inFlight = (async () => {
     try {
       await reconcile(s.opts, s.verified, await readRegistry(s.opts));
@@ -229,11 +236,37 @@ export async function syncDispatchPlugins(opts: { force?: boolean } = {}): Promi
       s.lastError = (e as Error).message;
       console.error(`[plugin-host] gateway registry sync failed: ${s.lastError}`);
     } finally {
-      s.syncedAt = Date.now();
+      s.syncedAt = s.generation === startedUnder ? Date.now() : 0;
       s.inFlight = null;
     }
   })();
   return s.inFlight;
+}
+
+/**
+ * The admin republished the registry (its NOTIFY reached the gateway,
+ * api-gateway published-changes.ts): the next {@link syncDispatchPlugins}
+ * reads it again, whatever the TTL says, and a sync already in flight no
+ * longer counts as current.
+ */
+export function markDispatchRegistryStale(): void {
+  if (!state) return;
+  state.generation += 1;
+  state.syncedAt = 0;
+}
+
+/**
+ * Epic #763 E14 a — whether an attached plugin serves at least one
+ * operation to visitors (`publicOperations`), from the last sync that is
+ * still current. null when that is not known: the host is not
+ * bootstrapped, the last read failed (a database blip, an unpublished
+ * registry) or the registry changed since. The gateway answers its fixed
+ * 404 only on `false`, never on a guess.
+ */
+export function servesVisitorOperations(): boolean | null {
+  const s = state;
+  if (!s || s.syncedAt === 0 || s.lastError !== null || s.inFlight) return null;
+  return loadedPlugins.all().some((p) => (p.definition.publicOperations ?? []).length > 0);
 }
 
 async function readRegistry(opts: DispatchOnlyBootstrapOpts): Promise<RegistryRow[]> {
