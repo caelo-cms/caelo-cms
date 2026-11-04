@@ -26,16 +26,27 @@ import type * as pulumi from "@pulumi/pulumi";
 /** Name of the site host's path matcher. */
 export const PUBLIC_PATH_MATCHER = "public";
 
+/** #1330 — name of the staging host's path matcher (gcp-names.ts stagingGatewayEdgeNames). */
+export const STAGING_PATH_MATCHER = "staging";
+
 /**
  * The URL map's `ignoreChanges`: the public path matcher (index 0, see
- * {@link siteUrlMapArgs}) holds the admin-managed redirect rules.
+ * {@link siteUrlMapArgs}) holds the admin-managed redirect rules, and the
+ * staging matcher's (index 2) default service is the staging gateway's
+ * backend, which the CLI creates after the first `up`
+ * (staging-gateway-setup.ts ensureStagingGatewayEdge, #1330).
  */
-export const SITE_URL_MAP_IGNORE_CHANGES: readonly string[] = ["pathMatchers[0].pathRules"];
+export const SITE_URL_MAP_IGNORE_CHANGES: readonly string[] = [
+  "pathMatchers[0].pathRules",
+  "pathMatchers[2].defaultService",
+];
 
 /** Inputs of {@link siteUrlMapArgs}. */
 export interface SiteUrlMapInputs {
   readonly domain: string;
   readonly adminDomain: string;
+  /** #1330 — the protected staging site's host. */
+  readonly stagingHost: string;
   readonly staticBackend: pulumi.Input<string>;
   readonly gatewayBackend: pulumi.Input<string>;
   readonly adminBackend: pulumi.Input<string>;
@@ -43,9 +54,13 @@ export interface SiteUrlMapInputs {
 
 /**
  * The URL map's arguments: the site host to the static bucket with `/api/*`
- * to the gateway; the admin host to the IAP-gated admin. The public path
- * matcher comes first — {@link SITE_URL_MAP_IGNORE_CHANGES} addresses it by
- * index.
+ * to the gateway; the admin host to the IAP-gated admin; (#1330) the staging
+ * host, every path, to the staging gateway. The public path matcher comes
+ * first and the staging one third — {@link SITE_URL_MAP_IGNORE_CHANGES}
+ * addresses them by index. The staging matcher is created pointing at the
+ * static bucket (the staging gateway's backend does not exist before the
+ * first `up`); the CLI moves it onto the staging gateway right after, and
+ * the stack leaves it there.
  */
 export function siteUrlMapArgs(i: SiteUrlMapInputs): gcp.compute.URLMapArgs {
   return {
@@ -53,6 +68,7 @@ export function siteUrlMapArgs(i: SiteUrlMapInputs): gcp.compute.URLMapArgs {
     hostRules: [
       { hosts: [i.domain], pathMatcher: PUBLIC_PATH_MATCHER },
       { hosts: [i.adminDomain], pathMatcher: "admin" },
+      { hosts: [i.stagingHost], pathMatcher: STAGING_PATH_MATCHER },
     ],
     pathMatchers: [
       {
@@ -68,6 +84,7 @@ export function siteUrlMapArgs(i: SiteUrlMapInputs): gcp.compute.URLMapArgs {
         name: "admin",
         defaultService: i.adminBackend,
       },
+      { name: STAGING_PATH_MATCHER, defaultService: i.staticBackend },
     ],
   };
 }

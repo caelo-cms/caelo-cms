@@ -32,6 +32,8 @@ describe("database URL builders (#1338)", () => {
       caeloSecretKek: "0".repeat(64),
       dbTlsServerCertSha256: "abababababababababababababababababababababababababababababababab",
       internalSecret: "i".repeat(48),
+      stagingHost: "staging.example.com",
+      stagingGateSecret: "g".repeat(64),
       diskSize: "20Gi",
       images: {
         mode: "release",
@@ -43,7 +45,7 @@ describe("database URL builders (#1338)", () => {
     });
     const urls = [...yaml.matchAll(/_DATABASE_URL: "([^"]+)"/g)].map((m) => m[1] as string);
     // admin: cms_admin, cms_public, cms_public_staging (#1329); gateway: cms_public.
-    expect(urls).toHaveLength(4);
+    expect(urls).toHaveLength(5);
     for (const url of urls) expect(databaseTlsProblem(url)).toBeNull();
   });
 

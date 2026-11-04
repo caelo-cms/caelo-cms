@@ -29,6 +29,7 @@ import {
   MCP_IAP_SERVICE_ACCOUNT_ID,
   mcpAuthProxyServiceAccountId,
   runServiceAccountId,
+  stagingGatewayServiceAccountId,
   staticPublisherServiceAccountId,
 } from "../../dist/gcp-names.js";
 import { createSiteUrlMap } from "../../dist/gcp-url-map.js";
@@ -513,9 +514,10 @@ new gcp.storage.BucketIAMMember(
 
 // v0.2.78 — private staging bucket. Stage uploads here; Confirm-publish
 // server-side copies to the public static bucket. Never has allUsers
-// binding so the staged HTML is reachable ONLY through the admin's
-// IAP-gated /_staging-preview/<runId>/ proxy route. The public CDN
-// never serves from this bucket.
+// binding: since #1330 the staged build is reachable ONLY through the
+// staging gateway (the staging host, behind the staging gate), whose
+// account may read this bucket and nothing else. The public CDN never
+// serves from it.
 const stagingBucket = new gcp.storage.Bucket(
   `${namePrefix}-staging`,
   {
@@ -570,9 +572,24 @@ const mcpAuthProxySa = new gcp.serviceaccount.Account(
   },
   opts,
 );
+// #1330 — the staging gateway's own SA and (below) its secretAccessor on
+// its one login password, plus the telemetry roles. Its service, its read
+// access to the staging bucket and its edge (gcp: NEG, backend, host rule,
+// certificate; gcp-firebase: the second Hosting site) are the CLI's
+// (staging-gateway-setup.ts, after the first `up` and in every converge).
+const stagingGatewaySa = new gcp.serviceaccount.Account(
+  `${namePrefix}-staging-gateway-sa`,
+  {
+    accountId: stagingGatewayServiceAccountId(env),
+    displayName: `Caelo ${env} staging gateway`,
+    createIgnoreAlreadyExists: true,
+  },
+  opts,
+);
 const serviceSa: Record<CloudRunSlug, gcp.serviceaccount.Account> = {
   admin: runSa,
   gateway: gatewaySa,
+  "staging-gateway": stagingGatewaySa,
   "mcp-auth-proxy": mcpAuthProxySa,
 };
 
@@ -582,6 +599,7 @@ const serviceSa: Record<CloudRunSlug, gcp.serviceaccount.Account> = {
 const secretBindings: Record<CloudRunSlug, gcp.secretmanager.SecretIamMember[]> = {
   admin: [],
   gateway: [],
+  "staging-gateway": [],
   "mcp-auth-proxy": [],
 };
 for (const binding of runtimeSecretBindings()) {
@@ -696,6 +714,24 @@ new gcp.projects.IAMMember(
   },
   opts,
 );
+new gcp.projects.IAMMember(
+  `${namePrefix}-staging-gateway-log-writer`,
+  {
+    project,
+    role: "roles/logging.logWriter",
+    member: pulumi.interpolate`serviceAccount:${stagingGatewaySa.email}`,
+  },
+  opts,
+);
+new gcp.projects.IAMMember(
+  `${namePrefix}-staging-gateway-metric-writer`,
+  {
+    project,
+    role: "roles/monitoring.metricWriter",
+    member: pulumi.interpolate`serviceAccount:${stagingGatewaySa.email}`,
+  },
+  opts,
+);
 
 // `static-publisher` SA used by `bunx @caelo-cms/provisioning deploy` to
 // upload the static-generator output to the bucket. Pre-v0.2.78 this
@@ -759,8 +795,8 @@ function imageTag(service: string): pulumi.Output<string> {
 }
 
 interface CloudRunArgs {
-  /** The MCP-Auth-Proxy is CLI-owned on this stack (see mcpAuthProxySa). */
-  readonly serviceName: Exclude<CloudRunSlug, "mcp-auth-proxy">;
+  /** The MCP-Auth-Proxy and the staging gateway are CLI-owned on this stack (see their SAs). */
+  readonly serviceName: Exclude<CloudRunSlug, "mcp-auth-proxy" | "staging-gateway">;
   readonly minInstances: number;
   readonly maxInstances: number;
   readonly memory: string;
@@ -1227,6 +1263,7 @@ const urlMap = createSiteUrlMap(
   {
     domain,
     adminDomain,
+    stagingHost,
     staticBackend: staticBackendBucket.id,
     gatewayBackend: gatewayBackendService.id,
     adminBackend: adminBackendService.id,
@@ -1261,10 +1298,14 @@ const adminCert = new gcp.compute.ManagedSslCertificate(
   opts,
 );
 
+// #1330 — the staging host's own certificate is the CLI's
+// (staging-gateway-setup.ts, `caelo-<env>-staging-cert`), attached next to
+// these two after the first `up` and by every converge, so the proxy's
+// certificate list is left to it after creation.
 const httpsProxy = new gcp.compute.TargetHttpsProxy(
   `${namePrefix}-https-proxy`,
   { urlMap: urlMap.id, sslCertificates: [adminCert.id, managedCert.id] },
-  opts,
+  { ...opts, ignoreChanges: ["sslCertificates"] },
 );
 
 new gcp.compute.GlobalForwardingRule(

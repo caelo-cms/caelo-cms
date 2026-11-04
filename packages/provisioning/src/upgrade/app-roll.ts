@@ -29,6 +29,7 @@ import {
   gatewayServiceAccountEmail,
   mcpAuthProxyServiceAccountEmail,
   runServiceAccountEmail,
+  stagingGatewayServiceAccountEmail,
 } from "../gcp-names.js";
 import type { ImageDigests } from "../install-state.js";
 import {
@@ -82,10 +83,10 @@ import type { UpgradeReporter } from "./reporter.js";
 export type RollSlug = CloudRunSlug;
 
 /**
- * The roll order: the gateway follows the admin, never the other way round,
- * and the MCP-Auth-Proxy comes last (#1328) — on gcp-firebase it forwards
- * the visitor traffic still addressed to it to the gateway, which must
- * already serve the new release by then.
+ * The roll order: the gateways follow the admin, never the other way round
+ * (the admin's migrations and projection come first), the staging gateway
+ * (#1330) right after the live one with the same image, and the
+ * MCP-Auth-Proxy last (#1328).
  */
 export const ROLL_ORDER: readonly RollSlug[] = CLOUD_RUN_SLUGS;
 
@@ -96,6 +97,8 @@ export function rollServiceAccount(slug: RollSlug, projectId: string, env: strin
       return runServiceAccountEmail(projectId, env);
     case "gateway":
       return gatewayServiceAccountEmail(projectId, env);
+    case "staging-gateway":
+      return stagingGatewayServiceAccountEmail(projectId, env);
     case "mcp-auth-proxy":
       return mcpAuthProxyServiceAccountEmail(projectId, env);
   }

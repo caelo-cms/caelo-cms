@@ -34,6 +34,7 @@ import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import type { ImageDigests } from "../install-state.js";
 import { ensureReleaseServices } from "../mcp-auth-proxy-setup.js";
 import type { HttpFetch } from "../runtime-secrets.js";
+import { SERVICE_IMAGE } from "../stack-contract.js";
 import {
   type AppRollPlan,
   executeAppRoll,
@@ -90,9 +91,11 @@ export interface UpgradeCheckpoint {
 
 /**
  * The rollback target per service. The MCP-Auth-Proxy's is absent in a
- * checkpoint a release before #1328 wrote; its planned revision is kept then.
+ * checkpoint a release before #1328 wrote, the staging gateway's in one from
+ * before #1330; their planned revisions are kept then.
  */
 export type PriorRevisions = Readonly<Record<"admin" | "gateway", string>> & {
+  readonly "staging-gateway"?: string;
   readonly "mcp-auth-proxy"?: string;
 };
 
@@ -189,13 +192,25 @@ export async function upgradeGcpInstallOutcome(
   // nothing yet, so the install keeps running as it is when this or
   // anything after it fails. The gcp proxy runs the new release's image,
   // so that image's signature is checked before it is deployed.
+  //
+  // #1330 — and the staging gateway (both providers), deployed with the new
+  // release's gateway image when the install has none yet, so that image's
+  // signature is checked first too.
   const proxyImage = images.images["mcp-auth-proxy"];
+  const gatewayImage = images.images.gateway;
   if (
     target.provider === "gcp" &&
     !target.skipVerify &&
     !(await deps.verifyImages([{ slug: "mcp-auth-proxy", digest: proxyImage.digest }]))
   ) {
     sPre.failed("The MCP-Auth-Proxy image's signature did not verify");
+    return failed;
+  }
+  if (
+    !target.skipVerify &&
+    !(await deps.verifyImages([{ slug: "gateway", digest: gatewayImage.digest }]))
+  ) {
+    sPre.failed("The gateway image's signature did not verify");
     return failed;
   }
   const ensured = await ensureReleaseServices(
@@ -205,7 +220,9 @@ export async function upgradeGcpInstallOutcome(
       region: target.region,
       env: target.env,
       domain: target.domain,
+      stagingHost: target.stagingHost,
       mcpAuthProxyImageRef: proxyImage.imageRef,
+      gatewayImageRef: gatewayImage.imageRef,
     },
     { run },
   );
@@ -244,7 +261,17 @@ export async function upgradeGcpInstallOutcome(
   // 2. P21 ship 4 — signatures against the Caelo release workflow's
   // identity: refuses a compromised registry, a typosquat or a fork's image.
   if (!target.skipVerify) {
-    if (!(await deps.verifyImages(plan.services))) return failed;
+    // One check per release image: the staging gateway (#1330) runs the
+    // gateway's, which has no repository of its own to verify against.
+    const images = [
+      ...new Map(
+        plan.services.map((s) => [
+          `${SERVICE_IMAGE[s.slug]}@${s.digest}`,
+          { slug: SERVICE_IMAGE[s.slug], digest: s.digest },
+        ]),
+      ).values(),
+    ];
+    if (!(await deps.verifyImages(images))) return failed;
   } else {
     r.warn("--skip-verify set — image signatures NOT verified.");
   }
