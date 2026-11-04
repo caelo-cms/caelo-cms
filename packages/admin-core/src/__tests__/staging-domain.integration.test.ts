@@ -1121,6 +1121,28 @@ describe("staging access settings", () => {
     }
   });
 
+  it("get with includeCredentials answers in a development checkout (no CAELO_PROVIDER, no gate key) — it is not self-hosted (#1330)", async () => {
+    const saved = {
+      provider: process.env.CAELO_PROVIDER,
+      secret: process.env.CAELO_STAGING_GATE_SECRET,
+    };
+    delete process.env.CAELO_PROVIDER;
+    delete process.env.CAELO_STAGING_GATE_SECRET;
+    try {
+      const v = await ok<{
+        stagingDomainSupported: boolean;
+        provider: string;
+        credentials?: unknown;
+      }>("staging_access.get", { includeCredentials: true });
+      expect(v.stagingDomainSupported).toBe(false);
+      expect(v.provider).toBe("development checkout");
+      expect(v.credentials).toBeUndefined();
+    } finally {
+      process.env.CAELO_PROVIDER = saved.provider;
+      process.env.CAELO_STAGING_GATE_SECRET = saved.secret;
+    }
+  });
+
   it("set generates a credential on first enable, keeps it, validates, and rotate replaces it", async () => {
     // #1325 — an IP allowlist only where a client address can be trusted.
     const refused = await execute(registry, adapter, SYSTEM, "staging_access.set", {

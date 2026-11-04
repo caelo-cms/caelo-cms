@@ -53,6 +53,11 @@ import { actorHasPermission } from "./quality/_permissions.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
+/** The provider as operators read it; a development checkout sets none. */
+function providerLabel(provider: string | undefined): string {
+  return provider || "development checkout";
+}
+
 /**
  * Request headers the secret-header mode must not reuse: the platform or
  * the browser sets them, or another gate mode reads them.
@@ -246,8 +251,11 @@ export const getStagingAccessOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const op = "staging_access.get";
     const row = await readStagingAccessRow(tx);
-    const provider = process.env.CAELO_PROVIDER ?? "self-hosted";
-    const supported = stagingServedByGateway(provider);
+    // The gate is decided by the configured provider only: a development
+    // checkout (no CAELO_PROVIDER) has no staging gateway and no gate key,
+    // and must not be read as self-hosted, which has both (#1330).
+    const supported = stagingServedByGateway(process.env.CAELO_PROVIDER);
+    const provider = providerLabel(process.env.CAELO_PROVIDER);
     const stagingHost = await readStagingHost(tx);
     const hasStagedBuild = row.origin_run_id !== null;
     const stageNeeded = supported ? stageNeededFor(hasStagedBuild) : null;
@@ -437,7 +445,7 @@ export const issueStagingOpenLinkOp = defineOperation({
     if (stagingUrl === null) {
       return handlerError(
         op,
-        `this install's provider (${process.env.CAELO_PROVIDER ?? "self-hosted"}) has no protected staging domain yet; open the staged build from the Stage result instead.`,
+        `this install's provider (${providerLabel(process.env.CAELO_PROVIDER)}) has no protected staging domain yet; open the staged build from the Stage result instead.`,
       );
     }
     const row = await readStagingAccessRow(tx);
@@ -678,7 +686,7 @@ export const provisionStagingOp = defineOperation({
     if (!stagingServedByGateway(provider)) {
       return handlerError(
         op,
-        `this install's provider (${provider ?? "self-hosted"}) has no protected staging domain yet — nothing to provision.`,
+        `this install's provider (${providerLabel(provider)}) has no protected staging domain yet — nothing to provision.`,
       );
     }
     const previousHost = await readStagingHost(tx);
