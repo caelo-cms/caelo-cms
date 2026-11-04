@@ -23,7 +23,7 @@
  * read but committed after it is delivered on the next read — never
  * skipped, which an `id > cursor` read does. A read looks up only the
  * rows the cursor has not seen — at or after its xmax, or of a transaction
- * in its in-flight list (`unseenBy`) — so a long transaction holding xmin
+ * in its in-flight list (`unseenRows`) — so a long transaction holding xmin
  * back (a build, a plugin's first rebuild) no longer makes every read
  * re-scan what was delivered since it began. A paged read pins its target snapshot, so rows
  * committing between pages are left for the next round instead of being
