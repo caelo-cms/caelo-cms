@@ -46,7 +46,6 @@ import { ensureMcpIapAccess, type IapResource } from "../mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "../operator-access.js";
 import { revokePublicRoleMemberships } from "../public-role-isolation.js";
 import { ensureRemoteMcpEdge, resolveRemoteMcpIdentity } from "../remote-mcp.js";
-import { ensureStagingGatewayEdge } from "../staging-gateway-setup.js";
 import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
@@ -78,6 +77,7 @@ import {
   removeRetiredIamBindings,
 } from "../stack-converge.js";
 import { ensureStagingDatabase } from "../staging-database.js";
+import { ensureStagingGatewayEdge } from "../staging-gateway-setup.js";
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import type { AppRollHooks, AppRollPlan, RollPlan, RollSlug } from "./app-roll.js";

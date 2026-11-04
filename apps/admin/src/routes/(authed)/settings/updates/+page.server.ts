@@ -41,12 +41,12 @@ import {
   agentUnavailable,
   checkReleasesNow,
   type PlatformUpdateEvent,
-  readStagingHostDns,
-  type StagingHostDns,
   type PlatformUpdateRequest,
   type PlatformUpdateStatus,
+  readStagingHostDns,
   type SchedulerStatus,
   STEP_UP_REQUIRED,
+  type StagingHostDns,
   startUpgraderFor,
 } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";

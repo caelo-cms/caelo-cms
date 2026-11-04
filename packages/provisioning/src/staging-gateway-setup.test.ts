@@ -19,9 +19,9 @@ import {
   firebaseStagingSiteConfig,
   isFirebaseStagingConfig,
   planStagingHostRule,
+  type StagingGatewayServiceInputs,
   stagingCertName,
   stagingGatewayDeployArgs,
-  type StagingGatewayServiceInputs,
 } from "./staging-gateway-setup.js";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });

@@ -31,10 +31,7 @@ import {
   type FakeStagingBucket,
   fakeStagingBucket,
 } from "../../__tests__/fixtures/fake-staging-bucket.js";
-import {
-  FakeChannelLifetimes,
-  FIREBASE_EXPIRE_TIME_CLEAR_REFUSED,
-} from "../../__tests__/fixtures/firebase-channel-lifetime.js";
+import { FakeChannelLifetimes } from "../../__tests__/fixtures/firebase-channel-lifetime.js";
 import { setStagingBucketForTests } from "../staging-slots.js";
 
 const realGoogleAuthExports = { ...realGoogleAuth };
@@ -55,7 +52,7 @@ const API = "https://firebasehosting.googleapis.com/v1beta1/";
 const UPLOAD = "https://upload.test/";
 const SITE = "test-site";
 const SITE_BASE_URL = "https://www.example.com";
-const DAY_MS = 24 * 60 * 60 * 1000;
+const _DAY_MS = 24 * 60 * 60 * 1000;
 const LIVE_ORIGIN = `https://${SITE}.web.app/`;
 
 interface HeaderEntry {

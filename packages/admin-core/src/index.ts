@@ -86,6 +86,12 @@ export {
 } from "./deploy/staged-build-files.js";
 // #650 — which installs serve staging at a protected staging.<domain>.
 export { stagingServedByGateway } from "./deploy/staging-domain.js";
+// #1330 — the staging host's DNS records, for Settings → Updates.
+export {
+  readStagingHostDns,
+  type StagingDnsRecord,
+  type StagingHostDns,
+} from "./deploy/staging-host-dns.js";
 // #1257 — the Stage warning for page lists cut at the query cap.
 export {
   describeTruncatedLists,
@@ -372,9 +378,3 @@ export {
 } from "./stage/stage-chats.js";
 export * from "./tokens.js";
 export * from "./untrusted/public-data.js";
-// #1330 — the staging host's DNS records, for Settings → Updates.
-export {
-  readStagingHostDns,
-  type StagingDnsRecord,
-  type StagingHostDns,
-} from "./deploy/staging-host-dns.js";

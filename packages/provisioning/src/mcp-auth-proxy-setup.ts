@@ -48,8 +48,8 @@ import {
   secretFilePath,
   serviceSecrets,
 } from "./stack-contract.js";
-import { ensureStagingGatewayFromLiveGateway } from "./staging-gateway-setup.js";
 import { listFlag } from "./stack-converge.js";
+import { ensureStagingGatewayFromLiveGateway } from "./staging-gateway-setup.js";
 import { lookupFailure, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 
 /** The install the services are ensured on. */

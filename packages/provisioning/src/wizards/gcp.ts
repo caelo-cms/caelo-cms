@@ -119,10 +119,6 @@ import {
   type RemoteMcpTarget,
   resolveStackRemoteMcpIdentity,
 } from "../remote-mcp.js";
-import {
-  ensureStagingGatewayEdge,
-  ensureStagingGatewayFromLiveGateway,
-} from "../staging-gateway-setup.js";
 import type { RunMode } from "../run-mode.js";
 import { ensureSchedulerTick } from "../scheduler-setup.js";
 import { selfCommand } from "../self-command.js";
@@ -133,6 +129,10 @@ import {
   type RemoteMcpIdentity,
   sameRemoteMcpIdentity,
 } from "../stack-contract.js";
+import {
+  ensureStagingGatewayEdge,
+  ensureStagingGatewayFromLiveGateway,
+} from "../staging-gateway-setup.js";
 import {
   chooseInstallBackend,
   describeBackend,
