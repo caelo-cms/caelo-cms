@@ -40,8 +40,13 @@ const MAX_CANDIDATES = 500;
 
 type Listed = z.infer<typeof pageListRowSchema>;
 
-/** Where a search continues: the last examined (word, page) of the last word's ranges. */
+/**
+ * Where a search continues: the last examined (word, page) of the last
+ * word's ranges, bound to the query's words — a cursor of another query
+ * would start at a point of a different candidate order.
+ */
 interface SearchCursor {
+  readonly words: readonly string[];
   readonly word: string;
   readonly pageId: string;
 }
@@ -49,7 +54,9 @@ interface SearchCursor {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function encodeSearchCursor(c: SearchCursor): string {
-  return Buffer.from(JSON.stringify(["pages.search", c.word, c.pageId])).toString("base64url");
+  return Buffer.from(JSON.stringify(["pages.search", c.words, c.word, c.pageId])).toString(
+    "base64url",
+  );
 }
 
 /** The cursor, or null when `text` is not one `pages.search` issued. */
@@ -60,11 +67,12 @@ function decodeSearchCursor(text: string): SearchCursor | null {
   } catch {
     return null;
   }
-  if (!Array.isArray(parsed) || parsed.length !== 3 || parsed[0] !== "pages.search") return null;
-  const [, word, pageId] = parsed as unknown[];
+  if (!Array.isArray(parsed) || parsed.length !== 4 || parsed[0] !== "pages.search") return null;
+  const [, words, word, pageId] = parsed as unknown[];
+  if (!Array.isArray(words) || !words.every((w) => typeof w === "string")) return null;
   if (typeof word !== "string" || word.length === 0 || word.length > 64) return null;
   if (typeof pageId !== "string" || !UUID.test(pageId)) return null;
-  return { word, pageId };
+  return { words: words as string[], word, pageId };
 }
 
 /** The query's words, split as the pages' words are (0603). */
@@ -88,20 +96,32 @@ async function candidates(
   tx: TransactionRunner,
   branchId: string | null,
   driver: string,
-  after: SearchCursor | null,
+  after: Pick<SearchCursor, "word" | "pageId"> | null,
   n: number,
 ): Promise<{ word: string; page_id: string }[]> {
-  const past = after
-    ? sql`AND (word, page_id) > (${after.word}::text COLLATE "C", ${after.pageId}::uuid)`
-    : sql``;
-  const live = sql`(SELECT word, page_id FROM page_search_words
-                     WHERE word ^@ (${driver}::text COLLATE "C") ${past}
-                     ORDER BY word, page_id LIMIT ${n})`;
+  const past = (alias: string) =>
+    after
+      ? sql`AND (${sql.raw(alias)}.word, ${sql.raw(alias)}.page_id)
+               > (${after.word}::text COLLATE "C", ${after.pageId}::uuid)`
+      : sql``;
+  // Only page rows the caller can see, and not deleted: rows another
+  // chat's branch created, or deleted pages, never take a candidate's
+  // place under the cap. (A branch's pending undelete or rename of a row
+  // is in the pending range.)
+  const visible = branchId
+    ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
+    : sql`p.chat_branch_id IS NULL`;
+  const live = sql`(SELECT w.word, w.page_id FROM page_search_words w
+                      JOIN pages p ON p.id = w.page_id
+                     WHERE w.word ^@ (${driver}::text COLLATE "C") ${past("w")}
+                       AND p.deleted_at IS NULL AND ${visible}
+                     ORDER BY w.word, w.page_id LIMIT ${n})`;
   const pending = branchId
     ? sql`UNION ALL
-          (SELECT word, page_id FROM draft_pending_page_words
-            WHERE chat_branch_id = ${branchId}::uuid AND word ^@ (${driver}::text COLLATE "C") ${past}
-            ORDER BY word, page_id LIMIT ${n})`
+          (SELECT d.word, d.page_id FROM draft_pending_page_words d
+            WHERE d.chat_branch_id = ${branchId}::uuid AND d.word ^@ (${driver}::text COLLATE "C")
+              ${past("d")}
+            ORDER BY d.word, d.page_id LIMIT ${n})`
     : sql``;
   return (await tx.execute(sql`
     SELECT word, page_id::text AS page_id FROM (${live} ${pending}) c
@@ -172,13 +192,21 @@ export const searchPagesOp = defineOperation({
       });
     }
     const words = await queryWords(tx, input.query);
+    if (after && JSON.stringify(after.words) !== JSON.stringify(words)) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.search",
+        message:
+          "cursor belongs to another query: pass the same query as the call that returned it, or omit cursor to start a new search.",
+      });
+    }
     const driver = words[words.length - 1];
     if (driver === undefined) return ok({ pages: [], nextCursor: null });
     const branchId = ctx.chatBranchId ?? null;
 
     const found: Listed[] = [];
     const seen = new Set<string>();
-    let cursor = after;
+    let cursor: Pick<SearchCursor, "word" | "pageId"> | null = after;
     let examined = 0;
     for (;;) {
       const chunk = await candidates(tx, branchId, driver, cursor, CHUNK);
@@ -207,14 +235,14 @@ export const searchPagesOp = defineOperation({
           if (found.length === input.limit) {
             return ok({
               pages: found,
-              nextCursor: encodeSearchCursor({ word: c.word, pageId: c.page_id }),
+              nextCursor: encodeSearchCursor({ words, word: c.word, pageId: c.page_id }),
             });
           }
         }
       }
       if (chunk.length < CHUNK) return ok({ pages: found, nextCursor: null });
       if (examined >= MAX_CANDIDATES) {
-        return ok({ pages: found, nextCursor: encodeSearchCursor(cursor) });
+        return ok({ pages: found, nextCursor: encodeSearchCursor({ words, ...cursor }) });
       }
     }
   },

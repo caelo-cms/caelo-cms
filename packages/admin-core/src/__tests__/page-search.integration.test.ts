@@ -15,6 +15,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { sql } from "drizzle-orm";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -181,6 +182,44 @@ describe("#1269 — pages.search by word prefix", () => {
     const a = await page(`${PFX}-dup-a`, `${PFX}shop ${PFX}shopping`);
     const b = await page(`${PFX}-dup-b`, `${PFX}shopper`);
     expect(await search(SYSTEM, `${PFX}shop`, 1)).toEqual([a, b].sort());
+  });
+
+  it("refuses a cursor of another query", async () => {
+    for (let i = 0; i < 3; i += 1) await page(`${PFX}-bound-${i}`, `Boundword ${i}`);
+    const first = await ok<{ nextCursor: string | null }>(SYSTEM, "pages.search", {
+      query: "boundw",
+      limit: 1,
+    });
+    expect(first.nextCursor).not.toBeNull();
+    const other = await execute(registry, adapter, SYSTEM, "pages.search", {
+      query: "other boundw",
+      limit: 1,
+      cursor: first.nextCursor,
+    });
+    expect(other.ok).toBe(false);
+    if (!other.ok) expect(JSON.stringify(other.error)).toContain("another query");
+  });
+
+  it("pages another chat created or a delete removed take no candidate's place", async () => {
+    // 600 rows the caller cannot see, all before the visible page in word
+    // order: they must not use up the call's 500 candidates.
+    const elsewhere = await ok<{ chatBranchId: string }>(SYSTEM, "chat.create_session", {
+      title: `${PFX}-elsewhere`,
+      isolation: "experiment",
+    });
+    await adapter.withAdminTransaction(SYSTEM, (tx) =>
+      tx.execute(sql`
+        INSERT INTO pages (slug, title, short_title, template_id, current_path, status,
+                           chat_branch_id, deleted_at)
+        SELECT ${`${PFX}-hidden-`} || i, ${`${PFX}hid`}, ${`${PFX}hid`}, ${templateId}::uuid,
+               ${`/${PFX}-hidden-`} || i, 'draft',
+               CASE WHEN i % 2 = 0 THEN ${elsewhere.chatBranchId}::uuid END,
+               CASE WHEN i % 2 = 1 THEN now() END
+          FROM generate_series(1, 600) i`),
+    );
+    const visible = await page(`${PFX}-shown`, `${PFX}hidz`);
+    const r = await ok<{ pages: Found[] }>(SYSTEM, "pages.search", { query: `${PFX}hid` });
+    expect(r.pages.map((p) => p.id)).toEqual([visible]);
   });
 
   it("the rebuild finds the triggers exact", async () => {
