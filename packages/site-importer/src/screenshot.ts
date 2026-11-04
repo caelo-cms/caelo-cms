@@ -163,6 +163,10 @@ export interface Screenshotter {
        *  reach). A null answer is a 404; cross-origin requests are
        *  aborted. Only for own-origin captures (`external` unset). */
       serve?: ServeOwnOrigin;
+      /** #1330 — headers an EXTERNAL render sends only with requests to
+       *  this one origin (the protected staging site: the capture's per-run
+       *  staging token), never to any other host the page embeds. */
+      originHeaders?: OriginHeaders;
     },
   ): Promise<Screenshot>;
   /**
@@ -181,6 +185,10 @@ export interface Screenshotter {
       /** issue #415 — also run the hidden-element removal pass after the
        *  full DOM was read; returns `visibleHtml` + `hiddenRemoved`. */
       stripHidden?: boolean;
+      /** #1330 — headers an EXTERNAL render sends only with requests to
+       *  this one origin (the protected staging site: the capture's per-run
+       *  staging token), never to any other host the page embeds. */
+      originHeaders?: OriginHeaders;
     },
   ): Promise<RenderedHtml>;
   /**
@@ -194,6 +202,12 @@ export interface Screenshotter {
     opts: { cssSelector?: string; xpath?: string; maxMatches?: number },
   ): Promise<string[]>;
   dispose(): Promise<void>;
+}
+
+/** #1330 — headers for requests to exactly one origin (see `capture`'s `originHeaders`). */
+export interface OriginHeaders {
+  readonly origin: string;
+  readonly headers: Readonly<Record<string, string>>;
 }
 
 /** One answer of a {@link ServeOwnOrigin} function. */
@@ -470,6 +484,8 @@ export async function handleExternalRoute(
     readonly lookupFn?: SafeFetchOptions["lookupFn"];
     readonly fetchBinaryFn?: typeof safeExternalFetchBinary;
     readonly onFinalUrl?: (requestUrl: string, finalUrl: string) => void;
+    /** #1330 — added only to requests whose origin is exactly `origin`. */
+    readonly originHeaders?: OriginHeaders;
   },
 ): Promise<void> {
   const req = route.request();
@@ -490,6 +506,8 @@ export async function handleExternalRoute(
     const res = await fetchFn(requestUrl, {
       allowedHosts: opts.allowedHosts,
       headers,
+      // Per hop: a redirect off the origin never carries them.
+      ...(opts.originHeaders ? { originHeaders: opts.originHeaders } : {}),
       ...(opts.lookupFn ? { lookupFn: opts.lookupFn } : {}),
     });
     opts.onFinalUrl?.(requestUrl, res.finalUrl);
@@ -560,6 +578,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       height?: number;
       sameOriginHeaders?: Record<string, string>;
       serve?: ServeOwnOrigin;
+      originHeaders?: OriginHeaders;
     },
     // biome-ignore lint/suspicious/noExplicitAny: Playwright page + response handles (dynamic import, no @types)
     fn: (page: any, gotoResponse: any, navFinalUrl?: string) => Promise<T>,
@@ -596,6 +615,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       await ctx.route("**/*", async (route: PlaywrightRoute) => {
         await handleExternalRoute(route, {
           allowedHosts,
+          ...(opts.originHeaders ? { originHeaders: opts.originHeaders } : {}),
           onFinalUrl: (reqUrl, finalUrl) => {
             if (navigationKey(reqUrl) === navTarget) navFinalUrl = finalUrl;
           },
@@ -676,6 +696,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
           height: opts?.height,
           ...(opts?.sameOriginHeaders ? { sameOriginHeaders: opts.sameOriginHeaders } : {}),
           ...(opts?.serve ? { serve: opts.serve } : {}),
+          ...(opts?.originHeaders ? { originHeaders: opts.originHeaders } : {}),
         },
         async (page, gotoResponse, navFinalUrl) => {
           let png: Uint8Array;
@@ -740,7 +761,12 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     async renderHtml(url, opts) {
       return withGuardedPage(
         url,
-        { external: opts?.external, width: opts?.width, height: opts?.height },
+        {
+          external: opts?.external,
+          width: opts?.width,
+          height: opts?.height,
+          ...(opts?.originHeaders ? { originHeaders: opts.originHeaders } : {}),
+        },
         async (page, gotoResponse, navFinalUrl) => {
           let styleSamples: ElementStyleSample[] | undefined;
           if (opts?.sampleStyles) {
