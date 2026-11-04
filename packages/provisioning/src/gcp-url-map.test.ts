@@ -73,8 +73,20 @@ describe("gcp stack URL map (Pulumi mocks)", () => {
         pathRules: [{ paths: [...GCP_GATEWAY_PATHS], service: "gateway-id" }],
       },
       { name: "admin", defaultService: "admin-id" },
-      { name: "staging", defaultService: "bucket-id" },
+      // #1330 — fails closed until the CLI routes it to the staging gateway:
+      // a redirect, never a backend (above all not the static bucket).
+      {
+        name: "staging",
+        defaultUrlRedirect: {
+          hostRedirect: "example.com",
+          pathRedirect: "/",
+          httpsRedirect: true,
+          redirectResponseCode: "FOUND",
+          stripQuery: true,
+        },
+      },
     ]);
+    expect(JSON.stringify(pathMatchers?.[2])).not.toContain("bucket-id");
     expect(registered.find((r) => r.name === "caelo-production-url-map")?.type).toBe(
       "gcp:compute/uRLMap:URLMap",
     );
@@ -121,8 +133,9 @@ describe("gcp stack URL map (Pulumi mocks)", () => {
     );
     expect(SITE_URL_MAP_IGNORE_CHANGES).toEqual([
       "pathMatchers[0].pathRules",
-      // #1330 — the staging matcher's backend is the CLI's.
+      // #1330 — the staging matcher's target is the CLI's.
       "pathMatchers[2].defaultService",
+      "pathMatchers[2].defaultUrlRedirect",
     ]);
     const args = siteUrlMapArgs({
       domain: "d",
