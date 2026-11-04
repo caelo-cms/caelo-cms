@@ -1,11 +1,15 @@
 # Coverage — the test-coverage gate
 
-The coverage gate enforces CLAUDE.md §6 (*"Coverage gates in CI: unit ≥ 90%, integration ≥ 80% of declared Query API ops"*). It runs in the `check` job of `.github/workflows/ci.yml` as the `Test + coverage gate` step, replacing the old bare `bun test --isolate`, and uploads its output as the `coverage-report` artifact. Source: `scripts/coverage-check.ts` + `scripts/coverage-thresholds.json`.
+The coverage gate enforces CLAUDE.md §6 (*"Coverage gates in CI: unit ≥ 90%, integration ≥ 80% of declared Query API ops"*). Source: `scripts/coverage-check.ts` + `scripts/coverage-thresholds.json`.
+
+In CI the suite is sharded. The tests run file by file against one database (the per-file reset of `scripts/test-preload.ts`), so one job cannot run them in parallel. Four `test` jobs (`Test shard <i>/4`) each start their own Postgres and run `bun run coverage:check --shard <i>/4`: their quarter of each tier, split by file size, writing raw data only (`coverage/shard-<i>/unit/lcov.info`, `…/op-coverage.jsonl`, artifact `coverage-shard-<i>`). The required `check` job (`Lint, Typecheck, Migrate, Test, License`) needs the shards and the `lint` job (lint, knip, madge, lockstep, typecheck, licenses), fails unless all of them passed, and runs `bun run coverage:check --merge coverage/shards`. That step unites the shards as one run would have measured them: for each source file the union of its lines, a line hit when any shard hit it, and the union of the exercised ops. Then it applies the floors and uploads the `coverage-report` artifact.
 
 ## Running it
 
 ```bash
 bun run coverage:check   # the full gate (needs Postgres up for the integration tier)
+bun run coverage:check --shard 2/4   # one CI shard's share, raw data only
+bun run coverage:check --merge coverage   # unite coverage/shard-*/ and gate
 bun run coverage         # raw `bun test --coverage` for a quick local look
 ```
 
