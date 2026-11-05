@@ -313,7 +313,9 @@ jobs:
     # 10x larger fixture; it fails when the large run issues more statements
     # or reads more than 1.5x. Its own database: pg_stat_statements must be
     # preloaded (a services container cannot take server flags) and nothing
-    # else may run against it while it measures.
+    # else may run against it while it measures, autovacuum included: the
+    # fixture analyzes its tables itself, and a vacuum mid-run moves buffer
+    # counts (#1441).
     env:
       POSTGRES_USER: caelo
       POSTGRES_PASSWORD: caelo_ci
@@ -344,7 +346,8 @@ jobs:
             -e POSTGRES_USER -e POSTGRES_PASSWORD -e POSTGRES_DB \
             postgres:17-alpine \
             -c shared_preload_libraries=pg_stat_statements \
-            -c pg_stat_statements.track=top
+            -c pg_stat_statements.track=top \
+            -c autovacuum=off
           # Over TCP: the image's init phase answers on its socket only, then
           # restarts; a socket check would pass before the server is up.
           for i in $(seq 1 90); do

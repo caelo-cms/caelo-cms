@@ -12,15 +12,25 @@
  *
  *   - the generator's peak resident memory stays flat (it holds a page
  *     batch and a small record per page, never every page);
- *   - the admin side's peak during the upload stays flat (bounded hashing,
- *     uploads streamed, media referenced by stored digest);
+ *   - the admin side's live memory during the Stage stays flat (bounded
+ *     hashing, uploads streamed, media referenced by stored digest);
  *   - not one media file goes through the build: after the first Stage
  *     uploaded the media, a Stage of ten times the pages uploads no media.
  *
  * Pages are bulk-inserted with SQL (clones of one page built through the
  * ops), so the 10k fixture takes seconds, not minutes.
+ *
+ * The admin is this test runner, so its resident set is the runner's: what
+ * it allocated before, and the garbage the collector has not returned yet.
+ * On unchanged code that read 53–128 MB of growth (#1441). The admin side
+ * is therefore measured as what stays alive: a full collection before each
+ * sample, then the live heap plus the buffers outside it, held to a budget
+ * per page. A whole-site buffer is alive by definition; garbage is not.
+ * The collections also keep the resident peak near the live set, so its
+ * check stays, for memory outside the engine's accounting.
  */
 
+import { heapStats } from "bun:jsc";
 import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -69,6 +79,18 @@ const SIZES = [1_000, 10_000] as const;
  * 3,461 MB on the same fixture shape).
  */
 const MAX_GROWTH_MB = 128;
+/**
+ * What the admin may keep alive per page the site grows by: the records of
+ * docs/dev/build-memory.md, ~2 KB per page measured. Keeping every page's
+ * body and gzip in memory read ~15 KB per page when tried on purpose (#1441).
+ */
+const MAX_ADMIN_LIVE_BYTES_PER_PAGE = 4096;
+/**
+ * How far apart the admin's live memory is sampled. Dense: a Stage's largest
+ * moment is a short read, and sparse samples hit or miss it (250 ms read
+ * 4–22 MB of growth on unchanged code).
+ */
+const LIVE_SAMPLE_MS = 40;
 
 const realFetch = globalThis.fetch;
 const hosting = new FakeFirebaseHosting(SITE, realFetch);
@@ -185,6 +207,10 @@ interface StageResult {
   uploadPeakMb: number;
   /** The admin's resident memory as the Stage started. */
   startMb: number;
+  /** What the Stage added to the admin's live memory at its peak. */
+  adminLivePeakMb: number;
+  /** Samples behind {@link adminLivePeakMb}: a handful would miss the peak. */
+  adminLiveSamples: number;
   /** Media files (by gzip hash) this Stage uploaded. */
   mediaUploaded: number;
   /**
@@ -226,14 +252,51 @@ async function peakDiskBytes<T>(dir: string, run: () => Promise<T>): Promise<[T,
   }
 }
 
+/** This process's live memory, in MiB: the heap and the buffers outside it, after a full collection. */
+function liveMb(): number {
+  Bun.gc(true);
+  const h = heapStats();
+  return (h.heapSize + h.extraMemorySize) / 1048576;
+}
+
+/**
+ * The most `run` added to this process's live memory ({@link liveMb}). The
+ * sample stops the world, so it is taken {@link LIVE_SAMPLE_MS} apart, not
+ * back to back; a buffer that grows with the site lives for many samples.
+ */
+async function peakLive<T>(run: () => Promise<T>): Promise<[T, number, number]> {
+  const start = liveMb();
+  let peak = start;
+  let samples = 0;
+  let running = true;
+  const loop = (async () => {
+    while (running) {
+      await Bun.sleep(LIVE_SAMPLE_MS);
+      peak = Math.max(peak, liveMb());
+      samples += 1;
+    }
+  })();
+  try {
+    const out = await run();
+    return [out, peak - start, samples];
+  } finally {
+    running = false;
+    await loop;
+  }
+}
+
 async function stage(): Promise<StageResult> {
   const before = hosting.uploaded.length;
   const pagesBefore = hosting.uploadedBytes;
-  const [staged, localPeakBytes] = await peakDiskBytes(join(root, "output"), () =>
-    ok<{ runId: string; phases: PhaseTiming[] }>("deploy.trigger", {
-      targetName: "staging",
-      repoRoot: root,
-    }),
+  const [[staged, adminLivePeakMb, adminLiveSamples], localPeakBytes] = await peakDiskBytes(
+    join(root, "output"),
+    () =>
+      peakLive(() =>
+        ok<{ runId: string; phases: PhaseTiming[] }>("deploy.trigger", {
+          targetName: "staging",
+          repoRoot: root,
+        }),
+      ),
   );
   console.info(
     "[build-memory] phases",
@@ -250,6 +313,8 @@ async function stage(): Promise<StageResult> {
     generatorPeakMb: peak("generator."),
     uploadPeakMb: peak("publish."),
     startMb: staged.phases.find((p) => p.phase === "prepare")?.peakRssMb ?? 0,
+    adminLivePeakMb,
+    adminLiveSamples,
     mediaUploaded: (await mediaHashes()).filter((h) => hosting.uploaded.slice(before).includes(h))
       .length,
     localPeakBytes,
@@ -407,6 +472,13 @@ describe("#1271 Stage memory is flat in the site's size", () => {
       expect(
         large.uploadPeakMb - large.startMb - (small.uploadPeakMb - small.startMb),
       ).toBeLessThan(MAX_GROWTH_MB);
+      // What the admin keeps alive grows by a small record per page.
+      const liveGrowthMb = large.adminLivePeakMb - small.adminLivePeakMb;
+      console.info("[build-memory] admin live growth MB", liveGrowthMb.toFixed(1));
+      expect(large.adminLiveSamples).toBeGreaterThan(10);
+      expect(liveGrowthMb * 1048576).toBeLessThan(
+        (SIZES[1] - SIZES[0]) * MAX_ADMIN_LIVE_BYTES_PER_PAGE,
+      );
     },
     { timeout: 900_000 },
   );
