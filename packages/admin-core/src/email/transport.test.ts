@@ -6,7 +6,7 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { emailDeliveryProblem } from "./transport.js";
+import { buildEmailTransport, emailDeliveryProblem } from "./transport.js";
 
 describe("emailDeliveryProblem", () => {
   it("names why no mail can go out", () => {
