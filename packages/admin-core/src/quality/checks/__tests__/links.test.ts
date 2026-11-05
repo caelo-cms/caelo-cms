@@ -376,6 +376,7 @@ describe("redirects", () => {
       "links/broken-internal",
       "links/broken-internal",
       "links/redirect-loop",
+      "links/redirect-shadows-page",
     ]);
     const loop = findings.find((f) => f.ruleId === "links/redirect-loop");
     expect(loop?.message).toContain("/a → /b (301) → /a/ (302)");
@@ -389,7 +390,8 @@ describe("redirects", () => {
   it("a live page wins over a redirect row for the same path", async () => {
     const home = page(1, "/", mod(TEXT, '<a href="/about">x</a><a href="/team">t</a>'));
     const { findings } = await findingsOf([home, ABOUT, TEAM], { redirects });
-    expect(rules(findings)).toEqual([]);
+    // The links resolve to the page; only the rule on its URL is reported.
+    expect(rules(findings)).toEqual(["links/redirect-shadows-page"]);
   });
 
   it("followRedirects is pure and bounded", () => {
@@ -677,5 +679,63 @@ describe("stagedBuildAt", () => {
     await expect(stagedBuildAt({ baseUrl: BASE }, broken.fn).probe("x")).rejects.toThrow(
       "root-relative",
     );
+  });
+});
+
+describe("links/redirect-shadows-page (#1447)", () => {
+  const RULE = "links/redirect-shadows-page";
+  const run = async (pages: readonly StagedPage[], redirects: RedirectRow[]) =>
+    (await findingsOf(pages, { redirects })).findings.filter((f) => f.ruleId === RULE);
+
+  it.each(["/about", "/about/"])("names the rule stored as %s and the page", async (fromPath) => {
+    const findings = await run(
+      [page(1, "/", ""), page(2, "/about", "")],
+      [{ fromPath, toPath: "/guides/old", statusCode: 301 }],
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ severity: "error", pageId: id(2) });
+    expect(findings[0]?.message).toContain(`"${fromPath}" → "/guides/old" (301)`);
+    expect(findings[0]?.message).toContain("/about");
+    expect(findings[0]?.fix?.tool).toBe("bulk_delete_redirects");
+    expect(findings[0]?.fix?.hint).toContain(`["${fromPath}"]`);
+  });
+
+  it("names both rows when both spellings are stored, so one fix clears the finding", async () => {
+    const findings = await run(
+      [page(1, "/", ""), page(2, "/about", "")],
+      [
+        { fromPath: "/about", toPath: "/guides/old", statusCode: 301 },
+        { fromPath: "/about/", toPath: "/guides/old", statusCode: 301 },
+      ],
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.fix?.hint).toContain('["/about","/about/"]');
+  });
+
+  it("is silent for a rule on a path no page uses", async () => {
+    expect(
+      await run([page(1, "/", "")], [{ fromPath: "/old", toPath: "/", statusCode: 301 }]),
+    ).toEqual([]);
+  });
+
+  it("leaves the 404 page out: its own path is free for a rule", async () => {
+    const notFound = { ...page(2, "/not-found", ""), notFoundPage: true as const };
+    expect(
+      await run(
+        [page(1, "/", ""), notFound],
+        [{ fromPath: "/not-found", toPath: "/", statusCode: 301 }],
+      ),
+    ).toEqual([]);
+  });
+
+  it("reports a page staging really redirected, with no rule to blame", async () => {
+    const findings = await run(
+      [page(1, "/", ""), { ...page(2, "/about", ""), redirectedTo: "/guides/old/" }],
+      [],
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.severity).toBe("error");
+    expect(findings[0]?.message).toContain("/guides/old/");
+    expect(findings[0]?.fix?.tool).toBe("stage_changes");
   });
 });

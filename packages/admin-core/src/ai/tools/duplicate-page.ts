@@ -13,6 +13,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { duplicatePageToolInput } from "@caelo-cms/shared";
 import { describeError, toolError } from "./_describe-error.js";
+import { redirectOnPageNote } from "./_redirect-on-page-note.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const duplicatePageTool: ToolDefinitionWithHandler<
@@ -59,7 +60,7 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
     const newPageId = (res.value as { pageId: string }).pageId;
     return {
       ok: true,
-      content: `page ${newPageId} cloned with slug=${input.newSlug}; modules carry over by reference (edits propagate to the source)`,
+      content: `page ${newPageId} cloned with slug=${input.newSlug}; modules carry over by reference (edits propagate to the source)${await redirectOnPageNote(ctx, toolCtx, { pageIds: [newPageId] })}`,
     };
   },
 };

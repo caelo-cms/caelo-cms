@@ -202,6 +202,21 @@ export function redirectsToUnservedPaths(
   });
 }
 
+/**
+ * #1447 — every spelling of a path the redirects table can hold a row for.
+ * A row answers its path with and without the trailing slash (see the module
+ * comment), and a table imported from a CMS with `/`-terminated URLs stores
+ * the slash form, so a lookup by one spelling misses the row that answers it.
+ *
+ * @example
+ *   redirectFromPathSpellings("/old/") // → ["/old", "/old/"]
+ *   redirectFromPathSpellings("/")     // → ["/"]
+ */
+export function redirectFromPathSpellings(path: string): readonly string[] {
+  const bare = stripTrailingSlash(path);
+  return bare === "/" ? [bare] : [bare, `${bare}/`];
+}
+
 function normaliseRows(rows: readonly RedirectTableRow[]): NormalisedRow[] {
   const byBare = new Map<string, NormalisedRow>();
   const out: NormalisedRow[] = [];

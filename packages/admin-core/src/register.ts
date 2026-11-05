@@ -191,6 +191,7 @@ import { listRecentlyEditedPagesOp } from "./ops/content/pages-recently-edited.j
 import { placeModuleOp } from "./ops/content/place-module.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
 import { resolvePublicUrlsOp } from "./ops/content/public-urls.js";
+import { pageConflictsRedirectOp } from "./ops/content/redirect-page-conflicts.js";
 import { listSharedContentOp } from "./ops/content/shared-content.js";
 import { setTemplateBlocksOp } from "./ops/content/template_blocks.js";
 import {
@@ -1129,6 +1130,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createRedirectOp);
   registry.register(listRedirectsOp);
   registry.register(lookupRedirectOp);
+  registry.register(pageConflictsRedirectOp);
   registry.register(deleteRedirectOp);
   registry.register(createRedirectsManyOp);
   registry.register(deleteRedirectsManyOp);
