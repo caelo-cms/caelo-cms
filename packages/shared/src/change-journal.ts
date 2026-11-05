@@ -263,6 +263,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   plugin_rate_limit_proposals: QUEUE,
 
   ai_providers: "Owner AI configuration; read per call, nothing is derived from it",
+  mcp_only_mode:
+    "#1460: the Owner's choice to run without an AI key; read per call, nothing is derived from it",
   ai_budgets: "Owner AI budgets; read per call, nothing is derived from it",
   ai_pricing: "Owner AI pricing; read per call, nothing is derived from it",
   email_config: "Owner email configuration; read per send",

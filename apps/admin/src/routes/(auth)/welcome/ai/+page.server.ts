@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * First-run AI wizard — the focused "pick a provider, paste a key,
- * start chatting" dialog the (authed) layout redirects to when no AI
- * provider is configured yet. Operator feedback (2026-07-12): landing
- * on the full /settings/ai management page right after the first
- * login is overwhelming; the first run should be a two-field dialog
- * that ends in the chat. /settings/ai stays the management surface
+ * First-run AI wizard — the focused dialog the (authed) layout redirects to
+ * until the Owner decided how this install gets its AI. Operator feedback
+ * (2026-07-12): landing on the full /settings/ai management page right after
+ * the first login is overwhelming; the first run should be a two-field
+ * dialog that ends in the chat. /settings/ai stays the management surface
  * (env keys, local models, output ceilings, switching providers).
+ *
+ * #1460 — the preselected first option is no key at all: the install works
+ * through an external agent (Power-MCP), nothing is stored but that choice,
+ * and the wizard ends at /settings/mcp, where the next step is a token.
  *
  * Lives in the (auth) route group for the same centered-card layout
  * as /login and /setup, but requires a signed-in Owner — it writes
@@ -15,6 +18,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import type { InstallAiMode } from "@caelo-cms/shared";
 import { fail, redirect } from "@sveltejs/kit";
 import { defaultModelForProvider, modelsForProvider } from "#lib/ai-models.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -28,6 +32,9 @@ import type { Actions, PageServerLoad } from "./$types";
 const WIZARD_PROVIDERS = ["anthropic", "openai", "google"] as const;
 type WizardProvider = (typeof WIZARD_PROVIDERS)[number];
 
+/** The form value of the no-key option, next to the provider names. */
+const MCP_ONLY_CHOICE = "mcp_only";
+
 const DISPLAY_NAME: Record<WizardProvider, string> = {
   anthropic: "Anthropic (Claude)",
   openai: "OpenAI",
@@ -38,12 +45,12 @@ export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.user) throw redirect(303, "/login");
   requirePermission(locals, "settings.write");
   const { adapter, registry } = getQueryContext();
-  const r = await execute(registry, adapter, locals.ctx, "ai_providers.any_configured", {});
-  if (r.ok && (r.value as { anyConfigured: boolean }).anyConfigured) {
-    // Already set up (another tab finished the wizard, or env keys
-    // exist) — straight to the chat.
-    throw redirect(303, "/edit");
-  }
+  const r = await execute(registry, adapter, locals.ctx, "ai_providers.get_mode", {});
+  const mode = r.ok ? (r.value as { mode: InstallAiMode }).mode : "unset";
+  // Already decided (another tab finished the wizard, or env keys exist):
+  // on to where that decision leads.
+  if (mode === "provider") throw redirect(303, "/edit");
+  if (mode === "mcp_only") throw redirect(303, "/settings/mcp");
   return {};
 };
 
@@ -55,11 +62,22 @@ export const actions: Actions = {
     const form = await request.formData();
     await assertCsrfToken(form, locals);
 
-    const name = String(form.get("provider") ?? "").trim() as WizardProvider;
+    const choice = String(form.get("provider") ?? "").trim();
+    if (choice === MCP_ONLY_CHOICE) {
+      const chosen = await execute(registry, adapter, locals.ctx, "ai_providers.set_mcp_only", {});
+      if (!chosen.ok) {
+        const error = "message" in chosen.error ? chosen.error.message : chosen.error.kind;
+        return fail(400, { provider: MCP_ONLY_CHOICE, error });
+      }
+      // The next step of this path is a token for the agent.
+      throw redirect(303, "/settings/mcp");
+    }
+
+    const name = choice as WizardProvider;
     if (!WIZARD_PROVIDERS.includes(name)) {
       // Uniform shape with the fails below so ActionData keeps
       // `provider` on every variant.
-      return fail(400, { provider: null, error: "Pick one of the listed providers." });
+      return fail(400, { provider: null, error: "Pick one of the listed options." });
     }
     const apiKey = String(form.get("apiKey") ?? "").trim();
     if (!apiKey) {

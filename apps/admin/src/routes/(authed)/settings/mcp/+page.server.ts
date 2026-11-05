@@ -49,14 +49,17 @@ async function remoteState(locals: App.Locals): Promise<RemoteMcpState> {
   return { status: "on", urls: availability.urls, siteHost };
 }
 
-export const load: PageServerLoad = async ({ locals, url }) => {
+export const load: PageServerLoad = async ({ locals, url, parent }) => {
   requirePermission(locals, "settings.read");
   const { adapter, registry } = getQueryContext();
+  const { aiMode } = await parent();
   const permissions = locals.user?.permissions;
   const canWrite = permissions?.has("settings.write") === true;
   // Which remote surfaces this user may connect — the URLs shown follow it.
+  // #1460 — the chat surface runs the install's own AI, so it is not on
+  // offer on an install without a key, whatever the role.
   const mayUse = {
-    chat: permissions?.has(MCP_SURFACE_PERMISSION.chat) === true,
+    chat: aiMode !== "mcp_only" && permissions?.has(MCP_SURFACE_PERMISSION.chat) === true,
     admin: permissions?.has(MCP_SURFACE_PERMISSION.admin) === true,
   };
   const r = await execute(registry, adapter, locals.ctx, "mcp_tokens.list", {});
@@ -119,7 +122,11 @@ export const actions: Actions = {
       aiCostCapMicrocents: cap,
       allowCaeloAi,
     });
-    if (!r.ok) return fail(400, { error: "could not create token" });
+    if (!r.ok) {
+      return fail(400, {
+        error: "message" in r.error ? r.error.message : "could not create token",
+      });
+    }
     const v = r.value as { id: string; plaintextToken: string };
     // Returned ONCE — the page renders it as a save-now banner, then the
     // user copies + pastes into their `claude mcp add` invocation.

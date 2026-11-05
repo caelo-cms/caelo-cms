@@ -13,7 +13,13 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared";
+import {
+  CHAT_SURFACE_NEEDS_INSTALL_AI,
+  err,
+  ok,
+  type ProposalStatus,
+  proposalStatus,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -30,6 +36,7 @@ import {
   credentialHandoffRef,
   recordCredentialHandoff,
 } from "./credential_handoffs.js";
+import { isMcpOnly } from "./security/ai_providers.js";
 import {
   createMcpTokenOp,
   mcpTokenNotVisibleMessage,
@@ -60,6 +67,15 @@ export const proposeMcpTokenCreateOp = defineOperation({
     preview: z.record(z.string(), z.unknown()),
   }),
   handler: async (ctx, input, tx) => {
+    // #1460 — refused here too: the Owner should not get a card that can
+    // only fail on Approve.
+    if ((input.scope ?? "chat") === "chat" && (await isMcpOnly(tx))) {
+      return err({
+        kind: "HandlerError",
+        operation: "mcp_tokens.propose_create",
+        message: `${CHAT_SURFACE_NEEDS_INSTALL_AI} Propose this token with scope 'admin'.`,
+      });
+    }
     const preview = {
       kind: "create",
       displayName: input.displayName,

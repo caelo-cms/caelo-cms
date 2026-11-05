@@ -13,6 +13,11 @@
  *      degraded-mode behaviour (chat stream emits SSE error; MCP
  *      bridge returns structured error).
  *
+ * #1460 — while the Owner runs the install without an AI key
+ * (`mcp_only_mode`), no key resolves, the environment's included: the choice
+ * decides what the install runs on, and each caller's "no provider" path
+ * answers with the refusal of that mode.
+ *
  * Cache: in-process Map keyed by (name, model, baseUrl, sha256(key)[0..8])
  * with 60s TTL so we don't re-decrypt on every chat turn. `pg_notify`
  * from `ai_providers.set` / `clear_key` invalidates the per-name slot
@@ -348,6 +353,24 @@ async function loadProviderMeta(
   };
 }
 
+/** #1460 — whether the Owner chose to run this install without an AI key. */
+async function mcpOnlyChosen(d: ResolverDeps): Promise<boolean> {
+  const rows = (await withSystemTx(
+    d,
+    (tx) => tx`SELECT 1 FROM mcp_only_mode LIMIT 1`,
+  )) as unknown as unknown[];
+  return rows.length > 0;
+}
+
+/**
+ * #1460 — whether a missing provider is the Owner's choice, not a mistake.
+ * Read by the callers that word a refusal; `false` before the resolver is
+ * wired, when no provider resolves either.
+ */
+export async function isMcpOnlyInstall(): Promise<boolean> {
+  return deps ? mcpOnlyChosen(deps) : false;
+}
+
 /**
  * Load a provider's API key: DB-stored encrypted key first, then the
  * legacy env-var fallback. Extracted from `resolveProvider` (issue #306)
@@ -358,6 +381,7 @@ async function loadApiKey(
   d: ResolverDeps,
   name: ProviderName,
 ): Promise<{ apiKey: string; source: "db" | "env" } | null> {
+  if (await mcpOnlyChosen(d)) return null;
   const encrypted = await loadEncryptedKeyFromDb(d, name);
   if (encrypted) {
     try {

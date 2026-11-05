@@ -7,7 +7,11 @@
   // that keeps two connectors to one site apart. What to show is decided by
   // remoteAccessView (lib/mcp-remote-access.ts, unit-tested); this renders
   // it. The concept is docs/dev/mcp-access.md.
-  import { MCP_SURFACE_PERMISSION, type McpSurfaceName } from "@caelo-cms/shared";
+  import {
+    CHAT_SURFACE_NEEDS_INSTALL_AI,
+    MCP_SURFACE_PERMISSION,
+    type McpSurfaceName,
+  } from "@caelo-cms/shared";
   import CopyLine from "#lib/components/updates/CopyLine.svelte";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -25,12 +29,15 @@
     remote,
     mayUse,
     canWrite,
+    chatOff = false,
   }: {
     remote: RemoteMcpState;
     /** The surfaces this user's role allows; only their URLs are shown. */
     mayUse: Record<McpSurfaceName, boolean>;
     /** settings.write — may set remote MCP up. */
     canWrite: boolean;
+    /** #1460 — no AI key on this install, so the chat address is not offered. */
+    chatOff?: boolean;
   } = $props();
 
   const view = $derived(remoteAccessView(remote, mayUse, canWrite));
@@ -79,7 +86,11 @@
         <p class="text-sm text-muted-foreground">Ask an Owner to set it up.</p>
       {/if}
     {:else}
-      {#if view.surfaces.length === 0}
+      {#if chatOff}
+        <p class="text-sm text-muted-foreground" data-testid="mcp-chat-unavailable">
+          {CHAT_SURFACE_NEEDS_INSTALL_AI}
+        </p>
+      {:else if view.surfaces.length === 0}
         <p class="text-sm" data-testid="mcp-remote-access-none">
           Your role may not use either address. Chatting with the site's AI needs
           {MCP_SURFACE_PERMISSION.chat}; ask an Owner under Settings → Users.

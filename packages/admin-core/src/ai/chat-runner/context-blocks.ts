@@ -80,6 +80,8 @@ export function buildStatusLine(args: {
   activeTheme: { origin?: string | null; description?: string | null } | null;
   /** `deploy.stage_readiness` result; null when the read failed. */
   stageReadinessValue?: unknown;
+  /** #1460 — the Owner runs this install without an AI key. */
+  noInstallAi?: boolean;
 }): string | undefined {
   const missing: string[] = [];
   const layouts = (args.layoutsValue as { layouts?: unknown[] } | null)?.layouts ?? [];
@@ -138,6 +140,10 @@ export function buildStatusLine(args: {
       "404 page: not designated — unknown URLs show the hosting provider's generic error page instead of the site's design (once the operator agrees: build_page a short 'Page not found' page with the site's normal template and links back home, publish it with set_pages_status_many, then set_not_found_page({pageId}))",
     );
   const segments: string[] = [];
+  if (args.noInstallAi)
+    segments.push(
+      "[Site status — install AI] No AI key, Power-MCP only: nothing runs on the install's own AI. This is the Owner's choice, not a gap to fix; do not ask for a key.",
+    );
   if (missing.length > 0)
     segments.push(`[Site status — base setup still missing] ${missing.join(" | ")}`);
   // What a staging build would refuse right now — mostly state this chat

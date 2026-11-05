@@ -12,16 +12,19 @@
  * applies without a restart. The call's declared `purpose` selects the
  * Owner's per-purpose model (#593, `getActiveProviderForPurpose`); with
  * none stored it runs on the chat model. No provider configured →
- * `complete()` throws, and the plugin host surfaces that to the plugin.
+ * `complete()` throws, and the plugin host surfaces that to the plugin. On
+ * an install the Owner runs without a key (#1460) the error says so.
  */
 
 import type { AIProvider as PluginHostAIProvider } from "@caelo-cms/plugin-host";
-import { getActiveProviderForPurpose } from "./provider-resolver.js";
+import { noInstallAiRefusal } from "@caelo-cms/shared";
+import { getActiveProviderForPurpose, isMcpOnlyInstall } from "./provider-resolver.js";
 
 /** The provider for a declared purpose; fails loudly when none is set up. */
 async function resolveOrThrow(purpose: string | undefined) {
   const resolved = await getActiveProviderForPurpose(purpose);
   if (!resolved) {
+    if (await isMcpOnlyInstall()) throw new Error(noInstallAiRefusal("This AI step"));
     throw new Error("AI provider not configured — Owner must visit /settings/ai");
   }
   return resolved;

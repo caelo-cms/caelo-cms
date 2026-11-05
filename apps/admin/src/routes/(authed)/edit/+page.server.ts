@@ -394,7 +394,11 @@ export const load: PageServerLoad = async ({ locals, url, setHeaders }) => {
   // chat; once identity or pages exist the branch never fires again.
   let firstRunSuggestions: typeof FIRST_RUN_SUGGESTIONS = [];
   let pluginSuggestions: typeof FIRST_RUN_SUGGESTIONS = [];
-  if (!messages.some((m) => m.role === "user")) {
+  // #1460 — no AI key, no chat: a welcome that asks the operator to type
+  // into it would be a dead end, and its chips would have nowhere to go.
+  const modeResult = await execute(registry, adapter, locals.ctx, "ai_providers.get_mode", {});
+  const chatOff = modeResult.ok && (modeResult.value as { mode: string }).mode === "mcp_only";
+  if (!chatOff && !messages.some((m) => m.role === "user")) {
     const visible = await timing.time("suggestions", () =>
       execute(registry, adapter, locals.ctx, "skills.list", { status: "active" }),
     );
@@ -415,7 +419,7 @@ export const load: PageServerLoad = async ({ locals, url, setHeaders }) => {
   }
   // No page in the chat's view at all: neither the lookup, the root nor
   // the first page of the site found one.
-  if (activePage === null) {
+  if (activePage === null && !chatOff) {
     const defaultsR = await execute(registry, adapter, locals.ctx, "site_defaults.get", {});
     const identity = defaultsR.ok
       ? (

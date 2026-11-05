@@ -6,12 +6,11 @@ import { clearLoginRateBucket } from "./helpers.js";
 /**
  * First-run AI wizard guards (/welcome/ai).
  *
- * The e2e seed always configures an active provider, so the happy
- * path (no provider → wizard form → save → /edit) cannot run inside
- * the fullyParallel suite without yanking providers out from under
- * concurrent specs. The two redirect guards ARE safely assertable
- * here; the form flow itself is covered by the action's server-side
- * validation and dogfood verification.
+ * The e2e seed always configures an active provider, so the wizard form
+ * cannot run inside the fullyParallel suite without yanking providers
+ * out from under concurrent specs. The two redirect guards ARE safely
+ * assertable here; the form flow runs in no-ai-key.browser.ts, its own
+ * Playwright project after this suite.
  */
 
 // Every spec logs in as dev-owner from the same IP; the login limiter
